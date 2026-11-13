@@ -215,7 +215,7 @@ class TestUnconfiguredErrorEnvelopeParity:
         # Developer machines may carry FIRECRAWL_* in ~/.hermes/.env — the
         # config-aware lookup must see a truly keyless environment here.
         monkeypatch.setattr(
-            "hermes_cli.config.get_env_value", lambda name: None, raising=True
+            "hermes_agent.hermes_cli.config.get_env_value", lambda name: None, raising=True
         )
 
         calls = {}
@@ -336,7 +336,7 @@ class TestDispatchersTriggerPluginDiscovery:
 
             mock_hook = MagicMock(wraps=_register_fake)
             # Patch the helper on ``hermes_agent.tools.web_tools`` directly rather than the
-            # underlying ``hermes_cli.plugins._ensure_plugins_discovered`` so
+            # underlying ``hermes_agent.hermes_cli.plugins._ensure_plugins_discovered`` so
             # the test stays valid even if the import inside the helper is
             # later moved to module scope or renamed.
             monkeypatch.setattr(
@@ -462,7 +462,7 @@ class TestDisabledPluginDiagnostic:
         """Point ``get_plugin_manager()`` at a stub whose ``_plugins``
         dict is ``plugins_map`` so ``_disabled_web_plugin_for`` sees the
         simulated disabled/enabled state without touching real config."""
-        import hermes_cli.plugins as plugins_mod
+        import hermes_agent.hermes_cli.plugins as plugins_mod
 
         class _StubMgr:
             _plugins = plugins_map

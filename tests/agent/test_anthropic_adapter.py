@@ -89,7 +89,7 @@ class TestBuildAnthropicClient:
             headers = kwargs["default_headers"]
             assert headers["HTTP-Referer"] == "https://hermes-agent.nousresearch.com"
             assert headers["X-Title"] == "Hermes Agent"
-            from hermes_cli.version_info import get_version_info
+            from hermes_agent.hermes_cli.version_info import get_version_info
             assert headers["User-Agent"] == f"HermesAgent/{get_version_info().base_version}"
             # Auth branch is unchanged: x-api-key via api_key, betas kept.
             assert kwargs["api_key"] == "sk-opencode-secret"

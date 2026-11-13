@@ -10,10 +10,10 @@ import zipfile
 
 import pytest
 
-from hermes_cli import main, update_cmd, update_cmd_fleet as fleet, update_cmd_maint as maint
-from hermes_cli import update_cmd_fleet_verify as fleet_verify, update_cmd_zip, update_receipt
-from hermes_cli.config_defaults import DEFAULT_CONFIG
-from hermes_cli.update_inventory import RuntimeRecord, UpdatePlan
+from hermes_agent.hermes_cli import main, update_cmd, update_cmd_fleet as fleet, update_cmd_maint as maint
+from hermes_agent.hermes_cli import update_cmd_fleet_verify as fleet_verify, update_cmd_zip, update_receipt
+from hermes_agent.hermes_cli.config_defaults import DEFAULT_CONFIG
+from hermes_agent.hermes_cli.update_inventory import RuntimeRecord, UpdatePlan
 import hermes_yaml
 
 
@@ -67,7 +67,7 @@ def zip_update(tmp_path, monkeypatch, isolated_source_completion):
     plan = UpdatePlan(install_method="git", expected_version="1.0", profiles=["default", "other"],
                       runtimes=[RuntimeRecord(kind="serve", profile="default", pid=99999999,
                                               supervisor="manual-serve")])
-    monkeypatch.setattr("hermes_cli.update_inventory.collect_runtime_inventory", lambda: plan)
+    monkeypatch.setattr("hermes_agent.hermes_cli.update_inventory.collect_runtime_inventory", lambda: plan)
     monkeypatch.setattr(main, "_pause_windows_gateways_for_update", lambda: token)
     monkeypatch.setattr("atexit.register", lambda *args: None)
     monkeypatch.setattr(main, "_desktop_packaged_executable", lambda root: None)
@@ -81,20 +81,20 @@ def zip_update(tmp_path, monkeypatch, isolated_source_completion):
         events.append("prepare")
         # The pre-update snapshot must reach the real cron-loss safety net.
         jobs.write_text('{"jobs": []}', encoding="utf-8")
-    monkeypatch.setattr("hermes_cli.source_build.build_update_products", prepare)
+    monkeypatch.setattr("hermes_agent.hermes_cli.source_build.build_update_products", prepare)
     # PM/builds and machine-level repair are independently covered. Keep real
     # config migration, profile env backfill, snapshot recovery and receipts.
-    monkeypatch.setattr("hermes_cli.macos_tcc_anchor.ensure_tcc_anchor", lambda: None)
+    monkeypatch.setattr("hermes_agent.hermes_cli.macos_tcc_anchor.ensure_tcc_anchor", lambda: None)
     monkeypatch.setattr(maint, "_print_post_update_notices_and_self_heals", lambda: None)
     monkeypatch.setattr(maint, "_print_bundled_skills_sync_report", lambda: None)
-    monkeypatch.setattr("hermes_cli.profiles.seed_profile_skills", lambda *a, **kw: {})
+    monkeypatch.setattr("hermes_agent.hermes_cli.profiles.seed_profile_skills", lambda *a, **kw: {})
     monkeypatch.setattr(update_cmd, "_reload_config_modules", lambda: None)
     monkeypatch.setattr(update_cmd, "_post_update_sqlite_runtime_status", lambda: (True, None))
     monkeypatch.setattr(fleet_verify, "_print_legacy_units_warning", lambda: None)
     monkeypatch.setattr(maint, "_refresh_dashboard_after_update", lambda **kwargs: None)
     monkeypatch.setattr(update_cmd, "_surviving_pre_update_serve_runtimes", lambda plan: [])
     monkeypatch.setattr(fleet_verify, "_collect_fleet_snapshot", lambda *args: [])
-    monkeypatch.setattr("hermes_cli.gateway_migrate.maybe_auto_migrate_after_update", lambda: None)
+    monkeypatch.setattr("hermes_agent.hermes_cli.gateway_migrate.maybe_auto_migrate_after_update", lambda: None)
 
     def resume(received):
         assert received is token
@@ -272,7 +272,7 @@ def test_zip_build_failure_after_swap_is_a_followup(zip_update, monkeypatch, rou
     def fail_build(*args, **kwargs):
         assert (state.root / "payload.txt").read_text() == "new"
         raise pm.InstallError("venv", "preparation stopped")
-    monkeypatch.setattr("hermes_cli.source_build.build_update_products", fail_build)
+    monkeypatch.setattr("hermes_agent.hermes_cli.source_build.build_update_products", fail_build)
     update_cmd._cmd_update_impl(SimpleNamespace(branch="main", yes=True), gateway_mode=True)
     assert (state.root / "payload.txt").read_text() == "new"
     receipt = json.loads((state.active / "logs/update_receipts/latest.json").read_text())
@@ -289,8 +289,8 @@ def test_zip_dependency_sync_failure_after_swap_is_a_followup(zip_update, monkey
     # exit 0, a ``dependencies`` follow-up, the tail obligation armed, nothing of the tail run.
     import pm
     import pm.client
-    from hermes_cli import update_completion
-    from hermes_cli.venv_sync import completion_pending_path
+    from hermes_agent.hermes_cli import update_completion
+    from hermes_agent.hermes_cli.venv_sync import completion_pending_path
 
     state = zip_update
     monkeypatch.setattr(update_cmd, "_prepare_git_command", lambda **_: (route == "direct", ["git"], False))
@@ -427,13 +427,13 @@ def test_installed_app_without_a_checkout_build_is_still_rebuilt(zip_update, mon
     (installed / "Contents" / "Resources").mkdir(parents=True)
     (installed / "Contents" / "Resources" / "install-stamp.json").write_text(
         json.dumps({"updateMechanism": mechanism}), encoding="utf-8")
-    monkeypatch.setattr("hermes_cli.gui_uninstall.packaged_gui_app_paths", lambda: [installed])
+    monkeypatch.setattr("hermes_agent.hermes_cli.gui_uninstall.packaged_gui_app_paths", lambda: [installed])
     # The checkout under the default Hermes home is the one an installed app runs.
     (tmp_path / "default-home").mkdir()
     (tmp_path / "default-home" / "hermes-agent").symlink_to(zip_update.root)
     monkeypatch.setattr("hermes_constants.get_default_hermes_root", lambda **kw: tmp_path / "default-home")
     built = []
-    monkeypatch.setattr("hermes_cli.source_build.build_update_products",
+    monkeypatch.setattr("hermes_agent.hermes_cli.source_build.build_update_products",
                         lambda selected, *, desktop, after_dependencies=None: built.append(desktop))
     monkeypatch.setattr(update_cmd, "_prepare_git_command", lambda **_: (True, ["git"], False))
     monkeypatch.setattr(main, "_warn_orphaned_update_autostashes", lambda *args: None)
@@ -446,7 +446,7 @@ def test_installed_app_without_a_checkout_build_is_still_rebuilt(zip_update, mon
 def test_unpinned_zip_update_owes_the_restart_for_the_archive_commit(tmp_path, monkeypatch):
     """A branch ZIP (no target SHA) still names its commit: GitHub archives carry it as the ZIP comment
     (``git archive``). The restart debt and the completion are armed for that commit, never for ''."""
-    from hermes_cli import update_cmd_commit
+    from hermes_agent.hermes_cli import update_cmd_commit
 
     sha = "8192da90e0afb20010a1c2f5da83db305d05ac5a"
     root = tmp_path / "checkout"
@@ -474,7 +474,7 @@ def test_a_zip_that_does_not_name_its_commit_is_refused_before_the_swap(tmp_path
     """S4: the installed identity must come from the downloaded bytes (``git archive``'s ZIP comment).
     No comment, a malformed one, or one naming another commit than the pinned target: no live rename,
     no obligation armed, never an empty durable SHA."""
-    from hermes_cli import update_cmd_commit
+    from hermes_agent.hermes_cli import update_cmd_commit
 
     root = tmp_path / "checkout"
     root.mkdir()

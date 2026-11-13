@@ -39,7 +39,7 @@ def two_profiles(tmp_path, monkeypatch):
 
 def _snapshot():
     from hermes_agent.agent.secret_scope import get_secret
-    from hermes_cli.config import load_config_readonly
+    from hermes_agent.hermes_cli.config import load_config_readonly
     from hermes_constants import get_hermes_home
     return {"home": str(get_hermes_home()), "secret": get_secret("PROBE_SECRET"),
             "model": load_config_readonly()["model"]["default"]}
@@ -297,7 +297,7 @@ def test_profile_pinned_to_a_missing_acp_command_is_refused_at_routing(two_profi
     """Same rule as ``delegation.provider`` (#80450): a profile whose provider is pinned to an ACP binary
     that is not on PATH refuses the spawn, naming the profile, instead of building a broken child."""
     from hermes_agent import providers
-    from hermes_cli import auth
+    from hermes_agent.hermes_cli import auth
     from hermes_agent.providers.base import ProviderProfile
 
     _, coder = two_profiles
@@ -323,7 +323,7 @@ def test_profile_pinned_to_a_missing_acp_command_is_refused_at_routing(two_profi
 
 
 def test_one_profile_under_two_labels_resolves_once_and_keeps_each_label(two_profiles):
-    from hermes_cli import runtime_provider
+    from hermes_agent.hermes_cli import runtime_provider
     from hermes_agent.tools.delegate_tool_routes import _route_to_task_route
 
     cache, parent = {}, _parent()

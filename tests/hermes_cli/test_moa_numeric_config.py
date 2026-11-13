@@ -5,7 +5,7 @@ import math
 
 import pytest
 
-from hermes_cli.moa_config import normalize_moa_config
+from hermes_agent.hermes_cli.moa_config import normalize_moa_config
 
 
 @pytest.mark.parametrize("fanout", [

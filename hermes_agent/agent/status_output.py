@@ -24,7 +24,7 @@ def deliver_kept_startup_notices(agent) -> None:
         return
     if (getattr(agent, "platform", None) or "cli") != "cli" and not getattr(agent, "notice_callback", None):
         return
-    from hermes_cli.left_core_migration import claim_kept_notices
+    from hermes_agent.hermes_cli.left_core_migration import claim_kept_notices
     for message in claim_kept_notices():
         agent._emit_startup_warning(message)
 

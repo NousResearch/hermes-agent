@@ -13,16 +13,16 @@ from unittest.mock import patch
 
 import pytest
 
-from hermes_cli import main as cli_main
-from hermes_cli import main_desktop
-from hermes_cli import main_desktop_tcc
-from hermes_cli import main_install_repair
-from hermes_cli import main_web_build
+from hermes_agent.hermes_cli import main as cli_main
+from hermes_agent.hermes_cli import main_desktop
+from hermes_agent.hermes_cli import main_desktop_tcc
+from hermes_agent.hermes_cli import main_install_repair
+from hermes_agent.hermes_cli import main_web_build
 
 
 @pytest.fixture(autouse=True)
 def _prepared_build_environment(monkeypatch):
-    from hermes_cli import source_build
+    from hermes_agent.hermes_cli import source_build
     monkeypatch.setattr(source_build, "source_build_env", lambda env=None, **kw: {**os.environ, **(env or {})})
 
 
@@ -204,7 +204,7 @@ def test_packaged_launch_opens_the_refreshed_installed_app(tmp_path, monkeypatch
     root = _make_desktop_tree(tmp_path)
     _stamped_macos_bundle(root / "apps" / "desktop" / "release" / "mac-arm64" / "Hermes.app", b"checkout build")
     installed = _stamped_macos_bundle(tmp_path / "Applications" / "Hermes.app", b"stale build")
-    monkeypatch.setattr("hermes_cli.gui_uninstall.packaged_gui_app_paths", lambda: [installed])
+    monkeypatch.setattr("hermes_agent.hermes_cli.gui_uninstall.packaged_gui_app_paths", lambda: [installed])
     monkeypatch.setattr("hermes_constants.get_default_hermes_root", lambda **kw: tmp_path)  # root is its hermes-agent
     monkeypatch.setattr(main_desktop, "_stage_macos_bundle_copy", lambda src, dst: shutil.copytree(src, dst, symlinks=True))
     monkeypatch.setattr(main_desktop, "_running_macos_app_bundles", lambda: set())
@@ -227,7 +227,7 @@ def test_packaged_launch_opens_the_refreshed_installed_app(tmp_path, monkeypatch
 def test_packaged_renderer_bom_does_not_bypass_entry_validation(tmp_path):
     import json
     import struct
-    from hermes_cli.desktop_update_verify import _verify_packaged_entry
+    from hermes_agent.hermes_cli.desktop_update_verify import _verify_packaged_entry
 
     resources = tmp_path / "resources"
     dist = resources / "app.asar.unpacked" / "dist"
@@ -310,9 +310,9 @@ def test_gui_close_preview_flag_forwards_to_packaged_exe(tmp_path, monkeypatch):
     preview pane the user cannot otherwise escape (#97213)."""
     root = _make_desktop_tree(tmp_path)
     monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
-    # Patching hermes_cli.main_desktop.subprocess.run swaps the shared stdlib
+    # Patching hermes_agent.hermes_cli.main_desktop.subprocess.run swaps the shared stdlib
     # module's attribute, so the desktop-entry install's interpreter probe
-    # (`<python> -I -c 'import hermes_cli.main'`) would be captured as a
+    # (`<python> -I -c 'import hermes_agent.hermes_cli.main'`) would be captured as a
     # launch too. Neutralize the entry install the way the other foreground
     # tests do; this test is only about the flag reaching the packaged exe.
     monkeypatch.setattr(main_desktop, "_register_linux_desktop_entry", lambda **kw: None)
@@ -324,9 +324,9 @@ def test_gui_close_preview_flag_forwards_to_packaged_exe(tmp_path, monkeypatch):
         launched.append(list(cmd))
         return subprocess.CompletedProcess(cmd, 0)
 
-    with patch("hermes_cli.main_desktop._desktop_build_needed", return_value=False), \
-         patch("hermes_cli.main_desktop._desktop_linux_sandbox_fixup", return_value=True), \
-         patch("hermes_cli.main_desktop.subprocess.run", side_effect=fake_run), \
+    with patch("hermes_agent.hermes_cli.main_desktop._desktop_build_needed", return_value=False), \
+         patch("hermes_agent.hermes_cli.main_desktop._desktop_linux_sandbox_fixup", return_value=True), \
+         patch("hermes_agent.hermes_cli.main_desktop.subprocess.run", side_effect=fake_run), \
          pytest.raises(SystemExit) as exc:
         cli_main.cmd_gui(_ns(close_preview=True))
 
@@ -346,7 +346,7 @@ def test_launch_installed_macos_desktop_app_gates_on_bundle_and_platform(tmp_pat
     monkeypatch.setattr(main_desktop.Path, "is_file", lambda self: exists if self == exe else Path.is_file(self))
     calls = []
     if exists and platform == "darwin":
-        from hermes_cli import bundled_app
+        from hermes_agent.hermes_cli import bundled_app
         monkeypatch.setattr(bundled_app, "launch_detached", lambda argv, **kw: calls.append(argv) or 4321)
 
     assert main_desktop._launch_installed_macos_desktop_app() is (exists and platform == "darwin")
@@ -492,7 +492,7 @@ def test_setup_tcc_identity_creates_cert_imports_trusts_and_configures(tmp_path,
     monkeypatch.setattr(main_desktop, "_desktop_packaged_executable", lambda d: None)
     monkeypatch.setattr(main_desktop, "_desktop_macos_relaunchable_fixup", lambda d: True)
     # Avoid writing the real user config.
-    monkeypatch.setattr("hermes_cli.config.set_config_value", lambda key, value: None)
+    monkeypatch.setattr("hermes_agent.hermes_cli.config.set_config_value", lambda key, value: None)
 
     assert main_desktop_tcc._desktop_macos_setup_tcc_identity(identity) is True
 
@@ -547,7 +547,7 @@ def test_setup_tcc_identity_retries_pkcs12_with_legacy_on_mac_verification_failu
     monkeypatch.setattr(cli_main.subprocess, "run", fake_run)
     monkeypatch.setattr(main_desktop, "_desktop_packaged_executable", lambda d: None)
     monkeypatch.setattr(main_desktop, "_desktop_macos_relaunchable_fixup", lambda d: True)
-    monkeypatch.setattr("hermes_cli.config.set_config_value", lambda key, value: None)
+    monkeypatch.setattr("hermes_agent.hermes_cli.config.set_config_value", lambda key, value: None)
 
     assert main_desktop_tcc._desktop_macos_setup_tcc_identity(identity) is True
 
@@ -624,7 +624,7 @@ def test_setup_tcc_identity_skips_generation_when_already_valid(tmp_path, monkey
     monkeypatch.setattr(cli_main.subprocess, "run", fake_run)
     monkeypatch.setattr(main_desktop, "_desktop_packaged_executable", lambda d: None)
     monkeypatch.setattr(main_desktop, "_desktop_macos_relaunchable_fixup", lambda d: True)
-    monkeypatch.setattr("hermes_cli.config.set_config_value", lambda key, value: None)
+    monkeypatch.setattr("hermes_agent.hermes_cli.config.set_config_value", lambda key, value: None)
 
     assert main_desktop_tcc._desktop_macos_setup_tcc_identity("Hermes Local Signing") is True
 
@@ -664,7 +664,7 @@ def test_setup_tcc_identity_untrusted_existing_cert_is_repaired(tmp_path, monkey
     monkeypatch.setattr(cli_main.subprocess, "run", fake_run)
     monkeypatch.setattr(main_desktop, "_desktop_packaged_executable", lambda d: None)
     monkeypatch.setattr(main_desktop, "_desktop_macos_relaunchable_fixup", lambda d: True)
-    monkeypatch.setattr("hermes_cli.config.set_config_value", lambda key, value: None)
+    monkeypatch.setattr("hermes_agent.hermes_cli.config.set_config_value", lambda key, value: None)
 
     assert main_desktop_tcc._desktop_macos_setup_tcc_identity("Hermes Local Signing") is True
     assert any(c[0] == "/usr/bin/security" and c[1] == "add-trusted-cert" for c in calls)
@@ -679,8 +679,8 @@ def test_cmd_gui_setup_tcc_identity_exits_before_build(tmp_path, monkeypatch):
     monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
     _make_packaged_executable(root, monkeypatch)
 
-    with patch("hermes_cli.main_desktop_tcc._desktop_macos_setup_tcc_identity", return_value=True) as mock_setup, \
-         patch("hermes_cli.source_build.prepare_source_dependencies") as mock_install, \
+    with patch("hermes_agent.hermes_cli.main_desktop_tcc._desktop_macos_setup_tcc_identity", return_value=True) as mock_setup, \
+         patch("hermes_agent.hermes_cli.source_build.prepare_source_dependencies") as mock_install, \
          pytest.raises(SystemExit) as exc:
         cli_main.cmd_gui(_ns(setup_tcc_identity=True, identity="Hermes Local Signing"))
 
@@ -1047,17 +1047,17 @@ def test_gui_registers_linux_desktop_entry_before_launch(tmp_path, monkeypatch):
     packaged_exe = _make_packaged_executable(root, monkeypatch)
 
     registered: list[Path] = []
-    monkeypatch.setattr("hermes_cli.linux_desktop_entry.is_supported", lambda: True)
+    monkeypatch.setattr("hermes_agent.hermes_cli.linux_desktop_entry.is_supported", lambda: True)
     monkeypatch.setattr(
-        "hermes_cli.linux_desktop_entry.install_desktop_entry",
+        "hermes_agent.hermes_cli.linux_desktop_entry.install_desktop_entry",
         lambda project_root: registered.append(project_root) or (tmp_path / "hermes.desktop"),
     )
 
     launch_ok = subprocess.CompletedProcess([str(packaged_exe)], 0)
 
-    with patch("hermes_cli.main_desktop._desktop_build_needed", return_value=False), \
-         patch("hermes_cli.main_desktop._desktop_linux_sandbox_fixup", return_value=True), \
-         patch("hermes_cli.main.subprocess.run", return_value=launch_ok), \
+    with patch("hermes_agent.hermes_cli.main_desktop._desktop_build_needed", return_value=False), \
+         patch("hermes_agent.hermes_cli.main_desktop._desktop_linux_sandbox_fixup", return_value=True), \
+         patch("hermes_agent.hermes_cli.main.subprocess.run", return_value=launch_ok), \
          pytest.raises(SystemExit):
         cli_main.cmd_gui(_ns())
 
@@ -1072,13 +1072,13 @@ def test_gui_shell_launch_defers_desktop_entry_until_window_reveal(tmp_path, mon
     root = _make_desktop_tree(tmp_path)
     monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
     monkeypatch.setenv("DESKTOP_STARTUP_ID", "gnome-shell/Hermes/1-0_TIME1")
-    monkeypatch.setattr("hermes_cli.linux_desktop_entry.time.sleep", lambda _s: None)
+    monkeypatch.setattr("hermes_agent.hermes_cli.linux_desktop_entry.time.sleep", lambda _s: None)
     packaged_exe = _make_packaged_executable(root, monkeypatch)
 
     events: list[str] = []
-    monkeypatch.setattr("hermes_cli.linux_desktop_entry.is_supported", lambda: True)
+    monkeypatch.setattr("hermes_agent.hermes_cli.linux_desktop_entry.is_supported", lambda: True)
     monkeypatch.setattr(
-        "hermes_cli.linux_desktop_entry.install_desktop_entry",
+        "hermes_agent.hermes_cli.linux_desktop_entry.install_desktop_entry",
         lambda project_root: events.append(f"install:{project_root}") or (tmp_path / "hermes.desktop"),
     )
 
@@ -1092,9 +1092,9 @@ def test_gui_shell_launch_defers_desktop_entry_until_window_reveal(tmp_path, mon
             time.sleep(0.01)
         return subprocess.CompletedProcess(cmd, 0)
 
-    with patch("hermes_cli.main_desktop._desktop_build_needed", return_value=False), \
-         patch("hermes_cli.main_desktop._desktop_linux_sandbox_fixup", return_value=True), \
-         patch("hermes_cli.main.subprocess.run", side_effect=fake_electron), \
+    with patch("hermes_agent.hermes_cli.main_desktop._desktop_build_needed", return_value=False), \
+         patch("hermes_agent.hermes_cli.main_desktop._desktop_linux_sandbox_fixup", return_value=True), \
+         patch("hermes_agent.hermes_cli.main.subprocess.run", side_effect=fake_electron), \
          pytest.raises(SystemExit) as exc:
         cli_main.cmd_gui(_ns())
 
@@ -1113,14 +1113,14 @@ def test_gui_launches_even_when_desktop_entry_install_fails(tmp_path, monkeypatc
     def boom(_project_root):
         raise OSError("read-only /home")
 
-    monkeypatch.setattr("hermes_cli.linux_desktop_entry.is_supported", lambda: True)
-    monkeypatch.setattr("hermes_cli.linux_desktop_entry.install_desktop_entry", boom)
+    monkeypatch.setattr("hermes_agent.hermes_cli.linux_desktop_entry.is_supported", lambda: True)
+    monkeypatch.setattr("hermes_agent.hermes_cli.linux_desktop_entry.install_desktop_entry", boom)
 
     launch_ok = subprocess.CompletedProcess([str(packaged_exe)], 0)
 
-    with patch("hermes_cli.main_desktop._desktop_build_needed", return_value=False), \
-         patch("hermes_cli.main_desktop._desktop_linux_sandbox_fixup", return_value=True), \
-         patch("hermes_cli.main.subprocess.run", return_value=launch_ok) as mock_run, \
+    with patch("hermes_agent.hermes_cli.main_desktop._desktop_build_needed", return_value=False), \
+         patch("hermes_agent.hermes_cli.main_desktop._desktop_linux_sandbox_fixup", return_value=True), \
+         patch("hermes_agent.hermes_cli.main.subprocess.run", return_value=launch_ok) as mock_run, \
          pytest.raises(SystemExit) as exc:
         cli_main.cmd_gui(_ns())
 
@@ -1146,7 +1146,7 @@ def test_gui_launches_even_when_desktop_entry_install_fails(tmp_path, monkeypatc
 )
 def test_desktop_launch_options_normalizes_password_store(raw, expected):
     cfg = {"desktop": {"password_store": raw}}
-    with patch("hermes_cli.config.load_config", return_value=cfg):
+    with patch("hermes_agent.hermes_cli.config.load_config", return_value=cfg):
         _, _, store, _, _ = main_desktop._desktop_launch_options()
     assert store == expected
 
@@ -1164,7 +1164,7 @@ def test_desktop_launch_options_normalizes_password_store(raw, expected):
 def test_desktop_launch_options_normalizes_ozone_hint(raw, expected):
     """``desktop.ozone_platform_hint`` normalizes to x11/wayland/auto."""
     cfg = {"desktop": {"ozone_platform_hint": raw}}
-    with patch("hermes_cli.config.load_config", return_value=cfg):
+    with patch("hermes_agent.hermes_cli.config.load_config", return_value=cfg):
         _, _, _, hint, _ = main_desktop._desktop_launch_options()
     assert hint == expected
 
@@ -1205,7 +1205,7 @@ def test_desktop_launch_options_normalizes_ozone_hint(raw, expected):
 def test_desktop_launch_options_normalizes_renderer_accessibility(raw, expected):
     """``desktop.renderer_accessibility`` defaults to ON; only explicit false words opt out."""
     cfg = {"desktop": {} if raw is None else {"renderer_accessibility": raw}}
-    with patch("hermes_cli.config.load_config", return_value=cfg):
+    with patch("hermes_agent.hermes_cli.config.load_config", return_value=cfg):
         _, _, _, _, renderer_a11y = main_desktop._desktop_launch_options()
     assert renderer_a11y is expected
 
@@ -1214,19 +1214,19 @@ def test_desktop_environment_bridges_only_the_accessibility_opt_out(monkeypatch)
     """ON (the default) sets nothing; the opt-out bridges to
     HERMES_DESKTOP_RENDERER_ACCESSIBILITY=0, and an explicit env var wins."""
     monkeypatch.delenv("HERMES_DESKTOP_RENDERER_ACCESSIBILITY", raising=False)
-    monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"desktop": {}})
+    monkeypatch.setattr("hermes_agent.hermes_cli.config.load_config", lambda: {"desktop": {}})
 
     env, _ = main_desktop._desktop_launch_env(_ns())
     assert "HERMES_DESKTOP_RENDERER_ACCESSIBILITY" not in env
 
     monkeypatch.setattr(
-        "hermes_cli.config.load_config",
+        "hermes_agent.hermes_cli.config.load_config",
         lambda: {"desktop": {"renderer_accessibility": False}})
     env, _ = main_desktop._desktop_launch_env(_ns())
     assert env["HERMES_DESKTOP_RENDERER_ACCESSIBILITY"] == "0"
 
     monkeypatch.setenv("HERMES_DESKTOP_RENDERER_ACCESSIBILITY", "0")
-    monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"desktop": {}})
+    monkeypatch.setattr("hermes_agent.hermes_cli.config.load_config", lambda: {"desktop": {}})
     env, _ = main_desktop._desktop_launch_env(_ns())
     assert env["HERMES_DESKTOP_RENDERER_ACCESSIBILITY"] == "0"
 
@@ -1275,7 +1275,7 @@ def test_detect_linux_password_store_gnome_keyring(monkeypatch):
 def test_detect_linux_password_store_via_dbus_secret_service(monkeypatch):
     _clear_keychain_env(monkeypatch)
     ping_ok = subprocess.CompletedProcess(["dbus-send"], 0)
-    with patch("hermes_cli.main.subprocess.run", return_value=ping_ok) as mock_run:
+    with patch("hermes_agent.hermes_cli.main.subprocess.run", return_value=ping_ok) as mock_run:
         assert main_desktop._detect_linux_password_store() == "gnome-libsecret"
     assert "--dest=org.freedesktop.secrets" in mock_run.call_args.args[0]
 
@@ -1283,9 +1283,9 @@ def test_detect_linux_password_store_via_dbus_secret_service(monkeypatch):
 def test_detect_linux_password_store_none_when_no_keychain(monkeypatch):
     _clear_keychain_env(monkeypatch)
     ping_fail = subprocess.CompletedProcess(["dbus-send"], 1)
-    with patch("hermes_cli.main.subprocess.run", return_value=ping_fail):
+    with patch("hermes_agent.hermes_cli.main.subprocess.run", return_value=ping_fail):
         assert main_desktop._detect_linux_password_store() is None
-    with patch("hermes_cli.main.subprocess.run", side_effect=FileNotFoundError):
+    with patch("hermes_agent.hermes_cli.main.subprocess.run", side_effect=FileNotFoundError):
         assert main_desktop._detect_linux_password_store() is None
 
 
@@ -1298,15 +1298,15 @@ def test_gui_linux_packaged_launch_bridges_detected_password_store(tmp_path, mon
 
     ok = subprocess.CompletedProcess([], 0)
 
-    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/pnpm"), \
-         patch("hermes_cli.source_build.prepare_source_dependencies", return_value=ok), \
-         patch("hermes_cli.main_desktop._desktop_build_needed", return_value=True), \
-         patch("hermes_cli.main_desktop._desktop_macos_relaunchable_fixup"), \
-         patch("hermes_cli.main_desktop._desktop_linux_sandbox_fixup", return_value=True), \
-         patch("hermes_cli.config.load_config", return_value={}), \
-         patch("hermes_cli.linux_desktop_entry.install_desktop_entry", return_value=None), \
-         patch("hermes_cli.main_desktop._detect_linux_password_store", return_value="gnome-libsecret"), \
-         patch("hermes_cli.main.subprocess.run", side_effect=_pack_into_staging(root)) as mock_run, \
+    with patch("hermes_agent.hermes_cli.main.shutil.which", return_value="/usr/bin/pnpm"), \
+         patch("hermes_agent.hermes_cli.source_build.prepare_source_dependencies", return_value=ok), \
+         patch("hermes_agent.hermes_cli.main_desktop._desktop_build_needed", return_value=True), \
+         patch("hermes_agent.hermes_cli.main_desktop._desktop_macos_relaunchable_fixup"), \
+         patch("hermes_agent.hermes_cli.main_desktop._desktop_linux_sandbox_fixup", return_value=True), \
+         patch("hermes_agent.hermes_cli.config.load_config", return_value={}), \
+         patch("hermes_agent.hermes_cli.linux_desktop_entry.install_desktop_entry", return_value=None), \
+         patch("hermes_agent.hermes_cli.main_desktop._detect_linux_password_store", return_value="gnome-libsecret"), \
+         patch("hermes_agent.hermes_cli.main.subprocess.run", side_effect=_pack_into_staging(root)) as mock_run, \
          pytest.raises(SystemExit):
         cli_main.cmd_gui(_ns())
 
@@ -1323,7 +1323,7 @@ def test_gui_linux_packaged_launch_bridges_detected_password_store(tmp_path, mon
 def test_desktop_environment_precedence(monkeypatch, explicit, configured, detected, expected):
     _clear_keychain_env(monkeypatch)
     monkeypatch.delenv('ELECTRON_OZONE_PLATFORM_HINT', raising=False)
-    monkeypatch.setattr('hermes_cli.config.load_config', lambda: {
+    monkeypatch.setattr('hermes_agent.hermes_cli.config.load_config', lambda: {
         'desktop': {'password_store': configured, 'ozone_platform_hint': 'x11'}})
     def detect():
         assert configured == 'auto' and explicit is None
@@ -1351,13 +1351,13 @@ def test_gui_linux_source_launch_bridges_detected_password_store(tmp_path, monke
 
     ok = subprocess.CompletedProcess([], 0)
 
-    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/pnpm"), \
-         patch("hermes_cli.source_build.prepare_source_dependencies", return_value=ok), \
-         patch("hermes_cli.main_desktop._desktop_build_needed", return_value=True), \
-         patch("hermes_cli.config.load_config", return_value={}), \
-         patch("hermes_cli.linux_desktop_entry.install_desktop_entry", return_value=None), \
-         patch("hermes_cli.main_desktop._detect_linux_password_store", return_value="kwallet6"), \
-         patch("hermes_cli.main.subprocess.run", side_effect=_pack_into_staging(root)) as mock_run, \
+    with patch("hermes_agent.hermes_cli.main.shutil.which", return_value="/usr/bin/pnpm"), \
+         patch("hermes_agent.hermes_cli.source_build.prepare_source_dependencies", return_value=ok), \
+         patch("hermes_agent.hermes_cli.main_desktop._desktop_build_needed", return_value=True), \
+         patch("hermes_agent.hermes_cli.config.load_config", return_value={}), \
+         patch("hermes_agent.hermes_cli.linux_desktop_entry.install_desktop_entry", return_value=None), \
+         patch("hermes_agent.hermes_cli.main_desktop._detect_linux_password_store", return_value="kwallet6"), \
+         patch("hermes_agent.hermes_cli.main.subprocess.run", side_effect=_pack_into_staging(root)) as mock_run, \
          pytest.raises(SystemExit):
         cli_main.cmd_gui(_ns(source=True))
 
@@ -1375,14 +1375,14 @@ def test_gui_password_store_bridge_is_linux_only(tmp_path, monkeypatch):
 
     ok = subprocess.CompletedProcess([], 0)
 
-    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/pnpm"), \
-         patch("hermes_cli.source_build.prepare_source_dependencies", return_value=ok), \
-         patch("hermes_cli.main_desktop._desktop_build_needed", return_value=True), \
-         patch("hermes_cli.main_desktop._desktop_macos_relaunchable_fixup"), \
-         patch("hermes_cli.config.load_config", return_value={}), \
-         patch("hermes_cli.linux_desktop_entry.install_desktop_entry", return_value=None), \
-         patch("hermes_cli.main_desktop._detect_linux_password_store") as mock_detect, \
-         patch("hermes_cli.main.subprocess.run", side_effect=_pack_into_staging(root)) as mock_run, \
+    with patch("hermes_agent.hermes_cli.main.shutil.which", return_value="/usr/bin/pnpm"), \
+         patch("hermes_agent.hermes_cli.source_build.prepare_source_dependencies", return_value=ok), \
+         patch("hermes_agent.hermes_cli.main_desktop._desktop_build_needed", return_value=True), \
+         patch("hermes_agent.hermes_cli.main_desktop._desktop_macos_relaunchable_fixup"), \
+         patch("hermes_agent.hermes_cli.config.load_config", return_value={}), \
+         patch("hermes_agent.hermes_cli.linux_desktop_entry.install_desktop_entry", return_value=None), \
+         patch("hermes_agent.hermes_cli.main_desktop._detect_linux_password_store") as mock_detect, \
+         patch("hermes_agent.hermes_cli.main.subprocess.run", side_effect=_pack_into_staging(root)) as mock_run, \
          pytest.raises(SystemExit):
             cli_main.cmd_gui(_ns())
 
@@ -1402,19 +1402,19 @@ def test_gui_password_store_bridge_is_linux_only(tmp_path, monkeypatch):
 
 @pytest.mark.platforms("windows")
 def test_gui_win32_launches_detached_and_returns(tmp_path, monkeypatch):
-    import hermes_cli._subprocess_compat as _subproc_compat
+    import hermes_agent.hermes_cli._subprocess_compat as _subproc_compat
 
     root = _make_desktop_tree(tmp_path)
     monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
     packaged_exe = _make_packaged_executable(root, monkeypatch)
     ok = subprocess.CompletedProcess([], 0)
 
-    with patch("hermes_cli.source_build.prepare_source_dependencies", return_value=ok), \
-         patch("hermes_cli.main_desktop._desktop_build_needed", return_value=False), \
-         patch("hermes_cli.main_desktop._desktop_exe_integrity_error", return_value=None), \
-         patch("hermes_cli.config.load_config", return_value={}), \
-         patch("hermes_cli.main.subprocess.Popen") as mock_popen, \
-         patch("hermes_cli.main.subprocess.run") as mock_run, \
+    with patch("hermes_agent.hermes_cli.source_build.prepare_source_dependencies", return_value=ok), \
+         patch("hermes_agent.hermes_cli.main_desktop._desktop_build_needed", return_value=False), \
+         patch("hermes_agent.hermes_cli.main_desktop._desktop_exe_integrity_error", return_value=None), \
+         patch("hermes_agent.hermes_cli.config.load_config", return_value={}), \
+         patch("hermes_agent.hermes_cli.main.subprocess.Popen") as mock_popen, \
+         patch("hermes_agent.hermes_cli.main.subprocess.run") as mock_run, \
          pytest.raises(SystemExit) as exc:
         cli_main.cmd_gui(_ns(skip_build=True))
 
@@ -1435,7 +1435,7 @@ def test_gui_win32_launches_detached_and_returns(tmp_path, monkeypatch):
 
 @pytest.mark.platforms("windows")
 def test_gui_win32_detach_falls_back_without_breakaway(tmp_path, monkeypatch):
-    import hermes_cli._subprocess_compat as _subproc_compat
+    import hermes_agent.hermes_cli._subprocess_compat as _subproc_compat
 
     root = _make_desktop_tree(tmp_path)
     monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
@@ -1445,11 +1445,11 @@ def test_gui_win32_detach_falls_back_without_breakaway(tmp_path, monkeypatch):
     breakaway_denied = PermissionError("breakaway denied")
     breakaway_denied.winerror = 5
 
-    with patch("hermes_cli.source_build.prepare_source_dependencies", return_value=ok), \
-         patch("hermes_cli.main_desktop._desktop_build_needed", return_value=False), \
-         patch("hermes_cli.main_desktop._desktop_exe_integrity_error", return_value=None), \
-         patch("hermes_cli.config.load_config", return_value={}), \
-         patch("hermes_cli.main.subprocess.Popen",
+    with patch("hermes_agent.hermes_cli.source_build.prepare_source_dependencies", return_value=ok), \
+         patch("hermes_agent.hermes_cli.main_desktop._desktop_build_needed", return_value=False), \
+         patch("hermes_agent.hermes_cli.main_desktop._desktop_exe_integrity_error", return_value=None), \
+         patch("hermes_agent.hermes_cli.config.load_config", return_value={}), \
+         patch("hermes_agent.hermes_cli.main.subprocess.Popen",
                side_effect=[breakaway_denied, None]) as mock_popen, \
          pytest.raises(SystemExit) as exc:
         cli_main.cmd_gui(_ns(skip_build=True))
@@ -1476,11 +1476,11 @@ def test_gui_win32_detach_reraises_non_breakaway_oserror(tmp_path, monkeypatch):
     spawn_error = OSError("The system cannot find the file specified")
     spawn_error.winerror = 2  # ERROR_FILE_NOT_FOUND — unrelated to breakaway.
 
-    with patch("hermes_cli.source_build.prepare_source_dependencies", return_value=ok), \
-         patch("hermes_cli.main_desktop._desktop_build_needed", return_value=False), \
-         patch("hermes_cli.main_desktop._desktop_exe_integrity_error", return_value=None), \
-         patch("hermes_cli.config.load_config", return_value={}), \
-         patch("hermes_cli.main.subprocess.Popen",
+    with patch("hermes_agent.hermes_cli.source_build.prepare_source_dependencies", return_value=ok), \
+         patch("hermes_agent.hermes_cli.main_desktop._desktop_build_needed", return_value=False), \
+         patch("hermes_agent.hermes_cli.main_desktop._desktop_exe_integrity_error", return_value=None), \
+         patch("hermes_agent.hermes_cli.config.load_config", return_value={}), \
+         patch("hermes_agent.hermes_cli.main.subprocess.Popen",
                side_effect=[spawn_error, None]) as mock_popen, \
          pytest.raises(OSError) as exc:
         cli_main.cmd_gui(_ns(skip_build=True))
@@ -1501,7 +1501,7 @@ def test_gui_foreground_launch_ctrl_c_exits_cleanly(tmp_path, monkeypatch, capsy
     """
     root = _make_desktop_tree(tmp_path)
     monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
-    # Patching hermes_cli.main.subprocess.run swaps the shared stdlib module's
+    # Patching hermes_agent.hermes_cli.main.subprocess.run swaps the shared stdlib module's
     # attribute, so EVERY subprocess.run in the process raises. Three
     # best-effort pre-launch paths call it BEFORE the attached launch — outside
     # the KeyboardInterrupt handler under test — so neutralize each the way the
@@ -1519,12 +1519,12 @@ def test_gui_foreground_launch_ctrl_c_exits_cleanly(tmp_path, monkeypatch, capsy
     def _interrupted_launch(*call_args, **kwargs):
         raise KeyboardInterrupt()
 
-    with patch("hermes_cli.source_build.prepare_source_dependencies", return_value=ok), \
-         patch("hermes_cli.main_desktop._desktop_build_needed", return_value=False), \
-         patch("hermes_cli.main_desktop._desktop_exe_integrity_error", return_value=None), \
-         patch("hermes_cli.config.load_config", return_value={}), \
-         patch("hermes_cli.main.subprocess.run", side_effect=_interrupted_launch) as mock_run, \
-         patch("hermes_cli.main.subprocess.Popen") as mock_popen, \
+    with patch("hermes_agent.hermes_cli.source_build.prepare_source_dependencies", return_value=ok), \
+         patch("hermes_agent.hermes_cli.main_desktop._desktop_build_needed", return_value=False), \
+         patch("hermes_agent.hermes_cli.main_desktop._desktop_exe_integrity_error", return_value=None), \
+         patch("hermes_agent.hermes_cli.config.load_config", return_value={}), \
+         patch("hermes_agent.hermes_cli.main.subprocess.run", side_effect=_interrupted_launch) as mock_run, \
+         patch("hermes_agent.hermes_cli.main.subprocess.Popen") as mock_popen, \
          pytest.raises(SystemExit) as exc:
         cli_main.cmd_gui(_ns(skip_build=True))
 
@@ -1545,16 +1545,16 @@ def test_gui_foreground_launch_ctrl_c_exits_cleanly(tmp_path, monkeypatch, capsy
 
 def _gui_build_patches(root: Path, run_side_effect):
     return [
-        patch("hermes_cli.main.shutil.which", return_value="/usr/bin/pnpm"),
+        patch("hermes_agent.hermes_cli.main.shutil.which", return_value="/usr/bin/pnpm"),
         # Staging doubles are text; the PE-validation suite owns real binaries.
-        patch("hermes_cli.main_desktop._desktop_exe_integrity_error", return_value=None),
-        patch("hermes_cli.source_build.prepare_source_dependencies",
+        patch("hermes_agent.hermes_cli.main_desktop._desktop_exe_integrity_error", return_value=None),
+        patch("hermes_agent.hermes_cli.source_build.prepare_source_dependencies",
               return_value=subprocess.CompletedProcess(["pnpm", "install"], 0)),
-        patch("hermes_cli.main_desktop._desktop_build_needed", return_value=True),
-        patch("hermes_cli.main_desktop._desktop_macos_relaunchable_fixup"),
-        patch("hermes_cli.main_desktop._register_linux_desktop_entry"),
-        patch("hermes_cli.main_desktop._stop_desktop_processes_locking_build", return_value=[]),
-        patch("hermes_cli.main.subprocess.run", side_effect=run_side_effect),
+        patch("hermes_agent.hermes_cli.main_desktop._desktop_build_needed", return_value=True),
+        patch("hermes_agent.hermes_cli.main_desktop._desktop_macos_relaunchable_fixup"),
+        patch("hermes_agent.hermes_cli.main_desktop._register_linux_desktop_entry"),
+        patch("hermes_agent.hermes_cli.main_desktop._stop_desktop_processes_locking_build", return_value=[]),
+        patch("hermes_agent.hermes_cli.main.subprocess.run", side_effect=run_side_effect),
     ]
 
 
@@ -1632,7 +1632,7 @@ def test_swap_staged_desktop_app_stops_live_renderer_before_rename(tmp_path):
     staged_exe.parent.mkdir(parents=True)
     staged_exe.write_text("new", encoding="utf-8")
 
-    with patch("hermes_cli.main_desktop._stop_desktop_processes_locking_build",
+    with patch("hermes_agent.hermes_cli.main_desktop._stop_desktop_processes_locking_build",
                return_value=[4321]) as stop:
         promoted = main_desktop._swap_staged_desktop_app(desktop_dir, staging)
 

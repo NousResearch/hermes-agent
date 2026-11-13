@@ -31,7 +31,7 @@ def _current_route(authority, live, old):
     pick then switches from the configured provider alone and resolves its own target.
     """
     from hermes_agent.gateway.session_policy import profile_read_scope
-    from hermes_cli.auth import AuthError
+    from hermes_agent.hermes_cli.auth import AuthError
     with profile_read_scope(old, authority):
         config = old.config(authority)
         block = config.get('model') or {}
@@ -52,8 +52,8 @@ def _current_route(authority, live, old):
 async def prepare_model(authority, live, payload, prepared):
     from hermes_agent.gateway.session_policy import restore_policy, bind_launch_key, bound_route_holds, route_launch_key
     from hermes_agent.gateway.session_policy_credentials import recover_config_secrets
-    from hermes_cli.model_switch import apply_model_selection, switch_model
-    from hermes_cli.config import get_compatible_custom_providers
+    from hermes_agent.hermes_cli.model_switch import apply_model_selection, switch_model
+    from hermes_agent.hermes_cli.config import get_compatible_custom_providers
     old = restore_policy(prepared['snapshot']['receipt']['policy'])
     config, current = _current_route(authority, live, old)
     reset = is_model_reset(payload)
@@ -163,7 +163,7 @@ async def prepare_model(authority, live, payload, prepared):
 def is_model_reset(payload):
     """``/model reset`` as a ``model`` mutation; with any other selection field it is refused, as on
     every surface (``parse_model_switch_args``)."""
-    from hermes_cli.model_switch import (
+    from hermes_agent.hermes_cli.model_switch import (
         MODEL_SWITCH_ERR_RESET_WITH_FLAGS, MODEL_SWITCH_ERROR_TEXT, MODEL_SWITCH_RESET_TOKEN)
     if payload['model'].strip().lower() != MODEL_SWITCH_RESET_TOKEN:
         return False
@@ -235,7 +235,7 @@ def _provider_resolution_config(authority, config, bypass=False):
 
 def _custom_provider_name(entry):
     """The runtime's canonical identity: ``My Provider`` and ``my-provider`` are one provider."""
-    from hermes_cli.providers import custom_provider_slug
+    from hermes_agent.hermes_cli.providers import custom_provider_slug
     return custom_provider_slug(str(entry.get('name') or ''), str(entry.get('provider_key') or ''))
 
 
@@ -260,7 +260,7 @@ def _freeze_selected_provider(config, frozen, provider):
     """
     from copy import deepcopy
     from hermes_agent.gateway.session_policy import _extract_config_secrets
-    from hermes_cli.runtime_provider_custom import named_custom_provider_config_path
+    from hermes_agent.hermes_cli.runtime_provider_custom import named_custom_provider_config_path
     path = named_custom_provider_config_path(provider, config)
     if path is None:
         return {}, (), {}
@@ -299,7 +299,7 @@ def _freeze_selected_provider(config, frozen, provider):
 
 def _provider_key_slug(key):
     """A ``providers:`` key's canonical identity: ``Review Prov`` and ``review-prov`` are one."""
-    from hermes_cli.providers import custom_provider_slug
+    from hermes_agent.hermes_cli.providers import custom_provider_slug
     return custom_provider_slug('', str(key))
 
 
@@ -310,7 +310,7 @@ def _alias_credential(authority, result):
     ``api_key: "${VAR}"`` is the pointer ``VAR``; ``(None, None, None)`` when it declares none."""
     from pathlib import Path
     from hermes_agent.gateway.run import _load_gateway_config
-    from hermes_cli.config import _env_ref_var_name, read_user_config_raw
+    from hermes_agent.hermes_cli.config import _env_ref_var_name, read_user_config_raw
     name = result.resolved_via_alias if result.success else ''
     path = Path(authority.db.db_path).resolve().parent / 'config.yaml'
     raw = read_user_config_raw(path) if name else {}
@@ -337,7 +337,7 @@ def _alias_credential(authority, result):
 
 def _persisted_selection_context(authority, snapshot, current):
     from hermes_agent.agent.usage_anchor import persisted_anchor_tokens
-    from hermes_cli.model_selection_guards import SelectionContext
+    from hermes_agent.hermes_cli.model_selection_guards import SelectionContext
     target = snapshot.get('target') or snapshot['receipt']['session_id']
     tokens = persisted_anchor_tokens(authority.db, target, authority.db.get_messages_as_conversation(target))
     return SelectionContext(context_tokens=tokens, current_model=current.model or None) if tokens else None
@@ -351,8 +351,8 @@ async def _selection_guard_refusal(authority, live, payload, snapshot, current, 
     token (target re-resolved elsewhere, another switch landed, a turn settled) gets a fresh
     refusal, never a silent apply."""
     import hashlib
-    from hermes_cli.model_selection_guards import combined_message, selection_context_for_agent, selection_warnings
-    from hermes_cli.route_identity import normalize_route_base_url
+    from hermes_agent.hermes_cli.model_selection_guards import combined_message, selection_context_for_agent, selection_warnings
+    from hermes_agent.hermes_cli.route_identity import normalize_route_base_url
     lookup = (getattr(authority.runner, '_resident_agent_for', None)
               or getattr(authority.runner, '_cached_agent_for', None))
     agent = lookup(live.route) if live is not None and callable(lookup) else None

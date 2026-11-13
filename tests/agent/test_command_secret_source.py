@@ -3,7 +3,7 @@
 These exercise the REAL resolution path: real helper shell scripts written
 to a temp dir (chmod +x), real ``/bin/sh -c`` subprocesses, and a real temp
 HERMES_HOME with a config.yaml routing ``secrets.provider: command`` through
-``hermes_cli.env_loader._apply_external_secret_sources``.
+``hermes_agent.hermes_cli.env_loader._apply_external_secret_sources``.
 
 Security invariants under test (ported from the desktop TS provider):
 
@@ -40,7 +40,7 @@ from hermes_agent.agent.secret_sources.base import (
     reset_source_environment,
     set_source_environment,
 )
-from hermes_cli import env_loader
+from hermes_agent.hermes_cli import env_loader
 
 
 pytestmark = pytest.mark.platforms("posix")  # the command secret provider is POSIX-only

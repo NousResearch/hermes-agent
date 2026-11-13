@@ -5,7 +5,7 @@ Protocol: reads JSON lines from stdin {id, command}, writes {id, ok, output|erro
 
 # Stop a ``utils/`` (or ``proxy/``, ``ui/``) package in the launch directory from shadowing Hermes's own
 # top-level modules: this worker is spawned as ``-m hermes_agent.tui_gateway.slash_worker`` with the user's CWD, so
-# ``import cli`` would otherwise resolve ``utils`` to a colliding local package and crash the child in a
+# ``from hermes_agent import cli`` would otherwise resolve ``utils`` to a colliding local package and crash the child in a
 # retry loop. ``hermes_bootstrap`` lives at the repo root (no collision risk), so importing it first is safe.
 # ``hermes_bootstrap`` lives at the repo root, so importing it is safe before the guard runs (its name won't
 # collide with a user package), and it owns the canonical path-hardening logic shared with the other entry
@@ -28,7 +28,7 @@ from typing import TYPE_CHECKING
 from hermes_agent.tui_gateway._stdin_recovery import handle_spurious_eof
 
 if TYPE_CHECKING:
-    from cli import HermesCLI
+    from hermes_agent.cli import HermesCLI
 
 logger = logging.getLogger(__name__)
 
@@ -56,7 +56,7 @@ def _start_legacy_parent_watchdog(parent_pid: int, *, poll_s: float = 2.0, grace
         deadline = time.monotonic() + grace_s
         while _in_flight.is_set() and time.monotonic() < deadline:
             time.sleep(0.05)
-        from hermes_cli.observability.shared_metrics_process import flush_before_hard_exit
+        from hermes_agent.hermes_cli.observability.shared_metrics_process import flush_before_hard_exit
         flush_before_hard_exit()  # os._exit skips the opt-in metrics runtimes' atexit flush (bounded)
         os._exit(0)
 
@@ -70,7 +70,7 @@ def _prepare_slash_worker_runtime() -> None:
 
     See #61891.
     """
-    from hermes_cli.mcp_startup import start_background_mcp_discovery, wait_for_mcp_discovery
+    from hermes_agent.hermes_cli.mcp_startup import start_background_mcp_discovery, wait_for_mcp_discovery
     start_background_mcp_discovery(logger=logger, thread_name="slash-worker-mcp-discovery")
     wait_for_mcp_discovery()
 
@@ -99,7 +99,7 @@ def _refuse_skill_slash(command: str) -> None:
     if not base:
         return
     try:
-        from cli import get_skill_commands
+        from hermes_agent.cli import get_skill_commands
         commands = get_skill_commands()
     except Exception:
         return
@@ -115,7 +115,7 @@ def _run(cli: "HermesCLI", command: str) -> str:
     worker has no REPL, so the seed is harvested here onto ``cli._harvested_seed``
     and routed back to the gateway, which sends it as the next turn (#107800).
     """
-    import cli as cli_mod
+    import hermes_agent.cli as cli_mod
     from rich.console import Console
 
     cli._harvested_seed = ""  # one-shot: a fresh run never re-sends a stale seed
@@ -168,7 +168,7 @@ def main():
     _start_legacy_parent_watchdog(args.parent_pid)
     # Import cli ahead of MCP discovery: importing it loads ~/.hermes/.env and sets HERMES_QUIET,
     # which MCP ``${VAR}`` interpolation in the runtime prep depends on.
-    from cli import HermesCLI
+    from hermes_agent.cli import HermesCLI
     _prepare_slash_worker_runtime()
 
     with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
@@ -207,7 +207,7 @@ def main():
             # Workers persist for the TUI session: release allocator pages at the command boundary like
             # other long-lived gateway processes (trim_memory's shared cooldown coalesces nearby activity).
             try:
-                from hermes_cli.mem_trim import trim_memory
+                from hermes_agent.hermes_cli.mem_trim import trim_memory
                 trim_memory(reason="slash worker command completion")
             except Exception as exc:
                 # debug, not warning — a persistent failure would repeat every command.

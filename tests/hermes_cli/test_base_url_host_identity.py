@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
-from hermes_cli.cli_agent_setup_mixin import CLIAgentSetupMixin
+from hermes_agent.hermes_cli.cli_agent_setup_mixin import CLIAgentSetupMixin
 
 
 class _Host(CLIAgentSetupMixin):
@@ -28,7 +28,7 @@ class _Host(CLIAgentSetupMixin):
 def _ready_with(runtime: dict) -> bool:
     host = _Host()
     with patch(
-        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        "hermes_agent.hermes_cli.runtime_provider.resolve_runtime_provider",
         return_value=runtime,
     ):
         return host._runtime_credentials_ready()

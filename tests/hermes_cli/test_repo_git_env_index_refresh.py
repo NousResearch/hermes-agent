@@ -39,13 +39,13 @@ def repo(tmp_path):
 
 
 def test_dashboard_status(repo):
-    from hermes_cli import web_git
+    from hermes_agent.hermes_cli import web_git
     web_git.repo_status(str(repo))
     assert "README" in _git(repo, "status", "--porcelain")
 
 
 def test_dashboard_review_list(repo):
-    from hermes_cli import web_git
+    from hermes_agent.hermes_cli import web_git
     web_git.review_list(str(repo), "working", None)
     assert "README" in _git(repo, "status", "--porcelain")
 

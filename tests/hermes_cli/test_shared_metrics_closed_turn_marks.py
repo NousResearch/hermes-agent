@@ -14,11 +14,11 @@ import threading
 import pytest
 
 from hermes_agent.agent import relay_runtime
-from hermes_cli import plugins
-from hermes_cli.observability import relay_shared_metrics
-from hermes_cli.observability import shared_metrics_events as events
-from hermes_cli.observability.shared_metrics import SharedMetricsStore
-from hermes_cli.plugins import PluginManager
+from hermes_agent.hermes_cli import plugins
+from hermes_agent.hermes_cli.observability import relay_shared_metrics
+from hermes_agent.hermes_cli.observability import shared_metrics_events as events
+from hermes_agent.hermes_cli.observability.shared_metrics import SharedMetricsStore
+from hermes_agent.hermes_cli.plugins import PluginManager
 
 _AUX_USAGE = {"input_tokens": 1000, "output_tokens": 10}
 
@@ -30,7 +30,7 @@ def relay_home(tmp_path, monkeypatch):
         pytest.skip("NeMo Relay native binding is unavailable on this platform")
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes-home"))
     monkeypatch.setattr(
-        "hermes_cli.config.read_raw_config_readonly",
+        "hermes_agent.hermes_cli.config.read_raw_config_readonly",
         lambda: {"telemetry": {"shared_metrics": {"enabled": True}}},
     )
     relay_shared_metrics._reset_for_tests()

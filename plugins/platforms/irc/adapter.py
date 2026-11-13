@@ -343,9 +343,9 @@ def validate_config(config) -> bool:
 
 def interactive_setup() -> None:
     """`hermes gateway setup` flow (lazy hermes_cli imports keep the plugin importable outside the CLI)."""
-    from hermes_cli.setup import (
+    from hermes_agent.hermes_cli.setup import (
         prompt, prompt_yes_no, save_env_value, get_env_value, print_header, print_info, print_warning, print_success)
-    from hermes_cli.setup_platforms import declines_reconfigure
+    from hermes_agent.hermes_cli.setup_platforms import declines_reconfigure
 
     def info(*lines: str) -> None:
         for line in lines:

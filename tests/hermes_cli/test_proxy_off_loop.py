@@ -6,7 +6,7 @@ blocking I/O:
 
   * ``NousPortalAdapter.get_credential`` takes ``_auth_store_lock()``, a
     *cross-process* advisory lock with ``AUTH_LOCK_TIMEOUT_SECONDS = 15.0``
-    (``hermes_cli/auth.py:110``), reads ``auth.json`` from disk, and may issue a
+    (``hermes_agent/hermes_cli/auth.py:110``), reads ``auth.json`` from disk, and may issue a
     token-refresh POST. Its terminal-error path takes that lock a second time to
     persist the quarantined state.
   * ``NousPortalAdapter.get_retry_credential`` routes to that same
@@ -42,12 +42,12 @@ from typing import Any, Dict, List, Optional
 
 import pytest
 
-from hermes_cli.proxy.adapters.base import UpstreamAdapter, UpstreamCredential
+from hermes_agent.hermes_cli.proxy.adapters.base import UpstreamAdapter, UpstreamCredential
 
 aiohttp = pytest.importorskip("aiohttp")
 from aiohttp import web
 
-from hermes_cli.proxy.server import create_app
+from hermes_agent.hermes_cli.proxy.server import create_app
 
 
 # How long the fake adapter blocks. Long enough that a starved loop records

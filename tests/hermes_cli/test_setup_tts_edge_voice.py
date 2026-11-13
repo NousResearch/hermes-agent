@@ -2,7 +2,7 @@
 
 import pytest
 
-from hermes_cli import setup_tts
+from hermes_agent.hermes_cli import setup_tts
 
 
 @pytest.fixture

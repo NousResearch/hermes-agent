@@ -2,8 +2,8 @@
 
 import pytest
 
-from hermes_cli.nous_account import NousPortalAccountInfo, NousToolAccessInfo
-from hermes_cli import nous_subscription as ns
+from hermes_agent.hermes_cli.nous_account import NousPortalAccountInfo, NousToolAccessInfo
+from hermes_agent.hermes_cli import nous_subscription as ns
 from hermes_agent.tools import tool_backend_helpers
 from hermes_agent.tools.image_generation_catalog import DEFAULT_MODEL as FAL_DEFAULT_MODEL
 
@@ -134,7 +134,7 @@ def _stub_browser_probes(monkeypatch, *, harness, chromium):
     monkeypatch.setattr(ns, "has_direct_modal_credentials", lambda: False)
     monkeypatch.setattr(ns, "is_managed_tool_gateway_ready", lambda vendor: False)
     monkeypatch.setattr(
-        "hermes_cli.browser_runtime.chromium_executable", lambda **_kw: "/pm/chromium/chrome" if chromium else None
+        "hermes_agent.hermes_cli.browser_runtime.chromium_executable", lambda **_kw: "/pm/chromium/chrome" if chromium else None
     )
 
 
@@ -183,11 +183,11 @@ def _capture_checklist(monkeypatch, *, selected_idx):
         captured["pre_selected"] = list(pre_selected or [])
         return list(selected_idx)
 
-    import hermes_cli.setup as setup_mod
+    import hermes_agent.hermes_cli.setup as setup_mod
 
     monkeypatch.setattr(setup_mod, "prompt_checklist", _fake_checklist, raising=False)
     monkeypatch.setattr(
-        "hermes_cli.config.save_config", lambda cfg: None, raising=False
+        "hermes_agent.hermes_cli.config.save_config", lambda cfg: None, raising=False
     )
     return captured
 
@@ -356,7 +356,7 @@ def test_prompt_enable_tool_gateway_persists_decline(monkeypatch):
     saved = []
     captured = _capture_checklist(monkeypatch, selected_idx=[])
     monkeypatch.setattr(
-        "hermes_cli.config.save_config", lambda cfg: saved.append(dict(cfg)), raising=False
+        "hermes_agent.hermes_cli.config.save_config", lambda cfg: saved.append(dict(cfg)), raising=False
     )
 
     config = {"model": {"provider": "nous"}}
@@ -371,7 +371,7 @@ def test_prompt_enable_tool_gateway_persists_decline(monkeypatch):
     # Second offer with the recorded declines: nothing is pre-checked.
     captured2 = _capture_checklist(monkeypatch, selected_idx=[])
     monkeypatch.setattr(
-        "hermes_cli.config.save_config", lambda cfg: saved.append(dict(cfg)), raising=False
+        "hermes_agent.hermes_cli.config.save_config", lambda cfg: saved.append(dict(cfg)), raising=False
     )
     ns.prompt_enable_tool_gateway(config)
     assert captured2["pre_selected"] == []

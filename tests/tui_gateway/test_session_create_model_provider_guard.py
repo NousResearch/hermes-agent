@@ -11,7 +11,7 @@ import pytest
 
 @pytest.fixture
 def _create(monkeypatch, tmp_path):
-    monkeypatch.setattr("hermes_cli.banner.prefetch_update_check", lambda: None)
+    monkeypatch.setattr("hermes_agent.hermes_cli.banner.prefetch_update_check", lambda: None)
     from hermes_agent.tui_gateway import server
 
     (tmp_path / "config.yaml").write_text("model:\n  default: claude-opus-5\n  provider: anthropic\n", encoding="utf-8")

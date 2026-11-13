@@ -1,6 +1,6 @@
 """GMI Cloud provider profile."""
 
-from hermes_cli.version_info import hermes_user_agent
+from hermes_agent.hermes_cli.version_info import hermes_user_agent
 from hermes_agent.providers import register_provider
 from hermes_agent.providers.base import LazyHeaders, ProviderProfile
 

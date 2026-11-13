@@ -22,7 +22,7 @@ export function channelBuildRequest(env = process.env) {
   const validator = [
     'import sys',
     'sys.path.insert(0, sys.argv[1])',
-    'from hermes_cli.release_channels import decode_json',
+    'from hermes_agent.hermes_cli.release_channels import decode_json',
     'from scripts.bundles.desktop_prepare import validate_channel_request',
     'validate_channel_request(decode_json(sys.stdin.buffer.read()))'
   ].join('; ')

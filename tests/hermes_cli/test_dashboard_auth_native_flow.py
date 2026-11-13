@@ -27,13 +27,13 @@ from urllib.parse import parse_qs, urlparse
 import pytest
 from fastapi.testclient import TestClient
 
-from hermes_cli import web_server
-from hermes_cli.dashboard_auth import (
+from hermes_agent.hermes_cli import web_server
+from hermes_agent.hermes_cli.dashboard_auth import (
     clear_providers,
     register_provider,
 )
-from hermes_cli.dashboard_auth import native_flow
-from hermes_cli.dashboard_auth.base import Session
+from hermes_agent.hermes_cli.dashboard_auth import native_flow
+from hermes_agent.hermes_cli.dashboard_auth.base import Session
 from tests.hermes_cli.conftest_dashboard_auth import StubAuthProvider
 
 
@@ -338,7 +338,7 @@ def test_native_authorize_empty_provider_password_only_brokers_to_login(
     # The PKCE cookie value is URL-encoded on the wire; decode through
     # the real reader inverse before asserting the broker handle rides
     # in it.
-    from hermes_cli.dashboard_auth.cookies import parse_pkce_payload
+    from hermes_agent.hermes_cli.dashboard_auth.cookies import parse_pkce_payload
     wire_value = set_cookie.split("=", 1)[1].split(";", 1)[0]
     assert "broker" in parse_pkce_payload(wire_value)
 
@@ -424,7 +424,7 @@ def test_status_loopback_mode_has_no_auth_flows():
 
 @pytest.fixture
 def pw_gated_client():
-    from hermes_cli.dashboard_auth.routes import _reset_password_rate_limit
+    from hermes_agent.hermes_cli.dashboard_auth.routes import _reset_password_rate_limit
     from tests.hermes_cli.test_dashboard_auth_password_login import (
         PasswordProvider,
     )
@@ -479,7 +479,7 @@ def test_native_authorize_password_provider_redirects_to_login(
     set_cookie = r.headers.get("set-cookie", "")
     assert "pkce" in set_cookie
     # Wire value is URL-encoded; decode through the reader inverse.
-    from hermes_cli.dashboard_auth.cookies import parse_pkce_payload
+    from hermes_agent.hermes_cli.dashboard_auth.cookies import parse_pkce_payload
     wire_value = set_cookie.split("=", 1)[1].split(";", 1)[0]
     assert "broker" in parse_pkce_payload(wire_value)
 

@@ -8,7 +8,7 @@ default core let the env override.
 import hermes_yaml as yaml
 import pytest
 
-from hermes_cli.config_defaults import DEFAULT_CONFIG
+from hermes_agent.hermes_cli.config_defaults import DEFAULT_CONFIG
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
 _AB_ENV = ("AGENT_BROWSER_EXECUTABLE_PATH", "AGENT_BROWSER_PROFILE", "AGENT_BROWSER_ARGS",
@@ -33,7 +33,7 @@ def _raw(home):
 
 
 def _migrate(home, *, quiet=False):
-    from hermes_cli.config import migrate_config
+    from hermes_agent.hermes_cli.config import migrate_config
 
     token = set_hermes_home_override(home)
     try:
@@ -68,8 +68,8 @@ def test_quiet_migration_hands_the_notice_to_the_caller(tmp_path, monkeypatch, c
 def _boot_agents(home, monkeypatch, starts: int) -> list[str]:
     """Boot maintenance for *home* (its config step), then *starts* agents in that process; the startup
     warnings they show."""
-    import hermes_cli.left_core_migration as lcm
-    from hermes_cli import post_update
+    import hermes_agent.hermes_cli.left_core_migration as lcm
+    from hermes_agent.hermes_cli import post_update
 
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(lcm, "_attempted", set())
@@ -83,7 +83,7 @@ def _boot_agents(home, monkeypatch, starts: int) -> list[str]:
 def test_boot_migration_shows_the_off_notice_at_the_first_agent_start_once(tmp_path, monkeypatch):
     """Boot migrates 51 -> 52 quietly, before any agent exists: the ``off`` notice reaches the first
     agent's startup warnings once, and neither a second agent nor the next boot repeats it."""
-    import hermes_cli.left_core_migration as lcm
+    import hermes_agent.hermes_cli.left_core_migration as lcm
 
     monkeypatch.delenv("CAMOFOX_URL", raising=False)
     home = _home(tmp_path / "a", {"_config_version": 51, "browser": {"backend": "off"}})
@@ -191,7 +191,7 @@ def test_relative_profile_keeps_the_directory_core_used(tmp_path, monkeypatch):
 def test_a_pinned_relative_profile_names_the_absolute_path_on_update_and_boot(tmp_path, monkeypatch):
     """The relative AGENT_BROWSER_PROFILE was resolved against whatever directory the migrating process ran
     in: `hermes update` and the first agent after a boot migration both name the absolute path pinned."""
-    import hermes_cli.left_core_migration as lcm
+    import hermes_agent.hermes_cli.left_core_migration as lcm
 
     monkeypatch.delenv("CAMOFOX_URL", raising=False)
     cwd = tmp_path / "work"

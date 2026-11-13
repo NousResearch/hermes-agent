@@ -13,10 +13,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from hermes_cli import update_cmd_fleet as fleet
-from hermes_cli import update_cmd_fleet_verify as fleet_verify
-from hermes_cli import update_receipt
-from hermes_cli.update_inventory import (
+from hermes_agent.hermes_cli import update_cmd_fleet as fleet
+from hermes_agent.hermes_cli import update_cmd_fleet_verify as fleet_verify
+from hermes_agent.hermes_cli import update_receipt
+from hermes_agent.hermes_cli.update_inventory import (
     RuntimeRecord,
     UpdatePlan,
     match_runtime_outcomes,
@@ -64,10 +64,10 @@ def external_profile_host(tmp_path, monkeypatch):
     monkeypatch.setattr("hermes_agent.gateway.status.live_gateway_pid_for_home", lambda home: live.get(Path(home).resolve()))
     monkeypatch.setattr(fleet_verify, "_time", SimpleNamespace(sleep=lambda _s: None, monotonic=time.monotonic))
     monkeypatch.setattr(fleet_verify, "_print_legacy_units_warning", lambda: None)
-    monkeypatch.setattr("hermes_cli.update_cmd._finish_dashboard_update_cleanup", lambda *a, **k: None)
+    monkeypatch.setattr("hermes_agent.hermes_cli.update_cmd._finish_dashboard_update_cleanup", lambda *a, **k: None)
     # The live post-update dashboard pass restarts a managed hermes-dashboard unit.
-    monkeypatch.setattr("hermes_cli.update_cmd_maint._refresh_dashboard_after_update", lambda **k: set())
-    monkeypatch.setattr("hermes_cli.gateway_migrate.maybe_auto_migrate_after_update", lambda: None)
+    monkeypatch.setattr("hermes_agent.hermes_cli.update_cmd_maint._refresh_dashboard_after_update", lambda **k: set())
+    monkeypatch.setattr("hermes_agent.hermes_cli.gateway_migrate.maybe_auto_migrate_after_update", lambda: None)
     return SimpleNamespace(other_checkout=other_checkout)
 
 

@@ -26,7 +26,7 @@ pytestmark = pytest.mark.usefixtures("authority_cwd_in_tmp")  # symbolic profile
 
 def test_restart_drain_timeout_default_stays_zero():
     from hermes_agent.gateway.restart import DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT
-    from hermes_cli.config import DEFAULT_CONFIG
+    from hermes_agent.hermes_cli.config import DEFAULT_CONFIG
 
     assert DEFAULT_CONFIG['agent']['restart_drain_timeout'] == 0
     assert DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT == 0.0
@@ -79,7 +79,7 @@ def test_a_turn_warning_is_not_overwritten():
 def test_classic_cli_view_prints_the_restart_notice_for_an_interrupted_turn(capsys):
     """The attached classic CLI (``hermes chat``) prints the notice on stderr; a completed turn's
     warning stays unprinted there, as before."""
-    from hermes_cli.gateway_chat_view import GatewayChatView
+    from hermes_agent.hermes_cli.gateway_chat_view import GatewayChatView
 
     view = GatewayChatView(object(), {'stored_session_id': 'sid'})
     view._complete('a1', {'text': '', 'status': 'interrupted', 'warning': RESTART_INTERRUPT_NOTICE})
@@ -150,7 +150,7 @@ async def test_user_stop_is_not_relabelled_when_shutdown_starts_during_settlemen
 
 
 STOPPABLE_CHILD = """import json, os, sys, psutil
-from hermes_cli.process_identity import worker_birth
+from hermes_agent.hermes_cli.process_identity import worker_birth
 me = psutil.Process()
 out = os.fdopen(os.dup(sys.stdout.fileno()), 'wb', buffering=0)
 def send(frame):

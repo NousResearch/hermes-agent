@@ -103,7 +103,7 @@ def run_one(scenario: dict[str, Any], mode: str, rep: int, out_dir: Path) -> dic
             skip_context_files=True, skip_memory=True,
             platform="cli", max_iterations=15,
         )
-        from hermes_cli.plugins import get_plugin_manager, discover_plugins
+        from hermes_agent.hermes_cli.plugins import get_plugin_manager, discover_plugins
         discover_plugins()  # idempotent; ensures no later clear wipes our hook
         pm = get_plugin_manager()
         pm._hooks.setdefault("post_api_request", []).append(usage_hook)

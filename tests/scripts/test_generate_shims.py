@@ -122,7 +122,7 @@ def test_loaded_by_path_carries_the_moved_names(repo):
 
 
 def test_copy_row_for_a_data_file_copies_that_file(repo):
-    # Released apps fetch hermes_cli/local_runtime/catalog.json from main by URL, so the old path must
+    # Released apps fetch hermes_agent/hermes_cli/local_runtime/catalog.json from main by URL, so the old path must
     # keep the moved data file's bytes, not its sibling module's.
     _write(repo, {"hermes_agent/oldpkg/data.json": '{"schema_version": 3}\n'})
     names = repo / "hermes_agent/compat/required_names.py"

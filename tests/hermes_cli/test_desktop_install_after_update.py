@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli import main_desktop
+from hermes_agent.hermes_cli import main_desktop
 
 
 def _bundle(root: Path, asar: bytes) -> Path:
@@ -177,8 +177,8 @@ def test_failed_swap_keeps_the_previous_bundle_launchable(rebuilt, tmp_path, mon
 
 @pytest.mark.platforms("macos")
 def test_recorded_app_that_went_missing_comes_back_until_gui_uninstall(rebuilt, tmp_path, monkeypatch):
-    from hermes_cli import gui_uninstall
-    from hermes_cli import main as hermes_main
+    from hermes_agent.hermes_cli import gui_uninstall
+    from hermes_agent.hermes_cli import main as hermes_main
 
     home = tmp_path / "hermes-home"
     (home / "hermes-agent").mkdir(parents=True)

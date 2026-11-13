@@ -4,7 +4,7 @@ import types
 
 import pytest
 
-import hermes_cli.web_server_gateway as _web_server_gateway
+import hermes_agent.hermes_cli.web_server_gateway as _web_server_gateway
 
 
 class TestUpdateStatusRootLog:
@@ -18,7 +18,7 @@ class TestUpdateStatusRootLog:
 
             from hermes_agent import hermes_state
             from hermes_constants import get_hermes_home
-            from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
+            from hermes_agent.hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
 
             monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", get_hermes_home() / "state.db")
 
@@ -94,7 +94,7 @@ class TestUpdateStatusRootLog:
         # The status route reads at most 2,000 log lines: build output (or rotation) pushing the
         # start header out must not turn B's own success into exit null ("Action failed (exit ?)"),
         # nor let profile A's newer latest receipt answer for B.
-        from hermes_cli import update_receipt
+        from hermes_agent.hermes_cli import update_receipt
 
         root, b_id, a_id = tmp_path / "root", "b" * 32, "a" * 32
         (root / "logs").mkdir(parents=True)
@@ -135,7 +135,7 @@ class TestUpdateStatusRootLog:
     def test_root_latest_receipt_of_another_profile_never_certifies_this_action(self, monkeypatch, tmp_path, b_outcome):
         # The receipt store is root-wide too: A's later success in latest.json must not become B's
         # exit 0. Only a receipt naming B's action (found in the archive when A is latest) counts.
-        from hermes_cli import update_receipt
+        from hermes_agent.hermes_cli import update_receipt
 
         root = tmp_path / "root"
         (root / "logs").mkdir(parents=True)
@@ -168,7 +168,7 @@ class TestUpdateStatusRootLog:
     def test_status_receipt_carries_owed_steps_of_a_committed_update(self, monkeypatch, tmp_path, debt):
         # C3: owed post-commit steps keep the run a success (exit 0); the summary must still name
         # them so the dashboard and Desktop report the debt instead of plain success.
-        from hermes_cli import update_receipt
+        from hermes_agent.hermes_cli import update_receipt
 
         root, action_id = tmp_path / "root", "c" * 32
         monkeypatch.setenv("HERMES_HOME", str(root / "profiles" / "coder"))

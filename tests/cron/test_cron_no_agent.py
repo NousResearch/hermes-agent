@@ -115,7 +115,7 @@ def test_run_job_no_agent_reloads_dotenv_before_script(hermes_env, monkeypatch):
     vars in its environment, and the agent path's per-run dotenv reload never
     executes for no_agent jobs — delivery home channels stayed unresolved.
     run_job must load .env at the top of the no_agent branch."""
-    from hermes_cli import env_loader
+    from hermes_agent.hermes_cli import env_loader
     from hermes_agent.cron.jobs import create_job
     from hermes_agent.cron.scheduler import run_job
 
@@ -350,7 +350,7 @@ def test_a_routed_profile_script_never_receives_a_launch_only_name(hermes_env, m
     from hermes_agent.agent.secret_sources.base import FetchResult
     from hermes_agent.agent.secret_sources.registry import ApplyReport, SourceReport
     from hermes_agent.cron.scheduler_script import _run_job_script
-    from hermes_cli import env_loader
+    from hermes_agent.hermes_cli import env_loader
     from hermes_constants import get_process_hermes_home, reset_hermes_home_override, set_hermes_home_override
 
     launch = get_process_hermes_home()
@@ -404,7 +404,7 @@ def test_a_routed_profile_script_keeps_administrator_managed_values_over_its_own
 
     from hermes_agent.agent import secret_scope
     from hermes_agent.cron.scheduler_script import _run_job_script
-    from hermes_cli import env_loader, managed_scope
+    from hermes_agent.hermes_cli import env_loader, managed_scope
     from hermes_constants import get_process_hermes_home, reset_hermes_home_override, set_hermes_home_override
 
     launch = get_process_hermes_home()

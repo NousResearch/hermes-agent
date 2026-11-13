@@ -39,7 +39,7 @@ def test_persist_disabled_fork_skips_session_and_turn_lifecycle_hooks():
     agent = _agent(persist_disabled=True)
 
     with (
-        patch("hermes_cli.lifecycle.invoke_hook") as lifecycle_hook,
+        patch("hermes_agent.hermes_cli.lifecycle.invoke_hook") as lifecycle_hook,
         patch("hermes_agent.agent.credits_tracker.seed_credits_at_session_start"),
     ):
         _restore_or_build_system_prompt(agent, None, [])
@@ -72,7 +72,7 @@ def test_persisted_agent_still_fires_session_and_turn_lifecycle_hooks():
     agent = _agent(persist_disabled=False)
 
     with (
-        patch("hermes_cli.lifecycle.invoke_hook") as lifecycle_hook,
+        patch("hermes_agent.hermes_cli.lifecycle.invoke_hook") as lifecycle_hook,
         patch("hermes_agent.agent.credits_tracker.seed_credits_at_session_start"),
     ):
         lifecycle_hook.side_effect = lambda name, **_kwargs: (

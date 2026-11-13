@@ -117,7 +117,7 @@ def test_cli_vision_fallback_notice_honors_policy(tmp_path, monkeypatch, setting
     """Real call through _preprocess_images_with_vision: the model-facing retry text (with the path)
     is always produced; only the console ⚠ notice follows policy."""
     _policy(tmp_path, monkeypatch, setting)
-    import cli as climod
+    import hermes_agent.cli as climod
     from unittest.mock import patch as _patch
     out = []
     monkeypatch.setattr(climod, "_cprint", lambda s: out.append(s))

@@ -66,7 +66,7 @@ export function commandLineIsHermesRuntime(raw: string): boolean {
   const hasModuleEntry = tokens.some(token => {
     const lower = token.toLowerCase()
 
-    return lower === 'hermes_cli.main' || lower === 'hermes_cli/main.py' || lower.endsWith('/hermes_cli/main.py')
+    return lower === 'hermes_cli.main' || lower === 'hermes_agent.hermes_cli.main' || lower === 'hermes_cli/main.py' || lower.endsWith('/hermes_cli/main.py')
   })
 
   return hasModuleEntry && tokensNameGatewaySubcommand(tokens)

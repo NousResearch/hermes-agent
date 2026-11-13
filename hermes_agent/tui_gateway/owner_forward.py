@@ -68,7 +68,7 @@ class OwnerUnconfirmed(OwnerUnavailable):
 
 def discover_owner(home: Path):
     """The ready gateway endpoint serving ``home``. Discovery only: never starts one."""
-    from hermes_cli.gateway_runtime import discover_gateway_endpoint
+    from hermes_agent.hermes_cli.gateway_runtime import discover_gateway_endpoint
     discovery = discover_gateway_endpoint(home, timeout=5)
     if discovery.state != "ready" or discovery.endpoint is None:
         raise OwnerNotRunning(f"the gateway that owns it is {discovery.state}")
@@ -80,7 +80,7 @@ async def connect_owner(home: Path, endpoint, *, scope=None, max_size: int = 2 *
     """A ``GatewayClient`` on ``endpoint``, the ready gateway serving ``home``; ``scope``: the
     ticket's profile scope (``"host"``: the one native Desktop holds); ``max_size``: the largest
     answer frame accepted (websockets' 1 MiB default)."""
-    from hermes_cli.gateway_client import GATEWAY_WS_PROTOCOL, GatewayClient, _session_ticket, gateway_ws_target
+    from hermes_agent.hermes_cli.gateway_client import GATEWAY_WS_PROTOCOL, GatewayClient, _session_ticket, gateway_ws_target
     from websockets.asyncio.client import connect
 
     ticket = await asyncio.to_thread(_session_ticket, home, endpoint, scope=scope)
@@ -159,7 +159,7 @@ class _Relay:
         queued: a lost connection, a missing answer or any other error may follow the owner's durable
         commit (a gateway restart mid-forward, a storage error publishing the pending list), so it is
         unconfirmed, never "nothing was sent" (a resend would run a second copy)."""
-        from hermes_cli.gateway_client import GatewayRPCError
+        from hermes_agent.hermes_cli.gateway_client import GatewayRPCError
         try:
             return await client.rpc("prompt.submit", session_id=target, text=self.text,
                                     submission_id=self.request_id)

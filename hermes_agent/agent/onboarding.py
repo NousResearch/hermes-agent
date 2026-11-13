@@ -210,7 +210,7 @@ def is_seen(config: Mapping[str, Any], flag: str) -> bool:
 def mark_seen(config_path: Path, flag: str) -> bool:
     """Persist ``onboarding.seen.<flag> = True`` atomically; False on any error (best-effort)."""
     try:
-        from hermes_cli.config import atomic_config_write, read_user_config_raw
+        from hermes_agent.hermes_cli.config import atomic_config_write, read_user_config_raw
     except Exception as e:  # pragma: no cover — dependency issue
         logger.debug("onboarding: failed to import config helpers: %s", e)
         return False

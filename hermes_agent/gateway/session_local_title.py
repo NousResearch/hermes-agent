@@ -2,7 +2,7 @@
 
 ``hermes chat --resume <title>`` / ``-c <title> [--create-if-missing]`` used to open
 SessionDB in the client; the zero-writer client now sends the name and the owner
-applies the classic CLI rule (``hermes_cli.main._resolve_session_by_name_or_id``).
+applies the classic CLI rule (``hermes_agent.hermes_cli.main._resolve_session_by_name_or_id``).
 """
 from __future__ import annotations
 
@@ -46,7 +46,7 @@ def resolve_titled_session(authority, actor, name, *, missing_ok=False):
 def resolve_latest_session(authority, actor, family, workspace=None):
     """The most recently active session of a surface family (``cli`` = classic CLI incl. its finite
     one-shot runs, ``tui``), scoped to ``workspace`` (git root / cwd) first and then global: the
-    classic ``hermes -c`` / ``--resume latest`` rule (``hermes_cli.main._resolve_last_session``),
+    classic ``hermes -c`` / ``--resume latest`` rule (``hermes_agent.hermes_cli.main._resolve_last_session``),
     applied by the owner so the client opens no database. Only a local session the actor may read
     counts; another principal's sessions are skipped, never confirmed."""
     from hermes_agent.agent.session_source import CLI_FAMILY_SOURCES

@@ -6,7 +6,7 @@ import pytest
 from acp.schema import TextContentBlock
 
 from hermes_agent.acp_adapter.gateway_server import GatewayACPAgent
-from hermes_cli.gateway_client import GatewayClientError
+from hermes_agent.hermes_cli.gateway_client import GatewayClientError
 
 
 def agent_with_admission():
@@ -48,7 +48,7 @@ async def test_cancelled_admission_suppresses_only_interrupt_metadata(text, visi
 async def test_refused_reattach_after_a_replay_gap_still_fails_the_pump():
     """A gap re-attaches that session (test_gateway_replay_gap); a refused re-attach ends the wait as
     before: the pump fails, the next call redials."""
-    from hermes_cli.gateway_client import GatewayRPCError
+    from hermes_agent.hermes_cli.gateway_client import GatewayRPCError
     agent = agent_with_admission()
     agent._snapshots['s'] = {'replay_epoch': 'e', 'last_sequence': 9}
     agent._gateway.events = asyncio.Queue()

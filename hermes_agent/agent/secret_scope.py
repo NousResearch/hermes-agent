@@ -283,7 +283,7 @@ def get_secret(name: str, default: Optional[str] = None) -> Optional[str]:
 def secret_source_label(name: str) -> str:
     """``" (from Bitwarden)"``-style suffix naming the external secret source (a secret-source plugin)
     that supplied env var *name*; ``""`` for ``.env`` / shell values. Public for plugins' status lines."""
-    from hermes_cli.env_loader import format_secret_source_suffix
+    from hermes_agent.hermes_cli.env_loader import format_secret_source_suffix
 
     return format_secret_source_suffix(name)
 
@@ -346,7 +346,7 @@ def _parse_env_value(raw_value: str) -> str:
 # in-place same-size rewrite inside one tick, and ``/reload`` then served the old value (CI run
 # 39146191939). The open keeps close-to-open revalidation on NFS, and a vanished/unreadable file
 # fails the open and is never cached (a transient EACCES must not become "this profile has no
-# secrets"). ``invalidate_env_file_cache()`` is the explicit knob; ``hermes_cli.config.
+# secrets"). ``invalidate_env_file_cache()`` is the explicit knob; ``hermes_agent.hermes_cli.config.
 # invalidate_env_cache()`` calls it for Hermes's own .env writers.
 _ENV_FILE_CACHE: OrderedDict[str, tuple[bytes, dict[str, str]]] = OrderedDict()
 _ENV_FILE_CACHE_LOCK = threading.Lock()
@@ -389,7 +389,7 @@ def _parse_env_text(text: str) -> dict[str, str]:
 
 
 def load_env_file(env_path: Path) -> dict[str, str]:
-    """THE ``.env`` tokenizer: every reader (profile scope, ``hermes_cli.config.load_env``, the dashboard
+    """THE ``.env`` tokenizer: every reader (profile scope, ``hermes_agent.hermes_cli.config.load_env``, the dashboard
     scrub, skill secret capture, managed .env, setup prompts) parses through here so no two boundaries
     disagree on which keys/values a file defines. Dict only — never touches ``os.environ``. ``export``
     prefix, ``#`` comments, quote escapes reversed; a BOM is stripped so it doesn't prefix the first key.
@@ -437,7 +437,7 @@ def build_profile_secret_scope(hermes_home: Path) -> dict[str, str]:
     secrets = {k: v for k, v in secrets.items() if not is_launch_only_env_key(k)}
     dotenv = dict(secrets)
     try:
-        from hermes_cli.env_loader import get_secret_source_values
+        from hermes_agent.hermes_cli.env_loader import get_secret_source_values
         external_secrets = get_secret_source_values(Path(hermes_home))
     except Exception:
         external_secrets = {}
@@ -456,7 +456,7 @@ def build_profile_secret_scope(hermes_home: Path) -> dict[str, str]:
     # managed-vs-user collision (#111187 review). Every multiplex-authoritative scope — gateway
     # turn, routed cron fire, external worker — is built here, so managed authority is composed
     # once, not restored by each consumer.
-    from hermes_cli.managed_scope import load_managed_env  # fail-open: {} when no managed scope
+    from hermes_agent.hermes_cli.managed_scope import load_managed_env  # fail-open: {} when no managed scope
 
     managed = {k: v for k, v in load_managed_env().items() if not _is_global_env(k)}
     secrets.update(managed)
@@ -476,7 +476,7 @@ def _expand_dotenv_templates(secrets: dict[str, str], hermes_home: Path, raw: di
     templated = {k: v for k, v in raw.items() if "${" in v and secrets.get(k) == v}
     if not templated:
         return
-    from hermes_cli.env_loader import resolve_home_dotenv
+    from hermes_agent.hermes_cli.env_loader import resolve_home_dotenv
     lookup = None if _is_process_home(hermes_home) else {k: v for k, v in os.environ.items() if _is_global_env(k)}
     resolved = resolve_home_dotenv(Path(hermes_home), lookup_env=lookup)
     secrets.update((k, resolved[k]) for k in templated if k in resolved)

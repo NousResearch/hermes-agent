@@ -10,7 +10,7 @@ description: >
   (each user runs /setup-files once in their own DM).
 author: Ramón Fernández
 # ``requires_env`` entries are surfaced in ``hermes config`` UI via the
-# platform-plugin env var injector in ``hermes_cli/config.py``.  Using the
+# platform-plugin env var injector in ``hermes_agent/hermes_cli/config.py``.  Using the
 # rich-dict form lets us contribute description/url/prompt metadata so users
 # see helpful guidance instead of the auto-generated fallback text.
 requires_env:

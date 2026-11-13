@@ -97,7 +97,7 @@ def test_standalone_lane_passes_force_document(monkeypatch):
         return {"success": True, "platform": "telegram", "chat_id": chat_id, "message_id": 9}
 
     import hermes_agent.gateway.platform_registry as reg_mod
-    import hermes_cli.plugins as hp
+    import hermes_agent.hermes_cli.plugins as hp
 
     if reg_mod.platform_registry.get("telegram") is None:
         hp.discover_plugins()

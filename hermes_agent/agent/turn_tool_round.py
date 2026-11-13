@@ -169,7 +169,7 @@ def run_tool_round(
     maybe_prepare(agent, messages, origin="tool-batch")
 
     agent._execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count)
-    from hermes_cli.observability.shared_metrics_harness import finish_tool_round
+    from hermes_agent.hermes_cli.observability.shared_metrics_harness import finish_tool_round
 
     finish_tool_round(agent)
 

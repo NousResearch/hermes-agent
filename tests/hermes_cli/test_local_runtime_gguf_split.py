@@ -19,9 +19,9 @@ import struct
 
 import pytest
 
-from hermes_cli.local_runtime.context_policy import spill_overrides
-from hermes_cli.local_runtime.estimator import profile_from_gguf
-from hermes_cli.local_runtime.gguf import read_gguf_header
+from hermes_agent.hermes_cli.local_runtime.context_policy import spill_overrides
+from hermes_agent.hermes_cli.local_runtime.estimator import profile_from_gguf
+from hermes_agent.hermes_cli.local_runtime.gguf import read_gguf_header
 
 GIB = 1 << 30
 
@@ -165,8 +165,8 @@ def test_residency_cap_prices_a_split_against_the_card(tmp_path, monkeypatch):
     """The consequence, not just the reader: a fleet whose largest model is a split must not be
     admitted ``models_max`` times over. Two giants co-resided because the probe saw a 175 GB model
     as a few GiB and booted the router with room for three."""
-    from hermes_cli.local_runtime import presets
-    from hermes_cli.local_runtime.estimator import HardwareBudget
+    from hermes_agent.hermes_cli.local_runtime import presets
+    from hermes_agent.hermes_cli.local_runtime.estimator import HardwareBudget
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
     mdir = tmp_path / "models"
@@ -188,8 +188,8 @@ def test_a_truncated_header_skips_the_model_instead_of_raising(tmp_path, monkeyp
     """Every caller skips a model whose header raises ValueError or OSError. A header cut short
     used to raise struct.error, which none of them catch, so one bad file took down the whole
     preset pass instead of dropping out of it."""
-    from hermes_cli.local_runtime import presets
-    from hermes_cli.local_runtime.estimator import HardwareBudget
+    from hermes_agent.hermes_cli.local_runtime import presets
+    from hermes_agent.hermes_cli.local_runtime.estimator import HardwareBudget
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
     parts = _split(tmp_path, "cut-head", [

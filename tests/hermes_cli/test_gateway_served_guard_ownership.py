@@ -51,7 +51,7 @@ def _refusal(gw) -> tuple[bool, str]:
 
 @pytest.fixture
 def gw(monkeypatch):
-    from hermes_cli import gateway as gw
+    from hermes_agent.hermes_cli import gateway as gw
     monkeypatch.setattr(gw, "_is_service_installed", lambda: True)
     return gw
 
@@ -106,14 +106,14 @@ def test_satellite_served_by_same_tenants_multiplexer_is_still_refused(tmp_path,
 def test_cron_status_restart_hint_names_the_profile_hosting_the_scheduler(tmp_path, monkeypatch, gw):
     """#120871: `hermes -p argus cron status` on a standalone fleet points at argus, not default."""
     from hermes_agent.gateway.host_topology import HostGatewayTopology
-    from hermes_cli import cron as cron_mod
+    from hermes_agent.hermes_cli import cron as cron_mod
 
     fake_home = tmp_path / "fakehome"
     own_home = fake_home / ".hermes" / "profiles" / "argus"
     _use_home(monkeypatch, fake_home, own_home)
     _publish_host(monkeypatch, own_home, ("argus",))
     monkeypatch.setattr(cron_mod, "_active_cron_provider_name", lambda: "builtin")
-    monkeypatch.setattr("hermes_cli.profiles.get_active_profile_name", lambda: "argus")
+    monkeypatch.setattr("hermes_agent.hermes_cli.profiles.get_active_profile_name", lambda: "argus")
     monkeypatch.setattr("hermes_agent.gateway.host_topology.host_gateway_serving",
                         lambda name=None: HostGatewayTopology(4242, ("argus",), "host_record"))
     seen = []

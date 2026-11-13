@@ -141,7 +141,7 @@ async def attach_file(connection, ref, params):
     session, so every file drop failed with ``session not found``.
 
     A browser pick arrives as ``staged_upload`` (the Webapp upload route's receipt,
-    ``hermes_cli/staged_uploads.py``): it is copied out of the profile it was uploaded to, which must
+    ``hermes_agent/hermes_cli/staged_uploads.py``): it is copied out of the profile it was uploaded to, which must
     be one this connection may reach."""
     staged_upload = params.get('staged_upload')
     if (set(params) - {'session_id', 'profile', 'path', 'data_url', 'name', 'staged_upload'} or not ref.session_id
@@ -372,7 +372,7 @@ async def _held_mcp_rev(connection, ref):
 def _mcp_revision_in_scope(home, policy):
     from hermes_agent.gateway.run import _profile_runtime_scope
     from hermes_agent.gateway.session_config import mcp_revision
-    from hermes_cli.config import load_config
+    from hermes_agent.hermes_cli.config import load_config
     with _profile_runtime_scope(home):
         return mcp_revision(policy, load_config())
 
@@ -383,7 +383,7 @@ def _session_servers(authority, sid, ready):
     a platform allowlist enabled, and one the policy names but that parked serves the chat nothing."""
     import json
     from hermes_agent.gateway.session_policy import restore_policy
-    from hermes_cli.tools_config import enabled_mcp_server_names
+    from hermes_agent.hermes_cli.tools_config import enabled_mcp_server_names
     from hermes_agent.hermes_state_local import local_receipt
     policy = restore_policy(local_receipt(authority.db, sid)['policy'])
     return sorted(set(policy.toolsets) & enabled_mcp_server_names(json.loads(policy.config_json)) & set(ready))
@@ -472,9 +472,9 @@ def physical_target(authority, ref):
 
 
 def control_snapshot(authority, ref):
-    from hermes_cli.goals import GoalState
-    from hermes_cli.loops import LoopState
-    from hermes_cli.heartbeat import HeartbeatState
+    from hermes_agent.hermes_cli.goals import GoalState
+    from hermes_agent.hermes_cli.loops import LoopState
+    from hermes_agent.hermes_cli.heartbeat import HeartbeatState
     # These pure serializers don't bind/import the legacy server. In particular
     # do not reuse _snapshot_control: its manager loader can write on a read.
     from hermes_agent.tui_gateway.methods_session_control import (

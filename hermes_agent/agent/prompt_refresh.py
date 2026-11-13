@@ -81,7 +81,7 @@ def rebuild_for_refresh(agent: Any, system_message: Any, conversation_history: A
     """Rebuild the session's prompt from current sources and persist it with ``epoch``."""
     from hermes_agent.agent.prompt_builder import clear_skills_system_prompt_cache
     from hermes_agent.agent.surface_switch import stage_surface_switch_note
-    from hermes_cli.observability.shared_metrics_efficiency import record_cache_break
+    from hermes_agent.hermes_cli.observability.shared_metrics_efficiency import record_cache_break
 
     logger.info("Operator requested a system prompt refresh (epoch %d) for session %s; rebuilding it "
                 "from current SOUL.md, skills and context files (one-time prefix-cache break).",

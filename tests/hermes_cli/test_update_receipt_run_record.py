@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pytest
 
-from hermes_cli import update_completion, update_receipt
+from hermes_agent.hermes_cli import update_completion, update_receipt
 
 
 def _lost_run(tmp_path):

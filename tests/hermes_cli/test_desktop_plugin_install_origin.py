@@ -8,8 +8,8 @@ fixtures as ``test_desktop_plugin_install.py``.
 import json
 from pathlib import Path
 
-from hermes_cli import desktop_plugin_halves as halves
-from hermes_cli import desktop_plugin_install as install
+from hermes_agent.hermes_cli import desktop_plugin_halves as halves
+from hermes_agent.hermes_cli import desktop_plugin_install as install
 from tests.hermes_cli.test_desktop_plugin_install import URL, _catalog, _commit, _git
 
 # The sibling's real-Git fixtures: `repo`, a local repository the https identifier clones from, and `home`.

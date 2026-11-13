@@ -13,9 +13,9 @@ import sys
 import threading
 import types
 
-from hermes_cli import mcp_startup
-from hermes_cli import web_server
-from hermes_cli import web_server_lifecycle
+from hermes_agent.hermes_cli import mcp_startup
+from hermes_agent.hermes_cli import web_server
+from hermes_agent.hermes_cli import web_server_lifecycle
 from tests.hermes_cli.test_dashboard_auth_gate import _stub_uvicorn_run
 
 
@@ -80,14 +80,14 @@ def test_deferred_discovery_fires_once_and_is_idempotent(monkeypatch):
 
 
 def _stub_dashboard_runtime(monkeypatch):
-    import hermes_cli.main as main_mod
+    import hermes_agent.hermes_cli.main as main_mod
 
     monkeypatch.setattr(main_mod, "_resolve_dashboard_web_dist", lambda *a, **k: None)
     monkeypatch.setattr(main_mod, "_sync_bundled_skills_quietly", lambda: None)
     monkeypatch.setitem(sys.modules, "fastapi", types.SimpleNamespace())
     monkeypatch.setitem(sys.modules, "uvicorn", types.SimpleNamespace())
     monkeypatch.setitem(sys.modules, "hermes_logging", types.SimpleNamespace(setup_logging=lambda **_k: None))
-    monkeypatch.setitem(sys.modules, "hermes_cli.plugins", types.SimpleNamespace(discover_plugins=lambda: None))
+    monkeypatch.setitem(sys.modules, "hermes_agent.hermes_cli.plugins", types.SimpleNamespace(discover_plugins=lambda: None))
     return main_mod
 
 
@@ -112,8 +112,8 @@ def test_standalone_dashboard_boot_arms_discovery_without_starting_it(monkeypatc
 def test_first_gateway_ws_client_starts_the_armed_discovery_once(monkeypatch):
     import asyncio
 
-    from hermes_cli.web_routers import chat_ws
-    from hermes_cli.web_session_sockets import GATEWAY_SOCKET
+    from hermes_agent.hermes_cli.web_routers import chat_ws
+    from hermes_agent.hermes_cli.web_session_sockets import GATEWAY_SOCKET
 
     _reset_discovery_state(monkeypatch)
     calls: list[str] = []

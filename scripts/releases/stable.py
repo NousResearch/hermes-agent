@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Iterable
 from urllib.parse import unquote, urlsplit
 
-from hermes_cli.update_channel import STABLE_TAG_RE
+from hermes_agent.hermes_cli.update_channel import STABLE_TAG_RE
 from scripts.releases import lanes as lane_set
 from scripts.releases.desktop_targets import MANIFEST_TARGETS
 from scripts.releases.draft_warning import strip_draft_warning

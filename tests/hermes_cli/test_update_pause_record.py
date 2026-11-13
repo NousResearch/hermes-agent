@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli import update_pause_record as pause_record
+from hermes_agent.hermes_cli import update_pause_record as pause_record
 from datetime import UTC
 
 REPO = Path(__file__).resolve().parents[2]
@@ -28,7 +28,7 @@ _PRIVATE_CHECKOUT_LOCK = """
 import os
 from pathlib import Path
 from hermes_cli import update_lock as _lock
-_repo, _real = Path(_lock.__file__).resolve().parents[1], _lock.checkout_lock_path
+_repo, _real = Path(_lock.__file__).resolve().parents[2], _lock.checkout_lock_path
 def checkout_lock_path(install_root=None):
     root = Path(install_root) if install_root else _repo
     return Path(os.environ["HERMES_TEST_CHECKOUT_LOCK"]) if root.resolve() == _repo else _real(install_root)
@@ -560,8 +560,8 @@ def test_a_request_on_disk_is_owed_even_before_it_is_recorded_sent(tmp_path):
 # --- R13: a checkout sharing the home never takes another checkout's paused set --------------
 def _checkout_copy(root: Path) -> Path:
     """A second checkout: the real module file under another install root."""
-    (root / "hermes_cli").mkdir(parents=True)
-    (root / "hermes_cli" / "update_pause_record.py").write_bytes(Path(pause_record.__file__).read_bytes())
+    (root / "hermes_agent" / "hermes_cli").mkdir(parents=True)
+    (root / "hermes_agent" / "hermes_cli" / "update_pause_record.py").write_bytes(Path(pause_record.__file__).read_bytes())
     _git(root, "init", "-q")
     _git(root, "add", ".")
     _git(root, "commit", "-qm", "b")
@@ -579,7 +579,7 @@ def test_another_checkouts_writer_never_imports_or_relabels_this_checkouts_debt(
         b = importlib.util.module_from_spec(spec); spec.loader.exec_module(b)
         b.write(b.stamp_tree({"resume_needed": True, "profiles": {"beta": 1}}), owner=b.UNOWNED)
         print(json.dumps([len(b.orphans()), b.read()]), flush=True)
-    """, str(other / "hermes_cli" / "update_pause_record.py"), env={"HERMES_HOME": str(tmp_path)})
+    """, str(other / "hermes_agent" / "hermes_cli" / "update_pause_record.py"), env={"HERMES_HOME": str(tmp_path)})
     out, _ = writer.communicate(timeout=60)
     seen, theirs = json.loads(out.strip().splitlines()[-1])
     assert seen == 1 and sorted(theirs["token"]["profiles"]) == ["beta"], f"imported this checkout's set: {theirs}"
@@ -795,7 +795,7 @@ def test_a_malformed_retired_list_is_set_aside_only_when_nothing_refers_to_it(tm
 def test_a_host_without_psutil_records_an_identity_the_liveness_rule_can_prove(monkeypatch):
     """Review 5411136378 fix 2: the record's creation time comes from the same probe the reader
     judges with, so a psutil-less host never writes ``ct=None`` (unprovable, so never orphaned)."""
-    from hermes_cli import update_lock
+    from hermes_agent.hermes_cli import update_lock
     monkeypatch.setitem(sys.modules, "psutil", None)  # `import psutil` raises ImportError
     # Our own creation time is cached per process; one an earlier test read with psutil differs
     # from the stdlib probe by its resolution (macOS `ps -o lstart`: 1 s). Judge with one probe.
@@ -812,7 +812,7 @@ def test_the_tree_gate_finds_pm_git_and_runs_it_in_the_updaters_custody(tmp_path
     from types import SimpleNamespace
 
     import pm
-    from hermes_cli import update_custody
+    from hermes_agent.hermes_cli import update_custody
     root = tmp_path / "checkout"
     root.mkdir()
     _git(root, "init", "-q")
@@ -841,7 +841,7 @@ def test_a_moved_head_holds_gateways_for_dependencies_only_where_a_launch_syncs_
     """Review 5411136378 decision (moved HEAD): stale dependencies defer the resume only where the
     next launch makes them current; an unknown currency never strands a committed update's set."""
     import pm
-    from hermes_cli import steward
+    from hermes_agent.hermes_cli import steward
     root = tmp_path / "checkout"
     root.mkdir()
     _git(root, "init", "-q")

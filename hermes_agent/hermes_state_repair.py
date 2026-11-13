@@ -77,14 +77,14 @@ def _sidecars(db_path: Path):
 
 
 def _read_offline(db_path: Path, what: str, reader) -> Optional[str]:
-    """Run *reader()* under ``hermes_cli.sqlite_safe_read.offline_file_access``.
+    """Run *reader()* under ``hermes_agent.hermes_cli.sqlite_safe_read.offline_file_access``.
 
     ``close()`` on ANY raw descriptor cancels every POSIX advisory lock this process holds on the file,
     including a peer connection's RESERVED lock (``sqlite_safe_read`` rule 1), so a raw read is only safe with
     no live connection; ``None`` when that makes it unsafe or the file is unreadable. Scaffold/embed installs
     without hermes_cli have no tracked connections."""
     try:
-        from hermes_cli.sqlite_safe_read import LiveConnectionError, offline_file_access
+        from hermes_agent.hermes_cli.sqlite_safe_read import LiveConnectionError, offline_file_access
     except ImportError:
         offline_file_access, LiveConnectionError = (lambda _p, **_k: contextlib.nullcontext()), OSError
     try:
@@ -483,7 +483,7 @@ def _backup_db_file(db_path: Path) -> tuple[Optional[Path], Optional[str]]:
     Raw bytes on purpose: the DB won't open cleanly, so preserve them exactly for forensics. Returns ``(backup_path,
     None)`` or ``(None, reason)``; repair treats a refused backup as a HARD STOP because the bundle is the recovery
     path when every strategy fails. Refuses while a connection to this DB is live in the process: the raw read would
-    ``close()`` a descriptor and cancel that connection's POSIX advisory locks (``hermes_cli.sqlite_safe_read``) —
+    ``close()`` a descriptor and cancel that connection's POSIX advisory locks (``hermes_agent.hermes_cli.sqlite_safe_read``) —
     real case: one SessionDB enters repair while the gateway holds others.
 
     Dedupe: reuse the newest backup when byte-identical to the current recovery image (``_backup_content_identity``
@@ -497,7 +497,7 @@ def _backup_db_file(db_path: Path) -> tuple[Optional[Path], Optional[str]]:
     See #69603.
     """
     with contextlib.suppress(ImportError):  # scaffold/embed installs without hermes_cli track no connections
-        from hermes_cli.sqlite_safe_read import has_live_connection
+        from hermes_agent.hermes_cli.sqlite_safe_read import has_live_connection
         if has_live_connection(db_path):
             reason = (f"a connection to {db_path} is still open in this process; raw-copying it would cancel that "
                       "connection's POSIX advisory locks. Close all SessionDB handles first.")
@@ -597,12 +597,12 @@ def _connect_repair_durable(db_path: Path, *, timeout: float = 5.0) -> sqlite3.C
     implicit transaction. Barriers are best-effort: on a malformed schema even ``PRAGMA synchronous=FULL`` raises,
     so whole-file rewrites call :func:`_reapply_durability_barriers` once the schema parses again.
 
-    Tracked (:func:`hermes_cli.sqlite_safe_read.connect_tracked`) because repair connections hold the
+    Tracked (:func:`hermes_agent.hermes_cli.sqlite_safe_read.connect_tracked`) because repair connections hold the
     strongest locks in the process (``locking_mode=EXCLUSIVE``, ``BEGIN IMMEDIATE``); an untracked fd let
     the byte-level probes ``open()``/``close()`` the live file, which cancels every POSIX advisory lock this
     process holds on it (sqlite.org/howtocorrupt §2.2) and lets an external writer commit mid-repair (#63386).
     """
-    from hermes_cli.sqlite_safe_read import connect_tracked
+    from hermes_agent.hermes_cli.sqlite_safe_read import connect_tracked
 
     conn = connect_tracked(db_path, tracking_path=db_path, timeout=timeout, isolation_level=None)
     _reapply_durability_barriers(conn)
@@ -634,7 +634,7 @@ def apply_durability_barriers(conn: sqlite3.Connection) -> bool:
     from hermes_agent.hermes_state_wal import _apply_synchronous_pragma
     ok = _reapply_durability_barriers(conn)
     with contextlib.suppress(Exception):
-        from hermes_cli.config import cfg_get, load_config_readonly  # local: avoids an import cycle
+        from hermes_agent.hermes_cli.config import cfg_get, load_config_readonly  # local: avoids an import cycle
         if (raw_synchronous := cfg_get(load_config_readonly(), "database", "synchronous", default=None)) is not None:
             _apply_synchronous_pragma(conn, raw_synchronous, db_label="state.db (guest)")
     return ok
@@ -751,7 +751,7 @@ def state_db_has_structural_damage(db_path: Path) -> bool:
     while ``messages``/``sessions`` read cleanly, and the FTS rebuild ladder cannot help.
     Cannot-open / locked stays False so the caller keeps the FTS path."""
     try:
-        from hermes_cli.sqlite_safe_read import connect_tracked
+        from hermes_agent.hermes_cli.sqlite_safe_read import connect_tracked
         conn = connect_tracked(read_only_db_uri(db_path), uri=True, timeout=1.0, tracking_path=db_path)
     except sqlite3.Error:
         return False

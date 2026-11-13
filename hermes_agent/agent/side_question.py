@@ -91,7 +91,7 @@ def render_history_for_side_question(history: Optional[list[dict[str, Any]]], ch
 def _side_question_task_config() -> dict[str, Any]:
     """Return ``auxiliary.side_question`` from config (or ``{}``)."""
     try:
-        from hermes_cli.config import load_config_readonly
+        from hermes_agent.hermes_cli.config import load_config_readonly
         aux = load_config_readonly().get("auxiliary")
     except Exception:
         return {}
@@ -109,7 +109,7 @@ def _answer_via_fork(parent_agent: Any, question: str, history: Optional[list[di
     ``on_fork(None)`` follows its teardown.
     """
     from hermes_agent.agent.background_review import _digest_history, build_cache_parity_fork, release_cache_parity_fork
-    from hermes_cli.plugins import clear_thread_tool_whitelist, set_thread_tool_whitelist
+    from hermes_agent.hermes_cli.plugins import clear_thread_tool_whitelist, set_thread_tool_whitelist
 
     fork, _rt, routed = build_cache_parity_fork(parent_agent, _side_question_task_config(),
                                                 max_iterations=_FORK_MAX_ITERATIONS, write_origin="side_question")

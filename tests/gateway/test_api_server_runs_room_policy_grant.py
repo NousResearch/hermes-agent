@@ -139,7 +139,7 @@ async def test_ordinary_run_uses_operator_toolsets_not_a_room_policy(adapter):
 def test_create_agent_without_room_dispatch_keeps_operator_toolsets(monkeypatch):
     """Even a stray policy kwarg is inert without a verified dispatch."""
     from hermes_agent.gateway import run as gateway_run
-    from hermes_cli import tools_config
+    from hermes_agent.hermes_cli import tools_config
 
     adapter = _make_adapter(api_key="sk-secret")
     monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", dict)

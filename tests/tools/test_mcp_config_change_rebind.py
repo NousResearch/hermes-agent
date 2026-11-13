@@ -77,9 +77,9 @@ def test_plugin_remote_server_keeps_its_rendered_header_across_a_rebuild(monkeyp
     portable = {"srv": {"url": "https://mcp.example.test/mcp", "headers": {"apikey": "${PKG_API_KEY}"},
                         "strict_redirect_headers": True}}
     manager = SimpleNamespace(get_portable_mcp_servers=lambda: {k: dict(v) for k, v in portable.items()})
-    with patch("hermes_cli.config.load_config", return_value={}), \
-            patch("hermes_cli.plugins.discover_plugins"), \
-            patch("hermes_cli.plugins.get_plugin_manager", return_value=manager):
+    with patch("hermes_agent.hermes_cli.config.load_config", return_value={}), \
+            patch("hermes_agent.hermes_cli.plugins.discover_plugins"), \
+            patch("hermes_agent.hermes_cli.plugins.get_plugin_manager", return_value=manager):
         running = mcp_tool_config._interpolate_env_vars(dict(portable["srv"]))
         task = MCPServerTask("srv")
         task._config = running
@@ -105,9 +105,9 @@ def test_unscoped_multiplex_load_keeps_plugin_servers_after_a_templated_one(monk
     manager = SimpleNamespace(get_portable_mcp_servers=lambda: {k: dict(v) for k, v in portable.items()})
     set_multiplex_active(True)
     try:
-        with patch("hermes_cli.config.load_config", return_value={}), \
-                patch("hermes_cli.plugins.discover_plugins"), \
-                patch("hermes_cli.plugins.get_plugin_manager", return_value=manager):
+        with patch("hermes_agent.hermes_cli.config.load_config", return_value={}), \
+                patch("hermes_agent.hermes_cli.plugins.discover_plugins"), \
+                patch("hermes_agent.hermes_cli.plugins.get_plugin_manager", return_value=manager):
             loaded = mcp_tool_config._load_mcp_config()
     finally:
         set_multiplex_active(False)

@@ -139,9 +139,9 @@ def _record_calls(monkeypatch):
     for mod in (registry_mod, local_mod):
         monkeypatch.setattr(mod, "own_process_groups", lambda pgids: calls.append(("own", list(pgids))))
         monkeypatch.setattr(mod, "release_process_groups", lambda pgids: calls.append(("release", list(pgids))))
-    monkeypatch.setattr("hermes_cli.process_identity.own_process_groups",
+    monkeypatch.setattr("hermes_agent.hermes_cli.process_identity.own_process_groups",
                         lambda pgids: calls.append(("own", list(pgids))))
-    monkeypatch.setattr("hermes_cli.process_identity.register_child", lambda pid, purpose: None)
+    monkeypatch.setattr("hermes_agent.hermes_cli.process_identity.register_child", lambda pid, purpose: None)
     return calls
 
 

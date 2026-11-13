@@ -14,7 +14,7 @@ import pytest
 
 import hermes_agent.agent.secret_scope as ss
 import hermes_agent.gateway.platforms._shared as shared
-import hermes_cli.config as cli_config
+import hermes_agent.hermes_cli.config as cli_config
 
 _ENV_ENABLEMENT_PLUGINS = ("buzz", "google_chat", "irc", "line", "ntfy", "photon", "simplex", "teams")
 

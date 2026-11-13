@@ -11,7 +11,7 @@ def test_load_env_preserves_concatenated_text_as_value_data():
     A missing newline is ambiguous: text resembling a second assignment may
     instead be part of the first value, so it must remain opaque value data.
     """
-    from hermes_cli.config import load_env
+    from hermes_agent.hermes_cli.config import load_env
 
     token = "0123456789:test"
     # Simulate concatenated line: TOKEN=xxx followed immediately by another key
@@ -24,7 +24,7 @@ def test_load_env_preserves_concatenated_text_as_value_data():
         env_path = Path(f.name)
 
     try:
-        with patch("hermes_cli.config.get_env_path", return_value=env_path):
+        with patch("hermes_agent.hermes_cli.config.get_env_path", return_value=env_path):
             result = load_env()
         assert result.get("TELEGRAM_BOT_TOKEN") == (
             f"{token}ANTHROPIC_API_KEY=sk-ant-test123"
@@ -38,7 +38,7 @@ def test_load_env_preserves_concatenated_text_as_value_data():
 
 def test_env_loader_does_not_split_concatenated_text():
     """Verify sanitization preserves one assignment per physical line."""
-    from hermes_cli.env_loader import _sanitize_env_file_if_needed
+    from hermes_agent.hermes_cli.env_loader import _sanitize_env_file_if_needed
 
     token = "0123456789:test"
     corrupted = f"TELEGRAM_BOT_TOKEN={token}ANTHROPIC_API_KEY=sk-ant-test\n"

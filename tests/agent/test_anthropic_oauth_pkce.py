@@ -57,7 +57,7 @@ def _patch_oauth_flow(
     # run headless, so force the GUI path to True — the URL capture relies on
     # webbrowser.open() being invoked.
     monkeypatch.setattr(
-        "hermes_cli.auth._can_open_graphical_browser", lambda: True
+        "hermes_agent.hermes_cli.auth._can_open_graphical_browser", lambda: True
     )
     monkeypatch.setattr("builtins.input", lambda *_a, **_kw: callback_code)
 

@@ -38,7 +38,7 @@ class TestRetryAfterHeaderOneParser:
         assert 85 <= ctx["reset_at"] - time.time() <= 91
 
     def test_metrics_sender_clamps_on_top_of_the_shared_parser(self):
-        from hermes_cli.observability.shared_metrics_sender import _retry_after_seconds
+        from hermes_agent.hermes_cli.observability.shared_metrics_sender import _retry_after_seconds
 
         assert _retry_after_seconds(_http_date(120), 7) in (119, 120)
         assert _retry_after_seconds("0", 7) == 1          # floor survives

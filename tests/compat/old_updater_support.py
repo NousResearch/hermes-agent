@@ -84,6 +84,7 @@ class FreshChild:
         def check_import(name):
             if name == "pm" or name.startswith("pm.") or name in {
                 "hermes_cli._update_takeover", "hermes_cli.update_finish",
+                "hermes_agent.hermes_cli._update_takeover", "hermes_agent.hermes_cli.update_finish",
             }:
                 pytest.fail(f"fresh updater imported in the old parent: {name}")
 
@@ -113,7 +114,7 @@ class FreshChild:
 
 @pytest.fixture
 def fresh_child(monkeypatch, no_external_work):
-    from hermes_cli import _old_updater
+    from hermes_agent.hermes_cli import _old_updater
 
     # Production caches across finally/atexit reentry. Test probes model separate
     # historical processes, so they must not inherit the previous probe's status.

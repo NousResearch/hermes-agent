@@ -1386,7 +1386,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
     def _spawn_windows_restart_watcher(hermes_cmd: list, current_pid: int, restart_after_s: float) -> None:
         """Spawn the detached Windows watcher (``python -c``), retrying once without job breakaway."""
         import subprocess
-        from hermes_cli._subprocess_compat import (
+        from hermes_agent.hermes_cli._subprocess_compat import (
             windows_detach_flags_without_breakaway, windows_detach_popen_kwargs
         )
         watcher_env = GatewayShutdownMixin._restart_watcher_env()
@@ -1397,12 +1397,12 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
             inherited = os.environ.get("VIRTUAL_ENV")
             if inherited:
                 watcher_env["VIRTUAL_ENV"] = inherited
-        from hermes_cli._startup_fast import project_root_str
+        from hermes_agent.hermes_cli._startup_fast import project_root_str
         project_root = Path(project_root_str())
         # Console python (NOT pythonw.exe) under CREATE_NO_WINDOW: the watcher owns one hidden console its
         # `hermes gateway restart` child inherits; a console-less watcher makes every descendant allocate a
         # visible conhost (#54220/#56747).
-        from hermes_cli._launchers import runtime_command
+        from hermes_agent.hermes_cli._launchers import runtime_command
         watcher_argv = runtime_command(project_root,
             [str(current_pid), str(restart_after_s), *hermes_cmd, "gateway", "restart"],
             code=_WINDOWS_RESTART_WATCHER)

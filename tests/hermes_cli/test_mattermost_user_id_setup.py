@@ -10,7 +10,7 @@ import io
 
 def test_gateway_setup_points_at_a_documented_user_id(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    from hermes_cli import gateway as gw
+    from hermes_agent.hermes_cli import gateway as gw
 
     platform = next(p for p in gw._PLATFORMS if p["key"] == "mattermost")
     monkeypatch.setattr(

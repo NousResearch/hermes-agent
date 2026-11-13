@@ -107,7 +107,7 @@ def get_provider_config_schema(name: str) -> ProviderConfigSchema | None:
 
     try:
         from plugins.memory import _is_bundled
-        from hermes_cli.plugin_isolation import user_plugin_host
+        from hermes_agent.hermes_cli.plugin_isolation import user_plugin_host
         host = None if _is_bundled(provider_dir) else user_plugin_host()
         if host is not None:  # plugins.isolation: host — a user schema file is user code too
             schema = _schema_from_record(host.config_schema(path))

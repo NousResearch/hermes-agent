@@ -14,7 +14,7 @@ import sys
 from pathlib import Path
 
 from hermes_agent.agent.onboarding import PROFILE_BUILD_FLAG, is_seen
-from hermes_cli.config_effective import load_user_config_effective
+from hermes_agent.hermes_cli.config_effective import load_user_config_effective
 from tests.fakes.fake_llm_provider import FakeLLMServer, Text, write_hermes_home
 
 ROOT = Path(__file__).parents[2]

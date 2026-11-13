@@ -117,7 +117,7 @@ class GatewayReplyMixin:
             # replay gap or from a receipt, only when this editor showed all of it.
             return ""
         if cut is not None:  # a replay gap stopped its live text: the rest once, or marked in full
-            from hermes_cli.gateway_replay_gap import owed_reply
+            from hermes_agent.hermes_cli.gateway_replay_gap import owed_reply
             # An interim after the gap closed the cut segment and may already have shown the whole reply.
             return "" if not cut and text.strip() in segments else owed_reply(cut, text)
         if text.startswith(streamed):

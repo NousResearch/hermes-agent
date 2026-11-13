@@ -235,7 +235,7 @@ TUI 附带有主见的按区块默认值，将轮次以实时转录形式流式�
 
 默认情况下，TUI 会在进程内启动自己的 gateway，因此每个 TUI 实例是自包含的——无需任何配置。
 
-你可能会在代码或日志中看到 `HERMES_TUI_GATEWAY_URL` 环境变量。它是 **Web 仪表板的内部接线细节**，并非面向用户的远程连接开关。当你打开仪表板的 "Chat" 标签页（`hermes dashboard` → `/chat`）时，仪表板的 Web 服务器会派生一个内嵌的 TUI 子进程，并注入 `HERMES_TUI_GATEWAY_URL`，让该子进程通过本地回环 WebSocket（`/api/ws`）连接到仪表板自己的进程内 `tui_gateway`。`/api/ws` 端点仅存在于仪表板服务器内部（`hermes_cli/web_server.py`），并绑定到该进程的生命周期和认证。
+你可能会在代码或日志中看到 `HERMES_TUI_GATEWAY_URL` 环境变量。它是 **Web 仪表板的内部接线细节**，并非面向用户的远程连接开关。当你打开仪表板的 "Chat" 标签页（`hermes dashboard` → `/chat`）时，仪表板的 Web 服务器会派生一个内嵌的 TUI 子进程，并注入 `HERMES_TUI_GATEWAY_URL`，让该子进程通过本地回环 WebSocket（`/api/ws`）连接到仪表板自己的进程内 `tui_gateway`。`/api/ws` 端点仅存在于仪表板服务器内部（`hermes_agent/hermes_cli/web_server.py`），并绑定到该进程的生命周期和认证。
 
 不存在通用的"将任意 TUI 指向任意独立 gateway 端口"的模式。特别是，OpenAI 兼容 API 服务器（`hermes gateway` / `api_server` 平台）**不**提供 `/api/ws`——它是模型后端接口（`/v1/chat/completions`、`/v1/models` 等），并刻意不暴露 TUI 的 JSON-RPC 控制通道。将 `HERMES_TUI_GATEWAY_URL` 设置为该端口将返回 404。
 

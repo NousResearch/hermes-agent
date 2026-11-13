@@ -1,10 +1,10 @@
-"""Guards for hermes_cli._startup_fast — the pre-import version fast path.
+"""Guards for hermes_agent.hermes_cli._startup_fast — the pre-import version fast path.
 
 Two invariants, each of which has been broken before:
 
 1. IMPORT WEIGHT: _startup_fast must stay stdlib-only. The whole point of
    the module is to run before main.py's heavy import wall; one careless
-   ``from hermes_cli.config import ...`` silently makes `hermes --version`
+   ``from hermes_agent.hermes_cli.config import ...`` silently makes `hermes --version`
    slow again for everyone (the regression would be invisible — everything
    still works, just 40x slower).
 
@@ -31,11 +31,11 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 # Modules that must NEVER be imported by the fast path. Each one either
 # pulls yaml/argparse/logging config or is itself a god-module.
 _FORBIDDEN_MODULES = (
-    "hermes_cli.config",
-    "hermes_cli.main",
+    "hermes_agent.hermes_cli.config",
+    "hermes_agent.hermes_cli.main",
     "yaml",
     "argparse",
-    "cli",
+    "hermes_agent.cli",
     "hermes_agent.run_agent",
     "hermes_agent.model_tools",
     "httpx",
@@ -76,7 +76,7 @@ def test_startup_fast_import_weight():
     """Importing _startup_fast must not drag in any heavy module."""
     probe = (
         "import sys, json\n"
-        "import hermes_cli._startup_fast\n"
+        "import hermes_agent.hermes_cli._startup_fast\n"
         "print(json.dumps(sorted(sys.modules.keys())))\n"
     )
     result = subprocess.run(
@@ -107,7 +107,7 @@ def test_project_root_is_the_folder_that_holds_hermes_agent(tmp_path, package):
     """The install-root owner gives the same answer before and after hermes_cli moves into the package."""
     (tmp_path / "hermes_agent" / "compat").mkdir(parents=True)
     (tmp_path / package).mkdir(parents=True, exist_ok=True)
-    shutil.copy2(REPO_ROOT / "hermes_cli" / "_startup_fast.py", tmp_path / package / "_startup_fast.py")
+    shutil.copy2(REPO_ROOT / "hermes_agent" / "hermes_cli" / "_startup_fast.py", tmp_path / package / "_startup_fast.py")
     owner = runpy.run_path(str(tmp_path / package / "_startup_fast.py"))["project_root_str"]
     assert owner() == os.path.realpath(tmp_path)
 
@@ -174,11 +174,11 @@ def test_literal_tilde_hermes_home_expands_before_any_reader(tmp_path):
     assert result.stdout.strip() == str(fake_home / ".x" / "config.yaml")
     assert not (cwd / "~").exists(), sorted(p.name for p in cwd.iterdir())
 
-    # Raw-reader observable: the ~30 ``os.environ["HERMES_HOME"]`` readers in hermes_cli/ never
+    # Raw-reader observable: the ~30 ``os.environ["HERMES_HOME"]`` readers in hermes_agent/hermes_cli/ never
     # call the resolver, so the entry-point hunk in main.py (not hermes_constants) must have
     # rewritten the env var by the time the module import finishes.
     probe = subprocess.run(
-        [sys.executable, "-c", "import hermes_cli.main, os; print(os.environ['HERMES_HOME'])"],
+        [sys.executable, "-c", "import hermes_agent.hermes_cli.main, os; print(os.environ['HERMES_HOME'])"],
         capture_output=True, text=True, timeout=120, cwd=cwd, env=env,
         check=False,
     )
@@ -187,7 +187,7 @@ def test_literal_tilde_hermes_home_expands_before_any_reader(tmp_path):
 
 
 def test_normalize_hermes_home_env_rewrites_tilde_and_leaves_absolute_alone(tmp_path, monkeypatch):
-    from hermes_cli import _startup_fast
+    from hermes_agent.hermes_cli import _startup_fast
 
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("USERPROFILE", str(tmp_path))
@@ -244,7 +244,7 @@ def test_fast_version_parity(tmp_path):
 
 @pytest.mark.parametrize("argv", [["update"], ["pm", "doctor"], ["gateway", "status"]])
 def test_termux_chat_shortcut_leaves_subcommands_to_dispatch(monkeypatch, argv):
-    from hermes_cli import main
+    from hermes_agent.hermes_cli import main
 
     monkeypatch.setenv("PREFIX", "/data/data/com.termux/files/usr")
     monkeypatch.delenv("HERMES_TERMUX_DISABLE_FAST_CLI", raising=False)

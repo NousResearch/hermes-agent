@@ -10,9 +10,9 @@ from typing import TYPE_CHECKING, Any, Callable, Optional
 import httpx
 
 from hermes_agent.agent.anthropic_credentials import _is_oauth_token, resolve_anthropic_token
-from hermes_cli.auth import AuthError, _read_codex_tokens, resolve_codex_runtime_credentials
-from hermes_cli.auth_codex import _codex_pool_route_base_url
-from hermes_cli.runtime_provider import resolve_runtime_provider
+from hermes_agent.hermes_cli.auth import AuthError, _read_codex_tokens, resolve_codex_runtime_credentials
+from hermes_agent.hermes_cli.auth_codex import _codex_pool_route_base_url
+from hermes_agent.hermes_cli.runtime_provider import resolve_runtime_provider
 from hermes_time import safe_strftime
 
 from hermes_agent.agent.usage_gauges import BP_FULL
@@ -116,7 +116,7 @@ def _reset_phrase(dt: Optional[datetime]) -> str:
     if not dt:
         return "resets soon"
     try:
-        from hermes_cli.model_picker_usage import format_resets_in
+        from hermes_agent.hermes_cli.model_picker_usage import format_resets_in
         return format_resets_in(int(dt.timestamp() * 1000))
     except Exception:
         logger.debug("Reset phrase formatting failed", exc_info=True)
@@ -163,7 +163,7 @@ def _render_usage_window_lines(snapshot: AccountUsageSnapshot) -> list[str]:
         else:
             used = max(0.0, min(100.0, float(window.used_percent))) / 100.0
             try:
-                from hermes_cli.model_picker_usage import format_percent_used, render_bar
+                from hermes_agent.hermes_cli.model_picker_usage import format_percent_used, render_bar
                 bar, pct = render_bar(used), format_percent_used(used)
             except Exception:
                 logger.debug("Usage bar rendering failed", exc_info=True)
@@ -265,7 +265,7 @@ def build_nous_credits_snapshot(account_info) -> Optional[AccountUsageSnapshot]:
     gauge when the portal supplies ``monthly_credits``. A usage-window account (``usage_window`` present) shows
     its allowances as percent used, the large-model line and its top-up balance instead. Fail-open → None."""
     try:
-        from hermes_cli.nous_account import nous_portal_topup_url
+        from hermes_agent.hermes_cli.nous_account import nous_portal_topup_url
         if account_info is None or not getattr(account_info, "logged_in", False):
             return None
         access = getattr(account_info, "paid_service_access_info", None)
@@ -325,7 +325,7 @@ def build_nous_credits_snapshot(account_info) -> Optional[AccountUsageSnapshot]:
 def _nous_logged_in() -> bool:
     """Cheap local auth-state check: a Nous access token is present. Fail-open False."""
     try:
-        from hermes_cli.auth import get_provider_auth_state
+        from hermes_agent.hermes_cli.auth import get_provider_auth_state
         tok = (get_provider_auth_state("nous") or {}).get("access_token")
         return isinstance(tok, str) and bool(tok.strip())
     except Exception:
@@ -342,7 +342,7 @@ def _fetch_portal_account(timeout: float):
     and never blocks the caller or process exit; its eventual exception is
     drained so GC never logs "exception was never retrieved"."""
     import contextvars
-    from hermes_cli.nous_account import get_nous_portal_account_info
+    from hermes_agent.hermes_cli.nous_account import get_nous_portal_account_info
     from hermes_agent.tools.daemon_pool import DaemonThreadPoolExecutor
 
     context = contextvars.copy_context()
@@ -509,7 +509,7 @@ def build_credits_view(*, markdown: bool = False, timeout: float = 10.0) -> Cred
         return not_logged_in
     if account is None or not getattr(account, "logged_in", False):
         return not_logged_in
-    from hermes_cli.nous_account import nous_portal_topup_url
+    from hermes_agent.hermes_cli.nous_account import nous_portal_topup_url
     balance_lines = [
         line
         for line in render_account_usage_lines(build_nous_credits_snapshot(account), markdown=markdown)
@@ -777,7 +777,7 @@ def _codex_reset_outcome(body: dict, available: int) -> CodexResetRedeemResult:
         # Quota is restored upstream — lift persisted pool cooldowns so the credential isn't frozen behind a
         # stale ``last_error_reset_at``.
         try:
-            from hermes_cli.auth import clear_codex_pool_quota_cooldowns
+            from hermes_agent.hermes_cli.auth import clear_codex_pool_quota_cooldowns
             clear_codex_pool_quota_cooldowns()
         except Exception:
             logger.debug("Failed to clear Codex pool cooldowns after reset redemption", exc_info=True)

@@ -26,7 +26,7 @@ def _caution_release(repo) -> str:
 
 @pytest.mark.parametrize("installed", ["custom"], indirect=True)
 def test_desktop_update_returns_findings_then_force_applies(installed, monkeypatch):
-    from hermes_cli import plugins_cmd as pc
+    from hermes_agent.hermes_cli import plugins_cmd as pc
     from hermes_agent.tui_gateway import server
 
     _, _home, repo, target, _state = installed
@@ -57,8 +57,8 @@ def test_dashboard_update_route_returns_the_findings_and_applies_with_force(inst
     could not show the findings or offer the override. It now answers 200 with them, nothing changed,
     and ``{"force": true}`` applies a caution verdict."""
     starlette = pytest.importorskip("starlette.testclient")
-    from hermes_cli import plugins_cmd as pc
-    from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
+    from hermes_agent.hermes_cli import plugins_cmd as pc
+    from hermes_agent.hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
 
     _, _home, repo, target, _state = installed
     old_head, new_head = _head(target), _caution_release(repo)
@@ -80,7 +80,7 @@ def test_dashboard_update_route_returns_the_findings_and_applies_with_force(inst
     (False, "y", True), (False, "n", False), (True, None, True)])
 def test_cli_update_asks_on_caution_and_force_skips_the_question(installed, monkeypatch, argv_force, answer,
                                                                   published):
-    from hermes_cli import plugins_cmd as pc
+    from hermes_agent.hermes_cli import plugins_cmd as pc
 
     _, _home, repo, target, _state = installed
     old_head = _head(target)
@@ -108,8 +108,8 @@ def test_desktop_rows_offer_a_git_update_only_while_the_check_still_matches_the_
     that revision, reinstalled from another source, or pinned with ``--ref`` (which ``update`` refuses)."""
     import json
 
-    from hermes_cli.plugins_cadence import cached_git_updates, record_check_results, snapshot_installs
-    from hermes_cli.plugins_updates import CheckResult
+    from hermes_agent.hermes_cli.plugins_cadence import cached_git_updates, record_check_results, snapshot_installs
+    from hermes_agent.hermes_cli.plugins_updates import CheckResult
 
     checked = {"source": "https://example.invalid/tern.git", "revision": "a" * 40, "pinned": False}
     sidecar = tmp_path / ".install-metadata.json"
@@ -132,7 +132,7 @@ def test_desktop_rows_offer_a_git_update_only_while_the_check_still_matches_the_
 
 def _subdir_install(tmp_path, monkeypatch):
     """A real subdirectory install (``file://repo#my-plugin``): no local ``.git``, so update re-clones."""
-    from hermes_cli import plugins_cmd as pc
+    from hermes_agent.hermes_cli import plugins_cmd as pc
 
     repo = tmp_path / "monorepo"
     plugin = repo / "my-plugin"
@@ -153,7 +153,7 @@ def test_subdirectory_update_asks_before_a_caution_scan_and_never_accepts_danger
     """The re-clone path used to accept a caution verdict without asking, because replacing the tree and
     accepting the scan were one ``force``. Now it follows the git-pull rule: caution needs ``force``,
     dangerous is refused even with it, and a refusal leaves the installed tree and record alone."""
-    from hermes_cli import plugins_cmd as pc
+    from hermes_agent.hermes_cli import plugins_cmd as pc
 
     # admission_env runs the update's dependency transaction on the local uv and interpreter; without
     # it the applied update downloaded a whole Python toolchain from GitHub on every run.

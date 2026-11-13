@@ -53,7 +53,7 @@ def _rewind_via(surface: str, db: SessionDB, sid: str, n: int):
     user_turns = sum(1 for m in warm if m.get("role") == "user")
     ordinal = user_turns - n
     if surface == "cli":
-        from hermes_cli.cli_session_mixin import CLISessionMixin
+        from hermes_agent.hermes_cli.cli_session_mixin import CLISessionMixin
         cli = CLISessionMixin.__new__(CLISessionMixin)
         cli._session_db, cli.session_id, cli.conversation_history, cli.agent = db, sid, warm, None
         cli._prefill_input_buffer = MagicMock()
@@ -101,7 +101,7 @@ def test_every_surface_persists_the_same_active_set(db, n, rich):
 def test_cli_undo_leaves_the_warm_history_shape_alone_while_the_tui_adopts_row_ids(db):
     """``_row_id`` adoption is the TUI's contract (clients address follow-ups by durable row); a CLI history
     that had no ids before /undo must not grow them."""
-    from hermes_cli.cli_session_mixin import CLISessionMixin
+    from hermes_agent.hermes_cli.cli_session_mixin import CLISessionMixin
     for sid in ("shape-cli", "shape-tui"):
         _seed(db, sid)
     warm = db.get_messages_as_conversation("shape-cli")

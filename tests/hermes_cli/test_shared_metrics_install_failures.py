@@ -8,10 +8,10 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli import observability
-from hermes_cli.observability import shared_metrics_contract as contract
-from hermes_cli.observability import shared_metrics_fields as fields
-from hermes_cli.observability import shared_metrics_update as update_metrics
+from hermes_agent.hermes_cli import observability
+from hermes_agent.hermes_cli.observability import shared_metrics_contract as contract
+from hermes_agent.hermes_cli.observability import shared_metrics_fields as fields
+from hermes_agent.hermes_cli.observability import shared_metrics_update as update_metrics
 
 _SCHEMA = Path(observability.__file__).parent / "schemas/hermes.shared_metrics.v4.schema.json"
 
@@ -46,7 +46,7 @@ def test_registry_ids_are_exactly_the_hub_router_adapters():
 def test_a_raised_install_error_is_classified_by_type_and_never_carries_its_text():
     """Invariant: no free-form string reaches failure_class; an untagged exception keeps only its type's
     class, a user path in its message never leaves."""
-    from hermes_cli.plugins_cmd import PluginOperationError
+    from hermes_agent.hermes_cli.plugins_cmd import PluginOperationError
 
     leaky = "/home/alice/secret-repo: Permission denied"
     cases = [
@@ -174,8 +174,8 @@ def test_failure_classifiers_never_raise_on_an_exception_whose_attribute_hooks_r
     """Invariant: classification is inert. The raise-site classifiers run outside the metrics guard
     (collection on or off), so a raising hook must not replace the user's error, and the metric row
     still records (as ``exception``) instead of being dropped."""
-    from hermes_cli.mcp_config import probe_failure_class
-    from hermes_cli.plugins_cmd_install import _publish_failure_class
+    from hermes_agent.hermes_cli.mcp_config import probe_failure_class
+    from hermes_agent.hermes_cli.plugins_cmd_install import _publish_failure_class
 
     assert _publish_failure_class(_HostileError("x")) == "deps_failed"
     assert probe_failure_class(_HostileError("x")) == "connect_failed"
@@ -203,7 +203,7 @@ def test_a_declined_dependency_consent_carries_its_class_not_its_copy(monkeypatc
     turn a decline into ``manifest_invalid``; the user still reads the same text."""
     from types import SimpleNamespace
 
-    from hermes_cli import plugins_cmd_install
+    from hermes_agent.hermes_cli import plugins_cmd_install
 
     console = SimpleNamespace(print=lambda *a, **k: None)
     monkeypatch.setattr("sys.stdin.isatty", lambda: False)
@@ -222,7 +222,7 @@ def test_a_declined_dependency_consent_carries_its_class_not_its_copy(monkeypatc
     ("https://h/a/SKILL.md", "url"), ("acme-corp/skills/x", "unresolved"),
 ])
 def test_an_unserved_identifier_names_the_registry_its_adapter_accepts(identifier, registry):
-    from hermes_cli.skills_hub import _registry_from_identifier
+    from hermes_agent.hermes_cli.skills_hub import _registry_from_identifier
 
     assert _registry_from_identifier(identifier) == registry
 

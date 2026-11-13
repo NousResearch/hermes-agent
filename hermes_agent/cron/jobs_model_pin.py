@@ -17,8 +17,8 @@ def _main_model_pin() -> tuple[Optional[str], Optional[str]]:
     answering "nothing configured" would silently drop the lock the caller asked for, so the
     create/update is refused like any other invalid input, and the caller's process lives on."""
     from hermes_agent.cron.jobs import _normalize_job_optional_text  # late: the facade imports this module
-    from hermes_cli.config_backend import ConfigBackendUnavailable, config_exists
-    from hermes_cli.config_effective import load_user_config_effective
+    from hermes_agent.hermes_cli.config_backend import ConfigBackendUnavailable, config_exists
+    from hermes_agent.hermes_cli.config_effective import load_user_config_effective
     cfg_path = get_hermes_home() / "config.yaml"
     try:
         cfg = load_user_config_effective(cfg_path) if config_exists(cfg_path) else {}
@@ -31,6 +31,6 @@ def _main_model_pin() -> tuple[Optional[str], Optional[str]]:
         return None, None
     provider = None
     with contextlib.suppress(Exception):
-        from hermes_cli.runtime_provider import resolve_runtime_provider
+        from hermes_agent.hermes_cli.runtime_provider import resolve_runtime_provider
         provider = _normalize_job_optional_text(resolve_runtime_provider(requested=None).get("provider"))
     return (provider.lower() if provider else None), model

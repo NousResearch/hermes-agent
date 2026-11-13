@@ -52,10 +52,10 @@ This page is the top-level map of Hermes Agent internals. Use it to orient yours
 
 ```text
 hermes-agent/
-├── cli.py                    # HermesCLI facade — mixins in hermes_cli/cli_*_mixin.py
 ├── hermes_constants.py       # HERMES_HOME, profile-aware paths
 ├── hermes_agent/             # the Python package
 │   ├── run_agent.py              # AIAgent facade — loop lives in agent/conversation_loop.py + agent/turn_*.py
+│   ├── cli.py                    # HermesCLI facade — mixins in hermes_cli/cli_*_mixin.py
 │   ├── model_tools.py            # Tool discovery, schema collection, dispatch
 │   ├── toolsets.py               # Tool groupings and platform presets
 │   ├── hermes_state.py           # SQLite session/state database facade (+ hermes_state_*.py siblings)
@@ -75,6 +75,23 @@ hermes-agent/
 │   │   ├── memory_manager.py    # Memory manager orchestration
 │   │   ├── memory_provider.py   # Memory provider ABC
 │   │   └── trajectory.py         # Trajectory saving helpers
+│   │
+│   ├── hermes_cli/               # CLI subcommands and setup
+│   │   ├── main.py               # Entry point — `hermes` subcommands (parsers in subcommands/, main_*.py)
+│   │   ├── config.py             # DEFAULT_CONFIG, OPTIONAL_ENV_VARS, migration
+│   │   ├── commands.py           # COMMAND_REGISTRY — central slash command definitions
+│   │   ├── auth.py               # PROVIDER_REGISTRY, credential resolution (+ auth_*.py siblings)
+│   │   ├── runtime_provider.py   # Provider → api_mode + credentials
+│   │   ├── models.py             # Model catalog, provider model lists
+│   │   ├── model_switch.py       # /model command logic (CLI + gateway shared)
+│   │   ├── setup.py              # Interactive setup wizard (+ setup_*.py siblings)
+│   │   ├── skin_engine.py        # CLI theming engine
+│   │   ├── skills_config.py      # hermes skills — enable/disable per platform
+│   │   ├── skills_hub.py         # /skills slash command
+│   │   ├── tools_config.py       # hermes tools — enable/disable per platform
+│   │   ├── plugins.py            # PluginManager — discovery, loading, hooks
+│   │   ├── callbacks.py          # Terminal callbacks (clarify, sudo, approval)
+│   │   └── gateway.py            # hermes gateway start/stop
 │   │
 │   ├── tools/                    # Tool implementations (one file per tool)
 │   │   ├── registry.py           # Central tool registry
@@ -107,23 +124,6 @@ hermes-agent/
 │   │
 │   ├── acp_adapter/              # ACP server (VS Code / Zed / JetBrains)
 │   └── cron/                     # Scheduler (jobs.py, scheduler.py)
-│
-├── hermes_cli/               # CLI subcommands and setup
-│   ├── main.py               # Entry point — `hermes` subcommands (parsers in subcommands/, main_*.py)
-│   ├── config.py             # DEFAULT_CONFIG, OPTIONAL_ENV_VARS, migration
-│   ├── commands.py           # COMMAND_REGISTRY — central slash command definitions
-│   ├── auth.py               # PROVIDER_REGISTRY, credential resolution (+ auth_*.py siblings)
-│   ├── runtime_provider.py   # Provider → api_mode + credentials
-│   ├── models.py             # Model catalog, provider model lists
-│   ├── model_switch.py       # /model command logic (CLI + gateway shared)
-│   ├── setup.py              # Interactive setup wizard (+ setup_*.py siblings)
-│   ├── skin_engine.py        # CLI theming engine
-│   ├── skills_config.py      # hermes skills — enable/disable per platform
-│   ├── skills_hub.py         # /skills slash command
-│   ├── tools_config.py       # hermes tools — enable/disable per platform
-│   ├── plugins.py            # PluginManager — discovery, loading, hooks
-│   ├── callbacks.py          # Terminal callbacks (clarify, sudo, approval)
-│   └── gateway.py            # hermes gateway start/stop
 │
 ├── plugins/platforms/        # Bundled platform plugins: telegram, discord, slack,
 │                             #   whatsapp, matrix, mattermost, email, sms, dingtalk,

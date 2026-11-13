@@ -20,7 +20,7 @@ _VALID_BODY_BOT_TOKEN = "987654321:ZYXWVUTSRQPONMLKJIHGFEDCBA_4321"
 def isolated_profiles(tmp_path, monkeypatch, _isolate_hermes_home):
     """Isolated default home + one named profile, each with its own .env."""
     from hermes_constants import get_hermes_home
-    from hermes_cli import profiles
+    from hermes_agent.hermes_cli import profiles
 
     default_home = get_hermes_home()
     profiles_root = default_home / "profiles"
@@ -48,7 +48,7 @@ def client(monkeypatch, isolated_profiles):
 
     from hermes_agent import hermes_state
     from hermes_constants import get_hermes_home
-    from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
+    from hermes_agent.hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
 
     monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", get_hermes_home() / "state.db")
     # The dashboard process's os.environ may carry root-install credentials;
@@ -225,7 +225,7 @@ class TestProfileScopedMessagingReads:
     def test_scoped_read_returns_profile_path_command_and_startup_failure(
         self, client, isolated_profiles, monkeypatch
     ):
-        from hermes_cli import web_server
+        from hermes_agent.hermes_cli import web_server
 
         worker_home = isolated_profiles["worker_alpha"]
         (worker_home / ".env").write_text(
@@ -402,7 +402,7 @@ class TestMultiplexPortBindingGuard:
             assert resp.status_code == 200
 
 def test_named_current_home_matches_unscoped(client, isolated_profiles, monkeypatch):
-    from hermes_cli.web_server_profiles import _config_profile_scope, _hermes_home_scope
+    from hermes_agent.hermes_cli.web_server_profiles import _config_profile_scope, _hermes_home_scope
     from hermes_constants import get_hermes_home
 
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "root-token")
@@ -426,7 +426,7 @@ def test_scoped_enablement_uses_only_own_credentials(client, isolated_profiles, 
     assert _telegram(payload)["enabled"] is True
     assert _telegram(payload)["configured"] is True
     assert _telegram(payload)["state"] != "disabled"
-    from hermes_cli.web_server_messaging import _messaging_platform_catalog
+    from hermes_agent.hermes_cli.web_server_messaging import _messaging_platform_catalog
     empty = {entry["id"] for entry in _messaging_platform_catalog() if not entry["required_env"]}
     for platform in payload["platforms"]:
         if platform["id"] in empty:
@@ -445,8 +445,8 @@ def test_credential_write_hot_serves_a_multiplexed_profile(client, isolated_prof
     """A token saved for a profile the live multiplexer serves is handed to the multiplexer right
     away (``hot_served``), so the UI skips its restart banner. Both Desktop topologies: the dashboard's
     ``?profile=`` and a pooled ``hermes --profile X serve`` that receives the PUT unscoped (#109088)."""
-    import hermes_cli.gateway as gateway_cli
-    import hermes_cli.gateway_multiplex_served as served_mod
+    import hermes_agent.hermes_cli.gateway as gateway_cli
+    import hermes_agent.hermes_cli.gateway_multiplex_served as served_mod
     notified = []
     monkeypatch.setattr(gateway_cli, "named_profile_served_by_running_multiplexer", lambda name=None: name == "worker_alpha")
     monkeypatch.setattr(served_mod, "notify_multiplexer_profiles_changed", lambda name, **kw: notified.append(name) or ["default", name])
@@ -465,7 +465,7 @@ def test_credential_write_hot_serves_a_multiplexed_profile(client, isolated_prof
 def test_credential_write_on_default_profile_is_not_hot_served(client, isolated_profiles, monkeypatch):
     """The default profile is the multiplexer itself (its own adapters are restart-managed): never
     claim a hot serve for it."""
-    import hermes_cli.gateway_multiplex_served as served_mod
+    import hermes_agent.hermes_cli.gateway_multiplex_served as served_mod
     monkeypatch.setattr(served_mod, "notify_multiplexer_profiles_changed",
                         lambda name, **kw: pytest.fail("default profile must not ping the multiplexer"))
     resp = client.put("/api/messaging/platforms/telegram",

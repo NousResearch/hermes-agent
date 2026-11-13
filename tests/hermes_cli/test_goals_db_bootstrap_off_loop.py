@@ -25,7 +25,7 @@ import time
 
 import pytest
 
-from hermes_cli import goals
+from hermes_agent.hermes_cli import goals
 
 
 class _RecordingDB:

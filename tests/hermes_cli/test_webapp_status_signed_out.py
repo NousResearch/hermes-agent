@@ -10,11 +10,11 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
-import hermes_cli.web_server_gateway as _web_server_gateway
+import hermes_agent.hermes_cli.web_server_gateway as _web_server_gateway
 import plugins.dashboard_auth.basic as basic_plugin
-from hermes_cli import web_server
-from hermes_cli.dashboard_auth import clear_providers, register_provider
-from hermes_cli.dashboard_auth.routes import _reset_password_rate_limit
+from hermes_agent.hermes_cli import web_server
+from hermes_agent.hermes_cli.dashboard_auth import clear_providers, register_provider
+from hermes_agent.hermes_cli.dashboard_auth.routes import _reset_password_rate_limit
 
 LAN = "http://192.168.50.220:9130"
 IDENTITY = ("profiles", "parked_profiles", "gateway_shared_with", "install_id", "memory", "disk",

@@ -11,7 +11,7 @@ from hermes_agent.gateway.platforms.event import MessageEvent
 from hermes_agent.gateway.response_filters import INTERNAL_NOTIFICATION_DISPLAY_KIND, display_kind_for_event
 from hermes_agent.gateway.run import GatewayRunner
 from hermes_agent.gateway.session import SessionSource, build_session_key
-from hermes_cli.heartbeat import HeartbeatManager
+from hermes_agent.hermes_cli.heartbeat import HeartbeatManager
 
 
 class _HeartbeatAdapter(BasePlatformAdapter):
@@ -32,7 +32,7 @@ class _HeartbeatAdapter(BasePlatformAdapter):
 
 @pytest.fixture
 def poller(monkeypatch):
-    from hermes_cli import goals, heartbeat
+    from hermes_agent.hermes_cli import goals, heartbeat
 
     goals._DB_CACHE.clear()
     goals._get_session_db()

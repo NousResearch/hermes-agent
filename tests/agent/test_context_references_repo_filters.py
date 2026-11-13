@@ -16,7 +16,7 @@ import pytest
 
 from hermes_agent.agent import context_references
 from hermes_agent.agent.context_references import preprocess_context_references_async
-from hermes_cli._subprocess_compat import FILTER_DISCOVERY_FAILED
+from hermes_agent.hermes_cli._subprocess_compat import FILTER_DISCOVERY_FAILED
 
 pytestmark = pytest.mark.skipif(shutil.which("git") is None, reason="git required")
 

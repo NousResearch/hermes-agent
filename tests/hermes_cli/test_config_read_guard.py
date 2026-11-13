@@ -8,7 +8,7 @@ config feature has historically required an N-site sweep (incident chain:
 
 Canonical owners:
 
-  * ``hermes_cli/config.py`` — ``load_config()`` / ``load_config_readonly()``
+  * ``hermes_agent/hermes_cli/config.py`` — ``load_config()`` / ``load_config_readonly()``
     (merged + managed + env-expanded), ``read_raw_config()`` and
     ``read_user_config_raw()`` (the ONLY legal raw primitives: write-back
     round-trips + raw-file diagnostics).
@@ -48,7 +48,7 @@ ALLOWLIST = {
     # Parse-health probe: intentionally answers "does the raw file parse?".
     "gateway/readiness.py",
     # _early_interface_from_config(): the pre-argparse TUI decision runs before
-    # hermes_cli.config is importable; it reads one display key best-effort and
+    # hermes_agent.hermes_cli.config is importable; it reads one display key best-effort and
     # defaults to the classic REPL on any error.
     "hermes_cli/main.py",
 }
@@ -129,7 +129,7 @@ def test_no_raw_config_yaml_reads_outside_owner_modules():
 
 def test_read_user_config_raw_exists_and_documented():
     """The shared raw primitive must exist and carry its legality docstring."""
-    from hermes_cli.config import read_user_config_raw
+    from hermes_agent.hermes_cli.config import read_user_config_raw
 
     doc = read_user_config_raw.__doc__ or ""
     assert "ONLY legal for write-back round-trips and raw-file diagnostics" in doc

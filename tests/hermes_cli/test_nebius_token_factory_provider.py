@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from hermes_cli.auth import (
+from hermes_agent.hermes_cli.auth import (
     resolve_api_key_provider_credentials,
     resolve_provider,
 )
-from hermes_cli.model_normalize import normalize_model_for_provider
-from hermes_cli.models import (
+from hermes_agent.hermes_cli.model_normalize import normalize_model_for_provider
+from hermes_agent.hermes_cli.models import (
     normalize_provider,
     provider_model_ids,
 )
@@ -43,7 +43,7 @@ def test_nebius_model_catalog_prefers_live_profile_fetch(monkeypatch):
     profile = get_provider_profile("nebius-token-factory")
     assert profile is not None
     monkeypatch.setattr(
-        "hermes_cli.auth.resolve_api_key_provider_credentials",
+        "hermes_agent.hermes_cli.auth.resolve_api_key_provider_credentials",
         lambda provider_id: {
             "provider": provider_id,
             "api_key": "nebius-live-key",
@@ -76,7 +76,7 @@ def test_nebius_model_catalog_falls_back_to_profile_models(monkeypatch):
     profile = get_provider_profile("nebius-token-factory")
     assert profile is not None
     monkeypatch.setattr(
-        "hermes_cli.auth.resolve_api_key_provider_credentials",
+        "hermes_agent.hermes_cli.auth.resolve_api_key_provider_credentials",
         lambda provider_id: {
             "provider": provider_id,
             "api_key": "nebius-live-key",

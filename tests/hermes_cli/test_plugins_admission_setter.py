@@ -13,7 +13,7 @@ from tests.hermes_cli.plugin_worker_support import (
 
 @pytest.mark.parametrize("failure", ["config", "facts"])
 def test_failed_publication_preserves_selection_and_imports(plugin_world, monkeypatch, failure):
-    from hermes_cli.plugins_admission import AdmissionRefused
+    from hermes_agent.hermes_cli.plugins_admission import AdmissionRefused
     from pm import client, paths, receipt
 
     world = plugin_world
@@ -61,13 +61,13 @@ def test_failed_publication_preserves_selection_and_imports(plugin_world, monkey
 
 
 def test_historical_writer_hands_off_without_mutating_config(plugin_world, monkeypatch):
-    from hermes_cli.plugins_cmd import _save_enabled_set
+    from hermes_agent.hermes_cli.plugins_cmd import _save_enabled_set
 
     config = plugin_world.home / "config.yaml"
     before = config.read_bytes()
     def takeover():
         raise SystemExit(73)
-    monkeypatch.setattr("hermes_cli._old_updater.stop_for_relaunch", takeover)
+    monkeypatch.setattr("hermes_agent.hermes_cli._old_updater.stop_for_relaunch", takeover)
     with pytest.raises(SystemExit) as exc:
         _save_enabled_set({"must-not-be-saved"})
     assert exc.value.code == 73
@@ -76,8 +76,8 @@ def test_historical_writer_hands_off_without_mutating_config(plugin_world, monke
 
 @pytest.mark.parametrize("surface", ["dashboard", "composite"])
 def test_ui_conflict_is_reported_without_changing_selection(plugin_world, surface):
-    from hermes_cli import plugins_cmd
-    from hermes_cli.plugins_admission import AdmissionRefused
+    from hermes_agent.hermes_cli import plugins_cmd
+    from hermes_agent.hermes_cli.plugins_admission import AdmissionRefused
     from pm import paths
 
     world = plugin_world
@@ -99,7 +99,7 @@ def test_ui_conflict_is_reported_without_changing_selection(plugin_world, surfac
     world.imports()
 
 def test_core_conflict_names_the_plugin_and_keeps_selection(plugin_world, capsys):
-    from hermes_cli.plugins_admission import AdmissionRefused
+    from hermes_agent.hermes_cli.plugins_admission import AdmissionRefused
     from pm import paths
 
     world = plugin_world

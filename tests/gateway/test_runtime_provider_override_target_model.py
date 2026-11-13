@@ -30,8 +30,8 @@ def test_fallback_chain_runtime_uses_the_entry_model(_zen_free_default_home, mon
     """The gateway's AuthError fallback goes through the shared ``resolve_runtime_with_fallback``
     walker (no gateway-private loop) and keeps the entry's own model."""
     import hermes_agent.gateway.run as gateway_run
-    import hermes_cli.runtime_provider as rp
-    from hermes_cli.auth import AuthError
+    import hermes_agent.hermes_cli.runtime_provider as rp
+    from hermes_agent.hermes_cli.auth import AuthError
 
     real_resolve = rp.resolve_runtime_provider
 

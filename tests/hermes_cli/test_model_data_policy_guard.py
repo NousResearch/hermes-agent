@@ -1,6 +1,6 @@
 """Tests for the data-training-tier selection guard."""
 
-from hermes_cli.model_data_policy_guard import (
+from hermes_agent.hermes_cli.model_data_policy_guard import (
     DataTrainingWarning,
     data_training_warning,
 )

@@ -11,7 +11,7 @@ import threading
 
 import pytest
 
-from hermes_cli.web_host_terminal_sessions import HostTerminalRegistry
+from hermes_agent.hermes_cli.web_host_terminal_sessions import HostTerminalRegistry
 from tests.waiting import async_wait_until
 
 

@@ -83,7 +83,7 @@ def _locales_dir() -> Path:
             "HERMES_BUNDLED_LOCALES points to a non-directory path (%s); "
             "falling back to bundled/source locale resolution", override,
         )
-    from hermes_cli._startup_fast import project_root_str
+    from hermes_agent.hermes_cli._startup_fast import project_root_str
     return Path(project_root_str()) / "locales"
 
 
@@ -205,7 +205,7 @@ def _config_language_cached(hermes_home: str) -> str | None:
     Keyed by home so a multiplexed gateway serving several profiles doesn't freeze the first
     profile's language for every other profile."""
     try:
-        from hermes_cli.config import load_config_readonly
+        from hermes_agent.hermes_cli.config import load_config_readonly
         lang = (load_config_readonly().get("display") or {}).get("language")
         return _normalize_lang(lang, hermes_home) if lang else None
     except Exception as exc:

@@ -32,8 +32,8 @@ os.environ['NO_PROXY'] = '*'
 os.environ['TZ'] = 'UTC'
 # Fail closed: these probes must never invoke a provider or external network.
 socket.socket.connect = lambda *a, **k: (_ for _ in ()).throw(RuntimeError('network prohibited in review probe'))
-from cli import HermesCLI
-from hermes_cli import cli_commands_mixin, goals
+from hermes_agent.cli import HermesCLI
+from hermes_agent.hermes_cli import cli_commands_mixin, goals
 from hermes_agent.gateway.slash_commands_goals import GatewayGoalCommandsMixin
 from hermes_agent.gateway.config import Platform
 from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
@@ -86,7 +86,7 @@ output['selection_ui'] = cli_case(options, 'ship the UI', tag+'-ui')
 output['different_selected_goals_same_model_prompt'] = output['selection_api']['prompt'] == output['selection_ui']['prompt']
 # /goal draft invokes its only paid dependency as an explicit unavailable stub.
 c = make_cli(history, tag+'-draft')
-with patch('hermes_cli.goals.draft_contract', return_value=None), contextlib.redirect_stdout(io.StringIO()):
+with patch('hermes_agent.hermes_cli.goals.draft_contract', return_value=None), contextlib.redirect_stdout(io.StringIO()):
     assert c.process_command('/goal draft ' + original)
 output['draft_fallback_prompt'] = c._pending_input.get_nowait()
 

@@ -1,6 +1,6 @@
 """The Webapp renderer (``dist-webapp``): verified reuse, one build at a time, rebuilt only when stale.
 
-``hermes_cli/webapp.py`` is what a Webapp launcher calls before handing the browser a link; these
+``hermes_agent/hermes_cli/webapp.py`` is what a Webapp launcher calls before handing the browser a link; these
 cases come from #93508's ``test_webapp_command.py`` (its renderer-build half).
 """
 from __future__ import annotations
@@ -10,7 +10,7 @@ import subprocess
 
 import pytest
 
-from hermes_cli import webapp
+from hermes_agent.hermes_cli import webapp
 
 
 def _workspace_tree(root: Path) -> None:
@@ -63,7 +63,7 @@ def test_skip_build_writes_nothing_into_the_install_tree(tmp_path: Path):
 def test_a_current_bundle_is_reused_without_writing_the_install_tree(tmp_path: Path, monkeypatch):
     """The Docker image bakes a current bundle under a root-owned install, so reusing it must not
     open the build lock there."""
-    from hermes_cli import source_build
+    from hermes_agent.hermes_cli import source_build
 
     _workspace_tree(tmp_path)
     dist = webapp.webapp_dist_dir(tmp_path)
@@ -79,7 +79,7 @@ def test_a_current_bundle_is_reused_without_writing_the_install_tree(tmp_path: P
 def test_a_packaged_bundle_is_served_as_shipped(tmp_path: Path, monkeypatch):
     """The Nix package points HERMES_WEBAPP_DIST at a bundle in the read-only store: it is used
     without a freshness check or the build lock, never rebuilt and never marked stale."""
-    from hermes_cli import source_build
+    from hermes_agent.hermes_cli import source_build
 
     _workspace_tree(tmp_path)
     packaged = tmp_path / "store" / "webapp"
@@ -106,7 +106,7 @@ def test_a_desktop_bundle_serves_the_renderer_it_ships(tmp_path: Path, monkeypat
     """A desktop bundle's agent payload carries the renderer its build planted, and none of the
     sources or scripts to rebuild it, inside an app that is read-only (WindowsApps) or signed (macOS).
     The renderer is served as shipped: no build lock, no build, never rebuilt."""
-    from hermes_cli import source_build
+    from hermes_agent.hermes_cli import source_build
 
     payload = tmp_path / "agent-payload" / "hermes-agent"
     payload.mkdir(parents=True)
@@ -161,7 +161,7 @@ def test_webapp_build_lock_excludes_a_second_open_on_windows(tmp_path: Path):
 
 
 def test_launch_rebuilds_only_stale_or_forced_renderers(tmp_path: Path, monkeypatch):
-    from hermes_cli import source_build
+    from hermes_agent.hermes_cli import source_build
 
     _workspace_tree(tmp_path)
     receipt_current = True
@@ -185,7 +185,7 @@ def test_launch_rebuilds_only_stale_or_forced_renderers(tmp_path: Path, monkeypa
     RuntimeError("npm is unavailable and lazy installs are disabled"),
 ])
 def test_renderer_build_failures_are_reported_not_raised_raw(tmp_path: Path, monkeypatch, failure):
-    from hermes_cli import source_build
+    from hermes_agent.hermes_cli import source_build
 
     _workspace_tree(tmp_path)
 
@@ -206,7 +206,7 @@ def test_a_build_or_a_current_bundle_clears_the_out_of_date_mark(tmp_path: Path,
     webapp``, Web Access Start or the next update), or that finds the bundle current, clears it.
     Reusing the bundle with ``--skip-build`` writes nothing and leaves it marked."""
     from hermes_agent.gateway.webapp_listener import bundle_missing_reason
-    from hermes_cli import source_build
+    from hermes_agent.hermes_cli import source_build
 
     _workspace_tree(tmp_path)
     dist = webapp.webapp_dist_dir(tmp_path)
@@ -244,7 +244,7 @@ def test_no_bundle_is_marked_out_of_date_before_one_is_built(tmp_path: Path):
 def test_dashboard_and_webapp_builds_share_the_workspace_lock(tmp_path: Path, monkeypatch):
     """While the Dashboard builder holds its lock, the Webapp build lock on the same checkout is taken."""
     from pm.filesystem import lock_fd
-    from hermes_cli import main_web_build
+    from hermes_agent.hermes_cli import main_web_build
 
     _workspace_tree(tmp_path)
     webapp_lock_free = []

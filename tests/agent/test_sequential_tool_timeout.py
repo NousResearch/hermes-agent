@@ -167,7 +167,7 @@ def test_sequential_tool_timeout_emits_result_and_continues(tmp_path, monkeypatc
 
 
 def test_sequential_tool_timeout_suppresses_late_terminal_event(tmp_path, monkeypatch):
-    from hermes_cli import lifecycle
+    from hermes_agent.hermes_cli import lifecycle
     from hermes_agent import model_tools
 
     agent = _make_agent(tmp_path)

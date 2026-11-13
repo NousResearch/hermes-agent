@@ -116,8 +116,8 @@ class CredentialPoolAdminMixin:
             _borrowed_single_use_pool_root, _next_priority, _profile_owns_pool_provider,
             write_credential_pool,
         )
-        from hermes_cli import auth as auth_mod
-        from hermes_cli.auth_oauth_grants import SINGLE_USE_REFRESH_POOL_PROVIDERS
+        from hermes_agent.hermes_cli import auth as auth_mod
+        from hermes_agent.hermes_cli.auth_oauth_grants import SINGLE_USE_REFRESH_POOL_PROVIDERS
 
         with self._lock:
             entry = replace(entry, priority=_next_priority(self._entries))

@@ -34,7 +34,7 @@ def home(tmp_path, monkeypatch):
 
 
 def _gateway(monkeypatch, state: str) -> None:
-    from hermes_cli import gateway_runtime
+    from hermes_agent.hermes_cli import gateway_runtime
 
     def discover(home, *, timeout=2.0):
         return gateway_runtime.GatewayDiscovery(state, endpoint=ENDPOINT if state == "ready" else None)
@@ -122,7 +122,7 @@ def test_a_download_larger_than_the_default_frame_crosses_the_owner_socket(tmp_p
 
     from websockets.asyncio.server import serve
 
-    from hermes_cli import gateway_client
+    from hermes_agent.hermes_cli import gateway_client
 
     data = base64.b64encode(bytes(range(256)) * (3 * 2 ** 20 // 256)).decode()
     ready, stop = threading.Event(), None

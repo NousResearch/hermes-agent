@@ -3,7 +3,7 @@
   PYTHONPATH=<tree> python launch.py <route:nous|openai-codex|openrouter> <model> <arm> <out.jsonl> <tree>
 """
 import os, subprocess, sys
-from hermes_cli.runtime_provider import resolve_runtime_provider
+from hermes_agent.hermes_cli.runtime_provider import resolve_runtime_provider
 route, model, arm, out, tree = sys.argv[1:6]
 rt = resolve_runtime_provider(requested=route)
 env = dict(os.environ, SC_TREE=tree, SC_URL=rt["base_url"], SC_KEY=rt["api_key"], SC_PROVIDER=route,

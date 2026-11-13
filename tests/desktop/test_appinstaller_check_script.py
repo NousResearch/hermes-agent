@@ -25,7 +25,7 @@ import pytest
 
 HERMES_PYTHON = sys.executable
 REPO = Path(__file__).resolve().parents[2]
-MODULE = "hermes_cli.windows_appinstaller_update"
+MODULE = "hermes_agent.hermes_cli.windows_appinstaller_update"
 
 @pytest.mark.parametrize("state,code,available", [
     ("not-packaged", 0, False), ("AVAILABLE", 2, True), ("REQUIRED", 2, True),

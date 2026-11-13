@@ -3,7 +3,7 @@
 Main's HermesCLI held a ``GoalManager`` / ``LoopManager`` / ``HeartbeatManager`` in its own process:
 they wrote ``state_meta`` through a read-write SessionDB and called the goal judge (an auxiliary
 model). Over the session authority the gateway is the single writer and runs every model call, so
-the viewer's managers are thin proxies (``hermes_cli/gateway_automation.py``) and each mutation or
+the viewer's managers are thin proxies (``hermes_agent/hermes_cli/gateway_automation.py``) and each mutation or
 judgement is one call of this verb, executed against the session's physical row under the owning
 profile's runtime scope and the session's own workspace (quality gates run in its cwd).
 
@@ -48,18 +48,18 @@ def _max_turns(runner):
     configured = getattr(runner, "_goal_max_turns_from_config", None)
     if configured is not None:
         return configured()
-    from hermes_cli.goals import DEFAULT_MAX_TURNS
+    from hermes_agent.hermes_cli.goals import DEFAULT_MAX_TURNS
     return DEFAULT_MAX_TURNS
 
 
 def _manager(runner, kind, target):
     if kind == "goal":
-        from hermes_cli.goals import GoalManager
+        from hermes_agent.hermes_cli.goals import GoalManager
         return GoalManager(session_id=target, default_max_turns=_max_turns(runner))
     if kind == "loop":
-        from hermes_cli.loops import LoopManager
+        from hermes_agent.hermes_cli.loops import LoopManager
         return LoopManager(session_id=target)
-    from hermes_cli.heartbeat import HeartbeatManager
+    from hermes_agent.hermes_cli.heartbeat import HeartbeatManager
     return HeartbeatManager(session_id=target)
 
 
@@ -85,12 +85,12 @@ def _special(mgr, kind, target, call, args, kwargs):
     if kind == "goal" and call == "command":
         # The whole /goal command (main's ``dispatch_goal_command``): ``/goal draft`` drafts its
         # contract with the auxiliary model, which runs here, never in the viewer.
-        from hermes_cli.goal_command import dispatch_goal_command
+        from hermes_agent.hermes_cli.goal_command import dispatch_goal_command
         arg, last_user = (list(args) + ["", None])[:2]
         return dispatch_goal_command(mgr, str(arg or ""), authorize_gate=lambda: None, last_user_message=last_user)
     if kind == "goal" and call == "evaluate_after_turn":
         # Background processes and delegations live in this process now (the turn ran here).
-        from hermes_cli.goals import count_active_delegations, gather_background_processes
+        from hermes_agent.hermes_cli.goals import count_active_delegations, gather_background_processes
         try:
             processes = gather_background_processes(owner_task_id=target)
             delegations = count_active_delegations(target)
@@ -99,11 +99,11 @@ def _special(mgr, kind, target, call, args, kwargs):
         return mgr.evaluate_after_turn(str((args or [""])[0] or ""), user_initiated=True,
                                        background_processes=processes, active_delegations=delegations)
     if kind == "goal" and call == "set" and isinstance(kwargs.get("contract"), dict):
-        from hermes_cli.goals import GoalContract
+        from hermes_agent.hermes_cli.goals import GoalContract
         kwargs = {**kwargs, "contract": GoalContract.from_dict(kwargs["contract"])}
         return mgr.set(*args, **kwargs)
     if kind == "loop" and call == "goal_blocks_tick":
-        from hermes_cli.loops import goal_blocks_loop_tick
+        from hermes_agent.hermes_cli.loops import goal_blocks_loop_tick
         return goal_blocks_loop_tick(target)
     if call == "state":
         return None

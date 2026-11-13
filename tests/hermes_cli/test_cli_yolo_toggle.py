@@ -31,7 +31,7 @@ import pytest
 import hermes_agent.tools.approval as approval_module
 from hermes_agent.tools.approval_yolo import transfer_session_yolo
 from hermes_agent.tools import approval_context
-from cli import HermesCLI
+from hermes_agent.cli import HermesCLI
 
 
 SESSION_KEY = "test-cli-yolo-session"
@@ -77,7 +77,7 @@ class TestToggleYoloIsSessionScoped:
 
     def test_toggle_yolo_disables_session_bypass_on_second_call(self):
         stand_in = _make_stand_in()
-        with patch("cli._cprint"):
+        with patch("hermes_agent.cli._cprint"):
             HermesCLI._toggle_yolo(stand_in)  # ON
             assert approval_module.is_session_yolo_enabled(SESSION_KEY) is True
             HermesCLI._toggle_yolo(stand_in)  # OFF
@@ -92,7 +92,7 @@ class TestToggleYoloIsSessionScoped:
         _make_stand_in(session_id="session-yolo-b")
 
         try:
-            with patch("cli._cprint"):
+            with patch("hermes_agent.cli._cprint"):
                 HermesCLI._toggle_yolo(cli_a)
 
             assert approval_module.is_session_yolo_enabled("session-yolo-a") is True
@@ -111,12 +111,12 @@ class TestIsSessionYoloActiveHelper:
 
         assert HermesCLI._is_session_yolo_active(stand_in) is False
 
-        with patch("cli._cprint"):
+        with patch("hermes_agent.cli._cprint"):
             HermesCLI._toggle_yolo(stand_in)
 
         assert HermesCLI._is_session_yolo_active(stand_in) is True
 
-        with patch("cli._cprint"):
+        with patch("hermes_agent.cli._cprint"):
             HermesCLI._toggle_yolo(stand_in)
 
         assert HermesCLI._is_session_yolo_active(stand_in) is False
@@ -139,7 +139,7 @@ class TestIsSessionYoloActiveHelper:
 
         printed = []
         with patch.object(approval_module, "_YOLO_MODE_FROZEN", True):
-            with patch("cli._cprint", side_effect=lambda msg: printed.append(msg)):
+            with patch("hermes_agent.cli._cprint", side_effect=lambda msg: printed.append(msg)):
                 HermesCLI._toggle_yolo(stand_in)
                 HermesCLI._toggle_yolo(stand_in)
 
@@ -161,7 +161,7 @@ class TestToggleYoloEndToEnd:
 
         token = approval_context.set_current_session_key(SESSION_KEY)
         try:
-            with patch("cli._cprint"):
+            with patch("hermes_agent.cli._cprint"):
                 HermesCLI._toggle_yolo(stand_in)  # YOLO ON
 
             result = approval_module.check_all_command_guards(

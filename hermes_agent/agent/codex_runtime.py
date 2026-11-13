@@ -38,7 +38,7 @@ def _stream_drain_timeout() -> float:
     ``0`` skips the drain entirely.
     """
     try:
-        from hermes_cli.config import load_config_readonly
+        from hermes_agent.hermes_cli.config import load_config_readonly
         agent_cfg = load_config_readonly().get("agent")
         value = agent_cfg.get("stream_drain_timeout") if isinstance(agent_cfg, dict) else None
         if isinstance(value, (int, float)) and not isinstance(value, bool):
@@ -544,7 +544,7 @@ def _codex_model_provider(agent) -> str | None:
     never enters the JSON-RPC payload (#75186)."""
     if str(getattr(agent, "provider", "") or "").strip().lower() != "custom":
         return None
-    from hermes_cli.runtime_provider_custom import codex_model_provider_id
+    from hermes_agent.hermes_cli.runtime_provider_custom import codex_model_provider_id
     return codex_model_provider_id(str(getattr(agent, "requested_provider", "") or ""))
 
 
@@ -556,7 +556,7 @@ def _codex_wire_model(agent, model_provider: str | None) -> str | None:
     from hermes_agent.agent.model_metadata import strip_codex_context_variant_suffix
     model = strip_codex_context_variant_suffix(getattr(agent, "model", None)) or None
     if model and model_provider is None:
-        from hermes_cli.model_normalize import normalize_model_for_provider
+        from hermes_agent.hermes_cli.model_normalize import normalize_model_for_provider
         model = normalize_model_for_provider(model, "openai-codex")
     return model
 
@@ -617,8 +617,8 @@ def _ensure_codex_session(agent, messages: list[dict[str, Any]] | None = None) -
     resume_thread_id = None if getattr(agent, "_codex_session_prompt", None) is not None else _stored_codex_thread_id(agent)
     from hermes_agent.agent.runtime_cwd import resolve_agent_cwd
     from hermes_agent.agent.transports.codex_app_server_session import CodexAppServerSession, _ServerRequestRouting
-    from hermes_cli.codex_runtime_switch import get_configured_codex_binary
-    from hermes_cli.config import load_config
+    from hermes_agent.hermes_cli.codex_runtime_switch import get_configured_codex_binary
+    from hermes_agent.hermes_cli.config import load_config
     # Approval callback: Hermes' standard prompt flow when a CLI thread installed one. `hermes chat -q`, cron and
     # unattended platforms can have one registered with nobody to answer it, so they get none and fail closed at once.
     approval_callback = None
@@ -1274,7 +1274,7 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
         return bool(agent._interrupt_requested)
 
     def _open_codex_stream(next_api_kwargs: dict[str, Any]):
-        from hermes_cli.providers import is_actual_route
+        from hermes_agent.hermes_cli.providers import is_actual_route
 
         if is_actual_route(
             getattr(agent, "provider", ""),

@@ -3,7 +3,7 @@
 ``hermes_agent/tui_gateway/server.py::_session_info`` on main put the session's tools (by toolset), skills (by
 category), MCP servers, version / release date, update notice, git branch, project and provider on
 every ``session.info`` / create / resume ``info``; the Ink banner (``components/branding.tsx``) and
-the classic CLI banner (``hermes_cli/banner.py::build_welcome_banner``) render them. A canonical
+the classic CLI banner (``hermes_agent/hermes_cli/banner.py::build_welcome_banner``) render them. A canonical
 session's agent is built on its first turn, so the inventory is computed here from the session's
 frozen policy (the toolsets that turn will run with), with main's own builders, in the owner
 process. Every builder does I/O (skills tree walk, tool ``check_fn`` probes, git), so callers run
@@ -27,7 +27,7 @@ def _start_update_prefetch():
     if _update_prefetch_started:
         return
     _update_prefetch_started = True
-    from hermes_cli.banner import prefetch_update_check
+    from hermes_agent.hermes_cli.banner import prefetch_update_check
     prefetch_update_check()
 
 
@@ -60,7 +60,7 @@ def _project(cwd):
     """``hermes_agent/tui_gateway/server.py::_project_info_for_cwd``: the named project owning *cwd*, or None."""
     if not str(cwd or "").strip():
         return None
-    from hermes_cli import projects_db as pdb
+    from hermes_agent.hermes_cli import projects_db as pdb
     try:
         with pdb.connect_closing() as conn:
             project = pdb.project_for_path(conn, cwd)
@@ -77,7 +77,7 @@ def _cli_startup_notices(enabled):
     with its own console."""
     notices: dict = {"tool_availability_warnings": []}
     with contextlib.suppress(Exception):
-        from hermes_cli.tool_availability_notices import (
+        from hermes_agent.hermes_cli.tool_availability_notices import (
             current_terminal_backend, filter_to_enabled_toolsets, tool_availability_warning_lines)
         from hermes_agent.model_tools import check_tool_availability
         from hermes_agent.tools.terminal_tool import terminal_backend_unavailable_reason
@@ -97,14 +97,14 @@ def _unknown_toolsets(enabled, config):
     if "all" in enabled or "*" in enabled:
         return []
     with contextlib.suppress(Exception):
-        from hermes_cli.toolset_validation import saved_toolset_resolver
+        from hermes_agent.hermes_cli.toolset_validation import saved_toolset_resolver
         known = saved_toolset_resolver(config)
         return [name for name in enabled if not known(name)]
     return []
 
 
 def _cli_skills():
-    """``hermes_cli.banner.get_available_skills`` as main's classic CLI computed it: ``cmd_chat`` pins
+    """``hermes_agent.hermes_cli.banner.get_available_skills`` as main's classic CLI computed it: ``cmd_chat`` pins
     ``HERMES_KANBAN_BOARD`` before HermesCLI starts, so ``environments: [kanban]`` skills are offered.
     The owner never sets that env; the kanban relevance is scoped to this scan (a ContextVar) and the
     catalog cache entry it would poison is restored, so other surfaces keep their own view."""
@@ -126,7 +126,7 @@ def _cli_skills():
 
 
 def _session_provider(view, config=None):
-    from hermes_cli.runtime_provider_custom import session_provider_identity
+    from hermes_agent.hermes_cli.runtime_provider_custom import session_provider_identity
     return session_provider_identity(getattr(view, "provider", None), getattr(view, "requested_provider", None),
                                      getattr(view, "base_url", None), getattr(view, "model", None), config=config)
 
@@ -162,7 +162,7 @@ def session_inventory(authority, policy, agent, cwd):
         info["enabled_toolsets"] = sorted(enabled)
         with contextlib.suppress(Exception):
             # The classic CLI banner colours lazy (yellow) / disabled (red) tools from this.
-            from hermes_cli.banner import compute_toolset_availability
+            from hermes_agent.hermes_cli.banner import compute_toolset_availability
             info["tool_availability"] = compute_toolset_availability(enabled)
         if policy is not None and policy.source == "cli":
             info.update(_cli_startup_notices(enabled), unknown_toolsets=_unknown_toolsets(enabled, config))
@@ -170,18 +170,18 @@ def session_inventory(authority, policy, agent, cwd):
             if policy is not None and policy.source == "cli":
                 info["skills"] = _cli_skills()
             else:
-                from hermes_cli.banner import get_available_skills
+                from hermes_agent.hermes_cli.banner import get_available_skills
                 info["skills"] = get_available_skills()
         with contextlib.suppress(Exception):
             from hermes_agent.tools.mcp_tool_discovery import get_mcp_status
             info["mcp_servers"] = get_mcp_status()
     with contextlib.suppress(Exception):
-        from hermes_cli import __release_date__
-        from hermes_cli.version_info import get_version_info
+        from hermes_agent.hermes_cli import __release_date__
+        from hermes_agent.hermes_cli.version_info import get_version_info
         info.update(version=get_version_info().base_version, release_date=__release_date__)
     with contextlib.suppress(Exception):
-        from hermes_cli.banner import get_update_result
-        from hermes_cli.config import recommended_update_command
+        from hermes_agent.hermes_cli.banner import get_update_result
+        from hermes_agent.hermes_cli.config import recommended_update_command
         _start_update_prefetch()
         # Two assignments, as on main: a failing command lookup still reports update_behind.
         info["update_behind"] = get_update_result(timeout=0.5)

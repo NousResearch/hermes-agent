@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from unittest.mock import patch
 
-from hermes_cli.main_install_repair import _is_windows_npm_path, _resolve_node_runtime_npm
+from hermes_agent.hermes_cli.main_install_repair import _is_windows_npm_path, _resolve_node_runtime_npm
 
 
 def test_windows_npm_path_refuses_windows_shims_but_not_native_data_mounts():

@@ -38,7 +38,7 @@ _repeat_lock = threading.Lock()
 def _cfg_vision(key: str, default=None):
     """``vision.<key>`` from config.yaml; ``default`` when config is unavailable."""
     try:
-        from hermes_cli.config import cfg_get, load_config
+        from hermes_agent.hermes_cli.config import cfg_get, load_config
         return cfg_get(load_config(), "vision", key, default=default)
     except Exception:
         return default

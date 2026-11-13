@@ -13,8 +13,8 @@ unexpired agent keys. Two invariants pinned here:
 
 import time
 
-import hermes_cli.auth as auth_mod
-from hermes_cli import auth_nous
+import hermes_agent.hermes_cli.auth as auth_mod
+from hermes_agent.hermes_cli import auth_nous
 from hermes_agent.agent.agent_runtime_helpers import _recover_auth_failure
 from hermes_agent.agent.credential_pool import load_pool
 

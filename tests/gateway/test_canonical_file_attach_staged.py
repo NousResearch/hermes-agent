@@ -1,7 +1,7 @@
 """A browser pick attaches through the shared owner, copied only from a profile it may reach.
 
 The Webapp's upload route stages a browser file and hands the renderer a ``staged_upload`` receipt
-(``hermes_cli/staged_uploads.py``); once the browser is an attach client of the gateway, that
+(``hermes_agent/hermes_cli/staged_uploads.py``); once the browser is an attach client of the gateway, that
 receipt reaches the owner's canonical ``file.attach``, which only knew ``path``/``data_url`` and
 answered ``invalid_params`` for every browser file drop.
 """

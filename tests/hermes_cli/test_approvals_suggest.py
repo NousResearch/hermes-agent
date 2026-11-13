@@ -1,4 +1,4 @@
-"""Tests for ``hermes approvals suggest`` (hermes_cli/approvals_suggest.py).
+"""Tests for ``hermes approvals suggest`` (hermes_agent/hermes_cli/approvals_suggest.py).
 
 Approval history in Hermes is implied, not ledgered: the session DB
 (state.db) stores every assistant ``terminal`` tool call plus its paired
@@ -18,7 +18,7 @@ from argparse import Namespace
 import pytest
 
 import hermes_agent.tools.approval as approval_module
-from hermes_cli.approvals_suggest import (
+from hermes_agent.hermes_cli.approvals_suggest import (
     Proposal,
     apply_proposals,
     build_proposals,
@@ -308,7 +308,7 @@ class TestParserWiring:
     def test_build_approvals_parser_wires_suggest(self):
         import argparse
 
-        from hermes_cli.subcommands.approvals import build_approvals_parser
+        from hermes_agent.hermes_cli.subcommands.approvals import build_approvals_parser
 
         sentinel = object()
         parser = argparse.ArgumentParser()
@@ -330,7 +330,7 @@ class TestParserWiring:
     def test_suggest_defaults_are_dry_and_bounded(self):
         import argparse
 
-        from hermes_cli.subcommands.approvals import build_approvals_parser
+        from hermes_agent.hermes_cli.subcommands.approvals import build_approvals_parser
 
         parser = argparse.ArgumentParser()
         subparsers = parser.add_subparsers(dest="command")

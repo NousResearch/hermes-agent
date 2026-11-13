@@ -16,7 +16,7 @@ from acp.schema import AllowedOutcome
 from websockets.exceptions import ConnectionClosed
 
 from hermes_agent.acp_adapter.gateway_server import GatewayACPAgent
-from hermes_cli.gateway_client import GatewayClientError, GatewayRPCError
+from hermes_agent.hermes_cli.gateway_client import GatewayClientError, GatewayRPCError
 from tests.acp_adapter.test_gateway_sessions import editor, viewer
 from tests.fakes.fake_llm_provider import FakeLLMServer, Text
 

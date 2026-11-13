@@ -66,7 +66,7 @@ def _pin_to_fallback(agent):
 
 def _restore(agent, quota_restored):
     with (
-        patch("hermes_cli.auth._probe_codex_quota_restored", return_value=quota_restored),
+        patch("hermes_agent.hermes_cli.auth._probe_codex_quota_restored", return_value=quota_restored),
         patch("hermes_agent.agent.process_bootstrap.OpenAI", return_value=MagicMock()),
     ):
         return agent._restore_primary_runtime()

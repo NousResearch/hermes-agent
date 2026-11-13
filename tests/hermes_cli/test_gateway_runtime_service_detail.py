@@ -37,8 +37,8 @@ def _installed_vbs(home, configured, *, extra_env="", extra_line=""):
 def _windows_refusal(tmp_path, monkeypatch, *, xml_rc=0, whoami=None, launcher_env="", run_level="",
                      launcher_home=None, launcher_line="", launcher_edit=None,
                      xml_error="ERROR: Access is denied.\r\n"):
-    from hermes_cli import gateway_runtime_service as service
-    from hermes_cli.gateway_windows import _build_scheduled_task_xml
+    from hermes_agent.hermes_cli import gateway_runtime_service as service
+    from hermes_agent.hermes_cli.gateway_windows import _build_scheduled_task_xml
 
     home = tmp_path / "profile"
     home.mkdir()
@@ -142,9 +142,9 @@ def test_child_output_in_a_refusal_is_redacted(tmp_path, monkeypatch):
     ("environment_unreadable", ["show-environment exited 3", "Failed to connect to bus"]),
 ])
 def test_ensure_reports_which_unit_check_failed(case, needles, tmp_path, monkeypatch):
-    from hermes_cli import gateway as gw
-    from hermes_cli import gateway_runtime as runtime
-    from hermes_cli.gateway_runtime_service import service_suffix
+    from hermes_agent.hermes_cli import gateway as gw
+    from hermes_agent.hermes_cli import gateway_runtime as runtime
+    from hermes_agent.hermes_cli.gateway_runtime_service import service_suffix
 
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     home = tmp_path / "custom root"

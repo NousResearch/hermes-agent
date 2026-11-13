@@ -15,9 +15,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from hermes_cli.gateway_client import GatewayClientError, GatewayRPCError, rpc_error
-from hermes_cli.gateway_connection import GatewayConnection
-from hermes_cli.gateway_session_store import GatewaySessionStore
+from hermes_agent.hermes_cli.gateway_client import GatewayClientError, GatewayRPCError, rpc_error
+from hermes_agent.hermes_cli.gateway_connection import GatewayConnection
+from hermes_agent.hermes_cli.gateway_session_store import GatewaySessionStore
 
 RAW = 'UNIQUE-LAUNCH-ONLY-KEY'
 LAUNCH = {'model': 'm', 'provider': None, 'api_key': RAW, 'base_url': 'http://127.0.0.1:9/v1'}
@@ -143,7 +143,7 @@ def _refuse_the_rebind(monkeypatch, code):
 
 
 def _plain_retries(caplog):
-    return [r.getMessage() for r in caplog.records if r.name == 'hermes_cli.gateway_connection']
+    return [r.getMessage() for r in caplog.records if r.name == 'hermes_agent.hermes_cli.gateway_connection']
 
 
 @pytest.mark.asyncio
@@ -156,7 +156,7 @@ async def test_a_refused_keyed_resume_retries_plain_only_when_the_key_does_not_a
     (``permission_denied``) resumes plain as main did, with a debug line naming the code, never the key. Any
     other refusal fails the resume, on ``/resume`` and on a reconnect alike (one helper): a plain retry would
     hide it, and the first turn would fail ``launch_credentials_unavailable`` with nothing in the log."""
-    caplog.set_level(logging.DEBUG, logger='hermes_cli.gateway_connection')
+    caplog.set_level(logging.DEBUG, logger='hermes_agent.hermes_cli.gateway_connection')
     owners = await _Owners().start(tmp_path, monkeypatch)
     conn = GatewayConnection(connect=owners.dial)
     store = GatewaySessionStore(conn)
@@ -187,7 +187,7 @@ async def test_a_read_only_viewer_still_gets_the_plain_attach(tmp_path, monkeypa
     """The owner checks ``session:control`` before it takes a key back: a read-only viewer's keyed resume is
     ``permission_denied``, and it still gets main's ``session:read`` attach, binding nothing."""
     from hermes_agent.hermes_state_runtime import RuntimeStoreError
-    caplog.set_level(logging.DEBUG, logger='hermes_cli.gateway_connection')
+    caplog.set_level(logging.DEBUG, logger='hermes_agent.hermes_cli.gateway_connection')
     owners = await _Owners().start(tmp_path, monkeypatch)
     await owners.boot('restarted')
     owners.identity = {'user_id': 'owner', 'capabilities': ['session:read']}
@@ -212,7 +212,7 @@ def _typed(session_id, key):
 async def test_resume_with_a_different_explicit_key_is_refused_not_dropped(tmp_path, monkeypatch):
     """Review probe (#141481, CLI-34): a typed ``--api-key`` the session was not launched with is refused with
     the thin client's words, never attached plain on the session's own key. Same owner life: K1 still held."""
-    from hermes_cli.gateway_client import RESUME_KEY_MISMATCH
+    from hermes_agent.hermes_cli.gateway_client import RESUME_KEY_MISMATCH
     owners = await _Owners().start(tmp_path, monkeypatch)
     conn = GatewayConnection(connect=owners.dial)
     try:
@@ -236,7 +236,7 @@ async def test_resume_with_a_different_explicit_key_is_refused_not_dropped(tmp_p
 async def test_a_keyed_alias_still_opens_a_keyless_session(tmp_path, monkeypatch, caplog):
     """The key came from a keyed startup alias (nothing typed): ``-c`` / ``--resume`` of a session launched
     without a key keeps the plain-resume fallback, and a reconnect resubscribes it plain too."""
-    caplog.set_level(logging.DEBUG, logger='hermes_cli.gateway_connection')
+    caplog.set_level(logging.DEBUG, logger='hermes_agent.hermes_cli.gateway_connection')
     owners = await _Owners().start(tmp_path, monkeypatch)
     conn = GatewayConnection(connect=owners.dial)
     try:
@@ -282,7 +282,7 @@ async def test_slash_resume_in_a_typed_key_cli_switches_to_a_keyless_session_on_
     session>`` in a ``--api-key`` CLI switches to it as on main, and the owner does not bind the key to it:
     the session keeps its own frozen route."""
     from unittest.mock import patch
-    from cli import HermesCLI
+    from hermes_agent.cli import HermesCLI
     from hermes_agent.hermes_state import SessionDB
     owners = await _Owners().start(tmp_path, monkeypatch)
     conn = GatewayConnection(connect=owners.dial)
@@ -295,8 +295,8 @@ async def test_slash_resume_in_a_typed_key_cli_switches_to_a_keyless_session_on_
         cli._restore_session_cwd = cli._restore_session_yolo = cli._restore_session_model = lambda *a, **k: None
         await asyncio.to_thread(store.open_session, cli, LAUNCH)  # hermes --resume <keyed> --api-key K
         printed = []
-        with patch('hermes_cli.main._resolve_session_by_name_or_id', return_value=None), \
-                patch('cli._cprint', printed.append):
+        with patch('hermes_agent.hermes_cli.main._resolve_session_by_name_or_id', return_value=None), \
+                patch('hermes_agent.cli._cprint', printed.append):
             await asyncio.to_thread(cli._handle_resume_command, f'/resume {owners.plain}')
         assert cli.session_id == owners.plain, printed
         assert store.current['stored_session_id'] == owners.plain
@@ -313,7 +313,7 @@ async def test_branch_after_new_in_a_typed_key_cli_switches_to_the_child(tmp_pat
     committed the child: the CLI stayed on the parent, and each retry made another child."""
     from datetime import datetime
     from hermes_agent.gateway import run
-    from hermes_cli.cli_init_mixin import CLIInitMixin
+    from hermes_agent.hermes_cli.cli_init_mixin import CLIInitMixin
     owners = await _Owners().start(tmp_path, monkeypatch)
     monkeypatch.setattr(run, '_load_gateway_config', lambda *a, **k: {'platform_toolsets': {'cli': []}, 'model': 'm'})
     conn = GatewayConnection(connect=owners.dial)
@@ -336,7 +336,7 @@ async def test_probe_slash_resume_keyless_session_from_api_key_cli_switches(tmp_
     """Review 2.1 probe (#141481, CLI-34): in a CLI started with ``--resume <keyed> --api-key K`` after a
     restart, ``/resume``'s id lookup (``_gateway_owned_id``) of a session launched without K answers that
     session's id and attaches it, as on main; only the startup resume is held to the typed key."""
-    from hermes_cli.cli_agent_setup_mixin import _gateway_owned_id
+    from hermes_agent.hermes_cli.cli_agent_setup_mixin import _gateway_owned_id
     owners = await _Owners().start(tmp_path, monkeypatch)
     await owners.boot('restarted')
     conn = GatewayConnection(connect=owners.dial)

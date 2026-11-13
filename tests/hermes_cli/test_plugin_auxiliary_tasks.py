@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from hermes_cli.plugins import (
+from hermes_agent.hermes_cli.plugins import (
     PluginContext,
     PluginManager,
     PluginManifest,
@@ -20,7 +20,7 @@ def patched_manager(monkeypatch):
 
     Restored automatically after the test by monkeypatch.
     """
-    from hermes_cli import plugins as plugins_mod
+    from hermes_agent.hermes_cli import plugins as plugins_mod
 
     fresh = PluginManager()
     fresh._discovered = True
@@ -38,7 +38,7 @@ def patched_manager(monkeypatch):
 
 
 def test_all_aux_tasks_includes_plugin_registered(patched_manager):
-    from hermes_cli.main_provider_setup import _AUX_TASKS, _all_aux_tasks
+    from hermes_agent.hermes_cli.main_provider_setup import _AUX_TASKS, _all_aux_tasks
 
     manifest = PluginManifest(name="hindsight")
     ctx = PluginContext(manifest, patched_manager)
@@ -69,8 +69,8 @@ def test_all_aux_tasks_includes_plugin_registered(patched_manager):
 def test_reset_aux_to_auto_resets_plugin_tasks(tmp_path, monkeypatch, patched_manager):
     """Plugin task with non-auto config gets reset alongside built-ins."""
     from pathlib import Path
-    from hermes_cli.config import load_config, save_config
-    from hermes_cli.main_provider_setup import _reset_aux_to_auto
+    from hermes_agent.hermes_cli.config import load_config, save_config
+    from hermes_agent.hermes_cli.main_provider_setup import _reset_aux_to_auto
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
@@ -119,7 +119,7 @@ def _register(patched_manager, key, **kwargs):
 
 
 def _set_aux(**blocks):
-    from hermes_cli.config import load_config, save_config
+    from hermes_agent.hermes_cli.config import load_config, save_config
 
     cfg = load_config()
     cfg.setdefault("auxiliary", {}).update(blocks)
@@ -161,7 +161,7 @@ def test_bad_inherit_from_warns_and_registers_without_inheritance(aux_home, patc
 
     from hermes_agent.agent.auxiliary_client import _get_auxiliary_task_config as resolve
 
-    with caplog.at_level(logging.WARNING, logger="hermes_cli.plugins"):
+    with caplog.at_level(logging.WARNING, logger="hermes_agent.hermes_cli.plugins"):
         _register(patched_manager, "plug_aux", inherit_from=bad)
     assert "ignoring inherit_from" in caplog.text
     assert patched_manager._aux_tasks["plug_aux"]["inherit_from"] is None

@@ -24,8 +24,8 @@ from tests.pm._range_server import dl_server, url as _srv_url
 @pytest.fixture
 def client(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
-    from hermes_cli import web_server
-    from hermes_cli.local_runtime import catalog
+    from hermes_agent.hermes_cli import web_server
+    from hermes_agent.hermes_cli.local_runtime import catalog
 
     # The first catalog request after start is due a GitHub fetch; tests serve the packaged copy.
     monkeypatch.setattr(catalog, "refresh_catalog_soon", lambda: None)
@@ -37,7 +37,7 @@ def client(tmp_path, monkeypatch):
 
 def test_local_models_routes_require_auth(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
-    from hermes_cli import web_server
+    from hermes_agent.hermes_cli import web_server
 
     unauth = TestClient(web_server.app)
     assert unauth.get("/api/local-models/status").status_code == 401
@@ -65,7 +65,7 @@ def test_status_shape_and_defaults(client):
 
 def test_status_renders_degraded_when_config_cannot_be_read(client, monkeypatch):
     """The status pane is garnish: an unreadable/uninitialized config renders defaults, never a 500."""
-    from hermes_cli import config as config_mod
+    from hermes_agent.hermes_cli import config as config_mod
 
     def _boom():
         raise FileNotFoundError("profile home is gone")
@@ -76,7 +76,7 @@ def test_status_renders_degraded_when_config_cannot_be_read(client, monkeypatch)
 
 
 def test_status_lists_staged_models_with_labels(client, tmp_path):
-    from hermes_cli.local_runtime.bootstrap import models_dir
+    from hermes_agent.hermes_cli.local_runtime.bootstrap import models_dir
 
     _write_fake_gguf(models_dir() / "Some-Model.gguf", size=2048)
     data = client.get("/api/local-models/status").json()
@@ -90,7 +90,7 @@ def test_status_lists_staged_models_with_labels(client, tmp_path):
 def test_status_sizes_a_split_model_by_all_its_parts(client):
     """A split's first file can be a metadata stub of a few MB. The row reports the model the user
     has on disk, so a side-loaded split outside the catalog is every part, not part 1."""
-    from hermes_cli.local_runtime.bootstrap import models_dir
+    from hermes_agent.hermes_cli.local_runtime.bootstrap import models_dir
 
     _write_fake_gguf(models_dir() / "Side-Split-00001-of-00002.gguf", size=1024)
     _write_fake_gguf(models_dir() / "Side-Split-00002-of-00002.gguf", size=8192)
@@ -103,12 +103,12 @@ def test_status_tracks_preset_spill_and_restored_window(client, tmp_path, monkey
     from dataclasses import replace
     from types import SimpleNamespace
 
-    from hermes_cli.local_runtime import bootstrap, presets
-    from hermes_cli.local_runtime.binaries import runtimes_root
-    from hermes_cli.local_runtime.context_policy import FLOOR, RUNTIME_OVERHEAD_BYTES, ub_logits_bytes
-    from hermes_cli.local_runtime.estimator import HardwareBudget, LayerKind, ModelProfile, ctx_bytes
-    from hermes_cli.local_runtime.growth import save_window_override
-    from hermes_cli.web_routers import local_models
+    from hermes_agent.hermes_cli.local_runtime import bootstrap, presets
+    from hermes_agent.hermes_cli.local_runtime.binaries import runtimes_root
+    from hermes_agent.hermes_cli.local_runtime.context_policy import FLOOR, RUNTIME_OVERHEAD_BYTES, ub_logits_bytes
+    from hermes_agent.hermes_cli.local_runtime.estimator import HardwareBudget, LayerKind, ModelProfile, ctx_bytes
+    from hermes_agent.hermes_cli.local_runtime.growth import save_window_override
+    from hermes_agent.hermes_cli.web_routers import local_models
 
     # Dense spill has no override-tensor flag: status must use the recorded decision.
     profile = ModelProfile("status-mtp", 16 << 30, 0, 262144,
@@ -190,9 +190,9 @@ def test_catalog_prices_every_entry_for_this_machine(client):
     ("vulkan", "qwen3.6-35b-a3b"), ("cpu", "qwen3.6-35b-a3b"),
 ])
 def test_calibrated_catalog_and_quickstart_respect_backend(client, monkeypatch, backend, expected):
-    from hermes_cli.local_runtime import binaries, bootstrap, catalog, hardware
-    from hermes_cli.local_runtime.estimator import HardwareBudget
-    from hermes_cli.web_routers import local_models
+    from hermes_agent.hermes_cli.local_runtime import binaries, bootstrap, catalog, hardware
+    from hermes_agent.hermes_cli.local_runtime.estimator import HardwareBudget
+    from hermes_agent.hermes_cli.web_routers import local_models
 
     budget = HardwareBudget(int(48 * (1 << 30) * .8), 48 << 30, 0, uma=True,
                             gpu_name="NVIDIA RTX Spark N1X (5120-core Blackwell RTX GPU)", platform="win32")
@@ -222,9 +222,9 @@ def test_quickstart_falls_back_past_entries_that_are_never_recommended(monkeypat
     Nemotron 3.5 Bolt is an option only, so the fallback refuses rather than download it."""
     from fastapi import HTTPException
 
-    from hermes_cli.local_runtime import catalog
-    from hermes_cli.local_runtime.estimator import HardwareBudget
-    from hermes_cli.web_routers import local_models
+    from hermes_agent.hermes_cli.local_runtime import catalog
+    from hermes_agent.hermes_cli.local_runtime.estimator import HardwareBudget
+    from hermes_agent.hermes_cli.web_routers import local_models
 
     budget = HardwareBudget(44 << 30, 48 << 30, 64 << 30, uma=False)
     bolt = catalog.catalog_by_id()["nemotron-3.5-bolt-74b-a9b"]
@@ -246,14 +246,14 @@ def test_quickstart_falls_back_past_entries_that_are_never_recommended(monkeypat
 def test_catalog_never_hides_unaffordable_models(client, monkeypatch):
     """Unaffordable entries stay visible with a plain reason — hiding them
     is how users conclude the feature is broken."""
-    from hermes_cli.local_runtime.estimator import HardwareBudget
+    from hermes_agent.hermes_cli.local_runtime.estimator import HardwareBudget
 
     tiny = HardwareBudget(usable_vram_bytes=1 << 30, total_device_bytes=1 << 30,
                           ram_available_bytes=1 << 30)
-    monkeypatch.setattr("hermes_cli.local_runtime.hardware.probe_budget",
+    monkeypatch.setattr("hermes_agent.hermes_cli.local_runtime.hardware.probe_budget",
                         lambda **kw: tiny)
     data = client.get("/api/local-models/catalog").json()
-    from hermes_cli.local_runtime.catalog import CATALOG
+    from hermes_agent.hermes_cli.local_runtime.catalog import CATALOG
 
     assert len(data["models"]) == len(CATALOG)
     refused = [m for m in data["models"] if not m["fits"]]
@@ -325,8 +325,8 @@ def test_download_short_of_server_length_errors_and_cleans_up(client, monkeypatc
     fewer bytes than the server promised means a dropped connection, so
     the job errors and nothing is staged."""
 
-    from hermes_cli.web_routers import local_models as lm
-    from hermes_cli.local_runtime.bootstrap import models_dir
+    from hermes_agent.hermes_cli.web_routers import local_models as lm
+    from hermes_agent.hermes_cli.local_runtime.bootstrap import models_dir
     requests = []
     class Truncated(_FakeRangeOpener):
         def open(self, req, timeout=None):
@@ -341,15 +341,15 @@ def test_download_short_of_server_length_errors_and_cleans_up(client, monkeypatc
     # Pin a generous budget: variant selection prices against the machine
     # running the test, and a GPU-less CI runner honestly refuses every
     # build (409) — this test is about the download path, not selection.
-    from hermes_cli.local_runtime.estimator import HardwareBudget
+    from hermes_agent.hermes_cli.local_runtime.estimator import HardwareBudget
 
     budget = HardwareBudget(usable_vram_bytes=64 << 30,
                             total_device_bytes=64 << 30,
                             ram_available_bytes=64 << 30)
-    monkeypatch.setattr("hermes_cli.local_runtime.hardware.probe_budget",
+    monkeypatch.setattr("hermes_agent.hermes_cli.local_runtime.hardware.probe_budget",
                         lambda **kw: budget)
 
-    from hermes_cli.local_runtime.catalog import CATALOG
+    from hermes_agent.hermes_cli.local_runtime.catalog import CATALOG
 
     entry_id = CATALOG[0].id
     r = client.post("/api/local-models/download", json={"model_id": entry_id})
@@ -373,18 +373,18 @@ def test_download_short_of_server_length_errors_and_cleans_up(client, monkeypatc
 
 
 def test_download_already_downloaded_short_circuits(client, monkeypatch):
-    from hermes_cli.local_runtime.bootstrap import models_dir
-    from hermes_cli.local_runtime.catalog import CATALOG, select_variant
-    from hermes_cli.local_runtime.estimator import HardwareBudget
+    from hermes_agent.hermes_cli.local_runtime.bootstrap import models_dir
+    from hermes_agent.hermes_cli.local_runtime.catalog import CATALOG, select_variant
+    from hermes_agent.hermes_cli.local_runtime.estimator import HardwareBudget
 
     # Pin the budget so the selected variant is deterministic in the test.
     budget = HardwareBudget(usable_vram_bytes=64 << 30, total_device_bytes=64 << 30,
                             ram_available_bytes=64 << 30)
-    monkeypatch.setattr("hermes_cli.local_runtime.hardware.probe_budget",
+    monkeypatch.setattr("hermes_agent.hermes_cli.local_runtime.hardware.probe_budget",
                         lambda **kw: budget)
     choice = select_variant(CATALOG[0], budget)
     assert choice is not None
-    from hermes_cli.web_routers.local_models import _download_plan
+    from hermes_agent.hermes_cli.web_routers.local_models import _download_plan
 
     for _, dest, _ in _download_plan(CATALOG[0], choice.variant):
         _write_fake_gguf(dest)
@@ -394,7 +394,7 @@ def test_download_already_downloaded_short_circuits(client, monkeypatch):
 
 
 def test_delete_model(client):
-    from hermes_cli.local_runtime.bootstrap import models_dir
+    from hermes_agent.hermes_cli.local_runtime.bootstrap import models_dir
 
     _write_fake_gguf(models_dir() / "Doomed.gguf")
     assert client.delete("/api/local-models/models/Doomed").status_code == 200
@@ -432,11 +432,11 @@ def test_eject_without_supervisor_is_not_a_500(client, monkeypatch):
     status route, so eject raised NameError -> 500 for every adopted-
     server session."""
     monkeypatch.setattr(
-        "hermes_cli.local_runtime.bootstrap.get_supervisor", lambda: None)
+        "hermes_agent.hermes_cli.local_runtime.bootstrap.get_supervisor", lambda: None)
     # No running server either: the route must answer 409 (no server),
     # never a NameError 500.
     monkeypatch.setattr(
-        "hermes_cli.web_routers.local_models._state_endpoint", lambda: None)
+        "hermes_agent.hermes_cli.web_routers.local_models._state_endpoint", lambda: None)
     r = client.post("/api/local-models/eject", json={"model_id": "anything"})
     assert r.status_code == 409, (r.status_code, r.text)
 
@@ -453,19 +453,19 @@ def test_download_tolerates_stale_catalog_size(client, monkeypatch):
     monkeypatch.setattr(
         "pm.downloader._OPENER", _FakeRangeOpener(body))
 
-    from hermes_cli.local_runtime.estimator import HardwareBudget
+    from hermes_agent.hermes_cli.local_runtime.estimator import HardwareBudget
 
     budget = HardwareBudget(usable_vram_bytes=64 << 30,
                             total_device_bytes=64 << 30,
                             ram_available_bytes=64 << 30)
-    monkeypatch.setattr("hermes_cli.local_runtime.hardware.probe_budget",
+    monkeypatch.setattr("hermes_agent.hermes_cli.local_runtime.hardware.probe_budget",
                         lambda **kw: budget)
     # Keep the post-download server bounce out of this unit.
     monkeypatch.setattr(
-        "hermes_cli.local_runtime.bootstrap.refresh_local_runtime",
+        "hermes_agent.hermes_cli.local_runtime.bootstrap.refresh_local_runtime",
         lambda: False)
 
-    from hermes_cli.local_runtime.catalog import CATALOG
+    from hermes_agent.hermes_cli.local_runtime.catalog import CATALOG
 
     # Catalog size for this entry is in the tens of GB — wildly stale
     # versus our 48-byte body. The download must still land.
@@ -504,19 +504,19 @@ def test_download_survives_a_held_finished_file(client, monkeypatch):
 
     monkeypatch.setattr(os, "replace", held_at_first)
 
-    from hermes_cli.local_runtime.estimator import HardwareBudget
+    from hermes_agent.hermes_cli.local_runtime.estimator import HardwareBudget
 
     budget = HardwareBudget(usable_vram_bytes=64 << 30,
                             total_device_bytes=64 << 30,
                             ram_available_bytes=64 << 30)
-    monkeypatch.setattr("hermes_cli.local_runtime.hardware.probe_budget",
+    monkeypatch.setattr("hermes_agent.hermes_cli.local_runtime.hardware.probe_budget",
                         lambda **kw: budget)
     monkeypatch.setattr(
-        "hermes_cli.local_runtime.bootstrap.refresh_local_runtime",
+        "hermes_agent.hermes_cli.local_runtime.bootstrap.refresh_local_runtime",
         lambda: False)
 
-    from hermes_cli.local_runtime.bootstrap import models_dir
-    from hermes_cli.local_runtime.catalog import CATALOG
+    from hermes_agent.hermes_cli.local_runtime.bootstrap import models_dir
+    from hermes_agent.hermes_cli.local_runtime.catalog import CATALOG
 
     r = client.post("/api/local-models/download", json={"model_id": CATALOG[0].id})
     assert r.status_code == 200
@@ -548,12 +548,12 @@ def test_download_pause_and_resume_unknown_404(client):
 def _pin_budget(monkeypatch):
     """Deterministic variant selection: a generous GPU budget so the
     download path (not selection) is what the test exercises."""
-    from hermes_cli.local_runtime.estimator import HardwareBudget
+    from hermes_agent.hermes_cli.local_runtime.estimator import HardwareBudget
 
     budget = HardwareBudget(usable_vram_bytes=64 << 30,
                             total_device_bytes=64 << 30,
                             ram_available_bytes=64 << 30)
-    monkeypatch.setattr("hermes_cli.local_runtime.hardware.probe_budget",
+    monkeypatch.setattr("hermes_agent.hermes_cli.local_runtime.hardware.probe_budget",
                         lambda **kw: budget)
 
 
@@ -563,8 +563,8 @@ def _serve_plan(monkeypatch, dl_server, tmp_partials, bodies):
     under a temp dir (never the machine's cache)."""
     from pm import paths as pm_paths
     from tests.pm._range_server import RangeHandler
-    from hermes_cli.local_runtime.bootstrap import models_dir
-    from hermes_cli.web_routers import local_models as lm
+    from hermes_agent.hermes_cli.local_runtime.bootstrap import models_dir
+    from hermes_agent.hermes_cli.web_routers import local_models as lm
 
     RangeHandler.chunk = 128 * 1024
     RangeHandler.slow_per_chunk = 0.2
@@ -577,7 +577,7 @@ def _serve_plan(monkeypatch, dl_server, tmp_partials, bodies):
     monkeypatch.setattr(pm_paths, "partials_root", lambda: Path(tmp_partials))
     monkeypatch.setattr(lm, "_download_plan", lambda entry, variant: plan)
     monkeypatch.setattr(
-        "hermes_cli.local_runtime.bootstrap.refresh_local_runtime",
+        "hermes_agent.hermes_cli.local_runtime.bootstrap.refresh_local_runtime",
         lambda: False)
     return plan
 
@@ -621,9 +621,9 @@ def test_download_resume_completes_bytes(client, monkeypatch, dl_server,
     stages the exact file the server serves."""
     _pin_budget(monkeypatch)
     from tests.pm._range_server import RangeHandler
-    from hermes_cli.local_runtime.bootstrap import models_dir
-    from hermes_cli.local_runtime.catalog import CATALOG
-    from hermes_cli.web_routers import local_models as lm
+    from hermes_agent.hermes_cli.local_runtime.bootstrap import models_dir
+    from hermes_agent.hermes_cli.local_runtime.catalog import CATALOG
+    from hermes_agent.hermes_cli.web_routers import local_models as lm
 
     _serve_plan(monkeypatch, dl_server, tmp_path / "partials",
                 {"PartA": _BIG_BODY})
@@ -657,8 +657,8 @@ def test_repeated_resume_never_spawns_concurrent_writers(
 
     _pin_budget(monkeypatch)
     from tests.pm._range_server import RangeHandler
-    from hermes_cli.local_runtime.catalog import CATALOG
-    from hermes_cli.web_routers import local_models as lm
+    from hermes_agent.hermes_cli.local_runtime.catalog import CATALOG
+    from hermes_agent.hermes_cli.web_routers import local_models as lm
 
     _serve_plan(monkeypatch, dl_server, tmp_path / "partials",
                 {"PartA": _BIG_BODY})
@@ -707,13 +707,13 @@ def test_quickstart_pause_stops_the_sequence(client, monkeypatch, dl_server,
     its resume handle stays registered."""
     _pin_budget(monkeypatch)
     from tests.pm._range_server import RangeHandler
-    from hermes_cli.web_routers import local_models as lm
+    from hermes_agent.hermes_cli.web_routers import local_models as lm
 
     _serve_plan(monkeypatch, dl_server, tmp_path / "partials",
                 {"QsPartA": _BIG_BODY, "QsPartB": _BIG_BODY})
-    from hermes_cli.local_runtime.binaries import Engine
+    from hermes_agent.hermes_cli.local_runtime.binaries import Engine
 
-    monkeypatch.setattr("hermes_cli.local_runtime.binaries.installed_engine",
+    monkeypatch.setattr("hermes_agent.hermes_cli.local_runtime.binaries.installed_engine",
                         lambda *args, **kwargs: Engine("cpu", "b99999", Path("unused")))
     monkeypatch.setattr(lm, "_runtime_target",
                         lambda requested=None: ("b1", "cpu"))
@@ -725,7 +725,7 @@ def test_quickstart_pause_stops_the_sequence(client, monkeypatch, dl_server,
         raise RuntimeError("server must not start after a pause")
 
     monkeypatch.setattr(
-        "hermes_cli.local_runtime.bootstrap.ensure_local_runtime", _fail_server)
+        "hermes_agent.hermes_cli.local_runtime.bootstrap.ensure_local_runtime", _fail_server)
 
     class _RecordLate:
         def __call__(self, *a, **kw):
@@ -733,7 +733,7 @@ def test_quickstart_pause_stops_the_sequence(client, monkeypatch, dl_server,
 
     monkeypatch.setattr(lm.web_deps, "late", _RecordLate())
 
-    from hermes_cli.local_runtime.catalog import CATALOG
+    from hermes_agent.hermes_cli.local_runtime.catalog import CATALOG
 
     job_id = client.post("/api/local-models/quickstart",
                          json={"model_id": CATALOG[0].id}).json()["job_id"]
@@ -743,7 +743,7 @@ def test_quickstart_pause_stops_the_sequence(client, monkeypatch, dl_server,
     assert status["status"] == "paused", status
     assert calls == {"server": 0, "assign": 0}
     # The second plan file must never have been touched after the pause.
-    from hermes_cli.local_runtime.bootstrap import models_dir
+    from hermes_agent.hermes_cli.local_runtime.bootstrap import models_dir
 
     assert not (models_dir() / "QsPartB.gguf").exists()
     assert lm._RUNNING[job_id].get("resume") is not None
@@ -770,8 +770,8 @@ def test_quickstart_pause_stops_the_sequence(client, monkeypatch, dl_server,
 
 
 def test_download_failure_releases_resume_handle(client, monkeypatch):
-    from hermes_cli.local_runtime.catalog import CATALOG
-    from hermes_cli.web_routers import local_models as lm
+    from hermes_agent.hermes_cli.local_runtime.catalog import CATALOG
+    from hermes_agent.hermes_cli.web_routers import local_models as lm
 
     _pin_budget(monkeypatch)
     monkeypatch.setattr(lm, "_download_plan", lambda *args: [])

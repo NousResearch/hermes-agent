@@ -61,7 +61,7 @@ REPLACE_HOST = "replace-host"
 
 def _normalize(name: str) -> str:
     try:
-        from hermes_cli.profiles import normalize_profile_name
+        from hermes_agent.hermes_cli.profiles import normalize_profile_name
 
         return normalize_profile_name(name or "default")
     except Exception:
@@ -147,7 +147,7 @@ def _served_from_identity(identity: dict) -> tuple[str, ...]:
     it serves its own profile and nothing else, which is not the same as "unknown".
 
     The unified runtime publishes each served profile as ``{"profile_id", "home"}`` (what
-    ``hermes_cli.gateway_runtime`` matches homes against); older gateways published bare names.
+    ``hermes_agent.hermes_cli.gateway_runtime`` matches homes against); older gateways published bare names.
     Both spell the same roster, so a dict entry is reduced to its profile name here."""
     served = identity.get("served_profiles")
     if isinstance(served, list) and served:
@@ -296,7 +296,7 @@ def _unknown_served_message(gateway: HostGateway, profile: str) -> str:
 
 
 def _refuse_message(gateway: HostGateway, profile: str) -> str:
-    from hermes_cli.gateway_migrate import MIGRATE_COMMAND
+    from hermes_agent.hermes_cli.gateway_migrate import MIGRATE_COMMAND
 
     return (
         f"❌ A gateway already owns this host and will not serve profile '{profile}'.\n"
@@ -322,7 +322,7 @@ def _coexisting_gateways(owner: Optional[HostGateway]):
     record, to ask every running profile gateway what it actually serves.
     """
     from hermes_agent.gateway.status import live_gateway_pid_for_home
-    from hermes_cli.profiles import profiles_to_serve
+    from hermes_agent.hermes_cli.profiles import profiles_to_serve
 
     seen = {os.getpid()}
     if owner is not None:
@@ -346,7 +346,7 @@ def standalone_attach_decision(our_home: Path, owner: Optional[HostGateway]) -> 
 
     Shared by the initial attach check and the lock-losing race check.
     """
-    from hermes_cli.profiles import profile_is_standalone
+    from hermes_agent.hermes_cli.profiles import profile_is_standalone
 
     if not profile_is_standalone(our_home):
         return None
@@ -410,7 +410,7 @@ def decide(our_home: Path, *, replace: bool = False) -> HostAttachDecision:
         # every unit but the first to claim the host lock. Start beside it. decide() runs twice per
         # start (CLI guard + start_gateway), so this is INFO; the host-lock claim in run.py logs the
         # one WARNING with the `gateway migrate --multiplex` converge hint.
-        from hermes_cli.gateway_migrate import MIGRATE_COMMAND
+        from hermes_agent.hermes_cli.gateway_migrate import MIGRATE_COMMAND
 
         logger.info(
             "Another profile's standalone gateway owns this host (%s); starting profile '%s' beside it. "

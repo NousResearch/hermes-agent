@@ -163,7 +163,7 @@ def test_plane_redirect_is_not_followed_with_the_bearer(monkeypatch, tmp_path, n
 def test_boot_fails_closed_on_forbidden_plane_url_without_retry(monkeypatch, tmp_path):
     """Through the real backend: a forbidden destination is a configuration error, so boot fails
     closed at once (no retry sleeps) and nothing is sent."""
-    from hermes_cli.config_backend import ConfigBackendUnavailable
+    from hermes_agent.hermes_cli.config_backend import ConfigBackendUnavailable
     from plugins.config_backends import remote as remote_pkg
     from plugins.config_backends.remote import backend as backend_mod
 
@@ -251,7 +251,7 @@ def test_display_url_drops_user_info(url, shown):
 
 def test_refused_url_never_echoes_user_info(monkeypatch, tmp_path):
     """The boot error, describe() and the destination errors show the URL without its user info."""
-    from hermes_cli.config_backend import ConfigBackendUnavailable
+    from hermes_agent.hermes_cli.config_backend import ConfigBackendUnavailable
     from plugins.config_backends import remote as remote_pkg
     from plugins.config_backends.remote import backend as backend_mod
 

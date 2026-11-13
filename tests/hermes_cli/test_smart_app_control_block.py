@@ -11,8 +11,8 @@ import builtins
 
 import pytest
 
-from hermes_cli import main
-from hermes_cli.main_dep_hints import smart_app_control_block_message
+from hermes_agent.hermes_cli import main
+from hermes_agent.hermes_cli.main_dep_hints import smart_app_control_block_message
 
 SAC_ERROR = ImportError(
     "DLL load failed while importing _ssl: "

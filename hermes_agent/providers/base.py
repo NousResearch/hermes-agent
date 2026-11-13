@@ -33,7 +33,7 @@ def _profile_user_agent() -> str:
     (OpenCode Zen, etc.) sit behind a WAF that returns 403 for that.
     """
     try:
-        from hermes_cli.version_info import get_version_info  # lazy: avoid layer cycle at import time
+        from hermes_agent.hermes_cli.version_info import get_version_info  # lazy: avoid layer cycle at import time
         return f"hermes-cli/{get_version_info().base_version}"
     except Exception:
         return "hermes-cli"
@@ -46,7 +46,7 @@ class LazyHeaders(dict[str, str]):
     """``default_headers`` whose callable values (a User-Agent carrying the release) run on first read.
 
     A source checkout resolves the release from git, and every CLI start imports all provider plugins
-    (``hermes_cli.config`` lists their env vars), so headers built at import made every command pay git
+    (``hermes_agent.hermes_cli.config`` lists their env vars), so headers built at import made every command pay git
     subprocesses for a request it may never send. Keys are stored up front, so ``in``/``len`` stay lazy,
     and the class stays a real ``dict``: plugins copy, merge, mutate and serialize ``default_headers``.
 
@@ -213,7 +213,7 @@ class ProviderProfile:
 
     # ── External-process providers (auth_type="external_process") ──
     # An agent CLI driven over stdio (ACP) rather than an HTTP endpoint. These
-    # describe how to launch it; hermes_cli/auth.py's
+    # describe how to launch it; hermes_agent/hermes_cli/auth.py's
     # resolve_external_process_provider_credentials() reads them instead of
     # hardcoding one vendor's binary. Env vars are checked in order and win
     # over the static defaults, so an operator can point at a custom build.
@@ -485,7 +485,7 @@ class ProviderProfile:
         """
         if not self.hidden:
             return True
-        from hermes_cli.auth import read_credential_pool  # lazy: providers/ must not import hermes_cli at load
+        from hermes_agent.hermes_cli.auth import read_credential_pool  # lazy: providers/ must not import hermes_cli at load
         return bool(read_credential_pool(self.name))
 
     def create_client(self, **client_kwargs: Any) -> Any | None:
@@ -575,7 +575,7 @@ class ProviderProfile:
         import json
         import urllib.request
 
-        from hermes_cli.urllib_security import open_credentialed_url
+        from hermes_agent.hermes_cli.urllib_security import open_credentialed_url
 
         req = urllib.request.Request(url)
         if api_key:
@@ -592,7 +592,7 @@ class ProviderProfile:
             with open_credentialed_url(req, timeout=timeout) as resp:
                 data = json.loads(resp.read().decode())
             items = data if isinstance(data, list) else data.get("data", [])
-            from hermes_cli.chat_catalog import chat_catalog_ids
+            from hermes_agent.hermes_cli.chat_catalog import chat_catalog_ids
 
             return chat_catalog_ids(items)
         except Exception as exc:
@@ -738,7 +738,7 @@ class ProviderProfile:
     # Extra names that normalize to the ``provider_overlay`` definition (its id, else ``name``); () = none.
     overlay_aliases: tuple = ()
 
-    # --- I2-auth: hermes-auth registry row mirrored from this profile (hermes_cli/auth_plugin_providers.py) ---
+    # --- I2-auth: hermes-auth registry row mirrored from this profile (hermes_agent/hermes_cli/auth_plugin_providers.py) ---
     # auth_type of the registry row when credential resolution differs from the setup flow ``auth_type`` names
     # (an env-token provider with its own login); "" = ``auth_type``.
     registry_auth_type: str = ""

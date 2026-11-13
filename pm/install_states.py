@@ -61,7 +61,7 @@ def _retention_seconds(data_root: Path) -> float | None:
     Every profile of that root shares the store, so the active profile's config must not decide
     for the others: a named profile without the key would apply the default to a state the root
     opted out of reclaiming."""
-    from hermes_cli.config import cfg_get, load_config_readonly
+    from hermes_agent.hermes_cli.config import cfg_get, load_config_readonly
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
     token = set_hermes_home_override(data_root)
@@ -117,7 +117,7 @@ def _install_lock(state: Path):
 
 def _leased(state: Path) -> bool:
     """True while a generation lease (dependency env or PM runtime) is held."""
-    from hermes_cli.runtime_state import leases_held
+    from hermes_agent.hermes_cli.runtime_state import leases_held
 
     for generations in (state / "environments", state / "pm-runtime" / "generations"):
         if generations.is_dir():

@@ -45,8 +45,8 @@ pytestmark = [
 
 UPDATE_TIMEOUT = 1500
 PROFILES = ("default", "work", "research")
-_VERSIONS_PY = ("from hermes_cli.config_defaults import DEFAULT_CONFIG as D; "
-                "from hermes_cli.config_migrations import SUPPORT_FLOOR_VERSION as F; "
+_VERSIONS_PY = ("from hermes_agent.hermes_cli.config_defaults import DEFAULT_CONFIG as D; "
+                "from hermes_agent.hermes_cli.config_migrations import SUPPORT_FLOOR_VERSION as F; "
                 "print(D['_config_version'], F)")
 
 

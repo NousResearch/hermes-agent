@@ -22,7 +22,7 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
-from hermes_cli import main as cli_main
+from hermes_agent.hermes_cli import main as cli_main
 
 BOM = b"\xef\xbb\xbf"
 

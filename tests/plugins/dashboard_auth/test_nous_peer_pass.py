@@ -15,9 +15,9 @@ from starlette.routing import Route
 from starlette.testclient import TestClient
 
 import plugins.dashboard_auth.nous as nous_plugin
-from hermes_cli import web_server
-from hermes_cli.dashboard_auth import clear_providers, register_provider
-from hermes_cli.web_routers import peer as peer_routes
+from hermes_agent.hermes_cli import web_server
+from hermes_agent.hermes_cli.dashboard_auth import clear_providers, register_provider
+from hermes_agent.hermes_cli.web_routers import peer as peer_routes
 from tests.plugins.dashboard_auth.test_nous_provider import _mint_token, _patched_jwks
 from tests.plugins.dashboard_auth.test_nous_provider import rsa_keypair as rsa_keypair  # noqa: PLC0414 -- the self-alias
 # is load-bearing: it suppresses F811 for the pytest fixture parameter shadowing this import

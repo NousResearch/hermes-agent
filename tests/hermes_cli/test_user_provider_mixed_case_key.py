@@ -61,8 +61,8 @@ def test_gateway_picker_slug_switches_to_the_configured_endpoint(key):
 @pytest.mark.parametrize("requested", ["OpenAI", "openai"])
 def test_cli_model_command_switches_to_the_configured_endpoint(requested):
     """CLI ``/model m1 --provider <key>``: the context the CLI loads, then its switch seam."""
-    from hermes_cli.cli_model_switch_mixin import _switch_model_from
-    from hermes_cli.inventory import load_picker_context
+    from hermes_agent.hermes_cli.cli_model_switch_mixin import _switch_model_from
+    from hermes_agent.hermes_cli.inventory import load_picker_context
 
     _, base_url = _write_config("OpenAI")
     ctx = load_picker_context()
@@ -75,9 +75,9 @@ def test_cli_model_command_switches_to_the_configured_endpoint(requested):
 
 def test_hermes_model_marks_the_configured_mixed_case_provider_active():
     """``hermes model`` opens with the configured ``providers.OpenAI`` row selected, not OpenRouter."""
-    from hermes_cli.config import load_config
-    from hermes_cli.main import _resolve_active_provider
-    from hermes_cli.main_provider_setup import _named_custom_provider_map
+    from hermes_agent.hermes_cli.config import load_config
+    from hermes_agent.hermes_cli.main import _resolve_active_provider
+    from hermes_agent.hermes_cli.main_provider_setup import _named_custom_provider_map
 
     _write_config("OpenAI", provider="OpenAI")
     cfg = load_config()
@@ -93,9 +93,9 @@ def test_builtin_name_with_an_owning_entry_switches_saves_and_runs_on_the_user_e
     built-in's env key."""
     for env in ("ANTHROPIC_API_KEY", "OPENROUTER_API_KEY", "DEEPSEEK_API_KEY"):
         monkeypatch.setenv(env, f"builtin-{env.lower()}-123456")
-    from hermes_cli.config import atomic_config_write, load_config
-    from hermes_cli.model_switch import model_selection_config_updates, switch_model
-    from hermes_cli.runtime_provider import resolve_runtime_provider
+    from hermes_agent.hermes_cli.config import atomic_config_write, load_config
+    from hermes_agent.hermes_cli.model_switch import model_selection_config_updates, switch_model
+    from hermes_agent.hermes_cli.runtime_provider import resolve_runtime_provider
 
     config_path, base_url = _write_config(key, provider="bedrock")
     cfg = load_config()
@@ -119,7 +119,7 @@ def test_config_saved_as_the_bare_builtin_name_runs_on_the_owning_entry(key, mon
     DeepSeek, sent to the user's URL) or ran on the built-in host (Anthropic)."""
     for env in ("ANTHROPIC_API_KEY", "OPENROUTER_API_KEY", "DEEPSEEK_API_KEY"):
         monkeypatch.setenv(env, f"builtin-{env.lower()}-123456")
-    from hermes_cli.runtime_provider import resolve_runtime_provider
+    from hermes_agent.hermes_cli.runtime_provider import resolve_runtime_provider
 
     config_path, base_url = _write_config(key, provider=key)
     config_path.write_text(config_path.read_text().replace("  default: x\n", f"  default: m1\n  base_url: {base_url}\n", 1))
@@ -133,7 +133,7 @@ def test_builtin_env_key_never_goes_to_a_url_another_entry_owns(provider, env, m
     its own key: the request carries that key, never the built-in env key. Without a declared
     credential the #10622 mirror keeps the built-in key."""
     monkeypatch.setenv(env, "builtin-env-key-123456")
-    from hermes_cli.runtime_provider import resolve_runtime_provider
+    from hermes_agent.hermes_cli.runtime_provider import resolve_runtime_provider
 
     config_path, base_url = _write_config("myproxy")
     text = f"model:\n  provider: {provider}\n  default: m1\n  base_url: {base_url}\n" + config_path.read_text().split("\n", 3)[3]
@@ -148,7 +148,7 @@ def test_builtin_env_key_never_goes_to_a_url_another_entry_owns(provider, env, m
 def test_tuning_only_block_keeps_the_builtin(monkeypatch):
     """A ``providers.<built-in>`` block with no base_url is tuning for the built-in, not an endpoint."""
     monkeypatch.setenv("DEEPSEEK_API_KEY", "builtin-deepseek-123456")
-    from hermes_cli.runtime_provider import resolve_runtime_provider
+    from hermes_agent.hermes_cli.runtime_provider import resolve_runtime_provider
 
     path = Path(os.environ["HERMES_HOME"]) / "config.yaml"
     path.write_text("model:\n  provider: DeepSeek\n  default: m1\nproviders:\n  deepseek:\n    request_timeout_seconds: 5\n")
@@ -158,7 +158,7 @@ def test_tuning_only_block_keeps_the_builtin(monkeypatch):
 
 @pytest.mark.parametrize("key", ["OpenRouter", "deepseek"])
 def test_doctor_names_the_endpoint_a_builtin_named_provider_runs_on(key, capsys):
-    from hermes_cli import doctor_config
+    from hermes_agent.hermes_cli import doctor_config
 
     config_path, base_url = _write_config(key, provider=key.lower())
     issues: list = []
@@ -175,9 +175,9 @@ def test_doctor_names_the_endpoint_a_builtin_named_provider_runs_on(key, capsys)
 @pytest.mark.parametrize("key", ["Anthropic", "OpenRouter"])
 def test_typed_model_declared_by_builtin_named_key_keeps_custom_runtime(key):
     """A typed model pick must use the same custom host/key on its next turn (#151775)."""
-    from hermes_cli.config import atomic_config_write, load_config
-    from hermes_cli.model_switch import model_selection_config_updates, switch_model
-    from hermes_cli.runtime_provider import resolve_runtime_provider
+    from hermes_agent.hermes_cli.config import atomic_config_write, load_config
+    from hermes_agent.hermes_cli.model_switch import model_selection_config_updates, switch_model
+    from hermes_agent.hermes_cli.runtime_provider import resolve_runtime_provider
 
     config_path, base_url = _write_config(key, provider="bedrock")
     cfg = load_config()
@@ -204,10 +204,10 @@ def test_dashboard_main_pick_of_builtin_named_key_runs_where_it_validated(key, m
     a key, so a pick that validates one route and saves another shows up as a different key."""
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-builtin-123456")
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-builtin-123456")
-    from hermes_cli.config import atomic_config_write, load_config
-    from hermes_cli.runtime_provider import resolve_runtime_provider
-    from hermes_cli.model_assignment import apply_main_model_assignment
-    from hermes_cli.web_server_config import _prepare_main_assignment
+    from hermes_agent.hermes_cli.config import atomic_config_write, load_config
+    from hermes_agent.hermes_cli.runtime_provider import resolve_runtime_provider
+    from hermes_agent.hermes_cli.model_assignment import apply_main_model_assignment
+    from hermes_agent.hermes_cli.web_server_config import _prepare_main_assignment
 
     config_path, _ = _write_config(key)
     cfg = load_config()
@@ -228,7 +228,7 @@ def test_typed_model_on_a_tuning_only_builtin_block_keeps_the_builtin(key, env, 
     """``/model <model>`` declared by a ``providers.<built-in>`` block with no base_url (tuning only)
     switches to the built-in, never a ``custom:<key>`` provider that does not exist."""
     monkeypatch.setenv(env, f"builtin-{key}-123456")
-    from hermes_cli.model_switch import switch_model
+    from hermes_agent.hermes_cli.model_switch import switch_model
 
     providers = {key: {"models": ["probe-model"], "request_timeout_seconds": 300}}
     result = switch_model("probe-model", "bedrock", "x", is_global=True,

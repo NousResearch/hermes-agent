@@ -20,7 +20,7 @@ envs in engaged multi-session hosts.
 import os
 import subprocess
 
-from hermes_cli.main import _advertise_agent_env
+from hermes_agent.hermes_cli.main import _advertise_agent_env
 
 # Registry id — must stay in sync with huggingface.js agent-harnesses.ts.
 HARNESS_ID = "hermes-agent"

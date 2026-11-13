@@ -33,7 +33,7 @@ def default_home_process(tmp_path, monkeypatch):
 def test_unnamed_lifecycle_verbs_from_default_home_always_name_default(default_home_process):
     """Every unnamed verb pins ``-p default``: the child argv names a profile and the env
     pins the default home even though the sticky ``active_profile`` names ``coder``."""
-    from hermes_cli.web_server_gateway import (
+    from hermes_agent.hermes_cli.web_server_gateway import (
         _gateway_subcommand,
         _named_profile_from_action,
         _profile_action_environment,

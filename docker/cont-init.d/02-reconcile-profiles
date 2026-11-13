@@ -33,5 +33,5 @@ chown hermes:hermes "$GATEWAY_SCANDIR"
 chmod 0755 "$GATEWAY_SCANDIR"
 
 # Skip the drop when already non-root.
-[ "$(id -u)" = 0 ] || exec /opt/hermes/.venv/bin/python -m hermes_cli.container_boot
-exec s6-setuidgid hermes /opt/hermes/.venv/bin/python -m hermes_cli.container_boot
+[ "$(id -u)" = 0 ] || exec /opt/hermes/.venv/bin/python -m hermes_agent.hermes_cli.container_boot
+exec s6-setuidgid hermes /opt/hermes/.venv/bin/python -m hermes_agent.hermes_cli.container_boot

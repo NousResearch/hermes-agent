@@ -20,7 +20,7 @@ def hermes_home(tmp_path, monkeypatch):
     home.mkdir()
     monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
     monkeypatch.setenv("HERMES_HOME", str(home))
-    from hermes_cli import goals
+    from hermes_agent.hermes_cli import goals
 
     goals._DB_CACHE.clear()
     yield home
@@ -32,8 +32,8 @@ def server(hermes_home, monkeypatch):
     with patch.dict(
         "sys.modules",
         {
-            "hermes_cli.env_loader": MagicMock(),
-            "hermes_cli.banner": MagicMock(),
+            "hermes_agent.hermes_cli.env_loader": MagicMock(),
+            "hermes_agent.hermes_cli.banner": MagicMock(),
         },
     ):
         mod = importlib.import_module("hermes_agent.tui_gateway.server")
@@ -63,9 +63,9 @@ def session(server):
     }
     server._sessions[sid] = entry
     yield sid, key, entry
-    from hermes_cli.goals import GoalManager
-    from hermes_cli.heartbeat import HeartbeatManager
-    from hermes_cli.loops import LoopManager
+    from hermes_agent.hermes_cli.goals import GoalManager
+    from hermes_agent.hermes_cli.heartbeat import HeartbeatManager
+    from hermes_agent.hermes_cli.loops import LoopManager
 
     GoalManager(key).clear()
     LoopManager(key).clear()
@@ -105,7 +105,7 @@ def _forbid_dispatch(server, monkeypatch):
 
 
 def _save_goal(key, **overrides):
-    from hermes_cli.goals import GoalState, save_goal
+    from hermes_agent.hermes_cli.goals import GoalState, save_goal
 
     fields = {
         "goal": "Finish the desktop control card",
@@ -122,7 +122,7 @@ def _save_goal(key, **overrides):
 
 
 def _save_loop(key, **overrides):
-    from hermes_cli.loops import LoopState, save_loop
+    from hermes_agent.hermes_cli.loops import LoopState, save_loop
 
     fields = {
         "prompt": "Check the deployment",
@@ -140,7 +140,7 @@ def _save_loop(key, **overrides):
 
 
 def _save_heartbeat(key, **overrides):
-    from hermes_cli.heartbeat import HeartbeatState, save_heartbeat
+    from hermes_agent.hermes_cli.heartbeat import HeartbeatState, save_heartbeat
 
     fields = {
         "prompt": "Check the deployment",
@@ -171,7 +171,7 @@ class TestStructuredRead:
         }
 
     def test_goal_contract_subgoals_and_gates_are_structured_and_sanitized(self, server, session):
-        from hermes_cli.goals import GoalContract, GoalGate
+        from hermes_agent.hermes_cli.goals import GoalContract, GoalGate
 
         sid, key, _ = session
         contract = GoalContract(outcome="Card is correct", verification="Run focused tests")
@@ -265,7 +265,7 @@ class TestDispatcherBackedMutations:
 
 class TestManagerOnlyMutations:
     def test_subgoal_add_remove_clear_are_real_one_based_mutations_without_dispatch(self, server, session, monkeypatch):
-        from hermes_cli.goals import load_goal
+        from hermes_agent.hermes_cli.goals import load_goal
 
         sid, key, _ = session
         _save_goal(key, subgoals=["First criterion"])
@@ -301,7 +301,7 @@ class TestManagerOnlyMutations:
             assert _error(_call(server, "session.control", session_id=sid, action=action, args=args))["code"] == 4004
 
     def test_goal_unwait_clears_the_real_barrier_through_shared_command(self, server, session):
-        from hermes_cli.goals import GoalManager
+        from hermes_agent.hermes_cli.goals import GoalManager
 
         sid, key, _ = session
         _save_goal(key)
@@ -360,7 +360,7 @@ class TestErrorsAndEvents:
         assert emitted == []
 
     def test_adapter_error_becomes_4004_and_emits_no_update(self, server, session, monkeypatch):
-        from hermes_cli.goals import GoalManager
+        from hermes_agent.hermes_cli.goals import GoalManager
 
         sid, key, _ = session
         _save_goal(key)
@@ -451,7 +451,7 @@ class TestUpdatePublication:
             release.set()
             slow.join(5)
             server._sessions.pop(other_sid, None)
-            from hermes_cli.goals import GoalManager
+            from hermes_agent.hermes_cli.goals import GoalManager
             GoalManager(other_key).clear()
 
     @pytest.mark.parametrize("name,arg", [("goal", "pause"), ("loop", "pause")])
@@ -462,7 +462,7 @@ class TestUpdatePublication:
         if name == "goal":
             _save_goal(key)
         else:
-            from hermes_cli.loops import LoopManager
+            from hermes_agent.hermes_cli.loops import LoopManager
 
             LoopManager(key).set("poll CI", interval_seconds=300)
         emitted = self._capture(server, monkeypatch)
@@ -508,10 +508,10 @@ class TestUpdatePublication:
             monkeypatch.setattr(server, name, value)
         monkeypatch.setattr(server.threading, "Thread", _InlineThread)
         # Deterministic judge: the model-graded verdict is not under test, the ordering is.
-        from hermes_cli.goals import GoalManager
+        from hermes_agent.hermes_cli.goals import GoalManager
 
         def judge(self, raw, **kwargs):
-            from hermes_cli.goals import save_goal
+            from hermes_agent.hermes_cli.goals import save_goal
 
             self.state.turns_used += 1
             save_goal(self.session_id, self.state)

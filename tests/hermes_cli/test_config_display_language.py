@@ -7,12 +7,12 @@ import pytest
 import hermes_yaml as yaml
 
 from hermes_agent.agent import i18n, i18n_layers
-from hermes_cli.config import set_config_value
+from hermes_agent.hermes_cli.config import set_config_value
 
 
 @pytest.fixture
 def home(tmp_path, monkeypatch):
-    from hermes_cli import plugins as plugins_mod
+    from hermes_agent.hermes_cli import plugins as plugins_mod
 
     home = tmp_path / "home"
     home.mkdir()

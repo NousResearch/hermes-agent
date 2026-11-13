@@ -7,14 +7,14 @@ import sys
 
 import pytest
 
-from hermes_cli import _launchers
+from hermes_agent.hermes_cli import _launchers
 from pm.environments import install_state_dir, site_packages
 
 
 @pytest.mark.platforms("windows")
 def test_minted_launcher_reads_current_selection_and_editable_members(tmp_path, monkeypatch):
     from pm import environments as runtime_paths
-    from hermes_cli import runtime_state
+    from hermes_agent.hermes_cli import runtime_state
     import hermes_constants
 
     root = tmp_path / "repo"
@@ -29,6 +29,11 @@ def test_minted_launcher_reads_current_selection_and_editable_members(tmp_path, 
     (pm_package / "filesystem.py").write_bytes((Path(runtime_paths.__file__).parent / "filesystem.py").read_bytes())
     (package / "runtime_state.py").write_bytes(Path(runtime_state.__file__).read_bytes())
     (root / "hermes_constants.py").write_bytes(Path(hermes_constants.__file__).read_bytes())
+    # pm/environments.py imports its hermes_agent modules from the copy.
+    (root / "hermes_agent" / "hermes_cli").mkdir(parents=True)
+    (root / "hermes_agent" / "__init__.py").write_text("")
+    (root / "hermes_agent" / "hermes_cli" / "__init__.py").write_text("")
+    (root / "hermes_agent" / "hermes_cli" / "runtime_state.py").write_bytes(Path(runtime_state.__file__).read_bytes())
     (root / "hermes_bootstrap.py").write_text(
         "from pathlib import Path\nfrom pm.environments import activate_dependencies\n"
         "activate_dependencies(Path(__file__).resolve().parent)\n"

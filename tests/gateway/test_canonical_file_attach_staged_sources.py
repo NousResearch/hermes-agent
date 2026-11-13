@@ -1,7 +1,7 @@
 """A browser pick reaches the session only from the exact upload it names, through the owner's ``file.attach``.
 
 The Webapp upload route publishes a browser file into its profile's ``uploads/`` and hands the renderer
-a ``staged_upload`` receipt (``hermes_cli/staged_uploads.py``). The browser is an attach client of the
+a ``staged_upload`` receipt (``hermes_agent/hermes_cli/staged_uploads.py``). The browser is an attach client of the
 gateway, so that receipt arrives at ``hermes_agent/gateway/session_ancillary.py::attach_file``, which copies it into
 the session's ``attachments/``. The receipt is only a claim: a deleted source profile, another
 backend's install, a missing source or an oversized file must never be copied, and a failed copy must
@@ -54,7 +54,7 @@ def _attach(authority, tickets, purpose, subject):
 async def owner(tmp_path, monkeypatch):
     """The profile's owner with one adopted chat open on a native connection, serving a sibling profile."""
     from hermes_agent.gateway.runtime_bootstrap import TicketStore
-    from hermes_cli import install_identity
+    from hermes_agent.hermes_cli import install_identity
 
     monkeypatch.setattr(install_identity, '_INSTALL_ID_CACHE', {'root': None, 'value': None})
     # The chat runs in a workspace of its own: a pick from the profile's uploads/ is copied, never referenced.
@@ -76,7 +76,7 @@ async def owner(tmp_path, monkeypatch):
 
     def upload(home=tmp_path, payload=b'browser payload'):
         # Exactly the Webapp upload route: publish into the profile home, return its receipt.
-        from hermes_cli.staged_uploads import publish_staged_upload, staged_upload_descriptor
+        from hermes_agent.hermes_cli.staged_uploads import publish_staged_upload, staged_upload_descriptor
         path = publish_staged_upload(io.BytesIO(payload), home, 'notes.txt')
         return staged_upload_descriptor(path, home)
 
@@ -178,7 +178,7 @@ async def home_in_workspace(request, tmp_path, monkeypatch):
     unless ``terminal.cwd`` says otherwise; a default profile home is ``~/.hermes``) or the profile
     home itself."""
     from hermes_agent.gateway.runtime_bootstrap import TicketStore
-    from hermes_cli import install_identity
+    from hermes_agent.hermes_cli import install_identity
 
     monkeypatch.setattr(install_identity, '_INSTALL_ID_CACHE', {'root': None, 'value': None})
     home = tmp_path / '.hermes'
@@ -190,7 +190,7 @@ async def home_in_workspace(request, tmp_path, monkeypatch):
     assert 'result' in resumed, resumed
 
     def upload(payload):
-        from hermes_cli.staged_uploads import publish_staged_upload, staged_upload_descriptor
+        from hermes_agent.hermes_cli.staged_uploads import publish_staged_upload, staged_upload_descriptor
         path = publish_staged_upload(io.BytesIO(payload), home, 'notes.txt')
         return staged_upload_descriptor(path, home)
 

@@ -12,7 +12,7 @@ from unittest.mock import MagicMock, patch
 
 def _make_cli():
     """Minimal HermesCLI shell exposing prompt fallback helpers."""
-    import cli as cli_mod
+    import hermes_agent.cli as cli_mod
 
     obj = object.__new__(cli_mod.HermesCLI)
     obj._app = MagicMock()

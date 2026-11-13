@@ -10,11 +10,11 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from cli import HermesCLI
+from hermes_agent.cli import HermesCLI
 
 
 def _import_cli():
-    import hermes_cli.config as config_mod
+    import hermes_agent.hermes_cli.config as config_mod
 
     if not hasattr(config_mod, "save_env_value_secure"):
         config_mod.save_env_value_secure = lambda key, value: {
@@ -23,7 +23,7 @@ def _import_cli():
             "validated": False,
         }
 
-    import cli as cli_mod
+    import hermes_agent.cli as cli_mod
 
     return cli_mod
 
@@ -46,8 +46,8 @@ class TestIndicatorDispatch(unittest.TestCase):
     def test_indicator_is_not_unknown_command(self):
         cli_obj = _make_cli()
         with (
-            patch("cli._cprint") as mock_cprint,
-            patch("cli.save_config_value", return_value=True),
+            patch("hermes_agent.cli._cprint") as mock_cprint,
+            patch("hermes_agent.cli.save_config_value", return_value=True),
         ):
             result = cli_obj.process_command("/indicator emoji")
 
@@ -121,7 +121,7 @@ class TestHandleIndicatorCommand(unittest.TestCase):
 class TestIndicatorRegistry(unittest.TestCase):
 
     def test_indicator_subcommands_match_handler(self):
-        from hermes_cli.commands import COMMAND_REGISTRY
+        from hermes_agent.hermes_cli.commands import COMMAND_REGISTRY
         from hermes_constants import INDICATOR_STYLES
 
         indicator = next(c for c in COMMAND_REGISTRY if c.name == "indicator")

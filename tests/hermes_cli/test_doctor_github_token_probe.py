@@ -13,7 +13,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import pytest
 
-from hermes_cli import doctor_connectivity as dc
+from hermes_agent.hermes_cli import doctor_connectivity as dc
 
 # GitHub's documented 401 body for a bad/expired token (REST API "Authentication" docs).
 _BAD_CREDENTIALS = {"message": "Bad credentials", "documentation_url": "https://docs.github.com/rest"}

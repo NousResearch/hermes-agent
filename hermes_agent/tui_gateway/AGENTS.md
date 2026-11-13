@@ -16,7 +16,7 @@ hermes --tui
 
 Ink attaches to the profile's shared gateway owner (`hermes gateway run`, started on demand with
 its idle exit), never to a private child. `ui-tui/scripts/gateway_bootstrap.py` is a thin wrapper
-over `hermes_cli/gateway_runtime_attach.py::attach_gateway`, the attach `hermes gateway attach
+over `hermes_agent/hermes_cli/gateway_runtime_attach.py::attach_gateway`, the attach `hermes gateway attach
 --json` gives any other local client. Only `HERMES_TUI_GATEWAY_URL` (the dashboard's `/chat`)
 dials another URL, and then negotiates the wire from that listener's ready frame.
 
@@ -151,7 +151,7 @@ retains its legacy unscoped contract.
 and skill-derived commands. `complete.slash` uses the existing CLI completer (registry, plugins,
 skills/bundles, argument completions); quick commands remain catalog-only. Shared data builders
 live in `hermes_agent/tui_gateway/command_discovery.py`, without importing the legacy server. Definitions
-come from `hermes_cli/commands.py` (`hermes_cli/AGENTS.md`).
+come from `hermes_agent/hermes_cli/commands.py` (`hermes_agent/hermes_cli/AGENTS.md`).
 
 The canonical gateway exposes the same two discovery RPCs through `hermes_agent/gateway/session_discovery.py`.
 It requires authenticated `session:read` capability and the authority's exact profile before any

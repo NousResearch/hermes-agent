@@ -5,7 +5,7 @@ unknown-command fallthrough) and return semantics must hold.
 """
 from unittest.mock import MagicMock, patch
 
-from cli import HermesCLI
+from hermes_agent.cli import HermesCLI
 
 
 def _cli():
@@ -19,7 +19,7 @@ def _cli():
 def test_dispatch_return_semantics_and_side_effects():
     c = _cli()
     with patch.object(HermesCLI, "_toggle_yolo", return_value=None) as m, \
-            patch("hermes_cli.plugins.fire_pre_command_hook") as hook:
+            patch("hermes_agent.hermes_cli.plugins.fire_pre_command_hook") as hook:
         assert c.process_command("/yolo") is True
         m.assert_called_once_with()
         hook.assert_called_once()

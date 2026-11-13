@@ -96,7 +96,7 @@ class TestProviderModelIdsBedrock:
 
     def test_returns_live_discovered_model_ids(self, monkeypatch):
         """Live discovery result is returned as a flat list of model ID strings."""
-        from hermes_cli.models import provider_model_ids
+        from hermes_agent.hermes_cli.models import provider_model_ids
 
         monkeypatch.setenv("AWS_REGION", "eu-central-1")
 
@@ -112,7 +112,7 @@ class TestProviderModelIdsBedrock:
 
     def test_region_determines_model_ids(self, monkeypatch):
         """Different regions produce different model ID prefixes (eu.* vs us.*)."""
-        from hermes_cli.models import provider_model_ids
+        from hermes_agent.hermes_cli.models import provider_model_ids
 
         with patch("hermes_agent.agent.bedrock_adapter.discover_bedrock_models", side_effect=_mock_discover):
             with patch("hermes_agent.agent.bedrock_adapter.resolve_bedrock_region", return_value="eu-central-1"):
@@ -141,7 +141,7 @@ class TestListAuthenticatedProvidersBedrock:
 
     def test_bedrock_not_shown_without_credentials(self, monkeypatch):
         """Bedrock must not appear when no AWS credentials are present."""
-        from hermes_cli.model_switch import list_authenticated_providers
+        from hermes_agent.hermes_cli.model_switch import list_authenticated_providers
 
         monkeypatch.delenv("AWS_PROFILE", raising=False)
         monkeypatch.delenv("AWS_ACCESS_KEY_ID", raising=False)
@@ -158,7 +158,7 @@ class TestListAuthenticatedProvidersBedrock:
 
     def test_non_bedrock_picker_does_not_probe_full_aws_chain(self, monkeypatch):
         """Non-Bedrock provider discovery must not touch boto3's full credential chain."""
-        from hermes_cli.model_switch import list_authenticated_providers
+        from hermes_agent.hermes_cli.model_switch import list_authenticated_providers
 
         monkeypatch.delenv("AWS_PROFILE", raising=False)
         monkeypatch.delenv("AWS_ACCESS_KEY_ID", raising=False)
@@ -191,7 +191,7 @@ class TestBedrockRegionRouting:
 
     def test_eu_region_from_botocore_profile_yields_eu_models(self):
         """When botocore resolves eu-central-1, picker shows eu.* model IDs."""
-        from hermes_cli.model_switch import list_authenticated_providers
+        from hermes_agent.hermes_cli.model_switch import list_authenticated_providers
 
         mock_session = MagicMock()
         mock_session.get_config_variable.return_value = "eu-central-1"
@@ -236,7 +236,7 @@ class TestBedrockOverlayRegistration:
 
 
     def test_bedrock_aliases_resolve(self):
-        from hermes_cli.providers import normalize_provider
+        from hermes_agent.hermes_cli.providers import normalize_provider
         for alias in ("aws", "aws-bedrock", "amazon-bedrock", "amazon"):
             assert normalize_provider(alias) == "bedrock", \
                 f"alias {alias!r} should normalize to 'bedrock'"

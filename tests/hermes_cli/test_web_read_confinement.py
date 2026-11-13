@@ -5,7 +5,7 @@ import subprocess
 import pytest
 from starlette.testclient import TestClient
 
-from hermes_cli import web_server
+from hermes_agent.hermes_cli import web_server
 
 
 @pytest.fixture

@@ -206,7 +206,7 @@ class TelegramTopicRoutingMixin:
         never swapped in: the gateway loader also accepts ``dm_topics`` in a top-level ``telegram:`` block
         or under ``gateway.platforms``, which that path does not hold."""
         try:
-            from hermes_cli.config import load_config_readonly
+            from hermes_agent.hermes_cli.config import load_config_readonly
             saved = load_config_readonly().get("platforms", {}).get("telegram", {}).get("extra", {}).get("dm_topics") or []
         except Exception as e:
             logger.debug("[%s] Could not read saved DM topic thread_ids: %s", self.name, e, exc_info=True)

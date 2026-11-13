@@ -16,8 +16,8 @@ def test_concurrent_cron_edits_survive_recovery(tmp_path, monkeypatch):
     committed after recovery first read jobs.json (create, remove, schedule edit, a
     legitimate prompt edit) all survive; only the still-degraded prompt is restored."""
     import hermes_agent.cron.jobs as cron_jobs
-    from hermes_cli.backup import create_quick_snapshot
-    import hermes_cli.backup_cron_prompts as bcp
+    from hermes_agent.hermes_cli.backup import create_quick_snapshot
+    import hermes_agent.hermes_cli.backup_cron_prompts as bcp
     hermes_home = tmp_path / ".hermes"
     jobs_path = hermes_home / "cron" / "jobs.json"
     sched = {"kind": "interval", "minutes": 60, "display": "every 60m"}

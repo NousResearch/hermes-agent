@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-import hermes_cli.gateway_setup_service as service_setup
+import hermes_agent.hermes_cli.gateway_setup_service as service_setup
 from tests.hermes_cli.test_backup import _make_hermes_tree
 
 
@@ -13,7 +13,7 @@ from tests.hermes_cli.test_backup import _make_hermes_tree
 def _no_real_gateway_service(monkeypatch):
     """run_import() may start an existing gateway service post-restore; tests must
     never touch the host's systemd/launchd."""
-    import hermes_cli.gateway as gateway_mod
+    import hermes_agent.hermes_cli.gateway as gateway_mod
 
     monkeypatch.setattr(service_setup, "ensure_gateway_service", lambda **kw: False)
     monkeypatch.setattr(gateway_mod, "_is_service_running", lambda: False)
@@ -23,7 +23,7 @@ def test_run_backup_prunes_older_default_named_zips_but_not_others(tmp_path, mon
     """Hourly `hermes backup` callers accumulated 150+ zips; --keep bounds the default-named
     ones and leaves custom-named or foreign zips alone (#81317)."""
     from argparse import Namespace
-    from hermes_cli import backup as backup_mod
+    from hermes_agent.hermes_cli import backup as backup_mod
 
     home = tmp_path / ".hermes"
     home.mkdir()
@@ -61,7 +61,7 @@ def test_import_restores_the_session_store_with_its_message_uids(tmp_path, monke
 
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    from hermes_cli.backup import run_backup, run_import
+    from hermes_agent.hermes_cli.backup import run_backup, run_import
 
     out_zip = tmp_path / "backup.zip"
     run_backup(Namespace(output=str(out_zip)))

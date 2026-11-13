@@ -8,7 +8,7 @@ import pytest
 
 pytestmark = pytest.mark.real_release_channels
 
-from hermes_cli import github_api, source_releases
+from hermes_agent.hermes_cli import github_api, source_releases
 
 SHA = "818c13be1dc4fd28987e1e881a9408224afd4535"
 

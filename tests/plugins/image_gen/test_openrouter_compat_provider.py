@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-_RUNTIME = "hermes_cli.runtime_provider.resolve_runtime_provider"
+_RUNTIME = "hermes_agent.hermes_cli.runtime_provider.resolve_runtime_provider"
 _PNG_DATA_URI = "data:image/png;base64,dGVzdC1pbWFnZS1kYXRh"  # "test-image-data"
 
 

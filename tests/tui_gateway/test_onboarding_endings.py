@@ -8,7 +8,7 @@ import pytest
 
 from hermes_agent.agent import onboarding_record
 from hermes_agent.agent.onboarding_flow import End, Facts
-from hermes_cli.config import read_user_config_raw
+from hermes_agent.hermes_cli.config import read_user_config_raw
 from hermes_agent.tui_gateway import server
 
 FACTS = Facts(os="macos", arch="arm64", machine_kind="Mac", plugins=())
@@ -59,7 +59,7 @@ def test_deleting_the_newest_copy_ends_the_run_on_every_copy(db, ended):
 
 
 def _failing_flag_write(monkeypatch):
-    from hermes_cli import onboarding_run
+    from hermes_agent.hermes_cli import onboarding_run
 
     def disk_full(value, **kw):
         raise OSError("disk full")

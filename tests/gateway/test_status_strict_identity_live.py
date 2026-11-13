@@ -157,10 +157,10 @@ class TestStrictIdentityWithLiveLock:
         assert identity == with_pid_file
 
     def test_updater_discovery_maps_the_profile_without_a_pid_file(self, home, gateway_holder, monkeypatch):
-        from hermes_cli.gateway import find_profile_gateway_processes
+        from hermes_agent.hermes_cli.gateway import find_profile_gateway_processes
 
-        monkeypatch.setattr("hermes_cli.profiles._get_default_hermes_home", lambda: home)
-        monkeypatch.setattr("hermes_cli.profiles._get_profiles_root", lambda: home / "no-profiles")
+        monkeypatch.setattr("hermes_agent.hermes_cli.profiles._get_default_hermes_home", lambda: home)
+        monkeypatch.setattr("hermes_agent.hermes_cli.profiles._get_profiles_root", lambda: home / "no-profiles")
         (home / "gateway.pid").unlink()
 
         procs = find_profile_gateway_processes(strict=True)
@@ -188,10 +188,10 @@ class TestStrictIdentityWithLiveLock:
     def test_updater_discovery_maps_the_profile_with_a_stale_pid_file(
         self, home, gateway_holder, monkeypatch,
     ):
-        from hermes_cli.gateway import find_profile_gateway_processes
+        from hermes_agent.hermes_cli.gateway import find_profile_gateway_processes
 
-        monkeypatch.setattr("hermes_cli.profiles._get_default_hermes_home", lambda: home)
-        monkeypatch.setattr("hermes_cli.profiles._get_profiles_root", lambda: home / "no-profiles")
+        monkeypatch.setattr("hermes_agent.hermes_cli.profiles._get_default_hermes_home", lambda: home)
+        monkeypatch.setattr("hermes_agent.hermes_cli.profiles._get_profiles_root", lambda: home / "no-profiles")
         _write_previous_gateway_pid_file(home, _exited_pid())
 
         procs = find_profile_gateway_processes(strict=True)

@@ -174,7 +174,7 @@ def test_pm_observer_accepts_ready_fixture_and_leaves_failed_fixture_untouched(t
     # stamps / compiler receipts. It never resolves or acquires a package.
     repo = ASSETS.parents[2]
     root = tmp_path / "source"
-    for directory in ("pm", "hermes_cli"):
+    for directory in ("pm", "hermes_cli", "hermes_agent"):
         shutil.copytree(repo / directory, root / directory, ignore=shutil.ignore_patterns("__pycache__"))
     shutil.copy2(repo / "hermes_constants.py", root / "hermes_constants.py")
     (root / "hermes_bootstrap.py").write_text("raise RuntimeError('bootstrap must not run')", encoding="utf-8")
@@ -194,7 +194,7 @@ sys.path.insert(0, str(root))
 from pm.lock import Facts, Lockfile
 from pm.packages import Venv
 from pm.environments import install_state_dir, runtime_facts_path, site_packages
-from hermes_cli._launchers import ensure_install_launchers
+from hermes_agent.hermes_cli._launchers import ensure_install_launchers
 lock = Lockfile(root / 'pm/lock.json')
 lock.set_pin('node', 'fixture', {})
 lock.save()
@@ -247,7 +247,7 @@ for (const [product, out] of [['tui', 'ui-tui/dist'], ['web', 'hermes_cli/web_di
     elif fault == "foreign-launcher":
         foreign = tmp_path / "foreign"
         shutil.copytree(root, foreign)
-        from hermes_cli._launchers import mint_launcher
+        from hermes_agent.hermes_cli._launchers import mint_launcher
         launcher = mint_launcher("hermes", foreign, root / ".hermes/bin", Path(sys.executable), None)
         assert launcher is not None
     elif fault == "missing-launcher":

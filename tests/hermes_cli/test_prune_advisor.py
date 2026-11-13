@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli import prune_advisor
+from hermes_agent.hermes_cli import prune_advisor
 
 _Usage = namedtuple("_Usage", "total used free")
 
@@ -71,7 +71,7 @@ def test_prompt_says_pruning_will_not_help_when_nothing_is_old_enough(home, monk
 def test_admin_managed_setting_is_never_asked_nor_overwritten(home, monkeypatch, tmp_path):
     """An administrator-pinned auto_prune is already decided: no prompt, and /autoprune off must
     not claim to have turned pruning off while the managed true still applies."""
-    from hermes_cli import managed_scope
+    from hermes_agent.hermes_cli import managed_scope
     managed = tmp_path / "managed"
     managed.mkdir()
     (managed / "config.yaml").write_text("sessions:\n  auto_prune: true\n", encoding="utf-8")

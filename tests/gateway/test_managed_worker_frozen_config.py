@@ -158,7 +158,7 @@ def test_ordinary_worker_binding_freezes_readers_but_keeps_customizations(tmp_pa
     assert result.returncode == 0, result.stdout + result.stderr
     receipt = json.loads(result.stdout.strip().splitlines()[-1])
     assert receipt == {'safe': False, 'turns': [7, 7, 7], 'mcp': 'FROZEN_A', 'plugin': True}, receipt
-    from hermes_cli.config import fast_safe_load
+    from hermes_agent.hermes_cli.config import fast_safe_load
     saved = fast_safe_load((home / 'config.yaml').read_text(encoding='utf-8'))
     assert saved['command_allowlist'] == ['echo *', 'ls *']
     assert saved['agent']['max_turns'] == 99 and saved['mcp_servers']['x']['command'] == 'LIVE_B', saved

@@ -5,7 +5,7 @@ leak into the input buffer after terminal resize storms or multiplexer
 tab switches — see issue #14692.
 """
 
-from cli import _strip_leaked_terminal_responses_with_meta
+from hermes_agent.cli import _strip_leaked_terminal_responses_with_meta
 
 
 def _strip_leaked_terminal_responses(text: str) -> str:

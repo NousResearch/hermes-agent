@@ -22,7 +22,7 @@ def _resolve(display: dict, platform: str = "telegram", env: str | None = None) 
 @pytest.fixture(autouse=True)
 def _plugin_platform_tiers():
     """Telegram/Slack defaults ship on their ``PlatformEntry``; the resolver reads the registry."""
-    from hermes_cli.plugins import discover_plugins
+    from hermes_agent.hermes_cli.plugins import discover_plugins
 
     discover_plugins()
 

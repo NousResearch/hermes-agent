@@ -65,7 +65,7 @@ async def save_session(connection, ref, params):
     target = physical_target(authority, ref)
 
     def write():
-        from hermes_cli.session_export import load_save_snapshot, render_session_for_save
+        from hermes_agent.hermes_cli.session_export import load_save_snapshot, render_session_for_save
         from hermes_agent.hermes_state import SessionExportTooLargeError
         try:
             data = load_save_snapshot(authority.db, target, 'json')
@@ -92,7 +92,7 @@ async def export_session(connection, ref, params):
     fmt, redact = params.get('format', 'json'), params.get('redact', False)
     if not isinstance(fmt, str) or not isinstance(redact, bool):
         raise RuntimeStoreError('invalid_params')
-    from hermes_cli.session_export import default_save_filename, normalize_save_format
+    from hermes_agent.hermes_cli.session_export import default_save_filename, normalize_save_format
     try:
         fmt = normalize_save_format(fmt)
     except ValueError:
@@ -102,7 +102,7 @@ async def export_session(connection, ref, params):
     target = physical_target(authority, ref)
 
     def render():
-        from hermes_cli.session_export import load_save_snapshot, render_session_for_save
+        from hermes_agent.hermes_cli.session_export import load_save_snapshot, render_session_for_save
         from hermes_agent.hermes_state import SessionExportTooLargeError
         try:
             data = load_save_snapshot(authority.db, target, fmt)
@@ -111,7 +111,7 @@ async def export_session(connection, ref, params):
         if not data:
             raise RuntimeStoreError('not_found')
         if redact:
-            from hermes_cli.session_export_md import redact_session_data
+            from hermes_agent.hermes_cli.session_export_md import redact_session_data
             data = redact_session_data(data)
         return render_session_for_save(data, fmt)
     content = await asyncio.to_thread(render)
@@ -136,7 +136,7 @@ async def session_history(connection, ref, params):
 async def reload_env(connection, ref, params):
     """``/reload``: re-read the profile's ``.env`` (main's ``reload.env`` / CLI ``/reload``).
 
-    Single-profile owner: main's ``hermes_cli.config.reload_env()`` verbatim — the owner's
+    Single-profile owner: main's ``hermes_agent.hermes_cli.config.reload_env()`` verbatim — the owner's
     ``os.environ`` is what its turns read, exactly as the TUI's own sidecar process was. Built agents
     keep their credential pool until ``/new`` (main's documented behaviour).
 
@@ -152,10 +152,10 @@ async def reload_env(connection, ref, params):
 
     def reload():
         if not _multiplexed(authority):
-            from hermes_cli.config import reload_env as reload_process_env
+            from hermes_agent.hermes_cli.config import reload_env as reload_process_env
             return reload_process_env()
         from hermes_agent.agent.secret_scope import build_profile_secret_scope, invalidate_env_file_cache
-        from hermes_cli.env_loader import hydrate_profile_secret_sources, reset_secret_source_cache
+        from hermes_agent.hermes_cli.env_loader import hydrate_profile_secret_sources, reset_secret_source_cache
         home = _profile_home(authority)
         before = build_profile_secret_scope(home)
         invalidate_env_file_cache(home / '.env')
@@ -186,7 +186,7 @@ async def pause_delegation(connection, ref, params):
         if profile is not None and not isinstance(profile, str):
             raise RuntimeStoreError('invalid_params')
         if profile:
-            from hermes_cli.profiles import profile_matches_home
+            from hermes_agent.hermes_cli.profiles import profile_matches_home
             if not profile_matches_home(profile, Path(connection.authority.profile_id)):
                 raise RuntimeStoreError('profile_mismatch')
     from hermes_agent.tools.delegate_tool_registry import set_spawn_paused
@@ -197,7 +197,7 @@ _ROLLBACK_FIELDS = {'list': {'session_id', 'profile', 'undo_since', 'undo_messag
                     'restore': {'session_id', 'profile', 'hash', 'file_path', 'all'},
                     'session_diff': {'session_id', 'profile'}}
 # ``rollback.session_diff`` stat + body bound, in bytes on the wire: half the 8 MiB frame every client
-# accepts (``hermes_cli/gateway_client.py``). Counted JSON-escaped, since a control character is one
+# accepts (``hermes_agent/hermes_cli/gateway_client.py``). Counted JSON-escaped, since a control character is one
 # character but six bytes (``\u0001``); the classic CLI shows 400 lines either way.
 _SESSION_DIFF_BYTES = 4 * 1024 * 1024
 

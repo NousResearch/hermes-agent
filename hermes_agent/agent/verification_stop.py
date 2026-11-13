@@ -73,7 +73,7 @@ def verify_on_stop_enabled(config: dict[str, Any] | None = None) -> bool:
         return env.strip().lower() not in _FALSY_TOKENS
     if config is None:
         try:
-            from hermes_cli.config import load_config_readonly
+            from hermes_agent.hermes_cli.config import load_config_readonly
 
             config = load_config_readonly()
         except Exception:

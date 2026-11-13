@@ -90,7 +90,7 @@ async def test_streamed_reply_then_marker_shows_the_reply_once(monkeypatch, tmp_
             return [expected]
         return []
 
-    monkeypatch.setattr("hermes_cli.lifecycle.invoke_hook", output_hook)
+    monkeypatch.setattr("hermes_agent.hermes_cli.lifecycle.invoke_hook", output_hook)
     (tmp_path / "config.yaml").write_text(yaml.safe_dump({
         "display": {"interim_assistant_messages": False, "tool_progress": "off"},
     }))

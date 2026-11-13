@@ -28,7 +28,7 @@ def _fallback_chain(authority, policy):
     if policy.safe_mode:
         return None
     if policy.ignore_user_config:
-        from hermes_cli.fallback_config import get_fallback_chain
+        from hermes_agent.hermes_cli.fallback_config import get_fallback_chain
         return get_fallback_chain(policy.config(authority)) or None
     refresh = getattr(authority.runner, '_refresh_fallback_model', None)
     return refresh() if refresh is not None else None
@@ -121,7 +121,7 @@ def _held_prefill(authority):
 
 
 def _read_prefill(authority, policy):
-    from hermes_cli.cli_config_load import _load_prefill_messages, _resolve_prefill_messages_file
+    from hermes_agent.hermes_cli.cli_config_load import _load_prefill_messages, _resolve_prefill_messages_file
     home = Path(str(authority.profile_id))
     if not home.is_absolute():
         from hermes_constants import get_hermes_home
@@ -153,16 +153,16 @@ def route_runtime(policy, frozen, model, key, *, fallback=True):
     credential, walking its own fallback chain on an AuthError unless ``fallback=False`` (a session
     control asking which route the session itself runs). The one resolver an in-process turn
     (``_resolve_policy_agent_runtime``) and a managed worker (``worker_route``) share."""
-    from hermes_cli.runtime_provider import (
+    from hermes_agent.hermes_cli.runtime_provider import (
         frozen_runtime_config, resolve_runtime_provider, resolve_runtime_with_fallback,
     )
-    from hermes_cli.runtime_provider_custom import _resolve_named_custom_runtime
+    from hermes_agent.hermes_cli.runtime_provider_custom import _resolve_named_custom_runtime
     provider = (frozen.get('model') or {}).get('provider')
     launch_url = json.loads(policy.request_json).get('base_url')
     if launch_url:
         # The creation request is immutable identity, not the current selection: once a canonical
         # model mutation moved the route off the launch endpoint, the policy's selection wins.
-        from hermes_cli.route_identity import normalize_route_base_url
+        from hermes_agent.hermes_cli.route_identity import normalize_route_base_url
         if normalize_route_base_url(launch_url) != normalize_route_base_url((frozen.get('model') or {}).get('base_url')):
             launch_url = None
     # Every rung reads the session's FROZEN config, never live config.yaml: a later
@@ -229,7 +229,7 @@ def checkpoint_agent_kwargs(config):
         cp_cfg = {"enabled": cp_cfg}
     elif not isinstance(cp_cfg, dict):
         cp_cfg = {}
-    from hermes_cli.config import DEFAULT_CONFIG
+    from hermes_agent.hermes_cli.config import DEFAULT_CONFIG
     defaults = DEFAULT_CONFIG["checkpoints"]
     return {
         "checkpoints_enabled": cp_cfg.get("enabled", defaults["enabled"]),
@@ -243,7 +243,7 @@ def routing_agent_kwargs(config, model, provider, base_url):
     ``provider_routing`` / ``openrouter.min_coding_score`` / ``agent.service_tier``, a static fast
     tier's request overrides), from a managed worker's frozen session config."""
     from hermes_agent.agent.fast_mode import STATIC_TIERS, parse_service_tier
-    from hermes_cli.models import resolve_fast_mode_overrides
+    from hermes_agent.hermes_cli.models import resolve_fast_mode_overrides
     pr = config.get('provider_routing') or {}
     score = (config.get('openrouter') or {}).get('min_coding_score')
     tier = parse_service_tier((config.get('agent') or {}).get('service_tier', ''))

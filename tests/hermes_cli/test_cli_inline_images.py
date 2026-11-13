@@ -1,4 +1,4 @@
-"""Inline images in the classic CLI scrollback (hermes_cli/cli_inline_images.py)."""
+"""Inline images in the classic CLI scrollback (hermes_agent/hermes_cli/cli_inline_images.py)."""
 
 from __future__ import annotations
 
@@ -12,9 +12,9 @@ from prompt_toolkit.renderer import print_formatted_text
 from prompt_toolkit.styles import Style
 
 from hermes_agent.agent.terminal_image import render_inline_image
-import cli as cli_mod
-from hermes_cli.cli_inline_images import image_rows, print_inline_images
-from hermes_cli.cli_render import _output_tail_fitting
+import hermes_agent.cli as cli_mod
+from hermes_agent.hermes_cli.cli_inline_images import image_rows, print_inline_images
+from hermes_agent.hermes_cli.cli_render import _output_tail_fitting
 
 PIL = pytest.importorskip("PIL.Image")
 

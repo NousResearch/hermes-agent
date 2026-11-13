@@ -4,7 +4,7 @@ from __future__ import annotations
 
 
 
-from hermes_cli.codex_runtime_plugin_migration import (
+from hermes_agent.hermes_cli.codex_runtime_plugin_migration import (
     MIGRATION_MARKER,
     MIGRATION_END_MARKER,
     _build_hermes_tools_mcp_entry,
@@ -158,7 +158,7 @@ class TestMigrate:
         """Discovered curated plugins land as [plugins."<name>@<marketplace>"]
         blocks. This is what OpenClaw calls 'migrate native codex plugins.'
         The discovery spawn must use the configured ``model.codex_bin`` (#61360)."""
-        from hermes_cli import codex_runtime_plugin_migration as crpm
+        from hermes_agent.hermes_cli import codex_runtime_plugin_migration as crpm
 
         seen: dict = {}
 
@@ -185,7 +185,7 @@ class TestMigrate:
     def test_plugin_discovery_failure_non_fatal(self, tmp_path, monkeypatch):
         """If codex isn't installed or RPC fails, MCP migration still
         completes. The error surfaces in the report but doesn't abort."""
-        from hermes_cli import codex_runtime_plugin_migration as crpm
+        from hermes_agent.hermes_cli import codex_runtime_plugin_migration as crpm
 
         def fake_query_fails(codex_home=None, timeout=8.0, codex_bin="codex"):
             return [], "codex CLI not available"
@@ -349,7 +349,7 @@ class TestStripUnmanagedPluginTables:
             )
 
         monkeypatch.setattr(
-            "hermes_cli.codex_runtime_plugin_migration._query_codex_plugins",
+            "hermes_agent.hermes_cli.codex_runtime_plugin_migration._query_codex_plugins",
             fake_query,
         )
         migrate({}, codex_home=tmp_path, discover_plugins=True, expose_hermes_tools=False)
@@ -456,10 +456,10 @@ class TestSameNameUserMcpTable:
     def test_cli_migrate_dry_run_json_reports_without_writing(self, tmp_path, monkeypatch, capsys):
         """`hermes codex-runtime migrate --dry-run --json` is the supported automation seam:
         drive it through the real ``hermes`` argparse tree so the subcommand registration in
-        hermes_cli/main.py stays pinned, and honour ``CODEX_HOME`` like every codex sibling."""
+        hermes_agent/hermes_cli/main.py stays pinned, and honour ``CODEX_HOME`` like every codex sibling."""
         import json
 
-        from hermes_cli import main
+        from hermes_agent.hermes_cli import main
 
         codex_home = tmp_path / "alt-codex"
         codex_home.mkdir()
@@ -468,7 +468,7 @@ class TestSameNameUserMcpTable:
         monkeypatch.setenv("CODEX_HOME", str(codex_home))
         monkeypatch.setattr("pathlib.Path.home", classmethod(lambda cls: tmp_path))
         monkeypatch.setattr(
-            "hermes_cli.config.load_config",
+            "hermes_agent.hermes_cli.config.load_config",
             lambda: {"mcp_servers": {"gbrain": {"command": "projected"}, "other": {"command": "o"}}})
         parser, _subparsers = main._build_cli_parser()
         args = parser.parse_args(["codex-runtime", "migrate", "--dry-run", "--json"])

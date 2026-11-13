@@ -193,7 +193,7 @@ def test_crashed_childs_worktree_survives_the_sweep_until_its_record_expires(tmp
     sweep keeps it past 24 h; once the record expires the same sweep archives and removes it."""
     import sqlite3
 
-    from hermes_cli.worktree_sweep import plan_sweep, run_sweep, sweep_settings
+    from hermes_agent.hermes_cli.worktree_sweep import plan_sweep, run_sweep, sweep_settings
     from hermes_agent.hermes_state import SessionDB
     from hermes_agent.tools.async_delegation import recover_abandoned_delegations
     from hermes_agent.tools.delegate_tool_resumable import _upsert

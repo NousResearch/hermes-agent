@@ -124,8 +124,8 @@ def _serve_plugin_skill(
     skill_md: Path, namespace: str, bare: str, file_path: str | None = None, *,
     preprocess: bool = True, session_id: str | None = None) -> str:
     """Read a plugin-provided skill, apply guards, return JSON."""
-    from hermes_cli.plugins import _get_disabled_plugins, get_plugin_manager
-    from hermes_cli.plugins_content import plugin_skill_owners
+    from hermes_agent.hermes_cli.plugins import _get_disabled_plugins, get_plugin_manager
+    from hermes_agent.hermes_cli.plugins_content import plugin_skill_owners
     from hermes_agent.tools import skills_tool as _st
     qualified_name = f"{namespace}:{bare}"
     if disabled := sorted(plugin_skill_owners(get_plugin_manager(), qualified_name) & _get_disabled_plugins()):

@@ -23,7 +23,7 @@ import pytest
 
 
 def _default(*keys: str):
-    from hermes_cli.config import DEFAULT_CONFIG, cfg_get
+    from hermes_agent.hermes_cli.config import DEFAULT_CONFIG, cfg_get
     return cfg_get(DEFAULT_CONFIG, *keys)
 
 @pytest.fixture(autouse=True)
@@ -62,7 +62,7 @@ class TestIgnoreUserConfigEnvGate:
 
     def _reload_cli(self, monkeypatch, tmp_path):
         """Point cli._hermes_home at tmp_path and return a fresh load_cli_config."""
-        import cli
+        from hermes_agent import cli
         monkeypatch.setattr(cli, "_hermes_home", tmp_path)
         return cli.load_cli_config
 
@@ -121,8 +121,8 @@ class TestIgnoreUserConfigEnvGate:
         package.mkdir()
         for where in (root, package):  # the install root, and beside the loader where the fallback looked
             (where / "cli-config.yaml").write_text("model:\n  default: test-vendor/project-sentinel\n")
-        monkeypatch.setattr("hermes_cli.config.get_project_root", lambda: root)
-        monkeypatch.setattr("hermes_cli.cli_config_load.__file__", str(package / "cli_config_load.py"))
+        monkeypatch.setattr("hermes_agent.hermes_cli.config.get_project_root", lambda: root)
+        monkeypatch.setattr("hermes_agent.hermes_cli.cli_config_load.__file__", str(package / "cli_config_load.py"))
 
         cfg = self._reload_cli(monkeypatch, home)()
 
@@ -133,9 +133,9 @@ class TestIgnoreUserConfigDelegationDefault:
     delegation reader must give the same cap as ``DEFAULT_CONFIG``."""
 
     def test_builtin_delegation_default_matches_the_delegate_tool_default(self):
-        """The CLI's built-in default (``hermes_cli/cli_config_load.py``, re-exported by ``cli``) is the
+        """The CLI's built-in default (``hermes_agent/hermes_cli/cli_config_load.py``, re-exported by ``cli``) is the
         value a `--ignore-user-config` run actually uses."""
-        import cli
+        from hermes_agent import cli
         from hermes_agent.tools.delegate_tool import DEFAULT_MAX_ITERATIONS
 
         assert DEFAULT_MAX_ITERATIONS == _default("delegation", "max_iterations")
@@ -151,7 +151,7 @@ class TestIgnoreUserConfigDelegationDefault:
         root = Path(__file__).resolve().parents[2]
         (tmp_path / "config.yaml").write_text("delegation:\n  max_iterations: 7\n")
         script = (
-            "import json, cli; from hermes_agent.tools import delegate_tool_config; "
+            "import json; from hermes_agent import cli; from hermes_agent.tools import delegate_tool_config; "
             "print(json.dumps([cli.CLI_CONFIG['delegation']['max_iterations'], "
             "delegate_tool_config._load_config()['max_iterations']]))"
         )
@@ -189,17 +189,17 @@ class TestSharedDefaults:
     def _home(self, tmp_path, monkeypatch, text=""):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         (tmp_path / "config.yaml").write_text(text)
-        import cli
+        from hermes_agent import cli
         monkeypatch.setattr(cli, "_hermes_home", tmp_path)
         return tmp_path
 
     def test_classic_cli_defaults_are_the_shared_defaults(self, tmp_path, monkeypatch):
         """An empty config.yaml gives ``hermes chat`` the turn cap and subagent cap that load_config
         (gateway, TUI, dashboard) gives: unlimited and 250."""
-        from hermes_cli.config import load_config
+        from hermes_agent.hermes_cli.config import load_config
 
         self._home(tmp_path, monkeypatch)
-        import cli
+        from hermes_agent import cli
         cfg, shared = cli.load_cli_config(), load_config()
 
         assert cfg["agent"]["max_turns"] == shared["agent"]["max_turns"] == _default("agent", "max_turns")
@@ -211,7 +211,7 @@ class TestSharedDefaults:
         must not export a built-in default over the user's TERMINAL_TIMEOUT."""
         self._home(tmp_path, monkeypatch, "terminal:\n  backend: local\n")
         monkeypatch.setenv("TERMINAL_TIMEOUT", "600")
-        import cli
+        from hermes_agent import cli
         cli.load_cli_config()
         assert os.environ["TERMINAL_TIMEOUT"] == "600"
 
@@ -220,8 +220,8 @@ class TestSharedDefaults:
 @pytest.mark.parametrize("limit,label", [(19, "19"), (None, "unlimited")])
 def test_classic_config_renders_the_resolved_budget(capsys, limit, label):
     from datetime import datetime
-    from cli import HermesCLI, _t
-    from hermes_cli.config import resolve_turn_limit
+    from hermes_agent.cli import HermesCLI, _t
+    from hermes_agent.hermes_cli.config import resolve_turn_limit
     resolved = resolve_turn_limit(limit)
     stand_in = HermesCLI.__new__(HermesCLI)
     stand_in.api_key, stand_in.agent, stand_in.model, stand_in.base_url = None, None, "test/model", "local"

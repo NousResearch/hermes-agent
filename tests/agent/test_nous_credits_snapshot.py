@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from hermes_agent.agent.account_usage import build_nous_credits_snapshot
-from hermes_cli.nous_account import (
+from hermes_agent.hermes_cli.nous_account import (
     NousPaidServiceAccessInfo,
     NousPortalAccountInfo,
     NousPortalSubscriptionInfo,

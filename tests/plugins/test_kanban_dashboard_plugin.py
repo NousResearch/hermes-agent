@@ -21,8 +21,8 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from hermes_cli import kanban_db as kb
-from hermes_cli import kanban_db_connect as kbc
+from hermes_agent.hermes_cli import kanban_db as kb
+from hermes_agent.hermes_cli import kanban_db_connect as kbc
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -513,7 +513,7 @@ def test_ws_events_rejects_when_token_required(tmp_path, monkeypatch):
 
     # Stub web_server_chat with a loopback-mode _ws_auth_ok (auth_required False →
     # accept only the correct ?token=). Mirrors the real gate's loopback path.
-    import hermes_cli
+    from hermes_agent import hermes_cli
     import types
 
     def _fake_ws_auth_ok(ws):
@@ -523,7 +523,7 @@ def test_ws_events_rejects_when_token_required(tmp_path, monkeypatch):
         _SESSION_TOKEN="secret-xyz",
         _ws_auth_ok=_fake_ws_auth_ok,
     )
-    monkeypatch.setitem(sys.modules, "hermes_cli.web_server_chat", stub)
+    monkeypatch.setitem(sys.modules, "hermes_agent.hermes_cli.web_server_chat", stub)
     monkeypatch.setattr(hermes_cli, "web_server_chat", stub, raising=False)
 
     app = FastAPI()
@@ -807,8 +807,8 @@ def test_event_dict_includes_run_id(client):
     """GET /tasks/:id returns events with run_id populated."""
     r = client.post("/api/plugins/kanban/tasks", json={"title": "e", "assignee": "worker"})
     tid = r.json()["task"]["id"]
-    from hermes_cli import kanban_db as kb
-    from hermes_cli import kanban_db_connect as kbc
+    from hermes_agent.hermes_cli import kanban_db as kb
+    from hermes_agent.hermes_cli import kanban_db_connect as kbc
     conn = kbc.connect()
     try:
         kb.claim_task(conn, tid)
@@ -1053,8 +1053,8 @@ def test_specify_resolves_each_profiles_key_under_multiplex(kanban_home, tmp_pat
     (A) and a ``?profile=`` request (B) each resolve their OWN key, and B never leaks into A."""
     import hermes_agent.agent.secret_scope as ss
     from fastapi import Depends
-    from hermes_cli import profiles
-    from hermes_cli.web_server_dashboard import _plugin_route_secret_scope
+    from hermes_agent.hermes_cli import profiles
+    from hermes_agent.hermes_cli.web_server_dashboard import _plugin_route_secret_scope
     from hermes_agent.tui_gateway import launch_profile_policy
     from unittest.mock import MagicMock
 
@@ -1189,14 +1189,14 @@ def test_ws_events_for_archived_board_does_not_recreate_it(tmp_path, monkeypatch
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     kb.init_db()
 
-    import hermes_cli
+    from hermes_agent import hermes_cli
     import types
 
     def _fake_ws_auth_ok(ws):
         return ws.query_params.get("token", "") == "secret-xyz"
 
     stub = types.SimpleNamespace(_SESSION_TOKEN="secret-xyz", _ws_auth_ok=_fake_ws_auth_ok)
-    monkeypatch.setitem(sys.modules, "hermes_cli.web_server_chat", stub)
+    monkeypatch.setitem(sys.modules, "hermes_agent.hermes_cli.web_server_chat", stub)
     monkeypatch.setattr(hermes_cli, "web_server_chat", stub, raising=False)
 
     app = FastAPI()

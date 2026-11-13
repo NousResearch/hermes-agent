@@ -26,13 +26,13 @@ logger = logging.getLogger("hermes_agent.gateway.run")
 class GatewayPluginInjectionMixin:
     def _install_plugin_message_injector(self) -> None:
         """Publish this live gateway's plugin message scheduler process-wide."""
-        from hermes_cli.plugins import publish_gateway_message_host
+        from hermes_agent.hermes_cli.plugins import publish_gateway_message_host
 
         publish_gateway_message_host(self, self._schedule_plugin_message_injection)
 
     def _clear_plugin_message_injector(self) -> None:
         """Remove this runner's scheduler without clobbering a newer owner."""
-        from hermes_cli.plugins import clear_published_gateway_message_host
+        from hermes_agent.hermes_cli.plugins import clear_published_gateway_message_host
 
         clear_published_gateway_message_host(self)
 

@@ -8,7 +8,7 @@ import pytest
 import hermes_yaml as yaml
 
 from hermes_agent.agent.auxiliary_unavailable import missing_provider_credentials_message
-from hermes_cli.auth import PROVIDER_REGISTRY
+from hermes_agent.hermes_cli.auth import PROVIDER_REGISTRY
 
 
 @pytest.mark.parametrize("provider, expected, forbidden", [

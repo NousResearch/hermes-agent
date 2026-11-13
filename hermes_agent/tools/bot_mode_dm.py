@@ -256,7 +256,7 @@ def message_agent_tool(target: str = "", message: str = "", task_id: Optional[st
                         "message_agent is unavailable. Do not retry.")
     except Exception as exc:  # pragma: no cover — defensive
         return _err(f"Bot Mode gate check failed: {exc}")
-    from hermes_cli.observability.shared_metrics_signals import record_feature_used
+    from hermes_agent.hermes_cli.observability.shared_metrics_signals import record_feature_used
     record_feature_used("bot_mode", hermes_home=home)
 
     root, me = _hermes_root(Path(home)), _self_profile_name(Path(home))
@@ -573,7 +573,7 @@ def _admit_live_dm(profile_home: Path | None, dm_file: str, author: Optional[dic
     home = intent["owner"]["profile_home"]
     record = read_delivery_result(home, intent["delivery_id"])
     if record is None or intent["owner"].get("canonical"):
-        from hermes_cli.gateway_client import GatewayRPCError
+        from hermes_agent.hermes_cli.gateway_client import GatewayRPCError
         from hermes_agent.tools.bot_failure_reasons import HELD_NOT_SENT
         from hermes_agent.tools.bot_live_delivery import settle_held_delivery
 
@@ -842,7 +842,7 @@ def _spawn_delivery(command: str, label: str, *, dm_file: Optional[str] = None, 
     try:
         from hermes_agent.tools.terminal_tool import terminal_tool
 
-        from hermes_cli._startup_fast import project_root_str
+        from hermes_agent.hermes_cli._startup_fast import project_root_str
         raw = terminal_tool(command, background=True, notify_on_complete=wake != "none", task_id=task_id,
                             workdir=project_root_str(), _host_local=True,
                             _completion_output_chars=completion_chars)

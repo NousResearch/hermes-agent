@@ -8,8 +8,8 @@ from pathlib import Path
 import hermes_yaml as yaml
 import pytest
 
-from hermes_cli import plugins as plugins_mod
-from hermes_cli.plugins import PluginManager
+from hermes_agent.hermes_cli import plugins as plugins_mod
+from hermes_agent.hermes_cli.plugins import PluginManager
 
 HOSTED_PROVIDER = '''
 import os
@@ -83,7 +83,7 @@ def test_hosted_delegation_provider_extends_schema_and_routes_from_the_host(tmp_
         # The /delegation seam acts on THIS process (ctx.delegation_backends is a host remote facade): its
         # config.yaml, and the --now rebuild THIS process's session runs at its next turn.
         from hermes_agent.agent import delegation_backends
-        from hermes_cli.plugin_command_dispatch import invoke_plugin_command
+        from hermes_agent.hermes_cli.plugin_command_dispatch import invoke_plugin_command
         out = invoke_plugin_command(plugins_mod.get_plugin_command_handler("deleg-switch"), "default",
                                     session_key="chat-a")
         pid, listed = out.split(" ", 1)

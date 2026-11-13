@@ -4,7 +4,7 @@ Covers the monthly_credits denominator path added when the portal /api/oauth/acc
 subscription block began carrying `monthly_credits`. Magnitudes-only fallback, clamp,
 and the non-finite / rollover guards (surfaced by adversarial review) are all asserted.
 """
-from hermes_cli.nous_account import (
+from hermes_agent.hermes_cli.nous_account import (
     NousPortalAccountInfo,
     NousPaidServiceAccessInfo,
     NousPortalSubscriptionInfo,

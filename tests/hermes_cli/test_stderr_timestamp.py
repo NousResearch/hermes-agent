@@ -1,4 +1,4 @@
-"""Tests for hermes_cli.stderr_timestamp."""
+"""Tests for hermes_agent.hermes_cli.stderr_timestamp."""
 
 import os
 import re
@@ -15,7 +15,7 @@ from hermes_agent.gateway.restart import (
     GATEWAY_SERVICE_RESTART_EXIT_CODE,
     LAUNCHD_LABEL_ENV,
 )
-from hermes_cli import stderr_timestamp
+from hermes_agent.hermes_cli import stderr_timestamp
 
 
 def _script(tmp_path, name: str, source: str) -> str:

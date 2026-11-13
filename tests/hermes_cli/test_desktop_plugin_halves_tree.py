@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli.desktop_plugin_halves import reconcile_desktop_halves, reconcile_desktop_halves_report
+from hermes_agent.hermes_cli.desktop_plugin_halves import reconcile_desktop_halves, reconcile_desktop_halves_report
 
 pytestmark = pytest.mark.platforms("posix")
 

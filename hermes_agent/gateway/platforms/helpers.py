@@ -602,7 +602,7 @@ def bypasses_chat_order(text: Any) -> bool:
     flight, so it skips :class:`ChatOrderedWork`'s per-chat wait and never waits on an earlier voice
     note's gate STT. Every other command (``/new``, ``/undo``, ``/status``) keeps its place behind it."""
     from hermes_agent.gateway.session_commands import _ESCAPE_HATCHES
-    from hermes_cli.commands import resolve_command
+    from hermes_agent.hermes_cli.commands import resolve_command
     head = str(text or "").lstrip().split(maxsplit=1)
     if not head or not head[0].startswith("/"):
         return False

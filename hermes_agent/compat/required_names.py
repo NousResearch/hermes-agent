@@ -136,6 +136,7 @@ REQUIRED_NAMES: dict[str, str] = {
     "hermes_cli/_update_takeover.py": "by-path",  # v0.21.6..v0.23.0: hermes_cli/_old_updater.py:137@v0.23.0
     "hermes_cli/backup_sqlite.py": "copy",  # v0.21.6..v0.23.0: -I -S, apps/desktop/electron/updater/state-db-preflight.ts:60
     "hermes_cli/linux_desktop_entry.py": "copy",  # v0.21.6..v0.23.0: nix/desktop.nix:204 copies it alone onto PYTHONPATH
+    "hermes_cli/local_runtime/catalog.json": "copy",  # v0.21.6..v0.23.1: refresh_catalog fetches it from main by URL, hermes_cli/local_runtime/catalog.py:308@v0.23.1
     "hermes_cli/main.py": "by-path",  # v0.21.6..v0.23.0: hermes_cli/update_receipt.py:1063@v0.23.0
     "hermes_cli/source_check.py": "by-path",  # v0.21.6..v0.23.0: apps/desktop/electron/updater/checkout-source.ts:106@v0.23.0
     "hermes_cli/source_completion.py": "by-path",  # v0.21.6..v0.23.0: scripts/install.sh:1120

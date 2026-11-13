@@ -5,7 +5,7 @@ honoured only while ``is_current`` says it is the one in use; ``rotate`` (``herm
 --sign-out``) replaces the credential and runs every revoker registered with ``on_rotate``. The
 grant kinds themselves are pinned in test_webapp_sign_out_sockets.py and test_webapp_gated_sign_out.py.
 """
-from hermes_cli import browser_credential, web_server
+from hermes_agent.hermes_cli import browser_credential, web_server
 
 
 def test_a_generation_is_current_only_while_its_credential_is_in_use(monkeypatch):

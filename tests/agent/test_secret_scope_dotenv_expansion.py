@@ -19,7 +19,7 @@ def test_cron_home_target_resolves_a_dotenv_reference(tmp_path, monkeypatch):
         "DEFAULTED=${UNSET_IN_TEST:-fallback}\nPLAIN=lit$eral\n", encoding="utf-8")
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.delenv("UNSET_IN_TEST", raising=False)
-    from hermes_cli.plugins import discover_plugins
+    from hermes_agent.hermes_cli.plugins import discover_plugins
     discover_plugins()
     from hermes_agent.cron.scheduler_delivery import _get_home_target_chat_id
 

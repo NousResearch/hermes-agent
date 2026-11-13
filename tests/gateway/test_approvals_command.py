@@ -49,7 +49,7 @@ async def test_gateway_rejects_non_admin_persistent_approval_change():
         }
     )
 
-    with patch("hermes_cli.approval_mode.run_approval_mode_command") as run:
+    with patch("hermes_agent.hermes_cli.approval_mode.run_approval_mode_command") as run:
         output = await runner._handle_approvals_command(_event("/approvals off"))
 
     assert "admin" in output.lower()

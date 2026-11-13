@@ -23,7 +23,7 @@ def _read_only_copy(home, *, lock):
 
 @pytest.mark.parametrize('lock', [False, True])
 def test_read_only_copy_is_unowned_unless_its_lock_is_held(tmp_path, lock):
-    from hermes_cli.profiles_remove import wait_profile_unowned
+    from hermes_agent.hermes_cli.profiles_remove import wait_profile_unowned
     home = tmp_path / 'profiles' / 'ro'
     _read_only_copy(home, lock=lock)
     try:

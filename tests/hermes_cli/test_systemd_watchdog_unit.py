@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from hermes_agent.gateway.config import GatewayConfig
-from hermes_cli import gateway as gateway_cli
+from hermes_agent.hermes_cli import gateway as gateway_cli
 
 
 

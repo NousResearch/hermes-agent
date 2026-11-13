@@ -62,7 +62,7 @@ def test_first_party_context_values_keep_the_process_value(monkeypatch):
 def test_managed_policy_keys_beat_the_routed_scope(monkeypatch):
     monkeypatch.setenv("ORG_POLICY_FLAG", "policy-value")
     monkeypatch.setattr(
-        "hermes_cli.env_loader.managed_dotenv_keys", lambda: ["ORG_POLICY_FLAG"])
+        "hermes_agent.hermes_cli.env_loader.managed_dotenv_keys", lambda: ["ORG_POLICY_FLAG"])
     _multiplex(monkeypatch, {"ORG_POLICY_FLAG": "routed-user-value"})
     env = _make_run_env({})
     assert env["ORG_POLICY_FLAG"] == "policy-value"
@@ -74,7 +74,7 @@ def test_background_commands_get_the_same_routed_base(monkeypatch, tmp_path):
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
     monkeypatch.setenv("MYAPP_AGENT_ID", "from-p1")
     monkeypatch.setenv("LAUNCH_DOTENV_NAME", "launch-residue")
-    monkeypatch.setattr("hermes_cli.env_loader.launch_dotenv_keys", lambda: ["LAUNCH_DOTENV_NAME"])
+    monkeypatch.setattr("hermes_agent.hermes_cli.env_loader.launch_dotenv_keys", lambda: ["LAUNCH_DOTENV_NAME"])
     _multiplex(monkeypatch, {"MYAPP_AGENT_ID": "from-p2"})
     token = set_hermes_home_override(str(tmp_path / "profiles" / "p2"))
     try:

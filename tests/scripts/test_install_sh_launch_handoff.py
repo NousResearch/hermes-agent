@@ -67,7 +67,7 @@ def test_installer_post_pm_stages(tmp_path: Path, stage: str, expected: list[str
 ])
 def test_products_and_desktop_stages_share_the_completion_tail(tmp_path: Path, stage: str,
                                                                 include_desktop: bool, expected_desktop: bool) -> None:
-    """Both stages hand the checkout to hermes_cli/source_completion.py; --include-desktop
+    """Both stages hand the checkout to hermes_agent/hermes_cli/source_completion.py; --include-desktop
     (or the external `desktop` stage) only adds --desktop to that one call."""
     install = tmp_path / 'source tree'
     calls = tmp_path / 'calls.json'

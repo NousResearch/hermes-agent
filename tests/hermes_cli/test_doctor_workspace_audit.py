@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 import pytest
 
-from hermes_cli import doctor_tools
+from hermes_agent.hermes_cli import doctor_tools
 
 
 @pytest.mark.parametrize("workspace, runtime_package", [("web", "react-router"), ("ui-tui", "undici")])

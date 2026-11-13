@@ -28,10 +28,10 @@ def restart_child(monkeypatch, tmp_path):
     """The real restart spawn (``_spawn_gateway_restart`` → ``_spawn_hermes_action``, log header
     included), with the ``hermes gateway restart`` argv swapped for a stand-in child whose output
     and exit code each test picks: no gateway lifecycle code runs."""
-    import hermes_cli._launchers as launchers
-    from hermes_cli import web_server
-    import hermes_cli.web_server_gateway as gw
-    from hermes_cli import webapp_access
+    import hermes_agent.hermes_cli._launchers as launchers
+    from hermes_agent.hermes_cli import web_server
+    import hermes_agent.hermes_cli.web_server_gateway as gw
+    from hermes_agent.hermes_cli import webapp_access
 
     monkeypatch.setattr(gw, "_ACTION_LOG_DIR", tmp_path / "logs")
     monkeypatch.setattr(gw, "_action_targets_system_gateway", lambda _subcommand: False)
@@ -53,7 +53,7 @@ def restart_child(monkeypatch, tmp_path):
 
 
 def _status_after_child_exits(client, pid: int) -> dict:
-    from hermes_cli import web_server
+    from hermes_agent.hermes_cli import web_server
 
     web_server._LAST_GATEWAY_RESTART[1].wait(timeout=10)
     assert web_server._LAST_GATEWAY_RESTART[1].pid == pid
@@ -90,7 +90,7 @@ def test_a_restart_child_that_succeeds_reports_no_failure(client, restart_child)
 
 
 def test_a_silent_failure_names_its_exit_code_not_an_earlier_runs_error(client, restart_child):
-    import hermes_cli.web_server_gateway as gw
+    import hermes_agent.hermes_cli.web_server_gateway as gw
 
     gw._ACTION_LOG_DIR.mkdir(parents=True)
     (gw._ACTION_LOG_DIR / "gateway-restart.log").write_text(
@@ -107,14 +107,14 @@ def test_a_retry_that_fails_to_spawn_does_not_lend_its_error_to_the_recorded_chi
         client, restart_child, monkeypatch):
     """A retry writes its own log header before it spawns; when that spawn fails, the child still on
     record keeps its own reason."""
-    from hermes_cli import web_server
+    from hermes_agent.hermes_cli import web_server
 
     monkeypatch.setattr(web_server, "GATEWAY_RESTART_COOLDOWN_SECONDS", 0.0)
     restart_child["script"] = "import sys; print('first child: run `hermes pm repair`'); sys.exit(1)"
     first = client.post("/api/webapp-access/restart").json()
     web_server._LAST_GATEWAY_RESTART[1].wait(timeout=10)
 
-    import hermes_cli.web_server_gateway as gw
+    import hermes_agent.hermes_cli.web_server_gateway as gw
 
     def _spawn_refused(_subcommand, _overrides=None):
         raise RuntimeError("retry could not start")

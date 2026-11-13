@@ -8,13 +8,13 @@ override is left alone; explicit null → cleared (inherit); a level → set. Ru
 import pytest
 from fastapi import HTTPException
 
-from hermes_cli.web_server_config import _UNSET, _apply_aux_assignment_sync
+from hermes_agent.hermes_cli.web_server_config import _UNSET, _apply_aux_assignment_sync
 
 
 @pytest.fixture
 def saved(monkeypatch):
     store: dict = {}
-    monkeypatch.setattr("hermes_cli.config.save_config", lambda cfg: store.update(cfg))
+    monkeypatch.setattr("hermes_agent.hermes_cli.config.save_config", lambda cfg: store.update(cfg))
     return store
 
 

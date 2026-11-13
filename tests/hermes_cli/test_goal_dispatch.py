@@ -6,13 +6,13 @@ from types import SimpleNamespace
 
 import pytest
 
-from hermes_cli import goals
+from hermes_agent.hermes_cli import goals
 
 
 def _surface(surface, mgr, monkeypatch, prompts=None):
     prompts = prompts if prompts is not None else []
     if surface == "cli":
-        from hermes_cli.cli_commands_mixin import CLICommandsMixin
+        from hermes_agent.hermes_cli.cli_commands_mixin import CLICommandsMixin
         cli = object.__new__(CLICommandsMixin)
         cli._get_goal_manager = lambda: mgr
         cli._pending_input = queue.Queue()
@@ -120,7 +120,7 @@ def test_drafts_start_work_but_inspection_and_literal_prefixes_do_not_draft(
 
 
 def _dispatch(mgr, arg):
-    from hermes_cli.goal_command import dispatch_goal_command
+    from hermes_agent.hermes_cli.goal_command import dispatch_goal_command
     return dispatch_goal_command(mgr, arg, authorize_gate=lambda: None)
 
 
@@ -134,7 +134,7 @@ def test_control_verb_with_trailing_words_never_replaces_the_goal(command, pause
     mgr.set('original objective')
     if paused:
         mgr.pause(reason='user-paused')
-    from hermes_cli.goal_command import is_goal_control
+    from hermes_agent.hermes_cli.goal_command import is_goal_control
     assert is_goal_control(command)  # gateway busy path dispatches instead of rejecting
     result = _dispatch(mgr, command)
     state = goals.load_goal(mgr.session_id)

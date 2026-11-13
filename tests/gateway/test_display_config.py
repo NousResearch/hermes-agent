@@ -7,7 +7,7 @@
 class TestToolProgressProvenance:
     def test_winning_source_controls_mode_and_intent(self):
         from hermes_agent.gateway.display_config import resolve_tool_progress
-        from hermes_cli.plugins import discover_plugins
+        from hermes_agent.hermes_cli.plugins import discover_plugins
 
         discover_plugins()  # slack's "off" default ships on its PlatformEntry (display_overrides)
         cases = [
@@ -141,7 +141,7 @@ def assert_keeps_platform_display_defaults(cfg):
     platform tier, because the gateway loader merges no DEFAULT_CONFIG (#121230)."""
     from hermes_agent.gateway.display_config import _PLATFORM_DEFAULTS, _platform_defaults, resolve_display_setting, resolve_tool_progress
     from hermes_agent.gateway.platform_registry import platform_registry
-    from hermes_cli.plugins import discover_plugins
+    from hermes_agent.hermes_cli.plugins import discover_plugins
 
     # Core-only rows plus every plugin platform that declares display defaults on its PlatformEntry.
     discover_plugins()
@@ -225,7 +225,7 @@ class TestConfigMigration:
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         # Re-import to pick up the new HERMES_HOME
         import importlib
-        import hermes_cli.config as cfg_mod
+        import hermes_agent.hermes_cli.config as cfg_mod
         importlib.reload(cfg_mod)
 
         cfg_mod.migrate_config(interactive=False, quiet=True)

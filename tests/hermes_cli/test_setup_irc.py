@@ -60,7 +60,7 @@ class TestIRCFreshInstallDiscovery:
 
     def test_irc_appears_in_all_platforms(self, monkeypatch):
         """When the IRC plugin is registered, _all_platforms() surfaces it."""
-        import hermes_cli.gateway as gateway_mod
+        import hermes_agent.hermes_cli.gateway as gateway_mod
 
         _register_irc_platform()
         try:
@@ -77,7 +77,7 @@ class TestIRCFreshInstallDiscovery:
 
     def test_irc_status_configured_when_env_set(self, monkeypatch):
         """After the user sets IRC_SERVER and IRC_CHANNEL, status is 'configured'."""
-        import hermes_cli.gateway as gateway_mod
+        import hermes_agent.hermes_cli.gateway as gateway_mod
 
         plat = _register_irc_platform()
         try:
@@ -99,7 +99,7 @@ class TestIRCInteractiveSetup:
 
     def test_configure_platform_dispatches_to_irc_setup_fn(self, monkeypatch, capsys):
         """_configure_platform() calls the IRC plugin's setup_fn when selected."""
-        import hermes_cli.gateway as gateway_mod
+        import hermes_agent.hermes_cli.gateway as gateway_mod
 
         calls = []
 
@@ -120,7 +120,7 @@ class TestIRCInteractiveSetup:
 
     def test_configure_platform_fallback_when_no_setup_fn(self, monkeypatch, capsys):
         """A plugin with no setup_fn falls back to env-var instructions."""
-        import hermes_cli.gateway as gateway_mod
+        import hermes_agent.hermes_cli.gateway as gateway_mod
 
         plat = _register_irc_platform(setup_fn=None)
         try:
@@ -141,8 +141,8 @@ class TestIRCGatewaySetupFreshInstall:
 
     def test_setup_gateway_shows_irc_in_platform_menu(self, monkeypatch, capsys, tmp_path):
         """The gateway setup menu lists IRC among the available platforms."""
-        import hermes_cli.gateway as gateway_mod
-        from hermes_cli import setup as setup_mod
+        import hermes_agent.hermes_cli.gateway as gateway_mod
+        from hermes_agent.hermes_cli import setup as setup_mod
 
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         _register_irc_platform()
@@ -186,8 +186,8 @@ class TestIRCGatewaySetupFreshInstall:
 
     def test_setup_gateway_irc_counts_as_messaging_platform(self, monkeypatch, capsys, tmp_path):
         """When IRC is configured, setup_gateway counts it as a messaging platform."""
-        import hermes_cli.gateway as gateway_mod
-        from hermes_cli import setup as setup_mod
+        import hermes_agent.hermes_cli.gateway as gateway_mod
+        from hermes_agent.hermes_cli import setup as setup_mod
 
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         _register_irc_platform()

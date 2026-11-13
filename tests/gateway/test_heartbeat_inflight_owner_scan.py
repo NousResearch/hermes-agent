@@ -7,7 +7,7 @@ import pytest
 from hermes_agent.gateway.config import Platform
 from hermes_agent.gateway.session import SessionSource
 from hermes_agent.gateway.session_authority import SessionAuthority
-from hermes_cli.heartbeat import HeartbeatState, save_heartbeat
+from hermes_agent.hermes_cli.heartbeat import HeartbeatState, save_heartbeat
 from hermes_agent.hermes_state import SessionDB
 from hermes_agent.hermes_state_runtime import admit_session_input, begin_runtime_epoch
 

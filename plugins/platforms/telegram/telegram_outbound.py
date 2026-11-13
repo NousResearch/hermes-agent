@@ -29,7 +29,7 @@ def resolve_notifications_mode() -> str:
     ``display.platforms.telegram.notifications``; unknown values warn and use ``important``."""
     mode = os.getenv("HERMES_TELEGRAM_NOTIFICATIONS", "").strip().lower()
     if not mode:
-        from hermes_cli.config import cfg_get, load_config_readonly
+        from hermes_agent.hermes_cli.config import cfg_get, load_config_readonly
         raw = cfg_get(load_config_readonly(), "display", "platforms", "telegram", "notifications")
         mode = "" if raw is None else str(raw).strip().lower()
     if not mode:

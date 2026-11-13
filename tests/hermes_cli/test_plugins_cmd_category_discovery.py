@@ -40,7 +40,7 @@ def _make_category_plugin(
 
 class TestReadManifestInfo:
     def test_flat_plugin(self, tmp_path):
-        from hermes_cli.plugins_cmd import _read_manifest_info
+        from hermes_agent.hermes_cli.plugins_cmd import _read_manifest_info
 
         d = _make_plugin_dir(tmp_path, "my-plugin", {
             "name": "my-plugin", "version": "1.0.0", "description": "test"
@@ -55,14 +55,14 @@ class TestReadManifestInfo:
 
 
     def test_no_manifest(self, tmp_path):
-        from hermes_cli.plugins_cmd import _read_manifest_info
+        from hermes_agent.hermes_cli.plugins_cmd import _read_manifest_info
 
         d = tmp_path / "empty-dir"
         d.mkdir()
         assert _read_manifest_info(d, "") is None
 
     def test_yml_extension(self, tmp_path):
-        from hermes_cli.plugins_cmd import _read_manifest_info
+        from hermes_agent.hermes_cli.plugins_cmd import _read_manifest_info
 
         d = tmp_path / "my-plugin"
         d.mkdir()
@@ -81,10 +81,10 @@ class TestReadManifestInfo:
 class TestDiscoverAllPlugins:
 
 
-    @patch("hermes_cli.plugins.get_bundled_plugins_dir")
-    @patch("hermes_cli.plugins_cmd._plugins_dir")
+    @patch("hermes_agent.hermes_cli.plugins.get_bundled_plugins_dir")
+    @patch("hermes_agent.hermes_cli.plugins_cmd._plugins_dir")
     def test_mixed_flat_and_category(self, mock_user_dir, mock_bundled_dir, tmp_path):
-        from hermes_cli.plugins_cmd import _discover_all_plugins
+        from hermes_agent.hermes_cli.plugins_cmd import _discover_all_plugins
 
         _make_plugin_dir(tmp_path, "disk-cleanup", {
             "name": "disk-cleanup", "version": "1.0.0"
@@ -105,11 +105,11 @@ class TestDiscoverAllPlugins:
         assert "web/exa" in keys
         assert len(entries) == 3
 
-    @patch("hermes_cli.plugins.get_bundled_plugins_dir")
-    @patch("hermes_cli.plugins_cmd._plugins_dir")
+    @patch("hermes_agent.hermes_cli.plugins.get_bundled_plugins_dir")
+    @patch("hermes_agent.hermes_cli.plugins_cmd._plugins_dir")
     def test_depth_cap_at_two(self, mock_user_dir, mock_bundled_dir, tmp_path):
         """Plugins nested 3 levels deep should NOT be discovered."""
-        from hermes_cli.plugins_cmd import _discover_all_plugins
+        from hermes_agent.hermes_cli.plugins_cmd import _discover_all_plugins
 
         # 2 levels: should be found
         _make_category_plugin(tmp_path, "web", "keenable", {
@@ -130,8 +130,8 @@ class TestDiscoverAllPlugins:
         assert "web/keenable" in keys
         assert "a/b/c" not in keys
 
-    @patch("hermes_cli.plugins.get_bundled_plugins_dir")
-    @patch("hermes_cli.plugins_cmd._plugins_dir")
+    @patch("hermes_agent.hermes_cli.plugins.get_bundled_plugins_dir")
+    @patch("hermes_agent.hermes_cli.plugins_cmd._plugins_dir")
     def test_bundled_model_providers_skipped(self, mock_user_dir, mock_bundled_dir, tmp_path):
         """``plugins/model-providers/`` has its own provider registry loader.
 
@@ -140,7 +140,7 @@ class TestDiscoverAllPlugins:
         surface for providers selected via ``model.provider`` / ``--provider``.
         Same rationale as the existing bundled memory/context_engine skip.
         """
-        from hermes_cli.plugins_cmd import _discover_all_plugins
+        from hermes_agent.hermes_cli.plugins_cmd import _discover_all_plugins
 
         bundled = tmp_path / "bundled"
         user = tmp_path / "user"
@@ -168,15 +168,15 @@ class TestDiscoverAllPlugins:
         assert "context_engine/compressor" not in keys
         assert "observability/langfuse" in keys
 
-    @patch("hermes_cli.plugins.get_bundled_plugins_dir")
-    @patch("hermes_cli.plugins_cmd._plugins_dir")
+    @patch("hermes_agent.hermes_cli.plugins.get_bundled_plugins_dir")
+    @patch("hermes_agent.hermes_cli.plugins_cmd._plugins_dir")
     def test_user_model_providers_subdir_is_still_scanned(
         self, mock_user_dir, mock_bundled_dir, tmp_path
     ):
         """The model-providers skip only applies to *bundled* — a user plugin
         at ``~/.hermes/plugins/model-providers/<x>/`` is still discovered so
         ``hermes plugins list`` shows what the user installed."""
-        from hermes_cli.plugins_cmd import _discover_all_plugins
+        from hermes_agent.hermes_cli.plugins_cmd import _discover_all_plugins
 
         bundled = tmp_path / "bundled"
         bundled.mkdir()
@@ -202,11 +202,11 @@ class TestPluginStatus:
 
 
     def test_key_in_disabled(self):
-        from hermes_cli.plugins_cmd import _plugin_status
+        from hermes_agent.hermes_cli.plugins_cmd import _plugin_status
         assert _plugin_status("web-keenable", set(), {"web/keenable"}, key="web/keenable") == "disabled"
 
     def test_neither_name_nor_key(self):
-        from hermes_cli.plugins_cmd import _plugin_status
+        from hermes_agent.hermes_cli.plugins_cmd import _plugin_status
         assert _plugin_status("unknown", {"other"}, set(), key="cat/unknown") == "not enabled"
 
 
@@ -217,7 +217,7 @@ class TestPluginStatus:
 
 class TestFilterPluginEntries:
     def test_enabled_filter_uses_key(self):
-        from hermes_cli.plugins_cmd import _filter_plugin_entries
+        from hermes_agent.hermes_cli.plugins_cmd import _filter_plugin_entries
 
         entries = [
             ("web-keenable", "1.0.0", "search", "user", Path("/tmp"), "web/keenable"),
@@ -239,10 +239,10 @@ class TestFilterPluginEntries:
 
 
 class TestCmdListJson:
-    @patch("hermes_cli.plugins.get_bundled_plugins_dir")
-    @patch("hermes_cli.plugins_cmd._plugins_dir")
+    @patch("hermes_agent.hermes_cli.plugins.get_bundled_plugins_dir")
+    @patch("hermes_agent.hermes_cli.plugins_cmd._plugins_dir")
     def test_json_output_includes_category_plugins(self, mock_user_dir, mock_bundled_dir, tmp_path, capsys):
-        from hermes_cli.plugins_cmd import cmd_list
+        from hermes_agent.hermes_cli.plugins_cmd import cmd_list
 
         _make_category_plugin(tmp_path, "web", "keenable", {
             "name": "web-keenable", "version": "1.0.0", "description": "search"
@@ -267,10 +267,10 @@ class TestCmdListJson:
         assert "web-keenable" in names
         assert "disk-cleanup" in names
 
-    @patch("hermes_cli.plugins.get_bundled_plugins_dir")
-    @patch("hermes_cli.plugins_cmd._plugins_dir")
+    @patch("hermes_agent.hermes_cli.plugins.get_bundled_plugins_dir")
+    @patch("hermes_agent.hermes_cli.plugins_cmd._plugins_dir")
     def test_json_status_uses_key(self, mock_user_dir, mock_bundled_dir, tmp_path, capsys):
-        from hermes_cli.plugins_cmd import cmd_list
+        from hermes_agent.hermes_cli.plugins_cmd import cmd_list
 
         _make_category_plugin(tmp_path, "web", "keenable", {
             "name": "web-keenable", "version": "1.0.0"
@@ -279,7 +279,7 @@ class TestCmdListJson:
         mock_bundled_dir.return_value = tmp_path / "nonexistent"
 
         # Patch config to return web/keenable as enabled
-        with patch("hermes_cli.plugins_cmd._get_enabled_set", return_value={"web/keenable"}):
+        with patch("hermes_agent.hermes_cli.plugins_cmd._get_enabled_set", return_value={"web/keenable"}):
             args = MagicMock()
             args.json = True
             args.plain = False

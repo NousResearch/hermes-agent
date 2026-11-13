@@ -11,6 +11,14 @@ import sys
 import pytest
 
 
+def _moved_package(root: Path) -> Path:
+    moved = root / "hermes_agent" / "hermes_cli"
+    moved.mkdir(parents=True)
+    (root / "hermes_agent" / "__init__.py").touch()
+    (moved / "__init__.py").touch()
+    return moved
+
+
 @pytest.mark.parametrize("desktop", [False, True])
 @pytest.mark.parametrize("resume", [None, {"resume_needed": True, "profiles": {"work": "old-pid"}}])
 def test_historical_payload_maps_to_takeover_request_schema(tmp_path, desktop, resume):
@@ -22,7 +30,8 @@ def test_historical_payload_maps_to_takeover_request_schema(tmp_path, desktop, r
     root = tmp_path / "updated checkout"
     package = root / "hermes_cli"
     package.mkdir(parents=True)
-    shutil.copy2(source / "hermes_cli/_old_updater.py", package / "_old_updater.py")
+    moved = _moved_package(root)
+    shutil.copy2(source / "hermes_agent/hermes_cli/_old_updater.py", moved / "_old_updater.py")
     (package / "_update_takeover.py").write_text(
         "import json, os, sys\nfrom pathlib import Path\n"
         "request = json.loads(Path(sys.argv[1]).read_text())\n"
@@ -52,7 +61,7 @@ def test_historical_payload_maps_to_takeover_request_schema(tmp_path, desktop, r
         payload["windows_gateway_resume"] = resume
     # The retired updater reaches the takeover through the NEW tree's hand-off module; this
     # checkout is the whole tree the child sees (CI has no editable finder for the source).
-    shutil.copy2(source / "hermes_cli/update_handoff.py", package / "update_handoff.py")
+    shutil.copy2(source / "hermes_agent/hermes_cli/update_handoff.py", moved / "update_handoff.py")
     # write_handoff resolves the home through hermes_constants; the child tree is the whole
     # sys.path (CI has no editable finder), so give it the names the hand-off reads (the
     # payload lands beside the receipts in the ROOT home, which is HERMES_HOME here).
@@ -64,7 +73,7 @@ def test_historical_payload_maps_to_takeover_request_schema(tmp_path, desktop, r
     program = root / "historical.py"
     program.write_text(
         "import os\n"
-        "from hermes_cli.update_handoff import continue_update_in_fresh_interpreter\n"
+        "from hermes_agent.hermes_cli.update_handoff import continue_update_in_fresh_interpreter\n"
         "code = continue_update_in_fresh_interpreter(\n"
         f"    {payload!r}, argv_tail=['update', '--yes', '--gateway', '--branch', 'main'])\n"
         "raise SystemExit(code)\n", encoding="utf-8",
@@ -92,14 +101,13 @@ def test_shipped_post_swap_argv_enters_takeover_before_current_cli(tmp_path):
     root = tmp_path / "updated checkout"
     package = root / "hermes_cli"
     package.mkdir(parents=True)
-    (package / "__init__.py").write_text("", encoding="utf-8")
-    (package / "main.py").write_text(
+    for relative in ("hermes_bootstrap.py", "hermes_cli/__init__.py", "hermes_cli/main.py"):
+        shutil.copy2(source / relative, root / relative)
+    shutil.copytree(source / "hermes_agent", root / "hermes_agent", ignore=shutil.ignore_patterns("__pycache__"))
+    (root / "hermes_agent/hermes_cli/main.py").write_text(
         "import hermes_bootstrap\nraise AssertionError('current CLI parsed a legacy continuation')\n",
         encoding="utf-8",
     )
-    for relative in ("hermes_bootstrap.py", "hermes_cli/update_handoff.py", "hermes_cli/_old_updater.py"):
-        shutil.copy2(source / relative, root / relative)
-    shutil.copytree(source / "hermes_agent", root / "hermes_agent", ignore=shutil.ignore_patterns("__pycache__"))
     (package / "_update_takeover.py").write_text(
         "import json, sys\nfrom pathlib import Path\n"
         "request = json.loads(Path(sys.argv[1]).read_text())\n"
@@ -146,7 +154,8 @@ def test_takeover_waits_propagates_status_and_never_reenters_old_code(tmp_path, 
     root = tmp_path / "updated checkout"
     package = root / "hermes_cli"
     package.mkdir(parents=True)
-    shutil.copy2(source / "hermes_cli/_old_updater.py", package / "_old_updater.py")
+    moved = _moved_package(root)
+    shutil.copy2(source / "hermes_agent/hermes_cli/_old_updater.py", moved / "_old_updater.py")
     # This is the process seam, not a counterfeit installer. Actual PM and
     # product construction are exercised separately against local packages.
     (package / "_update_takeover.py").write_text(
@@ -171,7 +180,7 @@ def test_takeover_waits_propagates_status_and_never_reenters_old_code(tmp_path, 
     program.write_text(
         "import atexit, json, os, sys, types\nfrom pathlib import Path\n"
         "sys.modules['old_only'] = types.ModuleType('old_only')\n"
-        "from hermes_cli._old_updater import stop_for_relaunch\n"
+        "from hermes_agent.hermes_cli._old_updater import stop_for_relaunch\n"
         "_windows_gateway_resume = {'resume_needed': True, 'profiles': {'work': 'old-pid'}}\n"
         # The June updater reaches the takeover before it declares this local.
         f"if {desktop!r} is not None:\n    had_desktop_app_before_update = {desktop!r}\n"
@@ -208,8 +217,9 @@ def test_only_known_early_updater_restarts_with_original_arguments(tmp_path, pos
     root = tmp_path / "updated checkout"
     package = root / "hermes_cli"
     package.mkdir(parents=True)
+    moved = _moved_package(root)
     for name in ("_old_updater.py", "old_updater_deps.py"):
-        shutil.copy2(source / "hermes_cli" / name, package / name)
+        shutil.copy2(source / "hermes_agent/hermes_cli" / name, moved / name)
     (package / "_update_takeover.py").write_text(
         "import json, sys\nfrom pathlib import Path\n"
         "request = json.loads(Path(sys.argv[1]).read_text())\n"
@@ -220,7 +230,7 @@ def test_only_known_early_updater_restarts_with_original_arguments(tmp_path, pos
     # after pulling, the *same* frame reaches a dependency hook. The wrapper
     # must not make that post-pull invocation look like another early update.
     (package / f"{module_name}.py").write_text(
-        "from hermes_cli.old_updater_deps import _capture_active_lazy_features, _update_node_dependencies\n"
+        "from hermes_agent.hermes_cli.old_updater_deps import _capture_active_lazy_features, _update_node_dependencies\n"
         "def _cmd_update_impl(post_pull):\n"
         "    if not post_pull:\n        _capture_active_lazy_features()\n"
         "    pre_update_version = None\n"
@@ -254,8 +264,9 @@ def test_atexit_recovers_only_stopped_serves_after_cached_update(tmp_path, ackno
     root = tmp_path / "updated checkout"
     package = root / "hermes_cli"
     package.mkdir(parents=True)
+    moved = _moved_package(root)
     for name in ("_old_updater.py", "old_updater_deps.py"):
-        shutil.copy2(source / "hermes_cli" / name, package / name)
+        shutil.copy2(source / "hermes_agent/hermes_cli" / name, moved / name)
     (package / "_update_takeover.py").write_text(
         "import json, sys\nfrom pathlib import Path\n"
         "request = json.loads(Path(sys.argv[1]).read_text())\n"
@@ -275,8 +286,8 @@ def test_atexit_recovers_only_stopped_serves_after_cached_update(tmp_path, ackno
     program = root / "historical.py"
     program.write_text(
         "import atexit, json, os\nfrom pathlib import Path\n"
-        "from hermes_cli._old_updater import stop_for_relaunch\n"
-        "from hermes_cli.old_updater_deps import _relaunch_stopped_serves\n"
+        "from hermes_agent.hermes_cli._old_updater import stop_for_relaunch\n"
+        "from hermes_agent.hermes_cli.old_updater_deps import _relaunch_stopped_serves\n"
         "token = {'pending': True, 'entries': [{'purpose': 'serve', 'profile': 'work profile',"
         " 'host': '127.0.0.1', 'port': 8119}]}\n"
         "def cleanup():\n"
@@ -341,7 +352,7 @@ def test_serve_resume_child_reuses_respawn_without_updater_or_supervisors(tmp_pa
         f"sys.argv = [{str(root / 'hermes_cli/update_serve_resume.py')!r}, {str(context)!r}, {str(result_path)!r}]\n"
         "try:\n    runpy.run_path(sys.argv[0], run_name='__main__')\n"
         "finally:\n"
-        "    assert not any(name in sys.modules for name in ('hermes_cli.update_cmd', 'hermes_cli.update_receipt', 'hermes_cli.main'))\n"
+        "    assert not any(name in sys.modules for name in ('hermes_agent.hermes_cli.update_cmd', 'hermes_agent.hermes_cli.update_receipt', 'hermes_agent.hermes_cli.main'))\n"
         "    Path(os.environ['HERMES_HOME'], 'commands.json').write_text(json.dumps(calls))\n",
         encoding="utf-8",
     )
@@ -393,7 +404,7 @@ def test_completed_serve_token_is_acknowledged_without_preparation(tmp_path, enc
     shutil.copytree(source / "hermes_agent", root / "hermes_agent", ignore=shutil.ignore_patterns("__pycache__"))
     # Only selection is supplied. The two real entrypoints must carry the
     # request without importing PM or launching any completed backend twice.
-    (package / "_launchers.py").write_text(
+    (root / "hermes_agent/hermes_cli/_launchers.py").write_text(
         "import sys\nresolve_store_python = lambda root: sys.executable\n", encoding="utf-8")
     pm_package = root / "pm"
     pm_package.mkdir()
@@ -465,8 +476,8 @@ def test_takeover_arms_the_checkout_head_when_git_cannot_answer(tmp_path, monkey
     PATH (only PM's store copy) used to raise FileNotFoundError there, reporting a committed update
     as failed (F20); a git that runs but fails silently armed nothing (F25). Either way the record
     must still name the HEAD the checkout's own ref files hold."""
-    from hermes_cli import _early_recovery, _update_takeover
-    from hermes_cli.update_host_obligation import read_host_obligation
+    from hermes_agent.hermes_cli import _early_recovery, _update_takeover
+    from hermes_agent.hermes_cli.update_host_obligation import read_host_obligation
 
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
@@ -503,8 +514,8 @@ def test_takeover_arms_the_checkout_head_when_git_cannot_answer(tmp_path, monkey
 def test_takeover_arms_an_sha_less_obligation_for_a_git_less_root(tmp_path, monkeypatch):
     """An archive install has no HEAD to name, yet its update still owes the fleet a restart (F21):
     an SHA-less record (readers hold the fleet to the checkout) instead of no record at all."""
-    from hermes_cli import _update_takeover
-    from hermes_cli.update_host_obligation import read_host_obligation
+    from hermes_agent.hermes_cli import _update_takeover
+    from hermes_agent.hermes_cli.update_host_obligation import read_host_obligation
 
     monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path))  # no enclosing repo answers for it
     root = tmp_path / "archive"
@@ -535,7 +546,7 @@ def test_takeover_arms_the_host_record_without_application_dependencies(tmp_path
          "import importlib.util, sys\nfrom pathlib import Path\n"
          f"sys.path.insert(0, {str(source)!r})\n"
          "assert importlib.util.find_spec('ruamel') is None, 'precondition: no app dependencies'\n"
-         "from hermes_cli._update_takeover import _arm_fleet_obligation\n"
+         "from hermes_agent.hermes_cli._update_takeover import _arm_fleet_obligation\n"
          f"_arm_fleet_obligation(Path({str(root)!r}))\n"],
         env={**os.environ, "HERMES_GATEWAY_LOCK_DIR": str(lock_dir), "HERMES_HOME": str(home)},
         stdin=subprocess.DEVNULL, capture_output=True, text=True, encoding="utf-8", timeout=60,
@@ -550,7 +561,7 @@ def test_a_finish_child_that_cannot_start_after_the_commit_is_owed_not_failed(tm
     """The historical updater already moved the tree and prepare() armed the tail. A Popen/resume
     OSError starting update_finish used to land in the preparation catch-all: receipt failed,
     .update_exit_code=1, exit 1 for a committed update (review C7, invariant 3)."""
-    from hermes_cli import _update_takeover, update_custody, update_lock, update_receipt
+    from hermes_agent.hermes_cli import _update_takeover, update_custody, update_lock, update_receipt
     from hermes_constants import get_hermes_home
 
     class _Lock:
@@ -592,7 +603,7 @@ def test_a_finish_child_that_cannot_start_after_the_commit_is_owed_not_failed(tm
 def test_the_takeover_breadcrumb_is_written_temp_fsync_rename(tmp_path, monkeypatch):
     """With the host record unwritable the takeover falls back to the per-home breadcrumb; it was
     written in place (review C12, invariant 5): a crash mid-write left a truncated debt record."""
-    from hermes_cli import _update_takeover, update_host_obligation
+    from hermes_agent.hermes_cli import _update_takeover, update_host_obligation
     from hermes_constants import get_hermes_home
 
     monkeypatch.setattr(update_host_obligation, "write_host_obligation", lambda **_kw: False)
@@ -616,7 +627,7 @@ def test_a_takeover_debt_another_profile_cannot_see_is_never_silent(tmp_path, mo
     fallback as the commit point: with the host record unwritable on a two-profile install, the
     arming profile's marker hides the debt from the other one, so the takeover must say so (it
     cannot refuse a move that already happened) (kshitijk4poor P2, review S2)."""
-    from hermes_cli import _update_takeover
+    from hermes_agent.hermes_cli import _update_takeover
 
     homes = {name: tmp_path / "profiles" / name for name in ("coder", "writer")}
     for home in homes.values():
@@ -641,8 +652,8 @@ def test_a_historical_updater_arms_the_host_record_under_the_current_mutex(tmp_p
     """An N-1 updater imported ``update_lock`` before its pull, then lazily imports the pulled
     ``update_host_obligation``: the arm must still write the record, under the same sidecar lock
     current processes hold, instead of crashing the update on the missing ``marker_mutex``."""
-    from hermes_cli import update_lock
-    from hermes_cli.update_host_obligation import read_host_obligation, write_host_obligation
+    from hermes_agent.hermes_cli import update_lock
+    from hermes_agent.hermes_cli.update_host_obligation import read_host_obligation, write_host_obligation
 
     monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "gateway-locks"))
     monkeypatch.delattr(update_lock, "marker_mutex")  # N-1's in-memory update_lock had no such name

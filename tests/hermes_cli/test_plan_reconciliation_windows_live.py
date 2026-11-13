@@ -79,11 +79,11 @@ def test_plan_reconciliation_live_windows(tmp_path, monkeypatch):
             "code_version": "0.20.5",
         }), encoding="utf-8")
 
-        import hermes_cli.profiles as profiles_mod
+        import hermes_agent.hermes_cli.profiles as profiles_mod
         monkeypatch.setattr(profiles_mod, "_get_default_hermes_home", lambda: home)
         monkeypatch.setattr(profiles_mod, "_get_profiles_root", lambda: tmp_path / "none")
 
-        from hermes_cli.update_inventory import (
+        from hermes_agent.hermes_cli.update_inventory import (
             collect_runtime_inventory,
             match_runtime_outcomes,
             report_unaccounted_runtimes,

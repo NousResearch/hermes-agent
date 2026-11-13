@@ -5,15 +5,15 @@ a user message; the kickoff re-sent it and the agent spent 11 API calls / 6 min 
 """
 import queue
 
-from hermes_cli.cli_commands_mixin import CLICommandsMixin
-from hermes_cli.goals import GOAL_ALREADY_SEEN_KICK
+from hermes_agent.hermes_cli.cli_commands_mixin import CLICommandsMixin
+from hermes_agent.hermes_cli.goals import GOAL_ALREADY_SEEN_KICK
 
 
 def _cli(history):
     cli = CLICommandsMixin.__new__(CLICommandsMixin)
     cli.conversation_history = history
     cli._pending_input = queue.Queue()
-    from hermes_cli.goals import GoalManager
+    from hermes_agent.hermes_cli.goals import GoalManager
     cli._get_goal_manager = lambda: GoalManager("kick-test")
     return cli
 
@@ -61,7 +61,7 @@ def test_a_short_goal_that_selects_one_option_from_the_last_message_is_kicked_ve
 
 def test_gateway_and_tui_surfaces_use_the_same_rule(tmp_path, monkeypatch):
     """Independent review: other surfaces still duplicated the full goal. One shared function now."""
-    from hermes_cli import goals
+    from hermes_agent.hermes_cli import goals
     long_goal = "HANDOFF " + "step; " * 120
     assert goals.goal_kick_prompt(long_goal, long_goal) == goals.GOAL_ALREADY_SEEN_KICK
     assert goals.goal_kick_prompt("ship the API", "ship the API or ship the UI? " * 8) == "ship the API"

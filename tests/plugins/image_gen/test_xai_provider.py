@@ -19,7 +19,7 @@ def _fake_api_key(monkeypatch, tmp_path):
     monkeypatch.setenv("XAI_API_KEY", "test-key-12345")
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     try:
-        import hermes_cli.config as cfg_mod
+        import hermes_agent.hermes_cli.config as cfg_mod
 
         if hasattr(cfg_mod, "_invalidate_load_config_cache"):
             cfg_mod._invalidate_load_config_cache()

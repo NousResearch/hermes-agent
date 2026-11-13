@@ -196,7 +196,7 @@ class TestOneTimeUserNotice:
         import hermes_agent.agent.agent_runtime_helpers as arh
 
         monkeypatch.setattr(
-            "hermes_cli.config.load_config_readonly",
+            "hermes_agent.hermes_cli.config.load_config_readonly",
             lambda: {"agent": {"sanitizer_heal_escalation_threshold": 7}},
         )
         assert arh._heal_escalation_threshold() == 7
@@ -207,7 +207,7 @@ class TestOneTimeUserNotice:
         def _boom():
             raise RuntimeError("no config")
 
-        monkeypatch.setattr("hermes_cli.config.load_config_readonly", _boom)
+        monkeypatch.setattr("hermes_agent.hermes_cli.config.load_config_readonly", _boom)
         assert (
             arh._heal_escalation_threshold() == arh._EMPTY_HEAL_ESCALATE_AFTER
         )
@@ -231,7 +231,7 @@ class TestHealStatsSurface:
 
     def test_debug_report_includes_heal_counters(self, monkeypatch):
         import hermes_agent.agent.agent_runtime_helpers as arh
-        from hermes_cli.debug import collect_debug_report, LogSnapshot
+        from hermes_agent.hermes_cli.debug import collect_debug_report, LogSnapshot
 
         monkeypatch.setattr(arh, "_heal_escalation_threshold", lambda: 2)
         set_session_context("sess-report")

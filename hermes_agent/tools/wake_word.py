@@ -96,7 +96,7 @@ def load_wake_word_config() -> dict[str, Any]:
     """Return the ``wake_word`` config section, shape-guarded to a dict."""
     cfg = None
     with suppress(Exception):
-        from hermes_cli.config import load_config
+        from hermes_agent.hermes_cli.config import load_config
         cfg = load_config().get("wake_word")
     return cfg if isinstance(cfg, dict) else {}
 
@@ -192,7 +192,7 @@ def wake_surface_enabled(surface: str, cfg: Optional[dict[str, Any]] = None) -> 
 
 def _active_profile_name() -> str:
     with suppress(Exception):
-        from hermes_cli.profiles import get_active_profile_name
+        from hermes_agent.hermes_cli.profiles import get_active_profile_name
         return get_active_profile_name() or "default"
     return "default"
 
@@ -203,8 +203,8 @@ def enrolled_profile_phrases() -> dict[str, str]:
     ``"hey <profile>"``; the sherpa engine listens for all and routes to the match. Unreadable → skipped."""
     phrases: dict[str, str] = {}
     with suppress(Exception):
-        from hermes_cli.config import read_user_config_raw
-        from hermes_cli.profiles import get_profile_dir, list_profiles
+        from hermes_agent.hermes_cli.config import read_user_config_raw
+        from hermes_agent.hermes_cli.profiles import get_profile_dir, list_profiles
         for info in list_profiles():
             name = getattr(info, "name", None) or str(info)
             with suppress(Exception):

@@ -14,8 +14,8 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli import desktop_plugin_halves as halves
-from hermes_cli.desktop_plugin_halves import PACKAGE_MARKER, reconcile_desktop_halves_report
+from hermes_agent.hermes_cli import desktop_plugin_halves as halves
+from hermes_agent.hermes_cli.desktop_plugin_halves import PACKAGE_MARKER, reconcile_desktop_halves_report
 
 
 def _package(folder: Path) -> None:

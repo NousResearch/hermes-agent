@@ -21,10 +21,10 @@ from unittest.mock import patch
 
 import pytest
 
-from hermes_cli import dashboard_procs, main_dashboard, update_cmd, update_cmd_fleet
-from hermes_cli import update_cmd_fleet_verify as fleet_verify
-from hermes_cli import update_inventory, update_receipt
-from hermes_cli.update_inventory import RuntimeRecord, UpdatePlan
+from hermes_agent.hermes_cli import dashboard_procs, main_dashboard, update_cmd, update_cmd_fleet
+from hermes_agent.hermes_cli import update_cmd_fleet_verify as fleet_verify
+from hermes_agent.hermes_cli import update_inventory, update_receipt
+from hermes_agent.hermes_cli.update_inventory import RuntimeRecord, UpdatePlan
 
 DASH_PID = 961386
 UNIT = "hermes-dashboard.service"
@@ -93,7 +93,7 @@ def test_systemd_owned_ledger_dashboard_is_classified_systemd(monkeypatch):
     entry = {"pid": DASH_PID, "create_time": 1000.0, "purpose": "dashboard", "profile": "",
              "argv": "hermes dashboard --host 0.0.0.0 --port 9119 --no-open", "host": "0.0.0.0", "port": 9119}
     fake_pi = SimpleNamespace(ledger_entries=lambda **k: [entry], spawner_is_dead=lambda e: None)
-    monkeypatch.setitem(sys.modules, "hermes_cli.process_identity", fake_pi)
+    monkeypatch.setitem(sys.modules, "hermes_agent.hermes_cli.process_identity", fake_pi)
     plan = UpdatePlan()
     update_inventory._collect_ledger_runtimes(plan, set())
     (row,) = plan.runtimes
@@ -109,7 +109,7 @@ def test_hand_started_dashboard_in_a_foreign_cgroup_stays_manual(monkeypatch):
     monkeypatch.setattr(main_dashboard, "_run_probe",
                         lambda cmd, *, timeout: SimpleNamespace(returncode=0, stdout="991\n", stderr=""))
     entry = {"pid": 4321, "create_time": 1.0, "purpose": "dashboard", "argv": "hermes dashboard"}
-    monkeypatch.setitem(sys.modules, "hermes_cli.process_identity",
+    monkeypatch.setitem(sys.modules, "hermes_agent.hermes_cli.process_identity",
                         SimpleNamespace(ledger_entries=lambda **k: [entry], spawner_is_dead=lambda e: None))
     plan = UpdatePlan()
     update_inventory._collect_ledger_runtimes(plan, set())
@@ -120,7 +120,7 @@ def test_stale_unit_dashboard_hint_names_its_unit_and_scope(monkeypatch, capsys)
     plan = UpdatePlan(runtimes=[RuntimeRecord(
         kind="dashboard", profile="default", pid=DASH_PID, supervisor="systemd", restart_via="systemd",
         detail={"create_time": 1000.0, "systemd_unit": UNIT, "systemd_scope": "system"})])
-    monkeypatch.setitem(sys.modules, "hermes_cli.process_identity", SimpleNamespace(
+    monkeypatch.setitem(sys.modules, "hermes_agent.hermes_cli.process_identity", SimpleNamespace(
         ledger_entries=lambda: [{"pid": DASH_PID, "purpose": "dashboard", "create_time": 1000.0}]))
     rows = update_cmd._surviving_pre_update_serve_runtimes(plan)
     update_cmd._warn_stale_serve_runtimes(rows)
@@ -133,11 +133,11 @@ def _verify(monkeypatch, restart, *, fleet_state="current", plan=None, dashboard
     refreshed: list = []
     monkeypatch.setattr(fleet_verify, "_print_legacy_units_warning", lambda: None)
     monkeypatch.setattr(update_cmd, "_surviving_pre_update_serve_runtimes", lambda plan: list(survivors))
-    monkeypatch.setattr("hermes_cli.update_cmd_maint._refresh_dashboard_after_update",
+    monkeypatch.setattr("hermes_agent.hermes_cli.update_cmd_maint._refresh_dashboard_after_update",
                         lambda **k: refreshed.append(k) or set(dashboards_down))
     monkeypatch.setattr(update_receipt, "_code_identity", lambda **k: {})
-    monkeypatch.setattr("hermes_cli.gateway_migrate.maybe_auto_migrate_after_update", lambda: None)
-    monkeypatch.setattr("hermes_cli.update_cmd_stale_survivors.signal_stale_fleet_survivors", lambda *a: None)
+    monkeypatch.setattr("hermes_agent.hermes_cli.gateway_migrate.maybe_auto_migrate_after_update", lambda: None)
+    monkeypatch.setattr("hermes_agent.hermes_cli.update_cmd_stale_survivors.signal_stale_fleet_survivors", lambda *a: None)
     monkeypatch.setattr(fleet_verify, "_collect_fleet_snapshot",
                         lambda outcome, expected: [{"profile": "default", "pid": 1563620, "state": fleet_state}])
     update_cmd_fleet._write_fleet_restart_pending_marker()
@@ -229,7 +229,7 @@ def test_unrestarted_unit_dashboard_keeps_a_receipt_backed_reminder(monkeypatch,
     never be mentioned again. It rides the same receipt-backed reminder flow as a manual serve, so the
     startup warning recovers it from the receipt's plan even when verification never ran (an aborted
     run, ``--no-gateway-restart``), names the unit's command, and clears once the process exits."""
-    from hermes_cli import process_identity
+    from hermes_agent.hermes_cli import process_identity
 
     monkeypatch.setattr(process_identity, "_pid_alive_matches", lambda *a: True)
     if how == "after-verification":
@@ -260,8 +260,8 @@ def test_unrestarted_unit_dashboard_keeps_a_receipt_backed_reminder(monkeypatch,
 
 
 def test_unit_reminder_that_cannot_be_saved_stays_in_the_receipt_with_its_command(monkeypatch, capsys):
-    from hermes_cli import process_identity
-    from hermes_cli.update_serve_obligations import retain_receipt_manual_serves, warn_pending_manual_serves
+    from hermes_agent.hermes_cli import process_identity
+    from hermes_agent.hermes_cli.update_serve_obligations import retain_receipt_manual_serves, warn_pending_manual_serves
     from hermes_constants import get_hermes_home
 
     monkeypatch.setattr(process_identity, "_pid_alive_matches", lambda *a: True)
@@ -274,7 +274,7 @@ def test_unit_reminder_that_cannot_be_saved_stays_in_the_receipt_with_its_comman
 
 
 def test_receipt_carries_unit_rows_forward_like_manual_ones():
-    from hermes_cli.update_serve_obligations import is_reminder_row
+    from hermes_agent.hermes_cli.update_serve_obligations import is_reminder_row
 
     assert is_reminder_row(_unit_row())
     assert is_reminder_row({"kind": "serve", "supervisor": "manual-serve"})

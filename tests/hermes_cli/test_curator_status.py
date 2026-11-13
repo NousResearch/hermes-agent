@@ -33,7 +33,7 @@ def curator_status_env(tmp_path, monkeypatch):
     importlib.reload(skill_usage)
     from hermes_agent.agent import curator
     importlib.reload(curator)
-    from hermes_cli import curator as curator_cli
+    from hermes_agent.hermes_cli import curator as curator_cli
     importlib.reload(curator_cli)
 
     def _write_skill(name: str) -> None:

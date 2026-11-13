@@ -22,8 +22,8 @@ def _write_env(path: Path, contents: str) -> None:
 
 def test_remove_env_value_invalidates_cache(tmp_path, monkeypatch):
     """remove_env_value() invalidates the cache so the removed key disappears."""
-    from hermes_cli import config as config_mod
-    from hermes_cli.config import (
+    from hermes_agent.hermes_cli import config as config_mod
+    from hermes_agent.hermes_cli.config import (
         invalidate_env_cache,
         load_env,
         remove_env_value,

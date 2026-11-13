@@ -13,7 +13,7 @@ from tests.waiting import async_wait_until
 
 
 def _hooks_in(home: Path) -> list:
-    from hermes_cli.plugins import get_plugin_manager
+    from hermes_agent.hermes_cli.plugins import get_plugin_manager
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
     token = set_hermes_home_override(str(home))
     try:

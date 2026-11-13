@@ -41,7 +41,7 @@ async def test_keyboard_interrupt_in_end_session_does_not_skip_close(tmp_path, m
         raise RuntimeError("boom")
 
     try:
-        with patch("hermes_cli.runtime_provider.resolve_runtime_provider", return_value=runtime), \
+        with patch("hermes_agent.hermes_cli.runtime_provider.resolve_runtime_provider", return_value=runtime), \
              patch("hermes_agent.run_agent.AIAgent") as agent_class, \
              patch.object(db, "end_session", side_effect=KeyboardInterrupt) as end_session, \
              patch.object(db, "close", wraps=db.close) as close:

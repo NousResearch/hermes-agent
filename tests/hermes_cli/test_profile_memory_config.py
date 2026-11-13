@@ -2,7 +2,7 @@
 
 import pytest
 
-from hermes_cli.profile_memory_config import cloned_memory_provider
+from hermes_agent.hermes_cli.profile_memory_config import cloned_memory_provider
 
 
 @pytest.mark.parametrize("body", [

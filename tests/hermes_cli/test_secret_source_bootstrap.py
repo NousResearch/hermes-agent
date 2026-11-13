@@ -11,7 +11,7 @@ from hermes_agent.agent.secret_sources.base import (
     FetchResult,
     SecretSource,
 )
-from hermes_cli.plugins import PluginManager
+from hermes_agent.hermes_cli.plugins import PluginManager
 
 
 class _StubSource(SecretSource):
@@ -43,11 +43,11 @@ def test_refresh_secret_sources_noop_without_plugin_sources(monkeypatch):
 
     monkeypatch.setattr(reg, "list_plugin_sources", list)
     monkeypatch.setattr(
-        "hermes_cli.env_loader.reset_secret_source_cache",
+        "hermes_agent.hermes_cli.env_loader.reset_secret_source_cache",
         lambda *a, **kw: called.__setitem__("reset", called["reset"] + 1),
     )
     monkeypatch.setattr(
-        "hermes_cli.env_loader.load_hermes_dotenv",
+        "hermes_agent.hermes_cli.env_loader.load_hermes_dotenv",
         lambda **kw: called.__setitem__("load", called["load"] + 1),
     )
 
@@ -65,15 +65,15 @@ def test_refresh_secret_sources_noop_when_only_builtins(monkeypatch):
     reg._reset_registry_for_tests()
     assert reg.list_plugin_sources() == []
     monkeypatch.setattr(
-        "hermes_cli.config.load_config",
+        "hermes_agent.hermes_cli.config.load_config",
         lambda: {"secrets": {"bitwarden": {"enabled": True}}},
     )
     monkeypatch.setattr(
-        "hermes_cli.env_loader.reset_secret_source_cache",
+        "hermes_agent.hermes_cli.env_loader.reset_secret_source_cache",
         lambda *a, **kw: called.__setitem__("reset", called["reset"] + 1),
     )
     monkeypatch.setattr(
-        "hermes_cli.env_loader.load_hermes_dotenv",
+        "hermes_agent.hermes_cli.env_loader.load_hermes_dotenv",
         lambda **kw: called.__setitem__("load", called["load"] + 1),
     )
 
@@ -89,15 +89,15 @@ def test_refresh_secret_sources_repulls_when_plugin_enabled(monkeypatch):
 
     monkeypatch.setattr(reg, "list_plugin_sources", lambda: [_StubSource()])
     monkeypatch.setattr(
-        "hermes_cli.config.load_config",
+        "hermes_agent.hermes_cli.config.load_config",
         lambda: {"secrets": {"myvault": {"enabled": True}}},
     )
     monkeypatch.setattr(
-        "hermes_cli.env_loader.reset_secret_source_cache",
+        "hermes_agent.hermes_cli.env_loader.reset_secret_source_cache",
         lambda *a, **kw: called.__setitem__("reset", called["reset"] + 1),
     )
     monkeypatch.setattr(
-        "hermes_cli.env_loader.load_hermes_dotenv",
+        "hermes_agent.hermes_cli.env_loader.load_hermes_dotenv",
         lambda **kw: called.__setitem__("load", called["load"] + 1),
     )
 
@@ -117,15 +117,15 @@ def test_refresh_respects_custom_is_enabled(monkeypatch):
     )
     # No `enabled` key at all — only the source's custom contract decides.
     monkeypatch.setattr(
-        "hermes_cli.config.load_config",
+        "hermes_agent.hermes_cli.config.load_config",
         lambda: {"secrets": {"myvault": {"vault_id": "abc123"}}},
     )
     monkeypatch.setattr(
-        "hermes_cli.env_loader.reset_secret_source_cache",
+        "hermes_agent.hermes_cli.env_loader.reset_secret_source_cache",
         lambda *a, **kw: called.__setitem__("reset", called["reset"] + 1),
     )
     monkeypatch.setattr(
-        "hermes_cli.env_loader.load_hermes_dotenv",
+        "hermes_agent.hermes_cli.env_loader.load_hermes_dotenv",
         lambda **kw: called.__setitem__("load", called["load"] + 1),
     )
 
@@ -144,15 +144,15 @@ def test_refresh_skips_custom_source_when_not_activated(monkeypatch):
     )
     # `enabled: true` but the custom contract ignores it and requires vault_id.
     monkeypatch.setattr(
-        "hermes_cli.config.load_config",
+        "hermes_agent.hermes_cli.config.load_config",
         lambda: {"secrets": {"myvault": {"enabled": True}}},
     )
     monkeypatch.setattr(
-        "hermes_cli.env_loader.reset_secret_source_cache",
+        "hermes_agent.hermes_cli.env_loader.reset_secret_source_cache",
         lambda *a, **kw: called.__setitem__("reset", called["reset"] + 1),
     )
     monkeypatch.setattr(
-        "hermes_cli.env_loader.load_hermes_dotenv",
+        "hermes_agent.hermes_cli.env_loader.load_hermes_dotenv",
         lambda **kw: called.__setitem__("load", called["load"] + 1),
     )
 
@@ -172,15 +172,15 @@ def test_refresh_skips_source_whose_is_enabled_raises(monkeypatch):
 
     monkeypatch.setattr(reg, "list_plugin_sources", lambda: [_Boom()])
     monkeypatch.setattr(
-        "hermes_cli.config.load_config",
+        "hermes_agent.hermes_cli.config.load_config",
         lambda: {"secrets": {"myvault": {"enabled": True}}},
     )
     monkeypatch.setattr(
-        "hermes_cli.env_loader.reset_secret_source_cache",
+        "hermes_agent.hermes_cli.env_loader.reset_secret_source_cache",
         lambda *a, **kw: called.__setitem__("reset", called["reset"] + 1),
     )
     monkeypatch.setattr(
-        "hermes_cli.env_loader.load_hermes_dotenv",
+        "hermes_agent.hermes_cli.env_loader.load_hermes_dotenv",
         lambda **kw: called.__setitem__("load", called["load"] + 1),
     )
 
@@ -193,7 +193,7 @@ def test_refresh_skips_source_whose_is_enabled_raises(monkeypatch):
 def test_real_plugin_source_discovery_applies_dotenv(monkeypatch, tmp_path):
     """A cold process discovers a real plugin and applies its credential."""
     import hermes_agent.agent.secret_sources.registry as reg
-    from hermes_cli import env_loader
+    from hermes_agent.hermes_cli import env_loader
 
     reg._reset_registry_for_tests()
     env_loader.reset_secret_source_cache()
@@ -284,7 +284,7 @@ def test_removing_the_last_plugin_source_revokes_its_process_env_value(
     has its own view disturbed by the revocation."""
     import hermes_agent.agent.secret_sources.registry as reg
     from hermes_agent.agent.secret_scope import get_secret
-    from hermes_cli import env_loader
+    from hermes_agent.hermes_cli import env_loader
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
     reg._reset_registry_for_tests()

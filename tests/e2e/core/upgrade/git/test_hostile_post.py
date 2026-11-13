@@ -11,7 +11,7 @@ release and breaks something that runs AFTER the checkout moved, for real:
     (``_config_version`` lowered by one): one failed step must not skip later independent ones.
 (b) a gateway that refuses to restart: a credential-free, platform-less (cron-only) ``hermes
     gateway run`` lives in the same PID namespace as the updater (``handoff._nshost``). The release
-    makes ``hermes_cli.gateway.run_gateway`` exit 1 before booting while
+    makes ``hermes_agent.hermes_cli.gateway.run_gateway`` exit 1 before booting while
     ``$HOME/.e2e-break-gateway-boot`` exists. The updater drains the OLD gateway (pre-update code,
     no fault) and its relaunch boots the NEW code, which refuses to start: the restart fails for real,
     no gateway serves the new commit. Removing the toggle and updating again must retry the owed
@@ -254,13 +254,13 @@ def _publish_web_release(w: G.World, tag: str) -> str:
 
 def _publish_gateway_fault_release(w: G.World, tag: str) -> str:
     """A release whose ``hermes gateway run`` refuses to boot while the toggle exists."""
-    text = _head_file(w, "hermes_cli/gateway.py")
+    text = _head_file(w, "hermes_agent/hermes_cli/gateway.py")
     if _GATEWAY_MARK not in text:
         m = re.search(r"^def run_gateway\(.*?\):\n    \"\"\".*?\"\"\"\n", text, re.DOTALL | re.MULTILINE)
-        assert m, "premise: hermes_cli/gateway.py has no run_gateway() with a docstring to inject after"
+        assert m, "premise: hermes_agent/hermes_cli/gateway.py has no run_gateway() with a docstring to inject after"
         text = text[:m.end()] + _HOSTILE_GATEWAY + text[m.end():]
     return w.publish(f"release: e2e hostile post gateway {tag}", {
-        "hermes_cli/gateway.py": text,
+        "hermes_agent/hermes_cli/gateway.py": text,
         f"docs/e2e-hostile-post-{tag}.txt": f"release {tag}\n",
     })
 
@@ -351,7 +351,7 @@ def test_failed_web_build_after_commit_is_a_followup_not_a_failed_update(w):
     _clear_toggles(w)
     latest = _config_version(w)
     if latest is None:
-        from hermes_cli.config_defaults import DEFAULT_CONFIG
+        from hermes_agent.hermes_cli.config_defaults import DEFAULT_CONFIG
 
         latest = int(DEFAULT_CONFIG["_config_version"])
     owed = latest - 1

@@ -259,7 +259,7 @@ _ENABLE_VIRTUAL_TERMINAL_PROCESSING = 0x0004
 def enable_windows_vt(streams=None) -> bool:
     """Opt the console behind stdout/stderr in to ANSI escape processing.
 
-    ``hermes_cli.colors`` and the skins emit raw SGR codes whenever stdout is a TTY. A
+    ``hermes_agent.hermes_cli.colors`` and the skins emit raw SGR codes whenever stdout is a TTY. A
     conhost console (PowerShell 5.1, cmd.exe, the installer's ``hermes setup``) prints
     them as ``←[35m`` until the output handle has ENABLE_VIRTUAL_TERMINAL_PROCESSING, and
     shells hand native children a console with it off. The mode belongs to the console
@@ -303,8 +303,8 @@ def suppress_platform_ver_console() -> None:
     and Python 3.11.0/3.11.1 (no ``encoding="locale"`` fix) strict-utf-8-decodes the OEM
     code page output under PEP 540 mode and raises (#69413). Returning the inputs makes
     ``win32_ver()`` fall back to ``sys.getwindowsversion()`` — same data, no subprocess.
-    Mirrors ``hermes_cli._subprocess_compat.suppress_platform_ver_console`` for callers
-    that never import ``hermes_cli.main``; double application is harmless.
+    Mirrors ``hermes_agent.hermes_cli._subprocess_compat.suppress_platform_ver_console`` for callers
+    that never import ``hermes_agent.hermes_cli.main``; double application is harmless.
     """
     if not _IS_WINDOWS:
         return
@@ -457,7 +457,7 @@ def export_scratch_tmp_env() -> None:
 
     System temp is tmpfs on most Linux hosts and containers; Hermes' browser profiles, PTY
     probes and every ``tempfile`` default a child script makes would eat RAM there. Runs at
-    import so every entry point and every child they spawn inherits it; ``hermes_cli.main``
+    import so every entry point and every child they spawn inherits it; ``hermes_agent.hermes_cli.main``
     re-runs it after ``--profile`` re-homes the process. Never raises.
     """
     try:
@@ -509,31 +509,44 @@ harden_import_path(str(_root))
 
 def _settle_interrupted_update() -> None:
     """Put back the tree a killed ``hermes update`` left half-moved, before PM, launch preparation or
-    any Hermes package imports from it (``hermes_cli._early_recovery``; ``hermes_cli.main`` repeats the
-    call for entries that never reach this module). A killed ZIP swap can leave ``hermes_cli/`` itself
+    any Hermes package imports from it (``hermes_agent.hermes_cli._early_recovery``; ``hermes_agent.hermes_cli.main`` repeats the
+    call for entries that never reach this module). A killed ZIP swap can leave ``hermes_agent/hermes_cli/`` itself
     moved aside: the journal-driven restore then runs from that moved-aside copy, the code that wrote
     the journal. Root files are never absent mid-swap (``update_cmd_zip._commit_staged_replacements``)."""
     try:
-        from hermes_cli import _early_recovery as recovery
+        from hermes_agent.hermes_cli import _early_recovery as recovery
     except ImportError:
-        moved_aside = _root / "hermes_cli.hermes-update-old" / "_early_recovery.py"
-        if not (_root / ".hermes-update-zip-swap").is_file() or not moved_aside.is_file():
+        new_aside = _root / "hermes_agent.hermes-update-old"
+        old_aside = _root / "hermes_cli.hermes-update-old"
+        if not (_root / ".hermes-update-zip-swap").is_file():
             return  # not a torn update: the imports below report the real damage
+        if (new_aside / "hermes_cli" / "_early_recovery.py").is_file():
+            module = "hermes_agent.hermes_cli._early_recovery"
+            stand_ins = {"hermes_agent": [str(new_aside), str(_root / "hermes_agent")],
+                         "hermes_agent.hermes_cli": [str(new_aside / "hermes_cli"), str(_root / "hermes_agent" / "hermes_cli")]}
+        elif (old_aside / "_early_recovery.py").is_file() or (_root / "hermes_cli" / "_early_recovery.py").is_file():
+            module = "hermes_cli._early_recovery"
+            stand_ins = {"hermes_cli": [str(old_aside), str(_root / "hermes_cli")]}
+        else:
+            return
+        import importlib
         import types
 
-        # The moved-aside directory stands in as ``hermes_cli`` (its ``__init__`` not run), so the
-        # repair's own ``from hermes_cli import update_lock`` finds the custody code beside it:
-        # without that the restore refuses to repair unguarded. Dropped again unless it relaunches.
-        package = types.ModuleType("hermes_cli")
-        package.__path__ = [str(moved_aside.parent), str(_root / "hermes_cli")]
-        sys.modules["hermes_cli"] = package
+        # The moved-aside directory stands in for its package (its ``__init__`` not run), so the
+        # repair's own ``update_lock`` import finds the custody code beside it: without that the
+        # restore refuses to repair unguarded. Dropped again unless it relaunches.
+        for name, path in stand_ins.items():
+            package = types.ModuleType(name)
+            package.__path__ = path
+            sys.modules[name] = package
+        tops = {name.split(".")[0] for name in stand_ins}
         try:
-            from hermes_cli import _early_recovery as recovery
+            recovery = importlib.import_module(module)
 
             if recovery.restore_interrupted_pull(_root):
                 recovery.relaunch_after_restore()
         finally:
-            for name in [n for n in sys.modules if n == "hermes_cli" or n.startswith("hermes_cli.")]:
+            for name in [n for n in sys.modules if n.split(".")[0] in tops]:
                 del sys.modules[name]
         return
     if recovery.restore_interrupted_pull(_root):
@@ -549,7 +562,7 @@ _install_compat()
 
 
 def _pin_launcher_home() -> None:
-    """A minted launcher (``hermes_cli._launchers``) pins ``HERMES_HOME`` to the install's default
+    """A minted launcher (``hermes_agent.hermes_cli._launchers``) pins ``HERMES_HOME`` to the install's default
     root. That needs ``hermes_constants`` from the checkout, so the launcher asks for it here, after
     the repair above: a merge killed while writing ``hermes_constants.py`` must not keep the repair
     from ever running. The flag name is ``_launchers.PIN_DEFAULT_HOME_FLAG``."""
@@ -566,7 +579,7 @@ if _legacy_post_swap is not None:
     # This continuation exists precisely because the replacement tree may not
     # run under the old release's dependency graph. Take it over before PM
     # activation, launch preparation, or argparse imports any of that graph.
-    from hermes_cli.update_handoff import _continue_legacy_post_swap
+    from hermes_agent.hermes_cli.update_handoff import _continue_legacy_post_swap
 
     _handoff_path, _argv_tail = _legacy_post_swap
     raise SystemExit(_continue_legacy_post_swap(_handoff_path, argv_tail=_argv_tail))
@@ -579,14 +592,14 @@ class RelaunchExit(SystemExit):
 
 
 from pm.environments import activate_dependencies, install_state_permission_message
-from hermes_cli._early_recovery import recover_if_needed
+from hermes_agent.hermes_cli._early_recovery import recover_if_needed
 
-from hermes_cli._parser import command_argv
+from hermes_agent.hermes_cli._parser import command_argv
 
 # Repair needs only stdlib. Do not activate the damaged tree to reach it.
 _pm_repair = command_argv(sys.argv[1:])[:2] == ["pm", "repair"]
 if not _pm_repair:
-    from hermes_cli.venv_sync import prepare_launch, relaunch_command
+    from hermes_agent.hermes_cli.venv_sync import prepare_launch, relaunch_command
 
     try:
         _launch_python = prepare_launch(_root, sys.argv[1:])

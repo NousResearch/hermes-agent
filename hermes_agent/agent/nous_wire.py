@@ -75,7 +75,7 @@ def maybe_switch_wire_after_first_response(agent: Any, response: Any, api_call_c
     if not model.lower().startswith("anthropic/"):
         return False
     try:
-        from hermes_cli.providers import _nous_anthropic_wire
+        from hermes_agent.hermes_cli.providers import _nous_anthropic_wire
         if _nous_anthropic_wire() != "auto":
             return False
     except Exception:

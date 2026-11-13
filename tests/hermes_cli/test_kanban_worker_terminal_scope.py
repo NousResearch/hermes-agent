@@ -12,7 +12,8 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli import kanban_db_dispatch
+from hermes_agent.hermes_cli import kanban_db_dispatch
+from hermes_agent.hermes_cli._startup_fast import project_root_str
 from hermes_agent.tools.terminal_scope import get_terminal_scope
 
 
@@ -47,7 +48,7 @@ def test_worker_profile_scope_installs_the_assigned_profiles_terminal_policy(pro
 
 def _spawn_env_for_profile_b(monkeypatch, tmp_path):
     """Run ``_default_spawn`` far enough to capture the worker env, never spawning anything."""
-    from hermes_cli.kanban_db import Task
+    from hermes_agent.hermes_cli.kanban_db import Task
     from hermes_agent.tools import process_registry
 
     captured: list[dict] = []
@@ -86,7 +87,7 @@ def test_launch_profiles_own_worker_keeps_its_credentials(tmp_path, monkeypatch)
     monkeypatch.setenv("HERMES_HOME", str(launch))
     monkeypatch.setenv("OPENAI_API_KEY", "dispatcher-launch-key")
 
-    from hermes_cli.kanban_db import Task
+    from hermes_agent.hermes_cli.kanban_db import Task
     from hermes_agent.tools import process_registry
 
     captured: list[dict] = []
@@ -109,9 +110,9 @@ def test_launch_profiles_own_worker_keeps_its_credentials(tmp_path, monkeypatch)
 
 def test_worker_for_another_profile_can_still_import_hermes(profile_b, tmp_path, monkeypatch):
     """The routed-profile scrub strips Hermes-owned PYTHONPATH entries, but the worker IS Hermes
-    (`-m hermes_cli.kanban_worker_client`): a PYTHONPATH-launched dispatcher must hand it a tree
+    (`-m hermes_agent.hermes_cli.kanban_worker_client`): a PYTHONPATH-launched dispatcher must hand it a tree
     it can import, or it dies on `No module named 'hermes_cli'` before reaching the owner."""
-    repo_root = Path(kanban_db_dispatch.__file__).resolve().parent.parent
+    repo_root = Path(project_root_str())
     monkeypatch.setenv("PYTHONPATH", str(repo_root))
     env = _spawn_env_for_profile_b(monkeypatch, tmp_path)
     assert str(repo_root) in env.get("PYTHONPATH", "").split(os.pathsep)
@@ -124,7 +125,7 @@ def test_worker_for_another_profile_keeps_the_instance_config_deployment(profile
     cold-start for B) keeps it; anything else from that ``.env`` does not reach B. The selected
     backend names the deployment (``deployment_env_names``); the file backend names none, so a
     stand-in backend names one here, through the real dispatch path."""
-    from hermes_cli import config_backend
+    from hermes_agent.hermes_cli import config_backend
 
     launch = Path(os.environ["HERMES_HOME"])
     (launch / ".env").write_text("FIXTURE_CONFIG_PLANE=plane-1\nFIXTURE_PLANE_TOKEN=secret\n", encoding="utf-8")

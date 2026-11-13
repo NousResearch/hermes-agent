@@ -11,7 +11,7 @@ from types import SimpleNamespace
 import pytest
 from prompt_toolkit.buffer import Buffer
 
-import hermes_cli.cli_tui_mixin as mixin_mod
+import hermes_agent.hermes_cli.cli_tui_mixin as mixin_mod
 
 
 class _Cli(mixin_mod.CLITuiMixin):

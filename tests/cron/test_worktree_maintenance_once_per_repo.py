@@ -23,8 +23,8 @@ def _git_repo(path):
 
 def test_profiles_sharing_a_repo_prune_it_once_per_interval(tmp_path, monkeypatch):
     import hermes_agent.cron.scheduler as sched
-    from hermes_cli import worktree_ops
-    from hermes_cli.worktree_registry import record_worktree_repo
+    from hermes_agent.hermes_cli import worktree_ops
+    from hermes_agent.hermes_cli.worktree_registry import record_worktree_repo
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
     shared = _git_repo(tmp_path / "shared")
@@ -70,7 +70,7 @@ def test_profiles_sharing_a_repo_prune_it_once_per_interval(tmp_path, monkeypatc
 @pytest.mark.platforms("posix")
 def test_footprint_warning_sizes_the_tree_only_when_the_count_does_not_decide(
         tmp_path, monkeypatch, caplog):
-    from hermes_cli import worktree_ops
+    from hermes_agent.hermes_cli import worktree_ops
 
     shim_dir = tmp_path / "bin"
     shim_dir.mkdir()

@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 import pytest
 
-from hermes_cli.web_server_chat import _legacy_pump
+from hermes_agent.hermes_cli.web_server_chat import _legacy_pump
 
 
 class _FakeBridge:
@@ -61,7 +61,7 @@ async def test_legacy_pump_sleeps_on_idle_pty():
 
     ws = _FakeWebSocket()
 
-    with patch("hermes_cli.web_server.asyncio.sleep", side_effect=fake_sleep):
+    with patch("hermes_agent.hermes_cli.web_server.asyncio.sleep", side_effect=fake_sleep):
         # _legacy_pump is typed against starlette WebSocket; our fake is an
         # intentional behavioral shim.  # type: ignore[invalid-argument-type]
         await _legacy_pump(ws, bridge)

@@ -8,7 +8,7 @@ choice; a tall one must keep the full question text.
 import shutil
 from unittest.mock import patch
 
-from cli import HermesCLI
+from hermes_agent.cli import HermesCLI
 
 
 def _make_cli(questions, answers, choices, active):
@@ -30,7 +30,7 @@ def _make_cli(questions, answers, choices, active):
 
 def _rendered(cli, columns, lines):
     size = shutil.os.terminal_size((columns, lines))
-    with patch("hermes_cli.cli_tui_mixin.shutil.get_terminal_size", return_value=size):
+    with patch("hermes_agent.hermes_cli.cli_tui_mixin.shutil.get_terminal_size", return_value=size):
         fragments = cli._get_clarify_display_fragments()
     return "".join(text for _style, text in fragments)
 

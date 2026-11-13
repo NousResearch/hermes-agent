@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 import hermes_yaml as yaml
 
-from hermes_cli.profiles import (
+from hermes_agent.hermes_cli.profiles import (
     create_profile,
     format_profile_label,
     get_profile_dir,
@@ -39,7 +39,7 @@ def _get_api_profiles(profile_env, monkeypatch) -> list:
     """Rows of a real ``GET /api/profiles`` against the isolated home."""
     from hermes_agent import hermes_state
     from starlette.testclient import TestClient
-    from hermes_cli.web_server import _SESSION_HEADER_NAME, _SESSION_TOKEN, app
+    from hermes_agent.hermes_cli.web_server import _SESSION_HEADER_NAME, _SESSION_TOKEN, app
     monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", profile_env / "state.db")
     resp = TestClient(app).get("/api/profiles", headers={_SESSION_HEADER_NAME: _SESSION_TOKEN})
     assert resp.status_code == 200, resp.text
@@ -62,7 +62,7 @@ class TestMetaAndValidation:
             "ui_meta:\n  hermes-bots:\n    title: JordyV\n", encoding="utf-8")
         assert read_profile_meta(profile_env)["bot_title"] == "JordyV"
         # The web/Desktop roster carries it through the same dict the chips read.
-        from hermes_cli.web_routers.profiles import _profile_to_dict
+        from hermes_agent.hermes_cli.web_routers.profiles import _profile_to_dict
         assert _profile_to_dict(list_profiles()[0])["bot_title"] == "JordyV"
 
     def test_bot_title_absent_when_no_bots_meta(self, profile_env):
@@ -84,11 +84,11 @@ class TestMetaAndValidation:
         (profile_env / "profile.yaml").write_text(
             "ui_meta:\n  hermes-bots:\n    title: Builder\n    sectionId: jm\n    sectionName: JM\n"
             "    created: 2026-11-12\n  hermes-bots-groups:\n    rooms: {r1: {log: [hi]}}\n", encoding="utf-8")
-        from hermes_cli import profiles
-        from hermes_cli.web_server_profiles import _fallback_profile_dicts
+        from hermes_agent.hermes_cli import profiles
+        from hermes_agent.hermes_cli.web_server_profiles import _fallback_profile_dicts
         expected = {"hermes-bots": {"title": "Builder", "sectionId": "jm", "sectionName": "JM",
                                     "created": "2026-11-12"}}
-        import hermes_cli.web_routers.profiles as router  # the normal path, not the fallback
+        import hermes_agent.hermes_cli.web_routers.profiles as router  # the normal path, not the fallback
         monkeypatch.setattr(router, "_fallback_profile_dicts", lambda _mod: pytest.fail("fallback served"))
         assert _get_api_profiles(profile_env, monkeypatch)[0]["ui_meta"] == expected
         assert _fallback_profile_dicts(profiles)[0]["ui_meta"] == expected
@@ -156,7 +156,7 @@ class TestRenameDefault:
         self, profile_env, monkeypatch
     ):
         monkeypatch.setattr(
-            "hermes_cli.profiles.check_alias_collision", lambda name: "skip"
+            "hermes_agent.hermes_cli.profiles.check_alias_collision", lambda name: "skip"
         )
         create_profile("oldname", no_alias=True)
         write_profile_meta(get_profile_dir("oldname"), display_name="Old Friend")

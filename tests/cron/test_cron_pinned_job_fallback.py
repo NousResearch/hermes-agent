@@ -1,7 +1,7 @@
 """A cron job with its own provider/model/base_url pin never walks the global fallback chain (#100437).
 
 Two vectors, one rule (``hermes_agent.cron.scheduler._job_fallback_chain``, shared with delegate_task's pinned
-children via ``hermes_cli.fallback_config.scoped_fallback_chain``):
+children via ``hermes_agent.hermes_cli.fallback_config.scoped_fallback_chain``):
 
 - credential resolution: an AuthError / DNS blip on the pinned primary must not resolve a
   ``fallback_providers`` entry instead;
@@ -22,7 +22,7 @@ import pytest
 
 from hermes_agent.cron import scheduler
 from hermes_agent.cron.scheduler import _CronJobConfig, _resolve_job_runtime
-from hermes_cli.auth import AuthError
+from hermes_agent.hermes_cli.auth import AuthError
 
 
 def _run_owned_job(job, tmp_path):
@@ -96,9 +96,9 @@ def _run(tmp_path, job, *, primary_error=None):
     with patch("hermes_agent.cron.scheduler._hermes_home", tmp_path), \
          patch("hermes_agent.cron.scheduler._get_hermes_home", return_value=tmp_path), \
          patch("hermes_agent.cron.scheduler_delivery._resolve_origin", return_value=None), \
-         patch("hermes_cli.env_loader.load_hermes_dotenv"), \
-         patch("hermes_cli.env_loader.reset_secret_source_cache"), \
-         patch("hermes_cli.runtime_provider.resolve_runtime_provider", side_effect=resolve), \
+         patch("hermes_agent.hermes_cli.env_loader.load_hermes_dotenv"), \
+         patch("hermes_agent.hermes_cli.env_loader.reset_secret_source_cache"), \
+         patch("hermes_agent.hermes_cli.runtime_provider.resolve_runtime_provider", side_effect=resolve), \
          patch("hermes_agent.tools.mcp_tool_discovery.discover_mcp_tools", return_value=[]), \
          patch("hermes_agent.run_agent.AIAgent") as agent_cls:
         agent_cls.return_value.run_conversation.return_value = {"final_response": "ok"}
@@ -148,7 +148,7 @@ def test_resolve_job_runtime_does_not_walk_the_chain_for_a_pinned_job(pin):
     jc = _CronJobConfig(cfg={"fallback_providers": list(_CHAIN)}, model=pin.get("model") or "gpt-5.6-sol",
                         model_cfg={}, cron_default_provider="")
     resolve = MagicMock(side_effect=AuthError("No credentials stored"))
-    with patch("hermes_cli.runtime_provider.resolve_runtime_provider", resolve):
+    with patch("hermes_agent.hermes_cli.runtime_provider.resolve_runtime_provider", resolve):
         with pytest.raises(RuntimeError, match="No credentials stored"):
             _resolve_job_runtime(_job(**pin), "pin-job", jc)
     assert resolve.call_count == 1
@@ -163,7 +163,7 @@ def test_resolve_job_runtime_walks_the_chain_for_an_unpinned_job():
             return _runtime("openrouter")
         raise AuthError("No credentials stored")
 
-    with patch("hermes_cli.runtime_provider.resolve_runtime_provider", side_effect=resolve):
+    with patch("hermes_agent.hermes_cli.runtime_provider.resolve_runtime_provider", side_effect=resolve):
         runtime, model = _resolve_job_runtime(_job(), "free-job", jc)
     assert (runtime["provider"], model) == ("openrouter", "z-ai/glm-5.2")
 

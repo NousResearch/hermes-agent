@@ -25,7 +25,7 @@ def _load_language_packs() -> None:
     """Plugin packs register during plugin discovery, which nothing in this process may have run yet: the
     Desktop asks for its catalog as soon as it connects, before any agent exists. Idempotent. A failed
     discovery still answers with the bundled and overlay layers."""
-    from hermes_cli.plugins import discover_plugins
+    from hermes_agent.hermes_cli.plugins import discover_plugins
     try:
         discover_plugins()
     except Exception:

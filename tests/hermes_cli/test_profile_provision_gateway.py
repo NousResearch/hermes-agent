@@ -12,8 +12,8 @@ from typing import Optional
 
 import pytest
 
-from hermes_cli import profiles
-from hermes_cli.profile_provision import ProfileCreateReceipt, ProfileCreateRequest, provision_profile
+from hermes_agent.hermes_cli import profiles
+from hermes_agent.hermes_cli.profile_provision import ProfileCreateReceipt, ProfileCreateRequest, provision_profile
 
 
 @pytest.fixture()
@@ -68,9 +68,9 @@ def test_a_quiet_create_reports_why_seeding_failed(root, monkeypatch):
 
 
 def test_a_refused_create_answers_with_its_type_and_whole_text(root, monkeypatch):
-    from hermes_cli import profile_provision
-    from hermes_cli.gateway_client import rpc_error
-    from hermes_cli.profile_provision import refusal_from
+    from hermes_agent.hermes_cli import profile_provision
+    from hermes_agent.hermes_cli.gateway_client import rpc_error
+    from hermes_agent.hermes_cli.profile_provision import refusal_from
     from hermes_agent.tui_gateway import server
     profiles.create_profile("taken", no_alias=True)
     error = server._methods["profiles.create"](1, {"name": "taken", "no_alias": True})["error"]
@@ -117,7 +117,7 @@ class _Client:
 def _gateway(monkeypatch, outcome, *, reachable=True, instance="this-home") -> list[dict]:
     """A gateway answering *outcome* (a callable gets the params) and reporting *instance* from
     ``runtime.describe``; this home's discovered owner is ``this-home``. Returns the create params sent."""
-    from hermes_cli import gateway_client, gateway_runtime
+    from hermes_agent.hermes_cli import gateway_client, gateway_runtime
     sent: list[dict] = []
 
     @contextlib.asynccontextmanager
@@ -139,8 +139,8 @@ def _receipt(**over):
 
 
 def test_typed_refusals_and_fallbacks(root, monkeypatch):
-    from hermes_cli.gateway_client import GatewayRPCError
-    from hermes_cli.profile_provision_gateway import GatewayCreateError, create_through_gateway
+    from hermes_agent.hermes_cli.gateway_client import GatewayRPCError
+    from hermes_agent.hermes_cli.profile_provision_gateway import GatewayCreateError, create_through_gateway
     request = ProfileCreateRequest(name="x", alias=False)
     _gateway(monkeypatch, GatewayRPCError("bad", 4062, {"type": "FileExistsError", "message_parts": ["exists"]}))
     with pytest.raises(FileExistsError, match="exists"):
@@ -178,7 +178,7 @@ def test_creates_of_one_name_share_a_lock_others_do_not(root, monkeypatch):
     """``create_profile`` stages in ``.<name>.staging-<pid>``: two in-process creates of one name
     (two terminals through one gateway) shared it and the loser died with a raw OSError. The core
     create of a name runs under that name's lock; another name's create does not wait for it."""
-    from hermes_cli import profile_provision
+    from hermes_agent.hermes_cli import profile_provision
     real, held = profiles.create_profile, []
 
     def create_profile(*a, **k):
@@ -194,8 +194,8 @@ def test_creates_of_one_name_share_a_lock_others_do_not(root, monkeypatch):
 
 
 def test_gateway_answers_that_create_nothing_here_or_report_the_unknown(root, monkeypatch):
-    from hermes_cli.gateway_client import GatewayRPCError
-    from hermes_cli.profile_provision_gateway import GatewayCreateError, create_through_gateway
+    from hermes_agent.hermes_cli.gateway_client import GatewayRPCError
+    from hermes_agent.hermes_cli.profile_provision_gateway import GatewayCreateError, create_through_gateway
     request = ProfileCreateRequest(name="x", alias=False)
     _gateway(monkeypatch, GatewayRPCError("backend is retiring", 5035))  # retiring: nothing was made
     assert create_through_gateway(request) is None
@@ -270,8 +270,8 @@ def test_the_wrapper_is_written_here_only_when_this_create_made_the_local_profil
     path, whatever the URL says: a loopback tunnel or container can serve another home, and another
     machine with the same home layout reports the same path."""
     import shutil
-    from hermes_cli.gateway_client import GatewayRPCError
-    from hermes_cli.profile_provision_gateway import create_through_gateway
+    from hermes_agent.hermes_cli.gateway_client import GatewayRPCError
+    from hermes_agent.hermes_cli.profile_provision_gateway import create_through_gateway
     wrote = []
     monkeypatch.setattr(profiles, "create_wrapper_script", lambda name: wrote.append(name) or Path("/bin") / name)
     request = ProfileCreateRequest(name="x")
@@ -328,8 +328,8 @@ def test_the_wrapper_is_written_here_only_when_this_create_made_the_local_profil
 def test_a_url_gateway_creates_in_this_terminals_profile(root, monkeypatch):
     """A URL's connection carries no profile-bound ticket: the terminal's profile is named, so ``-p work``
     copies work, not the gateway's launch profile. A profile it can't serve refuses before any create."""
-    from hermes_cli.gateway_client import rpc_error
-    from hermes_cli.profile_provision_gateway import GatewayCreateError, create_through_gateway
+    from hermes_agent.hermes_cli.gateway_client import rpc_error
+    from hermes_agent.hermes_cli.profile_provision_gateway import GatewayCreateError, create_through_gateway
     from hermes_agent.tui_gateway import ws_legacy_fallback
     monkeypatch.setenv("HERMES_TUI_GATEWAY_URL", "wss://gw.invalid/api/ws")
     request = ProfileCreateRequest(name="x", alias=False, clone_config=True)
@@ -358,9 +358,9 @@ def test_a_url_gateway_creates_in_this_terminals_profile(root, monkeypatch):
 def test_refusals_the_cli_never_reports_as_maybe_created(root, monkeypatch):
     """A ``ValueError`` subclass from the create (a broken source config), a missing name and a typed
     refusal with no text are refusals: nothing was made, so never "may have created"."""
-    from hermes_cli.gateway_client import GatewayRPCError, rpc_error
-    from hermes_cli.profile_provision import refusal
-    from hermes_cli.profile_provision_gateway import GatewayCreateError, create_through_gateway
+    from hermes_agent.hermes_cli.gateway_client import GatewayRPCError, rpc_error
+    from hermes_agent.hermes_cli.profile_provision import refusal
+    from hermes_agent.hermes_cli.profile_provision_gateway import GatewayCreateError, create_through_gateway
     from hermes_agent.tui_gateway import server
     request = ProfileCreateRequest(name="x", alias=False)
     import json
@@ -388,14 +388,14 @@ def test_refusals_the_cli_never_reports_as_maybe_created(root, monkeypatch):
                                  {"cloned_plugins": [1]}, {"served_now": "false"}, {"display_path": None},
                                  {"mirrored": {"env": "yes"}}, {"alias_path": 5}, {"path": ""}])
 def test_a_receipt_with_a_wrong_type_is_an_unknown_outcome(root, monkeypatch, bad):
-    from hermes_cli.profile_provision_gateway import GatewayCreateError, create_through_gateway
+    from hermes_agent.hermes_cli.profile_provision_gateway import GatewayCreateError, create_through_gateway
     _gateway(monkeypatch, {"ok": True, "receipt": _receipt(**bad)})
     with pytest.raises(GatewayCreateError, match="may have created 'x'"):
         create_through_gateway(ProfileCreateRequest(name="x", alias=False))
 
 
 def test_a_newer_gateways_extra_receipt_fields_are_dropped(root, monkeypatch):
-    from hermes_cli.profile_provision_gateway import create_through_gateway
+    from hermes_agent.hermes_cli.profile_provision_gateway import create_through_gateway
     _gateway(monkeypatch, {"ok": True, "receipt": _receipt(mirrored={"env": True, "skills": True}, extra=[1])})
     made = create_through_gateway(ProfileCreateRequest(name="x", alias=False))
     assert made.mirrored == {"env": True, "skills": True} and not hasattr(made, "extra")
@@ -405,10 +405,10 @@ def test_a_newer_gateways_extra_receipt_fields_are_dropped(root, monkeypatch):
 def test_a_config_outage_mid_create_is_an_unknown_outcome(root, monkeypatch, where):
     """``ConfigBackendUnavailable`` is a ``SystemExit``: past ``except Exception`` it reached the
     dispatcher's 4064 ("profile unavailable"), read as nothing created although the profile existed."""
-    from hermes_cli import profile_provision
-    from hermes_cli.config_backend import ConfigBackendUnavailable
-    from hermes_cli.gateway_client import rpc_error
-    from hermes_cli.profile_provision_gateway import GatewayCreateError, create_through_gateway
+    from hermes_agent.hermes_cli import profile_provision
+    from hermes_agent.hermes_cli.config_backend import ConfigBackendUnavailable
+    from hermes_agent.hermes_cli.gateway_client import rpc_error
+    from hermes_agent.hermes_cli.profile_provision_gateway import GatewayCreateError, create_through_gateway
     from hermes_agent.tui_gateway.server import handle_request  # the real dispatcher (rebound onto server)
     if where == "create":
         monkeypatch.setattr(profile_provision, "provision_profile", _raise(ConfigBackendUnavailable("backend down")))
@@ -433,9 +433,9 @@ def test_a_handler_failure_named_like_a_routing_refusal_is_an_unknown_outcome(ro
     """Routing refusals are matched by code AND ``data.reason``: a handler failure (5062) whose text or
     reason reads like one, after the profile was made, is never "nothing was created", "retry" or a
     local create, wherever the gateway is."""
-    from hermes_cli.config_backend import ConfigBackendUnavailable
-    from hermes_cli.gateway_client import rpc_error
-    from hermes_cli.profile_provision_gateway import GatewayCreateError, create_through_gateway
+    from hermes_agent.hermes_cli.config_backend import ConfigBackendUnavailable
+    from hermes_agent.hermes_cli.gateway_client import rpc_error
+    from hermes_agent.hermes_cli.profile_provision_gateway import GatewayCreateError, create_through_gateway
     from hermes_agent.tui_gateway.server import handle_request
     monkeypatch.setattr(ProfileCreateReceipt, "of", _raise(ConfigBackendUnavailable(reason)))
     real = handle_request({"jsonrpc": "2.0", "id": 1, "method": "profiles.create",
@@ -456,8 +456,8 @@ def test_a_create_with_no_gateway_url_loads_no_gateway_platforms_or_pydantic():
     modules) and reading a gateway's receipt needs pydantic, so neither loads on the way to a local create."""
     import subprocess
     import sys
-    probe = ("import sys; from hermes_cli.profile_provision_gateway import _where; "
-             "from hermes_cli.profile_provision import ProfileCreateReceipt; _where(''); "
+    probe = ("import sys; from hermes_agent.hermes_cli.profile_provision_gateway import _where; "
+             "from hermes_agent.hermes_cli.profile_provision import ProfileCreateReceipt; _where(''); "
              "print([m for m in ('hermes_agent.gateway.platforms', 'pydantic') if m in sys.modules])")
     out = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True, check=True,
                          cwd=Path(__file__).resolve().parents[2])

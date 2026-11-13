@@ -9,10 +9,10 @@ from datetime import datetime, timezone, UTC
 import pytest
 
 from hermes_agent.agent.portal_tags import reset_conversation_context, set_conversation_context
-from hermes_cli import lifecycle
-from hermes_cli.observability import relay_shared_metrics
-from hermes_cli.observability import shared_metrics_engagement as engagement
-from hermes_cli.observability.shared_metrics import SharedMetricsStore
+from hermes_agent.hermes_cli import lifecycle
+from hermes_agent.hermes_cli.observability import relay_shared_metrics
+from hermes_agent.hermes_cli.observability import shared_metrics_engagement as engagement
+from hermes_agent.hermes_cli.observability.shared_metrics import SharedMetricsStore
 from tests.hermes_cli.test_relay_shared_metrics_runtime import (
     _join_export_workers,
     _stored_values,
@@ -132,7 +132,7 @@ def test_a_late_interaction_never_reopens_a_closed_day():
 
 
 def test_collection_off_writes_no_engagement_state(direct_runtime, tmp_path, clock, monkeypatch):
-    monkeypatch.setattr("hermes_cli.config.read_raw_config_readonly", dict)
+    monkeypatch.setattr("hermes_agent.hermes_cli.config.read_raw_config_readonly", dict)
     _turn("s1", "t1", clock=clock, at=DAY1)
     clock["now"] = DAY1 + 86_400
     _turn("s1", "t2", clock=clock, at=DAY1 + 86_400)
@@ -208,7 +208,7 @@ def test_compression_commit_hands_the_segment_off(monkeypatch):
 
 def test_switch_and_undo_right_after_a_rotation_reach_the_conversation(direct_runtime, tmp_path):
     """/model or /undo on the rotated-to id before it served a turn still sees the conversation."""
-    from hermes_cli.observability.shared_metrics_events import record_model_switch
+    from hermes_agent.hermes_cli.observability.shared_metrics_events import record_model_switch
 
     _turn("s1", "t1")
     _turn("s1", "t2")
@@ -240,7 +240,7 @@ def test_a_background_review_fork_on_the_session_id_adds_no_session_volume(direc
 def test_turns_before_switch_ignore_failover_and_review_forks(direct_runtime, tmp_path):
     """The run counts the route each user turn was sent on: a turn that failed over to a fallback
     still served the selected model, and a background review fork on another model is not a turn."""
-    from hermes_cli.observability.shared_metrics_events import record_model_switch
+    from hermes_agent.hermes_cli.observability.shared_metrics_events import record_model_switch
 
     _turn("s1", "t1")
     base = {"session_id": "s1", "task_id": "t2", "provider": "openrouter"}
@@ -264,7 +264,7 @@ def test_turns_before_switch_ignore_failover_and_review_forks(direct_runtime, tm
 def test_turns_before_switch_count_the_model_left_across_rotation(direct_runtime, tmp_path):
     """/model counts how many turns the model being left served in the conversation (compression
     segments included); a second switch before any turn on the new model reports nothing."""
-    from hermes_cli.observability.shared_metrics_events import record_model_switch
+    from hermes_agent.hermes_cli.observability.shared_metrics_events import record_model_switch
 
     token = set_conversation_context("s1")
     try:
@@ -323,7 +323,7 @@ def test_active_profiles_are_counted_once_per_host_day_on_the_root_profiles_row(
 
 @pytest.mark.parametrize(("count", "bucket"), [(250, "101_to_250"), (251, "251_to_1000"), (1001, "gte_1001")])
 def test_long_conversations_bucket_past_251(count, bucket):
-    from hermes_cli.observability import shared_metrics_contract as contract
+    from hermes_agent.hermes_cli.observability import shared_metrics_contract as contract
 
     assert contract.long_size_bucket(count) == bucket
     assert bucket in contract.LONG_SIZE_BUCKETS

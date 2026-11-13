@@ -493,7 +493,7 @@ class _ManagedRotatingFileHandler(RotatingFileHandler):
     """
 
     def __init__(self, *args, **kwargs):
-        from hermes_cli.config import is_managed
+        from hermes_agent.hermes_cli.config import is_managed
         self._managed = is_managed()
         self._unavailable_reported = False
         # Set by _ProfileRoutingFileHandler: a vanished logs/ dir means the profile was deleted,
@@ -1052,13 +1052,13 @@ def _read_logging_config():
     """Best-effort read of ``logging.*`` from config.yaml."""
     try:
         # Prefer the shared effective-config cache (managed overlay included, so an administrator
-        # can pin logging.*) so this reuses hermes_cli.main's early parse (one config.yaml parse
+        # can pin logging.*) so this reuses hermes_agent.hermes_cli.main's early parse (one config.yaml parse
         # per process); fall back to a direct parse for bare hermes_logging consumers.
         try:
-            from hermes_cli.config_effective import load_user_config_effective
+            from hermes_agent.hermes_cli.config_effective import load_user_config_effective
             cfg = load_user_config_effective(get_config_path())
         except Exception:
-            from hermes_cli.config_backend import config_exists, read_config_doc
+            from hermes_agent.hermes_cli.config_backend import config_exists, read_config_doc
             config_path = get_config_path()
             cfg = (read_config_doc(config_path) or {}) if config_exists(config_path) else {}
         if not cfg:

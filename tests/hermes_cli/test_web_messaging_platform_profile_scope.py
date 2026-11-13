@@ -23,7 +23,7 @@ def register(ctx):
 
 @pytest.fixture
 def homes(tmp_path, monkeypatch):
-    from hermes_cli import plugins as plugins_mod
+    from hermes_agent.hermes_cli import plugins as plugins_mod
 
     root = tmp_path / "hermes_home"
     work = root / "profiles" / "work"
@@ -51,7 +51,7 @@ def homes(tmp_path, monkeypatch):
 
 @pytest.fixture
 def client(homes):
-    from hermes_cli.web_server import _SESSION_HEADER_NAME, _SESSION_TOKEN, app
+    from hermes_agent.hermes_cli.web_server import _SESSION_HEADER_NAME, _SESSION_TOKEN, app
     c = TestClient(app)
     c.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
     return c
@@ -82,7 +82,7 @@ def test_a_managed_gateway_block_for_a_profile_plugin_stays_in_that_profile(clie
     """The administrator's config goes through the same filtered steps: a managed ``gateway.<plugin id>``
     block must not register the profile's plugin process-wide either."""
     from hermes_agent.gateway.config import Platform
-    from hermes_cli import managed_scope
+    from hermes_agent.hermes_cli import managed_scope
 
     _, work = homes
     managed = tmp_path / "managed"

@@ -22,7 +22,7 @@ def _env(home, n):
 
 @pytest_asyncio.fixture
 async def owner(tmp_path, monkeypatch):
-    from hermes_cli import model_switch
+    from hermes_agent.hermes_cli import model_switch
     monkeypatch.setattr(model_switch, 'DIRECT_ALIASES', {})
     for name in ('P5_ENDPOINT', 'P5_ALIAS_KEY'):
         monkeypatch.delenv(name, raising=False)

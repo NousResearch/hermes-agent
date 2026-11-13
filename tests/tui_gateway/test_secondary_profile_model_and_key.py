@@ -36,7 +36,7 @@ def homes(tmp_path, monkeypatch):
 
 def test_session_bound_save_key_writes_only_the_session_profiles_env(homes, monkeypatch):
     launch, worker = homes
-    monkeypatch.setattr("hermes_cli.inventory.build_models_payload", Mock(return_value={"providers": []}))
+    monkeypatch.setattr("hermes_agent.hermes_cli.inventory.build_models_payload", Mock(return_value={"providers": []}))
     key = "glm-" + "worker-canary"
     session = {"agent": None, "profile_home": str(worker), "session_key": "worker-session"}
     with patch.dict(server._sessions, {"s-worker": session}, clear=False):

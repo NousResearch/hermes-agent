@@ -12,7 +12,7 @@ tests monkeypatch the seam rather than asserting on RSS. Salvaged in spirit
 from #70782 (which reached for a bare gc.collect(); trim_memory is the
 house mechanism and already wraps a collect).
 """
-from hermes_cli import mem_trim
+from hermes_agent.hermes_cli import mem_trim
 from hermes_agent.agent.context_compressor import ContextCompressor
 
 

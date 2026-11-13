@@ -36,7 +36,7 @@ def test_routed_profile_prompt_resolves_from_its_own_config(tmp_path, monkeypatc
     assert runner._get_system_prompt_for_channel(Platform.TELEGRAM, "c") == "DEFAULT-PERSONA"
 
     # /personality from the routed chat writes the routed profile and only it.
-    from hermes_cli.personality import persist_personality
+    from hermes_agent.hermes_cli.personality import persist_personality
 
     with _profile_runtime_scope(routed_home):
         assert persist_personality("pirate")

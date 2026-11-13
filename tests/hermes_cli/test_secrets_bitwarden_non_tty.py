@@ -28,13 +28,13 @@ class TestCmdSetupNonTtyGuard:
         """Non-TTY with server-url and project-id but no token → reports --access-token."""
         monkeypatch.setattr("sys.stdin.isatty", lambda: False)
         monkeypatch.setattr(
-            "hermes_cli.secrets_cli.bw.find_bws", lambda install_if_missing=False: "/usr/bin/bws"
+            "hermes_agent.hermes_cli.secrets_cli.bw.find_bws", lambda install_if_missing=False: "/usr/bin/bws"
         )
         monkeypatch.setattr(
-            "hermes_cli.secrets_cli._bws_version", lambda _: "2.0.0"
+            "hermes_agent.hermes_cli.secrets_cli._bws_version", lambda _: "2.0.0"
         )
 
-        from hermes_cli.secrets_cli import cmd_setup
+        from hermes_agent.hermes_cli.secrets_cli import cmd_setup
 
         result = cmd_setup(self._make_args(
             server_url="https://vault.bitwarden.com",
@@ -57,20 +57,20 @@ class TestCmdSetupNonTtyGuard:
         monkeypatch.setattr("sys.stdin.isatty", lambda: False)
         monkeypatch.setenv("BWS_SERVER_URL", "https://vault.bitwarden.com")
         monkeypatch.setattr(
-            "hermes_cli.secrets_cli.bw.find_bws", lambda install_if_missing=False: "/usr/bin/bws"
+            "hermes_agent.hermes_cli.secrets_cli.bw.find_bws", lambda install_if_missing=False: "/usr/bin/bws"
         )
         monkeypatch.setattr(
-            "hermes_cli.secrets_cli._bws_version", lambda _: "2.0.0"
+            "hermes_agent.hermes_cli.secrets_cli._bws_version", lambda _: "2.0.0"
         )
-        monkeypatch.setattr("hermes_cli.secrets_cli.load_config", dict)
-        monkeypatch.setattr("hermes_cli.secrets_cli.save_env_value", lambda *a: None)
-        monkeypatch.setattr("hermes_cli.secrets_cli.get_env_path", lambda: "/tmp/.env")
+        monkeypatch.setattr("hermes_agent.hermes_cli.secrets_cli.load_config", dict)
+        monkeypatch.setattr("hermes_agent.hermes_cli.secrets_cli.save_env_value", lambda *a: None)
+        monkeypatch.setattr("hermes_agent.hermes_cli.secrets_cli.get_env_path", lambda: "/tmp/.env")
         monkeypatch.setattr(
-            "hermes_cli.secrets_cli.bw.fetch_bitwarden_secrets",
+            "hermes_agent.hermes_cli.secrets_cli.bw.fetch_bitwarden_secrets",
             lambda **kw: ({"KEY": "val"}, []),
         )
 
-        from hermes_cli.secrets_cli import cmd_setup
+        from hermes_agent.hermes_cli.secrets_cli import cmd_setup
 
         result = cmd_setup(self._make_args(
             access_token="0.valid-token",

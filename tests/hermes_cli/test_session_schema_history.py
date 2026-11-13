@@ -1,4 +1,4 @@
-"""``hermes_cli.session_schema_history`` must track SCHEMA_SQL.
+"""``hermes_agent.hermes_cli.session_schema_history`` must track SCHEMA_SQL.
 
 The page-level salvage lane infers a salvaged store's physical column order
 from this history. If a column is added to SCHEMA_SQL without an event here,
@@ -12,7 +12,7 @@ import sqlite3
 
 import pytest
 
-from hermes_cli import session_schema_history as history
+from hermes_agent.hermes_cli import session_schema_history as history
 from hermes_agent.hermes_state_common import SCHEMA_SQL
 
 

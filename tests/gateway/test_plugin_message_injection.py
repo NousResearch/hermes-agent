@@ -16,7 +16,7 @@ from hermes_agent.gateway.platforms.base import (
 from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
 from hermes_agent.gateway.run import GatewayRunner
 from hermes_agent.gateway.session import SessionEntry, SessionSource, SessionStore, build_session_key
-from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
+from hermes_agent.hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
 
 
 def _entry(*, origin=True) -> SessionEntry:
@@ -121,7 +121,7 @@ async def test_plugin_context_routes_through_live_gateway_to_existing_session(
 
     # The runner publishes process-wide; expose this standalone manager through the legacy slot so
     # the real publisher stamps it while this integration test still exercises the scheduler.
-    with patch("hermes_cli.plugins._plugin_manager", manager):
+    with patch("hermes_agent.hermes_cli.plugins._plugin_manager", manager):
         runner._install_plugin_message_injector()
         assert (
             context.inject_message(
@@ -437,7 +437,7 @@ def test_install_and_clear_gateway_injector_preserves_newer_owner():
     manager = PluginManager()
 
     # The runner publishes process-wide; expose this standalone manager through the legacy slot.
-    with patch("hermes_cli.plugins._plugin_manager", manager):
+    with patch("hermes_agent.hermes_cli.plugins._plugin_manager", manager):
         runner._install_plugin_message_injector()
         assert manager.has_gateway_message_injector is True
 

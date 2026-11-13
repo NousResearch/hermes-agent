@@ -29,7 +29,7 @@ class TestAuxiliaryOpenrouterDefaultIsFree:
         from hermes_agent.agent import auxiliary_client as ac
 
         monkeypatch.setattr(
-            "hermes_cli.config.load_config_readonly",
+            "hermes_agent.hermes_cli.config.load_config_readonly",
             lambda: {"auxiliary": {"openrouter_model": "google/gemini-3.6-flash"}},
         )
         _free_only, model = ac._aux_openrouter_settings()

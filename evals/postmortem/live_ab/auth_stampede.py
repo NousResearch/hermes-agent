@@ -52,9 +52,9 @@ class H(BaseHTTPRequestHandler):
 srv = ThreadingHTTPServer(("127.0.0.1", 0), H); threading.Thread(target=srv.serve_forever, daemon=True).start()
 base = f"http://127.0.0.1:{srv.server_address[1]}/v1"
 
-import hermes_cli.auth as auth_mod
+import hermes_agent.hermes_cli.auth as auth_mod
 auth_mod.resolve_nous_runtime_credentials = lambda **kw: {"api_key": FRESH, "base_url": base}
-import hermes_cli.nous_auth_keepalive as ka
+import hermes_agent.hermes_cli.nous_auth_keepalive as ka
 ka.start_nous_auth_keepalive = lambda **kw: None  # thread itself is out of scope here; we test adoption
 
 from hermes_agent.run_agent import AIAgent

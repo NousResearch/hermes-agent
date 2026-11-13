@@ -5,7 +5,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 def _import_cli():
-    import hermes_cli.config as config_mod
+    import hermes_agent.hermes_cli.config as config_mod
 
     if not hasattr(config_mod, "save_env_value_secure"):
         config_mod.save_env_value_secure = lambda key, value: {
@@ -14,7 +14,7 @@ def _import_cli():
             "validated": False,
         }
 
-    import cli as cli_mod
+    import hermes_agent.cli as cli_mod
 
     return cli_mod
 

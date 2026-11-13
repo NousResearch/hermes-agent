@@ -25,7 +25,7 @@ def sticky_profile_home(monkeypatch, tmp_path):
 
 
 def test_building_the_parser_before_the_profile_override_stays_silent(sticky_profile_home, capsys):
-    from hermes_cli._parser import build_top_level_parser
+    from hermes_agent.hermes_cli._parser import build_top_level_parser
 
     build_top_level_parser()
 
@@ -33,7 +33,7 @@ def test_building_the_parser_before_the_profile_override_stays_silent(sticky_pro
 
 
 def test_help_text_names_the_profile_config_once_the_process_is_re_homed(sticky_profile_home, monkeypatch):
-    from hermes_cli._parser import _cfg_path
+    from hermes_agent.hermes_cli._parser import _cfg_path
 
     monkeypatch.setenv("HERMES_HOME", str(sticky_profile_home / "profiles" / "coder"))
 

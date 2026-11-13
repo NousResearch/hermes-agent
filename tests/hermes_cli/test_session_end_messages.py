@@ -15,9 +15,9 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-import cli as cli_mod  # module-level, like sibling CLI tests: importing cli runs bootstrap
-from hermes_cli import plugins
-from hermes_cli.plugins import PluginManager
+import hermes_agent.cli as cli_mod  # module-level, like sibling CLI tests: importing cli runs bootstrap
+from hermes_agent.hermes_cli import plugins
+from hermes_agent.hermes_cli.plugins import PluginManager
 
 DIGEST = "Session digest: 3 files touched"
 
@@ -39,7 +39,7 @@ def finalize_hook(monkeypatch):
 
 
 def test_session_end_messages_accepts_str_and_message_dict_only():
-    from hermes_cli.lifecycle import session_end_messages
+    from hermes_agent.hermes_cli.lifecycle import session_end_messages
 
     assert session_end_messages(["  hi  ", {"message": "there"}, {"context": "x"}, {"message": 3}, "", None, 7]) == [
         "hi", "there"]

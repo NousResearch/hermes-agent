@@ -166,7 +166,7 @@ class TestVaultSupervisorAttach:
     def test_exec_attaches_supervisor_to_the_browser_it_drives(self, tmp_path, monkeypatch, _fake_supervisor_registry):
         """browser_vault_fill injects secrets only over the supervisor's CDP WebSocket. Without this attach the
         default (Browser Use) backend had no supervisor at all and every fill failed with supervisor_required."""
-        monkeypatch.setattr("hermes_cli.config_effective.load_user_config_effective", lambda: {"browser": {}})
+        monkeypatch.setattr("hermes_agent.hermes_cli.config_effective.load_user_config_effective", lambda: {"browser": {}})
         cli = _fake_cli(tmp_path, 'cat > /dev/null\necho ok\n')
         monkeypatch.setattr(bu_cli, "_find_cli", lambda: [cli])
         monkeypatch.setattr("hermes_agent.tools.browser_session_cdp.resolve_cdp_override", lambda url: url)
@@ -259,7 +259,7 @@ class TestLegacyCloudMigration:
 
 
     def test_migrated_config_gets_bu_autospawn(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("hermes_cli.config_effective.load_user_config_effective", lambda: self._LEGACY)
+        monkeypatch.setattr("hermes_agent.hermes_cli.config_effective.load_user_config_effective", lambda: self._LEGACY)
         monkeypatch.setenv("BROWSER_USE_API_KEY", "bu-key")
         cli = _fake_cli(tmp_path, 'cat > /dev/null\necho "autospawn:$BU_AUTOSPAWN"\n')
         monkeypatch.setattr(bu_cli, "_find_cli", lambda: [cli])
@@ -268,7 +268,7 @@ class TestLegacyCloudMigration:
 
     def test_non_legacy_config_does_not_set_bu_autospawn(self, tmp_path, monkeypatch):
         monkeypatch.setattr(
-            "hermes_cli.config_effective.load_user_config_effective",
+            "hermes_agent.hermes_cli.config_effective.load_user_config_effective",
             lambda: {"browser": {}},
         )
         cli = _fake_cli(tmp_path, 'cat > /dev/null\necho "autospawn:[$BU_AUTOSPAWN]"\n')
@@ -598,7 +598,7 @@ class TestProviderPickerIntegration:
     def test_picker_row_names_stay_unique(self):
         """The CLI row is named "Browser Use"; the legacy plugin API row must
         keep a distinct name — apply_provider_selection matches by name."""
-        from hermes_cli.tools_config import TOOL_CATEGORIES, _plugin_browser_providers
+        from hermes_agent.hermes_cli.tools_config import TOOL_CATEGORIES, _plugin_browser_providers
 
         names = [r["name"] for r in TOOL_CATEGORIES["browser"]["providers"]]
         names += [r["name"] for r in _plugin_browser_providers()]
@@ -614,7 +614,7 @@ class TestBrowserSlashDispatch:
         import contextlib
         import io
 
-        import hermes_cli.cli_commands_mixin as mod
+        import hermes_agent.hermes_cli.cli_commands_mixin as mod
 
         calls = []
         monkeypatch.setattr(mod, "_browser_connect", lambda cli, url: calls.append(("connect", url)))
@@ -626,7 +626,7 @@ class TestBrowserSlashDispatch:
         return calls, buf.getvalue()
 
     def test_connect_keeps_url_case_and_defaults_to_status(self, monkeypatch):
-        from hermes_cli.browser_connect import DEFAULT_BROWSER_CDP_URL
+        from hermes_agent.hermes_cli.browser_connect import DEFAULT_BROWSER_CDP_URL
 
         assert self._run("/browser CONNECT ws://127.0.0.1:9222/devtools/browser/AbC", monkeypatch)[0] == [
             ("connect", "ws://127.0.0.1:9222/devtools/browser/AbC")]
@@ -966,7 +966,7 @@ class TestLightpandaHeader:
 
 class TestLightpandaPickerRow:
     def _rows(self):
-        from hermes_cli.tools_config import TOOL_CATEGORIES
+        from hermes_agent.hermes_cli.tools_config import TOOL_CATEGORIES
 
         return TOOL_CATEGORIES["browser"]["providers"]
 
@@ -975,7 +975,7 @@ class TestLightpandaPickerRow:
 
 
     def test_selecting_lightpanda_writes_engine_and_local(self):
-        from hermes_cli.tools_config import _write_provider_config
+        from hermes_agent.hermes_cli.tools_config import _write_provider_config
 
         config = {"browser": {"cloud_provider": "browserbase"}}
         _write_provider_config(self._row("Lightpanda"), config, managed_feature=None)
@@ -983,14 +983,14 @@ class TestLightpandaPickerRow:
         assert config["browser"]["engine"] == "lightpanda"
 
     def test_selecting_local_browser_resets_engine(self):
-        from hermes_cli.tools_config import _write_provider_config
+        from hermes_agent.hermes_cli.tools_config import _write_provider_config
 
         config = {"browser": {"cloud_provider": "local", "engine": "lightpanda"}}
         _write_provider_config(self._row("Local Browser"), config, managed_feature=None)
         assert config["browser"]["engine"] == "auto"
 
     def test_active_row_follows_engine(self):
-        from hermes_cli.tools_config import _is_provider_active
+        from hermes_agent.hermes_cli.tools_config import _is_provider_active
 
         lp_row, local_row = self._row("Lightpanda"), self._row("Local Browser")
         lp_cfg = {"browser": {"cloud_provider": "local", "engine": "lightpanda"}}
@@ -1016,7 +1016,7 @@ class TestTimeoutProcessGroupKill:
         """A grandchild that outlives the direct child and holds the inherited stdout
         pipe must not keep browser_exec blocked past the timeout (it wedged permanently
         before the group kill)."""
-        monkeypatch.setattr("hermes_cli.config_effective.load_user_config_effective", dict)
+        monkeypatch.setattr("hermes_agent.hermes_cli.config_effective.load_user_config_effective", dict)
         pid_file = tmp_path / "grandchild.pid"
         cli = _fake_cli(tmp_path, (
             "cat > /dev/null\n"

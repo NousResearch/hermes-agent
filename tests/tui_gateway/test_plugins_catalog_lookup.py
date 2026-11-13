@@ -2,7 +2,7 @@
 
 import pytest
 
-from hermes_cli import plugin_catalog as pc
+from hermes_agent.hermes_cli import plugin_catalog as pc
 from hermes_agent.tui_gateway import server
 
 SHA = "a" * 40

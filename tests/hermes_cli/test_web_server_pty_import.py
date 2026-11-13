@@ -1,4 +1,4 @@
-"""Test the platform-branched PTY bridge import in hermes_cli.web_server_chat.
+"""Test the platform-branched PTY bridge import in hermes_agent.hermes_cli.web_server_chat.
 
 The /api/pty WebSocket handler picks its bridge at import
 time via ``sys.platform.startswith("win")`` — Windows gets the ConPTY
@@ -19,13 +19,13 @@ import sys
 
 import pytest
 
-import hermes_cli.web_server_chat as _web_server_chat
+import hermes_agent.hermes_cli.web_server_chat as _web_server_chat
 
 @pytest.mark.platforms("posix")  # POSIX-only
 def test_web_server_uses_posix_pty_bridge_on_posix():
     """On POSIX, the bridge must be the fcntl/termios PtyBridge."""
-    from hermes_cli.pty_bridge import PtyBridge as PosixBridge
-    from hermes_cli.pty_bridge import PtyUnavailableError as PosixErr
+    from hermes_agent.hermes_cli.pty_bridge import PtyBridge as PosixBridge
+    from hermes_agent.hermes_cli.pty_bridge import PtyUnavailableError as PosixErr
 
     assert _web_server_chat.PtyBridge is PosixBridge
     assert _web_server_chat._PTY_BRIDGE_AVAILABLE is True

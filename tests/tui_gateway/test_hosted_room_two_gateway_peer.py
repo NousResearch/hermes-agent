@@ -16,7 +16,7 @@ from aiohttp.test_utils import TestServer
 from tests.waiting import async_wait_until, wait_until
 from tests.tui_gateway.test_hosted_room_service import _FakeRPC, _server
 
-from hermes_cli import urllib_security
+from hermes_agent.hermes_cli import urllib_security
 from hermes_agent.gateway import hosted_room_driver as driver
 from hermes_agent.gateway.config import PlatformConfig
 from hermes_agent.gateway.hosted_rooms import local_authority_gateway_id

@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli import profiles, profiles_remove
+from hermes_agent.hermes_cli import profiles, profiles_remove
 
 _HOLDER = (
     "import sys\nfrom pathlib import Path\nfrom hermes_agent.gateway.runtime_ownership import process_ownership\n"
@@ -35,7 +35,7 @@ def profile(tmp_path, monkeypatch):
 
 def _hold(profile_dir):
     holder = subprocess.Popen([sys.executable, "-c", _HOLDER, str(profile_dir)], stdin=subprocess.PIPE,
-                              stdout=subprocess.PIPE, text=True, cwd=str(Path(profiles.__file__).parent.parent))
+                              stdout=subprocess.PIPE, text=True, cwd=str(Path(profiles.__file__).parents[2]))
     assert holder.stdout.readline().strip() == "held"
     return holder
 

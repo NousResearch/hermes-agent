@@ -108,7 +108,7 @@ class TestMemoryManagerUserIdThreading:
         ), patch(
             "hermes_agent.agent.process_bootstrap.OpenAI",
         ), patch(
-            "hermes_cli.config.load_config_readonly",
+            "hermes_agent.hermes_cli.config.load_config_readonly",
             return_value={"memory": {"provider": "recording"}},
         ), patch(
             "plugins.memory.load_memory_provider",

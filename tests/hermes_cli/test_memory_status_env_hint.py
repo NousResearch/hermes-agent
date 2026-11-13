@@ -5,7 +5,7 @@ provider reports unavailable, status lists the missing env vars and surfaces
 the systemd/gateway ``.env``-inheritance gotcha that most often causes it.
 """
 
-from hermes_cli import memory_setup
+from hermes_agent.hermes_cli import memory_setup
 
 
 class _UnavailableProvider:
@@ -31,7 +31,7 @@ def test_status_surfaces_env_inheritance_hint_when_unavailable(monkeypatch, caps
         lambda: [("hindsight", "cloud", _UnavailableProvider())],
     )
     monkeypatch.setattr(
-        "hermes_cli.config.load_config",
+        "hermes_agent.hermes_cli.config.load_config",
         lambda: {"memory": {"provider": "hindsight", "hindsight": {}}},
     )
 

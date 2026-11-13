@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-import hermes_cli.left_core_migration as lcm
+import hermes_agent.hermes_cli.left_core_migration as lcm
 
 
 @pytest.fixture(autouse=True)
@@ -18,7 +18,7 @@ def _fresh(monkeypatch):
     monkeypatch.setattr(lcm, "_attempted", set())
     for name in ("YUANBAO_APP_ID", "YUANBAO_APP_KEY", "YUANBAO_APP_SECRET"):
         monkeypatch.delenv(name, raising=False)
-    import hermes_cli.memory_provider_migration as mpm
+    import hermes_agent.hermes_cli.memory_provider_migration as mpm
     monkeypatch.setattr(mpm, "catalog_source", lambda name: name)
 
 
@@ -98,7 +98,7 @@ def test_a_yuanbao_home_gets_the_plugin_once_with_the_labs_notice(tmp_path):
     assert calls == ["yuanbao"]
     assert "Yuanbao is now a Hermes Labs plugin: built by Nous Research, not supported" in said[0]
     # The yb_* tools lived only in hermes-yuanbao: every other platform keeps them off.
-    from hermes_cli.config import read_user_config_raw
+    from hermes_agent.hermes_cli.config import read_user_config_raw
     known = read_user_config_raw(home / "config.yaml")["known_plugin_toolsets"]
     assert known["telegram"] == ["yuanbao"] and known["cli"] == ["yuanbao"] and "yuanbao" not in known
 
@@ -146,8 +146,8 @@ def test_a_secondary_whose_credentials_come_from_its_secret_scope_uses_yuanbao(t
 
 @pytest.mark.parametrize("name", ["platforms/yuanbao", "yuanbao-platform"])
 def test_plugins_disabled_naming_the_bundled_adapter_is_not_use_and_still_disables_the_plugin(tmp_path, name):
-    from hermes_cli.plugins_discovery import gate_manifest
-    from hermes_cli.plugins_manifest import PluginManifest
+    from hermes_agent.hermes_cli.plugins_discovery import gate_manifest
+    from hermes_agent.hermes_cli.plugins_manifest import PluginManifest
     home = _home(tmp_path, env="YUANBAO_APP_ID=a\nYUANBAO_APP_SECRET=s\n",
                  config=f"plugins:\n  disabled: [{name}]\n")
     assert lcm.yuanbao_in_use(home) is False
@@ -163,7 +163,7 @@ def test_a_bare_yuanbao_in_plugins_disabled_is_still_use(tmp_path):
     """Core's adapter was ``platforms/yuanbao`` / ``yuanbao-platform``: a bare ``yuanbao`` never stopped it, so
     the home gets the plugin. The install's enable lifts that entry; one that survives it (a managed overlay
     pin) now turns the plugin off, and the notice says so."""
-    from hermes_cli.config import read_user_config_raw
+    from hermes_agent.hermes_cli.config import read_user_config_raw
     home = _home(tmp_path, env="YUANBAO_APP_ID=a\nYUANBAO_APP_SECRET=s\n",
                  config="plugins:\n  disabled: [yuanbao]\n")
     assert lcm.yuanbao_in_use(home) is True
@@ -196,7 +196,7 @@ def test_a_bare_yuanbao_in_plugins_disabled_is_still_use(tmp_path):
 
 def test_every_platform_core_knows_but_yuanbao_keeps_the_yb_tools_off():
     from hermes_agent.gateway.config import Platform
-    from hermes_cli.platforms import PLATFORMS
+    from hermes_agent.hermes_cli.platforms import PLATFORMS
     feature = next(f for f in lcm.LEFT_CORE if f.plugin == "yuanbao")
     assert "homeassistant" in feature.off_platforms and "yuanbao" not in feature.off_platforms
     assert set(PLATFORMS) <= set(feature.off_platforms)
@@ -211,7 +211,7 @@ def test_a_legacy_hermes_list_kept_the_yb_tools_off_and_keeps_them_off(tmp_path)
                  config="platform_toolsets:\n  telegram: [hermes]\n  slack: [hermes-gateway]\n")
     lcm.migrate_home(home, install=lambda name: (home / "plugins" / name).mkdir(parents=True) or {"ok": True},
                      say=lambda message: None)
-    from hermes_cli.config import read_user_config_raw
+    from hermes_agent.hermes_cli.config import read_user_config_raw
     known = read_user_config_raw(home / "config.yaml")["known_plugin_toolsets"]
     assert known["telegram"] == ["yuanbao"] and "slack" not in known
 
@@ -226,6 +226,6 @@ def test_a_disabled_hermes_yuanbao_bundle_keeps_the_yb_tools_disabled(tmp_path, 
     for _ in range(2):
         lcm.migrate_home(home, install=lambda name: (home / "plugins" / name).mkdir(parents=True, exist_ok=True)
                          or {"ok": True}, say=lambda message: None)
-    from hermes_cli.config import read_user_config_raw
+    from hermes_agent.hermes_cli.config import read_user_config_raw
     assert read_user_config_raw(home / "config.yaml")["agent"]["disabled_toolsets"] == [
         bundle, "memory", "yuanbao"]

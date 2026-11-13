@@ -10,8 +10,8 @@ Covers:
 
 import pytest
 
-from hermes_cli.models import clamp_reasoning_effort_to_supported
-from hermes_cli.models_reasoning_caps import parse_openrouter_reasoning_capabilities
+from hermes_agent.hermes_cli.models import clamp_reasoning_effort_to_supported
+from hermes_agent.hermes_cli.models_reasoning_caps import parse_openrouter_reasoning_capabilities
 
 
 class TestParseReasoningCapabilities:
@@ -114,25 +114,25 @@ class TestClampReasoningEffort:
 
 class TestOpenRouterModelReasoningCapabilities:
     def _prime_cache(self, monkeypatch, caps_by_id):
-        import hermes_cli.models as models_mod
+        import hermes_agent.hermes_cli.models as models_mod
         monkeypatch.setattr(models_mod, "_openrouter_reasoning_caps_cache", caps_by_id)
         monkeypatch.setattr(models_mod, "_openrouter_reasoning_caps_failed_at", None)
 
 
     def test_unlisted_model_returns_none(self, monkeypatch):
-        from hermes_cli.models_reasoning_caps import openrouter_model_reasoning_capabilities
+        from hermes_agent.hermes_cli.models_reasoning_caps import openrouter_model_reasoning_capabilities
         self._prime_cache(monkeypatch, {"a/b": {"supports_reasoning": True}})
         assert openrouter_model_reasoning_capabilities("private/custom") is None
 
     def test_empty_model_returns_none(self, monkeypatch):
-        from hermes_cli.models_reasoning_caps import openrouter_model_reasoning_capabilities
+        from hermes_agent.hermes_cli.models_reasoning_caps import openrouter_model_reasoning_capabilities
         self._prime_cache(monkeypatch, {"a/b": {"supports_reasoning": True}})
         assert openrouter_model_reasoning_capabilities("") is None
         assert openrouter_model_reasoning_capabilities(None) is None
 
     def test_catalog_unreachable_returns_none_and_rate_limits(self, monkeypatch):
-        import hermes_cli.models as models_mod
-        from hermes_cli.models_reasoning_caps import openrouter_model_reasoning_capabilities
+        import hermes_agent.hermes_cli.models as models_mod
+        from hermes_agent.hermes_cli.models_reasoning_caps import openrouter_model_reasoning_capabilities
 
         monkeypatch.setattr(models_mod, "_openrouter_reasoning_caps_cache", None)
         monkeypatch.setattr(models_mod, "_openrouter_reasoning_caps_failed_at", None)
@@ -149,8 +149,8 @@ class TestOpenRouterModelReasoningCapabilities:
         assert calls["n"] == 1
 
     def test_cache_only_by_default_never_fetches(self, monkeypatch):
-        import hermes_cli.models as models_mod
-        from hermes_cli.models_reasoning_caps import openrouter_model_reasoning_capabilities
+        import hermes_agent.hermes_cli.models as models_mod
+        from hermes_agent.hermes_cli.models_reasoning_caps import openrouter_model_reasoning_capabilities
 
         monkeypatch.setattr(models_mod, "_openrouter_reasoning_caps_cache", None)
         monkeypatch.setattr(models_mod, "_openrouter_reasoning_caps_failed_at", None)
@@ -179,7 +179,7 @@ class TestSupportsReasoningExtraBodyMetadataGate:
         return agent
 
     def test_metadata_positive_overrides_static_list(self, monkeypatch):
-        import hermes_cli.models as models_mod
+        import hermes_agent.hermes_cli.models as models_mod
         monkeypatch.setattr(models_mod, "_openrouter_reasoning_caps_failed_at", None)
         monkeypatch.setattr(models_mod, "_openrouter_reasoning_caps_cache", {
             # nvidia/ is NOT in the static prefix allowlist (#75386) —
@@ -194,7 +194,7 @@ class TestSupportsReasoningExtraBodyMetadataGate:
         assert agent._supports_reasoning_extra_body() is True
 
     def test_metadata_negative_overrides_static_list(self, monkeypatch):
-        import hermes_cli.models as models_mod
+        import hermes_agent.hermes_cli.models as models_mod
         monkeypatch.setattr(models_mod, "_openrouter_reasoning_caps_failed_at", None)
         monkeypatch.setattr(models_mod, "_openrouter_reasoning_caps_cache", {
             # openai/ IS in the static prefix list, but the catalog says this
@@ -205,7 +205,7 @@ class TestSupportsReasoningExtraBodyMetadataGate:
         assert agent._supports_reasoning_extra_body() is False
 
     def test_unknown_falls_back_to_static_prefixes(self, monkeypatch):
-        import hermes_cli.models as models_mod
+        import hermes_agent.hermes_cli.models as models_mod
         monkeypatch.setattr(models_mod, "_openrouter_reasoning_caps_cache", {"a/b": None})
         monkeypatch.setattr(models_mod, "_openrouter_reasoning_caps_failed_at", None)
         # deepseek/ is in the static list; unlisted in catalog → fallback True.
@@ -218,7 +218,7 @@ class TestSupportsReasoningExtraBodyMetadataGate:
 
 class TestOpenRouterProfileClamp:
     def test_clamp_applied_in_build_api_kwargs_extras(self, monkeypatch):
-        import hermes_cli.models as models_mod
+        import hermes_agent.hermes_cli.models as models_mod
         from hermes_agent.providers import get_provider_profile
 
         monkeypatch.setattr(models_mod, "_openrouter_reasoning_caps_failed_at", None)
@@ -239,7 +239,7 @@ class TestOpenRouterProfileClamp:
         assert extra_body["reasoning"]["effort"] == "high"
 
     def test_no_clamp_when_catalog_unknown(self, monkeypatch):
-        import hermes_cli.models as models_mod
+        import hermes_agent.hermes_cli.models as models_mod
         from hermes_agent.providers import get_provider_profile
 
         monkeypatch.setattr(models_mod, "_openrouter_reasoning_caps_cache", {"a/b": None})
@@ -257,7 +257,7 @@ class TestOpenRouterProfileClamp:
     def test_disable_omitted_for_mandatory_route_kept_otherwise(self, monkeypatch):
         """A reasoning-mandatory route 400s on ``{enabled: false}`` — omit it;
         a route that can disable still gets the user's disable verbatim."""
-        import hermes_cli.models as models_mod
+        import hermes_agent.hermes_cli.models as models_mod
         from hermes_agent.providers import get_provider_profile
 
         monkeypatch.setattr(models_mod, "_openrouter_reasoning_caps_failed_at", None)

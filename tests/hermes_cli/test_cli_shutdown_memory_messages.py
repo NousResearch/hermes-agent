@@ -21,10 +21,10 @@ from typing import Any
 from unittest.mock import MagicMock, patch
 
 
-@patch("hermes_cli.plugins.invoke_hook")
+@patch("hermes_agent.hermes_cli.plugins.invoke_hook")
 def test_cleanup_forwards_session_messages(mock_invoke_hook):
     """_run_cleanup forwards a populated ``_session_messages`` list."""
-    import cli as cli_mod
+    import hermes_agent.cli as cli_mod
 
     transcript = [
         {"role": "user", "content": "remember my dog is named Biscuit"},
@@ -50,10 +50,10 @@ def test_cleanup_forwards_session_messages(mock_invoke_hook):
 
 
 
-@patch("hermes_cli.plugins.invoke_hook")
+@patch("hermes_agent.hermes_cli.plugins.invoke_hook")
 def test_cleanup_provider_exception_is_swallowed(mock_invoke_hook):
     """A raising ``shutdown_memory_provider`` must not crash CLI exit."""
-    import cli as cli_mod
+    import hermes_agent.cli as cli_mod
 
     agent = MagicMock()
     agent.session_id = "cli-session-id"
@@ -113,7 +113,7 @@ def test_cli_close_preflush_resumed_prefix_is_not_duplicated(tmp_path, monkeypat
     """
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
 
-    import cli as cli_mod
+    import hermes_agent.cli as cli_mod
     from hermes_agent.hermes_state import SessionDB
 
     db = SessionDB(db_path=tmp_path / "state.db")
@@ -204,7 +204,7 @@ def test_cli_close_hands_staged_user_marker_to_turn_start(tmp_path, monkeypatch)
     """A close before turn setup does not duplicate the CLI-staged user row."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
 
-    import cli as cli_mod
+    import hermes_agent.cli as cli_mod
     from hermes_agent.hermes_state import SessionDB
 
     db = SessionDB(db_path=tmp_path / "state.db")
@@ -251,7 +251,7 @@ def test_cli_close_uses_clean_override_for_shortened_pending_snapshot(tmp_path, 
     """Close retains the clean user text when its snapshot omits the prefix."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
 
-    import cli as cli_mod
+    import hermes_agent.cli as cli_mod
     from hermes_agent.hermes_state import SessionDB
 
     db = SessionDB(db_path=tmp_path / "state.db")
@@ -299,7 +299,7 @@ def test_cli_close_builds_prompt_before_creating_first_session_row(tmp_path, mon
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
 
     import hermes_agent.agent.conversation_loop as loop_mod
-    import cli as cli_mod
+    import hermes_agent.cli as cli_mod
     from hermes_agent.hermes_state import SessionDB
 
     db = SessionDB(db_path=tmp_path / "state.db")

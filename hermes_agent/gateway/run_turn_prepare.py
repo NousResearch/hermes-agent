@@ -57,7 +57,7 @@ def _resolve_policy_agent_runtime(runner, policy, *, fallback=True) -> tuple[str
     runtime, fallback_entry = route_runtime(policy, frozen, model, route_launch_key(authority, policy, frozen),
                                             fallback=fallback)
     if fallback_entry is not None:
-        from hermes_cli.fallback_config import pre_agent_fallback_notice
+        from hermes_agent.hermes_cli.fallback_config import pre_agent_fallback_notice
         runner._pre_agent_fallback_notice = pre_agent_fallback_notice(
             provider or '', model or '',
             runtime.get('provider') or fallback_entry.get('provider') or 'unknown',
@@ -96,7 +96,7 @@ def _managed_oauth_env_host(provider: str) -> str:
     """The profile's documented host override for a managed OAuth provider, read through the
     secret scope like the resolver reads it: the process env holds the launch profile's value."""
     from hermes_agent.agent.secret_scope import get_secret_str
-    from hermes_cli.auth_xai import DEFAULT_XAI_OAUTH_BASE_URL, _xai_validate_inference_base_url
+    from hermes_agent.hermes_cli.auth_xai import DEFAULT_XAI_OAUTH_BASE_URL, _xai_validate_inference_base_url
 
     if provider == "openai-codex":
         return get_secret_str("HERMES_CODEX_BASE_URL", "").strip()
@@ -110,7 +110,7 @@ def _session_override_uses_managed_oauth(override: Optional[dict]) -> bool:
     A direct alias can retain the provider label but owns its endpoint/key. Never refresh a
     custom host's credential from the official provider's store (or the reverse).
     """
-    from hermes_cli.auth import PROVIDER_REGISTRY
+    from hermes_agent.hermes_cli.auth import PROVIDER_REGISTRY
 
     if not override or override.get("owns_credentials"):
         return False
@@ -265,7 +265,7 @@ class GatewayTurnPrepareMixin:
             logger.info("Runtime provider supplied explicit model override: %s -> %s", model, runtime_model)
             model = runtime_model
         if unavailable_override and not self._pre_agent_fallback_notice:
-            from hermes_cli.fallback_config import pre_agent_fallback_notice
+            from hermes_agent.hermes_cli.fallback_config import pre_agent_fallback_notice
             self._pre_agent_fallback_notice = pre_agent_fallback_notice(
                 unavailable_override["provider"], unavailable_override.get("model"), runtime_kwargs.get("provider"), model)
 
@@ -278,7 +278,7 @@ class GatewayTurnPrepareMixin:
         # provider's first catalog model.
         if not model and runtime_kwargs.get("provider"):
             with suppress(Exception):
-                from hermes_cli.models import get_default_model_for_provider
+                from hermes_agent.hermes_cli.models import get_default_model_for_provider
                 model = get_default_model_for_provider(runtime_kwargs["provider"])
                 if model:
                     logger.info(
@@ -295,7 +295,7 @@ class GatewayTurnPrepareMixin:
         ``/review``) passes the session's own instead of writing that shared slot."""
         from hermes_agent.gateway.run import _deep_merge_request_overrides
         from hermes_agent.agent.fast_mode import STATIC_TIERS
-        from hermes_cli.models import resolve_fast_mode_overrides
+        from hermes_agent.hermes_cli.models import resolve_fast_mode_overrides
         # Tests bind this method onto bare namespaces, so no class-level tables here.
         runtime = {
             k: runtime_kwargs.get(k) for k in (
@@ -339,7 +339,7 @@ class GatewayTurnPrepareMixin:
         model = getattr(agent, "model", None)
         if not model:
             return
-        from hermes_cli.runtime_provider_custom import session_provider_identity
+        from hermes_agent.hermes_cli.runtime_provider_custom import session_provider_identity
         runtime = {
             "provider": session_provider_identity(getattr(agent, "provider", None),
                                                   getattr(agent, "requested_provider", None),

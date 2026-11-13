@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli import venv_sync
+from hermes_agent.hermes_cli import venv_sync
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -148,7 +148,7 @@ class TestCliContract:
             [
                 sys.executable,
                 "-m",
-                "hermes_cli.venv_sync",
+                "hermes_agent.hermes_cli.venv_sync",
                 "--project-root",
                 str(root),
                 "--json",
@@ -167,7 +167,7 @@ class TestCliContract:
             [
                 sys.executable,
                 "-m",
-                "hermes_cli.venv_sync",
+                "hermes_agent.hermes_cli.venv_sync",
                 "--project-root",
                 str(tmp_path),  # empty dir: no pyproject, no stamp
                 "--json",

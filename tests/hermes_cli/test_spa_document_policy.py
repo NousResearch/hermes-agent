@@ -10,8 +10,8 @@ HTML = '<html><head><script src="/assets/app.js"></script></head><body>fixture</
 
 
 def _spa(monkeypatch, tmp_path, *, surface, gated) -> TestClient:
-    from hermes_cli import web_server as server
-    from hermes_cli.web_server_dashboard import mount_spa
+    from hermes_agent.hermes_cli import web_server as server
+    from hermes_agent.hermes_cli.web_server_dashboard import mount_spa
 
     (tmp_path / "index.html").write_text(HTML)
     (tmp_path / "help.html").write_text("<html><body>help</body></html>")
@@ -30,7 +30,7 @@ def _spa(monkeypatch, tmp_path, *, surface, gated) -> TestClient:
 @pytest.mark.parametrize("prefix", ["", "/hermes"])
 @pytest.mark.parametrize("path", ["/", "/chat/session", "/index.html", "/help.html"])
 def test_spa_documents_share_the_bootstrap_policy(monkeypatch, tmp_path, surface, prefix, path):
-    from hermes_cli import web_server as server
+    from hermes_agent.hermes_cli import web_server as server
 
     response = _spa(monkeypatch, tmp_path, surface=surface, gated=True).get(
         path, headers={"X-Forwarded-Prefix": prefix})

@@ -96,7 +96,7 @@ def test_read_nous_access_token_refreshes_expiring_cached_token(tmp_path, monkey
         }
     }))
     monkeypatch.setattr(
-        "hermes_cli.auth.resolve_nous_access_token",
+        "hermes_agent.hermes_cli.auth.resolve_nous_access_token",
         lambda refresh_skew_seconds=120: "fresh-token",
     )
 
@@ -123,7 +123,7 @@ def test_is_managed_tool_gateway_ready_skips_refresh_for_expired_cached_token(tm
         return "fresh-token"
 
     monkeypatch.setattr(
-        "hermes_cli.auth.resolve_nous_access_token",
+        "hermes_agent.hermes_cli.auth.resolve_nous_access_token",
         _record_refresh,
     )
 
@@ -225,7 +225,7 @@ def test_read_nous_provider_state_falls_back_to_global_root_for_share_auth_profi
     monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
 
     import hermes_constants
-    from hermes_cli import auth as auth_mod
+    from hermes_agent.hermes_cli import auth as auth_mod
 
     monkeypatch.setattr(hermes_constants, "get_default_hermes_root", lambda: root)
     monkeypatch.setattr(auth_mod, "get_hermes_home", lambda: profile)

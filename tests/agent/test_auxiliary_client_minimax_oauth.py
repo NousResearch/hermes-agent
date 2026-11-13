@@ -29,7 +29,7 @@ import logging
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from hermes_cli.auth_constants import AuthError
+from hermes_agent.hermes_cli.auth_constants import AuthError
 
 INFERENCE_BASE_URL = "https://api.minimax.io/anthropic"
 
@@ -59,7 +59,7 @@ def test_resolve_minimax_oauth_builds_anthropic_wrapper_with_third_party_wire():
     creds = _runtime_creds()
 
     with patch(
-        "hermes_cli.auth.resolve_minimax_oauth_runtime_credentials",
+        "hermes_agent.hermes_cli.auth.resolve_minimax_oauth_runtime_credentials",
         return_value=creds,
     ), patch(
         "hermes_agent.agent.anthropic_adapter.build_anthropic_client",
@@ -115,7 +115,7 @@ def test_resolve_minimax_oauth_tool_names_unprefixed_on_wire():
         )
 
     with patch(
-        "hermes_cli.auth.resolve_minimax_oauth_runtime_credentials",
+        "hermes_agent.hermes_cli.auth.resolve_minimax_oauth_runtime_credentials",
         return_value=_runtime_creds(),
     ), patch(
         "hermes_agent.agent.anthropic_adapter.build_anthropic_client",
@@ -159,7 +159,7 @@ def test_resolve_minimax_oauth_missing_credentials_log_once_debug(caplog):
     acr._LOGGED_MINIMAX_UNEXPECTED_KEYS.clear()
     resolved: tuple = (None, None)
     with patch(
-        "hermes_cli.auth.resolve_minimax_oauth_runtime_credentials",
+        "hermes_agent.hermes_cli.auth.resolve_minimax_oauth_runtime_credentials",
         side_effect=AuthError(
             "Not logged into MiniMax OAuth.", provider="minimax-oauth",
             code="not_logged_in", relogin_required=True),
@@ -207,9 +207,9 @@ def test_resolve_minimax_oauth_probe_reads_raw_state_no_refresh():
     }
 
     with patch(
-        "hermes_cli.auth.get_provider_auth_state", return_value=expired_state,
+        "hermes_agent.hermes_cli.auth.get_provider_auth_state", return_value=expired_state,
     ) as mock_state, patch(
-        "hermes_cli.auth.resolve_minimax_oauth_runtime_credentials",
+        "hermes_agent.hermes_cli.auth.resolve_minimax_oauth_runtime_credentials",
     ) as mock_resolve:
         with aux.aux_probe_mode():
             client, model = resolve_provider_client("minimax-oauth", "MiniMax-M3")

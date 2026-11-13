@@ -3,7 +3,7 @@
 import os
 from unittest.mock import patch
 
-from hermes_cli.model_switch import list_authenticated_providers
+from hermes_agent.hermes_cli.model_switch import list_authenticated_providers
 
 
 @patch.dict(os.environ, {"OPENCODE_GO_API_KEY": "test-key"}, clear=False)

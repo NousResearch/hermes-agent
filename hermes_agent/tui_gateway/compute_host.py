@@ -24,7 +24,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Callable, Collection
 
-from hermes_cli.config_backend import ConfigBackendUnavailable
+from hermes_agent.hermes_cli.config_backend import ConfigBackendUnavailable
 from hermes_agent.tui_gateway.host_supervisor import MUTATOR_ROUTE_TABLE, _build_sha
 
 
@@ -109,7 +109,7 @@ class ComputeHost:
             from hermes_agent.tools.environments.base import kill_live_foreground_processes
             kill_live_foreground_processes()
         # ...and the opt-in shared-metrics rows that atexit hook would have written (bounded).
-        from hermes_cli.observability.shared_metrics_process import flush_before_hard_exit
+        from hermes_agent.hermes_cli.observability.shared_metrics_process import flush_before_hard_exit
         flush_before_hard_exit()
 
     def shutdown(self, *, reason: str = "shutdown", wait: float = 10.0) -> None:
@@ -353,7 +353,7 @@ class ComputeHost:
             if profile_home:
                 from hermes_constants import set_hermes_home_override
                 from hermes_agent.agent.secret_scope import build_profile_secret_scope, set_secret_scope
-                from hermes_cli.env_loader import hydrate_profile_secret_sources
+                from hermes_agent.hermes_cli.env_loader import hydrate_profile_secret_sources
                 from hermes_agent.hermes_state_registry import acquire
                 home_token = set_hermes_home_override(profile_home)
                 # External sources first (1Password / Bitwarden / secrets.command): this isolated

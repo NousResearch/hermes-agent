@@ -216,7 +216,7 @@ def test_remote_scan_failure_merges_instead_of_replacing_cache(tmp_path, monkeyp
     state of #81723 (regression for MEDIUM: `replace=True` was wiping on every
     call regardless of success).
     """
-    from hermes_cli import projects_db as pdb
+    from hermes_agent.hermes_cli import projects_db as pdb
     from hermes_agent.tui_gateway import server
 
     def _git_repo(path):
@@ -269,7 +269,7 @@ def test_remote_scan_missing_root_does_not_wipe_cache(tmp_path):
     set and DELETE-replace every cached repo that lived under it. The missing
     root must contribute nothing, and the scan must merge — never wipe.
     """
-    from hermes_cli import projects_db as pdb
+    from hermes_agent.hermes_cli import projects_db as pdb
     from hermes_agent.tui_gateway import server
 
     def _git_repo(path):
@@ -307,7 +307,7 @@ def test_remote_scan_missing_root_does_not_wipe_cache(tmp_path):
 
 def test_remote_scan_full_authoritative_replaces_cache(tmp_path):
     """Only a fully-walked scan may replace the stale cache."""
-    from hermes_cli import projects_db as pdb
+    from hermes_agent.hermes_cli import projects_db as pdb
     from hermes_agent.tui_gateway import server
 
     def _git_repo(path):
@@ -536,7 +536,7 @@ def _bind_profiles(monkeypatch, tmp_path: Path, homes: dict[str, Path]) -> None:
     gateway detects "not a real profile on this host" and stays on launch.
     """
     monkeypatch.setattr(
-        "hermes_cli.profiles.get_profile_dir",
+        "hermes_agent.hermes_cli.profiles.get_profile_dir",
         lambda name: homes.get(name, tmp_path / "homes" / "missing" / name),
     )
 
@@ -588,7 +588,7 @@ def _serving_launch_profile(launch_home: Path):
 
 def _cached_repo_labels(home: Path) -> list[str]:
     """Labels in ``home``'s discovered-repo cache, read straight off disk."""
-    from hermes_cli import projects_db as pdb
+    from hermes_agent.hermes_cli import projects_db as pdb
 
     with pdb.connect_closing(home / "projects.db") as conn:
         return sorted(str(entry.get("label") or "") for entry in pdb.list_discovered_repos(conn))

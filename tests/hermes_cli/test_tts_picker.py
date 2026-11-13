@@ -1,4 +1,4 @@
-"""Tests for the TTS plugin picker surface in hermes_cli/tools_config.py (issue #30398).
+"""Tests for the TTS plugin picker surface in hermes_agent/hermes_cli/tools_config.py (issue #30398).
 
 Covers ``_plugin_tts_providers()`` and the ``_visible_providers()``
 integration that injects plugin rows into the Text-to-Speech category.
@@ -12,7 +12,7 @@ import pytest
 
 from hermes_agent.agent import tts_registry
 from hermes_agent.agent.tts_provider import TTSProvider
-from hermes_cli import tools_config
+from hermes_agent.hermes_cli import tools_config
 
 
 class _FakeTTSProvider(TTSProvider):

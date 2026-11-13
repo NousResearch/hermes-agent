@@ -8,7 +8,7 @@ SPA's ``?attach=`` keep-alive token, ``?profile=`` and a per-(profile) ``?channe
 has its own fake provider that only accepts that profile's key and echoes the prompt's canary, so
 every recorded request proves which profile's TUI sent it, and state.db proves where it landed.
 
-Contract under test (``hermes_cli/web_routers/chat_ws.py::pty_ws`` + ``hermes_cli/pty_session.py``):
+Contract under test (``hermes_agent/hermes_cli/web_routers/chat_ws.py::pty_ws`` + ``hermes_agent/hermes_cli/pty_session.py``):
   * ``?profile=<name>`` scopes the whole chat to that profile (HERMES_HOME=<profile dir>);
   * with ``?attach=T`` the PTY outlives the socket; reconnecting with the same T + profile replays
     the buffer and forces a redraw of the SAME TUI/session;

@@ -72,7 +72,7 @@ VIDEO_GENERATE_SCHEMA: dict[str, Any] = {
 def _read_video_gen_key(key: str) -> Optional[str]:
     """Return the stripped ``video_gen.<key>`` string from config.yaml, or None."""
     try:
-        from hermes_cli.config import cfg_get, load_config
+        from hermes_agent.hermes_cli.config import cfg_get, load_config
         value = cfg_get(load_config(), "video_gen", key)
     except Exception as exc:
         logger.debug("Could not read video_gen config: %s", exc)
@@ -91,7 +91,7 @@ def _read_configured_video_model() -> Optional[str]:
 def _discovered_registry():
     """Import the provider registry after (idempotent) plugin discovery so user-installed plugins are visible."""
     from hermes_agent.agent import video_gen_registry
-    from hermes_cli.plugins import _ensure_plugins_discovered
+    from hermes_agent.hermes_cli.plugins import _ensure_plugins_discovered
     _ensure_plugins_discovered()
     return video_gen_registry, _ensure_plugins_discovered
 

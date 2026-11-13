@@ -66,9 +66,9 @@ async def test_reset_runs_memory_cleanup_and_session_hooks_under_the_owning_prof
     prof_b = _profile_b(tmp_path, monkeypatch)
     key = "agent:b:telegram:dm:1"
     seen: dict = {}
-    monkeypatch.setattr("hermes_cli.lifecycle.finalize_session",
+    monkeypatch.setattr("hermes_agent.hermes_cli.lifecycle.finalize_session",
                         lambda **_kw: seen.__setitem__("finalize", str(get_hermes_home())))
-    monkeypatch.setattr("hermes_cli.lifecycle.invoke_hook", lambda name, **_kw: seen.__setitem__(name, (
+    monkeypatch.setattr("hermes_agent.hermes_cli.lifecycle.invoke_hook", lambda name, **_kw: seen.__setitem__(name, (
         str(get_hermes_home()), (secret_scope.current_secret_scope() or {}).get("HINDSIGHT_LLM_API_KEY"))))
     runner = _runner({key: prof_b})
     runner._agent_cache[key] = (_RecordingAgent(seen, prof_b), "sig")

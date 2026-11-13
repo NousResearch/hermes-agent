@@ -7,7 +7,7 @@ multi-million-object gateway, freezing every other session once a minute.
 
 from unittest.mock import Mock
 
-from hermes_cli import mem_trim
+from hermes_agent.hermes_cli import mem_trim
 
 
 def test_agent_close_trim_returns_pages_without_a_full_collection(monkeypatch):

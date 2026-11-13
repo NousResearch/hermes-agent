@@ -11,7 +11,7 @@ from tests.hermes_cli.test_local_download_jobs import client
 
 
 def test_jobs_keep_every_active_download_ahead_of_bounded_history(client):
-    from hermes_cli.web_routers import local_models as lm
+    from hermes_agent.hermes_cli.web_routers import local_models as lm
 
     paused = lm._job("runtime-install", "engine")
     paused["status"] = "paused"
@@ -25,7 +25,7 @@ def test_jobs_keep_every_active_download_ahead_of_bounded_history(client):
 
 
 def test_pause_request_prevents_transition_into_activation(client):
-    from hermes_cli.web_routers import local_models as lm
+    from hermes_agent.hermes_cli.web_routers import local_models as lm
 
     job = lm._job("quickstart", "model")
     job["phase"] = "downloading"

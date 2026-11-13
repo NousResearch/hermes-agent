@@ -3,9 +3,9 @@ from __future__ import annotations
 import argparse
 import sys
 
-import hermes_cli.config as config_mod
-import hermes_cli.main as main_mod
-from hermes_cli.subcommands.dashboard import build_dashboard_parser, build_serve_parser
+import hermes_agent.hermes_cli.config as config_mod
+import hermes_agent.hermes_cli.main as main_mod
+from hermes_agent.hermes_cli.subcommands.dashboard import build_dashboard_parser, build_serve_parser
 
 
 def _capture(_args) -> None:

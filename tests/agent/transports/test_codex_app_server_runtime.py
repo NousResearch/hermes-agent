@@ -12,7 +12,7 @@ import threading
 
 import pytest
 
-from hermes_cli.runtime_provider import (
+from hermes_agent.hermes_cli.runtime_provider import (
     _VALID_API_MODES,
     _maybe_apply_codex_app_server_runtime,
 )

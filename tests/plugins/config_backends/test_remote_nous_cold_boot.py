@@ -1,7 +1,7 @@
 """A Cloud agent's first remote config read, in a cold process, with the Nous credential.
 
 In Cloud mode (no ``GATEWAY_RELAY_IDP_*``) the plane bearer is the Nous Portal access token from the
-profile's ``auth.json``. Resolving it imports ``hermes_cli.auth`` inside the profile's first fetch;
+profile's ``auth.json``. Resolving it imports ``hermes_agent.hermes_cli.auth`` inside the profile's first fetch;
 that import discovers model providers, and provider discovery reads config (the gate on
 pip-installed provider plugins). That read used to wait on the fetch's own lock forever, so a Cloud
 agent never booted (stage2's ``refresh_dependencies`` hung). These tests run real imports in a
@@ -29,13 +29,13 @@ STAGE2_SNIPPET = """
 import json, os, sys
 from pathlib import Path
 from pm.recovery import refresh_dependencies  # stage2-hook.sh's import
-assert "hermes_cli.auth" not in sys.modules and "hermes_cli.config" not in sys.modules  # cold
+assert "hermes_agent.hermes_cli.auth" not in sys.modules and "hermes_agent.hermes_cli.config" not in sys.modules  # cold
 from pm.workspace import enabled_member_dirs
 enabled_member_dirs()  # refresh_dependencies -> venv_is_current -> expected_stamp reads this first
 from hermes_agent import providers
 if os.environ.get("PROBE_PROVIDER"):  # a $HERMES_HOME provider plugin loads once config is loaded
     assert providers.get_provider_profile("probe-provider") is not None
-from hermes_cli.config import load_config
+from hermes_agent.hermes_cli.config import load_config
 print("RESULT=" + json.dumps(load_config()["display"]["skin"]))
 """
 
@@ -110,14 +110,14 @@ def test_cloud_agent_first_remote_read_completes_cold(tmp_path, expired, layout)
 
 AUTH_IMPORT_READS_NO_CONFIG = """
 import sys
-import hermes_cli.config_backend as cb
+import hermes_agent.hermes_cli.config_backend as cb
 reads = []
 def refuse(*a, **k):
     reads.append(1)
     raise cb.ConfigBackendUnavailable("this test's backend refuses every read")
 cb._route = refuse  # every config read, through any backend, now raises
-import hermes_cli.auth
-from hermes_cli.auth import resolve_nous_access_token
+import hermes_agent.hermes_cli.auth
+from hermes_agent.hermes_cli.auth import resolve_nous_access_token
 assert resolve_nous_access_token() == sys.argv[1]
 assert reads == [], reads
 print("RESULT=" + '"ok"')
@@ -125,7 +125,7 @@ print("RESULT=" + '"ok"')
 
 
 def test_importing_auth_and_resolving_the_nous_token_read_no_config(tmp_path):
-    """The Cloud credential path (import hermes_cli.auth, resolve the Nous token) must not need the
+    """The Cloud credential path (import hermes_agent.hermes_cli.auth, resolve the Nous token) must not need the
     config it is used to fetch: under a backend whose every read raises, both succeed cold."""
     home = tmp_path / "home"
     home.mkdir()
@@ -153,20 +153,20 @@ def request(method, *args, **kwargs):  # thread A, holding the profile's fetch l
 client.request = request
 def b():
     in_fetch.wait(20)
-    import hermes_cli.auth  # cold, while A holds the fetch lock
+    import hermes_agent.hermes_cli.auth  # cold, while A holds the fetch lock
     imported.set()
 tb = threading.Thread(target=b, daemon=True)
 tb.start()
 get_remote_backend().version(home)  # thread A: the profile's first read
 tb.join(20)
 assert waited.get("b_done") and not tb.is_alive(), "the cold auth import waited for the fetch in flight"
-from hermes_cli.config import load_config
+from hermes_agent.hermes_cli.config import load_config
 print("RESULT=" + json.dumps(load_config()["display"]["skin"]))
 """
 
 
 def test_cold_auth_import_on_another_thread_never_waits_for_the_fetch(tmp_path):
-    """Thread A holds a profile's fetch lock; thread B cold-imports hermes_cli.auth. The import
+    """Thread A holds a profile's fetch lock; thread B cold-imports hermes_agent.hermes_cli.auth. The import
     must not read config (it would wait for A's fetch while A, resolving its own credential, can
     need the import lock B holds)."""
     from .stub_plane import remote_env
@@ -185,7 +185,7 @@ def test_cold_auth_import_on_another_thread_never_waits_for_the_fetch(tmp_path):
 MULTIPLEX_TOKEN_READS_NO_CONFIG = """
 import sys, threading
 from pathlib import Path
-import hermes_cli.config_backend as cb
+import hermes_agent.hermes_cli.config_backend as cb
 reads = []
 def refuse(*a, **k):
     reads.append(1)

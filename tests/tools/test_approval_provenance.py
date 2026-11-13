@@ -79,7 +79,7 @@ def test_approvals_off_keeps_the_bare_result_for_covered_commands(guard, monkeyp
 
 
 def test_session_grant_left_by_a_withdrawn_always_answer_is_not_called_a_session_answer(monkeypatch):
-    from hermes_cli.config import get_config_path
+    from hermes_agent.hermes_cli.config import get_config_path
     from hermes_agent.tools import terminal_tool
 
     monkeypatch.setattr(approval_module, "_permanent_baseline_by_home", {})

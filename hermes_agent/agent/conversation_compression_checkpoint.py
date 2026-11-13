@@ -119,7 +119,7 @@ def checkpoint_required_from_config() -> bool:
     from utils import is_truthy_value
 
     try:
-        from hermes_cli.config import load_config_readonly
+        from hermes_agent.hermes_cli.config import load_config_readonly
 
         compression = (load_config_readonly() or {}).get("compression") or {}
     except Exception:  # health: allow BLE001 -- an unreadable config reads as not armed, like init_agent
@@ -159,7 +159,7 @@ def _prune_would_have_run(compressor: Any, current_tokens: int) -> bool:
     host``) is not counted: its methods are all proxies, so an override can't be told from the no-op.
     """
     from hermes_agent.agent.context_engine import ContextEngine
-    from hermes_cli.plugin_host import is_hosted_object
+    from hermes_agent.hermes_cli.plugin_host import is_hosted_object
 
     prune = getattr(compressor, "prune_tool_results_only", None)
     if not callable(prune) or getattr(prune, "__func__", None) is ContextEngine.prune_tool_results_only:

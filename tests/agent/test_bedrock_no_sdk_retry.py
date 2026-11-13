@@ -86,7 +86,7 @@ def fake_bedrock(monkeypatch):
 
 
 def _use_config(monkeypatch, cfg):
-    monkeypatch.setattr("hermes_cli.config.load_config_readonly", lambda: cfg)
+    monkeypatch.setattr("hermes_agent.hermes_cli.config.load_config_readonly", lambda: cfg)
 
 
 def test_hung_converse_fails_after_one_read_timeout_not_five(fake_bedrock, monkeypatch):

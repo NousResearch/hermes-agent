@@ -71,7 +71,7 @@ async def dispatch_group_control(connection, method, params):
     db_path = await asyncio.to_thread(Path(authority.db.db_path).resolve)
     if db_path.parent != await asyncio.to_thread(home.resolve):
         raise RuntimeStoreError('profile_mismatch')
-    from hermes_cli.profiles import profile_matches_home
+    from hermes_agent.hermes_cli.profiles import profile_matches_home
     profile = params.get('profile')
     if profile is not None and not isinstance(profile, str):
         raise RuntimeStoreError('invalid_params')
@@ -467,7 +467,7 @@ def _sibling_sessions(authority, reader):
 def _profiles(authority, actor, home, params, siblings=()):
     """The Bots roster: this profile's row, then every profile it can name. ``siblings`` is
     ``_roster_siblings``' snapshot; a sibling with a reader carries the same session fields."""
-    from hermes_cli.profiles import _profile_info
+    from hermes_agent.hermes_cli.profiles import _profile_info
     import hermes_yaml as yaml
     include_sessions = params.get('include_sessions', True)
     if type(include_sessions) is not bool:
@@ -529,7 +529,7 @@ def _profiles(authority, actor, home, params, siblings=()):
     # (RT-38): a host running one gateway per profile serves no siblings, and Desktop drops every
     # union agent the active source leaves out, so a default-only answer hid the other bots.
     # Metadata only, like any discovery above.
-    from hermes_cli.profiles import _get_default_hermes_home
+    from hermes_agent.hermes_cli.profiles import _get_default_hermes_home
     root = _get_default_hermes_home()
     if root.is_dir():
         discovered('default', root)
@@ -538,7 +538,7 @@ def _profiles(authority, actor, home, params, siblings=()):
     # ``install_id`` (same value as /api/status) lets a multi-connection client prove which
     # machine answered; the roster trace logged ``answered=-`` without it. It already returns
     # None for an unreadable root.
-    from hermes_cli.install_identity import get_install_id
+    from hermes_agent.hermes_cli.install_identity import get_install_id
     return {'profiles': profiles, 'bot_mode_protocol': True, 'install_id': get_install_id() or ''}
 
 
@@ -568,7 +568,7 @@ def _lstat_key(path):
 
 
 def _named_profile_dirs():
-    from hermes_cli.profiles import _get_profiles_root, _iter_named_profile_dirs
+    from hermes_agent.hermes_cli.profiles import _get_profiles_root, _iter_named_profile_dirs
     from hermes_constants import _PROFILE_IDENTITY_MARKERS, profile_tombstone_path
     profiles_root = _get_profiles_root()
     try:

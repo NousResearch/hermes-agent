@@ -41,7 +41,7 @@ def client(tmp_path, monkeypatch):
     finally:
         db.close()
 
-    from hermes_cli.web_routers.sessions import manage_router
+    from hermes_agent.hermes_cli.web_routers.sessions import manage_router
 
     app = FastAPI()
     app.include_router(manage_router)

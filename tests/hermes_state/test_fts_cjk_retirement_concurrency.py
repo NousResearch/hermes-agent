@@ -128,7 +128,7 @@ def test_a_full_temporary_volume_is_neither_healthy_nor_damage(cjk_db, monkeypat
     import argparse
 
     from hermes_agent import hermes_state
-    from hermes_cli import sessions_cmd
+    from hermes_agent.hermes_cli import sessions_cmd
 
     before = _store_snapshot(cjk_db)
 

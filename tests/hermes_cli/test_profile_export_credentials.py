@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 
 from hermes_agent.agent.file_safety import HOME_CREDENTIAL_DIRS
-from hermes_cli.profiles import export_profile
+from hermes_agent.hermes_cli.profiles import export_profile
 from plugins.teams_pipeline.store import DEFAULT_TEAMS_PIPELINE_STORE_FILENAME
 
 # Long enough to match hermes_agent.agent.redact prefix patterns (sk- + 10+ chars).
@@ -23,9 +23,9 @@ _LEAKED_KEY = "sk-or-v1-reallyLongSecretKeyValue12345678"
 
 
 def _patch_named_profile(monkeypatch, profiles_root, profile_dir):
-    monkeypatch.setattr("hermes_cli.profiles._get_profiles_root", lambda: profiles_root)
-    monkeypatch.setattr("hermes_cli.profiles.get_profile_dir", lambda n: profile_dir)
-    monkeypatch.setattr("hermes_cli.profiles.validate_profile_name", lambda n: None)
+    monkeypatch.setattr("hermes_agent.hermes_cli.profiles._get_profiles_root", lambda: profiles_root)
+    monkeypatch.setattr("hermes_agent.hermes_cli.profiles.get_profile_dir", lambda n: profile_dir)
+    monkeypatch.setattr("hermes_agent.hermes_cli.profiles.validate_profile_name", lambda n: None)
 
 
 # Stores named here as well as in PROFILE_CREDENTIAL_PATHS, so dropping one from the list fails a test:
@@ -50,7 +50,7 @@ _DOT_DIRS = set(HOME_CREDENTIAL_DIRS)
 
 def _seed_stores(root):
     """Lay every credential store into a profile-shaped tree at *root*; returns their paths."""
-    from hermes_cli.profiles import PROFILE_CREDENTIAL_PATHS
+    from hermes_agent.hermes_cli.profiles import PROFILE_CREDENTIAL_PATHS
 
     stores = _EXTRA_STORES | PROFILE_CREDENTIAL_PATHS
     (root / "platforms").mkdir(parents=True)
@@ -100,11 +100,11 @@ class TestCredentialExclusion:
         named-profile export. .op.env, npmrc, home/ CLI stores and the .bak copies have no suffix the
         scrub edits, so exclusion is their only guard; a hand-named config copy is the user's and
         ships scrubbed."""
-        from hermes_cli.auth import _load_auth_store
-        from hermes_cli.backup import create_pre_update_backup, create_quick_snapshot
-        from hermes_cli.config_backups import backup_config
-        from hermes_cli.post_update import _backup_existing
-        from hermes_cli.profiles import PROFILE_CREDENTIAL_PATHS
+        from hermes_agent.hermes_cli.auth import _load_auth_store
+        from hermes_agent.hermes_cli.backup import create_pre_update_backup, create_quick_snapshot
+        from hermes_agent.hermes_cli.config_backups import backup_config
+        from hermes_agent.hermes_cli.post_update import _backup_existing
+        from hermes_agent.hermes_cli.profiles import PROFILE_CREDENTIAL_PATHS
 
         profiles_root = tmp_path / "profiles"
         profile_dir = profiles_root / "testprofile"
@@ -158,7 +158,7 @@ class TestCredentialExclusion:
         where the profile has a directory holding stores is refused before anything is written."""
         from pathlib import Path
 
-        from hermes_cli.profile_distribution import (
+        from hermes_agent.hermes_cli.profile_distribution import (
             DistributionError, DistributionManifest, install_distribution, write_manifest,
         )
 
@@ -304,7 +304,7 @@ def test_clone_all_does_not_share_the_source_webapp_browser_credential(profile_e
     """The Webapp's browser credential belongs to one gateway: a clone mints its own on first
     use, so signing one profile's browsers out never leaves them signed in to the other."""
     from hermes_agent.gateway.webapp_listener import TOKEN_PATH, browser_session_token
-    from hermes_cli.profiles import create_profile
+    from hermes_agent.hermes_cli.profiles import create_profile
 
     default_home = profile_env / ".hermes"
     (default_home / "config.yaml").write_text("model: test", encoding="utf-8")
@@ -323,8 +323,8 @@ def test_clone_all_leaves_the_source_gateways_webapp_sign_in_state_behind(profil
     own) and the Portal callback its Web Access registered for its own address. A ``--clone-all`` clone
     gets none of it, so the clone's gated Webapp honours no native sign-in made on the source, and the
     clone's Web Access registers its own callback."""
-    from hermes_cli.profiles import create_profile
-    from hermes_cli.webapp_sign_in import RECORD_PATH
+    from hermes_agent.hermes_cli.profiles import create_profile
+    from hermes_agent.hermes_cli.webapp_sign_in import RECORD_PATH
 
     default_home = profile_env / ".hermes"
     (default_home / "config.yaml").write_text("model: test", encoding="utf-8")

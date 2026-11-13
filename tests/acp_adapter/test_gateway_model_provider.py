@@ -47,7 +47,7 @@ async def test_picker_identity_reaches_prepared_mutation(model_id, expected, tmp
 @pytest.mark.asyncio
 @pytest.mark.parametrize("reason", ["connection_lost", "session_busy"])
 async def test_prefixed_pick_preserves_mutation_failure_contract(reason):
-    from hermes_cli.gateway_client import GatewayClientError
+    from hermes_agent.hermes_cli.gateway_client import GatewayClientError
 
     agent = GatewayACPAgent()
     calls = []

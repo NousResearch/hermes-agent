@@ -146,7 +146,7 @@ class TestGoalMigratesOnRotation:
         # Set a persistent goal on the parent via the real persistence path.
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path / ".hermes")}):
             (tmp_path / ".hermes").mkdir(exist_ok=True)
-            from hermes_cli import goals
+            from hermes_agent.hermes_cli import goals
             goals._DB_CACHE.clear()
             # Point the goal DB at the same state.db the agent uses.
             with patch.object(goals, "_get_session_db", return_value=db):

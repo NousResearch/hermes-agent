@@ -32,8 +32,8 @@ def _plugin(home: Path, name: str, url: str, env: tuple, aliases: tuple) -> None
 @pytest.fixture
 def homes(tmp_path, monkeypatch):
     import hermes_agent.providers as providers  # noqa: PLR0402
-    from hermes_cli import auth_plugin_providers as app
-    from hermes_cli.auth import PROVIDER_REGISTRY
+    from hermes_agent.hermes_cli import auth_plugin_providers as app
+    from hermes_agent.hermes_cli.auth import PROVIDER_REGISTRY
 
     a, b, c = (tmp_path / n for n in "abc")
     _plugin(a, "acme-scope", "https://a.invalid/v1", ("ACME_SCOPE_A_KEY",), ("acs",))
@@ -56,9 +56,9 @@ def homes(tmp_path, monkeypatch):
 
 
 def _view(home: Path):
-    from hermes_cli.auth import PROVIDER_REGISTRY
-    from hermes_cli.auth_plugin_providers import registry_lookup
-    from hermes_cli.models import normalize_provider
+    from hermes_agent.hermes_cli.auth import PROVIDER_REGISTRY
+    from hermes_agent.hermes_cli.auth_plugin_providers import registry_lookup
+    from hermes_agent.hermes_cli.models import normalize_provider
 
     token = set_hermes_home_override(home)
     try:

@@ -427,7 +427,7 @@ def _load_allowed_actions_config() -> Optional[list[str]]:
     """``discord.server_actions`` allowlist (comma string or YAML list), or ``None`` when
     unrestricted. Unknown names are dropped with a warning."""
     try:
-        from hermes_cli.config import load_config
+        from hermes_agent.hermes_cli.config import load_config
         cfg = load_config()
     except Exception as exc:
         logger.debug("discord: could not load config (%s); allowing all actions.", exc)

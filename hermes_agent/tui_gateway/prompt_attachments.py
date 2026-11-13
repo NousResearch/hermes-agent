@@ -101,7 +101,7 @@ def _sniff_image_ext(img_bytes: bytes, filename: str = "") -> str:
 
 def _allowed_image_extensions() -> frozenset[str]:
     try:
-        from cli import _IMAGE_EXTENSIONS
+        from hermes_agent.cli import _IMAGE_EXTENSIONS
         return frozenset(_IMAGE_EXTENSIONS)
     except Exception:
         return frozenset({".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"})
@@ -134,12 +134,12 @@ def _profile_attachments_storage(profile_home) -> str:
     profile-home store, which the sandbox mounts and the vision allowlist always cover, so the
     attachment still reaches the agent (by an absolute instead of a workspace-relative ref)."""
     import contextlib as _contextlib
-    from hermes_cli.config_backend import ConfigBackendUnavailable
+    from hermes_agent.hermes_cli.config_backend import ConfigBackendUnavailable
     home = Path(profile_home) if profile_home else _hermes_home
     try:
         with _contextlib.suppress(Exception):
-            from hermes_cli.config_backend import config_exists
-            from hermes_cli.config_effective import load_user_config_effective
+            from hermes_agent.hermes_cli.config_backend import config_exists
+            from hermes_agent.hermes_cli.config_effective import load_user_config_effective
             cfg_path = home / "config.yaml"
             if config_exists(cfg_path):
                 attachments_cfg = load_user_config_effective(cfg_path).get("attachments")
@@ -246,11 +246,11 @@ def _stage_browser_file_attachment(session: dict, staged_upload: object, name: s
     Source and destination may be different profiles on the same installation (an owner-routed
     tile can receive a foreground browser pick); the caller decides which source homes this
     connection may reach. The receipt is resolved back to exactly the staged layout under its
-    source home, which must still be a live profile (``hermes_cli/staged_uploads.py``). From there
+    source home, which must still be a live profile (``hermes_agent/hermes_cli/staged_uploads.py``). From there
     the copy is the native Desktop's out-of-workspace file attach, capped at the browser limit.
     """
     from hermes_constants import WEBAPP_ATTACHMENT_MAX_BYTES
-    from hermes_cli.staged_uploads import parse_staged_upload, resolve_staged_upload
+    from hermes_agent.hermes_cli.staged_uploads import parse_staged_upload, resolve_staged_upload
 
     raw_home, raw_path = parse_staged_upload(staged_upload)
     source = resolve_staged_upload(Path(raw_home), raw_path)
@@ -267,7 +267,7 @@ def _referenced_in_place(session: dict, path: Path, workspace: Path, *, staged: 
     if staged or not path.is_relative_to(workspace):
         return False
     try:
-        from hermes_cli.staged_uploads import is_staged_upload
+        from hermes_agent.hermes_cli.staged_uploads import is_staged_upload
     except ImportError:
         # An install without the web stack (fastapi) has no upload route that could stage one.
         return True
@@ -290,7 +290,7 @@ def _stage_session_file_attachment(
     resolved = None
     if raw_path:
         try:
-            from cli import _detect_file_drop, _resolve_attachment_path, _split_path_input
+            from hermes_agent.cli import _detect_file_drop, _resolve_attachment_path, _split_path_input
         except Exception:
             _detect_file_drop = None
         if _detect_file_drop is not None:

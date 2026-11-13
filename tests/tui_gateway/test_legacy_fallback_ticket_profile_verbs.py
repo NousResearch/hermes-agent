@@ -34,7 +34,7 @@ def _call(server, profile_id, method, params):
 
 
 def test_secondary_ticket_runs_connectors_and_billing_in_its_own_profile(homes, monkeypatch):
-    import hermes_cli.nous_billing
+    import hermes_agent.hermes_cli.nous_billing
     import hermes_agent.tools.connectors
     import hermes_agent.tools.connectors.managed
     import hermes_agent.tools.managed_tool_gateway
@@ -49,7 +49,7 @@ def test_secondary_ticket_runs_connectors_and_billing_in_its_own_profile(homes, 
     monkeypatch.setattr(hermes_agent.tools.managed_tool_gateway, 'read_nous_access_token', lambda: 'token')
     monkeypatch.setattr(hermes_agent.tools.connectors.managed, 'managed_client',
                         lambda **_: types.SimpleNamespace(list_connectors=lambda: rec('list') or []))
-    monkeypatch.setattr(hermes_cli.nous_billing, 'post_charge', lambda **k: rec('charge') or {'chargeId': 'c'})
+    monkeypatch.setattr(hermes_agent.hermes_cli.nous_billing, 'post_charge', lambda **k: rec('charge') or {'chargeId': 'c'})
     for method, params in (('connectors.list', {'owner': {'type': 'account'}}), ('billing.charge', {'amount_usd': 5})):
         _call(server, bee, method, params)
     assert {label for label, _ in seen} == {'list', 'charge'}, seen

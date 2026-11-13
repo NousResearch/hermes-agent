@@ -13,8 +13,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from hermes_cli.local_runtime import capabilities, endpoint, load_progress
-from hermes_cli.local_runtime.supervisor import LlamaServerSupervisor
+from hermes_agent.hermes_cli.local_runtime import capabilities, endpoint, load_progress
+from hermes_agent.hermes_cli.local_runtime.supervisor import LlamaServerSupervisor
 
 
 def test_child_query_opts_out_of_autoload():

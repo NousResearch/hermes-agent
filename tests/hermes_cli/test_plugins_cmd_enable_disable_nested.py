@@ -12,7 +12,7 @@ from tests.hermes_cli.plugin_worker_support import (
 
 @pytest.mark.parametrize("query", ["trace-leaf", "trace-manifest", "observability/trace-leaf"])
 def test_nested_enable_disable_and_composite_use_canonical_key(plugin_world, monkeypatch, query):
-    from hermes_cli import plugins_cmd
+    from hermes_agent.hermes_cli import plugins_cmd
     from rich.console import Console
 
     world = plugin_world
@@ -40,7 +40,7 @@ def test_nested_enable_disable_and_composite_use_canonical_key(plugin_world, mon
 
 
 def test_ambiguous_and_unknown_names_cannot_change_config(plugin_world):
-    from hermes_cli import plugins_cmd
+    from hermes_agent.hermes_cli import plugins_cmd
 
     world = plugin_world
     for category in ("image_gen", "model-providers"):
@@ -57,7 +57,7 @@ def test_ambiguous_and_unknown_names_cannot_change_config(plugin_world):
 
 
 def test_dependency_free_enable_no_churn_and_tool_override_fails_closed(plugin_world, monkeypatch):
-    from hermes_cli import plugins_cmd
+    from hermes_agent.hermes_cli import plugins_cmd
     from pm import client, receipt
 
     world = plugin_world
@@ -87,7 +87,7 @@ def test_dependency_free_enable_no_churn_and_tool_override_fails_closed(plugin_w
     bundled = world.core / "plugins/trusted-fixture"
     bundled.mkdir(parents=True)
     (bundled / "plugin.yaml").write_text("name: trusted-fixture\n", encoding="utf-8")
-    monkeypatch.setattr("hermes_cli.plugins.get_bundled_plugins_dir", lambda: world.core / "plugins")
+    monkeypatch.setattr("hermes_agent.hermes_cli.plugins.get_bundled_plugins_dir", lambda: world.core / "plugins")
     def unexpected(*args, **kwargs):
         pytest.fail("bundled plugin requested privilege consent")
     monkeypatch.setattr("rich.console.Console.input", unexpected)
@@ -99,7 +99,7 @@ def test_dependency_free_enable_no_churn_and_tool_override_fails_closed(plugin_w
 
 @pytest.mark.parametrize("config_changes", [False, True])
 def test_fallback_compares_the_preinteraction_selection(plugin_world, monkeypatch, config_changes):
-    from hermes_cli import plugins_cmd
+    from hermes_agent.hermes_cli import plugins_cmd
     from pm import receipt
 
     world = plugin_world
@@ -109,7 +109,7 @@ def test_fallback_compares_the_preinteraction_selection(plugin_world, monkeypatc
     config_path = world.home / "config.yaml"
     before = config_path.read_bytes()
     selected = world.selected()
-    monkeypatch.setattr("hermes_cli.plugins.get_bundled_plugins_dir", lambda: world.core / "plugins")
+    monkeypatch.setattr("hermes_agent.hermes_cli.plugins.get_bundled_plugins_dir", lambda: world.core / "plugins")
     monkeypatch.setattr(plugins_cmd, "_provider_categories", list)
     monkeypatch.setattr(plugins_cmd.sys.stdin, "isatty", lambda: True)
     monkeypatch.setitem(plugins_cmd.sys.modules, "curses", None)

@@ -413,7 +413,7 @@ class GatewayControlServer:
         if os.name == "nt":
             return None
         try:
-            from hermes_cli.gateway_runtime_discovery import home_mode_unsafe, socket_peer_uid
+            from hermes_agent.hermes_cli.gateway_runtime_discovery import home_mode_unsafe, socket_peer_uid
             home = self._home
             info = home.lstat()
             if (home.absolute() != home.resolve() or not stat.S_ISDIR(info.st_mode)

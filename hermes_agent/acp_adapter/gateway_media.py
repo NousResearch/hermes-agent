@@ -6,7 +6,7 @@ import logging
 import os
 from contextlib import suppress
 
-from hermes_cli.gateway_client import GatewayClientError
+from hermes_agent.hermes_cli.gateway_client import GatewayClientError
 
 logger = logging.getLogger(__name__)
 

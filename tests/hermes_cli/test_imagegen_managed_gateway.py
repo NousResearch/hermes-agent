@@ -15,7 +15,7 @@ read-time shim (use_gateway: true ⇒ nous) cannot override the fresh pick.
 The video twin (``_select_plugin_video_gen_provider``) shares the contract.
 """
 
-from hermes_cli.tools_config import (
+from hermes_agent.hermes_cli.tools_config import (
     _select_plugin_image_gen_provider,
     _select_plugin_video_gen_provider,
     _write_provider_config,
@@ -23,7 +23,7 @@ from hermes_cli.tools_config import (
 
 
 def _quiet(monkeypatch):
-    import hermes_cli.tools_config_providers as tc
+    import hermes_agent.hermes_cli.tools_config_providers as tc
 
     monkeypatch.setattr(tc, "_print_success", lambda *a, **k: None)
     monkeypatch.setattr(tc, "_print_info", lambda *a, **k: None, raising=False)
@@ -79,9 +79,9 @@ def test_image_and_video_selectors_share_the_selection_contract(monkeypatch):
 
 def _quiet_reconfigure(monkeypatch):
     """Silence prints + model pickers for _reconfigure_provider paths."""
-    import hermes_cli.tools_config as tc
-    from hermes_cli import tools_config_post_setup
-    import hermes_cli.tools_config_providers as tcp
+    import hermes_agent.hermes_cli.tools_config as tc
+    from hermes_agent.hermes_cli import tools_config_post_setup
+    import hermes_agent.hermes_cli.tools_config_providers as tcp
 
     monkeypatch.setattr(tcp, "_print_success", lambda *a, **k: None)
     monkeypatch.setattr(tcp, "_print_info", lambda *a, **k: None, raising=False)
@@ -91,7 +91,7 @@ def _quiet_reconfigure(monkeypatch):
     monkeypatch.setattr(tc, "_run_post_setup", lambda *a, **k: None, raising=False)
     monkeypatch.setattr(tools_config_post_setup, "_run_post_setup", lambda *a, **k: None, raising=False)
     # Managed rows gate on live Portal auth — stub it green.
-    import hermes_cli.nous_subscription as ns
+    import hermes_agent.hermes_cli.nous_subscription as ns
 
     monkeypatch.setattr(ns, "ensure_nous_portal_access", lambda **k: True)
 
@@ -103,7 +103,7 @@ def test_reconfigure_managed_fal_row_keeps_managed_selection(monkeypatch):
     picker to change models was silently flipped onto their personal
     FAL_KEY."""
     _quiet_reconfigure(monkeypatch)
-    import hermes_cli.tools_config as tc
+    import hermes_agent.hermes_cli.tools_config as tc
 
     managed_row = {
         "name": "Nous Subscription",
@@ -125,7 +125,7 @@ def test_reconfigure_direct_fal_row_writes_vendor_selection(monkeypatch):
     """Direct-key FAL reconfig writes the vendor name and pops any stale
     legacy use_gateway key so the read-time shim can't resurrect 'nous'."""
     _quiet_reconfigure(monkeypatch)
-    import hermes_cli.tools_config as tc
+    import hermes_agent.hermes_cli.tools_config as tc
 
     direct_row = {
         "name": "FAL.ai",

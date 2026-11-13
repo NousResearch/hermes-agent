@@ -76,7 +76,7 @@ def catalog_server(tmp_path):
 
 def _mcp_test(capsys, entry: dict) -> tuple[int, str]:
     """``hermes mcp test catalog`` against *entry*; returns (exit code, printed output)."""
-    from hermes_cli.mcp_config import cmd_mcp_test
+    from hermes_agent.hermes_cli.mcp_config import cmd_mcp_test
 
     (get_hermes_home() / "config.yaml").write_text(yaml.safe_dump({"mcp_servers": {"catalog": entry}}),
                                                    encoding="utf-8")

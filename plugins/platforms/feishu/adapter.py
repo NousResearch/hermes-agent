@@ -4256,7 +4256,7 @@ def _qr_register_inner(*, initial_domain: str, timeout_seconds: int) -> Optional
 # migrations: a register(ctx) entry point plus hook implementations that replace the per-platform core
 # touchpoints (the Platform.FEISHU elif in hermes_agent/gateway/run.py, the feishu_cfg YAML→env block +
 # _PLATFORM_CONNECTED_CHECKERS entry in hermes_agent/gateway/config.py, the _setup_feishu wizard + _PLATFORMS["feishu"]
-# static dict in hermes_cli/gateway.py, and the _send_feishu dispatch in hermes_agent/tools/send_message_tool.py).
+# static dict in hermes_agent/hermes_cli/gateway.py, and the _send_feishu dispatch in hermes_agent/tools/send_message_tool.py).
 # ──────────────────────────────────────────────────────────────────────────
 _MIGRATION_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
 _MIGRATION_VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".3gp"}
@@ -4300,10 +4300,10 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
 
 def interactive_setup() -> None:
     """Interactive setup for Feishu / Lark — scan-to-create or manual creds (CLI helpers lazy-imported)."""
-    from hermes_cli.config import remove_env_value, save_env_value
-    from hermes_cli.setup import prompt_choice
-    from hermes_cli.cli_output import prompt, print_header, print_info, print_success, print_warning
-    from hermes_cli.setup_platforms import declines_reconfigure
+    from hermes_agent.hermes_cli.config import remove_env_value, save_env_value
+    from hermes_agent.hermes_cli.setup import prompt_choice
+    from hermes_agent.hermes_cli.cli_output import prompt, print_header, print_info, print_success, print_warning
+    from hermes_agent.hermes_cli.setup_platforms import declines_reconfigure
 
     print_header("Feishu / Lark")
     if declines_reconfigure("Feishu / Lark", "Reconfigure Feishu / Lark?", "FEISHU_APP_ID"):

@@ -19,14 +19,14 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli import gateway_runtime, update_lock
+from hermes_agent.hermes_cli import gateway_runtime, update_lock
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 _PAUSED_PROBE = r"""
 import sys
 sys.path.insert(0, sys.argv[1])
-from hermes_cli import update_lock
+from hermes_agent.hermes_cli import update_lock
 paused = []
 
 def pause():
@@ -69,7 +69,7 @@ _HOLDER = r"""
 import sys
 from pathlib import Path
 sys.path.insert(0, sys.argv[1])
-from hermes_cli import update_lock
+from hermes_agent.hermes_cli import update_lock
 assert update_lock._acquire_checkout(Path(sys.argv[2])) is None
 print("held", flush=True)
 sys.stdin.readline()

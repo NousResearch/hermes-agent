@@ -140,7 +140,7 @@ def test_hard_link_alias_opened_after_scan_keeps_probe(tmp_path, monkeypatch):
     os.link(db_path, alias)
     _probe(db_path)
     entry = dbfile._HEADER_PROBE_FDS[str(db_path)]
-    from hermes_cli.sqlite_safe_read import connect_tracked
+    from hermes_agent.hermes_cli.sqlite_safe_read import connect_tracked
 
     writers: list = []
     scan = dbfile.inodes_with_other_descriptors
@@ -299,7 +299,7 @@ def test_close_all_under_does_not_block_on_a_held_probe_lock(tmp_path, monkeypat
     call alone would still pass on a tree whose scan blocks."""
     import contextlib
 
-    from hermes_cli import sqlite_safe_read
+    from hermes_agent.hermes_cli import sqlite_safe_read
 
     home, db_path = _home(tmp_path, "contended")
     _probe(db_path)

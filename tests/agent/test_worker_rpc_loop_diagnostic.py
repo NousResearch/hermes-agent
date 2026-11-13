@@ -19,7 +19,7 @@ def _guard_warnings(caplog):
 
 def test_on_loop_rpc_logs_caller_frames_without_argument_values(tmp_path, monkeypatch, caplog):
     from hermes_agent.agent.runtime_session_store import WorkerPersistenceError, WorkerRPC
-    monkeypatch.setattr('hermes_cli.gateway_runtime.discover_gateway_endpoint', _no_owner)
+    monkeypatch.setattr('hermes_agent.hermes_cli.gateway_runtime.discover_gateway_endpoint', _no_owner)
     rpc = WorkerRPC(tmp_path)
 
     def persist_from_callback():
@@ -42,7 +42,7 @@ def test_on_loop_store_write_names_the_caller_not_the_store(tmp_path, monkeypatc
     """Through the store, the summary skips its own frames (_apply, retry_pending) so the
     swallowing best-effort caller is what the log names."""
     from hermes_agent.agent.runtime_session_store import RuntimeSessionStore, WorkerPersistenceError, WorkerRPC
-    monkeypatch.setattr('hermes_cli.gateway_runtime.discover_gateway_endpoint', _no_owner)
+    monkeypatch.setattr('hermes_agent.hermes_cli.gateway_runtime.discover_gateway_endpoint', _no_owner)
     store = RuntimeSessionStore(WorkerRPC(tmp_path), {'session_id': 's'}, tmp_path / 'outbox')
 
     def best_effort_usage():

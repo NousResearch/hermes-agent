@@ -36,8 +36,8 @@ def _write(home: Path, terminal: dict) -> None:
 # ── pin verdict, launch-profile bridge ──────────────────────────────────────────────────────────
 
 def test_bridge_marks_default_image_unpinned_and_file_key_pinned(home):
-    from hermes_cli.config import apply_terminal_config_to_env
-    from hermes_cli.config_defaults import DEFAULT_SANDBOX_IMAGE
+    from hermes_agent.hermes_cli.config import apply_terminal_config_to_env
+    from hermes_agent.hermes_cli.config_defaults import DEFAULT_SANDBOX_IMAGE
 
     _write(home, {"backend": "docker"})
     env = apply_terminal_config_to_env(env={})
@@ -51,7 +51,7 @@ def test_bridge_marks_default_image_unpinned_and_file_key_pinned(home):
 
 
 def test_bridge_treats_a_preset_env_image_as_pinned_and_keeps_a_launcher_verdict(home):
-    from hermes_cli.config import apply_terminal_config_to_env
+    from hermes_agent.hermes_cli.config import apply_terminal_config_to_env
 
     _write(home, {"backend": "docker"})
     env = apply_terminal_config_to_env(env={"TERMINAL_DOCKER_IMAGE": "ghcr.io/me/mine:1"})
@@ -66,7 +66,7 @@ def test_bridge_treats_a_preset_env_image_as_pinned_and_keeps_a_launcher_verdict
 
 def test_terminal_scope_recomputes_the_pin_per_profile(home, tmp_path):
     from hermes_agent.tools.terminal_scope import build_profile_terminal_scope
-    from hermes_cli.config_defaults import DEFAULT_SANDBOX_IMAGE
+    from hermes_agent.hermes_cli.config_defaults import DEFAULT_SANDBOX_IMAGE
 
     _write(home, {"backend": "docker"})
     scope = build_profile_terminal_scope(home, env_overlay={"TERMINAL_DOCKER_IMAGE_PINNED": "1"})
@@ -90,7 +90,7 @@ def test_terminal_scope_pins_an_image_written_in_the_profile_env_even_when_it_sp
     """Provenance, not value: the approval writes the default's exact tag, and a profile whose .env carries
     TERMINAL_DOCKER_IMAGE chose it. The scope must agree with the bridge's verdict for the same input."""
     from hermes_agent.tools.terminal_scope import build_profile_terminal_scope
-    from hermes_cli.config_defaults import DEFAULT_SANDBOX_IMAGE
+    from hermes_agent.hermes_cli.config_defaults import DEFAULT_SANDBOX_IMAGE
 
     _write(home, {"backend": "docker"})
     (home / ".env").write_text(f"TERMINAL_DOCKER_IMAGE={DEFAULT_SANDBOX_IMAGE}\n", encoding="utf-8")
@@ -118,8 +118,8 @@ def _fake_docker(tmp_path, monkeypatch, ps_output: str) -> Path:
 
 
 def test_pending_needs_docker_backend_unpinned_and_a_stale_container(home, tmp_path, monkeypatch):
-    from hermes_cli import sandbox_image_switch as sw
-    from hermes_cli.config_defaults import DEFAULT_SANDBOX_IMAGE, LEGACY_SANDBOX_IMAGE
+    from hermes_agent.hermes_cli import sandbox_image_switch as sw
+    from hermes_agent.hermes_cli.config_defaults import DEFAULT_SANDBOX_IMAGE, LEGACY_SANDBOX_IMAGE
 
     _fake_docker(tmp_path, monkeypatch, f"hermes-abc\t{LEGACY_SANDBOX_IMAGE}\nhermes-def\t{DEFAULT_SANDBOX_IMAGE}\n")
 
@@ -139,8 +139,8 @@ def test_pending_needs_docker_backend_unpinned_and_a_stale_container(home, tmp_p
 
 
 def test_decide_pins_and_either_answer_ends_the_offer(home, tmp_path, monkeypatch):
-    from hermes_cli import sandbox_image_switch as sw
-    from hermes_cli.config_defaults import DEFAULT_SANDBOX_IMAGE, LEGACY_SANDBOX_IMAGE
+    from hermes_agent.hermes_cli import sandbox_image_switch as sw
+    from hermes_agent.hermes_cli.config_defaults import DEFAULT_SANDBOX_IMAGE, LEGACY_SANDBOX_IMAGE
 
     _fake_docker(tmp_path, monkeypatch, f"hermes-abc\t{LEGACY_SANDBOX_IMAGE}\n")
     _write(home, {"backend": "docker"})
@@ -170,8 +170,8 @@ def test_decide_pins_and_either_answer_ends_the_offer(home, tmp_path, monkeypatc
 
 
 def test_interactive_offer_writes_only_on_a_yes_or_no(home, tmp_path, monkeypatch):
-    from hermes_cli import sandbox_image_switch as sw
-    from hermes_cli.config_defaults import DEFAULT_SANDBOX_IMAGE, LEGACY_SANDBOX_IMAGE
+    from hermes_agent.hermes_cli import sandbox_image_switch as sw
+    from hermes_agent.hermes_cli.config_defaults import DEFAULT_SANDBOX_IMAGE, LEGACY_SANDBOX_IMAGE
 
     _fake_docker(tmp_path, monkeypatch, f"hermes-abc\t{LEGACY_SANDBOX_IMAGE}\n")
     monkeypatch.setattr("hermes_agent.tools.terminal_tool_lifecycle._evict_environment_for_task", lambda task: None)
@@ -189,8 +189,8 @@ def test_interactive_offer_writes_only_on_a_yes_or_no(home, tmp_path, monkeypatc
 
 
 def test_pending_reads_a_bound_terminal_scope_not_the_launch_env(home, tmp_path, monkeypatch):
-    from hermes_cli import sandbox_image_switch as sw
-    from hermes_cli.config_defaults import LEGACY_SANDBOX_IMAGE
+    from hermes_agent.hermes_cli import sandbox_image_switch as sw
+    from hermes_agent.hermes_cli.config_defaults import LEGACY_SANDBOX_IMAGE
     from hermes_agent.tools.terminal_scope import reset_terminal_scope, set_terminal_scope
 
     _fake_docker(tmp_path, monkeypatch, f"hermes-abc\t{LEGACY_SANDBOX_IMAGE}\n")

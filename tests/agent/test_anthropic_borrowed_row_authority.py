@@ -63,7 +63,7 @@ def hermes_home(tmp_path, monkeypatch):
         json.dumps({"version": 1, "providers": {}}), encoding="utf-8"
     )
     monkeypatch.setattr(
-        "hermes_cli.auth.is_provider_explicitly_configured", lambda pid: True
+        "hermes_agent.hermes_cli.auth.is_provider_explicitly_configured", lambda pid: True
     )
     return home
 

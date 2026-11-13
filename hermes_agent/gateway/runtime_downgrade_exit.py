@@ -23,8 +23,8 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from hermes_agent.gateway.restart import GATEWAY_SERVICE_RESTART_EXIT_CODE
-from hermes_cli._startup_fast import project_root_str
-from hermes_cli.update_downgrade_guard import STATE_MODULES, defines_runtime
+from hermes_agent.hermes_cli._startup_fast import project_root_str
+from hermes_agent.hermes_cli.update_downgrade_guard import STATE_MODULES, defines_runtime
 
 logger = logging.getLogger(__name__)
 
@@ -72,7 +72,7 @@ async def runtime_downgrade_watcher(runner, *, poll_s: float = POLL_S, skew_fn=N
     if skew_fn is None:
         from hermes_agent.gateway.code_skew import detect_code_skew as skew_fn
     if update_probe is None:
-        from hermes_cli.update_lock import update_in_progress as update_probe
+        from hermes_agent.hermes_cli.update_lock import update_in_progress as update_probe
     observe_skew: Callable = skew_fn
     observe_update: Callable[[], bool] = update_probe
 

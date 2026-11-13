@@ -129,7 +129,7 @@ def test_finite_chat_joins_parallel_children_before_final_response(tmp_path, mod
     mode_flags = {"quiet": ["-Q"], "oneshot": ["--oneshot"], "redirected": [],
                   "resumed": ["-Q"]}
     command = [
-        sys.executable, "-c", "from hermes_cli.main import main; main()", "chat",
+        sys.executable, "-c", "from hermes_agent.hermes_cli.main import main; main()", "chat",
         *mode_flags[mode], "--provider", "custom", "--model", "test-model", "--base-url", url,
         "--toolsets", "delegation", "--ignore-rules", "--query-file", str(query),
         "--reasoning", "high", "--max-turns", "10",
@@ -192,7 +192,7 @@ def test_finite_chat_joins_parallel_children_before_final_response(tmp_path, mod
 @pytest.mark.parametrize("query,image", [("Delegate a task", None), (None, "image.png")])
 def test_tty_seeded_chat_keeps_background_delegation(monkeypatch, query, image):
     """A TTY -q (or image seed) still owns a later-turn completion consumer."""
-    import cli
+    from hermes_agent import cli
     import hermes_agent.tools.delegate_tool as dt
     from hermes_agent.gateway.session_context import reset_session_vars
     from hermes_agent.run_agent import AIAgent

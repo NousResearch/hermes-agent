@@ -12,7 +12,7 @@ import hermes_agent.gateway.run as run_mod
 from hermes_agent.gateway.active_lease_io import release_soon
 from hermes_agent.gateway.config import Platform
 from hermes_agent.gateway.session import SessionSource
-from hermes_cli import active_sessions
+from hermes_agent.hermes_cli import active_sessions
 
 
 class _ReleaseStuckOnTheRegistry:

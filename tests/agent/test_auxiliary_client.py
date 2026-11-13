@@ -148,11 +148,11 @@ class TestResolveTaskProviderModel:
         }
         monkeypatch.setattr("hermes_agent.agent.auxiliary_client._get_auxiliary_task_config", lambda task: {})
         monkeypatch.setattr(
-            "hermes_cli.moa_config.resolve_moa_preset",
+            "hermes_agent.hermes_cli.moa_config.resolve_moa_preset",
             lambda cfg, name: preset,
         )
-        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"moa": {}})
-        monkeypatch.setattr("hermes_cli.config.load_config_readonly", lambda: {"moa": {}})
+        monkeypatch.setattr("hermes_agent.hermes_cli.config.load_config", lambda: {"moa": {}})
+        monkeypatch.setattr("hermes_agent.hermes_cli.config.load_config_readonly", lambda: {"moa": {}})
 
         resolved_provider, model, base_url, api_key, _api_mode = _resolve_task_provider_model(
             task="title_generation",
@@ -184,11 +184,11 @@ class TestResolveTaskProviderModel:
             lambda task: {"provider": "moa", "model": "opus-gpt"} if task == "title_generation" else {},
         )
         monkeypatch.setattr(
-            "hermes_cli.moa_config.resolve_moa_preset",
+            "hermes_agent.hermes_cli.moa_config.resolve_moa_preset",
             lambda cfg, name: preset,
         )
-        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"moa": {}})
-        monkeypatch.setattr("hermes_cli.config.load_config_readonly", lambda: {"moa": {}})
+        monkeypatch.setattr("hermes_agent.hermes_cli.config.load_config", lambda: {"moa": {}})
+        monkeypatch.setattr("hermes_agent.hermes_cli.config.load_config_readonly", lambda: {"moa": {}})
 
         resolved_provider, model, base_url, api_key, _api_mode = _resolve_task_provider_model(
             task="title_generation",
@@ -206,11 +206,11 @@ class TestResolveTaskProviderModel:
         (literal "moa") rather than crash resolve_provider_client() harder."""
         monkeypatch.setattr("hermes_agent.agent.auxiliary_client._get_auxiliary_task_config", lambda task: {})
         monkeypatch.setattr(
-            "hermes_cli.moa_config.resolve_moa_preset",
+            "hermes_agent.hermes_cli.moa_config.resolve_moa_preset",
             lambda cfg, name: (_ for _ in ()).throw(KeyError("gone-preset")),
         )
-        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"moa": {}})
-        monkeypatch.setattr("hermes_cli.config.load_config_readonly", lambda: {"moa": {}})
+        monkeypatch.setattr("hermes_agent.hermes_cli.config.load_config", lambda: {"moa": {}})
+        monkeypatch.setattr("hermes_agent.hermes_cli.config.load_config_readonly", lambda: {"moa": {}})
 
         resolved_provider, model, _base_url, _api_key, _api_mode = _resolve_task_provider_model(
             task="title_generation",
@@ -478,8 +478,8 @@ class TestNormalizeAuxProvider:
         assert alias_model == canon_model
 
     def test_covers_every_alias_the_main_path_resolves(self):
-        """Every alias hermes_cli.auth resolves also resolves in aux — drift becomes a red test (#115006)."""
-        from hermes_cli.auth import _PROVIDER_ALIASES as auth_table
+        """Every alias hermes_agent.hermes_cli.auth resolves also resolves in aux — drift becomes a red test (#115006)."""
+        from hermes_agent.hermes_cli.auth import _PROVIDER_ALIASES as auth_table
         for alias, canonical in auth_table.items():
             assert _normalize_aux_provider(alias) == canonical, alias
 
@@ -564,7 +564,7 @@ class TestResolveXaiOAuthForAux:
         because the singleton auth-store entry is absent.
         """
         from hermes_agent.agent.credential_pool import AUTH_TYPE_OAUTH, PooledCredential, load_pool
-        from hermes_cli.auth import DEFAULT_XAI_OAUTH_BASE_URL
+        from hermes_agent.hermes_cli.auth import DEFAULT_XAI_OAUTH_BASE_URL
 
         hermes_home = tmp_path / "hermes"
         hermes_home.mkdir(parents=True, exist_ok=True)
@@ -596,7 +596,7 @@ class TestResolveXaiOAuthForAux:
 
     def test_pool_backed_credentials_honor_base_url_env_override(self, tmp_path, monkeypatch):
         from hermes_agent.agent.credential_pool import AUTH_TYPE_OAUTH, PooledCredential, load_pool
-        from hermes_cli.auth import DEFAULT_XAI_OAUTH_BASE_URL
+        from hermes_agent.hermes_cli.auth import DEFAULT_XAI_OAUTH_BASE_URL
 
         hermes_home = tmp_path / "hermes"
         hermes_home.mkdir(parents=True, exist_ok=True)
@@ -984,7 +984,7 @@ class TestOpenRouterPaidLaneGuard:
         """
         monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
         with patch("hermes_agent.agent.auxiliary_client._select_pool_entry", return_value=(False, None)), \
-             patch("hermes_cli.config.load_config_readonly", return_value={"auxiliary": {"free_only": True}}), \
+             patch("hermes_agent.hermes_cli.config.load_config_readonly", return_value={"auxiliary": {"free_only": True}}), \
              patch("hermes_agent.agent.auxiliary_client.OpenAI") as mock_openai:
             mock_client = MagicMock(name="openrouter_client")
             mock_openai.return_value = mock_client
@@ -996,7 +996,7 @@ class TestOpenRouterPaidLaneGuard:
         """free_only=true + user-configured PAID model → OpenRouter skipped."""
         monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
         with patch("hermes_agent.agent.auxiliary_client._select_pool_entry", return_value=(False, None)), \
-             patch("hermes_cli.config.load_config_readonly",
+             patch("hermes_agent.hermes_cli.config.load_config_readonly",
                    return_value={"auxiliary": {"free_only": True,
                                                "openrouter_model": "google/gemini-3.6-flash"}}), \
              patch("hermes_agent.agent.auxiliary_client.OpenAI") as mock_openai:
@@ -1009,7 +1009,7 @@ class TestOpenRouterPaidLaneGuard:
         """free_only=true + :free model → OpenRouter used with that model."""
         monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
         with patch("hermes_agent.agent.auxiliary_client._select_pool_entry", return_value=(False, None)), \
-             patch("hermes_cli.config.load_config_readonly",
+             patch("hermes_agent.hermes_cli.config.load_config_readonly",
                    return_value={"auxiliary": {"free_only": True,
                                               "openrouter_model": "nvidia/nemotron-3-ultra-550b-a55b:free"}}), \
              patch("hermes_agent.agent.auxiliary_client.OpenAI") as mock_openai:
@@ -1023,7 +1023,7 @@ class TestOpenRouterPaidLaneGuard:
         """auxiliary.openrouter_model replaces _OPENROUTER_MODEL."""
         monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
         with patch("hermes_agent.agent.auxiliary_client._select_pool_entry", return_value=(False, None)), \
-             patch("hermes_cli.config.load_config_readonly",
+             patch("hermes_agent.hermes_cli.config.load_config_readonly",
                    return_value={"auxiliary": {"openrouter_model": "some/vendor-model"}}), \
              patch("hermes_agent.agent.auxiliary_client.OpenAI") as mock_openai:
             mock_client = MagicMock(name="openrouter_client")
@@ -1036,7 +1036,7 @@ class TestOpenRouterPaidLaneGuard:
         """Auxiliary.<task>.model (explicit) is also gated by free_only."""
         monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
         with patch("hermes_agent.agent.auxiliary_client._select_pool_entry", return_value=(False, None)), \
-             patch("hermes_cli.config.load_config_readonly", return_value={"auxiliary": {"free_only": True}}), \
+             patch("hermes_agent.hermes_cli.config.load_config_readonly", return_value={"auxiliary": {"free_only": True}}), \
              patch("hermes_agent.agent.auxiliary_client.OpenAI") as mock_openai:
             client, model = _try_openrouter(model="google/gemini-3.6-flash")
         assert client is None
@@ -1047,7 +1047,7 @@ class TestOpenRouterPaidLaneGuard:
         """The concrete OpenRouter route gates the caller's model, not its default."""
         monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
         with patch("hermes_agent.agent.auxiliary_client._select_pool_entry", return_value=(False, None)), \
-             patch("hermes_cli.config.load_config_readonly",
+             patch("hermes_agent.hermes_cli.config.load_config_readonly",
                    return_value={"auxiliary": {"free_only": True}}), \
              patch("hermes_agent.agent.auxiliary_client.OpenAI") as mock_openai:
             mock_client = MagicMock(name="openrouter_client")
@@ -1062,7 +1062,7 @@ class TestOpenRouterPaidLaneGuard:
     def test_free_only_gate_does_not_mark_openrouter_unhealthy(self, monkeypatch):
         monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
         with patch("hermes_agent.agent.auxiliary_client._select_pool_entry", return_value=(False, None)), \
-             patch("hermes_cli.config.load_config_readonly",
+             patch("hermes_agent.hermes_cli.config.load_config_readonly",
                    return_value={"auxiliary": {"free_only": True}}), \
              patch("hermes_agent.agent.auxiliary_client._mark_provider_unhealthy") as mark_unhealthy:
             client, model = resolve_provider_client(
@@ -1087,7 +1087,7 @@ class TestOpenRouterPaidLaneGuard:
         _paid_lane_warned.discard(_paid_model)
         monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
         with patch("hermes_agent.agent.auxiliary_client._select_pool_entry", return_value=(False, None)), \
-             patch("hermes_cli.config.load_config_readonly", return_value=_paid_cfg), \
+             patch("hermes_agent.hermes_cli.config.load_config_readonly", return_value=_paid_cfg), \
              patch("hermes_agent.agent.auxiliary_client.OpenAI") as mock_openai:
             mock_client = MagicMock(name="openrouter_client")
             mock_openai.return_value = mock_client
@@ -1098,7 +1098,7 @@ class TestOpenRouterPaidLaneGuard:
         assert any("PAID lane engaged" in r.getMessage() for r in caplog.records)
         # Second call logs nothing new.
         with patch("hermes_agent.agent.auxiliary_client._select_pool_entry", return_value=(False, None)), \
-             patch("hermes_cli.config.load_config_readonly", return_value=_paid_cfg), \
+             patch("hermes_agent.hermes_cli.config.load_config_readonly", return_value=_paid_cfg), \
              patch("hermes_agent.agent.auxiliary_client.OpenAI") as mock_openai:
             caplog.clear()
             with caplog.at_level(logging.WARNING, logger="hermes_agent.agent.auxiliary_client"):
@@ -1135,7 +1135,7 @@ class TestGetTextAuxiliaryClient:
         with (
             patch("hermes_agent.agent.auxiliary_client.load_pool", return_value=_Pool()),
             patch("hermes_agent.agent.auxiliary_client.OpenAI"),
-            patch("hermes_cli.auth._read_codex_tokens", side_effect=AssertionError("legacy codex store should not run")),
+            patch("hermes_agent.hermes_cli.auth._read_codex_tokens", side_effect=AssertionError("legacy codex store should not run")),
         ):
             from hermes_agent.agent.auxiliary_client import _build_codex_client
 
@@ -1261,7 +1261,7 @@ class TestAuxiliaryPoolAwareness:
         with (
             patch("hermes_agent.agent.auxiliary_client.load_pool", return_value=pool),
             patch("hermes_agent.agent.auxiliary_client.OpenAI") as mock_openai,
-            patch("hermes_cli.models.get_nous_recommended_aux_model", return_value=None),
+            patch("hermes_agent.hermes_cli.models.get_nous_recommended_aux_model", return_value=None),
         ):
             from hermes_agent.agent.auxiliary_client import _try_nous
 
@@ -1360,7 +1360,7 @@ class TestRefreshNousRecommendedModel:
         def _boom(**kw):
             raise RuntimeError("portal down")
         monkeypatch.setattr(
-            "hermes_cli.models.get_nous_recommended_aux_model", _boom)
+            "hermes_agent.hermes_cli.models.get_nous_recommended_aux_model", _boom)
         out = _refresh_nous_recommended_model(
             vision=False, stale_model="some/dead-model")
         assert out == _NOUS_MODEL
@@ -1369,7 +1369,7 @@ class TestRefreshNousRecommendedModel:
         """When the failed model IS the default and the Portal has nothing
         else, there's no usable alternative."""
         monkeypatch.setattr(
-            "hermes_cli.models.get_nous_recommended_aux_model",
+            "hermes_agent.hermes_cli.models.get_nous_recommended_aux_model",
             lambda **kw: _NOUS_MODEL,
         )
         out = _refresh_nous_recommended_model(
@@ -1943,7 +1943,7 @@ class TestTryMainAgentModelFallback:
 def test_resolve_api_key_provider_skips_unconfigured_anthropic(monkeypatch):
     """_resolve_api_key_provider must not try anthropic when user never configured it."""
     from collections import OrderedDict
-    from hermes_cli.auth import ProviderConfig
+    from hermes_agent.hermes_cli.auth import ProviderConfig
 
     # Build a minimal registry with only "anthropic" so the loop is guaranteed
     # to reach it without being short-circuited by earlier providers.
@@ -1964,9 +1964,9 @@ def test_resolve_api_key_provider_skips_unconfigured_anthropic(monkeypatch):
         return None, None
 
     monkeypatch.setattr("hermes_agent.agent.auxiliary_client._try_anthropic", mock_try_anthropic)
-    monkeypatch.setattr("hermes_cli.auth.PROVIDER_REGISTRY", fake_registry)
+    monkeypatch.setattr("hermes_agent.hermes_cli.auth.PROVIDER_REGISTRY", fake_registry)
     monkeypatch.setattr(
-        "hermes_cli.auth.is_provider_explicitly_configured",
+        "hermes_agent.hermes_cli.auth.is_provider_explicitly_configured",
         lambda pid: False,
     )
 
@@ -1980,7 +1980,7 @@ def test_resolve_api_key_provider_skips_unconfigured_anthropic(monkeypatch):
 def test_resolve_api_key_provider_skips_unconfigured_copilot(monkeypatch):
     """_resolve_api_key_provider must skip copilot when user never configured it (#114740)."""
     from collections import OrderedDict
-    from hermes_cli.auth import ProviderConfig
+    from hermes_agent.hermes_cli.auth import ProviderConfig
 
     fake_registry = OrderedDict({
         "copilot": ProviderConfig(
@@ -1999,9 +1999,9 @@ def test_resolve_api_key_provider_skips_unconfigured_copilot(monkeypatch):
         return False, None
 
     monkeypatch.setattr("hermes_agent.agent.auxiliary_client._select_pool_entry", mock_select_pool_entry)
-    monkeypatch.setattr("hermes_cli.auth.PROVIDER_REGISTRY", fake_registry)
+    monkeypatch.setattr("hermes_agent.hermes_cli.auth.PROVIDER_REGISTRY", fake_registry)
     monkeypatch.setattr(
-        "hermes_cli.auth.is_provider_explicitly_configured",
+        "hermes_agent.hermes_cli.auth.is_provider_explicitly_configured",
         lambda pid: False,
     )
 
@@ -2522,7 +2522,7 @@ class TestAuxiliaryTaskExtraBody:
             }
         }
 
-        with patch("hermes_cli.config.load_config", return_value=config), patch("hermes_cli.config.load_config_readonly", return_value=config), patch(
+        with patch("hermes_agent.hermes_cli.config.load_config", return_value=config), patch("hermes_agent.hermes_cli.config.load_config_readonly", return_value=config), patch(
             "hermes_agent.agent.auxiliary_client._get_cached_client",
             return_value=(client, "glm-4.5-air"),
         ):
@@ -2553,7 +2553,7 @@ class TestAuxiliaryTaskExtraBody:
             }
         }
 
-        with patch("hermes_cli.config.load_config", return_value=config), patch("hermes_cli.config.load_config_readonly", return_value=config), patch(
+        with patch("hermes_agent.hermes_cli.config.load_config", return_value=config), patch("hermes_agent.hermes_cli.config.load_config_readonly", return_value=config), patch(
             "hermes_agent.agent.auxiliary_client._get_cached_client",
             return_value=(client, "glm-4.5-air"),
         ):
@@ -2579,7 +2579,7 @@ class TestAuxiliaryTaskExtraBody:
         from hermes_agent.agent.auxiliary_client import _get_task_extra_body
 
         config = {"auxiliary": {moa_task: {"reasoning_effort": "xhigh"}}}
-        with patch("hermes_cli.config.load_config", return_value=config), patch("hermes_cli.config.load_config_readonly", return_value=config), \
+        with patch("hermes_agent.hermes_cli.config.load_config", return_value=config), patch("hermes_agent.hermes_cli.config.load_config_readonly", return_value=config), \
              caplog.at_level(logging.WARNING, logger="hermes_agent.agent.auxiliary_client"):
             result = _get_task_extra_body(moa_task)
 
@@ -2658,11 +2658,11 @@ class TestAuxiliaryTaskExtraBody:
     def test_bare_custom_auth_error_does_not_fall_back_to_env_base_url(self, monkeypatch):
         """Bare 'custom' with nothing configured: the main resolver raises AuthError; aux must
         return no endpoint rather than route to a stale env OPENAI_BASE_URL with a placeholder key."""
-        from hermes_cli.auth import AuthError
+        from hermes_agent.hermes_cli.auth import AuthError
         from hermes_agent.agent.auxiliary_client import _resolve_custom_runtime
         monkeypatch.setenv("OPENAI_BASE_URL", "https://old-proxy.example/v1")
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-        with patch("hermes_cli.runtime_provider.resolve_runtime_provider",
+        with patch("hermes_agent.hermes_cli.runtime_provider.resolve_runtime_provider",
                    side_effect=AuthError("no creds", provider="custom", code="missing_api_key")):
             assert _resolve_custom_runtime() == (None, None, None)
 
@@ -4601,7 +4601,7 @@ class TestCustomEndpointApiKeyInheritance:
             captured.update(kwargs)
             return MagicMock()
 
-        with patch("hermes_cli.config.load_config", return_value=fake_config), patch("hermes_cli.config.load_config_readonly", return_value=fake_config), \
+        with patch("hermes_agent.hermes_cli.config.load_config", return_value=fake_config), patch("hermes_agent.hermes_cli.config.load_config_readonly", return_value=fake_config), \
              patch.object(ac, "_create_openai_client", side_effect=_capture_create):
             _client, _model = resolve_provider_client(
                 "custom",
@@ -4629,7 +4629,7 @@ class TestCustomEndpointApiKeyInheritance:
             captured.update(kwargs)
             return MagicMock()
 
-        with patch("hermes_cli.config.load_config", return_value=fake_config), patch("hermes_cli.config.load_config_readonly", return_value=fake_config), \
+        with patch("hermes_agent.hermes_cli.config.load_config", return_value=fake_config), patch("hermes_agent.hermes_cli.config.load_config_readonly", return_value=fake_config), \
              patch.object(ac, "_create_openai_client", side_effect=_capture_create):
             _client, _model = resolve_provider_client(
                 "custom",
@@ -4655,7 +4655,7 @@ class TestCustomEndpointApiKeyInheritance:
             return MagicMock()
 
         with ac.scoped_runtime_main({"base_url": "https://gw.example.com/v1", "api_key": "sk-runtime-key"}), \
-             patch("hermes_cli.config.load_config", return_value={"model": {}}), patch("hermes_cli.config.load_config_readonly", return_value={"model": {}}), \
+             patch("hermes_agent.hermes_cli.config.load_config", return_value={"model": {}}), patch("hermes_agent.hermes_cli.config.load_config_readonly", return_value={"model": {}}), \
              patch.object(ac, "_create_openai_client", side_effect=_capture_create):
             _client, _model = resolve_provider_client(
                 "custom",
@@ -4687,7 +4687,7 @@ class TestCustomEndpointApiKeyInheritance:
             captured.update(kwargs)
             return MagicMock()
 
-        with patch("hermes_cli.config.load_config", return_value=fake_config), patch("hermes_cli.config.load_config_readonly", return_value=fake_config), \
+        with patch("hermes_agent.hermes_cli.config.load_config", return_value=fake_config), patch("hermes_agent.hermes_cli.config.load_config_readonly", return_value=fake_config), \
              patch.object(ac, "_create_openai_client", side_effect=_capture_create):
             _client, _model = resolve_provider_client(
                 "custom",
@@ -5137,7 +5137,7 @@ class TestFastModelTier:
             "~openai/gpt-mini-latest": {},
             "stepfun/step-3.7-flash:free": {},
         }
-        with patch("hermes_cli.models_pricing.fetch_models_with_pricing", return_value=catalog):
+        with patch("hermes_agent.hermes_cli.models_pricing.fetch_models_with_pricing", return_value=catalog):
             assert ac._fast_model_from_catalog("nous") == "~openai/gpt-mini-latest"
 
     def test_catalog_match_skips_reasoning_batch_and_embedding_lookalikes(self):
@@ -5150,7 +5150,7 @@ class TestFastModelTier:
             "sentence-transformers/all-minilm-l6-v2": {},
             "google/gemini-3.6-flash": {},
         }
-        with patch("hermes_cli.models_pricing.fetch_models_with_pricing", return_value=catalog):
+        with patch("hermes_agent.hermes_cli.models_pricing.fetch_models_with_pricing", return_value=catalog):
             assert ac._fast_model_from_catalog("nous") == "google/gemini-3.6-flash"
 
     def test_catalog_match_skips_the_non_chat_siblings_of_a_chat_model(self):
@@ -5164,7 +5164,7 @@ class TestFastModelTier:
             "openai/gpt-4o-mini-search-preview": {},
             "openai/gpt-4o-mini": {},
         }
-        with patch("hermes_cli.models_pricing.fetch_models_with_pricing", return_value=catalog):
+        with patch("hermes_agent.hermes_cli.models_pricing.fetch_models_with_pricing", return_value=catalog):
             assert ac._fast_model_from_catalog("nous") == "openai/gpt-4o-mini"
 
     def test_catalog_match_takes_the_newest_of_a_family(self):
@@ -5181,7 +5181,7 @@ class TestFastModelTier:
             "openai/gpt-9-mini": {},
             "openai/gpt-10-mini": {},
         }
-        with patch("hermes_cli.models_pricing.fetch_models_with_pricing", return_value=catalog):
+        with patch("hermes_agent.hermes_cli.models_pricing.fetch_models_with_pricing", return_value=catalog):
             assert ac._fast_model_from_catalog("nous") == "openai/gpt-10-mini"
 
     def test_catalog_fetch_is_authenticated(self):
@@ -5193,10 +5193,10 @@ class TestFastModelTier:
         from hermes_agent.agent import auxiliary_client as ac
 
         with patch(
-            "hermes_cli.auth.resolve_api_key_provider_credentials",
+            "hermes_agent.hermes_cli.auth.resolve_api_key_provider_credentials",
             return_value={"api_key": "sk-test", "base_url": "https://api.example.com/v1"},
         ), patch(
-            "hermes_cli.models_pricing.fetch_models_with_pricing", return_value={}
+            "hermes_agent.hermes_cli.models_pricing.fetch_models_with_pricing", return_value={}
         ) as fetch:
             ac._fast_model_from_catalog("openai")
 
@@ -5256,10 +5256,10 @@ class TestFastModelTier:
             "model": "agnes-2.5-flash",
         }
         with patch(
-            "hermes_cli.runtime_provider._get_named_custom_provider",
+            "hermes_agent.hermes_cli.runtime_provider._get_named_custom_provider",
             return_value=fake_entry,
         ), patch(
-            "hermes_cli.providers.get_provider", side_effect=_catalog_raises,
+            "hermes_agent.hermes_cli.providers.get_provider", side_effect=_catalog_raises,
         ):
             resolved_provider, _model, base_url, _api_key, _api_mode = (
                 ac._resolve_task_provider_model(
@@ -5337,7 +5337,7 @@ class TestFastModelTier:
 # defined in the ``providers:`` section of config.yaml plus an explicit
 # ``base_url`` was being silently downgraded to ``"custom"`` because
 # ``_preserve_provider_with_base_url`` only consulted the built-in
-# provider registry (``hermes_cli.providers.get_provider``). The
+# provider registry (``hermes_agent.hermes_cli.providers.get_provider``). The
 # downgrade routed the call through the bare-custom branch in
 # ``resolve_provider_client`` with no key, producing 401s from
 # auth-required providers (e.g. agnes-ai.cn, nvidia-nim with key_env).
@@ -5373,10 +5373,10 @@ class TestPreserveNamedCustomProviderWithBaseUrl:
             "model": "agnes-2.5-flash",
         }
         with patch(
-            "hermes_cli.runtime_provider._get_named_custom_provider",
+            "hermes_agent.hermes_cli.runtime_provider._get_named_custom_provider",
             return_value=fake_entry,
         ), patch(
-            "hermes_cli.providers.get_provider", return_value=None,
+            "hermes_agent.hermes_cli.providers.get_provider", return_value=None,
         ):
             resolved_provider, _model, base_url, _api_key, _api_mode = (
                 ac._resolve_task_provider_model(
@@ -5402,7 +5402,7 @@ class TestPreserveNamedCustomProviderWithBaseUrl:
         import hermes_agent.agent.auxiliary_client as ac
 
         with patch(
-            "hermes_cli.providers.get_provider",
+            "hermes_agent.hermes_cli.providers.get_provider",
             return_value={"name": "Anthropic", "api_key": "sk-anthropic"},
         ):
             resolved_provider, _model, base_url, _api_key, _api_mode = (
@@ -5427,10 +5427,10 @@ class TestPreserveNamedCustomProviderWithBaseUrl:
         import hermes_agent.agent.auxiliary_client as ac
 
         with patch(
-            "hermes_cli.runtime_provider._get_named_custom_provider",
+            "hermes_agent.hermes_cli.runtime_provider._get_named_custom_provider",
             return_value=None,
         ), patch(
-            "hermes_cli.providers.get_provider", return_value=None,
+            "hermes_agent.hermes_cli.providers.get_provider", return_value=None,
         ):
             resolved_provider, _model, base_url, _api_key, _api_mode = (
                 ac._resolve_task_provider_model(
@@ -5460,10 +5460,10 @@ class TestPreserveNamedCustomProviderWithBaseUrl:
             raise RuntimeError("catalog unavailable")
 
         with patch(
-            "hermes_cli.runtime_provider._get_named_custom_provider",
+            "hermes_agent.hermes_cli.runtime_provider._get_named_custom_provider",
             side_effect=_boom,
         ), patch(
-            "hermes_cli.providers.get_provider", side_effect=_boom,
+            "hermes_agent.hermes_cli.providers.get_provider", side_effect=_boom,
         ):
             resolved_provider, _model, _base_url, _api_key, _api_mode = (
                 ac._resolve_task_provider_model(

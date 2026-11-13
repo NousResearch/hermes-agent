@@ -51,7 +51,7 @@ def _identity() -> dict:
 
 def _fire(hook_name: str, payload: dict) -> None:
     try:
-        from hermes_cli.lifecycle import invoke_hook
+        from hermes_agent.hermes_cli.lifecycle import invoke_hook
         invoke_hook(hook_name, **payload)
     except Exception:  # observability must never break a human prompt
         logger.debug("%s dispatch failed", hook_name, exc_info=True)

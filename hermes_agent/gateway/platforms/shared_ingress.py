@@ -151,6 +151,6 @@ async def dispatch_profile_ingress(
     if scoped:
         return await chosen._handle(forwarded)
     from hermes_agent.gateway.run import _profile_runtime_scope
-    from hermes_cli.profiles import get_profile_dir
+    from hermes_agent.hermes_cli.profiles import get_profile_dir
     with _profile_runtime_scope(get_profile_dir(profile)):
         return await chosen._handle(forwarded)

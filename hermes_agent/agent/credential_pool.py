@@ -19,19 +19,19 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional, Set, Tuple
 
 from hermes_constants import OPENROUTER_BASE_URL
-from hermes_cli.config import load_env
+from hermes_agent.hermes_cli.config import load_env
 from hermes_agent.agent.secret_scope import get_secret as _get_secret, get_secret_str
 from hermes_agent.agent.retry_utils import reset_delay_from_message
-from hermes_cli.auth_plugin_providers import plugin_refresh_hook
+from hermes_agent.hermes_cli.auth_plugin_providers import plugin_refresh_hook
 from hermes_agent.agent.credential_pool_plugin import apply_plugin_refresh_result, plugin_row_is_expiring, recover_failed_plugin_refresh
 from hermes_agent.agent.credential_persistence import (
     fingerprint_secret_value,
     is_borrowed_credential_source,
     sanitize_borrowed_credential_payload,
 )
-import hermes_cli.auth as auth_mod
-from hermes_cli.auth_oauth_grants import owned_profile_reads_root_state
-from hermes_cli.auth import (
+import hermes_agent.hermes_cli.auth as auth_mod
+from hermes_agent.hermes_cli.auth_oauth_grants import owned_profile_reads_root_state
+from hermes_agent.hermes_cli.auth import (
     CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS,
     PROVIDER_REGISTRY,
     SINGLE_USE_REFRESH_POOL_PROVIDERS,
@@ -60,17 +60,17 @@ def _load_config_safe() -> Optional[dict]:
     Inside ``frozen_runtime_config`` it is the session's frozen config: a key rotated in config.yaml
     must never seed a frozen session's pool."""
     try:
-        from hermes_cli.config import load_config_readonly
-        from hermes_cli.runtime_provider import _FROZEN_RUNTIME_CONFIG
+        from hermes_agent.hermes_cli.config import load_config_readonly
+        from hermes_agent.hermes_cli.runtime_provider import _FROZEN_RUNTIME_CONFIG
         return _FROZEN_RUNTIME_CONFIG.get() or load_config_readonly()
     except Exception:
         return None
 
 
 def _is_source_suppressed_fn() -> Callable[[str, str], bool]:
-    """``hermes_cli.auth.is_source_suppressed`` (late-bound), or an always-False stub."""
+    """``hermes_agent.hermes_cli.auth.is_source_suppressed`` (late-bound), or an always-False stub."""
     try:
-        from hermes_cli.auth import is_source_suppressed
+        from hermes_agent.hermes_cli.auth import is_source_suppressed
         return is_source_suppressed
     except ImportError:
         return lambda _p, _s: False
@@ -473,7 +473,7 @@ def _iter_custom_providers(config: Optional[dict] = None):
     if config is None:
         return
     try:
-        from hermes_cli.config import get_compatible_custom_providers
+        from hermes_agent.hermes_cli.config import get_compatible_custom_providers
 
         custom_providers = get_compatible_custom_providers(config)
     except Exception:
@@ -631,7 +631,7 @@ def credential_pool_entry_serves_endpoint(entry: Any, base_url: Any) -> bool:
     entry_url = getattr(entry, "runtime_base_url", None) or getattr(entry, "base_url", None)
     if not isinstance(entry_url, str) or not entry_url:
         return True
-    from hermes_cli.route_identity import normalize_route_base_url
+    from hermes_agent.hermes_cli.route_identity import normalize_route_base_url
     return normalize_route_base_url(entry_url) == normalize_route_base_url(base_url)
 
 
@@ -762,7 +762,7 @@ def _write_through_provider_state_to_global_root(
     the profile store (the caller already saved that). Swallows all errors —
     a failed write-through degrades to root-stale and must never break the
     profile's own successful save. Mirrors
-    ``hermes_cli.auth._write_through_xai_oauth_to_global_root``.
+    ``hermes_agent.hermes_cli.auth._write_through_xai_oauth_to_global_root``.
 
     See #48415.
     """
@@ -915,7 +915,7 @@ def persist_pool_entries(
 #
 # Providers whose OAuth singleton lives in auth.json ``providers.<id>.tokens``
 # (Codex, xAI): log names (sync-message form, "<name> OAuth" form),
-# ``hermes_cli.auth`` refresh function and terminal-error predicate (looked
+# ``hermes_agent.hermes_cli.auth`` refresh function and terminal-error predicate (looked
 # up at call time so tests can patch them).
 _TOKENS_SINGLETON_PROVIDERS: dict[str, tuple[str, str, str, str]] = {
     "openai-codex": ("Codex", "Codex", "refresh_codex_oauth_pure", "_is_terminal_codex_oauth_refresh_error"),
@@ -924,7 +924,7 @@ _TOKENS_SINGLETON_PROVIDERS: dict[str, tuple[str, str, str, str]] = {
 
 # Built-in providers whose pooled OAuth entries ``_refresh_entry_impl`` can actually refresh. Plugin
 # providers are refreshable when their profile ships ``refresh_credential`` (see
-# ``hermes_cli.auth_plugin_providers.is_refreshable_oauth_provider``); any other provider is returned
+# ``hermes_agent.hermes_cli.auth_plugin_providers.is_refreshable_oauth_provider``); any other provider is returned
 # unchanged by that path, so callers must not report a refresh for them.
 REFRESHABLE_OAUTH_PROVIDERS = frozenset({"anthropic", "nous", *_TOKENS_SINGLETON_PROVIDERS})
 
@@ -1933,7 +1933,7 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
                 self._sync_device_code_entry_to_auth_store(entry)
                 token = entry.access_token or token
             # The row keeps the canonical URL; a gateway key belongs to its route host (#121486).
-            from hermes_cli.auth_codex import _codex_pool_route_base_url
+            from hermes_agent.hermes_cli.auth_codex import _codex_pool_route_base_url
             return bool(auth_mod._probe_codex_quota_restored(
                 token, base_url=_codex_pool_route_base_url(entry.base_url)))
         except Exception:
@@ -2547,7 +2547,7 @@ def _seed_anthropic_singletons(seed: _Seeder) -> None:
     # the user explicitly configured anthropic; otherwise auxiliary fallback
     # chains would read ~/.claude/.credentials.json without consent (PR #4210).
     try:
-        from hermes_cli.auth import is_provider_explicitly_configured
+        from hermes_agent.hermes_cli.auth import is_provider_explicitly_configured
         if not is_provider_explicitly_configured("anthropic"):
             return
     except ImportError:
@@ -2601,7 +2601,7 @@ def _seed_nous_singleton(seed: _Seeder, auth_store: dict[str, Any]) -> None:
     if owned_profile_reads_root_state(auth_store, "nous", source_path):
         # e.g. an agent_key-only row surviving a fork strip/heal
         return
-    from hermes_cli.anon_auth import guest_without_free_tier  # kept for connectors only: no inference rows
+    from hermes_agent.hermes_cli.anon_auth import guest_without_free_tier  # kept for connectors only: no inference rows
     has_runtime_material = not guest_without_free_tier(state) and bool(isinstance(state, dict) and (
         str(state.get("access_token") or "").strip() or str(state.get("agent_key") or "").strip()))
     if state and not has_runtime_material:
@@ -2639,7 +2639,7 @@ def _seed_profile_singleton(seed: _Seeder) -> None:
     profile = get_provider_profile(seed.provider)
     if profile is None or not _profile_seeds_pool(seed.provider):
         return
-    from hermes_cli.auth import is_provider_explicitly_configured, suppressed_credential_sources
+    from hermes_agent.hermes_cli.auth import is_provider_explicitly_configured, suppressed_credential_sources
     rows = profile.seed_pool_credentials(  # values, not callbacks: a hosted profile gets plain JSON
         suppressed_sources=suppressed_credential_sources(seed.provider),
         explicitly_configured=is_provider_explicitly_configured(seed.provider))
@@ -2665,7 +2665,7 @@ def _seed_qwen_singleton(seed: _Seeder) -> None:
     # Qwen OAuth tokens live in ~/.qwen/oauth_creds.json (written by the Qwen
     # CLI). refresh_if_expiring=False avoids network calls during pool loading.
     try:
-        from hermes_cli.auth import resolve_qwen_runtime_credentials
+        from hermes_agent.hermes_cli.auth import resolve_qwen_runtime_credentials
         creds = resolve_qwen_runtime_credentials(refresh_if_expiring=False)
         token = creds.get("api_key", "")
         if token:
@@ -2685,7 +2685,7 @@ def _seed_minimax_singleton(seed: _Seeder) -> None:
     # Read the raw auth.json state rather than resolve_minimax_oauth_runtime_credentials,
     # which always refreshes on expiry (surprise network calls during discovery).
     try:
-        from hermes_cli.auth import get_provider_auth_state
+        from hermes_agent.hermes_cli.auth import get_provider_auth_state
         state = get_provider_auth_state("minimax-oauth")
         if not (state and state.get("access_token")):
             return
@@ -2813,7 +2813,7 @@ def _env_payload(*, env_var: str, token: str, base_url: str) -> dict[str, Any]:
         "label": env_var,
     }
     try:
-        from hermes_cli.env_loader import get_secret_source
+        from hermes_agent.hermes_cli.env_loader import get_secret_source
         source_label = get_secret_source(env_var)
     except Exception:
         source_label = None

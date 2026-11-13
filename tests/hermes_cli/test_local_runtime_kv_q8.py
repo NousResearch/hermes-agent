@@ -11,9 +11,9 @@ memory guarantee still holds.
 
 from __future__ import annotations
 
-from hermes_cli.local_runtime.context_policy import WindowDecision, launch_args
-from hermes_cli.local_runtime.estimator import ctx_bytes, kv_dtype_factor, profile_from_gguf
-from hermes_cli.local_runtime.gguf import GGUFHeader
+from hermes_agent.hermes_cli.local_runtime.context_policy import WindowDecision, launch_args
+from hermes_agent.hermes_cli.local_runtime.estimator import ctx_bytes, kv_dtype_factor, profile_from_gguf
+from hermes_agent.hermes_cli.local_runtime.gguf import GGUFHeader
 
 _ARCH = "kimi-linear-test"
 

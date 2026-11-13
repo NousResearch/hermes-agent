@@ -58,7 +58,7 @@ def plugin_homes(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(launch))
     monkeypatch.setenv("PROBE_KEY", "launch-key")
 
-    from hermes_cli import plugins as plugins_mod
+    from hermes_agent.hermes_cli import plugins as plugins_mod
 
     plugins_mod._reset_plugin_managers_for_tests()
     yield {"launch": launch, "secondary": secondary}
@@ -144,7 +144,7 @@ def test_launch_profile_chat_reads_its_own_secret_once_multiplexed(plugin_homes)
 def test_builtin_slash_exec_runs_when_the_profile_secret_bind_fails(plugin_homes, monkeypatch):
     """Only a plugin command needs the profile's secrets: a secret source that fails to load must
     not turn every built-in reaching slash.exec into ``Plugin command error`` (review of #153538)."""
-    from hermes_cli import env_loader
+    from hermes_agent.hermes_cli import env_loader
 
     from hermes_agent.tui_gateway import server
 
@@ -219,7 +219,7 @@ def test_absent_command_probe_reads_the_registry_under_the_discovery_lock(plugin
     probe must read it under that lock, never between the loaded check and the read."""
     import threading
 
-    from hermes_cli import plugins as plugins_mod
+    from hermes_agent.hermes_cli import plugins as plugins_mod
 
     manager = plugins_mod.get_plugin_manager()
     manager.discover_and_load()

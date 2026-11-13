@@ -9,7 +9,7 @@ from collections.abc import Iterator
 
 import pytest
 
-from hermes_cli import plugins_loader
+from hermes_agent.hermes_cli import plugins_loader
 
 # Enough entries that the filtering pass spans several GIL switches.
 _MODULE_COUNT = 5000

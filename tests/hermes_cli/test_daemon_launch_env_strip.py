@@ -33,7 +33,7 @@ LEAKS = {**SUPERVISOR_LEAKS, 'HERMES_ACCEPT_HOOKS': '1', 'HERMES_KANBAN_TASK': '
 @pytest.mark.platforms("linux")
 @pytest.mark.spawns_gateway_lookalike  # stub interpreter records env then exits; reaped below
 def test_daemon_does_not_inherit_hook_consent_or_worker_pins(tmp_path, monkeypatch):
-    from hermes_cli import gateway_runtime_start as start
+    from hermes_agent.hermes_cli import gateway_runtime_start as start
     home = tmp_path / 'home'
     home.mkdir(mode=0o700)
     witness = home / 'env.json'
@@ -66,7 +66,7 @@ def test_daemon_does_not_inherit_hook_consent_or_worker_pins(tmp_path, monkeypat
 def test_daemon_started_below_a_launchd_gateway_is_unsupervised(tmp_path, monkeypatch):
     # An agent of a launchd gateway auto-starts a daemon for another home: that daemon has no supervisor,
     # so it must declare "manual" (which arms --idle-exit) instead of claiming its launcher's launchd job.
-    from hermes_cli import gateway_runtime_start as start
+    from hermes_agent.hermes_cli import gateway_runtime_start as start
     home = tmp_path / 'home'
     home.mkdir(mode=0o700)
     witness = home / 'supervisor.json'

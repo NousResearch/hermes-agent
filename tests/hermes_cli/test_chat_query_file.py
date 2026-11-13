@@ -15,7 +15,7 @@ REPO = Path(__file__).resolve().parents[2]
 def _parse(argv):
     sys.path.insert(0, str(REPO))
     try:
-        from hermes_cli._parser import build_top_level_parser
+        from hermes_agent.hermes_cli._parser import build_top_level_parser
 
         built = build_top_level_parser()
         parser = built[0] if isinstance(built, tuple) else built

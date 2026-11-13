@@ -43,8 +43,8 @@ def hosted(tmp_path, monkeypatch):
 
 def _enabled_under_own_scope(home: Path) -> set:
     """What `hermes -p <profile> tools list` resolves: that profile's config under its own secrets."""
-    from hermes_cli.config import load_config
-    from hermes_cli.tools_config import _get_platform_tools
+    from hermes_agent.hermes_cli.config import load_config
+    from hermes_agent.hermes_cli.tools_config import _get_platform_tools
 
     home_token = set_hermes_home_override(str(home))
     secret_token = set_secret_scope(build_profile_secret_scope(home), profile_home=str(home))

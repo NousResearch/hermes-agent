@@ -1,6 +1,6 @@
 """Plugin activation writes and reads the SAME key on every surface (#27548, #73131, #82898).
 
-Runs the real ``hermes_cli.plugins_cmd`` commands against a temp HERMES_HOME and checks the verdict
+Runs the real ``hermes_agent.hermes_cli.plugins_cmd`` commands against a temp HERMES_HOME and checks the verdict
 through the loader's own gate (``plugins_discovery.gate_manifest``) — never by re-reading the list
 the command just wrote.
 """
@@ -9,9 +9,9 @@ from __future__ import annotations
 
 import pytest
 
-from hermes_cli import plugins_cmd
-from hermes_cli.config import load_config, save_config
-from hermes_cli.plugins_discovery import collect_directory_manifests, gate_manifest
+from hermes_agent.hermes_cli import plugins_cmd
+from hermes_agent.hermes_cli.config import load_config, save_config
+from hermes_agent.hermes_cli.plugins_discovery import collect_directory_manifests, gate_manifest
 
 
 def _write_plugin(root, rel, name, extra=""):
@@ -50,7 +50,7 @@ def _commit_plugin_selection_without_building_an_environment(monkeypatch):
         cfg["plugins"] = {"enabled": sorted(enabled), "disabled": sorted(disabled)}
         save_config(cfg)
 
-    monkeypatch.setattr("hermes_cli.plugins_admission.admit_plugin_set_change", admit)
+    monkeypatch.setattr("hermes_agent.hermes_cli.plugins_admission.admit_plugin_set_change", admit)
 
 
 def _lists():
@@ -100,7 +100,7 @@ def test_dashboard_enable_on_a_fresh_config_keeps_the_core_tools(home):
     """Desktop/TUI/dashboard enable with no saved ``platform_toolsets`` must not write one: the old
     seed ``platform_toolsets.cli: [<plugin_ts>]`` replaced the ``hermes-cli`` composite, so the model
     lost every built-in tool (27 -> 2, no ``terminal``). The plugin toolset is on by default anyway."""
-    from hermes_cli.tools_config import _get_platform_tools
+    from hermes_agent.hermes_cli.tools_config import _get_platform_tools
     from hermes_agent.tools.registry import registry
 
     _write_tool_plugin(home / "plugins", "zzseed")
@@ -115,7 +115,7 @@ def test_dashboard_enable_on_a_fresh_config_keeps_the_core_tools(home):
 
 def _restart_backend():
     """A new process: no plugin manager has scanned yet and no plugin tool is registered."""
-    from hermes_cli.plugins import _reset_plugin_managers_for_tests
+    from hermes_agent.hermes_cli.plugins import _reset_plugin_managers_for_tests
     from hermes_agent.tools.registry import registry
 
     _reset_plugin_managers_for_tests()
@@ -142,7 +142,7 @@ def test_dashboard_reenable_restores_the_toolset_in_a_saved_list(saved_list_plug
     """Desktop/TUI/dashboard disable drops the plugin toolset from a saved list; re-enabling from a
     backend that scanned while the plugin was off must add it back. The toggle ran before the plugin
     loaded, found no registered tool, and left the plugin enabled with its tools off."""
-    from hermes_cli.plugins import discover_plugins
+    from hermes_agent.hermes_cli.plugins import discover_plugins
 
     discover_plugins()  # long-lived backend: scanned while the plugin was on
     assert plugins_cmd.dashboard_set_agent_plugin_enabled("zzre", enabled=False)["ok"] is True

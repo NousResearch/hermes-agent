@@ -38,7 +38,7 @@ def captured_upload(monkeypatch, tmp_path):
             "expiresAt": "2026-09-05T00:00:00Z",
         }
 
-    import hermes_cli.diagnostics_upload as du
+    import hermes_agent.hermes_cli.diagnostics_upload as du
 
     monkeypatch.setattr(du, "share_to_nous", _fake_share)
     return captured
@@ -146,7 +146,7 @@ def test_redacted_support_egress_scrubs_structured_values_and_errors(
 
     # An oversized client value is scrubbed through a bounded window (line-aligned
     # when a line ends in [2x, 3x) cap), with the same capped output as a full scrub.
-    import hermes_cli.debug_redaction as dr
+    import hermes_agent.hermes_cli.debug_redaction as dr
 
     real_redact, scrubbed_sizes = dr.redact_debug_support_text, []
 
@@ -168,7 +168,7 @@ def test_redacted_support_egress_scrubs_structured_values_and_errors(
     monkeypatch.setattr(dr, "redact_debug_support_text", real_redact)
     assert max(scrubbed_sizes) <= 3 * 8_000
 
-    import hermes_cli.diagnostics_upload as du
+    import hermes_agent.hermes_cli.diagnostics_upload as du
 
     def _fail(_blob: bytes) -> dict:
         # The tail is already scrubbed (a wrapped inner error); re-scrubbing it
@@ -218,7 +218,7 @@ def test_redacted_support_egress_scrubs_structured_values_and_errors(
 def test_share_nous_linkless_success_is_a_failure(monkeypatch):
     """ok:true with neither view_url nor id would strand the user with an
     unreferencable upload — surface it as a structured failure instead."""
-    import hermes_cli.diagnostics_upload as du
+    import hermes_agent.hermes_cli.diagnostics_upload as du
 
     monkeypatch.setattr(du, "share_to_nous", lambda blob: {})
 
@@ -256,7 +256,7 @@ def test_share_nous_extra_files_sanitized_and_redacted(captured_upload):
 
 
 def test_share_nous_upload_failure_is_structured(monkeypatch):
-    import hermes_cli.diagnostics_upload as du
+    import hermes_agent.hermes_cli.diagnostics_upload as du
 
     def _boom(blob: bytes) -> dict:
         raise RuntimeError("NAS unavailable")

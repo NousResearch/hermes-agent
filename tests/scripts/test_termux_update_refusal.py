@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from hermes_cli.update_contract import COMMIT_BUILD_UPDATE_MESSAGE
+from hermes_agent.hermes_cli.update_contract import COMMIT_BUILD_UPDATE_MESSAGE
 
 
 @pytest.mark.platforms("posix")
@@ -46,12 +46,12 @@ def artifact(tmp_path, request):
 
 @pytest.mark.platforms("posix")
 def test_validator_accepts_real_cli_refusal_for_installed_identity(artifact, monkeypatch, capsys, tmp_path):
-    from hermes_cli import main
+    from hermes_agent.hermes_cli import main
     from scripts.termux.validate_installed import validate_update_refusal
 
     root, source = artifact
     monkeypatch.setattr(main, "PROJECT_ROOT", root)
-    monkeypatch.setattr("hermes_cli.image_provenance.IMAGE_PROVENANCE_PATH", tmp_path / "absent")
+    monkeypatch.setattr("hermes_agent.hermes_cli.image_provenance.IMAGE_PROVENANCE_PATH", tmp_path / "absent")
     monkeypatch.delenv("HERMES_MANAGED", raising=False)
 
     def unexpected_update(*args, **kwargs):

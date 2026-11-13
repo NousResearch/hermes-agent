@@ -16,7 +16,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from hermes_cli import kanban_db as kb
+from hermes_agent.hermes_cli import kanban_db as kb
 
 
 def _load_plugin_router():

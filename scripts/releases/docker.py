@@ -12,7 +12,7 @@ import time
 MANIFEST_SCHEMA = 1
 SHA256 = re.compile(r"[a-f0-9]{64}")
 GIT_SHA = re.compile(r"[a-f0-9]{40}")
-from hermes_cli.update_channel import STABLE_TAG_RE
+from hermes_agent.hermes_cli.update_channel import STABLE_TAG_RE
 from scripts.releases.versioning import parse_attempt_ref
 ARCHES = ("amd64", "arm64")
 IMAGE = "nousresearch/hermes-agent"

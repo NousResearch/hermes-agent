@@ -5,8 +5,8 @@ import threading
 
 
 def test_prepare_freezes_admission_without_blocking_other_work_locks(monkeypatch):
-    from hermes_cli.backend_retirement import RetirementFence
-    from hermes_cli import web_server_idle_proof
+    from hermes_agent.hermes_cli.backend_retirement import RetirementFence
+    from hermes_agent.hermes_cli import web_server_idle_proof
 
     fence = RetirementFence()
     probing, release, attempted = (threading.Event() for _ in range(3))
@@ -37,8 +37,8 @@ def test_prepare_freezes_admission_without_blocking_other_work_locks(monkeypatch
 
 
 def test_probe_failure_refuses_the_permit_without_wedging_admission(monkeypatch):
-    from hermes_cli.backend_retirement import RetirementFence
-    from hermes_cli import web_server_idle_proof
+    from hermes_agent.hermes_cli.backend_retirement import RetirementFence
+    from hermes_agent.hermes_cli import web_server_idle_proof
 
     def broken_probe():
         raise OSError("ledger unavailable")

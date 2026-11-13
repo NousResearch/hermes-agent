@@ -13,7 +13,7 @@ from types import SimpleNamespace
 import pytest
 from starlette.datastructures import Headers, QueryParams
 
-from hermes_cli.dashboard_auth import native_http
+from hermes_agent.hermes_cli.dashboard_auth import native_http
 
 
 def _request(method, path, query=''):
@@ -29,7 +29,7 @@ def root(tmp_path, monkeypatch):
     for name in ('active', 'import', 'sessions', 'beta'):
         (root / 'profiles' / name).mkdir(parents=True)
     monkeypatch.setenv('HERMES_HOME', str(root))
-    from hermes_cli import web_server_profiles
+    from hermes_agent.hermes_cli import web_server_profiles
     # The profile registry's own name -> dir mapping (validation + existence), rooted here.
     monkeypatch.setattr(web_server_profiles, '_resolve_profile_dir',
                         lambda name: root / 'profiles' / name if name != 'default' else root)

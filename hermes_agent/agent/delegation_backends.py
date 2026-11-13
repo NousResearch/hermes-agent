@@ -95,7 +95,7 @@ def set_global_backend(name: str, *, session_key: str = "", apply_now: bool = Fa
     from there (an opt-in prompt-cache break); otherwise sessions pick the switch up from ``/new``. Raises ``PermissionError`` on a package-manager-managed
     install (its config.yaml is not ours to write) and ``ValueError`` (with the reason) for a backend that cannot
     run or an ``apply_now`` without a session, before anything is written."""
-    from hermes_cli.config import (
+    from hermes_agent.hermes_cli.config import (
         atomic_config_write, format_managed_message, get_config_path, is_managed, read_user_config_raw,
     )
     if is_managed():
@@ -135,7 +135,7 @@ def apply_requested_tool_rebuild(agent: Any) -> bool:
         if key not in _rebuild_requests:
             return False
         _rebuild_requests.discard(key)
-    from hermes_cli.observability.shared_metrics_efficiency import record_cache_break
+    from hermes_agent.hermes_cli.observability.shared_metrics_efficiency import record_cache_break
     from hermes_agent.tools.mcp_tool_agent import refresh_agent_mcp_tools
     before = getattr(agent, "tools", None)
     refresh_agent_mcp_tools(agent, quiet_mode=True, content_aware=True)  # adopts the saved backend, re-pins a change

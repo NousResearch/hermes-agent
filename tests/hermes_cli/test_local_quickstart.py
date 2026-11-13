@@ -15,13 +15,13 @@ from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
-from hermes_cli.local_runtime.binaries import Engine
+from hermes_agent.hermes_cli.local_runtime.binaries import Engine
 
 
 @pytest.fixture
 def client(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
-    from hermes_cli import web_server
+    from hermes_agent.hermes_cli import web_server
 
     test_client = TestClient(web_server.app)
     test_client.headers[web_server._SESSION_HEADER_NAME] = web_server._SESSION_TOKEN
@@ -45,8 +45,8 @@ def test_quickstart_unknown_model_404s(client):
 
 def test_quickstart_without_recommendation_requires_explicit_choice(client, monkeypatch):
     """One budget: automatic setup refuses; an explicit spilled choice reaches activation."""
-    from hermes_cli.local_runtime.estimator import HardwareBudget
-    import hermes_cli.web_routers.local_models as lm
+    from hermes_agent.hermes_cli.local_runtime.estimator import HardwareBudget
+    import hermes_agent.hermes_cli.web_routers.local_models as lm
 
     gib = 1 << 30
     budget = HardwareBudget(
@@ -82,7 +82,7 @@ def test_quickstart_without_recommendation_requires_explicit_choice(client, monk
     monkeypatch.setattr(lm, "_run_download_plan", download)
     monkeypatch.setattr(lm.bootstrap, "ensure_local_runtime", start_server)
     monkeypatch.setattr(
-        "hermes_cli.web_server_config._apply_model_assignment_sync",
+        "hermes_agent.hermes_cli.web_server_config._apply_model_assignment_sync",
         lambda *args: calls.append(("assign", *args)),
     )
     rows = client.get("/api/local-models/catalog").json()["models"]
@@ -115,7 +115,7 @@ def test_quickstart_refuses_when_nothing_fits(client, monkeypatch):
     """Preflight is synchronous: a machine no catalog entry fits gets a 409
     with guidance, not a doomed background job."""
     monkeypatch.setattr(
-        "hermes_cli.local_runtime.catalog.select_variant", lambda *a, **k: None)
+        "hermes_agent.hermes_cli.local_runtime.catalog.select_variant", lambda *a, **k: None)
     r = client.post("/api/local-models/quickstart", json={})
     assert r.status_code == 409
     assert "Local Models" in r.json()["detail"]
@@ -124,8 +124,8 @@ def test_quickstart_refuses_when_nothing_fits(client, monkeypatch):
 @pytest.fixture
 def capable_hardware(monkeypatch):
     """Success-path orchestration tests need a model to fit, independent of host load."""
-    from hermes_cli.local_runtime import hardware
-    from hermes_cli.local_runtime.estimator import HardwareBudget
+    from hermes_agent.hermes_cli.local_runtime import hardware
+    from hermes_agent.hermes_cli.local_runtime.estimator import HardwareBudget
 
     gib = 1 << 30
     budget = HardwareBudget(
@@ -142,7 +142,7 @@ def test_quickstart_runs_all_three_legs(client, capable_hardware, monkeypatch, t
 
     # Supply the same supported backend to preflight and the stubbed install;
     # host auto-detection may select a GPU backend this test host cannot install.
-    from hermes_cli.config import load_config, save_config
+    from hermes_agent.hermes_cli.config import load_config, save_config
 
     config = load_config()
     config.setdefault("local_runtime", {})["backend"] = "cpu"
@@ -150,9 +150,9 @@ def test_quickstart_runs_all_three_legs(client, capable_hardware, monkeypatch, t
 
     # Leg 1: no runtime installed yet; install is the stubbed binaries call.
     monkeypatch.setattr(
-        "hermes_cli.local_runtime.binaries.installed_engine", lambda *args, **kwargs: None)
+        "hermes_agent.hermes_cli.local_runtime.binaries.installed_engine", lambda *args, **kwargs: None)
     monkeypatch.setattr(
-        "hermes_cli.local_runtime.binaries.ensure_engine",
+        "hermes_agent.hermes_cli.local_runtime.binaries.ensure_engine",
         lambda backend, **kwargs: calls.append("install"))
 
     # Leg 2: nothing staged; the download writes the files the plan names.
@@ -163,17 +163,17 @@ def test_quickstart_runs_all_three_legs(client, capable_hardware, monkeypatch, t
         calls.append("download")
 
     monkeypatch.setattr(
-        "hermes_cli.web_routers.local_models._download_job", _fake_download)
+        "hermes_agent.hermes_cli.web_routers.local_models._download_job", _fake_download)
 
     # Leg 3: activation — stub the server start and the model assignment.
     monkeypatch.setattr(
-        "hermes_cli.local_runtime.bootstrap.ensure_local_runtime",
+        "hermes_agent.hermes_cli.local_runtime.bootstrap.ensure_local_runtime",
         lambda config, force=False: calls.append("server") or None)
     monkeypatch.setattr(
-        "hermes_cli.web_routers.local_models._state_endpoint",
+        "hermes_agent.hermes_cli.web_routers.local_models._state_endpoint",
         lambda: {"base_url": "http://127.0.0.1:1/v1", "api_key": "k"})
     monkeypatch.setattr(
-        "hermes_cli.web_server_config._apply_model_assignment_sync",
+        "hermes_agent.hermes_cli.web_server_config._apply_model_assignment_sync",
         lambda *a, **k: calls.append("assign"))
 
     r = client.post("/api/local-models/quickstart", json={})
@@ -192,7 +192,7 @@ def test_quickstart_runs_all_three_legs(client, capable_hardware, monkeypatch, t
     assert calls.index("install") < calls.index("download") < calls.index("assign")
 
     # Durable effect: the runtime is enabled in config.
-    from hermes_cli.config import load_config
+    from hermes_agent.hermes_cli.config import load_config
 
     assert load_config()["local_runtime"]["enabled"] is True
 
@@ -203,14 +203,14 @@ def test_quickstart_skips_satisfied_legs(client, capable_hardware, monkeypatch):
     calls: list[str] = []
 
     monkeypatch.setattr(
-        "hermes_cli.local_runtime.binaries.installed_engine", lambda *args, **kwargs: Engine("cpu", "b10362", Path("unused")))
+        "hermes_agent.hermes_cli.local_runtime.binaries.installed_engine", lambda *args, **kwargs: Engine("cpu", "b10362", Path("unused")))
     monkeypatch.setattr(
-        "hermes_cli.local_runtime.binaries.ensure_engine",
+        "hermes_agent.hermes_cli.local_runtime.binaries.ensure_engine",
         lambda backend, **kwargs: calls.append("install"))
 
     # Every model file and companion is already present.
-    from hermes_cli.local_runtime.catalog import CATALOG
-    from hermes_cli.web_routers.local_models import _download_plan
+    from hermes_agent.hermes_cli.local_runtime.catalog import CATALOG
+    from hermes_agent.hermes_cli.web_routers.local_models import _download_plan
 
     for entry in CATALOG:
         for variant in entry.variants:
@@ -218,16 +218,16 @@ def test_quickstart_skips_satisfied_legs(client, capable_hardware, monkeypatch):
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 dest.write_bytes(b"downloaded fixture")
     monkeypatch.setattr(
-        "hermes_cli.web_routers.local_models._download_job",
+        "hermes_agent.hermes_cli.web_routers.local_models._download_job",
         lambda *a, **k: calls.append("download"))
     monkeypatch.setattr(
-        "hermes_cli.local_runtime.bootstrap.ensure_local_runtime",
+        "hermes_agent.hermes_cli.local_runtime.bootstrap.ensure_local_runtime",
         lambda config, force=False: None)
     monkeypatch.setattr(
-        "hermes_cli.web_routers.local_models._state_endpoint",
+        "hermes_agent.hermes_cli.web_routers.local_models._state_endpoint",
         lambda: {"base_url": "http://127.0.0.1:1/v1", "api_key": "k"})
     monkeypatch.setattr(
-        "hermes_cli.web_server_config._apply_model_assignment_sync",
+        "hermes_agent.hermes_cli.web_server_config._apply_model_assignment_sync",
         lambda *a, **k: calls.append("assign"))
 
     r = client.post("/api/local-models/quickstart", json={})
@@ -249,17 +249,17 @@ def quickstart_ready(monkeypatch):
     installed and every entry's first variant is servable, so the POST
     reaches the single-flight lock instead of 409ing at fit/engine
     preflight on machines where nothing fits."""
-    from hermes_cli.local_runtime.catalog import VariantChoice
+    from hermes_agent.hermes_cli.local_runtime.catalog import VariantChoice
 
     monkeypatch.setattr(
-        "hermes_cli.local_runtime.binaries.installed_engine", lambda *args, **kwargs: Engine("cpu", "b10362", Path("unused")))
+        "hermes_agent.hermes_cli.local_runtime.binaries.installed_engine", lambda *args, **kwargs: Engine("cpu", "b10362", Path("unused")))
     monkeypatch.setattr(
-        "hermes_cli.local_runtime.catalog.select_variant",
+        "hermes_agent.hermes_cli.local_runtime.catalog.select_variant",
         lambda entry, budget: VariantChoice(variant=entry.variants[0],
                                             zero_spill=True,
                                             reason_key="best-fits"))
     monkeypatch.setattr(
-        "hermes_cli.web_routers.local_models._engine_too_old",
+        "hermes_agent.hermes_cli.web_routers.local_models._engine_too_old",
         lambda min_engine: False)
 
 
@@ -267,7 +267,7 @@ def test_quickstart_is_single_flight(client, quickstart_ready, monkeypatch):
     """A second quickstart while one runs must 409, not start a twin job
     (the job sequences installs, downloads, a server bounce, and a config
     write — two interleaved runs corrupt all four)."""
-    import hermes_cli.web_routers.local_models as lm
+    import hermes_agent.hermes_cli.web_routers.local_models as lm
 
     lm._QUICKSTART_LOCK.acquire()
     try:
@@ -282,11 +282,11 @@ def test_assign_default_reaches_model_assignment(monkeypatch):
     """late() must resolve _apply_model_assignment_sync on web_server_config, the
     sibling that defines it. Only the leaf is stubbed; the default web_server lookup
     raised AttributeError at the quickstart's 'making it your default' step."""
-    import hermes_cli.web_routers.local_models as lm
+    import hermes_agent.hermes_cli.web_routers.local_models as lm
 
     seen: list[tuple] = []
     monkeypatch.setattr(
-        "hermes_cli.web_server_config._apply_model_assignment_sync",
+        "hermes_agent.hermes_cli.web_server_config._apply_model_assignment_sync",
         lambda *a, **k: seen.append(a))
     lm._assign_default({}, "some-model")
     assert seen == [("main", "llamacpp", "some-model", "", "", "")]
@@ -295,9 +295,9 @@ def test_assign_default_reaches_model_assignment(monkeypatch):
 def test_quickstart_prices_after_installing_the_engine(client, monkeypatch):
     """A Vulkan/HIP card's size comes from the installed engine's own device probe, so the model the
     job downloads and makes default is the one priced AFTER the install, not the preflight guess."""
-    import hermes_cli.web_routers.local_models as lm
-    from hermes_cli.local_runtime.catalog import CATALOG, VariantChoice
-    from hermes_cli.local_runtime.estimator import HardwareBudget
+    import hermes_agent.hermes_cli.web_routers.local_models as lm
+    from hermes_agent.hermes_cli.local_runtime.catalog import CATALOG, VariantChoice
+    from hermes_agent.hermes_cli.local_runtime.estimator import HardwareBudget
 
     gib = 1 << 30
     as_ram = HardwareBudget(usable_vram_bytes=50 * gib, total_device_bytes=50 * gib,

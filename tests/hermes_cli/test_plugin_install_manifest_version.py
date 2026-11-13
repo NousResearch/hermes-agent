@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 import hermes_yaml as yaml
 
-from hermes_cli.plugins import SUPPORTED_MANIFEST_VERSION
+from hermes_agent.hermes_cli.plugins import SUPPORTED_MANIFEST_VERSION
 from tests.pm._fixtures import client, isolated_python
 
 
@@ -43,7 +43,7 @@ def _plugin_repo(root: Path, manifest: dict) -> Path:
 def test_install_accepts_every_loader_supported_manifest_version(
     client, monkeypatch, tmp_path, manifest_version
 ):
-    from hermes_cli import plugins_cmd
+    from hermes_agent.hermes_cli import plugins_cmd
 
     monkeypatch.setattr(plugins_cmd, "_scan_on_install_enabled", lambda: False)
     repo = _plugin_repo(
@@ -63,7 +63,7 @@ def test_install_accepts_every_loader_supported_manifest_version(
 def test_manifest_version_above_shared_support_is_refused_cleanly(
     client, monkeypatch, tmp_path
 ):
-    from hermes_cli import plugins_cmd
+    from hermes_agent.hermes_cli import plugins_cmd
 
     monkeypatch.setattr(plugins_cmd, "_scan_on_install_enabled", lambda: False)
     repo = _plugin_repo(
@@ -90,7 +90,7 @@ def test_manifest_version_above_shared_support_is_refused_cleanly(
 def test_a_linked_plugin_slot_is_already_installed_not_a_bad_manifest(monkeypatch, tmp_path):
     """A provider's own installer can leave ``plugins/<name>`` as a link into a venv (mnemosyne-hermes
     did). The catalog install must say the slot is taken, not record ``manifest_invalid``."""
-    from hermes_cli import plugins_cmd
+    from hermes_agent.hermes_cli import plugins_cmd
 
     monkeypatch.setattr(plugins_cmd, "_scan_on_install_enabled", lambda: False)
     repo = _plugin_repo(tmp_path, {"name": "demo", "version": "1.0.0"})

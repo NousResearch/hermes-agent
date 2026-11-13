@@ -15,7 +15,7 @@ import sys
 
 import pytest
 
-from hermes_cli import gateway
+from hermes_agent.hermes_cli import gateway
 from tests.waiting import wait_until
 
 MARKERS = {"INVOCATION_ID": "unit-invocation", "JOURNAL_STREAM": "8:1234",
@@ -24,7 +24,7 @@ MARKERS = {"INVOCATION_ID": "unit-invocation", "JOURNAL_STREAM": "8:1234",
 _RESPAWN = """import json, os, sys
 sys.path.insert(0, sys.argv[2])
 from hermes_agent.gateway.restart import is_gateway_supervisor_process
-from hermes_cli.main import _under_gateway_supervisor
+from hermes_agent.hermes_cli.main import _under_gateway_supervisor
 open(sys.argv[1] + ".tmp", "w").write(json.dumps({
     "markers": {k: os.environ.get(k) for k in json.loads(sys.argv[3])},
     "claims_supervisor": is_gateway_supervisor_process(),
@@ -67,7 +67,7 @@ _LAUNCHD = {"XPC_SERVICE_NAME": "ai.hermes.gateway", "HERMES_LAUNCHD_LABEL": "ai
 def test_a_respawn_on_the_launchers_own_profile_sheds_the_markers_too(tmp_path, monkeypatch):
     """The watcher inherits the launcher's env for its own profile (an exported token may be its only
     credential); that path must still drop the unit identity, or the respawn races the unit."""
-    from hermes_cli.gateway_restart_env import restart_watcher_env
+    from hermes_agent.hermes_cli.gateway_restart_env import restart_watcher_env
     root = tmp_path / ".hermes"
     api1 = root / "profiles" / "api1"
     api1.mkdir(parents=True)
@@ -86,7 +86,7 @@ def test_a_paused_gateway_replayed_from_a_supervised_update_claims_no_supervisor
     """``/update`` sent to a launchd gateway pauses a bare gateway and replays it later. The replay
     env used to drop only INVOCATION_ID/JOURNAL_STREAM, so it still claimed launchd."""
     from hermes_agent.gateway.restart import is_gateway_supervisor_process
-    from hermes_cli.update_cmd_posix_pause import _bare_replay_env
+    from hermes_agent.hermes_cli.update_cmd_posix_pause import _bare_replay_env
     root = tmp_path / ".hermes"
     (root / "profiles" / "work").mkdir(parents=True)
     monkeypatch.setenv("HOME", str(tmp_path))

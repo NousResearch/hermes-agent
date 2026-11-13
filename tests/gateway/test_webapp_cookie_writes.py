@@ -51,9 +51,9 @@ async def _native_app_token(client: httpx.AsyncClient) -> str:
 
 
 def test_a_wildcard_webapp_takes_cookie_writes_only_from_its_own_page(tmp_path, monkeypatch):
-    from hermes_cli import web_server
-    from hermes_cli.config import read_raw_config
-    from hermes_cli.dashboard_auth import clear_providers, register_provider
+    from hermes_agent.hermes_cli import web_server
+    from hermes_agent.hermes_cli.config import read_raw_config
+    from hermes_agent.hermes_cli.dashboard_auth import clear_providers, register_provider
     from hermes_constants import get_hermes_home
     from tests.hermes_cli.conftest_dashboard_auth import StubAuthProvider
 

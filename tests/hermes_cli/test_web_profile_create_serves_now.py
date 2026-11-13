@@ -16,8 +16,8 @@ def client(monkeypatch, _isolate_hermes_home):
 
     from hermes_agent import hermes_state
     from hermes_constants import get_hermes_home
-    from hermes_cli import profiles
-    from hermes_cli.web_server import _SESSION_HEADER_NAME, _SESSION_TOKEN, app
+    from hermes_agent.hermes_cli import profiles
+    from hermes_agent.hermes_cli.web_server import _SESSION_HEADER_NAME, _SESSION_TOKEN, app
 
     home = get_hermes_home()
     home.mkdir(parents=True, exist_ok=True)
@@ -31,7 +31,7 @@ def client(monkeypatch, _isolate_hermes_home):
 
 
 def test_a_created_profile_is_served_without_waiting_for_the_rescan(client, monkeypatch):
-    from hermes_cli import gateway_multiplex_served
+    from hermes_agent.hermes_cli import gateway_multiplex_served
 
     served = []
 

@@ -453,7 +453,7 @@ plugins:
             encoding="utf-8",
         )
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-        from hermes_cli import config as _config_mod
+        from hermes_agent.hermes_cli import config as _config_mod
         _config_mod._config_cache = None  # type: ignore[attr-defined]
 
         policy = _resolve_trust_policy("my-plugin")
@@ -472,7 +472,7 @@ plugins:
         hermes_home.mkdir()
         (hermes_home / "config.yaml").write_text("plugins: {}\n", encoding="utf-8")
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-        from hermes_cli import config as _config_mod
+        from hermes_agent.hermes_cli import config as _config_mod
         _config_mod._config_cache = None  # type: ignore[attr-defined]
 
         policy = _resolve_trust_policy("never-configured")
@@ -488,7 +488,7 @@ plugins:
 class TestPluginContextIntegration:
 
     def test_ctx_llm_uses_manifest_key_for_policy(self):
-        from hermes_cli.plugins import PluginContext, PluginManifest, PluginManager
+        from hermes_agent.hermes_cli.plugins import PluginContext, PluginManifest, PluginManager
 
         manifest = PluginManifest(
             name="bare-name", source="test", key="image_gen/openai"
@@ -551,7 +551,7 @@ class TestHookMode:
     the real ``invoke_hook`` machinery, and check the call landed."""
 
     def test_complete_works_from_post_tool_call_hook(self):
-        from hermes_cli.plugins import PluginContext, PluginManifest, PluginManager
+        from hermes_agent.hermes_cli.plugins import PluginContext, PluginManifest, PluginManager
 
         manifest = PluginManifest(name="hook-plugin", source="test", key="hook-plugin")
         manager = PluginManager()

@@ -4,7 +4,7 @@ import time
 
 import pytest
 
-from hermes_cli.pty_session import RingBuffer
+from hermes_agent.hermes_cli.pty_session import RingBuffer
 from tests.waiting import async_wait_until
 
 
@@ -89,7 +89,7 @@ class FailingWS(FakeWS):
 
 @pytest.mark.asyncio
 async def test_attach_replays_buffer_then_streams_live():
-    from hermes_cli.pty_session import PtySession
+    from hermes_agent.hermes_cli.pty_session import PtySession
     bridge = FakeBridge([b"hello ", b"world", None])
     s = PtySession("k", bridge, buffer_cap=1024, read_timeout=0.01)
     await s.start()
@@ -105,7 +105,7 @@ async def test_attach_replays_buffer_then_streams_live():
 @pytest.mark.asyncio
 async def test_failed_replay_detaches_session_so_reaper_reclaims_it():
     """A client dropping mid-replay must not pin the PTY as attached forever (#110849)."""
-    from hermes_cli.pty_session import PtySessionRegistry
+    from hermes_agent.hermes_cli.pty_session import PtySessionRegistry
 
     reg = PtySessionRegistry(ttl=0.0, max_sessions=2, buffer_cap=1024, read_timeout=0.01)
     bridge = FakeBridge([b""])
@@ -123,7 +123,7 @@ async def test_failed_replay_detaches_session_so_reaper_reclaims_it():
 
 @pytest.mark.asyncio
 async def test_drain_send_failure_detaches_current_socket_but_not_a_replacement():
-    from hermes_cli.pty_session import PtySession
+    from hermes_agent.hermes_cli.pty_session import PtySession
 
     s = PtySession("k", FakeBridge([b"live"]), buffer_cap=1024, read_timeout=0.01)
     await s.start()
@@ -156,8 +156,8 @@ async def test_viewer_that_stops_reading_live_output_is_told_to_reconnect(monkey
     """The send limit drops a stalled viewer, not its session. 1011 makes the
     dashboard chat tab offer a new session; 1001 is the code both it and the
     Webapp terminal redial on, and the same key then reattaches the same PTY."""
-    from hermes_cli import pty_session
-    from hermes_cli.pty_session import PtySessionRegistry
+    from hermes_agent.hermes_cli import pty_session
+    from hermes_agent.hermes_cli.pty_session import PtySessionRegistry
 
     monkeypatch.setattr(pty_session, "_VIEWER_SEND_TIMEOUT_SECONDS", 0.1)
     registry = PtySessionRegistry(ttl=60.0, max_sessions=2, buffer_cap=1024, read_timeout=0.01)
@@ -193,8 +193,8 @@ class SlowLinkWS(FakeWS):
 async def test_a_full_replay_over_a_slow_link_is_not_a_stalled_viewer(monkeypatch):
     """The stall limit covers one live frame. A reattach replay of up to the 1 MiB buffer gets time
     to cross a slow link too, or every redial replays, times out and redials again."""
-    from hermes_cli import pty_session
-    from hermes_cli.pty_session import PtySession
+    from hermes_agent.hermes_cli import pty_session
+    from hermes_agent.hermes_cli.pty_session import PtySession
 
     monkeypatch.setattr(pty_session, "_VIEWER_SEND_TIMEOUT_SECONDS", 0.05)
     history = b"x" * (1024 * 1024)
@@ -236,8 +236,8 @@ async def test_redials_over_a_link_too_slow_for_the_whole_replay_reach_a_replay_
     """A replay that misses its deadline is halved for the session's next attach, so a viewer on a
     link of any speed gets the newest output it can carry after a few redials instead of timing out
     on every one. A client that dropped is not a slow link and keeps the whole replay."""
-    from hermes_cli import pty_session
-    from hermes_cli.pty_session import PtySession
+    from hermes_agent.hermes_cli import pty_session
+    from hermes_agent.hermes_cli.pty_session import PtySession
 
     monkeypatch.setattr(pty_session, "_VIEWER_SEND_TIMEOUT_SECONDS", 0.01)
     monkeypatch.setattr(pty_session, "_REPLAY_MIN_BYTES_PER_SECOND", 1024 ** 3)
@@ -267,8 +267,8 @@ async def test_redials_over_a_link_too_slow_for_the_whole_replay_reach_a_replay_
 async def test_a_shrunk_replay_keeps_a_floor(monkeypatch):
     """Replays that keep timing out shrink the next one only down to a floor, so a reattach still
     shows the newest output instead of nothing."""
-    from hermes_cli import pty_session
-    from hermes_cli.pty_session import PtySession
+    from hermes_agent.hermes_cli import pty_session
+    from hermes_agent.hermes_cli.pty_session import PtySession
 
     monkeypatch.setattr(pty_session, "_VIEWER_SEND_TIMEOUT_SECONDS", 0.01)
     monkeypatch.setattr(pty_session, "_REPLAY_MIN_BYTES_PER_SECOND", 1024 ** 3)
@@ -291,8 +291,8 @@ async def test_a_replay_size_that_timed_out_is_not_replayed_again(monkeypatch):
     that the link carries more. After a replay times out, the session never replays that size again:
     a viewer that keeps redialing over the same slow link gets the replay it carries every time,
     instead of timing out on every second redial."""
-    from hermes_cli import pty_session
-    from hermes_cli.pty_session import PtySession
+    from hermes_agent.hermes_cli import pty_session
+    from hermes_agent.hermes_cli.pty_session import PtySession
 
     monkeypatch.setattr(pty_session, "_VIEWER_SEND_TIMEOUT_SECONDS", 0.01)
     monkeypatch.setattr(pty_session, "_REPLAY_MIN_BYTES_PER_SECOND", 1024 ** 3)
@@ -321,9 +321,9 @@ async def test_a_reattach_that_replays_part_of_the_history_says_output_was_trimm
     import secrets
     from types import SimpleNamespace
 
-    from hermes_cli import pty_session
-    from hermes_cli.web_host_terminal import META_PREFIX
-    from hermes_cli.web_host_terminal_sessions import HostOwner, HostTerminalRegistry, host_terminal
+    from hermes_agent.hermes_cli import pty_session
+    from hermes_agent.hermes_cli.web_host_terminal import META_PREFIX
+    from hermes_agent.hermes_cli.web_host_terminal_sessions import HostOwner, HostTerminalRegistry, host_terminal
 
     home = tmp_path / "home"
     home.mkdir()
@@ -379,7 +379,7 @@ async def test_a_reattach_that_replays_part_of_the_history_says_output_was_trimm
 @pytest.mark.asyncio
 async def test_reattach_can_force_complete_tui_redraw_after_replay():
     """A fresh terminal cannot reconstruct a differential ANSI tail alone."""
-    from hermes_cli.pty_session import PtySession
+    from hermes_agent.hermes_cli.pty_session import PtySession
 
     bridge = FakeBridge([b"partial differential frame", b""])
     s = PtySession("k", bridge, buffer_cap=1024, read_timeout=0.01)
@@ -397,7 +397,7 @@ async def test_reattach_can_force_complete_tui_redraw_after_replay():
 
 @pytest.mark.asyncio
 async def test_failed_redraw_marks_session_dead_for_replacement():
-    from hermes_cli.pty_session import PtySession
+    from hermes_agent.hermes_cli.pty_session import PtySession
 
     bridge = FakeBridge([b""], write_result=False)
     s = PtySession("k", bridge, buffer_cap=1024, read_timeout=0.01)
@@ -411,7 +411,7 @@ async def test_failed_redraw_marks_session_dead_for_replacement():
 
 @pytest.mark.asyncio
 async def test_session_serializes_input_across_socket_tasks():
-    from hermes_cli.pty_session import PtySession
+    from hermes_agent.hermes_cli.pty_session import PtySession
 
     class OrderedBridge(FakeBridge):
         def __init__(self):
@@ -447,7 +447,7 @@ async def test_session_serializes_input_across_socket_tasks():
 
 @pytest.mark.asyncio
 async def test_superseded_failed_write_does_not_kill_replacement_session():
-    from hermes_cli.pty_session import PtySession
+    from hermes_agent.hermes_cli.pty_session import PtySession
 
     class SupersededBridge(FakeBridge):
         def __init__(self):
@@ -492,7 +492,7 @@ async def test_superseded_failed_write_does_not_kill_replacement_session():
 
 @pytest.mark.asyncio
 async def test_detach_keeps_draining_into_buffer():
-    from hermes_cli.pty_session import PtySession
+    from hermes_agent.hermes_cli.pty_session import PtySession
     bridge = FakeBridge([b"one", b"", b"two"])
     s = PtySession("k", bridge, buffer_cap=1024, read_timeout=0.01)
     await s.start()
@@ -513,7 +513,7 @@ async def test_detach_keeps_draining_into_buffer():
 
 @pytest.mark.asyncio
 async def test_eof_marks_dead_and_closes_socket_4410():
-    from hermes_cli.pty_session import PtySession
+    from hermes_agent.hermes_cli.pty_session import PtySession
     bridge = FakeBridge([b"bye", None])
     s = PtySession("k", bridge, buffer_cap=1024, read_timeout=0.01)
     await s.start()
@@ -525,7 +525,7 @@ async def test_eof_marks_dead_and_closes_socket_4410():
     await s.close()
 
 
-from hermes_cli.pty_session import PtySessionRegistry, RegistryFull
+from hermes_agent.hermes_cli.pty_session import PtySessionRegistry, RegistryFull
 
 
 def make_registry(ttl=1800.0, max_sessions=16):
@@ -566,7 +566,7 @@ async def test_concurrent_attach_on_one_token_forks_one_pty():
     out of the registry (never reaped) and a reattach landed on the wrong
     terminal (#115304).
     """
-    from hermes_cli.pty_session import WS_CLOSE_SUPERSEDED
+    from hermes_agent.hermes_cli.pty_session import WS_CLOSE_SUPERSEDED
 
     reg = make_registry()
     spawned = []
@@ -600,7 +600,7 @@ async def test_concurrent_attach_on_one_token_forks_one_pty():
 
 async def _two_idle_sessions_first_close_gated(reg):
     """Two detached (idle) sessions; k0's close() parks until ``release`` is set."""
-    from hermes_cli.pty_session import PtySession
+    from hermes_agent.hermes_cli.pty_session import PtySession
     bridges = []
     for i in range(2):
         bridge = FakeBridge([b""])
@@ -713,7 +713,7 @@ async def test_close_all_waits_for_closes_already_running_in_the_background():
 
 @pytest.mark.asyncio
 async def test_close_other_sessions_removes_old_profile_session():
-    from hermes_cli.pty_session import WS_CLOSE_SUPERSEDED, PtySession
+    from hermes_agent.hermes_cli.pty_session import WS_CLOSE_SUPERSEDED, PtySession
 
     reg = make_registry()
     old_bridge = FakeBridge([b""])
@@ -738,7 +738,7 @@ async def test_close_other_sessions_removes_old_profile_session():
     await reg.close_all()
 @pytest.mark.asyncio
 async def test_close_orphaned_sessions_closes_pty_stranded_by_token_rotation():
-    from hermes_cli.pty_session import PtySession
+    from hermes_agent.hermes_cli.pty_session import PtySession
 
     reg = make_registry()
     stranded_bridge = FakeBridge([b""])
@@ -761,7 +761,7 @@ async def test_close_orphaned_sessions_closes_pty_stranded_by_token_rotation():
 
 @pytest.mark.asyncio
 async def test_close_orphaned_sessions_keeps_a_pty_someone_is_viewing():
-    from hermes_cli.pty_session import PtySession
+    from hermes_agent.hermes_cli.pty_session import PtySession
 
     reg = make_registry()
     viewed_bridge = FakeBridge([b""])
@@ -784,7 +784,7 @@ async def test_close_orphaned_sessions_keeps_a_pty_someone_is_viewing():
 
 @pytest.mark.asyncio
 async def test_close_orphaned_sessions_without_resume_target_touches_nothing():
-    from hermes_cli.pty_session import PtySession
+    from hermes_agent.hermes_cli.pty_session import PtySession
 
     reg = make_registry()
     other_bridge = FakeBridge([b""])
@@ -810,7 +810,7 @@ async def test_close_orphaned_sessions_without_resume_target_touches_nothing():
     ],
 )
 def test_key_segments_read_profile_and_resume(key, expected):
-    from hermes_cli.pty_session import _key_segments
+    from hermes_agent.hermes_cli.pty_session import _key_segments
 
     assert _key_segments(key) == expected
 
@@ -818,7 +818,7 @@ def test_key_segments_read_profile_and_resume(key, expected):
 @pytest.mark.asyncio
 async def test_close_orphaned_sessions_leaves_the_same_session_id_in_another_profile():
     """Session ids are per profile store: alpha's ``session-a`` is not beta's."""
-    from hermes_cli.pty_session import PtySession
+    from hermes_agent.hermes_cli.pty_session import PtySession
 
     reg = make_registry()
     other_bridge = FakeBridge([b""])
@@ -850,7 +850,7 @@ class PidBridge(FakeBridge):
 def process_tree(monkeypatch):
     """Fake ancestry: ``{pid: {ancestor pids}}``. The dashboard PTY leader (node) is pid 4242;
     the tui_gateway child that actually holds the session lease is 4243 underneath it."""
-    import hermes_cli.pty_session as mod
+    import hermes_agent.hermes_cli.pty_session as mod
 
     tree = {4243: {4242, 1}, 5152: {5151, 1}}
     monkeypatch.setattr(mod, "_process_ancestors", lambda pid: tree.get(pid, set()))
@@ -862,7 +862,7 @@ async def test_close_orphaned_sessions_finds_the_lease_holder_without_a_resume_k
     """The reported repro starts a *fresh* chat in the default profile, so chat A's key is
     the bare token — no profile, no resume segment. Only the process holding the session
     lease identifies it, and that process is the PTY leader's CHILD, not the leader."""
-    from hermes_cli.pty_session import PtySession
+    from hermes_agent.hermes_cli.pty_session import PtySession
 
     reg = make_registry()
     fresh_a = PtySession("old-token", PidBridge([b""], 4242), buffer_cap=1024, read_timeout=0.01)
@@ -886,7 +886,7 @@ async def test_close_orphaned_sessions_finds_the_lease_holder_without_a_resume_k
 async def test_close_orphaned_sessions_leaves_a_holder_outside_every_pty(process_tree):
     """A lease held by a plain terminal (`hermes` in a shell, pid 9000, no PTY ancestor) is a
     real other window: nothing is closed and the single-writer refusal stands."""
-    from hermes_cli.pty_session import PtySession
+    from hermes_agent.hermes_cli.pty_session import PtySession
 
     reg = make_registry()
     detached = PtySession("old-token", PidBridge([b""], 4242), buffer_cap=1024, read_timeout=0.01)
@@ -903,8 +903,8 @@ async def test_close_orphaned_sessions_leaves_a_holder_outside_every_pty(process
 @pytest.mark.platforms("posix")
 def test_hosts_pid_sees_the_lease_holding_grandchild_of_a_real_pty():
     """Live topology: ptyprocess forks the leader; the leader's child is what claims the lease."""
-    from hermes_cli.pty_bridge import PtyBridge
-    from hermes_cli.pty_session import PtySession
+    from hermes_agent.hermes_cli.pty_bridge import PtyBridge
+    from hermes_agent.hermes_cli.pty_session import PtySession
 
     bridge = PtyBridge.spawn(
         ["sh", "-c", "python3 -c 'import os,time;print(\"CHILD\",os.getpid(),flush=True);time.sleep(20)'; true"]
@@ -943,7 +943,7 @@ async def test_reap_reaps_dead_process_even_when_attached():
 
 @pytest.mark.asyncio
 async def test_close_orphaned_sessions_leaves_a_lease_holding_pty_that_is_viewed(process_tree):
-    from hermes_cli.pty_session import PtySession
+    from hermes_agent.hermes_cli.pty_session import PtySession
 
     reg = make_registry()
     watched = PtySession("old-token", PidBridge([b""], 4242), buffer_cap=1024, read_timeout=0.01)
@@ -961,7 +961,7 @@ async def test_close_orphaned_sessions_leaves_a_lease_holding_pty_that_is_viewed
 
 
 def test_hosts_pid_tolerates_a_bridge_without_one():
-    from hermes_cli.pty_session import PtySession
+    from hermes_agent.hermes_cli.pty_session import PtySession
 
     session = PtySession("tok", FakeBridge([b""]), buffer_cap=8, read_timeout=0.01)
     assert session.hosts_pid(None) is False

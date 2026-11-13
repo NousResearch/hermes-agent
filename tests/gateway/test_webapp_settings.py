@@ -91,7 +91,7 @@ def test_the_webapp_and_its_sign_in_gate_agree_on_which_hosts_stay_on_this_machi
     open, and only a wildcard bind needs sign-in. Another spelling of 127.0.0.1, ::1 or localhost
     binds that address; any other loopback address, which the gate would treat as public, keeps the
     Webapp off and says which hosts work."""
-    from hermes_cli.web_server_boundary import should_require_auth
+    from hermes_agent.hermes_cli.web_server_boundary import should_require_auth
 
     settings = webapp.webapp_settings(_home(tmp_path, f"webapp:\n  enabled: true\n  host: {host}\n"))
     if bind_host is None:

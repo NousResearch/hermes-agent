@@ -16,10 +16,10 @@ def _run_uninstall_cli(monkeypatch, argv):
         captured["name"] = name
         captured["skip_confirm"] = skip_confirm
 
-    monkeypatch.setattr("hermes_cli.skills_hub.do_uninstall", fake_do_uninstall)
+    monkeypatch.setattr("hermes_agent.hermes_cli.skills_hub.do_uninstall", fake_do_uninstall)
     monkeypatch.setattr(sys, "argv", argv)
 
-    from hermes_cli.main import main
+    from hermes_agent.hermes_cli.main import main
 
     main()
     return captured

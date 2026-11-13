@@ -1,11 +1,11 @@
-"""Tests for hermes_cli.model_normalize — provider-aware model name normalization.
+"""Tests for hermes_agent.hermes_cli.model_normalize — provider-aware model name normalization.
 
 Covers issue #5211: opencode-go model names with dots (e.g. minimax-m2.7)
 must NOT be mangled to hyphens (minimax-m2-7).
 """
 import pytest
 
-from hermes_cli.model_normalize import (
+from hermes_agent.hermes_cli.model_normalize import (
     normalize_model_for_provider,
     _normalize_for_deepseek,
 )

@@ -86,14 +86,14 @@ def _stop_session_voice_capture(session_id) -> None:
             return
         _voice_capture_gen += 1
     with contextlib.suppress(Exception):
-        from hermes_cli.voice import stop_continuous
+        from hermes_agent.hermes_cli.voice import stop_continuous
         stop_continuous()
     _resume_voice_wake()
 
 
 def _capture_live() -> bool:
     try:
-        from hermes_cli.voice import is_continuous_active
+        from hermes_agent.hermes_cli.voice import is_continuous_active
     except ImportError:  # an older voice wrapper without the probe
         return False
     return bool(is_continuous_active())
@@ -121,7 +121,7 @@ def _end_voice_chat(*, stop_loop: bool, stop_tts: bool) -> None:
     os.environ["HERMES_VOICE"] = os.environ["HERMES_VOICE_TTS"] = "0"
     if stop_loop:
         with contextlib.suppress(Exception):
-            from hermes_cli.voice import stop_continuous
+            from hermes_agent.hermes_cli.voice import stop_continuous
             stop_continuous()
     if stop_tts:
         with contextlib.suppress(Exception):
@@ -341,7 +341,7 @@ def _deliver_fd_transcript(text: str) -> None:
 
 def _speak_text_with_barge(text: str) -> None:
     """speak_text registered in ``_fd_speak_pipelines`` so the listener can cut it / waits for it."""
-    from hermes_cli.voice import speak_text
+    from hermes_agent.hermes_cli.voice import speak_text
     stop, done = threading.Event(), threading.Event()
     with _fd_listener_lock:
         _fd_speak_pipelines.add((stop, done))
@@ -464,7 +464,7 @@ def _wake_resume_if_owner(owner: Transport, *, retry_seconds: float = 15.0,
 def _persist_wake_enabled(enabled: bool) -> bool:
     """Write ``wake_word.enabled``; only for explicit gestures (ear toggle, /wake on|off)."""
     try:
-        from cli import save_config_value
+        from hermes_agent.cli import save_config_value
         return bool(save_config_value("wake_word.enabled", enabled))
     except Exception as e:
         logger.warning("wake: failed to persist wake_word.enabled=%s: %s", enabled, e)
@@ -517,7 +517,7 @@ def _wake_detect_handler(transport, sid: str, phrase: str, new_session: bool):
 def _(rid, params: dict) -> dict:
     """What THIS BUILD enforces (a client withholds unless advertised), sourced from the enforcing
     module, never config: a believed-but-absent capability is worse."""
-    from hermes_cli.active_sessions import PER_SESSION_EXCLUSIVE_SUBMIT
+    from hermes_agent.hermes_cli.active_sessions import PER_SESSION_EXCLUSIVE_SUBMIT
     return _ok(rid, {"per_session_exclusive_submit": bool(PER_SESSION_EXCLUSIVE_SUBMIT)})
 
 
@@ -526,7 +526,7 @@ def _(rid, params: dict) -> dict:
     """What the calling client handles. ``server_requests: true`` marks this connection as one that answers
     server→client requests; a WebSocket client that never sends it gets every such request failed fast
     instead of stalling the agent for the deadline (#112548)."""
-    from hermes_cli.process_identity import local_desktop_client
+    from hermes_agent.hermes_cli.process_identity import local_desktop_client
     from hermes_agent.tui_gateway import server_requests
     from hermes_agent.tui_gateway.contracts import registry as contracts
     transport = _caller_transport()
@@ -743,7 +743,7 @@ def _voice_toggle_mode(rid, params: dict) -> dict:
     else:
         # The continuous loop holds the microphone; tear it down with the mode.
         try:
-            from hermes_cli.voice import stop_continuous
+            from hermes_agent.hermes_cli.voice import stop_continuous
             stop_continuous()
         except ImportError:
             pass
@@ -832,7 +832,7 @@ def _(rid, params: dict) -> dict:
             _voice_event_sid = sid or _voice_event_sid
             _voice_event_transport = transport
         if action == "stop":
-            from hermes_cli.voice import stop_continuous
+            from hermes_agent.hermes_cli.voice import stop_continuous
             stop_continuous(force_transcribe=True)
             _resume_voice_wake()
             return _ok(rid, {"status": "stopped"})
@@ -841,11 +841,11 @@ def _(rid, params: dict) -> dict:
         # user_barge=True also marks the speech interrupted for the next turn's
         # model note, and stop_playback() releases the file player.
         _tts_stream_stop(user_barge=True)
-        from hermes_cli.voice import start_continuous
+        from hermes_agent.hermes_cli.voice import start_continuous
         # Busy probe holds the no-speech counter during long agent turns; safe to re-register every
         # start (older wrappers lack the setter).
         with contextlib.suppress(Exception):
-            from hermes_cli.voice import set_voice_busy_probe
+            from hermes_agent.hermes_cli.voice import set_voice_busy_probe
             set_voice_busy_probe(_any_session_running)
         # Shape-safe: malformed voice YAML falls back to documented defaults; an explicit numeric
         # max_recording_seconds <= 0 disables the cap (0.0).
@@ -892,7 +892,7 @@ def _(rid, params: dict) -> dict:
     if not text:
         return _err(rid, 4020, "text required")
     try:
-        import hermes_cli.voice
+        import hermes_agent.hermes_cli.voice
     except Exception as e:
         return _err(rid, 5026, "voice module not available" if isinstance(e, ImportError) else str(e))
     from hermes_agent.agent.memory_provider import spawn_context_thread

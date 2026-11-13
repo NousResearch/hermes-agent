@@ -70,7 +70,7 @@ def test_agent_terminal_child_sees_no_supervisor_identity(tmp_path, monkeypatch)
 @pytest.mark.usefixtures("child_env")
 def test_external_supervisor_gateways_tool_child_cli_stays_on_the_gateways_profile(tmp_path, monkeypatch):
     """Losing the supervisor claim must not unpin the agent's own `hermes ...` commands (#74872)."""
-    from hermes_cli import main as cli_main
+    from hermes_agent.hermes_cli import main as cli_main
 
     root = tmp_path / ".hermes"
     (root / "profiles" / "work").mkdir(parents=True)

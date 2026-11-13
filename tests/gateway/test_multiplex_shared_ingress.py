@@ -77,7 +77,7 @@ def mux_home(tmp_path, monkeypatch):
     from hermes_agent.agent import secret_scope
     monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", True)
     monkeypatch.setattr(
-        "hermes_cli.profiles.profiles_to_serve",
+        "hermes_agent.hermes_cli.profiles.profiles_to_serve",
         lambda multiplex: [("default", root), ("coder", root / "profiles" / "coder"), ("ops", root / "profiles" / "ops")])
     return root
 

@@ -112,7 +112,7 @@ except ImportError:
         "  (HERMES_PYTHON=<hermes venv python> node scripts/generate-icons.mjs)"
     )
 
-# Copy of hermes_cli.update_channel._CANARY_TAG_RE: builders run this renderer
+# Copy of hermes_agent.hermes_cli.update_channel._CANARY_TAG_RE: builders run this renderer
 # on the runtime dependencies without the application package installed
 # (Docker, bundles). tests/scripts/test_icon_flavors.py pins it to the canonical one.
 _CANARY_TAG_RE = re.compile(

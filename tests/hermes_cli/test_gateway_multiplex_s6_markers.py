@@ -7,8 +7,8 @@ from unittest.mock import Mock
 
 import pytest
 
-from hermes_cli import gateway_multiplex_s6 as s6
-from hermes_cli import service_manager as sm
+from hermes_agent.hermes_cli import gateway_multiplex_s6 as s6
+from hermes_agent.hermes_cli import service_manager as sm
 
 pytestmark = pytest.mark.platforms("posix")
 

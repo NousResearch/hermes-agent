@@ -49,8 +49,8 @@ def homes(tmp_path, monkeypatch):
     )
     yield launch, profile
     from hermes_agent.agent.secret_sources import registry
-    from hermes_cli.env_loader import reset_secret_source_cache
-    from hermes_cli.plugins import _reset_plugin_managers_for_tests
+    from hermes_agent.hermes_cli.env_loader import reset_secret_source_cache
+    from hermes_agent.hermes_cli.plugins import _reset_plugin_managers_for_tests
 
     registry._reset_registry_for_tests()
     reset_secret_source_cache()

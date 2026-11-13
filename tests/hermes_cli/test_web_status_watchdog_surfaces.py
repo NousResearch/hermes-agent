@@ -23,7 +23,7 @@ def client(monkeypatch):
     except ImportError:
         pytest.skip("fastapi/starlette not installed")
 
-    from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
+    from hermes_agent.hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
 
     monkeypatch.setattr(_gw_status, "_pid_exists", lambda pid: False)
     monkeypatch.setattr(_gw_status, "_get_process_start_time", lambda pid: None)

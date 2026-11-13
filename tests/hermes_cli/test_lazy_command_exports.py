@@ -1,7 +1,7 @@
-"""The frozen updater surface on hermes_cli.main stays lazy and resolvable.
+"""The frozen updater surface on hermes_agent.hermes_cli.main stays lazy and resolvable.
 
-``hermes_cli/update_cmd*.py`` (frozen: old installed versions call into it) reads
-helpers off ``hermes_cli.main`` via ``_m().<name>``. main.py resolves the ones that
+``hermes_agent/hermes_cli/update_cmd*.py`` (frozen: old installed versions call into it) reads
+helpers off ``hermes_agent.hermes_cli.main`` via ``_m().<name>``. main.py resolves the ones that
 live in the lazily-imported command modules through PEP 562 ``__getattr__`` so
 every ``hermes`` invocation (including ``hermes --version``) does not pay for
 update_cmd's dependency chain (jwt, click, ...) when no subcommand runs.
@@ -13,7 +13,7 @@ import textwrap
 
 import pytest
 
-import hermes_cli.main
+import hermes_agent.hermes_cli.main
 
 def test_importing_main_does_not_import_command_modules():
     code = textwrap.dedent(
@@ -43,12 +43,12 @@ def test_importing_main_does_not_import_command_modules():
 
 @pytest.mark.real_concurrent_gate  # conftest autouse stub would shadow one frozen name
 def test_frozen_updater_surface_resolves_to_real_objects():
-    for module, names in hermes_cli.main._FROZEN_UPDATER_SURFACE.items():
+    for module, names in hermes_agent.hermes_cli.main._FROZEN_UPDATER_SURFACE.items():
         mod = sys.modules[module] if module in sys.modules else __import__(module, fromlist=["_"])
         for name in names:
-            got = getattr(hermes_cli.main, name)
+            got = getattr(hermes_agent.hermes_cli.main, name)
             # Identity, or the same function after another test importlib.reload()ed the module
-            # (the resolved value is cached on hermes_cli.main by design).
+            # (the resolved value is cached on hermes_agent.hermes_cli.main by design).
             assert got is getattr(mod, name) or (
                 getattr(got, "__module__", None) == module and getattr(got, "__name__", None) == name
             ), name

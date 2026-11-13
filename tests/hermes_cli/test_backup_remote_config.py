@@ -5,8 +5,8 @@ from pathlib import Path
 def test_restore_config_model_settings_is_a_no_op_without_file_tooling(tmp_path: Path, monkeypatch):
     """The snapshot is a LOCAL copy, so the net must never write its values into a backend
     without a config file: that would PATCH stale local values into the plane."""
-    from hermes_cli import backup, config_backend
-    from hermes_cli.backup import create_quick_snapshot, restore_config_model_settings_if_rewritten
+    from hermes_agent.hermes_cli import backup, config_backend
+    from hermes_agent.hermes_cli.backup import create_quick_snapshot, restore_config_model_settings_if_rewritten
 
     hermes_home = tmp_path / ".hermes"
     hermes_home.mkdir()

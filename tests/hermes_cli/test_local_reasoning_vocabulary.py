@@ -8,7 +8,7 @@ accepts; the request and the picker's "sends X" hint both clamp onto them.
 import pytest
 
 from hermes_agent.agent.reasoning_effort import EFFORT_LADDER, effort_display_label
-from hermes_cli.local_runtime import catalog, growth
+from hermes_agent.hermes_cli.local_runtime import catalog, growth
 
 MANAGED = "http://127.0.0.1:18434/v1"
 

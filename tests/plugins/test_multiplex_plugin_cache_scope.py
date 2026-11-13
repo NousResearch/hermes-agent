@@ -84,7 +84,7 @@ def test_router_efforts_cache_and_base_url_follow_the_active_profile(homes, monk
     """Efforts map + once-only flags are per home under an override (and the warm thread inherits the
     scope), while the unscoped path keeps using the module slots; the base URL comes from the
     profile's .env."""
-    from hermes_cli import urllib_security
+    from hermes_agent.hermes_cli import urllib_security
 
     a, b = homes
     profile, mod = _router()
@@ -153,7 +153,7 @@ def test_memory_provider_skill_prune_only_touches_the_active_home(homes, monkeyp
     """Pruning under profile B (whose active provider differs) must leave profile A's registered
     provider skill in place; A's own later prune still retracts it."""
     import plugins.memory as mem
-    from hermes_cli.plugins import _reset_plugin_managers_for_tests, get_plugin_manager
+    from hermes_agent.hermes_cli.plugins import _reset_plugin_managers_for_tests, get_plugin_manager
 
     a, b = homes
     _reset_plugin_managers_for_tests()

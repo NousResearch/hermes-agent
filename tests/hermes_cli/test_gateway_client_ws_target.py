@@ -1,7 +1,7 @@
 """Every owner dial (viewer, worker RPC, A2A forward, bot delivery, Ink bootstrap) builds the same target."""
 from types import SimpleNamespace
 
-from hermes_cli.gateway_client import GATEWAY_WS_PROTOCOL, gateway_ws_target
+from hermes_agent.hermes_cli.gateway_client import GATEWAY_WS_PROTOCOL, gateway_ws_target
 
 
 def test_gateway_ws_target_maps_scheme_and_carries_one_ticket_protocol():

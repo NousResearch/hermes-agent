@@ -77,7 +77,7 @@ async def test_named_secondary_with_unresolvable_home_cannot_read_the_launch_sec
     Base resolved the missing home to ``None`` and the handler ran under the LAUNCH profile's
     scope, so an inbound message on profile B's own bot read ``launch-dotenv``.
     """
-    from hermes_cli import profiles as profiles_mod
+    from hermes_agent.hermes_cli import profiles as profiles_mod
 
     def _gone(_name):
         raise FileNotFoundError("profile deleted mid-run")
@@ -93,7 +93,7 @@ async def test_named_secondary_with_unresolvable_home_cannot_read_the_launch_sec
 
 def test_unresolvable_home_is_a_sentinel_not_none(multiplexing_host, monkeypatch):
     """Overloading ``None`` is what made the fallback silent; keep the two answers distinct."""
-    from hermes_cli import profiles as profiles_mod
+    from hermes_agent.hermes_cli import profiles as profiles_mod
 
     monkeypatch.setattr(profiles_mod, "get_profile_dir", lambda _n: (_ for _ in ()).throw(OSError()))
     assert GatewayAdapterLifecycleMixin._routed_profile_home("b") is UNRESOLVED_PROFILE_HOME

@@ -13,12 +13,12 @@ from hermes_agent.gateway.platforms.base import BasePlatformAdapter
 from hermes_agent.gateway.platforms.event import MessageEvent
 from hermes_agent.gateway.session import SessionSource
 from hermes_agent.gateway.session_ingress_burst import discard_busy_burst, dispatch_busy_burst
-from hermes_cli.observability import relay_shared_metrics as rsm
-from hermes_cli.observability import shared_metrics_busy as busy
-from hermes_cli.observability import shared_metrics_contract as contract
-from hermes_cli.observability import shared_metrics_engagement as engagement
-from hermes_cli.observability import shared_metrics_gateway as smg
-from hermes_cli.observability.shared_metrics import SharedMetricsStore
+from hermes_agent.hermes_cli.observability import relay_shared_metrics as rsm
+from hermes_agent.hermes_cli.observability import shared_metrics_busy as busy
+from hermes_agent.hermes_cli.observability import shared_metrics_contract as contract
+from hermes_agent.hermes_cli.observability import shared_metrics_engagement as engagement
+from hermes_agent.hermes_cli.observability import shared_metrics_gateway as smg
+from hermes_agent.hermes_cli.observability.shared_metrics import SharedMetricsStore
 
 KEY = "agent:main:telegram:dm:42"
 RESOURCE = {"architecture": "x86_64", "hermes_version": "0.0.0", "install_method": "git", "os_family": "linux"}

@@ -5,8 +5,8 @@ from types import SimpleNamespace
 
 def test_launch_ticket_overrides_foreign_ambient_scope(tmp_path, monkeypatch):
     from hermes_agent.agent.secret_scope import get_secret
-    from hermes_cli.dashboard_auth.native_http import native_profile_scope
-    from hermes_cli.web_server_profiles import _config_profile_scope
+    from hermes_agent.hermes_cli.dashboard_auth.native_http import native_profile_scope
+    from hermes_agent.hermes_cli.web_server_profiles import _config_profile_scope
     from hermes_constants import get_hermes_home, reset_hermes_home_override, set_hermes_home_override
     home = tmp_path / '.hermes'
     home.mkdir()

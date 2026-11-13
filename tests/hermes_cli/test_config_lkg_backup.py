@@ -12,7 +12,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from hermes_cli.config_backups import list_config_backups
+from hermes_agent.hermes_cli.config_backups import list_config_backups
 
 REPO = Path(__file__).resolve().parents[2]
 GOOD = (
@@ -26,7 +26,7 @@ BROKEN = "approvals:\n  deny: [unclosed\n"
 def _fresh_load(home: Path) -> tuple[dict, str]:
     env = {**os.environ, "HERMES_HOME": str(home), "PYTHONPATH": str(REPO), "LKG_TOKEN": "expanded-secret"}
     proc = subprocess.run(
-        [sys.executable, "-c", "import json; from hermes_cli.config import load_config; print(json.dumps(load_config()))"],
+        [sys.executable, "-c", "import json; from hermes_agent.hermes_cli.config import load_config; print(json.dumps(load_config()))"],
         cwd=REPO, env=env, text=True, capture_output=True, check=True, stdin=subprocess.DEVNULL,
     )
     return json.loads(proc.stdout), proc.stderr

@@ -128,8 +128,8 @@ class TestStartupPlatformIsolation:
             return MagicMock()
 
         with patch("hermes_agent.gateway.status.publish_runtime_status"):
-            with patch("hermes_cli.plugins.discover_plugins"):
-                with patch("hermes_cli.config.load_config", return_value={}):
+            with patch("hermes_agent.hermes_cli.plugins.discover_plugins"):
+                with patch("hermes_agent.hermes_cli.config.load_config", return_value={}):
                     with patch("hermes_agent.agent.shell_hooks.register_from_config"):
                         with patch(
                             "hermes_agent.tools.process_registry.process_registry.recover_from_checkpoint",
@@ -367,7 +367,7 @@ class TestPlatformReconnectWatcher:
         """An unregistered plugin platform (its deferred load failed at startup) heals on the next watcher
         tick: the adapter_unavailable branch re-arms the failed load instead of waiting for a manual
         reload-plugins or restart (#126356)."""
-        import hermes_cli.plugins as plugins_mod
+        import hermes_agent.hermes_cli.plugins as plugins_mod
 
         runner = _make_runner()
         runner._update_platform_runtime_status = MagicMock()
@@ -541,8 +541,8 @@ class TestReconnectKeepsInboundDedup:
         runner._configure_profile_adapter = MagicMock(side_effect=lambda *_a: setattr(runner, "_running", False))
         if mode != "connect-raises":  # stub the attempt; connect-raises runs the real one's own teardown
             runner._secondary_reconnect_attempt = attempt
-        with patch("hermes_cli.profiles.get_profile_dir"), \
-             patch("hermes_cli.env_loader.hydrate_profile_secret_sources"), \
+        with patch("hermes_agent.hermes_cli.profiles.get_profile_dir"), \
+             patch("hermes_agent.hermes_cli.env_loader.hydrate_profile_secret_sources"), \
              patch("hermes_agent.gateway.run._profile_runtime_scope", MagicMock()), \
              patch("hermes_agent.gateway.run._platform_has_bot_credential", return_value=True), \
              patch("hermes_agent.gateway.config.load_gateway_config") as load, \
@@ -666,7 +666,7 @@ class TestSpawnSupervised:
             is_delegated_child_context,
         )
         from hermes_agent.gateway.kanban_watchers_common import _to_thread_process_service
-        from hermes_cli.kanban_db import _assert_not_delegated_child_mutation
+        from hermes_agent.hermes_cli.kanban_db import _assert_not_delegated_child_mutation
 
         with delegated_child_context():
             assert is_delegated_child_context() is True
@@ -870,8 +870,8 @@ class TestVoiceInputCallbackWiring:
 
         with patch.object(runner, "_create_adapter", return_value=adapter):
             with patch("hermes_agent.gateway.status.publish_runtime_status"):
-                with patch("hermes_cli.plugins.discover_plugins"):
-                    with patch("hermes_cli.config.load_config", return_value={}):
+                with patch("hermes_agent.hermes_cli.plugins.discover_plugins"):
+                    with patch("hermes_agent.hermes_cli.config.load_config", return_value={}):
                         with patch("hermes_agent.agent.shell_hooks.register_from_config"):
                             with patch(
                                 "hermes_agent.tools.process_registry.process_registry.recover_from_checkpoint",

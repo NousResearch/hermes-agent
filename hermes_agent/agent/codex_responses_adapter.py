@@ -15,7 +15,7 @@ from typing import Any, Callable, Dict, Iterator, List, NamedTuple, Optional, Ty
 
 from hermes_agent.agent.message_sanitization import coerce_tool_name, deterministic_call_id
 from hermes_agent.agent.prompt_builder import DEFAULT_AGENT_IDENTITY
-from hermes_cli.route_identity import normalize_route_base_url
+from hermes_agent.hermes_cli.route_identity import normalize_route_base_url
 
 logger = logging.getLogger(__name__)
 

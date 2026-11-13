@@ -70,7 +70,7 @@ def selected_tool_inputs(request: BuildRequest) -> list[Path]:
 
 def validate_channel_request(value: dict) -> dict:
     """Add native packaging constraints to the shared release protocol."""
-    from hermes_cli.release_channels import validate_request
+    from hermes_agent.hermes_cli.release_channels import validate_request
     from scripts.releases.bundle_env import validate
 
     validate_request(value)
@@ -301,7 +301,7 @@ def prepare(request: BuildRequest, *, clean: bool = False) -> Path:
 def _prepare(request: BuildRequest) -> Path:
     from scripts.bundles.desktop_toolchain import run_preparation
     from pm.lock import _write
-    from hermes_cli.runtime_state import _lock
+    from hermes_agent.hermes_cli.runtime_state import _lock
 
     require_source(request.source, request.commit)
     owner = request.work / ".desktop-preparation"

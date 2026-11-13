@@ -8,7 +8,7 @@ from hermes_agent.gateway.config import Platform
 from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
 from hermes_agent.gateway.run import GatewayRunner
 from hermes_agent.gateway.session import SessionSource
-from hermes_cli.goals import CONTINUATION_PROMPT_TEMPLATE
+from hermes_agent.hermes_cli.goals import CONTINUATION_PROMPT_TEMPLATE
 
 
 class FakeAdapter:

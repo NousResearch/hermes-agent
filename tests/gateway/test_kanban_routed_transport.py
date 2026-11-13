@@ -6,7 +6,7 @@ from hermes_agent.gateway.config import GatewayConfig, Platform
 from hermes_agent.gateway.kanban_watchers_notifier import _KanbanNotification, _notifier_collect
 from hermes_agent.gateway.profile_routing import parse_profile_routes
 from hermes_agent.gateway.run import GatewayRunner
-from hermes_cli import kanban_db as kb, kanban_db_connect as kbc, kanban_db_notify as kbn
+from hermes_agent.hermes_cli import kanban_db as kb, kanban_db_connect as kbc, kanban_db_notify as kbn
 
 
 class RecordingAdapter:

@@ -121,13 +121,13 @@ class TestPressureSignalScope:
 
     def test_same_cgroup_child_anon_counts_against_the_budget(self, monkeypatch, tmp_path):
         acp = self._cgroup(monkeypatch, tmp_path, "anon 4928307200\nfile 5426061312\nkernel 3629735936\n")
-        monkeypatch.setattr("hermes_cli.mem_trim.collect_memory_snapshot", lambda: {"rss_anon_kib": 1_600 * 1024})
+        monkeypatch.setattr("hermes_agent.hermes_cli.mem_trim.collect_memory_snapshot", lambda: {"rss_anon_kib": 1_600 * 1024})
 
         assert acp.read_anon_rss_mb() == 4_700
 
     def test_unreadable_cgroup_stat_keeps_the_self_reading(self, monkeypatch, tmp_path):
         acp = self._cgroup(monkeypatch, tmp_path, None)
-        monkeypatch.setattr("hermes_cli.mem_trim.collect_memory_snapshot", lambda: {"rss_anon_kib": 1_600 * 1024})
+        monkeypatch.setattr("hermes_agent.hermes_cli.mem_trim.collect_memory_snapshot", lambda: {"rss_anon_kib": 1_600 * 1024})
 
         assert acp.read_anon_rss_mb() == 1_600
 

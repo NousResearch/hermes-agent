@@ -8,9 +8,9 @@ from unittest.mock import Mock
 import hermes_yaml
 import pytest
 
-from hermes_cli import config, models_validate, profiles
-from hermes_cli.config_backend import CONFIG_MUTATION_LOCK
-from hermes_cli.profile_provision import (
+from hermes_agent.hermes_cli import config, models_validate, profiles
+from hermes_agent.hermes_cli.config_backend import CONFIG_MUTATION_LOCK
+from hermes_agent.hermes_cli.profile_provision import (
     ProfileCreateRequest,
     inherit_launch_model,
     provision_profile,
@@ -38,9 +38,9 @@ def validation(monkeypatch):
     validate = Mock(wraps=models_validate.validate_requested_model)
     probe = Mock(return_value={"models": ["private-model"]})
     monkeypatch.setattr(models_validate, "validate_requested_model", validate)
-    monkeypatch.setattr("hermes_cli.models.probe_api_models", probe)
-    monkeypatch.setattr("hermes_cli.model_switch.get_model_info", lambda *a, **k: None)
-    monkeypatch.setattr("hermes_cli.model_switch.get_model_capabilities", lambda *a, **k: None)
+    monkeypatch.setattr("hermes_agent.hermes_cli.models.probe_api_models", probe)
+    monkeypatch.setattr("hermes_agent.hermes_cli.model_switch.get_model_info", lambda *a, **k: None)
+    monkeypatch.setattr("hermes_agent.hermes_cli.model_switch.get_model_capabilities", lambda *a, **k: None)
     return validate, probe
 
 
@@ -136,8 +136,8 @@ def test_inherit_copies_raw_route_without_validation(launch, monkeypatch, valida
 
 @pytest.mark.parametrize("legacy", [False, "default", "name"])
 def test_inherit_source_selection_destination_secret_refs(launch, validation, legacy):
-    from hermes_cli.config_effective import load_user_config_effective
-    from hermes_cli.runtime_provider import resolve_runtime_provider
+    from hermes_agent.hermes_cli.config_effective import load_user_config_effective
+    from hermes_agent.hermes_cli.runtime_provider import resolve_runtime_provider
 
     source = launch / "profiles" / "source"
     target = launch / "profiles" / "target"
@@ -188,8 +188,8 @@ def test_inherit_source_selection_destination_secret_refs(launch, validation, le
 
 @pytest.mark.parametrize("layout", ["root", "api_base", "complete"])
 def test_inherit_destination_legacy_route(launch, validation, layout):
-    from hermes_cli.config_effective import load_user_config_effective
-    from hermes_cli.runtime_provider import resolve_runtime_provider
+    from hermes_agent.hermes_cli.config_effective import load_user_config_effective
+    from hermes_agent.hermes_cli.runtime_provider import resolve_runtime_provider
 
     config.atomic_config_write(launch / "config.yaml", {
         "model": {"provider": "openrouter", "default": "source-model"}})
@@ -226,8 +226,8 @@ def test_inherit_destination_legacy_route(launch, validation, layout):
 @pytest.mark.parametrize("schema", ["providers", "custom_providers"])
 @pytest.mark.parametrize("identity", ["literal", "name", "provider_key"])
 def test_inherit_endpoint_identity_scopes(launch, validation, schema, identity):
-    from hermes_cli.config_effective import load_user_config_effective
-    from hermes_cli.runtime_provider import resolve_runtime_provider
+    from hermes_agent.hermes_cli.config_effective import load_user_config_effective
+    from hermes_agent.hermes_cli.runtime_provider import resolve_runtime_provider
 
     source = launch / "profiles" / "source"
     target = launch / "profiles" / "target"
@@ -284,7 +284,7 @@ def test_inherit_endpoint_identity_scopes(launch, validation, schema, identity):
 
 @pytest.mark.parametrize("locked", [True, False])
 def test_inherit_keeps_remote_route_refusal(launch, monkeypatch, locked):
-    from hermes_cli import config_backend
+    from hermes_agent.hermes_cli import config_backend
 
     config.atomic_config_write(launch / "config.yaml", {"model": {"provider": "custom", "default": "source",
                                                                "base_url": "${SEED_URL}"}})

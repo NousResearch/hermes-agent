@@ -159,7 +159,7 @@ class TestModelSupportsVision:
         agent = _make_agent()
         agent.provider = "custom"
         agent.model = "my-llava"
-        with patch("hermes_cli.config.load_config", return_value={"model": {"supports_vision": True}}), \
+        with patch("hermes_agent.hermes_cli.config.load_config", return_value={"model": {"supports_vision": True}}), \
              patch("hermes_agent.agent.models_dev.get_model_capabilities", return_value=None):
             assert agent._model_supports_vision() is True
 
@@ -175,7 +175,7 @@ class TestModelSupportsVision:
             "model": {"provider": "my-vllm", "default": "my-llava"},
             "providers": {"my-vllm": {"models": {"my-llava": {"supports_vision": True}}}},
         }
-        with patch("hermes_cli.config.load_config", return_value=cfg), \
+        with patch("hermes_agent.hermes_cli.config.load_config", return_value=cfg), \
              patch("hermes_agent.agent.models_dev.get_model_capabilities", return_value=None):
             assert agent._model_supports_vision() is True
 

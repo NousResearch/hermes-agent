@@ -14,7 +14,7 @@ from typing import Any, Dict, List, Optional
 
 from hermes_agent.agent.skill_commands import AUTO_LOAD_SCAFFOLD_SQL_LIKE, SKILL_SCAFFOLD_SQL_LIKE
 from utils import safe_json_loads
-from hermes_cli.timefmt import coerce_epoch
+from hermes_agent.hermes_cli.timefmt import coerce_epoch
 from hermes_agent.hermes_state_ids import new_session_id
 from hermes_agent.hermes_state_keys import (
     CRON_PRINCIPAL_ID, CRON_REQUEST_PREFIX, cron_request_range, cron_run_from_request, legacy_cron_run_job,

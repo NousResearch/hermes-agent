@@ -301,7 +301,7 @@ def _format_live_tools_output(sid: str, session: dict, arg: str) -> str:
 
 def _format_live_help_output(sid: str, session: dict, arg: str) -> str:
     try:
-        from hermes_cli.commands import COMMANDS_BY_CATEGORY
+        from hermes_agent.hermes_cli.commands import COMMANDS_BY_CATEGORY
         lines = ["Available commands:", ""]
         for category, commands in COMMANDS_BY_CATEGORY.items():
             lines.append(f"{category}:")
@@ -438,7 +438,7 @@ def _mirror_approvals(sid, session, agent, arg) -> None:
 def _mirror_personality(sid, session, agent, arg) -> None:
     if arg and agent:
         pname, new_prompt = _validate_personality(arg, _load_cfg())
-        from hermes_cli.personality import persist_personality  # single owner: no surface drift
+        from hermes_agent.hermes_cli.personality import persist_personality  # single owner: no surface drift
         persist_personality(pname)
         _apply_personality_to_session(sid, session, new_prompt, pname)
 
@@ -471,7 +471,7 @@ def _mirror_autoprune(sid, session, agent, arg) -> str:
     """An answered low-disk question drops its sticky notice (``later`` too: it re-arms in a week);
     ``status``, a typo or a failed save leave it up."""
     from pathlib import Path
-    from hermes_cli.prune_advisor import answered
+    from hermes_agent.hermes_cli.prune_advisor import answered
     home = session.get("profile_home")
     if arg and answered(Path(home) if home else None):
         _emit("notification.clear", sid, {"key": "sessions.auto_prune"})

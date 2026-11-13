@@ -7,7 +7,7 @@ import pytest
 from fastapi import FastAPI
 from starlette.types import Message, Scope
 
-from hermes_cli import web_server
+from hermes_agent.hermes_cli import web_server
 
 
 @pytest.fixture

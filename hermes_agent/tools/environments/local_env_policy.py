@@ -66,9 +66,9 @@ def _secret_source_bootstrap_env() -> frozenset[str]:
 
 
 def _left_core_env(*, secrets_only: bool) -> frozenset:
-    """Env of features that left core for a catalog plugin (``hermes_cli.left_core_migration``):
+    """Env of features that left core for a catalog plugin (``hermes_agent.hermes_cli.left_core_migration``):
     stripped exactly as when core shipped them, plugin installed or not."""
-    from hermes_cli.left_core_migration import LEFT_CORE
+    from hermes_agent.hermes_cli.left_core_migration import LEFT_CORE
     return frozenset(name for feature in LEFT_CORE
                      for name in feature.secret_env + (() if secrets_only else feature.private_env))
 
@@ -78,7 +78,7 @@ def _build_provider_env_blocklist() -> frozenset:
     blocked: set[str] = (set(_STATIC_PROVIDER_ENV_BLOCKLIST) | _left_core_env(secrets_only=False)
                          | _secret_source_bootstrap_env())
     try:
-        from hermes_cli.auth import PROVIDER_REGISTRY
+        from hermes_agent.hermes_cli.auth import PROVIDER_REGISTRY
         for pconfig in PROVIDER_REGISTRY.values():
             blocked.update(pconfig.api_key_env_vars)
             if pconfig.auth_type == "aws_sdk":
@@ -88,7 +88,7 @@ def _build_provider_env_blocklist() -> frozenset:
     except ImportError:
         pass
     try:
-        from hermes_cli.config import OPTIONAL_ENV_VARS
+        from hermes_agent.hermes_cli.config import OPTIONAL_ENV_VARS
         for name, metadata in OPTIONAL_ENV_VARS.items():
             category = metadata.get("category")
             if category in {"tool", "messaging"} or (
@@ -120,9 +120,9 @@ def _build_adapter_secret_env() -> frozenset:
     A profile's user-installed platform plugins are per home: :func:`_home_adapter_secret_env`.
     Nothing here fails soft: an unreadable bundled manifest or env table fails the import rather
     than dropping its secrets from the policy."""
-    from hermes_cli.config import (
+    from hermes_agent.hermes_cli.config import (
         CORE_DECLARED_ENV_NAMES, OPTIONAL_ENV_VARS, PLATFORM_SECRET_ENV_SUFFIXES, platform_manifest_secret_envs)
-    from hermes_cli.profile_channels import config_env_table_keys
+    from hermes_agent.hermes_cli.profile_channels import config_env_table_keys
     # Read in code only, declared nowhere else: the Microsoft Graph app secret and webhook
     # clientState, the QQ bot's speech-to-text key, and secrets only a plugin's ``env_overrides``
     # reads (Feishu webhook keys; Yuanbao's legacy app key, kept while the plugin is absent). Those rows live on the adapter's
@@ -138,7 +138,7 @@ def _build_adapter_secret_env() -> frozenset:
     return frozenset(names)
 
 
-# Provider blocklist first: it imports hermes_cli.auth before hermes_cli.config, whose import
+# Provider blocklist first: it imports hermes_agent.hermes_cli.auth before hermes_agent.hermes_cli.config, whose import
 # discovers provider plugins that expect a fully initialized auth registry.
 _PROVIDER_ENV_BLOCKLIST = _build_provider_env_blocklist()
 _ADAPTER_SECRET_ENV = _build_adapter_secret_env()
@@ -155,7 +155,7 @@ def _home_adapter_secret_env() -> frozenset:
     manifest under ``plugins/platforms/`` that cannot be read raises. A partial scan (a plugin dir
     or flat manifest unreadable or unparsable) keeps the names this home already had and is not
     cached, so a failed discovery never releases a known denial and recovery is seen at once."""
-    from hermes_cli.config import platform_manifest_secret_scan, platform_manifest_stamp
+    from hermes_agent.hermes_cli.config import platform_manifest_secret_scan, platform_manifest_stamp
     from hermes_constants import get_hermes_home, hermes_home_key
     home = get_hermes_home()
     key, stamp = hermes_home_key(home), platform_manifest_stamp(home)
@@ -176,7 +176,7 @@ def _registry_adapter_secret_env() -> frozenset:
     must not strip it from credentialed children. No blanket fallback: a registry error surfaces
     instead of an empty (fail-open) set."""
     from hermes_agent.gateway.platform_registry import platform_registry
-    from hermes_cli.config import PLATFORM_SECRET_ENV_SUFFIXES
+    from hermes_agent.hermes_cli.config import PLATFORM_SECRET_ENV_SUFFIXES
     return frozenset(n.upper() for n in platform_registry.required_env_names()
                      if n.upper().endswith(PLATFORM_SECRET_ENV_SUFFIXES))
 
@@ -304,7 +304,7 @@ _SUPERVISED_PROCESS_IDENTITY_VARS = (
     "HERMES_LAUNCHD_LABEL", "HERMES_GATEWAY_EXTERNAL_SUPERVISOR", "NOTIFY_SOCKET", "WATCHDOG_USEC", "WATCHDOG_PID",
 )
 # The supervisor markers are also profile pins: a CLI under them skips the sticky active_profile
-# (``hermes_cli.main._under_gateway_supervisor``, #74872), and HERMES_GATEWAY_EXTERNAL_SUPERVISOR is an
+# (``hermes_agent.hermes_cli.main._under_gateway_supervisor``, #74872), and HERMES_GATEWAY_EXTERNAL_SUPERVISOR is an
 # --external-supervisor gateway's ONLY one. A child that loses a marker keeps the pin under a name the
 # restart-route and launch-identity probes never read, so it stays on the gateway's profile without
 # claiming the supervisor.
@@ -338,7 +338,7 @@ def _is_hermes_internal_secret(key: str) -> bool:
     side-LLM credentials), the ``.env`` names config writers store model / delegation /
     custom-endpoint keys under (``HERMES_MODEL_API_KEY``, ``HERMES_DELEGATION_API_KEY``,
     ``HERMES_CUSTOM_<ID>_API_KEY``, ``HERMES_PROVIDER_<NAME>_API_KEY``;
-    ``hermes_cli.config_secret_refs``) and
+    ``hermes_agent.hermes_cli.config_secret_refs``) and
     ``GATEWAY_RELAY_*_SECRET``/``_KEY``/``_TOKEN`` (relay auth; non-secret routing hints stay
     visible). Stripped on every spawn path regardless of env_passthrough registration or
     ``inherit_credentials``."""
@@ -385,7 +385,7 @@ def _config_credential_env_refs(node: Any) -> set:
     (``api_key: "prefix-${VAR}"``), parsed exactly as the config loader expands them.
     Must be the unexpanded config: the merged one already holds the value, not the name. The
     top-level ``mcp_servers`` block is skipped: its ``env:`` refs are what a server is meant to get."""
-    from hermes_cli.config import _ENV_REF_RE, _env_ref_var_name
+    from hermes_agent.hermes_cli.config import _ENV_REF_RE, _env_ref_var_name
 
     def ref_name(value: str) -> set:
         return {name for ref in _ENV_REF_RE.finditer(value) if (name := _env_ref_var_name(ref.group(1)))}
@@ -419,8 +419,8 @@ def _raw_config_behind_effective() -> Any:
     fails to parse, the loader keeps serving its last-known-good, whose credentials stay in use;
     that is the file as of the last successful load, which the loader backs up as the newest
     ``good`` copy (``config_backups.backup_config``), so its refs come from there, not from ``{}``."""
-    from hermes_cli.config import FailedConfigRead, get_config_path, read_raw_config_readonly
-    from hermes_cli.config_backups import load_newest_good_backup
+    from hermes_agent.hermes_cli.config import FailedConfigRead, get_config_path, read_raw_config_readonly
+    from hermes_agent.hermes_cli.config_backups import load_newest_good_backup
 
     raw = read_raw_config_readonly()
     if not isinstance(raw, FailedConfigRead):
@@ -445,10 +445,10 @@ def hermes_consumed_credentials(names: Iterable[str]) -> frozenset:
     (``secret_sources.registry._profile_alias_target``). Resolved per call: pool rows, config,
     plugin adapters and the profile differ per served profile."""
     from hermes_agent.agent.secret_sources.registry import _active_profile_name, _profile_alias_target
-    from hermes_cli.auth import read_credential_pool
-    from hermes_cli.config import load_config_readonly
-    from hermes_cli.managed_scope import load_managed_config
-    from hermes_cli.profile_channels import credential_env_keys
+    from hermes_agent.hermes_cli.auth import read_credential_pool
+    from hermes_agent.hermes_cli.config import load_config_readonly
+    from hermes_agent.hermes_cli.managed_scope import load_managed_config
+    from hermes_agent.hermes_cli.profile_channels import credential_env_keys
     from hermes_constants import get_hermes_home
 
     adapter_keys = credential_env_keys()

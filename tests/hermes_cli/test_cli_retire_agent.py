@@ -6,7 +6,7 @@ None`` alone orphans it for the CLI process lifetime (#72548)."""
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from hermes_cli.cli_commands_mixin import CLICommandsMixin
+from hermes_agent.hermes_cli.cli_commands_mixin import CLICommandsMixin
 
 
 class _FakeAgent:
@@ -20,7 +20,7 @@ class _FakeAgent:
 def test_reasoning_command_releases_old_agent_clients_before_rebuild():
     agent = _FakeAgent()
     stub = SimpleNamespace(reasoning_config={"enabled": True, "effort": "medium"}, show_reasoning=False, agent=agent)
-    with patch("cli.save_config_value"), patch("cli._cprint"):
+    with patch("hermes_agent.cli.save_config_value"), patch("hermes_agent.cli._cprint"):
         CLICommandsMixin._handle_reasoning_command(stub, "/reasoning high")
     assert stub.reasoning_config == {"enabled": True, "effort": "high"}
     assert stub.agent is None

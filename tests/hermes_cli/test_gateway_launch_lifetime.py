@@ -38,8 +38,8 @@ def test_retained_tui_worktree_survives_stale_prune_while_its_session_resumes(tm
     import os
     import time
 
-    from hermes_cli import main_tui_launch
-    from hermes_cli.worktree_ops import _prune_stale_worktrees, _setup_worktree
+    from hermes_agent.hermes_cli import main_tui_launch
+    from hermes_agent.hermes_cli.worktree_ops import _prune_stale_worktrees, _setup_worktree
     from hermes_constants import get_hermes_home
     from hermes_agent.hermes_state import SessionDB
 
@@ -93,7 +93,7 @@ def test_retained_tui_worktree_kept_while_any_session_in_it_resumes(tmp_path, mo
     import re
     import time
 
-    from hermes_cli import main_tui_launch, worktree_ops
+    from hermes_agent.hermes_cli import main_tui_launch, worktree_ops
     from hermes_constants import get_hermes_home
     from hermes_agent.hermes_state import SessionDB
 

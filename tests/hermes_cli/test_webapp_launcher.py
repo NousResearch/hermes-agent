@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli import webapp_launcher as launcher
+from hermes_agent.hermes_cli import webapp_launcher as launcher
 
 LINK = "http://127.0.0.1:9120/webapp/launch#ticket=" + "t" * 43
 
@@ -404,7 +404,7 @@ def test_a_hermes_home_at_a_deleted_profile_is_refused_like_its_profile_flag(wor
 
 def test_the_webapp_command_takes_one_action_at_a_time():
     import argparse
-    from hermes_cli.subcommands.webapp import build_webapp_parser
+    from hermes_agent.hermes_cli.subcommands.webapp import build_webapp_parser
     parser = argparse.ArgumentParser()
     seen = []
     build_webapp_parser(parser.add_subparsers(), cmd_webapp=seen.append)
@@ -448,7 +448,7 @@ def test_a_webapp_opened_over_plain_http_on_the_lan_says_what_the_browser_loses(
 
 def _register_lan_sign_in(world, address: str, port: int = 9120) -> None:
     """Web Access Start registered Nous sign-in for ``http://<address>:<port>``, this machine's LAN address."""
-    from hermes_cli import webapp_access
+    from hermes_agent.hermes_cli import webapp_access
     record = world["root"] / "webapp" / "sign-in-registration.json"
     record.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     record.write_text(json.dumps({"portal": "https://portal.example", "client_id": "agent:x",

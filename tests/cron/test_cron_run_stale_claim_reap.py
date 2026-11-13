@@ -20,7 +20,7 @@ import sys
 
 def test_one_shot_cli_path_reaps_dead_owner_row_before_returning_sync(tmp_path, monkeypatch):
     """The real one-shot `hermes cron run` shape (``_SESSION_ASYNC_DELIVERY`` scoped to False,
-    as hermes_cli/cron.py::_job_action does) must still reap a 'running' row whose owner pid
+    as hermes_agent/hermes_cli/cron.py::_job_action does) must still reap a 'running' row whose owner pid
     is provably dead before falling back to the sync run — the early return used to skip it."""
     import subprocess as sp
     import sqlite3

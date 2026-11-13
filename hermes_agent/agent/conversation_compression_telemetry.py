@@ -34,7 +34,7 @@ def _snapshot_compression_effect_input(messages: list, verbatim_tail: list | Non
     try:
         if not verbatim_tail:
             return messages
-        from hermes_cli.partial_compress import rejoin_compressed_head_and_tail
+        from hermes_agent.hermes_cli.partial_compress import rejoin_compressed_head_and_tail
 
         return rejoin_compressed_head_and_tail(messages, copy.deepcopy(verbatim_tail))
     except Exception:
@@ -50,7 +50,7 @@ def _record_committed_attempt_effect(
         return
     try:
         if verbatim_tail and split_status == "not_applicable":
-            from hermes_cli.partial_compress import rejoin_compressed_head_and_tail
+            from hermes_agent.hermes_cli.partial_compress import rejoin_compressed_head_and_tail
 
             # Without a SessionDB, the manual-compression caller performs this rejoin after compress_context returns.
             messages_after = rejoin_compressed_head_and_tail(messages_after, verbatim_tail)
@@ -141,7 +141,7 @@ def _emit_compression_attempt_telemetry(
         )
         _log_attempt_record(payload)
         publish_attempt(agent, payload)
-        from hermes_cli.observability.shared_metrics_events import finish_compression_attempt
+        from hermes_agent.hermes_cli.observability.shared_metrics_events import finish_compression_attempt
 
         finish_compression_attempt(
             commit_status, payload.get("failure_class"), getattr(agent.context_compressor, "context_length", None), agent=agent,
@@ -150,7 +150,7 @@ def _emit_compression_attempt_telemetry(
         spliced = payload.get("prepared_summary") or (
             state is not None and state.spliced_attempt_id is not None and state.spliced_attempt_id == seed["attempt_id"])
         if spliced and commit_status != "committed":
-            from hermes_cli.observability.shared_metrics_prepared_compaction import record_prepared_compaction
+            from hermes_agent.hermes_cli.observability.shared_metrics_prepared_compaction import record_prepared_compaction
 
             record_prepared_compaction("compaction_failed", failure_class=payload.get("failure_class") or "")
     except Exception as exc:
@@ -196,7 +196,7 @@ def _emit_bypassed_attempt_telemetry(
         # Bypassed attempts are log-only, so retire that lifecycle explicitly; otherwise an unrelated
         # pool-saturation emit on the same thread can consume its trigger and token count.
         try:
-            from hermes_cli.observability.shared_metrics_events import discard_compression_attempt
+            from hermes_agent.hermes_cli.observability.shared_metrics_events import discard_compression_attempt
 
             discard_compression_attempt()
         except Exception:

@@ -28,7 +28,7 @@ Hermes 在 `HermesCLI` 上暴露了受保护的扩展 hook（钩子），使包�
 #!/usr/bin/env python3
 """my_cli.py — Example wrapper CLI that extends Hermes."""
 
-from cli import HermesCLI
+from hermes_agent.cli import HermesCLI
 from prompt_toolkit.layout import FormattedTextControl, Window
 from prompt_toolkit.filters import Condition
 

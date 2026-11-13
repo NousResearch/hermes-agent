@@ -201,7 +201,7 @@ class TestLifecycle:
         """#75186: for ``provider=custom`` + a configured ``providers.<name>`` entry, the session built by
         ``_ensure_codex_session`` sends ``model`` + ``modelProvider=<name>`` on thread/start and never the
         API key; openai/openai-codex agents send the selected model with codex's own provider."""
-        import hermes_cli.runtime_provider as rp
+        import hermes_agent.hermes_cli.runtime_provider as rp
         from hermes_agent.agent.codex_runtime import _ensure_codex_session
         from hermes_agent.agent.transports import codex_app_server_session as sess_mod
         monkeypatch.setattr(rp, "load_config", lambda: {

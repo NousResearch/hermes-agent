@@ -14,7 +14,7 @@ from hermes_agent.cron.scheduler_preflight import (
     _delivery_platform_routed_from_primary_gateway,
     _primary_profile_routes_for_current_home,
 )
-from hermes_cli import managed_scope
+from hermes_agent.hermes_cli import managed_scope
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
 

@@ -65,7 +65,7 @@ def legacy_tree(monkeypatch, tmp_path):
     monkeypatch.setattr(pm.client, "ensure_tools_for_sync", lambda: None)
     # Plugin eviction judges requires-python against the pinned interpreter; this tree has no plugins.
     monkeypatch.setattr("pm.plugin_eviction._interpreter_version", lambda: "3.14.0")
-    from hermes_cli import gitlock, venv_sync
+    from hermes_agent.hermes_cli import gitlock, venv_sync
 
     for name in ("arm_completion", "collect_superseded_generations", "publish_launchers",
                  "refuse_foreign_owned_venv"):
@@ -77,7 +77,7 @@ def legacy_tree(monkeypatch, tmp_path):
 
 def _completion_bootstrap(root: Path, tmp_path: Path, monkeypatch) -> None:
     """``hermes update``'s completion bootstrap, on a pre-PM tree with no recorded selection."""
-    from hermes_cli import update_completion
+    from hermes_agent.hermes_cli import update_completion
 
     result = tmp_path / "result.json"
 
@@ -93,24 +93,24 @@ def _completion_bootstrap(root: Path, tmp_path: Path, monkeypatch) -> None:
 
 def _historical_takeover(root: Path, tmp_path: Path, monkeypatch) -> None:
     """A pre-handoff updater's takeover of the new tree."""
-    from hermes_cli import _update_takeover, update_stage
+    from hermes_agent.hermes_cli import _update_takeover, update_stage
 
     monkeypatch.setattr(update_stage, "ensure_panel", lambda root: None)
     monkeypatch.setattr(_update_takeover, "_arm_fleet_obligation", lambda root: None)
-    monkeypatch.setattr("hermes_cli._launchers.resolve_store_python", lambda root: Path(sys.executable))
+    monkeypatch.setattr("hermes_agent.hermes_cli._launchers.resolve_store_python", lambda root: Path(sys.executable))
     _update_takeover.prepare({"root": str(root), "update_id": "u1"})
 
 
 def _launch_migration(root: Path, tmp_path: Path, monkeypatch) -> None:
     """The first launch after a pull finishes the source update's dependency sync."""
-    from hermes_cli import venv_sync
+    from hermes_agent.hermes_cli import venv_sync
 
     venv_sync._sync_source_dependencies(root, arm=False)
 
 
 def _venv_sync_entry(root: Path, tmp_path: Path, monkeypatch) -> None:
-    """``python -m hermes_cli.venv_sync``: the stdlib-only sync entry."""
-    from hermes_cli import venv_sync
+    """``python -m hermes_agent.hermes_cli.venv_sync``: the stdlib-only sync entry."""
+    from hermes_agent.hermes_cli import venv_sync
 
     assert venv_sync.sync(root) == {"state": "synced", "ok": True}
 
@@ -301,7 +301,7 @@ def _pm_repair(root: Path, tmp_path: Path, monkeypatch) -> None:
 
 def _launch_recovery(root: Path, tmp_path: Path, monkeypatch) -> None:
     """A launch that finds the marker a main-era update left behind when it was interrupted."""
-    from hermes_cli._early_recovery import recover_if_needed
+    from hermes_agent.hermes_cli._early_recovery import recover_if_needed
 
     (root / ".update-incomplete").write_text("", encoding="utf-8")
     assert recover_if_needed(root, argv=["chat"])

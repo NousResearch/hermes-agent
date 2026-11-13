@@ -1,4 +1,4 @@
-"""Tests for hermes_cli.process_identity — spawn tags, the machine spawn
+"""Tests for hermes_agent.hermes_cli.process_identity — spawn tags, the machine spawn
 ledger, and the updater's ledger-identified reap rung.
 
 Layer context (Aug 2026, after the 12-minute Windows update hang): reapers
@@ -26,7 +26,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from hermes_cli import process_identity as pi
+from hermes_agent.hermes_cli import process_identity as pi
 
 
 class _FakeNoSuchProcess(Exception):
@@ -102,7 +102,7 @@ def test_install_id_stable_and_path_scoped():
 
 
 def test_install_id_hashes_the_install_root_the_cli_resolves(monkeypatch):
-    from hermes_cli import _startup_fast
+    from hermes_agent.hermes_cli import _startup_fast
 
     repo = Path(__file__).resolve().parents[2]
     assert pi.install_id() == pi.install_id(repo)  # an existing install keeps its id
@@ -324,7 +324,7 @@ def _holders(*pids):
 
 
 def test_updater_reaps_ledger_proven_orphans():
-    from hermes_cli import update_cmd_windows
+    from hermes_agent.hermes_cli import update_cmd_windows
 
     entries = [
         _entry(200, 2.0, spawner_pid=700, spawner_create=7.0),   # spawner dead → reap
@@ -341,7 +341,7 @@ def test_updater_reaps_ledger_proven_orphans():
 
 
 def test_updater_ledger_rung_never_raises():
-    from hermes_cli import update_cmd_windows
+    from hermes_agent.hermes_cli import update_cmd_windows
 
     with patch.object(pi, "ledger_entries", side_effect=RuntimeError("boom")):
         assert update_cmd_windows._ledger_reapable_backend_pids(_holders(200)) == []
@@ -412,7 +412,7 @@ def test_reclaim_spares_unprovable_spawner():
 
 
 def test_reclaim_reaps_null_spawner_orphan_to_init():
-    from hermes_cli import dashboard_procs
+    from hermes_agent.hermes_cli import dashboard_procs
 
     with patch.object(dashboard_procs, "_process_ppid", return_value=1), \
          patch.object(dashboard_procs, "_lock_owned_serve_pids", return_value=set()):
@@ -423,7 +423,7 @@ def test_reclaim_reaps_null_spawner_orphan_to_init():
 
 
 def test_reclaim_spares_null_spawner_with_live_parent():
-    from hermes_cli import dashboard_procs
+    from hermes_agent.hermes_cli import dashboard_procs
 
     with patch.object(dashboard_procs, "_process_ppid", return_value=1234):
         result, kills = _reap(procs={555: 55.0})
@@ -433,7 +433,7 @@ def test_reclaim_spares_null_spawner_with_live_parent():
 
 def test_reclaim_spares_lock_claimed_orphan():
     """A valid backend.lock.json claims the PID: another session owns it, never kill."""
-    from hermes_cli import dashboard_procs
+    from hermes_agent.hermes_cli import dashboard_procs
 
     with patch.object(dashboard_procs, "_process_ppid", return_value=1), \
          patch.object(dashboard_procs, "_lock_owned_serve_pids", return_value={555}):
@@ -462,7 +462,7 @@ def test_reclaim_ignores_unknown_pid_and_never_raises():
 _CONCURRENT_WRITER = r"""
 import os, subprocess, sys, time
 sys.path.insert(0, sys.argv[1])
-from hermes_cli.process_identity import register_child
+from hermes_agent.hermes_cli.process_identity import register_child
 start_at, n = float(sys.argv[2]), int(sys.argv[3])
 kids = [subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"], stdin=subprocess.DEVNULL)
         for _ in range(n)]

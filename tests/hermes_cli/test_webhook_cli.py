@@ -1,4 +1,4 @@
-"""Tests for hermes_cli/webhook.py — webhook subscription CLI."""
+"""Tests for hermes_agent/hermes_cli/webhook.py — webhook subscription CLI."""
 
 import json
 import os
@@ -7,7 +7,7 @@ import stat
 import threading
 from argparse import Namespace
 
-from hermes_cli.webhook import (
+from hermes_agent.hermes_cli.webhook import (
     webhook_command,
     _get_webhook_base_url,
     _load_subscriptions,
@@ -20,7 +20,7 @@ def _isolate(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     # Default: webhooks enabled (most tests need this)
     monkeypatch.setattr(
-        "hermes_cli.webhook._is_webhook_enabled", lambda: True
+        "hermes_agent.hermes_cli.webhook._is_webhook_enabled", lambda: True
     )
 
 def _make_args(**kwargs):
@@ -44,7 +44,7 @@ def _make_args(**kwargs):
 @pytest.mark.parametrize("host", [None, "", "0.0.0.0", "::"])
 def test_webhook_base_url_maps_wildcard_hosts_to_localhost(monkeypatch, host):
     monkeypatch.setattr(
-        "hermes_cli.webhook._get_webhook_config",
+        "hermes_agent.hermes_cli.webhook._get_webhook_config",
         lambda: {"extra": {"host": host, "port": 9123}},
     )
     assert _get_webhook_base_url() == "http://localhost:9123"
@@ -93,7 +93,7 @@ class TestSubscribe:
         assert _load_subscriptions()["notifier"]["secret"] == "original"
 
     def test_stale_update_cannot_restore_concurrently_removed_or_disabled_route(self, monkeypatch):
-        import hermes_cli.webhook as webhook_module
+        import hermes_agent.hermes_cli.webhook as webhook_module
 
         webhook_command(_make_args(
             webhook_action="subscribe", name="notifier", secret="original"
@@ -110,7 +110,7 @@ class TestSubscribe:
                     raise AssertionError("timed out waiting to resume stale update")
             return subscriptions
 
-        monkeypatch.setattr("hermes_cli.webhook._load_subscriptions", load_with_paused_update)
+        monkeypatch.setattr("hermes_agent.hermes_cli.webhook._load_subscriptions", load_with_paused_update)
 
         def update_route():
             try:
@@ -161,7 +161,7 @@ class TestSubscribe:
         profile_dir = tmp_path / "profiles" / "compta"
         profile_dir.mkdir(parents=True)
         (profile_dir / "config.yaml").write_text("{}\n")  # identity marker
-        monkeypatch.setattr("hermes_cli.webhook.time.strftime", lambda *_a: "2026-01-01T00:00:00Z")
+        monkeypatch.setattr("hermes_agent.hermes_cli.webhook.time.strftime", lambda *_a: "2026-01-01T00:00:00Z")
         # One char shorter than the rotated secret: "default" -> "compta" then keeps the file size equal.
         webhook_command(_make_args(
             webhook_action="subscribe", name="notifier", secret="old-profile-secret-ab"
@@ -171,7 +171,7 @@ class TestSubscribe:
         adapter = WebhookAdapter(PlatformConfig(enabled=True, extra={"secret": "global"}))
         adapter._reload_dynamic_routes()
         initial_stat = _subscriptions_path().stat()
-        monkeypatch.setattr("hermes_cli.webhook.secrets.token_urlsafe", lambda _n: "rotated-profile-secret")
+        monkeypatch.setattr("hermes_agent.hermes_cli.webhook.secrets.token_urlsafe", lambda _n: "rotated-profile-secret")
         webhook_command(_make_args(
             webhook_action="subscribe", name="notifier", route_profile="compta"
         ))
@@ -275,7 +275,7 @@ class TestPersistence:
 class TestWebhookEnabledGate:
 
     def test_blocks_list_when_disabled(self, capsys, monkeypatch):
-        monkeypatch.setattr("hermes_cli.webhook._is_webhook_enabled", lambda: False)
+        monkeypatch.setattr("hermes_agent.hermes_cli.webhook._is_webhook_enabled", lambda: False)
         webhook_command(_make_args(webhook_action="list"))
         out = capsys.readouterr().out
         assert "not enabled" in out.lower()

@@ -151,7 +151,7 @@ async def test_rewritten_busy_followup_preserves_processing_hooks(monkeypatch):
             return [{'action': 'rewrite', 'text': 'rewritten two'}]
         return []
 
-    monkeypatch.setattr('hermes_cli.lifecycle.ainvoke_hook', rewrite)
+    monkeypatch.setattr('hermes_agent.hermes_cli.lifecycle.ainvoke_hook', rewrite)
     adapter = HookAdapter()
     authority, source, gate = await _busy_hook_owner(monkeypatch, adapter)
     await adapter.handle_message(MessageEvent(text='one', source=source, message_id='m1'))

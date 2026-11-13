@@ -5,14 +5,14 @@ import json
 
 import pytest
 
-from hermes_cli import web_server
+from hermes_agent.hermes_cli import web_server
 
 
 @pytest.fixture
 def client(_isolate_hermes_home):
     from starlette.testclient import TestClient
 
-    from hermes_cli.web_server import _SESSION_HEADER_NAME, _SESSION_TOKEN, app
+    from hermes_agent.hermes_cli.web_server import _SESSION_HEADER_NAME, _SESSION_TOKEN, app
 
     original_routes = list(app.router.routes)
     web_server._dashboard_plugins_cache = None
@@ -33,7 +33,7 @@ def _install_late_plugin(home, *, enabled: bool) -> None:
         "from fastapi import APIRouter\nrouter = APIRouter()\n"
         "@router.get('/ping')\nasync def ping():\n    return {'pong': True}\n"
     )
-    from hermes_cli.config import load_config, save_config
+    from hermes_agent.hermes_cli.config import load_config, save_config
     cfg = load_config()
     cfg.setdefault("plugins", {})["enabled"] = ["late-probe"] if enabled else []
     save_config(cfg)
@@ -49,7 +49,7 @@ def test_plugin_enabled_after_startup_serves_without_restart(client):
     assert (first.status_code, first.json()) == (200, {"pong": True})
     assert client.get("/api/plugins/late-probe/missing").status_code == 404
 
-    from hermes_cli.config import load_config, save_config
+    from hermes_agent.hermes_cli.config import load_config, save_config
     cfg = load_config()
     cfg["plugins"]["enabled"], cfg["plugins"]["disabled"] = [], ["late-probe"]
     save_config(cfg)

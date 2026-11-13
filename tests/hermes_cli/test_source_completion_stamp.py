@@ -9,8 +9,8 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli.source_completion import complete_source_checkout
-from hermes_cli.source_stamp import write_source_stamp
+from hermes_agent.hermes_cli.source_completion import complete_source_checkout
+from hermes_agent.hermes_cli.source_stamp import write_source_stamp
 
 
 def _repo(tmp_path: Path) -> Path:
@@ -32,9 +32,9 @@ def _repo(tmp_path: Path) -> Path:
 
 
 def _completion_dependencies(monkeypatch, maintenance):
-    monkeypatch.setattr("hermes_cli.venv_sync.publish_launchers", lambda root: None)
-    monkeypatch.setattr("hermes_cli.source_build.build_update_products", lambda root, *, desktop, after_dependencies=None: None)
-    monkeypatch.setattr("hermes_cli.update_cmd_maint._run_post_update_maintenance", maintenance)
+    monkeypatch.setattr("hermes_agent.hermes_cli.venv_sync.publish_launchers", lambda root: None)
+    monkeypatch.setattr("hermes_agent.hermes_cli.source_build.build_update_products", lambda root, *, desktop, after_dependencies=None: None)
+    monkeypatch.setattr("hermes_agent.hermes_cli.update_cmd_maint._run_post_update_maintenance", maintenance)
 
 
 def test_successful_source_completion_writes_checkout_identity(tmp_path, monkeypatch):
@@ -57,7 +57,7 @@ def test_failed_source_completion_does_not_publish_identity(tmp_path, monkeypatc
     def broken_build(root, *, desktop, after_dependencies=None):
         raise RuntimeError("web UI build: npm exited 1")
 
-    monkeypatch.setattr("hermes_cli.source_build.build_update_products", broken_build)
+    monkeypatch.setattr("hermes_agent.hermes_cli.source_build.build_update_products", broken_build)
     owed: list = []
     assert not complete_source_checkout(root, desktop=False, assume_yes=True, followups=owed)
     # The tail is owed, so the checkout identity is not published.
@@ -79,7 +79,7 @@ def test_unsafe_sqlite_withholds_success_but_not_the_finished_tail(tmp_path, mon
 def _sandboxed_marker(tmp_path, monkeypatch):
     """Point every update-lock reader at a marker inside this test's sandbox."""
     marker = tmp_path / ".hermes-update-in-progress"
-    monkeypatch.setattr("hermes_cli.update_lock.update_marker_path", lambda: marker)
+    monkeypatch.setattr("hermes_agent.hermes_cli.update_lock.update_marker_path", lambda: marker)
     return marker
 
 
@@ -105,13 +105,13 @@ def test_completion_holds_the_update_lock_during_the_tail(tmp_path, monkeypatch)
     seen = {}
 
     def build(_root, *, desktop, after_dependencies=None):
-        from hermes_cli.update_lock import read_live_update
+        from hermes_agent.hermes_cli.update_lock import read_live_update
 
         seen["holder"] = read_live_update()
 
-    monkeypatch.setattr("hermes_cli.source_build.build_update_products", build)
-    monkeypatch.setattr("hermes_cli.venv_sync.publish_launchers", lambda root: None)
-    monkeypatch.setattr("hermes_cli.update_cmd_maint._run_post_update_maintenance", lambda **_kwargs: True)
+    monkeypatch.setattr("hermes_agent.hermes_cli.source_build.build_update_products", build)
+    monkeypatch.setattr("hermes_agent.hermes_cli.venv_sync.publish_launchers", lambda root: None)
+    monkeypatch.setattr("hermes_agent.hermes_cli.update_cmd_maint._run_post_update_maintenance", lambda **_kwargs: True)
 
     assert complete_source_checkout(root, desktop=False, assume_yes=True)
 
@@ -199,7 +199,7 @@ def test_publishing_checkout_identity_never_invents_an_installer_receipt(tmp_pat
 def test_shallow_checkout_publishes_its_release_after_fetching_the_commit_graph(tmp_path):
     # Pre-PM installers cloned --depth 1; the completion fetches commits (not trees) so
     # the stamp can still name the release the checkout is built on.
-    from hermes_cli.gitlock import fetch_full_commit_graph
+    from hermes_agent.hermes_cli.gitlock import fetch_full_commit_graph
 
     server = _repo(tmp_path)
     subprocess.run(["git", "config", "uploadpack.allowFilter", "true"], cwd=server, check=True)
@@ -219,7 +219,7 @@ def test_shallow_checkout_publishes_its_release_after_fetching_the_commit_graph(
 
 
 def test_full_checkout_refreshes_release_tags_before_publishing_identity(tmp_path):
-    from hermes_cli.gitlock import fetch_full_commit_graph
+    from hermes_agent.hermes_cli.gitlock import fetch_full_commit_graph
 
     server = _repo(tmp_path)
     env = {"HOME": str(tmp_path), "PATH": os.environ["PATH"]}

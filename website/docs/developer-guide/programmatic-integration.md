@@ -284,7 +284,7 @@ Mid-session model switching works on every surface — it's the `/model` slash c
 - **ACP:** the IDE sends the slash command as a prompt; the agent dispatches it
 - **API server:** include a `model` field in the request body
 
-Provider-aware resolution (the same model name picks the right format for whatever provider you're on) is built in. See `hermes_cli/model_switch.py`.
+Provider-aware resolution (the same model name picks the right format for whatever provider you're on) is built in. See `hermes_agent/hermes_cli/model_switch.py`.
 
 ---
 

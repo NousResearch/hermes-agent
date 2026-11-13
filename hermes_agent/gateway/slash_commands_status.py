@@ -16,7 +16,7 @@ from hermes_agent.agent.i18n import t
 from hermes_agent.gateway.config import Platform
 from hermes_agent.gateway.platforms.event import MessageEvent
 from hermes_agent.gateway.session_transcript import TranscriptReadError
-from hermes_cli.status_report import build_status_fields
+from hermes_agent.hermes_cli.status_report import build_status_fields
 
 # Log-record parity with hermes_agent/gateway/run.py and the origin module.
 logger = logging.getLogger("hermes_agent.gateway.run")

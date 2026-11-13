@@ -13,8 +13,8 @@ import json
 
 
 def test_left_alone_notice_prints_once_across_the_completion_handoff(monkeypatch, capsys):
-    from hermes_cli import update_cmd_fleet as fleet, update_fleet_scope, update_receipt
-    from hermes_cli.update_completion import _resume_receipt
+    from hermes_agent.hermes_cli import update_cmd_fleet as fleet, update_fleet_scope, update_receipt
+    from hermes_agent.hermes_cli.update_completion import _resume_receipt
 
     homes = {101: "/srv/other-a/.hermes", 102: "/srv/other-b/.hermes", 103: "/srv/other-c/.hermes"}
     monkeypatch.setattr(update_fleet_scope, "partition_gateway_pids_by_scope",

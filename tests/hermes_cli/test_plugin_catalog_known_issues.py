@@ -11,7 +11,7 @@ see teknium1's review on #124037 and #122341 / #123771).
 
 from pathlib import Path
 
-from hermes_cli.plugin_catalog import (
+from hermes_agent.hermes_cli.plugin_catalog import (
     PluginCatalogEntry,
     entry_capability_summary,
     entry_from_mapping,
@@ -64,21 +64,21 @@ def test_known_issues_parse_round_trip(tmp_path):
 
 def test_install_summary_shows_known_issues(monkeypatch):
     """The dashboard install result and capability summary surface the text; install still proceeds."""
-    from hermes_cli.plugins_cmd_install import dashboard_install_plugin
+    from hermes_agent.hermes_cli.plugins_cmd_install import dashboard_install_plugin
 
     entry = _entry(known_issues=["Local embedded mode is not supported on PM-managed Hermes."])
-    monkeypatch.setattr("hermes_cli.plugins_cmd_catalog.get_live_catalog_entry", lambda _n: entry)
+    monkeypatch.setattr("hermes_agent.hermes_cli.plugins_cmd_catalog.get_live_catalog_entry", lambda _n: entry)
     monkeypatch.setattr(
-        "hermes_cli.plugins_cmd._resolve_git_url",
+        "hermes_agent.hermes_cli.plugins_cmd._resolve_git_url",
         lambda _i: ("https://github.com/vectorize-io/hindsight.git", None))
-    monkeypatch.setattr("hermes_cli.plugins_cmd_catalog.raise_if_removed", lambda *a: None)
+    monkeypatch.setattr("hermes_agent.hermes_cli.plugins_cmd_catalog.raise_if_removed", lambda *a: None)
     monkeypatch.setattr(
-        "hermes_cli.plugins_cmd_catalog.install_catalog_entry",
+        "hermes_agent.hermes_cli.plugins_cmd_catalog.install_catalog_entry",
         lambda *a, **k: (Path("/tmp/hindsight-target"), {"manifest": 1}, "hindsight"))
-    monkeypatch.setattr("hermes_cli.plugins_cmd._python_dependency_summary", lambda _t, w: None)
-    monkeypatch.setattr("hermes_cli.plugins_cmd._set_plugin_enabled", lambda *a, **k: None)
-    monkeypatch.setattr("hermes_cli.plugins_cmd._missing_env_specs", lambda _m: [])
-    monkeypatch.setattr("hermes_cli.plugins_activation.activate_plugin_now", lambda _n: {})
+    monkeypatch.setattr("hermes_agent.hermes_cli.plugins_cmd._python_dependency_summary", lambda _t, w: None)
+    monkeypatch.setattr("hermes_agent.hermes_cli.plugins_cmd._set_plugin_enabled", lambda *a, **k: None)
+    monkeypatch.setattr("hermes_agent.hermes_cli.plugins_cmd._missing_env_specs", lambda _m: [])
+    monkeypatch.setattr("hermes_agent.hermes_cli.plugins_activation.activate_plugin_now", lambda _n: {})
 
     result = dashboard_install_plugin("", force=False, enable=False, catalog_name="hindsight")
     assert result["ok"] is True  # informational — the install is not refused

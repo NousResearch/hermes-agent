@@ -764,7 +764,7 @@ class TestRuntimeFtsRebuild:
         clock = [1000.0]
         monkeypatch.setattr(hermes_state_schema.time, "time", lambda: clock[0])
 
-        from hermes_cli.doctor_state import _render_state_db_stats
+        from hermes_agent.hermes_cli.doctor_state import _render_state_db_stats
         from hermes_agent.hermes_state_dbfile import collect_state_db_stats
 
         def doctor_blob():

@@ -20,7 +20,7 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-from hermes_cli.browser_runtime import chromium_executable
+from hermes_agent.hermes_cli.browser_runtime import chromium_executable
 from hermes_constants import get_hermes_home
 from utils import atomic_json_write
 

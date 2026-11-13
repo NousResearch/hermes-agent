@@ -65,7 +65,7 @@ def _make_frame(sid: str, **overrides) -> dict:
 
 def _seed_parent_lease(key: str, live_session_id: str = "parent-sid"):
     """Claim the lease exactly as the parent dashboard would (same pid, its own live id)."""
-    from hermes_cli.active_sessions import try_acquire_active_session
+    from hermes_agent.hermes_cli.active_sessions import try_acquire_active_session
 
     lease, message = try_acquire_active_session(
         session_id=key, surface="desktop", config={},
@@ -76,7 +76,7 @@ def _seed_parent_lease(key: str, live_session_id: str = "parent-sid"):
 
 def _foreign_acquire(key: str):
     """A DISTINCT writer (same pid, another live id — the exact _is_same_writer fence)."""
-    from hermes_cli.active_sessions import try_acquire_active_session
+    from hermes_agent.hermes_cli.active_sessions import try_acquire_active_session
 
     return try_acquire_active_session(
         session_id=key, surface="cli", config={}, metadata={"live_session_id": "other-writer"})

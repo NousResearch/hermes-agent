@@ -14,8 +14,8 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli import boot_bootstrap
-from hermes_cli.boot_bootstrap import (
+from hermes_agent.hermes_cli import boot_bootstrap
+from hermes_agent.hermes_cli.boot_bootstrap import (
     _RecordLock,
     current_install_identity,
     needs_bootstrap,
@@ -218,7 +218,7 @@ def fake_steps(monkeypatch):
         calls["home"] += 1
         return {"ok": True}
 
-    from hermes_cli import post_update
+    from hermes_agent.hermes_cli import post_update
 
     monkeypatch.setattr(post_update, "BOOT_HOME_STEPS", (("h", home_step),))
     return calls
@@ -260,7 +260,7 @@ def test_sealed_tree_bootstrap_end_to_end(tmp_path, monkeypatch):
     swap emits."""
     import json as _json
 
-    from hermes_cli import post_update
+    from hermes_agent.hermes_cli import post_update
 
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))

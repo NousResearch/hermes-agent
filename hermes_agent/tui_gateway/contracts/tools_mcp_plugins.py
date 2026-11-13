@@ -181,7 +181,7 @@ class SkillHubHit(Result):
 
 
 class SkillBrowseItem(OpenModel):
-    """``hermes_cli.skills_hub.browse_skills`` row."""
+    """``hermes_agent.hermes_cli.skills_hub.browse_skills`` row."""
 
     name: str = ""
     description: str = ""
@@ -191,7 +191,7 @@ class SkillBrowseItem(OpenModel):
 
 
 class SkillInspectInfo(OpenModel):
-    """``hermes_cli.skills_hub.inspect_skill``; ``{}`` when the identifier resolves nowhere."""
+    """``hermes_agent.hermes_cli.skills_hub.inspect_skill``; ``{}`` when the identifier resolves nowhere."""
 
     name: str | None = None
     description: str | None = None
@@ -670,7 +670,7 @@ class PluginSettingFieldType(WireEnum):
 
 class PluginSettingField(Result):
     """One ``config_schema`` key of a plugin manifest, rendered by the Plugins hub
-    (``hermes_cli.plugins_settings.plugin_settings_fields``). ``secret`` fields carry no value: ``env``
+    (``hermes_agent.hermes_cli.plugins_settings.plugin_settings_fields``). ``secret`` fields carry no value: ``env``
     names the ``.env`` variable and ``has_value`` whether it is set."""
 
     key: str
@@ -759,7 +759,7 @@ class PluginRestartTarget(WireEnum):
 
 
 class PluginActivation(Result):
-    """What a plugin loaded mid-run does NOW vs later (``hermes_cli.plugins_activation``). ``activated_now``
+    """What a plugin loaded mid-run does NOW vs later (``hermes_agent.hermes_cli.plugins_activation``). ``activated_now``
     kinds (``{kind: [names]}``): ``gateway_commands`` (slash names), ``locales`` (``<lang>.<surface>``
     language-pack layers), ``gateway_transforms`` / ``hooks`` (hook
     names), ``callbacks`` (platforms / ``slack:<action_id>``) — live in the running gateway once it reloaded
@@ -839,7 +839,7 @@ class PluginUpdateAllSkip(Result):
 
 class PluginsManageResult(Result):
     """``list`` → ``plugins`` + counts; ``toggle`` → ``ok``/``unchanged``/``restart_required``/``name``
-    (the canonical key written)/``plugin``; ``install`` → ``hermes_cli.plugins_cmd.dashboard_install_plugin``'s
+    (the canonical key written)/``plugin``; ``install`` → ``hermes_agent.hermes_cli.plugins_cmd.dashboard_install_plugin``'s
     ok payload; ``inspect`` → ``ok``/``agent``/``desktop``/``agent_name``/``desktop_name``/``sha`` (the commit
     read)/``warnings``/``insecure`` or ``ok=false`` + ``error``; ``toggle``/``install``/``update`` that loaded a plugin also carry ``gateway_reloaded`` (the
     running gateway picked it up and re-wired its handlers) and ``activation`` — the honest split of what is
@@ -887,7 +887,7 @@ class PluginsManageResult(Result):
     presence: list[CatalogPluginPresence] | None = None
     # ``inspect`` → which halves the source ships (``ok`` + ``warnings``, or ``ok=false`` + ``error``),
     # the commit it read (``sha``) and whether its URL scheme is insecure; nothing was installed
-    # (``hermes_cli.plugins_cmd_inspect``).
+    # (``hermes_agent.hermes_cli.plugins_cmd_inspect``).
     agent: bool | None = None
     desktop: bool | None = None
     agent_name: str | None = None

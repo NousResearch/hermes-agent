@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from hermes_cli.local_runtime import supervisor
+from hermes_agent.hermes_cli.local_runtime import supervisor
 
 
 @pytest.mark.parametrize("help_text, expected", [

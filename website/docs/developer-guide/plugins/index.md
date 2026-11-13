@@ -409,7 +409,7 @@ Known capability ids: `tools.override`, `llm.provider_override`,
 `llm.model_override`, `llm.agent_id_override`, `llm.profile_override`,
 `llm.task_override`, `llm.side_question` (ask the session's own agent after
 a turn, see [Plugin LLM Access](../plugin-llm-access.md#asking-the-sessions-own-agent-ctxside_question)),
-`gateway.platform_actions` (see `hermes_cli/plugin_capabilities.py` for the
+`gateway.platform_actions` (see `hermes_agent/hermes_cli/plugin_capabilities.py` for the
 canonical registry). Unknown ids are ignored. The older per-capability
 config keys (`plugins.entries.<id>.allow_tool_override`, …) still work but
 are deprecated — declare capabilities instead so users get a single,
@@ -458,7 +458,7 @@ Then call the public helper. It is a plain function, so dashboard plugins
 `register(ctx)` code:
 
 ```python
-from hermes_cli.plugin_provider_requests import ProviderNotSignedIn, credentialed_provider_request
+from hermes_agent.hermes_cli.plugin_provider_requests import ProviderNotSignedIn, credentialed_provider_request
 
 def mint_client_secret(session: dict) -> dict:
     try:
@@ -551,8 +551,8 @@ The plugin calls the API through the same helper, with the entry's `id` as the
 provider:
 
 ```python
-from hermes_cli.auth_constants import AuthError
-from hermes_cli.plugin_provider_requests import ProviderNotSignedIn, credentialed_provider_request
+from hermes_agent.hermes_cli.auth_constants import AuthError
+from hermes_agent.hermes_cli.plugin_provider_requests import ProviderNotSignedIn, credentialed_provider_request
 
 def create_document(title: str) -> dict:
     try:
@@ -1057,7 +1057,7 @@ where users set the server's key.
 `plugin.<id>.settings.changed` (payload `{ written: [...keys] }`; a secret-only
 save sends an empty list), so a Desktop half re-reads its preferences at once:
 `ctx.onEvent('plugin.my-plugin.settings.changed', reload)`. Read the values from
-your own `plugin_api.py` with `load_config_readonly()` from `hermes_cli.config`
+your own `plugin_api.py` with `load_config_readonly()` from `hermes_agent.hermes_cli.config`
 (`plugins.entries.<id>.settings`), falling back to the schema defaults.
 
 ## Step 6: Test it
@@ -1300,20 +1300,20 @@ def load_recipe(path):
 
 Import the names themselves (`from hermes_yaml import safe_load`), as above: `hermes plugins
 validate` accepts those spellings and reports a bare `import hermes_agent.agent.file_safety` as a private import.
-To read Hermes's own settings, use `load_config_readonly()` from `hermes_cli.config` rather than
+To read Hermes's own settings, use `load_config_readonly()` from `hermes_agent.hermes_cli.config` rather than
 parsing `config.yaml` yourself.
 
 ### Send a credentialed HTTP request without leaking it on redirect
 
 Plain `urllib.request.urlopen` follows a redirect to another host with your `Authorization` header
-still attached. `hermes_cli.urllib_security.open_credentialed_url(request, timeout=...)` opens a
+still attached. `hermes_agent.hermes_cli.urllib_security.open_credentialed_url(request, timeout=...)` opens a
 `urllib.request.Request` the way Hermes's own provider calls do: credential headers are dropped when
 a redirect leaves the original origin, and the process's installed opener (proxy, TLS trust) is kept.
 
 ```python
 import urllib.request
 
-from hermes_cli.urllib_security import open_credentialed_url
+from hermes_agent.hermes_cli.urllib_security import open_credentialed_url
 
 def fetch_models(base_url, api_key):
     request = urllib.request.Request(f"{base_url}/models", headers={"Authorization": f"Bearer {api_key}"})
@@ -1632,11 +1632,11 @@ The **API request hooks** are observers for the raw provider request, one level 
 
 ### Where each hook fires {#hook-fire-sites}
 
-Every name in `hermes_cli.plugins.VALID_HOOKS` has at least one core fire site. This table names the function that fires each one, so you can read the exact call and payload. Paths are relative to the repository root. When you add a hook, add its row here in the same change.
+Every name in `hermes_agent.hermes_cli.plugins.VALID_HOOKS` has at least one core fire site. This table names the function that fires each one, so you can read the exact call and payload. Paths are relative to the repository root. When you add a hook, add its row here in the same change.
 
 | Hook | Fired by |
 |------|----------|
-| `pre_tool_call` | `hermes_cli/plugins.py` `_dispatch_pre_tool_call_hooks`, called from `hermes_agent/agent/tool_executor.py` `_pre_tool_block`, `hermes_agent/agent/agent_runtime_helpers.py` `_pre_tool_block_message` and `hermes_agent/model_tools.py` `_pre_dispatch_guards` |
+| `pre_tool_call` | `hermes_agent/hermes_cli/plugins.py` `_dispatch_pre_tool_call_hooks`, called from `hermes_agent/agent/tool_executor.py` `_pre_tool_block`, `hermes_agent/agent/agent_runtime_helpers.py` `_pre_tool_block_message` and `hermes_agent/model_tools.py` `_pre_dispatch_guards` |
 | `post_tool_call` | `hermes_agent/model_tools.py` `_emit_post_tool_call_hook` |
 | `transform_terminal_output` | `hermes_agent/tools/terminal_tool_result.py` `_apply_output_transform_hook` |
 | `transform_tool_result` | `hermes_agent/model_tools.py` `_apply_transform_tool_result_hook` |
@@ -1646,16 +1646,16 @@ Every name in `hermes_cli.plugins.VALID_HOOKS` has at least one core fire site. 
 | `on_stream_start` / `on_stream_end` | `hermes_agent/agent/stream_delivery.py` `StreamDeliveryMixin._emit_stream_start` / `_emit_stream_end` |
 | `on_stream_delta` | `hermes_agent/agent/stream_delivery.py` `StreamDeliveryMixin._fire_stream_delta` (text) and `_fire_reasoning_delta` (reasoning) |
 | `on_interim_message` | `hermes_agent/agent/stream_delivery.py` `StreamDeliveryMixin._emit_interim_assistant_message` |
-| `pre_verify` | `hermes_cli/plugins.py` `get_pre_verify_continue_message`, called from `hermes_agent/agent/turn_stop_gates.py` `_pre_verify_nudge` |
+| `pre_verify` | `hermes_agent/hermes_cli/plugins.py` `get_pre_verify_continue_message`, called from `hermes_agent/agent/turn_stop_gates.py` `_pre_verify_nudge` |
 | `pre_api_request` | `hermes_agent/agent/turn_api_request.py` `_fire_pre_api_request_hook` |
 | `post_api_request` | `hermes_agent/agent/turn_response_intake.py` `_fire_post_api_request_hook` |
 | `api_request_error` | `hermes_agent/agent/api_request_hooks.py` `ApiRequestHooksMixin._invoke_api_request_error_hook` |
 | `pre_auxiliary_call` / `post_auxiliary_call` | `hermes_agent/agent/auxiliary_hooks.py` `_AuxCallHooks.pre` / `_AuxCallHooks.post` |
-| `transform_api_error_classification` | `hermes_cli/plugins.py` `get_plugin_error_classification`, called from `hermes_agent/agent/error_classifier.py` `_plugin_verdict` |
+| `transform_api_error_classification` | `hermes_agent/hermes_cli/plugins.py` `get_plugin_error_classification`, called from `hermes_agent/agent/error_classifier.py` `_plugin_verdict` |
 | `on_session_start` | `hermes_agent/agent/conversation_loop.py` `_restore_or_build_system_prompt` |
-| `on_session_end` | `hermes_agent/agent/turn_finalizer.py` `finalize_turn`; interrupted exits: `hermes_cli/cli_shutdown.py` `_invoke_interrupted_session_end`, `hermes_agent/tui_gateway/session_lifecycle.py` `_finalize_session` |
-| `on_session_finalize` | `hermes_cli/lifecycle.py` `finalize_session`, called from `hermes_cli/cli_session_mixin.py` `CLISessionMixin._notify_session_boundary`, `hermes_cli/cli_shutdown.py` `_notify_session_finalize`, `hermes_agent/tui_gateway/session_lifecycle.py` `_notify_session_boundary` and `hermes_agent/gateway/run_shutdown_session_end.py` `GatewaySessionEndMixin._finalize_session_off_loop` |
-| `on_session_reset` | `hermes_cli/cli_session_mixin.py` `CLISessionMixin._notify_session_boundary`; `hermes_agent/tui_gateway/session_registry.py` `_start_session_services`; `hermes_agent/gateway/slash_commands_session.py` `GatewaySessionCommandsMixin._handle_reset_command`; `hermes_agent/gateway/run_shutdown_session_end.py` `GatewaySessionEndMixin._reset_session_off_loop` |
+| `on_session_end` | `hermes_agent/agent/turn_finalizer.py` `finalize_turn`; interrupted exits: `hermes_agent/hermes_cli/cli_shutdown.py` `_invoke_interrupted_session_end`, `hermes_agent/tui_gateway/session_lifecycle.py` `_finalize_session` |
+| `on_session_finalize` | `hermes_agent/hermes_cli/lifecycle.py` `finalize_session`, called from `hermes_agent/hermes_cli/cli_session_mixin.py` `CLISessionMixin._notify_session_boundary`, `hermes_agent/hermes_cli/cli_shutdown.py` `_notify_session_finalize`, `hermes_agent/tui_gateway/session_lifecycle.py` `_notify_session_boundary` and `hermes_agent/gateway/run_shutdown_session_end.py` `GatewaySessionEndMixin._finalize_session_off_loop` |
+| `on_session_reset` | `hermes_agent/hermes_cli/cli_session_mixin.py` `CLISessionMixin._notify_session_boundary`; `hermes_agent/tui_gateway/session_registry.py` `_start_session_services`; `hermes_agent/gateway/slash_commands_session.py` `GatewaySessionCommandsMixin._handle_reset_command`; `hermes_agent/gateway/run_shutdown_session_end.py` `GatewaySessionEndMixin._reset_session_off_loop` |
 | `on_session_delete` | `hermes_agent/hermes_state_common.py` `emit_session_deleted` |
 | `on_session_open` | `hermes_agent/gateway/session_open.py` `_Open._deliver` |
 | `on_skill_lifecycle` | `hermes_agent/tools/skill_usage.py` `_emit_skill_lifecycle` |
@@ -1668,16 +1668,16 @@ Every name in `hermes_cli.plugins.VALID_HOOKS` has at least one core fire site. 
 | `on_human_input_request` / `on_human_input_resolved` | `hermes_agent/tools/human_input_hooks.py` `human_input_request` |
 | `on_room_member_activity` | `hermes_agent/tui_gateway/hosted_room_member_activity.py` `emit_room_member_activity` |
 | `pre_transcription` | `hermes_agent/tools/transcription_command.py` `_apply_pre_transcription_hook` |
-| `kanban_task_claimed` | `hermes_cli/kanban_db.py` `claim_task` (through `_fire_task_hook`) |
-| `kanban_task_completed` | `hermes_cli/kanban_db.py` `complete_task` (through `_fire_task_hook`); `hermes_cli/kanban_swarm.py` `create_swarm` |
-| `kanban_task_blocked` | `hermes_cli/kanban_db.py` `block_task` (through `_fire_task_hook`) |
-| `on_kanban_worker_spawned` | `hermes_cli/kanban_db.py` `_fire_worker_spawned_hook` |
-| `on_kanban_worker_exited` | `hermes_cli/kanban_db_dispatch.py` `detect_crashed_workers` |
-| `on_kanban_worker_stale_claim` | `hermes_cli/kanban_db.py` `release_stale_claims` |
-| `on_kanban_task_updated` | `hermes_cli/kanban_db.py` `notify_task_updated` |
-| `on_kanban_dispatch_tick` | `hermes_cli/kanban_db.py` `_fire_dispatch_tick_hook` |
+| `kanban_task_claimed` | `hermes_agent/hermes_cli/kanban_db.py` `claim_task` (through `_fire_task_hook`) |
+| `kanban_task_completed` | `hermes_agent/hermes_cli/kanban_db.py` `complete_task` (through `_fire_task_hook`); `hermes_agent/hermes_cli/kanban_swarm.py` `create_swarm` |
+| `kanban_task_blocked` | `hermes_agent/hermes_cli/kanban_db.py` `block_task` (through `_fire_task_hook`) |
+| `on_kanban_worker_spawned` | `hermes_agent/hermes_cli/kanban_db.py` `_fire_worker_spawned_hook` |
+| `on_kanban_worker_exited` | `hermes_agent/hermes_cli/kanban_db_dispatch.py` `detect_crashed_workers` |
+| `on_kanban_worker_stale_claim` | `hermes_agent/hermes_cli/kanban_db.py` `release_stale_claims` |
+| `on_kanban_task_updated` | `hermes_agent/hermes_cli/kanban_db.py` `notify_task_updated` |
+| `on_kanban_dispatch_tick` | `hermes_agent/hermes_cli/kanban_db.py` `_fire_dispatch_tick_hook` |
 | `gateway_platform_event` | `hermes_agent/gateway/run_adapters.py` `GatewayAdapterLifecycleMixin._handle_gateway_platform_event` (events come from the Telegram and Discord adapters) |
-| `pre_command` | `hermes_cli/plugins.py` `fire_pre_command_hook`, called from `cli.py` `HermesCLI.process_command`, `hermes_agent/gateway/run_inbound_hooks.py` `GatewayInboundHooksMixin._hm_command_hooks` and `hermes_agent/gateway/session_commands.py` |
+| `pre_command` | `hermes_agent/hermes_cli/plugins.py` `fire_pre_command_hook`, called from `cli.py` `HermesCLI.process_command`, `hermes_agent/gateway/run_inbound_hooks.py` `GatewayInboundHooksMixin._hm_command_hooks` and `hermes_agent/gateway/session_commands.py` |
 | `post_compaction` | `hermes_agent/agent/compaction_events.py` `fire_post_compaction` |
 | `post_curator_run` | `hermes_agent/agent/curator.py` `_notify_post_curator_run` |
 
@@ -1821,7 +1821,7 @@ def register(ctx):
     ctx.register_middleware("tool_request", cap_find_output)
 ```
 
-The canonical list of kinds is `VALID_MIDDLEWARE` in `hermes_cli/middleware.py`:
+The canonical list of kinds is `VALID_MIDDLEWARE` in `hermes_agent/hermes_cli/middleware.py`:
 
 | Kind | Receives | Return contract |
 |------|----------|-----------------|
@@ -2118,7 +2118,7 @@ listens for the event frame of type `plugin.<plugin_id>.pane.changed`:
   id (compression gives the agent a new one), so a tool or hook can pass the `session_id` it received.
   `payload` is a JSON dict. The call returns `True` when a live viewer took the frame, `False` when no
   client is viewing or this process holds no such session. `ctx.emit_to_session` looks the session up in
-  your plugin's own profile, also from a thread you started. `hermes_cli.plugin_events.emit_plugin_session_event(plugin_id, session_id, event, payload)`
+  your plugin's own profile, also from a thread you started. `hermes_agent.hermes_cli.plugin_events.emit_plugin_session_event(plugin_id, session_id, event, payload)`
   is the same call for code without `ctx`; it uses the caller's profile scope, so from your own thread on
   a gateway that serves several profiles, use `ctx.emit_to_session`.
 - **`plugins.isolation: host`:** handlers run in the plugin host process, and both emit calls are
@@ -2333,7 +2333,7 @@ A plugin can load while the gateway (or the TUI/Desktop server) is already runni
 install`/`enable`, a Desktop or dashboard install, a catalog re-pin, or a tool-triggered force
 re-discovery. Every one of those paths runs a **real forced rescan** (`discover_plugins(force=True)`) and
 `PluginManager.on_plugin_loaded(callback)` fires from inside it with one summary per **newly** loaded plugin
-(`hermes_cli/plugins_activation.py`):
+(`hermes_agent/hermes_cli/plugins_activation.py`):
 
 ```python
 {"name": "late-mcp", "key": "late-mcp",

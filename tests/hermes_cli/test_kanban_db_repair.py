@@ -9,9 +9,9 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli import kanban_db as kb
-from hermes_cli import kanban_db_connect as kbc
-from hermes_cli import kanban_db_dispatch as kbd
+from hermes_agent.hermes_cli import kanban_db as kb
+from hermes_agent.hermes_cli import kanban_db_connect as kbc
+from hermes_agent.hermes_cli import kanban_db_dispatch as kbd
 
 
 # ---------------------------------------------------------------------------
@@ -246,7 +246,7 @@ def _run_kanban_cli(argv: list[str]) -> int:
     """Drive the real argparse surface exactly like `hermes kanban …`."""
     import argparse
 
-    from hermes_cli import kanban as kc
+    from hermes_agent.hermes_cli import kanban as kc
 
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="command")

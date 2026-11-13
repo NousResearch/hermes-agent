@@ -1,4 +1,4 @@
-"""The gateway's askers for ``PluginContext.ask_choice`` (``hermes_cli/plugin_choices.py``).
+"""The gateway's askers for ``PluginContext.ask_choice`` (``hermes_agent/hermes_cli/plugin_choices.py``).
 
 Both reuse the clarify tool's own prompt, so every surface renders a plugin command's choice the
 way it renders the agent's questions:
@@ -27,7 +27,7 @@ from hermes_agent.gateway.config import Platform
 def chat_choices(runner, source, session_key: str):
     """Bind the messaging asker for a command *source* sent, unless the caller bound one already (a
     local viewer's ``slash.exec``) or the source is a local session (it has no chat to post in)."""
-    from hermes_cli.plugin_choices import asker_bound, bind_asker
+    from hermes_agent.hermes_cli.plugin_choices import asker_bound, bind_asker
     if asker_bound() or source.platform == Platform.LOCAL:
         return nullcontext()
     loop = asyncio.get_running_loop()
@@ -65,7 +65,7 @@ def _ask_chat(runner, source, session_key, loop, question, labels) -> Optional[s
 
 def viewer_choices(live, session_id: str):
     """Bind the local-session asker: the ``clarify`` server request to *live*'s attached viewers."""
-    from hermes_cli.plugin_choices import bind_asker
+    from hermes_agent.hermes_cli.plugin_choices import bind_asker
     return bind_asker(lambda question, labels: _ask_viewers(live, session_id, question, labels))
 
 

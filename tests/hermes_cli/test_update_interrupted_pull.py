@@ -16,8 +16,9 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli import _early_recovery as er
-from hermes_cli import update_cmd
+from hermes_agent.hermes_cli import _early_recovery as er
+from hermes_agent.hermes_cli import update_cmd
+from hermes_agent.hermes_cli._startup_fast import project_root_str
 
 
 def _git(root: Path, *args: str) -> str:
@@ -34,7 +35,7 @@ _MULTI = "top = 1\nx = 0\ny = 0\nz = 0\nend = 1\n"
 _ENTRY_SPY = """
 import importlib, json, os, sys
 import hermes_bootstrap
-from hermes_cli import _early_recovery as er
+from hermes_agent.hermes_cli import _early_recovery as er
 
 venv, entry = os.path.realpath(sys.prefix), sys.argv[1]
 importlib.import_module(entry.rpartition(".")[0] or "hermes_cli")
@@ -79,7 +80,7 @@ def checkout(tmp_path, monkeypatch):
     root = tmp_path / "install"
     _git(tmp_path, "clone", "-q", str(origin), str(root))
     _git(root, "reset", "-q", "--hard", "HEAD~1")
-    monkeypatch.setattr("hermes_cli.main.PROJECT_ROOT", root)
+    monkeypatch.setattr("hermes_agent.hermes_cli.main.PROJECT_ROOT", root)
     return root, _git(root, "rev-parse", "HEAD"), _git(root, "rev-parse", "origin/main")
 
 
@@ -187,8 +188,8 @@ def test_restore_runs_the_installers_store_git_when_path_has_none(checkout, monk
 
     # Every console script (`hermes`, `hermes-agent`, `hermes-acp`) repairs before its entry module imports
     # any other checkout module past hermes_bootstrap: any of them may be a half-written file.
-    repo = os.path.realpath(Path(er.__file__).parent.parent)
-    for entry in ("hermes_cli.main", "hermes_agent.agent.legacy_cli", "hermes_agent.run_agent", "hermes_agent.acp_adapter.entry"):
+    repo = os.path.realpath(Path(er.__file__).parents[2])
+    for entry in ("hermes_agent.hermes_cli.main", "hermes_agent.agent.legacy_cli", "hermes_agent.run_agent", "hermes_agent.acp_adapter.entry"):
         run = subprocess.run([sys.executable, "-c", _ENTRY_SPY, entry], cwd=repo, capture_output=True, text=True,
                              encoding="utf-8", env={**os.environ, "PYTHONPATH": repo}, timeout=120, check=False)
         assert run.stdout.strip().splitlines()[-1:] == ["[]"], (entry, run.stdout[-500:], run.stderr[-2000:])
@@ -261,7 +262,7 @@ def test_restore_never_touches_user_work_when_git_wrote_nothing(checkout, capsys
 _RACER = """
 import sys
 from pathlib import Path
-from hermes_cli import _early_recovery as er
+from hermes_agent.hermes_cli import _early_recovery as er
 print("ready", flush=True)
 sys.stdin.readline()
 print(er.restore_interrupted_pull(Path(sys.argv[1])))
@@ -297,7 +298,7 @@ def test_concurrent_launches_take_turns_and_all_rerun_from_the_restored_tree(tmp
     marker = er.interrupted_pull_marker(root)
     marker.write_text(f"pid=0\npre={pre}\ntarget={target}\nstash=\n", encoding="utf-8", newline="")
 
-    repo = os.path.realpath(Path(er.__file__).parent.parent)
+    repo = os.path.realpath(Path(er.__file__).parents[2])
     launches = [subprocess.Popen([sys.executable, "-c", _RACER, str(root)], cwd=repo, text=True, encoding="utf-8",
                                  env={**os.environ, "PYTHONPATH": repo}, stdin=subprocess.PIPE,
                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE) for _ in range(3)]
@@ -467,9 +468,9 @@ def test_a_launch_that_cannot_get_the_repair_claim_never_continues_from_the_torn
             er.restore_interrupted_pull(root)
         # A real launch sees one line and exit 1, never a traceback (review C14).
         launch = subprocess.run(
-            [sys.executable, "-c", "import sys; from pathlib import Path; from hermes_cli import _early_recovery as er; "
+            [sys.executable, "-c", "import sys; from pathlib import Path; from hermes_agent.hermes_cli import _early_recovery as er; "
              "er._RESTORE_CLAIM_WAIT_SECONDS = 0.2; er.restore_interrupted_pull(Path(sys.argv[1]))", str(root)],
-            cwd=Path(er.__file__).resolve().parent.parent, capture_output=True, text=True, encoding="utf-8",
+            cwd=Path(er.__file__).resolve().parents[2], capture_output=True, text=True, encoding="utf-8",
             timeout=60, check=False)
     finally:
         er._lock_fd(fd, False)
@@ -486,7 +487,7 @@ def test_a_launch_that_cannot_get_the_repair_claim_never_continues_from_the_torn
 _HOLD_CHECKOUT = """
 import sys, time
 from pathlib import Path
-from hermes_cli import update_lock
+from hermes_agent.hermes_cli import update_lock
 assert update_lock._acquire_checkout(Path(sys.argv[1])) is None
 print("held", flush=True)
 time.sleep(120)
@@ -499,7 +500,7 @@ def test_launch_repair_leaves_the_tree_to_a_live_update_holding_the_checkout(tmp
     must not touch it, and must finish the job once the tree is gone."""
     root, pre, target = _broken_release(tmp_path, 20)
     marker = _rollback_marker(root, pre, target)
-    env = dict(os.environ, PYTHONPATH=os.pathsep.join([str(Path(er.__file__).resolve().parents[1]),
+    env = dict(os.environ, PYTHONPATH=os.pathsep.join([project_root_str(),
                                                        os.environ.get("PYTHONPATH", "")]))
     holder = subprocess.Popen([sys.executable, "-c", _HOLD_CHECKOUT, str(root)], stdout=subprocess.PIPE,
                               text=True, env=env)
@@ -607,7 +608,7 @@ def test_an_empty_head_answer_keeps_the_marker(tmp_path, monkeypatch, capsys):
 def test_a_refusal_whose_holder_exits_before_the_probe_retries_the_lock(tmp_path, monkeypatch):
     """m10: the acquire was refused, then the follow-up probe found the lock free (its holder had
     just exited) and the repair ran unguarded. It takes the lock in that case."""
-    from hermes_cli import update_lock
+    from hermes_agent.hermes_cli import update_lock
 
     root, _pre, _target = _broken_release(tmp_path, 1)
     real = update_lock._acquire_checkout
@@ -630,7 +631,7 @@ def test_a_refusal_whose_holder_exits_before_the_probe_retries_the_lock(tmp_path
 
 @pytest.fixture
 def commit_point():
-    from hermes_cli import update_cmd_commit as commit
+    from hermes_agent.hermes_cli import update_cmd_commit as commit
 
     commit.begin_update_attempt()
     yield commit
@@ -652,8 +653,8 @@ def test_a_pull_whose_marker_cannot_be_written_never_moves_the_tree(checkout, co
         _pull(root)
 
     _unmovable(root, a)
-    from hermes_cli.update_host_obligation import read_host_obligation
-    from hermes_cli.venv_sync import completion_pending_path
+    from hermes_agent.hermes_cli.update_host_obligation import read_host_obligation
+    from hermes_agent.hermes_cli.venv_sync import completion_pending_path
 
     assert read_host_obligation() is None and not completion_pending_path(root).exists(), "the refused move left a debt"
 
@@ -706,7 +707,7 @@ def test_a_branch_switch_whose_marker_cannot_be_written_never_starts(checkout, c
 def test_a_branch_switch_owes_the_restart_for_the_commit_it_lands_on(checkout, commit_point):
     """Local main (A) trails origin/main (B): CP0 lands on A, so a stop before CP1 must leave debt
     a checkout at A can discharge, never B's (N16)."""
-    from hermes_cli.update_host_obligation import read_host_obligation
+    from hermes_agent.hermes_cli.update_host_obligation import read_host_obligation
 
     root, a, b = checkout
     _git(root, "checkout", "-q", "-b", "feat")
@@ -862,7 +863,7 @@ def test_the_tree_move_marker_is_durable_before_it_appears_under_its_name(checko
     """The marker is the restore's only record: it is written to a temp file, fsynced, then renamed
     over its name. An in-place write could leave a power cut with an empty or half marker over a
     torn tree, which no launch can identify (review C3)."""
-    from hermes_cli import update_cmd_commit
+    from hermes_agent.hermes_cli import update_cmd_commit
 
     root, _a, b = checkout
     marker = er.interrupted_pull_marker(root)
@@ -910,7 +911,7 @@ def test_a_lock_our_killed_rollback_git_left_is_reclaimed_by_the_next_launch(tmp
     "cannot resume yet" forever. Only the lock generation that predates the move is foreign."""
     if sys.platform == "darwin" and not shutil.which("lsof"):
         pytest.skip("no lsof: a fresh dead lock cannot be proven dead here")
-    from hermes_cli import update_cmd_commit
+    from hermes_agent.hermes_cli import update_cmd_commit
 
     root, pre, target = _broken_release(tmp_path, 2)
     marker = update_cmd_commit.arm_tree_move(["git"], root, pre=pre, target=target, stash=None,
@@ -928,7 +929,7 @@ def test_a_lock_our_killed_rollback_git_left_is_reclaimed_by_the_next_launch(tmp
 def test_a_lock_that_predates_the_move_stays_foreign_after_our_git_exited(tmp_path):
     """F05/F06 unchanged: the lock generation already there when the move was armed is another
     git's (e.g. `git commit` waiting in the editor, fd closed); no later launch deletes it."""
-    from hermes_cli import update_cmd_commit
+    from hermes_agent.hermes_cli import update_cmd_commit
 
     root, pre, target = _broken_release(tmp_path, 2)
     lock = root / ".git" / "index.lock"

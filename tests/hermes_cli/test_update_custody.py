@@ -1,4 +1,4 @@
-"""R2: every updater git runner shares ONE custody policy (hermes_cli.update_custody).
+"""R2: every updater git runner shares ONE custody policy (hermes_agent.hermes_cli.update_custody).
 
 Real git, real processes, no mocks:
 * every runner passes ``-c gc.autoDetach=false -c maintenance.auto=false`` (git reports the
@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli import update_lock as ul
+from hermes_agent.hermes_cli import update_lock as ul
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -48,7 +48,7 @@ def repo(tmp_path, monkeypatch):
 
 def _runners(repo: Path):
     """Every updater git runner, as ``args -> stdout``."""
-    from hermes_cli import gitlock, update_cmd, update_cmd_check, update_cmd_git, update_cmd_stash
+    from hermes_agent.hermes_cli import gitlock, update_cmd, update_cmd_check, update_cmd_git, update_cmd_stash
 
     yield "update_cmd._git_run", lambda a: update_cmd._git_run(["git"], a, cwd=repo).stdout
     yield "update_cmd_git._git_run", lambda a: update_cmd_git._git_run(["git"], a, cwd=repo).stdout
@@ -81,7 +81,7 @@ _RECORDER = textwrap.dedent("""\
 
 @pytest.mark.skipif(not Path("/proc/self/fd").is_dir(), reason="needs /proc fd listing")
 def test_lock_fd_reaches_local_mutators_only(repo, tmp_path, monkeypatch):
-    from hermes_cli import update_cmd
+    from hermes_agent.hermes_cli import update_cmd
 
     recorder = tmp_path / "recorder.sh"
     recorder.write_text(_RECORDER, encoding="utf-8")
@@ -128,7 +128,7 @@ def test_a_background_hook_never_keeps_a_completed_update_locked(repo, tmp_path)
     hook = repo / ".git" / "hooks" / "post-merge"
     hook.write_text(f"#!/bin/sh\nsleep 60 </dev/null >/dev/null 2>&1 &\necho $! > {pid_file}\n", encoding="utf-8")
     hook.chmod(0o755)
-    from hermes_cli.update_custody import run_git
+    from hermes_agent.hermes_cli.update_custody import run_git
 
     lock = ul.UpdateLock(path=tmp_path / "marker", install_root=repo)
     assert lock.acquire()
@@ -221,8 +221,8 @@ def test_a_refused_build_join_is_logged_and_noted_in_the_receipt(tmp_path, monke
     import json
     import logging
 
-    import hermes_cli.update_receipt as ur
-    from hermes_cli import update_custody
+    import hermes_agent.hermes_cli.update_receipt as ur
+    from hermes_agent.hermes_cli import update_custody
 
     home = tmp_path / ".hermes"
     home.mkdir()
@@ -232,7 +232,7 @@ def test_a_refused_build_join_is_logged_and_noted_in_the_receipt(tmp_path, monke
     report.write_text(note, encoding="utf-8")
     with ur.update_receipt_scope():
         ur.begin_update_receipt()
-        with caplog.at_level(logging.WARNING, logger="hermes_cli.update_custody"):
+        with caplog.at_level(logging.WARNING, logger="hermes_agent.hermes_cli.update_custody"):
             assert update_custody._report_refused_join(str(report), ["node", "scripts/build/tui.mjs"]) == note
         payload = json.loads(ur.finalize_update_receipt("success").read_text(encoding="utf-8-sig"))
     assert any(note in rec.getMessage() and "tui.mjs" in rec.getMessage() for rec in caplog.records)
@@ -252,8 +252,8 @@ def test_a_swallowed_refusal_is_what_the_update_reports(tmp_path, monkeypatch, c
     import contextlib
     from types import SimpleNamespace
 
-    import hermes_cli.update_receipt as ur
-    from hermes_cli import main, update_cmd, update_custody, update_owning_install
+    import hermes_agent.hermes_cli.update_receipt as ur
+    from hermes_agent.hermes_cli import main, update_cmd, update_custody, update_owning_install
 
     monkeypatch.setattr(update_custody, "_RUN", {"ran": False, "refused": None})
     monkeypatch.setattr(update_owning_install, "retarget_to_owning_install", lambda root: None)
@@ -311,7 +311,7 @@ def test_a_partial_clone_move_never_fetches_under_the_lock_fd(repo, tmp_path, mo
     monkeypatch.setenv("HERMES_TEST_LOCK", os.path.realpath(ul.checkout_lock_path(clone)))
     monkeypatch.setenv("HERMES_TEST_OUT", str(out))
 
-    from hermes_cli.update_custody import run_git
+    from hermes_agent.hermes_cli.update_custody import run_git
 
     lock = ul.UpdateLock(path=tmp_path / "marker", install_root=clone)
     assert lock.acquire()
@@ -331,7 +331,7 @@ def test_a_partial_clone_move_never_fetches_under_the_lock_fd(repo, tmp_path, mo
 def test_run_git_hands_the_lock_fd_to_local_mutators_only(repo, tmp_path, monkeypatch, args, holds):
     """Through the production runner: `gc` (packs refs, repacks) is a local mutator and runs
     holding the checkout lock; a reader does not. `pull` is never one (its network half)."""
-    from hermes_cli.update_custody import LOCAL_MUTATORS, run_git
+    from hermes_agent.hermes_cli.update_custody import LOCAL_MUTATORS, run_git
 
     assert "pull" not in LOCAL_MUTATORS
     git = tmp_path / "git-recorder.sh"
@@ -364,7 +364,7 @@ def test_a_timed_out_child_never_waits_on_a_grandchild_holding_its_pipes(monkeyp
     """N14: the in-update (Windows) run() killed only the direct child on a timeout, then waited
     unbounded for the pipes a grandchild still held (git-remote-https under a stalled fetch).
     Driven here through that branch with a POSIX grandchild the tree kill (taskkill) cannot reach."""
-    from hermes_cli import update_custody
+    from hermes_agent.hermes_cli import update_custody
 
     # Only update_custody sees win32: patching sys.platform itself would send every lazy import
     # in this window (the suite's Popen guard imports hermes_agent.gateway.status) down its Windows branch.
@@ -392,7 +392,7 @@ def test_no_build_descendant_outlives_the_build_call(repo, tmp_path, monkeypatch
     """N13: node marks the donated lock fd close-on-exec, so npm/esbuild under it never hold the
     checkout; custody rested on node alone. A node that dies leaving a writer behind must not
     leave it running once the build call returns: the next lock owner would share the checkout."""
-    from hermes_cli.source_build import run_source_script
+    from hermes_agent.hermes_cli.source_build import run_source_script
 
     late = tmp_path / "late"
     writer = f"import os, time; os.closerange(3, 4096); time.sleep(2); __import__('pathlib').Path({str(late)!r}).touch()"
@@ -440,7 +440,7 @@ def _launch_in_custody(repo: Path, tmp_path: Path, command: list[str], *, platfo
                        **popen) -> subprocess.Popen:
     """Start ``command`` the way the build runner does (contained_command under a held checkout
     lock); ``platform`` makes the launcher see another ``sys.platform`` (its no-subreaper path)."""
-    from hermes_cli.update_custody import contained_command
+    from hermes_agent.hermes_cli.update_custody import contained_command
 
     lock = ul.UpdateLock(path=tmp_path / "marker", install_root=repo)
     assert lock.acquire()
@@ -608,7 +608,7 @@ def test_a_terminated_launcher_takes_node_and_its_descendants_with_it(repo, tmp_
 def test_the_desktop_build_runs_in_checkout_custody(repo, tmp_path, monkeypatch):
     """F04: the desktop app build (pnpm run build / builder) writes the checkout like the other
     product builds, so it holds the checkout lock while it runs."""
-    from hermes_cli import main_desktop
+    from hermes_agent.hermes_cli import main_desktop
 
     pnpm = _held_lock_recorder(tmp_path, "pnpm", "exit 0")
     out = tmp_path / "pnpm.out"
@@ -649,7 +649,7 @@ def _run_join_launcher(monkeypatch, *, stray_polls: int, escaped: bool = False, 
     import ctypes
     import types
 
-    from hermes_cli.update_custody import _JOIN_JOB
+    from hermes_agent.hermes_cli.update_custody import _JOIN_JOB
 
     events = []
     live = {"left": stray_polls}
@@ -736,7 +736,7 @@ def test_a_build_command_that_starts_outside_the_update_job_is_put_in_it_before_
 def test_a_build_command_the_update_job_will_not_take_never_runs(monkeypatch, tmp_path):
     """F54 kept: a suspended command outside the job that Windows also refuses to assign to it
     is killed before its first instruction and the launcher refuses."""
-    from hermes_cli.update_custody import _REFUSED_EXIT
+    from hermes_agent.hermes_cli.update_custody import _REFUSED_EXIT
 
     monkeypatch.chdir(tmp_path)
     events = _run_join_launcher(monkeypatch, stray_polls=0, escaped=True, rebind=0)

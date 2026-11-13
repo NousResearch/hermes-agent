@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pytest
 
-from hermes_cli import models
+from hermes_agent.hermes_cli import models
 
 
 @pytest.fixture
@@ -22,7 +22,7 @@ def no_live_catalog(monkeypatch):
 @pytest.fixture
 def authed(monkeypatch):
     """Pin which providers count as authenticated; everything else has no credentials."""
-    from hermes_cli import models_detect
+    from hermes_agent.hermes_cli import models_detect
 
     granted: set[str] = set()
     monkeypatch.setattr(models_detect, "provider_has_credentials", lambda p: p in granted)

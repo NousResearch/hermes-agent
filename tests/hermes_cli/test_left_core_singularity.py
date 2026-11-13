@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-import hermes_cli.left_core_migration as lcm
+import hermes_agent.hermes_cli.left_core_migration as lcm
 
 
 @pytest.fixture(autouse=True)
@@ -21,7 +21,7 @@ def _fresh(monkeypatch, tmp_path):
     managed = tmp_path / "managed"
     managed.mkdir()
     monkeypatch.setenv("HERMES_MANAGED_DIR", str(managed))
-    import hermes_cli.memory_provider_migration as mpm
+    import hermes_agent.hermes_cli.memory_provider_migration as mpm
     monkeypatch.setattr(mpm, "catalog_source", lambda name: name)
 
 
@@ -143,7 +143,7 @@ def test_config_unset_removes_the_env_copy_core_used_to_write(tmp_path, monkeypa
     home = _home(tmp_path, env="TERMINAL_SINGULARITY_IMAGE=docker://old:1\n",
                  config="terminal:\n  backend: singularity\n  singularity_image: docker://old:1\n")
     monkeypatch.setenv("HERMES_HOME", str(home))
-    from hermes_cli.config import unset_config_value
+    from hermes_agent.hermes_cli.config import unset_config_value
     unset_config_value("terminal.singularity_image")
     assert "singularity_image" not in (home / "config.yaml").read_text(encoding="utf-8")
     assert "TERMINAL_SINGULARITY_IMAGE" not in (home / ".env").read_text(encoding="utf-8")
@@ -154,7 +154,7 @@ def test_config_set_and_get_still_recognize_the_image_key(tmp_path, monkeypatch,
     # terminal.singularity_image <image>`; leaving DEFAULT_CONFIG must not make it an unknown key.
     home = _home(tmp_path, config="terminal:\n  backend: singularity\n")
     monkeypatch.setenv("HERMES_HOME", str(home))
-    from hermes_cli.config import get_config_value, set_config_value
+    from hermes_agent.hermes_cli.config import get_config_value, set_config_value
     set_config_value("terminal.singularity_image", "docker://python:3.12")
     get_config_value("terminal.singularity_image")
     out = capsys.readouterr()

@@ -62,7 +62,7 @@ def _store_cursor(route_name: str, cursor: str) -> None:
 
 
 def _remove_route(route_name: str) -> None:
-    from hermes_cli.webhook import _mutate_subscriptions
+    from hermes_agent.hermes_cli.webhook import _mutate_subscriptions
     from hermes_agent.tools.mcp_tool_events import drop_state
     _mutate_subscriptions(lambda subscriptions: subscriptions.pop(route_name, None))
     drop_state(route_name)

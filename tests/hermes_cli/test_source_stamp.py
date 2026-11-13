@@ -15,7 +15,7 @@ def _git(repo: Path, *args: str) -> str:
 
 
 def test_write_source_stamp_records_live_checkout_identity_atomically(tmp_path):
-    from hermes_cli.source_stamp import write_source_stamp
+    from hermes_agent.hermes_cli.source_stamp import write_source_stamp
 
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -43,8 +43,8 @@ def test_write_source_stamp_records_live_checkout_identity_atomically(tmp_path):
 
 
 def test_stale_source_stamp_defers_to_live_checkout(tmp_path, monkeypatch):
-    from hermes_cli.source_stamp import write_source_stamp
-    from hermes_cli.version_info import _reset_version_info_cache, get_version_info
+    from hermes_agent.hermes_cli.source_stamp import write_source_stamp
+    from hermes_agent.hermes_cli.version_info import _reset_version_info_cache, get_version_info
 
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -60,7 +60,7 @@ def test_stale_source_stamp_defers_to_live_checkout(tmp_path, monkeypatch):
     (repo / "tracked").write_text("manual pull\n", encoding="utf-8")
     _git(repo, "commit", "-qam", "manual pull")
     monkeypatch.setenv("HERMES_INSTALL_ROOT", str(repo))
-    monkeypatch.setattr("hermes_cli.version_info._resolve_repo_dir", lambda: repo)
+    monkeypatch.setattr("hermes_agent.hermes_cli.version_info._resolve_repo_dir", lambda: repo)
     _reset_version_info_cache()
 
     info = get_version_info()

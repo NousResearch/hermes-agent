@@ -15,7 +15,7 @@ from unittest.mock import MagicMock
 import pytest
 
 import plugins.dashboard_auth.basic as basic_plugin
-from hermes_cli.dashboard_auth import (
+from hermes_agent.hermes_cli.dashboard_auth import (
     InvalidCredentialsError,
     RefreshExpiredError,
     assert_protocol_compliance,

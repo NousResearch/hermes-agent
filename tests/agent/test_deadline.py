@@ -202,7 +202,7 @@ class TestResolveTimeout:
         def _boom():
             raise RuntimeError("config unreadable")
 
-        monkeypatch.setattr("hermes_cli.config.load_config_readonly", _boom)
+        monkeypatch.setattr("hermes_agent.hermes_cli.config.load_config_readonly", _boom)
         assert dl._timeouts_section() == {}
         assert resolve_timeout("a.b", default=5.0) == 5.0
 

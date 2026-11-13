@@ -35,7 +35,7 @@ def config_home(tmp_path, monkeypatch):
     (home / "config.yaml").write_text("\n".join(lines) + "\n", encoding="utf-8")
     monkeypatch.setenv("HERMES_HOME", str(home))
 
-    from hermes_cli import config as cfgmod
+    from hermes_agent.hermes_cli import config as cfgmod
 
     cfgmod._LOAD_CONFIG_CACHE.clear()
     cfgmod._RAW_CONFIG_CACHE.clear()
@@ -47,7 +47,7 @@ def config_home(tmp_path, monkeypatch):
 def _time_cached_read_under_held_lock(reader):
     """Prime ``reader`` (lock-free), then time one more call while another thread holds
     ``_CONFIG_LOCK``. Returns ``(result, elapsed_seconds)``."""
-    from hermes_cli import config as cfgmod
+    from hermes_agent.hermes_cli import config as cfgmod
 
     reader()  # prime the cache
 
@@ -73,7 +73,7 @@ def _time_cached_read_under_held_lock(reader):
 
 
 def test_cached_read_completes_while_another_thread_holds_the_config_lock(config_home):
-    from hermes_cli import config as cfgmod
+    from hermes_agent.hermes_cli import config as cfgmod
 
     cfg, elapsed = _time_cached_read_under_held_lock(cfgmod.load_config_readonly)
 
@@ -86,7 +86,7 @@ def test_cached_read_completes_while_another_thread_holds_the_config_lock(config
 
 def test_cached_raw_read_completes_while_another_thread_holds_the_config_lock(config_home):
     """Twin of the load_config test for the sibling ``read_raw_config`` fast path."""
-    from hermes_cli import config as cfgmod
+    from hermes_agent.hermes_cli import config as cfgmod
 
     raw, elapsed = _time_cached_read_under_held_lock(cfgmod.read_raw_config_readonly)
 

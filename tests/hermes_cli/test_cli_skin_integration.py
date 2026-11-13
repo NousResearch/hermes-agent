@@ -1,8 +1,8 @@
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from cli import HermesCLI, _build_compact_banner, _rich_text_from_ansi
-from hermes_cli.skin_engine import get_active_skin, set_active_skin
+from hermes_agent.cli import HermesCLI, _build_compact_banner, _rich_text_from_ansi
+from hermes_agent.hermes_cli.skin_engine import get_active_skin, set_active_skin
 
 
 def _make_cli_stub():
@@ -81,7 +81,7 @@ class TestCliSkinPromptIntegration:
     def test_handle_skin_command_refreshes_live_tui(self, capsys):
         cli = _make_cli_stub()
 
-        with patch("cli.save_config_value", return_value=True):
+        with patch("hermes_agent.cli.save_config_value", return_value=True):
             cli._handle_skin_command("/skin ares")
 
         assert get_active_skin().name == "ares"
@@ -95,7 +95,7 @@ class TestCompactBannerSkinIntegration:
         set_active_skin("poseidon")
         skin = get_active_skin()
 
-        with patch("cli.shutil.get_terminal_size", return_value=SimpleNamespace(columns=90)), \
+        with patch("hermes_agent.cli.shutil.get_terminal_size", return_value=SimpleNamespace(columns=90)), \
              patch.dict(_build_compact_banner.__globals__, {"format_banner_version_label": lambda: "Hermes Agent v0.1.0 (test)"}):
             banner = _build_compact_banner()
 

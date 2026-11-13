@@ -27,9 +27,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from hermes_cli import update_abort_recovery as abort_recovery
-from hermes_cli import update_cmd
-from hermes_cli import update_restart_recovery as recovery
+from hermes_agent.hermes_cli import update_abort_recovery as abort_recovery
+from hermes_agent.hermes_cli import update_cmd
+from hermes_agent.hermes_cli import update_restart_recovery as recovery
 
 
 class _Completed:
@@ -60,7 +60,7 @@ def _serve_runtime(pid, *, create_time=None, kind="serve", profile="default"):
 
 
 def _identity_module():
-    return __import__("hermes_cli.process_identity", fromlist=["ledger_entries"])
+    return __import__("hermes_agent.hermes_cli.process_identity", fromlist=["ledger_entries"])
 
 
 # ---------------------------------------------------------------------------
@@ -810,7 +810,7 @@ def test_spawn_failure_reports_empty_serve_coverage(monkeypatch):
 
 
 def test_serve_coverage_reaches_the_persisted_receipt(tmp_path, monkeypatch):
-    from hermes_cli import update_receipt
+    from hermes_agent.hermes_cli import update_receipt
 
     monkeypatch.setattr(update_receipt, "_receipt_dir", lambda: tmp_path)
     update_receipt.begin_update_receipt()
@@ -908,7 +908,7 @@ def test_recovery_module_reports_serve_units_in_a_real_process(tmp_path):
     """The protocol survives a genuine subprocess round-trip."""
     path, log = _fake_systemctl_path(tmp_path)
     result = subprocess.run(
-        [sys.executable, "-m", "hermes_cli.update_restart_recovery", "--stdin"],
+        [sys.executable, "-m", "hermes_agent.hermes_cli.update_restart_recovery", "--stdin"],
         input=json.dumps(
             {"profiles": [], "serve_units": {"recover": True, "skip": []}}
         ),
@@ -929,7 +929,7 @@ def test_recovery_module_reports_serve_units_in_a_real_process(tmp_path):
 def test_recovery_module_reports_empty_serve_coverage_off_linux_in_a_real_process():
     """Off Linux there is no systemd serve pass, but the protocol still round-trips."""
     result = subprocess.run(
-        [sys.executable, "-m", "hermes_cli.update_restart_recovery", "--stdin"],
+        [sys.executable, "-m", "hermes_agent.hermes_cli.update_restart_recovery", "--stdin"],
         input=json.dumps(
             {"profiles": [], "serve_units": {"recover": True, "skip": []}}
         ),
@@ -949,8 +949,8 @@ def test_recovery_module_reports_empty_serve_coverage_off_linux_in_a_real_proces
 
 
 def _stub_dashboard_helpers(monkeypatch, **helpers):
-    """Stub the ``hermes_cli.main_dashboard`` helpers the dashboard-cleanup path reads at call time."""
-    from hermes_cli import main_dashboard
+    """Stub the ``hermes_agent.hermes_cli.main_dashboard`` helpers the dashboard-cleanup path reads at call time."""
+    from hermes_agent.hermes_cli import main_dashboard
 
     for name, value in helpers.items():
         monkeypatch.setattr(main_dashboard, name, value)
@@ -958,7 +958,7 @@ def _stub_dashboard_helpers(monkeypatch, **helpers):
 
 def test_restarted_dashboard_unit_is_not_killed_by_the_continued_scan(monkeypatch):
     """Continuing the scan must not undo the restart it just performed."""
-    from hermes_cli import dashboard_procs
+    from hermes_agent.hermes_cli import dashboard_procs
 
     killed: list[int] = []
     _stub_dashboard_helpers(
@@ -985,7 +985,7 @@ def test_restarted_dashboard_unit_is_not_killed_by_the_continued_scan(monkeypatc
 @pytest.mark.platforms("posix")
 def test_serve_backend_survives_selection_when_the_dashboard_unit_restarts(monkeypatch):
     """A serve PID owned by a DIFFERENT unit is still selected for recovery."""
-    from hermes_cli import dashboard_procs
+    from hermes_agent.hermes_cli import dashboard_procs
 
     signalled: list[int] = []
     restarted: list[str] = []

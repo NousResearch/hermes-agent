@@ -1,6 +1,6 @@
 import re
 
-from hermes_cli.session_export_html import _generate_messages_html
+from hermes_agent.hermes_cli.session_export_html import _generate_messages_html
 
 def test_role_is_escaped_in_html_export():
     messages = [

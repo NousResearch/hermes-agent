@@ -34,7 +34,7 @@ def _trim_recorder(monkeypatch, agent):
         seen.append((reason, agent._executing_tools))
         return True
 
-    monkeypatch.setattr("hermes_cli.mem_trim.trim_memory", trim)
+    monkeypatch.setattr("hermes_agent.hermes_cli.mem_trim.trim_memory", trim)
     return seen
 
 

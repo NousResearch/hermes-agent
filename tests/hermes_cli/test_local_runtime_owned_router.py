@@ -94,8 +94,8 @@ def test_owner_sigkill_reaps_router_tree_not_an_external_control(tmp_path):
 
 
 def test_a_graceful_stop_releases_the_routers_group(monkeypatch, tmp_path):
-    from hermes_cli import process_identity
-    from hermes_cli.local_runtime import supervisor
+    from hermes_agent.hermes_cli import process_identity
+    from hermes_agent.hermes_cli.local_runtime import supervisor
 
     monkeypatch.setattr(supervisor, "runtimes_root", lambda: tmp_path)
     sup = supervisor.LlamaServerSupervisor(tmp_path, tmp_path, port=59998)
@@ -116,8 +116,8 @@ def test_a_graceful_stop_releases_the_routers_group(monkeypatch, tmp_path):
 
 def test_stop_after_a_router_crash_still_stops_its_surviving_model_child(monkeypatch, tmp_path):
     """The watcher's restart backoff: the router died, its model child (same group) still runs."""
-    from hermes_cli import process_identity
-    from hermes_cli.local_runtime import supervisor
+    from hermes_agent.hermes_cli import process_identity
+    from hermes_agent.hermes_cli.local_runtime import supervisor
 
     monkeypatch.setattr(supervisor, "runtimes_root", lambda: tmp_path)
     sup = supervisor.LlamaServerSupervisor(tmp_path, tmp_path, port=59997)
@@ -146,8 +146,8 @@ def test_stop_after_a_router_crash_still_stops_its_surviving_model_child(monkeyp
 
 def test_a_crash_restart_stops_the_old_routers_survivors_and_releases_its_group(monkeypatch, tmp_path):
     """The watcher restarts a crashed router: the old group's model child must not outlive the restart."""
-    from hermes_cli import process_identity
-    from hermes_cli.local_runtime import supervisor
+    from hermes_agent.hermes_cli import process_identity
+    from hermes_agent.hermes_cli.local_runtime import supervisor
 
     monkeypatch.setattr(supervisor, "runtimes_root", lambda: tmp_path)
     monkeypatch.setattr(supervisor, "_RESTART_BACKOFF_S", (0,))
@@ -180,8 +180,8 @@ def test_a_crash_restart_stops_the_old_routers_survivors_and_releases_its_group(
 def test_a_crashed_routers_empty_group_is_released_before_the_restart_backoff(monkeypatch, tmp_path):
     """Kept registered through the backoff, the freed number could be reused by a stranger's group,
     which the restart's survivor stop would then TERM and KILL."""
-    from hermes_cli import process_identity
-    from hermes_cli.local_runtime import supervisor
+    from hermes_agent.hermes_cli import process_identity
+    from hermes_agent.hermes_cli.local_runtime import supervisor
 
     monkeypatch.setattr(supervisor, "runtimes_root", lambda: tmp_path)
     sup = supervisor.LlamaServerSupervisor(tmp_path, tmp_path, port=59995)

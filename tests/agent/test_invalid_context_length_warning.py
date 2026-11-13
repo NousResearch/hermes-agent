@@ -11,8 +11,8 @@ def _build_agent(model_cfg, custom_providers=None, model=None):
     base_url = model_cfg.get("base_url", "")
 
     with (
-        patch("hermes_cli.config.load_config", return_value=cfg),
-        patch("hermes_cli.config.load_config_readonly", return_value=cfg),
+        patch("hermes_agent.hermes_cli.config.load_config", return_value=cfg),
+        patch("hermes_agent.hermes_cli.config.load_config_readonly", return_value=cfg),
         patch("hermes_agent.agent.model_metadata.get_model_context_length", return_value=128_000),
         patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]),
         patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),

@@ -13,7 +13,7 @@ def test_run_conversation_exports_session_and_turn_cwds(tmp_path, monkeypatch):
         pytest.skip("NeMo Relay native binding is unavailable on this platform")
 
     from hermes_agent.agent import relay_runtime
-    from hermes_cli.lifecycle import finalize_session
+    from hermes_agent.hermes_cli.lifecycle import finalize_session
     from hermes_agent.run_agent import AIAgent
     from hermes_agent.tools.terminal_tool import clear_session_cwd, record_session_cwd
 

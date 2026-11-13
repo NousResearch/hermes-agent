@@ -15,7 +15,7 @@ _STUDIO_MODELS = "https://generativelanguage.googleapis.com/v1beta/models"
 
 
 def test_doctor_gemini_probe_keeps_aq_keys_on_the_studio_host(monkeypatch):
-    from hermes_cli.doctor_connectivity import _apikey_request
+    from hermes_agent.hermes_cli.doctor_connectivity import _apikey_request
 
     _, url, headers = _apikey_request(
         "AQ.studio-key", "GEMINI_BASE_URL", _STUDIO_MODELS
@@ -41,8 +41,8 @@ def test_doctor_gemini_probe_keeps_aq_keys_on_the_studio_host(monkeypatch):
 
 
 def test_dashboard_gemini_key_probe_keeps_aq_keys_on_the_studio_host(monkeypatch):
-    import hermes_cli.web_routers.config_env as mod
-    from hermes_cli.web_models import EnvVarUpdate
+    import hermes_agent.hermes_cli.web_routers.config_env as mod
+    from hermes_agent.hermes_cli.web_models import EnvVarUpdate
 
     seen = {}
 

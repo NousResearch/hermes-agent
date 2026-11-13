@@ -3,7 +3,7 @@
 Both speak the OpenAI-style ``/chat/completions`` image protocol (``modalities:
 ["image","text"]``, references as ``image_url`` parts, output in
 ``choices[0].message.images[].image_url.url``); only ``(base_url, api_key)`` differs,
-via :func:`hermes_cli.runtime_provider.resolve_runtime_provider`. OpenRouter alone also
+via :func:`hermes_agent.hermes_cli.runtime_provider.resolve_runtime_provider`. OpenRouter alone also
 has the Dedicated Image API (``POST /images/generations``, own catalog, exact ratios,
 up to 16 references) — see :func:`_select_surface`.
 """
@@ -527,7 +527,7 @@ class OpenRouterCompatImageProvider(ImageGenProvider):
 
     def _credentials(self) -> tuple[str, str]:
         """``(api_key, base_url)`` — either may be ``""``; raises on resolution failure."""
-        from hermes_cli.runtime_provider import resolve_runtime_provider
+        from hermes_agent.hermes_cli.runtime_provider import resolve_runtime_provider
 
         runtime = resolve_runtime_provider(requested=self._runtime_name)
         return (

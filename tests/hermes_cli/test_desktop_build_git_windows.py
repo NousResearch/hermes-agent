@@ -12,7 +12,7 @@ def test_packaged_desktop_build_restores_pm_git_for_stamp_and_pack(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import pm
-    from hermes_cli import main_desktop
+    from hermes_agent.hermes_cli import main_desktop
 
     desktop = tmp_path / "apps" / "desktop"
     desktop.mkdir(parents=True)

@@ -86,7 +86,7 @@ def test_unnamed_group_topic_is_listed(tmp_path):
 async def test_topic_setup_does_not_mutate_shared_config_cache(tmp_path, monkeypatch):
     """Setup writes created thread_ids into its own copy; the process-wide config cache only learns
     them through the persist path."""
-    from hermes_cli.config import load_config_readonly
+    from hermes_agent.hermes_cli.config import load_config_readonly
 
     home = tmp_path / "hermes"
     home.mkdir()

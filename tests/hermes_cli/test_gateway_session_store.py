@@ -5,9 +5,9 @@ from contextlib import asynccontextmanager
 
 import pytest
 
-from hermes_cli.gateway_client import GatewayClientError, GatewayRPCError
-from hermes_cli.gateway_connection import GatewayConnection
-from hermes_cli.gateway_session_store import GatewaySessionStore
+from hermes_agent.hermes_cli.gateway_client import GatewayClientError, GatewayRPCError
+from hermes_agent.hermes_cli.gateway_connection import GatewayConnection
+from hermes_agent.hermes_cli.gateway_session_store import GatewaySessionStore
 
 INFO = {"model": "fake-model", "cwd": "/w", "context_length": 128000, "enabled_toolsets": ["file"],
         "tools": {"file": ["read_file", "write_file"]}, "skills": {"devops": ["sdlc-review"]},
@@ -233,7 +233,7 @@ def test_reader_opens_once_the_gateway_created_state_db(store, tmp_path, monkeyp
 
 
 def test_banner_session_label_is_mains_eight_characters_for_a_canonical_id():
-    from hermes_cli.gateway_session_store import session_label
+    from hermes_agent.hermes_cli.gateway_session_store import session_label
     assert session_label("local-ab12cd34" + "0" * 56) == "ab12cd34"
     assert session_label("20261012_134501_abcdef") == "20261012_134501_abcdef"
     assert session_label("local-abc") == "local-abc"
@@ -245,13 +245,13 @@ def test_cli_startup_notices_render_from_the_snapshot(store, monkeypatch):
     session's tools); the CLI process enumerates nothing."""
     from types import SimpleNamespace
 
-    from hermes_cli.cli_info_mixin import CLIInfoMixin
+    from hermes_agent.hermes_cli.cli_info_mixin import CLIInfoMixin
     db, _ = store
     db.open_session(cli("local-old", resumed=True))
     db.current["info"].update(tool_availability_warnings=["[yellow]⚠ terminal off[/]"])
     printed = []
     host = SimpleNamespace(_session_db=db, _console_print=lambda *a: printed.append(a[0] if a else ""))
-    monkeypatch.setattr("cli._build_compact_banner", lambda: "compact", raising=False)
+    monkeypatch.setattr("hermes_agent.cli._build_compact_banner", lambda: "compact", raising=False)
     banner = SimpleNamespace(**vars(host), console=SimpleNamespace(clear=lambda: None), compact=True,
                              session_id="local-old", _show_status=lambda: None, agent=None,
                              _show_tool_availability_warnings=lambda: printed.append("LOCAL-WARN"))
@@ -336,7 +336,7 @@ def test_rewind_refuses_when_the_warm_view_diverged(store):
 def test_new_session_id_is_a_fresh_gateway_session(store, monkeypatch):
     """/new: the id main mints is the gateway's new session (created with the profile's default model:
     an explicit -m was for the previous session only)."""
-    from hermes_cli.cli_init_mixin import CLIInitMixin
+    from hermes_agent.hermes_cli.cli_init_mixin import CLIInitMixin
     monkeypatch.delenv("HERMES_SESSION_SOURCE", raising=False)
     db, client = store
     host = types.SimpleNamespace(session_id="local-old", _resumed=True, _session_db=db, model="m-explicit",
@@ -356,7 +356,7 @@ def test_new_session_id_is_a_fresh_gateway_session(store, monkeypatch):
 
 
 def test_branch_session_id_is_the_gateway_branch_child(store):
-    from hermes_cli.cli_init_mixin import CLIInitMixin
+    from hermes_agent.hermes_cli.cli_init_mixin import CLIInitMixin
     db, client = store
     base = client.rpc
 
@@ -376,7 +376,7 @@ def test_branch_session_id_is_the_gateway_branch_child(store):
 
 
 def test_new_session_id_off_the_gateway_is_mains_mint():
-    from hermes_cli.cli_init_mixin import CLIInitMixin
+    from hermes_agent.hermes_cli.cli_init_mixin import CLIInitMixin
     host = types.SimpleNamespace(_session_db=None)
     from datetime import datetime
     assert CLIInitMixin._new_session_id(host, datetime(2026, 10, 12, 1, 2, 3)).startswith("20261012_010203_")
@@ -400,7 +400,7 @@ def test_cli_listings_include_gateway_rows_created_by_the_cli(store, tmp_path, m
     conn.executemany("UPDATE sessions SET created_source=? WHERE id=?", [(c, sid) for sid, _s, c in rows])
     conn.commit()
     conn.close()
-    from hermes_cli.session_listing import query_session_listing
+    from hermes_agent.hermes_cli.session_listing import query_session_listing
     listed = query_session_listing(db, source="cli", include_unnamed=True, limit=10)
     assert sorted(r["id"] for r in listed) == ["legacy", "local-cli"]
     found = db.search_sessions(source=["cli", "oneshot"], limit=10)
@@ -413,7 +413,7 @@ def test_create_if_missing_titles_a_gateway_created_session(store, monkeypatch):
     """``chat -c NAME --create-if-missing``: the gateway creates the titled session (its own
     resolve -> create -> title step); the CLI then resumes the id it returns. No client write."""
     db, client = store
-    from hermes_cli import gateway_session_store as gss
+    from hermes_agent.hermes_cli import gateway_session_store as gss
     monkeypatch.setattr(gss, "session_store", lambda: db)
     assert gss.create_titled_session("Fresh Named") == "local-new"
     _method, params = [c for c in client.calls if c[0] == "session.create"][-1]
@@ -436,8 +436,8 @@ def test_bare_continue_finds_the_last_session_the_cli_created(tmp_path, monkeypa
     conn.executemany("UPDATE sessions SET created_source=? WHERE id=?", [("cli", "local-cli"), ("tui", "local-tui")])
     conn.commit()
     conn.close()
-    monkeypatch.setattr("hermes_cli.main._resolve_workspace_key", lambda: None)
-    from hermes_cli.main import _resolve_last_session
+    monkeypatch.setattr("hermes_agent.hermes_cli.main._resolve_workspace_key", lambda: None)
+    from hermes_agent.hermes_cli.main import _resolve_last_session
     assert _resolve_last_session("cli") == "local-cli"
     assert _resolve_last_session("tui") == "local-tui"
 
@@ -445,7 +445,7 @@ def test_bare_continue_finds_the_last_session_the_cli_created(tmp_path, monkeypa
 def test_start_and_quit_closes_the_gateway_session_with_no_agent():
     """The gateway session exists from the banner on, before any agent is built (main created its row
     lazily at the first turn): quit-immediately still ends and discards it, as main leaves no row."""
-    from hermes_cli.cli_tui_runtime_mixin import CLITuiRuntimeMixin
+    from hermes_agent.hermes_cli.cli_tui_runtime_mixin import CLITuiRuntimeMixin
     host = types.SimpleNamespace(agent=None, session_id="local-new", _gateway_session_open=True)
     assert CLITuiRuntimeMixin._closing_session_id(host) == "local-new"
     host._gateway_session_open = False
@@ -467,7 +467,7 @@ def test_yolo_toggle_persists_as_the_gateway_session_yolo(store):
 
 
 def test_new_session_before_the_gateway_session_opened_is_mains_placeholder(store):
-    from hermes_cli.cli_init_mixin import CLIInitMixin
+    from hermes_agent.hermes_cli.cli_init_mixin import CLIInitMixin
     from datetime import datetime
     db, client = store
     host = types.SimpleNamespace(session_id="x", _session_db=db, _gateway_session_open=False)
@@ -476,13 +476,13 @@ def test_new_session_before_the_gateway_session_opened_is_mains_placeholder(stor
 
 
 def test_run_budget_flag_rides_session_create():
-    from hermes_cli.gateway_session_store import _creation_policy
+    from hermes_agent.hermes_cli.gateway_session_store import _creation_policy
     assert _creation_policy({"run_budget": 90})["run_budget"] == 90.0
     assert "run_budget" not in _creation_policy({"run_budget": None})
 
 
 def test_verbose_flag_rides_session_create():
-    from hermes_cli.gateway_session_store import _creation_policy
+    from hermes_agent.hermes_cli.gateway_session_store import _creation_policy
     assert _creation_policy({"verbose": True})["verbose"] is True
     assert "verbose" not in _creation_policy({"verbose": None})
 
@@ -490,8 +490,8 @@ def test_verbose_flag_rides_session_create():
 def test_row_cwd_is_mains_stamp_while_the_tools_run_in_terminal_cwd(store, monkeypatch, tmp_path):
     """Main's row cwd: the launching process's cwd on its first session (``-w`` never chdirs, so the
     repo root), none on ``/new`` and ``--create-if-missing``. The execution cwd stays TERMINAL_CWD."""
-    from hermes_cli.cli_init_mixin import CLIInitMixin
-    from hermes_cli import gateway_session_store as gss
+    from hermes_agent.hermes_cli.cli_init_mixin import CLIInitMixin
+    from hermes_agent.hermes_cli import gateway_session_store as gss
     db, client = store
     repo, tree = tmp_path / "repo", tmp_path / "repo" / ".worktrees" / "wt"
     tree.mkdir(parents=True)
@@ -518,7 +518,7 @@ def test_a_sandbox_backend_sends_the_host_launch_dir_not_its_terminal_cwd(store,
     """A docker/ssh ``terminal.cwd`` (bridged to TERMINAL_CWD) names a path inside the sandbox. The
     owner checks ``cwd`` on its own host, so sending it refused every launch with ``invalid_params``;
     like the thin client and the TUI, the classic CLI sends its host launch dir."""
-    from hermes_cli import gateway_session_store as gss
+    from hermes_agent.hermes_cli import gateway_session_store as gss
     db, client = store
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("TERMINAL_CWD", "/project/not-on-this-host")
@@ -554,14 +554,14 @@ def test_a_removed_w_worktree_is_sent_so_the_gateway_refuses_it(store, monkeypat
     original checkout would put the agent's edits there. Main sent the path and the gateway refused it.
     ``hermes -w`` records the tree in the imported ``cli`` module, ``python cli.py -w`` in ``__main__``."""
     import sys
-    from hermes_cli import gateway_session_store as gss
+    from hermes_agent.hermes_cli import gateway_session_store as gss
     db, client = store
     repo = tmp_path / "repo"
     repo.mkdir()
     tree = repo / ".worktrees" / "wt"  # never created: removed while the CLI was open
     monkeypatch.chdir(repo)
     if entry == "cli":
-        monkeypatch.setitem(sys.modules, "cli", types.SimpleNamespace(_active_worktree={"path": str(tree)}))
+        monkeypatch.setitem(sys.modules, "hermes_agent.cli", types.SimpleNamespace(_active_worktree={"path": str(tree)}))
     else:
         monkeypatch.setattr(sys.modules["__main__"], "_active_worktree", {"path": str(tree)}, raising=False)
     monkeypatch.setenv("TERMINAL_CWD", str(tree))
@@ -581,13 +581,13 @@ def test_a_project_resumed_after_w_is_sent_not_the_w_worktree(store, monkeypatch
     """``hermes -w`` in A, ``/resume`` of a session from B, then ``/new``: the resume moves cwd and
     TERMINAL_CWD to B but A stays recorded (its quit cleanup is still due), so A must not win."""
     import sys
-    from hermes_cli.cli_session_mixin import CLISessionMixin
+    from hermes_agent.hermes_cli.cli_session_mixin import CLISessionMixin
     db, client = store
     tree, project_b = tmp_path / "a" / ".worktrees" / "wt", tmp_path / "b"
     tree.mkdir(parents=True)
     project_b.mkdir()
     monkeypatch.chdir(tmp_path / "a")
-    monkeypatch.setitem(sys.modules, "cli", types.SimpleNamespace(_active_worktree={"path": str(tree)}))
+    monkeypatch.setitem(sys.modules, "hermes_agent.cli", types.SimpleNamespace(_active_worktree={"path": str(tree)}))
     monkeypatch.setenv("TERMINAL_CWD", str(tree))
     monkeypatch.setenv("TERMINAL_ENV", backend)
     if mount:
@@ -604,7 +604,7 @@ def test_explicit_reasoning_max_turns_and_checkpoints_reach_session_create(store
     the profile default. Unset flags stay unset (the gateway resolves the profile default)."""
     from types import SimpleNamespace
 
-    from hermes_cli.cli_init_mixin import CLIInitMixin
+    from hermes_agent.hermes_cli.cli_init_mixin import CLIInitMixin
     db, client = store
 
     def host(**flags):
@@ -631,7 +631,7 @@ def test_resume_hands_the_cli_lease_over_while_the_gateway_imports_the_row(store
     CLI's lease before the first turn, so the attach must run without it and re-claim afterwards."""
     from types import SimpleNamespace
 
-    from hermes_cli.cli_init_mixin import CLIInitMixin
+    from hermes_agent.hermes_cli.cli_init_mixin import CLIInitMixin
     db, client = store
     events = []
     h = SimpleNamespace(model="m1", requested_provider="auto", enabled_toolsets=["terminal"],
@@ -654,7 +654,7 @@ def test_resume_hands_the_cli_lease_over_while_the_gateway_imports_the_row(store
 def test_skills_flag_reaches_session_create_without_auto_load_names(store, monkeypatch):
     """CLI-1: `-s/--skills` rides ``session.create`` (the gateway renders it into the session once); the
     CLI's own system prompt never reaches the gateway. ``skills.auto_load`` names the gateway loads itself."""
-    from hermes_cli.cli_init_mixin import CLIInitMixin
+    from hermes_agent.hermes_cli.cli_init_mixin import CLIInitMixin
     monkeypatch.setattr("hermes_agent.agent.skill_commands.resolve_auto_load_skills", lambda config=None: ["pinned"])
     db, client = store
     host = types.SimpleNamespace(model="m1", requested_provider="auto", enabled_toolsets=["file"],
@@ -707,8 +707,8 @@ def test_unchanged_model_flag_on_resume_ignores_the_configured_provider(store, m
     """CLI-2: `--resume <id> -m my-model` repeats the session's frozen `-m` while the CLI resolved the
     profile's provider; only a `--provider` the user typed is launch policy, so the repeat is accepted
     (as the thin client accepts it) and a different `--provider` is still refused."""
-    import cli as cli_module
-    from hermes_cli.cli_init_mixin import CLIInitMixin
+    import hermes_agent.cli as cli_module
+    from hermes_agent.hermes_cli.cli_init_mixin import CLIInitMixin
     monkeypatch.setitem(cli_module.CLI_CONFIG, "model", {"default": "cfg-model", "provider": "openrouter"})
     db, client = store
     _frozen_launch(client, {"model": "my-model"})
@@ -736,7 +736,7 @@ def test_unchanged_model_flag_on_resume_ignores_the_configured_provider(store, m
 def test_new_session_keeps_the_runs_launch_policy(store, monkeypatch):
     """CLI-3: `/new` keeps `--max-turns`, `--checkpoints`, `--run-budget`, `-v` and `-s` (main kept one
     AIAgent across /new); only the explicit model route is left to the profile default."""
-    from hermes_cli.cli_init_mixin import CLIInitMixin
+    from hermes_agent.hermes_cli.cli_init_mixin import CLIInitMixin
     monkeypatch.setattr("hermes_agent.agent.skill_commands.resolve_auto_load_skills", lambda config=None: [])
     db, client = store
     db.open_session(cli("local-old", resumed=True))
@@ -754,7 +754,7 @@ def test_new_session_keeps_the_runs_launch_policy(store, monkeypatch):
 def test_branch_carries_a_live_yolo_onto_the_gateway_child(store):
     """CLI-20: the gateway's branch child starts without the parent's `/yolo` toggle while the CLI moves
     its own flag over (status bar YOLO); the CLI sets the child's bypass on the gateway too."""
-    from hermes_cli.cli_init_mixin import CLIInitMixin
+    from hermes_agent.hermes_cli.cli_init_mixin import CLIInitMixin
     from hermes_agent.tools import approval
     db, client = store
     base = client.rpc
@@ -784,7 +784,7 @@ def test_branch_never_shows_yolo_the_gateway_refused(store):
     """CLI-20: approvals run on the gateway, so a failed ``config.set yolo`` on the child surfaces instead of
     being logged as a best-effort persist, and the child's local flag stays off (no YOLO display while the
     gateway still asks)."""
-    from hermes_cli.cli_init_mixin import CLIInitMixin
+    from hermes_agent.hermes_cli.cli_init_mixin import CLIInitMixin
     from hermes_agent.tools import approval
     db, client = store
     base = client.rpc
@@ -813,7 +813,7 @@ def test_exported_ignore_rules_never_refuses_a_bare_resume(store, monkeypatch):
     """CLI-2: an exported HERMES_IGNORE_RULES is creation policy only, so a bare `hermes -c` continues a
     session created without it (Desktop, Ink, before the export); a typed --ignore-rules is still refused,
     as the thin client refuses it."""
-    from hermes_cli.cli_init_mixin import CLIInitMixin, _gateway_launch
+    from hermes_agent.hermes_cli.cli_init_mixin import CLIInitMixin, _gateway_launch
     monkeypatch.setenv("HERMES_IGNORE_RULES", "1")
     db, client = store
     _frozen_launch(client, {"model": "m-frozen"})
@@ -835,7 +835,7 @@ def test_resume_refusal_names_the_clashing_flag_and_the_way_forward(store):
     """CLI-2: the refusal (one text for both clients) names the flag that differs from the frozen launch
     and how to go on: resume without it, then the slash command that switches it live."""
     import argparse
-    from hermes_cli.gateway_chat import check_resume_policy
+    from hermes_agent.hermes_cli.gateway_chat import check_resume_policy
     db, client = store
     _frozen_launch(client, {"model": "m-frozen", "max_turns": 5})
     host = cli("local-old", resumed=True)
@@ -857,8 +857,8 @@ def test_clear_banner_shows_the_new_gateway_sessions_tools_and_short_label(store
     """#134889 CLI-22: `/clear` inside the running CLI redraws the banner from the new gateway
     session's snapshot (its MCP tools, main's 8-character label), as the startup banner does; this
     process's own tool registry has no MCP servers and is never walked."""
-    import cli as cli_mod
-    from cli import HermesCLI
+    import hermes_agent.cli as cli_mod
+    from hermes_agent.cli import HermesCLI
     db, client = store
     canonical = "local-ab12cd34" + "e" * 56
     info = {**INFO, "tools": {"file": ["read_file"], "mcp-zeta": ["mcp__zeta__ro_probe"]}}
@@ -869,7 +869,7 @@ def test_clear_banner_shows_the_new_gateway_sessions_tools_and_short_label(store
         return created if method == "session.create" else {}
     client.rpc = rpc
     banners = []
-    monkeypatch.setattr("hermes_cli.banner.build_welcome_banner", lambda **kw: banners.append(kw))
+    monkeypatch.setattr("hermes_agent.hermes_cli.banner.build_welcome_banner", lambda **kw: banners.append(kw))
     monkeypatch.setattr(cli_mod, "get_tool_definitions", lambda **_kw: pytest.fail("walked the CLI's registry"))
     monkeypatch.setattr(cli_mod, "_cprint", lambda *_a: None)
     monkeypatch.setattr("shutil.get_terminal_size", lambda *_a: types.SimpleNamespace(columns=200, lines=50))

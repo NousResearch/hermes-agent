@@ -18,7 +18,7 @@ def test_every_stable_selector_rejects_legacy_calver_tags():
     """One shared stable grammar: a CalVer tag (v2026.9.21) must be refused by
     every stable admission path, or a workflow_call carrying the old GitHub
     'latest' tag would be admitted for docker/stable publication."""
-    from hermes_cli.source_releases import _valid_tag
+    from hermes_agent.hermes_cli.source_releases import _valid_tag
     from scripts.releases.docker import DockerReleaseError, require_stable_tag
     from scripts.releases.semver import compare
 

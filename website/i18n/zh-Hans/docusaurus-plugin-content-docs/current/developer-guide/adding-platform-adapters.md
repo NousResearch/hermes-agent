@@ -323,7 +323,7 @@ ctx.register_platform(
 
 ## 在 `hermes config` 中暴露环境变量 {#surfacing-env-vars-in-hermes-config}
 
-`hermes_cli/config.py` 在导入时扫描 `plugins/platforms/*/plugin.yaml`，并从 `requires_env` 和（可选的）`optional_env` 块自动填充 `OPTIONAL_ENV_VARS`。使用富字典形式可提供完整的描述、prompt、password 标志和 URL — CLI 设置 UI 会自动识别。
+`hermes_agent/hermes_cli/config.py` 在导入时扫描 `plugins/platforms/*/plugin.yaml`，并从 `requires_env` 和（可选的）`optional_env` 块自动填充 `OPTIONAL_ENV_VARS`。使用富字典形式可提供完整的描述、prompt、password 标志和 URL — CLI 设置 UI 会自动识别。
 
 ```yaml
 # plugins/platforms/my_platform/plugin.yaml
@@ -551,12 +551,12 @@ await self.handle_message(event)
 
 ### 6. CLI 集成
 
-1. **`hermes_cli/config.py`** — 将所有 `NEWPLAT_*` 变量添加到 `_EXTRA_ENV_KEYS`
-2. **`hermes_cli/gateway.py`** — 在 `_PLATFORMS` 列表中添加条目，包含 key、label、emoji、token_var、setup_instructions 和 vars
-3. **`hermes_cli/platforms.py`** — 添加带 label 和 default_toolset 的 `PlatformInfo` 条目（供 `skills_config` 和 `tools_config` TUI 使用）
-4. **`hermes_cli/setup.py`** — 添加 `_setup_newplat()` 函数（可委托给 `gateway.py`）并将元组添加到消息平台列表
-5. **`hermes_cli/status.py`** — 添加平台检测条目：`"NewPlat": ("NEWPLAT_TOKEN", "NEWPLAT_HOME_CHANNEL")`
-6. **`hermes_cli/dump.py`** — 将 `"newplat": "NEWPLAT_TOKEN"` 添加到平台检测字典
+1. **`hermes_agent/hermes_cli/config.py`** — 将所有 `NEWPLAT_*` 变量添加到 `_EXTRA_ENV_KEYS`
+2. **`hermes_agent/hermes_cli/gateway.py`** — 在 `_PLATFORMS` 列表中添加条目，包含 key、label、emoji、token_var、setup_instructions 和 vars
+3. **`hermes_agent/hermes_cli/platforms.py`** — 添加带 label 和 default_toolset 的 `PlatformInfo` 条目（供 `skills_config` 和 `tools_config` TUI 使用）
+4. **`hermes_agent/hermes_cli/setup.py`** — 添加 `_setup_newplat()` 函数（可委托给 `gateway.py`）并将元组添加到消息平台列表
+5. **`hermes_agent/hermes_cli/status.py`** — 添加平台检测条目：`"NewPlat": ("NEWPLAT_TOKEN", "NEWPLAT_HOME_CHANNEL")`
+6. **`hermes_agent/hermes_cli/dump.py`** — 将 `"newplat": "NEWPLAT_TOKEN"` 添加到平台检测字典
 
 ### 7. 工具
 

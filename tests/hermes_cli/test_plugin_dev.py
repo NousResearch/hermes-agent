@@ -8,7 +8,7 @@ import pytest
 def test_doctor_uses_registration_to_reject_bad_hook_and_callback_signature(
     tmp_path: Path,
 ) -> None:
-    from hermes_cli.plugin_dev import doctor_plugin
+    from hermes_agent.hermes_cli.plugin_dev import doctor_plugin
 
     plugin = tmp_path / "bad-plugin"
     plugin.mkdir()
@@ -43,7 +43,7 @@ def test_doctor_uses_registration_to_reject_bad_hook_and_callback_signature(
 
 
 def test_doctor_accepts_manifest_defaults_from_runtime_parser(tmp_path: Path) -> None:
-    from hermes_cli.plugin_dev import doctor_plugin
+    from hermes_agent.hermes_cli.plugin_dev import doctor_plugin
 
     plugin = tmp_path / "minimal"
     plugin.mkdir()
@@ -61,7 +61,7 @@ def test_doctor_accepts_manifest_defaults_from_runtime_parser(tmp_path: Path) ->
 def test_doctor_restores_global_tool_policy_and_module_state(tmp_path: Path) -> None:
     import sys
 
-    from hermes_cli.plugin_dev import doctor_plugin
+    from hermes_agent.hermes_cli.plugin_dev import doctor_plugin
     from hermes_agent.tools.registry import registry
 
     target = tmp_path / "cleanup-plugin"
@@ -101,7 +101,7 @@ def test_doctor_restores_global_tool_policy_and_module_state(tmp_path: Path) -> 
 
 
 def test_doctor_blocks_live_network(tmp_path: Path) -> None:
-    from hermes_cli.plugin_dev import doctor_plugin
+    from hermes_agent.hermes_cli.plugin_dev import doctor_plugin
 
     plugin = tmp_path / "network-plugin"
     plugin.mkdir()
@@ -130,7 +130,7 @@ def test_doctor_default_target_does_not_copy_cwd(
     import os
     import shutil
 
-    from hermes_cli import plugin_dev
+    from hermes_agent.hermes_cli import plugin_dev
 
     workdir = tmp_path / "workdir"
     (workdir / "big").mkdir(parents=True)
@@ -163,7 +163,7 @@ def test_doctor_does_not_copy_home_with_a_plugin_checkout(
     """
     import os
 
-    from hermes_cli import plugin_dev
+    from hermes_agent.hermes_cli import plugin_dev
 
     home = tmp_path / "fake-home"
     (home / ".hermes" / "cache" / "scratch").mkdir(parents=True)
@@ -189,7 +189,7 @@ def test_doctor_does_not_copy_home_with_a_plugin_checkout(
 
 def test_resolve_accepts_category_layout(tmp_path: Path) -> None:
     """A category directory holds no manifest itself but discovery finds one."""
-    from hermes_cli.plugin_dev import resolve_plugin_path
+    from hermes_agent.hermes_cli.plugin_dev import resolve_plugin_path
 
     category = tmp_path / "image_gen"
     plugin = category / "openai"
@@ -205,7 +205,7 @@ def test_doctor_stages_only_the_plugin_of_a_category(tmp_path: Path, monkeypatch
     import os
     import shutil
 
-    from hermes_cli import plugin_dev
+    from hermes_agent.hermes_cli import plugin_dev
 
     category = tmp_path / "tools"
     plugin = category / "minimal"
@@ -236,7 +236,7 @@ def test_doctor_rejects_category_of_several_plugins_before_copying(
     tmp_path: Path, monkeypatch
 ) -> None:
     """Doctor validates one plugin, so copying a whole category first only wastes disk."""
-    from hermes_cli import plugin_dev
+    from hermes_agent.hermes_cli import plugin_dev
 
     category = tmp_path / "web"
     for name in ("a", "b"):
@@ -258,7 +258,7 @@ def test_doctor_names_plugin_dirs_of_a_target_that_is_not_a_category(
     """The refusal names the plugin inside, so the user knows what to pass instead."""
     import os
 
-    from hermes_cli import plugin_dev
+    from hermes_agent.hermes_cli import plugin_dev
 
     repo = tmp_path / "repo"
     (repo / "tests").mkdir(parents=True)
@@ -277,7 +277,7 @@ def test_resolve_prefers_installed_id_over_unrelated_local_dir(
     tmp_path: Path, monkeypatch
 ) -> None:
     """A same-named local directory must not shadow the installed plugin."""
-    from hermes_cli import plugin_dev
+    from hermes_agent.hermes_cli import plugin_dev
 
     hermes_home = tmp_path / "hermes-home"
     installed = hermes_home / "plugins" / "sample"
@@ -301,7 +301,7 @@ def test_doctor_removes_temp_home_when_staging_copy_fails(
     import tempfile
 
 
-    from hermes_cli import plugin_dev
+    from hermes_agent.hermes_cli import plugin_dev
 
     plugin = tmp_path / "sample"
     plugin.mkdir()
@@ -347,7 +347,7 @@ def test_doctor_never_copies_a_plugin_into_its_own_temp_dir(
     import shutil
     import tempfile
 
-    from hermes_cli import plugin_dev
+    from hermes_agent.hermes_cli import plugin_dev
 
     target = tmp_path / "target"
     plugin = target / "inner" if layout == "category" else target
@@ -388,7 +388,7 @@ def test_doctor_loads_model_provider_plugins_through_provider_discovery(tmp_path
     """`kind: model-provider` registers a ProviderProfile at import and has no register(ctx);
     doctor must judge it by that contract and leave the live registry untouched."""
     from hermes_agent import providers
-    from hermes_cli.plugin_dev import doctor_plugin
+    from hermes_agent.hermes_cli.plugin_dev import doctor_plugin
 
     plugin = tmp_path / "acme-provider"
     plugin.mkdir()
@@ -417,7 +417,7 @@ def test_doctor_loads_a_model_provider_plugin_from_its_category(tmp_path: Path) 
     """``plugins/model-providers/<name>`` is the runtime layout; the provider loader must get the
     staged plugin directory, not the category around it."""
     from hermes_agent import providers
-    from hermes_cli.plugin_dev import doctor_plugin
+    from hermes_agent.hermes_cli.plugin_dev import doctor_plugin
 
     plugin = tmp_path / "model-providers" / "acme-provider"
     plugin.mkdir(parents=True)

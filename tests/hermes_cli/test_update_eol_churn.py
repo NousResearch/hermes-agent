@@ -20,7 +20,7 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli.update_cmd import _normalize_managed_eol
+from hermes_agent.hermes_cli.update_cmd import _normalize_managed_eol
 
 pytestmark = pytest.mark.skipif(shutil.which("git") is None, reason="needs git")
 

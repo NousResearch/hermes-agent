@@ -21,7 +21,7 @@ def _bundled_with_authz():
 
 def test_registered_entries_carry_exactly_the_file_declaration():
     from hermes_agent.gateway.platform_registry import platform_registry
-    from hermes_cli.plugins import discover_plugins
+    from hermes_agent.hermes_cli.plugins import discover_plugins
 
     discover_plugins()
     names = _bundled_with_authz()
@@ -37,7 +37,7 @@ def test_registered_entries_carry_exactly_the_file_declaration():
 def test_override_without_fields_still_gates_on_bundled_names(name, monkeypatch):
     from hermes_agent.gateway import pairing, run_startup
     from hermes_agent.gateway.platform_registry import platform_registry
-    from hermes_cli.plugins import discover_plugins
+    from hermes_agent.hermes_cli.plugins import discover_plugins
 
     discover_plugins()
     bare = dataclasses.replace(

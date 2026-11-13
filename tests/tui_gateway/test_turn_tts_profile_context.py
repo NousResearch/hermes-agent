@@ -23,7 +23,7 @@ def profile_b(tmp_path, monkeypatch):
 
 def _speaker(monkeypatch):
     """Replace the real speaker with one that records the home it runs under."""
-    from hermes_cli import voice
+    from hermes_agent.hermes_cli import voice
     seen, done = {}, threading.Event()
 
     def speak_text(text, stop_event=None):

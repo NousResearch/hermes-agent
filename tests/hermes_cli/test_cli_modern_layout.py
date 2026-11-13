@@ -10,8 +10,8 @@ def _plain(s: str) -> str:
 
 
 def _run_turn(monkeypatch, width: int, *, modern: bool) -> list[str]:
-    from cli import HermesCLI
-    import cli as climod
+    from hermes_agent.cli import HermesCLI
+    import hermes_agent.cli as climod
 
     cli = HermesCLI.__new__(HermesCLI)
     cli._modern_layout = modern
@@ -57,8 +57,8 @@ def test_glyph_layout_scrollback_is_width_independent(monkeypatch, modern):
 ])
 def test_one_line_reasoning_is_shown_once(monkeypatch, reasoning):
     """Reasoning streams above its ∴ summary, so a one-sentence block must not reappear as the title."""
-    from cli import HermesCLI
-    import cli as climod
+    from hermes_agent.cli import HermesCLI
+    import hermes_agent.cli as climod
 
     cli = HermesCLI.__new__(HermesCLI)
     cli._modern_layout, cli.show_reasoning, cli.reasoning_full = True, True, False
@@ -80,7 +80,7 @@ def test_one_line_reasoning_is_shown_once(monkeypatch, reasoning):
 
 @pytest.mark.parametrize("modern", [True, False])
 def test_status_line_sits_under_the_composer_only_in_the_glyph_layout(modern):
-    from cli import HermesCLI
+    from hermes_agent.cli import HermesCLI
 
     cli = HermesCLI.__new__(HermesCLI)
     cli._modern_layout = modern
@@ -97,7 +97,7 @@ def test_status_line_sits_under_the_composer_only_in_the_glyph_layout(modern):
 def test_panel_rows_never_carry_a_newline():
     """A multi-line command (heredoc) in the approval panel wraps line by line, so no row breaks
     the panel's right border."""
-    from cli import _wrap_panel_text_keep_ws
+    from hermes_agent.cli import _wrap_panel_text_keep_ws
 
     rows = _wrap_panel_text_keep_ws("python3 - <<'PY'\nprint(sum(range(10)))\nPY", 30)
     assert rows == ["python3 - <<'PY'", "print(sum(range(10)))", "PY"]
@@ -111,8 +111,8 @@ def test_panel_rows_never_carry_a_newline():
 ])
 def test_layout_and_busy_default_through_the_config_loader(tmp_path, monkeypatch, display, modern, busy):
     import hermes_yaml as yaml
-    import cli
-    from hermes_cli.cli_modern_layout import busy_input_mode_from_config, layout_from_config
+    from hermes_agent import cli
+    from hermes_agent.hermes_cli.cli_modern_layout import busy_input_mode_from_config, layout_from_config
 
     home = tmp_path / ".hermes"
     home.mkdir()
@@ -127,7 +127,7 @@ def test_layout_and_busy_default_through_the_config_loader(tmp_path, monkeypatch
 def test_status_line_keeps_every_classic_status_bar_field(monkeypatch):
     """The glyph footer renders the classic bar's segments: nothing (tps, cache, latency, context
     detail, duration...) is dropped by a layout-private default subset."""
-    from cli import HermesCLI
+    from hermes_agent.cli import HermesCLI
 
     cli = HermesCLI.__new__(HermesCLI)
     cli._modern_layout, cli._status_bar_visible = True, True
@@ -141,8 +141,8 @@ def test_status_line_keeps_every_classic_status_bar_field(monkeypatch):
     monkeypatch.setattr(HermesCLI, "_is_session_yolo_active", lambda self: False)
     monkeypatch.setattr(HermesCLI, "_vim_mode_label", lambda self: "")
     monkeypatch.setattr(HermesCLI, "_cache_hit_rate", lambda self, snap, precision=1: (28.9, "◎ 28.9%"))
-    monkeypatch.setattr("hermes_cli.cli_modern_layout.hint_pairs", lambda cli: [])
-    monkeypatch.setattr("hermes_cli.cli_modern_layout._cwd_label", lambda: "~")
+    monkeypatch.setattr("hermes_agent.hermes_cli.cli_modern_layout.hint_pairs", lambda cli: [])
+    monkeypatch.setattr("hermes_agent.hermes_cli.cli_modern_layout._cwd_label", lambda: "~")
     line = "".join(text for _, text in cli._get_status_bar_fragments())
     for piece in ("73.2K/1M", "7%", "◎ 28.9%", "◷ 9.0s", "↑ 61 t/s", "⛓ 3", "6h 43m", "⏱ 10s"):
         assert piece in line, (piece, line)
@@ -159,7 +159,7 @@ def test_tab_never_queues_what_a_prompt_owns(prompt):
     from prompt_toolkit.key_binding import KeyBindings
     from prompt_toolkit.keys import Keys
     from prompt_toolkit.layout import BufferControl, Layout, Window
-    from hermes_cli.cli_modern_layout import modern_input_rules
+    from hermes_agent.hermes_cli.cli_modern_layout import modern_input_rules
 
     cli = SimpleNamespace(_agent_running=True, _tui_input_rule_height=lambda pos: 1)
     kb = KeyBindings()
@@ -177,8 +177,8 @@ def test_tab_never_queues_what_a_prompt_owns(prompt):
 def test_long_user_message_soft_wraps_so_a_resize_reflows_it(monkeypatch):
     """The glyph layout's echo of a long prompt is one logical line per source line: the terminal
     wraps it, so widening the window re-flows it instead of keeping old-width breaks."""
-    from cli import HermesCLI
-    import cli as climod
+    from hermes_agent.cli import HermesCLI
+    import hermes_agent.cli as climod
     import shutil
 
     cli = HermesCLI.__new__(HermesCLI)
@@ -200,7 +200,7 @@ def test_tool_rows_keep_the_classic_tool_emoji():
     """Each finished tool row leads with the same emoji the classic ``┊`` row shows (📖 read, 💻
     terminal…); a failed entry swaps it for the red ✗ so failures stay obvious."""
     from hermes_agent.agent.display import get_cute_tool_message
-    from hermes_cli.cli_modern_layout import tool_row
+    from hermes_agent.hermes_cli.cli_modern_layout import tool_row
 
     # clarify has no dedicated renderer: both layouts take its registered emoji from one source.
     for name, args in (("read_file", {"path": "/etc/hostname"}), ("terminal", {"command": "echo ok"}),
@@ -215,7 +215,7 @@ def test_refused_skill_write_reads_neutral_not_failed():
     """A skill_manage write the agent will re-plan (size cap, stale old_string) keeps the tool's own
     emoji and a dim reason: no red ✗ for the agent's routine retry loop."""
     from hermes_agent.agent.display import get_tool_emoji
-    from hermes_cli.cli_modern_layout import _RED, tool_row
+    from hermes_agent.hermes_cli.cli_modern_layout import _RED, tool_row
 
     refused = ('{"success": false, "error": "operations[0] (patch on \'hermes-agent-dev\') failed: '
                'SKILL.md content is 100,193 characters (limit: 100,000).", '
@@ -233,9 +233,9 @@ def test_every_block_is_framed_by_bars_and_blank_lines(monkeypatch):
     The blank line after a closing bar is paid by whatever prints next (a tool row, the footer)
     and never doubled when the next block opens with its own blank line + bar. Tool rows inside a
     run stay tight."""
-    from cli import HermesCLI
-    import cli as climod
-    from hermes_cli import cli_modern_layout as layout
+    from hermes_agent.cli import HermesCLI
+    import hermes_agent.cli as climod
+    from hermes_agent.hermes_cli import cli_modern_layout as layout
 
     out: list[str] = []
     monkeypatch.setattr(climod, "_cprint", lambda s: out.extend(_plain(s).split("\n")))

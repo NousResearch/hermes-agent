@@ -32,8 +32,8 @@ def fake_config(monkeypatch):
     def _save(config):
         store["command_allowlist"] = list(config.get("command_allowlist", []))
 
-    monkeypatch.setattr("hermes_cli.config.load_config", _load, raising=False)
-    monkeypatch.setattr("hermes_cli.config.save_config", _save, raising=False)
+    monkeypatch.setattr("hermes_agent.hermes_cli.config.load_config", _load, raising=False)
+    monkeypatch.setattr("hermes_agent.hermes_cli.config.save_config", _save, raising=False)
 
     saved_approved = set(approval._permanent_approved)
     saved_baseline = dict(approval._permanent_baseline_by_home)
@@ -115,7 +115,7 @@ def test_save_failure_is_logged_not_raised(fake_config, monkeypatch, caplog):
     def _boom():
         raise OSError("disk full")
 
-    monkeypatch.setattr("hermes_cli.config.load_config", _boom, raising=False)
+    monkeypatch.setattr("hermes_agent.hermes_cli.config.load_config", _boom, raising=False)
     approval.approve_permanent("docker *")
     with caplog.at_level(logging.WARNING, logger=approval.logger.name):
         approval.save_permanent_allowlist(approval._permanent_approved)   # must not raise

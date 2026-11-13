@@ -28,7 +28,7 @@ def bridge_dir(tmp_path, monkeypatch):
 
 
 def test_dashboard_pairing_bridge_env_is_scrubbed(bridge_dir, tmp_path, monkeypatch):
-    from hermes_cli.web_routers import messaging
+    from hermes_agent.hermes_cli.web_routers import messaging
 
     monkeypatch.setattr(messaging, "_ensure_whatsapp_bridge_dependencies", lambda _dir: None)
     captured = {}
@@ -44,7 +44,7 @@ def test_dashboard_pairing_bridge_env_is_scrubbed(bridge_dir, tmp_path, monkeypa
 def test_cli_pairing_bridge_env_is_scrubbed(bridge_dir, tmp_path, monkeypatch):
     import subprocess
 
-    from hermes_cli import main, main_platform_setup as setup
+    from hermes_agent.hermes_cli import main, main_platform_setup as setup
 
     monkeypatch.setattr(main, "_require_tty", lambda _name: None)
     monkeypatch.setattr(main, "get_hermes_home", lambda: tmp_path / "home")

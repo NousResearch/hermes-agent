@@ -33,7 +33,7 @@ def test_tui_bootstrap_starts_the_correct_supervised_owner(
             "-c",
             (
                 "from pathlib import Path; "
-                "from hermes_cli.service_manager import S6ServiceManager; "
+                "from hermes_agent.hermes_cli.service_manager import S6ServiceManager; "
                 f"home = Path({home!r}); home.mkdir(parents=True); "
                 f"(home / 'config.yaml').write_text({config!r}); "
                 "S6ServiceManager().register_profile_gateway('worker', start_now=False)"
@@ -105,7 +105,7 @@ def test_s6_discovery_refuses_another_install_root(
         "-c",
         (
             "import time; from pathlib import Path; "
-            "from hermes_cli.gateway_runtime import ensure_gateway_runtime; "
+            "from hermes_agent.hermes_cli.gateway_runtime import ensure_gateway_runtime; "
             "receipt = ensure_gateway_runtime(Path('/tmp/foreign-home'), timeout=5); "
             "assert receipt.state == 'inaccessible', receipt.state; "
             "assert receipt.reason_code == 'profile_mismatch', receipt.reason_code"

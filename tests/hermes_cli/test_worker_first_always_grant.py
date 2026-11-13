@@ -139,13 +139,13 @@ def test_controls_persist(tmp_path, monkeypatch, live_yaml, bind, expected):
 
 def _bind_snapshot(monkeypatch, snapshot):
     import copy
-    from hermes_cli import config as cfg
+    from hermes_agent.hermes_cli import config as cfg
     monkeypatch.setattr(cfg, "_worker_config_snapshot", lambda: copy.deepcopy(snapshot))
     return cfg
 
 
 def test_rebase_applies_an_edit_to_a_default_only_list(monkeypatch):
-    from hermes_cli.config_worker_save import rebase_for_save
+    from hermes_agent.hermes_cli.config_worker_save import rebase_for_save
     snapshot = {"model": {"default": "m"}}
     cfg = _bind_snapshot(monkeypatch, snapshot)
     desired = cfg.load_config()
@@ -155,7 +155,7 @@ def test_rebase_applies_an_edit_to_a_default_only_list(monkeypatch):
 
 
 def test_rebase_keeps_a_list_the_snapshot_carried_and_the_operator_deleted(monkeypatch):
-    from hermes_cli.config_worker_save import rebase_for_save
+    from hermes_agent.hermes_cli.config_worker_save import rebase_for_save
     snapshot = {"model": {"default": "m"}, "command_allowlist": ["a *"]}
     cfg = _bind_snapshot(monkeypatch, snapshot)
     desired = cfg.load_config()
@@ -166,7 +166,7 @@ def test_rebase_keeps_a_list_the_snapshot_carried_and_the_operator_deleted(monke
 
 def test_rebase_applies_an_edit_to_a_default_only_mapping(monkeypatch):
     import copy
-    from hermes_cli.config_worker_save import rebase_for_save
+    from hermes_agent.hermes_cli.config_worker_save import rebase_for_save
     snapshot = {"model": {"default": "m"}}
     cfg = _bind_snapshot(monkeypatch, snapshot)
     base = cfg.load_config()
@@ -181,7 +181,7 @@ def test_rebase_applies_an_edit_to_a_default_only_mapping(monkeypatch):
 
 
 def test_rebase_keeps_a_mapping_the_snapshot_carried_and_the_operator_deleted(monkeypatch):
-    from hermes_cli.config_worker_save import rebase_for_save
+    from hermes_agent.hermes_cli.config_worker_save import rebase_for_save
     snapshot = {"model": {"default": "m"}, "approvals": {"mode": "manual"}}
     cfg = _bind_snapshot(monkeypatch, snapshot)
     desired = cfg.load_config()
@@ -191,7 +191,7 @@ def test_rebase_keeps_a_mapping_the_snapshot_carried_and_the_operator_deleted(mo
 
 
 def test_rebase_applies_an_edit_to_a_nested_default_only_list(monkeypatch):
-    from hermes_cli.config_worker_save import rebase_for_save
+    from hermes_agent.hermes_cli.config_worker_save import rebase_for_save
     # The parent is in the snapshot and the live file. ``deny`` is not: it comes
     # only from the schema defaults under that parent.
     snapshot = {"model": {"default": "m"}, "approvals": {"mode": "manual"}}
@@ -245,7 +245,7 @@ def test_bypass_worker_keeps_an_existing_allowlist_and_unrelated_keys(tmp_path, 
 
 
 def test_rebase_keeps_an_explicit_empty_list_the_operator_deleted(monkeypatch):
-    from hermes_cli.config_worker_save import rebase_for_save
+    from hermes_agent.hermes_cli.config_worker_save import rebase_for_save
     snapshot = {"model": {"default": "m"}, "command_allowlist": []}
     cfg = _bind_snapshot(monkeypatch, snapshot)
     desired = cfg.load_config()
@@ -255,7 +255,7 @@ def test_rebase_keeps_an_explicit_empty_list_the_operator_deleted(monkeypatch):
 
 
 def test_rebase_keeps_a_nested_list_the_snapshot_carried_and_the_operator_deleted(monkeypatch):
-    from hermes_cli.config_worker_save import rebase_for_save
+    from hermes_agent.hermes_cli.config_worker_save import rebase_for_save
     snapshot = {"model": {"default": "m"}, "approvals": {"mode": "manual", "deny": ["old"]}}
     live = {"model": {"default": "m"}, "approvals": {"mode": "manual"}}
     cfg = _bind_snapshot(monkeypatch, snapshot)

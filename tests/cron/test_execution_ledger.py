@@ -211,7 +211,7 @@ def test_cron_runs_cli_prints_execution_history(monkeypatch, tmp_path, capsys):
     executions = _point_ledger(monkeypatch, tmp_path)
     row = executions.create_execution("cli-job", source="builtin")
     executions.finish_execution(row["id"], success=False, error="boom")
-    from hermes_cli.cron import cron_runs
+    from hermes_agent.hermes_cli.cron import cron_runs
 
     cron_runs("cli-job", limit=10)
 
@@ -222,7 +222,7 @@ def test_cron_runs_cli_prints_execution_history(monkeypatch, tmp_path, capsys):
 
 
 def test_quick_backup_includes_execution_ledger():
-    from hermes_cli.backup import _QUICK_STATE_FILES
+    from hermes_agent.hermes_cli.backup import _QUICK_STATE_FILES
 
     assert "cron/executions.db" in _QUICK_STATE_FILES
 

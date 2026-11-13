@@ -84,7 +84,7 @@ def _display_flag_enabled(agent, *, env_var: str, config_key: str, cache_attr: s
 
     ``env_var`` overrides on every call and is never cached. Reads the persisted config.yaml
     so gateway and CLI share the setting; ``load_config`` is imported lazily (startup cycle,
-    and tests patch it at ``hermes_cli.config``). Any failure → True (safe default: on)."""
+    and tests patch it at ``hermes_agent.hermes_cli.config``). Any failure → True (safe default: on)."""
     try:
         env = os.environ.get(env_var)
         if env is not None:
@@ -93,7 +93,7 @@ def _display_flag_enabled(agent, *, env_var: str, config_key: str, cache_attr: s
         if cached is not None:
             return cached
         try:
-            from hermes_cli.config import load_config as _load_config
+            from hermes_agent.hermes_cli.config import load_config as _load_config
             _cfg = _load_config() or {}
         except Exception:
             _cfg = {}

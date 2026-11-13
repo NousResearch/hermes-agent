@@ -20,7 +20,7 @@ from unittest.mock import patch as mock_patch
 
 import pytest
 
-from hermes_cli.runtime_provider import _fallback_api_mode
+from hermes_agent.hermes_cli.runtime_provider import _fallback_api_mode
 
 
 class TestFallbackApiMode:
@@ -49,7 +49,7 @@ class TestFallbackApiMode:
         """Pin the models.dev default endpoints the predicate compares against, so the contract
         holds without the network (a cold cache leaves ``ProviderDef.base_url`` empty)."""
         import dataclasses
-        from hermes_cli import runtime_provider
+        from hermes_agent.hermes_cli import runtime_provider
         defaults = {
             "minimax": "https://api.minimax.io/anthropic/v1",
             "minimax-cn": "https://api.minimaxi.com/anthropic/v1",
@@ -100,7 +100,7 @@ class TestFallbackApiMode:
         # The spoof host must not be detected AS OpenAI by the URL lane —
         # the provider-declared transport may still apply, but host-derived
         # detection must return None for it.
-        from hermes_cli.runtime_provider import _detect_api_mode_for_url
+        from hermes_agent.hermes_cli.runtime_provider import _detect_api_mode_for_url
 
         assert _detect_api_mode_for_url("https://api.openai.com.attacker.test/v1") is None
 
@@ -124,10 +124,10 @@ class TestExplicitRuntimeIntegration:
     """The explicit-runtime path resolves regional OpenAI to codex_responses."""
 
     def test_explicit_openai_api_regional_host(self):
-        from hermes_cli.runtime_provider import _resolve_explicit_runtime
+        from hermes_agent.hermes_cli.runtime_provider import _resolve_explicit_runtime
 
         with mock_patch(
-            "hermes_cli.runtime_provider._get_model_config",
+            "hermes_agent.hermes_cli.runtime_provider._get_model_config",
             return_value={"provider": "openai-api", "default": "gpt-5.6-terra"},
         ):
             result = _resolve_explicit_runtime(

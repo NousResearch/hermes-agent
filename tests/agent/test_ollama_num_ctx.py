@@ -132,8 +132,8 @@ def _build_agent(cfg, probed_ctx, base_url="http://localhost:11434/v1"):
         patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]),
         patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
         patch("hermes_agent.agent.process_bootstrap.OpenAI"),
-        patch("hermes_cli.config.load_config", return_value=cfg),
-        patch("hermes_cli.config.load_config_readonly", return_value=cfg),
+        patch("hermes_agent.hermes_cli.config.load_config", return_value=cfg),
+        patch("hermes_agent.hermes_cli.config.load_config_readonly", return_value=cfg),
         patch(
             "hermes_agent.agent.model_metadata.get_model_context_length",
             return_value=probed_ctx,

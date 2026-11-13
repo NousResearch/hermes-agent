@@ -14,7 +14,7 @@ import stat
 
 import pytest
 
-import hermes_cli.browser_connect as bc
+import hermes_agent.hermes_cli.browser_connect as bc
 import hermes_agent.tools.computer_use.tool as cu
 import hermes_agent.tools.vision_tools as vt
 

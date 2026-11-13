@@ -12,7 +12,7 @@ import hermes_yaml as yaml
 import pytest
 from fastapi import FastAPI
 
-from hermes_cli import web_server_dashboard as dashboard
+from hermes_agent.hermes_cli import web_server_dashboard as dashboard
 from hermes_constants import get_hermes_home
 
 NAME = "isoprobe"
@@ -88,7 +88,7 @@ def test_non_python_api_file_is_skipped_without_a_warning(tmp_path, caplog):
     (dash / "plugin_api.py").rename(dash / "plugin_api.txt")
     plugin["_api_file"] = "plugin_api.txt"
 
-    with caplog.at_level("DEBUG", logger="hermes_cli"):
+    with caplog.at_level("DEBUG", logger="hermes_agent.hermes_cli"):
         app, mounted, hosted = _mount(plugin)
 
     assert mounted is False

@@ -168,7 +168,7 @@ def write_mcp_server_enabled(cfg: dict, on: bool) -> None:
 def drop_legacy_disabled_for_key(located) -> bool:
     """A generic write of ``mcp_servers.<name>.enabled`` (``hermes config set``) also drops the
     legacy ``disabled``, as :func:`write_mcp_server_enabled` does, or an enable would not take.
-    *located*: ``hermes_cli.config._locate_nested`` of the written key, so a server name with a
+    *located*: ``hermes_agent.hermes_cli.config._locate_nested`` of the written key, so a server name with a
     dot resolves to the same entry the write landed on. True when it dropped one."""
     if located is None:
         return False

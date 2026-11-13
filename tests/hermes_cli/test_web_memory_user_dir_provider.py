@@ -82,7 +82,7 @@ def user_dir_honcho(monkeypatch, tmp_path, _isolate_hermes_home):
 def test_user_dir_host_block_provider_serves_its_declared_config(user_dir_honcho):
     from starlette.testclient import TestClient
 
-    from hermes_cli.web_server import _SESSION_HEADER_NAME, _SESSION_TOKEN, app
+    from hermes_agent.hermes_cli.web_server import _SESSION_HEADER_NAME, _SESSION_TOKEN, app
 
     client = TestClient(app, headers={_SESSION_HEADER_NAME: _SESSION_TOKEN})
     resp = client.get("/api/memory/providers/honcho/config", params={"surface": "declared"})
@@ -93,7 +93,7 @@ def test_user_dir_host_block_provider_serves_its_declared_config(user_dir_honcho
 
 
 def test_user_dir_provider_oauth_flow_resolves_from_its_directory(user_dir_honcho):
-    from hermes_cli.memory_oauth import _resolve_flow
+    from hermes_agent.hermes_cli.memory_oauth import _resolve_flow
 
     flow = _resolve_flow("honcho")
 
@@ -104,7 +104,7 @@ def test_user_dir_provider_oauth_flow_resolves_from_its_directory(user_dir_honch
 def test_oauth_routes_load_the_provider_from_the_requested_profile(tmp_path, monkeypatch):
     """A desktop serving two homes must not import the launch home's OAuth flow for both."""
     import plugins.memory as memory_pkg
-    from hermes_cli.web_server import _SESSION_HEADER_NAME, _SESSION_TOKEN, app
+    from hermes_agent.hermes_cli.web_server import _SESSION_HEADER_NAME, _SESSION_TOKEN, app
     from starlette.testclient import TestClient
 
     default_home = tmp_path / ".hermes"

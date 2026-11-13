@@ -385,7 +385,7 @@ def _build_child_agent(
     # saturated — then the subagent_start lifecycle hook.
     _safe_progress(child_progress_cb, "subagent.spawn_requested", preview=goal)
     with _quiet("subagent_start hook invocation failed", exc_info=True):
-        from hermes_cli.lifecycle import invoke_hook as _invoke_hook
+        from hermes_agent.hermes_cli.lifecycle import invoke_hook as _invoke_hook
         _invoke_hook(
             "subagent_start", parent_session_id=parent_sid,
             parent_turn_id=getattr(parent_agent, "_current_turn_id", "") or "", parent_subagent_id=parent_subagent_id,

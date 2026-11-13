@@ -19,7 +19,7 @@ import time
 import psutil
 import pytest
 
-from hermes_cli.gateway_client import GatewayRPCError
+from hermes_agent.hermes_cli.gateway_client import GatewayRPCError
 from tests.acp_adapter.test_gateway_sessions import editor, viewer
 from tests.gateway.test_normal_runtime_boot import control
 from tests.waiting import async_wait_until

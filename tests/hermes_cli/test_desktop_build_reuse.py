@@ -74,7 +74,7 @@ def packaged_checkout(tmp_path, monkeypatch):
 
 
 def _update_builds_desktop(root: Path, monkeypatch) -> bool:
-    from hermes_cli import desktop_build_lock, main_desktop, source_build
+    from hermes_agent.hermes_cli import desktop_build_lock, main_desktop, source_build
 
     builds = []
     monkeypatch.setattr(main_desktop, "build_prepared_desktop", lambda *_a, **_k: builds.append(1))

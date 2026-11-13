@@ -13,8 +13,8 @@ only the profile-root location is pointed at tmp_path.
 import hermes_yaml as yaml
 from pathlib import Path
 
-from hermes_cli import update_cmd
-from hermes_cli import update_cmd_config
+from hermes_agent.hermes_cli import update_cmd
+from hermes_agent.hermes_cli import update_cmd_config
 
 
 def _write_profile(root: Path, name: str, version: int) -> Path:
@@ -28,13 +28,13 @@ def _write_profile(root: Path, name: str, version: int) -> Path:
 
 
 def _latest_version() -> int:
-    from hermes_cli.config import DEFAULT_CONFIG
+    from hermes_agent.hermes_cli.config import DEFAULT_CONFIG
 
     return int(DEFAULT_CONFIG["_config_version"])
 
 
 def _setup(monkeypatch, tmp_path, active_home: Path, *, default_home: Path | None = None):
-    import hermes_cli.profiles as profiles_mod
+    import hermes_agent.hermes_cli.profiles as profiles_mod
 
     monkeypatch.setattr(profiles_mod, "_get_profiles_root", lambda: tmp_path / "profiles")
     # Default lives at the install root, not under profiles/; absent unless a test passes it,
@@ -178,8 +178,8 @@ def test_sibling_step_notices_reach_the_update_output(monkeypatch, tmp_path, cap
     _setup(monkeypatch, tmp_path, active)
     monkeypatch.setenv("HERMES_HOME", str(active))
     monkeypatch.setattr(update_cmd_config, "_restore_snapshot_safety_nets", lambda _sid: None)
-    monkeypatch.setattr("hermes_cli.config.get_missing_env_vars", lambda **_: [])
-    monkeypatch.setattr("hermes_cli.config.get_missing_config_fields", lambda: [{"key": "display.new_option"}])
+    monkeypatch.setattr("hermes_agent.hermes_cli.config.get_missing_env_vars", lambda **_: [])
+    monkeypatch.setattr("hermes_agent.hermes_cli.config.get_missing_config_fields", lambda: [{"key": "display.new_option"}])
 
     update_cmd_config._check_and_apply_config_migration()
 

@@ -151,7 +151,7 @@ def _turn_replay_window(agent: Any) -> int:
     if cached is not None and cached[0] == key:
         return cached[1]
     from hermes_agent.agent.image_routing import decide_image_input_mode
-    from hermes_cli.config import load_config_readonly
+    from hermes_agent.hermes_cli.config import load_config_readonly
 
     cfg = load_config_readonly()
     keep = resolve_replay_recent_images(cfg)

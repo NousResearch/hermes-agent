@@ -66,8 +66,8 @@ def model_provider_key_names() -> frozenset:
     secret provider entries of ``OPTIONAL_ENV_VARS`` (``OPENROUTER_API_KEY`` is declared only there), kept
     only where the child-env scrub removes them. A name the scrub passes on purpose
     (``CLAUDE_CODE_OAUTH_TOKEN``, #55878) does reach the skill, so reading it stays medium."""
-    from hermes_cli.auth import PROVIDER_REGISTRY
-    from hermes_cli.config import OPTIONAL_ENV_VARS
+    from hermes_agent.hermes_cli.auth import PROVIDER_REGISTRY
+    from hermes_agent.hermes_cli.config import OPTIONAL_ENV_VARS
     from hermes_agent.tools.environments.local_env_policy import _HERMES_PROVIDER_ENV_BLOCKLIST
     names = {var.upper() for pconfig in PROVIDER_REGISTRY.values() for var in pconfig.api_key_env_vars}
     names.update(name.upper() for name, meta in OPTIONAL_ENV_VARS.items()

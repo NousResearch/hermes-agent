@@ -14,8 +14,8 @@ from hermes_agent.agent.i18n import t
 
 def _make_cli(config_overrides=None, env_overrides=None, **kwargs):
     """Create a HermesCLI instance with minimal mocking."""
-    import cli as _cli_mod
-    from cli import HermesCLI
+    import hermes_agent.cli as _cli_mod
+    from hermes_agent.cli import HermesCLI
 
     _clean_config = {
         "model": {
@@ -38,7 +38,7 @@ def _make_cli(config_overrides=None, env_overrides=None, **kwargs):
     if env_overrides:
         clean_env.update(env_overrides)
     with (
-        patch("cli.get_tool_definitions", return_value=[]),
+        patch("hermes_agent.cli.get_tool_definitions", return_value=[]),
         patch.dict("os.environ", clean_env, clear=False),
         patch.dict(_cli_mod.__dict__, {"CLI_CONFIG": _clean_config}),
     ):
@@ -346,7 +346,7 @@ class TestHandleResumeCommandRecap:
         cli._session_db = mock_db
 
         with (
-            patch("hermes_cli.main._resolve_session_by_name_or_id", return_value="target_session"),
+            patch("hermes_agent.hermes_cli.main._resolve_session_by_name_or_id", return_value="target_session"),
             patch.object(cli, "_display_resumed_history") as display_mock,
         ):
             cli._handle_resume_command("/resume test session")
@@ -378,7 +378,7 @@ class TestHandleResumeCommandRecap:
         cli._session_db = mock_db
 
         with (
-            patch("hermes_cli.main._resolve_session_by_name_or_id", return_value="session_b"),
+            patch("hermes_agent.hermes_cli.main._resolve_session_by_name_or_id", return_value="session_b"),
             patch.object(cli, "_display_resumed_history") as display_mock,
         ):
             cli._handle_resume_command("/resume session_b")

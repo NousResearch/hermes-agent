@@ -18,7 +18,7 @@ import pytest
 import hermes_agent.hermes_state_runtime as rt
 from hermes_agent.gateway.session_authority import LiveSession, SessionAuthority
 from hermes_agent.gateway.session_controls import AuthorityConnection
-from hermes_cli import sessions_cmd
+from hermes_agent.hermes_cli import sessions_cmd
 from hermes_agent.hermes_state import SessionDB
 from tests.hermes_state.test_target_advance_fence import _local_session, _mutate
 
@@ -68,10 +68,10 @@ def owned_store(monkeypatch, tmp_path):
 
 
 def test_prune_under_the_live_owner_is_applied_by_the_owner_not_refused(owned_store, monkeypatch, capsys):
-    from hermes_cli import gateway_client
-    from hermes_cli import gateway_runtime
+    from hermes_agent.hermes_cli import gateway_client
+    from hermes_agent.hermes_cli import gateway_runtime
     from hermes_agent import hermes_state
-    from hermes_cli.gateway_client import rpc_error
+    from hermes_agent.hermes_cli.gateway_client import rpc_error
     store = owned_store
     holder = subprocess.Popen([sys.executable, '-c', _HOLDER, str(store.path)],
                               stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)

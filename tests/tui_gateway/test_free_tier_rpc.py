@@ -7,8 +7,8 @@ from __future__ import annotations
 import pytest
 
 import hermes_agent.tui_gateway.server as srv
-from hermes_cli import anon_auth, free_tier_offer
-from hermes_cli.auth import _auth_store_lock, _load_auth_store, _save_auth_store
+from hermes_agent.hermes_cli import anon_auth, free_tier_offer
+from hermes_agent.hermes_cli.auth import _auth_store_lock, _load_auth_store, _save_auth_store
 from tests.hermes_cli.anon_portal import as_local_desktop_backend, claimed_trial, install_portal
 
 
@@ -54,7 +54,7 @@ def test_status_is_pull_from_local_state_and_ack_persists_on_the_identity(guest,
 def test_status_carries_the_pending_browser_challenge_and_drops_it_once_cleared(guest):
     """A client that connects after the ``free_tier.challenge`` event still learns there is a
     window to open; once the challenge is worked, the field is gone."""
-    from hermes_cli import anon_challenge
+    from hermes_agent.hermes_cli import anon_challenge
     assert "challenge" not in _call("free_tier.status")
 
     challenge = anon_challenge.BrowserChallenge(
@@ -68,7 +68,7 @@ def test_status_carries_the_pending_browser_challenge_and_drops_it_once_cleared(
 
 
 def test_window_outcomes_are_scoped_and_do_not_grant_auth(guest, tmp_path):
-    from hermes_cli import anon_challenge
+    from hermes_agent.hermes_cli import anon_challenge
     from hermes_constants import set_hermes_home_override, reset_hermes_home_override
     a = anon_challenge.BrowserChallenge("https://portal.example.test/challenge?code=a", True, 600, 2, "check")
     b = anon_challenge.BrowserChallenge("https://portal.example.test/challenge?code=b", False, 600, 2, "check")

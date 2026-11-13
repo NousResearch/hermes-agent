@@ -58,7 +58,7 @@ class TestFormatSessionInfo:
             "reference_models": [{"provider": "openai", "model": "gpt-5.5"}],
             "aggregator": {"provider": "nous", "model": "claude-opus-4.8"},
         }}}}
-        with p1, p2, p3, patch("hermes_cli.config.load_config", return_value=moa_cfg):
+        with p1, p2, p3, patch("hermes_agent.hermes_cli.config.load_config", return_value=moa_cfg):
             info = runner._format_session_info()
         assert "nous:claude-opus-4.8" in info
 
@@ -93,7 +93,7 @@ class TestFormatSessionInfo:
             },
         )
         with p1, p2, p3, patch(
-            "hermes_cli.config.get_compatible_custom_providers",
+            "hermes_agent.hermes_cli.config.get_compatible_custom_providers",
             return_value=[
                 {
                     "name": "custom-local-agentw",

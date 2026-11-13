@@ -6,10 +6,10 @@ from unittest.mock import MagicMock, patch
 
 import hermes_yaml as yaml
 
-import hermes_cli.plugins as plugins_mod
+import hermes_agent.hermes_cli.plugins as plugins_mod
 from hermes_agent.agent import secret_scope
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
-from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
+from hermes_agent.hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
 
 
 def _context(name: str = "notify-plugin") -> tuple[PluginContext, PluginManager]:
@@ -136,7 +136,7 @@ def test_gateway_injection_fails_closed_when_config_cannot_be_read():
     manager.set_gateway_message_injector(object(), injector)
 
     with patch(
-        "hermes_cli.plugins.load_config_readonly",
+        "hermes_agent.hermes_cli.plugins.load_config_readonly",
         side_effect=OSError("config unavailable"),
     ):
         assert (

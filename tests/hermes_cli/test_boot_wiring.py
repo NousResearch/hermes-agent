@@ -4,7 +4,7 @@ the cadence has a production caller.
 Proven with real imports against a temp HERMES_HOME; the external
 boundaries (pm store, network check seams, process identity) are
 stubbed — the wiring itself is exercised through the exact public
-invocation (``hermes_cli.main.main()``, ``hermes_agent.gateway.run`` housekeeping).
+invocation (``hermes_agent.hermes_cli.main.main()``, ``hermes_agent.gateway.run`` housekeeping).
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ def hermes_home(tmp_path, monkeypatch):
 @pytest.fixture
 def boot_probe(monkeypatch):
     """Record every maybe_run_boot_bootstrap call without running steps."""
-    import hermes_cli.boot_bootstrap as bb
+    import hermes_agent.hermes_cli.boot_bootstrap as bb
 
     calls: list = []
     monkeypatch.setattr(
@@ -40,7 +40,7 @@ def boot_probe(monkeypatch):
 def _run_cli_main(argv):
     import sys
 
-    from hermes_cli import main as cli_main
+    from hermes_agent.hermes_cli import main as cli_main
 
     old_argv = sys.argv
     sys.argv = argv

@@ -275,7 +275,7 @@ def test_a_changed_fallback_secret_removes_that_fallback(tmp_path, monkeypatch, 
     key used to leave the entry with ``api_key: null``, which means 'resolve another credential': the
     fallback then sent the provider's OTHER account key (or the rotated key re-seeded from live
     config). A changed fallback secret now removes that fallback; no credential is substituted."""
-    from hermes_cli.auth import AuthError
+    from hermes_agent.hermes_cli.auth import AuthError
     from tests.fakes.fake_llm_provider import FakeLLMServer
     for name in ('ANTHROPIC_API_KEY', 'ANTHROPIC_TOKEN', 'CLAUDE_CODE_OAUTH_TOKEN'):
         monkeypatch.delenv(name, raising=False)

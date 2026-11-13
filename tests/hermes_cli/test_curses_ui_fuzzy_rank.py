@@ -1,5 +1,5 @@
 """Tests for the ranked fuzzy scorer used by the searchable curses pickers."""
-from hermes_cli.curses_ui import (
+from hermes_agent.hermes_cli.curses_ui import (
     _SearchState,
     _fuzzy_score,
     _handle_active_search_key,

@@ -163,7 +163,7 @@ def poll_until(predicate: Callable[[], _T], timeout: float, interval: float) -> 
 def _timeouts_section() -> dict:
     """Read the ``timeouts:`` root section from config.yaml (read-only, fail-open)."""
     try:
-        from hermes_cli.config import load_config_readonly
+        from hermes_agent.hermes_cli.config import load_config_readonly
         section = load_config_readonly().get("timeouts")
         return section if isinstance(section, dict) else {}
     except Exception:
@@ -455,7 +455,7 @@ def kill_process_tree(pid: int, *, sig: Optional[int] = None) -> bool:
     signals do not suspend recipients. ``sig`` defaults to ``SIGKILL``."""
     if sys.platform == "win32":
         try:
-            from hermes_cli._subprocess_compat import windows_hide_flags
+            from hermes_agent.hermes_cli._subprocess_compat import windows_hide_flags
             creationflags = windows_hide_flags()
         except Exception:
             creationflags = 0

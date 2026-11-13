@@ -86,7 +86,7 @@ def test_provider_headers_run_no_git_until_read_and_stay_a_dict_for_overrides(tm
         ),
     }
     code = (
-        "import json, os, pathlib, hermes_cli.config\n"
+        "import json, os, pathlib, hermes_agent.hermes_cli.config\n"
         "from hermes_agent import providers\n"
         "providers.list_providers()\n"
         "log = os.environ['PATH'].split(os.pathsep)[0] + '/../git.log'\n"
@@ -99,7 +99,7 @@ def test_provider_headers_run_no_git_until_read_and_stay_a_dict_for_overrides(tm
         "        'from hermes_agent.providers import get_provider_profile, register_provider\\n'\n"
         "        \"base = get_provider_profile('gmi')\\n\" + body)\n"
         "providers._home_layer(force_stamp_check=True)\n"
-        "from hermes_cli.version_info import get_version_info\n"
+        "from hermes_agent.hermes_cli.version_info import get_version_info\n"
         "found = {n: providers.get_provider_profile(n) for n in ('gmi-eu', 'gmi-acct', 'gmi-tag')}\n"
         "print(json.dumps({'before': before, 'ua': ua, 'base': get_version_info().base_version,\n"
         "                  'found': {n: p and dict(p.default_headers) for n, p in found.items()}}))\n"
@@ -121,7 +121,7 @@ def test_provider_headers_run_no_git_until_read_and_stay_a_dict_for_overrides(tm
 def test_startup_checkout_sha_read_is_one_rev_parse(tmp_path):
     code = (
         "import json\n"
-        "from hermes_cli.update_cmd_fleet import _current_checkout_sha\n"
+        "from hermes_agent.hermes_cli.update_cmd_fleet import _current_checkout_sha\n"
         "sha = _current_checkout_sha()\n"
         "print(json.dumps({'sha': sha}))\n"
     )

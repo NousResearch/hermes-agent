@@ -32,7 +32,7 @@ def test_stage2_discovers_chromium_binary(
     r = docker_exec(
         container_name,
         "/opt/hermes/.venv/bin/python", "-c",
-        "from hermes_cli.browser_runtime import chromium_executable; "
+        "from hermes_agent.hermes_cli.browser_runtime import chromium_executable; "
         "print(chromium_executable(allow_override=False))",
         timeout=30,
     )

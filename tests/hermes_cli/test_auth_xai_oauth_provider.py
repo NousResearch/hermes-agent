@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli.auth import (
+from hermes_agent.hermes_cli.auth import (
     AuthError,
     DEFAULT_XAI_OAUTH_BASE_URL,
     _read_xai_oauth_tokens,
@@ -105,7 +105,7 @@ def _patch_httpx_client(monkeypatch, response):
         holder["client"] = client
         return client
 
-    monkeypatch.setattr("hermes_cli.auth.httpx.Client", _factory)
+    monkeypatch.setattr("hermes_agent.hermes_cli.auth.httpx.Client", _factory)
     return holder
 
 
@@ -186,7 +186,7 @@ def test_refresh_xai_oauth_tokens_preserves_active_provider(tmp_path, monkeypatc
             "last_refresh": "2026-07-25T12:00:00Z",
         }
 
-    monkeypatch.setattr("hermes_cli.auth.refresh_xai_oauth_pure", _fake_pure)
+    monkeypatch.setattr("hermes_agent.hermes_cli.auth.refresh_xai_oauth_pure", _fake_pure)
 
     tokens = _read_xai_oauth_tokens()["tokens"]
     _refresh_xai_oauth_tokens(
@@ -238,7 +238,7 @@ def test_resolve_xai_runtime_credentials_refreshes_expiring_token(tmp_path, monk
         updated["refresh_token"] = "rt-new"
         return updated
 
-    monkeypatch.setattr("hermes_cli.auth._refresh_xai_oauth_tokens", _fake_refresh)
+    monkeypatch.setattr("hermes_agent.hermes_cli.auth._refresh_xai_oauth_tokens", _fake_refresh)
 
     creds = resolve_xai_oauth_runtime_credentials()
     assert called["count"] == 1
@@ -311,7 +311,7 @@ def test_resolve_credentials_quarantines_dead_tokens_on_terminal_refresh_failure
             relogin_required=True,
         )
 
-    monkeypatch.setattr("hermes_cli.auth._refresh_xai_oauth_tokens", _terminal_refresh)
+    monkeypatch.setattr("hermes_agent.hermes_cli.auth._refresh_xai_oauth_tokens", _terminal_refresh)
 
     with pytest.raises(AuthError) as exc_info:
         resolve_xai_oauth_runtime_credentials(force_refresh=True)
@@ -391,7 +391,7 @@ def test_xai_oauth_discovery_raises_typed_error_on_malformed_json(monkeypatch):
     HTML), surface a typed AuthError rather than letting the
     ``json.JSONDecodeError`` escape — so the message reads as an auth
     problem instead of an internal parsing crash."""
-    from hermes_cli.auth import _xai_oauth_discovery
+    from hermes_agent.hermes_cli.auth import _xai_oauth_discovery
 
     class _BadJSON:
         status_code = 200
@@ -400,7 +400,7 @@ def test_xai_oauth_discovery_raises_typed_error_on_malformed_json(monkeypatch):
             raise ValueError("Expecting value: line 1 column 1 (char 0)")
 
     monkeypatch.setattr(
-        "hermes_cli.auth.httpx.get",
+        "hermes_agent.hermes_cli.auth.httpx.get",
         lambda *a, **kw: _BadJSON(),
     )
     with pytest.raises(AuthError) as exc:
@@ -458,7 +458,7 @@ def test_xai_oauth_discovery_validates_endpoints(monkeypatch):
     attacker-controlled ``token_endpoint``. (The persistence is what makes
     this attack worth defending against — one MITM = forever credential
     leak.)"""
-    from hermes_cli.auth import _xai_oauth_discovery
+    from hermes_agent.hermes_cli.auth import _xai_oauth_discovery
 
     class _StubGetResponse:
         status_code = 200
@@ -475,7 +475,7 @@ def test_xai_oauth_discovery_validates_endpoints(monkeypatch):
             "token_endpoint": "https://evil.example.com/token",  # poisoned
         })
 
-    monkeypatch.setattr("hermes_cli.auth.httpx.get", _fake_get)
+    monkeypatch.setattr("hermes_agent.hermes_cli.auth.httpx.get", _fake_get)
     with pytest.raises(AuthError) as exc:
         _xai_oauth_discovery()
     assert exc.value.code == "xai_discovery_invalid"
@@ -515,7 +515,7 @@ def test_credential_pool_seeds_xai_oauth_from_singleton(tmp_path, monkeypatch):
 
 def test_credential_pool_device_code_seed_respects_suppression(tmp_path, monkeypatch):
     from hermes_agent.agent.credential_pool import load_pool
-    from hermes_cli.auth import suppress_credential_source
+    from hermes_agent.hermes_cli.auth import suppress_credential_source
 
     hermes_home = tmp_path / "hermes"
     fresh = _jwt_with_exp(int(time.time()) + 2 * 60 * 60)
@@ -547,7 +547,7 @@ def test_auth_remove_xai_oauth_clears_singleton_and_sticks(tmp_path, monkeypatch
     entries (pool-only) but wrong for singleton-seeded ``device_code``
     entries (auth.json singleton survives the in-memory removal)."""
     from hermes_agent.agent.credential_pool import load_pool
-    from hermes_cli.auth_commands import auth_remove_command
+    from hermes_agent.hermes_cli.auth_commands import auth_remove_command
     from types import SimpleNamespace
 
     hermes_home = tmp_path / "hermes"
@@ -597,7 +597,7 @@ def test_login_xai_oauth_relogin_clears_suppression_and_reseeds(tmp_path, monkey
     from types import SimpleNamespace
 
     from hermes_agent.agent.credential_pool import load_pool
-    from hermes_cli.auth import (
+    from hermes_agent.hermes_cli.auth import (
         _login_xai_oauth,
         is_source_suppressed,
         suppress_credential_source,
@@ -618,7 +618,7 @@ def test_login_xai_oauth_relogin_clears_suppression_and_reseeds(tmp_path, monkey
 
     new_access = _jwt_with_exp(int(time.time()) + 2 * 60 * 60)
     monkeypatch.setattr(
-        "hermes_cli.auth._xai_oauth_device_code_login",
+        "hermes_agent.hermes_cli.auth._xai_oauth_device_code_login",
         lambda **kwargs: {
             "tokens": {
                 "access_token": new_access,
@@ -634,7 +634,7 @@ def test_login_xai_oauth_relogin_clears_suppression_and_reseeds(tmp_path, monkey
     )
     # Don't mutate a real config file during the test.
     monkeypatch.setattr(
-        "hermes_cli.auth._update_config_for_provider",
+        "hermes_agent.hermes_cli.auth._update_config_for_provider",
         lambda *args, **kwargs: "config.toml",
     )
 
@@ -666,7 +666,7 @@ def test_login_xai_oauth_relogin_clears_suppression_and_reseeds(tmp_path, monkey
 
 
 def test_runtime_provider_uses_pool_entry_for_xai_oauth(tmp_path, monkeypatch):
-    from hermes_cli.runtime_provider import resolve_runtime_provider
+    from hermes_agent.hermes_cli.runtime_provider import resolve_runtime_provider
 
     hermes_home = tmp_path / "hermes"
     fresh = _jwt_with_exp(int(time.time()) + 2 * 60 * 60)
@@ -726,7 +726,7 @@ def test_pool_refresh_recovers_when_other_process_already_refreshed(tmp_path, mo
             relogin_required=True,
         )
 
-    monkeypatch.setattr("hermes_cli.auth.refresh_xai_oauth_pure", _fake_refresh)
+    monkeypatch.setattr("hermes_agent.hermes_cli.auth.refresh_xai_oauth_pure", _fake_refresh)
 
     selected = pool.select()
     # Even though refresh_xai_oauth_pure raised, the post-failure
@@ -764,7 +764,7 @@ def test_pool_manual_entry_does_not_sync_back_to_singleton(tmp_path, monkeypatch
             "last_refresh": "2026-05-15T04:00:00Z",
         }
 
-    monkeypatch.setattr("hermes_cli.auth.refresh_xai_oauth_pure", _fake_refresh)
+    monkeypatch.setattr("hermes_agent.hermes_cli.auth.refresh_xai_oauth_pure", _fake_refresh)
 
     pool = load_pool("xai-oauth")
     pool.add_entry(
@@ -890,7 +890,7 @@ def test_pool_sync_back_preserves_active_provider(tmp_path, monkeypatch):
             "last_refresh": "2026-05-15T10:00:00Z",
         }
 
-    monkeypatch.setattr("hermes_cli.auth.refresh_xai_oauth_pure", _fake_refresh)
+    monkeypatch.setattr("hermes_agent.hermes_cli.auth.refresh_xai_oauth_pure", _fake_refresh)
 
     pool = load_pool("xai-oauth")
     selected = pool.select()

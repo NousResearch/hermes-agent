@@ -26,8 +26,8 @@ def _catalog_down(_name):
 def test_ambient_credential_profile_keeps_identity_when_catalog_fails():
     import hermes_agent.agent.auxiliary_client as ac
 
-    with patch("hermes_cli.providers.get_provider", side_effect=_catalog_down), \
-            patch("hermes_cli.runtime_provider._get_named_custom_provider", return_value=None), \
+    with patch("hermes_agent.hermes_cli.providers.get_provider", side_effect=_catalog_down), \
+            patch("hermes_agent.hermes_cli.runtime_provider._get_named_custom_provider", return_value=None), \
             patch("hermes_agent.providers.get_provider_profile", side_effect=_PROFILES.get):
         assert ac._preserve_provider_with_base_url("acme-cloud") is True
         assert ac._preserve_provider_with_base_url("plain-key") is False

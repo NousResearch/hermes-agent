@@ -1,11 +1,11 @@
-"""The desktop's welcome trial (``hermes_cli.welcome_trial``): who may claim it, what a claim leaves
+"""The desktop's welcome trial (``hermes_agent.hermes_cli.welcome_trial``): who may claim it, what a claim leaves
 behind, which guests keep the free model, and that a connector guest never asks for inference."""
 
 import contextlib
 
 import pytest
 
-from hermes_cli import anon_auth, install_state, welcome_trial
+from hermes_agent.hermes_cli import anon_auth, install_state, welcome_trial
 from tests.hermes_cli.anon_portal import as_local_desktop_backend, claimed_trial, install_portal, off_local_desktop
 
 
@@ -63,7 +63,7 @@ def test_a_connector_guest_neither_claims_nor_carries_inference(portal, monkeypa
 
     assert welcome_trial.claim_desktop_free_tier() is None
     assert not anon_auth.free_inference_active()
-    from hermes_cli.auth import resolve_nous_access_token
+    from hermes_agent.hermes_cli.auth import resolve_nous_access_token
     resolve_nous_access_token()
     assert [r["body"]["purpose"] for r in portal.token_requests] == ["connectors"]
 
@@ -94,7 +94,7 @@ def test_a_lost_claim_is_not_replaced(portal, monkeypatch):
 
 
 def test_a_connector_guest_adopted_from_the_shared_store_carries_no_trial(portal, monkeypatch):
-    from hermes_cli.auth import _load_auth_store, _save_auth_store
+    from hermes_agent.hermes_cli.auth import _load_auth_store, _save_auth_store
 
     as_local_desktop_backend(monkeypatch)
     anon_auth.ensure_portal_identity(explicit=True)  # connector mint: welcome_claim False, mirrored
@@ -118,9 +118,9 @@ LOSSES = {
 
 @pytest.mark.parametrize("loss", list(LOSSES))
 def test_a_lost_trial_is_never_claimed_again_after_a_relaunch(portal, monkeypatch, loss):
-    from hermes_cli import free_tier_bootstrap
-    from hermes_cli.auth import resolve_provider
-    from hermes_cli.auth_constants import AuthError
+    from hermes_agent.hermes_cli import free_tier_bootstrap
+    from hermes_agent.hermes_cli.auth import resolve_provider
+    from hermes_agent.hermes_cli.auth_constants import AuthError
     from hermes_constants import get_hermes_home
 
     lose, creates = LOSSES[loss]
@@ -142,8 +142,8 @@ def test_a_lost_trial_is_never_claimed_again_after_a_relaunch(portal, monkeypatc
 
 
 def test_a_leftover_guest_pool_row_is_not_reported_as_a_nous_login(portal, monkeypatch):
-    from hermes_cli.auth import _load_auth_store, _save_auth_store, resolve_nous_runtime_credentials
-    from hermes_cli.auth_nous import get_nous_auth_status_local
+    from hermes_agent.hermes_cli.auth import _load_auth_store, _save_auth_store, resolve_nous_runtime_credentials
+    from hermes_agent.hermes_cli.auth_nous import get_nous_auth_status_local
 
     claimed_trial(monkeypatch)
     resolve_nous_runtime_credentials()  # the trial ran, so the pool holds the guest's exchanged token
@@ -157,8 +157,8 @@ def test_a_leftover_guest_pool_row_is_not_reported_as_a_nous_login(portal, monke
 
 @pytest.mark.parametrize("desktop", [True, False], ids=["local_desktop_backend", "elsewhere"])
 def test_a_connector_guest_pinned_to_nous_gets_no_inference_token(portal, monkeypatch, desktop):
-    from hermes_cli.auth_constants import AuthError
-    from hermes_cli.runtime_provider import resolve_runtime_provider
+    from hermes_agent.hermes_cli.auth_constants import AuthError
+    from hermes_agent.hermes_cli.runtime_provider import resolve_runtime_provider
     from hermes_constants import get_hermes_home
 
     if desktop:
@@ -175,7 +175,7 @@ def test_a_connector_guest_pinned_to_nous_gets_no_inference_token(portal, monkey
 def test_the_token_seam_refuses_an_inference_token_to_a_guest_without_the_trial(portal, monkeypatch):
     import httpx
 
-    from hermes_cli.auth_constants import AuthError
+    from hermes_agent.hermes_cli.auth_constants import AuthError
 
     as_local_desktop_backend(monkeypatch)
     state = dict(anon_auth.ensure_portal_identity(explicit=True))  # a connector guest
@@ -186,7 +186,7 @@ def test_the_token_seam_refuses_an_inference_token_to_a_guest_without_the_trial(
 
 
 def _root_run():
-    from hermes_cli.config_effective import load_user_config_effective
+    from hermes_agent.hermes_cli.config_effective import load_user_config_effective
     from hermes_constants import get_default_hermes_root
 
     section = load_user_config_effective(get_default_hermes_root() / "config.yaml").get("onboarding") or {}
@@ -194,7 +194,7 @@ def _root_run():
 
 
 def _relaunch():
-    from hermes_cli import free_tier_bootstrap
+    from hermes_agent.hermes_cli import free_tier_bootstrap
 
     install_state.probe.cache_clear()
     free_tier_bootstrap.reset_for_tests()
@@ -203,7 +203,7 @@ def _relaunch():
 
 @pytest.mark.parametrize("used", [False, True], ids=["fresh", "used"])
 def test_the_first_desktop_boot_records_that_onboarding_is_due(portal, monkeypatch, used):
-    from hermes_cli.onboarding_run import set_run
+    from hermes_agent.hermes_cli.onboarding_run import set_run
 
     as_local_desktop_backend(monkeypatch)
     if used:
@@ -218,7 +218,7 @@ def test_the_first_desktop_boot_records_that_onboarding_is_due(portal, monkeypat
 
 
 def test_a_missed_first_launch_stays_due_and_keeps_the_trial(portal, monkeypatch):
-    from hermes_cli.onboarding_run import should_run
+    from hermes_agent.hermes_cli.onboarding_run import should_run
     from hermes_constants import get_hermes_home
 
     as_local_desktop_backend(monkeypatch)
@@ -256,7 +256,7 @@ def test_two_installs_claiming_at_once_mint_one_trial(portal, monkeypatch, tmp_p
     their auth locks never meet), one OS user, one marker. The canary claims while stable mints."""
     import threading
 
-    from hermes_cli import auth_nous
+    from hermes_agent.hermes_cli import auth_nous
     from hermes_constants import get_hermes_home, reset_hermes_home_override, set_hermes_home_override
 
     as_local_desktop_backend(monkeypatch)
@@ -292,7 +292,7 @@ def test_two_installs_claiming_at_once_mint_one_trial(portal, monkeypatch, tmp_p
 
 
 def test_one_due_answer_walks_the_provider_ladder_once(portal, monkeypatch):
-    from hermes_cli import auth
+    from hermes_agent.hermes_cli import auth
 
     as_local_desktop_backend(monkeypatch)
     real, calls = auth.resolve_provider, []
@@ -312,9 +312,9 @@ def _kanban_worker_model(monkeypatch, tmp_path) -> str:
     from dataclasses import asdict
     from types import SimpleNamespace
     from contextlib import closing
-    from hermes_cli import kanban_db as kb
-    from hermes_cli.config import load_config
-    from hermes_cli.kanban_db_connect import connect
+    from hermes_agent.hermes_cli import kanban_db as kb
+    from hermes_agent.hermes_cli.config import load_config
+    from hermes_agent.hermes_cli.kanban_db_connect import connect
     from hermes_constants import get_hermes_home
     from hermes_agent.gateway.session_contract import SessionActor
     from hermes_agent.gateway.session_kanban import build_kanban_policy
@@ -323,7 +323,7 @@ def _kanban_worker_model(monkeypatch, tmp_path) -> str:
     home = str(get_hermes_home())
     monkeypatch.setenv("HERMES_KANBAN_HOME", str(tmp_path / "kanban"))
     monkeypatch.delenv("HERMES_KANBAN_DB", raising=False)
-    monkeypatch.setattr("hermes_cli.profiles.resolve_profile_env", lambda name: home)
+    monkeypatch.setattr("hermes_agent.hermes_cli.profiles.resolve_profile_env", lambda name: home)
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     kb.create_board("trial")
@@ -346,7 +346,7 @@ def unconfigured_trial(portal, monkeypatch):
     claimed_trial(monkeypatch)
     off_local_desktop(monkeypatch)
     yield
-    from hermes_cli.config import load_config
+    from hermes_agent.hermes_cli.config import load_config
     assert not (load_config().get("model") or {}).get("default")  # never persisted: a later provider wins
 
 

@@ -28,7 +28,7 @@ class _Sink:
 
 def test_voice_transcript_for_an_unregistered_session_goes_to_the_capturing_client(monkeypatch):
     callbacks = {}
-    monkeypatch.setitem(sys.modules, "hermes_cli.voice", types.SimpleNamespace(
+    monkeypatch.setitem(sys.modules, "hermes_agent.hermes_cli.voice", types.SimpleNamespace(
         start_continuous=lambda **kw: callbacks.update(kw), stop_continuous=lambda **kw: None))
     monkeypatch.setenv("HERMES_VOICE", "1")
     monkeypatch.setattr(server, "_load_cfg", dict)

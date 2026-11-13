@@ -159,7 +159,7 @@ class TestNativeImageAttach:
         with patch("hermes_agent.tools.registry.registry", registry), \
              patch.dict(mcp_tool._servers, {"srv": server}), \
              patch("hermes_agent.tools.mcp_tool_loop._run_on_mcp_loop", side_effect=run), \
-             patch("hermes_cli.config.load_config", return_value=cfg), \
+             patch("hermes_agent.hermes_cli.config.load_config", return_value=cfg), \
              patch("hermes_agent.agent.auxiliary_client._read_main_provider", return_value="anthropic"), \
              patch("hermes_agent.agent.auxiliary_client._read_main_model", return_value="claude-opus-4-5"), \
              patch("hermes_agent.agent.image_routing._lookup_supports_vision", return_value=True):

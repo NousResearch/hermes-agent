@@ -31,7 +31,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-import hermes_cli.plugins as plugins_mod
+import hermes_agent.hermes_cli.plugins as plugins_mod
 from hermes_agent.tools import transcription_tools
 
 
@@ -58,8 +58,8 @@ def _fake_hooks(monkeypatch, results):
         captured["kwargs"] = kw
         return list(results)
 
-    monkeypatch.setattr("hermes_cli.plugins.has_hook", lambda name: True)
-    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", _invoke)
+    monkeypatch.setattr("hermes_agent.hermes_cli.plugins.has_hook", lambda name: True)
+    monkeypatch.setattr("hermes_agent.hermes_cli.plugins.invoke_hook", _invoke)
     return captured
 
 
@@ -70,8 +70,8 @@ def _no_hooks(monkeypatch):
             "invoke_hook must not be called when has_hook() is False"
         )
 
-    monkeypatch.setattr("hermes_cli.plugins.has_hook", lambda name: False)
-    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", _boom)
+    monkeypatch.setattr("hermes_agent.hermes_cli.plugins.has_hook", lambda name: False)
+    monkeypatch.setattr("hermes_agent.hermes_cli.plugins.invoke_hook", _boom)
 
 
 def _dispatch_ctx(stt_config, provider):

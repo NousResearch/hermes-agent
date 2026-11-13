@@ -4,8 +4,8 @@ import types
 
 import pytest
 
-from hermes_cli import update_cmd_fleet as fleet
-from hermes_cli import update_cmd_fleet_unit_budget as budget
+from hermes_agent.hermes_cli import update_cmd_fleet as fleet
+from hermes_agent.hermes_cli import update_cmd_fleet_unit_budget as budget
 
 
 @pytest.fixture(autouse=True)
@@ -75,8 +75,8 @@ def test_fleet_restart_budget_preserves_user_scope_and_verifies_health(monkeypat
     monkeypatch.setattr(fleet, "_systemctl", systemctl)
     monkeypatch.setattr(fleet, "_SYSTEMD_SCOPES", (("user", scope),))
     monkeypatch.setattr(fleet, "_wait_for_service_active", check_health)
-    monkeypatch.setattr("hermes_cli.gateway.supports_systemd_services", lambda: True)
-    monkeypatch.setattr("hermes_cli.gateway._ensure_user_systemd_env", lambda: None)
+    monkeypatch.setattr("hermes_agent.hermes_cli.gateway.supports_systemd_services", lambda: True)
+    monkeypatch.setattr("hermes_agent.hermes_cli.gateway._ensure_user_systemd_env", lambda: None)
     restarted, failed, scoped = [], [], set()
     fleet._restart_systemd_gateway_units(restarted, failed, scoped, drain_budget=45)
 
@@ -122,7 +122,7 @@ def test_fleet_restart_repairs_a_system_unit_that_cannot_park_on_exit_78(monkeyp
     """A ``Restart=on-failure`` system unit predating ``RestartPreventExitStatus=78`` crash-looped ~180x on
     a permanent refusal while the user units parked (#118282). The update-time fleet restart is the only
     contact with that unit: as root it rewrites it, otherwise it names the repair. A parked unit is left alone."""
-    from hermes_cli import gateway as gateway_cli
+    from hermes_agent.hermes_cli import gateway as gateway_cli
 
     unit_dir = tmp_path / "system"
     unit_dir.mkdir()

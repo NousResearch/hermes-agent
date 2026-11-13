@@ -44,7 +44,7 @@ _PLUGIN_INSTALL = ("hermes_cli/plugins_cmd.py", "hermes_cli/plugins_cmd_install.
 def test_update_migration_on_a_journey_home_runs_no_plugin_install_code():
     """The journeys' homes configure no memory provider that left core. If the migration ever runs
     plugin-install code there, the journeys exercise it: route these modules again."""
-    from hermes_cli.memory_provider_migration import migrate_all_homes
+    from hermes_agent.hermes_cli.memory_provider_migration import migrate_all_homes
 
     ran: set[tuple[str, str]] = set()
 

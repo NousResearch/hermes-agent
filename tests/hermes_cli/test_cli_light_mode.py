@@ -15,7 +15,7 @@ import pytest
 @pytest.fixture
 def cli_mod(monkeypatch):
     """Import cli with the light-mode cache cleared each test."""
-    import cli as _cli
+    import hermes_agent.cli as _cli
 
     # The module-level _install_skin_light_mode_hook() and import-time
     # _detect_light_mode() prime ran once at first import.  We just reset
@@ -140,7 +140,7 @@ class TestSkinConfigHook:
     def test_badge_preserves_its_paired_colors_in_light_mode(
         self, cli_mod, monkeypatch, skin_name
     ):
-        from hermes_cli.skin_engine import (
+        from hermes_agent.hermes_cli.skin_engine import (
             get_active_skin, get_prompt_toolkit_style_overrides, set_active_skin,
         )
 
@@ -162,7 +162,7 @@ class TestSkinConfigHook:
     def test_hook_is_idempotent(self, cli_mod):
         # Calling the installer twice must not double-wrap (the marker
         # attribute is the guard).
-        from hermes_cli.skin_engine import SkinConfig
+        from hermes_agent.hermes_cli.skin_engine import SkinConfig
 
         before = SkinConfig.get_color
         cli_mod._install_skin_light_mode_hook()
@@ -172,7 +172,7 @@ class TestSkinConfigHook:
     def test_skin_color_remaps_through_wrapper_in_light_mode(
         self, cli_mod, monkeypatch
     ):
-        from hermes_cli.skin_engine import SkinConfig
+        from hermes_agent.hermes_cli.skin_engine import SkinConfig
 
         cli_mod._LIGHT_MODE_CACHE = True
         skin = SkinConfig(
@@ -184,7 +184,7 @@ class TestSkinConfigHook:
         assert skin.get_color("response_border") == "#9A6B00"
 
     def test_skin_color_passthrough_in_dark_mode(self, cli_mod, monkeypatch):
-        from hermes_cli.skin_engine import SkinConfig
+        from hermes_agent.hermes_cli.skin_engine import SkinConfig
 
         cli_mod._LIGHT_MODE_CACHE = False
         skin = SkinConfig(name="test", colors={"banner_text": "#FFF8DC"})
@@ -310,7 +310,7 @@ import sys as _sys
 _CHILD_SRC = r"""
 import sys, os
 sys.path.insert(0, os.environ["HERMES_REPO"])
-import cli
+from hermes_agent import cli
 bg = cli._query_osc11_background()
 print("RESULT:" + repr(bg), flush=True)
 # Drain anything left in the tty buffer — must be empty (no leak).

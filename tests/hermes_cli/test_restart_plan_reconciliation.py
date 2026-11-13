@@ -7,7 +7,7 @@ Pins:
   rows — the silent-miss tripwire.
 """
 
-from hermes_cli.update_inventory import (
+from hermes_agent.hermes_cli.update_inventory import (
     RuntimeRecord,
     UpdatePlan,
     _restart_mechanism,
@@ -35,7 +35,7 @@ def _rt(profile: str, pid: int, supervisor: str = "manual") -> RuntimeRecord:
 
 
 def test_windows_service_supervisor_classification():
-    from hermes_cli.update_inventory import _detect_supervisor_for_pid
+    from hermes_agent.hermes_cli.update_inventory import _detect_supervisor_for_pid
 
     # An SCM-owned gateway PID classifies as windows-service even when the
     # generic service-PID probe also knows the pid.
@@ -456,7 +456,7 @@ def test_missing_successor_evidence_is_logged(caplog):
     evidence was missing or the restart was genuinely missed."""
     import logging
 
-    with caplog.at_level(logging.DEBUG, logger="hermes_cli.update_inventory"):
+    with caplog.at_level(logging.DEBUG, logger="hermes_agent.hermes_cli.update_inventory"):
         outcomes = match_runtime_outcomes(
             _plan(_rt("coder", 76508, supervisor="launchd")),
             restarted_services=["ai.hermes.gateway"], relaunched_profiles=[],
@@ -494,7 +494,7 @@ def test_live_gateway_pids_from_fleet_skips_down_and_unusable_rows():
     PRE-restart PID (nothing replaced it) so it must never count as a successor;
     rows without a usable profile/PID are skipped; a ``stale`` row is a live
     successor (the fleet matrix escalates staleness on its own)."""
-    from hermes_cli.update_cmd_fleet_verify import _live_gateway_pids_from_fleet
+    from hermes_agent.hermes_cli.update_cmd_fleet_verify import _live_gateway_pids_from_fleet
 
     rows = [
         {"profile": "coder", "pid": 76796, "state": "current"},

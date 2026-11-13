@@ -1,4 +1,4 @@
-"""Unit tests for hermes_cli.pty_bridge — PTY spawning + byte forwarding.
+"""Unit tests for hermes_agent.hermes_cli.pty_bridge — PTY spawning + byte forwarding.
 
 These tests drive the bridge with minimal POSIX processes (echo, env, sleep,
 printf) to verify it behaves like a PTY you can read/write/resize/close.
@@ -20,7 +20,7 @@ import pytest
 
 pytest.importorskip("ptyprocess", reason="ptyprocess not installed")
 
-from hermes_cli.pty_bridge import PtyBridge
+from hermes_agent.hermes_cli.pty_bridge import PtyBridge
 
 skip_on_windows = pytest.mark.skipif(
     sys.platform.startswith("win"), reason="PTY bridge is POSIX-only"
@@ -49,7 +49,7 @@ class TestPtyBridgeSpawn:
     def test_spawn_marks_child_as_dashboard_hosted(self):
         # Ink reads this to skip its focus-in erase+repaint, which under
         # xterm.js was a visible reload on every OS app-switch (#94337).
-        from hermes_cli.pty_bridge import PTY_HOST_DASHBOARD, PTY_HOST_ENV
+        from hermes_agent.hermes_cli.pty_bridge import PTY_HOST_DASHBOARD, PTY_HOST_ENV
 
         bridge = PtyBridge.spawn([shutil.which("sh") or "sh", "-c", f'printf "%s" "${PTY_HOST_ENV}"'])
         try:
@@ -199,13 +199,13 @@ class TestPtyBridgeResize:
 @skip_on_windows
 class TestClampDimension:
     def test_clamps_above_max(self):
-        from hermes_cli.pty_bridge import _MAX_COLS, _MAX_ROWS, _clamp_dimension
+        from hermes_agent.hermes_cli.pty_bridge import _MAX_COLS, _MAX_ROWS, _clamp_dimension
 
         assert _clamp_dimension(131072, _MAX_COLS) == _MAX_COLS
         assert _clamp_dimension(131072, _MAX_ROWS) == _MAX_ROWS
 
     def test_non_numeric_falls_back_to_min(self):
-        from hermes_cli.pty_bridge import _MAX_COLS, _clamp_dimension
+        from hermes_agent.hermes_cli.pty_bridge import _MAX_COLS, _clamp_dimension
 
         assert _clamp_dimension(None, _MAX_COLS) == 1  # type: ignore[arg-type]
         assert _clamp_dimension(float("nan"), _MAX_COLS) == 1  # type: ignore[arg-type]
@@ -215,7 +215,7 @@ class TestClampDimension:
         # The whole point: clamped output must never raise struct.error.
         import struct as _struct
 
-        from hermes_cli.pty_bridge import _MAX_COLS, _MAX_ROWS, _clamp_dimension
+        from hermes_agent.hermes_cli.pty_bridge import _MAX_COLS, _MAX_ROWS, _clamp_dimension
 
         cols = _clamp_dimension(131072, _MAX_COLS)
         rows = _clamp_dimension(1, _MAX_ROWS)

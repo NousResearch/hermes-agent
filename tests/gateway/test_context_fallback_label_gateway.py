@@ -95,12 +95,12 @@ async def test_context_marks_a_non_resident_sessions_defaulted_route():
 async def test_model_switch_does_not_show_a_discarded_pin(tmp_path, monkeypatch):
     """The configured model's 128K pin is dropped for the new route, so it must not label the new window."""
     import hermes_yaml as yaml
-    from hermes_cli.model_switch import ModelSwitchResult
+    from hermes_agent.hermes_cli.model_switch import ModelSwitchResult
     from tests.gateway.test_model_command_context_offload import _event, _runner_with_store
     runner = _runner_with_store(tmp_path, monkeypatch)
     (tmp_path / ".hermes" / "config.yaml").write_text(yaml.safe_dump(
         {"model": {"default": "old-model", "provider": "openrouter", "context_length": 128_000}}), encoding="utf-8")
-    monkeypatch.setattr("hermes_cli.model_switch.switch_model", lambda **kw: ModelSwitchResult(
+    monkeypatch.setattr("hermes_agent.hermes_cli.model_switch.switch_model", lambda **kw: ModelSwitchResult(
         success=True, new_model=UNKNOWN, target_provider="bedrock", provider_changed=True, api_key="aws-sdk",
         base_url=RUNTIME_URL, api_mode="bedrock_converse", provider_label="AWS Bedrock"))
     result = await runner._handle_model_command(_event(f"/model {UNKNOWN}"))

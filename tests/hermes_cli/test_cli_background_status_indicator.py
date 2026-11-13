@@ -9,7 +9,7 @@ finally block, so len() reflects truly-running tasks.
 import threading
 from datetime import datetime
 
-from cli import HermesCLI
+from hermes_agent.cli import HermesCLI
 
 
 def _stub_thread() -> threading.Thread:

@@ -11,7 +11,7 @@ import types
 
 import pytest
 
-from hermes_cli.tools_config_providers import _is_provider_active
+from hermes_agent.hermes_cli.tools_config_providers import _is_provider_active
 
 
 @pytest.fixture(autouse=True)
@@ -49,7 +49,7 @@ def test_row_active_iff_it_serves_a_capability(web, active, inactive):
 def test_managed_row_active_for_a_nous_capability_pin(monkeypatch):
     """``extract_backend: nous`` (Desktop "Use for Extract" on Nous Subscription): the managed row serves
     extract and must be active alongside the BYOK row serving search; a vendor-only config leaves it off."""
-    from hermes_cli import tools_config
+    from hermes_agent.hermes_cli import tools_config
 
     monkeypatch.setattr(tools_config, "get_nous_subscription_features", lambda *a, **k: types.SimpleNamespace(
         features={"web": types.SimpleNamespace(managed_by_nous=True)}))
@@ -61,7 +61,7 @@ def test_managed_row_active_for_a_nous_capability_pin(monkeypatch):
 
 
 def _web_rows():
-    from hermes_cli.tools_config import TOOL_CATEGORIES, _visible_providers
+    from hermes_agent.hermes_cli.tools_config import TOOL_CATEGORIES, _visible_providers
 
     return {p["name"]: p for p in _visible_providers(TOOL_CATEGORIES["web"], {"web": {}})}
 
@@ -74,7 +74,7 @@ def _web_rows():
 def test_firecrawl_rows_split_by_the_credential_set(monkeypatch, env, active):
     """Cloud and Self-Hosted rows share ``web_backend: firecrawl``; only the one whose env var is set
     is the configured provider (#112022), so the picker cursor does not land on an unconfigured row."""
-    from hermes_cli import tools_config
+    from hermes_agent.hermes_cli import tools_config
 
     monkeypatch.setattr(tools_config, "get_env_value", env.get)
     rows = _web_rows()
@@ -87,7 +87,7 @@ def test_keyless_row_readiness_follows_registry_availability(monkeypatch):
     """No-key rows used to read "ready" vacuously (#132526): OpenAI Native needs an openai-codex login,
     while free-tier keyless rows really run on the public ring."""
     import plugins.web.openai_native.provider as native
-    from hermes_cli.tools_config_providers import provider_readiness_status
+    from hermes_agent.hermes_cli.tools_config_providers import provider_readiness_status
 
     rows = _web_rows()
     native_row = next(p for name, p in rows.items() if p.get("web_backend") == "openai-native")

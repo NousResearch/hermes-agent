@@ -10,8 +10,8 @@ def client(_isolate_hermes_home):
         from starlette.testclient import TestClient
     except ImportError:
         pytest.skip("fastapi/starlette not installed")
-    from hermes_cli.config import load_config, save_config
-    from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
+    from hermes_agent.hermes_cli.config import load_config, save_config
+    from hermes_agent.hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
 
     cfg = load_config()
     cfg.setdefault("platforms", {})["webhook"] = {"enabled": True, "extra": {"host": "127.0.0.1", "port": 8644}}
@@ -22,7 +22,7 @@ def client(_isolate_hermes_home):
 
 
 def _stored(name):
-    from hermes_cli.webhook import _load_subscriptions
+    from hermes_agent.hermes_cli.webhook import _load_subscriptions
 
     return _load_subscriptions()[name]
 
@@ -43,7 +43,7 @@ def test_explicit_signature_is_stored(client):
 def test_unknown_signature_is_rejected(client):
     r = client.post("/api/webhooks", json={"name": "bad", "signature": "v1"})
     assert r.status_code == 422
-    from hermes_cli.webhook import _load_subscriptions
+    from hermes_agent.hermes_cli.webhook import _load_subscriptions
 
     assert "bad" not in _load_subscriptions()
 
@@ -57,7 +57,7 @@ def test_edit_without_signature_keeps_pin_and_explicit_edit_changes_it(client):
 
 
 def test_edit_of_unpinned_route_without_signature_stays_unpinned(client):
-    from hermes_cli.webhook import _mutate_subscriptions
+    from hermes_agent.hermes_cli.webhook import _mutate_subscriptions
 
     _mutate_subscriptions(lambda subs: subs.update({"legacy": {"secret": "s", "deliver": "log"}}))
     assert client.post("/api/webhooks", json={"name": "legacy", "deliver": "log"}).status_code == 200

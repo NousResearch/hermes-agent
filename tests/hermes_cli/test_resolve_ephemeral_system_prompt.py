@@ -1,6 +1,6 @@
 """Unit tests for resolve_ephemeral_system_prompt_from_config."""
 
-from hermes_cli.config import (
+from hermes_agent.hermes_cli.config import (
     resolve_ephemeral_system_prompt_from_config,
 )
 

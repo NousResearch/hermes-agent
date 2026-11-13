@@ -15,7 +15,7 @@ import subprocess
 from contextlib import suppress
 from typing import Dict, List
 
-from hermes_cli._subprocess_compat import (
+from hermes_agent.hermes_cli._subprocess_compat import (
     FILTER_DISCOVERY_FAILED,
     harden_git_argv,
     noninteractive_repo_git_env,

@@ -18,12 +18,12 @@ from hermes_agent.gateway.kanban_watchers_common import _board_slugs, _positive_
 
 
 def _kbc():
-    from hermes_cli import kanban_db_connect
+    from hermes_agent.hermes_cli import kanban_db_connect
     return kanban_db_connect
 
 
 def _kbd():
-    from hermes_cli import kanban_db_dispatch
+    from hermes_agent.hermes_cli import kanban_db_dispatch
     return kanban_db_dispatch
 
 _CORRUPT_DB_MARKERS = ("file is not a database", "database disk image is malformed")
@@ -137,7 +137,7 @@ class _KanbanDispatcher:
         return _board_slugs(self.kb)
 
     def board_db_fingerprint(self, slug: str) -> tuple[str, int | None, int | None]:
-        from hermes_cli import kanban_db as _kb
+        from hermes_agent.hermes_cli import kanban_db as _kb
         with _kb.pin_first_board_resolution():
             path = self.kb.kanban_db_path(slug)
         try:
@@ -189,7 +189,7 @@ class _KanbanDispatcher:
             # Pin-first: the tick is machine flow — on a box whose env pins
             # HERMES_KANBAN_DB every enumerated slug must resolve to the pinned
             # file, or the dispatcher reads per-slug DBs nobody writes.
-            from hermes_cli import kanban_db as _kb
+            from hermes_agent.hermes_cli import kanban_db as _kb
             with _kb.pin_first_board_resolution():
                 conn = _kbc().connect(board=slug)
                 return _kbd().dispatch_once(conn, board=slug, **kwargs)
@@ -227,7 +227,7 @@ class _KanbanDispatcher:
         """
         kbd = _kbd()
         _review_probe = kbd.review_dispatch_enabled()
-        from hermes_cli import kanban_db as _kb
+        from hermes_agent.hermes_cli import kanban_db as _kb
         with _kb.pin_first_board_resolution():
             for slug in self._board_slugs():
                 conn = None
@@ -250,14 +250,14 @@ class _KanbanDispatcher:
         load from burst-spending the aux LLM. Returns the number decomposed.
         """
         try:
-            from hermes_cli import kanban_decompose as _decomp
-            from hermes_cli.kanban_db import scoped_current_board
+            from hermes_agent.hermes_cli import kanban_decompose as _decomp
+            from hermes_agent.hermes_cli.kanban_db import scoped_current_board
         except Exception as exc:  # pragma: no cover
             logger.warning("kanban auto-decompose: import failed (%s); skipping", exc)
             return 0
         attempted = 0
         successes = 0
-        from hermes_cli import kanban_db as _kb
+        from hermes_agent.hermes_cli import kanban_db as _kb
         with _default_profile_secret_scope(), _kb.pin_first_board_resolution():
             for slug in self._board_slugs():
                 if attempted >= auto_decompose_per_tick:

@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 import pm
-from hermes_cli import main, update_cmd
+from hermes_agent.hermes_cli import main, update_cmd
 
 
 
@@ -17,11 +17,11 @@ from hermes_cli import main, update_cmd
     (None, None, 0), (SystemExit(3), SystemExit, 3),
     (SystemExit(None), SystemExit, 1), (RuntimeError("tail exploded"), RuntimeError, 1),
     (pm.InstallError("venv", "conflict"), SystemExit, 1),
-    (subprocess.CalledProcessError(23, ["python", "-m", "hermes_cli.source_build"]), SystemExit, 1),
+    (subprocess.CalledProcessError(23, ["python", "-m", "hermes_agent.hermes_cli.source_build"]), SystemExit, 1),
 ])
 @pytest.mark.parametrize("reexec", [False, True])
 def test_command_reports_outcome_and_releases_real_lock(tmp_path, monkeypatch, failure, exception, code, reexec):
-    from hermes_cli import update_lock, update_receipt
+    from hermes_agent.hermes_cli import update_lock, update_receipt
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setenv("HERMES_UPDATE_REEXEC", "1" if reexec else "")

@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 from fastapi import HTTPException
 
-from hermes_cli import web_server
+from hermes_agent.hermes_cli import web_server
 
 pytest.importorskip("starlette.testclient")
 from starlette.testclient import TestClient
@@ -86,7 +86,7 @@ def sandboxes(monkeypatch, tmp_path):
             raise HTTPException(status_code=404, detail="Session not found")
         return {"cwd": row[1], "id": session_id}
 
-    monkeypatch.setattr("hermes_cli.web_routers.sessions.get_session_detail", detail)
+    monkeypatch.setattr("hermes_agent.hermes_cli.web_routers.sessions.get_session_detail", detail)
     return {"own": own, "foreign": foreign, "shared": shared, "outside": outside, "lookups": lookups}
 
 

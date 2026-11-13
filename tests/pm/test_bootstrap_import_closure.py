@@ -89,7 +89,7 @@ class NoApplication:
         if fullname == 'pm' or fullname == 'utils' or fullname.startswith(('pm.', 'agent.')):
             raise AssertionError('signing imported ' + fullname)
 sys.meta_path.insert(0, NoApplication())
-from hermes_cli.macos_signing import sign_managed_python
+from hermes_agent.hermes_cli.macos_signing import sign_managed_python
 assert callable(sign_managed_python)
 """
     result = subprocess.run([sys.executable, "-S", "-c", script], cwd=repo,

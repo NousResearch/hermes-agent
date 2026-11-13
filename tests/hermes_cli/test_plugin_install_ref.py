@@ -14,7 +14,7 @@ from tests.hermes_cli.plugin_worker_support import (
 )
 import hermes_yaml as yaml
 
-from hermes_cli.subcommands.plugins import build_plugins_parser
+from hermes_agent.hermes_cli.subcommands.plugins import build_plugins_parser
 
 
 @pytest.fixture(autouse=True)
@@ -57,7 +57,7 @@ def _metadata(home: Path) -> dict:
 
 
 def test_canonical_source_never_persists_http_credentials():
-    from hermes_cli.plugins_cmd import _canonical_source
+    from hermes_agent.hermes_cli.plugins_cmd import _canonical_source
 
     assert (
         _canonical_source("https://user:token@example.com/owner/repo.git", None)
@@ -70,7 +70,7 @@ def test_canonical_source_never_persists_http_credentials():
 
 
 def test_cloned_origin_never_persists_http_credentials(tmp_path):
-    from hermes_cli.plugins_cmd import _scrub_cloned_origin
+    from hermes_agent.hermes_cli.plugins_cmd import _scrub_cloned_origin
 
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -96,7 +96,7 @@ def test_cloned_origin_never_persists_http_credentials(tmp_path):
 
 
 def test_git_errors_never_echo_source_credentials():
-    from hermes_cli.plugins_cmd import _safe_git_error
+    from hermes_agent.hermes_cli.plugins_cmd import _safe_git_error
 
     source = "https://user:secret@example.com/owner/repo.git?token=secret"
     result = subprocess.CompletedProcess(
@@ -114,7 +114,7 @@ def test_git_errors_never_echo_source_credentials():
 
 
 def test_exact_ref_installs_old_commit_and_normalizes_uppercase(monkeypatch, tmp_path):
-    from hermes_cli.plugins_cmd import _install_plugin_core
+    from hermes_agent.hermes_cli.plugins_cmd import _install_plugin_core
 
     repo, old_sha, new_sha = _plugin_repo(tmp_path)
     home = tmp_path / "home"
@@ -135,7 +135,7 @@ def test_exact_ref_installs_old_commit_and_normalizes_uppercase(monkeypatch, tmp
 
 @pytest.mark.parametrize("ref", ["", "main", "abc", "g" * 40, "a" * 39, "a" * 41])
 def test_invalid_ref_is_rejected_before_any_install_state(monkeypatch, tmp_path, ref):
-    from hermes_cli.plugins_cmd import PluginOperationError, _install_plugin_core
+    from hermes_agent.hermes_cli.plugins_cmd import PluginOperationError, _install_plugin_core
 
     repo, _old_sha, _new_sha = _plugin_repo(tmp_path)
     home = tmp_path / "home"
@@ -151,7 +151,7 @@ def test_invalid_ref_is_rejected_before_any_install_state(monkeypatch, tmp_path,
 def test_subdir_pin_records_source_identity_and_installs_requested_tree(
     monkeypatch, tmp_path
 ):
-    from hermes_cli.plugins_cmd import _install_plugin_core
+    from hermes_agent.hermes_cli.plugins_cmd import _install_plugin_core
 
     repo = tmp_path / "monorepo"
     plugin = repo / "extensions" / "demo"
@@ -183,7 +183,7 @@ def test_subdir_pin_records_source_identity_and_installs_requested_tree(
 
 
 def test_clone_timeout_applies_to_every_network_step_of_a_pinned_install(monkeypatch, tmp_path):
-    from hermes_cli import plugins_cmd
+    from hermes_agent.hermes_cli import plugins_cmd
 
     repo, old_sha, _new_sha = _plugin_repo(tmp_path)
     home = tmp_path / "home"
@@ -210,7 +210,7 @@ def test_clone_timeout_applies_to_every_network_step_of_a_pinned_install(monkeyp
 
 @pytest.mark.parametrize("pinned", [False, True])
 def test_subdir_install_downloads_only_that_subdirectory(monkeypatch, tmp_path, pinned):
-    from hermes_cli.plugins_cmd import _install_plugin_core
+    from hermes_agent.hermes_cli.plugins_cmd import _install_plugin_core
 
     repo = tmp_path / "monorepo"
     plugin = repo / "integrations" / "hermes"
@@ -243,7 +243,7 @@ def test_subdir_install_downloads_only_that_subdirectory(monkeypatch, tmp_path, 
 
 
 def test_clone_timeout_uses_active_profile_and_bounds_invalid_values(monkeypatch, tmp_path):
-    from hermes_cli.plugins_cmd import _clone_timeout_seconds
+    from hermes_agent.hermes_cli.plugins_cmd import _clone_timeout_seconds
 
     home = tmp_path / "home"
     home.mkdir(exist_ok=True)
@@ -266,7 +266,7 @@ def test_clone_timeout_uses_active_profile_and_bounds_invalid_values(monkeypatch
 def test_force_reinstall_does_not_drift_pin_without_explicit_new_ref(
     monkeypatch, tmp_path
 ):
-    from hermes_cli.plugins_cmd import _install_plugin_core
+    from hermes_agent.hermes_cli.plugins_cmd import _install_plugin_core
 
     repo, old_sha, new_sha = _plugin_repo(tmp_path)
     home = tmp_path / "home"
@@ -290,7 +290,7 @@ def test_force_reinstall_of_the_same_source_keeps_the_users_files(monkeypatch, t
     code, not the user's state. Untracked/ignored files stay live, edits to tracked files go to
     plugins-backup, and nothing the new revision ships is overwritten by the old tree. Another
     repository under the same plugin name is another plugin and still starts clean."""
-    from hermes_cli.plugins_cmd import _install_plugin_core
+    from hermes_agent.hermes_cli.plugins_cmd import _install_plugin_core
 
     (tmp_path / "first").mkdir()
     repo, _old, _new = _plugin_repo(tmp_path / "first")
@@ -325,7 +325,7 @@ def test_force_reinstall_of_the_same_source_keeps_the_users_files(monkeypatch, t
 
 
 def test_unpinned_install_and_force_reinstall_keep_tracking_head(monkeypatch, tmp_path):
-    from hermes_cli.plugins_cmd import _install_plugin_core
+    from hermes_agent.hermes_cli.plugins_cmd import _install_plugin_core
 
     repo, _old_sha, first_head = _plugin_repo(tmp_path)
     home = tmp_path / "home"
@@ -343,7 +343,7 @@ def test_unpinned_install_and_force_reinstall_keep_tracking_head(monkeypatch, tm
 
 
 def test_metadata_is_profile_local_and_read_from_disk_each_time(monkeypatch, tmp_path):
-    from hermes_cli.plugins_cmd import _install_plugin_core, _read_install_metadata
+    from hermes_agent.hermes_cli.plugins_cmd import _install_plugin_core, _read_install_metadata
 
     repo, old_sha, _new_sha = _plugin_repo(tmp_path)
     home_a = tmp_path / "profile-a"
@@ -360,7 +360,7 @@ def test_metadata_is_profile_local_and_read_from_disk_each_time(monkeypatch, tmp
 
 
 def test_pinned_plugin_update_refuses_to_drift(monkeypatch, tmp_path, capsys):
-    from hermes_cli.plugins_cmd import _install_plugin_core, cmd_update
+    from hermes_agent.hermes_cli.plugins_cmd import _install_plugin_core, cmd_update
 
     repo, old_sha, _new_sha = _plugin_repo(tmp_path)
     home = tmp_path / "home"
@@ -376,7 +376,7 @@ def test_pinned_plugin_update_refuses_to_drift(monkeypatch, tmp_path, capsys):
 
 
 def test_dashboard_update_also_refuses_to_drift_pin(monkeypatch, tmp_path):
-    from hermes_cli.plugins_cmd import (
+    from hermes_agent.hermes_cli.plugins_cmd import (
         _install_plugin_core,
         dashboard_update_user_plugin,
     )
@@ -396,7 +396,7 @@ def test_dashboard_update_also_refuses_to_drift_pin(monkeypatch, tmp_path):
 def test_failed_force_reinstall_keeps_existing_plugin_and_metadata(
     monkeypatch, tmp_path
 ):
-    from hermes_cli.plugins_cmd import PluginOperationError, _install_plugin_core
+    from hermes_agent.hermes_cli.plugins_cmd import PluginOperationError, _install_plugin_core
 
     repo, old_sha, _new_sha = _plugin_repo(tmp_path)
     home = tmp_path / "home"
@@ -415,13 +415,13 @@ def test_failed_force_reinstall_keeps_existing_plugin_and_metadata(
 
 
 def test_checkout_mismatch_is_rejected(monkeypatch, tmp_path):
-    from hermes_cli.plugins_cmd import PluginOperationError, _checkout_exact_revision
+    from hermes_agent.hermes_cli.plugins_cmd import PluginOperationError, _checkout_exact_revision
 
     repo, old_sha, new_sha = _plugin_repo(tmp_path)
     clone = tmp_path / "clone"
     subprocess.run(["git", "clone", "-q", repo.as_uri(), str(clone)], check=True)
     monkeypatch.setattr(
-        "hermes_cli.plugins_cmd._git_head_revision", lambda _repo, _git: new_sha
+        "hermes_agent.hermes_cli.plugins_cmd._git_head_revision", lambda _repo, _git: new_sha
     )
 
     with pytest.raises(PluginOperationError, match="does not match requested"):
@@ -429,7 +429,7 @@ def test_checkout_mismatch_is_rejected(monkeypatch, tmp_path):
 
 
 def test_metadata_write_failure_rolls_back_new_install(monkeypatch, tmp_path, isolated_python):
-    from hermes_cli.plugins_cmd import _install_plugin_core, PluginOperationError
+    from hermes_agent.hermes_cli.plugins_cmd import _install_plugin_core, PluginOperationError
     from pm import client
     from tests.pm._fixtures import worker_toolchain
 
@@ -455,7 +455,7 @@ def test_metadata_write_failure_rolls_back_new_install(monkeypatch, tmp_path, is
 
 
 def test_metadata_write_failure_rolls_back_removal(monkeypatch, tmp_path):
-    from hermes_cli.plugins_cmd import _install_plugin_core, _remove_plugin_core
+    from hermes_agent.hermes_cli.plugins_cmd import _install_plugin_core, _remove_plugin_core
 
     repo, old_sha, _new_sha = _plugin_repo(tmp_path)
     home = tmp_path / "home"
@@ -465,7 +465,7 @@ def test_metadata_write_failure_rolls_back_removal(monkeypatch, tmp_path):
     )
     before = _metadata(home)
     monkeypatch.setattr(
-        "hermes_cli.plugins_cmd._write_install_metadata",
+        "hermes_agent.hermes_cli.plugins_cmd._write_install_metadata",
         lambda _metadata: (_ for _ in ()).throw(OSError("disk full")),
     )
 
@@ -479,7 +479,7 @@ def test_metadata_write_failure_rolls_back_removal(monkeypatch, tmp_path):
 
 
 def test_reinstall_after_manual_directory_removal_retains_pin(monkeypatch, tmp_path):
-    from hermes_cli.plugins_cmd import _install_plugin_core
+    from hermes_agent.hermes_cli.plugins_cmd import _install_plugin_core
     from utils import rmtree_readonly
 
     repo, old_sha, _new_sha = _plugin_repo(tmp_path)
@@ -504,7 +504,7 @@ def test_annotated_tag_pin_installs_at_its_commit(monkeypatch, tmp_path):
     `git rev-parse <tag>`; git detaches at the tag's commit, so the guard has
     to peel before comparing or the entry is uninstallable.
     """
-    from hermes_cli.plugins_cmd import _install_plugin_core
+    from hermes_agent.hermes_cli.plugins_cmd import _install_plugin_core
 
     repo, old_sha, _new_sha = _plugin_repo(tmp_path)
     _git(repo, "tag", "-a", "v1.0.2", old_sha, "-m", "v1.0.2")
@@ -531,7 +531,7 @@ def test_annotated_tag_pin_installs_at_its_commit(monkeypatch, tmp_path):
 def test_checkout_that_lands_on_another_commit_is_still_rejected(monkeypatch, tmp_path):
     """Peeling must not weaken the guard: an annotated tag pin whose checkout
     ends somewhere else is still a mismatch."""
-    from hermes_cli.plugins_cmd import PluginOperationError, _checkout_exact_revision
+    from hermes_agent.hermes_cli.plugins_cmd import PluginOperationError, _checkout_exact_revision
 
     repo, old_sha, new_sha = _plugin_repo(tmp_path)
     _git(repo, "tag", "-a", "v1.0.2", old_sha, "-m", "v1.0.2")
@@ -539,7 +539,7 @@ def test_checkout_that_lands_on_another_commit_is_still_rejected(monkeypatch, tm
     clone = tmp_path / "clone"
     subprocess.run(["git", "clone", "-q", repo.as_uri(), str(clone)], check=True)
     monkeypatch.setattr(
-        "hermes_cli.plugins_cmd._git_head_revision", lambda _repo, _git: new_sha
+        "hermes_agent.hermes_cli.plugins_cmd._git_head_revision", lambda _repo, _git: new_sha
     )
 
     with pytest.raises(PluginOperationError, match="does not match requested"):
@@ -551,7 +551,7 @@ def test_install_refuses_a_non_https_update_url(monkeypatch, tmp_path, update_ur
     """The saved update_url is fetched unattended by the gateway and picks which origin commit
     gets installed; anything a network peer can rewrite (http/ftp) or a local path must not
     become the feed. Refused before any install state exists."""
-    from hermes_cli.plugins_cmd import PluginOperationError, _install_plugin_core
+    from hermes_agent.hermes_cli.plugins_cmd import PluginOperationError, _install_plugin_core
 
     repo, _old, _new = _plugin_repo(tmp_path)
     (repo / "plugin.yaml").write_text(
@@ -568,7 +568,7 @@ def test_install_refuses_a_non_https_update_url(monkeypatch, tmp_path, update_ur
 
 
 def test_install_saves_an_https_update_url_tag(monkeypatch, tmp_path):
-    from hermes_cli.plugins_cmd import _install_plugin_core
+    from hermes_agent.hermes_cli.plugins_cmd import _install_plugin_core
 
     repo, _old, _sha = _plugin_repo(tmp_path)
     (repo / "plugin.yaml").write_text(

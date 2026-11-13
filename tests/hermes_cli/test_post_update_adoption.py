@@ -11,7 +11,7 @@ import sys
 
 import pytest
 
-from hermes_cli.post_update import step_adopt_blessed_checkout
+from hermes_agent.hermes_cli.post_update import step_adopt_blessed_checkout
 
 
 @pytest.fixture
@@ -98,7 +98,7 @@ def test_read_only_tree_fails_soft(blessed_checkout):
 def test_adoption_keeps_the_steward_verdict_checkout(blessed_checkout):
     """End to end: the adopted stamp changes update admission, never the
     steward ladder — a .git tree stays a checkout (sealed_steward None)."""
-    from hermes_cli.steward import sealed_steward
+    from hermes_agent.hermes_cli.steward import sealed_steward
 
     assert sealed_steward(blessed_checkout) is None
     step_adopt_blessed_checkout()

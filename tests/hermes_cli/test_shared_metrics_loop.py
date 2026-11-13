@@ -8,9 +8,9 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli.observability import relay_shared_metrics
-from hermes_cli.observability import shared_metrics_loop as loop
-from hermes_cli.observability.shared_metrics import SharedMetricsStore
+from hermes_agent.hermes_cli.observability import relay_shared_metrics
+from hermes_agent.hermes_cli.observability import shared_metrics_loop as loop
+from hermes_agent.hermes_cli.observability.shared_metrics import SharedMetricsStore
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 from tests.hermes_cli.test_relay_shared_metrics_runtime import direct_runtime
 
@@ -132,7 +132,7 @@ def test_memory_provider_tools_report_bounded_provider_and_op(home):
 
 def test_disabled_shared_metrics_record_no_loop_rows(home, monkeypatch):
     monkeypatch.setattr(
-        "hermes_cli.config.read_raw_config_readonly", lambda: {"telemetry": {"shared_metrics": {"enabled": False}}},
+        "hermes_agent.hermes_cli.config.read_raw_config_readonly", lambda: {"telemetry": {"shared_metrics": {"enabled": False}}},
     )
     from hermes_agent.tools.memory_tool import memory_tool
 
@@ -273,7 +273,7 @@ def test_path_completion_listing_is_not_user_backend_work(home):
 
 
 def test_every_shipped_terminal_backend_has_its_own_bucket():
-    from hermes_cli.observability import shared_metrics_contract as contract
+    from hermes_agent.hermes_cli.observability import shared_metrics_contract as contract
     from hermes_agent.tools.terminal_tool_config import _BUILTIN_BACKENDS
 
     schema = json.loads(
@@ -288,7 +288,7 @@ def test_every_shipped_terminal_backend_has_its_own_bucket():
 
 def test_browser_backend_is_not_resolved_while_collection_is_off(home, monkeypatch):
     monkeypatch.setattr(
-        "hermes_cli.config.read_raw_config_readonly", lambda: {"telemetry": {"shared_metrics": {"enabled": False}}},
+        "hermes_agent.hermes_cli.config.read_raw_config_readonly", lambda: {"telemetry": {"shared_metrics": {"enabled": False}}},
     )
     resolved = []
     loop.record_browser_call(lambda: '{"success": true}', lambda: resolved.append(1) or "local")

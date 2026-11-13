@@ -182,7 +182,7 @@ async def test_compress_mutation_copies_parent_or_uses_the_policy_surface(tmp_pa
 
 def _listed(db, source, capsys):
     from argparse import Namespace
-    from hermes_cli.sessions_cmd import _cmd_list
+    from hermes_agent.hermes_cli.sessions_cmd import _cmd_list
     _cmd_list(db, Namespace(limit=20, source=source, workspace=None))
     return capsys.readouterr().out
 
@@ -255,9 +255,9 @@ async def test_latest_skips_a_newer_empty_launch_stub(tmp_path, monkeypatch, adm
         authority.sessions.clear()
         expected = stub if admission else real
 
-        from hermes_cli.main import _resolve_last_session
-        monkeypatch.setattr('hermes_cli.main._resolve_workspace_key', lambda: None)
-        monkeypatch.setattr('hermes_cli.main.get_hermes_home', lambda: authority.db.db_path.parent)
+        from hermes_agent.hermes_cli.main import _resolve_last_session
+        monkeypatch.setattr('hermes_agent.hermes_cli.main._resolve_workspace_key', lambda: None)
+        monkeypatch.setattr('hermes_agent.hermes_cli.main.get_hermes_home', lambda: authority.db.db_path.parent)
         assert _resolve_last_session('cli') == expected
 
         resumed = await _call(owner, 'session.resume', latest='cli')

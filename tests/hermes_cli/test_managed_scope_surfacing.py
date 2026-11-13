@@ -1,6 +1,6 @@
 """Surfacing tests — managed scope shown in `config show` and `hermes doctor`."""
 import pytest
-from hermes_cli import doctor_config
+from hermes_agent.hermes_cli import doctor_config
 
 
 @pytest.fixture
@@ -15,8 +15,8 @@ def homes(tmp_path, monkeypatch):
     (managed / "config.yaml").write_text(
         "model:\n  default: managed/model\n", encoding="utf-8"
     )
-    import hermes_cli.config as cfg
-    from hermes_cli import managed_scope
+    import hermes_agent.hermes_cli.config as cfg
+    from hermes_agent.hermes_cli import managed_scope
 
     cfg._LOAD_CONFIG_CACHE.clear()
     cfg._RAW_CONFIG_CACHE.clear()
@@ -33,13 +33,13 @@ def test_config_show_no_managed_scope_silent(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setenv("HERMES_MANAGED_DIR", str(tmp_path / "nope"))
     (home / "config.yaml").write_text("model:\n  default: user/model\n", encoding="utf-8")
-    import hermes_cli.config as cfg
-    from hermes_cli import managed_scope
+    import hermes_agent.hermes_cli.config as cfg
+    from hermes_agent.hermes_cli import managed_scope
 
     cfg._LOAD_CONFIG_CACHE.clear()
     cfg._RAW_CONFIG_CACHE.clear()
     managed_scope.invalidate_managed_cache()
-    from hermes_cli.config_show import show_config
+    from hermes_agent.hermes_cli.config_show import show_config
 
     show_config()
     out = capsys.readouterr().out.lower()
@@ -50,7 +50,7 @@ def test_config_show_no_managed_scope_silent(tmp_path, monkeypatch, capsys):
 
 def test_doctor_silent_with_no_managed_scope(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("HERMES_MANAGED_DIR", str(tmp_path / "nope"))
-    from hermes_cli import managed_scope, doctor
+    from hermes_agent.hermes_cli import managed_scope, doctor
 
     managed_scope.invalidate_managed_cache()
     doctor_config.managed_scope_check()

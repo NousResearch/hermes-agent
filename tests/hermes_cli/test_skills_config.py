@@ -1,4 +1,4 @@
-"""Tests for hermes_cli/skills_config.py and skills_tool disabled filtering."""
+"""Tests for hermes_agent/hermes_cli/skills_config.py and skills_tool disabled filtering."""
 from unittest.mock import patch
 
 
@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 class TestGetDisabledSkills:
     def test_empty_config(self):
-        from hermes_cli.skills_config import get_disabled_skills
+        from hermes_agent.hermes_cli.skills_config import get_disabled_skills
         assert get_disabled_skills({}) == set()
 
 
@@ -16,7 +16,7 @@ class TestGetDisabledSkills:
 
     def test_null_skills_section(self):
         """``skills:`` with no value (YAML null) must not crash (#13026)."""
-        from hermes_cli.skills_config import get_disabled_skills
+        from hermes_agent.hermes_cli.skills_config import get_disabled_skills
         assert get_disabled_skills({"skills": None}) == set()
         assert get_disabled_skills({"skills": None}, platform="telegram") == set()
 
@@ -28,9 +28,9 @@ class TestGetDisabledSkills:
 # ---------------------------------------------------------------------------
 
 class TestSaveDisabledSkills:
-    @patch("hermes_cli.skills_config.save_config")
+    @patch("hermes_agent.hermes_cli.skills_config.save_config")
     def test_saves_global_sorted(self, mock_save):
-        from hermes_cli.skills_config import save_disabled_skills
+        from hermes_agent.hermes_cli.skills_config import save_disabled_skills
         config = {}
         save_disabled_skills(config, {"skill-z", "skill-a"})
         assert config["skills"]["disabled"] == ["skill-a", "skill-z"]
@@ -44,7 +44,7 @@ class TestSaveDisabledSkills:
 class TestIsSkillDisabled:
 
 
-    @patch("hermes_cli.config.load_config")
+    @patch("hermes_agent.hermes_cli.config.load_config")
     def test_platform_disabled(self, mock_load):
         mock_load.return_value = {"skills": {
             "disabled": ["a/one"],
@@ -59,7 +59,7 @@ class TestIsSkillDisabled:
 
 
 
-    @patch("hermes_cli.config.load_config")
+    @patch("hermes_agent.hermes_cli.config.load_config")
     @patch.dict("os.environ", {"HERMES_PLATFORM": "discord"})
     def test_env_var_platform(self, mock_load):
         mock_load.return_value = {"skills": {
@@ -163,7 +163,7 @@ class TestFindAllSkillsFiltering:
 
 class TestGetCategories:
     def test_extracts_unique_categories(self):
-        from hermes_cli.skills_config import _get_categories
+        from hermes_agent.hermes_cli.skills_config import _get_categories
         skills = [
             {"name": "a", "category": "mlops", "description": ""},
             {"name": "b", "category": "coding", "description": ""},
@@ -173,6 +173,6 @@ class TestGetCategories:
         assert cats == ["coding", "mlops"]
 
     def test_none_becomes_uncategorized(self):
-        from hermes_cli.skills_config import _get_categories
+        from hermes_agent.hermes_cli.skills_config import _get_categories
         skills = [{"name": "a", "category": None, "description": ""}]
         assert "uncategorized" in _get_categories(skills)

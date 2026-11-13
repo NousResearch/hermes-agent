@@ -55,7 +55,7 @@ def _stop_response():
 
 
 def _make_agent(monkeypatch, tmp_path: Path, *, max_attempts) -> AIAgent:
-    from hermes_cli import config as config_mod
+    from hermes_agent.hermes_cli import config as config_mod
 
     monkeypatch.setattr(
         config_mod, "load_config", lambda: _config(max_attempts)

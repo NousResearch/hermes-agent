@@ -12,7 +12,7 @@ from unittest.mock import patch
 
 import pytest
 
-from hermes_cli.models import provider_model_ids
+from hermes_agent.hermes_cli.models import provider_model_ids
 
 STEPFUN_CREDS = {
     "provider": "stepfun",
@@ -39,9 +39,9 @@ def hermetic_home(tmp_path, monkeypatch):
 def step_plan_live_listing(ids):
     """Patch the stepfun credential resolver and /v1/models probe."""
     with patch(
-        "hermes_cli.auth.resolve_api_key_provider_credentials",
+        "hermes_agent.hermes_cli.auth.resolve_api_key_provider_credentials",
         return_value=dict(STEPFUN_CREDS),
-    ), patch("hermes_cli.models.fetch_api_models", return_value=list(ids)):
+    ), patch("hermes_agent.hermes_cli.models.fetch_api_models", return_value=list(ids)):
         yield
 
 
@@ -60,7 +60,7 @@ class TestStepfunPickerMergesLiveWithCurated:
         with step_plan_live_listing(STEP_PLAN_LIVE_IDS):
             ids = provider_model_ids("stepfun")
         assert len(ids) == len(set(i.lower() for i in ids)), "duplicate rows in merged picker"
-        from hermes_cli.models_catalog_static import _PROVIDER_MODELS
+        from hermes_agent.hermes_cli.models_catalog_static import _PROVIDER_MODELS
 
         for curated_id in _PROVIDER_MODELS["stepfun"]:
             assert curated_id in ids
@@ -69,7 +69,7 @@ class TestStepfunPickerMergesLiveWithCurated:
         """Outage fallback unchanged: the curated list, flagged as placeholder."""
         with step_plan_live_listing([]):
             ids = provider_model_ids("stepfun")
-        from hermes_cli.models_catalog_static import CuratedFallbackModels, _PROVIDER_MODELS
+        from hermes_agent.hermes_cli.models_catalog_static import CuratedFallbackModels, _PROVIDER_MODELS
 
         assert list(ids) == list(_PROVIDER_MODELS["stepfun"])
         # The placeholder flag rides on the list subclass, so the disk cache can
@@ -78,7 +78,7 @@ class TestStepfunPickerMergesLiveWithCurated:
 
     def test_wizard_offer_merges_live_and_curated(self, hermetic_home):
         """The setup wizard's StepFun flow must offer the same merged list."""
-        from hermes_cli.model_setup_flows import _model_flow_stepfun
+        from hermes_agent.hermes_cli.model_setup_flows import _model_flow_stepfun
 
         captured = {}
 
@@ -86,13 +86,13 @@ class TestStepfunPickerMergesLiveWithCurated:
             captured["models"] = list(model_list)
 
         with patch(
-            "hermes_cli.model_setup_flows._ensure_flow_api_key", return_value=(None, "sk-stepfun-test", False)
+            "hermes_agent.hermes_cli.model_setup_flows._ensure_flow_api_key", return_value=(None, "sk-stepfun-test", False)
         ), patch(
-            "hermes_cli.main_provider_setup._prompt_provider_choice", return_value=0
-        ), patch("hermes_cli.config.save_env_value"), patch(
-            "hermes_cli.model_setup_flows._pick_model_or_prompt", side_effect=fake_pick
+            "hermes_agent.hermes_cli.main_provider_setup._prompt_provider_choice", return_value=0
+        ), patch("hermes_agent.hermes_cli.config.save_env_value"), patch(
+            "hermes_agent.hermes_cli.model_setup_flows._pick_model_or_prompt", side_effect=fake_pick
         ), patch(
-            "hermes_cli.model_setup_flows._finish_model", return_value=None
+            "hermes_agent.hermes_cli.model_setup_flows._finish_model", return_value=None
         ):
             _model_flow_stepfun({})
         assert "step-3.7-flash" in captured["models"], (
@@ -101,7 +101,7 @@ class TestStepfunPickerMergesLiveWithCurated:
         # Contract: the wizard offers the same MERGED list as the picker — every
         # Step Plan live id plus the curated floor, no duplicates.
         assert set(STEP_PLAN_LIVE_IDS) <= {m.lower() for m in captured["models"]}
-        from hermes_cli.models_catalog_static import _PROVIDER_MODELS
+        from hermes_agent.hermes_cli.models_catalog_static import _PROVIDER_MODELS
 
         for curated_id in _PROVIDER_MODELS["stepfun"]:
             assert curated_id in captured["models"]

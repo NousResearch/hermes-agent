@@ -11,7 +11,7 @@ import builtins
 import io
 from unittest import mock
 
-from hermes_cli import main_tui_launch
+from hermes_agent.hermes_cli import main_tui_launch
 
 V2 = "/sys/fs/cgroup/memory.max"
 V1 = "/sys/fs/cgroup/memory/memory.limit_in_bytes"

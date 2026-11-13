@@ -100,7 +100,7 @@ for name in list(sys.modules):
     if (name.startswith("hermes_agent.tools.")
             or name.startswith("hermes_agent.agent.")
             or name.startswith("plugins.")
-            or name.startswith("hermes_cli.")):
+            or name.startswith("hermes_agent.hermes_cli.")):
         sys.modules.pop(name, None)
 
 # Try importing tts_registry — only exists on PR side.

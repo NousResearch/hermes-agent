@@ -15,7 +15,7 @@ import types
 
 import pytest
 
-from hermes_cli.update_inventory import RuntimeRecord
+from hermes_agent.hermes_cli.update_inventory import RuntimeRecord
 
 pytestmark = pytest.mark.platforms("linux")
 
@@ -64,8 +64,8 @@ def test_settled_unit_keeps_the_receipt_incomplete_while_a_dashboard_is_down(mon
 
 
 def _update_with_failed_unit(monkeypatch, capsys, main_pid, fleet_rows, dashboards_down=None):
-    from hermes_cli import gateway, update_cmd, update_cmd_fleet as fleet, update_cmd_fleet_verify as verify
-    from hermes_cli import update_receipt
+    from hermes_agent.hermes_cli import gateway, update_cmd, update_cmd_fleet as fleet, update_cmd_fleet_verify as verify
+    from hermes_agent.hermes_cli import update_receipt
 
     # Restart phase: the unit's restart call timed out, so it lands in the failed list.
     monkeypatch.setattr(gateway, "find_gateway_pids", lambda **kw: [OLD_PID])
@@ -90,9 +90,9 @@ def _update_with_failed_unit(monkeypatch, capsys, main_pid, fleet_rows, dashboar
     monkeypatch.setattr(update_receipt, "collect_fleet_versions", lambda **kw: [dict(r) for r in rows])
     monkeypatch.setattr(verify, "_time", types.SimpleNamespace(monotonic=lambda: 0.0, sleep=lambda s: None))
     monkeypatch.setattr(verify, "_print_legacy_units_warning", lambda: None)
-    monkeypatch.setattr("hermes_cli.update_cmd_maint._refresh_dashboard_after_update", lambda **kw: dashboards_down)
+    monkeypatch.setattr("hermes_agent.hermes_cli.update_cmd_maint._refresh_dashboard_after_update", lambda **kw: dashboards_down)
     monkeypatch.setattr(update_cmd, "_surviving_pre_update_serve_runtimes", lambda plan: [])
-    monkeypatch.setattr("hermes_cli.gateway_migrate.maybe_auto_migrate_after_update", lambda: None)
+    monkeypatch.setattr("hermes_agent.hermes_cli.gateway_migrate.maybe_auto_migrate_after_update", lambda: None)
     cleared = []
     monkeypatch.setattr(fleet, "_clear_fleet_restart_pending_marker", lambda: cleared.append(True))
 

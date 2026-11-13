@@ -75,8 +75,8 @@ def _capture_fork_kwargs(site, *, checkpoint_required):
 
     cfg = _fork_config(checkpoint_required)
     with ExitStack() as stack:
-        stack.enter_context(patch("hermes_cli.config.load_config", return_value=cfg))
-        stack.enter_context(patch("hermes_cli.config.load_config_readonly", return_value=cfg))
+        stack.enter_context(patch("hermes_agent.hermes_cli.config.load_config", return_value=cfg))
+        stack.enter_context(patch("hermes_agent.hermes_cli.config.load_config_readonly", return_value=cfg))
         stack.enter_context(patch.object(binding, "AIAgent", _recorder))
         for extra in extra_patches:
             stack.enter_context(extra)
@@ -109,7 +109,7 @@ def test_checkpoint_required_from_config_reads_the_armed_key():
     from hermes_agent.agent.conversation_compression_checkpoint import checkpoint_required_from_config
 
     def _with(cfg):
-        with patch("hermes_cli.config.load_config_readonly", return_value=cfg):
+        with patch("hermes_agent.hermes_cli.config.load_config_readonly", return_value=cfg):
             return checkpoint_required_from_config()
 
     assert _with({"compression": {"checkpoint_required": True}}) is True
@@ -121,7 +121,7 @@ def test_checkpoint_required_from_config_reads_the_armed_key():
     assert _with({"compression": "nonsense"}) is False
     assert _with(None) is False
     # An unreadable config reads as "not armed", matching init_agent.
-    with patch("hermes_cli.config.load_config_readonly", side_effect=RuntimeError("config unreadable")):
+    with patch("hermes_agent.hermes_cli.config.load_config_readonly", side_effect=RuntimeError("config unreadable")):
         assert checkpoint_required_from_config() is False
 
 
@@ -154,8 +154,8 @@ def _build_agent_with_recording_provider(seen, builtin_memory=False, **extra):
     cfg = {"compression": {}, "agent": {}, "memory": {"provider": "recording", "memory_enabled": builtin_memory,
                                                       "user_profile_enabled": builtin_memory}}
     with (
-        patch("hermes_cli.config.load_config", return_value=cfg),
-        patch("hermes_cli.config.load_config_readonly", return_value=cfg),
+        patch("hermes_agent.hermes_cli.config.load_config", return_value=cfg),
+        patch("hermes_agent.hermes_cli.config.load_config_readonly", return_value=cfg),
         patch("plugins.memory.load_memory_provider", return_value=_RecordingProvider(seen)),
         patch("hermes_agent.agent.model_metadata.get_model_context_length", return_value=204_800),
         patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]),

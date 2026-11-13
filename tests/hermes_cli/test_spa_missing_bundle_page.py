@@ -10,8 +10,8 @@ BROWSER = {"accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;
 
 
 def _spa(monkeypatch, dist: Path, *, surface) -> TestClient:
-    from hermes_cli import web_server as server
-    from hermes_cli.web_server_dashboard import mount_spa
+    from hermes_agent.hermes_cli import web_server as server
+    from hermes_agent.hermes_cli.web_server_dashboard import mount_spa
 
     app = FastAPI()
     if surface is not None:
@@ -24,7 +24,7 @@ def _spa(monkeypatch, dist: Path, *, surface) -> TestClient:
 
 
 def _stale_bundle(dist: Path) -> Path:
-    from hermes_cli.webapp import STALE_MARKER
+    from hermes_agent.hermes_cli.webapp import STALE_MARKER
 
     (dist / "index.html").write_text("<html><head></head><body>old build</body></html>")
     (dist / STALE_MARKER).write_text("")

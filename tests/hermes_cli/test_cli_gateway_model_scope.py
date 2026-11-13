@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from hermes_cli.model_switch import ModelSwitchResult
+from hermes_agent.hermes_cli.model_switch import ModelSwitchResult
 from tests.hermes_cli.test_cli_gateway_model_route import RecordingConnection, _agent, _model_routes
 
 _CONFIRM_MESSAGE = "Large context: this switch re-reads the whole session."
@@ -27,8 +27,8 @@ class GuardedConnection(RecordingConnection):
 
 
 def _cli(monkeypatch, conn):
-    import cli as cli_mod
-    from hermes_cli.gateway_session_store import GatewaySessionStore
+    import hermes_agent.cli as cli_mod
+    from hermes_agent.hermes_cli.gateway_session_store import GatewaySessionStore
     from tests.hermes_cli.test_cli_model_once import _StubCLI
     stub = _StubCLI()
     stub.agent = _agent(conn, model="old/model", provider="openrouter")
@@ -38,16 +38,16 @@ def _cli(monkeypatch, conn):
     printed = []
     monkeypatch.setattr(cli_mod, "_cprint", lambda s, *a, **k: printed.append(str(s)))
     monkeypatch.setattr(cli_mod, "save_config_value", lambda *a, **k: None)
-    monkeypatch.setattr("hermes_cli.inventory.load_picker_context", lambda: SimpleNamespace(
+    monkeypatch.setattr("hermes_agent.hermes_cli.inventory.load_picker_context", lambda: SimpleNamespace(
         user_providers=None, custom_providers=None,
         with_overrides=lambda **_: SimpleNamespace(user_providers=None, custom_providers=None)))
     _pick(monkeypatch, "claude-sonnet-4.6", "anthropic", "https://api.anthropic.com", "anthropic_messages")
-    monkeypatch.setattr("hermes_cli.model_switch.resolve_display_context_length", lambda *a, **k: None)
+    monkeypatch.setattr("hermes_agent.hermes_cli.model_switch.resolve_display_context_length", lambda *a, **k: None)
     return cli_mod, stub, printed
 
 
 def _pick(monkeypatch, model, provider, base_url, api_mode):
-    monkeypatch.setattr("hermes_cli.model_switch.switch_model", lambda **_: ModelSwitchResult(
+    monkeypatch.setattr("hermes_agent.hermes_cli.model_switch.switch_model", lambda **_: ModelSwitchResult(
         success=True, new_model=model, target_provider=provider, api_key=f"sk-{provider}",
         base_url=base_url, api_mode=api_mode, provider_label=provider.title()))
 
@@ -272,8 +272,8 @@ def test_once_reasoning_rides_the_admission_and_never_mutates_the_session(monkey
 def test_once_reasoning_equal_to_the_inherited_level_commits_nothing(monkeypatch):
     """dokterdok's probe: the session already runs ``high`` by inheritance; neither the --once pick nor its
     restore may write the session's reasoning."""
-    import cli
-    from hermes_cli.cli_model_switch_mixin import _commit_model_switch
+    from hermes_agent import cli
+    from hermes_agent.hermes_cli.cli_model_switch_mixin import _commit_model_switch
     conn = RecordingConnection({"model": "old/model", "provider": "openrouter", "reasoning_effort": "high"})
     _cli_mod, stub, _printed = _cli(monkeypatch, conn)
     stub.agent = _agent(conn, model="old/model", provider="openrouter",
@@ -293,7 +293,7 @@ def test_once_sends_the_alias_it_resolved_through(monkeypatch, session_model):
     endpoints. ``/model second --once`` sends ``second``, not the bare model the owner would re-resolve to
     the first alias, and still sends it when the session already runs that model."""
     from hermes_agent.gateway.session_cli_turn import one_turn_runtime
-    from hermes_cli import model_switch
+    from hermes_agent.hermes_cli import model_switch
     resolve = model_switch.switch_model
     conn = RecordingConnection({"model": session_model, "provider": "custom"})
     cli_mod, stub, printed = _chat_cli(monkeypatch, conn)
@@ -301,7 +301,7 @@ def test_once_sends_the_alias_it_resolved_through(monkeypatch, session_model):
     for name, port in (("first", 7002), ("second", 7003)):
         monkeypatch.setitem(model_switch.DIRECT_ALIASES, name, model_switch.DirectAlias(
             model="shared-model", provider="custom", base_url=f"http://127.0.0.1:{port}/v1", api_key=f"sk-{name}"))
-    monkeypatch.setattr("hermes_cli.models_validate.validate_requested_model", lambda *_a, **_k: {
+    monkeypatch.setattr("hermes_agent.hermes_cli.models_validate.validate_requested_model", lambda *_a, **_k: {
         "accepted": True, "persist": True, "recognized": True, "message": ""})
     monkeypatch.setattr("hermes_agent.agent.models_dev.fetch_models_dev", dict)
     session = {"provider": "custom", "api_key": "sk-session", "base_url": "http://127.0.0.1:7001/v1"}
@@ -329,14 +329,14 @@ def test_once_through_an_alias_named_like_the_session_model_still_sends_it(monke
     --once`` resolves the alias, but the submit compared the staged ``shared-model`` with the session's
     route again, dropped it, and the turn ran on the session's endpoint and key."""
     from hermes_agent.gateway.session_cli_turn import one_turn_runtime
-    from hermes_cli import model_switch
+    from hermes_agent.hermes_cli import model_switch
     resolve = model_switch.switch_model
     conn = RecordingConnection({"model": "shared-model", "provider": "custom"})
     cli_mod, stub, printed = _chat_cli(monkeypatch, conn)
     monkeypatch.setattr(model_switch, "switch_model", resolve)  # the real resolver over this alias
     monkeypatch.setitem(model_switch.DIRECT_ALIASES, "shared-model", model_switch.DirectAlias(
         model="shared-model", provider="custom", base_url="http://127.0.0.1:7003/v1", api_key="sk-alias"))
-    monkeypatch.setattr("hermes_cli.models_validate.validate_requested_model", lambda *_a, **_k: {
+    monkeypatch.setattr("hermes_agent.hermes_cli.models_validate.validate_requested_model", lambda *_a, **_k: {
         "accepted": True, "persist": True, "recognized": True, "message": ""})
     monkeypatch.setattr("hermes_agent.agent.models_dev.fetch_models_dev", dict)
     session = {"provider": "custom", "api_key": "sk-session", "base_url": "http://127.0.0.1:7001/v1"}
@@ -367,7 +367,7 @@ class BusyOnceConnection(RecordingConnection):
 
     def call(self, method, *, timeout=None, **params):
         if method == "prompt.submit" and not self.refused:
-            from hermes_cli.gateway_client import GatewayRPCError
+            from hermes_agent.hermes_cli.gateway_client import GatewayRPCError
             self.refused = True
             self.calls.append((method, params))
             raise GatewayRPCError("session_busy")
@@ -423,7 +423,7 @@ def test_a_prompt_refused_behind_a_lost_turn_leaves_its_turn_for_the_resend(monk
     stub._chat_stage_user_message = cli_mod.HermesCLI._chat_stage_user_message.__get__(stub)
     stub._chat_settle_turn = cli_mod.HermesCLI._chat_settle_turn.__get__(stub)
     stub._flush_stream = lambda: None
-    monkeypatch.setattr("hermes_cli.gateway_side.connection_for", lambda cli: conn)
+    monkeypatch.setattr("hermes_agent.hermes_cli.gateway_side.connection_for", lambda cli: conn)
     cli_mod.HermesCLI._handle_model_switch(stub, "/model claude-sonnet-4.6 --provider anthropic --once")
     note = stub._pending_model_switch_note
 
@@ -477,7 +477,7 @@ def test_a_session_reasoning_pick_is_committed_once_not_on_every_rebuild(monkeyp
     """Review of #140969: ``_reasoning_user_set`` never cleared after the commit, so every later agent
     rebuild (``/fast``, ``/personality``, a route change, a --once restore) re-sent the explicit level: a
     full ``session.resume``, a prepare+commit, a receipt and a gateway agent eviction each time."""
-    from hermes_cli.cli_agent_setup_mixin import _retire_agent
+    from hermes_agent.hermes_cli.cli_agent_setup_mixin import _retire_agent
     conn = RecordingConnection({"model": "old/model", "provider": "openrouter"})
     _cli_mod, stub, _printed = _chat_cli(monkeypatch, conn)
     stub.agent = None

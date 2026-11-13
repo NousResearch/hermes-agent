@@ -61,7 +61,7 @@ def test_withheld_key_error_names_delegation_api_key(monkeypatch):
 
 def test_resolver_that_ignores_base_url_is_refused(monkeypatch):
     """A provider whose resolver keeps its own endpoint must not silently reroute the child off delegation.base_url."""
-    from hermes_cli import runtime_provider
+    from hermes_agent.hermes_cli import runtime_provider
     monkeypatch.setattr(runtime_provider, "resolve_runtime_provider", lambda **_: {
         "provider": "minimax-oauth", "base_url": "https://api.minimax.io/anthropic", "api_key": "oauth-token"})
     for base_url in ("https://llm-proxy.example/anthropic", "https://api.minimax.io/v1"):
@@ -76,7 +76,7 @@ def test_resolver_path_normalisation_is_not_a_reroute(monkeypatch):
     config = {"provider": "lmstudio", "model": "m", "base_url": "http://localhost:1234/api/v1"}
     assert _resolve_delegation_credentials(config, _parent())["base_url"] == "http://localhost:1234/v1"
 
-    from hermes_cli import runtime_provider
+    from hermes_agent.hermes_cli import runtime_provider
     monkeypatch.setattr(runtime_provider, "resolve_runtime_provider", lambda **_: {
         "provider": "azure-foundry", "base_url": "https://res.services.ai.azure.com/anthropic",
         "api_key": "foundry-key", "api_mode": "anthropic_messages"})

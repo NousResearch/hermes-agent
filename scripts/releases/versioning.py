@@ -12,7 +12,7 @@ import subprocess
 from functools import cmp_to_key
 from typing import Any
 
-from hermes_cli.update_channel import STABLE_TAG_RE
+from hermes_agent.hermes_cli.update_channel import STABLE_TAG_RE
 from scripts.releases.semver import compare
 
 # The legacy CalVer line published up to 0.21.5 (v2026.9.24); the pipeline continues it.
@@ -23,7 +23,7 @@ BUMPS = ("major", "minor", "patch")
 def published_channel_identity(repository: str, channel: str, *, base_url: str | None = None,
                                reader_type=None) -> tuple[str, str] | None:
     """Resolve one validated protected channel's payload version and commit."""
-    from hermes_cli.release_channels import ChannelNotFound, ChannelReader
+    from hermes_agent.hermes_cli.release_channels import ChannelNotFound, ChannelReader
     from scripts.releases.r2 import public_base_url
 
     if channel not in {"stable", "canary"}:

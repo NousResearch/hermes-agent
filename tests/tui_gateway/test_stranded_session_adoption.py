@@ -159,8 +159,8 @@ def gateway(tmp_path, monkeypatch):
     with patch.dict(
         "sys.modules",
         {
-            "hermes_cli.env_loader": MagicMock(),
-            "hermes_cli.banner": MagicMock(),
+            "hermes_agent.hermes_cli.env_loader": MagicMock(),
+            "hermes_agent.hermes_cli.banner": MagicMock(),
         },
     ):
         mod = importlib.import_module("hermes_agent.tui_gateway.server")
@@ -173,9 +173,9 @@ def gateway(tmp_path, monkeypatch):
     profile_home = home / "profiles" / "developer"
     profile_home.mkdir(parents=True)
 
-    # session.resume resolves the profile via hermes_cli.profiles
+    # session.resume resolves the profile via hermes_agent.hermes_cli.profiles
     monkeypatch.setattr(
-        "hermes_cli.profiles.get_profile_dir", lambda name: str(profile_home)
+        "hermes_agent.hermes_cli.profiles.get_profile_dir", lambda name: str(profile_home)
     )
 
     yield mod, default_db, profile_home

@@ -40,7 +40,7 @@ def two_profiles(tmp_path, monkeypatch):
 def _install_agent(monkeypatch, seen):
     import hermes_agent.cron.scheduler as sched
     from hermes_agent.cron import scheduler_delivery as sched_delivery
-    from hermes_cli import runtime_provider as rtp
+    from hermes_agent.hermes_cli import runtime_provider as rtp
 
     class TerminalAgent:
         def __init__(self, **_kw):

@@ -32,7 +32,7 @@ def _turn_of(tmp_path, monkeypatch, **request):
 
 def test_session_client_answers_for_the_running_session_only(tmp_path, monkeypatch):
     from hermes_agent.gateway.session_context import clear_session_vars, set_session_vars
-    from hermes_cli.plugin_session import session_client
+    from hermes_agent.hermes_cli.plugin_session import session_client
     assert session_client() is None  # outside any session
     with _turn_of(tmp_path, monkeypatch, client=dict(TERN)):
         first = session_client()
@@ -72,7 +72,7 @@ def test_a_plugins_prompt_section_sees_the_client_in_either_isolation_mode(tmp_p
     """A hosted section's callable gets the session info as plain data (a read-only mapping crosses the
     host wire as a dict, not an opaque placeholder), so it reads ``client`` exactly as in-process."""
     from hermes_agent.agent.system_prompt import _plugin_session_info
-    from hermes_cli.plugins import PluginManager
+    from hermes_agent.hermes_cli.plugins import PluginManager
     home = _home_with_plugins(tmp_path, monkeypatch, {'clientprobe': SECTION_PLUGIN}, isolation=isolation)
     manager = PluginManager()
     manager.discover_and_load()

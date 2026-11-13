@@ -177,7 +177,7 @@ async def test_typed_answer_from_an_unadmitted_discord_sender_is_refused(gateway
 async def test_a_pre_gateway_dispatch_rewrite_keeps_the_interaction_unadmitted(gateway, monkeypatch):
     """A plugin hook that rewrites the text (here: to the same text) replaces the event with a copy;
     the copy still answers only as the unadmitted sender."""
-    from hermes_cli.plugins import get_plugin_manager
+    from hermes_agent.hermes_cli.plugins import get_plugin_manager
     from tests.waiting import async_wait_until
 
     async def rewrite(event, **_kwargs):

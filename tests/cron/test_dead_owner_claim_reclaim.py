@@ -8,7 +8,7 @@ blocking every future run.
 
 Two-part fix under test here:
 
-1. ``hermes_cli.cron._job_action("run", ...)`` declares the channel stateless
+1. ``hermes_agent.hermes_cli.cron._job_action("run", ...)`` declares the channel stateless
    before invoking the cron API, so the background-dispatch path is gated off
    and the run executes synchronously to completion in the CLI process.
 2. ``hermes_agent.cron.scheduler.tick`` periodically reaps execution rows whose owner
@@ -160,7 +160,7 @@ class TestOneShotCliRunIsSynchronous:
         """`hermes cron run` must gate off async delivery so the run executes
         synchronously in the CLI process instead of on a doomed daemon thread."""
         from hermes_agent.gateway.session_context import async_delivery_supported
-        from hermes_cli import cron as cron_cli
+        from hermes_agent.hermes_cli import cron as cron_cli
 
         observed = {}
 
@@ -178,7 +178,7 @@ class TestOneShotCliRunIsSynchronous:
 
     def test_non_run_actions_leave_channel_capability_alone(self, monkeypatch):
         from hermes_agent.gateway.session_context import async_delivery_supported
-        from hermes_cli import cron as cron_cli
+        from hermes_agent.hermes_cli import cron as cron_cli
 
         observed = {}
 

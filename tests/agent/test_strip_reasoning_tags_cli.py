@@ -11,7 +11,7 @@ from functools import partial
 import pytest
 
 from hermes_agent.agent.agent_runtime_helpers import strip_think_blocks
-from cli import _strip_reasoning_tags
+from hermes_agent.cli import _strip_reasoning_tags
 
 # GLM text-channel tool call cut mid-serialization by a stream drop (#101899):
 # the first key and call name never arrived, only orphan argument markup.

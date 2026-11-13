@@ -45,11 +45,11 @@ def _make_args(**kwargs):
 @pytest.fixture(autouse=True)
 def _isolate_config(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    monkeypatch.setattr("hermes_cli.config.get_hermes_home", lambda: tmp_path)
+    monkeypatch.setattr("hermes_agent.hermes_cli.config.get_hermes_home", lambda: tmp_path)
     config_path = tmp_path / "config.yaml"
     env_path = tmp_path / ".env"
-    monkeypatch.setattr("hermes_cli.config.get_config_path", lambda: config_path)
-    monkeypatch.setattr("hermes_cli.config.get_env_path", lambda: env_path)
+    monkeypatch.setattr("hermes_agent.hermes_cli.config.get_config_path", lambda: config_path)
+    monkeypatch.setattr("hermes_agent.hermes_cli.config.get_env_path", lambda: env_path)
     return tmp_path
 
 
@@ -61,7 +61,7 @@ def _seed_config(tmp_path, mcp_servers):
 
 class TestRedactMcpProbeText:
     def test_authorization_header_is_fully_replaced(self):
-        from hermes_cli.mcp_config import redact_mcp_probe_text
+        from hermes_agent.hermes_cli.mcp_config import redact_mcp_probe_text
 
         out = redact_mcp_probe_text(f"401 {HEADER}")
         _assert_fully_redacted(out)
@@ -69,21 +69,21 @@ class TestRedactMcpProbeText:
         assert "Bearer ***" in out
 
     def test_bare_bearer_scheme_is_fully_replaced(self):
-        from hermes_cli.mcp_config import redact_mcp_probe_text
+        from hermes_agent.hermes_cli.mcp_config import redact_mcp_probe_text
 
         out = redact_mcp_probe_text(f"probe Bearer {SYNTHETIC} failed")
         _assert_fully_redacted(out)
         assert "Bearer ***" in out
 
     def test_opaque_api_key_header_is_fully_replaced(self):
-        from hermes_cli.mcp_config import redact_mcp_probe_text
+        from hermes_agent.hermes_cli.mcp_config import redact_mcp_probe_text
 
         out = redact_mcp_probe_text(f"connect failed: X-Api-Key: {OPAQUE_API_KEY}")
         _assert_fully_redacted(out)
         assert "X-Api-Key: ***" in out
 
     def test_digest_authorization_params_are_fully_replaced(self):
-        from hermes_cli.mcp_config import redact_mcp_probe_text
+        from hermes_agent.hermes_cli.mcp_config import redact_mcp_probe_text
 
         out = redact_mcp_probe_text(
             f'Authorization: Digest username="u", response="{OPAQUE_API_KEY}"'
@@ -92,7 +92,7 @@ class TestRedactMcpProbeText:
         assert "Digest ***" in out
 
     def test_digest_response_first_does_not_orphan_quoted_value(self):
-        from hermes_cli.mcp_config import redact_mcp_probe_text
+        from hermes_agent.hermes_cli.mcp_config import redact_mcp_probe_text
 
         out = redact_mcp_probe_text(
             f'Authorization: Digest response="{OPAQUE_API_KEY}", username="u"'
@@ -102,7 +102,7 @@ class TestRedactMcpProbeText:
         assert "response=" not in out
 
     def test_python_mapping_api_key_is_fully_replaced(self):
-        from hermes_cli.mcp_config import redact_mcp_probe_text
+        from hermes_agent.hermes_cli.mcp_config import redact_mcp_probe_text
 
         payload = {"X-Api-Key": OPAQUE_API_KEY}
         out = redact_mcp_probe_text(f"headers={payload!r}")
@@ -110,7 +110,7 @@ class TestRedactMcpProbeText:
         assert "***" in out
 
     def test_json_mapping_api_key_is_fully_replaced(self):
-        from hermes_cli.mcp_config import redact_mcp_probe_text
+        from hermes_agent.hermes_cli.mcp_config import redact_mcp_probe_text
 
         out = redact_mcp_probe_text(json.dumps({"X-Api-Key": OPAQUE_API_KEY}))
         _assert_fully_redacted(out)
@@ -130,7 +130,7 @@ class TestRedactMcpProbeText:
     )
     @pytest.mark.parametrize("quoted_values", [True, False])
     def test_digest_parameter_order_and_quoting(self, params, quoted_values):
-        from hermes_cli.mcp_config import redact_mcp_probe_text
+        from hermes_agent.hermes_cli.mcp_config import redact_mcp_probe_text
 
         parts = []
         for key, value in params:
@@ -147,7 +147,7 @@ class TestRedactMcpProbeText:
         ('"', "'"),
     ])
     def test_mapping_quotes_on_api_key(self, key_quote, value_quote):
-        from hermes_cli.mcp_config import redact_mcp_probe_text
+        from hermes_agent.hermes_cli.mcp_config import redact_mcp_probe_text
 
         text = (
             "headers={"
@@ -160,7 +160,7 @@ class TestRedactMcpProbeText:
         assert "***" in out
 
     def test_mapping_digest_authorization_is_fully_replaced(self):
-        from hermes_cli.mcp_config import redact_mcp_probe_text
+        from hermes_agent.hermes_cli.mcp_config import redact_mcp_probe_text
 
         value = f'Digest response="{OPAQUE_API_KEY}", username="u"'
         out = redact_mcp_probe_text(f"headers={{'Authorization': {value!r}}}")
@@ -169,7 +169,7 @@ class TestRedactMcpProbeText:
 
     def test_shared_secret_header_vocabulary_is_fully_replaced(self):
         from hermes_agent.agent.redact_headers import _SECRET_HEADER_NAMES
-        from hermes_cli.mcp_config import redact_mcp_probe_text
+        from hermes_agent.hermes_cli.mcp_config import redact_mcp_probe_text
 
         inner = _SECRET_HEADER_NAMES
         if inner.startswith("(?:") and inner.endswith(")"):
@@ -179,7 +179,7 @@ class TestRedactMcpProbeText:
             _assert_fully_redacted(out)
 
     def test_header_display_masks_opaque_api_key(self):
-        from hermes_cli.mcp_config import redact_mcp_header_display
+        from hermes_agent.hermes_cli.mcp_config import redact_mcp_header_display
 
         assert redact_mcp_header_display("X-Api-Key", OPAQUE_API_KEY) == "***"
         assert redact_mcp_header_display(
@@ -187,7 +187,7 @@ class TestRedactMcpProbeText:
         ) == "***"
 
     def test_header_display_keeps_pure_env_template(self):
-        from hermes_cli.mcp_config import redact_mcp_header_display
+        from hermes_agent.hermes_cli.mcp_config import redact_mcp_header_display
 
         assert redact_mcp_header_display(
             "Authorization", "Bearer ${MCP_TEST_TOKEN}"
@@ -198,7 +198,7 @@ class TestProbeHelperRedactsBeforeRaise:
     def test_probe_exception_leaving_helper_is_already_safe(self, monkeypatch):
         import hermes_agent.tools.mcp_tool_lifecycle as mcp_lifecycle
         import hermes_agent.tools.mcp_tool_loop as mcp_loop
-        from hermes_cli.mcp_config import _probe_single_server
+        from hermes_agent.hermes_cli.mcp_config import _probe_single_server
 
         monkeypatch.setattr(mcp_loop, "_ensure_mcp_loop", lambda: None)
         monkeypatch.setattr(mcp_lifecycle, "_stop_mcp_loop_if_idle", lambda: None)
@@ -217,7 +217,7 @@ class TestProbeHelperRedactsBeforeRaise:
     def test_probe_exception_redacts_opaque_api_key(self, monkeypatch):
         import hermes_agent.tools.mcp_tool_lifecycle as mcp_lifecycle
         import hermes_agent.tools.mcp_tool_loop as mcp_loop
-        from hermes_cli.mcp_config import _probe_single_server
+        from hermes_agent.hermes_cli.mcp_config import _probe_single_server
 
         monkeypatch.setattr(mcp_loop, "_ensure_mcp_loop", lambda: None)
         monkeypatch.setattr(mcp_lifecycle, "_stop_mcp_loop_if_idle", lambda: None)
@@ -236,7 +236,7 @@ class TestProbeHelperRedactsBeforeRaise:
     def test_probe_exception_redacts_digest_response_first(self, monkeypatch):
         import hermes_agent.tools.mcp_tool_lifecycle as mcp_lifecycle
         import hermes_agent.tools.mcp_tool_loop as mcp_loop
-        from hermes_cli.mcp_config import _probe_single_server
+        from hermes_agent.hermes_cli.mcp_config import _probe_single_server
 
         monkeypatch.setattr(mcp_loop, "_ensure_mcp_loop", lambda: None)
         monkeypatch.setattr(mcp_lifecycle, "_stop_mcp_loop_if_idle", lambda: None)
@@ -258,7 +258,7 @@ class TestProbeHelperRedactsBeforeRaise:
     def test_probe_exception_redacts_python_mapping_api_key(self, monkeypatch):
         import hermes_agent.tools.mcp_tool_lifecycle as mcp_lifecycle
         import hermes_agent.tools.mcp_tool_loop as mcp_loop
-        from hermes_cli.mcp_config import _probe_single_server
+        from hermes_agent.hermes_cli.mcp_config import _probe_single_server
 
         monkeypatch.setattr(mcp_loop, "_ensure_mcp_loop", lambda: None)
         monkeypatch.setattr(mcp_lifecycle, "_stop_mcp_loop_if_idle", lambda: None)
@@ -285,10 +285,10 @@ class TestCmdMcpTestRedaction:
             },
         })
         monkeypatch.setattr(
-            "hermes_cli.mcp_config._probe_single_server",
+            "hermes_agent.hermes_cli.mcp_config._probe_single_server",
             lambda *a, **k: [("ping", "Ping")],
         )
-        from hermes_cli.mcp_config import cmd_mcp_test
+        from hermes_agent.hermes_cli.mcp_config import cmd_mcp_test
 
         cmd_mcp_test(argparse.Namespace(name="ink"))
         out = capsys.readouterr().out
@@ -304,10 +304,10 @@ class TestCmdMcpTestRedaction:
             },
         })
         monkeypatch.setattr(
-            "hermes_cli.mcp_config._probe_single_server",
+            "hermes_agent.hermes_cli.mcp_config._probe_single_server",
             lambda *a, **k: [("ping", "Ping")],
         )
-        from hermes_cli.mcp_config import cmd_mcp_test
+        from hermes_agent.hermes_cli.mcp_config import cmd_mcp_test
 
         cmd_mcp_test(argparse.Namespace(name="ink"))
         out = capsys.readouterr().out
@@ -322,10 +322,10 @@ class TestCmdMcpTestRedaction:
             },
         })
         monkeypatch.setattr(
-            "hermes_cli.mcp_config._probe_single_server",
+            "hermes_agent.hermes_cli.mcp_config._probe_single_server",
             lambda *a, **k: [("ping", "Ping")],
         )
-        from hermes_cli.mcp_config import cmd_mcp_test
+        from hermes_agent.hermes_cli.mcp_config import cmd_mcp_test
 
         cmd_mcp_test(argparse.Namespace(name="ink"))
         out = capsys.readouterr().out
@@ -343,10 +343,10 @@ class TestCmdMcpTestRedaction:
             },
         })
         monkeypatch.setattr(
-            "hermes_cli.mcp_config._probe_single_server",
+            "hermes_agent.hermes_cli.mcp_config._probe_single_server",
             lambda *a, **k: [("ping", "Ping")],
         )
-        from hermes_cli.mcp_config import cmd_mcp_test
+        from hermes_agent.hermes_cli.mcp_config import cmd_mcp_test
 
         cmd_mcp_test(argparse.Namespace(name="ink"))
         out = capsys.readouterr().out
@@ -361,8 +361,8 @@ class TestCmdMcpTestRedaction:
         def boom(*a, **k):
             raise RuntimeError(f"connect failed: {HEADER}")
 
-        monkeypatch.setattr("hermes_cli.mcp_config._probe_single_server", boom)
-        from hermes_cli.mcp_config import cmd_mcp_test
+        monkeypatch.setattr("hermes_agent.hermes_cli.mcp_config._probe_single_server", boom)
+        from hermes_agent.hermes_cli.mcp_config import cmd_mcp_test
 
         cmd_mcp_test(argparse.Namespace(name="ink"))
         out = capsys.readouterr().out
@@ -378,8 +378,8 @@ class TestDashboardMcpTestRedaction:
         except ImportError:
             pytest.skip("fastapi/starlette not installed")
 
-        from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
-        from hermes_cli import mcp_config
+        from hermes_agent.hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
+        from hermes_agent.hermes_cli import mcp_config
 
         _seed_config(tmp_path, {
             "ink": {"url": "https://mcp.example/mcp"},
@@ -409,8 +409,8 @@ class TestDashboardMcpTestRedaction:
         except ImportError:
             pytest.skip("fastapi/starlette not installed")
 
-        from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
-        from hermes_cli import mcp_config
+        from hermes_agent.hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
+        from hermes_agent.hermes_cli import mcp_config
 
         _seed_config(tmp_path, {
             "ink": {"url": "https://mcp.example/mcp"},
@@ -444,9 +444,9 @@ class TestSiblingProbeConsumersRedact:
         def boom(*a, **k):
             raise RuntimeError(f"connect failed: {HEADER}")
 
-        monkeypatch.setattr("hermes_cli.mcp_config._probe_single_server", boom)
-        monkeypatch.setattr("hermes_cli.mcp_config._confirm", lambda *a, **k: False)
-        from hermes_cli.mcp_config import cmd_mcp_add
+        monkeypatch.setattr("hermes_agent.hermes_cli.mcp_config._probe_single_server", boom)
+        monkeypatch.setattr("hermes_agent.hermes_cli.mcp_config._confirm", lambda *a, **k: False)
+        from hermes_agent.hermes_cli.mcp_config import cmd_mcp_add
 
         cmd_mcp_add(_make_args(name="ink", url="https://mcp.example/mcp"))
         out = capsys.readouterr().out
@@ -462,12 +462,12 @@ class TestSiblingProbeConsumersRedact:
         def boom(*a, **k):
             raise RuntimeError(f"connect failed: {HEADER}")
 
-        monkeypatch.setattr("hermes_cli.mcp_config._probe_single_server", boom)
+        monkeypatch.setattr("hermes_agent.hermes_cli.mcp_config._probe_single_server", boom)
         monkeypatch.setattr(
             "hermes_agent.tools.mcp_oauth.humanize_oauth_registration_error",
             lambda *a, **k: None,
         )
-        from hermes_cli.mcp_config import cmd_mcp_login
+        from hermes_agent.hermes_cli.mcp_config import cmd_mcp_login
 
         cmd_mcp_login(_make_args(name="ink"))
         out = capsys.readouterr().out

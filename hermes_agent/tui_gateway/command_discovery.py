@@ -69,7 +69,7 @@ def _rank_slash_completions(items: list[dict], usage, origin_of, *, browsing: bo
         *(() if score_of is None else (score_of(item),)), -usage(name_of(item)), name_of(item)))
     if browsing:
         if registry_command_names is None:
-            from hermes_cli.commands import GATEWAY_KNOWN_COMMANDS
+            from hermes_agent.hermes_cli.commands import GATEWAY_KNOWN_COMMANDS
             registry_command_names = GATEWAY_KNOWN_COMMANDS
         fixed = [c for c in commands if name_of(c) in registry_command_names]
         other = [c for c in commands if name_of(c) not in registry_command_names]
@@ -139,7 +139,7 @@ class _Catalog:
 
 
 def _catalog_registry(cat: _Catalog, module_loader) -> None:
-    commands = module_loader("hermes_cli.commands")
+    commands = module_loader("hermes_agent.hermes_cli.commands")
     for cmd in commands.COMMAND_REGISTRY:
         meta = commands.command_desktop_meta(cmd)
         cat.commands.update({f"/{key}": dict(meta) for key in (cmd.name, *cmd.aliases)})
@@ -169,7 +169,7 @@ def _catalog_quick_commands(cat: _Catalog, load_cfg) -> None:
 
 
 def _catalog_plugin_commands(cat: _Catalog, module_loader) -> None:
-    plugin_cmds = module_loader("hermes_cli.plugins").get_plugin_commands() or {}
+    plugin_cmds = module_loader("hermes_agent.hermes_cli.plugins").get_plugin_commands() or {}
     if plugin_cmds:
         cat.cat_map.setdefault("Plugin commands", [])
     for pname, info in sorted(plugin_cmds.items()):
@@ -215,7 +215,7 @@ def command_catalog(load_cfg=None, module_loader=import_module, scope=None) -> d
     lists the launch profile's quick/plugin commands. A scope that cannot bind (unknown profile)
     raises out of here — the caller maps it to 4064 like ``complete.slash`` (#124651)."""
     if load_cfg is None:
-        from hermes_cli.config import load_config_readonly
+        from hermes_agent.hermes_cli.config import load_config_readonly
         load_cfg = load_config_readonly
     cat = _Catalog()
     _catalog_registry(cat, module_loader)
@@ -242,7 +242,7 @@ def command_catalog(load_cfg=None, module_loader=import_module, scope=None) -> d
             logger.debug("skill discovery failed", exc_info=True)
             warning = f"skill discovery unavailable: {e}"
     return {
-        "pairs": cat.pairs, "sub": {k: v[:] for k, v in module_loader("hermes_cli.commands").SUBCOMMANDS.items()},
+        "pairs": cat.pairs, "sub": {k: v[:] for k, v in module_loader("hermes_agent.hermes_cli.commands").SUBCOMMANDS.items()},
         "canon": cat.canon,
         "commands": cat.commands,
         "categories": [{"name": c, "pairs": rows} for c, rows in cat.cat_map.items()],
@@ -256,7 +256,7 @@ def slash_completions(text: str = "", scope=None) -> dict:
     for that session (#114359)."""
     if not text.startswith("/"):
         return {"items": []}
-    from hermes_cli.commands_completion import SlashCommandCompleter
+    from hermes_agent.hermes_cli.commands_completion import SlashCommandCompleter
     from prompt_toolkit.document import Document
     from prompt_toolkit.formatted_text import to_plain_text
     from hermes_agent.agent.skill_commands import get_interactive_skill_commands

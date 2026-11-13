@@ -5,7 +5,7 @@ import threading
 from contextlib import suppress
 from typing import Any
 
-from hermes_cli.process_identity import own_process_groups, release_process_groups, spawn_owned
+from hermes_agent.hermes_cli.process_identity import own_process_groups, release_process_groups, spawn_owned
 
 
 class ProcessOwnershipMixin:

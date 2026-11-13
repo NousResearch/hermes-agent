@@ -19,7 +19,7 @@ import logging
 import time
 
 from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
-from hermes_cli.observability.shared_metrics_busy import note_busy_merged, settle_busy_arrival, stamp_busy_arrival
+from hermes_agent.hermes_cli.observability.shared_metrics_busy import note_busy_merged, settle_busy_arrival, stamp_busy_arrival
 
 logger = logging.getLogger(__name__)
 

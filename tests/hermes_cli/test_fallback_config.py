@@ -1,7 +1,7 @@
-"""Tests for hermes_cli/fallback_config.py — fallback entry API-key resolution."""
+"""Tests for hermes_agent/hermes_cli/fallback_config.py — fallback entry API-key resolution."""
 
 from hermes_agent.agent.secret_scope import reset_secret_scope, set_secret_scope
-from hermes_cli.fallback_config import effective_runtime_provider, resolve_entry_api_key
+from hermes_agent.hermes_cli.fallback_config import effective_runtime_provider, resolve_entry_api_key
 
 
 class TestResolveEntryApiKey:
@@ -71,7 +71,7 @@ class TestFallbackEntryRuntimeKwargs:
     """One kwargs shape for every resolution-time walker and ``hermes fallback check``."""
 
     def test_carries_provider_model_base_url_and_entry_key(self, monkeypatch):
-        from hermes_cli.fallback_config import fallback_entry_runtime_kwargs
+        from hermes_agent.hermes_cli.fallback_config import fallback_entry_runtime_kwargs
         monkeypatch.setenv("FB_KEY", "entry-key")
         assert fallback_entry_runtime_kwargs(
             {"provider": " custom ", "model": " m ", "base_url": "http://h/v1", "key_env": "FB_KEY"}) == {
@@ -79,6 +79,6 @@ class TestFallbackEntryRuntimeKwargs:
             "explicit_api_key": "entry-key"}
 
     def test_omits_absent_endpoint_and_key(self):
-        from hermes_cli.fallback_config import fallback_entry_runtime_kwargs
+        from hermes_agent.hermes_cli.fallback_config import fallback_entry_runtime_kwargs
         assert fallback_entry_runtime_kwargs({"provider": "nous", "model": "m"}) == {
             "requested": "nous", "target_model": "m"}

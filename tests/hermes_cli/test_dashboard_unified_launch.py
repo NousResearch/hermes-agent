@@ -8,12 +8,12 @@ launching profile preselected. `--isolated` opts out.
 import sys
 import types
 import pytest
-from hermes_cli import main_dashboard
+from hermes_agent.hermes_cli import main_dashboard
 
 
 @pytest.fixture
 def main_mod():
-    import hermes_cli.main as main_mod
+    import hermes_agent.hermes_cli.main as main_mod
     return main_mod
 
 
@@ -33,7 +33,7 @@ class TestUnifiedDashboardRouting:
     def test_profile_launch_reexecs_machine_dashboard(self, main_mod, monkeypatch):
         monkeypatch.delenv("HERMES_HOME", raising=False)
         monkeypatch.setattr(
-            "hermes_cli.profiles.get_active_profile_name", lambda: "worker_x"
+            "hermes_agent.hermes_cli.profiles.get_active_profile_name", lambda: "worker_x"
         )
         monkeypatch.setattr(main_dashboard, "_dashboard_listening", lambda host, port: False)
         execs = []
@@ -93,7 +93,7 @@ class TestUnifiedDashboardRouting:
         monkeypatch.setenv("HERMES_DESKTOP", "1")
         monkeypatch.setenv("HERMES_DASHBOARD_SESSION_TOKEN", "desktop-spawn-token")
         monkeypatch.setattr(
-            "hermes_cli.profiles.get_active_profile_name", lambda: "worker_x"
+            "hermes_agent.hermes_cli.profiles.get_active_profile_name", lambda: "worker_x"
         )
         listening_calls = []
         monkeypatch.setattr(main_dashboard, "_dashboard_listening",
@@ -115,7 +115,7 @@ class TestInteractiveDashboardAuthSetup:
         self, main_mod, monkeypatch, capsys
     ):
         """A TTY operator is prompted when public_url gates a loopback bind."""
-        from hermes_cli.dashboard_auth import clear_providers
+        from hermes_agent.hermes_cli.dashboard_auth import clear_providers
 
         monkeypatch.setenv(
             "HERMES_DASHBOARD_PUBLIC_URL",

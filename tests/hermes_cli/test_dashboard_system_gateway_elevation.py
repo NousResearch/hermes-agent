@@ -12,7 +12,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from hermes_cli._launchers import runtime_command
+from hermes_agent.hermes_cli._launchers import runtime_command
 
 
 @pytest.fixture
@@ -29,7 +29,7 @@ def system_scope_install(monkeypatch, tmp_path):
     system_unit.write_text("[Service]\n", encoding="utf-8")
     user_unit = tmp_path / "user" / "hermes-gateway.service"
     monkeypatch.setattr(
-        "hermes_cli.gateway.get_systemd_unit_path",
+        "hermes_agent.hermes_cli.gateway.get_systemd_unit_path",
         lambda system=False: system_unit if system else user_unit,
     )
     return system_unit, user_unit
@@ -40,7 +40,7 @@ def _spawn(tmp_path, subcommand, *, sudo_ok: bool, targeted_only: bool = False, 
     the elevation decision runs through the production helpers. Returns the attempted argv.
     ``targeted_only`` models a command-scoped NOPASSWD sudoers entry: the blanket ``sudo -n true``
     is refused but anything else under ``sudo -n`` is allowed."""
-    from hermes_cli import web_server_gateway
+    from hermes_agent.hermes_cli import web_server_gateway
 
     def run(argv, **_kwargs):
         if probes is not None:
@@ -53,7 +53,7 @@ def _spawn(tmp_path, subcommand, *, sudo_ok: bool, targeted_only: bool = False, 
     with patch.object(web_server_gateway, "_ACTION_LOG_DIR", tmp_path / "logs"), patch.object(
         web_server_gateway.subprocess, "run", side_effect=run
     ), patch.object(web_server_gateway.subprocess, "Popen", return_value=child) as popen, patch(
-        "hermes_cli.web_server.PROJECT_ROOT", tmp_path
+        "hermes_agent.hermes_cli.web_server.PROJECT_ROOT", tmp_path
     ):
         web_server_gateway._spawn_hermes_action(subcommand, "probe")
     return popen.call_args.args[0]
@@ -75,7 +75,7 @@ def test_only_system_scope_lifecycle_verbs_are_spawned_under_sudo(
     if both_units:
         user_unit.parent.mkdir(parents=True)
         user_unit.write_text("[Service]\n", encoding="utf-8")
-    monkeypatch.setattr("hermes_cli.web_server_profiles._resolve_profile_dir", lambda name: tmp_path / name)
+    monkeypatch.setattr("hermes_agent.hermes_cli.web_server_profiles._resolve_profile_dir", lambda name: tmp_path / name)
     argv = _spawn(tmp_path, subcommand, sudo_ok=True)
     plain = runtime_command(tmp_path, subcommand)
     assert argv == (["sudo", "-n", *plain] if elevated else plain)

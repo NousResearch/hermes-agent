@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 import pytest
 
-from hermes_cli import model_setup_flows_custom as flows
+from hermes_agent.hermes_cli import model_setup_flows_custom as flows
 
 
 @pytest.mark.parametrize("resolved, expect", [

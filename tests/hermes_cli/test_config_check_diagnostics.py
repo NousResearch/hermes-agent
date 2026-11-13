@@ -2,9 +2,9 @@
 
 from pathlib import Path
 
-import hermes_cli.config as config_mod
-import hermes_cli.plugins as plugins_mod
-from hermes_cli.config import DEFAULT_CONFIG, _cmd_config_check, _warn_invalid_platform_toolsets
+import hermes_agent.hermes_cli.config as config_mod
+import hermes_agent.hermes_cli.plugins as plugins_mod
+from hermes_agent.hermes_cli.config import DEFAULT_CONFIG, _cmd_config_check, _warn_invalid_platform_toolsets
 
 
 def _write_home(home: Path, body: str, env: str = "") -> Path:

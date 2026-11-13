@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli.desktop_plugin_halves import PACKAGE_MARKER, reconcile_desktop_halves
+from hermes_agent.hermes_cli.desktop_plugin_halves import PACKAGE_MARKER, reconcile_desktop_halves
 
 pytestmark = pytest.mark.platforms("posix")
 

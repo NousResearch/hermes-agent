@@ -964,9 +964,9 @@ _SETUP_PROMPTS = (  # (env var, prompt, masked)
 
 def interactive_setup() -> None:
     """``hermes setup line`` wizard (writes ``~/.hermes/.env``); CLI helpers are lazy-imported."""
-    from hermes_cli.config import get_env_value, save_env_value
-    from hermes_cli.cli_output import print_header, print_info, prompt
-    from hermes_cli.setup_platforms import declines_reconfigure
+    from hermes_agent.hermes_cli.config import get_env_value, save_env_value
+    from hermes_agent.hermes_cli.cli_output import print_header, print_info, prompt
+    from hermes_agent.hermes_cli.setup_platforms import declines_reconfigure
     print_header("LINE Messaging API")
     if declines_reconfigure("LINE", "Reconfigure LINE?", "LINE_CHANNEL_ACCESS_TOKEN"):
         return

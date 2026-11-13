@@ -176,8 +176,8 @@ def client(monkeypatch, _isolate_hermes_home):
         pytest.skip("fastapi/starlette not installed")
 
     from hermes_agent import hermes_state
-    from hermes_cli.web_routers import profiles as profiles_routes
-    from hermes_cli.web_server import _SESSION_HEADER_NAME, _SESSION_TOKEN, app
+    from hermes_agent.hermes_cli.web_routers import profiles as profiles_routes
+    from hermes_agent.hermes_cli.web_server import _SESSION_HEADER_NAME, _SESSION_TOKEN, app
     from hermes_constants import get_hermes_home
 
     monkeypatch.setattr(profiles_routes, "_SIDEBAR_CACHE_TTL_SECONDS", 0.0)

@@ -10,7 +10,7 @@ from argparse import Namespace
 
 import pytest
 
-from hermes_cli.sessions_cmd import _cmd_optimize_storage, _optimize_progress_line
+from hermes_agent.hermes_cli.sessions_cmd import _cmd_optimize_storage, _optimize_progress_line
 from hermes_agent.hermes_state import SessionDB
 from hermes_agent.hermes_state_common import LEGACY_FTS_SQL, LEGACY_FTS_TRIGRAM_SQL, SCHEMA_SQL
 

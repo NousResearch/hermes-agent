@@ -118,5 +118,5 @@ def _defaults_merges():
 
 @pytest.mark.parametrize("merge,effective", list(_defaults_merges()))
 def test_defaults_merge_matches_deep_merge(merge, effective):
-    from hermes_cli.config import _deep_merge
+    from hermes_agent.hermes_cli.config import _deep_merge
     assert _deep_merge(merge["defaults"], effective) == merge["expect"]

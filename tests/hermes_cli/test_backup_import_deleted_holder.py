@@ -17,7 +17,7 @@ import zipfile
 
 import pytest
 
-from hermes_cli import backup_restore as backup_mod
+from hermes_agent.hermes_cli import backup_restore as backup_mod
 
 pytestmark = pytest.mark.platforms("linux")  # /proc holder scan is Linux-only
 

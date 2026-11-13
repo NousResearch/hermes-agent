@@ -12,7 +12,7 @@ from hermes_agent.agent.i18n import t
 def hermes_home(tmp_path, monkeypatch):
     from pathlib import Path
 
-    from hermes_cli import goals
+    from hermes_agent.hermes_cli import goals
 
     home = tmp_path / ".hermes"
     home.mkdir()
@@ -24,9 +24,9 @@ def hermes_home(tmp_path, monkeypatch):
 
 
 def test_dock_paints_goal_on_top_and_queue_last_and_follows_their_lifecycle(hermes_home):
-    from cli import _VoiceInputMessage
-    from hermes_cli.cli_subagent_monitor import SubagentMonitor
-    from hermes_cli.goals import GoalManager
+    from hermes_agent.cli import _VoiceInputMessage
+    from hermes_agent.hermes_cli.cli_subagent_monitor import SubagentMonitor
+    from hermes_agent.hermes_cli.goals import GoalManager
     from hermes_agent.tools.process_registry_notifications import TimelineNotification
 
     mgr = GoalManager(session_id="sid-a", default_max_turns=20)
@@ -66,8 +66,8 @@ def test_dock_paints_goal_on_top_and_queue_last_and_follows_their_lifecycle(herm
 def test_dock_ignores_a_goal_manager_left_over_from_another_session(hermes_home):
     """After /new the cached manager still names the old session until it is rebuilt; the dock
     must not paint the previous session's goal (and never opens state.db itself)."""
-    from hermes_cli.cli_session_dock import goal_line
-    from hermes_cli.goals import GoalManager
+    from hermes_agent.hermes_cli.cli_session_dock import goal_line
+    from hermes_agent.hermes_cli.goals import GoalManager
 
     mgr = GoalManager(session_id="old-sid")
     mgr.set("previous session objective")
@@ -82,8 +82,8 @@ def test_dock_drops_the_prompt_a_turn_takes_from_the_queue_before_the_turn_runs(
     or the dock is still painted when the reply prints and shrinks under it afterwards."""
     from unittest.mock import Mock
 
-    from cli import HermesCLI, _SeededQueryMessage
-    from hermes_cli.cli_subagent_monitor import SubagentMonitor
+    from hermes_agent.cli import HermesCLI, _SeededQueryMessage
+    from hermes_agent.hermes_cli.cli_subagent_monitor import SubagentMonitor
 
     cli = HermesCLI.__new__(HermesCLI)
     cli.session_id, cli.agent = "sid-a", None
@@ -110,8 +110,8 @@ def test_dock_drops_the_prompt_a_turn_takes_from_the_queue_before_the_turn_runs(
 def test_dock_loop_row_counts_down_to_the_next_wakeup(hermes_home):
     """A standing /loop gets a dock row whose countdown moves with the clock (it used to be a
     one-shot ``next in 45m`` transcript line that never changed)."""
-    from hermes_cli.cli_subagent_monitor import SubagentMonitor
-    from hermes_cli.loops import LoopManager
+    from hermes_agent.hermes_cli.cli_subagent_monitor import SubagentMonitor
+    from hermes_agent.hermes_cli.loops import LoopManager
 
     mgr = LoopManager(session_id="sid-a")
     mgr.set("check the deploy", interval_seconds=45 * 60)
@@ -138,10 +138,10 @@ def test_dock_loop_row_counts_down_to_the_next_wakeup(hermes_home):
 def test_dock_repaints_a_goal_a_tool_changed_mid_turn(hermes_home):
     """A plugin tool adds criteria to the goal mid-turn: the gateway's ``session.control.update`` frame
     marks the CLI's mirrored manager stale and the dock's next poll re-reads it (once), not at turn end."""
-    from hermes_cli.cli_loops_mixin import CLILoopsMixin
-    from hermes_cli.cli_subagent_monitor import SubagentMonitor
-    from hermes_cli.gateway_agent import _HANDLERS
-    from hermes_cli.goals import GoalManager
+    from hermes_agent.hermes_cli.cli_loops_mixin import CLILoopsMixin
+    from hermes_agent.hermes_cli.cli_subagent_monitor import SubagentMonitor
+    from hermes_agent.hermes_cli.gateway_agent import _HANDLERS
+    from hermes_agent.hermes_cli.goals import GoalManager
 
     mgr = GoalManager(session_id="sid-a")
     mgr.set("ship the dock feature")

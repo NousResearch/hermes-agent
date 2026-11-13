@@ -2,8 +2,8 @@
 import pytest
 import hermes_yaml as yaml
 
-from hermes_cli.auth import PROVIDER_REGISTRY, write_credential_pool
-from hermes_cli.runtime_provider import resolve_runtime_provider
+from hermes_agent.hermes_cli.auth import PROVIDER_REGISTRY, write_credential_pool
+from hermes_agent.hermes_cli.runtime_provider import resolve_runtime_provider
 from hermes_constants import get_hermes_home
 
 

@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 
 def _import_cli():
-    import cli as cli_mod
+    import hermes_agent.cli as cli_mod
 
     return cli_mod
 

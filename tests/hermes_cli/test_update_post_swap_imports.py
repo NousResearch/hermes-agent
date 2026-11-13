@@ -214,7 +214,7 @@ def _run_case(case, tmp_path, monkeypatch):
     label = clone = ""
     if case == "launchd_resume":
         monkeypatch.setenv("HERMES_HOME", env["HERMES_HOME"])
-        from hermes_cli.gateway_launchd import get_launchd_label
+        from hermes_agent.hermes_cli.gateway_launchd import get_launchd_label
 
         label = get_launchd_label()
     if case == "shallow_count":

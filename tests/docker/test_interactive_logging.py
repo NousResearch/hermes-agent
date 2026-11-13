@@ -45,7 +45,7 @@ def _emit_supervised_output(container: str) -> None:
     )
     code = (
         "from pathlib import Path; "
-        "from hermes_cli.service_manager import S6ServiceManager; "
+        "from hermes_agent.hermes_cli.service_manager import S6ServiceManager; "
         "directory = Path('/opt/data/console-probe-bin'); "
         "directory.mkdir(); "
         "executable = directory / 'hermes'; "

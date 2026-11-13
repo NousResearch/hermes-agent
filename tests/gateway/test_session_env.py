@@ -326,7 +326,7 @@ async def test_plugin_slash_command_sees_session_env(monkeypatch):
         seen["chat_id"] = get_session_env("HERMES_SESSION_CHAT_ID")
         return f"Bound: {raw_args}"
 
-    from hermes_cli import plugins as _plugins_mod
+    from hermes_agent.hermes_cli import plugins as _plugins_mod
     monkeypatch.setattr(_plugins_mod, "get_plugin_command_handler",
                          lambda name: _handler if name == "gsd-bind" else None)
 
@@ -383,7 +383,7 @@ async def test_plugin_slash_command_receives_calling_session(monkeypatch):
         seen.append((raw_args, source, session_id, session_key, platform, get_session_env("HERMES_SESSION_ID")))
         return "ok"
 
-    from hermes_cli import plugins as _plugins_mod
+    from hermes_agent.hermes_cli import plugins as _plugins_mod
     monkeypatch.setattr(_plugins_mod, "get_plugin_command_handler", lambda name: _handler)
 
     event = MessageEvent(text="/who details", source=source, message_id="m1")

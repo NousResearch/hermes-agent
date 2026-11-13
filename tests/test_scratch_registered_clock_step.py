@@ -11,8 +11,8 @@ from pathlib import Path
 import psutil
 import pytest
 
-from hermes_cli.data_cleanup_holders import _refuse_backend_writers
-from hermes_cli.process_identity import (
+from hermes_agent.hermes_cli.data_cleanup_holders import _refuse_backend_writers
+from hermes_agent.hermes_cli.process_identity import (
     _ledger_path, boot_start, install_id, ledger_entries, reap_orphaned_mcp_helpers, register_self,
 )
 from hermes_constants import get_scratch_dir, prune_scratch_dir
@@ -35,7 +35,7 @@ def test_prune_keeps_a_registered_gateways_shell_after_a_clock_step(tmp_path, mo
     gateway = subprocess.Popen(
         [sys.executable, "-c",
          f"import sys, subprocess, time; sys.path.insert(0, {repo!r}); "
-         "from hermes_cli.process_identity import register_self; assert register_self('gateway'); "
+         "from hermes_agent.hermes_cli.process_identity import register_self; assert register_self('gateway'); "
          f"shell = subprocess.Popen(['sleep', '60'], cwd={str(lane)!r}); "
          f"open({str(shell_pidfile)!r}, 'w').write(str(shell.pid)); time.sleep(60)"],
         stdin=subprocess.DEVNULL, env={**os.environ, "HERMES_HOME": str(tmp_path)})

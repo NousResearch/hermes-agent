@@ -19,7 +19,7 @@ _profile_scoped = _registry.profile_scoped
 
 def _shared_metrics_consent(cfg) -> dict:
     """The one ``{enabled, send, decided, reask}`` reading every surface shares (CLI offer included)."""
-    from hermes_cli.observability.shared_metrics_consent import consent_state
+    from hermes_agent.hermes_cli.observability.shared_metrics_consent import consent_state
 
     return consent_state(cfg)
 
@@ -27,7 +27,7 @@ def _shared_metrics_consent(cfg) -> dict:
 def _shared_metrics_record_setup_completed(cfg) -> None:
     """Desktop has no setup-finish RPC; this first-run answer is the one backend call made once,
     right after onboarding settles. A no-op (inside the events API) unless collection is on."""
-    from hermes_cli.observability.shared_metrics_events import record_setup_completed
+    from hermes_agent.hermes_cli.observability.shared_metrics_events import record_setup_completed
 
     model = cfg.get("model") if isinstance(cfg, dict) else None
     provider = model.get("provider") if isinstance(model, dict) else None
@@ -35,7 +35,7 @@ def _shared_metrics_record_setup_completed(cfg) -> None:
 
 
 def _tui_model_friction(signal, session, turns=1):
-    from hermes_cli.observability.shared_metrics_model import record_model_friction
+    from hermes_agent.hermes_cli.observability.shared_metrics_model import record_model_friction
     record_model_friction(
         signal, session_id=session.get("session_key"), agent=session.get("agent"),
         hermes_home=session.get("profile_home"), turns=turns)
@@ -61,8 +61,8 @@ def _(rid, params: dict) -> dict:
     the setup-completed metric. Answers the stored ``{enabled, send, decided, reask}``."""
     enabled = params.get("enabled") is True
     send = enabled and params.get("send") is True
-    from hermes_cli.config_backend import ConfigWriteError, supports_file_tooling
-    from hermes_cli.observability.shared_metrics_consent import OFFER_VERSION, set_answer
+    from hermes_agent.hermes_cli.config_backend import ConfigWriteError, supports_file_tooling
+    from hermes_agent.hermes_cli.observability.shared_metrics_consent import OFFER_VERSION, set_answer
     try:
         if supports_file_tooling():
             cfg = _load_cfg_raw()
@@ -79,12 +79,12 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 4002, str(e))
     except Exception as e:
         return _err(rid, 5096, str(e))
-    from hermes_cli.setup import _record_send_consent_change
+    from hermes_agent.hermes_cli.setup import _record_send_consent_change
     # Unconditional, like the wizard: a send key already false may still have an open window.
     _record_send_consent_change(enabled=send)
     if not enabled:
-        from hermes_cli.observability.shared_metrics_desktop import purge_onboarding_latches
-        from hermes_cli.observability.shared_metrics_process import purge_pending_receipts
+        from hermes_agent.hermes_cli.observability.shared_metrics_desktop import purge_onboarding_latches
+        from hermes_agent.hermes_cli.observability.shared_metrics_process import purge_pending_receipts
         from hermes_constants import get_hermes_home
 
         purge_onboarding_latches()
@@ -100,7 +100,7 @@ def _(rid, params: dict) -> dict:
     """The Desktop and Ink TUI dispatchers call this once per user-typed slash command, locally
     handled ones included; the gateway never counts slash.exec / command.dispatch itself, so
     each command lands exactly once. Always ``{ok: true}`` (the events API never raises)."""
-    from hermes_cli.observability.shared_metrics_events import record_slash_command
+    from hermes_agent.hermes_cli.observability.shared_metrics_events import record_slash_command
 
     record_slash_command(command=str(params.get("command") or ""), surface=_resolve_session_platform())
     return _ok(rid, {"ok": True})
@@ -113,7 +113,7 @@ def _(rid, params: dict) -> dict:
     ready time once per launch; ``launch_id`` latches it here too, so a reconnect to this backend
     never re-counts. A Desktop on a URL/cloud backend has no ``HERMES_DESKTOP`` here, so the
     client's declared surface wins over env detection. Always ``{ok: true}``."""
-    from hermes_cli.observability.shared_metrics_startup import record_rpc_startup_latency
+    from hermes_agent.hermes_cli.observability.shared_metrics_startup import record_rpc_startup_latency
 
     record_rpc_startup_latency(
         client_surface=params.get("surface") or _resolve_session_platform(), elapsed_ms=params.get("elapsed_ms"),
@@ -128,7 +128,7 @@ def _(rid, params: dict) -> dict:
 def _(rid, params: dict) -> dict:
     """Desktop reports each packaged self-update once (a pending record survives the restart that
     applies it and is sent on the next backend attach). Always ``{ok: true}``."""
-    from hermes_cli.observability.shared_metrics_update import record_desktop_update
+    from hermes_agent.hermes_cli.observability.shared_metrics_update import record_desktop_update
 
     record_desktop_update(
         outcome=params.get("outcome"), failed_stage=params.get("failed_stage"),
@@ -145,7 +145,7 @@ def _(rid, params: dict) -> dict:
 def _(rid, params: dict) -> dict:
     """Desktop reports each area the user opened, at most once per UTC day (latched on both sides).
     Always ``{ok: true}``; a no-op unless shared metrics are on."""
-    from hermes_cli.observability.shared_metrics_desktop import record_desktop_feature_use
+    from hermes_agent.hermes_cli.observability.shared_metrics_desktop import record_desktop_feature_use
 
     record_desktop_feature_use(area=params.get("area"))
     return _ok(rid, {"ok": True})
@@ -156,7 +156,7 @@ def _(rid, params: dict) -> dict:
 def _(rid, params: dict) -> dict:
     """One Desktop friction event (dismissed notice, error toast by category, renderer crash, backend
     disconnect, slow frame), capped per day. Always ``{ok: true}``."""
-    from hermes_cli.observability.shared_metrics_desktop import record_desktop_friction
+    from hermes_agent.hermes_cli.observability.shared_metrics_desktop import record_desktop_friction
 
     record_desktop_friction(kind=params.get("kind"), detail=params.get("detail"))
     return _ok(rid, {"ok": True})
@@ -166,7 +166,7 @@ def _(rid, params: dict) -> dict:
 @_profile_scoped
 def _(rid, params: dict) -> dict:
     """One Desktop first-run step transition, once per (step, event) per profile. Always ``{ok: true}``."""
-    from hermes_cli.observability.shared_metrics_desktop import record_desktop_onboarding
+    from hermes_agent.hermes_cli.observability.shared_metrics_desktop import record_desktop_onboarding
 
     record_desktop_onboarding(step=params.get("step"), event=params.get("event"))
     return _ok(rid, {"ok": True})
@@ -178,7 +178,7 @@ def _(rid, params: dict) -> dict:
     """One Desktop dislike signal (quick close, cancelled flow, setting changed vs default, rage click,
     undo, feature disabled), capped per signal per day. For a setting the backend reads the saved value
     and compares it to the default itself; only the key and the direction are recorded."""
-    from hermes_cli.observability.shared_metrics_desktop import record_desktop_dislike
+    from hermes_agent.hermes_cli.observability.shared_metrics_desktop import record_desktop_dislike
 
     record_desktop_dislike(signal=params.get("signal"), target=params.get("target"), setting=params.get("setting"))
     return _ok(rid, {"ok": True})
@@ -189,7 +189,7 @@ def _(rid, params: dict) -> dict:
 def _(rid, params: dict) -> dict:
     """One finished Desktop day: mode use (Bot Mode vs Sessions, with the bot count) and button presses
     per action. ``{recorded: true}`` once settled, so the client drops the day; false keeps it."""
-    from hermes_cli.observability.shared_metrics_desktop import record_desktop_daily
+    from hermes_agent.hermes_cli.observability.shared_metrics_desktop import record_desktop_daily
 
     recorded = record_desktop_daily(
         day=params.get("day"), modes=params.get("modes"), actions=params.get("actions"),

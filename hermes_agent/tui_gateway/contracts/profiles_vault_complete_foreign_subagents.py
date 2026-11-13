@@ -13,7 +13,7 @@ from typing import Literal
 
 from pydantic import Field
 
-from hermes_cli.profile_provision import ProfileCreateReceipt
+from hermes_agent.hermes_cli.profile_provision import ProfileCreateReceipt
 
 from .base import JsonValue, Params, Result, WireEnum
 from .common import OpenModel, ProfileParams, SessionParams, SubagentStatus
@@ -602,7 +602,7 @@ class ForeignSource(WireEnum):
 
 
 class ForeignSessionRow(Result):
-    """``hermes_cli/foreign_sessions_browser.py::list_foreign_sessions`` — ``id`` is an opaque
+    """``hermes_agent/hermes_cli/foreign_sessions_browser.py::list_foreign_sessions`` — ``id`` is an opaque
     handle, never a path."""
 
     id: str

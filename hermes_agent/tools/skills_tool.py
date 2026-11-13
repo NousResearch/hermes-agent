@@ -15,7 +15,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from hermes_constants import get_hermes_home
 from hermes_agent.tools.registry import registry, tool_error
-from hermes_cli.config import cfg_get
+from hermes_agent.hermes_cli.config import cfg_get
 from hermes_agent.agent.skill_utils import (
     EXCLUDED_SKILL_DIRS as _EXCLUDED_SKILL_DIRS, is_skill_support_path as _is_skill_support_path)
 from hermes_agent.tools.skills_tool_setup import (
@@ -118,7 +118,7 @@ def skill_lookup_path_error(name: str) -> Optional[str]:
 def load_env() -> dict[str, str]:
     """Snapshot of HERMES_HOME/.env for the post-skill secret-capture diff (same tokenizer that
     installs the profile scope, so a captured value never differs from the served one). A frozen-policy
-    worker never opens the profile ``.env``: ``hermes_cli.config.load_env`` owns that short-circuit."""
+    worker never opens the profile ``.env``: ``hermes_agent.hermes_cli.config.load_env`` owns that short-circuit."""
     from hermes_agent.agent.safe_worker_policy import worker_config_snapshot
 
     if worker_config_snapshot() is not None:
@@ -200,7 +200,7 @@ def _is_skill_disabled(*names: str, platform: str | None = None) -> bool:
     ``HERMES_PLATFORM``, session ``HERMES_SESSION_PLATFORM``. A globally-disabled skill stays disabled on every platform
     (keep in sync with hermes_agent.agent.skill_utils.get_disabled_skill_names)."""
     try:
-        from hermes_cli.config import load_config
+        from hermes_agent.hermes_cli.config import load_config
         skills_cfg = load_config().get("skills", {})
         resolved_platform = platform or os.getenv("HERMES_PLATFORM")
         if not resolved_platform:
@@ -308,7 +308,7 @@ def skills_list(category: str | None = None, task_id: str | None = None) -> str:
         _skills_dir().mkdir(parents=True, exist_ok=True)
         all_skills = find_all_skills()
         try:
-            from hermes_cli.plugins import discover_plugins, get_plugin_manager
+            from hermes_agent.hermes_cli.plugins import discover_plugins, get_plugin_manager
             discover_plugins()
             for plugin_skill in get_plugin_manager().list_plugin_skill_metadata():
                 frontmatter = plugin_skill.pop("frontmatter", {})
@@ -349,7 +349,7 @@ def _resolve_plugin_skill(name, file_path, task_id, preprocess):
     local_category_name)`` to fall through to the flat-tree scan — categorized local skills also use
     ``category:skill`` in config/gateway prompts, so the on-disk ``category/skill`` form returns."""
     from hermes_agent.agent.skill_utils import is_valid_namespace, parse_qualified_name
-    from hermes_cli.plugins import discover_plugins, get_plugin_manager
+    from hermes_agent.hermes_cli.plugins import discover_plugins, get_plugin_manager
     namespace, bare = parse_qualified_name(name)
     if namespace == "plugin" and ":" in bare:
         # The skills index lists plugin skills under a "plugin" heading, and models write that

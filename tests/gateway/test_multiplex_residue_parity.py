@@ -89,7 +89,7 @@ def test_stale_served_turn_never_recreates_archived_profile(two_homes):
 def test_mcp_discovery_slot_is_per_profile_home(two_homes, monkeypatch):
     """#67605: alpha building an agent after default must still get ITS discovery run."""
     root, alpha = two_homes
-    import hermes_cli.mcp_startup as ms
+    import hermes_agent.hermes_cli.mcp_startup as ms
     from hermes_constants import get_hermes_home
     for home in (root, alpha):
         (home / "config.yaml").write_text("mcp_servers:\n  demo:\n    command: /bin/true\n", encoding="utf-8")

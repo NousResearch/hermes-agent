@@ -50,12 +50,12 @@ class ResumeWire:
 @pytest.mark.parametrize('consumer', ['chat', 'acp'])
 @pytest.mark.parametrize('burst', [4096, 4097, 6000])
 async def test_resume_answer_behind_a_burst_stays_reachable(monkeypatch, consumer, burst):
-    from hermes_cli import gateway_client
+    from hermes_agent.hermes_cli import gateway_client
     monkeypatch.setattr(gateway_client, 'EVENT_STALL_TIMEOUT', 30)
     wire = ResumeWire(burst)
     async with gateway_client.GatewayClient(wire) as client:
         if consumer == 'chat':
-            from hermes_cli.gateway_chat_view import GatewayChatView
+            from hermes_agent.hermes_cli.gateway_chat_view import GatewayChatView
             view = GatewayChatView(client, {'stored_session_id': 's'}, quiet=True)
             pump = asyncio.create_task(view.render())
             failure = lambda: view.failure
@@ -115,7 +115,7 @@ async def test_a_full_queue_never_drops_a_post_ack_recovery():
     """Session t fills the queue while session s's ack lands after a gap re-attach covering it."""
     import acp
     from hermes_agent.acp_adapter.gateway_server import GatewayACPAgent
-    from hermes_cli.gateway_client import GatewayClient
+    from hermes_agent.hermes_cli.gateway_client import GatewayClient
     from tests.waiting import async_wait_until
 
     wire = PostAckWire()

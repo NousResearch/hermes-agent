@@ -60,9 +60,9 @@ def _gateway_store(loop, authority, tmp_path):
     """A ``GatewaySessionStore`` whose verbs run on the real authority (no socket) and whose reads use
     the real read-only state.db reader, as the classic CLI's does."""
     from hermes_agent.gateway.session_controls import AuthorityConnection
-    from hermes_cli.gateway_client import GatewayClientError
-    from hermes_cli.gateway_connection import GatewayConnection, SessionState
-    from hermes_cli.gateway_session_store import GatewaySessionStore
+    from hermes_agent.hermes_cli.gateway_client import GatewayClientError
+    from hermes_agent.hermes_cli.gateway_connection import GatewayConnection, SessionState
+    from hermes_agent.hermes_cli.gateway_session_store import GatewaySessionStore
     from hermes_agent.hermes_state import SessionDB
     states = {}
     connection = types.SimpleNamespace(final=False, launch_api_key=None, launch_api_key_typed=False,
@@ -87,7 +87,7 @@ def _gateway_store(loop, authority, tmp_path):
 
 
 def _cli(store, session_id):
-    from cli import HermesCLI
+    from hermes_agent.cli import HermesCLI
     cli = HermesCLI.__new__(HermesCLI)
     cli._resumed, cli._session_db, cli.session_id = True, store, session_id
     cli.session_start = None

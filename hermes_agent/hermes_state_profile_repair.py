@@ -12,7 +12,7 @@ row and can settle it.
 
 Store-level only. Which profiles exist, which store owns which home, whether a live gateway holds the
 routing index in memory, and the JSON files outside ``state.db`` are the orchestrator's concern
-(``hermes_cli/sessions_repair_profiles.py``).
+(``hermes_agent/hermes_cli/sessions_repair_profiles.py``).
 
 Moving a session between two stores is two single-store transactions — copy into the target, then
 delete from the source — because a crash between them leaves a *duplicate*, which the next run

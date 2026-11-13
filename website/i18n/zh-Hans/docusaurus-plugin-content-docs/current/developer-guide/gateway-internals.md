@@ -113,7 +113,7 @@ Gateway: "Paired! You're now authorized."
 
 Gateway 中所有斜杠命令均经过相同的解析流程：
 
-1. `hermes_cli/commands.py` 中的 `resolve_command()` 将输入映射为规范名称（处理别名、前缀匹配）
+1. `hermes_agent/hermes_cli/commands.py` 中的 `resolve_command()` 将输入映射为规范名称（处理别名、前缀匹配）
 2. 规范名称与 `GATEWAY_KNOWN_COMMANDS` 进行比对
 3. `_handle_message()` 中的处理器根据规范名称进行分发
 4. 部分命令受配置门控（`CommandDef` 上的 `gateway_config_gate`）

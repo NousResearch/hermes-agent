@@ -11,8 +11,8 @@ from __future__ import annotations
 import argparse
 
 
-from hermes_cli.subcommands.acp import build_acp_parser
-from hermes_cli.subcommands.mcp import build_mcp_parser
+from hermes_agent.hermes_cli.subcommands.acp import build_acp_parser
+from hermes_agent.hermes_cli.subcommands.mcp import build_mcp_parser
 
 
 def _h(name):

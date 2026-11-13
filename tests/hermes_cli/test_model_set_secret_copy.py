@@ -28,7 +28,7 @@ def isolated_home(tmp_path, monkeypatch):
     monkeypatch.setenv("MY_SECRET_KEY", SECRET)
     # Config caches are keyed per-path, but reload the config module state so
     # nothing from a previous test's HERMES_HOME bleeds in.
-    for mod in ("hermes_cli.config",):
+    for mod in ("hermes_agent.hermes_cli.config",):
         if mod in sys.modules:
             importlib.reload(sys.modules[mod])
     return home
@@ -39,7 +39,7 @@ def _write_config(home, body: str) -> None:
 
 
 def _apply(provider="myprov", model="test-model"):
-    from hermes_cli.web_server_config import _apply_model_assignment_sync
+    from hermes_agent.hermes_cli.web_server_config import _apply_model_assignment_sync
 
     return _apply_model_assignment_sync("main", provider, model, "", "")
 

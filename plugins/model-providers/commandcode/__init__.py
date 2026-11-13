@@ -6,7 +6,7 @@ import json
 import logging
 import urllib.request
 
-from hermes_cli.urllib_security import open_credentialed_url
+from hermes_agent.hermes_cli.urllib_security import open_credentialed_url
 from hermes_agent.providers import get_provider_profile, register_provider
 from hermes_agent.providers.base import ProviderProfile, _profile_user_agent
 

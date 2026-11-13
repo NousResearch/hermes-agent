@@ -19,7 +19,7 @@ def _uncached_sidebar_endpoints(monkeypatch):
     """Both sidebar endpoints sit behind ``_sidebar_singleflight_cache`` (5s TTL). Every
     test here builds a fresh tmp profile set under the same default query params, so a warm
     entry would answer with another test's payload. TTL 0 makes each request cold."""
-    from hermes_cli.web_routers import profiles as profiles_routes
+    from hermes_agent.hermes_cli.web_routers import profiles as profiles_routes
 
     monkeypatch.setattr(profiles_routes, "_SIDEBAR_CACHE_TTL_SECONDS", 0.0)
 
@@ -27,7 +27,7 @@ def _uncached_sidebar_endpoints(monkeypatch):
 @pytest.fixture
 def profiles_on_disk(tmp_path, monkeypatch, _isolate_hermes_home):
     """An isolated default home plus one named profile, each with a state.db."""
-    from hermes_cli import profiles
+    from hermes_agent.hermes_cli import profiles
     from hermes_constants import get_hermes_home
 
     default_home = get_hermes_home()
@@ -52,7 +52,7 @@ def client(monkeypatch, profiles_on_disk):
         pytest.skip("fastapi/starlette not installed")
 
     from hermes_agent import hermes_state
-    from hermes_cli.web_server import _SESSION_HEADER_NAME, _SESSION_TOKEN, app
+    from hermes_agent.hermes_cli.web_server import _SESSION_HEADER_NAME, _SESSION_TOKEN, app
     from hermes_constants import get_hermes_home
 
     monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", get_hermes_home() / "state.db")
@@ -97,7 +97,7 @@ def _seed_session(home, session_id, *, source, cwd=None, tokens=None, cost=None,
 
 
 def _seed_project(home, name, folder):
-    from hermes_cli import projects_db
+    from hermes_agent.hermes_cli import projects_db
 
     with projects_db.connect_closing(db_path=home / "projects.db") as conn:
         return projects_db.create_project(conn, name=name, folders=[str(folder)])

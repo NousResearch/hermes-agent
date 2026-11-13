@@ -10,8 +10,8 @@ from pathlib import Path
 import pytest
 from fastapi import HTTPException
 
-from hermes_cli import web_server, web_server_chat
-from hermes_cli.web_routers import chat_workspaces
+from hermes_agent.hermes_cli import web_server, web_server_chat
+from hermes_agent.hermes_cli.web_routers import chat_workspaces
 
 pytest.importorskip("starlette.testclient")
 from starlette.testclient import TestClient
@@ -38,7 +38,7 @@ def client():
 def test_workspaces_lists_projects_and_discovered_repos(client, tmp_path):
     """Explicit project folders AND the discovery cache both surface; the payload names the
     default cwd a chat lands in when nothing is picked."""
-    from hermes_cli import projects_db as pdb
+    from hermes_agent.hermes_cli import projects_db as pdb
 
     proj_dir = tmp_path / "proj"
     proj_dir.mkdir()
@@ -60,7 +60,7 @@ def test_workspaces_lists_projects_and_discovered_repos(client, tmp_path):
 def test_resolve_chat_cwd_fails_closed_and_reaches_the_tui_env(monkeypatch, tmp_path):
     """A picked directory becomes HERMES_CWD + HERMES_TUI_CWD on the PTY child; a missing one is a
     400 (never the launch-dir fallback); unset means no override."""
-    import hermes_cli.main_tui_launch as tui_launch
+    import hermes_agent.hermes_cli.main_tui_launch as tui_launch
 
     monkeypatch.setattr(
         tui_launch, "_make_tui_argv", lambda *_a, **_k: (["node", "fake-tui.js"], tmp_path))

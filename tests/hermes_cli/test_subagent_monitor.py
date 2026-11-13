@@ -5,7 +5,7 @@ from hermes_agent.agent.i18n import t
 
 
 def test_dock_scopes_children_and_fits_short_narrow_terminal(monkeypatch):
-    from hermes_cli import cli_subagent_monitor as monitor
+    from hermes_agent.hermes_cli import cli_subagent_monitor as monitor
     from hermes_agent.tools import delegate_tool_registry as registry
     owner = SimpleNamespace(session_id='owner')
     monkeypatch.setattr(registry, '_active_subagents', {})
@@ -26,7 +26,7 @@ def test_dock_scopes_children_and_fits_short_narrow_terminal(monkeypatch):
     assert dock.refresh(now=21)
     assert dock.dock_text(columns=32, rows=14) == ''
     assert not dock.refresh(now=22)
-    from hermes_cli.cli_tui_mixin import CLITuiMixin
+    from hermes_agent.hermes_cli.cli_tui_mixin import CLITuiMixin
     cli = SimpleNamespace(_subagent_dock_widget='dock', _get_extra_tui_widgets=list)
     children = CLITuiMixin._build_tui_layout_children(cli, sudo_widget=None, secret_widget=None,
         approval_widget=None, clarify_widget=None, spacer='spacer', status_bar='status',
@@ -36,7 +36,7 @@ def test_dock_scopes_children_and_fits_short_narrow_terminal(monkeypatch):
 
 
 def test_monitor_controls_recheck_ownership_and_keep_selection(monkeypatch):
-    from hermes_cli.cli_subagent_monitor import SubagentMonitor
+    from hermes_agent.hermes_cli.cli_subagent_monitor import SubagentMonitor
     from hermes_agent.tools import delegate_tool_registry as registry
     monkeypatch.setattr(registry, '_active_subagents', {})
     delivered = []

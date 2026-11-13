@@ -23,7 +23,7 @@ from aiohttp.test_utils import TestClient, TestServer
 from hermes_agent.gateway.config import PlatformConfig
 from hermes_agent.gateway.platforms.webhook import WebhookAdapter
 from hermes_agent.gateway.run import GatewayRunner
-from hermes_cli.tools_config import _get_platform_tools
+from hermes_agent.hermes_cli.tools_config import _get_platform_tools
 
 
 class _Src:

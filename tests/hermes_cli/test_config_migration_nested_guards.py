@@ -48,7 +48,7 @@ def _read_config(tmp_path):
 )
 def test_malformed_nested_value_is_migrated_not_crashed(tmp_path, current_ver, config, path, expected):
     """Each cited step replaces the malformed slot and still lands the migrated value."""
-    from hermes_cli.config_migrations import run_migrations
+    from hermes_agent.hermes_cli.config_migrations import run_migrations
 
     _write_config(tmp_path, {"_config_version": current_ver, **config})
     results = {"env_added": [], "config_added": [], "warnings": []}
@@ -67,12 +67,12 @@ def test_failing_step_stops_the_ladder_and_is_retried(tmp_path, caplog):
     next pass retries it, and the steps after it wait. v21 raises on a nested list in
     ``plugins.disabled``; v53 (a one-time 3600 -> 90 rewrite) must not run past it, or the pass
     that retries v21 would run v53 again over a 3600 the user set back on purpose."""
-    from hermes_cli.config import DEFAULT_CONFIG, migrate_config
+    from hermes_agent.hermes_cli.config import DEFAULT_CONFIG, migrate_config
 
     _write_config(tmp_path, {"_config_version": 16, "compression": {"summary_model": "m"},
                              "plugins": {"disabled": [["x"]]}, "agent": {"clarify_timeout": 3600}})
     with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}), \
-            caplog.at_level(logging.WARNING, logger="hermes_cli.config_migrations"):
+            caplog.at_level(logging.WARNING, logger="hermes_agent.hermes_cli.config_migrations"):
         results = migrate_config(interactive=False, quiet=True)
 
     raw = _read_config(tmp_path)
@@ -98,8 +98,8 @@ def test_failing_step_stops_the_ladder_and_is_retried(tmp_path, caplog):
 def test_failing_step_on_an_unversioned_config_leaves_it_unversioned(tmp_path):
     """An unversioned file gets only the legacy-key steps. A stamp after a failed one would hand
     it the whole ladder, or (latest) hide the failed step forever: it stays unstamped."""
-    from hermes_cli import config_migrations
-    from hermes_cli.config import migrate_config
+    from hermes_agent.hermes_cli import config_migrations
+    from hermes_agent.hermes_cli.config import migrate_config
 
     def _boom(results, quiet):
         raise RuntimeError("boom")
@@ -116,8 +116,8 @@ def test_failing_step_on_an_unversioned_config_leaves_it_unversioned(tmp_path):
 
 def test_successful_migration_warning_still_stamps_latest_version(tmp_path):
     """The real v38 Relay cleanup warns while succeeding; it must still stamp latest."""
-    from hermes_cli import config_migrations
-    from hermes_cli.config import migrate_config
+    from hermes_agent.hermes_cli import config_migrations
+    from hermes_agent.hermes_cli.config import migrate_config
 
     _write_config(tmp_path, {
         "_config_version": 37,
@@ -137,13 +137,13 @@ def test_config_migrate_command_reports_a_stopped_pass(tmp_path, capsys):
     """`hermes config migrate` must not say "Configuration updated!" for a pass that stopped,
     and exits 1 so scripts see it."""
     import pytest
-    from hermes_cli.config import _cmd_config_migrate
+    from hermes_agent.hermes_cli.config import _cmd_config_migrate
 
     # A new default key is listed in config_added, as on a real upgrade; then v21 raises.
     _write_config(tmp_path, {"_config_version": 20, "plugins": {"disabled": [["x"]]}})
     with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}), \
-            patch("hermes_cli.config.get_missing_env_vars", return_value=[]), \
-            patch("hermes_cli.config.get_missing_config_fields",
+            patch("hermes_agent.hermes_cli.config.get_missing_env_vars", return_value=[]), \
+            patch("hermes_agent.hermes_cli.config.get_missing_config_fields",
                   return_value=[{"key": "display.zz_new", "default": 1}]), \
             pytest.raises(SystemExit) as exited:
         _cmd_config_migrate(None)
@@ -156,7 +156,7 @@ def test_config_migrate_command_reports_a_stopped_pass(tmp_path, capsys):
 def test_console_config_migrate_error_says_why(tmp_path):
     """The web console drops a failing command's printed output, so the error itself carries the cause."""
     import pytest
-    from hermes_cli.console_engine import ConsoleCommandError, _config_migrate
+    from hermes_agent.hermes_cli.console_engine import ConsoleCommandError, _config_migrate
 
     _write_config(tmp_path, {"_config_version": 20, "plugins": {"disabled": [["x"]]}})
     with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}), pytest.raises(ConsoleCommandError) as err:

@@ -11,10 +11,10 @@ import sqlite3
 import pytest
 
 from hermes_agent.agent.insights import InsightsEngine
-from hermes_cli.session_export import iter_user_prompt_records
-from hermes_cli.session_export_html import generate_multi_session_html_export
-from hermes_cli.session_export_md import _iso_timestamp
-from hermes_cli.sessions_cmd import _cmd_list
+from hermes_agent.hermes_cli.session_export import iter_user_prompt_records
+from hermes_agent.hermes_cli.session_export_html import generate_multi_session_html_export
+from hermes_agent.hermes_cli.session_export_md import _iso_timestamp
+from hermes_agent.hermes_cli.sessions_cmd import _cmd_list
 from hermes_agent.hermes_state import SessionDB
 
 
@@ -38,7 +38,7 @@ def corrupt_db(tmp_path):
 
 
 def test_list_export_and_insights_survive_corrupt_timestamp_rows(corrupt_db, capsys, caplog):
-    with caplog.at_level(logging.WARNING, logger="hermes_cli.timefmt"):
+    with caplog.at_level(logging.WARNING, logger="hermes_agent.hermes_cli.timefmt"):
         _cmd_list(corrupt_db, argparse.Namespace(limit=20, source=None, all=False, workspace=None))
         listing = capsys.readouterr().out
         exported = corrupt_db.export_all()

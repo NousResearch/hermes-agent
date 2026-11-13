@@ -16,7 +16,7 @@ def _manage(**params):
 
 
 def test_install_desktop_round_trips_through_the_rpc(tmp_path, monkeypatch):
-    from hermes_cli import plugins_cmd
+    from hermes_agent.hermes_cli import plugins_cmd
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))

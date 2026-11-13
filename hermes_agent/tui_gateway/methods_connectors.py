@@ -195,7 +195,7 @@ _ACCOUNT_CREATES_GUEST = {"status": False, "connect": True}
 
 
 def _account_connector_list(rid):
-    from hermes_cli.free_tier_offer import note_connected_apps_seen
+    from hermes_agent.hermes_cli.free_tier_offer import note_connected_apps_seen
     from hermes_agent.tools.connectors.managed import managed_client
     from hermes_agent.tools.managed_tool_gateway import read_nous_access_token
 

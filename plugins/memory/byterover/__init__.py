@@ -40,7 +40,7 @@ def _coerce_bool(value: Any, default: bool = False) -> bool:
 def _load_plugin_config() -> dict[str, Any]:
     """Read ``memory.byterover``; fall back to legacy ``memory.provider_config`` (early docs used it)."""
     try:
-        from hermes_cli.config import load_config
+        from hermes_agent.hermes_cli.config import load_config
         memory_config = load_config().get("memory", {})
     except Exception:
         return {}

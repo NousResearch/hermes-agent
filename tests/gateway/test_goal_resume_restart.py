@@ -25,7 +25,7 @@ from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
 from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
 from hermes_agent.gateway.run import GatewayRunner
 from hermes_agent.gateway.session import SessionSource
-from hermes_cli import goals
+from hermes_agent.hermes_cli import goals
 
 
 @pytest.fixture
@@ -63,7 +63,7 @@ def _exhaust_budget(session_id: str, goal_text: str = "ship the benchmark"):
     mgr = goals.GoalManager(session_id)
     mgr.set(goal_text, max_turns=1)
     with patch(
-        "hermes_cli.goals.judge_goal",
+        "hermes_agent.hermes_cli.goals.judge_goal",
         return_value=("continue", "needs more steps", False, None, False),
     ):
         decision = mgr.evaluate_after_turn("worked a bit")
@@ -79,7 +79,7 @@ def _exhaust_budget(session_id: str, goal_text: str = "ship the benchmark"):
 
 
 def _make_cli(session_id: str):
-    from cli import HermesCLI
+    from hermes_agent.cli import HermesCLI
 
     cli = HermesCLI.__new__(HermesCLI)
     cli._pending_input = queue.Queue()

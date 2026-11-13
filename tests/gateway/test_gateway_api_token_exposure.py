@@ -17,7 +17,7 @@ from starlette.testclient import TestClient
 @pytest.mark.asyncio
 async def test_gateway_listener_never_publishes_the_session_token(tmp_path, monkeypatch):
     from hermes_agent.gateway.run_api import start_gateway_api, stop_gateway_api
-    from hermes_cli import web_server
+    from hermes_agent.hermes_cli import web_server
 
     dist = tmp_path / "web_dist"
     (dist / "assets").mkdir(parents=True)

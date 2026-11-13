@@ -11,8 +11,8 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli import plugins_cmd
-from hermes_cli.config import load_config, save_config
+from hermes_agent.hermes_cli import plugins_cmd
+from hermes_agent.hermes_cli.config import load_config, save_config
 
 
 @pytest.fixture
@@ -30,7 +30,7 @@ def home(tmp_path, monkeypatch):
         cfg["plugins"] = {"enabled": sorted(enabled), "disabled": sorted(disabled)}
         save_config(cfg)
 
-    monkeypatch.setattr("hermes_cli.plugins_admission.admit_plugin_set_change", admit)
+    monkeypatch.setattr("hermes_agent.hermes_cli.plugins_admission.admit_plugin_set_change", admit)
     return hermes_home
 
 
@@ -59,7 +59,7 @@ def test_disable_unloads_the_plugin_from_the_running_gateway(home, monkeypatch, 
 
 def test_the_gateways_forced_rediscovery_drops_a_disabled_plugins_hook(home):
     """What the ``reload-plugins`` verb runs: the reloaded manager no longer offers the plugin's hook."""
-    from hermes_cli import plugins
+    from hermes_agent.hermes_cli import plugins
 
     (home / "plugins" / "probe" / "__init__.py").write_text(
         "def _probe_hook(**kwargs):\n    return None\n\n"
@@ -149,7 +149,7 @@ def test_disable_says_the_running_gateway_unloaded_it(home, monkeypatch, capsys)
 def test_enable_prints_only_the_outcome_that_applies(home, monkeypatch, capsys, reloaded):
     """``enable`` knows whether the running gateway took the plugin: it prints that outcome, never
     "Takes effect on next session." above a line saying it is active in the running gateway now."""
-    from hermes_cli import plugins_activation
+    from hermes_agent.hermes_cli import plugins_activation
     save_config({**load_config(), "plugins": {"enabled": [], "disabled": ["probe"]}})
     outcome = {"gateway_reloaded": reloaded, "restart_required": not reloaded,
                "activation": {"activated_now": {"hooks": 1}} if reloaded else None}

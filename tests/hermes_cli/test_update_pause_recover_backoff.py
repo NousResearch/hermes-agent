@@ -13,7 +13,7 @@ import sys
 
 import pytest
 
-from hermes_cli import update_pause_record as pause_record
+from hermes_agent.hermes_cli import update_pause_record as pause_record
 
 pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="the stand-in replaces the native resume")
 
@@ -23,7 +23,7 @@ def _claims() -> list:
 
 
 def test_an_unready_relaunch_stalls_one_launch_per_backoff_window_and_stays_owed(tmp_path, monkeypatch, capsys):
-    import hermes_cli.update_cmd_windows as w
+    import hermes_agent.hermes_cli.update_cmd_windows as w
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     pause_record.write(pause_record.stamp_tree({"resume_needed": True, "profiles": {"alpha": 4194000}}),
                        owner=pause_record.UNOWNED)  # a killed update's set; pid 4194000 is long gone

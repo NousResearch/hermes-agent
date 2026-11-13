@@ -15,7 +15,7 @@ from unittest.mock import patch
 
 
 def _import_cli():
-    import hermes_cli.config as config_mod
+    import hermes_agent.hermes_cli.config as config_mod
 
     if not hasattr(config_mod, "save_env_value_secure"):
         config_mod.save_env_value_secure = lambda key, value: {
@@ -24,7 +24,7 @@ def _import_cli():
             "validated": False,
         }
 
-    import cli as cli_mod
+    import hermes_agent.cli as cli_mod
 
     return cli_mod
 
@@ -128,7 +128,7 @@ class TestRunCleanupWiring(unittest.TestCase):
                     "hermes_agent.agent.auxiliary_client.shutdown_cached_clients",
                     lambda *a, **k: None,
                 ),
-                patch("hermes_cli.plugins.invoke_hook", lambda *a, **k: None),
+                patch("hermes_agent.hermes_cli.plugins.invoke_hook", lambda *a, **k: None),
             ):
                 if extra_patches.get("terminals_raise"):
                     with patch.object(

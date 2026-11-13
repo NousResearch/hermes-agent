@@ -73,7 +73,7 @@ async def test_a_reasoning_pick_on_a_compressed_messaging_chat_is_the_chats_next
 
 @pytest.mark.asyncio
 async def test_a_model_pick_on_a_messaging_chat_is_the_chats_next_turn_model(tmp_path, monkeypatch):
-    from hermes_cli import model_selection_guards, model_switch
+    from hermes_agent.hermes_cli import model_selection_guards, model_switch
     monkeypatch.setattr(model_switch, 'switch_model', lambda **k: model_switch.ModelSwitchResult(
         success=True, new_model=k['raw_input'], target_provider='custom', base_url='http://127.0.0.1:9/v1'))
     monkeypatch.setattr(model_selection_guards, 'selection_warnings', lambda *a, **k: [])
@@ -124,7 +124,7 @@ async def test_a_messaging_pick_is_fenced_by_its_receipt_and_revision(tmp_path):
 async def test_a_cold_model_pick_resolves_against_the_chats_saved_provider(tmp_path, monkeypatch):
     """After a restart the chat's /model override lives only in the session store: a bare model pick
     resolves against that saved provider and base URL and keeps them, not config.yaml's provider."""
-    from hermes_cli import model_selection_guards, model_switch
+    from hermes_agent.hermes_cli import model_selection_guards, model_switch
     seen = {}
 
     def switch(**k):

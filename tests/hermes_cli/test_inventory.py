@@ -1,4 +1,4 @@
-"""Behavior tests for hermes_cli.inventory.
+"""Behavior tests for hermes_agent.hermes_cli.inventory.
 
 Locks the invariants the three migrated consumers (web_server.py
 /api/model/options, tui_gateway model.options, tui_gateway model.save_key)
@@ -22,7 +22,7 @@ from __future__ import annotations
 from unittest.mock import patch
 
 
-from hermes_cli.inventory import (
+from hermes_agent.hermes_cli.inventory import (
     ConfigContext,
     build_models_payload,
     load_picker_context,
@@ -60,7 +60,7 @@ def test_load_picker_context_coerces_numeric_yaml_provider():
             }
         },
     )
-    with patch("hermes_cli.config.load_config", return_value=cfg):
+    with patch("hermes_agent.hermes_cli.config.load_config", return_value=cfg):
         ctx = load_picker_context()
     assert ctx.current_provider == "2070"
     assert isinstance(ctx.current_provider, str)
@@ -93,7 +93,7 @@ def _empty_ctx(provider="orig", model="orig-model", base_url="orig-url"):
 def _list_auth_returning(rows: list[dict]):
     """Patch list_authenticated_providers to return a fixed row list."""
     return patch(
-        "hermes_cli.model_switch.list_authenticated_providers",
+        "hermes_agent.hermes_cli.model_switch.list_authenticated_providers",
         return_value=rows,
     )
 
@@ -126,8 +126,8 @@ def test_build_models_payload_returns_expected_shape():
     }
     with (
         _list_auth_returning(rows),
-        patch("hermes_cli.config.read_raw_config", return_value=raw_config),
-        patch("hermes_cli.config.load_config", return_value=raw_config),
+        patch("hermes_agent.hermes_cli.config.read_raw_config", return_value=raw_config),
+        patch("hermes_agent.hermes_cli.config.load_config", return_value=raw_config),
     ):
         payload = build_models_payload(ctx)
     assert set(payload.keys()) == {"providers", "model", "provider"}
@@ -151,8 +151,8 @@ def test_build_models_payload_hides_moa_without_raw_preset():
     synthesized = {"moa": {"presets": {"default": {"enabled": True}}}}
     with (
         _list_auth_returning(rows),
-        patch("hermes_cli.config.read_raw_config", return_value={}),
-        patch("hermes_cli.config.load_config", return_value=synthesized),
+        patch("hermes_agent.hermes_cli.config.read_raw_config", return_value={}),
+        patch("hermes_agent.hermes_cli.config.load_config", return_value=synthesized),
     ):
         payload = build_models_payload(ctx)
     assert [r["slug"] for r in payload["providers"]] == ["openrouter"]
@@ -180,7 +180,7 @@ def test_include_unconfigured_appends_canonical_skeletons():
     # All canonical providers other than openrouter should appear as
     # skeleton rows. MoA is virtual/opt-in and excluded from unconfigured;
     # so is a pre-release provider the user has not signed into.
-    from hermes_cli.models_catalog_static import listed_canonical_providers
+    from hermes_agent.hermes_cli.models_catalog_static import listed_canonical_providers
 
     seen_slugs = {r["slug"] for r in payload["providers"]}
     for entry in listed_canonical_providers():
@@ -219,9 +219,9 @@ def test_explicit_only_filters_ambient_credentials_but_keeps_current_and_custom_
     ctx = _empty_ctx(provider="openai-codex", model="gpt-5.4")
     with (
         _list_auth_returning(rows),
-        patch("hermes_cli.config.read_raw_config", return_value={}),
+        patch("hermes_agent.hermes_cli.config.read_raw_config", return_value={}),
         patch(
-            "hermes_cli.auth.is_provider_explicitly_configured",
+            "hermes_agent.hermes_cli.auth.is_provider_explicitly_configured",
             side_effect=lambda slug: slug == "gemini",
         ),
     ):
@@ -254,13 +254,13 @@ def test_explicit_only_keeps_anthropic_row_with_oauth_credentials():
     ctx = _empty_ctx(provider="opencode-go", model="glm-5.3")
     with (
         _list_auth_returning(rows),
-        patch("hermes_cli.config.read_raw_config", return_value={}),
+        patch("hermes_agent.hermes_cli.config.read_raw_config", return_value={}),
         patch(
-            "hermes_cli.auth.is_provider_explicitly_configured",
+            "hermes_agent.hermes_cli.auth.is_provider_explicitly_configured",
             return_value=False,
         ),
         patch(
-            "hermes_cli.inventory._anthropic_oauth_credentials_present",
+            "hermes_agent.hermes_cli.inventory._anthropic_oauth_credentials_present",
             return_value=True,
         ),
     ):
@@ -285,13 +285,13 @@ def test_explicit_only_drops_anthropic_row_without_oauth_credentials():
     ctx = _empty_ctx(provider="opencode-go", model="glm-5.3")
     with (
         _list_auth_returning(rows),
-        patch("hermes_cli.config.read_raw_config", return_value={}),
+        patch("hermes_agent.hermes_cli.config.read_raw_config", return_value={}),
         patch(
-            "hermes_cli.auth.is_provider_explicitly_configured",
+            "hermes_agent.hermes_cli.auth.is_provider_explicitly_configured",
             return_value=False,
         ),
         patch(
-            "hermes_cli.inventory._anthropic_oauth_credentials_present",
+            "hermes_agent.hermes_cli.inventory._anthropic_oauth_credentials_present",
             return_value=False,
         ),
     ):
@@ -307,7 +307,7 @@ def test_anthropic_oauth_presence_accepts_pool_only_oauth_entry():
     .anthropic_oauth.json or ~/.claude/.credentials.json. The presence
     check must accept them or the row is built and then silently dropped.
     """
-    from hermes_cli.inventory import _anthropic_oauth_credentials_present
+    from hermes_agent.hermes_cli.inventory import _anthropic_oauth_credentials_present
 
     with (
         patch(
@@ -319,7 +319,7 @@ def test_anthropic_oauth_presence_accepts_pool_only_oauth_entry():
             return_value=None,
         ),
         patch(
-            "hermes_cli.auth.read_credential_pool",
+            "hermes_agent.hermes_cli.auth.read_credential_pool",
             return_value=[
                 {"auth_type": "oauth", "access_token": "sk-ant-oat01-pool"}
             ],
@@ -339,7 +339,7 @@ def test_anthropic_oauth_presence_accepts_pool_only_oauth_entry():
             return_value=None,
         ),
         patch(
-            "hermes_cli.auth.read_credential_pool",
+            "hermes_agent.hermes_cli.auth.read_credential_pool",
             return_value=[
                 {"auth_type": "api_key", "access_token": "sk-ant-api03-key"}
             ],
@@ -390,7 +390,7 @@ def test_canonical_order_uses_slug_not_is_user_defined_flag():
     canonical providers configured via the keyed schema get demoted to
     the tail.
     """
-    from hermes_cli.models import CANONICAL_PROVIDERS
+    from hermes_agent.hermes_cli.models import CANONICAL_PROVIDERS
 
     canonical_slug = CANONICAL_PROVIDERS[2].slug  # any canonical
     rows = [
@@ -425,7 +425,7 @@ def test_canonical_order_with_unconfigured_preserves_full_universe():
     custom rows trailing. MoA is excluded from unconfigured skeletons
     (virtual, opt-in only — issue #63353).
     """
-    from hermes_cli.models import CANONICAL_PROVIDERS
+    from hermes_agent.hermes_cli.models import CANONICAL_PROVIDERS
 
     rows = [
         {"slug": "custom:Ollama", "name": "Ollama", "models": [],
@@ -446,7 +446,7 @@ def test_canonical_order_with_unconfigured_preserves_full_universe():
     # Custom row trails all visible canonical rows. MoA is virtual/opt-in
     # so it is excluded from the unconfigured skeleton set, and so is an
     # unlisted pre-release provider.
-    from hermes_cli.models_catalog_static import listed_canonical_providers
+    from hermes_agent.hermes_cli.models_catalog_static import listed_canonical_providers
     visible_canonical_count = sum(
         1 for e in listed_canonical_providers() if e.slug != "moa"
     )
@@ -464,7 +464,7 @@ def test_end_to_end_with_real_context_no_credentials_leak(monkeypatch):
     monkeypatch.setenv("OPENROUTER_API_KEY", canary)
     monkeypatch.setenv("ANTHROPIC_API_KEY", canary)
     cfg = _cfg(model={"provider": "openrouter"})
-    with patch("hermes_cli.config.load_config", return_value=cfg):
+    with patch("hermes_agent.hermes_cli.config.load_config", return_value=cfg):
         ctx = load_picker_context()
     payload = build_models_payload(
         ctx, include_unconfigured=True, picker_hints=True,
@@ -667,9 +667,9 @@ def test_build_models_payload_no_max_models_returns_full_list():
 def test_list_authenticated_providers_refresh_busts_cache():
     """refresh=True clears the provider-model disk cache exactly once;
     refresh=False leaves it untouched (so normal picker opens stay snappy)."""
-    from hermes_cli import model_switch
+    from hermes_agent.hermes_cli import model_switch
 
-    with patch("hermes_cli.models.clear_provider_models_cache") as clear:
+    with patch("hermes_agent.hermes_cli.models.clear_provider_models_cache") as clear:
         model_switch.list_authenticated_providers(refresh=False)
         assert clear.call_count == 0
         model_switch.list_authenticated_providers(refresh=True)
@@ -685,7 +685,7 @@ def test_picker_metadata_uses_one_config_read_for_real_models_dev_lookups(tmp_pa
     path makes the larger payload re-open config.yaml once per lookup.
     """
     from hermes_agent.agent import models_dev
-    from hermes_cli import config as config_module
+    from hermes_agent.hermes_cli import config as config_module
 
     home = tmp_path / "hermes"
     home.mkdir()
@@ -761,10 +761,10 @@ def test_picker_metadata_uses_one_config_read_for_real_models_dev_lookups(tmp_pa
 
         with (
             _list_auth_returning(_rows(model_ids)),
-            patch("hermes_cli.inventory._local_runtime_row", return_value=None),
-            patch("hermes_cli.inventory._moa_provider_row", return_value=None),
-            patch("hermes_cli.models.model_supports_fast_mode", return_value=False),
-            patch("hermes_cli.inventory._reasoning_catalog_reader", return_value=None),
+            patch("hermes_agent.hermes_cli.inventory._local_runtime_row", return_value=None),
+            patch("hermes_agent.hermes_cli.inventory._moa_provider_row", return_value=None),
+            patch("hermes_agent.hermes_cli.models.model_supports_fast_mode", return_value=False),
+            patch("hermes_agent.hermes_cli.inventory._reasoning_catalog_reader", return_value=None),
             patch.object(models_dev, "_cfg_get", side_effect=counted_cfg_get),
             patch.object(
                 config_module, "load_config_readonly",
@@ -803,7 +803,7 @@ def test_picker_metadata_uses_one_config_read_for_real_models_dev_lookups(tmp_pa
 def test_apply_limits_skips_window_plan_rows():
     """A window plan says its limits in ``plan_usage``; the credential-cooldown chip would add a second,
     unrelated reset time, so ``_apply_limits`` leaves that row alone. Other pooled rows keep it."""
-    from hermes_cli import inventory
+    from hermes_agent.hermes_cli import inventory
 
     class _Pool:
         def limit_state(self, models):
@@ -813,7 +813,7 @@ def test_apply_limits_skips_window_plan_rows():
         {"slug": "nous", "models": ["a/b"], "plan_usage": {"kind": "usage_window"}},
         {"slug": "example", "models": ["a/b"]},
     ]
-    with patch("hermes_cli.auth.read_credential_pool", return_value={"nous": [{}], "example": [{}]}), \
+    with patch("hermes_agent.hermes_cli.auth.read_credential_pool", return_value={"nous": [{}], "example": [{}]}), \
             patch("hermes_agent.agent.credential_pool.load_pool", return_value=_Pool()):
         inventory._apply_limits(rows)
     assert "limit" not in rows[0]

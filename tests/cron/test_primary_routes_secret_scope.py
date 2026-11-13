@@ -14,7 +14,7 @@ import pytest
 
 from hermes_agent.agent.secret_scope import reset_secret_scope, set_secret_scope
 from hermes_agent.cron.scheduler_preflight import _primary_profile_routes_for_current_home
-from hermes_cli import managed_scope
+from hermes_agent.hermes_cli import managed_scope
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
 

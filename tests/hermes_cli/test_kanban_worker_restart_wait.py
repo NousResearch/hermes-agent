@@ -12,7 +12,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from hermes_cli import gateway_client, gateway_runtime, kanban_worker_client
+from hermes_agent.hermes_cli import gateway_client, gateway_runtime, kanban_worker_client
 from hermes_agent.gateway.drain_control import RESTART_WAIT_REASON
 
 GUE = gateway_client.GatewayUnavailableError
@@ -122,8 +122,8 @@ def _owner_rig(tmp_path, monkeypatch, *, old_owner=False):
     from hermes_agent.gateway.control_socket import GatewayControlServer
     from hermes_agent.gateway.run_api import GatewayRuntimeAPI
     from hermes_agent.gateway.runtime_bootstrap import TicketStore
-    from hermes_cli import web_server as web
-    from hermes_cli import web_server_chat
+    from hermes_agent.hermes_cli import web_server as web
+    from hermes_agent.hermes_cli import web_server_chat
 
     profile = str(tmp_path)
     tickets = TicketStore("owner", [profile])

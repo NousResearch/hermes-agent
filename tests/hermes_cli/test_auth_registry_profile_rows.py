@@ -16,17 +16,17 @@ from hermes_agent.providers.base import ProviderProfile
 def plugin(monkeypatch):
     """Register a profile the way discovery does (providers layer + auth mirror) on registry copies."""
     from hermes_agent import providers
-    from hermes_cli import auth
+    from hermes_agent.hermes_cli import auth
 
     monkeypatch.setattr(providers, "_REGISTRY", dict(providers._REGISTRY))
     monkeypatch.setattr(providers, "_ALIASES", dict(providers._ALIASES))
     monkeypatch.setattr(providers, "_PROVIDER_LIST_CACHE", None, raising=False)
-    monkeypatch.setattr("hermes_cli.auth_plugin_providers.PLUGIN_MIRRORED_PROVIDERS", set())
-    # Restored in place: modules hold the dict itself (``from hermes_cli.auth import PROVIDER_REGISTRY``).
+    monkeypatch.setattr("hermes_agent.hermes_cli.auth_plugin_providers.PLUGIN_MIRRORED_PROVIDERS", set())
+    # Restored in place: modules hold the dict itself (``from hermes_agent.hermes_cli.auth import PROVIDER_REGISTRY``).
     saved = dict(auth.PROVIDER_REGISTRY)
 
     def _register(profile: ProviderProfile) -> ProviderProfile:
-        from hermes_cli.auth_plugin_providers import register_plugin_provider
+        from hermes_agent.hermes_cli.auth_plugin_providers import register_plugin_provider
 
         providers.register_provider(profile)
         register_plugin_provider(profile)
@@ -47,7 +47,7 @@ def _token_profile(name: str, *, ambient: bool) -> ProviderProfile:
 def test_ambient_plugin_is_not_env_auto_detected_under_its_aliases(plugin, monkeypatch):
     """An ambient token never auto-selects the provider, not even through the alias keys the mirror
     points at its row; a non-ambient twin of the same shape is detected under its canonical id."""
-    from hermes_cli import auth
+    from hermes_agent.hermes_cli import auth
 
     plugin(_token_profile("ambientco", ambient=True))
     plugin(_token_profile("keyedco", ambient=False))
@@ -62,8 +62,8 @@ def test_ambient_plugin_is_not_env_auto_detected_under_its_aliases(plugin, monke
 def test_profile_declares_its_registry_row_shape_and_place(plugin, monkeypatch, capsys):
     """registry_auth_type / base_url_env_var / registry_after produce the row a built-in would have
     had, and `hermes auth add` takes the api-key path instead of demanding an auth_handler."""
-    from hermes_cli import auth
-    from hermes_cli.auth_commands import auth_add_command
+    from hermes_agent.hermes_cli import auth
+    from hermes_agent.hermes_cli.auth_commands import auth_add_command
 
     plugin(ProviderProfile(
         name="acme", display_name="Acme Cloud", aliases=("acme-alias",), env_vars=("ACME_TOKEN", "ACME_KEY"),
@@ -83,7 +83,7 @@ def test_profile_declares_its_registry_row_shape_and_place(plugin, monkeypatch, 
 
 
 def test_auth_list_shows_a_plugin_provider_once_not_per_alias(plugin, monkeypatch, capsys):
-    from hermes_cli.auth_commands import auth_list_command
+    from hermes_agent.hermes_cli.auth_commands import auth_list_command
 
     from hermes_agent.agent import secret_scope
 

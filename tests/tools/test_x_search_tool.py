@@ -36,7 +36,7 @@ class _FakeResponse:
 
 def test_x_search_posts_responses_request(monkeypatch):
     from hermes_agent.tools.x_search_tool import x_search_tool
-    from hermes_cli.version_info import get_version_info
+    from hermes_agent.hermes_cli.version_info import get_version_info
 
     captured = {}
 
@@ -315,7 +315,7 @@ def test_x_search_prefers_explicit_api_key_over_oauth(monkeypatch):
 
     monkeypatch.delenv("XAI_API_KEY", raising=False)
     monkeypatch.setattr(
-        "hermes_cli.config.get_env_value",
+        "hermes_agent.hermes_cli.config.get_env_value",
         lambda name, default=None: {
             "XAI_API_KEY": paid_key,
         }.get(name, default),
@@ -345,7 +345,7 @@ def test_x_search_bearer_helper_falls_back_to_oauth_without_api_key(monkeypatch)
 
     monkeypatch.delenv("XAI_API_KEY", raising=False)
     monkeypatch.setattr(
-        "hermes_cli.config.get_env_value",
+        "hermes_agent.hermes_cli.config.get_env_value",
         lambda name, default=None: default,
     )
     _install_fake_oauth_pool(monkeypatch, oauth_token)

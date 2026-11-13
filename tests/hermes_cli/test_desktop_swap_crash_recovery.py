@@ -6,7 +6,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from hermes_cli import main_desktop
+from hermes_agent.hermes_cli import main_desktop
 from tests.hermes_cli.test_desktop_swap_file_lock_retry import _staged_over_live
 
 

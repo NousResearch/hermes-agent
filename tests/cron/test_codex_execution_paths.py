@@ -132,7 +132,7 @@ def test_cron_run_job_codex_path_handles_internal_401_refresh(monkeypatch, tmp_p
     monkeypatch.setattr("hermes_agent.agent.process_bootstrap.OpenAI", _FakeOpenAI)
     monkeypatch.setattr(run_agent, "AIAgent", _Codex401ThenSuccessAgent)
     monkeypatch.setattr(
-        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        "hermes_agent.hermes_cli.runtime_provider.resolve_runtime_provider",
         lambda requested=None, **kwargs: {
             "provider": "openai-codex",
             "api_mode": "codex_responses",
@@ -140,7 +140,7 @@ def test_cron_run_job_codex_path_handles_internal_401_refresh(monkeypatch, tmp_p
             "api_key": "codex-token",
         },
     )
-    monkeypatch.setattr("hermes_cli.runtime_provider.format_runtime_provider_error", lambda exc: str(exc))
+    monkeypatch.setattr("hermes_agent.hermes_cli.runtime_provider.format_runtime_provider_error", lambda exc: str(exc))
 
     _Codex401ThenSuccessAgent.refresh_attempts = 0
     _Codex401ThenSuccessAgent.last_init = {}

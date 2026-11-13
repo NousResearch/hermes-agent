@@ -43,7 +43,7 @@ def test_explicit_reset_timestamp_overrides_default_429_ttl(tmp_path, monkeypatc
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     # Prevent auto-seeding from Codex CLI tokens on the host
     monkeypatch.setattr(
-        "hermes_cli.auth._import_codex_cli_tokens",
+        "hermes_agent.hermes_cli.auth._import_codex_cli_tokens",
         lambda: None,
     )
     _write_auth_store(
@@ -677,7 +677,7 @@ def test_load_pool_persists_bitwarden_origin_metadata_without_secret(tmp_path, m
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     monkeypatch.setenv("OPENROUTER_API_KEY", sentinel)
     monkeypatch.setattr(
-        "hermes_cli.env_loader.get_secret_source",
+        "hermes_agent.hermes_cli.env_loader.get_secret_source",
         lambda env_var: "bitwarden" if env_var == "OPENROUTER_API_KEY" else None,
     )
     _write_auth_store(tmp_path, {"version": 1, "providers": {}})
@@ -837,7 +837,7 @@ def test_write_credential_pool_sanitizes_borrowed_payload_at_disk_boundary(tmp_p
     manual_secret = "MANUAL_SECRET_STAYS_PERSISTABLE"
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
 
-    from hermes_cli.auth import write_credential_pool
+    from hermes_agent.hermes_cli.auth import write_credential_pool
 
     write_credential_pool("openrouter", [
         {
@@ -880,7 +880,7 @@ def test_write_credential_pool_treats_unowned_oauth_source_as_borrowed(tmp_path,
     sentinel = "S3NTINEL_DO_NOT_PERSIST_UNOWNED_OAUTH"
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
 
-    from hermes_cli.auth import write_credential_pool
+    from hermes_agent.hermes_cli.auth import write_credential_pool
 
     write_credential_pool("openrouter", [
         {
@@ -908,7 +908,7 @@ def test_write_credential_pool_preserves_known_provider_owned_oauth_state(tmp_pa
     sentinel = "PROVIDER_OWNED_DEVICE_CODE_STAYS_PERSISTABLE"
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
 
-    from hermes_cli.auth import write_credential_pool
+    from hermes_agent.hermes_cli.auth import write_credential_pool
 
     write_credential_pool("nous", [
         {
@@ -1092,7 +1092,7 @@ def test_load_pool_api_key_path_skips_oauth_autodiscovery(tmp_path, monkeypatch)
     monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
     monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
     _write_auth_store(tmp_path, {"version": 1, "providers": {}})
-    monkeypatch.setattr("hermes_cli.auth.is_provider_explicitly_configured", lambda pid: True)
+    monkeypatch.setattr("hermes_agent.hermes_cli.auth.is_provider_explicitly_configured", lambda pid: True)
 
     pkce_called = {"n": 0}
     cc_called = {"n": 0}
@@ -1166,7 +1166,7 @@ def test_load_pool_api_key_path_prunes_stale_oauth_entries(tmp_path, monkeypatch
             },
         },
     )
-    monkeypatch.setattr("hermes_cli.auth.is_provider_explicitly_configured", lambda pid: True)
+    monkeypatch.setattr("hermes_agent.hermes_cli.auth.is_provider_explicitly_configured", lambda pid: True)
     monkeypatch.setattr("hermes_agent.agent.anthropic_credentials.read_hermes_oauth_credentials", lambda: None)
     monkeypatch.setattr("hermes_agent.agent.anthropic_credentials.read_claude_code_credentials", lambda: None)
 
@@ -1193,7 +1193,7 @@ def test_load_pool_oauth_path_still_autodiscovers(tmp_path, monkeypatch):
     monkeypatch.setenv("ANTHROPIC_TOKEN", "sk-ant-oat01-explicit-oauth-token")
     monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
     _write_auth_store(tmp_path, {"version": 1, "providers": {}})
-    monkeypatch.setattr("hermes_cli.auth.is_provider_explicitly_configured", lambda pid: True)
+    monkeypatch.setattr("hermes_agent.hermes_cli.auth.is_provider_explicitly_configured", lambda pid: True)
 
     monkeypatch.setattr(
         "hermes_agent.agent.anthropic_credentials.read_hermes_oauth_credentials",
@@ -1375,7 +1375,7 @@ def test_load_pool_does_not_seed_claude_code_when_anthropic_not_configured(tmp_p
     )
     # User configured kimi-coding, NOT anthropic
     monkeypatch.setattr(
-        "hermes_cli.auth.is_provider_explicitly_configured",
+        "hermes_agent.hermes_cli.auth.is_provider_explicitly_configured",
         lambda pid: pid == "kimi-coding",
     )
 
@@ -1392,7 +1392,7 @@ def test_load_pool_seeds_qwen_oauth_via_cli_tokens(tmp_path, monkeypatch):
     _write_auth_store(tmp_path, {"version": 1, "credential_pool": {}})
 
     monkeypatch.setattr(
-        "hermes_cli.auth.resolve_qwen_runtime_credentials",
+        "hermes_agent.hermes_cli.auth.resolve_qwen_runtime_credentials",
         lambda **kw: {
             "provider": "qwen-oauth",
             "base_url": "https://portal.qwen.ai/v1",
@@ -1418,10 +1418,10 @@ def test_load_pool_does_not_seed_qwen_oauth_when_no_token(tmp_path, monkeypatch)
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     _write_auth_store(tmp_path, {"version": 1, "credential_pool": {}})
 
-    from hermes_cli.auth import AuthError
+    from hermes_agent.hermes_cli.auth import AuthError
 
     monkeypatch.setattr(
-        "hermes_cli.auth.resolve_qwen_runtime_credentials",
+        "hermes_agent.hermes_cli.auth.resolve_qwen_runtime_credentials",
         lambda **kw: (_ for _ in ()).throw(
             AuthError("Qwen CLI credentials not found.", provider="qwen-oauth", code="qwen_auth_missing")
         ),
@@ -1585,7 +1585,7 @@ def test_persist_preserves_concurrent_disk_only_entry(tmp_path, monkeypatch):
     )
 
     from hermes_agent.agent.credential_pool import load_pool
-    from hermes_cli.auth import read_credential_pool, write_credential_pool
+    from hermes_agent.hermes_cli.auth import read_credential_pool, write_credential_pool
 
     pool = load_pool("anthropic")
     assert {entry.id for entry in pool.entries()} == {"cred-A", "cred-B"}
@@ -1629,7 +1629,7 @@ def _make_anthropic_claude_code_pool(tmp_path, monkeypatch, *, access_token, ref
     monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
     monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
     _write_auth_store(tmp_path, {"version": 1, "credential_pool": {}})
-    monkeypatch.setattr("hermes_cli.auth.is_provider_explicitly_configured", lambda pid: pid == "anthropic")
+    monkeypatch.setattr("hermes_agent.hermes_cli.auth.is_provider_explicitly_configured", lambda pid: pid == "anthropic")
     monkeypatch.setattr(
         "hermes_agent.agent.anthropic_credentials.read_hermes_oauth_credentials",
         lambda: None,
@@ -1867,7 +1867,7 @@ def test_a_persist_without_declared_intent_still_cannot_erase_a_cooldown(
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     _exhausted_billing_store(tmp_path, age_seconds=5)
 
-    from hermes_cli.auth import write_credential_pool
+    from hermes_agent.hermes_cli.auth import write_credential_pool
 
     # A stale snapshot: same id, status cleared, intent NOT declared.
     write_credential_pool(

@@ -671,7 +671,7 @@ async def test_plugin_rewrite_of_a_voice_note_reply_is_the_clarify_answer(hook_r
     await adapter._cache_replied_media(SimpleNamespace(reply_to_message=reply_to), event)
     if hook_result is not None and hook_result["text"] is None:
         hook_result = {**hook_result, "text": event.text}  # a plugin returning the text unchanged
-    monkeypatch.setattr("hermes_cli.plugins.ainvoke_hook", AsyncMock(return_value=[hook_result] if hook_result else []))
+    monkeypatch.setattr("hermes_agent.hermes_cli.plugins.ainvoke_hook", AsyncMock(return_value=[hook_result] if hook_result else []))
 
     runner = object.__new__(GatewayRunner)
     runner.config = GatewayConfig(platforms={Platform.TELEGRAM: PlatformConfig(enabled=True)})

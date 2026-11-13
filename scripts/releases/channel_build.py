@@ -13,7 +13,7 @@ import os
 from pathlib import Path
 import subprocess
 
-from hermes_cli.release_channels import (
+from hermes_agent.hermes_cli.release_channels import (
     ChannelError,
     validate_name,
     validate_repository,

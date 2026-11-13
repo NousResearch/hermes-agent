@@ -136,7 +136,7 @@ def _resolve_allow_private_urls() -> bool:
     if env_val in {"false", "0", "no"}:
         return False  # explicit false does not fall through to config
     try:
-        from hermes_cli.config import read_raw_config
+        from hermes_agent.hermes_cli.config import read_raw_config
         cfg = read_raw_config()
         for section in ("security", "browser"):  # preferred, then legacy
             block = cfg.get(section, {})
@@ -164,7 +164,7 @@ def _resolve_fake_ip_ranges() -> tuple:
     declares one, and the sentinel range keeps the ordinary private-address verdict otherwise.
     """
     try:
-        from hermes_cli.config import read_raw_config
+        from hermes_agent.hermes_cli.config import read_raw_config
         block = read_raw_config().get("security", {})
         raw = block.get("fake_ip_ranges") if isinstance(block, dict) else None
     except Exception:

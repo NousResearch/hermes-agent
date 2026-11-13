@@ -22,7 +22,7 @@ async def discover_commands(authority, actor, params, *, completion=False):
         scope = _session_workspace(authority.runner, authority.sessions[ref.session_id].source)
 
     def discover():
-        from hermes_cli.profiles import profile_matches_home
+        from hermes_agent.hermes_cli.profiles import profile_matches_home
         home = Path(authority.profile_id)
         if params.get('profile') and not profile_matches_home(params['profile'], home):
             raise RuntimeStoreError('profile_mismatch')
@@ -46,8 +46,8 @@ async def list_plugins(authority, actor, params):
 
     def rows():
         from hermes_agent.gateway.run import _profile_runtime_scope
-        from hermes_cli.plugins import discover_plugins, get_plugin_manager
-        from hermes_cli.plugins import get_plugin_toolsets
+        from hermes_agent.hermes_cli.plugins import discover_plugins, get_plugin_manager
+        from hermes_agent.hermes_cli.plugins import get_plugin_toolsets
         with _profile_runtime_scope(Path(authority.profile_id)):
             discover_plugins()  # idempotent: the profile's plugins are normally loaded already
             manager = get_plugin_manager()

@@ -49,7 +49,7 @@ async def test_safe_mode_acp_session_freezes_the_launch_model(monkeypatch, tmp_p
     monkeypatch.setenv('HERMES_IGNORE_USER_CONFIG', '1')
     import hermes_agent.acp_adapter.entry
     from hermes_agent.gateway.session_local import _bypass_policy
-    from hermes_cli.main_agent_cmds import cmd_acp
+    from hermes_agent.hermes_cli.main_agent_cmds import cmd_acp
     monkeypatch.setattr(hermes_agent.acp_adapter.entry, 'main', lambda argv: None)
     cmd_acp(SimpleNamespace(model='anthropic/claude-sonnet-4', provider='openrouter'))
     created = []
@@ -63,7 +63,7 @@ async def test_safe_mode_acp_session_freezes_the_launch_model(monkeypatch, tmp_p
 @pytest.mark.asyncio
 @pytest.mark.parametrize('flag', ['HERMES_SAFE_MODE', 'HERMES_IGNORE_USER_CONFIG'])
 async def test_bypass_without_a_model_names_the_missing_flag(monkeypatch, tmp_path, flag):
-    from hermes_cli.gateway_client import GatewayClientError
+    from hermes_agent.hermes_cli.gateway_client import GatewayClientError
     for name in _ENV:
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv(flag, '1')
@@ -78,7 +78,7 @@ async def test_bypass_without_a_model_names_the_missing_flag(monkeypatch, tmp_pa
 async def test_bypass_with_a_model_but_no_provider_is_refused_at_session_new(monkeypatch, tmp_path, flag):
     """`hermes -m <model> --safe-mode acp`: the owner would accept the session, then its first turn
     could not build the agent. Refused before session.create, naming the missing flag."""
-    from hermes_cli.gateway_client import GatewayClientError
+    from hermes_agent.hermes_cli.gateway_client import GatewayClientError
     for name in _ENV:
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv(flag, '1')
@@ -95,7 +95,7 @@ async def test_cli_only_acp_flags_reach_the_session(monkeypatch, tmp_path):
     for name in _ENV:
         monkeypatch.setenv(name, '')  # recorded, so cmd_acp's exports are undone after the test
     import hermes_agent.acp_adapter.entry
-    from hermes_cli.main_agent_cmds import cmd_acp
+    from hermes_agent.hermes_cli.main_agent_cmds import cmd_acp
     monkeypatch.setattr(hermes_agent.acp_adapter.entry, 'main', lambda argv: None)
     cmd_acp(SimpleNamespace(accept_hooks=True, ignore_rules=True))
     created = []

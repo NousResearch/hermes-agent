@@ -113,7 +113,7 @@ def _setup_monkeypatches(monkeypatch, tmp_path):
         },
     )
 
-    from hermes_cli import tools_config
+    from hermes_agent.hermes_cli import tools_config
     monkeypatch.setattr(tools_config, "_get_platform_tools", lambda user_config, platform_key: {"core"})
 
 

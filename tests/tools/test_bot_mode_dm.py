@@ -575,7 +575,7 @@ def test_delivery_pins_the_hermes_entrypoint_beside_this_interpreter(tmp_path, m
     monkeypatch.setattr(sys, "executable", str(venv_bin / "python3"))
     # An install without a published launcher keeps the sibling fallback; keep this
     # checkout's own published launcher out of the resolution (#124868).
-    monkeypatch.setattr("hermes_cli._startup_fast.project_root_str", lambda: str(tmp_path))
+    monkeypatch.setattr("hermes_agent.hermes_cli._startup_fast.project_root_str", lambda: str(tmp_path))
 
     calls = _capture_spawn(monkeypatch)
     home = _managed_home(tmp_path, teammates=("researcher",), peers=("spark",))

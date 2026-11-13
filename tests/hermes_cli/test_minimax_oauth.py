@@ -1,4 +1,4 @@
-"""Tests for MiniMax OAuth provider (hermes_cli/auth.py).
+"""Tests for MiniMax OAuth provider (hermes_agent/hermes_cli/auth.py).
 
 Covers:
 - PKCE pair generation (S256 challenge)
@@ -21,7 +21,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from hermes_cli.auth import (
+from hermes_agent.hermes_cli.auth import (
     AuthError,
     MINIMAX_OAUTH_CLIENT_ID,
     MINIMAX_OAUTH_GLOBAL_BASE,
@@ -223,9 +223,9 @@ def test_resolve_credentials_quarantines_dead_tokens_on_terminal_refresh_failure
             relogin_required=True,
         )
 
-    with patch("hermes_cli.auth.get_provider_auth_state", return_value=stale_state), \
-         patch("hermes_cli.auth._refresh_minimax_oauth_state", side_effect=_terminal_refresh), \
-         patch("hermes_cli.auth._minimax_save_auth_state", side_effect=_capture_save):
+    with patch("hermes_agent.hermes_cli.auth.get_provider_auth_state", return_value=stale_state), \
+         patch("hermes_agent.hermes_cli.auth._refresh_minimax_oauth_state", side_effect=_terminal_refresh), \
+         patch("hermes_agent.hermes_cli.auth._minimax_save_auth_state", side_effect=_capture_save):
         with pytest.raises(AuthError) as exc_info:
             resolve_minimax_oauth_runtime_credentials()
 
@@ -272,7 +272,7 @@ def test_resolve_credentials_quarantines_dead_tokens_on_terminal_refresh_failure
 # ---------------------------------------------------------------------------
 
 def test_get_minimax_oauth_auth_status_not_logged_in():
-    with patch("hermes_cli.auth.get_provider_auth_state", return_value=None):
+    with patch("hermes_agent.hermes_cli.auth.get_provider_auth_state", return_value=None):
         status = get_minimax_oauth_auth_status()
 
     assert status["logged_in"] is False
@@ -289,7 +289,7 @@ def test_generic_auth_status_dispatches_minimax_oauth():
         "region": "global",
     }
 
-    with patch("hermes_cli.auth.get_provider_auth_state", return_value=state):
+    with patch("hermes_agent.hermes_cli.auth.get_provider_auth_state", return_value=state):
         status = get_auth_status("minimax-oauth")
 
     assert status["logged_in"] is True
@@ -305,7 +305,7 @@ def test_generic_auth_status_dispatches_minimax_oauth():
 
 def test_token_provider_returns_current_access_token_when_fresh():
     """When token is far from expiry, callable just returns the cached token."""
-    from hermes_cli.auth import build_minimax_oauth_token_provider
+    from hermes_agent.hermes_cli.auth import build_minimax_oauth_token_provider
 
     state = {
         "access_token": "still-fresh",
@@ -318,7 +318,7 @@ def test_token_provider_returns_current_access_token_when_fresh():
 
     provider = build_minimax_oauth_token_provider()
 
-    with patch("hermes_cli.auth.get_provider_auth_state", return_value=state), \
+    with patch("hermes_agent.hermes_cli.auth.get_provider_auth_state", return_value=state), \
          patch("httpx.Client") as mock_client_class:
         token = provider()
         # No network call should happen — token is fresh.
@@ -328,7 +328,7 @@ def test_token_provider_returns_current_access_token_when_fresh():
 
 def test_token_provider_refreshes_when_near_expiry():
     """When token is within the skew window, callable mints a fresh one."""
-    from hermes_cli.auth import build_minimax_oauth_token_provider
+    from hermes_agent.hermes_cli.auth import build_minimax_oauth_token_provider
 
     state = {
         "access_token": "about-to-die",
@@ -349,9 +349,9 @@ def test_token_provider_refreshes_when_near_expiry():
 
     provider = build_minimax_oauth_token_provider()
 
-    with patch("hermes_cli.auth.get_provider_auth_state", return_value=state), \
+    with patch("hermes_agent.hermes_cli.auth.get_provider_auth_state", return_value=state), \
          patch("httpx.Client") as mock_client_class, \
-         patch("hermes_cli.auth._minimax_save_auth_state"):
+         patch("hermes_agent.hermes_cli.auth._minimax_save_auth_state"):
         mock_instance = MagicMock()
         mock_instance.__enter__ = MagicMock(return_value=mock_instance)
         mock_instance.__exit__ = MagicMock(return_value=False)
@@ -365,10 +365,10 @@ def test_token_provider_refreshes_when_near_expiry():
 
 def test_token_provider_raises_not_logged_in_when_state_missing():
     """No state in auth.json → AuthError(not_logged_in, relogin_required=True)."""
-    from hermes_cli.auth import build_minimax_oauth_token_provider
+    from hermes_agent.hermes_cli.auth import build_minimax_oauth_token_provider
 
     provider = build_minimax_oauth_token_provider()
-    with patch("hermes_cli.auth.get_provider_auth_state", return_value=None):
+    with patch("hermes_agent.hermes_cli.auth.get_provider_auth_state", return_value=None):
         with pytest.raises(AuthError) as exc_info:
             provider()
 
@@ -378,7 +378,7 @@ def test_token_provider_raises_not_logged_in_when_state_missing():
 def test_token_provider_quarantines_state_on_terminal_refresh():
     """When refresh returns invalid_grant, callable raises AuthError AND
     wipes the dead tokens so subsequent calls fail fast without network."""
-    from hermes_cli.auth import build_minimax_oauth_token_provider
+    from hermes_agent.hermes_cli.auth import build_minimax_oauth_token_provider
 
     state = {
         "access_token": "expired",
@@ -397,10 +397,10 @@ def test_token_provider_quarantines_state_on_terminal_refresh():
     saved_states: list[dict] = []
 
     provider = build_minimax_oauth_token_provider()
-    with patch("hermes_cli.auth.get_provider_auth_state", return_value=state), \
+    with patch("hermes_agent.hermes_cli.auth.get_provider_auth_state", return_value=state), \
          patch("httpx.Client") as mock_client_class, \
          patch(
-             "hermes_cli.auth._minimax_save_auth_state",
+             "hermes_agent.hermes_cli.auth._minimax_save_auth_state",
              side_effect=lambda s, **_k: saved_states.append(dict(s)),
          ):
         mock_instance = MagicMock()
@@ -433,7 +433,7 @@ def test_resolve_returns_callable_when_as_token_provider_true():
         "expires_at": _future_iso(3600),
     }
 
-    with patch("hermes_cli.auth.get_provider_auth_state", return_value=state):
+    with patch("hermes_agent.hermes_cli.auth.get_provider_auth_state", return_value=state):
         creds = resolve_minimax_oauth_runtime_credentials(as_token_provider=True)
 
     assert callable(creds["api_key"])
@@ -458,7 +458,7 @@ def test_refresh_error_body_bounded_and_readable_with_real_client():
     import socketserver
     import threading
 
-    from hermes_cli.auth import _refresh_minimax_oauth_state
+    from hermes_agent.hermes_cli.auth import _refresh_minimax_oauth_state
 
     big_body = b"invalid_grant " + b"x" * (64 * 1024)  # 64KB error body
 
@@ -504,7 +504,7 @@ def test_refresh_error_body_bounded_and_readable_with_real_client():
 
 def _minimax_state(tmp_path, *, expires_in: int = 30, refresh_token: str = "r1",
                    access_token: str = "tok1") -> dict:
-    from hermes_cli.auth import MINIMAX_OAUTH_CLIENT_ID
+    from hermes_agent.hermes_cli.auth import MINIMAX_OAUTH_CLIENT_ID
 
     state = {
         "provider": "minimax-oauth",
@@ -525,7 +525,7 @@ def _minimax_state(tmp_path, *, expires_in: int = 30, refresh_token: str = "r1",
 
 
 def _minimax_expiry_fields_for_test(expires_in: int) -> dict:
-    from hermes_cli.auth_minimax import _minimax_expiry_fields
+    from hermes_agent.hermes_cli.auth_minimax import _minimax_expiry_fields
 
     return _minimax_expiry_fields(expires_in)
 
@@ -598,7 +598,7 @@ def test_concurrent_refresh_rotates_token_once_and_keeps_login(tmp_path, monkeyp
     same still-valid ``r1``, the portal rejects the second (``refresh_token_reused``),
     and the quarantine wipes the winner's fresh tokens (the review's case D).
     """
-    from hermes_cli.auth import build_minimax_oauth_token_provider
+    from hermes_agent.hermes_cli.auth import build_minimax_oauth_token_provider
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     _minimax_state(tmp_path, expires_in=30, refresh_token="r1")
@@ -663,7 +663,7 @@ def test_aux_refresh_preserves_active_provider(tmp_path, monkeypatch):
     """An aux-triggered refresh rewrites credentials, not the user's provider
     choice: ``auth.json.active_provider`` stays ``nous`` (review case B'; the
     rule ``_save_provider_state_to_source`` already documents)."""
-    from hermes_cli.auth import build_minimax_oauth_token_provider, get_active_provider
+    from hermes_agent.hermes_cli.auth import build_minimax_oauth_token_provider, get_active_provider
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     _minimax_state(tmp_path, expires_in=30, refresh_token="r1")
@@ -689,18 +689,18 @@ def test_aux_refresh_preserves_active_provider(tmp_path, monkeypatch):
 def test_minimax_oauth_login_sets_active_provider(tmp_path, monkeypatch):
     """``_minimax_oauth_login`` is the one path that legitimately makes
     minimax-oauth the active provider (the user just chose it)."""
-    from hermes_cli import auth_minimax
+    from hermes_agent.hermes_cli import auth_minimax
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     store = {"version": 1, "active_provider": "", "providers": {}}
     (tmp_path / "auth.json").write_text(json.dumps(store), encoding="utf-8")
 
     token_data = {"access_token": "tok", "refresh_token": "r1", "expired_in": 900}
-    with patch("hermes_cli.auth._minimax_pkce_pair", return_value=("v", "c", "s")), \
-         patch("hermes_cli.auth._minimax_request_user_code", return_value={
+    with patch("hermes_agent.hermes_cli.auth._minimax_pkce_pair", return_value=("v", "c", "s")), \
+         patch("hermes_agent.hermes_cli.auth._minimax_request_user_code", return_value={
              "verification_uri": "https://portal.minimax.io/device", "user_code": "ABCD",
              "expired_in": 600, "interval": 1000}), \
-         patch("hermes_cli.auth._print_device_code_instructions"), \
+         patch("hermes_agent.hermes_cli.auth._print_device_code_instructions"), \
          patch.object(auth_minimax, "_minimax_poll_token", return_value=token_data):
         auth_minimax._minimax_oauth_login(region="global", open_browser=False)
 

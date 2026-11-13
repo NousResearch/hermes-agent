@@ -22,7 +22,7 @@ import pytest
 
 from tests.waiting import wait_until
 
-from hermes_cli import process_identity
+from hermes_agent.hermes_cli import process_identity
 from hermes_agent.tools import mcp_tool
 from hermes_agent.tools import mcp_tool_lifecycle as _mcp_lifecycle
 
@@ -646,7 +646,7 @@ def _stdio_connection(child_pid, fake_supervisor):
         ),
         patch("hermes_agent.tools.mcp_tool_config._write_stderr_log_header"),
         patch(
-            "hermes_cli.process_identity._spawn_supervisor",
+            "hermes_agent.hermes_cli.process_identity._spawn_supervisor",
             return_value=fake_supervisor,
         ),
     ):

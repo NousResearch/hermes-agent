@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli.plugin_validate_core_override import core_override_findings
+from hermes_agent.hermes_cli.plugin_validate_core_override import core_override_findings
 
 _RECORDER = (
     "import run_agent\n"

@@ -70,7 +70,7 @@ class TestRefreshSkillGroup:
             )
 
         monkeypatch.setattr(
-            "hermes_cli.commands_platforms.discord_skill_commands_by_category",
+            "hermes_agent.hermes_cli.commands_platforms.discord_skill_commands_by_category",
             fake_collector,
         )
 

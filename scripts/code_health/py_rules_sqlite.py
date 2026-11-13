@@ -1,6 +1,6 @@
 """HX015: a raw ``sqlite3.connect`` on the session store (registered in ``py_rules.CHECKERS``).
 
-``hermes_cli.sqlite_safe_read.has_live_connection()`` / ``offline_file_access()`` decide when raw
+``hermes_agent.hermes_cli.sqlite_safe_read.has_live_connection()`` / ``offline_file_access()`` decide when raw
 byte I/O on a live ``state.db`` is safe, and they only see connections opened through
 ``connect_tracked`` (closing any raw fd on the file cancels the process's POSIX locks on it).
 

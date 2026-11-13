@@ -17,7 +17,7 @@ _KEY = "k" * 32
 @pytest.fixture(autouse=True)
 def _plain_process(monkeypatch):
     from hermes_agent.agent import secret_scope
-    from hermes_cli import managed_scope
+    from hermes_agent.hermes_cli import managed_scope
 
     monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", False)
     for name in ("GATEWAY_RELAY_URL", "GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS"):  # not in the suite's env filter
@@ -53,7 +53,7 @@ def test_explicit_disable_beats_an_env_key(monkeypatch, config):
 
 
 def test_an_administrator_pinned_key_outranks_the_users_empty_one(monkeypatch, tmp_path):
-    from hermes_cli import managed_scope
+    from hermes_agent.hermes_cli import managed_scope
 
     managed = tmp_path / "managed"
     managed.mkdir()

@@ -35,7 +35,7 @@ MANAGED = SimpleNamespace(
 class TestReadSelection:
     def _with_raw(self, raw):
         return patch(
-            "hermes_cli.config.read_raw_config_readonly",
+            "hermes_agent.hermes_cli.config.read_raw_config_readonly",
             return_value=raw,
         )
 
@@ -287,7 +287,7 @@ class TestBrowserUseStrictSelection:
 
 class TestWriteProviderConfig:
     def test_managed_row_writes_nous_and_clears_legacy_flag(self):
-        from hermes_cli.tools_config import _write_provider_config
+        from hermes_agent.hermes_cli.tools_config import _write_provider_config
 
         config = {"tts": {"provider": "edge", "use_gateway": False}}
         provider = {"name": "Nous Subscription", "tts_provider": "openai"}
@@ -296,7 +296,7 @@ class TestWriteProviderConfig:
         assert "use_gateway" not in config["tts"]
 
     def test_byok_row_writes_vendor_and_clears_legacy_flag(self):
-        from hermes_cli.tools_config import _write_provider_config
+        from hermes_agent.hermes_cli.tools_config import _write_provider_config
 
         config = {"web": {"backend": "nous", "use_gateway": True}}
         provider = {"name": "Keenable", "web_backend": "keenable"}
@@ -305,7 +305,7 @@ class TestWriteProviderConfig:
         assert "use_gateway" not in config["web"]
 
     def test_managed_image_row_persists_nous_provider(self):
-        from hermes_cli.tools_config import _write_provider_config
+        from hermes_agent.hermes_cli.tools_config import _write_provider_config
 
         config = {}
         provider = {"name": "Nous Subscription", "imagegen_backend": "fal"}
@@ -316,7 +316,7 @@ class TestWriteProviderConfig:
     def test_plugin_injected_byok_row_clears_stale_use_gateway(self):
         """Plugin-injected rows are not in TOOL_CATEGORIES' hardcoded
         provider lists; the legacy clear-loop skipped them."""
-        from hermes_cli.tools_config import _write_provider_config
+        from hermes_agent.hermes_cli.tools_config import _write_provider_config
 
         config = {"stt": {"provider": "nous", "use_gateway": True}}
         provider = {"name": "Groq Whisper", "stt_provider": "groq"}

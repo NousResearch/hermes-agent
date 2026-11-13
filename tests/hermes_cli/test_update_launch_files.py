@@ -11,8 +11,8 @@ from pathlib import Path
 
 import pytest
 
-import hermes_cli.gateway as gateway_cli
-from hermes_cli import gateway_windows, source_build, update_cmd, update_completion
+import hermes_agent.hermes_cli.gateway as gateway_cli
+from hermes_agent.hermes_cli import gateway_windows, source_build, update_cmd, update_completion
 
 STALE_UNIT = "[Service]\nEnvironment=\"PATH=/usr/bin:/bin\"\nRestartSec=30\n"
 
@@ -46,9 +46,9 @@ def systemd_update(tmp_path, monkeypatch):
         lambda args, **kw: events.append(("systemctl", *args, unit.read_text(encoding="utf-8"))))
 
     # The real build ordering; only the external commands are replaced.
-    monkeypatch.setattr("hermes_cli.main_install_repair._install_configured_features_missing_deps", lambda r: None)
-    monkeypatch.setattr("hermes_cli.memory_provider_migration.migrate_all_homes", lambda: None)
-    monkeypatch.setattr("hermes_cli.left_core_migration.migrate_all_homes", lambda: None)
+    monkeypatch.setattr("hermes_agent.hermes_cli.main_install_repair._install_configured_features_missing_deps", lambda r: None)
+    monkeypatch.setattr("hermes_agent.hermes_cli.memory_provider_migration.migrate_all_homes", lambda: None)
+    monkeypatch.setattr("hermes_agent.hermes_cli.left_core_migration.migrate_all_homes", lambda: None)
     monkeypatch.setattr(source_build, "source_frontends", lambda r: ("ui-tui",))
     monkeypatch.setattr(source_build, "source_build_env", lambda **kw: {"PATH": ""})
     monkeypatch.setattr(source_build, "source_product_current", lambda *a: False)
@@ -59,8 +59,8 @@ def systemd_update(tmp_path, monkeypatch):
 
     monkeypatch.setattr(source_build, "prepare_source_dependencies", prepare_node)
     monkeypatch.setattr(source_build, "build_source_tui", lambda r, env: events.append(("tui build",)))
-    monkeypatch.setattr("hermes_cli.venv_sync.publish_launchers", lambda r: None)
-    monkeypatch.setattr("hermes_cli.update_cmd_maint._run_post_update_maintenance", lambda **kw: True)
+    monkeypatch.setattr("hermes_agent.hermes_cli.venv_sync.publish_launchers", lambda r: None)
+    monkeypatch.setattr("hermes_agent.hermes_cli.update_cmd_maint._run_post_update_maintenance", lambda **kw: True)
     monkeypatch.setattr(update_cmd, "_sweep_bytecode_after_update", lambda branch: None)
 
     def start_paused(token):
@@ -103,8 +103,8 @@ def test_the_paused_gateway_starts_under_the_unit_generated_after_the_node_depen
 @pytest.mark.platforms("linux")
 def test_one_failed_launch_file_is_a_followup_and_the_other_profiles_are_still_rewritten(
         tmp_path, monkeypatch, capsys):
-    from hermes_cli import update_launch_files
-    from hermes_cli.config_backend import ConfigBackendUnavailable
+    from hermes_agent.hermes_cli import update_launch_files
+    from hermes_agent.hermes_cli.config_backend import ConfigBackendUnavailable
 
     homes = [("default", tmp_path / "default"), ("work", tmp_path / "work"), ("lab", tmp_path / "lab")]
     seen: list[str] = []
@@ -115,7 +115,7 @@ def test_one_failed_launch_file_is_a_followup_and_the_other_profiles_are_still_r
         if home.name == "work":
             raise ConfigBackendUnavailable("the remote config backend is unreachable")
 
-    monkeypatch.setattr("hermes_cli.update_receipt._profile_homes", lambda: homes)
+    monkeypatch.setattr("hermes_agent.hermes_cli.update_receipt._profile_homes", lambda: homes)
     monkeypatch.setattr(update_launch_files, "_refreshers", lambda: [("systemd user unit", refresh)])
     monkeypatch.setattr(update_launch_files.os, "geteuid", lambda: 1000)
 
@@ -128,7 +128,7 @@ def test_one_failed_launch_file_is_a_followup_and_the_other_profiles_are_still_r
 
 def test_windows_launcher_scripts_are_rewritten_when_their_contents_drift(tmp_path, monkeypatch):
     """The task XML can match the template while the .cmd/.vbs it runs still name an older command."""
-    from hermes_cli import update_launch_files
+    from hermes_agent.hermes_cli import update_launch_files
 
     script = tmp_path / "gateway-service" / "Hermes_Gateway.cmd"
     script.parent.mkdir()

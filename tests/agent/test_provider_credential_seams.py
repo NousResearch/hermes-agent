@@ -50,7 +50,7 @@ def test_profile_seeded_rows_land_in_the_pool_and_skip_the_generic_env_loop(monk
 
 
 def test_profile_claimed_removal_suppresses_every_variant(monkeypatch):
-    from hermes_cli import auth
+    from hermes_agent.hermes_cli import auth
     from hermes_agent.agent.credential_sources import find_removal_step
 
     _registry(monkeypatch)

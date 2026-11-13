@@ -21,7 +21,7 @@ def _build_rig(monkeypatch, tmp_path, request, surface_a, mode):
 
     from hermes_agent.gateway.platforms.base import BasePlatformAdapter
     from hermes_agent.gateway.run import _async_profile_runtime_scope
-    from hermes_cli.profiles import get_profile_dir
+    from hermes_agent.hermes_cli.profiles import get_profile_dir
     from hermes_constants import get_hermes_home
     from hermes_agent import hermes_state
     from hermes_agent.tools import process_registry as pr_module

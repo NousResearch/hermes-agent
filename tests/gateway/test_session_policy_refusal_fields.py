@@ -184,8 +184,8 @@ async def test_a_bare_refusal_does_not_warn(tmp_path, caplog):
 
 def test_the_cli_copy_names_the_field_a_user_reads():
     """The panel line said ``invalid_params`` alone; it now carries the check (#138748)."""
-    from hermes_cli.cli_chat_error_copy import agent_init_failure_message
-    from hermes_cli.gateway_client import GatewayRPCError
+    from hermes_agent.hermes_cli.cli_chat_error_copy import agent_init_failure_message
+    from hermes_agent.hermes_cli.gateway_client import GatewayRPCError
 
     exc = GatewayRPCError('invalid_params', 4001, {
         'reason': 'invalid_params', 'field': 'toolsets',
@@ -196,8 +196,8 @@ def test_the_cli_copy_names_the_field_a_user_reads():
 
 def test_a_refusal_without_a_named_field_reads_exactly_as_before():
     """Refusals raised elsewhere keep their copy: no empty parentheses on the panel."""
-    from hermes_cli.cli_chat_error_copy import agent_init_failure_message
-    from hermes_cli.gateway_client import GatewayRPCError
+    from hermes_agent.hermes_cli.cli_chat_error_copy import agent_init_failure_message
+    from hermes_agent.hermes_cli.gateway_client import GatewayRPCError
 
     message = agent_init_failure_message(GatewayRPCError('storage_unavailable', 5001,
                                                          {'reason': 'storage_unavailable'}))
@@ -246,7 +246,7 @@ def test_an_unusable_server_spec_never_echoes_its_values(tmp_path):
 def test_a_bypass_launch_never_reads_profile_plugin_state(tmp_path, monkeypatch):
     def _profile_read(_config):
         raise AssertionError('a bypass launch read the profile toolset resolver')
-    monkeypatch.setattr('hermes_cli.toolset_validation.saved_toolset_resolver', _profile_read)
+    monkeypatch.setattr('hermes_agent.hermes_cli.toolset_validation.saved_toolset_resolver', _profile_read)
     policy = build_policy({'source': 'cli', 'cwd': str(tmp_path), 'ignore_user_config': True, 'model': 'fixture',
                            'toolsets': ['terminal']}, dict(_CFG))
     assert 'terminal' in policy.toolsets

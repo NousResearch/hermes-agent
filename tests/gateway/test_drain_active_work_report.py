@@ -12,7 +12,7 @@ from types import SimpleNamespace
 import hermes_agent.cron.scheduler as sched
 from hermes_agent.gateway.run import GatewayRunner
 from hermes_agent.gateway.session_state import SessionState
-from hermes_cli.update_cmd_drain_report import describe_active_work_unit, drain_progress_reporter
+from hermes_agent.hermes_cli.update_cmd_drain_report import describe_active_work_unit, drain_progress_reporter
 from hermes_agent.gateway.status import flush_runtime_status
 
 

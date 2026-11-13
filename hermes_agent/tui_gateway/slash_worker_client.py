@@ -18,11 +18,11 @@ import sys
 import threading
 from pathlib import Path
 
-from hermes_cli.process_identity import release_process_group_once_empty, spawn_owned
+from hermes_agent.hermes_cli.process_identity import release_process_group_once_empty, spawn_owned
 from hermes_constants import get_hermes_home
 
 from .method_ctx import bind_module
-from hermes_cli._startup_fast import project_root_str
+from hermes_agent.hermes_cli._startup_fast import project_root_str
 
 
 def _prepend_tool_paths(env: dict[str, str]) -> dict[str, str]:
@@ -60,7 +60,7 @@ class _SlashWorker:
             + (["--provider", provider] if provider else []) \
             + (["--base-url", base_url] if base_url else [])
         self._closed = False
-        from hermes_cli._subprocess_compat import windows_hide_flags
+        from hermes_agent.hermes_cli._subprocess_compat import windows_hide_flags
         # slash_worker runs the Hermes agent → needs provider credentials. Tier-1 secrets
         # (gateway/GitHub/infra) are still stripped (#29157). Global-remote / multi-profile sessions: the
         # worker must resolve config/skills/state against the session's profile home, not the gateway's

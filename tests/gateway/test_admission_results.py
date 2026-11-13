@@ -123,7 +123,7 @@ async def test_a_finite_prompt_answered_without_running_settles_failed(tmp_path,
     from hermes_agent.gateway.session_authority import LiveSession, SessionAuthority
     from hermes_agent.gateway.session_contract import SessionActor, SessionRef, Submission
     from hermes_agent.gateway.session_results import admission_result
-    from hermes_cli.turn_exit import turn_exit_code
+    from hermes_agent.hermes_cli.turn_exit import turn_exit_code
     from hermes_agent.hermes_state_runtime import get_session_admission
 
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))

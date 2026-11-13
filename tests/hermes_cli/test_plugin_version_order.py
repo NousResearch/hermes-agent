@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pytest
 import hermes_yaml as yaml
 
-from hermes_cli.plugins_updates import run_checks
+from hermes_agent.hermes_cli.plugins_updates import run_checks
 
 
 def _installed_feed_plugin(plugins):
@@ -56,7 +56,7 @@ def test_feed_and_pip_checks_use_the_same_version_order(tmp_path, current, offer
 
 
 def test_cadence_never_applies_an_unparseable_version(tmp_path, monkeypatch):
-    from hermes_cli.plugins_cadence import run_scheduled_check
+    from hermes_agent.hermes_cli.plugins_cadence import run_scheduled_check
     from pm import receipt
 
     home = tmp_path / 'home'

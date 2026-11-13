@@ -30,7 +30,7 @@ SOUL = "# Persona\n\nYou are a careful, terse assistant.\n"
 def client(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setenv("HERMES_DASHBOARD_SESSION_TOKEN", "soul-test-token")
-    from hermes_cli import web_server
+    from hermes_agent.hermes_cli import web_server
 
     with TestClient(web_server.app, raise_server_exceptions=False) as c:
         # web_server resolves _SESSION_TOKEN once, at import. Read it back from
@@ -45,7 +45,7 @@ def client(tmp_path, monkeypatch):
 def profile_dir(tmp_path, monkeypatch) -> Path:
     """Create a real profile directory under the test HERMES_HOME."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    from hermes_cli import profiles as profiles_mod
+    from hermes_agent.hermes_cli import profiles as profiles_mod
 
     d = profiles_mod.get_profile_dir("demo")
     d.mkdir(parents=True, exist_ok=True)

@@ -5,7 +5,7 @@ A child started in its own session/process group (``start_new_session=True``, ``
 ``os.setpgid``/``os.setpgrp`` in a ``preexec_fn``) no longer dies with the Hermes process that
 started it. When that process is SIGKILLed, OOM-killed or crashes, the child reparents to init
 (or a ``systemd --user`` subreaper) and runs forever. Every long-lived child that should die with
-its owner goes through ``hermes_cli.process_identity.spawn_owned`` (or hands its group to
+its owner goes through ``hermes_agent.hermes_cli.process_identity.spawn_owned`` (or hands its group to
 ``own_process_groups`` where something else spawned it), which registers the group with the
 per-process owner-death supervisor.
 

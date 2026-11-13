@@ -9,8 +9,8 @@ from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
 from hermes_agent.gateway.run import GatewayRunner
 from hermes_agent.gateway.session import SessionSource
 from hermes_agent.gateway.wake import deliver_wake
-from hermes_cli import kanban_db as kb
-from hermes_cli import kanban_db_connect as kbc
+from hermes_agent.hermes_cli import kanban_db as kb
+from hermes_agent.hermes_cli import kanban_db_connect as kbc
 
 
 class WakeAdapter(BasePlatformAdapter):

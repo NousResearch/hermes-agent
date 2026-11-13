@@ -57,7 +57,7 @@ def interaction_admitted(event: Any, admin_ids: Any = ()) -> bool:
     sender = str(event.sender_id() or "")
     if sender and sender in {str(a) for a in admin_ids}:
         return True
-    from hermes_cli.commands import resolve_command
+    from hermes_agent.hermes_cli.commands import resolve_command
 
     command = resolve_command(event.get_command() or "") if event.get_command() else None
     return command is not None and command.name in _UNADMITTED_COMMANDS

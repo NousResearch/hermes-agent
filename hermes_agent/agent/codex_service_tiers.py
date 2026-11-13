@@ -89,13 +89,13 @@ def _cyber_programs_for_model(access_token: str, base_url: str, model: str) -> f
 
 def _account_catalog_token(access_token: Any) -> str | None:
     """The ChatGPT OAuth JWT that reads this account's Codex catalog, or None."""
-    from hermes_cli.auth_constants import AuthError, _decode_jwt_claims
+    from hermes_agent.hermes_cli.auth_constants import AuthError, _decode_jwt_claims
     # Only a ChatGPT OAuth JWT reads this catalog; a caller's pre-init key (an OpenAI API key on a
     # profile that also has one) is not this account's credential, so use the stored Codex login.
     token = access_token if isinstance(access_token, str) and _decode_jwt_claims(access_token) else None
     if not token:
         try:
-            from hermes_cli.auth_codex import resolve_codex_runtime_credentials
+            from hermes_agent.hermes_cli.auth_codex import resolve_codex_runtime_credentials
             token = resolve_codex_runtime_credentials(read_only=True).get("api_key")
         except AuthError:  # no Codex login on this profile: unknown, never a refusal
             return None
@@ -126,7 +126,7 @@ def daybreak_offered(model: Any, *, provider: Any = None, base_url: Any = None, 
     this account's own Codex catalog lists ``daybreak_blue`` for the model. Unknown is False, so the
     switch stays hidden rather than offering something the account may not have."""
     from hermes_agent.agent.codex_headers import CODEX_AUX_BASE_URL, is_official_codex_base_url
-    from hermes_cli.models import normalize_provider
+    from hermes_agent.hermes_cli.models import normalize_provider
     if not provider or normalize_provider(provider) != "openai-codex":
         return False
     base = str(base_url or "").strip() or CODEX_AUX_BASE_URL
@@ -170,7 +170,7 @@ def ultrafast_offered(model: Any, *, provider: Any = None, base_url: Any = None,
     blocks (request-time negotiation still clamps per credential)."""
     from urllib.parse import urlparse
 
-    from hermes_cli.models import normalize_provider, resolve_fast_mode_overrides
+    from hermes_agent.hermes_cli.models import normalize_provider, resolve_fast_mode_overrides
     if resolve_fast_mode_overrides(model, provider=provider, base_url=base_url, tier="ultrafast") is None:
         return False
     on_codex_sub = (provider and normalize_provider(provider) == "openai-codex") or (

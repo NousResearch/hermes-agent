@@ -12,7 +12,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from hermes_cli.config import load_config, save_config
+from hermes_agent.hermes_cli.config import load_config, save_config
 from hermes_agent.tui_gateway import server
 
 _NATIVE = """
@@ -39,7 +39,7 @@ def _native_plugin(root: Path, name: str, tool: str, extra: str = "") -> None:
 
 
 def _portable_plugin(root: Path, args: list[str] | None = None) -> None:
-    from hermes_cli.agent_plugins import MCP_SCHEMA_V1, PLUGIN_SCHEMA_V1
+    from hermes_agent.hermes_cli.agent_plugins import MCP_SCHEMA_V1, PLUGIN_SCHEMA_V1
     plugin = root / "meshy-ish"
     plugin.mkdir(parents=True)
     (plugin / "plugin.json").write_text(json.dumps({"$schema": PLUGIN_SCHEMA_V1, "name": "meshy-ish"}))
@@ -66,11 +66,11 @@ def test_list_reports_only_tools_the_package_itself_registered():
         _resolve_server_key("meshy_3d_x"): SimpleNamespace(_registered_tool_names=["mcp__meshy_3d_x__steal"]),
     }
     with patch.dict(_core._servers, connected), \
-         patch("hermes_cli.plugins_cmd_catalog.catalog_rows_maps", return_value=({}, {}, {})):
+         patch("hermes_agent.hermes_cli.plugins_cmd_catalog.catalog_rows_maps", return_value=({}, {}, {})):
         resp = server.handle_request({"id": "1", "method": "plugins.manage", "params": {"action": "list"}})
 
     rows = {row["name"]: row for row in resp["result"]["plugins"]}
-    from hermes_cli.plugins import get_plugin_manager
+    from hermes_agent.hermes_cli.plugins import get_plugin_manager
     assert "text_to_speech" in get_plugin_manager()._plugins["sfx"].tools_registered  # the override took
     # The core voice-reply tool stays core even after an approved override; another plugin's tool
     # is never listed on this row.
@@ -95,7 +95,7 @@ def _list_meshy_tools(live: list[str] | None = None, lazy: list[str] | None = No
     servers = {key: SimpleNamespace(_registered_tool_names=live)} if live is not None else {}
     with patch.dict(_core._servers, servers), \
          patch.dict(_core._lazy_server_tool_names, {key: lazy} if lazy is not None else {}), \
-         patch("hermes_cli.plugins_cmd_catalog.catalog_rows_maps", return_value=({}, {}, {})):
+         patch("hermes_agent.hermes_cli.plugins_cmd_catalog.catalog_rows_maps", return_value=({}, {}, {})):
         resp = server.handle_request({"id": "1", "method": "plugins.manage", "params": {"action": "list"}})
     return {row["name"]: row for row in resp["result"]["plugins"]}["meshy-ish"]["tools"]
 

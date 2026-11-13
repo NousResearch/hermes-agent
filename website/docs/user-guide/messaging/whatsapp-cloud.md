@@ -365,7 +365,7 @@ Same 401 root causes as outbound (`graph error 190`) — the access token is inv
 
 Common cause: the toolset configured for `whatsapp_cloud` is missing the tools the agent wants to call.  Check `hermes tools list` and verify the platform is using `hermes-whatsapp` (the default Cloud adapter toolset, same as Baileys).
 
-If the model emits tool-call-shaped text instead of a structured call, it usually means the toolset was effectively empty.  See `hermes_cli/platforms.py` for the platform → default toolset mapping.
+If the model emits tool-call-shaped text instead of a structured call, it usually means the toolset was effectively empty.  See `hermes_agent/hermes_cli/platforms.py` for the platform → default toolset mapping.
 
 ### STT (voice note transcription) returns empty / "could not transcribe"
 

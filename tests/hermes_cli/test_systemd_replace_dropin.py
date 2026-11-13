@@ -6,7 +6,7 @@ a per-profile fleet's unit into one that can never start (#119467). Refresh reti
 and only that file: a drop-in the operator wrote is theirs.
 """
 
-import hermes_cli.gateway as gateway_cli
+import hermes_agent.hermes_cli.gateway as gateway_cli
 
 HERMES_DROPIN = (
     "# Added to end the gateway respawn storm: a stray lock-holder used to make the\n"

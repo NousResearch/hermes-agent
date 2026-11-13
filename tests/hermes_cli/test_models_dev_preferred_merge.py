@@ -20,7 +20,7 @@ appear in ``/model`` without a Hermes release.
 from unittest.mock import patch
 
 
-from hermes_cli.models import (
+from hermes_agent.hermes_cli.models import (
     _PROVIDER_MODELS,
     _merge_with_models_dev,
     provider_model_ids,
@@ -34,8 +34,8 @@ class TestMergeHelper:
         with patch(
             "hermes_agent.agent.models_dev.list_agentic_models",
             return_value=["deepseek-v4-flash-vision-exp", "deepseek-v4-flash", "deepseek-flash", "deepseek-v4-pro"],
-        ), patch("hermes_cli.models._PROVIDER_CATALOG_FETCHERS", {}), \
-                patch("hermes_cli.models._profile_live_catalog", return_value=None):
+        ), patch("hermes_agent.hermes_cli.models._PROVIDER_CATALOG_FETCHERS", {}), \
+                patch("hermes_agent.hermes_cli.models._profile_live_catalog", return_value=None):
             out = provider_model_ids("deepseek")
 
         assert out == list(_PROVIDER_MODELS["deepseek"])
@@ -84,9 +84,9 @@ class TestProviderModelIdsPreferred:
                 return Response(b'{"data":[{"id":"k3"},{"id":"kimi-k2.6"}]}')
             raise AssertionError(f"unexpected Kimi models URL: {req.full_url}")
 
-        with patch("hermes_cli.urllib_security.open_credentialed_url", side_effect=fake_open):
+        with patch("hermes_agent.hermes_cli.urllib_security.open_credentialed_url", side_effect=fake_open):
             with patch(
-                "hermes_cli.auth.resolve_api_key_provider_credentials",
+                "hermes_agent.hermes_cli.auth.resolve_api_key_provider_credentials",
                 return_value={
                     "api_key": "sk-kimi-test",
                     "base_url": "https://api.kimi.com/coding",
@@ -95,7 +95,7 @@ class TestProviderModelIdsPreferred:
                 coding_models = provider_model_ids("kimi-coding")
 
             with patch(
-                "hermes_cli.auth.resolve_api_key_provider_credentials",
+                "hermes_agent.hermes_cli.auth.resolve_api_key_provider_credentials",
                 return_value={
                     "api_key": "legacy-test",
                     "base_url": "https://api.moonshot.ai/v1",
@@ -104,7 +104,7 @@ class TestProviderModelIdsPreferred:
                 legacy_models = provider_model_ids("kimi-coding")
 
             with patch(
-                "hermes_cli.auth.resolve_api_key_provider_credentials",
+                "hermes_agent.hermes_cli.auth.resolve_api_key_provider_credentials",
                 return_value={
                     "api_key": "custom-test",
                     "base_url": "https://example.invalid/v1",
@@ -123,7 +123,7 @@ class TestProviderModelIdsPreferred:
 
     def test_kimi_setup_flow_uses_same_coding_plan_catalog(self):
         """The setup wizard must not carry a stale duplicate Kimi model list."""
-        from hermes_cli.model_setup_flows import _model_flow_kimi
+        from hermes_agent.hermes_cli.model_setup_flows import _model_flow_kimi
 
         captured = {}
 
@@ -131,10 +131,10 @@ class TestProviderModelIdsPreferred:
             captured["models"] = model_list
 
         with (
-            patch("hermes_cli.main_provider_setup._prompt_api_key", return_value=("sk-kimi-test", False)),
-            patch("hermes_cli.auth._prompt_model_selection", side_effect=fake_select),
-            patch("hermes_cli.config.get_env_value", return_value=""),
-            patch("hermes_cli.config.save_env_value"),
+            patch("hermes_agent.hermes_cli.main_provider_setup._prompt_api_key", return_value=("sk-kimi-test", False)),
+            patch("hermes_agent.hermes_cli.auth._prompt_model_selection", side_effect=fake_select),
+            patch("hermes_agent.hermes_cli.config.get_env_value", return_value=""),
+            patch("hermes_agent.hermes_cli.config.save_env_value"),
         ):
             _model_flow_kimi({}, current_model="")
 
@@ -142,7 +142,7 @@ class TestProviderModelIdsPreferred:
 
 
 def test_setup_menu_merge_leads_with_curated_in_full():
-    from hermes_cli.model_setup_flows_common import _models_dev_merged
+    from hermes_agent.hermes_cli.model_setup_flows_common import _models_dev_merged
     with patch("hermes_agent.agent.models_dev.list_agentic_models", return_value=["a/x", "b/Y", "c/z"]):
         assert _models_dev_merged("nvidia", ["B/y", "d/w"]) == ["b/Y", "d/w", "a/x", "c/z"]
         assert _models_dev_merged("opencode-zen", ["B/y", "d/w"]) == ["a/x", "b/Y", "c/z", "d/w"]

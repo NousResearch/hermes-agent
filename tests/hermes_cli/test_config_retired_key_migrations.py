@@ -6,8 +6,8 @@ import hermes_yaml as yaml
 class TestRetiredMultiplexAllowlist:
     def test_v43_drops_multiplex_profile_allowlist_from_user_config(self, tmp_path, monkeypatch):
         """The multiplexer serves every profile; a stale allowlist must not linger in config.yaml."""
-        from hermes_cli.config import DEFAULT_CONFIG
-        from hermes_cli.config_migrations import run_migrations
+        from hermes_agent.hermes_cli.config import DEFAULT_CONFIG
+        from hermes_agent.hermes_cli.config_migrations import run_migrations
 
         config_path = tmp_path / "config.yaml"
         config_path.write_text(yaml.safe_dump({
@@ -25,8 +25,8 @@ class TestRetiredMultiplexAllowlist:
 class TestCuratorFasterPrune:
     def test_v44_rewrites_old_curator_defaults_but_keeps_user_values(self, tmp_path, monkeypatch):
         """Old 30/90 defaults move to 14/30; an explicitly customized window is untouched."""
-        from hermes_cli.config import DEFAULT_CONFIG
-        from hermes_cli.config_migrations import run_migrations
+        from hermes_agent.hermes_cli.config import DEFAULT_CONFIG
+        from hermes_agent.hermes_cli.config_migrations import run_migrations
 
         config_path = tmp_path / "config.yaml"
         config_path.write_text(yaml.safe_dump({
@@ -43,8 +43,8 @@ class TestCuratorFasterPrune:
         """A step that raises is retried whole on the next pass. v44 rewrites two keys: if the
         first rewrite landed and the second raised, the retry would rewrite the first again, over
         a value the user may have set back in between."""
-        from hermes_cli import config_migrations
-        from hermes_cli.config import DEFAULT_CONFIG, migrate_config
+        from hermes_agent.hermes_cli import config_migrations
+        from hermes_agent.hermes_cli.config import DEFAULT_CONFIG, migrate_config
 
         config_path = tmp_path / "config.yaml"
         config_path.write_text(yaml.safe_dump({
@@ -77,7 +77,7 @@ def test_one_step_per_version():
     """The stamp records versions, and a failing step is retried whole: two steps under one
     version would be stamped and retried together, so a later one's failure re-runs the
     earlier one. Each version has exactly one step, in ascending order."""
-    from hermes_cli.config_migrations import MIGRATIONS
+    from hermes_agent.hermes_cli.config_migrations import MIGRATIONS
 
     versions = [version for version, _step in MIGRATIONS]
     assert versions == sorted(set(versions))
@@ -112,7 +112,7 @@ def test_every_step_writes_config_yaml_at_most_once(tmp_path, monkeypatch):
     write, raise on the second, and on the retry write the first part again over a value the
     user set back in between. So every step builds one document and saves it once."""
     import copy
-    from hermes_cli import config_migrations
+    from hermes_agent.hermes_cli import config_migrations
 
     real = config_migrations._persist_migration
     writes = {}
@@ -151,8 +151,8 @@ _NOT_TRIGGERED_HERE = {
 def test_v48_lands_whole_so_the_retry_keeps_a_pin_the_user_restored(tmp_path, monkeypatch):
     """v48 drops several old-default sandbox images. If it raised half way, the retry would drop
     again an image the user pinned back on purpose in between."""
-    from hermes_cli import config_migrations
-    from hermes_cli.config import DEFAULT_CONFIG, migrate_config
+    from hermes_agent.hermes_cli import config_migrations
+    from hermes_agent.hermes_cli.config import DEFAULT_CONFIG, migrate_config
 
     config_path = tmp_path / "config.yaml"
     config_path.write_text(yaml.safe_dump({
@@ -185,8 +185,8 @@ class TestRetiredBotChatDeliveryTimeout:
     def test_v51_drops_bot_chat_delivery_timeout_with_a_note(self, tmp_path, monkeypatch):
         """The removed cron knob is dropped from existing configs with a one-time note;
         sibling cron settings and the rest of the file survive untouched."""
-        from hermes_cli.config import DEFAULT_CONFIG
-        from hermes_cli.config_migrations import run_migrations
+        from hermes_agent.hermes_cli.config import DEFAULT_CONFIG
+        from hermes_agent.hermes_cli.config_migrations import run_migrations
 
         config_path = tmp_path / "config.yaml"
         config_path.write_text(yaml.safe_dump({
@@ -209,7 +209,7 @@ class TestRetiredKeysWhateverTheStamp:
     own step numbers both still carry keys nothing reads."""
 
     def test_unversioned_config_drops_the_retired_bot_chat_timeout(self, tmp_path, monkeypatch):
-        from hermes_cli.config import migrate_config
+        from hermes_agent.hermes_cli.config import migrate_config
 
         config_path = tmp_path / "config.yaml"
         config_path.write_text(yaml.safe_dump({
@@ -223,7 +223,7 @@ class TestRetiredKeysWhateverTheStamp:
     def test_branch_stamped_home_still_gets_main_retired_key_steps(self, tmp_path, monkeypatch):
         """A home stamped 50 by a build whose v50 was the cron-key step skipped main's v46 (MCP
         `disabled: true`) and v50 (tirith keys). Both apply, and a second pass writes nothing."""
-        from hermes_cli.config import migrate_config
+        from hermes_agent.hermes_cli.config import migrate_config
 
         config_path = tmp_path / "config.yaml"
         config_path.write_text(yaml.safe_dump({
@@ -239,7 +239,7 @@ class TestRetiredKeysWhateverTheStamp:
         settled = config_path.read_bytes()
         assert migrate_config(interactive=False, quiet=True)["config_added"] == []
         assert config_path.read_bytes() == settled
-        from hermes_cli.config_migrations import LEGACY_KEY_STEPS, STAMP_INDEPENDENT_STEPS
+        from hermes_agent.hermes_cli.config_migrations import LEGACY_KEY_STEPS, STAMP_INDEPENDENT_STEPS
         assert STAMP_INDEPENDENT_STEPS <= LEGACY_KEY_STEPS
 
 
@@ -255,11 +255,11 @@ class TestStampIndependentStepsAreIdempotent:
     so a second run over a step's own output must change nothing."""
 
     def test_every_stamp_independent_step_has_a_trigger_here(self):
-        from hermes_cli.config_migrations import STAMP_INDEPENDENT_STEPS
+        from hermes_agent.hermes_cli.config_migrations import STAMP_INDEPENDENT_STEPS
         assert set(_STAMP_INDEPENDENT_TRIGGERS) == STAMP_INDEPENDENT_STEPS
 
     def test_second_run_changes_nothing(self, tmp_path, monkeypatch):
-        from hermes_cli.config_migrations import MIGRATIONS, STAMP_INDEPENDENT_STEPS
+        from hermes_agent.hermes_cli.config_migrations import MIGRATIONS, STAMP_INDEPENDENT_STEPS
 
         config_path = tmp_path / "config.yaml"
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -282,7 +282,7 @@ class TestNewerStamp:
     step runs on it, so this build does not rewrite what the newer one wrote, and saves keep it."""
 
     def _newer(self, tmp_path, monkeypatch):
-        from hermes_cli.config import DEFAULT_CONFIG
+        from hermes_agent.hermes_cli.config import DEFAULT_CONFIG
 
         config_path = tmp_path / "config.yaml"
         config_path.write_text(yaml.safe_dump({
@@ -295,7 +295,7 @@ class TestNewerStamp:
         return config_path
 
     def test_migrate_runs_no_step_on_it(self, tmp_path, monkeypatch):
-        from hermes_cli.config import migrate_config
+        from hermes_agent.hermes_cli.config import migrate_config
 
         config_path = self._newer(tmp_path, monkeypatch)
         before = config_path.read_bytes()
@@ -307,7 +307,7 @@ class TestNewerStamp:
     def test_a_legacy_disabled_server_stays_off_without_v46(self, tmp_path, monkeypatch):
         """v46 does not run on a newer file, so its `disabled: true` stays on disk; the runtime
         must still read it as off, or this build spawns a server the user turned off."""
-        from hermes_cli.config import load_config, migrate_config
+        from hermes_agent.hermes_cli.config import load_config, migrate_config
         import hermes_agent.tools.mcp_tool as core
         from hermes_agent.tools import mcp_tool_discovery as discovery
         from hermes_agent.tools.mcp_tool_common import mcp_server_enabled
@@ -333,7 +333,7 @@ class TestNewerStamp:
     def test_whole_file_save_keeps_what_the_newer_build_wrote(self, tmp_path, monkeypatch):
         """Saves still work on a newer file and keep its stamp, unknown keys and legacy keys:
         only the migration steps rewrote a newer build's settings."""
-        from hermes_cli.config import load_config, save_config
+        from hermes_agent.hermes_cli.config import load_config, save_config
 
         config_path = self._newer(tmp_path, monkeypatch)
         stamp = yaml.safe_load(config_path.read_text(encoding="utf-8"))["_config_version"]
@@ -351,9 +351,9 @@ class TestNewerStamp:
 def test_raw_config_editor_maps_an_expected_refusal(tmp_path, monkeypatch):
     """PUT /api/config/raw says why an expected refusal saved nothing (409 here), not a 500."""
     from starlette.testclient import TestClient
-    from hermes_cli import config as config_mod
-    from hermes_cli.config_backend import ConfigWriteError
-    from hermes_cli.web_server import _SESSION_HEADER_NAME, _SESSION_TOKEN, app
+    from hermes_agent.hermes_cli import config as config_mod
+    from hermes_agent.hermes_cli.config_backend import ConfigWriteError
+    from hermes_agent.hermes_cli.web_server import _SESSION_HEADER_NAME, _SESSION_TOKEN, app
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 

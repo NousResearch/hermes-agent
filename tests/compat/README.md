@@ -61,8 +61,6 @@ A fresh source launch checks PM's existing successful dependency facts. It
 synchronizes stale state and switches to the managed interpreter before
 activating application dependencies. No new incomplete-marker protocol is used.
 
-`old_updater_dependencies.py` retains historical caller functions with their
-lazy imports intact. The shim tests execute those callers against the new tree.
 `tests/pm/test_source_update_launch.py` exercises real worker publication,
 failed-build retention, and fresh-process bootstrap.
 

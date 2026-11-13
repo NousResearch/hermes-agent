@@ -19,7 +19,7 @@ def authorize(connection, ref, params, capability):
     connection.authority.authorize(connection.actor, ref, capability)
     # The contract's ``profile`` is nullable; null means this owner, as an omitted key does.
     if params.get('profile') is not None:
-        from hermes_cli.profiles import profile_matches_home
+        from hermes_agent.hermes_cli.profiles import profile_matches_home
         profile = params['profile']
         if not isinstance(profile, str):
             raise RuntimeStoreError('invalid_params')

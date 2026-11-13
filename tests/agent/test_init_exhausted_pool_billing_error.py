@@ -78,7 +78,7 @@ def _patch_no_routed_client(monkeypatch):
         "hermes_agent.agent.auxiliary_client.resolve_provider_client", lambda *a, **k: (None, None)
     )
     monkeypatch.setattr(
-        "hermes_cli.fallback_config.resolve_entry_api_key", lambda entry: None
+        "hermes_agent.hermes_cli.fallback_config.resolve_entry_api_key", lambda entry: None
     )
 
 

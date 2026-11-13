@@ -21,7 +21,7 @@ def test_credentials_follow_profile_home(tmp_path):
             overridden = PlatformConfig(extra={"session_path": str(a / "platforms/whatsapp/session")})
             assert _platform_has_bot_credential(Platform.WHATSAPP, overridden)
     from hermes_agent.gateway.status import write_runtime_status
-    from hermes_cli import gateway_multiplex_served as served
+    from hermes_agent.hermes_cli import gateway_multiplex_served as served
     from unittest.mock import patch
     write_runtime_status(platform="work:whatsapp", platform_state="disabled",
                          error_code="whatsapp_unpaired", error_message="pair it: hermes -p work whatsapp")

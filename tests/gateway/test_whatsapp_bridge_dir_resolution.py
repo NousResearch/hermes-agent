@@ -30,7 +30,7 @@ def test_readonly_install_mirrors_to_hermes_home(tmp_path, monkeypatch):
     hermes_home.mkdir()
 
     monkeypatch.setattr(
-        "hermes_cli._startup_fast.project_root_str", lambda: str(install_root)
+        "hermes_agent.hermes_cli._startup_fast.project_root_str", lambda: str(install_root)
     )
     monkeypatch.setattr(
         "hermes_constants.get_hermes_home", lambda: hermes_home
@@ -72,7 +72,7 @@ def test_existing_mirror_is_refreshed_from_the_install_tree_and_keeps_its_deps(t
     (mirror / "node_modules" / "dep" / "index.js").write_text("// installed\n")
     (mirror / "bridge.js").write_text("// stale bridge\n")
 
-    monkeypatch.setattr("hermes_cli._startup_fast.project_root_str", lambda: str(install_root))
+    monkeypatch.setattr("hermes_agent.hermes_cli._startup_fast.project_root_str", lambda: str(install_root))
     monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: hermes_home)
     _real_touch = Path.touch
 

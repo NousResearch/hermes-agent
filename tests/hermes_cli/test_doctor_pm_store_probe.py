@@ -11,7 +11,7 @@ import subprocess
 import pytest
 
 import pm
-from hermes_cli import doctor_tools
+from hermes_agent.hermes_cli import doctor_tools
 from pm import paths
 from pm.lock import Facts, Lockfile
 from pm.registry import get_package

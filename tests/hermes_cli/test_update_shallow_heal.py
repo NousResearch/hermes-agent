@@ -14,7 +14,7 @@ import os
 
 import pytest
 
-from hermes_cli.gitlock import convert_treeless_checkout, heal_shallow_history
+from hermes_agent.hermes_cli.gitlock import convert_treeless_checkout, heal_shallow_history
 
 
 def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess:

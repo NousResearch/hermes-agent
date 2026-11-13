@@ -90,7 +90,7 @@ class RelayMediaClient:
         any host that names that path. Userinfo is refused outright so a parser
         differential (``https://evil\\@connector/…``) cannot split host and target.
         """
-        from hermes_cli.urllib_security import url_origin
+        from hermes_agent.hermes_cli.urllib_security import url_origin
 
         try:
             candidate = urllib.parse.urlsplit(url or "")
@@ -115,7 +115,7 @@ class RelayMediaClient:
         set apart from the ``GATEWAY_RELAY_URL`` this client is built from; those downloads
         then 401 and the attachment is lost, so name both origins instead of failing quietly.
         """
-        from hermes_cli.urllib_security import url_origin
+        from hermes_agent.hermes_cli.urllib_security import url_origin
 
         try:
             parts = urllib.parse.urlsplit(url)

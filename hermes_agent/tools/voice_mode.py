@@ -1464,7 +1464,7 @@ def _check_plugin_stt_provider(provider: str) -> bool:
         return False
     try:
         from hermes_agent.agent.transcription_registry import get_provider
-        from hermes_cli.plugins import _ensure_plugins_discovered
+        from hermes_agent.hermes_cli.plugins import _ensure_plugins_discovered
         _ensure_plugins_discovered()
         plugin_provider = get_provider(key)
         if plugin_provider is None:

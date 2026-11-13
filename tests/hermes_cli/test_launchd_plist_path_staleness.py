@@ -17,7 +17,7 @@ from __future__ import annotations
 import json
 import re
 
-from hermes_cli import gateway as gateway_cli
+from hermes_agent.hermes_cli import gateway as gateway_cli
 
 
 def _seed_managed_node(home, version: str) -> str:

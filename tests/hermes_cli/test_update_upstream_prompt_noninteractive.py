@@ -14,7 +14,7 @@ from unittest.mock import patch
 
 import pytest
 
-from hermes_cli import update_cmd
+from hermes_agent.hermes_cli import update_cmd
 
 
 @pytest.fixture

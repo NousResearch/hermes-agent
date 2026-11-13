@@ -25,7 +25,7 @@ import threading
 import uuid
 from typing import Any, Callable, Optional
 
-from hermes_cli.config import DEFAULT_CONFIG
+from hermes_agent.hermes_cli.config import DEFAULT_CONFIG
 from hermes_constants import hermes_home_key
 from utils import env_int
 

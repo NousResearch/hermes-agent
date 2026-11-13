@@ -161,7 +161,7 @@ def _snapshot_sessions(rid):
 def _pet_display_cfg() -> dict:
     """``display.pet`` config block, ``{}`` when config is unreadable."""
     try:
-        from hermes_cli.config import load_config
+        from hermes_agent.hermes_cli.config import load_config
         cfg = load_config()
         display = cfg.get("display", {}) if isinstance(cfg.get("display"), dict) else {}
         return display.get("pet", {}) if isinstance(display.get("pet"), dict) else {}
@@ -209,7 +209,7 @@ def _active_pet():
 
 def _billing_call(rid, fn, extra: dict | None = None) -> dict:
     """Portal call → ok; BillingError → serialized envelope, else generic; ``extra`` rides both ERROR envelopes."""
-    from hermes_cli.nous_billing import BillingError
+    from hermes_agent.hermes_cli.nous_billing import BillingError
     try:
         return _ok(rid, fn())
     except BillingError as exc:
@@ -544,7 +544,7 @@ def _(rid, params: dict, db) -> dict:
         # surfaces that OWN hidden sessions (Bots pane, pickers).
         from pathlib import Path
 
-        from hermes_cli.session_listing import show_subagent_sessions
+        from hermes_agent.hermes_cli.session_listing import show_subagent_sessions
 
         # ``sessions.show_subagents`` (the store's own profile config) re-admits delegate runs (#97202).
         # A store without a path has no profile config to read, so it keeps the default shape.
@@ -843,7 +843,7 @@ def _resume_guard(ctx: _Resume) -> dict | None:
     ownership env, invisible to the board while a re-dispatch can start a competing writer
     in the same workspace. One guard for every resume shape below (cold / eager / deferred /
     lazy / live-reuse) — no slash worker is ever built for a refused session."""
-    from hermes_cli.kanban_resume_guard import kanban_resume_refusal
+    from hermes_agent.hermes_cli.kanban_resume_guard import kanban_resume_refusal
     if (kanban_refusal := kanban_resume_refusal(ctx.db, ctx.target)) is not None:
         return _err(ctx.rid, 4132, kanban_refusal)
     from hermes_agent.hermes_state import SessionResumeTooLargeError, resolved_max_resume_messages
@@ -1594,7 +1594,7 @@ def _(rid, params: dict, slug: str) -> dict:
     """Adopt a pet: install (if needed) + activate; writes ``display.pet.*`` to config."""
     from hermes_agent.agent.pet import store
     from hermes_agent.agent.pet.manifest import ManifestError
-    from hermes_cli.pets import _set_active
+    from hermes_agent.hermes_cli.pets import _set_active
     try:
         pet = store.install_pet(slug)
     except (store.PetStoreError, ManifestError) as exc:
@@ -1607,14 +1607,14 @@ def _(rid, params: dict, slug: str) -> dict:
 def _(rid, params: dict, slug: str) -> dict:
     """Uninstall a pet (delete its directory); if it was active, turn the display off."""
     from hermes_agent.agent.pet import store
-    from hermes_cli.pets import _clear_active_if
+    from hermes_agent.hermes_cli.pets import _clear_active_if
     removed = store.remove_pet(slug)
     _pet_config_followup("pet.remove", _clear_active_if, slug)
     return _ok(rid, {"ok": removed, "slug": slug})
 
 
 def _pet_config_followup(what: str, fn, *args) -> None:
-    """Best-effort ``hermes_cli.pets`` active-slug update after a store op that already succeeded."""
+    """Best-effort ``hermes_agent.hermes_cli.pets`` active-slug update after a store op that already succeeded."""
     try:
         fn(*args)
     except Exception as exc:
@@ -1643,7 +1643,7 @@ def _(rid, params: dict, slug: str) -> dict:
     if not (new_slug := store.rename_pet(slug, name)):
         return _err(rid, 5031, "pet.rename failed")
     if new_slug != slug:
-        from hermes_cli.pets import _rename_active_if
+        from hermes_agent.hermes_cli.pets import _rename_active_if
         _pet_config_followup("pet.rename", _rename_active_if, slug, new_slug)
     return _ok(rid, {"ok": True, "slug": new_slug, "displayName": name})
 
@@ -1660,7 +1660,7 @@ def _(rid, params: dict, slug: str) -> dict:
 @_pet_method("pet.disable")
 def _(rid, params: dict) -> dict:
     """``display.pet.enabled=false`` from the desktop picker."""
-    from hermes_cli.pets import _set_enabled
+    from hermes_agent.hermes_cli.pets import _set_enabled
     _set_enabled(False)
     return _ok(rid, {"ok": True})
 
@@ -1668,7 +1668,7 @@ def _(rid, params: dict) -> dict:
 @_pet_method("pet.scale")
 def _(rid, params: dict) -> dict:
     """Persist ``display.pet.scale`` (clamped to engine bounds) from the desktop slider."""
-    from hermes_cli.pets import set_pet_scale
+    from hermes_agent.hermes_cli.pets import set_pet_scale
     scale, err = set_pet_scale(params.get("scale"))
     return _err(rid, 4004, err) if err else _ok(rid, {"ok": True, "scale": scale})
 
@@ -1830,7 +1830,7 @@ def _(rid, params: dict) -> dict:
     round-trip that could only fail."""
     try:
         from hermes_agent.agent.billing_view import BillingState, build_billing_state
-        from hermes_cli.anon_auth import has_free_tier_account
+        from hermes_agent.hermes_cli.anon_auth import has_free_tier_account
         if has_free_tier_account():
             return _ok(rid, _serialize_billing_state(BillingState(logged_in=False), free_tier_account=True))
         return _ok(rid, _serialize_billing_state(build_billing_state()))
@@ -1850,7 +1850,7 @@ _billing_view("subscription.state", "hermes_agent.agent.subscription_view", "bui
 def _(rid, params: dict) -> dict:
     """POST /api/billing/subscription/preview → chargeless effect quote. billing:manage."""
     from hermes_agent.agent.subscription_view import subscription_change_preview_from_payload
-    from hermes_cli.nous_billing import post_subscription_preview
+    from hermes_agent.hermes_cli.nous_billing import post_subscription_preview
     if not (tier_id := params.get("subscription_type_id")):
         return _billing_invalid(rid, "subscription_type_id is required")
     return _billing_call(rid, lambda: _serialize_subscription_preview(
@@ -1859,13 +1859,13 @@ def _(rid, params: dict) -> dict:
 
 def _billing_route(name: str, call, *, invalid=None, message: str = "", error: str = "invalid_request",
                    idempotent: bool = False):
-    """Portal write route on ``hermes_cli.nous_billing`` (lazy; tests patch its functions): ``invalid(params)``
+    """Portal write route on ``hermes_agent.hermes_cli.nous_billing`` (lazy; tests patch its functions): ``invalid(params)``
     → ``_billing_invalid(message, error)``; ``call(nb, params, key)`` performs the request. ``idempotent``
     mints ``idempotency_key`` if absent and echoes it (also on error) so the TUI retries the SAME operation."""
     @method(name)
     @_profile_scoped
     def _(rid, params: dict) -> dict:
-        import hermes_cli.nous_billing as nb
+        import hermes_agent.hermes_cli.nous_billing as nb
         if invalid is not None and invalid(params):
             return _billing_invalid(rid, message, error=error)
         key = extra = None
@@ -1923,7 +1923,7 @@ def _(rid, params: dict) -> dict:
     sid = params.get("session_id") or ""
 
     def call():
-        from hermes_cli.auth import step_up_nous_billing_scope
+        from hermes_agent.hermes_cli.auth import step_up_nous_billing_scope
         granted = step_up_nous_billing_scope(
             open_browser=False,
             on_verification=lambda url, code: _emit(
@@ -1952,7 +1952,7 @@ def _try_get_session(db, key: str) -> dict:
 
 @_session_method("session.status")
 def _(rid, params: dict, session: dict) -> dict:
-    from hermes_cli.status_report import build_status_fields, status_lines
+    from hermes_agent.hermes_cli.status_report import build_status_fields, status_lines
     key = session.get("session_key") or params.get("session_id") or ""
     mirror = _metadata_mirror(session)
     # Under turn isolation the compute host owns the live route: a stale in-process agent object
@@ -2146,7 +2146,7 @@ def _(rid, params: dict) -> dict:
 def _(rid, params: dict, session: dict) -> dict:
     if _session_uses_compute_host(session):
         return _save_via_compute_host(rid, params)
-    from hermes_cli.session_export import load_save_snapshot, render_session_for_save
+    from hermes_agent.hermes_cli.session_export import load_save_snapshot, render_session_for_save
     from hermes_agent.hermes_state import SessionExportTooLargeError
     # As CLI/messaging /save json, under the SESSION's profile config + home (runs unscoped); a failed read falls back.
     try:

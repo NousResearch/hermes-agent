@@ -4,7 +4,7 @@ from argparse import Namespace
 from unittest.mock import patch
 
 import pytest
-from hermes_cli.config import DEFAULT_CONFIG, load_config, save_config
+from hermes_agent.hermes_cli.config import DEFAULT_CONFIG, load_config, save_config
 
 
 def _make_setup_args(**overrides):
@@ -41,7 +41,7 @@ class TestNonInteractiveSetup:
 
     def test_reset_flag_rewrites_config_before_noninteractive_exit(self, tmp_path, monkeypatch, capsys):
         """--reset should rewrite config.yaml even when the wizard cannot run interactively."""
-        from hermes_cli.setup import run_setup_wizard
+        from hermes_agent.hermes_cli.setup import run_setup_wizard
 
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         cfg = load_config()
@@ -61,13 +61,13 @@ class TestNonInteractiveSetup:
 
     def test_chat_first_run_headless_skips_setup_prompt(self, capsys):
         """Bare `hermes` should not prompt for input when no provider exists and stdin is headless."""
-        from hermes_cli.main import cmd_chat
+        from hermes_agent.hermes_cli.main import cmd_chat
 
         args = _make_chat_args()
 
         with (
-            patch("hermes_cli.main._has_any_provider_configured", return_value=False),
-            patch("hermes_cli.main.cmd_setup") as mock_setup,
+            patch("hermes_agent.hermes_cli.main._has_any_provider_configured", return_value=False),
+            patch("hermes_agent.hermes_cli.main.cmd_setup") as mock_setup,
             patch("sys.stdin") as mock_stdin,
             patch("builtins.input", side_effect=AssertionError("input should not be called")),
         ):

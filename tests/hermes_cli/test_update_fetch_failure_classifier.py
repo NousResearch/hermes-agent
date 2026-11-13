@@ -11,7 +11,7 @@ import os
 import subprocess
 from pathlib import Path
 
-from hermes_cli import update_cmd, update_cmd_git
+from hermes_agent.hermes_cli import update_cmd, update_cmd_git
 
 
 RATE_LIMIT_STDERR = (
@@ -166,7 +166,7 @@ def test_update_network_git_calls_never_prompt_for_credentials():
 def test_update_and_upstream_network_calls_disable_terminal_prompts(monkeypatch, tmp_path):
     """Exercise origin fetch and fork fetch/merge/push, not their source spelling."""
     import subprocess
-    from hermes_cli import update_cmd_git
+    from hermes_agent.hermes_cli import update_cmd_git
 
     monkeypatch.setenv("GIT_TERMINAL_PROMPT", "1")
     monkeypatch.setenv("GCM_INTERACTIVE", "Always")
@@ -188,7 +188,7 @@ def test_update_and_upstream_network_calls_disable_terminal_prompts(monkeypatch,
     (tmp_path / ".git").mkdir()  # the fork ff's recovery marker lives there: no marker, no move
     update_cmd._git_run(["git"], ["fetch", "origin", "main"], cwd=tmp_path, network=True, check=True)
     assert update_cmd_git._sync_with_upstream_if_needed(["git"], tmp_path, assume_yes=True)
-    from hermes_cli.update_custody import git_subcommand
+    from hermes_agent.hermes_cli.update_custody import git_subcommand
 
     # The fork push runs only after the update is validated (_push_synced_fork), never inside the sync.
     update_cmd_git._sync_fork_with_upstream(["git"], tmp_path)

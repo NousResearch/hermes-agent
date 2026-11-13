@@ -6,7 +6,7 @@ import pytest
 from prompt_toolkit.input.ansi_escape_sequences import ANSI_SEQUENCES
 from prompt_toolkit.input.vt100_parser import Vt100Parser
 
-from hermes_cli import pt_input_extras
+from hermes_agent.hermes_cli import pt_input_extras
 
 
 @pytest.fixture(autouse=True)
@@ -67,7 +67,7 @@ def test_keypad_alt_enter_inserts_newlines_at_the_cursor(prefix):
     from prompt_toolkit.layout import BufferControl, Layout, Window
     from prompt_toolkit.output import DummyOutput
 
-    from hermes_cli.cli_tui_mixin import CLITuiMixin
+    from hermes_agent.hermes_cli.cli_tui_mixin import CLITuiMixin
 
     async def probe(sequence):
         buf = Buffer(document=Document(prefix + "suffix", len(prefix)))

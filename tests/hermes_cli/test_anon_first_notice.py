@@ -6,8 +6,8 @@ import time
 
 import pytest
 
-from hermes_cli import anon_auth
-from hermes_cli.auth import _auth_store_lock, _load_auth_store, _save_auth_store
+from hermes_agent.hermes_cli import anon_auth
+from hermes_agent.hermes_cli.auth import _auth_store_lock, _load_auth_store, _save_auth_store
 from tests.hermes_cli.anon_portal import as_local_desktop_backend, claimed_trial, install_portal
 
 

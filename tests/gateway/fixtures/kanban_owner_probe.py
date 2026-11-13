@@ -83,9 +83,9 @@ def main():
         'terminal': {'backend': 'local'}, 'agent': {'api_max_retries': 1}, 'kanban': {'dispatch_in_gateway': False},
         'hooks': {'post_tool_call': [{'command': f'{sys.executable} {hook}'}]}}
     (home / 'config.yaml').write_text(json.dumps(cfg), encoding='utf-8')
-    from hermes_cli import kanban_db as kb
-    from hermes_cli.kanban_db_connect import connect
-    from hermes_cli import kanban_db_dispatch as dispatch
+    from hermes_agent.hermes_cli import kanban_db as kb
+    from hermes_agent.hermes_cli.kanban_db_connect import connect
+    from hermes_agent.hermes_cli import kanban_db_dispatch as dispatch
     # Pin the installed launcher to this checkout for base/fixed argv comparisons.
     dispatch._resolve_hermes_argv = lambda: [sys.executable, '-m', 'hermes_cli.main']
     os.environ['HERMES_KANBAN_CRASH_GRACE_SECONDS'] = '0'
@@ -100,7 +100,7 @@ def main():
     original_popen = subprocess.Popen
     def spawn(*args, **kwargs):
         child = original_popen(*args, **kwargs)
-        if 'hermes_cli.kanban_worker_client' in args[0]:
+        if 'hermes_agent.hermes_cli.kanban_worker_client' in args[0]:
             clients.append(child)
             if peer.mode == 'timeout':
                 assert peer.blocked.wait(55), 'managed worker did not reach loopback'

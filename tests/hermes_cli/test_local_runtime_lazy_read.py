@@ -15,10 +15,10 @@ from __future__ import annotations
 
 import struct
 
-from hermes_cli.local_runtime import presets
-from hermes_cli.local_runtime.catalog import AssetFile, QuantVariant
-from hermes_cli.local_runtime.estimator import HardwareBudget, as_loaded, profile_from_gguf
-from hermes_cli.local_runtime.gguf import read_gguf_header
+from hermes_agent.hermes_cli.local_runtime import presets
+from hermes_agent.hermes_cli.local_runtime.catalog import AssetFile, QuantVariant
+from hermes_agent.hermes_cli.local_runtime.estimator import HardwareBudget, as_loaded, profile_from_gguf
+from hermes_agent.hermes_cli.local_runtime.gguf import read_gguf_header
 
 GIB = 1 << 30
 OVER_4_GIB = (4 * GIB) // 4 + 256   # f32 elements: 4 GiB + 1 KiB

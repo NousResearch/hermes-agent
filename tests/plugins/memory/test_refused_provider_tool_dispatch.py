@@ -84,7 +84,7 @@ def homes(tmp_path, monkeypatch):
         (home / "config.yaml").write_text("memory:\n  provider: sharedmem\n", encoding="utf-8")
     monkeypatch.setenv("HERMES_HOME", str(root))
     from hermes_agent.agent.secret_scope import reset_multiplex_context, set_multiplex_context
-    from hermes_cli.plugins import _reset_plugin_managers_for_tests
+    from hermes_agent.hermes_cli.plugins import _reset_plugin_managers_for_tests
     _reset_plugin_managers_for_tests()
     token = set_multiplex_context(True)
     try:

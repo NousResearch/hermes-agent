@@ -29,10 +29,10 @@ USER, PASSWORD = "owner", "throwaway-test-password"
 @pytest.fixture
 def gated(tmp_path, monkeypatch):
     """The Webapp behind the sign-in gate with a password and an OAuth provider registered."""
-    from hermes_cli import webapp_sign_in
-    from hermes_cli.dashboard_auth import clear_providers, register_provider
-    from hermes_cli.dashboard_auth.routes import _reset_password_rate_limit
-    from hermes_cli.dashboard_auth.ws_tickets import _reset_for_tests
+    from hermes_agent.hermes_cli import webapp_sign_in
+    from hermes_agent.hermes_cli.dashboard_auth import clear_providers, register_provider
+    from hermes_agent.hermes_cli.dashboard_auth.routes import _reset_password_rate_limit
+    from hermes_agent.hermes_cli.dashboard_auth.ws_tickets import _reset_for_tests
     from plugins.dashboard_auth.basic import BasicAuthProvider, hash_password
     from tests.hermes_cli.conftest_dashboard_auth import StubAuthProvider
 
@@ -143,7 +143,7 @@ def test_a_credential_replaced_while_the_gateway_was_down_signs_logins_out(gated
 
 
 def test_signing_out_closes_the_sockets_and_host_terminal_a_login_opened(gated, sign_out):
-    from hermes_cli.dashboard_auth.ws_tickets import mint_ticket
+    from hermes_agent.hermes_cli.dashboard_auth.ws_tickets import mint_ticket
 
     browser = gated.browser()
     _sign_in_with_password(browser)
@@ -221,7 +221,7 @@ def test_two_gateways_with_their_own_sign_in_on_one_hostname_keep_their_logins_a
     gateways on one hostname whose sign-in providers differ (two users' or two profiles' gateways, each
     with its own provider secret) keep their own logins in one browser: signing in to one leaves the
     other signed in, and signing out of one in the browser leaves the other."""
-    from hermes_cli.dashboard_auth import clear_providers, register_provider
+    from hermes_agent.hermes_cli.dashboard_auth import clear_providers, register_provider
     from plugins.dashboard_auth.basic import BasicAuthProvider, hash_password
 
     state = gated.server.app.state
@@ -331,7 +331,7 @@ def _refused_alone(gated, access, refresh):
 def _restart(gated, monkeypatch, *, token=None):
     """What a new gateway process starts from: nothing in memory but the files in its home, and the
     browser credential stored there (*token* when the CLI replaced it while no gateway ran)."""
-    from hermes_cli import webapp_sign_in
+    from hermes_agent.hermes_cli import webapp_sign_in
 
     webapp_sign_in._reset_for_tests()
     if token is not None:
@@ -573,7 +573,7 @@ def test_a_native_apps_token_opens_a_socket_that_stays_open_across_sign_out(gate
 
 @pytest.mark.platforms("posix")
 def test_the_record_of_native_sign_ins_is_user_only(gated, tmp_path):
-    from hermes_cli.webapp_sign_in import RECORD_PATH
+    from hermes_agent.hermes_cli.webapp_sign_in import RECORD_PATH
 
     _native_app_sign_in(gated)
     record = tmp_path / ".hermes" / RECORD_PATH

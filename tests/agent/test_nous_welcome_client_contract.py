@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 import pytest
 
-from hermes_cli import anon_auth
+from hermes_agent.hermes_cli import anon_auth
 
 WELCOME = "https://welcome-api.nousresearch.com/v1"
 PAID = "https://inference-api.nousresearch.com/v1"
@@ -29,7 +29,7 @@ class TestAuxiliaryOnWelcomeHost:
         import hermes_agent.agent.auxiliary_client as ac
         with patch.object(ac, "_resolve_nous_runtime_api", return_value=("jwt", WELCOME)), \
              patch.object(ac, "_create_openai_client", return_value="client") as create, \
-             patch("hermes_cli.models.get_nous_recommended_aux_model") as recommended:
+             patch("hermes_agent.hermes_cli.models.get_nous_recommended_aux_model") as recommended:
             client, model = ac._try_nous()
         assert (client, model) == ("client", anon_auth.GUEST_MODEL)
         assert create.call_args.kwargs["base_url"] == WELCOME
@@ -39,7 +39,7 @@ class TestAuxiliaryOnWelcomeHost:
         import hermes_agent.agent.auxiliary_client as ac
         with patch.object(ac, "_resolve_nous_runtime_api", return_value=("jwt", WELCOME)), \
              patch.object(ac, "_create_openai_client", return_value="client"), \
-             patch("hermes_cli.models.get_nous_recommended_aux_model") as recommended:
+             patch("hermes_agent.hermes_cli.models.get_nous_recommended_aux_model") as recommended:
             assert ac._try_nous(vision=True) == ("client", anon_auth.GUEST_MODEL)
         recommended.assert_not_called()
 
@@ -47,7 +47,7 @@ class TestAuxiliaryOnWelcomeHost:
         import hermes_agent.agent.auxiliary_client as ac
         with patch.object(ac, "_resolve_nous_runtime_api", return_value=("jwt", PAID)), \
              patch.object(ac, "_create_openai_client", return_value="client"), \
-             patch("hermes_cli.models.get_nous_recommended_aux_model", return_value="some/free-model"):
+             patch("hermes_agent.hermes_cli.models.get_nous_recommended_aux_model", return_value="some/free-model"):
             client, model = ac._try_nous()
         assert (client, model) == ("client", "some/free-model")
 
@@ -75,8 +75,8 @@ class TestModelSwitchHeader:
         agent._buffer_status = agent.statuses.append
         anon_auth.note_model_switch(agent, {"x-nous-model-switch": "z-ai/glm-5.3-flash"})
         writes = []
-        monkeypatch.setattr("hermes_cli.config.load_config_readonly", lambda: {"model": {"default": "nous/welcome"}})
-        monkeypatch.setattr("hermes_cli.auth._update_config_for_provider",
+        monkeypatch.setattr("hermes_agent.hermes_cli.config.load_config_readonly", lambda: {"model": {"default": "nous/welcome"}})
+        monkeypatch.setattr("hermes_agent.hermes_cli.auth._update_config_for_provider",
                             lambda provider, url, default_model=None, **kw: writes.append((provider, url, default_model)))
         assert anon_auth.apply_model_switch(agent) == "z-ai/glm-5.3-flash"
         assert agent.model == "z-ai/glm-5.3-flash"
@@ -90,8 +90,8 @@ class TestModelSwitchHeader:
         agent = _agent()
         anon_auth.note_model_switch(agent, {"x-nous-model-switch": "z-ai/glm-5.3-flash"})
         writes = []
-        monkeypatch.setattr("hermes_cli.config.load_config_readonly", lambda: {"model": {"default": "openai/gpt-5"}})
-        monkeypatch.setattr("hermes_cli.auth._update_config_for_provider",
+        monkeypatch.setattr("hermes_agent.hermes_cli.config.load_config_readonly", lambda: {"model": {"default": "openai/gpt-5"}})
+        monkeypatch.setattr("hermes_agent.hermes_cli.auth._update_config_for_provider",
                             lambda *a, **kw: writes.append(a))
         assert anon_auth.apply_model_switch(agent) == "z-ai/glm-5.3-flash"
         assert writes == []

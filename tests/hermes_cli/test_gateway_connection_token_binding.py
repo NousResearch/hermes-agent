@@ -13,9 +13,9 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import pytest
 
-from hermes_cli import gateway_connections as store
-from hermes_cli import gateway_connections_oauth as oauth
-from hermes_cli import gateway_connections_reach as reach
+from hermes_agent.hermes_cli import gateway_connections as store
+from hermes_agent.hermes_cli import gateway_connections_oauth as oauth
+from hermes_agent.hermes_cli import gateway_connections_reach as reach
 
 
 @pytest.fixture

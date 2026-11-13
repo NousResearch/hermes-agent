@@ -92,10 +92,10 @@ def _resolve_timezone_name() -> str:
         # parse through the config backend is the fallback when the effective loader cannot be
         # imported (any failure there lands in the outer except: no configured timezone).
         try:
-            from hermes_cli.config_effective import load_user_config_effective
+            from hermes_agent.hermes_cli.config_effective import load_user_config_effective
             cfg = load_user_config_effective(get_config_path())
         except Exception:
-            from hermes_cli.config_backend import config_exists, read_config_doc
+            from hermes_agent.hermes_cli.config_backend import config_exists, read_config_doc
             config_path = get_config_path()
             cfg = (read_config_doc(config_path) or {}) if config_exists(config_path) else {}
         if cfg:

@@ -91,7 +91,7 @@ def test_switch_model_resets_stale_streak():
 
     agent._create_openai_client = MagicMock(return_value=MagicMock(name="NewClient"))
 
-    with patch("hermes_cli.timeouts.get_provider_request_timeout", return_value=None):
+    with patch("hermes_agent.hermes_cli.timeouts.get_provider_request_timeout", return_value=None):
         agent.switch_model(
             new_model="openai/gpt-5",
             new_provider="openrouter",
@@ -114,7 +114,7 @@ def test_switch_model_failure_does_not_reset_streak():
 
     agent._create_openai_client = boom
 
-    with patch("hermes_cli.timeouts.get_provider_request_timeout", return_value=None):
+    with patch("hermes_agent.hermes_cli.timeouts.get_provider_request_timeout", return_value=None):
         try:
             agent.switch_model(
                 new_model="openai/gpt-5",

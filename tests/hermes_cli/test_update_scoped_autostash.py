@@ -7,8 +7,8 @@ the autostash and deleted from disk on every update; declining the restore then 
 import subprocess
 import sys
 
-import hermes_cli.main as cli_main
-from hermes_cli import update_cmd, update_cmd_stash
+import hermes_agent.hermes_cli.main as cli_main
+from hermes_agent.hermes_cli import update_cmd, update_cmd_stash
 
 
 def _git(cwd, *args):

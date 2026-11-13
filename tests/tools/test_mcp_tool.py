@@ -116,7 +116,7 @@ class TestLoadMCPConfig:
                 "env": {},
             }
         }
-        with patch("hermes_cli.config.load_config", return_value={"mcp_servers": servers}):
+        with patch("hermes_agent.hermes_cli.config.load_config", return_value={"mcp_servers": servers}):
             from hermes_agent.tools.mcp_tool_config import _load_mcp_config
             result = _load_mcp_config()
             assert "filesystem" in result
@@ -124,7 +124,7 @@ class TestLoadMCPConfig:
 
     def test_mcp_servers_not_dict_returns_empty(self):
         """mcp_servers set to non-dict value -> empty dict."""
-        with patch("hermes_cli.config.load_config", return_value={"mcp_servers": "invalid"}):
+        with patch("hermes_agent.hermes_cli.config.load_config", return_value={"mcp_servers": "invalid"}):
             from hermes_agent.tools.mcp_tool_config import _load_mcp_config
             result = _load_mcp_config()
             assert result == {}
@@ -140,9 +140,9 @@ class TestLoadMCPConfig:
         }
         manager = SimpleNamespace(get_portable_mcp_servers=lambda: portable)
         with (
-            patch("hermes_cli.config.load_config", return_value={"mcp_servers": native}),
-            patch("hermes_cli.plugins.discover_plugins"),
-            patch("hermes_cli.plugins.get_plugin_manager", return_value=manager),
+            patch("hermes_agent.hermes_cli.config.load_config", return_value={"mcp_servers": native}),
+            patch("hermes_agent.hermes_cli.plugins.discover_plugins"),
+            patch("hermes_agent.hermes_cli.plugins.get_plugin_manager", return_value=manager),
             patch.dict(os.environ, {"PORT": "3000"}),
         ):
             from hermes_agent.tools.mcp_tool_config import _load_mcp_config
@@ -157,8 +157,8 @@ class TestLoadMCPConfig:
     ):
         import json
         import hermes_yaml as yaml
-        from hermes_cli.agent_plugins import MCP_SCHEMA_V1, PLUGIN_SCHEMA_V1
-        from hermes_cli import plugins as plugins_mod
+        from hermes_agent.hermes_cli.agent_plugins import MCP_SCHEMA_V1, PLUGIN_SCHEMA_V1
+        from hermes_agent.hermes_cli import plugins as plugins_mod
 
         home = tmp_path / "home"
         plugin = home / "plugins" / "portable"
@@ -2541,7 +2541,7 @@ class TestDiscoveryConnectConcurrency:
             return []
 
         with patch("hermes_agent.tools.mcp_tool_config._load_mcp_config", return_value=server_names), \
-             patch("hermes_cli.config.load_config", return_value={"mcp": {"discovery_concurrency": cap}}), \
+             patch("hermes_agent.hermes_cli.config.load_config", return_value={"mcp": {"discovery_concurrency": cap}}), \
              patch("hermes_agent.tools.mcp_tool_discovery._discover_and_register_server", side_effect=tracked_register), \
              patch("hermes_agent.tools.mcp_tool._MCP_AVAILABLE", True), \
              patch("hermes_agent.tools.mcp_tool_registration._existing_tool_names", return_value=[]):

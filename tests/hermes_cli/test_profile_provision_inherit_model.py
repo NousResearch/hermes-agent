@@ -5,8 +5,8 @@ from pathlib import Path
 import hermes_yaml as yaml
 import pytest
 
-from hermes_cli.config import DEFAULT_CONFIG, atomic_config_write, read_user_config_raw
-from hermes_cli.profile_provision import inherit_launch_model
+from hermes_agent.hermes_cli.config import DEFAULT_CONFIG, atomic_config_write, read_user_config_raw
+from hermes_agent.hermes_cli.profile_provision import inherit_launch_model
 
 
 @pytest.mark.parametrize(

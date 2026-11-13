@@ -57,7 +57,7 @@ def test_a_malformed_webapp_public_url_keeps_the_webapp_off(tmp_path, value):
 
 
 def test_a_listener_that_declares_its_public_url_never_reads_the_dashboards(monkeypatch):
-    from hermes_cli.dashboard_auth.prefix import resolve_public_url
+    from hermes_agent.hermes_cli.dashboard_auth.prefix import resolve_public_url
 
     monkeypatch.setenv("HERMES_DASHBOARD_PUBLIC_URL", DASHBOARD_URL)
     assert resolve_public_url(SimpleNamespace(listener_public_url=WEBAPP_URL)) == WEBAPP_URL
@@ -77,7 +77,7 @@ def _request(state, headers):
 
 
 def test_the_webapps_mcp_oauth_callback_is_built_on_its_own_public_url(monkeypatch):
-    from hermes_cli.web_routers.mcp import _mcp_oauth_callback_url
+    from hermes_agent.hermes_cli.web_routers.mcp import _mcp_oauth_callback_url
 
     monkeypatch.setenv("HERMES_DASHBOARD_PUBLIC_URL", DASHBOARD_URL)
     state = SimpleNamespace(listener_public_url=WEBAPP_URL)
@@ -87,7 +87,7 @@ def test_the_webapps_mcp_oauth_callback_is_built_on_its_own_public_url(monkeypat
 
 def test_a_browser_without_fetch_metadata_writes_from_the_webapps_public_origin(monkeypatch):
     # Without Sec-Fetch-Site the Origin is compared with this listener's own public URL.
-    from hermes_cli.dashboard_auth.request_utils import cookie_origin_is_allowed
+    from hermes_agent.hermes_cli.dashboard_auth.request_utils import cookie_origin_is_allowed
 
     monkeypatch.setenv("HERMES_DASHBOARD_PUBLIC_URL", DASHBOARD_URL)
     state = SimpleNamespace(listener_public_url=WEBAPP_URL, bound_host="127.0.0.1",

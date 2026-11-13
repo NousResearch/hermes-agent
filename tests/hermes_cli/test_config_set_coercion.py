@@ -10,7 +10,7 @@ Covers:
 
 import pytest
 
-from hermes_cli import config as cfg
+from hermes_agent.hermes_cli import config as cfg
 
 
 def _read(tmp_path, *path):

@@ -3,7 +3,7 @@
 ``kanban_comment`` / ``kanban_create`` used to read ``os.environ["HERMES_PROFILE"]`` and fall back to
 ``"worker"``. A multiplexed per-profile cron tick binds the profile as a ``HERMES_HOME`` override and
 never mirrors it into ``os.environ``, so every card comment a served profile's turn wrote was
-authored ``"worker"`` (#119859). ``hermes_cli.profiles.current_profile_name`` is the one resolver:
+authored ``"worker"`` (#119859). ``hermes_agent.hermes_cli.profiles.current_profile_name`` is the one resolver:
 the bound override first, the dispatcher's ``HERMES_PROFILE`` pin only outside an override, the
 process home last. Identity never comes from tool args (#19713).
 """
@@ -27,8 +27,8 @@ def board_env(tmp_path, monkeypatch):
                 "HERMES_KANBAN_HOME", "HERMES_KANBAN_BOARD", "HERMES_KANBAN_WORKSPACES_ROOT"):
         monkeypatch.delenv(var, raising=False)
 
-    from hermes_cli import kanban_db as kb
-    from hermes_cli import kanban_db_connect as kbc
+    from hermes_agent.hermes_cli import kanban_db as kb
+    from hermes_agent.hermes_cli import kanban_db_connect as kbc
     kb._INITIALIZED_PATHS.clear()
     kb.init_db()
     conn = kbc.connect()
@@ -42,8 +42,8 @@ def board_env(tmp_path, monkeypatch):
 
 
 def _last_comment_author(tid: str) -> str:
-    from hermes_cli import kanban_db as kb
-    from hermes_cli import kanban_db_connect as kbc
+    from hermes_agent.hermes_cli import kanban_db as kb
+    from hermes_agent.hermes_cli import kanban_db_connect as kbc
     conn = kbc.connect()
     try:
         return kb.list_comments(conn, tid)[-1].author
@@ -52,8 +52,8 @@ def _last_comment_author(tid: str) -> str:
 
 
 def _created_by(tid: str) -> str:
-    from hermes_cli import kanban_db as kb
-    from hermes_cli import kanban_db_connect as kbc
+    from hermes_agent.hermes_cli import kanban_db as kb
+    from hermes_agent.hermes_cli import kanban_db_connect as kbc
     conn = kbc.connect()
     try:
         return kb.get_task(conn, tid).created_by
@@ -95,7 +95,7 @@ def test_a_dispatched_worker_keeps_its_pinned_identity_and_an_unnamed_caller_sta
     assert _last_comment_author(tid) == "pinned-bot"
 
     monkeypatch.delenv("HERMES_PROFILE")
-    from hermes_cli import profiles
+    from hermes_agent.hermes_cli import profiles
     monkeypatch.setattr(profiles, "get_active_profile_name", lambda: "")
     assert json.loads(kt._handle_comment({"task_id": tid, "body": "anon"}))["ok"]
     assert _last_comment_author(tid) == "worker"

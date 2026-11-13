@@ -10,10 +10,10 @@ from types import SimpleNamespace
 import pytest
 from fastapi.testclient import TestClient
 
-from hermes_cli import gateway_connections as store
-from hermes_cli import gateway_connections_probe as probe
-from hermes_cli import gateway_connections_ssh as ssh
-from hermes_cli import web_server
+from hermes_agent.hermes_cli import gateway_connections as store
+from hermes_agent.hermes_cli import gateway_connections_probe as probe
+from hermes_agent.hermes_cli import gateway_connections_ssh as ssh
+from hermes_agent.hermes_cli import web_server
 
 
 @pytest.fixture

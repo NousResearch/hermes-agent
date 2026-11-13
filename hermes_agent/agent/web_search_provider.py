@@ -32,7 +32,7 @@ def get_provider_env(name: str) -> str:
     an Exa/Parallel key must be refused, not search on another profile's key.
     """
     try:
-        from hermes_cli.config import get_env_value
+        from hermes_agent.hermes_cli.config import get_env_value
 
         val = get_env_value(name)
     except Exception as exc:

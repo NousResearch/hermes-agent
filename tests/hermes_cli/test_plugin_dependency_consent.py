@@ -6,7 +6,7 @@ import subprocess
 import pytest
 import hermes_yaml as yaml
 
-from hermes_cli import plugins_cmd
+from hermes_agent.hermes_cli import plugins_cmd
 from tests.pm.test_plugin_survival_contract import admission_env
 
 
@@ -158,7 +158,7 @@ def test_publish_assume_consent_skips_replacement_veto(tmp_path, monkeypatch):
     """The active-replacement veto at publication honors --yes-deps: with the
     explicit answer the PM handoff runs; the default without it stays the
     non-interactive refusal (#122134's 'Reinstall declined' half)."""
-    from hermes_cli import plugins_transaction
+    from hermes_agent.hermes_cli import plugins_transaction
     from pm import workspace as ws
 
     staged, target = tmp_path / 'staged', tmp_path / 'target'
@@ -184,7 +184,7 @@ def test_publish_assume_consent_skips_replacement_veto(tmp_path, monkeypatch):
 def test_install_parser_offers_yes_deps_exclusive_with_no_deps():
     import argparse
 
-    from hermes_cli.subcommands.plugins import build_plugins_parser
+    from hermes_agent.hermes_cli.subcommands.plugins import build_plugins_parser
 
     parser = argparse.ArgumentParser(prog='hermes')
     build_plugins_parser(parser.add_subparsers(), cmd_plugins=lambda args: None)

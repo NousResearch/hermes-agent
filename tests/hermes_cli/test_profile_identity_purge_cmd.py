@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli import profile_cmd
+from hermes_agent.hermes_cli import profile_cmd
 
 
 @pytest.fixture()
@@ -24,7 +24,7 @@ def profile_env(tmp_path, monkeypatch):
 
 def test_every_profile_subcommand_has_a_dispatch_entry():
     """A subcommand that parses but has no entry in the dispatch table silently does nothing."""
-    from hermes_cli.subcommands.profile import build_profile_parser
+    from hermes_agent.hermes_cli.subcommands.profile import build_profile_parser
     top = argparse.ArgumentParser()
     subparsers = top.add_subparsers(dest="command")
     build_profile_parser(subparsers, cmd_profile=lambda args: None)
@@ -38,7 +38,7 @@ def test_every_profile_subcommand_has_a_dispatch_entry():
 
 def test_purge_identity_exits_nonzero_when_settlement_stays_pending(
         profile_env, monkeypatch, capsys):
-    monkeypatch.setattr("hermes_cli.profile_identity.purge_profile_identity", lambda name: False)
+    monkeypatch.setattr("hermes_agent.hermes_cli.profile_identity.purge_profile_identity", lambda name: False)
 
     with pytest.raises(SystemExit) as exc:
         profile_cmd.cmd_profile(Namespace(profile_action="purge-identity", profile_name="gone"))
@@ -57,7 +57,7 @@ def test_purge_identity_refuses_a_same_name_profile_created_after_the_delete(pro
     """
     import json
 
-    from hermes_cli.profiles import create_profile
+    from hermes_agent.hermes_cli.profiles import create_profile
     from hermes_agent.hermes_state import SessionDB
 
     create_profile("gone", no_alias=True)

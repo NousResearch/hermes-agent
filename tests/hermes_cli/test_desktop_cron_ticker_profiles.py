@@ -13,7 +13,7 @@ import threading
 
 import pytest
 
-import hermes_cli.web_server as ws
+import hermes_agent.hermes_cli.web_server as ws
 
 
 class _RecordingBuiltin:
@@ -59,7 +59,7 @@ def test_multi_profile_homes_passed_to_builtin(monkeypatch, _providers, tmp_path
         ("default", tmp_path / "root"),
         ("coder", tmp_path / "profiles" / "coder"),
     ]
-    import hermes_cli.profiles as profiles_mod
+    import hermes_agent.hermes_cli.profiles as profiles_mod
 
     monkeypatch.setattr(profiles_mod, "profiles_to_serve", lambda **_kw: list(homes))
 
@@ -80,7 +80,7 @@ def test_single_profile_ticks_only_without_gateway(monkeypatch, tmp_path, gatewa
     """Exercise Desktop startup through the real built-in scheduler loop."""
     from hermes_agent.cron.scheduler_provider import InProcessCronScheduler
     from hermes_constants import get_hermes_home
-    import hermes_cli.profiles as profiles_mod
+    import hermes_agent.hermes_cli.profiles as profiles_mod
 
     home = tmp_path / "root"
     home.mkdir()
@@ -105,7 +105,7 @@ def test_single_profile_ticks_only_without_gateway(monkeypatch, tmp_path, gatewa
 def test_enumeration_failure_fails_open(monkeypatch, _providers):
     """The active profile's jobs keep firing even if profile listing breaks."""
     _sp, builtin = _providers
-    import hermes_cli.profiles as profiles_mod
+    import hermes_agent.hermes_cli.profiles as profiles_mod
 
     def _boom(**_kw):
         raise RuntimeError("profiles dir unreadable")
@@ -130,7 +130,7 @@ def test_external_provider_never_gets_profile_homes(monkeypatch, tmp_path):
     external = _RecordingExternal()
     monkeypatch.setattr(sp, "resolve_cron_scheduler", lambda: external)
 
-    import hermes_cli.profiles as profiles_mod
+    import hermes_agent.hermes_cli.profiles as profiles_mod
 
     monkeypatch.setattr(
         profiles_mod,
@@ -149,7 +149,7 @@ def test_desktop_ticker_serves_every_profile_and_yields_to_owning_gateway(monkey
     or the live default multiplexer that already ticks it — such a satellite has no gateway.pid
     of its own, so the per-home liveness check alone lets both tickers race for its fires
     (#107485, #108428)."""
-    import hermes_cli.profiles as profiles_mod
+    import hermes_agent.hermes_cli.profiles as profiles_mod
     import hermes_yaml as yaml
 
     _sp, builtin = _providers

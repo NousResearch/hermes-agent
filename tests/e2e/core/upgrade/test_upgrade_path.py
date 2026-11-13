@@ -463,7 +463,7 @@ def migrate_oracle(leg: Leg, name: str, before: bytes) -> bytes:
     src_env = _profile_homes(leg)[name] / ".env"
     if src_env.exists():
         shutil.copy2(src_env, home / ".env")
-    code = "from hermes_cli.config import migrate_config; migrate_config(interactive=False, quiet=True)"
+    code = "from hermes_agent.hermes_cli.config import migrate_config; migrate_config(interactive=False, quiet=True)"
     # HEAD's test interpreter, however the runner got it: <checkout>/.venv exists only in CI's checkout.
     cp = H.run([sys.executable, "-c", code],
                env=env, cwd=H.WORKTREE, writable=[oroot], timeout=CLI_TIMEOUT)

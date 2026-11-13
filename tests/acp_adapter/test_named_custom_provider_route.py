@@ -45,12 +45,12 @@ def test_persist_falls_back_to_the_kind_without_a_route(tmp_path):
 
 
 def _patch_resolution(monkeypatch, *, runtime=None, error=None):
-    monkeypatch.setattr("hermes_cli.config.load_config",
+    monkeypatch.setattr("hermes_agent.hermes_cli.config.load_config",
                         lambda: {"model": {"default": "some-model", "provider": "custom:home"}, "agent": {}})
-    monkeypatch.setattr("hermes_cli.tools_config._get_platform_tools", lambda cfg, platform: set())
-    monkeypatch.setattr("hermes_cli.tools_config.enabled_mcp_server_names", lambda cfg: set())
+    monkeypatch.setattr("hermes_agent.hermes_cli.tools_config._get_platform_tools", lambda cfg, platform: set())
+    monkeypatch.setattr("hermes_agent.hermes_cli.tools_config.enabled_mcp_server_names", lambda cfg: set())
     monkeypatch.setattr("hermes_constants.resolve_reasoning_config", lambda cfg, model: None)
-    monkeypatch.setattr("hermes_cli.mcp_startup.ensure_mcp_discovery_before_agent_build",
+    monkeypatch.setattr("hermes_agent.hermes_cli.mcp_startup.ensure_mcp_discovery_before_agent_build",
                         lambda **_kw: None)
     built: list[dict] = []
 
@@ -66,7 +66,7 @@ def _patch_resolution(monkeypatch, *, runtime=None, error=None):
         return runtime or {"provider": "custom", "api_mode": "chat", "base_url": "http://a/v1",
                            "api_key": "k", "credential_pool": None, "command": None, "args": []}
 
-    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", _resolve)
+    monkeypatch.setattr("hermes_agent.hermes_cli.runtime_provider.resolve_runtime_provider", _resolve)
     return built
 
 
@@ -81,7 +81,7 @@ def test_make_agent_stamps_the_resolved_named_route(monkeypatch, tmp_path):
 
 
 def test_make_agent_fails_closed_when_a_named_request_cannot_resolve(monkeypatch, tmp_path):
-    from hermes_cli.auth import AuthError
+    from hermes_agent.hermes_cli.auth import AuthError
 
     _patch_resolution(monkeypatch, error=AuthError(
         "provider 'custom' resolved without credentials (no endpoint or API key configured). "
@@ -97,13 +97,13 @@ def test_make_agent_fails_closed_when_a_named_request_cannot_resolve(monkeypatch
 
 
 def test_restore_of_a_legacy_bare_kind_row_fails_closed(monkeypatch, tmp_path):
-    from hermes_cli.auth import AuthError
+    from hermes_agent.hermes_cli.auth import AuthError
 
     _patch_resolution(monkeypatch, error=AuthError(
         "provider 'custom' resolved without credentials", provider="custom", code="missing_api_key"))
     # The recorded endpoint belongs to no configured custom provider, so the recovery
     # lookup finds nothing and the bare kind stays unresolvable.
-    monkeypatch.setattr("hermes_cli.runtime_provider_custom.find_custom_provider_identity",
+    monkeypatch.setattr("hermes_agent.hermes_cli.runtime_provider_custom.find_custom_provider_identity",
                         lambda _base_url: None)
     db = SessionDB(tmp_path / "state.db")
     db.create_session(session_id="legacy", source="acp", model="some-model",
@@ -122,7 +122,7 @@ def test_restore_recovers_a_bare_kind_row_from_its_recorded_endpoint(monkeypatch
     session restores onto that endpoint instead of refusing to resume — and the next
     persist stores the recovered name, ending the downgrade-retry loop."""
     _patch_resolution(monkeypatch)
-    monkeypatch.setattr("hermes_cli.runtime_provider_custom.find_custom_provider_identity",
+    monkeypatch.setattr("hermes_agent.hermes_cli.runtime_provider_custom.find_custom_provider_identity",
                         lambda _base_url: "custom:gw")
     requested: list[str] = []
 
@@ -131,7 +131,7 @@ def test_restore_recovers_a_bare_kind_row_from_its_recorded_endpoint(monkeypatch
         return {"provider": "custom", "api_mode": "chat", "base_url": "http://a/v1",
                 "api_key": "k", "credential_pool": None, "command": None, "args": []}
 
-    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", _resolve)
+    monkeypatch.setattr("hermes_agent.hermes_cli.runtime_provider.resolve_runtime_provider", _resolve)
 
     db = SessionDB(tmp_path / "state.db")
     db.create_session(session_id="recoverable", source="acp", model="some-model",
@@ -149,12 +149,12 @@ def test_restore_recovers_a_bare_kind_row_from_its_recorded_endpoint(monkeypatch
 
 def test_switch_model_never_pins_the_endpoint_for_an_unknown_provider(monkeypatch):
     from hermes_agent.acp_adapter.server import HermesACPAgent
-    from hermes_cli.model_switch import ModelSwitchResult
+    from hermes_agent.hermes_cli.model_switch import ModelSwitchResult
 
-    monkeypatch.setattr("hermes_cli.config.load_config", dict)
-    monkeypatch.setattr("hermes_cli.model_switch.switch_model", lambda **_kw: ModelSwitchResult(
+    monkeypatch.setattr("hermes_agent.hermes_cli.config.load_config", dict)
+    monkeypatch.setattr("hermes_agent.hermes_cli.model_switch.switch_model", lambda **_kw: ModelSwitchResult(
         success=True, new_model="some-model", target_provider="custom:gw"))
-    monkeypatch.setattr("hermes_cli.observability.shared_metrics_events.record_model_switch",
+    monkeypatch.setattr("hermes_agent.hermes_cli.observability.shared_metrics_events.record_model_switch",
                         lambda **_kw: None)
     made: dict = {}
 
@@ -188,7 +188,7 @@ def test_restore_never_pairs_the_resolved_key_with_a_foreign_recorded_endpoint(m
     built = _patch_resolution(monkeypatch, runtime={
         "provider": "custom", "api_mode": "chat_completions", "base_url": "https://api.cheap.test/v1",
         "api_key": "cheap-key", "credential_pool": None, "command": None, "args": []})
-    monkeypatch.setattr("hermes_cli.runtime_provider_custom.find_custom_provider_identity",
+    monkeypatch.setattr("hermes_agent.hermes_cli.runtime_provider_custom.find_custom_provider_identity",
                         lambda _base_url: None)
     db = SessionDB(tmp_path / "state.db")
     db.create_session(session_id="poisoned", source="acp", model="some-model",
@@ -220,7 +220,7 @@ def test_persist_keeps_the_resolved_built_in_provider(monkeypatch, tmp_path, con
     _patch_resolution(monkeypatch, runtime={
         "provider": resolved, "api_mode": "chat_completions", "base_url": "https://api.test/v1",
         "api_key": "k", "credential_pool": None, "command": None, "args": []})
-    monkeypatch.setattr("hermes_cli.config.load_config",
+    monkeypatch.setattr("hermes_agent.hermes_cli.config.load_config",
                         lambda: {"model": {"default": "some-model", "provider": configured}, "agent": {}})
     monkeypatch.setattr("hermes_agent.run_agent.AIAgent", lambda **kw: _agent(provider=kw["provider"], base_url=kw["base_url"]))
     db = SessionDB(tmp_path / "state.db")
@@ -249,7 +249,7 @@ def test_switch_model_compares_an_alias_session_by_its_resolved_provider(monkeyp
         seen.update(kw)
         raise RuntimeError("stop after seeding")
 
-    monkeypatch.setattr("hermes_cli.model_switch.switch_model", _switch)
+    monkeypatch.setattr("hermes_agent.hermes_cli.model_switch.switch_model", _switch)
     state = SimpleNamespace(session_id="s-alias", cwd=".", model="some-model", agent=live)
     with pytest.raises(RuntimeError, match="stop after seeding"):
         HermesACPAgent(session_manager=manager)._switch_model(state, "other-model", keep_endpoint=True)

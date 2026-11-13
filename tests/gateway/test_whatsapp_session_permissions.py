@@ -113,7 +113,7 @@ async def test_adopting_a_running_bridge_tightens_its_existing_log(host, tmp_pat
 def test_dashboard_pairing_tightens_an_existing_world_readable_session(host, tmp_path, monkeypatch):
     import hermes_constants
     from hermes_agent.gateway.platforms import whatsapp_common
-    from hermes_cli.web_routers import messaging
+    from hermes_agent.hermes_cli.web_routers import messaging
 
     monkeypatch.setattr(whatsapp_common, "resolve_whatsapp_bridge_dir", lambda: host.parent)
     monkeypatch.setattr(messaging, "_ensure_whatsapp_bridge_dependencies", lambda path: None)
@@ -133,7 +133,7 @@ def test_cli_pairing_writes_the_session_owner_only(host, tmp_path, monkeypatch):
 
     import hermes_constants
     from hermes_agent.gateway.platforms import whatsapp_common
-    from hermes_cli import main_platform_setup as setup
+    from hermes_agent.hermes_cli import main_platform_setup as setup
 
     home = tmp_path / "hermes"
     home.mkdir()
@@ -141,7 +141,7 @@ def test_cli_pairing_writes_the_session_owner_only(host, tmp_path, monkeypatch):
     monkeypatch.setenv("WHATSAPP_MODE", "bot")
     monkeypatch.setenv("WHATSAPP_ALLOWED_USERS", "15550001111")
     monkeypatch.setattr("builtins.input", lambda _prompt="": "n")
-    monkeypatch.setattr("hermes_cli.main._require_tty", lambda *_a, **_kw: None)
+    monkeypatch.setattr("hermes_agent.hermes_cli.main._require_tty", lambda *_a, **_kw: None)
     monkeypatch.setattr(whatsapp_common, "resolve_whatsapp_bridge_dir", lambda: host.parent)
     monkeypatch.setattr(setup, "_whatsapp_install_bridge", lambda path: True)
     monkeypatch.setattr(hermes_constants, "find_node_executable", lambda name: sys.executable)

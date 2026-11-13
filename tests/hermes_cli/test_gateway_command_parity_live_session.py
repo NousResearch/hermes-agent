@@ -26,7 +26,7 @@ def test_a_refused_subcommand_keeps_the_rest_of_the_command_routed():
     backend's route only."""
     import sys
     sys.path.insert(0, str(ROOT))
-    from hermes_cli.commands import COMMAND_REGISTRY
+    from hermes_agent.hermes_cli.commands import COMMAND_REGISTRY
     spec = importlib.util.spec_from_file_location("gen_gateway_command_parity",
                                                   ROOT / "scripts" / "gen_gateway_command_parity.py")
     gen = importlib.util.module_from_spec(spec)

@@ -20,8 +20,8 @@ from unittest.mock import MagicMock
 import pytest
 
 import plugins.dashboard_auth.session_token as session_token_plugin
-from hermes_cli.dashboard_auth import RefreshExpiredError, assert_protocol_compliance
-from hermes_cli.dashboard_auth import registry
+from hermes_agent.hermes_cli.dashboard_auth import RefreshExpiredError, assert_protocol_compliance
+from hermes_agent.hermes_cli.dashboard_auth import registry
 
 
 @pytest.fixture(scope="module")
@@ -214,7 +214,7 @@ class TestInteractiveSurfaces:
         return cls(token=_token())
 
     def test_login_page_shows_token_mode_notice_not_a_button(self, plugin):
-        from hermes_cli.dashboard_auth.login_page import render_login_html
+        from hermes_agent.hermes_cli.dashboard_auth.login_page import render_login_html
 
         registry.register_global_provider(plugin.SessionTokenProvider(token=_token()))
         html = render_login_html(next_path="", prefix="")
@@ -224,7 +224,7 @@ class TestInteractiveSurfaces:
         assert "/auth/login?provider=" not in html
 
     def test_login_page_keeps_interactive_providers_clickable(self, plugin):
-        from hermes_cli.dashboard_auth.login_page import render_login_html
+        from hermes_agent.hermes_cli.dashboard_auth.login_page import render_login_html
 
         registry.register_global_provider(plugin.SessionTokenProvider(token=_token()))
         registry.register_global_provider(
@@ -237,7 +237,7 @@ class TestInteractiveSurfaces:
     def test_api_auth_providers_filters_non_interactive(self, plugin):
         import asyncio
 
-        from hermes_cli.dashboard_auth.routes import api_auth_providers
+        from hermes_agent.hermes_cli.dashboard_auth.routes import api_auth_providers
 
         registry.register_global_provider(plugin.SessionTokenProvider(token=_token()))
         providers = asyncio.run(api_auth_providers())

@@ -2,8 +2,8 @@
 
 import pytest
 
-from hermes_cli.providers import determine_api_mode, host_mandated_api_mode
-from hermes_cli import runtime_provider as rp
+from hermes_agent.hermes_cli.providers import determine_api_mode, host_mandated_api_mode
+from hermes_agent.hermes_cli import runtime_provider as rp
 
 class TestHostMandatedMetaResponses:
     @pytest.mark.parametrize(
@@ -76,7 +76,7 @@ class TestHostMandatedMetaResponses:
 
 class TestMetaConfigRoundtrip:
     def test_providers_meta_api_mode_roundtrip(self):
-        from hermes_cli.config import _normalize_custom_provider_entry
+        from hermes_agent.hermes_cli.config import _normalize_custom_provider_entry
 
         entry = {"name": "Meta", "base_url": "https://api.meta.ai/v1", "api_mode": "codex_responses"}
         normalized = _normalize_custom_provider_entry(entry)

@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-import hermes_cli.left_core_migration as lcm
+import hermes_agent.hermes_cli.left_core_migration as lcm
 from hermes_agent.agent.agent_init import _load_tools
 from hermes_agent.agent.status_output import StatusOutputMixin
 from hermes_agent.agent.turn_context import _reset_per_turn_agent_state
@@ -36,7 +36,7 @@ def home(tmp_path, monkeypatch):
     from hermes_agent import model_tools
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setattr(lcm, "_attempted", set())
-    monkeypatch.setattr("hermes_cli.plugins.discover_plugins", lambda: None)
+    monkeypatch.setattr("hermes_agent.hermes_cli.plugins.discover_plugins", lambda: None)
     monkeypatch.setattr(model_tools, "get_tool_definitions", lambda **kw: [])
     monkeypatch.setattr(model_tools, "check_toolset_requirements", dict)
     lcm._queue_notice(tmp_path, KEPT)  # kept by the gateway's start

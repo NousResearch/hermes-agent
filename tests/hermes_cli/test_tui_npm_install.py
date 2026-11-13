@@ -6,7 +6,7 @@ import shutil
 import subprocess
 
 import pytest
-from hermes_cli import main_tui_launch
+from hermes_agent.hermes_cli import main_tui_launch
 from tests.hermes_cli.test_source_build import source_checkout, source_products, _events
 
 
@@ -132,7 +132,7 @@ def test_failed_dependency_preparation_launches_the_previous_build(tui_source, m
 @pytest.mark.platforms("posix")
 def test_fallback_names_a_refusal_that_printed_nothing(tui_source, monkeypatch, capsys, caplog):
     """PM refusing to fetch pnpm raises before any command prints: the fallback names that cause."""
-    from hermes_cli import source_build
+    from hermes_agent.hermes_cli import source_build
 
     root, _ = tui_source
     _touch_tui_entry(root / "ui-tui")
@@ -151,7 +151,7 @@ _TUI_CLEAR = "\\x1b[2J\\x1b[H\\x1b[3J"
 _FALLBACK_LAUNCH = f"""
 import fcntl, sys, termios
 fcntl.ioctl(0, termios.TIOCSCTTY, 0)  # this new session's controlling terminal, as a shell has
-from hermes_cli import main_tui_launch
+from hermes_agent.hermes_cli import main_tui_launch
 def argv(tui_dir, tui_dev, notices=None):
     print("fallback notice", file=sys.stderr)
     if notices is not None:
@@ -346,7 +346,7 @@ def test_runtime_node_comes_from_pm_without_legacy_repair(tmp_path, monkeypatch)
 
 @pytest.mark.platforms("linux")
 def test_tui_rebuild_preserves_the_prepared_desktop_and_web_union(tui_source):
-    from hermes_cli.source_build import build_update_products
+    from hermes_agent.hermes_cli.source_build import build_update_products
 
     root, acquired = tui_source
     build_update_products(root, desktop=True)

@@ -7,7 +7,7 @@ import http.client
 import secrets
 import uuid
 
-from hermes_cli.release_channels import (
+from hermes_agent.hermes_cli.release_channels import (
     ChannelError, ChannelNotFound, ChannelReader, artifact_key, build_prefix,
     canonical_json, channel_key, decode_json, package_versions, public_base as validate_public_base,
     validate_name, validate_record, validate_repository, validate_request, validate_manifest, require_sha256,
@@ -395,7 +395,7 @@ class ChannelPublisher:
             if policy is not None and record["head"] is not None:
                 from scripts.releases.semver import compare
                 from scripts.releases.stable import windows_version
-                from hermes_cli.update_channel import canary_timestamp
+                from hermes_agent.hermes_cli.update_channel import canary_timestamp
                 previous_head = record["head"]
                 previous = self.store.get(previous_head["manifestKey"])
                 if previous is None or hashlib.sha256(previous[0]).hexdigest() != previous_head["sha256"]:

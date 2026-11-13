@@ -9,7 +9,7 @@ import os
 
 import pytest
 
-from hermes_cli import config, managed_scope
+from hermes_agent.hermes_cli import config, managed_scope
 
 
 @pytest.fixture

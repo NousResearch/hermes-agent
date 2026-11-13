@@ -1,4 +1,4 @@
-"""Invariants for the canonical SQLite connect/transaction layer (``hermes_cli/sqlite_util.py``).
+"""Invariants for the canonical SQLite connect/transaction layer (``hermes_agent/hermes_cli/sqlite_util.py``).
 
 Every small store used to carry its own connect + PRAGMA + ``with conn:`` stack, so the #69567 fd-leak
 fix and the WAL fallback rules had to be re-pasted per module (and at least one copy missed each).
@@ -11,7 +11,7 @@ import sqlite3
 
 import pytest
 
-from hermes_cli import sqlite_util
+from hermes_agent.hermes_cli import sqlite_util
 
 
 def test_transaction_closes_the_connection_even_when_the_body_raises(tmp_path):
@@ -69,7 +69,7 @@ _STORE_OPENERS = (
     ("hermes_agent.cron.delivery_queue", "_connect"),
     ("hermes_agent.gateway.delivery_ledger", "_connect"),
     ("hermes_agent.tools.async_delegation", "_connect"),
-    ("hermes_cli.projects_db", "connect"),
+    ("hermes_agent.hermes_cli.projects_db", "connect"),
     ("hermes_agent.gateway.hosted_rooms_common", "open_sqlite"),
 )
 
@@ -103,7 +103,7 @@ def test_every_store_opens_through_the_canonical_open_db(monkeypatch, tmp_path, 
         monkeypatch.setattr(module, "open_db", spy)
     opener = getattr(module, attr)
     args = (tmp_path / "opened.db",) if module_name == "hermes_agent.gateway.hosted_rooms_common" else ()
-    if module_name == "hermes_cli.projects_db":
+    if module_name == "hermes_agent.hermes_cli.projects_db":
         args = (tmp_path / "projects.db",)
     conn = opener(*args)
     try:

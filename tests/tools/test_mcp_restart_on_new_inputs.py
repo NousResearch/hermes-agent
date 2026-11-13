@@ -53,7 +53,7 @@ def test_restart_only_when_resolved_launch_inputs_change(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setenv("DEMO_KEY", "first")
 
-    from hermes_cli.config import save_env_value
+    from hermes_agent.hermes_cli.config import save_env_value
     from hermes_agent.tools import mcp_tool_discovery as disc
     from hermes_agent.tools import mcp_tool_loop as _loop
     from hermes_agent.tools.mcp_tool_common import _core

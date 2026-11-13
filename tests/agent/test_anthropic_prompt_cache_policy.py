@@ -357,7 +357,7 @@ class TestCustomProviderOpenAIWireCapability:
             pytest.fail("unrelated built-in route performed custom capability lookup")
 
         monkeypatch.setattr(
-            "hermes_cli.config.get_custom_provider_model_capability",
+            "hermes_agent.hermes_cli.config.get_custom_provider_model_capability",
             unexpected_lookup,
         )
 
@@ -410,7 +410,7 @@ class TestCustomProviderOpenAIWireCapability:
         must stay off the network: get_provider must be called with
         allow_network=False so a cold models.dev cache cannot trigger a
         foreground registry download from the send path."""
-        import hermes_cli.providers as _providers
+        import hermes_agent.hermes_cli.providers as _providers
 
         seen: list = []
         real_get_provider = _providers.get_provider

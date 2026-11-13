@@ -1,4 +1,4 @@
-"""Regression tests for hermes_cli._ensure_utf8().
+"""Regression tests for hermes_agent.hermes_cli._ensure_utf8().
 
 Covers the crash class where the setup wizard (and other banner-printing
 commands) emit box-drawing characters and the ☤ glyph, which raise
@@ -15,7 +15,7 @@ import io
 import os
 import sys
 
-import hermes_cli
+from hermes_agent import hermes_cli
 
 
 # The exact glyphs the setup wizard / banners print (setup.py ~line 2962+).

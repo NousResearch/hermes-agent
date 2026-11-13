@@ -13,7 +13,7 @@ import threading
 
 import pytest
 
-import hermes_cli.update_receipt as ur
+import hermes_agent.hermes_cli.update_receipt as ur
 
 
 @pytest.fixture

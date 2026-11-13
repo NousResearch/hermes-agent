@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import argparse
 
-from hermes_cli.subcommands.cron import build_cron_parser
+from hermes_agent.hermes_cli.subcommands.cron import build_cron_parser
 
 
 def _sentinel_handler(args):  # pragma: no cover - only identity is asserted

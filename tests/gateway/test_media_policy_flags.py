@@ -90,7 +90,7 @@ def test_unknown_config_value_takes_the_restrictive_reading(homes, stored):
     the routed path and through the bridge."""
     launch, routed = homes
     from hermes_agent.gateway import media_policy
-    from hermes_cli.config import load_config
+    from hermes_agent.hermes_cli.config import load_config
 
     _write_gateway(routed, {"strict": stored, "trust_recent_files": stored})
     assert _under(routed, media_policy.media_delivery_strict) is True
@@ -108,7 +108,7 @@ def test_value_an_older_config_set_stored_keeps_its_meaning(homes, stored, expec
     the stored word must still decide both flags, on the routed path and through the bridge."""
     launch, routed = homes
     from hermes_agent.gateway import media_policy
-    from hermes_cli.config import load_config
+    from hermes_agent.hermes_cli.config import load_config
 
     _write_gateway(routed, {"strict": stored, "trust_recent_files": stored})
     assert _under(routed, media_policy.media_delivery_strict) is expected
@@ -180,7 +180,7 @@ def test_bridge_copies_the_same_reading_into_the_launch_env(homes):
     sees the env reads the policy the operator wrote."""
     launch, _ = homes
     from hermes_agent.gateway import media_policy
-    from hermes_cli.config import load_config
+    from hermes_agent.hermes_cli.config import load_config
 
     _write_gateway(launch, {"strict": "false", "trust_recent_files": "false"})
     media_policy.apply_media_policy_env(load_config())
@@ -196,7 +196,7 @@ def test_bridge_copies_the_same_reading_into_the_launch_env(homes):
 def test_bridge_still_bridges_plain_bools(homes):
     launch, _ = homes
     from hermes_agent.gateway import media_policy
-    from hermes_cli.config import load_config
+    from hermes_agent.hermes_cli.config import load_config
     import os
 
     _write_gateway(launch, {"strict": True, "trust_recent_files": False})
@@ -213,7 +213,7 @@ def test_cli_quoted_media_flags_enforce_strict_allowlist(homes, tmp_path, monkey
     configured allowlist must be rejected when strict is on and recency trust off.
     """
     launch, _ = homes
-    from hermes_cli.config import load_config, set_config_value
+    from hermes_agent.hermes_cli.config import load_config, set_config_value
     from hermes_agent.gateway import media_policy
     from hermes_agent.gateway.platforms.base import validate_media_delivery_path
 

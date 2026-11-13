@@ -23,7 +23,7 @@ from types import SimpleNamespace
 import pytest
 import hermes_yaml as yaml
 
-import hermes_cli.model_selection_guards as guards
+import hermes_agent.hermes_cli.model_selection_guards as guards
 import hermes_agent.tui_gateway.server as srv
 
 GUARDED_MODEL = "muse-spark-1.2-contributor"
@@ -37,9 +37,9 @@ def home(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
     # The profile write now validates through ``switch_model`` (catalog + credentials); these
     # tests pin the guard handshake, so echo the pick back as an accepted route.
-    from hermes_cli.model_switch import ModelSwitchResult
+    from hermes_agent.hermes_cli.model_switch import ModelSwitchResult
     monkeypatch.setattr(
-        "hermes_cli.model_switch.switch_model",
+        "hermes_agent.hermes_cli.model_switch.switch_model",
         lambda *, raw_input, explicit_provider, **_kw: ModelSwitchResult(
             success=True, new_model=raw_input, target_provider=explicit_provider))
     return hermes_home

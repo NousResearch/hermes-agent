@@ -69,8 +69,8 @@ async def test_exec_approval_content_stays_within_discord_cap_for_long_reason():
 
 @pytest.mark.asyncio
 async def test_exec_approval_view_honors_discord_timeout_with_request_id(monkeypatch):
-    import hermes_cli.config
-    monkeypatch.setattr(hermes_cli.config, "read_raw_config", lambda: {
+    import hermes_agent.hermes_cli.config
+    monkeypatch.setattr(hermes_agent.hermes_cli.config, "read_raw_config", lambda: {
         "approvals": {"timeout": 7200, "discord_prompt_timeout": 3600},
     })
     adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))

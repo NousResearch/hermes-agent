@@ -20,7 +20,7 @@ def _oauth_row(provider, token, *, row_id="shared", priority=0):
 def test_quick_snapshot_restore_keeps_live_oauth_and_restores_static_auth(
     tmp_path, monkeypatch
 ):
-    from hermes_cli.backup import restore_quick_snapshot
+    from hermes_agent.hermes_cli.backup import restore_quick_snapshot
 
     home = tmp_path / ".hermes"
     home.mkdir()
@@ -89,7 +89,7 @@ def test_quick_snapshot_restore_keeps_live_oauth_and_restores_static_auth(
 
 def test_auth_refusal_is_not_hidden_by_another_restored_file(tmp_path, monkeypatch, capsys):
     """A partial restore must not report success after refusing the auth store (#127010)."""
-    from hermes_cli.backup import restore_quick_snapshot
+    from hermes_agent.hermes_cli.backup import restore_quick_snapshot
 
     snap_id = "20260101-000000-pre-update"
     home = tmp_path / "home"
@@ -115,7 +115,7 @@ def test_auth_refusal_is_not_hidden_by_another_restored_file(tmp_path, monkeypat
     # The /snapshot restore caller must not report an existing snapshot as missing.
     from types import SimpleNamespace
 
-    from hermes_cli.cli_commands_mixin import CLICommandsMixin, _t
+    from hermes_agent.hermes_cli.cli_commands_mixin import CLICommandsMixin, _t
 
     capsys.readouterr()
     CLICommandsMixin._snapshot_restore(SimpleNamespace(), ["/snapshot", "restore", snap_id])

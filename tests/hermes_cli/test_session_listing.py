@@ -1,8 +1,8 @@
-"""Tests for the shared session-listing helpers (hermes_cli/session_listing.py)."""
+"""Tests for the shared session-listing helpers (hermes_agent/hermes_cli/session_listing.py)."""
 
 import pytest
 
-from hermes_cli.session_listing import (
+from hermes_agent.hermes_cli.session_listing import (
     format_gateway_session_listing,
     query_session_listing,
 )

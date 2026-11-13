@@ -29,7 +29,7 @@ def switch_deferred_by_reset(agent, reason: FailoverReason | None, reset_at) -> 
     if reason not in _RATE_LIMIT_FAILOVER_REASONS or getattr(agent, "_fallback_activated", False):
         return False
     try:
-        from hermes_cli.config import load_config
+        from hermes_agent.hermes_cli.config import load_config
         threshold = float((load_config() or {}).get("fallback", {}).get("min_switch_reset_seconds") or 0)
     except Exception:
         return False
@@ -46,7 +46,7 @@ def _on_primary_route(agent) -> bool:
     """True when the agent's live route IS the ``_primary_runtime`` snapshot: provider, model and
     endpoint, the triple that keys a fallback entry (``_fallback_entry_key``). A provider name
     alone is not an identity: two ``custom`` endpoints (or one provider's other model) share it."""
-    from hermes_cli.route_identity import normalize_route_base_url
+    from hermes_agent.hermes_cli.route_identity import normalize_route_base_url
     rt = getattr(agent, "_primary_runtime", None) or {}
     if not str(rt.get("provider") or "").strip():
         return False
@@ -139,5 +139,5 @@ def _is_entitlement_rejected(agent, provider: str, model: str) -> bool:
         return False
     if (provider, model) in rejected:
         return True
-    from hermes_cli.model_normalize import normalize_model_for_provider
+    from hermes_agent.hermes_cli.model_normalize import normalize_model_for_provider
     return (provider, normalize_model_for_provider(model, provider)) in rejected

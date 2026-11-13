@@ -1,10 +1,10 @@
-"""Unit tests for hermes_cli.xai_retirement (May 15, 2026 model retirement)."""
+"""Unit tests for hermes_agent.hermes_cli.xai_retirement (May 15, 2026 model retirement)."""
 from __future__ import annotations
 
 
 import hermes_yaml as yaml
 
-from hermes_cli.xai_retirement import (
+from hermes_agent.hermes_cli.xai_retirement import (
     RetirementIssue,
     _RETIRED_MODELS,
     _looks_like_xai,

@@ -13,12 +13,12 @@ from pathlib import Path
 
 import pytest
 
-import hermes_cli.web_routers.cron as _rt_cron
+import hermes_agent.hermes_cli.web_routers.cron as _rt_cron
 
 
 @pytest.fixture()
 def homes(tmp_path, monkeypatch):
-    from hermes_cli import profiles
+    from hermes_agent.hermes_cli import profiles
 
     default_home = tmp_path / ".hermes"
     profiles_root = default_home / "profiles"

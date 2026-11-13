@@ -55,7 +55,7 @@ def test_settings_writes_the_plugin_namespace_and_refuses_secrets_and_bad_types(
     resp = _manage(action="settings", key="demo-plugin", values={"api_url": "https://real.invalid", "retries": 2, "mode": "careful"})
 
     assert resp["result"]["ok"] is True and sorted(resp["result"]["written"]) == ["api_url", "mode", "retries"]
-    from hermes_cli.config import load_config_readonly
+    from hermes_agent.hermes_cli.config import load_config_readonly
     assert load_config_readonly()["plugins"]["entries"]["demo-plugin"]["settings"] == {
         "api_url": "https://real.invalid", "retries": 2, "mode": "careful"}
     refreshed = {f["key"]: f["value"] for f in resp["result"]["plugin"]["settings_schema"] if "value" in f}
@@ -95,7 +95,7 @@ def test_portable_plugin_json_schema_lists_and_saves_like_a_native_one(plugins_h
 
     resp = _manage(action="settings", key="portable-demo", values={"show_chip": False})
     assert resp["result"]["written"] == ["show_chip"]
-    from hermes_cli.config import load_config_readonly
+    from hermes_agent.hermes_cli.config import load_config_readonly
     assert load_config_readonly()["plugins"]["entries"]["portable-demo"]["settings"] == {"show_chip": False}
     assert sent == [("plugin.portable-demo.settings.changed", {"written": ["show_chip"]})]
     assert _manage(action="settings", key="portable-demo", values={"api_key": "leak"})["error"]["code"] == 4021

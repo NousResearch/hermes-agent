@@ -24,7 +24,7 @@ def test_planted_dotenv_line_does_not_strip_launch_managed_dir(tmp_path, monkeyp
     import hermes_constants
     monkeypatch.setattr(hermes_constants, "_default_hermes_root_memo", None)
 
-    from hermes_cli.web_server_gateway import _profile_action_environment
+    from hermes_agent.hermes_cli.web_server_gateway import _profile_action_environment
 
     env = _profile_action_environment(["-p", "other", "gateway", "status"])
     assert env["HERMES_HOME"] == str(root / "profiles" / "other")

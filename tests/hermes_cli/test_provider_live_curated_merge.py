@@ -14,7 +14,7 @@ Guards two contracts:
 
 from unittest.mock import MagicMock, patch
 
-from hermes_cli.models import (
+from hermes_agent.hermes_cli.models import (
     _LIVE_FIRST_PICKER_PROVIDERS,
     provider_model_ids,
 )
@@ -42,10 +42,10 @@ class TestGenericProviderLiveCuratedMerge:
         with (
             patch("hermes_agent.providers.get_provider_profile", return_value=profile),
             patch(
-                "hermes_cli.auth.resolve_api_key_provider_credentials",
+                "hermes_agent.hermes_cli.auth.resolve_api_key_provider_credentials",
                 return_value={"api_key": "k", "base_url": ""},
             ),
-            patch.dict("hermes_cli.models._PROVIDER_MODELS", {"zai": curated}),
+            patch.dict("hermes_agent.hermes_cli.models._PROVIDER_MODELS", {"zai": curated}),
         ):
             result = provider_model_ids("zai")
 
@@ -64,10 +64,10 @@ class TestGenericProviderLiveCuratedMerge:
         with (
             patch("hermes_agent.providers.get_provider_profile", return_value=self._make_profile(live)),
             patch(
-                "hermes_cli.auth.resolve_api_key_provider_credentials",
+                "hermes_agent.hermes_cli.auth.resolve_api_key_provider_credentials",
                 return_value={"api_key": "k", "base_url": ""},
             ),
-            patch.dict("hermes_cli.models._PROVIDER_MODELS", {"zai": ["c", "b"]}),
+            patch.dict("hermes_agent.hermes_cli.models._PROVIDER_MODELS", {"zai": ["c", "b"]}),
         ):
             zai_result = set(provider_model_ids("zai"))
         assert {"a", "b", "c"} <= zai_result
@@ -76,10 +76,10 @@ class TestGenericProviderLiveCuratedMerge:
         with (
             patch("hermes_agent.providers.get_provider_profile", return_value=self._make_profile(live)),
             patch(
-                "hermes_cli.auth.resolve_api_key_provider_credentials",
+                "hermes_agent.hermes_cli.auth.resolve_api_key_provider_credentials",
                 return_value={"api_key": "k", "base_url": ""},
             ),
-            patch.dict("hermes_cli.models._PROVIDER_MODELS", {"opencode-zen": ["c", "b"]}),
+            patch.dict("hermes_agent.hermes_cli.models._PROVIDER_MODELS", {"opencode-zen": ["c", "b"]}),
         ):
             zen_result = set(provider_model_ids("opencode-zen"))
         assert {"a", "b", "c"} <= zen_result
@@ -95,7 +95,7 @@ class TestGenericProviderLiveCuratedMerge:
         with (
             patch("hermes_agent.providers.get_provider_profile", return_value=self._make_profile(live)),
             patch(
-                "hermes_cli.auth.resolve_api_key_provider_credentials",
+                "hermes_agent.hermes_cli.auth.resolve_api_key_provider_credentials",
                 return_value={"api_key": "k", "base_url": ""},
             ),
         ):
@@ -116,7 +116,7 @@ class TestGenericProviderLiveCuratedMerge:
         with (
             patch("hermes_agent.providers.get_provider_profile", return_value=self._make_profile(live)),
             patch(
-                "hermes_cli.auth.resolve_api_key_provider_credentials",
+                "hermes_agent.hermes_cli.auth.resolve_api_key_provider_credentials",
                 return_value={"api_key": "k", "base_url": ""},
             ),
         ):
@@ -131,7 +131,7 @@ class TestGenericProviderLiveCuratedMerge:
         with (
             patch("hermes_agent.providers.get_provider_profile", return_value=self._make_profile(None)),
             patch(
-                "hermes_cli.auth.resolve_api_key_provider_credentials",
+                "hermes_agent.hermes_cli.auth.resolve_api_key_provider_credentials",
                 return_value={"api_key": "", "base_url": ""},
             ),
             patch("hermes_agent.agent.models_dev.list_agentic_models", return_value=["x-preview-f-free", "kimi-k3"]),

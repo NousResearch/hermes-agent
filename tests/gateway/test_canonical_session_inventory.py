@@ -26,7 +26,7 @@ async def test_created_session_snapshot_carries_inventory_for_frozen_toolsets(tm
     from hermes_agent.gateway.session import SessionStore
     from hermes_agent.gateway.session_authority import initialize_session_authority
     from hermes_agent.gateway.session_controls import AuthorityConnection
-    from hermes_cli import banner
+    from hermes_agent.hermes_cli import banner
     from hermes_agent.tui_gateway.contracts.registry import CANONICAL_METHODS
 
     home = tmp_path / 'home'
@@ -85,8 +85,8 @@ async def test_cli_surface_snapshot_carries_main_cli_toolsets_and_startup_warnin
     from hermes_agent.gateway.session import SessionStore
     from hermes_agent.gateway.session_authority import initialize_session_authority
     from hermes_agent.gateway.session_controls import AuthorityConnection
-    from hermes_cli import banner
-    from hermes_cli.tools_config import _get_platform_tools
+    from hermes_agent.hermes_cli import banner
+    from hermes_agent.hermes_cli.tools_config import _get_platform_tools
 
     home = tmp_path / 'home'
     home.mkdir()
@@ -107,7 +107,7 @@ async def test_cli_surface_snapshot_carries_main_cli_toolsets_and_startup_warnin
         assert 'result' in reply, reply
         return reply['result']
 
-    from hermes_cli.config import load_config
+    from hermes_agent.hermes_cli.config import load_config
     cli = (await call('session.create', request_id='cli', source='cli', cwd=str(repo)))['info']
     assert cli['enabled_toolsets'] == sorted(_get_platform_tools(load_config(), 'cli'))
     assert isinstance(cli['tool_availability_warnings'], list)
@@ -126,7 +126,7 @@ async def test_cli_surface_counts_kanban_skills_like_main_cli_without_leaking(tm
     from hermes_agent.gateway.session import SessionStore
     from hermes_agent.gateway.session_authority import initialize_session_authority
     from hermes_agent.gateway.session_controls import AuthorityConnection
-    from hermes_cli import banner
+    from hermes_agent.hermes_cli import banner
     from hermes_agent.tools.skills_tool import find_all_skills
 
     home = tmp_path / 'home'

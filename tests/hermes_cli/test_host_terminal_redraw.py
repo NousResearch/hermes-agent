@@ -7,9 +7,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from hermes_cli import web_host_terminal_sessions
-from hermes_cli.pty_session import PtySession
-from hermes_cli.web_host_terminal_sessions import HostOwner, _pump_input, _resize
+from hermes_agent.hermes_cli import web_host_terminal_sessions
+from hermes_agent.hermes_cli.pty_session import PtySession
+from hermes_agent.hermes_cli.web_host_terminal_sessions import HostOwner, _pump_input, _resize
 from tests.waiting import async_wait_until
 
 # Programs that, like Node's stdout 'resize' event (Hermes' TUI redraws on it), report a size only
@@ -75,7 +75,7 @@ async def test_a_resize_back_waits_until_the_program_answered_the_step(tmp_path,
     so the foreground program redraws. Applied back to back, both SIGWINCHes can reach the program
     after the size is back where it was: it sees no change and does not redraw. The step back waits
     until the program has answered the first step, so a real program sees both sizes."""
-    from hermes_cli.pty_bridge import PtyBridge
+    from hermes_agent.hermes_cli.pty_bridge import PtyBridge
 
     if watcher == "node":
         node = shutil.which("node")

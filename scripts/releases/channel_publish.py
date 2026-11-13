@@ -8,7 +8,7 @@ import os
 from pathlib import Path
 import tempfile
 
-from hermes_cli.release_channels import ChannelReader, build_prefix, canonical_json, decode_json, require_sha256, validate_request
+from hermes_agent.hermes_cli.release_channels import ChannelReader, build_prefix, canonical_json, decode_json, require_sha256, validate_request
 from scripts.releases import commit_build, handoff, r2
 from scripts.releases.desktop_targets import MANIFEST_PLATFORM, NATIVE_LEGS, TARGETS
 REQUIRED_JOBS = ("validate", "build-darwin-arm64",
@@ -134,7 +134,7 @@ def assemble(request: dict, root: Path, *, needs: dict) -> tuple[dict, list[Path
 
 def publish_receiver(request: dict, root: Path, *, needs: dict, publisher) -> dict:
     from scripts.releases.channel_disposable import require_receiver_scope
-    from hermes_cli.release_channels import channel_key, validate_manifest
+    from hermes_agent.hermes_cli.release_channels import channel_key, validate_manifest
 
     require_receiver_scope(publisher)
     if not receiver_request(request) or publisher.request(request["buildId"]) != request:

@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from hermes_cli import update_cmd, update_cmd_fleet, update_receipt
+from hermes_agent.hermes_cli import update_cmd, update_cmd_fleet, update_receipt
 from hermes_constants import get_hermes_home
 
 

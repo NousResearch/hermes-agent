@@ -14,7 +14,7 @@ _OS = {"darwin": "macos", "win32": "windows"}
 
 def read_facts(*, facts_source: str = "local", locale: str | None = None) -> Facts:
     """``locale``: the desktop's UI language, preferred over the backend OS locale for wording."""
-    from hermes_cli.plugin_catalog_presence import onboarding_names
+    from hermes_agent.hermes_cli.plugin_catalog_presence import onboarding_names
     from hermes_platform.host.summary import summary
     from hermes_agent.tools.tour_tool import check_tours_enabled
 

@@ -11,7 +11,7 @@ import pytest
 async def test_resume_displays_unknown_and_queue_then_discards_with_refreshed_generation(monkeypatch, capsys):
     from websockets.asyncio.server import serve
 
-    from hermes_cli import gateway_chat
+    from hermes_agent.hermes_cli import gateway_chat
 
     unknown_id = "admission-unknown-0123456789abcdef0123456789abcdef"
     queued_id = "admission-queued-fedcba9876543210fedcba9876543210"

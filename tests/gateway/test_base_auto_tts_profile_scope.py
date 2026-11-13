@@ -76,7 +76,7 @@ async def test_voice_note_auto_tts_reads_the_routed_profiles_settings(tmp_path, 
     seen = []
 
     def provider_reads_its_setting():
-        from hermes_cli.config import get_env_value
+        from hermes_agent.hermes_cli.config import get_env_value
         seen.append(get_env_value("PROBE_TTS_BASE_URL"))  # raises UnscopedSecretError with no scope
         return True
 

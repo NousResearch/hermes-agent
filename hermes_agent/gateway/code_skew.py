@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from hermes_cli._startup_fast import project_root_str
+from hermes_agent.hermes_cli._startup_fast import project_root_str
 
 _PROJECT_ROOT = Path(project_root_str())
 _boot_fingerprint: str | None = None
@@ -20,9 +20,9 @@ _boot_fingerprint: str | None = None
 
 def _fingerprint() -> str | None:
     """Current checkout fingerprint via the CLI's worktree-aware git-rev reader
-    (``hermes_cli.main`` is always already imported in a gateway process)."""
+    (``hermes_agent.hermes_cli.main`` is always already imported in a gateway process)."""
     try:
-        from hermes_cli.main import _read_git_revision_fingerprint
+        from hermes_agent.hermes_cli.main import _read_git_revision_fingerprint
 
         return _read_git_revision_fingerprint(_PROJECT_ROOT)
     except Exception:

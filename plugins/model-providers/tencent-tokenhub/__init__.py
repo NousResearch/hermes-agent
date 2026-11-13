@@ -4,7 +4,7 @@ Request quirk: top-level ``reasoning_effort``, clamped to TokenHub's low/medium/
 when thinking is off; a main-loop turn with no configured effort sends ``high``.
 
 Endpoint, ``TOKENHUB_API_KEY``, aliases and the static Hy model list stay in
-``hermes_cli/auth.py`` / ``hermes_cli/models_catalog_static.py``. ``base_url`` is left empty so
+``hermes_agent/hermes_cli/auth.py`` / ``hermes_agent/hermes_cli/models_catalog_static.py``. ``base_url`` is left empty so
 model listing keeps today's paths: first-time setup probes ``{base}/models`` through the generic
 fallback and the ``/model`` picker serves the curated list. The doctor probe stays off.
 """

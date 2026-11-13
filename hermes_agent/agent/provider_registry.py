@@ -2,7 +2,7 @@
 
 Every pluggable-backend registry has the same shape: a global name->provider map
 plus per-profile *scoped* maps (multiplexed gateways), a lock, registration with
-re-registration logging, and the snapshot/restore pair :mod:`hermes_cli.plugins`
+re-registration logging, and the snapshot/restore pair :mod:`hermes_agent.hermes_cli.plugins`
 uses to unwind a plugin. Each ``*_registry`` module instantiates one
 :class:`ProviderRegistry` and re-exports its bound methods under the historical
 module-level names via :meth:`ProviderRegistry.export`, so ``patch("agent.x_registry.get_provider")``
@@ -192,7 +192,7 @@ def configured_provider_name(section: str, logger: logging.Logger) -> Optional[s
     selection to ``fal`` (the FAL plugin services it via the managed gateway)."""
     configured: Optional[str] = None
     try:
-        from hermes_cli.config import load_config_readonly
+        from hermes_agent.hermes_cli.config import load_config_readonly
         cfg = load_config_readonly()
         block = cfg.get(section) if isinstance(cfg, dict) else None
         raw = block.get("provider") if isinstance(block, dict) else None

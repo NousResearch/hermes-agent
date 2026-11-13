@@ -10,9 +10,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from hermes_cli import resource_limits
-from hermes_cli import dashboard_procs
-from hermes_cli import main_dashboard
+from hermes_agent.hermes_cli import resource_limits
+from hermes_agent.hermes_cli import dashboard_procs
+from hermes_agent.hermes_cli import main_dashboard
 
 
 class _FakeResource:
@@ -124,7 +124,7 @@ def test_fresh_process_import_without_posix_resource_is_a_safe_noop():
     subprocess.run(
         [sys.executable, "-c", code, resource_limits.__file__],
         check=True,
-        cwd=Path(resource_limits.__file__).resolve().parents[1],
+        cwd=Path(resource_limits.__file__).resolve().parents[2],
         capture_output=True,
         text=True,
     )
@@ -204,10 +204,10 @@ async def test_gateway_startup_applies_limit_before_gateway_initialization(monke
 
 
 def test_serve_startup_applies_limit_before_web_server(monkeypatch):
-    from hermes_cli import main as cli_main
-    from hermes_cli import main_web_build
-    import hermes_cli.plugins
-    import hermes_cli.web_server
+    from hermes_agent.hermes_cli import main as cli_main
+    from hermes_agent.hermes_cli import main_web_build
+    import hermes_agent.hermes_cli.plugins
+    import hermes_agent.hermes_cli.web_server
 
     # cmd_dashboard(headless_backend=True) exports HERMES_SERVE_HEADLESS=1 into
     # this process's environment (main.py serve path). Touch the key through
@@ -226,10 +226,10 @@ def test_serve_startup_applies_limit_before_web_server(monkeypatch):
     monkeypatch.setattr(cli_main, "_build_web_ui", lambda *args, **kwargs: True)
     monkeypatch.setattr(main_web_build, "_build_web_ui", lambda *args, **kwargs: True)
     monkeypatch.setattr(cli_main, "_maybe_setup_dashboard_auth_interactively", lambda args: None)
-    monkeypatch.setattr(hermes_cli.plugins, "discover_plugins", lambda: None)
+    monkeypatch.setattr(hermes_agent.hermes_cli.plugins, "discover_plugins", lambda: None)
     served: dict = {}
     monkeypatch.setattr(
-        hermes_cli.web_server,
+        hermes_agent.hermes_cli.web_server,
         "start_server",
         lambda **kwargs: (calls.append("server"), served.update(kwargs)),
     )
@@ -261,8 +261,8 @@ def test_serve_startup_applies_limit_before_web_server(monkeypatch):
 @pytest.mark.platforms("linux")
 def test_named_profile_reroute_defers_limit_to_final_process(monkeypatch, tmp_path):
     """The launcher profile must not leak its limit across machine re-exec."""
-    from hermes_cli import main as cli_main
-    import hermes_cli.profiles
+    from hermes_agent.hermes_cli import main as cli_main
+    import hermes_agent.hermes_cli.profiles
     import hermes_constants
     from hermes_agent.tools.environments import local as local_environment
 
@@ -276,7 +276,7 @@ def test_named_profile_reroute_defers_limit_to_final_process(monkeypatch, tmp_pa
         lambda: calls.append("limit"),
     )
     monkeypatch.setattr(
-        hermes_cli.profiles,
+        hermes_agent.hermes_cli.profiles,
         "get_active_profile_name",
         lambda: "worker",
     )
@@ -320,15 +320,15 @@ def test_named_profile_reroute_defers_limit_to_final_process(monkeypatch, tmp_pa
         cli_main.cmd_dashboard(args)
 
     assert calls == []
-    assert exec_call["argv"][1:5] == ["-m", "hermes_cli.main", "-p", "default"]
+    assert exec_call["argv"][1:5] == ["-m", "hermes_agent.hermes_cli.main", "-p", "default"]
     assert exec_call["env"]["HERMES_HOME"] == str(tmp_path)
 
 
 @pytest.mark.parametrize("lifecycle_flag", ["status", "stop"])
 def test_dashboard_lifecycle_flags_skip_limit_adjustment(monkeypatch, lifecycle_flag):
     """Informational/stop-only commands must not mutate process limits."""
-    from hermes_cli import main as cli_main
-    import hermes_cli.main_dashboard as hermes_cli_main_dashboard
+    from hermes_agent.hermes_cli import main as cli_main
+    import hermes_agent.hermes_cli.main_dashboard as hermes_cli_main_dashboard
 
     calls: list[str] = []
     monkeypatch.setattr(

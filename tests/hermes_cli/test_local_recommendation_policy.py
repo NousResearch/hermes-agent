@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from hermes_cli.local_runtime.catalog import recommended_entry, select_variant
-from hermes_cli.local_runtime.estimator import HardwareBudget
+from hermes_agent.hermes_cli.local_runtime.catalog import recommended_entry, select_variant
+from hermes_agent.hermes_cli.local_runtime.estimator import HardwareBudget
 
 _GIB = 1 << 30
 
@@ -43,7 +43,7 @@ def test_24gb_discrete_card_recommends_resident_qwen_27b():
 
 
 def test_spilled_model_remains_explicitly_browseable_on_16gb():
-    from hermes_cli.local_runtime.catalog import CATALOG
+    from hermes_agent.hermes_cli.local_runtime.catalog import CATALOG
 
     entry = next(e for e in CATALOG if e.id == "qwen3.8-27b")
     choice = select_variant(entry, _discrete(16))

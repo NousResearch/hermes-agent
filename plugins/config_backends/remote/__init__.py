@@ -22,7 +22,7 @@ def get_remote_backend() -> RemoteBackend:
 
 
 def get_backend() -> RemoteBackend:
-    """The entry point ``hermes_cli.config_backend`` resolves ``HERMES_CONFIG_BACKEND=remote`` to."""
+    """The entry point ``hermes_agent.hermes_cli.config_backend`` resolves ``HERMES_CONFIG_BACKEND=remote`` to."""
     return get_remote_backend()
 
 

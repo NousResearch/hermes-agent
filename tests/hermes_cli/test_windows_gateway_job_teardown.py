@@ -20,7 +20,7 @@ Two fixes under test:
    updater's Job Object teardown.
 """
 
-from hermes_cli import gateway
+from hermes_agent.hermes_cli import gateway
 
 # ---------------------------------------------------------------------------
 # 1. Watcher template contract

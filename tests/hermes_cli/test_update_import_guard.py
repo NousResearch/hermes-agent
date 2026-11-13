@@ -21,8 +21,8 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli import update_cmd
-from hermes_cli import update_cmd_validation
+from hermes_agent.hermes_cli import update_cmd
+from hermes_agent.hermes_cli import update_cmd_validation
 from hermes_constants import partial_update_hint
 
 def _write_skewed_tree(root: Path, *, skewed: bool) -> None:
@@ -43,7 +43,7 @@ def test_syntax_guard_passes_but_import_guard_catches_skew(monkeypatch, probe_ro
     _write_skewed_tree(probe_root, skewed=True)
 
     # Both files are valid Python -- the syntax guard sees nothing wrong.
-    from hermes_cli import update_cmd_commit
+    from hermes_agent.hermes_cli import update_cmd_commit
 
     assert update_cmd_commit.tree_syntax_error(probe_root, ("consumer.py", "provider/thing.py")) is None, (
         "sanity: the skewed tree must parse cleanly")

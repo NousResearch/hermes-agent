@@ -28,7 +28,7 @@ _JSON_BLOCK_RE = re.compile(r"\{[\s\S]*\}", re.MULTILINE)
 def _load_xai_web_config() -> dict[str, Any]:
     """Read ``web.xai`` from config.yaml (returns {} on miss)."""
     try:
-        from hermes_cli.config import load_config
+        from hermes_agent.hermes_cli.config import load_config
         cfg = load_config()
         for key in ("web", "xai"):
             cfg = cfg.get(key) if isinstance(cfg, dict) else None

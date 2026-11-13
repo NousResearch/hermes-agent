@@ -73,7 +73,7 @@ def _agent_provider_refusal(agent: Any) -> Optional[str]:
     provider, codex app-server, a client declaring ``SUPPORTS_HERMES_TOOL_CALLS = False``)
     runs its own tools on the remote side, which no client-side drop can stop."""
     from hermes_agent.agent.background_review import _parent_can_emit_tool_calls
-    from hermes_cli.runtime_provider_backends import _is_external_process_provider
+    from hermes_agent.hermes_cli.runtime_provider_backends import _is_external_process_provider
 
     if agent.provider == "moa":
         return "moa"

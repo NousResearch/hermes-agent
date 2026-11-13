@@ -1,4 +1,4 @@
-"""Unit tests for hermes_cli.security_audit — parsers + OSV plumbing.
+"""Unit tests for hermes_agent.hermes_cli.security_audit — parsers + OSV plumbing.
 
 These never hit the live OSV API; HTTP is monkeypatched. The live-call path
 is exercised in the E2E test embedded in PR validation, not here.
@@ -12,7 +12,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 
-from hermes_cli import security_audit as sa
+from hermes_agent.hermes_cli import security_audit as sa
 
 
 # ─── Parsers ──────────────────────────────────────────────────────────────────
@@ -103,7 +103,7 @@ class TestVenvDiscovery:
     """Regression: source/PM installs carry hermes-agent 0.0.0, which matches every advisory."""
 
     def _versions(self, monkeypatch, base_version):
-        from hermes_cli import version_info
+        from hermes_agent.hermes_cli import version_info
 
         dists = [SimpleNamespace(metadata={"Name": n}, version="0.0.0") for n in ("hermes_agent", "requests")]
         monkeypatch.setattr("importlib.metadata.distributions", lambda: dists)

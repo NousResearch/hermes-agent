@@ -599,7 +599,7 @@ hermes kanban gc [--event-retention-days N]            # 工作区 + 旧事件 +
 
 ## `/kanban` 斜杠命令 {#kanban-slash-command}
 
-每个 `hermes kanban <action>` 动词也可以作为 `/kanban <action>` 访问 —— 从交互式 `hermes chat` 会话内部**以及**从任何 gateway 平台（Telegram、Discord、Slack、WhatsApp、Signal、Matrix、Mattermost、电子邮件、SMS）。两个界面都调用完全相同的 `hermes_cli.kanban.run_slash()` 入口点，该入口点复用 `hermes kanban` argparse 树，因此参数界面、标志和输出格式在 CLI、`/kanban` 和 `hermes kanban` 之间完全相同。你不必离开聊天来驱动看板。
+每个 `hermes kanban <action>` 动词也可以作为 `/kanban <action>` 访问 —— 从交互式 `hermes chat` 会话内部**以及**从任何 gateway 平台（Telegram、Discord、Slack、WhatsApp、Signal、Matrix、Mattermost、电子邮件、SMS）。两个界面都调用完全相同的 `hermes_agent.hermes_cli.kanban.run_slash()` 入口点，该入口点复用 `hermes kanban` argparse 树，因此参数界面、标志和输出格式在 CLI、`/kanban` 和 `hermes kanban` 之间完全相同。你不必离开聊天来驱动看板。
 
 ```
 /kanban list
@@ -708,7 +708,7 @@ EOF
 在大规模并行战役中，某些文件会成为碰撞磁石：许多 worker 各自往同一个文件里添加一点内容，没有人负责保持它精简，它于是成为持续合并冲突的发生地。缓解方式是一种注释约定，而非新原语。当 worker 发现自己的 diff 在某个文件上不断与兄弟分支冲突，或它触碰的某个文件反复出现在其他卡片最近的评论中时，不应默默继续叠加改动，而应在自己的卡片上留下带有可识别前缀的评论：
 
 ```
-hotspot: hermes_cli/kanban_db.py — 本轮对 dispatch 循环的第三次冲突性编辑
+hotspot: hermes_agent/hermes_cli/kanban_db.py — 本轮对 dispatch 循环的第三次冲突性编辑
 ```
 
 并在完成时的 `metadata` 中重复该标记。编排者（或查看看板的人类）如果看到**两条或更多 `hotspot:` 评论指向同一路径**，应在继续排入任何触碰该文件的工作**之前**，为该文件创建一张专门的重构/分解卡片 —— 拆分磁石文件比调解它未来引发的每一次冲突更便宜。对于*已经*发生的冲突，请使用上文的调解卡片模式配合 `agent-merge-conflict-arbiter` 技能；hotspot 标记是上游修复，能避免调解者变成一条常设车道。

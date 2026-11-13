@@ -2,7 +2,7 @@
 
 Profiles are islands (93889b770da): a bare ``hermes auth`` / ``hermes model`` from a named
 profile's error text re-signs the ROOT store, which is exactly the loop #114012 measured.
-Every relogin hint raised by ``hermes_cli/auth_codex.py`` and appended by
+Every relogin hint raised by ``hermes_agent/hermes_cli/auth_codex.py`` and appended by
 ``format_auth_error`` must carry the ``-p <profile>`` selector under a profile HERMES_HOME.
 """
 
@@ -12,8 +12,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from hermes_cli.auth import AuthError, _read_codex_tokens, format_auth_error
-from hermes_cli.auth_codex import _codex_refresh_failure_error
+from hermes_agent.hermes_cli.auth import AuthError, _read_codex_tokens, format_auth_error
+from hermes_agent.hermes_cli.auth_codex import _codex_refresh_failure_error
 
 
 @pytest.fixture

@@ -777,10 +777,10 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
 
 def interactive_setup() -> None:
     """Configure DingTalk — QR scan (recommended) or manual credential entry."""
-    from hermes_cli.config import save_env_value
-    from hermes_cli.setup import prompt_choice
-    from hermes_cli.cli_output import prompt, print_header, print_success, print_warning
-    from hermes_cli.setup_platforms import declines_reconfigure
+    from hermes_agent.hermes_cli.config import save_env_value
+    from hermes_agent.hermes_cli.setup import prompt_choice
+    from hermes_agent.hermes_cli.cli_output import prompt, print_header, print_success, print_warning
+    from hermes_agent.hermes_cli.setup_platforms import declines_reconfigure
     print_header("DingTalk")
     if declines_reconfigure("DingTalk", "Reconfigure DingTalk?", "DINGTALK_CLIENT_ID"):
         return
@@ -788,7 +788,7 @@ def interactive_setup() -> None:
     result = None
     if prompt_choice("Choose setup method", choices, default=0) == 0:
         try:
-            from hermes_cli.dingtalk_auth import dingtalk_qr_auth
+            from hermes_agent.hermes_cli.dingtalk_auth import dingtalk_qr_auth
             result = dingtalk_qr_auth()
             if result is None:
                 print_warning("QR auth incomplete, falling back to manual input.")

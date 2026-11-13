@@ -15,7 +15,7 @@ description: >
 author: sprmn24
 # ``requires_env`` and ``optional_env`` entries are surfaced in the
 # ``hermes config`` UI via the platform-plugin env var injector in
-# ``hermes_cli/config.py``.
+# ``hermes_agent/hermes_cli/config.py``.
 requires_env:
   - name: NTFY_TOPIC
     description: "Topic name to subscribe to (e.g. hermes-in)"

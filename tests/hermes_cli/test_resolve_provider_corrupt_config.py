@@ -8,7 +8,7 @@ PAID openrouter provider, even though the user's real (broken) config may name
 a completely different provider (e.g. ``openai-codex``). Real money, zero
 consent.
 
-The fix: ``hermes_cli.config`` records active parse failures
+The fix: ``hermes_agent.hermes_cli.config`` records active parse failures
 (``get_active_config_parse_failure``), and ``resolve_provider`` refuses
 env/pool auto-adoption with ``AuthError(code='corrupt_config')`` while the
 active config is corrupt. Explicit provider requests and valid-config
@@ -49,7 +49,7 @@ def _setup_home(tmp_path, monkeypatch, config_text):
 
 def _load_config_fresh():
     """Call load_config so a corrupt file goes through the warn/record funnel."""
-    from hermes_cli.config import load_config
+    from hermes_agent.hermes_cli.config import load_config
 
     return load_config()
 
@@ -59,7 +59,7 @@ class TestParseFailureProbe:
         _home, _cfg = _setup_home(tmp_path, monkeypatch, CORRUPT_YAML)
         _load_config_fresh()
 
-        from hermes_cli.config_read_errors import get_active_config_parse_failure
+        from hermes_agent.hermes_cli.config_read_errors import get_active_config_parse_failure
 
         err = get_active_config_parse_failure()
         assert err, "expected an active parse failure to be reported"
@@ -68,7 +68,7 @@ class TestParseFailureProbe:
         _home, cfg = _setup_home(tmp_path, monkeypatch, CORRUPT_YAML)
         _load_config_fresh()
 
-        from hermes_cli.config_read_errors import get_active_config_parse_failure
+        from hermes_agent.hermes_cli.config_read_errors import get_active_config_parse_failure
 
         assert get_active_config_parse_failure()
         cfg.write_text(VALID_YAML)  # user fixes the YAML — different size/mtime
@@ -78,7 +78,7 @@ class TestParseFailureProbe:
         _setup_home(tmp_path, monkeypatch, VALID_YAML)
         _load_config_fresh()
 
-        from hermes_cli.config_read_errors import get_active_config_parse_failure
+        from hermes_agent.hermes_cli.config_read_errors import get_active_config_parse_failure
 
         assert get_active_config_parse_failure() is None
 
@@ -90,7 +90,7 @@ class TestResolveProviderCorruptConfig:
         monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-FAKE1234567890")
         _load_config_fresh()
 
-        from hermes_cli.auth import AuthError, resolve_provider
+        from hermes_agent.hermes_cli.auth import AuthError, resolve_provider
 
         with pytest.raises(AuthError) as excinfo:
             resolve_provider("auto")
@@ -123,7 +123,7 @@ class TestResolveProviderCorruptConfig:
             )
         )
 
-        from hermes_cli.auth import AuthError, resolve_provider
+        from hermes_agent.hermes_cli.auth import AuthError, resolve_provider
 
         with pytest.raises(AuthError) as excinfo:
             resolve_provider("auto")
@@ -135,7 +135,7 @@ class TestResolveProviderCorruptConfig:
         monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-FAKE1234567890")
         _load_config_fresh()
 
-        from hermes_cli.auth import resolve_provider
+        from hermes_agent.hermes_cli.auth import resolve_provider
 
         assert resolve_provider("auto") == "openrouter"
 
@@ -145,7 +145,7 @@ class TestResolveProviderCorruptConfig:
         monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-FAKE1234567890")
         _load_config_fresh()
 
-        from hermes_cli.auth import AuthError, resolve_provider
+        from hermes_agent.hermes_cli.auth import AuthError, resolve_provider
 
         with pytest.raises(AuthError):
             resolve_provider("auto")
@@ -159,6 +159,6 @@ class TestResolveProviderCorruptConfig:
         monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-FAKE1234567890")
         _load_config_fresh()
 
-        from hermes_cli.auth import resolve_provider
+        from hermes_agent.hermes_cli.auth import resolve_provider
 
         assert resolve_provider("openrouter") == "openrouter"

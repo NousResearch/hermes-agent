@@ -1,0 +1,23 @@
+name: memorybank
+repo: https://github.com/nicholaslaldigital/hermes-memory-bank
+sha: "dfc5dc82f3d412d1d35d22c5ea93ca614febaa43"
+subdir: memorybank
+version: "1.3.0"
+description: Memory Bank - unlimited local long-term memory for Hermes as a knowledge graph; adding a new memory never fails for lack of room, relevance-gated recall, an index of past sessions and skills, a live network view and a usage meter.
+maintainer: nicholaslaldigital
+tier: community
+category: memory
+requires_hermes: ">=0.21.5"
+docs_url: https://github.com/nicholaslaldigital/hermes-memory-bank#readme
+known_issues:
+- Developed and tested on Windows only; macOS and Linux are expected to work but have not been run.
+- The macOS/Linux-only code (owner-only file modes, macOS durability settings, no browser auto-open on Linux) is untested on a real Mac or Linux machine.
+- A replace that makes an existing MEMORY.md / USER.md entry longer than the room left is still refused by Hermes; only new entries (adds) are rescued.
+- Keeps excerpts of what you typed in each conversation (and skill text) in a local, unencrypted SQLite file.
+capabilities:
+  provides_tools: []
+  provides_hooks:
+  - transform_tool_result
+  - on_skill_lifecycle
+  provides_middleware: []
+  requires_env: []

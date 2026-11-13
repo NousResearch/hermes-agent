@@ -687,6 +687,11 @@ class GatewayTurnPrepareMixin:
                 prof = (getattr(source, "profile", None) or "").strip()
                 if prof and prof != "default" and _lgc().get_home_channel(source.platform):
                     home_env = "set"
+        # A home channel on any other platform is enough: don't nag per-platform.
+        if not home_env:
+            with suppress(Exception):
+                if any(self.config.get_home_channel(pl) for pl in self.config.platforms):
+                    home_env = "set"
         if not home_env:
             # Slack routes every command through the parent `/hermes`; bare `/sethome` would fail.
             sethome_cmd = "/hermes sethome" if source.platform == Platform.SLACK else "/sethome"

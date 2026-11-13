@@ -1,0 +1,12 @@
+name: barrier-shield
+repo: https://github.com/arjunbagga-xyz/hermes-barrier-shield
+sha: 3f359262963cd948e65cb876f55fd2f4432dfebc
+title: Barrier Shield
+description: Control-Barrier Function (h(x) >= 0) and Lyapunov continuous safety shield
+  that solves a real-time Quadratic Program (QP) to smoothly dampen aggressive tool
+  actions.
+maintainer: arjunbagga-xyz
+tier: community
+category: tools
+version: 0.1.0
+docs_url: https://github.com/arjunbagga-xyz/hermes-barrier-shield#readme

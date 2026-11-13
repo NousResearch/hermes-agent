@@ -288,22 +288,62 @@ def snapshot_problems(tenants: dict[str, Tenant]) -> list[str]:
     return problems
 
 
+def _routing_owner(key: str, tenants: dict[str, Tenant]) -> str | None:
+    """The tenant a routing-index key belongs to (``agent:<profile>:...``; ``agent:main:`` is the
+    default profile)."""
+    parts = key.split(":")
+    name = "default" if parts[1:2] == ["main"] else (parts[1] if len(parts) > 1 else "")
+    return name if parts[:1] == ["agent"] and name in tenants else None
+
+
+def _launch_index_view(path: Path, rel: Path, owner: str, tenants: dict[str, Tenant]) -> bytes | None:
+    """What of the launch home's state.db / sessions.json is the launch profile's own, with the
+    multiplex routing index rows of OTHER profiles left out: a multiplexed gateway keeps every
+    profile's routing entries in its one launch-home index by design (8d74cb52dac6, #66887), so
+    those rows carry their own profile's data (origin, ``terminal_cwd``) and are scanned as theirs.
+    None: not an index file, scan the raw bytes."""
+    def foreign(key: str) -> bool:
+        return _routing_owner(key, tenants) not in (None, owner)
+
+    if rel == Path("sessions/sessions.json"):
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return json.dumps({k: v for k, v in data.items() if not foreign(k)}).encode()
+    if rel.name in ("state.db-wal", "state.db-shm") and rel.parent == Path("."):
+        return b""  # read through the database below, which sees committed WAL frames
+    if rel != Path("state.db"):
+        return None
+    import sqlite3
+    conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=10)
+    try:
+        rows = []
+        for (table,) in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall():
+            cur = conn.execute(f'SELECT * FROM "{table}"')
+            cols = [c[0] for c in cur.description]
+            rows += [repr(r) for r in cur.fetchall()
+                     if not (table == "gateway_routing" and foreign(r[cols.index("session_key")]))]
+    finally:
+        conn.close()
+    return "\n".join(rows).encode()
+
+
 def file_leaks(tenants: dict[str, Tenant], launch: str = "default") -> list[str]:
     """Byte-scan every file of every tenant home (state.db + WAL, logs, sessions, config, .env,
     memories, cron output) for any other tenant's canary. The launch home's ``profiles/`` subtree
-    belongs to the other tenants and is scanned as theirs."""
+    and its routing-index rows for other profiles belong to those tenants and are scanned as theirs."""
     problems: list[str] = []
     for t in tenants.values():
         foreign = [(u.name, kind, value.encode()) for u in tenants.values() if u is not t
                    for kind, value in u.canaries().items()]
         for path in t.home.rglob("*"):
-            if not path.is_file() or (t.name == launch and "profiles" in path.relative_to(t.home).parts[:1]):
+            rel = path.relative_to(t.home)
+            if not path.is_file() or (t.name == launch and "profiles" in rel.parts[:1]):
                 continue
             try:
-                data = path.read_bytes()
+                data = _launch_index_view(path, rel, t.name, tenants) if t.name == launch else None
+                data = path.read_bytes() if data is None else data
             except OSError:
                 continue
-            problems += [f"{t.name}: {path.relative_to(t.home)} contains {owner}'s {kind}"
+            problems += [f"{t.name}: {rel} contains {owner}'s {kind}"
                          for owner, kind, value in foreign if value in data]
     return problems
 

@@ -761,6 +761,12 @@ class TestSnowflakeValidation:
         with pytest.raises(ValueError, match="Invalid Discord channel_id"):
             _validate_snowflake("１２３", "channel_id")
 
+    def test_trailing_newline_rejected(self):
+        """``$`` matches before a final newline; validation must anchor the whole string."""
+        from tools.discord_tool import _validate_snowflake
+        with pytest.raises(ValueError, match="Invalid Discord channel_id"):
+            _validate_snowflake("123\n", "channel_id")
+
     def test_too_long_rejected(self):
         from tools.discord_tool import _validate_snowflake
         with pytest.raises(ValueError, match="Invalid Discord user_id"):

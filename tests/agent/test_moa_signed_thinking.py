@@ -133,10 +133,61 @@ moa:
     assert api.rejected == 0  # every replayed block sat behind the prefix it was signed for
     assert api.replayed[1] >= 1 and api.replayed[2] >= 1  # the tool step and the next turn got thinking back
     assert api.replayed[3] == 0  # the fresh facade dropped what it could not vouch for
+    # A reused fan-out's guidance goes out once, where it was first sent; the next turn adds its own.
+    assert [json.dumps(r["messages"]).count("[Mixture of Agents reference context]") for r in api.requests] == [1, 1, 2, 1]
     for request in api.requests:  # and never as assistant text
         assert not any(t in json.dumps(m["content"]) for m in request["messages"] if m["role"] == "assistant"
                        for t in THOUGHTS if not any(b.get("type") == "thinking" for b in m["content"]
                                                     if isinstance(m["content"], list)))
+
+
+def test_a_fanout_that_runs_again_under_the_same_key_brings_its_new_advice(monkeypatch, tmp_path):
+    """An interrupted fan-out is not cached, so the next request of the turn runs the advisors again under the
+    same turn key. Its advice follows the signed prefix; the first run's guidance stays where it was sent."""
+    from agent import moa_loop
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text("""
+moa:
+  default_preset: review
+  presets:
+    review:
+      reference_models:
+        - provider: openai-codex
+          model: gpt-6-astra
+        - provider: openai-codex
+          model: gpt-6-sol
+      aggregator:
+        provider: anthropic
+        model: claude-fable-5-2
+        reasoning_effort: high
+""".strip(), encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    note = tmp_path / "note.txt"
+    note.write_text("hello\n", encoding="utf-8")
+    api = _PreservedThinkingAPI([
+        (THOUGHTS[0], [{"type": "text", "text": "Reading it."},
+                       {"type": "tool_use", "id": "toolu_1", "name": "read_file", "input": {"path": str(note)}}]),
+        (THOUGHTS[1], [{"type": "text", "text": "hello"}]),
+    ])
+    agent = _moa_agent(monkeypatch, tmp_path, api)
+    run_references, runs = moa_loop._run_references_parallel, []
+
+    def second_advisor_stopped_once(reference_models, ref_messages, **kwargs):
+        outputs = run_references(reference_models, ref_messages, **kwargs)
+        runs.append(outputs)
+        if len(runs) == 1:  # the user stopped the second advisor during the first fan-out
+            outputs[1] = moa_loop._placeholder_output(reference_models[1], moa_loop._INTERRUPTED_REFERENCE_NOTE)
+        return outputs
+
+    monkeypatch.setattr(moa_loop, "_run_references_parallel", second_advisor_stopped_once)
+    assert agent.run_conversation(f"What does {note} say?")["final_response"] == "hello"
+
+    assert len(runs) == 2 and api.rejected == 0  # the tool step ran the advisors again, and its thinking stayed valid
+    tool_step = [json.dumps(m["content"]) for m in api.requests[1]["messages"]]
+    assert "advice #0" in tool_step[0]  # the first run's guidance, in place
+    assert "advice #1" in tool_step[-1] and not any("advice #1" in m for m in tool_step[:-1])  # the new run's, last
 
 
 def _assistant_turn():

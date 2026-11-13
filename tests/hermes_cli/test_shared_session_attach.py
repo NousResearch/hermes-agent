@@ -383,6 +383,8 @@ def test_shared_group_home_keeps_group_access_and_setgid(tmp_path):
     hermes-group users share session fencing. Hardening against other users must only
     strip the 'other' bits: squashing to owner-only locks group members out of
     active_sessions.lock, and their CLI/gateway then run with no lease at all."""
+    from hermes_cli.active_sessions import _read_entries, _write_entries
+
     home = tmp_path / "shared"
     home.mkdir()
     os.chmod(home, 0o2770)
@@ -399,11 +401,16 @@ def test_shared_group_home_keeps_group_access_and_setgid(tmp_path):
         registry = runtime / "active_sessions.json"
         runtime_mode = os.stat(runtime).st_mode
         registry_mode = stat.S_IMODE(os.stat(registry).st_mode)
-        assert runtime_mode & stat.S_ISGID
         assert stat.S_IMODE(runtime_mode) & 0o070 == 0o070
         assert stat.S_IMODE(runtime_mode) & 0o007 == 0
         assert registry_mode & 0o060 == 0o060
         assert registry_mode & 0o007 == 0
+        # Linux hands a setgid parent's bit to a new subdirectory; macOS does not (its
+        # directories take the parent's group anyway). Set it so both hosts test the strip.
+        entries = _read_entries(registry, strict=True)
+        os.chmod(runtime, 0o2777)
+        _write_entries(registry, entries)
+        assert stat.S_IMODE(os.stat(runtime).st_mode) == 0o2770
     finally:
         lease.release()
 

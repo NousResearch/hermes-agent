@@ -747,6 +747,7 @@ gateway:
     reject_goal: "Agent loop — gebruik /goal status / pause / clear / wait tydens die lopie, of /stop voordat jy 'n nuwe doelwit stel."
     reject_loop: "Agent loop — gebruik /loop status / pause / stop tydens die lopie, of /stop voordat jy 'n nuwe lus stel."
     draining_maintenance: "⏳ Hierdie agent word vir 'n onderhoudsaksie gedreineer en aanvaar nie nou nuwe beurte nie. Dit sal oor 'n oomblik terug wees — stuur asseblief binnekort weer."
+    compressing_retry: "⏳ Hierdie sessie is besig om konteks te komprimeer, dus is hierdie boodskap nie verwerk om die transkripsie te beskerm nie. Dit is gewoonlik binne 'n minuut of twee klaar — stuur dit daarna asseblief weer."
     another_turn_running: "⏳ Nog 'n beurt loop steeds op hierdie sessie. Om die transkripsie te beskerm, is hierdie boodskap nie verwerk nie. Wag tot die aktiewe beurt klaar is en stuur dit dan weer."
     setup_timeout: "⏳ Die beurt se opstelling het vasgehaak sonder agentaktiwiteit en is gekanselleer. Stuur asseblief jou boodskap weer."
     setup_waiting: "⏳ Begin steeds hierdie beurt ({minutes} min, nog geen agentaktiwiteit nie). Jou boodskap is in die tou. Gebruik /stop om dit en alles in die tou te kanselleer."

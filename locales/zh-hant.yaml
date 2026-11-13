@@ -747,6 +747,7 @@ gateway:
     reject_goal: "代理正在執行中 — 執行途中可使用 /goal status / pause / clear / wait，或先 /stop 再設定新目標。"
     reject_loop: "代理正在執行中 — 執行途中可使用 /loop status / pause / stop，或先 /stop 再設定新迴圈。"
     draining_maintenance: "⏳ 此代理正在為維護操作收尾，目前不接受新的回合。稍後即會恢復 — 請稍後重新傳送。"
+    compressing_retry: "⏳ 此工作階段正在進行上下文壓縮，為保護對話記錄，這則訊息未被處理。壓縮通常在一兩分鐘內完成，之後請重新傳送。"
     another_turn_running: "⏳ 此工作階段仍有另一輪在執行中。為保護對話紀錄，這則訊息未被處理。請等目前這一輪結束後再重新傳送。"
     setup_timeout: "⏳ 本輪準備工作卡住且代理沒有任何活動，已取消。請重新傳送你的訊息。"
     setup_waiting: "⏳ 本輪仍在啟動中（{minutes} 分鐘，代理尚無活動）。你的訊息已排入佇列。使用 /stop 可取消本輪及佇列中的全部訊息。"

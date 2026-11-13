@@ -747,6 +747,7 @@ gateway:
     reject_goal: "O agente está em execução — use /goal status / pause / clear / wait durante a execução, ou /stop antes de definir um novo objetivo."
     reject_loop: "O agente está em execução — use /loop status / pause / stop durante a execução, ou /stop antes de definir um novo loop."
     draining_maintenance: "⏳ Este agente está sendo drenado para uma ação de manutenção e não está aceitando novos turnos agora. Ele voltará em instantes — reenvie em breve."
+    compressing_retry: "⏳ Esta sessão está comprimindo o contexto, então esta mensagem não foi processada para proteger a transcrição. A compressão normalmente termina em um ou dois minutos — reenvie depois."
     another_turn_running: "⏳ Outro turno ainda está em execução nesta sessão. Para proteger a transcrição, esta mensagem não foi processada. Aguarde o turno ativo terminar e reenvie."
     setup_timeout: "⏳ A preparação do turno travou sem atividade do agente e foi cancelada. Envie sua mensagem novamente."
     setup_waiting: "⏳ Este turno ainda está iniciando ({minutes} min, sem atividade do agente ainda). Sua mensagem está na fila. Use /stop para cancelá-lo junto com tudo o que está na fila."

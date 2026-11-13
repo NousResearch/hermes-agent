@@ -297,12 +297,12 @@ async def scan_skill_hub(identifier: str = "", profile: Optional[str] = None):
         if not bundle:
             return None
 
-        scan_source = _scan_source_for_install(bundle, meta, ident, matched_source)
+        scan_source, scan_trust = _scan_source_for_install(bundle, meta, ident, matched_source)
 
         tier1 = None
         q_path = quarantine_bundle(bundle)
         try:
-            result = scan_skill(q_path, source=scan_source)
+            result = scan_skill(q_path, source=scan_source, trust_level=scan_trust)
             # Advisory SkillEvaluator Tier 1 second opinion: optional binary,
             # never blocks, errors degrade to no data (same as the CLI installer).
             try:

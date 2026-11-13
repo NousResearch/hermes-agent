@@ -901,11 +901,12 @@ def _community_note(f: Finding) -> Finding:
     return f
 
 
-def scan_skill(skill_path: Path, source: str = "community") -> ScanResult:
+def scan_skill(skill_path: Path, source: str = "community", *, trust_level: str | None = None) -> ScanResult:
     """Structural checks + pattern scan of every file in a skill dir (or a single file). Bundle-supplied ignore
     files (`.skillignore` / `.clawhubignore`) are NOT honored: they are authored by the publisher being scanned,
-    so a `*` would mask every payload. *source* (e.g. "openai/skills") sets the trust level."""
-    name, trust = skill_path.name, _resolve_trust_level(source)
+    so a `*` would mask every payload. *source* (e.g. "openai/skills") sets the trust level unless the caller
+    passes the serving adapter's own *trust_level*."""
+    name, trust = skill_path.name, trust_level or _resolve_trust_level(source)
     findings: list[Finding] = []
     if skill_path.is_dir():
         findings.extend(_check_structure(skill_path))
@@ -946,7 +947,7 @@ def content_hash(skill_path: Path) -> str:
 
 
 def scan_skill_cached(skill_path: Path, source: str = "community", *, source_url: str = "",
-                      cache_dir: Path | None = None) -> tuple[ScanResult, dict]:
+                      cache_dir: Path | None = None, trust_level: str | None = None) -> tuple[ScanResult, dict]:
     """Scan plus attestation dict; the cache (keyed by content digest + source identity) only serves exact
     current content under the current scanner version."""
     digest = _content_digest(skill_path)
@@ -954,7 +955,7 @@ def scan_skill_cached(skill_path: Path, source: str = "community", *, source_url
     source_identity = hashlib.sha256(f"{source}\0{source_url}".encode()).hexdigest()[:16]
     cache_file = cache_root / f"{digest}-{source_identity}.json"
     expected = {"bundle_hash": f"sha256:{digest}", "scanner_version": SCANNER_VERSION, "source": source,
-                "source_url": source_url, "trust_level": _resolve_trust_level(source)}
+                "source_url": source_url, "trust_level": trust_level or _resolve_trust_level(source)}
     cached = None
     with suppress(OSError, json.JSONDecodeError):
         cached = json.loads(cache_file.read_text(encoding="utf-8-sig"))
@@ -964,7 +965,7 @@ def scan_skill_cached(skill_path: Path, source: str = "community", *, source_url
                             cached.get("summary", ""))
         provenance = {**cached, "fresh": False}
     else:
-        result = scan_skill(skill_path, source=source)
+        result = scan_skill(skill_path, source=source, trust_level=trust_level)
         findings = [asdict(item) for item in result.findings]
         provenance = {**expected, "verdict": result.verdict, "trust_level": result.trust_level, "findings": findings,
                       "rules": sorted({item["pattern_id"] for item in findings}), "scanned_at": result.scanned_at,

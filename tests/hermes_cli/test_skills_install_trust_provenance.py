@@ -72,6 +72,27 @@ def test_optional_skill_adapter_keeps_builtin_trust(tmp_path, monkeypatch):
     assert result.trust_level == "builtin"
 
 
+def test_optional_skill_upstream_pointer_bundle_does_not_get_builtin(tmp_path, monkeypatch):
+    """A catalog stub's ``metadata.hermes.upstream`` bundle is live third-party content: same adapter,
+    but the dangerous verdict must still block."""
+    from tools import skills_hub
+    from tools.skills_guard import should_allow_install
+
+    monkeypatch.setattr(skills_hub, "HUB_DIR", tmp_path / "hub")
+    upstream = SkillBundle(name="x", files={"SKILL.md": _PAYLOAD}, source="github",
+                           identifier="someone/repo/skills/x", trust_level="community")
+    src = OptionalSkillSource.__new__(OptionalSkillSource)
+    monkeypatch.setattr(src, "_get_github", lambda: type("GH", (), {"fetch": lambda self, ident: upstream})(),
+                        raising=False)
+    bundle = src._fetch_from_upstream({"repo": "someone/repo", "path": "skills/x"}, "creative/x")
+    result = cli_hub._scan_quarantined(_console(), _dangerous_dir(tmp_path), bundle, None,
+                                       "official/creative/x", src)
+
+    assert result.verdict == "dangerous"
+    assert result.trust_level == "trusted"
+    assert should_allow_install(result, force=True)[0] is False
+
+
 def test_audit_does_not_elevate_reserved_lock_identifier(tmp_path, monkeypatch):
     from tools import skills_hub
 

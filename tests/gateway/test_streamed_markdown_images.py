@@ -210,6 +210,36 @@ async def test_streamed_image_tag_never_shows_and_frames_stay_prefix_stable(delt
     assert frames[-1].strip() == final
 
 
+@pytest.mark.parametrize("deltas, final, tag_shown", [
+    # The closing backtick makes the tag quoted code: it is shown, never sent as a photo.
+    (["Синтаксис: `", "![x](https://example.com/a.png)", " и ещё", "` ок"],
+     "Синтаксис: `![x](https://example.com/a.png) и ещё` ок", True),
+    # The line ends with the backtick unpaired: the tag is a real image, hidden as usual.
+    (["Синтаксис: `", "![x](https://example.com/a.png)", " и ещё\n", "дальше"],
+     "Синтаксис: ` и ещё\nдальше", False),
+    # A ``` opened mid-line is a code span until the matching run arrives, whatever the lines.
+    (["Пример: ```md\n", "![x](https://example.com/a.png)\n", "ещё\n", "```"],
+     "Пример: ```md\n![x](https://example.com/a.png)\nещё", True),
+])
+@pytest.mark.asyncio
+async def test_image_tag_after_an_open_backtick_waits_for_the_span_to_settle(deltas, final, tag_shown):
+    """Until its span settles, a tag after an unpaired backtick may still become quoted code.
+    Hiding it first and showing it once the span closes would rewrite text already streamed."""
+    # Edit frames close an open span with trailing backticks (ensure_closed_code_fences);
+    # compare the reply's own text.
+    frames = [f.rstrip().rstrip("`").rstrip() for f in await _stream_frames(deltas)]
+
+    assert frames[-1] == final
+    assert ("example.com" in frames[-1]) is tag_shown
+    for prev, nxt in itertools.pairwise(frames):
+        assert nxt.startswith(prev), (prev, nxt)
+
+
+def test_display_keeps_an_image_tag_quoted_in_code():
+    text = "Разметка: `![x](https://example.com/a.png)`\n```md\n![y](https://example.com/b.png)\n```"
+    assert GatewayStreamConsumer._clean_for_display(text) == text
+
+
 @pytest.mark.asyncio
 async def test_queued_lane_sends_the_text_without_the_tag_and_the_image_once():
     """The queued follow-up lane sends the text itself, then runs the post-stream uploader: the

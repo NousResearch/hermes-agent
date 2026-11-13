@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import re
 
-from gateway.platforms.base import HTML_IMAGE_TAG_PATTERN, MD_IMAGE_TAG_PATTERN, BasePlatformAdapter
+from gateway.platforms.base_markdown import _delete_spans, deliverable_image_tags, mask_code_spans
 
 # A delivery directive still being typed on the open (last) line: "MEDIA:" the cleaner has not
 # stripped yet whose remainder can still become a path (MEDIA_TAG_CLEANUP_RE's openers: a quote,
@@ -29,6 +29,7 @@ _PENDING_IMAGE_RE = re.compile(
     r"""!\[[^\]]*(?:\](?:\([^)\s]*)?)?\Z|(?<![\w)\]"'”’!?.*_~`])!\Z"""
     r"""|<(?:i(?:m(?:g(?:\s+(?:s(?:r(?:c(?:=["']?[^\s"'<>]*["']?\s*/?)?)?)?)?)?)?)?)?\Z"""
     r"""|</(?:i(?:m(?:g)?)?)?\Z""")
+_TAG_TRAILING_BREAKS_RE = re.compile(r"(?:\r?\n){0,2}")
 
 
 def strip_image_tags_for_display(text: str) -> str:
@@ -36,18 +37,26 @@ def strip_image_tags_for_display(text: str) -> str:
 
     Each tag goes with up to two line breaks after it, and nothing else is trimmed
     or collapsed: an interim frame must stay a prefix of the next one, so text in front of the tag
-    (already shown) is never rewritten.
+    (already shown) is never rewritten. Tags quoted in code are not delivered, so they stay.
     """
     if "![" not in text and "<img" not in text:
         return text
-    images, _ = BasePlatformAdapter.extract_images(text)
-    if not images:
-        return text
-    urls = {url for url, _ in images}
-    for pattern, url_group in ((MD_IMAGE_TAG_PATTERN, 2), (HTML_IMAGE_TAG_PATTERN, 1)):
-        text = re.sub(f"(?:{pattern})(?:\\r?\\n){{0,2}}",
-                      lambda m, g=url_group: "" if m.group(g) in urls else m.group(0), text)
-    return text
+    return _delete_spans(text, [(start, _TAG_TRAILING_BREAKS_RE.match(text, end).end())
+                                for start, end, _, _ in deliverable_image_tags(text)])
+
+
+def has_unsettled_image_tag(text: str) -> bool:
+    """True while a deliverable image tag in streamed text may still become quoted code: it
+    follows a backtick on the open line (a closing one makes an inline code span) or an unclosed
+    mid-line ``` run (a matching run closes a code span over it). Hiding it now and showing it
+    once the span closes would rewrite text already streamed, so the edit waits."""
+    if "`" not in text:
+        return False
+    starts = [start for start, _, _, _ in deliverable_image_tags(text)]
+    if not starts:
+        return False
+    before = mask_code_spans(text)[:max(starts)]
+    return "`" in before[before.rfind("\n") + 1:] or "```" in before
 
 
 def has_pending_media_directive(cleaned: str) -> bool:

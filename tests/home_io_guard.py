@@ -24,12 +24,14 @@ def _pm_generation_dirs(prefixes) -> set[Path]:
 
 
 _INTERPRETER_PREFIXES = tuple({
-    Path(p).resolve() for p in (sys.prefix, sys.base_prefix, sys.exec_prefix, sys.base_exec_prefix)
+    literal for p in (sys.prefix, sys.base_prefix, sys.exec_prefix, sys.base_exec_prefix)
+    for literal in (Path(p), Path(p).resolve())
 } | {
     # A PM-activated developer shell runs sys.prefix's python against a dependency generation
     # whose site-packages sits under the (real) Hermes home; third-party imports from it are the
     # interpreter's installation, not Hermes state.
-    Path(p).resolve() for p in sys.path if p and Path(p).name in ("site-packages", "dist-packages")
+    literal for p in sys.path if p and Path(p).name in ("site-packages", "dist-packages")
+    for literal in (Path(p), Path(p).resolve())
 } | {
     # scripts/run_tests.sh runs a PM generation venv (<installs>/<key>/{environments,test-environment}
     # /<gen>/venv) that sits under the home whenever HOME is the run's fake home. The generation dir

@@ -35,7 +35,7 @@ def surface(monkeypatch):
 
 
 def _session(profile_home=None) -> dict:
-    return {"history_lock": threading.RLock(), "running": False, "history": [], "agent": None,
+    return {"history_lock": threading.RLock(), "running": False, "history": [], "agent": SimpleNamespace(),
             "profile_home": str(profile_home) if profile_home else None}
 
 

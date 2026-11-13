@@ -27,7 +27,7 @@ def test_canonical_busy_notification_backs_off_without_consuming_work(monkeypatc
         monkeypatch.setattr(server, "_emit", lambda *args: emitted.append(args))
         waits = []
         monkeypatch.setattr(server, "time", SimpleNamespace(sleep=waits.append, time=lambda: 1))
-        session = {"history_lock": threading.RLock(), "session_key": key, "running": False}
+        session = {"history_lock": threading.RLock(), "session_key": key, "running": False, "agent": object()}
         registry = SimpleNamespace(completion_queue=queue.Queue())
         monkeypatch.setattr("tools.process_registry.process_registry", registry)
         monkeypatch.setattr("tools.async_delegation.claim_event_delivery", lambda *a: "")
@@ -74,11 +74,38 @@ def test_canonical_busy_notification_backs_off_without_consuming_work(monkeypatc
 
 
 def test_a_refusal_that_is_not_requeued_does_not_delay_the_poller(monkeypatch):
-    """Kanban and /loop callers keep their notice themselves; the poller thread must not sleep for them
-    (it also drives the kanban and loop polls)."""
+    """Admission clears the refused turn; a later user claim must survive without a second release."""
     waits = []
     monkeypatch.setattr(server, "time", SimpleNamespace(sleep=waits.append, time=lambda: 1))
-    monkeypatch.setattr(server, "_run_prompt_submit", lambda *a, **k: False)
+    def refuse(_rid, _sid, session, *_args, **_kwargs):
+        with session["history_lock"]:
+            session["running"] = False  # admission owns the refusal's clear
+            session["running"] = True  # a user claims the idle session before submit returns
+        return False
+    monkeypatch.setattr(server, "_run_prompt_submit", refuse)
     session = {"history_lock": threading.RLock(), "running": True}
     assert server._notif_submit("r", "ui", session, "tick", "loop wakeup send failed") is False
-    assert session["running"] is False and not waits
+    assert session["running"] is True and not waits
+
+
+def test_kanban_refusal_retains_one_batch_without_error_frames(monkeypatch):
+    """A refused kanban batch waits for the next poll: no ownership-refusal frame per retry, no copies."""
+    notices, attempts, frames = [["finished"]], [], []
+    session = {"history_lock": threading.RLock(), "running": False, "agent": object()}
+    monkeypatch.setattr(server, "_collect_kanban_notifications", lambda _: notices.pop(0) if notices else [])
+    monkeypatch.setattr(server, "_emit", lambda *args: frames.append(args))
+    def refuse(*args):
+        attempts.append(args)
+        return "gateway owns the chat"
+    monkeypatch.setattr(server, "_ensure_active_session_slot", refuse)
+    for _ in range(4):
+        server._notif_poll_kanban("ui", session)
+        assert session["running"] is False and session["_kanban_pending"] == ["finished"]
+    assert len(attempts) == 4
+    assert [frame[0] for frame in frames] == ["status.update"]  # the arrival notice only
+    assert "_notif_refusal_delay" not in session  # the delegation poller's backoff is not advanced
+    delivered = []
+    monkeypatch.setattr(server, "_run_prompt_submit", lambda *args, **kwargs: delivered.append(args[3]) or True)
+    server._notif_poll_kanban("ui", session)
+    server._notif_poll_kanban("ui", session)
+    assert delivered == ["finished"] and session["_kanban_pending"] == []

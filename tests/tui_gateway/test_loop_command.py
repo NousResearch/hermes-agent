@@ -57,6 +57,7 @@ def session(server):
         "history_lock": threading.Lock(),
         "history_version": 0,
         "running": False,
+        "agent": object(),
         "attached_images": [],
         "cols": 120,
     }

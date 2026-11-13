@@ -47,7 +47,7 @@ def _session(notification_env, monkeypatch, kind):
     transport = {"stdio": stdio, "websocket": WSTransport(None, loop),
                  "detached": server._detached_ws_transport}[kind]
     session = {"session_key": "chat", "transport": transport, "profile_home": str(home),
-               "history_lock": threading.RLock(), "running": False, "_finalized": False}
+               "history_lock": threading.RLock(), "running": False, "_finalized": False, "agent": object()}
     server._sessions["ui1"] = session
     return session
 

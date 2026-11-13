@@ -410,6 +410,7 @@ export const CODICON_PIXEL: Readonly<Record<string, PixelMapping>> = {
   worktree: 'git-branch',
   x: 'close',
   zap: 'zap',
+  'zoom-in': 'zoom-in', // Library image preview zoom (1170:8636)
   'zoom-out': 'zoom-out'
 }
 

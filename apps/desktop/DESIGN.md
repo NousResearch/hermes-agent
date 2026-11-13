@@ -674,6 +674,7 @@ The tables below are generated from the CSS; do not edit them by hand.
 | `--portal-sidebar-background` | `color-mix( in srgb, var(--portal-raw-pure-white) 2%, color-mix( in srgb, var(--portal-raw-black) 85%, color-mix(in srgb, var(--portal-raw-blue) 70%, var(--portal-surface-canvas)) ) )` | `color-mix(in srgb, var(--portal-raw-pure-white) 98%, var(--portal-surface-canvas))` | The chat sidebar's opaque fill (the shared sidebar surface, sheets): its veil flattened onto the canvas. |
 | `--portal-page-background` | `color-mix( in srgb, var(--portal-raw-pure-white) 5%, color-mix( in srgb, var(--portal-raw-black) 80%, color-mix(in srgb, var(--portal-raw-blue) 40%, var(--portal-surface-canvas)) ) )` | `color-mix(in srgb, var(--portal-raw-pure-white) 80%, var(--portal-surface-canvas))` | Routed pages lay their nav and body on the window canvas like chat (06 · Settings/Account 16292:19723): the band shows the art, the body is the new chat's stage, flattened here for what covers it. |
 | `--portal-page-sidebar-background` | `var(--portal-sidebar-background)` | ″ |  |
+| `--portal-surface-collection` | `color-mix( in srgb, var(--portal-raw-pure-white) 2%, color-mix(in srgb, var(--portal-raw-black) 50%, color-mix(in srgb, var(--portal-raw-blue) 10%, transparent)) )` | `color-mix(in srgb, var(--portal-raw-pure-white) 70%, transparent)` | A collection's cards and table on a page body (Library 1163:18113, 1163:18155): white .02 / black .50 / blue .10 over the stage. |
 | `--portal-surface-elevated` | `var(--ui-bg-elevated)` | ″ | Menus, popovers, dialogs, drawers, toasts: the solid floating fill (878:6044 #0D0D1E on dark). |
 | `--portal-surface-card` | `var(--portal-raw-ink-2)` | ″ | Cards of grouped rows (1036:7576, 1038:7803). |
 | `--portal-settings-card` | `color-mix( in srgb, var(--portal-raw-pure-white) 2%, color-mix(in srgb, var(--portal-raw-black) 50%, var(--portal-raw-brand-10)) )` | `color-mix(in srgb, var(--portal-raw-pure-white) 70%, transparent)` | Global Settings' cards lift off the page with no stroke (Card 16292:16456): white .02 / black .50 / blue .10 (#1A1A30 where solid); their dividers light/5. Section heads at .8 ink. |
@@ -857,6 +858,7 @@ The tables below are generated from the CSS; do not edit them by hand.
 | `--portal-radius-chip` | `2px` | ″ | Chips, counts, segments, tags (877:4186). |
 | `--portal-radius-control` | `3px` | ″ | Buttons, inputs, selects, checkboxes, keycaps, chrome buttons, page-panel rows (1036:7409). |
 | `--portal-radius-card` | `4px` | ″ | Cards, tables, banners, menus (1036:7576, 878:6044). |
+| `--portal-radius-tile` | `12px` | ″ | Media cards and the collections they sit beside (Library 1163:18113: 12px; its table draws 15, held to the card's step). |
 | `--portal-radius-surface` | `6px` | ″ | Chat content (bubble, tool row, code card) and chat-sidebar rows (491:40655, 147:7470). |
 | `--portal-radius-floating` | `8px` | ″ | Popovers, dialogs, choice tiles (616:1685). |
 | `--portal-radius-panel` | `9px` | ″ | The outer top corner of panels, the stage and the composer (906:19804). |

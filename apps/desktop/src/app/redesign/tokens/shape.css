@@ -8,6 +8,9 @@
   --portal-radius-control: 3px;
   /* Cards, tables, banners, menus (1036:7576, 878:6044). */
   --portal-radius-card: 4px;
+  /* Media cards and the collections they sit beside (Library 1163:18113: 12px; its table draws 15,
+     held to the card's step). */
+  --portal-radius-tile: 12px;
   /* Chat content (bubble, tool row, code card) and chat-sidebar rows (491:40655, 147:7470). */
   --portal-radius-surface: 6px;
   /* Popovers, dialogs, choice tiles (616:1685). */

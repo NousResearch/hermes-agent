@@ -118,6 +118,13 @@
     )
   );
   --portal-page-sidebar-background: var(--portal-sidebar-background);
+  /* A collection's cards and table on a page body (Library 1163:18113, 1163:18155): white .02 /
+     black .50 / blue .10 over the stage. */
+  --portal-surface-collection: color-mix(
+    in srgb,
+    var(--portal-raw-pure-white) 2%,
+    color-mix(in srgb, var(--portal-raw-black) 50%, color-mix(in srgb, var(--portal-raw-blue) 10%, transparent))
+  );
   /* Menus, popovers, dialogs, drawers, toasts: the solid floating fill (878:6044 #0D0D1E on dark). */
   --portal-surface-elevated: var(--ui-bg-elevated);
   /* Cards of grouped rows (1036:7576, 1038:7803). */
@@ -301,6 +308,7 @@
   --portal-composer-fill: color-mix(in srgb, var(--portal-raw-pure-white) 98%, var(--ui-chat-surface-background));
   --portal-panel-action: var(--portal-raw-ink-2);
   --portal-panel-action-hover: var(--portal-raw-ink-5);
+  --portal-surface-collection: color-mix(in srgb, var(--portal-raw-pure-white) 70%, transparent);
   --portal-surface-control: var(--portal-raw-ink-3);
   --portal-surface-control-hover: var(--portal-raw-ink-5);
   --portal-surface-control-pressed: var(--portal-raw-ink-8);

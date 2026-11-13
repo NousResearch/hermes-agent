@@ -49,13 +49,20 @@ export const PAGE_SIDEBAR_NARROW = BELOW_WIDE_QUERY
 /** A page with a sidebar panel is showing. */
 export const $pageHasSidebar = computed($pagePanels, count => count > 0)
 
-/** The panel's title row (895:8991 "Agents", 16292:16360 "Settings"): the display title at the
- *  panel's inset, an optional action at its end. The panel folds from its rail destination, never
- *  from a button of its own. */
-export function PageSidebarHead({ action, title }: { action?: ReactNode; title: string }) {
+/** The panel's title row (895:8991 "Agents", 16292:16360 "Settings", 1163:17585 "Library"): the
+ *  display title at the panel's inset, an optional caption under it and action at its end. The
+ *  panel folds from its rail destination, never from a button of its own. */
+export function PageSidebarHead({ action, caption, title }: { action?: ReactNode; caption?: string; title: string }) {
   return (
     <div className="page-sidebar-head">
-      <h2 className="page-nav-title">{title}</h2>
+      {caption ? (
+        <div className="page-sidebar-titles">
+          <h2 className="page-nav-title">{title}</h2>
+          <p className="page-sidebar-summary">{caption}</p>
+        </div>
+      ) : (
+        <h2 className="page-nav-title">{title}</h2>
+      )}
       {action}
     </div>
   )
@@ -82,13 +89,17 @@ function moveRowFocus(event: KeyboardEvent<HTMLDivElement>) {
 interface PageSidebarPanelProps {
   /** The 40px row under the title that starts something new ("New agent", "New schedule"). */
   action?: ReactNode
+  /** A one-line status under the title (Library 1163:17700 "// 799 items · Updated 2:24 PM"). */
+  caption?: string
+  /** A control at the end of the title row (Library's search, 1163:17705). */
+  headAction?: ReactNode
   children: ReactNode
   title: string
 }
 
 /** A list→detail destination's list (Agents 895:8991, Schedules): the chat sidebar's panel at the
  *  stage's leading edge. It folds away with the chat sidebar; the stage keeps the selected item. */
-export function PageSidebarPanel({ action, children, title }: PageSidebarPanelProps) {
+export function PageSidebarPanel({ action, caption, children, headAction, title }: PageSidebarPanelProps) {
   const open = usePageSidebarOpen()
 
   if (!open) {
@@ -97,7 +108,7 @@ export function PageSidebarPanel({ action, children, title }: PageSidebarPanelPr
 
   return (
     <aside aria-label={title} className="page-sidebar-panel" data-page-panel="">
-      <PageSidebarHead title={title} />
+      <PageSidebarHead action={headAction} caption={caption} title={title} />
       {action}
       <div className="page-sidebar-scroll">{children}</div>
     </aside>

@@ -2,6 +2,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { MemoryRouter } from 'react-router'
 import { afterEach, expect, it, vi } from 'vitest'
 
+import { _resetItemIndexForTests } from '@/store/item-index'
 import { $connection } from '@/store/session'
 import { $shellChoice } from '@/store/shell-variant'
 
@@ -34,6 +35,8 @@ afterEach(() => {
   $shellChoice.set(null)
   vi.clearAllMocks()
   vi.unstubAllGlobals()
+  window.localStorage.clear()
+  _resetItemIndexForTests()
 })
 
 it.each([false, true])(
@@ -65,8 +68,9 @@ it.each([false, true])(
       token: '',
       wsUrl: ''
     })
+    // The redesign's All view shows a short table; its Files tab lists every file.
     render(
-      <MemoryRouter>
+      <MemoryRouter initialEntries={[enabled ? '/?tab=file' : '/']}>
         <ArtifactsView />
       </MemoryRouter>
     )
@@ -95,7 +99,11 @@ it.each([false, true])(
         suggestedName: path.split(/[\\/]/).pop()
       }))
     )
-    expect(screen.getByRole('link').getAttribute('href')).toBe('https://example.com/report.txt')
+
+    if (!enabled) {
+      expect(screen.getByRole('link').getAttribute('href')).toBe('https://example.com/report.txt')
+    }
+
     expect(openExternal).not.toHaveBeenCalled()
     expect(getSessionMessages).toHaveBeenCalledWith('artifact-session', 'origin-profile', {
       includeCompacted: true,

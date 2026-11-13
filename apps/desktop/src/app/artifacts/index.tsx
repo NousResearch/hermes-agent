@@ -7,7 +7,6 @@ import { ZoomableImage } from '@/components/chat/zoomable-image'
 import { PageLoader } from '@/components/page-loader'
 import { Button } from '@/components/ui/button'
 import { CopyButton } from '@/components/ui/copy-button'
-import { EmptyState } from '@/components/ui/empty-state'
 import {
   Pagination,
   PaginationButton,
@@ -18,7 +17,6 @@ import {
   PaginationPrevious
 } from '@/components/ui/pagination'
 import { RowButton } from '@/components/ui/row-button'
-import { Skeleton } from '@/components/ui/skeleton'
 import { Tip } from '@/components/ui/tooltip'
 import { type Translations, useI18n } from '@/i18n'
 import { resolveBrandIcon } from '@/lib/brand-icon'
@@ -40,42 +38,19 @@ import { usePortalShell } from '@/store/shell-variant'
 
 import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
 import { useRouteEnumParam } from '../hooks/use-route-enum-param'
+import { LibraryPage } from '../library/library-page'
 import { openSessionFromPicker } from '../open-session'
-import { usePageFrameCopy } from '../overlays/page-frame-copy'
 import { PageSearchShell } from '../page-search-shell'
 import type { SetStatusbarItemGroup } from '../shell/statusbar-controls'
 
-import { ARTIFACT_FILTERS, type ArtifactFilter, artifactImageSrc, type ArtifactRecord } from './artifact-utils'
+import {
+  ARTIFACT_FILTERS,
+  type ArtifactFilter,
+  artifactImageSrc,
+  type ArtifactRecord,
+  paginationItems
+} from './artifact-utils'
 import { useArtifactIndex } from './artifacts-index'
-
-/** File rows a loading Library reserves under its pagination strip. */
-const SKELETON_ROWS = 6
-
-/** The redesign's first paint before any index is cached: the file table's frame (pagination strip,
- *  header row and rows) in the page column, filled in place when the index lands. */
-function LibrarySkeleton({ label }: { label: string }) {
-  return (
-    <div
-      aria-busy="true"
-      aria-label={label}
-      className="page-search-column h-full max-w-(--page-content-max-width) overflow-hidden"
-      role="status"
-    >
-      <div className="flex flex-col px-(--page-content-inset)">
-        <div className="h-7" />
-        <div className="overflow-hidden rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-chat-bubble-background)">
-          <div className="h-7 border-b border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary)" />
-          {Array.from({ length: SKELETON_ROWS }, (_, index) => (
-            <div className="flex h-10 items-center gap-3 px-2.5" key={index}>
-              <Skeleton className="h-3.5 w-1/3" />
-              <Skeleton className="ml-auto h-3 w-24" />
-            </div>
-          ))}
-        </div>
-      </div>
-    </div>
-  )
-}
 
 function formatArtifactTime(timestamp: number): string {
   return fmtDayTime.format(new Date(timestamp))
@@ -90,32 +65,6 @@ function pageRangeLabel(total: number, page: number, pageSize: number, a: Transl
   const end = Math.min(total, page * pageSize)
 
   return a.rangeOf(start, end, total)
-}
-
-function paginationItems(page: number, pageCount: number): Array<number | 'ellipsis'> {
-  if (pageCount <= 7) {
-    return Array.from({ length: pageCount }, (_, index) => index + 1)
-  }
-
-  const pages: Array<number | 'ellipsis'> = [1]
-  const start = Math.max(2, page - 1)
-  const end = Math.min(pageCount - 1, page + 1)
-
-  if (start > 2) {
-    pages.push('ellipsis')
-  }
-
-  for (let nextPage = start; nextPage <= end; nextPage += 1) {
-    pages.push(nextPage)
-  }
-
-  if (end < pageCount - 1) {
-    pages.push('ellipsis')
-  }
-
-  pages.push(pageCount)
-
-  return pages
 }
 
 type CellCtx = {
@@ -138,11 +87,14 @@ interface ArtifactsViewProps extends React.ComponentProps<'section'> {
   setStatusbarItemGroup?: SetStatusbarItemGroup
 }
 
+/** The Library route: the redesign's page (app/library), or classic's Artifacts page as on main. */
 export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...props }: ArtifactsViewProps) {
+  return usePortalShell() ? <LibraryPage {...props} /> : <ClassicArtifactsView {...props} />
+}
+
+function ClassicArtifactsView(props: React.ComponentProps<'section'>) {
   const { t } = useI18n()
   const a = t.artifacts
-  const redesign = usePortalShell()
-  const frame = usePageFrameCopy()
   const navigate = useNavigate()
   const [query, setQuery] = useState('')
   const [kindFilter, setKindFilter] = useRouteEnumParam('tab', ARTIFACT_FILTERS, 'all')
@@ -293,8 +245,6 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
       activeTab={kindFilter}
       onSearchChange={setQuery}
       onTabChange={id => setKindFilter(id as typeof kindFilter)}
-      pageDescription={frame.libraryDescription}
-      pageTitle={t.simplifiedAgents.library}
       searchHidden={counts.all === 0}
       searchHints={searchHints}
       searchPlaceholder={a.search}
@@ -302,10 +252,7 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
         <Tip label={refreshing ? a.refreshing : a.refresh}>
           <Button
             aria-label={refreshing ? a.refreshing : a.refresh}
-            className={cn(
-              'text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover) hover:text-foreground',
-              redesign && 'page-header-chrome-button'
-            )}
+            className="text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover) hover:text-foreground"
             disabled={refreshing}
             onClick={() => void refreshArtifacts()}
             size="icon-titlebar"
@@ -323,14 +270,8 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
         { id: 'link', label: a.tabLinks, meta: artifacts ? counts.link : null }
       ]}
     >
-      {!artifacts && redesign ? (
-        <LibrarySkeleton label={a.indexing} />
-      ) : !artifacts ? (
+      {!artifacts ? (
         <PageLoader label={a.indexing} />
-      ) : visibleArtifacts.length === 0 && redesign ? (
-        <div className="page-search-empty">
-          <EmptyState description={counts.all === 0 ? a.noArtifactsDesc : undefined} title={a.noArtifactsTitle} />
-        </div>
       ) : visibleArtifacts.length === 0 ? (
         <div className="grid h-full place-items-center px-6 text-center">
           <div>

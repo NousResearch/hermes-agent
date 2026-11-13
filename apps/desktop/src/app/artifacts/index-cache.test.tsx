@@ -41,5 +41,5 @@ it('reopens the Library on its last index in the first paint, with no indexing s
 
   // Synchronous: the reopened page has its rows before any fetch settles.
   expect(screen.getByRole('button', { name: 'cached.md' })).toBeTruthy()
-  expect(screen.queryByRole('status', { name: /index/i })).toBeNull()
+  expect(screen.queryByRole('status', { name: /index|loading/i })).toBeNull()
 })

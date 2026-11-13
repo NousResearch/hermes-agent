@@ -1,0 +1,676 @@
+/* The redesigned Library (Figma 1163:17584). Only the redesign renders these classes (LibraryPage),
+   so no root gate; every value reads a token. Body text keeps the build's 14px step where Figma
+   draws 13. */
+
+/* ── Page frame: the panel at the stage's leading edge, the stage past it ── */
+
+.library-page {
+  position: relative;
+  display: flex;
+  height: 100%;
+  min-width: 0;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+@media (min-width: 1024px) {
+  /* Wide (breakpoints.ts): below it the panel is the band menu's sheet, not a column. */
+  .library-page:has(> .page-sidebar-panel) {
+    padding-inline-start: var(--page-nav-width);
+  }
+}
+
+.library-stage {
+  display: flex;
+  width: 100%;
+  max-width: calc(var(--page-catalog-max-width) + 2 * var(--page-panel-inset));
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 1.25rem;
+  margin-inline: auto;
+  padding: var(--portal-page-top) var(--page-panel-inset) var(--portal-page-end-space);
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+}
+
+.library-stage > .portal-page-header {
+  margin-bottom: 0;
+}
+
+.library-search {
+  width: 16.25rem;
+  max-width: 100%;
+}
+
+.library-refresh[data-busy] svg {
+  animation: library-spin 1s linear infinite;
+}
+
+@keyframes library-spin {
+  to {
+    rotate: 360deg;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .library-refresh[data-busy] svg {
+    animation: none;
+  }
+}
+
+.library-panel-search {
+  flex-shrink: 0;
+}
+
+.library-nav-label {
+  min-width: 0;
+  flex: 1;
+  font-weight: 600;
+}
+
+/* ── Sections (1163:18089): a 14px label and its count, View all at the end ── */
+
+.library-section {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+
+.library-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.library-section-head h2 {
+  margin: 0;
+  color: var(--portal-text-primary);
+  font-size: var(--portal-type-body-size);
+  font-weight: 600;
+}
+
+.library-section-head h2 span {
+  margin-inline-start: 0.5rem;
+  color: var(--portal-text-tertiary);
+  font-family: var(--portal-font-mono);
+  font-size: var(--portal-type-micro-size);
+  font-weight: 400;
+}
+
+/* ── Image cards (1163:18113): 120px cover thumbnail, name, chat · date ── */
+
+.library-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(10.5rem, 1fr));
+  gap: 1rem;
+}
+
+.library-card {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 0.625rem;
+  padding: 0.5rem 0.5rem 0.75rem;
+  border: 1px solid var(--portal-stroke-hairline);
+  border-radius: var(--portal-radius-tile);
+  background: var(--portal-surface-collection);
+  text-align: start;
+}
+
+.library-card:hover {
+  border-color: var(--portal-stroke-control);
+}
+
+.library-card:focus-visible,
+.library-row-open:focus-visible,
+.library-chat-cell:focus-visible,
+.library-filmstrip button:focus-visible,
+.library-preview-image:focus-visible,
+.library-pager button:focus-visible {
+  outline: var(--portal-focus-ring-width) solid var(--portal-focus-ring-color);
+  outline-offset: var(--portal-focus-ring-offset);
+}
+
+[data-slot='library-thumb'] {
+  display: grid;
+  overflow: hidden;
+  place-items: center;
+  border-radius: var(--portal-radius-floating);
+  background: var(--portal-surface-control);
+}
+
+[data-slot='library-thumb'] img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.library-card-thumb {
+  width: 100%;
+  height: 7.5rem;
+}
+
+.library-thumb-missing {
+  color: var(--portal-text-quaternary);
+}
+
+.library-card-meta {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 0.1875rem;
+  padding-inline: 0.25rem;
+}
+
+.library-card-name,
+.library-card-sub {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.library-card-name {
+  color: var(--portal-text-primary);
+  font-size: var(--portal-type-body-size);
+  font-weight: 500;
+}
+
+.library-card-sub {
+  color: var(--portal-text-tertiary);
+  font-family: var(--portal-font-mono);
+  font-size: var(--portal-type-micro-size);
+}
+
+/* ── Files & links table (1163:18155): tag 44 / name 200 / location 270 / chat ── */
+
+.library-table-card {
+  padding: 0.25rem 1.25rem;
+  overflow-x: auto;
+  border: 1px solid var(--portal-stroke-hairline);
+  border-radius: var(--portal-radius-tile);
+  background: var(--portal-surface-collection);
+}
+
+.library-table {
+  width: 100%;
+  min-width: 36rem;
+  border-collapse: collapse;
+  table-layout: fixed;
+}
+
+.library-table th {
+  padding: 0.75rem 0.375rem 0.5rem;
+  color: var(--portal-text-quaternary);
+  font-family: var(--portal-font-mono);
+  font-size: var(--portal-type-caption-size);
+  font-weight: 400;
+  letter-spacing: var(--portal-tracking-caption);
+  text-align: start;
+  text-transform: uppercase;
+}
+
+.library-table td {
+  padding: 0.5rem 0.375rem;
+  border-top: 1px solid var(--portal-stroke-divider);
+  vertical-align: middle;
+}
+
+.library-col-tag {
+  width: 3.5rem;
+}
+
+.library-col-name {
+  width: 30%;
+}
+
+.library-col-location {
+  width: 38%;
+}
+
+.library-tag {
+  display: inline-block;
+  padding: 0.1875rem 0.3125rem;
+  border-radius: var(--portal-radius-control);
+  background: var(--portal-surface-control-pressed);
+  color: var(--portal-text-secondary);
+  font-family: var(--portal-font-mono);
+  font-size: var(--portal-type-chip-size);
+  letter-spacing: var(--portal-tracking-caption);
+  text-transform: uppercase;
+}
+
+.library-row-open {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  color: var(--portal-text-primary);
+  font-size: var(--portal-type-body-size);
+  text-align: start;
+  text-decoration: none;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.library-row-open:hover {
+  text-decoration: underline;
+}
+
+.library-col-location {
+  color: var(--portal-text-tertiary);
+  font-family: var(--portal-font-mono);
+  font-size: var(--portal-type-meta-size);
+}
+
+.library-col-location [data-slot='path-text'] {
+  max-width: 100%;
+}
+
+.library-url {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.library-chat-cell {
+  display: flex;
+  max-width: 100%;
+  flex-direction: column;
+  gap: 0.125rem;
+  text-align: start;
+}
+
+.library-chat-title,
+.library-chat-date {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.library-chat-title {
+  color: var(--portal-text-secondary);
+  font-size: var(--portal-type-body-size);
+}
+
+.library-chat-cell:hover .library-chat-title {
+  color: var(--portal-text-primary);
+  text-decoration: underline;
+}
+
+.library-chat-date {
+  color: var(--portal-text-quaternary);
+  font-family: var(--portal-font-mono);
+  font-size: var(--portal-type-micro-size);
+}
+
+/* ── Pager (1163:18242): "1–24 of 161 images ‹ 1 2 3 … 7 ›" at the end ── */
+
+.library-pager {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.25rem;
+  color: var(--portal-text-tertiary);
+  font-family: var(--portal-font-mono);
+  font-size: var(--portal-type-micro-size);
+}
+
+.library-pager-range {
+  margin-inline-end: 0.75rem;
+}
+
+.library-pager button {
+  display: grid;
+  min-width: 1.5rem;
+  height: 1.5rem;
+  place-items: center;
+  border-radius: var(--portal-radius-control);
+  color: var(--portal-text-secondary);
+}
+
+.library-pager button svg {
+  width: 0.75rem;
+  height: 0.75rem;
+}
+
+.library-pager button:hover:not(:disabled) {
+  background: var(--portal-surface-row-hover);
+  color: var(--portal-text-primary);
+}
+
+.library-pager button[aria-current] {
+  background: var(--portal-surface-control);
+  color: var(--portal-text-primary);
+}
+
+.library-pager button:disabled {
+  opacity: 0.4;
+}
+
+/* ── States ── */
+
+.library-empty,
+.library-error {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.75rem;
+  padding-block: 4rem;
+}
+
+.library-skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+
+.library-skeleton-card {
+  height: 10.5rem;
+  border-radius: var(--portal-radius-tile);
+}
+
+.library-skeleton-row {
+  display: flex;
+  height: 2.75rem;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+/* ── Image preview (1170:8636) ── */
+
+.library-preview {
+  display: flex;
+  min-height: 0;
+  flex-direction: column;
+  gap: 1rem;
+  outline: none;
+}
+
+.library-preview-head {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+
+.library-preview-title {
+  min-width: 0;
+  flex: 1;
+}
+
+/* Above the page H1 rule (portal-typography.css): the open image is named, not titled. */
+[data-page-surface].library-page .library-preview-title > h1.library-preview-name {
+  margin: 0;
+  font-family: var(--portal-font-body);
+  letter-spacing: normal;
+  line-height: 1.4;
+  text-transform: none;
+  overflow: hidden;
+  color: var(--portal-text-primary);
+  font-size: var(--portal-type-section-size);
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.library-preview-title p {
+  margin: 0;
+  color: var(--portal-text-tertiary);
+  font-family: var(--portal-font-mono);
+  font-size: var(--portal-type-micro-size);
+}
+
+.library-preview-steps {
+  display: flex;
+  gap: 0.25rem;
+}
+
+.library-preview-stage {
+  position: relative;
+  display: grid;
+  min-height: 18rem;
+  height: 26rem;
+  max-height: 60vh;
+  overflow: auto;
+  place-items: center;
+  padding: 0.75rem;
+  border: 1px solid var(--portal-stroke-hairline);
+  border-radius: var(--portal-radius-tile);
+  background: var(--portal-surface-collection);
+}
+
+.library-preview-image {
+  display: grid;
+  width: 100%;
+  height: 100%;
+  place-items: center;
+  cursor: zoom-in;
+}
+
+.library-preview-image img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}
+
+.library-preview-missing {
+  color: var(--portal-text-tertiary);
+  font-size: var(--portal-type-body-size);
+}
+
+.library-zoom {
+  position: absolute;
+  inset-inline-end: 0.75rem;
+  inset-block-end: 0.75rem;
+  display: flex;
+  align-items: center;
+  border-radius: var(--portal-radius-control);
+  background: var(--portal-surface-elevated);
+}
+
+.library-preview-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 1rem 2rem;
+  padding: 0.75rem 1rem;
+  border: 1px solid var(--portal-stroke-hairline);
+  border-radius: var(--portal-radius-tile);
+  background: var(--portal-surface-collection);
+}
+
+.library-preview-meta dl {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-wrap: wrap;
+  gap: 0.75rem 2rem;
+  margin: 0;
+}
+
+.library-preview-meta dl > div {
+  min-width: 0;
+}
+
+.library-preview-path {
+  flex: 1;
+}
+
+.library-preview-meta dt {
+  color: var(--portal-text-quaternary);
+  font-family: var(--portal-font-mono);
+  font-size: var(--portal-type-caption-size);
+  letter-spacing: var(--portal-tracking-caption);
+  text-transform: uppercase;
+}
+
+.library-preview-meta dd {
+  display: flex;
+  margin: 0.25rem 0 0;
+  color: var(--portal-text-primary);
+  font-size: var(--portal-type-body-size);
+}
+
+.library-preview-path dd {
+  color: var(--portal-text-secondary);
+  font-size: var(--portal-type-meta-size);
+}
+
+.library-preview-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+}
+
+.library-filmstrip {
+  display: flex;
+  gap: 0.5rem;
+  overflow-x: auto;
+}
+
+.library-filmstrip button {
+  flex-shrink: 0;
+  border-radius: var(--portal-radius-floating);
+  opacity: 0.6;
+}
+
+.library-filmstrip button:hover,
+.library-filmstrip button[aria-current] {
+  opacity: 1;
+}
+
+.library-filmstrip button[aria-current] {
+  box-shadow: 0 0 0 2px var(--portal-surface-brand);
+}
+
+.library-filmstrip-thumb {
+  width: 4.5rem;
+  height: 3rem;
+}
+
+/* ── Image open (1192:8764): the whole window ── */
+
+.library-lightbox-scrim {
+  position: fixed;
+  z-index: var(--portal-layer-sheet);
+  inset: 0;
+  background: var(--portal-surface-scrim);
+  backdrop-filter: blur(12px);
+}
+
+.library-lightbox {
+  position: fixed;
+  z-index: var(--portal-layer-sheet);
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  padding: calc(var(--titlebar-band-height) + 0.5rem) 1.5rem 1rem;
+  outline: none;
+}
+
+.library-lightbox-head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.library-lightbox-title {
+  min-width: 0;
+  flex: 1;
+}
+
+.library-lightbox-title h2 {
+  margin: 0;
+  overflow: hidden;
+  color: var(--portal-text-primary);
+  font-size: var(--portal-type-body-size);
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.library-lightbox-title p {
+  margin: 0;
+  overflow: hidden;
+  color: var(--portal-text-tertiary);
+  font-family: var(--portal-font-mono);
+  font-size: var(--portal-type-micro-size);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.library-lightbox-body {
+  display: grid;
+  min-height: 0;
+  flex: 1;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 1rem;
+  padding-block: 1.5rem;
+}
+
+.library-lightbox-body > img,
+.library-lightbox-body > p {
+  justify-self: center;
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}
+
+.library-lightbox-step button {
+  border-radius: var(--portal-radius-round);
+}
+
+.library-lightbox-position {
+  margin: 0;
+  color: var(--portal-text-tertiary);
+  font-family: var(--portal-font-mono);
+  font-size: var(--portal-type-micro-size);
+  text-align: center;
+}
+
+@media (max-width: 639.98px) {
+  /* Compact (breakpoints.ts): search and refresh share one row; the table keeps name, chat and
+     tag, its location in each row's tooltip; previews stack. */
+  .library-stage .portal-page-header-actions {
+    flex-wrap: nowrap;
+  }
+
+  .library-search {
+    width: auto;
+    min-width: 0;
+    flex: 1;
+  }
+
+  .library-table {
+    min-width: 0;
+  }
+
+  .library-table .library-col-location {
+    display: none;
+  }
+
+  .library-table-card {
+    padding-inline: 0.75rem;
+  }
+
+  .library-preview-head {
+    flex-wrap: wrap;
+  }
+
+  .library-lightbox {
+    padding-inline: 0.75rem;
+  }
+
+  .library-lightbox-head {
+    flex-wrap: wrap;
+  }
+
+  .library-lightbox-body {
+    gap: 0.25rem;
+  }
+}

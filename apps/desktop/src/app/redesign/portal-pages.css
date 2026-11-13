@@ -114,6 +114,34 @@
   margin: 0;
 }
 
+/* A title with a status line under it, then the row's own control at the end (Library 1163:17697). */
+.page-sidebar-titles {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 0.625rem;
+}
+
+.page-sidebar-head:has(> .page-sidebar-titles) {
+  align-items: flex-start;
+}
+
+/* "// 799 ITEMS · UPDATED 2:24 PM": the caption voice, mono. */
+.page-sidebar-summary {
+  margin: 0;
+  color: var(--portal-text-quaternary);
+  font-family: var(--portal-font-mono);
+  font-size: var(--portal-type-caption-size);
+  line-height: 1.6;
+  letter-spacing: var(--portal-tracking-caption);
+  text-transform: uppercase;
+}
+
+.page-sidebar-summary::before {
+  content: '// ';
+}
+
 /* ── List panel (Agents 895:8991, Schedules) ──
    A list→detail destination's list rides the panel at the stage's leading edge; the page (its
    management panel, full width and positioned) starts its stage past it. Below wide the panel is a

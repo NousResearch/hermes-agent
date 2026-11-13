@@ -339,6 +339,7 @@ async function runRefresh(owner: string): Promise<void> {
     const stale = rows.filter(
       row => ownerIndex(owner).snapshot.chats[chatFromRow(owner, row).key]?.marker !== sessionMarker(row)
     )
+
     const failures: ArtifactLoadFailure[] = []
 
     for (const row of stale) {
@@ -389,9 +390,8 @@ export function refreshItemIndex(): Promise<void> {
 }
 
 /** Index one chat now (the items panel opened on a chat outside the Library's window, or one the
- *  index has not read yet). A no-op when its marker is current. */
-export async function ensureChatIndexed(row: SessionInfo): Promise<void> {
-  const owner = activeItemIndexOwner()
+ *  index has not read yet) into `owner`'s index. A no-op when its marker is current. */
+export async function ensureChatIndexed(row: SessionInfo, owner = activeItemIndexOwner()): Promise<void> {
   const key = chatFromRow(owner, row).key
 
   if (ownerIndex(owner).snapshot.chats[key]?.marker === sessionMarker(row)) {
@@ -400,7 +400,8 @@ export async function ensureChatIndexed(row: SessionInfo): Promise<void> {
 
   const result = await readChat(row)
 
-  if (result.failures.length || activeItemIndexOwner() !== owner) {
+  // An unpinned read went to whichever machine was in front; keep it only if that is still `owner`.
+  if (result.failures.length || (!row.connection_id && activeItemIndexOwner() !== owner)) {
     return
   }
 

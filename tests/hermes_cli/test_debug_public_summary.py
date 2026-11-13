@@ -164,3 +164,16 @@ def test_message_derived_names_never_reach_the_summary():
     assert loggers == {"agent.*", "agent.conversation_loop"}
     assert set(exceptions) == {"(other)", "ConnectionResetError", "httpx.ReadTimeout"}
     assert "john_smith" not in repr(by_logger) and "jsmith" not in repr(exceptions)
+
+def test_known_module_prefix_does_not_launder_message_text():
+    """A fabricated class after a real package name is still message text, not a diagnosis."""
+    from hermes_cli.debug_summary import _log_counts
+
+    private_token = "PrivateName427ElmStreet"
+    log = (
+        "2026-04-12 17:00:00,001 WARNING agent.conversation_loop: "
+        f"received httpx.{private_token}Error while httpx.ReadTimeout was raised\n"
+    )
+    _, exceptions, _, _ = _log_counts(log)
+    assert exceptions == {"(other)": 1, "httpx.ReadTimeout": 1}
+    assert private_token not in repr(exceptions)

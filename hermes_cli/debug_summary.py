@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import builtins
 import functools
+import importlib
 import importlib.util
 import logging
 import platform
@@ -146,7 +147,11 @@ def _exception_label(token: str) -> str:
     prefix, _, cls = token.rpartition(".")
     path = _module_path(prefix) if prefix else None
     if path and not path.endswith(".*"):
-        return token
+        # A real module prefix is not proof that a class name quoted in a log exists.
+        module = _guarded(lambda: importlib.import_module(prefix), None)
+        candidate = vars(module).get(cls) if module is not None else None
+        if isinstance(candidate, type) and issubclass(candidate, BaseException):
+            return token
     builtin = getattr(builtins, cls, None)
     return cls if isinstance(builtin, type) and issubclass(builtin, BaseException) else "(other)"
 

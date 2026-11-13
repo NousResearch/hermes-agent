@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Iterable
 from pathlib import Path
 
 from hermes_constants import get_process_hermes_home
@@ -27,26 +28,33 @@ def planned_restart_marker_path(home: Path | None = None) -> Path:
     return (home or get_process_hermes_home()) / PLANNED_RESTART_MARKER_FILENAME
 
 
-def write_planned_restart_marker(*, via_service: bool = False, detached: bool = False) -> None:
-    """Record that the running gateway is going down FOR A RESTART; never blocks the restart.
+def write_planned_restart_marker(
+    *,
+    via_service: bool = False,
+    detached: bool = False,
+    delivered_targets: Iterable[tuple] | None = None,
+) -> None:
+    """Record that the running gateway is going DOWN FOR A RESTART; never blocks the restart.
 
     One writer for both restart kinds: the gateway's own in-band shutdown (``via_service`` /
     ``detached`` from its shutdown context) and the CLI, which has no in-band path of its own.
+
+    ``delivered_targets`` pre-seeds the owed set with chats a more specific notice already reached
+    on this boot (the chat that ran ``/restart``), so the boot pass does not repeat itself there.
 
     Best-effort like ``gateway.status.write_planned_stop_marker``: an unwritable home costs the
     notice, not the restart. Wider than ``OSError`` on purpose — a marker write that raises for any
     other reason must still not leave the caller's ``stop()`` un-run.
     """
+    payload = {
+        "requested_at": time.time(),
+        "via_service": bool(via_service),
+        "detached": bool(detached),
+    }
+    if delivered_targets:
+        payload["delivered_targets"] = [list(target) for target in delivered_targets]
     try:
-        atomic_json_write(
-            planned_restart_marker_path(),
-            {
-                "requested_at": time.time(),
-                "via_service": bool(via_service),
-                "detached": bool(detached),
-            },
-            indent=None,
-        )
+        atomic_json_write(planned_restart_marker_path(), payload, indent=None)
     except Exception:
         logger.debug(
             "Could not record the planned restart; home channels get no online notice", exc_info=True

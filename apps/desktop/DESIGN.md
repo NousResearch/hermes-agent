@@ -256,9 +256,8 @@ The redesigned shell is a window canvas with panels laid on it
 (`app/redesign/portal-shell.css`; every colour, radius and size comes from the tokens in
 "Portal design language" below). The titlebar band and the 60px rails show the canvas; zones
 touching the window top become panels starting below the band, and only the row's outer top
-corners round. The wing artwork is painted once, on the canvas, and reads only through
-translucent panels; page nav panels carry their own viewport-registered wing layer
-(`--portal-page-panel-fill`). Window Glass (macOS default) never switches the redesign off: its
+corners round. Behind it all lies the launch's artwork (see "Artwork" below), which the canvas
+shows at full strength and every panel veils. Window Glass (macOS default) never switches the redesign off: its
 rules are unlayered and beat the `@layer base` Glass rules, and only the canvas (rails, band) takes
 the native material, tinted with the portal canvas at the user's Glass intensity. Titlebar, rail and
 pane header buttons are chrome buttons (`--portal-surface-chrome*`); the open destination or shown
@@ -406,9 +405,8 @@ is 13px at 1.6 leading before user scaling. A pinned prompt keeps 12px of cleara
 below its bubble so clipped reply lines never touch it. Retain the current branded
 body font, timestamp preference, and working message actions; enabled timestamps
 use caption ink and sit above the bubble. Collapsed tool runs, including
-single-tool runs, use the dashed [2,4] summary frame with a status dot. The stage's
-hero photo is luminosity-blended at Figma's crop behind the landing and fades to a
-trace behind a conversation. The composer has no ring: its static 2px spectrum edge
+single-tool runs, use the dashed [2,4] summary frame with a status dot. The stage is a
+veil over the launch's artwork, lighter behind a new chat than behind a conversation. The composer has no ring: its static 2px spectrum edge
 is full strength while it holds focus and dims when focus leaves; its native base
 text is 14px before the
 user's scale, retaining the browser minimum. Floating dialogs inherit redesigned padding, display typography, and
@@ -513,8 +511,7 @@ class. Classic's sidebar dock point is the medium breakpoint; classic is otherwi
   any pick (navigation) closes one; focus moves into it and returns to the menu. Sheets sit under
   menus and popovers (`--portal-layer-sheet*`), so a row's menu opens over its sheet.
 - **Short (max-height 30rem, `SHORT_QUERY`)**: a landscape phone or a raised keyboard puts the
-  composer on one row (attach, editor, send), hides the model row until there is room, drops the
-  hero art, and takes the browser's compact band (48, touch 44).
+  composer on one row (attach, editor, send), hides the model row until there is room, and takes the browser's compact band (48, touch 44).
 - **Touch** (`(hover: none), (pointer: coarse)` on the browser host, any width): chrome buttons,
   rows, menu items, tabs and page buttons take `--portal-touch-target` (44px); switches and
   checkboxes keep their visual and extend their hit area; text fields never go under
@@ -525,6 +522,30 @@ class. Classic's sidebar dock point is the medium breakpoint; classic is otherwi
 - **Browser chrome** (`app/redesign/browser-chrome.ts`): `theme-color` follows the canvas;
   `viewport-fit=cover` lays the page under the notch, and on a device that reports a safe area the
   app root is inset by it as a whole (body-portalled dialogs read `--portal-safe-*`).
+
+### Artwork
+
+The redesign paints one artwork per app launch behind the whole window (Figma "Prod - Desktop" ›
+Brand, frame `16292:10764`: one row per artwork). Dark rotates Vanilla (the engraved wing as a
+trace), Wing (the RGB wing), Angel, Ascend and Karborn; light rotates its own Vanilla and Ascend.
+`app/redesign/artwork.ts` picks the next one in that order on every launch (per device, in
+localStorage), so two launches in a row never repeat; every window of one launch shares the pick
+through the main process's launch id (`hermesDesktop.launchId`), and in a browser each page load
+is a launch. A theme switch keeps the same artwork when the other theme draws it, else the next
+one it does. The pick is mirrored onto `<html data-artwork-dark/-light>` before the first paint;
+classic, the HUD and the popped-out Browser get none.
+
+`app/redesign/portal-artwork.css` holds the art: Figma's geometry in frame pixels (the 1270×870
+Background), scaled to cover the window and centred, plus its ground (`--portal-artwork-ground-*`,
+which becomes `--portal-surface-canvas`). Panels are veils over it, Figma's own fills: the stage of
+a new chat and a page body `--portal-surface-stage-veil`, a conversation the stronger
+`--portal-surface-stage-veil-conversation`, the sidebar kind `--portal-sidebar-panel-background`.
+Every painter repeats the art on its own box (`--artwork-paint`, `background-attachment: fixed`)
+so nested surfaces never compound a veil; covers that cannot (`--portal-surface-stage`,
+`--portal-page-background`) take the veil flattened onto the ground. With a sidebar or page nav
+docked (wide), the figure artworks move right by Figma's own amount to stay on the stage. Figma's
+"01 · Artwork" screens are the canvas layer on its own, not an app state; it shows no setting to
+turn the art off or choose one.
 
 ### Tokens
 
@@ -601,14 +622,19 @@ The tables below are generated from the CSS; do not edit them by hand.
 | `--portal-text-secondary` | `color-mix(in srgb, var(--ui-base) 70%, transparent)` | `color-mix(in srgb, var(--ui-base) 80%, transparent)` |  |
 | `--portal-text-tertiary` | `color-mix(in srgb, var(--ui-base) 60%, transparent)` | `color-mix(in srgb, var(--ui-base) 72%, transparent)` |  |
 | `--portal-text-quaternary` | `color-mix(in srgb, var(--ui-base) 50%, transparent)` | `color-mix(in srgb, var(--ui-base) 64%, transparent)` |  |
-| `--portal-surface-canvas` | `var(--portal-skin-window, var(--ui-bg-chrome))` | `var(--portal-skin-window, color-mix(in srgb, var(--ui-base) 5%, var(--ui-bg-chrome)))` | Window canvas (rails, titlebar band): the skin's own canvas, else its chrome. |
-| `--portal-surface-panel` | `color-mix(in srgb, var(--portal-surface-canvas) 90%, transparent)` | `color-mix(in srgb, var(--portal-raw-pure-white) 30%, transparent)` | Panels laid on the canvas (chat sidebar, page panels, side tool panels): #0A0A1A@.90 over the canvas (856:2740), so the wing reads through at a tenth of its strength. |
-| `--portal-surface-chat` | `color-mix(in srgb, var(--portal-raw-pure-white) 5%, var(--portal-raw-black))` | ″ | Chat's own neutral (906:19804, 1089:8377, 1054:23044): white 5% on black, where pages keep the skin's navy chrome (1036:7189). One value for the stage, the chat sidebar and the side tool panels; point it at --ui-bg-chrome to put chat back on the skin's colour. |
-| `--portal-surface-stage` | `color-mix(in srgb, var(--portal-surface-chat) 96%, var(--portal-surface-canvas))` | `color-mix(in srgb, var(--portal-raw-pure-white) 90%, var(--portal-surface-canvas))` | The stage: the chat neutral at .96 over the canvas. |
-| `--portal-sidebar-background` | `var(--portal-surface-canvas)` | `color-mix(in srgb, var(--portal-raw-pure-white) 30%, var(--portal-surface-canvas))` | The chat sidebar's opaque fill (the shared sidebar surface). |
-| `--portal-page-canvas` | `var(--ui-bg-chrome)` | `var(--portal-surface-canvas)` | Routed pages lay their body on the canvas (Overview 856:2809) and their nav on a panel. |
-| `--portal-page-background` | `var(--portal-page-canvas)` | `var(--portal-surface-stage)` |  |
-| `--portal-page-sidebar-background` | `var(--portal-surface-panel)` | `var(--portal-sidebar-background)` |  |
+| `--portal-surface-canvas` | `var(--portal-skin-window, var(--ui-bg-chrome))` | `var(--portal-skin-window, color-mix(in srgb, var(--ui-base) 5%, var(--ui-bg-chrome)))` | Window canvas (rails, titlebar band): the skin's own canvas, else its chrome. Under the launch's artwork (portal-artwork.css) it is that artwork's ground instead. |
+| `--portal-artwork-ground-vanilla` | `color-mix( in srgb, var(--portal-raw-pure-white) 5%, color-mix(in srgb, var(--portal-raw-black) 94%, var(--portal-raw-blue)) )` | ″ | The artworks' grounds (Prod - Desktop › Brand 16291:10506, each row's Background fill): brand blue under black .94 and white .05 (Vanilla 16292:10768), black .90 (Wing 16292:13812), black .96 (Angel 16292:17116, Ascend 16292:20301); Karborn lays black .98 on the blue and lightens it with a blue .10 filter (16292:35757). Light paints #f2f2f2 under both of its artworks (16292:26683). |
+| `--portal-artwork-ground-wing` | `color-mix( in srgb, var(--portal-raw-pure-white) 5%, color-mix(in srgb, var(--portal-raw-black) 90%, var(--portal-raw-blue)) )` | ″ |  |
+| `--portal-artwork-ground-photo` | `color-mix( in srgb, var(--portal-raw-pure-white) 5%, color-mix(in srgb, var(--portal-raw-black) 96%, var(--portal-raw-blue)) )` | ″ |  |
+| `--portal-artwork-ground-karborn` | `color-mix( in srgb, var(--portal-raw-blue) 10%, color-mix(in srgb, var(--portal-raw-black) 98%, var(--portal-raw-blue)) )` | ″ |  |
+| `--portal-artwork-ground-light` | `var(--portal-raw-white)` | ″ |  |
+| `--portal-surface-chat` | `color-mix(in srgb, var(--portal-raw-pure-white) 5%, var(--portal-raw-black))` | ″ | Chat's own neutral (906:19804, 1089:8377, 1054:23044): white 5% on black, where pages keep the skin's navy chrome (1036:7189). One value for the stage, the chat sidebar and the side tool panels. |
+| `--portal-surface-stage-veil` | `color-mix(in srgb, var(--portal-surface-chat) 88.6%, transparent)` | `color-mix(in srgb, var(--portal-raw-pure-white) 80%, transparent)` | Panels over the artwork are veils, so the art reads through each at Figma's strength (Brand 16292:10764). The stage of a new chat and a page body (Panel/flexible 16292:18060, 16292:19906) are about 89% opaque. |
+| `--portal-surface-stage-veil-conversation` | `color-mix(in srgb, var(--portal-surface-chat) 94.3%, transparent)` | `color-mix( in srgb, var(--portal-raw-black) 2%, color-mix(in srgb, var(--portal-raw-pure-white) 96%, transparent) )` | A conversation strengthens it to focus the transcript (05 · Workspace/Chat 16292:18949): 94%. |
+| `--portal-surface-stage` | `color-mix(in srgb, var(--portal-surface-chat) 94.3%, var(--portal-surface-canvas))` | `color-mix( in srgb, var(--portal-raw-black) 2%, color-mix(in srgb, var(--portal-raw-pure-white) 96%, var(--portal-surface-canvas)) )` | The stage flattened onto the canvas: what covers inside a conversation paint (the docked composer's floor, overlays on the transcript) where the art itself is not repainted. |
+| `--portal-sidebar-background` | `color-mix(in srgb, var(--portal-surface-chat) 95.6%, var(--portal-surface-canvas))` | `color-mix(in srgb, var(--portal-raw-pure-white) 98%, var(--portal-surface-canvas))` | The chat sidebar's opaque fill (the shared sidebar surface, sheets): its veil flattened onto the canvas. |
+| `--portal-page-background` | `color-mix(in srgb, var(--portal-surface-chat) 88.6%, var(--portal-surface-canvas))` | `color-mix(in srgb, var(--portal-raw-pure-white) 80%, var(--portal-surface-canvas))` | Routed pages lay their nav and body on the window canvas like chat (06 · Settings/Account 16292:19723): the band shows the art, the body is the new chat's stage, flattened here for what covers it. |
+| `--portal-page-sidebar-background` | `var(--portal-sidebar-background)` | ″ |  |
 | `--portal-surface-elevated` | `var(--ui-bg-elevated)` | ″ | Menus, popovers, dialogs, drawers, toasts: the solid floating fill (878:6044 #0D0D1E on dark). |
 | `--portal-surface-card` | `var(--portal-raw-ink-2)` | ″ | Cards of grouped rows (1036:7576, 1038:7803). |
 | `--portal-surface-selected` | `var(--portal-raw-ink-5)` | ″ | Neutral selection: list rows, nav rows (1036:7409), with --portal-stroke-selected. |
@@ -650,7 +676,7 @@ The tables below are generated from the CSS; do not edit them by hand.
 | `--portal-neutral-selection-background` | `var(--portal-surface-selected)` | ″ |  |
 | `--portal-neutral-selection-stroke` | `var(--portal-stroke-selected)` | ″ |  |
 | `--portal-window-background` | `var(--portal-surface-canvas)` | ″ |  |
-| `--portal-sidebar-panel-background` | `color-mix(in srgb, var(--portal-surface-chat) 90%, transparent)` | `var(--portal-surface-panel)` | The chat sidebar and side tool panels: the chat neutral at .90, so the wing still reads through (1089:8226). |
+| `--portal-sidebar-panel-background` | `color-mix(in srgb, var(--portal-surface-chat) 95.6%, transparent)` | `color-mix(in srgb, var(--portal-raw-pure-white) 98%, transparent)` | The chat sidebar, side tool panels and page navs (Panel 16292:18203): about 96% opaque, so the art still reads through. |
 | `--portal-panel-divider` | `var(--portal-stroke-hairline)` | ″ |  |
 | `--portal-control-fill` | `var(--portal-surface-control)` | ″ |  |
 | `--portal-control-fill-hover` | `var(--portal-surface-control-hover)` | ″ |  |
@@ -740,8 +766,7 @@ The tables below are generated from the CSS; do not edit them by hand.
 | `--portal-dialog-action-height` | `2.75rem` | ″ | The actions of a dialog or drawer footer (1038:7792): taller than the page's 36px buttons. |
 | `--portal-row-chrome` | `1.875rem` | ″ | Row heights: 30 chrome buttons (906:19469), 40 panel list rows (1038:7408). |
 | `--portal-row-panel` | `2.5rem` | ″ |  |
-| `--portal-wing-fade-length` | `20rem` | ″ | How far into a page's body the wing art takes to fade out, from the panel's edge. |
-| `--page-nav-width` | `var(--portal-panel-width)` | ″ |  |
+| `--page-nav-width` | `var(--portal-panel-width)` | ″ | Names in use before the role names; Phase B moves their readers to the role and deletes them. |
 | `--page-panel-inset` | `var(--portal-frame-inset)` | ″ |  |
 | `--page-stage-inset` | `var(--portal-stage-inset)` | ″ |  |
 | `--page-form-max-width` | `var(--portal-column-form)` | ″ |  |

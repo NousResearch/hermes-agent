@@ -75,7 +75,7 @@ import { useHistoryWindow } from './history-window'
 import { type DroppedFile, partitionDroppedFiles } from './hooks/use-composer-actions'
 import { useFileDropZone } from './hooks/use-file-drop-zone'
 import { shouldShowIntro } from './intro-visibility'
-import { ChatStageArt, useChatLanding } from './landing'
+import { useChatLanding } from './landing'
 import { ProfileTag } from './profile-tag'
 import { ResumeExhaustedOverlay } from './resume-exhausted-overlay'
 import { isRouteSessionMismatch } from './route-session-state'
@@ -802,7 +802,6 @@ const ChatViewContent = memo(function ChatViewContent({
           data-slot="composer-bounds"
           {...dropHandlers}
         >
-          <ChatStageArt landing={landing.centered} />
           <Thread
             clampToComposer={showChatBar}
             cwd={currentCwd}

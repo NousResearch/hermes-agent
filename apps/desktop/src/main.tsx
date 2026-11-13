@@ -32,6 +32,7 @@ import { createRoot } from 'react-dom/client'
 import { HashRouter } from 'react-router'
 
 import App from './app'
+import { installArtworkAttributes } from './app/redesign/artwork'
 import { installPortalBrowserChrome } from './app/redesign/browser-chrome'
 import { installShellSheetAttribute } from './app/shell/shell-sheet'
 import { installTitlebarBandProperty } from './app/shell/use-touch-titlebar'
@@ -61,6 +62,8 @@ startUiPreferencesSync(window.hermesDesktop?.uiPreferences)
 // <html data-shell> gates every redesign rule, including body-portalled surfaces;
 // set it before the first render and keep it in step with runtime toggles.
 installShellAttribute()
+// The launch's artwork (redesign only), on <html> before the first paint so no other art flashes.
+installArtworkAttributes()
 // Body-portalled surfaces clear the band through this root property, in every window.
 installTitlebarBandProperty()
 // The redesign's sheets below wide: CSS lifts the rail into a compact sheet and stands the band down.

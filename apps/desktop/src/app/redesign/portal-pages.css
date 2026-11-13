@@ -91,12 +91,11 @@
 }
 
 /* ── Page sidebar panel (856:2740 Settings, 895:8991 Agents) ──
-   The chat sidebar's panel on every page that has secondary navigation: the same translucent panel
-   fill (the wing reads through), the same 9px outer top corner, a hairline to the stage, and a title
+   The chat sidebar's panel on every page that has secondary navigation: the same veil over the
+   artwork (portal-artwork.css), the same 9px outer top corner, a hairline to the stage, and a title
    row. It folds from its rail destination, as the chat sidebar does. */
 :root[data-shell='portal'] [data-page-surface] :is([data-tour='overlay-nav'], .page-sidebar-panel) {
   border-start-start-radius: var(--portal-panel-radius);
-  background: var(--portal-page-panel-fill);
 }
 
 /* Both page navs end in the same light/5 hairline to the stage (895:17703 x 380). */

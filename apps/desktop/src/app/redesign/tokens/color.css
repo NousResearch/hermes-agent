@@ -24,23 +24,54 @@
   --portal-text-tertiary: color-mix(in srgb, var(--ui-base) 60%, transparent);
   --portal-text-quaternary: color-mix(in srgb, var(--ui-base) 50%, transparent);
 
-  /* Window canvas (rails, titlebar band): the skin's own canvas, else its chrome. */
+  /* Window canvas (rails, titlebar band): the skin's own canvas, else its chrome. Under the launch's
+     artwork (portal-artwork.css) it is that artwork's ground instead. */
   --portal-surface-canvas: var(--portal-skin-window, var(--ui-bg-chrome));
-  /* Panels laid on the canvas (chat sidebar, page panels, side tool panels): #0A0A1A@.90 over the
-     canvas (856:2740), so the wing reads through at a tenth of its strength. */
-  --portal-surface-panel: color-mix(in srgb, var(--portal-surface-canvas) 90%, transparent);
+  /* The artworks' grounds (Prod - Desktop › Brand 16291:10506, each row's Background fill): brand blue
+     under black .94 and white .05 (Vanilla 16292:10768), black .90 (Wing 16292:13812), black .96
+     (Angel 16292:17116, Ascend 16292:20301); Karborn lays black .98 on the blue and lightens it with a
+     blue .10 filter (16292:35757). Light paints #f2f2f2 under both of its artworks (16292:26683). */
+  --portal-artwork-ground-vanilla: color-mix(
+    in srgb,
+    var(--portal-raw-pure-white) 5%,
+    color-mix(in srgb, var(--portal-raw-black) 94%, var(--portal-raw-blue))
+  );
+  --portal-artwork-ground-wing: color-mix(
+    in srgb,
+    var(--portal-raw-pure-white) 5%,
+    color-mix(in srgb, var(--portal-raw-black) 90%, var(--portal-raw-blue))
+  );
+  --portal-artwork-ground-photo: color-mix(
+    in srgb,
+    var(--portal-raw-pure-white) 5%,
+    color-mix(in srgb, var(--portal-raw-black) 96%, var(--portal-raw-blue))
+  );
+  --portal-artwork-ground-karborn: color-mix(
+    in srgb,
+    var(--portal-raw-blue) 10%,
+    color-mix(in srgb, var(--portal-raw-black) 98%, var(--portal-raw-blue))
+  );
+  --portal-artwork-ground-light: var(--portal-raw-white);
   /* Chat's own neutral (906:19804, 1089:8377, 1054:23044): white 5% on black, where pages keep the
-     skin's navy chrome (1036:7189). One value for the stage, the chat sidebar and the side tool panels;
-     point it at --ui-bg-chrome to put chat back on the skin's colour. */
+     skin's navy chrome (1036:7189). One value for the stage, the chat sidebar and the side tool panels. */
   --portal-surface-chat: color-mix(in srgb, var(--portal-raw-pure-white) 5%, var(--portal-raw-black));
-  /* The stage: the chat neutral at .96 over the canvas. */
-  --portal-surface-stage: color-mix(in srgb, var(--portal-surface-chat) 96%, var(--portal-surface-canvas));
-  /* The chat sidebar's opaque fill (the shared sidebar surface). */
-  --portal-sidebar-background: var(--portal-surface-canvas);
-  /* Routed pages lay their body on the canvas (Overview 856:2809) and their nav on a panel. */
-  --portal-page-canvas: var(--ui-bg-chrome);
-  --portal-page-background: var(--portal-page-canvas);
-  --portal-page-sidebar-background: var(--portal-surface-panel);
+  /* Panels over the artwork are veils, so the art reads through each at Figma's strength (Brand
+     16292:10764). The stage of a new chat and a page body (Panel/flexible 16292:18060, 16292:19906)
+     are about 89% opaque. */
+  --portal-surface-stage-veil: color-mix(in srgb, var(--portal-surface-chat) 88.6%, transparent);
+  /* A conversation strengthens it to focus the transcript (05 · Workspace/Chat 16292:18949): 94%. */
+  --portal-surface-stage-veil-conversation: color-mix(in srgb, var(--portal-surface-chat) 94.3%, transparent);
+  /* The stage flattened onto the canvas: what covers inside a conversation paint (the docked
+     composer's floor, overlays on the transcript) where the art itself is not repainted. */
+  --portal-surface-stage: color-mix(in srgb, var(--portal-surface-chat) 94.3%, var(--portal-surface-canvas));
+  /* The chat sidebar's opaque fill (the shared sidebar surface, sheets): its veil flattened onto the
+     canvas. */
+  --portal-sidebar-background: color-mix(in srgb, var(--portal-surface-chat) 95.6%, var(--portal-surface-canvas));
+  /* Routed pages lay their nav and body on the window canvas like chat (06 · Settings/Account
+     16292:19723): the band shows the art, the body is the new chat's stage, flattened here for what
+     covers it. */
+  --portal-page-background: color-mix(in srgb, var(--portal-surface-chat) 88.6%, var(--portal-surface-canvas));
+  --portal-page-sidebar-background: var(--portal-sidebar-background);
   /* Menus, popovers, dialogs, drawers, toasts: the solid floating fill (878:6044 #0D0D1E on dark). */
   --portal-surface-elevated: var(--ui-bg-elevated);
   /* Cards of grouped rows (1036:7576, 1038:7803). */
@@ -111,9 +142,9 @@
   --portal-neutral-selection-background: var(--portal-surface-selected);
   --portal-neutral-selection-stroke: var(--portal-stroke-selected);
   --portal-window-background: var(--portal-surface-canvas);
-  /* The chat sidebar and side tool panels: the chat neutral at .90, so the wing still reads through
-     (1089:8226). */
-  --portal-sidebar-panel-background: color-mix(in srgb, var(--portal-surface-chat) 90%, transparent);
+  /* The chat sidebar, side tool panels and page navs (Panel 16292:18203): about 96% opaque, so the art
+     still reads through. */
+  --portal-sidebar-panel-background: color-mix(in srgb, var(--portal-surface-chat) 95.6%, transparent);
   --portal-panel-divider: var(--portal-stroke-hairline);
   --portal-control-fill: var(--portal-surface-control);
   --portal-control-fill-hover: var(--portal-surface-control-hover);
@@ -139,15 +170,22 @@
   --portal-text-quaternary: color-mix(in srgb, var(--ui-base) 64%, transparent);
   /* A skin without its own canvas gets chrome with 5% ink. */
   --portal-surface-canvas: var(--portal-skin-window, color-mix(in srgb, var(--ui-base) 5%, var(--ui-bg-chrome)));
-  /* Light panels lift toward white: the panel is one translucent white layer, so the canvas wing reads
-     through it as a trace (Light draws it barely there, 491:46161). */
-  --portal-surface-panel: color-mix(in srgb, var(--portal-raw-pure-white) 30%, transparent);
-  --portal-surface-stage: color-mix(in srgb, var(--portal-raw-pure-white) 90%, var(--portal-surface-canvas));
-  --portal-sidebar-background: color-mix(in srgb, var(--portal-raw-pure-white) 30%, var(--portal-surface-canvas));
-  --portal-page-canvas: var(--portal-surface-canvas);
-  --portal-page-background: var(--portal-surface-stage);
-  --portal-page-sidebar-background: var(--portal-sidebar-background);
-  --portal-sidebar-panel-background: var(--portal-surface-panel);
+  /* Light veils are white (16292:27185, 16292:28348, 16292:24306): the new chat's stage and a page body
+     at .80, a conversation at .96 under black .02, the sidebar at .98. */
+  --portal-surface-stage-veil: color-mix(in srgb, var(--portal-raw-pure-white) 80%, transparent);
+  --portal-surface-stage-veil-conversation: color-mix(
+    in srgb,
+    var(--portal-raw-black) 2%,
+    color-mix(in srgb, var(--portal-raw-pure-white) 96%, transparent)
+  );
+  --portal-surface-stage: color-mix(
+    in srgb,
+    var(--portal-raw-black) 2%,
+    color-mix(in srgb, var(--portal-raw-pure-white) 96%, var(--portal-surface-canvas))
+  );
+  --portal-sidebar-background: color-mix(in srgb, var(--portal-raw-pure-white) 98%, var(--portal-surface-canvas));
+  --portal-page-background: color-mix(in srgb, var(--portal-raw-pure-white) 80%, var(--portal-surface-canvas));
+  --portal-sidebar-panel-background: color-mix(in srgb, var(--portal-raw-pure-white) 98%, transparent);
   --portal-surface-control: var(--portal-raw-ink-3);
   --portal-surface-control-hover: var(--portal-raw-ink-5);
   --portal-surface-control-pressed: var(--portal-raw-ink-8);
@@ -167,21 +205,10 @@
 /* Window Glass (macOS default): the native material shows only on the canvas — the rails and the
    band — tinted with the portal canvas at the user's Glass intensity (0 = solid). styles.css clears
    the shell's own canvas paint for Glass; <body> is the canvas's one painter. Panels, cards and the
-   wing above it render exactly as without Glass. These rules are unlayered on purpose: they hold
+   artwork above it render exactly as without Glass. These rules are unlayered on purpose: they hold
    under Glass too (styles.css `@layer base`). */
 :root[data-shell='portal'][data-hermes-glass] body {
   background: color-mix(in srgb, var(--portal-window-background) var(--translucency-glass-keep, 100%), transparent);
-}
-
-/* Pages — overlays (Settings, Agents, …) and the workspace's own pages (Capabilities, Library, …)
-   — share one frame: square, full bleed beside the rail, nav and body laid on the page canvas
-   (Overview 856:2740 / 856:2809 / 919:9263) rather than on chat panels. */
-:root[data-shell='portal'] [data-overlay-surface][data-page-surface] {
-  background-color: var(--portal-page-canvas);
-}
-
-:root[data-shell='portal'] :is([data-slot='page-toolbar'], [data-tree-group][data-zone-page] > [data-panel-header]) {
-  background-color: var(--portal-page-canvas);
 }
 
 /* A page's band is canvas like every other screen's: under Glass it shows the material (a route

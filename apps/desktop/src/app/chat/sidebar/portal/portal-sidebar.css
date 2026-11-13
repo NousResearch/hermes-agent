@@ -10,7 +10,7 @@
   min-width: 0;
   overflow: hidden;
   border-right: 1px solid var(--sidebar-edge-border);
-  /* Translucent shell token: the window wing shows through, as in Figma 906. The zone clips the
+  /* Translucent shell token: the window's artwork shows through (Panel 16292:18203). The zone clips the
      outer corner, so the seam with the stage stays square. */
   background: var(--portal-sidebar-panel-background);
   color: var(--ui-text-primary);

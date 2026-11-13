@@ -26,7 +26,7 @@ interface OverlaySplitLayoutProps {
 interface OverlaySidebarProps {
   children: ReactNode
   className?: string
-  /** A redesigned page's docked panel: the page art's fade starts past it (portal-artwork.css). */
+  /** A redesigned page's docked panel: the artwork shifts past it, as beside the chat sidebar (portal-artwork.css). */
   docked?: boolean
 }
 

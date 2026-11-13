@@ -257,7 +257,7 @@ import {
   tuiResumeArgs
 } from './external-terminal'
 import { f12ShortcutDecision, toF12KeyboardEventPayload } from './f12-shortcut'
-import { resolveFeatureFlags } from './feature-flags'
+import { resolveLaunchFacts } from './feature-flags'
 import {
   installFindShortcut,
   installFoundInPageForwarder,
@@ -16443,15 +16443,11 @@ ipcMain.on('hermes:translucency:support', event => {
 // flags survive self-relaunches because collectRelaunchArgs only strips
 // internal flags.
 ipcMain.on('hermes:feature-flags', (event: IpcMainEvent): void => {
-  event.returnValue = {
-    ...resolveFeatureFlags({
-      argv: process.argv,
-      canary: resolveUpdaterChannelFromStamp() === 'canary'
-    }),
-    // Dev-only: `--fresh-install` makes onboarding treat this launch as a fresh
-    // install. Packaged builds never honour it.
-    assumeFreshInstall: !app.isPackaged && process.argv.includes('--fresh-install')
-  }
+  event.returnValue = resolveLaunchFacts({
+    argv: process.argv,
+    canary: resolveUpdaterChannelFromStamp() === 'canary',
+    packaged: app.isPackaged
+  })
 })
 
 ipcMain.on('hermes:translucency', (_event, payload) => {

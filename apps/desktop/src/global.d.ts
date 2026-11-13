@@ -423,6 +423,8 @@ declare global {
       localModelsEnabled?: boolean
       /** Dev-only launch flag (`--fresh-install`, unpackaged builds): onboarding treats this launch as a fresh install. */
       assumeFreshInstall?: boolean
+      /** Main-process fact: this app launch's id, the same in every window until the app quits. */
+      launchId?: string
       /** Sanitized local `display.skin`, available before any gateway connects. */
       localSkin?: { profile: string; skin: HermesSkin } | null
       /** This machine's shared UI preferences store (#145213): preload IPC natively,

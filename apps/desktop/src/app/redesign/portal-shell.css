@@ -1,6 +1,6 @@
 /* Redesigned shell frame (Figma 906:19396, 1089:7972): the window canvas shows through the titlebar
    band and the 60px rails; each zone at the window top is a panel with a hairline edge whose
-   leading top corner rounds at 9px (906:19804, 1089:8226), as does the row's trailing one. Tokens come from tokens/, the wing from portal-artwork.css. */
+   leading top corner rounds at 9px (906:19804, 1089:8226), as does the row's trailing one. Tokens come from tokens/, the artwork and the panels' veils over it from portal-artwork.css. */
 
 /* A page or route overlay paints over the chat it covers (contrib/route-cover.tsx). The chat keeps
    its rendering state (scroll, draft) but is skipped by style, layout and paint, so covering and
@@ -33,13 +33,13 @@
   pointer-events: none;
 }
 
-/* The sessions pane paints its own translucent panel so the wing reads through it. */
+/* The sessions pane paints its own translucent panel so the artwork reads through it. */
 :root[data-shell='portal'] [data-tree-group][data-zone-pane='sessions'] > [data-panel-header]::before {
   background-color: transparent;
 }
 
 /* Side tool panels (Files, Review) are the sidebar's kind of panel (Brand rev 491:40755's right
-   panel): the same translucent fill, so the wing reads through them as through the sidebar. */
+   panel): the same translucent fill, so the artwork reads through them as through the sidebar. */
 :root[data-shell='portal']
   [data-tree-group][data-window-top]:is([data-zone-pane='files'], [data-zone-pane='review'])
   > [data-panel-header]::before {

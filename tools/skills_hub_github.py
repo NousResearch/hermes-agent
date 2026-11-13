@@ -203,6 +203,13 @@ def _tree_members(entries: list[dict], prefix: str):
             yield item_path[len(prefix):], item_path, item.get("type") == "blob" and item.get("mode") != "120000"
 
 
+def _tree_executables(entries: list[dict], prefix: str) -> frozenset[str]:
+    """Relative paths of the git-tree blobs under ``prefix`` committed as executable (mode 100755)."""
+    return frozenset(
+        item["path"][len(prefix):] for item in entries
+        if item.get("mode") == "100755" and item.get("path", "").startswith(prefix))
+
+
 class GitHubSource(SkillSource):
     """Fetch skills from GitHub repos via the Contents API."""
 
@@ -307,7 +314,9 @@ class GitHubSource(SkillSource):
         if referenced is None:
             return None
         files: dict[str, str | bytes] = {"SKILL.md": skill_md}
+        executables: frozenset[str] = frozenset()
         if tree is not None:
+            executables = _tree_executables(tree[1], f"{skill_dir}/" if skill_dir else "")
             complete = self._collect_tree_files(repo, skill_dir, tree[1], pinned_ref, referenced, files)
             if complete is None:
                 return None
@@ -323,6 +332,7 @@ class GitHubSource(SkillSource):
         return SkillBundle(
             name=skill_dir.split("/")[-1] or repo.split("/")[-1], files=files, source="github", identifier=identifier,
             trust_level=self.trust_level_for(identifier), metadata={"source_url": url, "source_revision": revision},
+            executables=executables & files.keys(),
         )
 
     def current_revision(self, identifier: str) -> str:

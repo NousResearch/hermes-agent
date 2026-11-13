@@ -12,6 +12,7 @@ from typing import Any
 
 from hermes_cli.colors import Colors, color
 from hermes_cli.route_identity import normalize_route_base_url
+from utils import same_base_url_origin
 
 _AUX_KEY_FIELDS = ("api_key", "key_env", "api_key_env")
 
@@ -27,8 +28,9 @@ def clear_aux_credentials_on_route_change(entry: dict, provider: Any, base_url: 
     belong to the old endpoint, and the aux resolver would hand them to the new one (#141832).
     Returns True when credentials were cleared."""
     old, new = _route_of(entry.get("provider"), entry.get("base_url")), _route_of(provider, base_url)
-    # Bare custom is configured BY its base_url (provider_owns_route): an unchanged URL is the same endpoint.
-    if old == new or (new[0] == "custom" and new[1] and new[1] == old[1]):
+    # Bare custom is configured BY its base_url (provider_owns_route); its key binds to the URL's origin
+    # (#130410), so a path change on the same origin is the same endpoint's key.
+    if old == new or (new[0] == "custom" and new[1] and old[1] and same_base_url_origin(old[1], new[1])):
         return False
     from hermes_cli.config import clear_model_endpoint_credentials
     clear_model_endpoint_credentials(entry)

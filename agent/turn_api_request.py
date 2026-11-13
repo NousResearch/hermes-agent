@@ -13,6 +13,7 @@ import logging
 from typing import Any
 
 from agent.message_sanitization import sanitize_outbound_kwargs, strip_images_for_rejecting_model
+from agent.prefix_request import enabled as prefix_request_enabled
 from hermes_cli.observability.shared_metrics_efficiency import observe_request_tools
 from utils import env_var_enabled
 
@@ -184,6 +185,10 @@ def build_api_request(
     middleware/hooks/debug dumps observe the payload)."""
     from agent.conversation_loop import _moa_client_consumes_prepared_request
 
+    # Only a turn request has history rows; a side request through build_request_payload has none.
+    if prefix_request_enabled(agent):
+        # The history rows behind this request. The provider call copies them with its final body.
+        agent._prefix_source_messages = messages
     built = build_request_payload(
         agent, api_messages=api_messages, _moa_prepared_request=_moa_prepared_request,
         tools_for_api=tools_for_api, system_message=system_message, api_call_count=api_call_count,

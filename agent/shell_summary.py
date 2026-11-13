@@ -18,8 +18,8 @@ import functools
 import re
 from typing import Iterator
 
-#: Commands a session repeats: the few hundred a projection shares are what a warm pass rewrites.
-MEMO_SIZE = 1024
+#: A reported 2,420-command transcript needs room for each command and its parsed segments (#154513).
+MEMO_SIZE = 8192
 #: Pipeline stages whose tail is dropped from a preview (the pipeline's own output is not the command).
 PIPE_TAIL_HEADS = frozenset({"head", "tail", "wc", "sort", "uniq"})
 

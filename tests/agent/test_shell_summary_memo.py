@@ -134,6 +134,26 @@ def test_a_single_command_is_scanned_once_per_projection():
     assert warm == 0
 
 
+def test_reported_session_size_does_not_thrash_summary_cache(monkeypatch):
+    """A second read of the reported 2,420-command session must not redo its character scans."""
+    from agent.display import summarize_shell_command
+
+    # Different command and segment strings force the LRU to retain real session-sized history.
+    commands = [
+        f"cd /tmp/session-{index} && rg -n TODO src/task_{index}.py | head -10"
+        for index in range(2_420)
+    ]
+    steps = _count_scans(monkeypatch)
+    first = [summarize_shell_command(command) for command in commands]
+    cold_scans = len(steps)
+    steps.clear()
+    second = [summarize_shell_command(command) for command in commands]
+
+    assert first == second, "warm reads must preserve the same visible command labels"
+    assert cold_scans > 10_000, "the session should exercise the real character scanner"
+    assert not steps, f"the second read re-scanned {len(steps)} characters after LRU eviction"
+
+
 def test_the_memo_is_size_bounded():
     """A session's command set must not grow the cache without limit."""
     module = _summary_module()

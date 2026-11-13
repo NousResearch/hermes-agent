@@ -217,6 +217,24 @@ def _canonical_ledger_refusal(session: dict):
 def _attach_lease(session: dict, lease) -> None:
     session["active_session_lease"] = lease
     session.pop("_lease_taken_over", None)  # owning again: its finalize ends the row like any owner
+    session.pop("_lease_idle_released", None)
+
+
+def _reclaim_idle_released_lease(session: dict):
+    """Re-claim a lease the idle reaper released; None when this record owns the chat again, else the refusal.
+
+    Caller holds ``history_lock``, which the reaper's release also takes, so a rewind cannot interleave with a
+    release. Claim-only: a detached-runtime takeover takes the resume lock, which nests outside history_lock."""
+    if not (sid := session.get("_lease_idle_released")) or session.get("active_session_lease") is not None:
+        return None
+    if (refusal := _canonical_ledger_refusal(session)) is not None:
+        return refusal
+    lease, refusal = _claim_active_session_slot(
+        str(session.get("session_key") or ""), live_session_id=sid, surface=_session_source(session),
+        profile_home=session.get("profile_home"))
+    if refusal is None:
+        _attach_lease(session, lease)
+    return refusal
 
 
 def _detached_lease_holder(session: dict, key: str) -> tuple[str, dict] | None:

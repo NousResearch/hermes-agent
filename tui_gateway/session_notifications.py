@@ -398,13 +398,19 @@ def _maybe_fire_tui_loop_tick(sid: str, session: dict) -> None:
             _notif_slash_loop_tick(rid, sid, session, mgr, wakeup)
         else:
             _emit("message.start", sid)
-            _run_prompt_submit(rid, sid, session, wakeup)
+            if not _run_prompt_submit(rid, sid, session, wakeup):
+                # Refused at admission (another surface owns the chat): no turn will settle this tick.
+                _notif_abandon_loop_tick(sid, session, mgr)
     except Exception as exc:
         _notif_log_failure("loop wakeup dispatch failed", exc)
-        _notif_release_turn(session)
-        with contextlib.suppress(Exception):
-            mgr.abandon_tick()
-        _publish_session_control_snapshot(sid, session)  # back to the countdown, not "running now"
+        _notif_abandon_loop_tick(sid, session, mgr)
+
+
+def _notif_abandon_loop_tick(sid: str, session: dict, mgr) -> None:
+    _notif_release_turn(session)
+    with contextlib.suppress(Exception):
+        mgr.abandon_tick()
+    _publish_session_control_snapshot(sid, session)  # back to the countdown, not "running now"
 
 
 def _kb_first_line(value: Any, limit: int) -> str:

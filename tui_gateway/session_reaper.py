@@ -340,7 +340,8 @@ def _session_lease_is_idle(sid: str, session: dict, now: float) -> bool:
     ready = session.get("agent_ready")
     if ready is not None and not ready.is_set():
         return False
-    return not (_session_pending_kind(sid) or _session_has_active_delegations(sid, session))
+    return not (_session_pending_kind(sid) or _session_has_active_delegations(sid, session)
+                or _session_owns_live_wakeup_schedule(session) or _session_owns_pending_process_notification(session))
 
 
 def _release_idle_session_leases(now: float | None = None) -> int:
@@ -353,10 +354,14 @@ def _release_idle_session_leases(now: float | None = None) -> int:
         if not _session_lease_is_idle(sid, session, now):
             continue
         # A turn marks ``running`` under history_lock; re-check there so release never races its admission.
+        # ``_lease_idle_released`` is set under the same lock: a submit that checked the lease before this
+        # release, and every rewind, refuses to write the transcript until the lease is re-claimed.
         with session.get("history_lock") or contextlib.nullcontext():
             if session.get("running") or session.get("_finalized"):
                 continue
-            released += _release_active_session_slot(session)
+            if _release_active_session_slot(session):
+                session["_lease_idle_released"] = sid  # the writer identity a re-claim must present
+                released += 1
     return released
 
 

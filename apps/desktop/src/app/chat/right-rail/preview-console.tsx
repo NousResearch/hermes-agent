@@ -1,6 +1,6 @@
 import { useStore } from '@nanostores/react'
 import type { CSSProperties, MutableRefObject, PointerEvent as ReactPointerEvent, RefObject } from 'react'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 
 import { requestComposerInsert } from '@/app/chat/composer/focus'
 import { CopyButton } from '@/components/ui/copy-button'
@@ -196,31 +196,15 @@ export function PreviewConsolePanel({
   const selectedLogIds = useStore(consoleState.$selectedLogIds)
   const visibleSelection = useMemo(() => logs.filter(log => selectedLogIds.has(log.id)), [logs, selectedLogIds])
   const sendableLogs = visibleSelection.length > 0 ? visibleSelection : logs
-  const stickScrollRafRef = useRef<number | null>(null)
 
-  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
-  useEffect(() => {
+  // Follow in the batched commit, before another append checks the bottom gap.
+  useLayoutEffect(() => {
     if (!consoleShouldStickRef.current) {
       return
     }
 
-    if (stickScrollRafRef.current !== null) {
-      window.cancelAnimationFrame(stickScrollRafRef.current)
-      stickScrollRafRef.current = null
-    }
-
-    stickScrollRafRef.current = window.requestAnimationFrame(() => {
-      stickScrollRafRef.current = null
-      const consoleBody = consoleBodyRef.current
-      consoleBody?.scrollTo({ top: consoleBody.scrollHeight })
-    })
-
-    return () => {
-      if (stickScrollRafRef.current !== null) {
-        window.cancelAnimationFrame(stickScrollRafRef.current)
-        stickScrollRafRef.current = null
-      }
-    }
+    const consoleBody = consoleBodyRef.current
+    consoleBody?.scrollTo({ top: consoleBody.scrollHeight })
   }, [consoleBodyRef, consoleHeight, consoleShouldStickRef, logs])
 
   function sendLogsToComposer(entries: ConsoleEntry[]) {

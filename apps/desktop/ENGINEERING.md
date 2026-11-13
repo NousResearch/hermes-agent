@@ -59,7 +59,8 @@ assume:
   into the shared view; background work updates its own cache quietly.
 - **Coalesce noise, flush signal.** Batch high-frequency cosmetic updates, but
   let terminal transitions (a turn finishing, needing input, failing) reach the
-  user immediately.
+  user immediately. Frame-batched console logs follow the bottom in the same
+  layout commit, before another append can mistake DOM growth for a user scroll.
 - **Preserve reference identity on no-ops.** Handing React a fresh array that
   contains the same data re-renders expensive trees for nothing.
 

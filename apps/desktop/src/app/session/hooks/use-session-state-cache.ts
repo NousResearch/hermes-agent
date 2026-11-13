@@ -30,7 +30,8 @@ import {
   isSessionInForeground,
   publishSessionState,
   rekeySessionTile,
-  releaseSessionTranscript
+  releaseSessionTranscript,
+  unbindTileRuntime
 } from '@/store/session-states'
 
 import type { ClientSessionState } from '../../types'
@@ -154,6 +155,9 @@ export function useSessionStateCache({
         }
 
         releaseSessionTranscript(runtimeId)
+        // A parked tile must lose its binding as well as its transcript,
+        // otherwise its `!runtimeId` resume gate stays closed on remount.
+        unbindTileRuntime(runtimeId)
       }
     })
   }

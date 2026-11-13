@@ -38,12 +38,12 @@ _FLAGS_MESSAGE_CONTENT = (1 << 18) | (1 << 19)
 # letters, or Unicode decimal digits like '１２３') is rejected before it
 # reaches a URL path segment.  Use an explicit [0-9] class rather than \d,
 # which in Python also matches Unicode decimal digits.
-_SNOWFLAKE_RE = re.compile(r"^[0-9]{1,20}$")
+_SNOWFLAKE_RE = re.compile(r"[0-9]{1,20}")
 
 
 def _validate_snowflake(value: str, param_name: str) -> None:
     """Raise ``ValueError`` if *value* is not a valid Discord snowflake ID."""
-    if not _SNOWFLAKE_RE.match(str(value)):
+    if not _SNOWFLAKE_RE.fullmatch(str(value)):  # fullmatch: ``$`` would accept a trailing newline
         raise ValueError(
             f"Invalid Discord {param_name}: {value!r} "
             f"(expected 1-20 digit numeric string)")

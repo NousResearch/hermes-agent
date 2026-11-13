@@ -1,0 +1,61 @@
+# The catalog entry that goes into NousResearch/hermes-agent as
+# plugin-catalog/peripheral.yaml. `sha` is the most recent release commit: at HEAD it is
+# the commit tagged v<version>, and inside a release commit it names the release before
+# it, because nothing inside a commit can pin that same commit. The copy submitted in
+# the catalog PR carries the current pin. scripts/check_release.py proves the tag and
+# the pin agree wherever it is run.
+name: peripheral
+repo: https://github.com/okyssta/hermes-peripheral
+sha: 107445dbab1d09189a9a99612a3caa4a2827b3af
+description: >-
+  A memory of what the user has seen on screen. Peripheral captures the display
+  itself on request, optionally on change in the background, and indexes the
+  screenshots the OS already writes — read locally with Tesseract, deduplicated
+  (SHA-256 plus a 64-bit dHash change gate) and stored in SQLite/FTS5 with the time
+  they appeared. The agent gets six tools: screen_capture (photograph the screen now
+  and get it back), screen_recall (ranked search over the words that were on screen,
+  with since/until windows and a prefix fallback for OCR noise), screen_timeline
+  (what was on screen over a period, interleaved with the agent's own tool calls on
+  one clock), screen_show (one screen's full text plus the image itself, attached to
+  the result when the active model accepts images), screen_index, and screen_forget
+  (delete rows, thumbnails and captured frames on request). Ships a /peripheral
+  command (status, capture, watch on/off, scan, search, open, forget, pause, resume)
+  and a bundled skill that teaches when screen memory beats asking the user to
+  re-send a screenshot. Works without Tesseract: frames are still captured and can
+  be looked at, and the plugin says text search is unavailable rather than pretending.
+  Incremental and rate-limited: only changed files are re-read, each scan OCRs a
+  capped batch, background capture stores changed frames only under an hourly ceiling
+  (that bounds the rate, not the total size: retention_days is off by default), and
+  every failure (no capture binary, no Tesseract, unreadable image, locked database)
+  is logged and skipped rather than raised. Disclosure — reads image files under the
+  configured watch_dirs and captures the display when the agent calls its
+  screen_capture tool — the model may choose to do so, and every call is visible in
+  the session and recorded in the event log — or when the user enables
+  capture_enabled; writes one SQLite database, WebP
+  thumbnails and captured frames under the profile's plugin-data/peripheral/; runs
+  the local tesseract binary and a local capture binary (ffmpeg x11grab, grim,
+  screencapture, PowerShell, import, scrot or maim) as subprocesses with timeouts;
+  makes no network calls and has no telemetry; redacts API keys, JWTs, bearer
+  headers, private keys, card numbers and credentials inside connection URLs from
+  stored text and stored tool-event details before writing (on by default); 'forget'
+  deletes the row, the thumbnail and any frame the plugin captured, and never
+  modifies or deletes the user's own files.
+maintainer: okyssta
+tier: community
+category: tools
+requires_hermes: ">=0.22.0"
+version: "2.1.2"
+docs_url: https://github.com/okyssta/hermes-peripheral#readme
+platforms: []
+capabilities:
+  provides_tools:
+    - screen_recall
+    - screen_timeline
+    - screen_show
+    - screen_index
+    - screen_capture
+    - screen_forget
+  provides_hooks:
+    - post_tool_call
+  provides_middleware: []
+  requires_env: []

@@ -1157,6 +1157,7 @@ hermes dashboard [options]
 | `--host` | `127.0.0.1` | 绑定地址 |
 | `--no-open` | — | 不自动打开浏览器 |
 | `--insecure` | 关闭 | **已弃用 / 无实际作用。** 此参数曾用于在非回环绑定上绕过鉴权；自 2026 年 6 月安全加固后，公网绑定始终需要用户名/密码或 OAuth 鉴权提供方。若需保持仅本地访问，请绑定 `127.0.0.1` 并通过隧道连接。 |
+| `--isolated` | 关闭 | 从具名 profile 启动时（`worker dashboard`），运行该 profile 专用的服务器，而不是路由到本机 Dashboard。它只列出该 profile。这只是路由/运维便利，**不是**安全边界：同一操作系统用户下的 profile 可以互相读取（接受 profile 选择参数的路由、`/api/fs/*` 以及 agent 自身的工具仍可访问同级 profile）；要隔离租户，请使用不同的操作系统用户或容器。 |
 | `--stop` | — | 停止正在运行的 `hermes dashboard` 进程并退出。 |
 | `--status` | — | 列出正在运行的 `hermes dashboard` 进程并退出。 |
 

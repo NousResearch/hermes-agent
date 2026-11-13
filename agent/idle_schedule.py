@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import time
+import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -16,6 +17,9 @@ from typing import Any, Callable, Optional
 logger = logging.getLogger(__name__)
 
 CLAIM_STALE_SECONDS = 3600.0
+# This process image: ``os.execvp`` (hermes_cli/relaunch.py) keeps the pid and its start time, so a
+# claim the image before the exec took would otherwise look held by a live owner until this exits.
+_IMAGE = uuid.uuid4().hex
 
 
 def parse_iso(ts: Optional[str]) -> Optional[datetime]:
@@ -69,7 +73,7 @@ def _owner_record() -> dict[str, Any]:
     from gateway.status import get_process_start_time
 
     pid = os.getpid()
-    return {"pid": pid, "start": get_process_start_time(pid), "machine": _machine() or None}
+    return {"pid": pid, "start": get_process_start_time(pid), "machine": _machine() or None, "image": _IMAGE}
 
 
 def _read_owner(lock: Path) -> Optional[dict[str, Any]]:
@@ -87,6 +91,8 @@ def _owner_alive(owner: Optional[dict[str, Any]]) -> Optional[bool]:
     pid, start, machine = (owner or {}).get("pid"), (owner or {}).get("start"), (owner or {}).get("machine")
     if type(pid) is not int or pid <= 0 or type(start) is not int or not machine or machine != _machine():
         return None
+    if pid == os.getpid() and (owner or {}).get("image") not in (None, _IMAGE):
+        return False  # taken by this pid's image before an exec, which never released it
     from gateway.status import _pid_exists, get_process_start_time
 
     live_start = get_process_start_time(pid)
@@ -152,5 +158,5 @@ def release_run(lock: Path) -> None:
     """Drop this process's claim; a claim another process took over (as abandoned) stays."""
     with contextlib.suppress(OSError), _unlink_guard(lock):
         owner = _read_owner(lock)
-        if owner is None or owner.get("pid") == os.getpid():
+        if owner is None or (owner.get("pid") == os.getpid() and owner.get("image") in (None, _IMAGE)):
             lock.unlink()

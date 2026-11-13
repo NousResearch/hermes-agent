@@ -373,7 +373,11 @@ mcp_servers:
     auth: oauth
 ```
 
-On first connect, Hermes prints an authorize URL, opens your browser when possible, and waits for the OAuth callback on a local loopback port. Tokens are cached at `~/.hermes/mcp-tokens/<server>.json` with 0o600 perms; subsequent runs reuse them silently until refresh fails.
+On first connect, Hermes prints an authorize URL, opens your browser when possible, and waits for the OAuth callback on a local loopback port. Tokens are cached at `~/.hermes/mcp-tokens/<server>.json` with 0o600 perms; subsequent runs reuse them silently.
+
+If a token refresh returns HTTP 429 or 500–599, Hermes first checks for a live token pair rotated by a peer. Otherwise it preserves the cached tokens and client registration and raises a transient connection error before sending an unauthenticated resource request or starting browser authorization. Existing bounded reconnect retries control recovery; there is no retry loop or sleep inside the OAuth provider. A genuine HTTP 400 `invalid_grant` keeps the existing in-memory token clearing and reauthorization behavior.
+
+The provider honors a finite numeric or HTTP-date `Retry-After` header. Missing, malformed, or nonfinite values fall back to one second. Attempts before the monotonic deadline fail immediately without acquiring the refresh fence or sending another token POST; valid long delays are not shortened. A live peer rotation can still be adopted while waiting. The deadline belongs only to that provider in that process, survives reconnects that reuse it, and is not a cross-process throttle or persisted setting. A long deadline can outlast the reconnect budget; recovery is not guaranteed within that budget. Errors and logs omit token response bodies and credentials.
 
 Refresh tokens are bound to the authorization server that granted them: Hermes records the discovered issuer alongside the cached tokens and, if a server's advertised authorization server ever changes (server migration, metadata edit, or hijack), the stored refresh token is dropped instead of being sent to the new issuer. The current access token keeps working until it expires, then a normal re-authorization runs against the new issuer.
 

@@ -98,6 +98,9 @@ interface McpSetupButtonProps {
   ensureProfile?: () => Promise<null | string>
   entry: McpCatalogEntry
   onDone?: () => void
+  /** True once the owner retired this setup (New Bot rename/cancel). Unmounting
+   *  alone does not stop key setup: an adopted draft keeps its setup. */
+  retired?: () => boolean
   // TODO(bot-mode-types): Edit Profile passes `botBackendProfileScope(...)`, which
   // is a `{ connectionId, profile }` OBJECT for every source-scoped bot. That
   // object is forwarded verbatim as the `profile` param of mcp.servers.add /
@@ -107,7 +110,7 @@ interface McpSetupButtonProps {
   profile: McpSetupScope
 }
 
-export function McpSetupButton({ profile, entry, onDone, ensureProfile }: McpSetupButtonProps) {
+export function McpSetupButton({ profile, entry, onDone, ensureProfile, retired }: McpSetupButtonProps) {
   const { t } = useI18n()
   const b = useBots()
   // entry: { name, requires:[env keys], auth?, fromCatalog, installed }
@@ -118,15 +121,18 @@ export function McpSetupButton({ profile, entry, onDone, ensureProfile }: McpSet
   const [supported, setSupported] = useState<boolean | null>(null)
   const [keyValues, setKeyValues] = useState<Record<string, string>>({})
   const [message, setMessage] = useState('')
-  // One epoch owns all setup work, including OAuth and sequential key writes.
+  // OAuth is cancelled by unmount; key setup only by a newer action or the
+  // owner retiring it, so an adopted draft's key writes and test still finish.
   const oauthEpoch = useRef(0)
+  const keyEpoch = useRef(0)
+  const keysStale = (epoch: number) => keyEpoch.current !== epoch || Boolean(retired?.())
   // Holds ONLY the profile this component created on demand. The live prop
   // wins wherever both exist, so there is nothing to mirror into the ref and
   // no render of lag between the parent supplying a profile and us using it.
   const createdProfileRef = useRef<McpSetupScope>(null)
 
   // Resolve the target profile, creating it on demand for the New Bot flow.
-  const resolveProfile = async (epoch: number) => {
+  const resolveProfile = async (stale: () => boolean) => {
     const known = profile || createdProfileRef.current
 
     if (known) {
@@ -136,7 +142,7 @@ export function McpSetupButton({ profile, entry, onDone, ensureProfile }: McpSet
     if (ensureProfile) {
       const created = await ensureProfile()
 
-      if (oauthEpoch.current !== epoch) {
+      if (stale()) {
         return null
       }
 
@@ -169,13 +175,13 @@ export function McpSetupButton({ profile, entry, onDone, ensureProfile }: McpSet
   const requires = entry.requires || []
 
   const beginKeys = async () => {
-    const epoch = ++oauthEpoch.current
+    const epoch = ++keyEpoch.current
     // Ensure the server exists in the target profile first (add from catalog).
     setPhase('busy')
     setMessage('')
-    const profile = await resolveProfile(epoch)
+    const profile = await resolveProfile(() => keysStale(epoch))
 
-    if (oauthEpoch.current !== epoch) {
+    if (keysStale(epoch)) {
       return
     }
 
@@ -192,7 +198,7 @@ export function McpSetupButton({ profile, entry, onDone, ensureProfile }: McpSet
         preset: entry.name
       })
 
-      if (oauthEpoch.current !== epoch) {
+      if (keysStale(epoch)) {
         return
       }
 
@@ -208,7 +214,7 @@ export function McpSetupButton({ profile, entry, onDone, ensureProfile }: McpSet
   }
 
   const submitKeys = async () => {
-    const epoch = ++oauthEpoch.current
+    const epoch = ++keyEpoch.current
     setPhase('busy')
     const target = profile || createdProfileRef.current
 
@@ -234,7 +240,7 @@ export function McpSetupButton({ profile, entry, onDone, ensureProfile }: McpSet
       })
 
       // A sent write cannot be recalled; retirement stops the next key/test.
-      if (oauthEpoch.current !== epoch) {
+      if (keysStale(epoch)) {
         return
       }
 
@@ -252,7 +258,7 @@ export function McpSetupButton({ profile, entry, onDone, ensureProfile }: McpSet
       name: entry.name
     })
 
-    if (oauthEpoch.current !== epoch) {
+    if (keysStale(epoch)) {
       return
     }
 
@@ -279,9 +285,10 @@ export function McpSetupButton({ profile, entry, onDone, ensureProfile }: McpSet
 
     setPhase('busy')
     setMessage('')
-    const resolvedProfile = await resolveProfile(epoch)
+    const oauthStale = () => oauthEpoch.current !== epoch || Boolean(retired?.())
+    const resolvedProfile = await resolveProfile(oauthStale)
 
-    if (oauthEpoch.current !== epoch) {
+    if (oauthStale()) {
       return
     }
 

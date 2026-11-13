@@ -77,26 +77,31 @@ async def handle_multi_token(adapter: Any, query: Any, clarify_id: str, token: s
 
 async def _toggle(adapter: Any, query: Any, clarify_id: str, entry: Any, selected: set[int], idx: int,
                   user_display: str) -> None:
-    """Flip *idx* only once Telegram shows the new ticks, so Send never submits a pick the card hides."""
-    from telegram.error import BadRequest, NetworkError
+    """Flip *idx* only once Telegram may show the new ticks, so Send never submits a pick the card hides."""
+    from telegram.error import TelegramError
     from plugins.platforms.telegram.adapter import _toast
     from plugins.platforms.telegram.callback_answer import answer_callback
+    from plugins.platforms.telegram.telegram_send_errors import MAY_HAVE_DELIVERED, send_error_kind
     from tools.clarify_gateway import get_pending
+    failure = None
     try:
         await query.edit_message_reply_markup(
             reply_markup=multi_keyboard(adapter, clarify_id, len(entry.choices), selected ^ {idx}))
-    except BadRequest as exc:  # refused: the card still shows the old ticks, so keep the old selection
-        logger.warning("Telegram clarify toggle refused (id=%s): %s", clarify_id, exc)
-        await answer_callback(query, _toast("platform.telegram.prompt.toggle_failed"))
-        return
-    except NetworkError as exc:  # a timeout may still have landed the edit: keep the flip, answer the tap
-        logger.warning("Telegram clarify toggle edit unconfirmed (id=%s): %s", clarify_id, exc)
+    except TelegramError as exc:
+        failure = exc
     # A reset or timeout while the edit was in flight retired this question: retire the card too.
     if get_pending(clarify_id) is not entry:
         adapter._clarify_state.pop(clarify_id, None)
         adapter._clarify_multi.pop(clarify_id, None)
         await adapter._notify_clarify_expired(query, user_display)
         return
+    if failure is not None:
+        if send_error_kind(failure) not in MAY_HAVE_DELIVERED:  # refused, flood-waited or never sent
+            logger.warning("Telegram clarify toggle not applied (id=%s): %s", clarify_id, failure)
+            await answer_callback(query, _toast("platform.telegram.prompt.toggle_failed"))
+            return
+        # The request left and no answer came back: the edit may be on screen, so keep the flip.
+        logger.warning("Telegram clarify toggle edit unconfirmed (id=%s): %s", clarify_id, failure)
     selected.symmetric_difference_update({idx})
     await answer_callback(query, _toast("platform.telegram.prompt.selected_count", count=len(selected)))
 

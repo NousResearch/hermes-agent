@@ -2429,7 +2429,7 @@ export const jaOverrides = {
       '/topup': 'Nous の残高を表示し、請求を管理',
       '/platform': '問題のあるゲートウェイプラットフォームを一時停止、再開、一覧表示',
       '/version': 'Hermes Agent のバージョンを表示',
-      '/debug': 'デバッグレポートを作成',
+      '/debug': 'デバッグレポート（システム情報 + ログ）: まずプライバシー通知を表示し、/debug upload でリンクを共有',
       '/model': 'このセッションのモデルを切り替え'
     },
     hotkeyDescs: {

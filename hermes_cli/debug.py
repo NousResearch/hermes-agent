@@ -147,13 +147,6 @@ _GATEWAY_PRIVACY_NOTICE = (
     "Pastes auto-delete after 6 hours (dpaste.com fallback pastes: kept for "
     "1 day, cannot be deleted).")
 
-_GATEWAY_UPLOAD_HINT = "Nothing was uploaded. Send `/debug upload` to upload the summary report."
-
-_GATEWAY_NOUS_REFUSED = (
-    "Nothing was uploaded. Private Nous uploads aren't available from here: run "
-    "`hermes debug share --nous` in a terminal, or use Send diagnostics in the desktop app. "
-    "`/debug upload` uploads the summary to a public paste instead.")
-
 
 def _extract_paste_id(url: str) -> Optional[str]:
     """Paste ID from a paste.rs URL (dpaste.com pastes have no deletable ID)."""
@@ -620,9 +613,10 @@ def run_debug_slash(cmd_original: str = "") -> None:
     words = {w.lower() for w in cmd_original.split()[1:]}
     local = "local" in words
     nous = "nous" in words and not local
-    if not local and "upload" not in words:
+    if not local and ("upload" not in words or words - {"upload", "nous"}):
         # The notice must come BEFORE anything leaves the machine: a bare /debug is a request
-        # for the report, not consent to publish it (#94876).
+        # for the report, not consent to publish it (#94876). Only `upload` [+ `nous`] consents,
+        # so a refusal that contains the word (`/debug do not upload`) is not consent.
         print(_NOUS_PRIVACY_NOTICE if nous else _PRIVACY_NOTICE)
         print(f"Nothing was uploaded. Run `/debug {'nous upload' if nous else 'upload'}` to upload, "
               "or `/debug local` to view the report without uploading.")

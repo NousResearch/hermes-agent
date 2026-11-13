@@ -62,7 +62,7 @@ async def test_local_session_debug_local_returns_the_report_without_uploading(te
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('platform', [Platform.TELEGRAM, Platform.LOCAL])
-@pytest.mark.parametrize('text', ['/debug', '/debug nous', '/debug please'])
+@pytest.mark.parametrize('text', ['/debug', '/debug nous', '/debug please', '/debug do not upload'])
 async def test_debug_without_upload_word_shows_notice_and_uploads_nothing(platform, text):
     """The privacy notice comes before any upload: without ``upload`` nothing leaves the machine."""
     guard = _NoNetwork()
@@ -76,6 +76,20 @@ async def test_debug_without_upload_word_shows_notice_and_uploads_nothing(platfo
     assert guard.calls == []
     assert 'Privacy notice' in out and '/debug upload' in out
     assert 'http' not in out.lower()
+    # `/debug local` is the no-upload option only where it works (a local session).
+    assert ('/debug local' in out) == (platform == Platform.LOCAL)
+
+
+@pytest.mark.asyncio
+async def test_debug_consent_replies_follow_the_display_language(monkeypatch):
+    """The notice-only hint and the Nous refusal are catalog strings, not hard-coded English."""
+    from agent import i18n
+    monkeypatch.setenv('HERMES_LANGUAGE', 'de')
+    hint = await _runner()._handle_debug_command(_event(Platform.TELEGRAM, '/debug'))
+    refused = await _runner()._handle_debug_command(_event(Platform.TELEGRAM, '/debug nous upload'))
+    assert hint.endswith(i18n.t('gateway.debug.upload_hint', lang='de'))
+    assert refused == i18n.t('gateway.debug.nous_refused', lang='de')
+    assert 'Nothing was uploaded' not in hint + refused
 
 
 @pytest.mark.asyncio

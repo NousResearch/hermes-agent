@@ -1090,7 +1090,8 @@ class TestDebugSlashCommand:
             self._handler()(cmd_original)
         return captured
 
-    @pytest.mark.parametrize("cmd", ["/debug", "/debug nous", "/debug NOUS please"])
+    @pytest.mark.parametrize("cmd", ["/debug", "/debug nous", "/debug NOUS please",
+                                     "/debug do not upload", "/debug nous no upload"])
     def test_without_upload_word_prints_notice_and_uploads_nothing(self, cmd, capsys):
         """The privacy notice must precede any upload: no ``upload`` word, no network (#94876)."""
         with patch("hermes_cli.debug.upload_to_pastebin") as paste, \

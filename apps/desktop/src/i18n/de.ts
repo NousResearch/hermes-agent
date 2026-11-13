@@ -3903,7 +3903,7 @@ export const deOverrides = {
       '/topup': 'Ihr Nous-Guthaben anzeigen und die Abrechnung im Portal verwalten',
       '/platform': 'Eine fehlerhafte Gateway-Plattform pausieren, fortsetzen oder auflisten',
       '/version': 'Hermes-Agent-Version anzeigen',
-      '/debug': 'Debug-Bericht (Systeminfos + Logs) hochladen und teilbare Links erhalten',
+      '/debug': 'Debug-Bericht (Systeminfo + Logs): zeigt zuerst den Datenschutzhinweis; /debug upload teilt Links',
       '/model': 'Modell für diese Session wechseln'
     },
     hotkeyDescs: {

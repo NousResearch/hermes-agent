@@ -3355,7 +3355,7 @@ export const zhOverrides = {
       '/topup': '显示你的 Nous 余额，并在 Portal 管理账务',
       '/platform': '暂停、恢复或列出故障的网关平台',
       '/version': '显示 Hermes Agent 版本',
-      '/debug': '上传调试报告（系统信息与日志），并获取可分享链接',
+      '/debug': '调试报告（系统信息 + 日志）：先显示隐私声明；/debug upload 分享链接',
       '/model': '切换此会话的模型'
     },
     hotkeyDescs: {

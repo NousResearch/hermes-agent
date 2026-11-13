@@ -3912,7 +3912,7 @@ export const frOverrides = {
       '/topup': 'Afficher votre solde Nous et gérer la facturation sur le portail',
       '/platform': 'Suspendre, reprendre ou lister une plateforme de gateway en échec',
       '/version': 'Afficher la version de Hermes Agent',
-      '/debug': 'Téléverser un rapport de débogage (infos système + journaux) et obtenir des liens partageables',
+      '/debug': 'Rapport de débogage (infos système + journaux) : affiche d\'abord l\'avis de confidentialité ; /debug upload partage les liens',
       '/model': 'Changer le modèle de cette session'
     },
     hotkeyDescs: {

@@ -3892,7 +3892,7 @@ export const esOverrides = {
       '/topup': 'Mostrar tu saldo de Nous y gestionar la facturación en el portal',
       '/platform': 'Pausar, reanudar o listar una plataforma del gateway que falla',
       '/version': 'Mostrar la versión de Hermes Agent',
-      '/debug': 'Subir un informe de depuración (información del sistema + registros) y obtener enlaces para compartir',
+      '/debug': 'Informe de depuración (info del sistema + registros): muestra primero el aviso de privacidad; /debug upload comparte enlaces',
       '/model': 'Cambiar el modelo de esta sesión'
     },
     hotkeyDescs: {

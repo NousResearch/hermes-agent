@@ -314,13 +314,21 @@ def _rename_like(old: str, new: str, mine: str) -> str | None:
     for before, after in zip(old_tokens, new_tokens):
         if mapping.setdefault(before, after) != after:
             return None
-    mine_tokens = _TOKEN.findall(mine)
-    lined_up = {index for tag, _, _, first, last in difflib.SequenceMatcher(
-        None, old_tokens, mine_tokens, autojunk=False).get_opcodes() if tag == "equal" for index in range(first, last)}
+    found = list(_TOKEN.finditer(mine))
+    old_starts = [match.start() for match in _TOKEN.finditer(old)]
+    lined_up = {first + offset: old_first + offset for tag, old_first, _, first, last in difflib.SequenceMatcher(
+        None, old_tokens, [match.group() for match in found], autojunk=False).get_opcodes()
+        if tag == "equal" for offset in range(last - first)}
     same_strings = re.sub(r"[^\"']", "", mine) == re.sub(r"[^\"']", "", old)  # same quote characters, in order
-    if any(mapping.get(token, token) != token and not (same_strings and index in lined_up)
-           for index, token in enumerate(mine_tokens)):
-        return None  # a moved name the branch wrote elsewhere, or on a line whose strings it changed: its own change
+
+    def quoted(text: str) -> tuple[int, int]:  # inside a "..." or '...' string, by quote parity
+        return text.count('"') % 2, text.count("'") % 2
+
+    if any(mapping.get(match.group(), match.group()) != match.group() and not (
+            same_strings and index in lined_up
+            and quoted(mine[:match.start()]) == quoted(old[:old_starts[lined_up[index]]]))
+           for index, match in enumerate(found)):
+        return None  # a moved name the branch wrote elsewhere, or moved into or out of a string: its own change
     return _TOKEN.sub(lambda match: mapping.get(match.group(0), match.group(0)), mine)
 
 

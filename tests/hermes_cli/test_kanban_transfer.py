@@ -360,3 +360,21 @@ def test_import_rejects_a_future_format_version(kanban_root, tmp_path):
     kanban_root("target")
     with pytest.raises(ValueError, match="newer than this Hermes"):
         kt.import_board(str(bumped))
+
+
+def test_worker_fenced_import_refuses_before_staging(kanban_root, tmp_path, monkeypatch):
+    """A fenced execution must refuse the import before anything lands under
+    boards/<target>/: move-then-raise would strand half an imported board and
+    the error text ("Imported board …") would be false."""
+    from hermes_cli.kanban_db_connect import connect as kb_connect
+
+    _seed_board()
+    archive = kt.export_board("alpha", str(tmp_path / "alpha"))["archive"]
+    kb_connect()  # re-point the import machinery at the fresh root
+    kanban_root("target")
+    kb_connect()
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "worker-pinned.db"))
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_deadbeef")
+    with pytest.raises(ValueError, match="fenced"):
+        kt.import_board(archive)
+    assert not (Path(kb.kanban_home()) / "kanban" / "boards").exists()

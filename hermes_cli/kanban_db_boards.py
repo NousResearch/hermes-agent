@@ -62,7 +62,14 @@ def read_board_metadata(board: Optional[str] = None) -> dict:
                 meta.update(raw)
     except (OSError, json.JSONDecodeError):
         pass
-    meta["db_path"] = str(_kb.kanban_db_path(slug))
+    # #142435: under the worker/delegate fence a cross-board slug cannot
+    # resolve — enumeration (boards list) must stay best-effort instead of
+    # crashing on the refusal, so the db_path is reported as None there. A
+    # board's own row keeps its real (pinned) path.
+    try:
+        meta["db_path"] = str(_kb.kanban_db_path(slug))
+    except ValueError:
+        meta["db_path"] = None
     return meta
 
 
@@ -76,6 +83,12 @@ def write_board_metadata(
     "" = clear (``project_id`` is not validated here)."""
     _kb._assert_not_delegated_child_mutation()
     slug = _kb._slug_or_default(board)
+    # #142435: resolve the db path BEFORE writing board.json, so a fenced
+    # cross-board refusal lands with nothing written and the eventual
+    # "nothing was read or written" wording stays true. This is also the
+    # refusal point for the write path: without it a metadata write would
+    # succeed and only then raise while reporting itself as a no-op.
+    db_path = _kb.kanban_db_path(slug)
     meta = read_board_metadata(slug)
     # db_path is derived on every read; never persist it into board.json.
     meta.pop("db_path", None)
@@ -96,7 +109,7 @@ def write_board_metadata(
     path.write_text(
         json.dumps(meta, indent=2, ensure_ascii=False) + "\n", encoding="utf-8",
     )
-    meta["db_path"] = str(_kb.kanban_db_path(slug))
+    meta["db_path"] = str(db_path)
     return meta
 
 

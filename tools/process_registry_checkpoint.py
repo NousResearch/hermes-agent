@@ -15,6 +15,44 @@ class ProcessCheckpointMixin:
         """Subclass supplies the live PID decision. See ProcessRegistry."""
         raise NotImplementedError
 
+    def arm_interrupt_notices(self, *, rescan: bool = False) -> int:
+        """Subclass supplies the pending-death-notice replay (``ProcessRegistry.arm_interrupt_notices``)."""
+        raise NotImplementedError
+
+    @staticmethod
+    def _record_downtime_death(entry: dict[str, Any], ProcessSession, save_completed_result) -> None:
+        """A checkpoint entry whose PID is gone at boot: the process died while the gateway was
+        down. For a completion-contract holder that death owed its owner a notice — write a
+        ``lost`` / ``gateway_downtime`` receipt carrying ``interrupt_notice_state="pending"`` so
+        ``arm_interrupt_notices`` replays it through the completion wake chain. Unknown outcome
+        (no collected exit), so the notice says exactly that."""
+        if not (entry.get("notify_on_complete") or entry.get("persist_on_release")):
+            return  # silent process: no completion contract, no death notice
+        now = time.time()
+        fields = {
+            key: entry.get(key) for key in (
+                "command", "task_id", "owner_task_id", "session_key", "parent_session_id",
+                "started_at", *(f"watcher_{k}" for k in (
+                    "platform", "chat_id", "user_id", "user_name", "thread_id", "message_id")),
+            )
+        }
+        fields["id"] = entry.get("session_id", "")
+        fields["command"] = entry.get("command", "unknown")
+        session = ProcessSession(
+            **{k: v for k, v in fields.items() if v is not None},
+            exited=True, exit_code=None, completion_reason="lost",
+            termination_source="gateway_downtime", exited_at=now,
+            notify_on_complete=bool(entry.get("notify_on_complete")),
+            persist_on_release=bool(entry.get("persist_on_release")),
+        )
+        try:
+            save_completed_result(session)
+            logger.warning(
+                "Process %s died while the gateway was down (pid %s gone at recovery); "
+                "queued an interruption notice for its owner", session.id, entry.get("pid"))
+        except Exception:
+            logger.warning("Could not record downtime death for %s", entry.get("session_id"), exc_info=True)
+
     # ----- Checkpoint (crash recovery) -----
 
     def _write_checkpoint(self, extra_entries: Optional[list[dict[str, Any]]] = None):
@@ -78,16 +116,26 @@ class ProcessCheckpointMixin:
 
     def recover_from_checkpoint(self) -> int:
         """On gateway startup, probe PIDs from the checkpoint file; returns how many
-        were recovered as detached sessions."""
+        were recovered as detached sessions.
+
+        Dead entries of completion-contract holders (``notify_on_complete`` /
+        ``persist_on_release``) are not just dropped: the process died while the
+        gateway was down (or was swept by a shutdown that never delivered), and its
+        owner must learn it — a ``lost`` / ``gateway_downtime`` receipt with
+        ``interrupt_notice_state="pending"`` is written and replayed to the owner by
+        ``arm_interrupt_notices`` (death perceivable even when it cannot be kept
+        alive)."""
         from tools.process_registry import (
             ProcessSession, _CHECKPOINT_FIELDS, _checkpoint_path,
             _CHECKPOINT_DEFAULTS, _WATCHER_ROUTE_KEYS, _stop_systemd_unit,
         )
         from tools.process_registry_output_log import adoptable_log
+        from tools.process_registry_results import save_completed_result
 
         # This host adopts what a crashed predecessor left running, so the jobs it starts must
         # survive its own crash for the next one: they stay out of the owner-death supervisor.
         self._jobs_outlive_host = True
+        self.arm_interrupt_notices()
         checkpoint_path = _checkpoint_path()
         if not checkpoint_path.exists():
             return 0
@@ -138,6 +186,8 @@ class ProcessCheckpointMixin:
                         "retaining checkpoint entry for the next startup",
                         systemd_unit, pid)
                     unresolved_scope_entries.append(entry)
+                    continue
+                self._record_downtime_death(entry, ProcessSession, save_completed_result)
                 continue
             fields = {f: entry.get(f, _CHECKPOINT_DEFAULTS[f]) for f in _CHECKPOINT_FIELDS}
             fields.update(
@@ -166,4 +216,6 @@ class ProcessCheckpointMixin:
                     "parent_session_id": session.parent_session_id,
                 })
         self._write_checkpoint(extra_entries=unresolved_scope_entries)
+        # Downtime deaths recorded above become pending notices; arm them too (idempotent).
+        self.arm_interrupt_notices(rescan=True)
         return recovered

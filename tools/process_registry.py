@@ -688,6 +688,10 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
 
     # Class default so registries built via __new__ (tests) still restore on first drain.
     _completions_restored = False
+    # Interruption notices already armed this process (lazy per instance; see arm_interrupt_notices).
+    _interrupt_notices_armed = None
+    # Profile homes already scanned for pending interruption notices (one gateway serves many homes).
+    _interrupt_notices_scanned = None
 
     def __init__(self):
         self._running: dict[str, ProcessSession] = {}
@@ -1603,6 +1607,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
             "exit_code": session.exit_code,
             "completion_reason": session.completion_reason,
             "termination_source": session.termination_source,
+            "exited_at": session.exited_at or None,
         }
 
     def _release_finished_handles(self, session: ProcessSession):
@@ -1818,6 +1823,69 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
             return 0
         finally:
             reset_hermes_home_override(token)
+
+    def arm_interrupt_notices(self, *, rescan: bool = False) -> int:
+        """Arm one death-notice watcher per undelivered interruption record.
+
+        A process killed by lifecycle cleanup (``agent_close`` / ``kill_all`` /
+        ``gateway_shutdown`` / ``gateway_restart``) or found dead at boot carried a completion
+        contract (``notify_on_complete`` / ``persist_on_release``): its death must reach the agent
+        instead of silently disappearing with the killed watcher. Each pending receipt becomes a
+        one-shot synthetic watcher (``interrupted_death`` + ``dead_session``) that delivers through
+        the SAME wake chain as a completion notification, then stamps the receipt delivered so no
+        later boot replays it. Idempotent per profile and session id; each profile home
+        is scanned once unless ``rescan`` records new downtime deaths."""
+        # The registry is process-global, but every multiplexed profile has its own
+        # receipt ledger. A scan of the launch home must not suppress the next
+        # profile's scan (including profiles with no processes.json checkpoint).
+        profile_home = str(get_hermes_home().resolve())
+        with self._lock:
+            if self._interrupt_notices_scanned is None:
+                self._interrupt_notices_scanned = set()
+            if profile_home in self._interrupt_notices_scanned and not rescan:
+                return 0
+            self._interrupt_notices_scanned.add(profile_home)
+        from tools.process_registry_results import pending_interrupt_notices, session_from_result_record
+        try:
+            records = pending_interrupt_notices()
+        except Exception:
+            logger.warning("Could not load pending process interruption notices", exc_info=True)
+            return 0
+        armed = 0
+        for record in records:
+            session_id = str(record.get("id") or "")
+            if not session_id:
+                continue
+            with self._lock:
+                if self._interrupt_notices_armed is None:
+                    self._interrupt_notices_armed = set()
+                # A session identifier is local to its profile's ledger.
+                notice_key = (profile_home, session_id)
+                if notice_key in self._interrupt_notices_armed:
+                    continue
+                self._interrupt_notices_armed.add(notice_key)
+            session = session_from_result_record(record)
+            if session is None:
+                continue
+            self.pending_watchers.append({
+                "session_id": session_id,
+                "check_interval": 1,
+                "session_key": session.session_key,
+                "platform": session.watcher_platform,
+                "chat_id": session.watcher_chat_id,
+                "user_id": session.watcher_user_id,
+                "user_name": session.watcher_user_name,
+                "thread_id": session.watcher_thread_id,
+                "message_id": session.watcher_message_id,
+                "notify_on_complete": True,
+                "parent_session_id": session.parent_session_id,
+                "interrupted_death": True,
+                "dead_session": session,
+            })
+            armed += 1
+            logger.info("Armed interruption notice replay for %s (killed by %s)", session_id,
+                        session.termination_source or "lifecycle cleanup")
+        return armed
 
     def drain_notifications(
         self, session_key: str = "", owns_event=None, *, skip_poll_observed: bool = True,
@@ -2499,10 +2567,10 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         return frozenset(s.id for s in self.running_owned_by(task_id))
 
     # Kill sources that are agent-lifecycle cleanup (session end / compression / error
-    # recovery / turn abandon), not a deliberate stop: those must skip persist_on_release
-    # sessions. An explicit stop (process_manage kill, CLI /stop) passes its own source
-    # string and still reaches them.
-    _LIFECYCLE_KILL_SOURCES = frozenset({"kill_all", "gateway_turn_timeout", "agent_close"})
+    # recovery / turn abandon / gateway restart), not a deliberate stop: those must skip
+    # persist_on_release sessions. An explicit stop (process_manage kill, CLI /stop) passes
+    # its own source string and still reaches them.
+    _LIFECYCLE_KILL_SOURCES = frozenset({"kill_all", "gateway_turn_timeout", "agent_close", "gateway_restart"})
 
     def kill_started_since(self, task_id: str, baseline_ids, *, source: str) -> int:
         """Kill ``task_id`` processes created after ``baseline_ids``. Output is

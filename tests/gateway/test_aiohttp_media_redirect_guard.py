@@ -194,3 +194,47 @@ async def test_redirect_does_not_forward_session_authorization_to_another_public
 
     # The first origin may authenticate; the second must not receive any HTTP request.
     assert seen == [(PUBLIC_HOST, "Bearer origin-secret")]
+
+
+@pytest.mark.asyncio
+async def test_weixin_cdn_media_downloads_when_a_fake_ip_resolver_answers_the_cdn(monkeypatch):
+    """Inbound CDN URLs are vetted by the allowlist or the configured CDN base, never by DNS; a local
+    fake-ip proxy (198.18.0.0/15) answering the CDN host must not drop the media."""
+    from plugins.platforms.weixin import adapter as weixin
+
+    async def cdn(_request):
+        return web.Response(body=b"cdn-bytes")
+
+    app = web.Application()
+    app.router.add_get("/{tail:.*}", cdn)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "127.0.0.1", 0)
+    await site.start()
+    port = site._server.sockets[0].getsockname()[1]
+
+    real_getaddrinfo = url_safety._getaddrinfo
+
+    def getaddrinfo(host, port=None):
+        if host == WEIXIN_CDN_HOST:
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("198.18.0.7", port or 0))]
+        return real_getaddrinfo(host, port)
+    monkeypatch.setattr(url_safety, "_getaddrinfo", getaddrinfo)
+
+    try:
+        async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(resolver=_LoopbackResolver())) as session:
+            data = await weixin._download_and_decrypt_media(
+                session, cdn_base_url=f"http://{WEIXIN_CDN_HOST}:{port}/c2c", encrypted_query_param="q",
+                aes_key_b64=None, full_url=None, timeout_seconds=30)
+    finally:
+        await runner.cleanup()
+
+    assert data == b"cdn-bytes"
+
+
+@pytest.mark.asyncio
+async def test_first_url_is_checked_unless_the_caller_vetted_it():
+    async with aiohttp.ClientSession() as session:
+        with pytest.raises(ValueError, match="private or internal"):
+            async with ssrf_checked_aiohttp_get(session, "http://127.0.0.1:9/"):
+                pass

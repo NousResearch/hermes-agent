@@ -356,7 +356,8 @@ class MattermostAdapter(BasePlatformAdapter):
                         logger.debug("Mattermost download retry %d/2 for %s (status %d)",
                                      attempt + 1, url[:80], resp.status)
                     elif resp.status >= 400:
-                        return await fallback()
+                        file_data = None  # fall back outside the download's timeout scope
+                        break
                     else:
                         file_data = await read_httpx_body_with_limit(
                             resp, media_type="image", body=resp.content.iter_chunked(65536))
@@ -370,6 +371,8 @@ class MattermostAdapter(BasePlatformAdapter):
                     logger.warning("Mattermost: failed to download %s after %d attempts: %s", url, attempt + 1, exc)
                     return await fallback()
             await asyncio.sleep(1.5 * (attempt + 1))
+        if file_data is None:
+            return await fallback()
         file_id = await self._upload_file(chat_id, file_data, _url_filename(url, f"{kind}.png"), ct)
         return await self._post_with_file(chat_id, file_id, caption, reply_to, metadata) if file_id else await fallback()
 

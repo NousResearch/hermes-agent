@@ -1059,19 +1059,21 @@ def _sends_credentials(session: Any, kwargs: dict) -> bool:
 
 
 @contextlib.asynccontextmanager
-async def ssrf_checked_aiohttp_get(session: Any, url: str, **kwargs: Any):
+async def ssrf_checked_aiohttp_get(session: Any, url: str, *, first_hop_vetted: bool = False, **kwargs: Any):
     """``session.get(url)`` on an aiohttp session with every redirect hop checked by
     ``tools.url_safety.async_is_safe_url``. aiohttp follows redirects by default, so a pre-flight
     check alone lets a public URL 302 to loopback or cloud metadata. Raises ``ValueError`` on a
-    blocked hop, a credential-bearing cross-origin hop, or too many redirects."""
+    blocked hop, a credential-bearing cross-origin hop, or too many redirects. ``first_hop_vetted``
+    skips the check on ``url`` itself for a caller that vetted it another way (a host allowlist);
+    redirect targets are always checked."""
     from tools.url_safety import async_is_safe_url
     # aiohttp spends one ``total`` across its own redirect loop and the body read; each hop here
     # is a fresh request, so the whole chain shares one deadline or ``total`` multiplies per hop.
     total = getattr(kwargs.get("timeout") or getattr(session, "timeout", None), "total", None)
     async with asyncio.timeout(total if isinstance(total, (int, float)) else None):
         source_origin, current_url = _origin(url), url
-        for _ in range(_AIOHTTP_MAX_REDIRECTS + 1):
-            if not await async_is_safe_url(current_url):
+        for hop in range(_AIOHTTP_MAX_REDIRECTS + 1):
+            if (hop or not first_hop_vetted) and not await async_is_safe_url(current_url):
                 raise ValueError("Blocked URL targeting a private or internal address")
             # aiohttp strips Authorization on a cross-origin redirect; a fresh session.get() re-applies
             # session defaults, so refuse the hop rather than hand the first origin's credentials on.

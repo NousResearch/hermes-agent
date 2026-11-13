@@ -1158,7 +1158,7 @@ def _append_multimodal_context(
     appended = append_notes_to_multimodal_content(turn_user_msg.get("content"), _mm_ctx)
     if not appended and typed_ask_text(turn_user_msg) is None:
         return
-    from agent.session_persistence import _durable_content, _persist_lock
+    from agent.session_persistence import _durable_content, _persist_lock, sanitize_divergence_sidecar
 
     with _persist_lock(agent):
         _row_id = turn_user_msg.get("_row_id")
@@ -1169,6 +1169,9 @@ def _append_multimodal_context(
         content = turn_user_msg["content"] if _in_place_compacted else _durable_content(turn_user_msg["content"])
         try:
             _db.set_user_message_content(agent.session_id, _row_id, content, typed_ask_fields(turn_user_msg))
+            # Same sidecar the flush writes: the reload strips the recalled memory from the text projection.
+            if (sidecar := sanitize_divergence_sidecar("user", content)) is not None:
+                _db.set_message_api_content(agent.session_id, _row_id, content, sidecar)
         except Exception:
             logger.warning("multimodal context backfill failed for session=%s", agent.session_id or "none", exc_info=True)
 

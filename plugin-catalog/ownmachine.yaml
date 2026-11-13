@@ -1,7 +1,7 @@
 name: ownmachine
 title: OwnMachine
 repo: https://github.com/rbur0425/ownmachine
-sha: aa97193e2b424d4773768d9686111ca4d82910d2
+sha: 03c3cb679e1ae1b6b2e65391e6b92127adb69fbd
 subdir: plugin
 description: A persistent private macOS VM workspace for Hermes with SSH/MCP and human-controlled browser access.
 maintainer: rbur0425
@@ -13,9 +13,9 @@ docs_url: https://github.com/rbur0425/ownmachine#readme
 readme: true
 platforms: [linux, macos] # Hermes runtime; guest host still requires Apple Silicon macOS.
 screenshots:
-  - https://raw.githubusercontent.com/rbur0425/ownmachine/aa97193e2b424d4773768d9686111ca4d82910d2/docs/media/catalog/human-control.png
-  - https://raw.githubusercontent.com/rbur0425/ownmachine/aa97193e2b424d4773768d9686111ca4d82910d2/docs/media/catalog/agent-control.png
-  - https://raw.githubusercontent.com/rbur0425/ownmachine/aa97193e2b424d4773768d9686111ca4d82910d2/docs/media/catalog/google-task.png
+  - https://raw.githubusercontent.com/rbur0425/ownmachine/03c3cb679e1ae1b6b2e65391e6b92127adb69fbd/docs/media/catalog/human-control.png
+  - https://raw.githubusercontent.com/rbur0425/ownmachine/03c3cb679e1ae1b6b2e65391e6b92127adb69fbd/docs/media/catalog/agent-control.png
+  - https://raw.githubusercontent.com/rbur0425/ownmachine/03c3cb679e1ae1b6b2e65391e6b92127adb69fbd/docs/media/catalog/google-task.png
 known_issues:
   - Declares websockets==15.0.1 for gateway scheduling and Pillow>=11.0.0,<14 for screenshot verification; Hermes requests dependency consent during installation.
   - Manual Mac/guest setup, firewall installation and macOS permission grants are required.

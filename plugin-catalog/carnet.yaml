@@ -1,7 +1,7 @@
 name: carnet
 repo: https://github.com/404BugX/carnet
 sha: "137c33a830cd24b9bc54e3555eff3ec3b607179e"
-description: "A memory that stays bounded: core rules always in mind, facts recalled only when relevant, long sheets read on demand, and a memory graph inside the app."
+description: "A memory that stays bounded: core rules always in mind, facts recalled only when relevant, long sheets read on demand, and a memory graph inside the app. Disclosure — Carnet sends every saved fact and each turn's message to the embedding endpoint you configure (LM Studio on 127.0.0.1:1234 by default); the optional rephrase and scan features send fact text to the chat model you configure; the \"local\" backend downloads a ~310 MB model from Hugging Face only when you ask and runs it in a background Python process."
 maintainer: 404BugX
 tier: community
 category: memory

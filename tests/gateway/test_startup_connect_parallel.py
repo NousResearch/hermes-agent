@@ -129,6 +129,45 @@ async def test_startup_connects_platforms_concurrently(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_successful_startup_clears_stale_reconnect_attention(
+    monkeypatch, tmp_path
+):
+    """A recovered platform must not retain a prior process's retry warning."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    config = GatewayConfig(platforms={}, sessions_dir=tmp_path / "sessions")
+    runner = GatewayRunner(config)
+    adapter = _TimingAdapter(Platform.DISCORD, 0.0)
+    status_writes = []
+
+    monkeypatch.setattr(
+        runner,
+        "_update_platform_runtime_status",
+        lambda platform, **fields: status_writes.append((platform, fields)),
+    )
+    monkeypatch.setattr(runner, "_publish_primary_adapter", lambda *_args: None)
+
+    connected = await runner._start_aggregate_connect_results(
+        [(Platform.DISCORD, adapter, PlatformConfig(enabled=True), "ok", None)],
+        [],
+        [],
+    )
+
+    assert connected == 1
+    assert status_writes == [
+        (
+            "discord",
+            {
+                "platform_state": "connected",
+                "error_code": None,
+                "error_message": None,
+                "needs_attention": False,
+                "retrying_since": None,
+            },
+        )
+    ]
+
+
+@pytest.mark.asyncio
 async def test_startup_one_failing_platform_does_not_block_others(monkeypatch, tmp_path):
     """A failing/slow platform must not prevent others from connecting (#83791).
 

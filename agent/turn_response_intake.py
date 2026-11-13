@@ -94,6 +94,10 @@ def _fire_post_api_request_hook(
                 finish_reason=finish_reason,
                 message_count=len(api_messages),
                 response_model=getattr(response, "model", None),
+                # The provider's own response id (chatcmpl-/gen-...), the key a gateway's spend
+                # log is joined on. Observers cannot recover it from ``response`` alone: that
+                # payload is sanitised and capped.
+                response_id=getattr(response, "id", None),
                 response=agent._api_response_payload_for_hook(
                     response, assistant_message, finish_reason=finish_reason
                 ),

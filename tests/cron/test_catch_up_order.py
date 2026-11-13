@@ -114,9 +114,38 @@ def test_cron_slot_due_while_draining_queues_behind_the_replay(sched, monkeypatc
     _replay_in_order(runs, ["planner", "review", "briefing"])
 
 
+def test_one_overdue_slot_serialises_the_chain_slot_still_in_ticker_slack(sched, monkeypatch):
+    sched, runs = sched
+    _enable_serial_catch_up()
+    # Outage 05:19-05:26: the 05:20 slot is late, the 05:25 slot still reads on_time.
+    due = [
+        _job("structural", "on_time", "2026-11-11T04:25:00+00:00"),
+        _job("planner", "late", "2026-11-11T04:20:00+00:00"),
+    ]
+    monkeypatch.setattr(sched, "get_due_jobs", lambda: due)
+
+    sched.tick(verbose=False, sync=False)
+
+    _replay_in_order(runs, ["planner", "structural"])
+
+
+def test_single_overdue_cron_slot_beside_an_interval_job_keeps_the_pool(sched, monkeypatch):
+    sched, runs = sched
+    _enable_serial_catch_up()
+    due = [
+        _job("planner", "late", "2026-11-11T04:20:00+00:00"),
+        _job("probe", "catch_up", "2026-11-11T04:21:00+00:00", schedule="interval"),
+    ]
+    monkeypatch.setattr(sched, "get_due_jobs", lambda: due)
+
+    sched.tick(verbose=False, sync=False)
+
+    wait_until(lambda: runs.has_started("planner", "probe"), what="both jobs running at once")
+    assert not sched._catch_up_lanes
+
+
 @pytest.mark.parametrize(("serial", "kinds"), [
     (False, ("catch_up", "catch_up")),
-    (True, ("catch_up", "on_time")),
     (True, ("on_time", "on_time")),
 ])
 def test_other_ticks_keep_the_parallel_pool(sched, monkeypatch, serial, kinds):

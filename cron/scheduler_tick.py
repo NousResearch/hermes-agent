@@ -29,22 +29,23 @@ def _clock_anchored(job: dict) -> bool:
 
 def _catch_up_lane(_sched, due_jobs: list):
     """The profile's catch-up lane while a replay is queued or, with ``cron.catch_up_serial``, two
-    cron slots are overdue; else None."""
+    cron slots are due and one of them is overdue; else None."""
     home = _sched.hermes_home_key(_sched._get_hermes_home())
     lane = _sched._catch_up_lanes.get(home)
     if lane is not None:
         lane[1][:] = [f for f in lane[1] if not f.done()]
         if lane[1]:
             return lane
-    overdue = sum(
-        1 for j in due_jobs
-        if _clock_anchored(j) and (j.get("last_dispatch") or {}).get("kind") in _OVERDUE_KINDS)
-    if overdue < 2:
+    # A slot under five minutes late still reads on_time (ticker slack), so an outage across
+    # a 05:20/05:25 chain can make only the first slot overdue: one overdue slot is enough.
+    cron_due = [j for j in due_jobs if _clock_anchored(j)]
+    overdue = sum(1 for j in cron_due if (j.get("last_dispatch") or {}).get("kind") in _OVERDUE_KINDS)
+    if len(cron_due) < 2 or not overdue:
         return None
     from cron.jobs import _cron_config_number
     if not _cron_config_number("catch_up_serial", False, lambda raw: raw is True):
         return None
-    _sched.logger.info("Catch-up: replaying %d missed cron slot(s) one at a time in slot order", overdue)
+    _sched.logger.info("Catch-up: replaying %d due cron slot(s) one at a time in slot order", len(cron_due))
     return _sched._get_catch_up_lane()
 
 

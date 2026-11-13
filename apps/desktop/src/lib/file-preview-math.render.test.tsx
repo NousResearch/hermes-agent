@@ -83,4 +83,19 @@ describe('file-preview math rendering', () => {
     })
     expect(container.textContent).toContain('$connection 被别的写者整包覆盖')
   })
+
+  it('renders shell variables as literal chat text beside real inline math (#80331)', async () => {
+    const source = 'Progress: $VERIFIED_COUNT/$TOTAL_COUNT. Formula: $E=mc^2$.'
+
+    const { container } = render(
+      <Streamdown mode="static" plugins={{ math: mathPlugin }}>
+        {preprocessMarkdown(source)}
+      </Streamdown>
+    )
+
+    await waitFor(() => {
+      expect(container.textContent).toContain('$VERIFIED_COUNT/$TOTAL_COUNT')
+      expect(Array.from(container.querySelectorAll('.katex annotation'), node => node.textContent)).toEqual(['E=mc^2'])
+    })
+  })
 })

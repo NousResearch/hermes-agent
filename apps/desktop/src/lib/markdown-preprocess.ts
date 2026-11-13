@@ -646,7 +646,7 @@ function normalizeVisibleProse(text: string, sourceListIds: Set<string>): string
     .map(part =>
       part.startsWith('`')
         ? part
-        : part
+        : escapeShellVariableDollars(part)
             .split(MATH_SPAN_SPLIT_RE)
             .map((segment, index) => (index % 2 === 1 ? segment : rewriteProseSegment(segment, sourceListIds)))
             .join('')
@@ -706,6 +706,65 @@ function findClosingSingleDollar(text: string, openingIndex: number): number {
   }
 
   return -1
+}
+
+const ENV_NAME_RE = /^(?:[A-Z][A-Z0-9]{2,}|[A-Z][A-Z0-9]*(?:_[A-Z][A-Z0-9]*)+)$/u
+const SHELL_SNAKE_NAME_RE = /^[a-z][a-z0-9]*(?:_[a-z0-9]+)+$/u
+const SHELL_EXPANSION_RE = /^(?:\{[A-Za-z_][A-Za-z0-9_]*\}|[A-Za-z_][A-Za-z0-9_]*)/u
+
+/** Keep shell expansions in chat prose from becoming single-dollar math. */
+function escapeShellVariableDollars(text: string): string {
+  let out = ''
+  let copiedThrough = 0
+
+  for (let cursor = text.indexOf('$'); cursor !== -1; cursor = text.indexOf('$', cursor + 1)) {
+    if (isEscapedAt(text, cursor)) {
+      continue
+    }
+
+    if (text[cursor + 1] === '$') {
+      let close = text.indexOf('$$', cursor + 2)
+
+      while (close !== -1 && isEscapedAt(text, close)) {
+        close = text.indexOf('$$', close + 2)
+      }
+
+      if (close === -1) {
+        break // Preserve an in-progress display equation.
+      }
+
+      cursor = close + 1
+
+      continue
+    }
+
+    const name = SHELL_EXPANSION_RE.exec(text.slice(cursor + 1))?.[0]
+
+    if (!name) {
+      continue
+    }
+
+    if (!name.startsWith('{')) {
+      const close = findClosingSingleDollar(text, cursor)
+
+      // A delimiter immediately followed by a name can open the next
+      // expansion, as in $COUNT/$TOTAL. Keep a clear closing delimiter.
+      if (close !== -1 && !SHELL_EXPANSION_RE.test(text.slice(close + 1))) {
+        cursor = close
+
+        continue
+      }
+
+      if (!ENV_NAME_RE.test(name) && !(name.length >= 5 && SHELL_SNAKE_NAME_RE.test(name))) {
+        continue
+      }
+    }
+
+    out += text.slice(copiedThrough, cursor) + '\\$'
+    copiedThrough = cursor + 1
+  }
+
+  return out + text.slice(copiedThrough)
 }
 
 function isLikelyNumericInlineMath(body: string, followingCharacter: string): boolean {

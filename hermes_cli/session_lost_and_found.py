@@ -832,7 +832,7 @@ def map_lost_and_found_rows(lf_conn: sqlite3.Connection, dest: sqlite3.Connectio
 
 def stub_missing_parent_sessions(dest: sqlite3.Connection) -> dict[str, Any]:
     """Fabricate clearly-marked placeholder parents for salvaged child rows: children (messages,
-    model-usage rows) are NEVER deleted for FK cleanup — a stub parent beats losing the only copy."""
+    model-usage and outcome rows) are NEVER deleted for FK cleanup — a stub parent beats losing the only copy."""
     result: dict[str, Any] = {"sessions_stubbed": 0, "messages_retained": 0, "usage_rows_retained": 0}
     with _immediate_transaction(dest):
         orphan_ids: dict[str, dict[str, Any]] = {}
@@ -845,7 +845,8 @@ def stub_missing_parent_sessions(dest: sqlite3.Connection) -> dict[str, Any]:
                 "message_count": int(count),
             }
         for (session_id,) in dest.execute(
-            "SELECT DISTINCT u.session_id FROM session_model_usage AS u WHERE u.session_id IS NOT NULL AND NOT "
+            "SELECT DISTINCT u.session_id FROM (SELECT session_id FROM session_model_usage UNION ALL "
+            "SELECT session_id FROM session_outcomes) AS u WHERE u.session_id IS NOT NULL AND NOT "
             "EXISTS (SELECT 1 FROM sessions WHERE sessions.id = u.session_id)"
         ):
             orphan_ids.setdefault(str(session_id), {"started_at": 0.0, "message_count": 0})

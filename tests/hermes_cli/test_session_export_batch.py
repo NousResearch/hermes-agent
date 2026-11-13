@@ -40,6 +40,7 @@ def test_export_all_batches_message_reads_without_changing_export_rows(tmp_path,
         # messages; strip it so the batching contract compares like with like.
         assert [{k: v for k, v in row.items() if k != "timings"} for row in exported] == expected
         assert all("timings" in row for row in exported)
-        assert read_calls <= 2
+        # Session list + one batched messages read + one batched session_outcomes read: no per-session N+1.
+        assert read_calls <= 3
     finally:
         db.close()

@@ -4,7 +4,7 @@ import asyncio
 import logging
 
 from gateway.config import Platform
-from gateway.delivery import resolve_delivery_transport
+from gateway.delivery import DeliveryTransport, resolve_delivery_transport
 from gateway.delivery_work import delivery_work
 from hermes_state_keys import profile_from_session_key
 
@@ -14,11 +14,15 @@ logger = logging.getLogger("gateway.run")
 def _transport(runner, platform, profile):
     adapters = runner._adapters_for_profile(profile)
     configs = getattr(runner, "_profile_configs", {}) or {}
+    primary_config = getattr(runner, "config", None)
     config = (
-        runner.config
+        primary_config
         if adapters is runner.adapters
-        else configs.get(profile, runner.config)
+        else configs.get(profile, primary_config)
     )
+    if config is None:
+        native = adapters.get(platform)
+        return DeliveryTransport(native, None, platform) if native is not None else None
     return resolve_delivery_transport(platform, config, adapters)
 
 

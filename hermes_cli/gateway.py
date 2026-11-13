@@ -867,7 +867,7 @@ def find_windows_gateway_services(
                 continue
             except Exception as exc:
                 raise RuntimeError("SCM service inspection failed") from exc
-            if service_status == "stopped":
+            if service_status in ("stopped", "paused"):
                 continue
             if service_status != "running":
                 if service_pid > 0:

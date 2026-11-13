@@ -70,6 +70,37 @@ def test_star_segment_tries_the_highest_version_first(tmp_path):
     assert [os.path.basename(os.path.dirname(c.value)) for c in res.candidates] == ["Thing 10.0b", "Thing 2.10", "Thing 2.9"]
 
 
+def test_msix_roots_filters_the_family_and_prefers_the_newest_version():
+    from hermes_platform.resolver.app import _msix_roots
+
+    entries = [
+        ("Vendor.App_1.9.0.0_x64__abc123", "old"),
+        ("Vendor.App_2.0.1.0_x64__abc123", "new"),
+        ("Vendor.AppOther_9.0.0.0_x64__abc123", "sibling family"),
+        ("Vendor.App_3.0.0.0", "not a full package name"),
+        ("Vendor.App_9.9.9.9_x64__abc123", ""),
+    ]
+    assert _msix_roots("Vendor.App_abc123", entries) == ["new", "old"]
+    # Windows package family names are case-insensitive; the registry keeps the installer's casing.
+    assert _msix_roots("vendor.app_ABC123", entries) == ["new", "old"]
+
+
+@pytest.mark.platforms("windows")
+def test_msix_package_locator_joins_the_declared_file(tmp_path, monkeypatch):
+    from hermes_platform.resolver import app as app_mod
+
+    root = tmp_path / "WindowsApps" / "Vendor.App_2.0.1.0_x64__abc123"
+    root.mkdir(parents=True)
+    (root / "vendor.exe").write_bytes(b"MZ")
+    monkeypatch.setattr(app_mod, "_msix_packages", lambda family: iter([str(root)]))
+
+    location = AppLocation("msix_package", "Vendor.App_abc123", "vendor.exe")
+    res = AppResolver(AppDef("vendor", "win32", "executable", (location,))).locate()
+
+    assert res.kind == "known_path"
+    assert res.command == (str(root / "vendor.exe"),)
+
+
 def test_first_present_location_sets_the_resolution(tmp_path):
     exe = tmp_path / "later" / "thing"
     exe.parent.mkdir()

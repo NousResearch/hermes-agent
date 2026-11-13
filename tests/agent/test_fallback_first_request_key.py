@@ -162,3 +162,33 @@ class TestFallbackFirstRequestKey:
         sent = [_activate({"provider": "openrouter", "model": "qwen/qwen3-coder"}).api_key for _ in range(2)]
 
         assert sent == ["sk-or-key-a", "sk-or-key-b"]
+
+    def test_an_alias_named_fallback_keeps_credential_recovery(self):
+        from agent.agent_runtime_helpers import recover_with_credential_pool
+
+        _write_env(ALIBABA_TOKEN_PLAN_API_KEY=_ENV_KEY, ALIBABA_TOKEN_PLAN_API_KEY_2=_POOL_KEY)
+        agent = _activate({"provider": "dashscope-token-plan", "model": "qwen3.8-max"})
+        assert agent.api_key == _ENV_KEY
+
+        recovered, _ = recover_with_credential_pool(agent, status_code=402, has_retried_429=False)
+
+        assert recovered is True and agent.api_key == _POOL_KEY
+
+    def test_a_readiness_check_leaves_the_pool_rotation_alone(self, monkeypatch):
+        from agent.route_binding import resolve_route_entry_client
+
+        for name in [n for n in os.environ if n.startswith("ALIBABA_TOKEN_PLAN")]:
+            monkeypatch.delenv(name)  # an agent turn earlier in the process can load a .env into os.environ
+        Path(os.environ["HERMES_HOME"], "config.yaml").write_text(
+            f"credential_pool_strategies:\n  {_TOKEN_PLAN}: round_robin\n")
+        _write_env()
+        _add_pool_key(_TOKEN_PLAN, "key-a", _ENV_KEY, _TOKEN_PLAN_URL, priority=0)
+        _add_pool_key(_TOKEN_PLAN, "key-b", _POOL_KEY, _TOKEN_PLAN_URL, priority=1)
+        before = [(e.id, e.priority, e.request_count) for e in load_pool(_TOKEN_PLAN).entries()]
+
+        for _ in range(2):
+            route = resolve_route_entry_client({"provider": _TOKEN_PLAN, "model": "qwen3.8-max"}, _TOKEN_PLAN,
+                                               "qwen3.8-max", raw_codex=False)
+            assert route.client.api_key == _ENV_KEY  # key-a, the pool's first entry, on both checks
+
+        assert [(e.id, e.priority, e.request_count) for e in load_pool(_TOKEN_PLAN).entries()] == before

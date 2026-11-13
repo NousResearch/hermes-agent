@@ -203,3 +203,51 @@ def test_kanban_create_secret_free_body_passthrough(worker_env):
         conn.close()
     assert task is not None
     assert task.body == body
+
+
+def test_kanban_complete_corrupting_metadata_stays_structured(worker_env):
+    from tools import kanban_tools as kt
+    from hermes_cli import kanban_db as kb
+    from hermes_cli.kanban_db_connect import connect
+
+    secret = "DB_PASSWORD=pw1longer" + "value99"
+    response = json.loads(kt._handle_complete({
+        "summary": "done",
+        "metadata": {"headers": secret, "safe": "keep"},
+    }))
+    assert response["ok"] is True
+    conn = connect()
+    try:
+        metadata = kb.latest_run(conn, worker_env).metadata
+    finally:
+        conn.close()
+    assert metadata["safe"] == "keep"
+    assert secret not in json.dumps(metadata)
+
+
+def test_kanban_request_review_corrupting_metadata_stays_structured(worker_env, monkeypatch):
+    from tools import kanban_tools as kt
+    from hermes_cli import kanban_db as kb
+    from hermes_cli.kanban_db_connect import connect
+
+    secret = "DB_PASSWORD=pw1longer" + "value99"
+    conn = connect()
+    try:
+        run = kb.latest_run(conn, worker_env)
+    finally:
+        conn.close()
+    assert run is not None
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(run.id))
+    response = json.loads(kt._handle_request_review({
+        "summary": "ready for review",
+        "metadata": {"headers": secret, "safe": "keep"},
+    }))
+    assert "error" not in response, response
+    conn = connect()
+    try:
+        metadata = kb.latest_run(conn, worker_env).metadata
+    finally:
+        conn.close()
+    assert metadata is not None
+    assert metadata["safe"] == "keep"
+    assert secret not in json.dumps(metadata)

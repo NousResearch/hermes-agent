@@ -15,8 +15,7 @@ def _settled(payload) -> bool:
 
 
 CORRUPTING = [
-    {"cmd": "psql; export MY_TOKEN=xyz"},
-    {"hdr": "x-api-key: abc123"},
+    {"cmd": "psql; export DB_PASSWORD=pw1longervalue99"},
     {"backslash": "path\\to\\OPENAI_API_KEY=sk-abcdefghijklmnopqrst"},
 ]
 

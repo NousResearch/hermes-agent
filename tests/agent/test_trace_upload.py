@@ -76,6 +76,26 @@ def test_converter_refuses_unredacted_passthrough_when_redactor_fails(monkeypatc
         build_trace_jsonl(msgs, session_id="s1", redact=True)
 
 
+def test_tool_arguments_stay_structured_when_text_redaction_would_break_json():
+    secret = "DB_PASSWORD=pw1longer" + "value99"
+    msgs = [{
+        "role": "assistant",
+        "content": "done",
+        "tool_calls": [{
+            "id": "call_1",
+            "function": {
+                "name": "terminal",
+                "arguments": json.dumps({"headers": secret, "safe": "keep"}),
+            },
+        }],
+    }]
+
+    line = json.loads(build_trace_jsonl(msgs, session_id="s1").strip())
+    tool_use = line["message"]["content"][1]
+    assert tool_use["input"]["safe"] == "keep"
+    assert secret not in json.dumps(tool_use["input"])
+
+
 def test_upload_blocks_when_redactor_fails(monkeypatch):
     monkeypatch.setenv("HF_TOKEN", "hf_test")
 

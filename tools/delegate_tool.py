@@ -201,6 +201,41 @@ def _apply_child_compression_cap(child, delegation_cfg: dict) -> None:
         cc._apply_threshold_tokens_cap()
 
 
+def _profile_id(profile_home: Optional[Path]) -> Optional[str]:
+    """The profile id a route names: the default home is the Hermes root, whose basename is not ``default``."""
+    if profile_home is None:
+        return None
+    from hermes_constants import profile_name_for_home
+    return profile_name_for_home(profile_home) or profile_home.name
+
+
+def _attach_profile_memory(child: Any) -> None:
+    """Put the routed profile's MEMORY.md/USER.md in the child's prompt. Call inside
+    ``delegated_profile_scope`` (the store reads the bound home). ``_init_memory`` keeps both files
+    out of every ``memory_agent_context="subagent"`` child, and ``skip_memory=False`` would also start
+    an external memory provider, so the built-in store is attached here instead. Read-only: the
+    memory tool and its nudge still need a requested ``memory`` toolset."""
+    if getattr(child, "_memory_store", None) is not None:
+        return  # a requested memory toolset already built the store in this scope
+    from agent.safe_worker_policy import safe_worker_enabled
+    from hermes_cli.config import load_config_readonly
+    from tools.hosted_tool_policy import host_feature_enabled
+    from tools.memory_tool import MemoryStore, get_builtin_memory_config, get_builtin_memory_store_flags
+    if safe_worker_enabled() or not host_feature_enabled("builtin_memory"):
+        return
+    cfg = load_config_readonly()
+    memory_on, user_on = get_builtin_memory_store_flags(cfg)
+    if not (memory_on or user_on):
+        return
+    mem = get_builtin_memory_config(cfg)
+    store = MemoryStore(
+        memory_char_limit=mem.get("memory_char_limit", 2200), user_char_limit=mem.get("user_char_limit", 1375),
+        memory_enabled=memory_on, user_profile_enabled=user_on,
+    )
+    store.load_from_disk()
+    child._memory_store, child._memory_enabled, child._user_profile_enabled = store, memory_on, user_on
+
+
 def _build_child_agent(
     task_index: int,
     goal: str,
@@ -339,8 +374,7 @@ def _build_child_agent(
                     enabled_toolsets=child_toolsets, disabled_toolsets=child_disabled_toolsets, quiet_mode=True,
                     ephemeral_system_prompt=child_prompt, log_prefix=f"[subagent-{task_index}]", platform="subagent",
                     side_agent=True,
-                    skip_context_files=False if profile_home is not None else True,
-                    skip_memory=False if profile_home is not None else (not child_checkpoint_required),
+                    skip_context_files=True, skip_memory=not child_checkpoint_required,
                     memory_agent_context="subagent", clarify_callback=None,
                     thinking_callback=(
                         (lambda text: _safe_progress(child_progress_cb, "_thinking", text) if text else None)
@@ -360,6 +394,8 @@ def _build_child_agent(
                         from hermes_state_registry import release_or_close
                         release_or_close(child_session_db)
                 raise
+        if profile_home is not None:
+            _attach_profile_memory(child)
         # Shared pool lets children rotate credentials on rate limits. A profile child loads ITS profile's pool
         # (inside the scope) and never shares the launching parent's.
         child_pool = _resolve_child_credential_pool(
@@ -395,17 +431,18 @@ def _build_child_agent(
     # parent delete orphans them (mirrors /branch's ``_branched_from``). The
     # subagent_id lets a viewer find the stored transcript once the live registry
     # has forgotten the child (``delegate_tool_sessions``).
+    profile_name = _profile_id(profile_home)
     if getattr(child, "_session_init_model_config", None) is not None:
         if parent_sid:
             from tools.delegate_tool_sessions import SUBAGENT_ID_KEY
             child._session_init_model_config["_delegate_from"] = parent_sid
             child._session_init_model_config[SUBAGENT_ID_KEY] = subagent_id
-        if profile_home is not None:
-            child._session_init_model_config["delegated_profile"] = profile_home.name
-            child._session_init_model_config["delegate_identity"] = f"profile:{profile_home.name}"
-    if profile_home is not None:
-        child._delegated_profile = profile_home.name
-        child._delegate_identity = f"profile:{profile_home.name}"
+        if profile_name is not None:
+            child._session_init_model_config["delegated_profile"] = profile_name
+            child._session_init_model_config["delegate_identity"] = f"profile:{profile_name}"
+    if profile_name is not None:
+        child._delegated_profile = profile_name
+        child._delegate_identity = f"profile:{profile_name}"
     child._delegate_profile_home = profile_home  # _ChildRun.await_child runs the conversation in this scope
     child._delegate_resume = {  # for action='continue'
         "goal": goal, "context": context, "toolsets": list(child_toolsets),

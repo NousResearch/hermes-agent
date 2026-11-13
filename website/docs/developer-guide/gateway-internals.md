@@ -623,6 +623,8 @@ owner's `instance_id`, and expires after 30 seconds. `attach` prints it to stdou
 process only; it never logs it. Run `attach` again for each new connection and each reconnect.
 A client that speaks the control socket itself gets the same verdict and ticket without the spawn:
 see [Local control socket](#local-control-socket-public-client-contract).
+A client that reaches the host over SSH also needs HTTP tickets (`hermes gateway tickets`): see
+[Gateway over SSH: client contract](./gateway-ssh-clients.md).
 
 Every `attach` reply from a parsed invocation, success or refusal, also carries
 `"start_context": {"windows_service_session": <bool>}`. It is `true` when the caller runs elevated

@@ -29,7 +29,8 @@ export interface DesktopHalfMarker {
   package: string
   /** Where the half was copied from — refreshed whenever that source changes. */
   source: string
-  /** mtimeMs of the source `plugin.js` at copy time; a newer source re-copies. */
+  /** mtimeMs of the source `plugin.js` at copy time. Informational: freshness is a byte
+   *  comparison of the entry point, and older writers still read this field. */
   sourceMtimeMs: number
   /** The package folder is a symlink (a dev checkout linked into `plugins/`):
    *  the copy re-syncs on ANY byte difference and the renderer watches the
@@ -377,16 +378,27 @@ export async function materializeDesktopHalf(
       }
     }
 
-    // An installed package re-copies when its source is newer. A linked dev
-    // checkout compares bytes: mtime alone misses a `cp -p` / `git stash pop`
-    // that lands an older timestamp, and the copy would stay stale silently.
+    // The copy is current when its entry point already holds the source's bytes, whatever the
+    // clock says: mtime alone misses a `cp -p` / `git stash pop` / restore that lands the same
+    // or an older timestamp on changed content (the copy would stay stale silently), and
+    // needlessly re-copies a touch. The marker keeps `sourceMtimeMs` for older writers; only a
+    // corrupt one is repaired here, best-effort, so the next pass retries the stamp instead of
+    // failing a healthy half.
     if (
       existing &&
       !targetIsLink &&
       existing.source === sourceDir &&
       Boolean(existing.linked) === linked &&
-      (linked ? await sameFile(path.join(target, 'plugin.js'), entry) : existing.sourceMtimeMs >= stat.mtimeMs)
+      (await sameFile(path.join(target, 'plugin.js'), entry))
     ) {
+      if (typeof existing.sourceMtimeMs !== 'number') {
+        try {
+          await writeDesktopHalfMarker(target, marker)
+        } catch (error) {
+          console.warn(`[desktop-plugins] cannot repair marker of ${packageName}: ${String(error)}`)
+        }
+      }
+
       return null
     }
   }

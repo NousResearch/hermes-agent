@@ -181,3 +181,26 @@ def test_background_rewrite_of_long_preexisting_flagged_line_is_rolled_back(skil
     assert result["success"] is False, result
     assert "Security scan" in result["error"]
     assert ref.read_bytes() == before
+
+
+DENYLIST = 'blocked_paths = (\n    "authorized_keys",\n)\n'  # demoted to high under a denylist owner
+
+
+@pytest.mark.parametrize("rewrite,allowed", [
+    (lambda t: t.replace("blocked_paths = (", "paths = ("), False),
+    (lambda t: t.replace("blocked_paths = (", "blocked_paths_v2 = ("), True),
+], ids=["escalated", "still_denylist"])
+def test_background_write_escalating_preexisting_finding_is_judged_on_new_severity(skills, rewrite, allowed):
+    with _origin(BACKGROUND_REVIEW):
+        _seed(skills)
+        script = skills / "bg-skill" / "scripts" / "paths.py"
+        script.parent.mkdir()
+        script.write_text(DENYLIST, encoding="utf-8")
+        before = script.read_bytes()
+        mark_background_review_skill_read(script)
+        result = _dispatch({"action": "write_file", "name": "bg-skill", "file_path": "scripts/paths.py",
+                            "file_content": rewrite(DENYLIST)})
+    assert result["success"] is allowed, result
+    if not allowed:
+        assert "Security scan" in result["error"]
+        assert script.read_bytes() == before

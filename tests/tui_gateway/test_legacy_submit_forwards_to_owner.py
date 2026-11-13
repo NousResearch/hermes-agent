@@ -19,7 +19,7 @@ from hermes_agent.hermes_state_runtime import (
     admit_session_input, begin_runtime_epoch, claim_session_input, list_session_admissions,
     recover_session_inputs, settle_session_input,
 )
-from tui_gateway import server
+from hermes_agent.tui_gateway import server
 from tests.waiting import wait_until
 
 
@@ -66,7 +66,7 @@ def _owner(monkeypatch, db, key, epoch):
     authority.sessions[key] = LiveSession(SimpleNamespace(platform=None, user_id="desktop"), "route")
     monkeypatch.setattr(authority, "_schedule", lambda ref: None)  # the test drives the FIFO
     try:
-        from tui_gateway import owner_forward
+        from hermes_agent.tui_gateway import owner_forward
     except ImportError:  # main: no forwarder; the submit is refused and the assertions below fail
         return authority
 
@@ -161,7 +161,7 @@ def test_outcome_unknown_work_is_still_refused_and_never_forwarded(monkeypatch, 
 def test_a_closed_desktop_session_releases_its_relay_without_an_owner_frame(monkeypatch):
     """The relay re-checked ``_finalized`` only when an owner frame arrived, so a closed Desktop session
     held the relay thread and its owner socket until the owner's next frame (up to RELAY_TIMEOUT_S)."""
-    from tui_gateway import owner_forward
+    from hermes_agent.tui_gateway import owner_forward
     monkeypatch.setattr(owner_forward, "RELAY_FINALIZE_POLL_S", 0.05, raising=False)
     session, emitted = {}, []
     relay = owner_forward._Relay("ui", session, "key", None, None, "hi", lambda *a: emitted.append(a))
@@ -192,7 +192,7 @@ def test_an_unconfirmed_forward_is_never_reported_as_not_sent(monkeypatch, tmp_p
                             payload={"text": "a DM"})
         claim_session_input(db, epoch=epoch, session_id=key)
         _owner(monkeypatch, db, key, epoch)
-        from tui_gateway import owner_forward
+        from hermes_agent.tui_gateway import owner_forward
         monkeypatch.setattr(owner_forward, "ADMIT_TIMEOUT_S", 0)
         hold = asyncio.Event()
 
@@ -224,7 +224,7 @@ def test_a_receipt_lost_after_the_owner_queued_it_is_unconfirmed_not_resendable(
     from hermes_cli.gateway_client import GatewayClient
     from websockets.asyncio.client import connect
     from websockets.asyncio.server import serve
-    from tui_gateway import owner_forward
+    from hermes_agent.tui_gateway import owner_forward
 
     db = SessionDB(db_path=tmp_path / "state.db")
     sid, key, turns, _emitted = _legacy(monkeypatch, db)
@@ -340,7 +340,7 @@ def test_a_prompt_the_owner_cannot_queue_is_refused_with_why_and_when(monkeypatc
         params = {"session_id": sid, "text": "hi"}
         _owner(monkeypatch, db, key, epoch)
         if case == "owner_refused":
-            from tui_gateway import owner_forward
+            from hermes_agent.tui_gateway import owner_forward
 
             @contextlib.asynccontextmanager
             async def refused(_home, _endpoint):

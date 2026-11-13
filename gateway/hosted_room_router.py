@@ -1,7 +1,7 @@
 """Opt-in automatic routing and Continue for hosted Group Chats (pure: no I/O, no model knowledge).
 
 A room whose settings say ``routing: auto`` sends an unaddressed human message through one cheap, tool-less
-model call (``tui_gateway.hosted_room_router_call``) that picks the member(s) it is for. The deterministic
+model call (``hermes_agent.tui_gateway.hosted_room_router_call``) that picks the member(s) it is for. The deterministic
 rules still come first and never reach the router: an @mention or @all/@everyone, a scheduled post, and a
 message inside an existing thread (a hover Reply prefixes the member's handle, so it is a mention). The
 answer is written to the room log as ``room.routed`` BEFORE any turn is planned, so the planner stays a pure

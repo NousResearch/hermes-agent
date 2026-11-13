@@ -2,7 +2,7 @@
 for the user (``CARD_TIMEOUT_S``), and returns their answer with a short reminder of the next beat.
 
 The ``onboarding`` toolset carrying it is folded in only for the onboarding chat, at agent build
-(``tui_gateway/methods_onboarding.py``). The run record is the session's ``onboarding_run``
+(``hermes_agent/tui_gateway/methods_onboarding.py``). The run record is the session's ``onboarding_run``
 (``agent/onboarding_record.py``); the order and the options are ``agent/onboarding_flow.py``.
 """
 

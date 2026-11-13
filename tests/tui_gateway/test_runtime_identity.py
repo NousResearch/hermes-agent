@@ -3,7 +3,7 @@
 from types import SimpleNamespace
 
 import hermes_cli
-from tui_gateway import server
+from hermes_agent.tui_gateway import server
 
 
 def test_session_info_advertises_base_version_and_release_date(monkeypatch):

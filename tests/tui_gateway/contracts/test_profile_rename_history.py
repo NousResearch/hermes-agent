@@ -3,8 +3,8 @@
 import pytest
 from pydantic import ValidationError
 
-from tui_gateway.contracts.profiles_vault_complete_foreign_subagents import ProfilesListResult
-from tui_gateway.contracts.registry import METHODS, check_result
+from hermes_agent.tui_gateway.contracts.profiles_vault_complete_foreign_subagents import ProfilesListResult
+from hermes_agent.tui_gateway.contracts.registry import METHODS, check_result
 
 
 def test_profile_rename_history_survives_result_validation():

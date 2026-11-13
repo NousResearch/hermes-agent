@@ -8,7 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from gateway import hosted_room_driver as driver
-from tui_gateway.hosted_room_service import HostedRoomService
+from hermes_agent.tui_gateway.hosted_room_service import HostedRoomService
 
 
 PROFILES = ("research", "build", "review", "ops", "qa", "docs")

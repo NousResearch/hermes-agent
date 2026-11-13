@@ -16,7 +16,7 @@ from agent.inline_tool_executors import INLINE_TOOL_EXECUTORS, InlineToolContext
 from agent.onboarding import observe_tool_result
 from agent.onboarding_flow import Facts
 from hermes_cli.config import read_user_config_raw
-from tui_gateway import server, server_requests
+from hermes_agent.tui_gateway import server, server_requests
 
 SID, STORED = "ui-onboarding", "onboarding-chat"
 FACTS = Facts(os="windows", arch="amd64", machine_kind="PC", nvidia_platform="discrete",

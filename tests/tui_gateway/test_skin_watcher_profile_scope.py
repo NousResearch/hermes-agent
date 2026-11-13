@@ -43,7 +43,7 @@ def _write_skin(home, name):
 
 @pytest.fixture
 def homes(tmp_path, monkeypatch):
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
     default, work = tmp_path / "default", tmp_path / "default" / "profiles" / "work"
     work.mkdir(parents=True)
     _write_skin(default, "default")

@@ -25,7 +25,7 @@ def test_gateway_import_preserves_cwdless_tui_workspace(tmp_path, configured):
     result = subprocess.run(
         [sys.executable, "-c", """
 from pathlib import Path
-import tui_gateway.server as server
+from hermes_agent.tui_gateway import server
 launch = Path.cwd()
 assert Path(server._completion_cwd({})) == launch
 import gateway.run

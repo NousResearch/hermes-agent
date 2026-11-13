@@ -24,7 +24,7 @@ def pending_human_input() -> Optional[int]:
     gateway approvals); ``None`` when a ledger cannot be read."""
     global _input_probe_failure_logged
     try:
-        from tui_gateway import server_requests
+        from hermes_agent.tui_gateway import server_requests
         from tools.approval import pending_gateway_approval_count
 
         return server_requests.open_request_count() + pending_gateway_approval_count()

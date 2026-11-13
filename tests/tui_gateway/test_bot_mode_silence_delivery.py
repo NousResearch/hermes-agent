@@ -8,7 +8,7 @@ prose that merely mentions a marker are delivered unchanged.
 import contextlib
 from types import SimpleNamespace
 
-import tui_gateway.server as srv
+import hermes_agent.tui_gateway.server as srv
 
 
 def _turn(result):

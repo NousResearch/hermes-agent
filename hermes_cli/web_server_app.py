@@ -73,11 +73,11 @@ async def standalone_lifespan(app: "FastAPI"):
     # Hosted Bot rooms belong to the backend process. Recovery may need a
     # contended state.db migration, so keep it off the pre-yield path: Group
     # Chat must degrade on its own rather than block every Desktop feature.
-    from tui_gateway import methods_groups as _hosted_groups
-    import tui_gateway.server
+    from hermes_agent.tui_gateway import methods_groups as _hosted_groups
+    import hermes_agent.tui_gateway.server
 
     try:
-        tui_gateway.server.install_tui_message_injector()
+        hermes_agent.tui_gateway.server.install_tui_message_injector()
     except Exception:
         logger.warning("TUI message injector did not install", exc_info=True)
 
@@ -165,7 +165,7 @@ async def standalone_lifespan(app: "FastAPI"):
         yield
     finally:
         try:
-            tui_gateway.server.clear_tui_message_injector()
+            hermes_agent.tui_gateway.server.clear_tui_message_injector()
         except Exception:
             logger.debug("TUI message injector clear skipped", exc_info=True)
         hosted_room_start_cancel.set()

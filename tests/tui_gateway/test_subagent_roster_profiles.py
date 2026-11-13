@@ -15,7 +15,7 @@ def two_profiles(tmp_path, monkeypatch):
     from hermes_agent.hermes_state import SessionDB
     from tools import delegate_tool_registry as reg
     from tools.process_registry import process_registry
-    from tui_gateway import launch_profile_policy, server
+    from hermes_agent.tui_gateway import launch_profile_policy, server
 
     launch = tmp_path / "launch-home"
     bot2 = launch / "profiles" / "bot2"

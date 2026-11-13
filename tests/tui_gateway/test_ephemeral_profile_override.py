@@ -16,7 +16,7 @@ a non-default profile would run against the wrong home. This module locks in:
      like the normal prompt turn, and skip the bind entirely when no profile is set.
 
 How to test: run this module with pytest; each test drives the real RPC handler
-from ``tui_gateway.server._methods`` with ``threading.Thread`` patched to run the
+from ``hermes_agent.tui_gateway.server._methods`` with ``threading.Thread`` patched to run the
 target inline, then asserts on the recorded override set/reset calls and the agent.
 """
 
@@ -24,7 +24,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from tui_gateway import server as srv
+from hermes_agent.tui_gateway import server as srv
 from hermes_constants import get_hermes_home
 
 PROFILE_HOME = "/home/user/.hermes/profiles/work"
@@ -68,15 +68,15 @@ def override_calls():
 
     agent_instance.run_conversation.side_effect = _run_conversation
 
-    with patch("tui_gateway.server.threading.Thread", _InlineThread), \
-        patch("tui_gateway.server._background_agent_kwargs", return_value={}), \
-        patch("tui_gateway.server._ephemeral_preview_agent_kwargs", return_value={}), \
-        patch("tui_gateway.server._preview_restart_callbacks", return_value={}), \
-        patch("tui_gateway.server._preview_restart_history", return_value=[]), \
-        patch("tui_gateway.server._set_session_context", return_value=None), \
-        patch("tui_gateway.server._clear_session_context"), \
-        patch("tui_gateway.server._session_cwd", return_value="/tmp"), \
-        patch("tui_gateway.server._emit"), \
+    with patch("hermes_agent.tui_gateway.server.threading.Thread", _InlineThread), \
+        patch("hermes_agent.tui_gateway.server._background_agent_kwargs", return_value={}), \
+        patch("hermes_agent.tui_gateway.server._ephemeral_preview_agent_kwargs", return_value={}), \
+        patch("hermes_agent.tui_gateway.server._preview_restart_callbacks", return_value={}), \
+        patch("hermes_agent.tui_gateway.server._preview_restart_history", return_value=[]), \
+        patch("hermes_agent.tui_gateway.server._set_session_context", return_value=None), \
+        patch("hermes_agent.tui_gateway.server._clear_session_context"), \
+        patch("hermes_agent.tui_gateway.server._session_cwd", return_value="/tmp"), \
+        patch("hermes_agent.tui_gateway.server._emit"), \
         patch("run_agent.AIAgent", return_value=agent_instance) as m_agent:
         yield {
             "homes": homes,
@@ -87,7 +87,7 @@ def override_calls():
 def _run(method_name, params, session):
     """Invoke a registered RPC handler with ``_sess`` patched to our session."""
     handler = srv._methods[method_name]
-    with patch("tui_gateway.server._sess", return_value=(session, None)):
+    with patch("hermes_agent.tui_gateway.server._sess", return_value=(session, None)):
         return handler("rid1", params)
 
 class TestBackgroundProfileOverride:

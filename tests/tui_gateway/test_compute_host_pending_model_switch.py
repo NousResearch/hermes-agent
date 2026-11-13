@@ -20,7 +20,7 @@ from __future__ import annotations
 import threading
 import time
 
-from tui_gateway import server
+from hermes_agent.tui_gateway import server
 
 
 def _session(**extra):

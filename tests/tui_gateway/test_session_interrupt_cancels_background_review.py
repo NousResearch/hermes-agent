@@ -41,7 +41,7 @@ def server():
             "hermes_agent.hermes_state": MagicMock(),
         },
     ):
-        mod = importlib.import_module("tui_gateway.server")
+        mod = importlib.import_module("hermes_agent.tui_gateway.server")
     yield mod
 
 

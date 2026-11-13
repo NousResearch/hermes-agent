@@ -3,9 +3,9 @@ import contextlib
 import threading
 from types import SimpleNamespace
 
-from tui_gateway.method_ctx import rebind
-from tui_gateway import session_notifications, session_auto_continue
-from tui_gateway.turn_marker import record_turn_start, read_turn_marker
+from hermes_agent.tui_gateway.method_ctx import rebind
+from hermes_agent.tui_gateway import session_notifications, session_auto_continue
+from hermes_agent.tui_gateway.turn_marker import record_turn_start, read_turn_marker
 
 
 def test_refused_input_reports_a_failed_terminal_outcome():
@@ -13,8 +13,8 @@ def test_refused_input_reports_a_failed_terminal_outcome():
     import contextvars
     import logging
     import time
-    from tui_gateway import prompt_turn
-    from tui_gateway.session_lifecycle import _start_session_work
+    from hermes_agent.tui_gateway import prompt_turn
+    from hermes_agent.tui_gateway.session_lifecycle import _start_session_work
 
     agent = SimpleNamespace(session_id="chat")
     session = dict(agent=agent, session_key="chat", history_lock=threading.RLock(), running=True)

@@ -9,7 +9,7 @@ import pytest
 
 @pytest.fixture
 def runtime(monkeypatch):
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
     from tools import async_delegation, delegate_tool_registry
 
     transport = SimpleNamespace(write=lambda frame: True)

@@ -1,6 +1,6 @@
 """Tests for atomic_roundtrip_yaml_save() — comment-preserving full-state writes.
 
-This helper backs tui_gateway/server.py:_save_cfg(), which used to call
+This helper backs hermes_agent/tui_gateway/server.py:_save_cfg(), which used to call
 yaml.safe_dump and silently clobber user-edited config files on every
 TUI/gateway setting change (e.g. /personality, /reasoning, /details_mode).
 """

@@ -6,7 +6,7 @@ import threading
 import pytest
 
 from gateway import hosted_room_driver as driver, hosted_rooms
-from tui_gateway.hosted_room_service import HostedRoomService
+from hermes_agent.tui_gateway.hosted_room_service import HostedRoomService
 
 
 def _service(db):

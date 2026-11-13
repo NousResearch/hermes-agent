@@ -253,7 +253,7 @@ class TestCrossProfileProjectTree:
             _seed_session(home, f"{name}-chat", source="cli")
         _seed_project(profiles_on_disk["default"], "Healthy", tmp_path / "repos" / "healthy")
 
-        from tui_gateway import server as gateway_server
+        from hermes_agent.tui_gateway import server as gateway_server
 
         real_build = gateway_server._build_project_tree
 

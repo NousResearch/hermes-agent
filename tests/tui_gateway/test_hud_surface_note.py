@@ -17,7 +17,7 @@ import types
 import pytest
 
 from agent.prompt_builder import hud_surface_note
-from tui_gateway import server
+from hermes_agent.tui_gateway import server
 
 FULL_KIT = {"read_window_below", "computer_use", "browser_navigate"}
 

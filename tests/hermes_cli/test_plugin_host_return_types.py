@@ -111,7 +111,7 @@ def register(ctx):
 
 @pytest.mark.platforms("any")
 def test_hosted_context_reference_autocomplete_returns_items(tmp_path, monkeypatch):
-    from tui_gateway.methods_complete import _plugin_reference_items
+    from hermes_agent.tui_gateway.methods_complete import _plugin_reference_items
 
     _home_with_plugin(tmp_path, monkeypatch, "hostticket", CONTEXT_REFERENCE_PLUGIN)
     manager = _load("hostticket")

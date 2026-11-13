@@ -8,8 +8,8 @@ import time
 
 import pytest
 
-from tui_gateway import server
-from tui_gateway.hosted_room_member_activity import HOOK_NAME
+from hermes_agent.tui_gateway import server
+from hermes_agent.tui_gateway.hosted_room_member_activity import HOOK_NAME
 
 
 def _wait_for(predicate, timeout: float = 2.0) -> None:
@@ -58,7 +58,7 @@ def test_room_member_session_events_reach_plugins_with_room_coordinates(observer
     try:
         server._emit("tool.start", "room-sid", {"tool_id": "call-1", "name": "terminal", "args": {"command": "ls"}})
         # An approval is a server→client REQUEST frame, not an event; it is member activity all the same.
-        from tui_gateway import server_requests
+        from hermes_agent.tui_gateway import server_requests
         server_requests.send_async("approval", "room-sid", {"request_id": "req-1", "command": "rm -rf build"},
                                    lambda result: None)("test_done")
         server._emit("session.info", "room-sid", {"title": "chrome, not member activity"})

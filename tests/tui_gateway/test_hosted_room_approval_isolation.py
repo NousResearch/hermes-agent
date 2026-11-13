@@ -9,7 +9,7 @@ from gateway import hosted_room_driver as driver
 from tests.tui_gateway.test_hosted_room_peer_http import FakePeer
 from tests.tui_gateway.test_hosted_room_peer_recovery import _deferred_peer_turn
 from tests.tui_gateway.test_hosted_room_service import _FakeRPC
-from tui_gateway.hosted_room_peer_http import PeerRunsHTTPClient
+from hermes_agent.tui_gateway.hosted_room_peer_http import PeerRunsHTTPClient
 
 
 def _local_approval(service):

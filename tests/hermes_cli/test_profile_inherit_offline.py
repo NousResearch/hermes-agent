@@ -16,7 +16,7 @@ from hermes_cli.profile_provision import (
     provision_profile,
 )
 from hermes_constants import get_hermes_home
-from tui_gateway.launch_profile_policy import profile_config_scope
+from hermes_agent.tui_gateway.launch_profile_policy import profile_config_scope
 
 
 @pytest.fixture

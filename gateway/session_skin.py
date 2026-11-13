@@ -1,6 +1,6 @@
 """The owning profile's resolved skin for a canonical client's readiness.
 
-Main's TUI booted its theme from ``gateway.ready.skin`` (``tui_gateway/entry.py`` / ``ws.py``, both
+Main's TUI booted its theme from ``gateway.ready.skin`` (``hermes_agent/tui_gateway/entry.py`` / ``ws.py``, both
 ``change_watcher.resolve_skin()``). On the session authority the client publishes its own ready after
 ``runtime.describe``, so the describe reply carries the same payload, resolved for the profile that
 owns this authority (``display.skin`` and ``<home>/skins/*.yaml`` are per profile).

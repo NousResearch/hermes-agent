@@ -28,7 +28,7 @@ def _hook_calls(mock_invoke_hook):
 
 @patch("hermes_cli.plugins.invoke_hook")
 def test_interrupt_running_turn_fires_agent_loop_stopped(mock_invoke_hook):
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
 
     session = _make_session(running=True)
     with patch.object(server, "_clear_pending"):
@@ -47,7 +47,7 @@ def test_interrupt_running_turn_fires_agent_loop_stopped(mock_invoke_hook):
 @patch("hermes_cli.plugins.invoke_hook")
 def test_interrupt_idle_session_does_not_fire_hook(mock_invoke_hook):
     """No live turn -> nothing for a plugin to cancel -> no hook noise."""
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
 
     session = _make_session(running=False)
     with patch.object(server, "_clear_pending"):
@@ -60,7 +60,7 @@ def test_interrupt_idle_session_does_not_fire_hook(mock_invoke_hook):
 def test_hook_failure_does_not_break_interrupt(mock_invoke_hook):
     """A misbehaving plugin must never prevent the interrupt itself."""
     mock_invoke_hook.side_effect = RuntimeError("plugin exploded")
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
 
     session = _make_session(running=True)
     with patch.object(server, "_clear_pending"):
@@ -76,7 +76,7 @@ def test_interrupt_hook_observer_sees_the_sessions_profile_a_b_a(tmp_path, monke
     (#125063), and no binding leaks past the dispatch."""
     from agent.secret_scope import set_multiplex_active
     from hermes_constants import get_hermes_home, get_hermes_home_override
-    from tui_gateway import launch_profile_policy as lpp, server
+    from hermes_agent.tui_gateway import launch_profile_policy as lpp, server
 
     launch = tmp_path / "hermes_home"
     routed = launch / "profiles" / "s6probe-b"

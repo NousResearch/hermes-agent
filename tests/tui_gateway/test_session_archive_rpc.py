@@ -14,8 +14,8 @@ delete it permanently. ``session.archive`` mirrors ``session.set_hidden``:
 
 import pytest
 
-import tui_gateway.server as srv
-import tui_gateway.methods_session
+import hermes_agent.tui_gateway.server as srv
+import hermes_agent.tui_gateway.methods_session
 from hermes_agent.hermes_state import SessionDB
 
 

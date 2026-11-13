@@ -10,9 +10,9 @@ from contextlib import ExitStack, suppress
 
 import pytest
 
-from tui_gateway import server
-from tui_gateway.transport import FanoutTransport, StdioTransport
-from tui_gateway.ws import WSTransport
+from hermes_agent.tui_gateway import server
+from hermes_agent.tui_gateway.transport import FanoutTransport, StdioTransport
+from hermes_agent.tui_gateway.ws import WSTransport
 
 
 class RecordingTransport:
@@ -213,8 +213,8 @@ def test_membership_preserves_terminal_delivery_and_revokes_departed_peers(monke
 @pytest.mark.parametrize("slow_first", [True, False])
 @pytest.mark.parametrize("on_loop", [True, False])
 def test_backpressure_never_blocks_later_frames_or_other_subscribers(slow_first, on_loop, client_type, monkeypatch):
-    monkeypatch.setattr("tui_gateway.ws._WS_WRITE_TIMEOUT_S", 0.01)
-    monkeypatch.setattr("tui_gateway.ws._TOKEN_COALESCE_S", 0)
+    monkeypatch.setattr("hermes_agent.tui_gateway.ws._WS_WRITE_TIMEOUT_S", 0.01)
+    monkeypatch.setattr("hermes_agent.tui_gateway.ws._TOKEN_COALESCE_S", 0)
     with ExitStack() as stack:
         healthy, slow = client_type(stack), client_type(stack, reading=False)
         # Fill the actual kernel pipe, not a fake wait in a transport.write().

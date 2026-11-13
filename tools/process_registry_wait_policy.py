@@ -37,7 +37,7 @@ _STOP_NOTE = (
 
 def _effective_config() -> dict:
     """The profile's effective user config (managed overlay, ``${VAR}`` expansion): the same reader the
-    completion consumers use (``gateway.run._load_gateway_config``, ``tui_gateway.server._load_cfg``), so
+    completion consumers use (``gateway.run._load_gateway_config``, ``hermes_agent.tui_gateway.server._load_cfg``), so
     an admin-managed or env-expanded value decides promotion exactly as it decides delivery."""
     from hermes_cli.config_effective import load_user_config_effective
     return load_user_config_effective()

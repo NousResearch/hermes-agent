@@ -45,7 +45,7 @@ def _onboarding_connection(connection):
 
 
 async def start(connection, ref, params):
-    from tui_gateway.contracts.profiles_vault_complete_foreign_subagents import OnboardingStartParams
+    from hermes_agent.tui_gateway.contracts.profiles_vault_complete_foreign_subagents import OnboardingStartParams
     from pydantic import ValidationError
     try:
         request = OnboardingStartParams.model_validate(params)
@@ -287,7 +287,7 @@ async def skip(connection, ref, params):
     from gateway.session_runtime_workers import tracked_write
     from gateway.session_server_requests import withdraw
     from pydantic import ValidationError
-    from tui_gateway.contracts.profiles_vault_complete_foreign_subagents import OnboardingSkipParams
+    from hermes_agent.tui_gateway.contracts.profiles_vault_complete_foreign_subagents import OnboardingSkipParams
     try:
         request = OnboardingSkipParams.model_validate(params)
     except ValidationError as exc:

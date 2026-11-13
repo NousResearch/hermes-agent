@@ -1,4 +1,4 @@
-"""Tests: skills.manage install path (tui_gateway/methods_tools.py::_skills_install).
+"""Tests: skills.manage install path (hermes_agent/tui_gateway/methods_tools.py::_skills_install).
 
 The RPC runs `do_install(skip_confirm=True)` with a sink console. Contracts:
 - a successful install answers `installed: true`;
@@ -8,7 +8,7 @@ The RPC runs `do_install(skip_confirm=True)` with a sink console. Contracts:
   (#63307 Part B).
 """
 
-import tui_gateway.server as srv
+import hermes_agent.tui_gateway.server as srv
 
 
 def _install(params):

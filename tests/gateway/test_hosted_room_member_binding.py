@@ -29,7 +29,7 @@ def test_canonical_resolver_binds_the_member_the_driver_names(hosted_owner, monk
     from gateway.hosted_rooms import create_room, local_authority_gateway_id
     from gateway.session_hosted_service import CanonicalHostedRoomService
     from hermes_agent.hermes_state_runtime import RuntimeStoreError, list_session_admissions
-    from tui_gateway.hosted_room_driver import HostedRoomBinding, _member_id
+    from hermes_agent.tui_gateway.hosted_room_driver import HostedRoomBinding, _member_id
     authority, loop, _, _ = hosted_owner
     service = CanonicalHostedRoomService(authority, loop)
     monkeypatch.setattr(service, 'profile_homes', lambda: {'default': Path(authority.profile_id)})

@@ -21,7 +21,7 @@ import time
 
 import pytest
 
-from tui_gateway import server
+from hermes_agent.tui_gateway import server
 
 class _FlushAgent:
     """Minimal agent exposing the real ``_persist_session`` flush contract."""
@@ -245,7 +245,7 @@ def test_sigterm_grace_hard_exit_kills_a_sigterm_ignoring_command(monkeypatch):
     import psutil
 
     from tools.environments.local import LocalEnvironment
-    from tui_gateway import entry
+    from hermes_agent.tui_gateway import entry
 
     env = LocalEnvironment(cwd=os.getcwd())
     run_thread = threading.Thread(

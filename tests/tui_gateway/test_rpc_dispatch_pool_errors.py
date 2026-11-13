@@ -16,7 +16,7 @@ class _Transport:
 
 
 def test_pool_handler_failure_is_logged_with_traceback(monkeypatch, caplog):
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
 
     def handler(rid, params):
         raise RuntimeError("store unavailable")
@@ -24,7 +24,7 @@ def test_pool_handler_failure_is_logged_with_traceback(monkeypatch, caplog):
     monkeypatch.setitem(server._methods, "test.pool_failure", handler)
     monkeypatch.setattr(server, "_LONG_HANDLERS", {"test.pool_failure"})
     transport = _Transport()
-    with ThreadPoolExecutor(max_workers=1) as pool, caplog.at_level(logging.ERROR, logger="tui_gateway"):
+    with ThreadPoolExecutor(max_workers=1) as pool, caplog.at_level(logging.ERROR, logger="hermes_agent.tui_gateway"):
         monkeypatch.setattr(server, "_pool", pool)
         assert server.dispatch({"id": "r1", "method": "test.pool_failure"}, transport) is None
         reply = transport.frames.get(timeout=10)

@@ -19,8 +19,8 @@ import pytest
 from gateway import hosted_room_driver as state
 from gateway import hosted_rooms
 from tests.tui_gateway.test_hosted_room_driver_runtime import BINDING, PROFILE, ROOM_ID, _identity, _wait_for
-from tui_gateway.hosted_room_driver import HostedRoomRuntime
-from tui_gateway.hosted_room_server_rpc import HostedRoomServerRPC
+from hermes_agent.tui_gateway.hosted_room_driver import HostedRoomRuntime
+from hermes_agent.tui_gateway.hosted_room_server_rpc import HostedRoomServerRPC
 
 TTL = 0.6
 

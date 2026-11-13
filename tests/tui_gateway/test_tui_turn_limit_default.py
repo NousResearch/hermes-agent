@@ -4,9 +4,9 @@ unlimited turn budget as load_config, the CLI, the gateway and cron, and says so
 from unittest.mock import patch
 
 from hermes_cli.config import TURN_LIMIT_UNLIMITED
-from tui_gateway import server
-from tui_gateway.agent_factory import _make_agent
-from tui_gateway.method_ctx import rebind
+from hermes_agent.tui_gateway import server
+from hermes_agent.tui_gateway.agent_factory import _make_agent
+from hermes_agent.tui_gateway.method_ctx import rebind
 
 
 def _stub_make_agent(monkeypatch, cfg):
@@ -49,7 +49,7 @@ def test_the_config_panel_shows_unlimited_or_the_user_value(monkeypatch):
 
 def test_foreground_uses_shared_default_and_background_keeps_its_budget(monkeypatch):
     from hermes_cli.config import DEFAULT_CONFIG, cfg_get
-    from tui_gateway.agent_callbacks import _cfg_max_turns
+    from hermes_agent.tui_gateway.agent_callbacks import _cfg_max_turns
     monkeypatch.delenv("HERMES_TUI_MAX_TURNS", raising=False)
     monkeypatch.setitem(cfg_get(DEFAULT_CONFIG, "agent"), "max_turns", 37)
     resolve = rebind(_cfg_max_turns, server.__dict__)

@@ -15,7 +15,7 @@ def _make_skill(parent: Path, name: str) -> None:
 def test_cache_survives_platform_empty_string_none_flapping(tmp_path):
     """When platform flaps between "" and None, both share the same cache slot.
 
-    Regression for #104849: `_set_session_context` in `tui_gateway/server.py`
+    Regression for #104849: `_set_session_context` in `hermes_agent/tui_gateway/server.py`
     pins the platform to an empty string (`platform=""`), and
     `_resolve_skill_commands_platform()` normalizes that `""` to `None` in
     some request contexts. A single-slot cache treating them as distinct keys

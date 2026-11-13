@@ -15,7 +15,7 @@ class _FakeCLI:
 
 
 def test_run_strips_ansi_from_output():
-    from tui_gateway import slash_worker
+    from hermes_agent.tui_gateway import slash_worker
 
     out = slash_worker._run(_FakeCLI(), "/anything")
 

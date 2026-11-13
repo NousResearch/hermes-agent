@@ -75,7 +75,7 @@ def daemon(_isolate_hermes_home, monkeypatch):
     """The dashboard app as a multiplexing gateway serves it: the launch home plus profile ``beta``."""
     from starlette.testclient import TestClient
 
-    import tui_gateway.launch_profile_policy as launch_policy
+    import hermes_agent.tui_gateway.launch_profile_policy as launch_policy
     from agent.secret_scope import is_multiplex_active, set_multiplex_active
     from hermes_cli import profiles
     from hermes_cli.plugin_host import PluginHost

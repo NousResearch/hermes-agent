@@ -120,7 +120,7 @@ def test_mid_voice_turn_reports_the_sessions_own_route(tmp_path, monkeypatch, se
     """Desktop adopts session.info's effort/model into the composer that seeds new chats: a live
     voice turn's reasoning-off (and voice model) must never be reported or persisted as the chat's."""
     from agent.voice_turn_route import begin_voice_turn_route, end_voice_turn_route
-    from tui_gateway.server import _runtime_model_config, _session_info
+    from hermes_agent.tui_gateway.server import _runtime_model_config, _session_info
 
     with FakeLLMServer([]) as main, FakeLLMServer([]) as voice:
         extra = ("auxiliary:\n  voice_chat:\n    provider: custom\n"

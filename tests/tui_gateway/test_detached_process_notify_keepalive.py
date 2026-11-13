@@ -26,7 +26,7 @@ def server(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     monkeypatch.setenv("HERMES_HOME", str(home))
     with patch.dict("sys.modules", {"hermes_cli.env_loader": MagicMock(), "hermes_cli.banner": MagicMock()}):
-        mod = importlib.import_module("tui_gateway.server")
+        mod = importlib.import_module("hermes_agent.tui_gateway.server")
         yield mod
         mod._sessions.clear()
         mod._pending_ws_reaps.clear()
@@ -303,8 +303,8 @@ def test_disabled_watch_does_not_pin_session(server, registry, detached):
 
 
 def _post_turn_followups(server, namespace_overrides):
-    from tui_gateway import prompt_turn
-    from tui_gateway.method_ctx import rebind
+    from hermes_agent.tui_gateway import prompt_turn
+    from hermes_agent.tui_gateway.method_ctx import rebind
 
     namespace = dict(vars(server))
     namespace.update(_drain_queued_prompt=lambda *_: False,

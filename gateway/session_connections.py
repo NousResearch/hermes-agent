@@ -1,6 +1,6 @@
 """The ``manage_connections`` card on the session authority: ``connection.respond``, the operation's ``status``/``wake`` and the card's Try again (``connectors.connect`` with ``reconnect``), plus the open card a resume restores (``pending_connection``).
 
-The operation lives in ``tools/connectors/live.py`` under the turn's session key (the live session's route) and profile, so a card can only drive its own session's operation. Account-owned calls (the Connectors page) are not the session's and stay on the legacy handlers (``tui_gateway/methods_connectors.py``). Answers and refusals share that file's code (``tools.connectors.run.respond``, ``tui_gateway/connector_refusals.py``); ``ConnectorRefusal`` carries a refusal through the authority's error path.
+The operation lives in ``tools/connectors/live.py`` under the turn's session key (the live session's route) and profile, so a card can only drive its own session's operation. Account-owned calls (the Connectors page) are not the session's and stay on the legacy handlers (``hermes_agent/tui_gateway/methods_connectors.py``). Answers and refusals share that file's code (``tools.connectors.run.respond``, ``hermes_agent/tui_gateway/connector_refusals.py``); ``ConnectorRefusal`` carries a refusal through the authority's error path.
 """
 import asyncio
 from functools import partial
@@ -37,9 +37,9 @@ def pending_connection(authority, session_id):
 def _request(method, params):
     """The validated envelope and, for ``connection.respond``, the answer validated on its own as the legacy handler does: a bad answer is ``INVALID_ANSWER``, not a bad envelope."""
     from pydantic import ValidationError
-    from tui_gateway.connector_refusals import INVALID_ANSWER, INVALID_PARAMS
-    from tui_gateway.contracts.connectors_operation import ConnectionAnswer, ConnectionOperationParams
-    from tui_gateway.contracts.registry import METHODS as CONTRACTS
+    from hermes_agent.tui_gateway.connector_refusals import INVALID_ANSWER, INVALID_PARAMS
+    from hermes_agent.tui_gateway.contracts.connectors_operation import ConnectionAnswer, ConnectionOperationParams
+    from hermes_agent.tui_gateway.contracts.registry import METHODS as CONTRACTS
     respond = method == 'connection.respond'
     contract = ConnectionOperationParams if respond else CONTRACTS[method].params
     try:
@@ -55,7 +55,7 @@ def _request(method, params):
 
 
 def _view(operation):
-    from tui_gateway.connector_payload import connector_ui_payload
+    from hermes_agent.tui_gateway.connector_payload import connector_ui_payload
     snapshot = operation.snapshot()
     return connector_ui_payload({**snapshot, 'settled': snapshot.get('settled_at') is not None})
 
@@ -64,7 +64,7 @@ async def _handle(connection, method, _ref, params):
     from gateway.session_busy_controls import authorize
     from gateway.session_contract import SessionRef
     from tools.connectors import live
-    from tui_gateway import connector_refusals as refusals
+    from hermes_agent.tui_gateway import connector_refusals as refusals
     request, answer = _request(method, params)
     authority = connection.authority
     ref = SessionRef(authority.profile_id, request.owner.session_id)
@@ -92,7 +92,7 @@ async def _handle(connection, method, _ref, params):
 def _respond(operation, answer):
     from tools.connectors.operation import IllegalTransition
     from tools.connectors.run import respond
-    from tui_gateway.connector_refusals import INVALID_ANSWER
+    from hermes_agent.tui_gateway.connector_refusals import INVALID_ANSWER
     try:
         return {'status': 'ok', 'settled': respond(operation, answer.model_dump_json(exclude_none=True))}
     except IllegalTransition as exc:
@@ -103,7 +103,7 @@ def _retry(authority, ref, operation, request):
     """The card's Try again, under the session's own context, as the sidecar ran it for its session."""
     from tools.connectors import run
     from tools.connectors.gateway.errors import GatewayAuthError
-    from tui_gateway.connector_refusals import (INVALID_PARAMS, REISSUE_REFUSALS, REISSUE_REFUSED, REQUEST_FAILED,
+    from hermes_agent.tui_gateway.connector_refusals import (INVALID_PARAMS, REISSUE_REFUSALS, REISSUE_REFUSED, REQUEST_FAILED,
                                                 UNKNOWN_TARGET_REFUSAL, auth_refusal)
     if not request.reconnect:
         raise ConnectorRefusal(*INVALID_PARAMS)
@@ -132,7 +132,7 @@ def _require_connectors(authority, ref):
     """The sidecar's ``_session_connector_gate``: connectors on, and ``manage_connections`` in the session's tools."""
     import model_tools
     from tools.connectors import connectors_available
-    from tui_gateway import connector_refusals as refusals
+    from hermes_agent.tui_gateway import connector_refusals as refusals
     enabled, disabled = _session_toolsets(authority, ref)
     if 'manage_connections' not in model_tools._select_tool_names(enabled, disabled, quiet_mode=True) or not connectors_available():
         raise ConnectorRefusal(*refusals.CONNECTORS_UNAVAILABLE)

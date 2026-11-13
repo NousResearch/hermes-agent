@@ -12,8 +12,8 @@ import time
 import types
 
 import model_tools
-from tui_gateway import server
-from tui_gateway import entry
+from hermes_agent.tui_gateway import server
+from hermes_agent.tui_gateway import entry
 
 
 def _make_fake_agent(initial_tools, *, user_turns=0, api_calls=0):

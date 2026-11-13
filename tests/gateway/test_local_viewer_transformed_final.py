@@ -52,7 +52,7 @@ def _settle(platform, transformed):
 
 
 def test_a_streamed_local_turn_completes_with_the_transformed_final():
-    from tui_gateway.contracts.registry import EVENTS
+    from hermes_agent.tui_gateway.contracts.registry import EVENTS
     complete = _settle(Platform.LOCAL, transformed=True)
     assert complete["text"] == REWRITE and complete["response_transformed"] is True
     EVENTS["message.complete"].payload.model_validate(

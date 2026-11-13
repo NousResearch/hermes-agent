@@ -1,6 +1,6 @@
 """A dashboard login may act on the ``<provider>:<user>`` rows Desktop stamps for it.
 
-Desktop stamps its rows as ``<provider>:<user>`` (tui_gateway/session_transports.py), while a
+Desktop stamps its rows as ``<provider>:<user>`` (hermes_agent/tui_gateway/session_transports.py), while a
 forwarded dashboard actor carries ``authenticated_subject``'s ``auth:v1:[provider, "", user]``
 form (gateway/session_identity.py). ``authorize_history`` compared the two byte for byte, so the
 right logged-in user got ``permission_denied`` on rows it owned (#138950 review). The label maps

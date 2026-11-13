@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 import pytest
 
-from tui_gateway import server
+from hermes_agent.tui_gateway import server
 
 
 @pytest.mark.parametrize("tier,expected", [("", "normal"), (None, "normal"), ("priority", "fast")])

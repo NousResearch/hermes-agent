@@ -23,13 +23,13 @@ from gateway.hosted_room_peer import (
     catalog_mapping,
     issue_room_grant,
 )
-from tui_gateway.hosted_room_service import (
+from hermes_agent.tui_gateway.hosted_room_service import (
     HostedRoomService,
     _RouteStatusPeerClient,
     _grant_revoke_is_terminal,
 )
-from tui_gateway.hosted_room_peer_transport import PeerMemberRoute
-from tui_gateway.hosted_room_peer_http import PeerRunsHTTPError
+from hermes_agent.tui_gateway.hosted_room_peer_transport import PeerMemberRoute
+from hermes_agent.tui_gateway.hosted_room_peer_http import PeerRunsHTTPError
 
 
 def _append_room_event(db, **kwargs):

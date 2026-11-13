@@ -9,7 +9,7 @@ hosted instances, so the signal crosses over as a marker-file mtime.
 
 These tests exercise the REAL seams — the pure helpers with a real temp
 HERMES_HOME, GatewayRunner._scale_to_zero_is_idle's composition, and
-tui_gateway.ws.handle_ws — rather than stubbing the collection under test
+hermes_agent.tui_gateway.ws.handle_ws — rather than stubbing the collection under test
 (the F25 / #84327 lesson: bugs live at the call site, not in the pure predicate).
 """
 from __future__ import annotations
@@ -201,7 +201,7 @@ def _drain_marker_writes(ws_mod) -> None:
 
 
 def _stub_ws_server(monkeypatch, ws_mod):
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
 
     monkeypatch.setattr(server, "_start_backend_heartbeat_refresher", lambda: None)
     monkeypatch.setattr(server, "_schedule_startup_orphan_sweep", lambda: None, raising=False)
@@ -227,7 +227,7 @@ class _FakeWS:
         self.sent.append(line)
 
     async def receive_text(self):
-        from tui_gateway import ws as ws_mod
+        from hermes_agent.tui_gateway import ws as ws_mod
 
         if self.before_receive is not None:
             self.before_receive()
@@ -240,7 +240,7 @@ class _FakeWS:
 
 
 def test_handle_ws_connect_touches_marker(hermes_home, monkeypatch):
-    from tui_gateway import ws as ws_mod
+    from hermes_agent.tui_gateway import ws as ws_mod
 
     _stub_ws_server(monkeypatch, ws_mod)
     assert s2z.dashboard_client_last_seen() is None
@@ -251,7 +251,7 @@ def test_handle_ws_connect_touches_marker(hermes_home, monkeypatch):
 
 
 def test_handle_ws_inbound_frames_refresh_marker(hermes_home, monkeypatch):
-    from tui_gateway import ws as ws_mod
+    from hermes_agent.tui_gateway import ws as ws_mod
 
     _stub_ws_server(monkeypatch, ws_mod)
     # Disable the throttle so each frame is observable.
@@ -276,7 +276,7 @@ def test_handle_ws_inbound_frames_refresh_marker(hermes_home, monkeypatch):
 
 
 def test_note_activity_is_throttled(hermes_home, monkeypatch):
-    from tui_gateway import ws as ws_mod
+    from hermes_agent.tui_gateway import ws as ws_mod
 
     calls = {"n": 0}
     monkeypatch.setattr(
@@ -297,7 +297,7 @@ def test_slow_marker_write_does_not_hold_the_connection(hermes_home, monkeypatch
     """#139011: the marker write is disk I/O. On the event loop a slow disk stalled the whole
     gateway (and every managed-worker RPC, each of which opens a socket here); awaited, it would
     still hold the connection that triggered it. It runs off the loop and nothing waits for it."""
-    from tui_gateway import ws as ws_mod
+    from hermes_agent.tui_gateway import ws as ws_mod
 
     _stub_ws_server(monkeypatch, ws_mod)
     loop_threads: list[int] = []
@@ -329,7 +329,7 @@ def test_slow_marker_write_does_not_hold_the_connection(hermes_home, monkeypatch
 def test_refused_marker_write_does_not_wedge_its_path(hermes_home, monkeypatch):
     """Once interpreter shutdown starts the pool refuses work. The path must not stay pending, or
     every later touch for it is coalesced into a write that never runs."""
-    from tui_gateway import ws as ws_mod
+    from hermes_agent.tui_gateway import ws as ws_mod
 
     monkeypatch.setattr(ws_mod, "_dashboard_client_touched_at", 0.0)
     calls = {"n": 0}
@@ -354,7 +354,7 @@ def test_refused_marker_write_does_not_wedge_its_path(hermes_home, monkeypatch):
 def test_stalled_marker_write_coalesces_later_touches(hermes_home, monkeypatch):
     """Forced touches (one per accept) during a stalled write must not pile up behind it: the
     marker is an mtime, so one pending write per path covers them all."""
-    from tui_gateway import ws as ws_mod
+    from hermes_agent.tui_gateway import ws as ws_mod
 
     monkeypatch.setattr(ws_mod, "_dashboard_client_touched_at", 0.0)
     started, release = threading.Event(), threading.Event()
@@ -383,7 +383,7 @@ def test_marker_write_lands_in_the_launch_home_under_a_profile_override(hermes_h
     """The gateway's idle watcher reads the launch home's marker, so a socket running in another
     profile's HERMES_HOME override must still stamp the launch home."""
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
-    from tui_gateway import ws as ws_mod
+    from hermes_agent.tui_gateway import ws as ws_mod
 
     monkeypatch.setattr(ws_mod, "_dashboard_client_touched_at", 0.0)
     served = hermes_home / "served-profile"
@@ -403,7 +403,7 @@ def test_secondary_profile_socket_keeps_a_multiplexed_gateway_awake(hermes_home,
     from types import SimpleNamespace
 
     from gateway.session_authorities import owner_scope
-    from tui_gateway import ws as ws_mod
+    from hermes_agent.tui_gateway import ws as ws_mod
 
     _stub_ws_server(monkeypatch, ws_mod)
     secondary = hermes_home / "profiles" / "b"

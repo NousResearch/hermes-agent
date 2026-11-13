@@ -15,8 +15,8 @@ from tests.gateway.test_session_group_peer_discard import (
     _never_admitted_deferred_turn, gateway as gateway_fixture, linked_peer as linked_peer_fixture,
 )
 from tests.gateway.test_session_group_peers import call
-from tui_gateway.hosted_room_peer_http import PeerRunsHTTPClient, PeerRunsHTTPError
-from tui_gateway.hosted_room_peer_transport import build_member_dispatch
+from hermes_agent.tui_gateway.hosted_room_peer_http import PeerRunsHTTPClient, PeerRunsHTTPError
+from hermes_agent.tui_gateway.hosted_room_peer_transport import build_member_dispatch
 
 gateway, linked_peer = gateway_fixture, linked_peer_fixture
 

@@ -1,6 +1,6 @@
 """Main's banner / status-bar inventory for a canonical local session.
 
-``tui_gateway/server.py::_session_info`` on main put the session's tools (by toolset), skills (by
+``hermes_agent/tui_gateway/server.py::_session_info`` on main put the session's tools (by toolset), skills (by
 category), MCP servers, version / release date, update notice, git branch, project and provider on
 every ``session.info`` / create / resume ``info``; the Ink banner (``components/branding.tsx``) and
 the classic CLI banner (``hermes_cli/banner.py::build_welcome_banner``) render them. A canonical
@@ -57,7 +57,7 @@ def _policy_tools(policy, config):
 
 
 def _project(cwd):
-    """``tui_gateway/server.py::_project_info_for_cwd``: the named project owning *cwd*, or None."""
+    """``hermes_agent/tui_gateway/server.py::_project_info_for_cwd``: the named project owning *cwd*, or None."""
     if not str(cwd or "").strip():
         return None
     from hermes_cli import projects_db as pdb
@@ -135,7 +135,7 @@ def session_inventory(authority, policy, agent, cwd):
     """Main's banner/status fields for one session. Each section degrades to main's empty value on
     its own, so one failing builder never blanks the others (main wrapped each in ``suppress``)."""
     from gateway.session_authorities import owner_scope
-    from tui_gateway import git_probe
+    from hermes_agent.tui_gateway import git_probe
     info: dict = {"tools": {}, "skills": {}, "mcp_servers": [], "version": "", "release_date": "",
                   "update_behind": None, "update_command": "",
                   "branch": git_probe.branch(cwd) if cwd else "", "project": _project(cwd)}

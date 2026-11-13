@@ -311,7 +311,7 @@ def test_a_tui_poller_leaves_another_agents_event_for_it():
     rendering or consuming it."""
     from agent.runtime_scope import bind_state
     from tools.process_registry import process_registry
-    from tui_gateway.session_notifications import _notif_handle_event
+    from hermes_agent.tui_gateway.session_notifications import _notif_handle_event
 
     evt = {"type": "completion", "session_id": "proc_tui_private", "session_key": "shared",
            "sandbox_key": sandbox_identity(A).key, "command": "echo A-PRIVATE", "output": "A-PRIVATE"}

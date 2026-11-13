@@ -1,7 +1,7 @@
 """``plugins remove`` (CLI, dashboard, ``plugins.manage`` RPC) leaves no config residue and never
 follows a symlink (#54336, plugin-scan L2-F1/F2/F5).
 
-Real removal core against a temp HERMES_HOME; the RPC path goes through ``tui_gateway.server``.
+Real removal core against a temp HERMES_HOME; the RPC path goes through ``hermes_agent.tui_gateway.server``.
 """
 
 from __future__ import annotations
@@ -10,7 +10,7 @@ import pytest
 import hermes_yaml as yaml
 
 from hermes_cli import plugins_cmd
-from tui_gateway import server
+from hermes_agent.tui_gateway import server
 
 
 def _write_plugin(root, rel, name, extra=""):

@@ -42,7 +42,7 @@ class _CwdRecordingProvider(MemoryProvider):
 def workspace_runtime(monkeypatch, tmp_path):
     # server imports start a background GitHub update check; disable it before import.
     monkeypatch.setattr("hermes_cli.banner.prefetch_update_check", lambda: None)
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
 
     old, new, other = (tmp_path / name for name in ("old-repo", "new-repo", "other-repo"))
     for path in (old, new, other):
@@ -179,7 +179,7 @@ def test_workspace_move_during_deferred_build_reaches_first_codex_thread(workspa
         return agent
 
     monkeypatch.setattr(server, "_make_agent", make_agent)
-    monkeypatch.setattr("tui_gateway.entry.ensure_mcp_discovery_started", lambda: None)
+    monkeypatch.setattr("hermes_agent.tui_gateway.entry.ensure_mcp_discovery_started", lambda: None)
     monkeypatch.setattr(server, "_wire_session_agent", lambda *a: False)
     monkeypatch.setattr(server, "_announce_built_agent", lambda *a: None)
     monkeypatch.setattr(server, "_config_model_target", lambda: ("", ""))

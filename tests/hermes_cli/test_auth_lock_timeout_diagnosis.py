@@ -97,7 +97,7 @@ def test_permanent_lock_failure_propagates_instead_of_burning_the_deadline(tmp_p
 
 
 def test_lock_timeout_message_still_matches_the_documented_prefix():
-    # Downstream diagnosis (tui_gateway.user_messages) matches on this prefix; keep it stable.
+    # Downstream diagnosis (hermes_agent.tui_gateway.user_messages) matches on this prefix; keep it stable.
     from hermes_cli import auth
     import inspect
 

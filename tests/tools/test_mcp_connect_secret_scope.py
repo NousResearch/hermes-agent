@@ -190,7 +190,7 @@ def test_launch_profile_env_only_credential_survives_the_owner_rebuild(spawn_env
     import os
     from pathlib import Path
     from tools import mcp_tool_config as _config
-    from tui_gateway import launch_profile_policy
+    from hermes_agent.tui_gateway import launch_profile_policy
     launch_home = Path(os.environ["HERMES_HOME"])  # conftest's per-test process home
     (launch_home / ".env").write_text("", encoding="utf-8")
     monkeypatch.setenv(TOKEN_NAME, "tok-from-systemd")

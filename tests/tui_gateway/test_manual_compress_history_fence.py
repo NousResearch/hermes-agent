@@ -42,7 +42,7 @@ def _agent_with_history(tmp_path, monkeypatch, in_place=False):
 def test_manual_compress_rejects_history_rewritten_before_admission(
     tmp_path, monkeypatch, caplog, stale, in_place, compress_args,
 ):
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
 
     monkeypatch.setattr(server, "_get_usage", lambda agent: {})
     db, agent, parent, before = _agent_with_history(tmp_path, monkeypatch, in_place)

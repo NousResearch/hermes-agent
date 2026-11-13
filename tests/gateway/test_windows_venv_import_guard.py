@@ -57,7 +57,7 @@ def test_legacy_venv_of_unknown_or_foreign_abi_is_never_overlaid(tmp_path, monke
     """#139085: with nothing committed and VIRTUAL_ENV unset (PM launchers and
     ``activate_dependencies`` pop it), the overlay fell back to ``<root>/venv`` and
     ``addsitedir``-ed a cp311 tree into a 3.14 gateway, which then died importing
-    ``pydantic_core`` when the Group Chat worker imported ``tui_gateway.server``.
+    ``pydantic_core`` when the Group Chat worker imported ``hermes_agent.tui_gateway.server``.
     A venv whose Python version can't be read fails closed the same way; both skips are logged."""
     import gateway.run as gateway_run
 

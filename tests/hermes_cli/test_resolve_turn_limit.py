@@ -139,28 +139,28 @@ class TestGatewayBridgeNullHandling:
 
 
 class TestTUIResolver:
-    """Verify that _cfg_max_turns in tui_gateway/server.py routes through
+    """Verify that _cfg_max_turns in hermes_agent/tui_gateway/server.py routes through
     resolve_turn_limit instead of bare int()."""
 
     def test_string_none_resolves_to_unlimited(self):
-        from tui_gateway.server import _cfg_max_turns
+        from hermes_agent.tui_gateway.server import _cfg_max_turns
         cfg = {"agent": {"max_turns": "none"}}
         assert _cfg_max_turns(cfg, default=25) == TURN_LIMIT_UNLIMITED
 
 
 
     def test_int_passthrough(self):
-        from tui_gateway.server import _cfg_max_turns
+        from hermes_agent.tui_gateway.server import _cfg_max_turns
         cfg = {"agent": {"max_turns": 50}}
         assert _cfg_max_turns(cfg, default=25) == 50
 
     def test_none_falls_through_to_default(self):
-        from tui_gateway.server import _cfg_max_turns
+        from hermes_agent.tui_gateway.server import _cfg_max_turns
         cfg = {"agent": {}}
         assert _cfg_max_turns(cfg, default=25) == 25
 
     def test_env_var_override(self, monkeypatch):
-        from tui_gateway.server import _cfg_max_turns
+        from hermes_agent.tui_gateway.server import _cfg_max_turns
         monkeypatch.setenv("HERMES_TUI_MAX_TURNS", "none")
         cfg = {"agent": {"max_turns": 50}}
         assert _cfg_max_turns(cfg, default=25) == TURN_LIMIT_UNLIMITED
@@ -168,13 +168,13 @@ class TestTUIResolver:
     def test_env_var_zero_is_unlimited(self, monkeypatch):
         """Old code swallowed 0 via `int(0) > 0` → False. Now it routes
         through resolve_turn_limit which treats 0 as unlimited."""
-        from tui_gateway.server import _cfg_max_turns
+        from hermes_agent.tui_gateway.server import _cfg_max_turns
         monkeypatch.setenv("HERMES_TUI_MAX_TURNS", "0")
         cfg = {"agent": {"max_turns": 50}}
         assert _cfg_max_turns(cfg, default=25) == TURN_LIMIT_UNLIMITED
 
     def test_root_level_max_turns(self):
         """Legacy root-level max_turns still works."""
-        from tui_gateway.server import _cfg_max_turns
+        from hermes_agent.tui_gateway.server import _cfg_max_turns
         cfg = {"max_turns": "none"}
         assert _cfg_max_turns(cfg, default=25) == TURN_LIMIT_UNLIMITED

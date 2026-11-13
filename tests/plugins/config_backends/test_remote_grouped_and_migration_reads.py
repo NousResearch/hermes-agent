@@ -42,7 +42,7 @@ def plane(tmp_path, monkeypatch):
 def _tui_server(monkeypatch, home):
     from hermes_cli import banner
     monkeypatch.setattr(banner, "prefetch_update_check", lambda: None)
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
     monkeypatch.setattr(server, "_hermes_home", home)
     server._cfg_cache = server._cfg_sig = server._cfg_path = None
     return server
@@ -343,7 +343,7 @@ def test_profile_editor_reports_mcp_unapplied_when_legacy_disabled_cleanup_is_lo
     lock keeps ``disabled: true``, the editor (which honours ``disabled``) still shows the server
     off, so the edit must not be acknowledged; unlocked, it lands and the editor agrees."""
     from hermes_cli.config import read_user_config_raw
-    from tui_gateway.methods_profiles import _mcp_entry_enabled
+    from hermes_agent.tui_gateway.methods_profiles import _mcp_entry_enabled
     plane.upper = {"mcp_servers": {"example": {"command": "unused", "enabled": False}}}
     plane.profile("default")["values"] = {"mcp_servers": {"example": {"disabled": True}}}
     plane.upper_locks = [{"path": "mcp_servers.example.disabled", "level": "tenant"}]

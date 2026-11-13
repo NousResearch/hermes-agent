@@ -1,4 +1,4 @@
-"""Tests: bot_relay.* JSON-RPC handlers (tui_gateway/methods_bot_relay.py).
+"""Tests: bot_relay.* JSON-RPC handlers (hermes_agent/tui_gateway/methods_bot_relay.py).
 
 The Desktop's relay door on each connected gateway. Contracts:
 - roster.sync persists validated rows and reports the accepted count;
@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-import tui_gateway.server as srv
+import hermes_agent.tui_gateway.server as srv
 from hermes_cli.dashboard_auth.ws_tickets import INTERNAL_PROVIDER, INTERNAL_USER_ID
 from tools import bot_relay
 
@@ -286,7 +286,7 @@ def test_gateway_drains_the_mailbox_the_tools_write_to(tmp_path, monkeypatch, su
     (``methods_bot_relay._relay_root``) must agree for a ``profiles/<name>`` home AND for an
     arbitrary subdir of the native ``~/.hermes`` — a split here is silent non-delivery."""
     from tools.bot_mode_probe import _default_home, _hermes_root
-    from tui_gateway import methods_bot_relay
+    from hermes_agent.tui_gateway import methods_bot_relay
 
     monkeypatch.setenv("HOME", str(tmp_path))
     home = tmp_path / ".hermes" / subdir

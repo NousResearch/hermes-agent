@@ -25,9 +25,9 @@ from tests.tui_gateway.test_hosted_room_attachment_routes import (
     _server_module,
 )
 from tests.tui_gateway.test_hosted_room_driver_runtime import BINDING, PROFILE, ROOM_ID
-import tui_gateway.server as srv
-from tui_gateway import methods_groups
-from tui_gateway.hosted_room_server_rpc import HostedRoomServerRPC
+import hermes_agent.tui_gateway.server as srv
+from hermes_agent.tui_gateway import methods_groups
+from hermes_agent.tui_gateway.hosted_room_server_rpc import HostedRoomServerRPC
 
 _PNG = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==")

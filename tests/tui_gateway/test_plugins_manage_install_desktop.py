@@ -8,7 +8,7 @@ second install is an RPC error until ``force``, and removal round-trips — all 
 
 import subprocess
 
-from tui_gateway import server
+from hermes_agent.tui_gateway import server
 
 
 def _manage(**params):

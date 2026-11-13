@@ -19,7 +19,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 import tools.async_delegation as ad
-from tui_gateway.server import (
+from hermes_agent.tui_gateway.server import (
     _finalize_session,
     _session_owns_notification_event,
 )
@@ -64,7 +64,7 @@ class TestSessionOwnsNotificationEvent:
         evt = {"type": "async_delegation", "origin_ui_session_id": "", "session_key": "parent_key"}
         db = MagicMock()
         db.resolve_resume_session_id.return_value = "child_key"
-        with patch("tui_gateway.server._get_db", return_value=db):
+        with patch("hermes_agent.tui_gateway.server._get_db", return_value=db):
             assert _session_owns_notification_event("tabX", self._session("child_key"), evt) is True
 
 
@@ -124,7 +124,7 @@ class TestFinalizeInterruptsOwnDelegations:
             "_sid": sid,
         }
 
-    @patch("tui_gateway.server._get_db")
+    @patch("hermes_agent.tui_gateway.server._get_db")
     def test_finalize_interrupts_sessions_delegations(self, mock_get_db):
         mock_db = MagicMock()
         mock_db.get_session.return_value = {"source": "tui"}
@@ -138,7 +138,7 @@ class TestFinalizeInterruptsOwnDelegations:
         assert kwargs["session_key"] == "sess_A"
         assert kwargs["origin_ui_session_id"] == "tab1"
 
-    @patch("tui_gateway.server._get_db")
+    @patch("hermes_agent.tui_gateway.server._get_db")
     def test_viewer_of_gateway_session_only_interrupts_by_origin(self, mock_get_db):
         """Closing a TUI viewer tab on a live gateway session must not kill
         the gateway's own background work — key-based interrupt is skipped,

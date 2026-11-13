@@ -43,7 +43,7 @@ for dp, dns, fns in os.walk(TREE):
 results["pyc_files"] = pyc_n; results["pyc_bytes"] = pyc_bytes
 
 # 1. import-time probes: fresh interpreter, measure wall + module count + RSS
-IMPORT_TARGETS = ["run_agent", "cli", "hermes_cli.main", "gateway.run", "tools.registry", "hermes_agent.hermes_state", "tui_gateway.server", "hermes_cli.web_server", "model_tools", "agent.prompt_builder"]
+IMPORT_TARGETS = ["run_agent", "cli", "hermes_cli.main", "gateway.run", "tools.registry", "hermes_agent.hermes_state", "hermes_agent.tui_gateway.server", "hermes_cli.web_server", "model_tools", "agent.prompt_builder"]
 probe = r'''
 import sys, time, os, resource, json
 t0=time.perf_counter()

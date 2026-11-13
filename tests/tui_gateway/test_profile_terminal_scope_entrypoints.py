@@ -23,8 +23,8 @@ import pytest
 
 from tools import terminal_tool as tt
 from tools.terminal_scope import get_terminal_scope
-from tui_gateway import launch_profile_policy as ltp
-from tui_gateway import server
+from hermes_agent.tui_gateway import launch_profile_policy as ltp
+from hermes_agent.tui_gateway import server
 
 
 @pytest.fixture(autouse=True)

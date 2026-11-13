@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from tui_gateway import server
+from hermes_agent.tui_gateway import server
 from agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_secret_scope
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
@@ -22,7 +22,7 @@ from hermes_constants import reset_hermes_home_override, set_hermes_home_overrid
 def hosted(tmp_path, monkeypatch):
     """Launch home with no xAI key + named profile ``bot`` whose own ``.env`` carries one; multi-profile
     hosting active the way ``hermes serve`` activates it at boot."""
-    import tui_gateway.launch_profile_policy as policy
+    import hermes_agent.tui_gateway.launch_profile_policy as policy
     from agent.secret_scope import set_multiplex_active
 
     launch = tmp_path / ".hermes"

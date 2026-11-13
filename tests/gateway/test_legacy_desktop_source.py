@@ -128,7 +128,7 @@ async def test_editing_ones_own_branch_leaves_another_logins_parent_alone(tmp_pa
     from gateway.session_contract import SessionRef
     from gateway.session_mutations import mutate_session
     from hermes_agent.hermes_state_runtime import begin_runtime_epoch
-    from tui_gateway.methods_session import _persist_branch
+    from hermes_agent.tui_gateway.methods_session import _persist_branch
 
     caps = frozenset({'session:read', 'session:control', 'session:create', 'session:operator'})
     alice = SessionActor(_login('alice'), 'p', caps, 'http')
@@ -173,7 +173,7 @@ async def test_renaming_ones_own_branch_leaves_another_logins_parent_title_alone
     from gateway.session_contract import SessionRef
     from gateway.session_mutations import mutate_session
     from hermes_agent.hermes_state_runtime import begin_runtime_epoch
-    from tui_gateway.methods_session import _persist_branch
+    from hermes_agent.tui_gateway.methods_session import _persist_branch
 
     caps = frozenset({'session:read', 'session:control', 'session:create', 'session:operator'})
     alice = SessionActor(_login('alice'), 'p', caps, 'http')

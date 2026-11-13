@@ -23,8 +23,8 @@ from gateway.session_group_peers import room_link
 from gateway.session_hosted_service import CanonicalHostedRoomService
 from hermes_agent.hermes_state import SessionDB
 from hermes_agent.hermes_state_runtime import begin_runtime_epoch
-from tui_gateway.contracts import groups_bot_relay as contract
-from tui_gateway.contracts.registry import CANONICAL_METHODS
+from hermes_agent.tui_gateway.contracts import groups_bot_relay as contract
+from hermes_agent.tui_gateway.contracts.registry import CANONICAL_METHODS
 
 
 @pytest.fixture
@@ -280,7 +280,7 @@ async def test_register_binds_only_the_pinned_peer_after_a_live_scoped_probe(gat
 async def test_an_invitation_can_keep_its_route_renewable_past_its_first_dispatch_lifetime(gateway, monkeypatch, linked_peer):
     """Renewal extends dispatch only within the operator's requested status horizon."""
     from gateway.hosted_room_peer import decode_room_grant, gateway_room_grant_secret
-    from tui_gateway.hosted_room_peer_http import PeerRunsHTTPClient
+    from hermes_agent.tui_gateway.hosted_room_peer_http import PeerRunsHTTPClient
     _server, url, catalog, room = linked_peer
     assert 'peer_renewal_horizon' in (await call(gateway.owner, 'groups.capabilities'))['features']
     identity = dict(room_id=room['room_id'], member_id='reviewer', home_install_id=room['authority_gateway_id'],
@@ -315,7 +315,7 @@ async def test_an_invitation_can_keep_its_route_renewable_past_its_first_dispatc
 
 @pytest.mark.asyncio
 async def test_disband_owes_a_renewable_invitation_until_its_status_horizon(gateway, monkeypatch, linked_peer):
-    from tui_gateway.hosted_room_peer_http import PeerRunsHTTPClient
+    from hermes_agent.tui_gateway.hosted_room_peer_http import PeerRunsHTTPClient
     _server, url, catalog, room = linked_peer
     invitation = await call(
         gateway.owner, 'groups.peer.invite', room_id=room['room_id'], member_id='reviewer',
@@ -342,9 +342,9 @@ async def test_disband_owes_a_renewable_invitation_until_its_status_horizon(gate
 @pytest.mark.asyncio
 async def test_reregistered_route_replays_accepted_work_as_the_same_target_run(gateway, monkeypatch, linked_peer):
     from gateway.platforms import api_server_runs
-    from tui_gateway.hosted_room_driver import HostedRoomBinding
-    from tui_gateway.hosted_room_peer_http import PeerRunsHTTPClient, PeerRunsHTTPError
-    from tui_gateway.hosted_room_peer_transport import build_member_dispatch
+    from hermes_agent.tui_gateway.hosted_room_driver import HostedRoomBinding
+    from hermes_agent.tui_gateway.hosted_room_peer_http import PeerRunsHTTPClient, PeerRunsHTTPError
+    from hermes_agent.tui_gateway.hosted_room_peer_transport import build_member_dispatch
 
     async def inert(adapter, run, **kwargs):
         pass
@@ -460,7 +460,7 @@ async def test_disband_keeps_the_room_while_its_member_gateway_is_down_and_revok
     grant with a shorter one. Disband revokes at the member gateway first, so it refuses and keeps
     the room and its route; once that gateway answers, Disband ends the room and its scope
     revocation covers both grants. No grant appears in an answer, error or log."""
-    from tui_gateway.hosted_room_peer_http import PeerRunsHTTPClient
+    from hermes_agent.tui_gateway.hosted_room_peer_http import PeerRunsHTTPClient
     caplog.set_level(logging.DEBUG)
     server, url, catalog, room = linked_peer
     restarted, db = None, gateway.db.db_path
@@ -495,8 +495,8 @@ def test_an_owed_revoke_settles_on_unknown_or_revoked_and_is_dropped_at_its_gran
     other refusal keeps it owed, with backoff. Past the grant's own expiry it is dropped unsent: that
     gateway refuses the grant by then anyway."""
     from gateway.hosted_room_peer import issue_room_grant, room_grant_hard_expiry
-    from tui_gateway.hosted_room_driver import HostedRoomRuntime
-    from tui_gateway.hosted_room_peer_http import PeerRunsHTTPError
+    from hermes_agent.tui_gateway.hosted_room_driver import HostedRoomRuntime
+    from hermes_agent.tui_gateway.hosted_room_peer_http import PeerRunsHTTPError
     service, db, now = gateway.service, gateway.db.db_path, [time.time()]
     service.runtime.clock = lambda: now[0]
 
@@ -544,7 +544,7 @@ def test_an_owed_revoke_settles_on_unknown_or_revoked_and_is_dropped_at_its_gran
 
 @pytest.mark.asyncio
 async def test_disband_and_registration_never_leave_a_route_behind(gateway, monkeypatch, linked_peer):
-    from tui_gateway.hosted_room_peer_http import PeerRunsHTTPClient
+    from hermes_agent.tui_gateway.hosted_room_peer_http import PeerRunsHTTPClient
     _server, url, catalog, room = linked_peer
     probe = PeerRunsHTTPClient.probe
 
@@ -569,7 +569,7 @@ async def test_disband_waits_for_a_registration_even_while_the_driver_stops(gate
     """The room driver stopping must not take Disband off the registration lock: a route published
     meanwhile is either refused by the room's tombstone or dropped by Disband with its revoke owed,
     never left behind."""
-    from tui_gateway.hosted_room_peer_http import PeerRunsHTTPClient
+    from hermes_agent.tui_gateway.hosted_room_peer_http import PeerRunsHTTPClient
     probe = PeerRunsHTTPClient.probe
     _server, url, catalog, room = linked_peer
     grant = (await invite(gateway, room))['grant']
@@ -635,7 +635,7 @@ async def _deferred_unreceipted_peer_turn(gateway, monkeypatch, linked_peer):
     the receipt, and the turn was deferred while the member stayed unreachable."""
     from gateway import hosted_room_driver as driver
     from gateway.platforms import api_server_runs
-    from tui_gateway.hosted_room_peer_transport import build_member_dispatch
+    from hermes_agent.tui_gateway.hosted_room_peer_transport import build_member_dispatch
 
     async def inert(adapter, run, **kwargs):
         pass
@@ -744,7 +744,7 @@ async def test_register_sends_the_grant_only_to_the_pinned_endpoint(gateway, mon
     """The pinned catalog's digest covers the endpoint its gateway advertises. Any other URL is
     refused before the grant leaves the home, so a host that repeats that gateway's answers is
     never bound in its place and never sees its grant."""
-    from tui_gateway.hosted_room_peer_http import PeerRunsHTTPClient
+    from hermes_agent.tui_gateway.hosted_room_peer_http import PeerRunsHTTPClient
     server, url, catalog, room = linked_peer
     seen, answer = [], {}
 
@@ -783,7 +783,7 @@ async def _seat(gateway, room, url, catalog, **invite_params):
 
 
 async def _grant_error(url, grant):
-    from tui_gateway.hosted_room_peer_http import PeerRunsHTTPClient, PeerRunsHTTPError
+    from hermes_agent.tui_gateway.hosted_room_peer_http import PeerRunsHTTPClient, PeerRunsHTTPError
     try:
         await asyncio.to_thread(PeerRunsHTTPClient(base_url=url, api_key='').probe, grant=grant)
     except PeerRunsHTTPError as exc:
@@ -832,9 +832,9 @@ def test_paying_owed_revokes_holds_the_room_supervisor_only_briefly(gateway):
 async def test_a_refresh_of_the_previous_grant_never_writes_over_a_re_seat(gateway, monkeypatch, linked_peer):
     """A turn renews the route's grant while an open room re-seats the member. The renewal belongs
     to the grant it renewed: once the route holds the re-seated grant, the renewal does not replace it."""
-    from tui_gateway.hosted_room_driver import HostedRoomBinding
-    from tui_gateway.hosted_room_peer_http import PeerRunsHTTPClient
-    from tui_gateway.hosted_room_peer_transport import build_member_dispatch
+    from hermes_agent.tui_gateway.hosted_room_driver import HostedRoomBinding
+    from hermes_agent.tui_gateway.hosted_room_peer_http import PeerRunsHTTPClient
+    from hermes_agent.tui_gateway.hosted_room_peer_transport import build_member_dispatch
     _server, url, catalog, room = linked_peer
     expiring, registered = await _seat(gateway, room, url, catalog, ttl_seconds=120)
     assert registered['registered'], registered

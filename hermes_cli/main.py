@@ -2483,7 +2483,7 @@ def _dashboard_prepare_runtime(args, headless_backend) -> bool:
 
     # Bridge terminal.* config into TERMINAL_* env for THIS process, like the
     # CLI (cli.py env_mappings) and gateway (_terminal_env_map) do. The
-    # dashboard/serve backend runs agents in-process (tui_gateway.ws →
+    # dashboard/serve backend runs agents in-process (hermes_agent.tui_gateway.ws →
     # server._make_agent) and ticks cron itself when desktop-spawned; without
     # this those consumers saw an unset TERMINAL_ENV and ran every command on
     # the host even under `terminal.backend: docker` (#63141, #54449).
@@ -2511,7 +2511,7 @@ def _dashboard_prepare_runtime(args, headless_backend) -> bool:
         # missing provider if it matters.
         print(f"⚠ Plugin discovery failed: {exc}", file=sys.stderr)
 
-    # Desktop chat uses the in-process /api/ws gateway (tui_gateway.server
+    # Desktop chat uses the in-process /api/ws gateway (hermes_agent.tui_gateway.server
     # ._make_agent), which only snapshots the tool registry and never starts
     # MCP discovery — so configured MCP servers would never connect. Spawn
     # discovery in the background here so a slow/dead server can't block

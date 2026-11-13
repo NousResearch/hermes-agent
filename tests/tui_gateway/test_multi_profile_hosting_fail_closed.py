@@ -18,8 +18,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from tui_gateway import server
-from tui_gateway import launch_profile_policy as lpp
+from hermes_agent.tui_gateway import server
+from hermes_agent.tui_gateway import launch_profile_policy as lpp
 
 A_VAL = "a-only-secret-0001"
 B_VAL = "b-only-secret-0002"
@@ -208,7 +208,7 @@ def test_live_review_binds_runtime_scope_under_multiplex(two_homes, monkeypatch)
     """Desktop /review is off-turn; start_review must still see the session's secrets (#117544)."""
     from agent.secret_scope import UnscopedSecretError, get_secret
     from hermes_constants import get_hermes_home
-    from tui_gateway.transport import StdioTransport
+    from hermes_agent.tui_gateway.transport import StdioTransport
 
     root, b = two_homes
     seen = []

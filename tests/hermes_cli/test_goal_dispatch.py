@@ -45,7 +45,7 @@ def _surface(surface, mgr, monkeypatch, prompts=None):
                 return asyncio.run(runner._busy_goal_command(event, mgr.session_id, None))
             return asyncio.run(runner._handle_goal_command(event))
         return execute
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
     server._sessions[mgr.session_id] = {'session_key': mgr.session_id}
     def execute(arg):
         result = server._methods['command.dispatch'](1, {

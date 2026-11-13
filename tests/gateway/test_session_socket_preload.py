@@ -11,14 +11,14 @@ from gateway import run_api
 
 @pytest.fixture
 def unloaded(monkeypatch):
-    """``tui_gateway.ws`` absent from sys.modules; record which thread imports it."""
+    """``hermes_agent.tui_gateway.ws`` absent from sys.modules; record which thread imports it."""
     import importlib
-    monkeypatch.delitem(sys.modules, "tui_gateway.ws", raising=False)
+    monkeypatch.delitem(sys.modules, "hermes_agent.tui_gateway.ws", raising=False)
     seen = {}
     real = importlib.import_module
 
     def spy(name, *args, **kwargs):
-        if name == "tui_gateway.ws":
+        if name == "hermes_agent.tui_gateway.ws":
             seen["thread"] = threading.current_thread()
             return SimpleNamespace(handle_ws=None)
         return real(name, *args, **kwargs)
@@ -63,7 +63,7 @@ async def test_a_preload_never_awaited_logs_no_unretrieved_exception(monkeypatch
 
     def boom(name, *args, **kwargs):
         raise ImportError("broken handler")
-    monkeypatch.delitem(sys.modules, "tui_gateway.ws", raising=False)
+    monkeypatch.delitem(sys.modules, "hermes_agent.tui_gateway.ws", raising=False)
     monkeypatch.setattr(importlib, "import_module", boom)
     seen = []
     loop = asyncio.get_running_loop()

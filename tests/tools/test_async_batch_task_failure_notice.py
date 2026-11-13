@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 from tools import async_delegation as ad
 from tools.process_registry_notifications import format_process_notification
-from tui_gateway.session_notifications import _notification_event_dedup_key
+from hermes_agent.tui_gateway.session_notifications import _notification_event_dedup_key
 
 
 def _record(status="running"):

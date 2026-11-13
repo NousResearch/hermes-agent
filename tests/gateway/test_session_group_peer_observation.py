@@ -9,7 +9,7 @@ from gateway import hosted_room_driver as driver
 from gateway.platforms import api_server_runs
 from tests.gateway import test_session_group_peers as peers
 from tests.tui_gateway.test_hosted_room_driver_runtime import FakeSessionRPC
-from tui_gateway.hosted_room_driver import HostedRoomRuntime
+from hermes_agent.tui_gateway.hosted_room_driver import HostedRoomRuntime
 
 gateway, linked_peer = peers.gateway, peers.linked_peer
 

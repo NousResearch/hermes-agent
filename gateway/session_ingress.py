@@ -410,7 +410,7 @@ def _launch_body_if_launch_owner(authority):
     owner = Path(str(authority.profile_id))
     if not owner.is_absolute() or not _is_process_home(owner):
         return nullcontext()
-    from tui_gateway.launch_profile_policy import launch_body
+    from hermes_agent.tui_gateway.launch_profile_policy import launch_body
     return launch_body()
 
 

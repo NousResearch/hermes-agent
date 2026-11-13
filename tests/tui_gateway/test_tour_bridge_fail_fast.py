@@ -4,14 +4,14 @@ bridge timeout per call.
 The renderer's handler ships in the desktop bundle; the tool is offered by the
 backend. An app build older than the tour tool has no branch for the event, so
 nothing ever answers the request and the agent blocks for the whole deadline
-— once per action the model tries. See tui_gateway.server._tour_request.
+— once per action the model tries. See hermes_agent.tui_gateway.server._tour_request.
 """
 
 import json
 
 import pytest
 
-from tui_gateway import server
+from hermes_agent.tui_gateway import server
 
 
 @pytest.fixture

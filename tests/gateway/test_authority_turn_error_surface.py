@@ -66,7 +66,7 @@ def test_free_tier_at_capacity_turn_completes_with_its_own_surface(platform):
 
 
 def test_rate_limited_turn_completes_with_rate_limit_and_reset_time():
-    from tui_gateway.contracts.registry import EVENTS
+    from hermes_agent.tui_gateway.contracts.registry import EVENTS
 
     complete = _complete(*_authority_turn(Platform.LOCAL, _RATE_LIMITED))
     surface = complete['error_surface']

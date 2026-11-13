@@ -68,8 +68,8 @@ async def test_discard_of_a_turn_the_member_never_admitted_settles_it_without_st
     assert driver.get_task(db, identity)['status'] == 'cancelled'
     assert gateway.adapter._run_statuses == {}, 'Discard started the turn on the member gateway'
     # The key is closed on the member: the home's lost POST, arriving late, is refused there.
-    from tui_gateway.hosted_room_peer_http import PeerRunsHTTPError
-    from tui_gateway.hosted_room_peer_transport import build_member_dispatch
+    from hermes_agent.tui_gateway.hosted_room_peer_http import PeerRunsHTTPError
+    from hermes_agent.tui_gateway.hosted_room_peer_transport import build_member_dispatch
     route, client = service.peer_routes[('linked', 'reviewer')], service.peer_clients[('linked', 'reviewer')]
     task = driver.get_task(db, identity)
     late = build_member_dispatch(

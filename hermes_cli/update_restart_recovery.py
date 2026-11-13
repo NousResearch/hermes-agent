@@ -28,7 +28,7 @@ covers both and an abort can strand either one (#92145):
 - **``hermes-serve*`` systemd units**, restarted directly through
   ``systemctl``.  ``hermes serve`` is not a gateway profile and has no
   per-profile relaunch command, but it is the runtime that hosts
-  ``tui_gateway.server``: the process the original report saw answering every
+  ``hermes_agent.tui_gateway.server``: the process the original report saw answering every
   chat turn with an ``ImportError`` for a symbol that existed on disk.  The
   unit family is enumerated from systemd itself rather than from the update
   inventory, so a manually launched or Desktop-owned ``hermes serve`` — which

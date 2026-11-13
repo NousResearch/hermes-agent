@@ -880,8 +880,8 @@ class GatewayStartupMixin:
     @staticmethod
     def _start_hosted_room_worker_sync():
         """Start the local Group Chat worker without importing the dashboard."""
-        import tui_gateway.server
-        from tui_gateway import methods_groups
+        import hermes_agent.tui_gateway.server
+        from hermes_agent.tui_gateway import methods_groups
         service = methods_groups.get_hosted_room_service()
         if service is None:
             service = methods_groups.start_hosted_room_service()
@@ -909,7 +909,7 @@ class GatewayStartupMixin:
         if getattr(self, 'session_authority', None) is not None:
             from gateway.session_hosted_service import stop_hosted_service
             return await stop_hosted_service(self, timeout=timeout)
-        from tui_gateway import methods_groups
+        from hermes_agent.tui_gateway import methods_groups
         return await asyncio.to_thread(methods_groups.stop_hosted_room_service, timeout=timeout)
 
     def _start_loop_heartbeat_task(self) -> None:

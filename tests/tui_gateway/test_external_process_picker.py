@@ -55,7 +55,7 @@ def test_process_provider_reaches_every_shared_picker(picker_env, monkeypatch):
     from hermes_cli.config import save_config
     from hermes_cli.main_provider_setup import _build_provider_picker_rows
     from hermes_cli.models import _PROVIDER_LABELS, list_available_providers, provider_model_ids
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
 
     assert any(row["id"] == profile.name for row in list_available_providers())
     rows, _ = _build_provider_picker_rows({}, "", _PROVIDER_LABELS, {})
@@ -118,7 +118,7 @@ def test_native_picker_selection_preserves_process_runtime(picker_env, monkeypat
     home, profile = picker_env
     from hermes_cli.config import load_config, save_config
     from hermes_cli.models import provider_model_ids
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
 
     save_config(load_config())  # materialize defaults before checking session-only writes
     config_before = (home / "config.yaml").read_bytes()

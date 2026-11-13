@@ -18,7 +18,7 @@ BEE_PORTAL = "https://bee-portal.invalid"
 @pytest.fixture
 def homes(tmp_path, monkeypatch):
     from agent import secret_scope
-    from tui_gateway import launch_profile_policy, server
+    from hermes_agent.tui_gateway import launch_profile_policy, server
     launch = tmp_path / "root"
     bee = launch / "profiles" / "bee"
     bee.mkdir(parents=True)
@@ -50,8 +50,8 @@ def _call_on_launch_socket(server, launch, params):
     """One legacy fallback request on a socket whose ticket is the launch profile's, in the scope
     ``gateway_ws`` binds for it."""
     from gateway.runtime_bootstrap import _PURPOSE_CAPABILITIES
-    from tui_gateway.launch_profile_policy import launch_profile_scope_if_multiplexed
-    from tui_gateway.ws_legacy_fallback import dispatch_legacy
+    from hermes_agent.tui_gateway.launch_profile_policy import launch_profile_scope_if_multiplexed
+    from hermes_agent.tui_gateway.ws_legacy_fallback import dispatch_legacy
     actor = types.SimpleNamespace(profile_id=str(launch), capabilities=frozenset(_PURPOSE_CAPABILITIES["interactive"]))
     written, done = [], threading.Event()
     transport = types.SimpleNamespace(write=lambda frame: written.append(frame) or done.set() or True)
@@ -83,7 +83,7 @@ def test_a_secondary_socket_naming_the_launch_profile_runs_in_the_launch_scope(h
     """Reverse direction: a profile-bound socket runs in that profile's scope, so a verb naming the
     launch profile must not keep the secondary's secrets and home."""
     from gateway.runtime_bootstrap import _PURPOSE_CAPABILITIES
-    from tui_gateway.ws_legacy_fallback import dispatch_legacy
+    from hermes_agent.tui_gateway.ws_legacy_fallback import dispatch_legacy
     server, launch, bee, seen = homes
     env_only = []
 

@@ -18,7 +18,7 @@ from argparse import Namespace
 
 import pytest
 
-import tui_gateway.server as srv
+import hermes_agent.tui_gateway.server as srv
 from hermes_cli import free_tier_offer
 from tests.hermes_cli.anon_portal import install_portal
 from tests.waiting import wait_until

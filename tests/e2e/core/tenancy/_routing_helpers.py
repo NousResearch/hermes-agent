@@ -6,7 +6,7 @@ invariant every scenario shares: a request on a host the scenario did not select
 selected host receiving any bearer other than its own, is a credential leak.
 
 Hermes itself runs for real in child processes (``hermes chat -q`` / ``hermes -z`` /
-``python -m tui_gateway.entry``) with HOME and HERMES_HOME inside the test's tmp dir,
+``python -m hermes_agent.tui_gateway.entry``) with HOME and HERMES_HOME inside the test's tmp dir,
 every credential/endpoint env var stripped, and only these fake hosts configured.
 """
 
@@ -313,13 +313,13 @@ def _kill_group(proc: subprocess.Popen) -> None:
 
 
 class TuiGateway:
-    """The real stdio JSON-RPC backend (``python -m tui_gateway.entry``) the TUI/Desktop drive."""
+    """The real stdio JSON-RPC backend (``python -m hermes_agent.tui_gateway.entry``) the TUI/Desktop drive."""
 
     def __init__(self, home: Path, proxy: str | None = None) -> None:
         self.home = home
         self._stderr = open(home / "tui_gateway.stderr.log", "w", encoding="utf-8")
         self.proc = subprocess.Popen(
-            [sys.executable, "-m", "tui_gateway.entry"], cwd=str(home), env=hermetic_env(home, proxy=proxy),
+            [sys.executable, "-m", "hermes_agent.tui_gateway.entry"], cwd=str(home), env=hermetic_env(home, proxy=proxy),
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=self._stderr, text=True, bufsize=1,
             start_new_session=True,
         )

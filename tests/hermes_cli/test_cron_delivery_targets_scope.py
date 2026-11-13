@@ -1,7 +1,7 @@
 """Regression: the delivery-targets route read a profile secret unscoped.
 
 The dashboard/desktop ``serve`` backend flips multi-profile hosting
-(``tui_gateway.launch_profile_policy.activate_multi_profile_hosting`` →
+(``hermes_agent.tui_gateway.launch_profile_policy.activate_multi_profile_hosting`` →
 ``agent.secret_scope.set_multiplex_active(True)``) as soon as it hosts a second
 profile home; after that ``get_secret`` fails closed for an unscoped read.
 

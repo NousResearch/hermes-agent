@@ -219,7 +219,7 @@ def test_gpu_requirement_hides_a_connected_server_and_says_which_gpu(monkeypatch
     from hermes_cli import agent_plugins
     from hermes_platform.host import facts
     from tools import mcp_liveness, mcp_tool_handlers
-    from tui_gateway.contracts.tools_mcp_plugins import PluginServerState
+    from hermes_agent.tui_gateway.contracts.tools_mcp_plugins import PluginServerState
 
     monkeypatch.setattr(facts, "gpu_class", lambda: "intel")
     monkeypatch.setattr(agent_plugins, "liveness_for", lambda name: None, raising=False)

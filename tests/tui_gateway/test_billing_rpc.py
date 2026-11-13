@@ -1,4 +1,4 @@
-"""Tests for the Phase 2b billing JSON-RPC methods (tui_gateway/server.py).
+"""Tests for the Phase 2b billing JSON-RPC methods (hermes_agent/tui_gateway/server.py).
 
 Verifies the structured envelope contract the Ink side branches on:
 - billing.state serializes BillingState (Decimals → strings) + fails open.
@@ -12,7 +12,7 @@ from __future__ import annotations
 from decimal import Decimal
 
 
-import tui_gateway.server as srv
+import hermes_agent.tui_gateway.server as srv
 import agent.billing_view as bv
 from agent.billing_view import BillingState, CardInfo, MonthlyCap, PaymentMethodInfo
 

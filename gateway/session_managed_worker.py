@@ -444,7 +444,7 @@ def _launch_env_only_credentials(home, env):
     this; a routed home's worker sees its own files only."""
     from tools.environments.local import _scrub_credentials
     from tools.environments.local_env_policy import _is_hermes_internal_secret
-    from tui_gateway.launch_profile_policy import launch_secret_scope
+    from hermes_agent.tui_gateway.launch_profile_policy import launch_secret_scope
     missing = {k: v for k, v in launch_secret_scope(home).items()
                if k not in env and not _is_hermes_internal_secret(k)}
     plain = _scrub_credentials(dict(missing), inherit_credentials=False)

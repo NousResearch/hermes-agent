@@ -6,7 +6,7 @@ import pytest
 
 from agent.replay_cleanup import canonicalize_replay_history
 from hermes_agent.hermes_state import SessionDB
-from tui_gateway import server
+from hermes_agent.tui_gateway import server
 
 
 @pytest.mark.parametrize("source,omit_messages", [("desktop", True), ("desktop", False), ("tui", True)])

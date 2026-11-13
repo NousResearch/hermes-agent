@@ -9,7 +9,7 @@ must then read THAT profile's ``cron/jobs.json``, not the launch profile's.
 
 import json
 
-from tui_gateway import server
+from hermes_agent.tui_gateway import server
 
 
 def test_cron_manage_profile_reads_that_profiles_store(tmp_path, monkeypatch):
@@ -53,7 +53,7 @@ def test_cron_manage_profile_reads_that_profiles_store(tmp_path, monkeypatch):
     names = [j.get("name") for j in resp["result"]["jobs"]]
     assert "botA-only-job" in names
     # The wire contract must accept the real row shape (a list of targets, not a bool).
-    from tui_gateway.contracts.tools_commands import CronManageResult
+    from hermes_agent.tui_gateway.contracts.tools_commands import CronManageResult
 
     jobs = CronManageResult.model_validate(resp["result"]).jobs or []
     assert jobs[0].last_delivery_unverified == ["telegram:123"]

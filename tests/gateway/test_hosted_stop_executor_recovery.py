@@ -13,7 +13,7 @@ def _seed_old_stopping_cross_profile_task(mux, room_id='room'):
     from gateway.session_authorities import owner_scope
     from gateway.session_hosted_service import CanonicalHostedRoomService
     from gateway.session_hosted_transport import install_hosted_transport
-    from tui_gateway.hosted_room_driver import HostedRoomBinding
+    from hermes_agent.tui_gateway.hosted_room_driver import HostedRoomBinding
 
     runner, homes, loop, _ = mux
     for authority in runner.session_authorities:

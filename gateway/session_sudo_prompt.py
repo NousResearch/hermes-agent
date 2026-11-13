@@ -1,10 +1,10 @@
 """The masked sudo password prompt for a local viewer's turn.
 
-Main's TUI sidecar registered ``set_sudo_password_callback`` per session (``tui_gateway/agent_callbacks.py``):
+Main's TUI sidecar registered ``set_sudo_password_callback`` per session (``hermes_agent/tui_gateway/agent_callbacks.py``):
 the terminal tool's sudo rewrite asked the renderer through a ``sudo`` server→client request and the
 Ink card answered with ``{value}``. On the session authority no callback was registered, so the tool
 took the headless path (``sudo: a terminal is required``). Here the owner sends the same ``sudo``
-request frame (``tui_gateway/contracts/server_requests.py``) to the viewers attached to the session's
+request frame (``hermes_agent/tui_gateway/contracts/server_requests.py``) to the viewers attached to the session's
 event stream and blocks the agent thread until one answers, the turn is interrupted, or it times out.
 The password is never published, journaled or logged: it travels only in the viewer's response frame.
 The request registry itself is ``gateway/session_server_requests.py``.

@@ -13,7 +13,7 @@ from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_db_notify as kbn
 from hermes_agent.hermes_state import SessionDB
 from hermes_agent.hermes_state_delegate_children import delegate_descendant_ids
-from tui_gateway import server
+from hermes_agent.tui_gateway import server
 
 
 def _subscribed_task(chat_id: str) -> str:

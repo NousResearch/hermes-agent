@@ -32,7 +32,7 @@ import os
 import sys
 import types
 
-from tui_gateway import server
+from hermes_agent.tui_gateway import server
 
 def test_voice_toggle_still_leaks_the_env_var_but_speech_is_stubbed(monkeypatch):
     """The dangerous primitive is neutralised even when the flag IS set.
@@ -78,7 +78,7 @@ def test_voice_toggle_still_leaks_the_env_var_but_speech_is_stubbed(monkeypatch)
         lambda *args, **kwargs: calls.append((args, kwargs)),
     )
 
-    # Called exactly as tui_gateway/server.py's prompt.submit completion path
+    # Called exactly as hermes_agent/tui_gateway/server.py's prompt.submit completion path
     # calls it (a late `from hermes_cli.voice import speak_text`), with the
     # exact fixture string that came out of the speakers.
     from hermes_cli.voice import speak_text

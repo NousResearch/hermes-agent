@@ -556,7 +556,7 @@ def resolve_persist_behavior(
 
 
 # --- Single-owner /model request parsing + effective-model resolution. Surfaces
-# (cli.py, gateway/slash_commands.py, tui_gateway/server.py, api_server.py)
+# (cli.py, gateway/slash_commands.py, hermes_agent/tui_gateway/server.py, api_server.py)
 # map error codes to their own copy but never re-derive the semantics.
 
 # Error codes emitted by parse_model_switch_args().

@@ -189,7 +189,7 @@ authorization model, but the rules below apply uniformly.
 - **Editor / IDE adapters.** The ACP adapter (`hermes_agent/acp_adapter/`) and
   equivalent integrations that accept requests from a local client
   process.
-- **The TUI gateway (`tui_gateway/`).** JSON-RPC backend for the
+- **The TUI gateway (`hermes_agent/tui_gateway/`).** JSON-RPC backend for the
   Ink terminal UI, reached over local IPC.
 
 **Uniform rules:**

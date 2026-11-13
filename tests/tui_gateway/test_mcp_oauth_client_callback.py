@@ -1,5 +1,5 @@
 """Tests for the client-side callback (remote-backend) variant of the
-session-backed MCP OAuth flow (tui_gateway/mcp_oauth_sessions.py).
+session-backed MCP OAuth flow (hermes_agent/tui_gateway/mcp_oauth_sessions.py).
 
 Covers the three seams added for remote Desktop backends:
   - _validate_client_redirect_uri: loopback-only allowlist for the
@@ -19,8 +19,8 @@ from hermes_constants import get_hermes_home
 from tools.connectors import mcp_oauth
 from tools.connectors.mcp_oauth import _validate_client_redirect_uri
 from tools.mcp_dashboard_oauth import DashboardOAuthFlow
-from tui_gateway import mcp_oauth_sessions
-from tui_gateway.mcp_oauth_sessions import deliver_callback_flow
+from hermes_agent.tui_gateway import mcp_oauth_sessions
+from hermes_agent.tui_gateway.mcp_oauth_sessions import deliver_callback_flow
 
 
 # ---------------------------------------------------------------------------
@@ -227,8 +227,8 @@ def test_deliver_callback_accepts_matching_state():
 def test_oauth_callback_rpc_relays_iss():
     """The gateway ``mcp.servers.oauth.callback`` RPC accepts ``iss`` under the extra=forbid contract
     and forwards it to the flow; the desktop renderer always sends the key (possibly null)."""
-    import tui_gateway.server as srv
-    from tui_gateway.contracts import registry as contracts
+    import hermes_agent.tui_gateway.server as srv
+    from hermes_agent.tui_gateway.contracts import registry as contracts
 
     flow = _make_session()
     contract = contracts.METHODS["mcp.servers.oauth.callback"]

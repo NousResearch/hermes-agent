@@ -1,5 +1,5 @@
 """A batch answer already locked with ``clarify.lock`` survives every way the wait can end, as on main's
-sidecar (``tui_gateway/server_requests.py``: "locked answers survive a timeout"): a timeout returns
+sidecar (``hermes_agent/tui_gateway/server_requests.py``: "locked answers survive a timeout"): a timeout returns
 ``{answers: <locked so far>, outcome: timed_out}``, an interrupt returns them with ``cancelled``, and a
 cancel-all closing frame (Ink Esc / Desktop Skip: no ``answers``) keeps them and reports ``cancelled``,
 never ``submitted``. Driven through the real dispatcher against a real ``ask_clarify_batch`` wait.

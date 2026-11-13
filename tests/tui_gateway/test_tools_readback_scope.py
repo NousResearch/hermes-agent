@@ -13,8 +13,8 @@ from __future__ import annotations
 import hermes_yaml as yaml
 import pytest
 
-from tui_gateway import server
-from tui_gateway.methods_profiles import _save_toolset_pin
+from hermes_agent.tui_gateway import server
+from hermes_agent.tui_gateway.methods_profiles import _save_toolset_pin
 
 LAUNCH_PIN = ["web", "browser", "terminal"]
 WORKER_PIN = ["file", "clarify"]

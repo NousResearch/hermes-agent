@@ -1,11 +1,11 @@
-"""Tests for tui_gateway.event_replay — per-session event seq + replay ring."""
+"""Tests for hermes_agent.tui_gateway.event_replay — per-session event seq + replay ring."""
 
 import threading
 
 import pytest
 
-from tui_gateway import event_replay
-from tui_gateway.event_replay import (
+from hermes_agent.tui_gateway import event_replay
+from hermes_agent.tui_gateway.event_replay import (
     latest_seq,
     reset_replay_state,
     events_since,
@@ -334,7 +334,7 @@ def test_a_frame_stamped_after_forget_does_not_rebuild_the_ring():
 
 
 def test_session_teardown_releases_the_replay_ring(monkeypatch):
-    from tui_gateway import session_lifecycle
+    from hermes_agent.tui_gateway import session_lifecycle
 
     # The isolated-turn settle and full finalize need an agent/DB behind the dict; the subject is the ring.
     monkeypatch.setattr(session_lifecycle, "_teardown_session", lambda session, end_reason="tui_close": None)
@@ -350,7 +350,7 @@ def test_session_teardown_releases_the_replay_ring(monkeypatch):
 
 
 def test_a_raising_teardown_still_releases_the_replay_ring(monkeypatch):
-    from tui_gateway import session_lifecycle
+    from hermes_agent.tui_gateway import session_lifecycle
 
     def _boom(session, end_reason="tui_close"):
         raise RuntimeError("finalize failed")

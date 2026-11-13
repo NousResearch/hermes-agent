@@ -8,7 +8,7 @@ import pytest
 
 from gateway import hosted_room_driver as driver, hosted_rooms
 from tests.gateway import test_session_group_peers as peers
-from tui_gateway.hosted_room_peer_http import PeerRunsHTTPError
+from hermes_agent.tui_gateway.hosted_room_peer_http import PeerRunsHTTPError
 
 gateway, linked_peer = peers.gateway, peers.linked_peer
 

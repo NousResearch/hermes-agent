@@ -1,11 +1,11 @@
 """``set_theme`` picker bridge: the model can tell a pick, a dismissed card and an expired one apart.
-See tui_gateway.theme_bridge.theme_request."""
+See hermes_agent.tui_gateway.theme_bridge.theme_request."""
 
 from types import SimpleNamespace
 
 import pytest
 
-from tui_gateway import server, server_requests, theme_bridge
+from hermes_agent.tui_gateway import server, server_requests, theme_bridge
 
 
 @pytest.mark.parametrize(("answer", "elapsed", "result"), [

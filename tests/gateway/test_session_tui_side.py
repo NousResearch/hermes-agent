@@ -191,7 +191,7 @@ def test_preview_restart_runs_a_hidden_terminal_agent_and_reports_on_the_session
 def test_preview_restart_history_trims_a_plain_message_list():
     """TUI-12: the trimming helper takes a message snapshot, not a session-shaped dict, so the
     owner passes its stored transcript directly (the legacy sidecar snapshots under its lock)."""
-    from tui_gateway.agent_callbacks import _preview_restart_history
+    from hermes_agent.tui_gateway.agent_callbacks import _preview_restart_history
     messages = [{'role': 'user', 'content': 'run vite'}, {'role': 'assistant', 'content': 'ok', 'reasoning': 'r'},
                 {'role': 'tool', 'content': 'x' * 50, 'tool_call_id': 't'}]
     trimmed = _preview_restart_history(messages, max_tool_chars=10)

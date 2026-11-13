@@ -5459,7 +5459,7 @@
       },
       "ApprovalRequestParams": {
         "additionalProperties": true,
-        "description": "``tui_gateway/server.py::_approval_request_payload`` \u2014 the command is redacted server-side.",
+        "description": "``hermes_agent/tui_gateway/server.py::_approval_request_payload`` \u2014 the command is redacted server-side.",
         "properties": {
           "session_id": {
             "title": "Session Id",
@@ -19213,7 +19213,7 @@
       },
       "GatewayReadyPayload": {
         "additionalProperties": false,
-        "description": "``tui_gateway/entry.py`` (stdio) / ``tui_gateway/ws.py`` (WebSocket) first frame.",
+        "description": "``hermes_agent/tui_gateway/entry.py`` (stdio) / ``hermes_agent/tui_gateway/ws.py`` (WebSocket) first frame.",
         "properties": {
           "skin": {
             "$ref": "#/components/schemas/SkinPayload"
@@ -23909,7 +23909,7 @@
       },
       "McpServerSummary": {
         "additionalProperties": false,
-        "description": "``tui_gateway/mcp_rpc_helpers.summarize_server`` \u2014 a server's config without secret values.",
+        "description": "``hermes_agent/tui_gateway/mcp_rpc_helpers.summarize_server`` \u2014 a server's config without secret values.",
         "properties": {
           "name": {
             "title": "Name",
@@ -25591,7 +25591,7 @@
       },
       "NoticePayload": {
         "additionalProperties": false,
-        "description": "``tui_gateway/model_switch.py`` capability-refresh notice.",
+        "description": "``hermes_agent/tui_gateway/model_switch.py`` capability-refresh notice.",
         "properties": {
           "message": {
             "title": "Message",
@@ -32126,7 +32126,7 @@
       },
       "ProjectRef": {
         "additionalProperties": false,
-        "description": "``tui_gateway/server.py::_project_info_for_cwd``.",
+        "description": "``hermes_agent/tui_gateway/server.py::_project_info_for_cwd``.",
         "properties": {
           "id": {
             "title": "Id",
@@ -39245,7 +39245,7 @@
       },
       "SessionLiveInfo": {
         "additionalProperties": true,
-        "description": "``tui_gateway/server.py::_session_info`` \u2014 the ``session.info`` event and the ``info`` field of\n``session.create`` / ``session.resume`` / ``session.activate`` results.",
+        "description": "``hermes_agent/tui_gateway/server.py::_session_info`` \u2014 the ``session.info`` event and the ``info`` field of\n``session.create`` / ``session.resume`` / ``session.activate`` results.",
         "properties": {
           "model": {
             "default": "",
@@ -43173,7 +43173,7 @@
       },
       "SkinPayload": {
         "additionalProperties": true,
-        "description": "``tui_gateway/change_watcher.py::resolve_skin`` \u2014 the resolved active skin (``HermesSkin``).\n``{}`` when the skin engine failed to load. Colour maps are token \u2192 colour string.",
+        "description": "``hermes_agent/tui_gateway/change_watcher.py::resolve_skin`` \u2014 the resolved active skin (``HermesSkin``).\n``{}`` when the skin engine failed to load. Colour maps are token \u2192 colour string.",
         "properties": {
           "name": {
             "default": "",
@@ -47078,7 +47078,7 @@
       },
       "Usage": {
         "additionalProperties": true,
-        "description": "``tui_gateway/server.py::_get_usage`` + ``agent/context_breakdown.py::context_usage_fields``.",
+        "description": "``hermes_agent/tui_gateway/server.py::_get_usage`` + ``agent/context_breakdown.py::context_usage_fields``.",
         "properties": {
           "model": {
             "default": "",

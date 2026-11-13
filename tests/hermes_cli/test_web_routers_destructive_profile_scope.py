@@ -31,7 +31,7 @@ def _multiplex_state_is_per_test():
     env snapshot activation captures.
     """
     from agent import secret_scope
-    from tui_gateway import launch_profile_policy
+    from hermes_agent.tui_gateway import launch_profile_policy
 
     was_active = secret_scope.is_multiplex_active()
     snapshot = launch_profile_policy._snapshot
@@ -162,7 +162,7 @@ def multiplexed(homes):
     proves the wiring — not just the flag — is what refuses the unnamed requests below.
     """
     from agent.secret_scope import is_multiplex_active
-    from tui_gateway.launch_profile_policy import activate_multi_profile_hosting_eagerly
+    from hermes_agent.tui_gateway.launch_profile_policy import activate_multi_profile_hosting_eagerly
 
     assert activate_multi_profile_hosting_eagerly() is True, "boot probe did not see two homes"
     assert is_multiplex_active()
@@ -316,7 +316,7 @@ def test_unnamed_profile_still_means_the_launch_profile_on_a_single_profile_host
     """A plain ``hermes serve`` has nothing to confuse: `curl` with no profile is unchanged."""
     from agent.secret_scope import is_multiplex_active
     from hermes_cli import profiles
-    from tui_gateway.launch_profile_policy import activate_multi_profile_hosting_eagerly
+    from hermes_agent.tui_gateway.launch_profile_policy import activate_multi_profile_hosting_eagerly
 
     empty_root = tmp_path / "no-named-profiles"
     empty_root.mkdir()

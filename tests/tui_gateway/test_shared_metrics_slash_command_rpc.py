@@ -4,7 +4,7 @@ gateway no longer counts the slash.exec / command.dispatch hops a command may or
 from __future__ import annotations
 
 import hermes_cli.observability.shared_metrics_events as events
-from tui_gateway import server
+from hermes_agent.tui_gateway import server
 
 
 def _request(method: str, params: dict) -> dict:

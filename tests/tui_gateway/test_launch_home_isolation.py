@@ -5,8 +5,8 @@ from pathlib import Path
 # Imported at collection on purpose: that is when real test modules import the server,
 # before any per-test fixture redirects HERMES_HOME, so ``_hermes_home`` freezes to the
 # pre-fixture home exactly as it does for the rest of the suite.
-from tui_gateway import server
-from tui_gateway.launch_profile_policy import launch_secret_scope
+from hermes_agent.tui_gateway import server
+from hermes_agent.tui_gateway.launch_profile_policy import launch_secret_scope
 
 
 def test_launch_home_follows_the_process_home_redirected_after_import():

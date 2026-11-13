@@ -22,7 +22,7 @@ class _StopClient:
 
 
 def test_owner_forward_relays_nothing_after_a_voice_stopped_reply(monkeypatch, tmp_path):
-    from tui_gateway import owner_forward, server
+    from hermes_agent.tui_gateway import owner_forward, server
     client = _StopClient()
 
     @contextlib.asynccontextmanager

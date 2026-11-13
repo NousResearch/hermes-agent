@@ -1,6 +1,6 @@
 """A viewer that reconnects while the owner's server→client request waits gets that request again.
 
-The canonical side of the sidecar's ``open_requests`` replay (``tui_gateway/server_requests.py``):
+The canonical side of the sidecar's ``open_requests`` replay (``hermes_agent/tui_gateway/server_requests.py``):
 a Desktop reload mid-onboarding re-renders the waiting ``setup_beat`` card, and answering it there
 unblocks the turn instead of leaving it parked until ``CARD_TIMEOUT_S``.
 """

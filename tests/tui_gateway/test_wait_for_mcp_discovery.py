@@ -1,4 +1,4 @@
-"""Tests for tui_gateway.entry.wait_for_mcp_discovery (PR #35245).
+"""Tests for hermes_agent.tui_gateway.entry.wait_for_mcp_discovery (PR #35245).
 
 MCP tool discovery runs in a background daemon thread so a slow/dead server
 can't freeze ``gateway.ready``.  The agent snapshots its tool list once at
@@ -10,7 +10,7 @@ the startup hang, and a no-op once discovery has finished.
 import threading
 import time
 
-from tui_gateway import entry
+from hermes_agent.tui_gateway import entry
 
 
 def _restore_thread_slot(saved):

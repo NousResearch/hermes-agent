@@ -155,7 +155,7 @@ def test_coding_workspace_snapshot_is_safe(malicious_repo):
 
 
 def test_gateway_git_probe_is_safe(malicious_repo):
-    from tui_gateway import git_probe
+    from hermes_agent.tui_gateway import git_probe
     repo, marker = malicious_repo
     git_probe.branch(str(repo))
     git_probe.run_git(str(repo), "status", "--porcelain")
@@ -202,7 +202,7 @@ def test_index_reading_probes_and_kanban_gc_git_are_safe(malicious_repo, tmp_pat
     from hermes_cli import kanban_db_workspace as kw
     from hermes_cli import worktree_gc, worktree_ops
     from tools.async_delegation_recovery_hints import git_state_hint
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
     repo, marker = malicious_repo
     assert git_state_hint(str(repo)) is not None
     assert "README" in list(server._git_repo_files(str(repo)))

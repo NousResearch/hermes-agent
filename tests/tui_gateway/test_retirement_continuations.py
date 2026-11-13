@@ -6,8 +6,8 @@ import types
 
 def test_crash_continuation_reserves_before_build_and_refuses_prepared_backend(tmp_path, monkeypatch):
     from hermes_cli import backend_retirement
-    from tui_gateway import server
-    from tui_gateway.turn_marker import record_turn_start
+    from hermes_agent.tui_gateway import server
+    from hermes_agent.tui_gateway.turn_marker import record_turn_start
 
     fence = backend_retirement.RetirementFence()
     monkeypatch.setattr(backend_retirement, "retirement", fence)
@@ -41,7 +41,7 @@ def test_crash_continuation_reserves_before_build_and_refuses_prepared_backend(t
 
 def test_prompt_worker_stays_busy_after_running_flag_until_finalizers_finish(tmp_path, monkeypatch):
     from hermes_cli import backend_retirement
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
 
     fence = backend_retirement.RetirementFence()
     monkeypatch.setattr(backend_retirement, "retirement", fence)

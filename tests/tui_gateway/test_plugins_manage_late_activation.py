@@ -16,7 +16,7 @@ from unittest.mock import patch
 
 from hermes_cli.config import load_config, save_config
 from hermes_cli.plugins import get_plugin_manager
-from tui_gateway import server
+from hermes_agent.tui_gateway import server
 
 
 def _fake_install_core(identifier, *, force=False, ref=None, **_kwargs):

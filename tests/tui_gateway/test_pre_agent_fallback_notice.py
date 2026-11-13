@@ -12,7 +12,7 @@ class _StubAgent:
 
 
 def _build(monkeypatch, tmp_path, *, primary_fails: bool):
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setenv("HERMES_IGNORE_RULES", "1")
@@ -50,7 +50,7 @@ def test_primary_build_carries_no_notice(monkeypatch, tmp_path):
 def test_fallback_build_survives_model_string_shorthand(monkeypatch, tmp_path):
     """``model: <id>`` (the string shorthand every other reader accepts) must not crash the fallback
     build while it names the primary in the notice."""
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setenv("HERMES_IGNORE_RULES", "1")

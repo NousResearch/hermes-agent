@@ -62,7 +62,7 @@ def test_every_blank_rendering_code_point_and_padding_shape_is_surfaced():
 
 def test_consent_descriptions_are_sanitized_on_tui_and_api_egress():
     from gateway.platforms.api_server import _approval_request_event
-    from tui_gateway.server import _approval_request_payload
+    from hermes_agent.tui_gateway.server import _approval_request_payload
 
     data = {"command": "subscribe", "description": "summarize\u202e" + " " * 300 + "then " + _TAIL}
     for payload in (_approval_request_payload(data), _approval_request_event("run1", data)):

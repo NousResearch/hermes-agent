@@ -64,7 +64,7 @@ def _lease_events(events, **want):
 
 
 def test_takeover_in_another_process_is_broadcast(tmp_path, monkeypatch):
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
     from hermes_constants import hermes_home_key
     home = tmp_path / "home"
     home.mkdir()
@@ -78,7 +78,7 @@ def test_takeover_in_another_process_is_broadcast(tmp_path, monkeypatch):
 
 
 def test_release_in_another_process_is_broadcast_and_local_transition_not_duplicated(tmp_path, monkeypatch):
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
     from tools.bot_desktop import lease
     home = tmp_path / "home"
     home.mkdir()
@@ -100,7 +100,7 @@ def test_release_in_another_process_is_broadcast_and_local_transition_not_duplic
 def test_screen_started_or_stopped_by_another_process_is_broadcast_as_status(tmp_path, monkeypatch):
     """A start/stop made by the CLI or gateway process must reach an open Desktop: the portal's
     status was otherwise one-shot (fetched once, then only lease events)."""
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
 
     home = tmp_path / "home"
     (home / "bot-desktop").mkdir(parents=True)
@@ -125,7 +125,7 @@ def test_launcher_dying_without_touching_its_files_is_broadcast_as_stopped(tmp_p
     """Xvnc/the launcher crashing leaves env and launcher.pid exactly as they were, so a watcher keyed
     on mtimes alone never told the Desktop the screen was gone. The mark must include liveness."""
     import psutil
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
 
     home = tmp_path / "home"
     (home / "bot-desktop").mkdir(parents=True)
@@ -157,7 +157,7 @@ def test_screen_start_and_stop_reach_the_models_turn_notes(tmp_path, monkeypatch
     live session of THAT profile. The staged note is consumed on the next turn
     (``agent/turn_context.py``), so only its presence here is asserted."""
     import psutil
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
 
     home = tmp_path / "home"
     (home / "bot-desktop").mkdir(parents=True)

@@ -35,7 +35,7 @@ import threading
 
 import pytest
 
-import tui_gateway.server as srv
+import hermes_agent.tui_gateway.server as srv
 
 CANON = "Bot Chat"
 

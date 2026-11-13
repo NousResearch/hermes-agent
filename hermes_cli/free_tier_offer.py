@@ -1,7 +1,7 @@
 """When a free-tier "sign in" offer is due: after finished tasks, backing off.
 
 Two offers share one schedule. ``trial`` is the welcome trial's "sign in for more"; a finished task
-is ``tui_gateway.free_tier_task_done``'s call. ``connector`` is for a guest that has connected an app
+is ``hermes_agent.tui_gateway.free_tier_task_done``'s call. ``connector`` is for a guest that has connected an app
 on its own model key; each app that connects counts as a finished task (``note_app_connected``).
 
 The first offer comes ``OFFER_DELAY_S`` after the first finished task. Each later offer needs another

@@ -18,7 +18,7 @@ from gateway import hosted_room_driver, hosted_rooms
 from gateway.hosted_rooms_gateway_import import handoff_gateway_id, import_standalone_rooms
 from tests.waiting import wait_until
 from gateway.session_hosted_controls import HostedControls
-from tui_gateway.hosted_room_service import HostedRoomService
+from hermes_agent.tui_gateway.hosted_room_service import HostedRoomService
 
 MEMBERS = [{"member_id": "default", "profile": "default", "handle": "hermes"},
            {"member_id": "ops", "profile": "ops", "handle": "ops"}]

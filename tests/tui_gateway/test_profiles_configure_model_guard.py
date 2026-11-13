@@ -24,7 +24,7 @@ import pytest
 import hermes_yaml as yaml
 
 import hermes_cli.model_selection_guards as guards
-import tui_gateway.server as srv
+import hermes_agent.tui_gateway.server as srv
 
 GUARDED_MODEL = "muse-spark-1.2-contributor"
 GUARD_MESSAGE = "CONTRIBUTOR TIER: this model may train on your data."

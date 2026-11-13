@@ -382,7 +382,7 @@ class GatewayError(RuntimeError):
 
 
 class TuiGateway:
-    """The real ``python -m tui_gateway.entry`` stdio JSON-RPC server (what the TUI spawns)."""
+    """The real ``python -m hermes_agent.tui_gateway.entry`` stdio JSON-RPC server (what the TUI spawns)."""
 
     def __init__(self, env: dict[str, str], cwd: Path, spawned: Spawned, *, ready_timeout: float = 120.0):
         self.env, self.cwd, self.spawned, self.ready_timeout = env, str(cwd), spawned, ready_timeout
@@ -403,7 +403,7 @@ class TuiGateway:
                        env={**self.env, "PWD": self.cwd}, stdin=subprocess.DEVNULL,
                        capture_output=True, text=True, encoding="utf-8", timeout=120, check=False)
         self.proc = self.spawned.add(subprocess.Popen(
-            [sys.executable, "-m", "tui_gateway.entry"], cwd=self.cwd, env={**self.env, "PWD": self.cwd},
+            [sys.executable, "-m", "hermes_agent.tui_gateway.entry"], cwd=self.cwd, env={**self.env, "PWD": self.cwd},
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             text=True, encoding="utf-8", bufsize=1))
         threading.Thread(target=self._read_stdout, daemon=True).start()

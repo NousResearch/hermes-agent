@@ -9,7 +9,7 @@ import pytest
 from cli import HermesCLI
 from tools.process_registry_notifications import (
     PROCESS_COMPLETE_DISPLAY_KIND, format_process_notification, process_completion_display_text)
-from tui_gateway import server
+from hermes_agent.tui_gateway import server
 
 def _registry(events):
     return SimpleNamespace(

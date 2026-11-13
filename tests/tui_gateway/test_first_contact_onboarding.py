@@ -15,7 +15,7 @@ import pytest
 
 from agent.onboarding import PROFILE_BUILD_FLAG, profile_build_directive
 from hermes_yaml import safe_dump, safe_load
-from tui_gateway import server
+from hermes_agent.tui_gateway import server
 
 
 def _session(agent, history=None):

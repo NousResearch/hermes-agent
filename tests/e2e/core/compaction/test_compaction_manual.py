@@ -44,7 +44,7 @@ def _tui_session(sc: Scenario) -> dict:
 
 
 def _compress_via_tui(sc: Scenario, args: str) -> int:
-    from tui_gateway.server import _compress_session_history
+    from hermes_agent.tui_gateway.server import _compress_session_history
 
     session = _tui_session(sc)
     sc.install()

@@ -65,7 +65,7 @@ async def test_an_opted_in_session_is_told_project_plugins_do_not_load(tmp_path,
 async def test_session_create_carries_the_notice_through_its_strict_wire_contract(tmp_path, monkeypatch):
     """The notice also rides the snapshot ``session.create`` returns: it must pass that method's declared
     result contract (strict here, as under ``HERMES_TEST_ISOLATION``), for both session-start notices."""
-    from tui_gateway.contracts import registry
+    from hermes_agent.tui_gateway.contracts import registry
     monkeypatch.setattr(registry, 'STRICT', True)
     home, repo = tmp_path / 'home', tmp_path / 'repo'
     home.mkdir()

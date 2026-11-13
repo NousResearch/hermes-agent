@@ -107,14 +107,14 @@ def busy_ledger() -> Optional[str]:
     cannot be read. The Desktop's idle probe reports this so a backend that will not retire says
     WHICH work it is protecting, instead of an opaque "turn in flight".
 
-    Session work lives on ``tui_gateway.server`` (the voice mixin's helper is bound into that
+    Session work lives on ``hermes_agent.tui_gateway.server`` (the voice mixin's helper is bound into that
     namespace). Cron runs live outside that table (``cron.scheduler.get_running_job_ids``, the same
     ledger the gateway shutdown drain reads): without it a daily job mid-run reported "no turn" and
     the exit killed it (#107485). None keeps the backend alive forever, so the cause is logged once —
     a silent never-exits would be the original bug with a new face."""
     global _probe_failure_logged
     try:
-        import tui_gateway.server as gateway
+        import hermes_agent.tui_gateway.server as gateway
         from hermes_cli.backend_retirement import retirement
 
         if retirement.active_count():

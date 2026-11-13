@@ -21,7 +21,7 @@ import types
 
 import pytest
 
-from tui_gateway import server
+from hermes_agent.tui_gateway import server
 
 # A vendor-documented data-training tier. The data-policy guard keys on the
 # model id alone (no base_url / api_key / model_info), which is exactly what

@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
-from tui_gateway import server
+from hermes_agent.tui_gateway import server
 
 
 def _call(method, params=None):
@@ -30,7 +30,7 @@ def _fast_git_probe(monkeypatch):
     tests take 10-80s. Behavior under test (policy gating, cache merging,
     ranking) only needs root resolution, not real git.
     """
-    from tui_gateway import git_probe
+    from hermes_agent.tui_gateway import git_probe
 
     git_probe.invalidate()
 
@@ -56,7 +56,7 @@ def test_repo_root_cache_does_not_freeze_a_not_yet_repo(monkeypatch):
     # have frozen the pre-init "" result, or the main lane mislabels by basename.
     # Negative results are TTL-cached; TTL=0 here makes them expire immediately so
     # this verifies the "never permanently frozen" contract directly.
-    from tui_gateway import git_probe
+    from hermes_agent.tui_gateway import git_probe
 
     monkeypatch.setattr(git_probe, "_NEG_TTL", 0)
     cwd = "/tmp/baby pics"
@@ -217,7 +217,7 @@ def test_remote_scan_failure_merges_instead_of_replacing_cache(tmp_path, monkeyp
     call regardless of success).
     """
     from hermes_cli import projects_db as pdb
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
 
     def _git_repo(path):
         repo = path
@@ -270,7 +270,7 @@ def test_remote_scan_missing_root_does_not_wipe_cache(tmp_path):
     root must contribute nothing, and the scan must merge — never wipe.
     """
     from hermes_cli import projects_db as pdb
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
 
     def _git_repo(path):
         repo = path
@@ -308,7 +308,7 @@ def test_remote_scan_missing_root_does_not_wipe_cache(tmp_path):
 def test_remote_scan_full_authoritative_replaces_cache(tmp_path):
     """Only a fully-walked scan may replace the stale cache."""
     from hermes_cli import projects_db as pdb
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
 
     def _git_repo(path):
         repo = path

@@ -383,7 +383,7 @@ def run_hermes(argv: list[str], home: Path, timeout: float = 120.0,
 
 
 class TuiBackend:
-    """The real stdio JSON-RPC backend the TUI/Desktop drive (``python -m tui_gateway.entry``)."""
+    """The real stdio JSON-RPC backend the TUI/Desktop drive (``python -m hermes_agent.tui_gateway.entry``)."""
 
     def __init__(self, home: Path, log_path: Path, extra_env: dict[str, str] | None = None) -> None:
         import queue
@@ -391,7 +391,7 @@ class TuiBackend:
 
         self._log = open(log_path, "a", encoding="utf-8")
         self.proc = subprocess.Popen(
-            [sys.executable, "-m", "tui_gateway.entry"], cwd=str(home), env=hermetic_env(home, extra_env),
+            [sys.executable, "-m", "hermes_agent.tui_gateway.entry"], cwd=str(home), env=hermetic_env(home, extra_env),
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=self._log, text=True, bufsize=1,
             start_new_session=True,
         )

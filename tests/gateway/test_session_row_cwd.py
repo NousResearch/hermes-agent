@@ -50,6 +50,6 @@ async def test_row_cwd_is_recorded_apart_from_the_execution_cwd(tmp_path, monkey
 
 
 def test_canonical_create_contract_accepts_row_cwd():
-    from tui_gateway.contracts.registry import CANONICAL_METHODS, canonical_param_problems
+    from hermes_agent.tui_gateway.contracts.registry import CANONICAL_METHODS, canonical_param_problems
     contract = CANONICAL_METHODS['session.create']
     assert not canonical_param_problems(contract, {'source': 'cli', 'row_cwd': ''})

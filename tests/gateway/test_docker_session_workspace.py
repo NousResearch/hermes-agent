@@ -87,7 +87,7 @@ def test_desktop_workspace_registration_preserves_unmounted_profile_sandbox(
     home, tmp_path, monkeypatch, mount, profile
 ):
     from tools import terminal_tool
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
 
     profile_home = home if profile == "default" else home / "profiles" / profile
     profile_home.mkdir(parents=True, exist_ok=True)
@@ -435,7 +435,7 @@ def test_desktop_session_container_binds_its_workspace_not_the_backend_launch_di
     sandbox). No gateway policy scope here: the Desktop backend's TERMINAL_CWD is its own launch dir."""
     from gateway.session_context import clear_session_vars, set_session_vars
     from tools import terminal_tool
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
     launch_home = tmp_path / 'user-home'
     (launch_home / '.ssh').mkdir(parents=True)
     ws1, ws2 = tmp_path / 'ws1', tmp_path / 'ws2'
@@ -474,7 +474,7 @@ def _desktop_shared_mode(monkeypatch, launch_home):
 def test_workspace_container_never_falls_back_to_the_launch_dir(home, tmp_path, monkeypatch):
     """#119170: a ``:ws:`` container whose workspace is gone mounts nothing, never the launch dir."""
     from gateway.session_context import clear_session_vars, set_session_vars
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
     launch_home = tmp_path / 'user-home'
     (launch_home / '.ssh').mkdir(parents=True)
     ws = tmp_path / 'ws'
@@ -496,7 +496,7 @@ def test_workspace_merely_prefixed_like_a_container_path_is_mounted(home, tmp_pa
     """The in-container guard matches path segments: ``/rootfs`` is a host dir, not ``/root``."""
     import os
     from gateway.session_context import clear_session_vars, set_session_vars
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
     launch_home = tmp_path / 'user-home'
     launch_home.mkdir()
     _desktop_shared_mode(monkeypatch, launch_home)
@@ -517,7 +517,7 @@ def test_root_launched_backend_keeps_the_guards_for_a_mounted_workspace(home, tm
     session's workspace: the dangerous-command guards must not take the empty-sandbox fast path."""
     from gateway.session_context import clear_session_vars, set_session_vars
     from tools import terminal_tool
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
     ws = tmp_path / 'project'
     ws.mkdir()
     _desktop_shared_mode(monkeypatch, '/root')
@@ -552,7 +552,7 @@ def test_operator_shared_key_ending_in_a_workspace_digest_never_binds_that_works
     bound to the one session whose workspace digest its name happens to end with."""
     from gateway.session_context import clear_session_vars, set_session_vars
     from tools.terminal_tool import workspace_key_for
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
     launch_home = tmp_path / 'user-home'
     launch_home.mkdir()
     ws = tmp_path / 'project'

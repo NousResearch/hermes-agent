@@ -23,7 +23,7 @@ def _current_route(authority, live, old):
 
     A following session runs the profile's current route, so its frozen creation endpoint beside
     the current key would send that key to a host the profile left. Main switched from the live
-    runtime's whole tuple (``tui_gateway.model_switch._current_model_runtime``). The provider is
+    runtime's whole tuple (``hermes_agent.tui_gateway.model_switch._current_model_runtime``). The provider is
     the configured name: a named ``providers:`` entry resolves to the bare ``custom`` class, and a
     pick on the same entry must not read as a route change. Only the session's own route counts:
     a fallback is where a turn lands, not what the user switches from. A route that cannot be

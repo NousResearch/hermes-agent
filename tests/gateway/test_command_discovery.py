@@ -101,7 +101,7 @@ def test_ordinary_daemon_discovery_matches_legacy_extensions(tmp_path):
     requests = [('commands.catalog', {}), *[('complete.slash', {'text': text})
         for text in ('/', '/probe', '/probe-quick', '/help', '/details c', 'plain')]]
     legacy_code = '''import json, sys
-from tui_gateway import server
+from hermes_agent.tui_gateway import server
 requests = json.loads(sys.argv[1])
 results = [server._methods[method](i, params)['result'] for i, (method, params) in enumerate(requests)]
 sys.__stdout__.write(json.dumps(results) + '\\n')

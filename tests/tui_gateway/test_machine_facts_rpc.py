@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import pytest
 
-from tui_gateway import server
+from hermes_agent.tui_gateway import server
 from hermes_platform.host import facts, summary
 
 

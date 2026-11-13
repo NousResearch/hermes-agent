@@ -7,7 +7,7 @@ handler resolves ``get_profile_dir(profile)`` and wraps the action dispatch in
 scan THAT profile's ``plugins/`` dir, not the launch profile's.
 """
 
-from tui_gateway import server
+from hermes_agent.tui_gateway import server
 
 
 def test_plugins_manage_profile_reads_that_profiles_dir(tmp_path, monkeypatch):

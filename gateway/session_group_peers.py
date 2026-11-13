@@ -88,7 +88,7 @@ def _revoke(authority, params):
 def _probe(client, grant, catalog, scope):
     """Check a grant on the member's gateway: reachable, the same catalog, the same room scope."""
     from gateway.hosted_room_peer import GatewayRoomCatalog, HostedRoomPeerError
-    from tui_gateway.hosted_room_peer_http import PeerRunsHTTPError
+    from hermes_agent.tui_gateway.hosted_room_peer_http import PeerRunsHTTPError
     try:
         probe = client.probe(grant=grant)
         live = GatewayRoomCatalog.from_mapping(probe.get('catalog'))
@@ -107,8 +107,8 @@ def register(service, params):
         room_grant_matches_scope, validate_room_link_url)
     from gateway.hosted_rooms import (
         HostedRoomError, OwedRevokesFullError, RoomNotFoundError, room_state)
-    from tui_gateway.hosted_room_peer_http import PeerRunsHTTPClient
-    from tui_gateway.hosted_room_peer_transport import PeerMemberRoute, route_identity
+    from hermes_agent.tui_gateway.hosted_room_peer_http import PeerRunsHTTPClient
+    from hermes_agent.tui_gateway.hosted_room_peer_transport import PeerMemberRoute, route_identity
     room_id, member_id, profile, grant = (params.get(k) for k in ('room_id', 'member_id', 'target_profile', 'grant'))
     if not all(isinstance(v, str) and v for v in (room_id, member_id, profile, grant)):
         raise RuntimeStoreError('invalid_params')

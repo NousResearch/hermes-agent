@@ -3,7 +3,7 @@
 Reported during the TUI v2 blitz retest:
   - typing `@folder:` (and `@folder` with no colon yet) surfaced files
     alongside directories — the gateway-side completion lives in
-    `tui_gateway/server.py` and was never touched by the earlier fix to
+    `hermes_agent/tui_gateway/server.py` and was never touched by the earlier fix to
     `hermes_cli/commands.py`.
   - typing `@appChrome` required the full `@ui-tui/src/components/app…`
     path to find the file — users expect Cmd-P-style fuzzy basename
@@ -24,7 +24,7 @@ from pathlib import Path
 
 import pytest
 
-from tui_gateway import server
+from hermes_agent.tui_gateway import server
 
 
 def _fixture(tmp_path: Path):

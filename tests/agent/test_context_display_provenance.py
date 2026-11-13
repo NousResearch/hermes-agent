@@ -28,7 +28,7 @@ def test_context_provenance_follows_the_selected_number():
 
 
 def test_preflight_seed_does_not_label_actual_usage_estimated():
-    from tui_gateway.server import _get_usage
+    from hermes_agent.tui_gateway.server import _get_usage
     comp = ContextCompressor(model="fixture", config_context_length=100_000, quiet_mode=True)
     agent = SimpleNamespace(context_compressor=comp, model="fixture")
     comp.maybe_seed_preflight_display_tokens(1234)

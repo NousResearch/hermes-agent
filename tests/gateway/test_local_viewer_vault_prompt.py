@@ -1,6 +1,6 @@
 """A local viewer's turn asks for browser-vault input (a site's one-time code, a login to save, a password
 manager's master password) through the Desktop/Ink cards, as main's sidecar did
-(``tui_gateway/agent_callbacks.py``). The canonical owner registered no vault callback, so ``browser_vault``
+(``hermes_agent/tui_gateway/agent_callbacks.py``). The canonical owner registered no vault callback, so ``browser_vault``
 reported ``prompt_unavailable`` in every Desktop chat and an emailed sign-in code could not be entered."""
 import json
 import threading
@@ -42,7 +42,7 @@ def _answer(peer, method, value):
     from gateway.session_server_requests import is_response_frame, resolve
     wait_until(lambda: any(f.get('method') == method for f in peer.frames), what=f'{method} request')
     request = next(f for f in peer.frames if f.get('method') == method)
-    from tui_gateway.contracts.registry import SERVER_REQUESTS, validate_params
+    from hermes_agent.tui_gateway.contracts.registry import SERVER_REQUESTS, validate_params
     assert validate_params(SERVER_REQUESTS[method], request['params'])[1] is None
     frame = {'jsonrpc': '2.0', 'id': request['id'], 'result': {'value': value}}
     assert is_response_frame(frame) and resolve(frame)

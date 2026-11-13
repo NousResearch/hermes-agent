@@ -31,7 +31,7 @@ def server():
             "hermes_agent.hermes_state": MagicMock(),
         },
     ):
-        mod = importlib.import_module("tui_gateway.server")
+        mod = importlib.import_module("hermes_agent.tui_gateway.server")
     yield mod
 
 
@@ -40,7 +40,7 @@ def _capture(server, monkeypatch):
     monkeypatch.setattr(
         server, "_emit", lambda event, sid, payload=None: events.append(payload or {})
     )
-    # The agent callbacks run against server's globals (tui_gateway/method_ctx.py).
+    # The agent callbacks run against server's globals (hermes_agent/tui_gateway/method_ctx.py).
     monkeypatch.setattr(server, "_agent_presentation_enabled", lambda sid, diagnostic=False: True)
     return events
 

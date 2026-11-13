@@ -49,7 +49,7 @@ def test_launch_profile_worker_keeps_env_only_tool_credentials_under_multiplex(t
     monkeypatch.setenv("AUXILIARY_VISION_API_KEY", "ENVONLY-aux")
     from agent.secret_scope import get_secret, set_multiplex_active
     from gateway.session_managed_worker import _worker_env
-    from tui_gateway.launch_profile_policy import activate_multi_profile_hosting, launch_profile_runtime_scope
+    from hermes_agent.tui_gateway.launch_profile_policy import activate_multi_profile_hosting, launch_profile_runtime_scope
     activate_multi_profile_hosting()
     try:
         with launch_profile_runtime_scope(launch):

@@ -314,7 +314,7 @@ def omitted_history_state(db, target):
     """``(todo_state, message_count)`` of a resume that omits its transcript: the physical *target*'s stored
     count and its todo plan. Skips the display-row lineage read; the todo lookup still walks the lineage's
     todo rows (removed ones included, so an undone plan stays gone)."""
-    from tui_gateway.tool_progress import _todo_state_from_db
+    from hermes_agent.tui_gateway.tool_progress import _todo_state_from_db
     row = db.get_session(target)
     if row is None:  # deleted since the attach resolved it
         raise RuntimeStoreError('not_found')

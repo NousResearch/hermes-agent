@@ -138,7 +138,7 @@ def _unsigned(messages: list[dict]) -> list[dict]:
 def _tui_gateway_two_turns(rig: Rig, prompts: list[str]) -> list[str]:
     from tests.e2e.core.parity._drive_rpc import RpcClient, StreamCapture
 
-    proc = subprocess.Popen([sys.executable, "-m", "tui_gateway.entry"], cwd=rig.project, env=rig.env(),
+    proc = subprocess.Popen([sys.executable, "-m", "hermes_agent.tui_gateway.entry"], cwd=rig.project, env=rig.env(),
                             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                             text=True, bufsize=1)
     cap = StreamCapture().start(proc)

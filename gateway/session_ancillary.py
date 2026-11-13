@@ -159,7 +159,7 @@ async def attach_file(connection, ref, params):
     if policy is None:
         raise RuntimeStoreError('permission_denied')
     # The staging helpers are bound onto the sidecar module's globals (method_ctx.bind_module).
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
     session = {'cwd': policy.cwd, 'profile_home': authority.profile_id}
 
     def stage():
@@ -477,7 +477,7 @@ def control_snapshot(authority, ref):
     from hermes_cli.heartbeat import HeartbeatState
     # These pure serializers don't bind/import the legacy server. In particular
     # do not reuse _snapshot_control: its manager loader can write on a read.
-    from tui_gateway.methods_session_control import (
+    from hermes_agent.tui_gateway.methods_session_control import (
         _safe_goal_snapshot, _safe_loop_snapshot, _safe_heartbeat_snapshot,
         _snapshot_revision, _snapshot_updated_at,
     )

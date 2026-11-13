@@ -10,7 +10,7 @@ from gateway import hosted_rooms
 from tests.gateway.test_session_group_peers import (
     _grant_error, _seat, invite, gateway as gateway_fixture, linked_peer as linked_peer_fixture,
 )
-from tui_gateway import methods_groups, methods_groups_forward, server
+from hermes_agent.tui_gateway import methods_groups, methods_groups_forward, server
 
 gateway = gateway_fixture
 linked_peer = linked_peer_fixture

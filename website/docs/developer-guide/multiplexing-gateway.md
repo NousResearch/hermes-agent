@@ -56,7 +56,7 @@ is documented as a known limitation at the end of this document.
   `get_secret()`.
 - The dashboard / remote-Desktop backend (`hermes serve`) has no such flag, so
   `hermes_cli/web_server.py::start_server` calls
-  `tui_gateway.launch_profile_policy.activate_multi_profile_hosting_eagerly()`
+  `hermes_agent.tui_gateway.launch_profile_policy.activate_multi_profile_hosting_eagerly()`
   as its LAST boot step: the host arms the guard when the machine has more than
   one servable profile home, instead of waiting for the first
   `?profile=<other>` request. Activation is one-way, and anything the backend
@@ -327,7 +327,7 @@ at command time and the gateway's executor hops copy the ContextVar scope.
 
 Desktop plugins reach the gateway only through the ws JSON-RPC door, so
 profile enumeration and configuration live in
-`tui_gateway/methods_profiles.py`: `profiles.list`, `profiles.create`,
+`hermes_agent/tui_gateway/methods_profiles.py`: `profiles.list`, `profiles.create`,
 `profiles.describe`, `profiles.configure`, `profiles.set_asset`,
 `profiles.get_asset`. Reads and writes run under the target profile's
 HERMES_HOME override. Asset writes are atomic, type- and size-capped.
@@ -383,4 +383,4 @@ out of scope for this document.
   and the standalone one-gateway-per-profile alternative.
 - `agent/secret_scope.py`, `hermes_constants.py`, `gateway/profile_routing.py`,
   `gateway/run.py` (`_profile_runtime_scope`), `hermes_cli/profiles.py`
-  (`profiles_to_serve`), `gateway/session.py`, `tui_gateway/methods_profiles.py`.
+  (`profiles_to_serve`), `gateway/session.py`, `hermes_agent/tui_gateway/methods_profiles.py`.

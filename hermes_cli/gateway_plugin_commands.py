@@ -20,7 +20,7 @@ from hermes_cli.gateway_client import GatewayClientError
 
 logger = logging.getLogger(__name__)
 
-_CATEGORY = "Plugin commands"  # tui_gateway/command_discovery.py
+_CATEGORY = "Plugin commands"  # hermes_agent/tui_gateway/command_discovery.py
 GONE = object()  # run(): the gateway no longer has the command; the caller dispatches the name again
 STOPPED = object()  # call_unbounded(): Ctrl+C stopped the wait (the stopped line is printed)
 _GONE_LINE = "  /{}: the gateway no longer has this plugin command; nothing was run."

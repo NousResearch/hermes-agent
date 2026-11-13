@@ -58,7 +58,7 @@ class TestPluginAPISecretScopeProductionMount:
         # into the launch scope when multi-profile hosting activates.
         monkeypatch.setenv(self._PROBE_KEY, "sk-launch-a")
 
-        import tui_gateway.launch_profile_policy as lpp
+        import hermes_agent.tui_gateway.launch_profile_policy as lpp
         from agent.secret_scope import is_multiplex_active, set_multiplex_active
 
         monkeypatch.setattr(lpp, "_snapshot", None)  # freeze the launch env fresh

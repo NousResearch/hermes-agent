@@ -319,7 +319,7 @@ The gateway runs as a child of the Node TUI. Options:
 
 **A. Source-edit the gateway:**
 ```python
-# tui_gateway/server.py near the top of serve()
+# hermes_agent/tui_gateway/server.py near the top of serve()
 import debugpy
 debugpy.listen(("127.0.0.1", 5678))
 debugpy.wait_for_client()

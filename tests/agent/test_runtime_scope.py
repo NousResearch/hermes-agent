@@ -366,7 +366,7 @@ def test_a_mirrored_hermes_home_is_not_mistaken_for_the_launch_profile(tmp_path,
     """An embedding host pins the launch home and mirrors the served profile into ``HERMES_HOME``:
     binding that profile must give it its own secrets, never the launch profile's env-only keys."""
     from hermes_constants import pin_process_hermes_home
-    from tui_gateway.launch_profile_policy import activate_multi_profile_hosting
+    from hermes_agent.tui_gateway.launch_profile_policy import activate_multi_profile_hosting
     launch, served = tmp_path / "launch", _profile(tmp_path, "b", "local")
     launch.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(launch))

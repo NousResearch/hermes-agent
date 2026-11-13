@@ -1,6 +1,6 @@
 """#125974 — ``agent.agent_init._setup_logging`` must honor the active profile scope.
 
-A Desktop serve backend (tui_gateway/compute_host.py) builds agents for several profiles
+A Desktop serve backend (hermes_agent/tui_gateway/compute_host.py) builds agents for several profiles
 inside ``set_hermes_home_override(profile_home)``. ``_setup_logging`` used to pass the
 import-time ``run_agent._hermes_home`` freeze, so the second profile's ``setup_logging``
 call saw a home it already served, never adopted it, and every profile's records kept

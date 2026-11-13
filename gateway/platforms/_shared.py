@@ -372,13 +372,13 @@ def _owner_scope(home: str):
     from hermes_constants import get_hermes_home
 
     if str(get_hermes_home()) == home:
-        yield
+        yield True
         return
     from pathlib import Path
 
     from gateway.run import _profile_runtime_scope
     with _profile_runtime_scope(Path(home)):
-        yield
+        yield False
 
 
 def refresh_live_gate_extra(adapter: Any, keys: Iterable[str], on_reload: Optional[Callable[[], None]] = None) -> bool:
@@ -400,12 +400,12 @@ def refresh_live_gate_extra(adapter: Any, keys: Iterable[str], on_reload: Option
     with _LIVE_GATE_LOCK:
         if version == adapter._live_gate_version:
             return False
-        with _owner_scope(home):
-            return _reload_live_gate_extra(adapter, keys, version, on_reload)
+        with _owner_scope(home) as own_scope:
+            return _reload_live_gate_extra(adapter, keys, version, on_reload, acknowledge=own_scope)
 
 
 def _reload_live_gate_extra(adapter: Any, keys: Iterable[str], version: tuple,
-                            on_reload: Optional[Callable[[], None]]) -> bool:
+                            on_reload: Optional[Callable[[], None]], acknowledge: bool = True) -> bool:
     from gateway.config import PlatformConfig, load_gateway_config
     try:  # ONE checked load: the fallback env-only config would drop the YAML-held lists
         loaded = load_gateway_config(strict=True)
@@ -424,8 +424,11 @@ def _reload_live_gate_extra(adapter: Any, keys: Iterable[str], version: tuple,
             extra.pop(key, None)
     if on_reload is not None:
         on_reload()
-    # Retry this same edit after a transient read failure, without requiring a second write.
-    adapter._live_gate_version = version
+    # Retry this same edit after a transient read failure, without requiring a second write. A reload under
+    # a bound scope is provisional: the launch profile's bound scope skips its YAML env bridge, so the
+    # snapshot can still hold the pre-edit values; the owner's own next event redoes it.
+    if acknowledge:
+        adapter._live_gate_version = version
     return True
 
 

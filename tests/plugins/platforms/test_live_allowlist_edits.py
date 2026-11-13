@@ -403,3 +403,56 @@ def test_a_resolved_username_survives_a_second_on_ready_and_a_later_edit(_home):
     _write(_home, {"allow_from": ["alice"], "allowed_channels": ["555"]})  # an unrelated edit
     assert adapter._is_allowed_user("111", alice, guild=guild, is_dm=False) is True
     assert adapter.resolved_allowlist_user_ids() == {"111"}
+
+
+def test_an_owner_edit_first_seen_under_a_routed_scope_applies_the_owners_lists(tmp_path):
+    """The owner's edit can reach the gate first from a routed profile's task (a /voice listen loop).
+    The reload and the env re-snapshot must both run as the owner: the routed home's lists and .env
+    never become this bot's gate."""
+    from agent.secret_scope import reset_multiplex_context, set_multiplex_context
+    from gateway.run import _profile_runtime_scope
+
+    owner, routed = tmp_path / "a", tmp_path / "b"
+    owner.mkdir()
+    routed.mkdir()
+    (routed / ".env").write_text("DISCORD_ALLOWED_USERS=9999\n", encoding="utf-8")
+    _write(owner, {"allowed_roles": ["2"]})
+    _write(routed, {"allowed_roles": ["7"]})
+    token = set_multiplex_context(True)
+    try:
+        with _profile_runtime_scope(owner):
+            adapter, guild, member = _connected_discord(roles=(5,))
+        _write(owner, {"allowed_roles": ["2", "5"]})
+        stranger = SimpleNamespace(id=9999, roles=[SimpleNamespace(id=7)], guild=guild)
+        with _profile_runtime_scope(routed):
+            assert _allowed(adapter, guild, member) is True
+            assert adapter._is_allowed_user("9999", stranger, guild=guild, is_dm=False) is False
+        with _profile_runtime_scope(owner):
+            assert adapter._is_allowed_user("9999", stranger, guild=guild, is_dm=False) is False
+    finally:
+        reset_multiplex_context(token)
+
+
+def test_a_launch_profile_edit_first_seen_under_a_routed_scope_still_applies(tmp_path, monkeypatch):
+    """The launch profile's YAML lists live in the process env (the single-profile bridge). Its bound
+    scope skips that bridge, so a reload there can only be provisional: the owner's next own event
+    must still apply the edit instead of finding it already acknowledged."""
+    from agent.secret_scope import reset_multiplex_context, set_multiplex_context
+    from gateway.run import _profile_runtime_scope
+
+    default, routed = tmp_path / "default", tmp_path / "b"
+    default.mkdir()
+    routed.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(default))
+    _write(default, {"allowed_roles": ["2"]})
+    _write(routed, {"allowed_roles": ["7"]})
+    token = set_multiplex_context(True)
+    try:
+        adapter, guild, member = _connected_discord(roles=(9,))
+        assert _allowed(adapter, guild, member) is False
+        _write(default, {"allowed_roles": ["9"]})
+        with _profile_runtime_scope(routed):
+            _allowed(adapter, guild, member)
+        assert _allowed(adapter, guild, member) is True
+    finally:
+        reset_multiplex_context(token)

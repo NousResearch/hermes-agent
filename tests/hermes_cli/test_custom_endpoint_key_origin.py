@@ -143,6 +143,16 @@ class TestDesktopEndpointEdit:
         assert probed and all(base == "https://llm.new.example/v1" for _key, base in probed)
         assert all("sk-old-origin-fixture" not in str(key) for key, _base in probed)
 
+    @pytest.mark.parametrize("new_key", ["", "sk-new...ture"])
+    def test_move_leaves_no_old_key_under_the_legacy_variable(self, new_key):
+        """The guard leaves ``key_env`` to ``_apply_endpoint_key``, which clears or rewrites the row's
+        own ``HERMES_CUSTOM_*`` variable; dropping it first left the old host's key in .env."""
+        from hermes_cli.config import get_env_path, get_env_value
+        old = get_env_value("HERMES_CUSTOM_MYEP_API_KEY")
+        assert old
+        assert self._edit("https://llm.new.example/v1", api_key=new_key).status_code == 200
+        assert old not in get_env_path().read_text()
+
     def test_new_origin_with_its_key_drops_every_old_credential(self):
         from hermes_cli.config import get_env_value, load_config
 

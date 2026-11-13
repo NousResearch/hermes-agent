@@ -624,7 +624,8 @@ def _drop_credentials_on_origin_move(entry: dict[str, Any], existing: dict[str, 
                     "Enter the API key for the new address to save this change."),
         )
     for field in stored:
-        entry.pop(field)
+        if field != "key_env":  # _apply_endpoint_key clears or rewrites it, and its .env value
+            entry.pop(field)
 
 
 def _drop_stale_addresses(entry: dict[str, Any]) -> None:

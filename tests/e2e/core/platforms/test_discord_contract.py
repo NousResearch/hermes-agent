@@ -1,4 +1,4 @@
-"""Messaging-adapter contract, Discord leg: the REAL gateway + REAL ``plugins/platforms/discord`` adapter.
+"""Messaging-adapter contract, Discord leg: the REAL gateway + REAL ``hermes_agent/plugins/platforms/discord`` adapter.
 
 The child is ``hermes gateway run`` on a throwaway HOME; the adapter's own SDK (discord.py via the ``discord_shim`` sitecustomize) talks to
 ``tests/fakes/platforms/discord_standin.py``, a local stand-in shaped per the platform's published

@@ -85,7 +85,7 @@ class TestBridgeEnvironment:
     def test_reply_prefix_reaches_bridge_with_existing_precedence(
         self, monkeypatch, configured, explicit_env, expected
     ):
-        from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
+        from hermes_agent.plugins.platforms.whatsapp.adapter import WhatsAppAdapter
 
         monkeypatch.delenv("WHATSAPP_REPLY_PREFIX", raising=False)
         if explicit_env is not None:
@@ -101,7 +101,7 @@ class TestBridgeEnvironment:
 class TestReadReceiptPolicyOrdering:
     @pytest.mark.asyncio
     async def test_accepted_receipt_key_is_sent_to_bridge(self):
-        from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
+        from hermes_agent.plugins.platforms.whatsapp.adapter import WhatsAppAdapter
 
         adapter = WhatsAppAdapter(
             PlatformConfig(enabled=True, extra={"send_read_receipts": True})

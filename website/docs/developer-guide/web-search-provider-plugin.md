@@ -6,7 +6,7 @@ description: "How to build a web-search/extract/crawl backend plugin for Hermes 
 
 # Building a Web Search Provider Plugin
 
-Web-search provider plugins register a backend that services `web_search`, `web_extract`, and (optionally) deep-crawl tool calls. Built-in providers — Firecrawl, SearXNG, Tavily, Perplexity, Exa, Parallel, Keenable, Brave Search (free tier), xAI, and DDGS — all ship as plugins under `plugins/web/<name>/`. You can add a new one, or override a bundled one, by dropping a directory next to them.
+Web-search provider plugins register a backend that services `web_search`, `web_extract`, and (optionally) deep-crawl tool calls. Built-in providers — Firecrawl, SearXNG, Tavily, Perplexity, Exa, Parallel, Keenable, Brave Search (free tier), xAI, and DDGS — all ship as plugins under `hermes_agent/plugins/web/<name>/`. You can add a new one, or override a bundled one, by dropping a directory next to them.
 
 :::tip
 Web search is one of several **backend plugins** Hermes supports. The others (with their own ABCs) are [Image Generation Provider Plugins](./image-gen-provider-plugin.md), [Video Generation Provider Plugins](./video-gen-provider-plugin.md), [Memory Provider Plugins](./memory-provider-plugin.md), [Context Engine Plugins](./context-engine-plugin.md), and [Model Provider Plugins](./model-provider-plugin.md). General tool/hook/CLI plugins live in [Build a Hermes Plugin](./plugins/index.md).
@@ -16,7 +16,7 @@ Web search is one of several **backend plugins** Hermes supports. The others (wi
 
 Hermes scans for web-search backends in three places:
 
-1. **Bundled** — `<repo>/plugins/web/<name>/` (auto-loaded with `kind: backend`, always available)
+1. **Bundled** — `<repo>/hermes_agent/plugins/web/<name>/` (auto-loaded with `kind: backend`, always available)
 2. **User** — `~/.hermes/plugins/web/<name>/` (opt-in via `plugins.enabled` or `hermes plugins enable <name>`)
 3. **Pip** — packages declaring a `hermes_agent.plugins` entry point
 
@@ -115,7 +115,7 @@ class MyBackendWebSearchProvider(WebSearchProvider):
 
 ```python
 # plugins/web/my-backend/__init__.py
-from plugins.web.my_backend.provider import MyBackendWebSearchProvider
+from hermes_agent.plugins.web.my_backend.provider import MyBackendWebSearchProvider
 
 
 def register(ctx) -> None:
@@ -244,11 +244,11 @@ Declare a third-party plugin's own dependencies in its manifest or
 
 ## Reference implementations
 
-- **`plugins/web/brave_free/`** — small, API-key-gated, search-only HTTP provider. Good starting template.
-- **`plugins/web/ddgs/`** — no-key provider that lazy-installs its SDK. Useful pattern for backends that wrap a Python package.
-- **`plugins/web/firecrawl/`** — full multi-capability provider (search + extract + crawl) with multiple format modes.
-- **`plugins/web/searxng/`** — self-hosted, URL-configured backend with no auth.
-- **`plugins/web/xai/`** — LLM-backed search via Grok's server-side `web_search` tool. Shows how to reuse an existing OAuth/env-var credential surface (`hermes_agent/tools/xai_http.py`) without adding new env vars, and how to write a cheap `is_available()` that honors the no-network contract.
+- **`hermes_agent/plugins/web/brave_free/`** — small, API-key-gated, search-only HTTP provider. Good starting template.
+- **`hermes_agent/plugins/web/ddgs/`** — no-key provider that lazy-installs its SDK. Useful pattern for backends that wrap a Python package.
+- **`hermes_agent/plugins/web/firecrawl/`** — full multi-capability provider (search + extract + crawl) with multiple format modes.
+- **`hermes_agent/plugins/web/searxng/`** — self-hosted, URL-configured backend with no auth.
+- **`hermes_agent/plugins/web/xai/`** — LLM-backed search via Grok's server-side `web_search` tool. Shows how to reuse an existing OAuth/env-var credential surface (`hermes_agent/tools/xai_http.py`) without adding new env vars, and how to write a cheap `is_available()` that honors the no-network contract.
 
 ## Distribute via pip
 

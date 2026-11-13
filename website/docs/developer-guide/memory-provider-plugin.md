@@ -18,7 +18,7 @@ Hermes discovers memory providers from four sources, in this precedence order:
 
 | Source | Location | Notes |
 |---|---|---|
-| Bundled | `plugins/memory/<name>/` | Ships with Hermes. Closed to new providers — see [CONTRIBUTING](https://github.com/NousResearch/hermes-agent/blob/main/CONTRIBUTING.md). |
+| Bundled | `hermes_agent/plugins/memory/<name>/` | Ships with Hermes. Closed to new providers — see [CONTRIBUTING](https://github.com/NousResearch/hermes-agent/blob/main/CONTRIBUTING.md). |
 | User | `$HERMES_HOME/plugins/<name>/` | Dropped in by the user, per profile. |
 | Project | `./.hermes/plugins/<name>/` | Opt-in via `HERMES_ENABLE_PROJECT_PLUGINS=1`. |
 | Package | `hermes_agent.memory_providers` entry point | Distribution supplied by the installation owner; nothing to copy. |
@@ -51,7 +51,7 @@ checks and setup commands remain separate from the Python union.
 
 ### Directory Provider
 
-A directory provider lives in `plugins/memory/<name>/` when bundled with
+A directory provider lives in `hermes_agent/plugins/memory/<name>/` when bundled with
 Hermes, in `$HERMES_HOME/plugins/<name>/` when installed by a user, or in
 `./.hermes/plugins/<name>/` for a project-local one:
 

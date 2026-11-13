@@ -253,7 +253,7 @@ class _TelegramFloodDeleteAdapter(_SlotAdapter):
         from unittest.mock import AsyncMock, MagicMock
 
         from hermes_agent.gateway.config import PlatformConfig
-        from plugins.platforms.telegram.adapter import TelegramAdapter
+        from hermes_agent.plugins.platforms.telegram.adapter import TelegramAdapter
         super().__init__(refuse)
         self.telegram = TelegramAdapter(PlatformConfig(enabled=True, token="***"))
         self.telegram._bot = MagicMock()

@@ -381,7 +381,7 @@ def test_provider_start_recovers_interrupted_records_before_tick(monkeypatch):
 
 
 def test_external_provider_start_recovers_interrupted_records(monkeypatch):
-    from plugins.cron_providers.chronos import ChronosCronScheduler
+    from hermes_agent.plugins.cron_providers.chronos import ChronosCronScheduler
 
     provider = ChronosCronScheduler()
     provider._client = type("Client", (), {"arm": lambda self, **kwargs: None})()

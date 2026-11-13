@@ -13,7 +13,7 @@ async def test_native_fifo_identity_is_stable_across_compression(tmp_path, monke
     from hermes_agent.gateway.session_ingress_context import native_callback
     from hermes_agent.hermes_constants import get_hermes_home
     from hermes_agent.hermes_state_runtime import list_session_admissions
-    from plugins.platforms.discord.adapter import DiscordAdapter
+    from hermes_agent.plugins.platforms.discord.adapter import DiscordAdapter
 
     monkeypatch.setattr(SessionAuthority, '_schedule', lambda self, ref: None)
     monkeypatch.setenv('DISCORD_ALLOWED_USERS', '42')

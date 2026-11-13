@@ -14,7 +14,7 @@ from hermes_agent.gateway.platforms.base import CachedMedia
 from hermes_agent.gateway.platforms.event import MessageType
 from tests.gateway._plugin_adapter_loader import load_plugin_adapter
 
-# Load plugins/platforms/buzz/adapter.py under a unique module name
+# Load hermes_agent/plugins/platforms/buzz/adapter.py under a unique module name
 # (plugin_adapter_buzz) so it cannot collide with other plugin adapters
 # loaded by sibling tests in the same process.
 _buzz_mod = load_plugin_adapter("buzz")

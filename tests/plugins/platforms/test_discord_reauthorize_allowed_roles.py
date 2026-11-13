@@ -18,7 +18,7 @@ import hermes_agent.hermes_yaml as yaml
 import pytest
 
 from hermes_agent.gateway.config import Platform, PlatformConfig
-from plugins.platforms.discord.adapter import DiscordAdapter
+from hermes_agent.plugins.platforms.discord.adapter import DiscordAdapter
 
 GUILD_ID = 222222
 USER_ID = "42"

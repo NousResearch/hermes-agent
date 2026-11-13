@@ -64,7 +64,7 @@ class _FakeAsyncClient:
 def xai_provider(monkeypatch):
     monkeypatch.setenv("XAI_API_KEY", "test-key")
 
-    import plugins.video_gen.xai as xai_plugin
+    import hermes_agent.plugins.video_gen.xai as xai_plugin
 
     captured: dict[str, _FakeAsyncClient] = {}
 

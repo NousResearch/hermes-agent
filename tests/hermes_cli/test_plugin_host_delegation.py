@@ -55,7 +55,7 @@ def test_hosted_delegation_provider_extends_schema_and_routes_from_the_host(tmp_
     # Bundled plugins: only the delegation category, so the bundled default strategy is listed and selectable.
     empty_bundled = tmp_path / "bundled"
     empty_bundled.mkdir()
-    (empty_bundled / "delegation").symlink_to(Path(__file__).resolve().parents[2] / "plugins" / "delegation",
+    (empty_bundled / "delegation").symlink_to(Path(__file__).resolve().parents[2] / "hermes_agent" / "plugins" / "delegation",
                                               target_is_directory=True)
     monkeypatch.setenv("HOME", str(tmp_path / "os-home"))
     monkeypatch.setenv("HERMES_HOME", str(home))

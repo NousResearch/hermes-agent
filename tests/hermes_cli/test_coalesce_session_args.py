@@ -4,7 +4,7 @@ from hermes_agent.hermes_cli.main import _coalesce_session_name_args
 
 
 def _active_provider(monkeypatch, tmp_path, *, with_cli):
-    import plugins.memory as memory_pkg
+    import hermes_agent.plugins.memory as memory_pkg
 
     provider_dir = tmp_path / "somemem"
     provider_dir.mkdir()

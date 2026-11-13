@@ -21,7 +21,7 @@ def _normalize_memory_provider_name(name: Any) -> str:
 
 def _load_memory_provider(name: str, *, register_skills: Optional[bool] = None):
     try:
-        from plugins.memory import load_memory_provider
+        from hermes_agent.plugins.memory import load_memory_provider
 
         return load_memory_provider(name, register_skills=register_skills)
     except Exception:
@@ -48,7 +48,7 @@ def _string_list(value: Any) -> list[str]:
 
 def _memory_provider_setup_manifest(name: str) -> tuple[dict, dict]:
     from hermes_agent.hermes_cli.memory_setup import memory_provider_dependency_inputs
-    from plugins.memory import find_provider_dir
+    from hermes_agent.plugins.memory import find_provider_dir
     from pm.plugin_declarations import read_python_declaration
 
     manifest, inputs = memory_provider_dependency_inputs(name)
@@ -319,7 +319,7 @@ def _memory_provider_is_configured(name: str, provider: Any) -> bool:
 
 
 def _memory_provider_status(row: dict[str, Any], setup: dict[str, Any], configured: bool, schema_fields: list) -> str:
-    from plugins.memory import parked_provider_notice
+    from hermes_agent.plugins.memory import parked_provider_notice
 
     if row["missing"]:
         return "missing"
@@ -336,7 +336,7 @@ def _discover_memory_provider_statuses() -> list[dict[str, Any]]:
     from hermes_agent.hermes_cli.config import load_config
     discovered: dict[str, dict[str, Any]] = {}
     try:
-        from plugins.memory import discover_memory_providers
+        from hermes_agent.plugins.memory import discover_memory_providers
 
         for name, description, available in discover_memory_providers():
             discovered[str(name)] = {

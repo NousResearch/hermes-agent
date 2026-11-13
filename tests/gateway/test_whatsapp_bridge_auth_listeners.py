@@ -27,7 +27,7 @@ async def _serve(app: web.Application, port: int) -> web.AppRunner:
 
 def _bridge_app(seen: list, *, proof_for) -> web.Application:
     """A bridge look-alike: ``proof_for(request)`` returns the HMAC key it answers with (None = no proof)."""
-    from plugins.platforms.whatsapp.adapter import _bridge_auth_proof
+    from hermes_agent.plugins.platforms.whatsapp.adapter import _bridge_auth_proof
 
     async def auth_proof(request):
         seen.append(("auth-proof", request.headers.get("Authorization")))
@@ -60,7 +60,7 @@ def _pconfig(tmp_path: Path, port: int) -> SimpleNamespace:
 async def test_standalone_send_never_discloses_the_bearer_to_an_impostor(tmp_path):
     """An impostor that bound the port answers the proof with whatever bearer the request carried. The challenge
     must arrive credential-free, so it cannot forge the proof and nothing is sent."""
-    from plugins.platforms.whatsapp.adapter import _standalone_send
+    from hermes_agent.plugins.platforms.whatsapp.adapter import _standalone_send
 
     seen: list = []
     port = _free_port()
@@ -80,7 +80,7 @@ async def test_standalone_send_never_discloses_the_bearer_to_an_impostor(tmp_pat
 @pytest.mark.asyncio
 async def test_standalone_send_authenticates_after_the_proof(tmp_path):
     """The real bridge (knows the token) gets the bearer on /health and /send, never on the challenge."""
-    from plugins.platforms.whatsapp.adapter import _standalone_send
+    from hermes_agent.plugins.platforms.whatsapp.adapter import _standalone_send
 
     seen: list = []
     port = _free_port()
@@ -95,7 +95,7 @@ async def test_standalone_send_authenticates_after_the_proof(tmp_path):
 
 
 def _adapter(tmp_path: Path, port: int):
-    from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
+    from hermes_agent.plugins.platforms.whatsapp.adapter import WhatsAppAdapter
 
     adapter = WhatsAppAdapter.__new__(WhatsAppAdapter)
     adapter._bridge_port = port

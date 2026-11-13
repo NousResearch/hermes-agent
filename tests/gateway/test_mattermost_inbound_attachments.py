@@ -21,7 +21,7 @@ OWNER, STRANGER = "owner_user", "stranger_user"
 async def mattermost(tmp_path, monkeypatch):
     from hermes_agent.gateway.pairing import PairingStore
     from hermes_agent.gateway.run import GatewayRunner
-    from plugins.platforms.mattermost.adapter import MattermostAdapter
+    from hermes_agent.plugins.platforms.mattermost.adapter import MattermostAdapter
 
     for key in ("GATEWAY_ALLOWED_USERS", "GATEWAY_ALLOW_ALL_USERS", "MATTERMOST_ALLOW_ALL_USERS"):
         monkeypatch.delenv(key, raising=False)

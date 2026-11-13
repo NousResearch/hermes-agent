@@ -16,7 +16,7 @@ description: "如何为 Hermes Agent 构建模型提供商（推理后端）插�
 
 `hermes_agent/providers/__init__.py._discover_providers()` 在任何代码首次调用 `get_provider_profile()` 或 `list_providers()` 时懒加载执行。发现顺序：
 
-1. **内置插件** — `<repo>/plugins/model-providers/<name>/` — 随 Hermes 一同发布
+1. **内置插件** — `<repo>/hermes_agent/plugins/model-providers/<name>/` — 随 Hermes 一同发布
 2. **用户插件** — `$HERMES_HOME/plugins/model-providers/<name>/` — 放入任意目录；后续会话无需重启即可生效
 3. **旧版单文件** — `<repo>/providers/<name>.py` — 为树外可编辑安装提供向后兼容
 
@@ -260,13 +260,13 @@ class AcmeProfile(ProviderProfile):
 
 | 插件 | 参考原因 |
 |---|---|
-| `plugins/model-providers/openrouter/` | 带 provider preferences 的聚合器，公开模型目录 |
-| `plugins/model-providers/gemini/` | `thinking_config` 转换（原生 + OpenAI 兼容嵌套形式） |
-| `plugins/model-providers/kimi-coding/` | `OMIT_TEMPERATURE`、`extra_body.thinking`、顶层 `reasoning_effort` |
-| `plugins/model-providers/qwen-oauth/` | 消息规范化、`cache_control` 注入、VL 高分辨率 |
-| `plugins/model-providers/nous/` | 归因标签、"禁用时省略 reasoning" |
-| `plugins/model-providers/custom/` | Ollama 的 `num_ctx` + `think: false` 特殊处理 |
-| `plugins/model-providers/bedrock/` | `api_mode="bedrock_converse"`，`fetch_models` 返回 None（无 REST 端点） |
+| `hermes_agent/plugins/model-providers/openrouter/` | 带 provider preferences 的聚合器，公开模型目录 |
+| `hermes_agent/plugins/model-providers/gemini/` | `thinking_config` 转换（原生 + OpenAI 兼容嵌套形式） |
+| `hermes_agent/plugins/model-providers/kimi-coding/` | `OMIT_TEMPERATURE`、`extra_body.thinking`、顶层 `reasoning_effort` |
+| `hermes_agent/plugins/model-providers/qwen-oauth/` | 消息规范化、`cache_control` 注入、VL 高分辨率 |
+| `hermes_agent/plugins/model-providers/nous/` | 归因标签、"禁用时省略 reasoning" |
+| `hermes_agent/plugins/model-providers/custom/` | Ollama 的 `num_ctx` + `think: false` 特殊处理 |
+| `hermes_agent/plugins/model-providers/bedrock/` | `api_mode="bedrock_converse"`，`fetch_models` 返回 None（无 REST 端点） |
 
 ## 用户覆盖——不修改仓库替换内置提供商
 

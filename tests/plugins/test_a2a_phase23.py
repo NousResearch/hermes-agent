@@ -25,7 +25,7 @@ import urllib.request
 
 import pytest
 
-from plugins.platforms.a2a import protocol, security, tools
+from hermes_agent.plugins.platforms.a2a import protocol, security, tools
 
 
 def _free_port() -> int:
@@ -37,7 +37,7 @@ def _free_port() -> int:
 
 
 def _make_live_adapter(monkeypatch, reply_fn=None):
-    from plugins.platforms.a2a.adapter import A2AAdapter
+    from hermes_agent.plugins.platforms.a2a.adapter import A2AAdapter
     from hermes_agent.gateway.config import PlatformConfig
 
     port = _free_port()
@@ -498,7 +498,7 @@ class TestTaskStore:
         assert adapter._fail_orphans_once() == ["t-live"]
 
     def test_orphan_timeout_is_bounded_and_disconnect_clears_active_tasks(self, monkeypatch):
-        from plugins.platforms.a2a import adapter as mod
+        from hermes_agent.plugins.platforms.a2a import adapter as mod
         monkeypatch.setenv("A2A_REPLY_TIMEOUT", "1e18")
         assert mod._orphan_timeout() == mod._MAX_ORPHAN_TIMEOUT
 
@@ -612,7 +612,7 @@ class TestDynamicAgentCards:
         """The Agent Card is built from the real tool registry at serve time."""
         from hermes_agent.tools.registry import registry
         from hermes_agent.gateway.config import PlatformConfig
-        from plugins.platforms.a2a.adapter import A2AAdapter
+        from hermes_agent.plugins.platforms.a2a.adapter import A2AAdapter
 
         monkeypatch.setattr(registry, "get_registered_toolset_names",
                             lambda: ["webz", "termz"])
@@ -628,7 +628,7 @@ class TestDynamicAgentCards:
     def test_advertised_toolsets_restrict_card(self, monkeypatch):
         from hermes_agent.tools.registry import registry
         from hermes_agent.gateway.config import PlatformConfig
-        from plugins.platforms.a2a.adapter import A2AAdapter
+        from hermes_agent.plugins.platforms.a2a.adapter import A2AAdapter
 
         monkeypatch.setattr(registry, "get_registered_toolset_names",
                             lambda: ["webz", "termz", "secretz"])

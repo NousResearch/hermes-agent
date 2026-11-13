@@ -129,7 +129,7 @@ def _isolated_registries():
     saved_discovered = providers._discovered
     saved_auth_keys = set(auth_mod.PROVIDER_REGISTRY)
     saved_plugin_modules = {
-        m for m in sys.modules if m.startswith("plugins.model_providers")
+        m for m in sys.modules if m.startswith("hermes_agent.plugins.model_providers")
     }
     providers._REGISTRY.clear()
     providers._ALIASES.clear()
@@ -142,7 +142,7 @@ def _isolated_registries():
     for mod in [
         m
         for m in sys.modules
-        if m.startswith("plugins.model_providers")
+        if m.startswith("hermes_agent.plugins.model_providers")
         and m not in saved_plugin_modules
     ]:
         del sys.modules[mod]

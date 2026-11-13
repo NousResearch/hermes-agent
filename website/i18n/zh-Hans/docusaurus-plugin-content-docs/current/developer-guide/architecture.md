@@ -120,14 +120,14 @@ hermes-agent/
 │   │   └── platforms/            # 核心入站适配器：api_server、webhook、
 │   │                             #   msgraph_webhook
 │   │
+│   ├── plugins/platforms/        # 随包平台插件：telegram、discord、slack、whatsapp、
+│   │                             #   whatsapp_cloud、signal、weixin、bluebubbles、qqbot、
+│   │                             #   matrix、feishu 等（元宝：`yuanbao` Hermes Labs 插件）
 │   ├── acp_adapter/              # ACP 服务器（VS Code / Zed / JetBrains）
-│   └── cron/                     # 调度器（jobs.py、scheduler.py）
+│   ├── cron/                     # 调度器（jobs.py、scheduler.py）
+│   ├── plugins/memory/           # 记忆提供者插件
+│   └── plugins/context_engine/   # 上下文引擎插件
 │
-├── plugins/platforms/        # 随包平台插件：telegram、discord、slack、whatsapp、
-│                             #   whatsapp_cloud、signal、weixin、bluebubbles、qqbot、
-│                             #   matrix、feishu 等（元宝：`yuanbao` Hermes Labs 插件）
-├── plugins/memory/           # 记忆提供者插件
-├── plugins/context_engine/   # 上下文引擎插件
 ├── skills/                   # 内置 skill（始终可用）
 ├── optional-skills/          # 官方可选 skill（需显式安装）
 ├── website/                  # Docusaurus 文档站点
@@ -230,7 +230,7 @@ CLI、gateway、cron、ACP 及辅助调用共用的运行时解析器。将 `(pr
 
 ### 插件系统
 
-三种发现来源：`~/.hermes/plugins/`（用户级）、`.hermes/plugins/`（项目级）和 pip entry point。插件通过上下文 API 注册工具、hook 和 CLI 命令。存在两种专用插件类型：记忆提供者（`plugins/memory/`）和上下文引擎（`plugins/context_engine/`）。两者均为单选——每种同时只能激活一个，通过 `hermes plugins` 或 `config.yaml` 配置。
+三种发现来源：`~/.hermes/plugins/`（用户级）、`.hermes/plugins/`（项目级）和 pip entry point。插件通过上下文 API 注册工具、hook 和 CLI 命令。存在两种专用插件类型：记忆提供者（`hermes_agent/plugins/memory/`）和上下文引擎（`hermes_agent/plugins/context_engine/`）。两者均为单选——每种同时只能激活一个，通过 `hermes plugins` 或 `config.yaml` 配置。
 
 → [插件指南](./plugins/index.md)，[记忆提供者插件](./memory-provider-plugin.md)
 

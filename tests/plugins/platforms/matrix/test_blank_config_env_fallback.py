@@ -9,7 +9,7 @@ from hermes_agent.gateway.config import PlatformConfig
 
 @pytest.mark.parametrize("blank", ["", "  \t "])
 def test_blank_yaml_values_fall_through_to_env(monkeypatch, blank):
-    from plugins.platforms.matrix.adapter import MatrixAdapter, _extra_csv_set, _resolve_max_message_length
+    from hermes_agent.plugins.platforms.matrix.adapter import MatrixAdapter, _extra_csv_set, _resolve_max_message_length
 
     monkeypatch.setenv("MATRIX_FREE_RESPONSE_ROOMS", "!home:example.org")
     monkeypatch.setenv("MATRIX_MAX_MESSAGE_LENGTH", "9000")
@@ -25,7 +25,7 @@ def test_blank_yaml_values_fall_through_to_env(monkeypatch, blank):
 def test_explicit_env_beats_yaml_and_yaml_beats_default(monkeypatch):
     """Per-profile precedence: explicit scoped env → the profile's YAML → default. A blank env
     value is unset (it must not clobber YAML); an explicit empty list is a real "no rooms" value."""
-    from plugins.platforms.matrix.adapter import MatrixAdapter, _extra_csv_set, _resolve_max_message_length
+    from hermes_agent.plugins.platforms.matrix.adapter import MatrixAdapter, _extra_csv_set, _resolve_max_message_length
 
     yaml_config = PlatformConfig(enabled=True, extra={
         "free_response_rooms": ["!a:example.org", " !b:example.org "], "max_message_length": 4000,

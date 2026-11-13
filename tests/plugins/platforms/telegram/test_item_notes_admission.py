@@ -16,7 +16,7 @@ from hermes_agent.gateway.runtime_ownership import process_ownership
 from hermes_agent.gateway.session_authorities import active_authority
 from hermes_agent.gateway.session_ingress import admit_message
 from hermes_agent.gateway.session_ingress_context import native_callback, register_transport_home
-from plugins.platforms.telegram.adapter import TelegramAdapter
+from hermes_agent.plugins.platforms.telegram.adapter import TelegramAdapter
 from tests.gateway.test_telegram_documents import _make_document, _make_message
 from tests.waiting import async_wait_until
 

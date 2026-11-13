@@ -11,9 +11,9 @@ from hermes_agent.gateway.config import Platform, PlatformConfig
 from tests.gateway.conftest import _ensure_telegram_mock
 
 _ensure_telegram_mock()
-sys.modules.pop("plugins.platforms.telegram.adapter", None)
+sys.modules.pop("hermes_agent.plugins.platforms.telegram.adapter", None)
 
-from plugins.platforms.telegram.adapter import TelegramAdapter
+from hermes_agent.plugins.platforms.telegram.adapter import TelegramAdapter
 
 
 @pytest.mark.asyncio

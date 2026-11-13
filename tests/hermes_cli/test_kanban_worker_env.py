@@ -32,7 +32,7 @@ def test_keeps_the_instance_config_deployment_and_managed_dir(tmp_path, monkeypa
 
 def test_never_keeps_the_config_plane_credential(tmp_path, monkeypatch):
     """The deployment is kept, its credential is not: the assignee resolves its own and fails closed."""
-    from plugins.config_backends.remote.credentials import PLANE_CREDENTIAL_ENV_NAMES
+    from hermes_agent.plugins.config_backends.remote.credentials import PLANE_CREDENTIAL_ENV_NAMES
 
     monkeypatch.setenv("HERMES_CONFIG_BACKEND", "remote")
     deployment = {"HERMES_CONFIG_BACKEND", "HERMES_CONFIG_REMOTE_URL", "HERMES_CONFIG_INSTANCE_ID"}

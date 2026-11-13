@@ -16,8 +16,8 @@ import pytest
 
 from hermes_agent.gateway.config import PlatformConfig
 from hermes_agent.gateway.platforms.event import MessageType
-from plugins.platforms.telegram.adapter import TelegramAdapter
-from plugins.platforms.telegram.telegram_media_fetch import local_bot_api_path
+from hermes_agent.plugins.platforms.telegram.adapter import TelegramAdapter
+from hermes_agent.plugins.platforms.telegram.telegram_media_fetch import local_bot_api_path
 
 TOKEN = "123456:AAFakeToken_abc-DEF"
 DATA = b"local-mov-bytes"

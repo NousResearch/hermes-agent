@@ -49,7 +49,7 @@ class TestPlatformEnumDynamic:
         a2a-platform) resolves under the manifest name to the directory-name member (#116180)."""
         import hermes_agent.gateway.config as gc
 
-        gc._Platform__bundled_plugin_names = None  # force a rescan of plugins/platforms/
+        gc._Platform__bundled_plugin_names = None  # force a rescan of hermes_agent/plugins/platforms/
         gc._Platform__bundled_plugin_aliases = None
         try:
             by_dir = Platform("a2a")

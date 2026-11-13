@@ -26,7 +26,7 @@ def _chat_item(contact_id, *, file_id, file_name, msg_type="file", text="hi"):
 def simplex(tmp_path, monkeypatch):
     from hermes_agent.gateway.pairing import PairingStore
     from hermes_agent.gateway.run import GatewayRunner
-    from plugins.platforms.simplex.adapter import SimplexAdapter
+    from hermes_agent.plugins.platforms.simplex.adapter import SimplexAdapter
 
     for key in ("GATEWAY_ALLOWED_USERS", "GATEWAY_ALLOW_ALL_USERS", "SIMPLEX_ALLOW_ALL_USERS"):
         monkeypatch.delenv(key, raising=False)

@@ -12,10 +12,10 @@ from pathlib import Path
 
 import pytest
 
-from plugins.config_backends.remote import client
-from plugins.config_backends.remote import credentials as cred_mod
-from plugins.config_backends.remote import destination
-from plugins.config_backends.remote.credentials import PlaneCredentialError
+from hermes_agent.plugins.config_backends.remote import client
+from hermes_agent.plugins.config_backends.remote import credentials as cred_mod
+from hermes_agent.plugins.config_backends.remote import destination
+from hermes_agent.plugins.config_backends.remote.credentials import PlaneCredentialError
 
 from .stub_plane import CLIENT_ID, CLIENT_SECRET, INSTANCE, StubPlane, remote_env
 
@@ -164,8 +164,8 @@ def test_boot_fails_closed_on_forbidden_plane_url_without_retry(monkeypatch, tmp
     """Through the real backend: a forbidden destination is a configuration error, so boot fails
     closed at once (no retry sleeps) and nothing is sent."""
     from hermes_agent.hermes_cli.config_backend import ConfigBackendUnavailable
-    from plugins.config_backends import remote as remote_pkg
-    from plugins.config_backends.remote import backend as backend_mod
+    from hermes_agent.plugins.config_backends import remote as remote_pkg
+    from hermes_agent.plugins.config_backends.remote import backend as backend_mod
 
     home = tmp_path / "home"
     home.mkdir()
@@ -252,8 +252,8 @@ def test_display_url_drops_user_info(url, shown):
 def test_refused_url_never_echoes_user_info(monkeypatch, tmp_path):
     """The boot error, describe() and the destination errors show the URL without its user info."""
     from hermes_agent.hermes_cli.config_backend import ConfigBackendUnavailable
-    from plugins.config_backends import remote as remote_pkg
-    from plugins.config_backends.remote import backend as backend_mod
+    from hermes_agent.plugins.config_backends import remote as remote_pkg
+    from hermes_agent.plugins.config_backends.remote import backend as backend_mod
 
     home = tmp_path / "home"
     home.mkdir()
@@ -280,7 +280,7 @@ def test_refused_url_never_echoes_user_info(monkeypatch, tmp_path):
 
 
 def test_provenance_never_echoes_user_info(monkeypatch, tmp_path):
-    from plugins.config_backends import remote as remote_pkg
+    from hermes_agent.plugins.config_backends import remote as remote_pkg
 
     home = tmp_path / "home"
     home.mkdir()

@@ -46,7 +46,7 @@ def _make_adapter(**overrides):
 
     Mirrors the pattern in tests/gateway/test_whatsapp_*.py.
     """
-    from plugins.platforms.whatsapp_cloud.adapter import WhatsAppCloudAdapter
+    from hermes_agent.plugins.platforms.whatsapp_cloud.adapter import WhatsAppCloudAdapter
 
     adapter = WhatsAppCloudAdapter.__new__(WhatsAppCloudAdapter)
     adapter.platform = Platform.WHATSAPP_CLOUD
@@ -392,7 +392,7 @@ class TestWebhookSignature:
 
     def test_null_yaml_app_secret_is_unset_not_the_string_none(self):
         from hermes_agent.gateway.config import PlatformConfig
-        from plugins.platforms.whatsapp_cloud.adapter import WhatsAppCloudAdapter
+        from hermes_agent.plugins.platforms.whatsapp_cloud.adapter import WhatsAppCloudAdapter
 
         adapter = WhatsAppCloudAdapter(PlatformConfig(enabled=True, extra={"app_secret": None, "verify_token": None}))
         assert adapter._app_secret == "" and adapter._verify_token == ""
@@ -403,7 +403,7 @@ class TestWebhookReplay:
 
 
     def test_dedup_cache_evicts_oldest(self):
-        from plugins.platforms.whatsapp_cloud.adapter import WAMID_DEDUP_CACHE_SIZE
+        from hermes_agent.plugins.platforms.whatsapp_cloud.adapter import WAMID_DEDUP_CACHE_SIZE
         adapter = _make_adapter()
         # Fill the cache plus 5 extra
         for i in range(WAMID_DEDUP_CACHE_SIZE + 5):
@@ -787,7 +787,7 @@ class TestDownloadMedia:
 
     @pytest.mark.asyncio
     async def test_two_step_download_writes_cache_file(self, tmp_path):
-        from plugins.platforms.whatsapp_cloud import adapter as wac
+        from hermes_agent.plugins.platforms.whatsapp_cloud import adapter as wac
 
         adapter = _make_adapter()
         adapter._http_client = MagicMock()
@@ -836,7 +836,7 @@ class TestInboundMediaDispatch:
     @pytest.mark.asyncio
     async def test_inbound_text_document_injected_into_body(self, tmp_path):
         """A .txt document should have its content prepended to the body."""
-        from plugins.platforms.whatsapp_cloud import adapter as wac
+        from hermes_agent.plugins.platforms.whatsapp_cloud import adapter as wac
 
         adapter = _make_adapter(app_secret="key")
         captured: list = []
@@ -912,7 +912,7 @@ class TestInboundMediaDispatch:
             "from": "1555", "id": "wamid.doc2", "timestamp": "0", "type": "document",
             "document": {"id": "media_doc_abc", "mime_type": "text/plain", "filename": "notes.txt"},
         }
-        from plugins.platforms.whatsapp_cloud import adapter as wac
+        from hermes_agent.plugins.platforms.whatsapp_cloud import adapter as wac
         with _patch.object(wac, "_INBOUND_MEDIA_CACHE", tmp_path):
             event = await adapter._build_message_event_from_cloud(
                 raw_message, {"1555": "U"}, {"phone_number_id": "1"})
@@ -1402,7 +1402,7 @@ class TestSendTyping:
 
 class TestAllowlistNormalization:
     def test_normalize_allow_ids_strips_jid_suffix_and_punctuation(self):
-        from plugins.platforms.whatsapp_cloud.adapter import WhatsAppCloudAdapter
+        from hermes_agent.plugins.platforms.whatsapp_cloud.adapter import WhatsAppCloudAdapter
 
         ids = {"15551234567@s.whatsapp.net", "+1 (555) 765-4321", "15550000000"}
         normalized = WhatsAppCloudAdapter._normalize_allow_ids(ids)
@@ -1410,7 +1410,7 @@ class TestAllowlistNormalization:
 
     def test_bsuid_allowlist_entries_do_not_collide_on_digit_projection(self):
         """Regression for #138192: Cloud BSUIDs are principals, not phone aliases."""
-        from plugins.platforms.whatsapp_cloud.adapter import WhatsAppCloudAdapter
+        from hermes_agent.plugins.platforms.whatsapp_cloud.adapter import WhatsAppCloudAdapter
 
         adapter = object.__new__(WhatsAppCloudAdapter)
         allowlist = {"DE.1A2B3C4D5E"}
@@ -1425,7 +1425,7 @@ class TestBoundedInteractiveState:
         from collections import OrderedDict
 
         from hermes_agent.gateway.platforms.helpers import bounded_put
-        from plugins.platforms.whatsapp_cloud.adapter import INTERACTIVE_STATE_CACHE_SIZE
+        from hermes_agent.plugins.platforms.whatsapp_cloud.adapter import INTERACTIVE_STATE_CACHE_SIZE
 
         cache: OrderedDict = OrderedDict()
         for i in range(INTERACTIVE_STATE_CACHE_SIZE + 10):
@@ -1520,9 +1520,9 @@ class TestReplyContextResolution:
 
 def test_plugin_register_shape():
     """whatsapp_cloud ships as a bundled platform plugin (formerly a core _BUILTIN_ADAPTERS row)."""
-    from plugins.platforms.whatsapp_cloud import register
-    from plugins.platforms.whatsapp_cloud.adapter import WhatsAppCloudAdapter, check_whatsapp_cloud_requirements
-    from plugins.platforms.whatsapp_cloud.setup_wizard import run_whatsapp_cloud_setup
+    from hermes_agent.plugins.platforms.whatsapp_cloud import register
+    from hermes_agent.plugins.platforms.whatsapp_cloud.adapter import WhatsAppCloudAdapter, check_whatsapp_cloud_requirements
+    from hermes_agent.plugins.platforms.whatsapp_cloud.setup_wizard import run_whatsapp_cloud_setup
 
     captured: dict = {}
 

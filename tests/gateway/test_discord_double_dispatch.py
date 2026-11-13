@@ -31,8 +31,8 @@ from hermes_agent.gateway.config import PlatformConfig
 # mock at collection time.  We import the adapter AFTER that is done.
 # ---------------------------------------------------------------------------
 
-import plugins.platforms.discord.adapter as discord_platform
-from plugins.platforms.discord.adapter import DiscordAdapter
+import hermes_agent.plugins.platforms.discord.adapter as discord_platform
+from hermes_agent.plugins.platforms.discord.adapter import DiscordAdapter
 
 
 # ---------------------------------------------------------------------------

@@ -34,7 +34,7 @@ class _Mentions:
 
 
 def _allowed_mentions(extra):
-    from plugins.platforms.discord import adapter as discord_adapter
+    from hermes_agent.plugins.platforms.discord import adapter as discord_adapter
     with patch.object(discord_adapter, "DISCORD_AVAILABLE", True), \
             patch.object(discord_adapter, "discord", types.SimpleNamespace(AllowedMentions=_Mentions), create=True):
         return discord_adapter._build_allowed_mentions(extra)
@@ -76,10 +76,10 @@ def test_secondary_reads_own_yaml_and_never_the_launch_env(homes, monkeypatch):
         "  allowed_users: ['@owner:example.org']\n  ignore_user_patterns: ['^@ignored:']\n"
         "discord:\n  enabled: true\nslack:\n  enabled: true\n"
         "telegram:\n  enabled: true\n  proxy_url: http://127.0.0.1:18080\n", encoding="utf-8")
-    from plugins.platforms.discord.adapter import DiscordAdapter
-    from plugins.platforms.matrix.adapter import MatrixAdapter
-    from plugins.platforms.slack.adapter import SlackAdapter
-    from plugins.platforms.telegram import adapter as tg
+    from hermes_agent.plugins.platforms.discord.adapter import DiscordAdapter
+    from hermes_agent.plugins.platforms.matrix.adapter import MatrixAdapter
+    from hermes_agent.plugins.platforms.slack.adapter import SlackAdapter
+    from hermes_agent.plugins.platforms.telegram import adapter as tg
     with _secondary_scope(secondary):
         cfg = load_gateway_config()
         m = MatrixAdapter(cfg.platforms[Platform.MATRIX])
@@ -110,7 +110,7 @@ def test_explicit_env_beats_yaml_for_the_owning_profile(homes, monkeypatch):
         "discord:\n  allow_mentions:\n    everyone: true\ntelegram:\n  reactions: false\n", encoding="utf-8")
     monkeypatch.setenv("DISCORD_ALLOW_MENTION_EVERYONE", "false")
     monkeypatch.setenv("TELEGRAM_REACTIONS", "true")
-    from plugins.platforms.telegram.adapter import TelegramAdapter
+    from hermes_agent.plugins.platforms.telegram.adapter import TelegramAdapter
     cfg = load_gateway_config()
     assert _allowed_mentions(cfg.platforms[Platform.DISCORD].extra).everyone is False
     assert TelegramAdapter(cfg.platforms[Platform.TELEGRAM])._reactions_enabled() is True
@@ -119,8 +119,8 @@ def test_explicit_env_beats_yaml_for_the_owning_profile(homes, monkeypatch):
 def test_central_allow_bots_gate_honours_a_secondary_yaml_policy(homes):
     from hermes_agent.gateway.run import GatewayRunner
     from hermes_agent.gateway.session import SessionSource
-    from plugins.platforms.discord.adapter import DiscordAdapter
-    from plugins.platforms.slack.adapter import SlackAdapter
+    from hermes_agent.plugins.platforms.discord.adapter import DiscordAdapter
+    from hermes_agent.plugins.platforms.slack.adapter import SlackAdapter
     _, secondary = homes
     (secondary / "config.yaml").write_text(
         "discord:\n  enabled: true\n  allow_bots: all\nslack:\n  enabled: true\n  allow_bots: all\n", encoding="utf-8")
@@ -137,7 +137,7 @@ def test_central_allow_bots_gate_honours_a_secondary_yaml_policy(homes):
 
 
 def test_matrix_yaml_lists_gate_intake_and_approval(homes):
-    from plugins.platforms.matrix.adapter import MatrixAdapter
+    from hermes_agent.plugins.platforms.matrix.adapter import MatrixAdapter
     _, secondary = homes
     (secondary / "config.yaml").write_text(
         "matrix:\n  enabled: true\n  user_id: '@bot:example.org'\n"
@@ -160,7 +160,7 @@ def test_matrix_yaml_lists_gate_intake_and_approval(homes):
 def test_whatsapp_bridge_env_carries_the_secondary_effective_policy(homes, monkeypatch):
     """bridge.js gates DMs and group intake before Python: it must receive the adapter's resolved
     dm_policy/allow_from/group_policy, not the launch process's WHATSAPP_* values."""
-    from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
+    from hermes_agent.plugins.platforms.whatsapp.adapter import WhatsAppAdapter
     _, secondary = homes
     monkeypatch.setenv("WHATSAPP_DM_POLICY", "allowlist")
     monkeypatch.setenv("WHATSAPP_GROUP_POLICY", "disabled")
@@ -182,7 +182,7 @@ def test_whatsapp_bridge_env_carries_the_secondary_effective_policy(homes, monke
 def test_whatsapp_reply_prefix_isolated_across_profile_scopes(
     homes, monkeypatch, secondary_prefix
 ):
-    from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
+    from hermes_agent.plugins.platforms.whatsapp.adapter import WhatsAppAdapter
 
     launch, secondary = homes
     monkeypatch.setenv("WHATSAPP_REPLY_PREFIX", "Launch Bot: ")

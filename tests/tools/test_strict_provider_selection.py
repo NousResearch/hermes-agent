@@ -174,7 +174,7 @@ class TestImageFalStrictSelection:
 
 class TestVideoFalStrictSelection:
     def test_nous_selection_routes_managed_even_with_fal_key(self):
-        from plugins.video_gen import fal as vf
+        from hermes_agent.plugins.video_gen import fal as vf
 
         with patch("hermes_agent.tools.tool_backend_helpers.read_selection", return_value="nous"), \
              patch("hermes_agent.tools.tool_backend_helpers.fal_key_is_configured", return_value=True), \
@@ -182,7 +182,7 @@ class TestVideoFalStrictSelection:
             assert vf._resolve_managed_fal_video_gateway() is MANAGED
 
     def test_fal_selection_missing_key_errors_without_managed_call(self):
-        from plugins.video_gen import fal as vf
+        from hermes_agent.plugins.video_gen import fal as vf
 
         with patch("hermes_agent.tools.tool_backend_helpers.read_selection", return_value="fal"), \
              patch("hermes_agent.tools.tool_backend_helpers.fal_key_is_configured", return_value=False), \
@@ -194,7 +194,7 @@ class TestVideoFalStrictSelection:
         assert "FAL_KEY" in str(exc.value)
 
     def test_never_configured_autodetect_unchanged(self):
-        from plugins.video_gen import fal as vf
+        from hermes_agent.plugins.video_gen import fal as vf
 
         with patch("hermes_agent.tools.tool_backend_helpers.read_selection", return_value=None), \
              patch("hermes_agent.tools.tool_backend_helpers.fal_key_is_configured", return_value=True):
@@ -247,13 +247,13 @@ class TestSttStrictSelection:
 
 class TestBrowserUseStrictSelection:
     def _provider(self):
-        from plugins.browser.browser_use.provider import BrowserUseBrowserProvider
+        from hermes_agent.plugins.browser.browser_use.provider import BrowserUseBrowserProvider
 
         return BrowserUseBrowserProvider()
 
     def test_nous_selection_routes_managed_even_with_direct_key(self):
         provider = self._provider()
-        with patch("plugins.browser.browser_use.provider.get_secret", return_value="bu-key"), \
+        with patch("hermes_agent.plugins.browser.browser_use.provider.get_secret", return_value="bu-key"), \
              patch("hermes_agent.tools.tool_backend_helpers.read_selection", return_value="nous"), \
              patch("hermes_agent.tools.managed_tool_gateway.resolve_managed_tool_gateway", return_value=MANAGED):
             config = provider._get_config_or_none()
@@ -262,7 +262,7 @@ class TestBrowserUseStrictSelection:
 
     def test_vendor_selection_missing_key_errors_without_managed_call(self):
         provider = self._provider()
-        with patch("plugins.browser.browser_use.provider.get_secret", return_value=""), \
+        with patch("hermes_agent.plugins.browser.browser_use.provider.get_secret", return_value=""), \
              patch("hermes_agent.tools.tool_backend_helpers.read_selection", return_value="browser-use"), \
              patch("hermes_agent.tools.managed_tool_gateway.resolve_managed_tool_gateway") as gw:
             with pytest.raises(ValueError) as exc:
@@ -273,7 +273,7 @@ class TestBrowserUseStrictSelection:
 
     def test_never_configured_key_still_routes_direct(self):
         provider = self._provider()
-        with patch("plugins.browser.browser_use.provider.get_secret", return_value="bu-key"), \
+        with patch("hermes_agent.plugins.browser.browser_use.provider.get_secret", return_value="bu-key"), \
              patch("hermes_agent.tools.tool_backend_helpers.read_selection", return_value=None):
             config = provider._get_config_or_none()
         assert config["managed_mode"] is False

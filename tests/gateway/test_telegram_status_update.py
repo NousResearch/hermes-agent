@@ -65,7 +65,7 @@ def _install_fake_telegram(monkeypatch):
 @pytest.fixture
 def adapter(monkeypatch):
     _install_fake_telegram(monkeypatch)
-    from plugins.platforms.telegram.adapter import TelegramAdapter
+    from hermes_agent.plugins.platforms.telegram.adapter import TelegramAdapter
 
     a = TelegramAdapter(PlatformConfig(enabled=True, token="fake-token"))
     a._bot = MagicMock()

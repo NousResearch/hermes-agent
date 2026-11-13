@@ -64,7 +64,7 @@ def test_telegram_send_failure_populates_error_kind():
     from unittest.mock import AsyncMock, MagicMock
 
     from hermes_agent.gateway.config import PlatformConfig
-    from plugins.platforms.telegram.adapter import TelegramAdapter
+    from hermes_agent.plugins.platforms.telegram.adapter import TelegramAdapter
 
     cfg = PlatformConfig(enabled=True, token="fake-token", extra={})
     adapter = TelegramAdapter(cfg)

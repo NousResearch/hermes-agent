@@ -50,7 +50,7 @@ class TimedOut(Exception):
 
 
 def _telegram_classifier():
-    from plugins.platforms.telegram.adapter import TelegramAdapter
+    from hermes_agent.plugins.platforms.telegram.adapter import TelegramAdapter
 
     return TelegramAdapter._looks_like_auth_error
 
@@ -93,7 +93,7 @@ class PrivilegedIntentsRequired(Exception):
 
 
 def _discord_classifier():
-    from plugins.platforms.discord.adapter import DiscordAdapter
+    from hermes_agent.plugins.platforms.discord.adapter import DiscordAdapter
 
     # Instance-bound (the intents branch reads the adapter's allowlists to
     # tailor its guidance); a bare instance with empty allowlists suffices.
@@ -138,8 +138,8 @@ class TestPhotonSidecarStartupClassification:
     def _make_adapter(self, monkeypatch):
         monkeypatch.setenv("PHOTON_PROJECT_ID", "pid")
         monkeypatch.setenv("PHOTON_PROJECT_SECRET", "psecret")
-        from plugins.platforms.photon import adapter as photon_adapter
-        from plugins.platforms.photon.adapter import PhotonAdapter
+        from hermes_agent.plugins.platforms.photon import adapter as photon_adapter
+        from hermes_agent.plugins.platforms.photon.adapter import PhotonAdapter
 
         # Stand-in for PM's node; the user's PATH node is never picked up.
         monkeypatch.setattr(photon_adapter, "find_node_executable", lambda _name: "/pm/node")
@@ -148,7 +148,7 @@ class TestPhotonSidecarStartupClassification:
 
     @pytest.mark.asyncio
     async def test_typed_startup_error_sets_nonretryable_fatal(self, monkeypatch):
-        from plugins.platforms.photon import adapter as photon_adapter
+        from hermes_agent.plugins.platforms.photon import adapter as photon_adapter
 
         adapter = self._make_adapter(monkeypatch)
 
@@ -183,7 +183,7 @@ class TestPhotonSidecarStartupClassification:
         assert adapter.fatal_error_retryable is True
 
     def test_deps_install_failure_raises_typed_nonretryable(self, monkeypatch):
-        from plugins.platforms.photon import adapter as photon_adapter
+        from hermes_agent.plugins.platforms.photon import adapter as photon_adapter
 
         adapter = self._make_adapter(monkeypatch)
         monkeypatch.setattr(photon_adapter, "sidecar_deps_installed", lambda: False)
@@ -208,7 +208,7 @@ class TestEmailConnectClassification:
             "EMAIL_SMTP_HOST": "smtp.example.com",
         }.items():
             monkeypatch.setenv(key, value)
-        from plugins.platforms.email.adapter import EmailAdapter
+        from hermes_agent.plugins.platforms.email.adapter import EmailAdapter
 
         return EmailAdapter(PlatformConfig(enabled=True, token=""))
 
@@ -218,7 +218,7 @@ class TestEmailConnectClassification:
         # "no info = transient" branch then retried forever with zero owner
         # signal ("stuck retrying 22h").
         adapter = self._make_adapter(monkeypatch)
-        from plugins.platforms.email import adapter as email_adapter
+        from hermes_agent.plugins.platforms.email import adapter as email_adapter
 
         def _raise(*a, **k):
             raise email_adapter.imaplib.IMAP4.error(b"[AUTHENTICATIONFAILED]")
@@ -237,7 +237,7 @@ class TestEmailConnectClassification:
         import smtplib
 
         adapter = self._make_adapter(monkeypatch)
-        from plugins.platforms.email import adapter as email_adapter
+        from hermes_agent.plugins.platforms.email import adapter as email_adapter
 
         imap = MagicMock()
         imap.uid.return_value = ("OK", [b""])
@@ -256,7 +256,7 @@ class TestEmailConnectClassification:
     @pytest.mark.asyncio
     async def test_smtp_transient_failure_stays_retryable(self, monkeypatch):
         adapter = self._make_adapter(monkeypatch)
-        from plugins.platforms.email import adapter as email_adapter
+        from hermes_agent.plugins.platforms.email import adapter as email_adapter
 
         imap = MagicMock()
         imap.uid.return_value = ("OK", [b""])

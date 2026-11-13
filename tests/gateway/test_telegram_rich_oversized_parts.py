@@ -18,8 +18,8 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from hermes_agent.gateway.config import PlatformConfig
-from plugins.platforms.telegram.adapter import TelegramAdapter
-from plugins.platforms.telegram.rich_parts import split_rich_parts
+from hermes_agent.plugins.platforms.telegram.adapter import TelegramAdapter
+from hermes_agent.plugins.platforms.telegram.rich_parts import split_rich_parts
 
 
 def _make_adapter(extra=None):
@@ -231,7 +231,7 @@ def test_standalone_send_delivers_an_oversized_rich_message_in_parts(monkeypatch
     import asyncio
     import sys
 
-    from plugins.platforms.telegram.standalone import _send_telegram
+    from hermes_agent.plugins.platforms.telegram.standalone import _send_telegram
 
     for var in ("TELEGRAM_PROXY", "HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"):
         monkeypatch.delenv(var, raising=False)

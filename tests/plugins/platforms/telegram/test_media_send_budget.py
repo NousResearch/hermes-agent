@@ -12,10 +12,10 @@ import asyncio
 from types import SimpleNamespace
 
 from hermes_agent.gateway.config import PlatformConfig
-from plugins.platforms.telegram import adapter as tg
-from plugins.platforms.telegram import standalone
-from plugins.platforms.telegram import telegram_media_budget as budget
-from plugins.platforms.telegram.adapter import TelegramAdapter
+from hermes_agent.plugins.platforms.telegram import adapter as tg
+from hermes_agent.plugins.platforms.telegram import standalone
+from hermes_agent.plugins.platforms.telegram import telegram_media_budget as budget
+from hermes_agent.plugins.platforms.telegram.adapter import TelegramAdapter
 
 
 class _Bot:

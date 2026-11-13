@@ -89,7 +89,7 @@ class TestBaseDefaultLoop:
         assert a.sent_files[0][1] == str(local)
 
 
-from plugins.platforms.telegram.adapter import TelegramAdapter
+from hermes_agent.plugins.platforms.telegram.adapter import TelegramAdapter
 
 
 class TestTelegramMultiImage:
@@ -177,7 +177,7 @@ def _ensure_discord_mock():
 
 _ensure_discord_mock()
 
-from plugins.platforms.discord.adapter import DiscordAdapter
+from hermes_agent.plugins.platforms.discord.adapter import DiscordAdapter
 
 
 class TestDiscordMultiImage:
@@ -191,7 +191,7 @@ class TestDiscordMultiImage:
 
     def test_url_batch_follows_safe_redirect_location_header(self, adapter, monkeypatch):
         """Redirect handling preserves aiohttp's case-insensitive Location behavior."""
-        import plugins.platforms.discord.adapter as discord_adapter
+        import hermes_agent.plugins.platforms.discord.adapter as discord_adapter
 
         public_url = "https://cdn.example.test/image.png"
         redirected_url = "https://assets.example.test/image.png"
@@ -253,7 +253,7 @@ class TestDiscordMultiImage:
         mock_channel.send.assert_awaited_once()
 
     def test_send_image_blocks_private_redirect_before_send(self, adapter, monkeypatch):
-        import plugins.platforms.discord.adapter as discord_adapter
+        import hermes_agent.plugins.platforms.discord.adapter as discord_adapter
 
         public_url = "https://cdn.example.test/image.png"
         private_url = "http://169.254.169.254/latest/meta-data/"
@@ -325,7 +325,7 @@ def _ensure_slack_mock():
 
 _ensure_slack_mock()
 
-from plugins.platforms.slack.adapter import SlackAdapter
+from hermes_agent.plugins.platforms.slack.adapter import SlackAdapter
 
 
 class TestSlackMultiImage:
@@ -362,7 +362,7 @@ class TestSlackMultiImage:
 # ---------------------------------------------------------------------------
 
 
-from plugins.platforms.mattermost.adapter import MattermostAdapter
+from hermes_agent.plugins.platforms.mattermost.adapter import MattermostAdapter
 
 
 class TestMattermostMultiImage:
@@ -401,7 +401,7 @@ class TestMattermostMultiImage:
 # ---------------------------------------------------------------------------
 
 
-from plugins.platforms.email.adapter import EmailAdapter
+from hermes_agent.plugins.platforms.email.adapter import EmailAdapter
 
 
 class TestEmailMultiImage:

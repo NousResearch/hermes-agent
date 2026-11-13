@@ -21,8 +21,8 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from hermes_agent.gateway.config import PlatformConfig
-from plugins.platforms.telegram import adapter as telegram_mod
-from plugins.platforms.telegram.adapter import (
+from hermes_agent.plugins.platforms.telegram import adapter as telegram_mod
+from hermes_agent.plugins.platforms.telegram.adapter import (
     TelegramAdapter,
     _coerce_duration_seconds,
     _probe_voice_duration_seconds,

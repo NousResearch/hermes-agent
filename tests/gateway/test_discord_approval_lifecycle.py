@@ -8,7 +8,7 @@ import pytest
 
 from hermes_agent.agent.i18n import t
 from hermes_agent.gateway.config import PlatformConfig
-from plugins.platforms.discord import adapter as discord_adapter
+from hermes_agent.plugins.platforms.discord import adapter as discord_adapter
 from hermes_agent.tools import approval
 from hermes_agent.tools.approval_gateway_wait import _ApprovalEntry
 

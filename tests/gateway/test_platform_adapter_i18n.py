@@ -14,9 +14,9 @@ from hermes_agent.agent import i18n
 from hermes_agent.agent.i18n import t
 from hermes_agent.gateway.platforms.base import utf16_len
 
-import plugins.platforms.discord.adapter as discord_adapter
-import plugins.platforms.telegram.adapter as telegram_adapter
-from plugins.platforms.discord.adapter import (
+import hermes_agent.plugins.platforms.discord.adapter as discord_adapter
+import hermes_agent.plugins.platforms.telegram.adapter as telegram_adapter
+from hermes_agent.plugins.platforms.discord.adapter import (
     _DISCORD_APP_COMMAND_TEXT_LIMIT,
     _DISCORD_BUTTON_LABEL_LIMIT,
     _NATIVE_SLASH_COMMAND_SPECS,
@@ -24,7 +24,7 @@ from plugins.platforms.discord.adapter import (
     ExecApprovalView,
     _native_slash_commands,
 )
-from plugins.platforms.telegram.adapter import TelegramAdapter, _TOAST_LIMIT
+from hermes_agent.plugins.platforms.telegram.adapter import TelegramAdapter, _TOAST_LIMIT
 
 
 @pytest.fixture

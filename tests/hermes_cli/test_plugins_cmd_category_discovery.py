@@ -133,7 +133,7 @@ class TestDiscoverAllPlugins:
     @patch("hermes_agent.hermes_cli.plugins.get_bundled_plugins_dir")
     @patch("hermes_agent.hermes_cli.plugins_cmd._plugins_dir")
     def test_bundled_model_providers_skipped(self, mock_user_dir, mock_bundled_dir, tmp_path):
-        """``plugins/model-providers/`` has its own provider registry loader.
+        """``hermes_agent/plugins/model-providers/`` has its own provider registry loader.
 
         Bundled providers should not appear in ``hermes plugins list`` as
         general opt-in plugins, or users get a misleading enable/disable

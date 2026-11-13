@@ -550,7 +550,7 @@ class GatewayProfileReconcileMixin:
                     from hermes_agent.hermes_state_registry import close_all_under
                     close_all_under(home)
                 with _log_suppressed(logging.DEBUG, "memory-store release failed", exc_info=True):
-                    from plugins.memory import import_provider_module  # catalog plugin since it left core
+                    from hermes_agent.plugins.memory import import_provider_module  # catalog plugin since it left core
                     import_provider_module("holographic", "store").MemoryStore.release_all_under(home)
                 # The gateway process is a second holder the CLI-side delete cannot reach: its routed
                 # log files (logs/.__agent.lock, logs/.__errors.lock) and its scoped MCP servers'

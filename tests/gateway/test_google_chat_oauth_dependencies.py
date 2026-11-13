@@ -7,7 +7,7 @@ from importlib.metadata import PackageNotFoundError
 import pytest
 
 import pm
-from plugins.platforms.google_chat import oauth
+from hermes_agent.plugins.platforms.google_chat import oauth
 
 
 def test_stale_google_transitives_are_reported_missing(monkeypatch):
@@ -46,7 +46,7 @@ def test_installer_repairs_stale_transitives_through_pm(monkeypatch, capsys):
 
 def test_ensure_deps_surfaces_install_reason(monkeypatch):
     """A refused install must reach the registry's log with its reason, not a bare False."""
-    from plugins.platforms.google_chat import adapter
+    from hermes_agent.plugins.platforms.google_chat import adapter
 
     monkeypatch.setattr(adapter, "GOOGLE_CHAT_AVAILABLE", False)
 
@@ -62,7 +62,7 @@ def test_ensure_deps_requests_every_extra_before_reporting_a_restart(monkeypatch
     """A successful install of the FIRST extra raises InstallError("restart Hermes…"); stopping
     there left the second extra uninstalled, so the restart landed right back here. Both are
     requested in one pass and the first failure is what the registry sees."""
-    from plugins.platforms.google_chat import adapter
+    from hermes_agent.plugins.platforms.google_chat import adapter
 
     monkeypatch.setattr(adapter, "GOOGLE_CHAT_AVAILABLE", False)
     requested = []

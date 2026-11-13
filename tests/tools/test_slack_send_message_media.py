@@ -1,6 +1,6 @@
 """Slack media delivery for send_message.
 
-Covers ``plugins/platforms/slack/adapter.py::_standalone_send`` media path:
+Covers ``hermes_agent/plugins/platforms/slack/adapter.py::_standalone_send`` media path:
 text+file, media-only, caption-on-upload, missing-file warnings.
 
 ``slack_sdk`` is optional in CI, so tests inject a fake module into
@@ -19,7 +19,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from plugins.platforms.slack.adapter import _standalone_send
+from hermes_agent.plugins.platforms.slack.adapter import _standalone_send
 
 
 def _pconfig(token: str = "xoxb-test"):

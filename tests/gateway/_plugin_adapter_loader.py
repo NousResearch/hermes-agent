@@ -3,10 +3,10 @@
 Every platform plugin under ``plugins/platforms/<name>/`` ships its own
 ``adapter.py``. If two tests independently do::
 
-    sys.path.insert(0, "plugins/platforms/irc")
+    sys.path.insert(0, "hermes_agent/plugins/platforms/irc")
     from adapter import IRCAdapter
 
-    sys.path.insert(0, "plugins/platforms/teams")
+    sys.path.insert(0, "hermes_agent/plugins/platforms/teams")
     from adapter import TeamsAdapter
 
 …then whichever collects first in a shared process wins
@@ -33,7 +33,7 @@ from types import ModuleType
 
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
-_PLUGINS_DIR = _REPO_ROOT / "plugins" / "platforms"
+_PLUGINS_DIR = _REPO_ROOT / "hermes_agent" / "plugins" / "platforms"
 
 
 def load_plugin_adapter(plugin_name: str) -> ModuleType:

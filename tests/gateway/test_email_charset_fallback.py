@@ -11,7 +11,7 @@ decoding must degrade, never raise.
 import email as email_lib
 from email.message import EmailMessage
 
-from plugins.platforms.email.adapter import (
+from hermes_agent.plugins.platforms.email.adapter import (
     _decode_header_value,
     _extract_text_body,
     _safe_decode,

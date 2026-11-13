@@ -285,8 +285,8 @@ def resolve_plugin_load_order(manifests: Mapping[str, PluginManifest]) -> list[s
 
 
 def _detect_kind_from_source(source_text: str) -> Optional[str]:
-    """Kind implied by source markers (mirrors plugins/memory ``_is_memory_provider_dir`` and
-    plugins/cron_providers ``_is_cron_provider_dir``): memory-, cron- or computer-use-provider markers -> ``exclusive``;
+    """Kind implied by source markers (mirrors hermes_agent/plugins/memory ``_is_memory_provider_dir`` and
+    hermes_agent/plugins/cron_providers ``_is_cron_provider_dir``): memory-, cron- or computer-use-provider markers -> ``exclusive``;
     ``register_provider`` + ``ProviderProfile`` -> ``model-provider``; else ``None``. Keeps these kinds out
     of the general manager's eager import (its PluginContext has no ``register_cron_scheduler``, #62951)."""
     if any(marker in source_text for marker in (
@@ -314,7 +314,7 @@ def resolve_module_origin(module_name: str) -> Optional[str]:
     """Return a module's source path WITHOUT importing it, or ``None``. ``find_spec`` on a dotted name imports
     the parent package, so only the top-level name uses it; remaining segments are walked through
     ``submodule_search_locations`` by hand. Namespace/zipped/extension modules return ``None``. Shared with
-    ``plugins/memory/__init__.py``."""
+    ``hermes_agent/plugins/memory/__init__.py``."""
     parts = [p for p in module_name.split(".") if p]
     if not parts:
         return None

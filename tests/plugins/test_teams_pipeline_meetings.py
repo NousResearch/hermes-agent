@@ -4,11 +4,11 @@ from pathlib import Path
 
 import pytest
 
-from plugins.teams_pipeline.meetings import (
+from hermes_agent.plugins.teams_pipeline.meetings import (
     download_transcript_text,
     resolve_meeting_reference,
 )
-from plugins.teams_pipeline.models import MeetingArtifact, TeamsMeetingRef
+from hermes_agent.plugins.teams_pipeline.models import MeetingArtifact, TeamsMeetingRef
 
 
 class FakeGraphClient:

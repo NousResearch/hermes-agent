@@ -11,7 +11,7 @@ a name holding newlines could forge whole context lines. The shared-session
 
 from types import SimpleNamespace
 
-from plugins.platforms.telegram.adapter import TelegramAdapter
+from hermes_agent.plugins.platforms.telegram.adapter import TelegramAdapter
 
 
 def _attributed(user_name, text="go AB12", user_id="12345"):

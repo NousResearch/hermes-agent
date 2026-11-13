@@ -19,7 +19,7 @@ async def test_new_moves_a_queued_wake_to_the_fresh_session(monkeypatch, settles
     from hermes_agent.gateway.session_automation import admit_route_wake
     from hermes_agent.gateway.session_results import execution_result
     from hermes_agent.hermes_state_runtime import list_session_admissions
-    from plugins.platforms.discord.adapter import DiscordAdapter
+    from hermes_agent.plugins.platforms.discord.adapter import DiscordAdapter
 
     monkeypatch.setenv('DISCORD_ALLOWED_USERS', '42')
     runner = GatewayRunner(GatewayConfig())

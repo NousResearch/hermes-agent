@@ -610,14 +610,14 @@ _MEMORY_PROVIDER_CHECKS: dict = {}
 
 def _memory_provider_generic(name: str) -> None:
     """Generic check for every memory provider (honcho, hindsight, mem0, openviking, ...)."""
-    from plugins.memory import load_memory_provider
+    from hermes_agent.plugins.memory import load_memory_provider
     _provider = load_memory_provider(name)
     if _provider and _provider.is_available():
         check_ok(f"{name} provider active")
     elif _provider:
         check_warn(f"{name} configured but not available", "run: hermes memory status")
     else:
-        from plugins.memory import find_provider_dir
+        from hermes_agent.plugins.memory import find_provider_dir
         from hermes_agent.hermes_cli.memory_provider_migration import catalog_install_hint
         hint = catalog_install_hint(name, category="memory") if find_provider_dir(name) is None else None
         check_warn(f"{name} plugin not found", f"run: {hint or 'hermes memory setup'}")
@@ -631,7 +631,7 @@ def _check_memory_provider(should_fix: bool, f: Finding) -> None:
     if is_core_memory_provider(name):
         check_ok("Built-in memory active", "(no external provider configured — this is fine)")
         return
-    from plugins.memory import parked_provider_notice
+    from hermes_agent.plugins.memory import parked_provider_notice
     if parked_provider_notice(name):
         check_warn(f"{name} is turned off", "(plugins.disabled lists it, so built-in memory is used)")
         f.manual_issues.append(f"Memory provider '{name}' is turned off — run: hermes plugins enable {name}")

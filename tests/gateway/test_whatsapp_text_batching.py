@@ -11,7 +11,7 @@ Batch delays are read from ``config.extra`` (config.yaml), not env vars.
 
 from hermes_agent.gateway.config import Platform, PlatformConfig
 from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
-from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
+from hermes_agent.plugins.platforms.whatsapp.adapter import WhatsAppAdapter
 from hermes_agent.gateway.session import SessionSource
 
 

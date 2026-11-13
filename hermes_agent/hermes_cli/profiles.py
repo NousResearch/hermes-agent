@@ -527,7 +527,7 @@ def check_alias_collision(name: str) -> Optional[str]:
         return f"'{canon}' is a reserved name"
     if canon in _HERMES_SUBCOMMANDS:
         return f"'{canon}' conflicts with a hermes subcommand"
-    from plugins.memory import list_memory_provider_names
+    from hermes_agent.plugins.memory import list_memory_provider_names
     if canon in list_memory_provider_names():  # a memory provider registers `hermes <name>`
         return f"'{canon}' conflicts with the `hermes {canon}` memory provider command"
     try:
@@ -1753,7 +1753,7 @@ def delete_profile(name: str, yes: bool = False) -> Path:
     # Inside serve (DELETE /api/profiles/<name>) the handles live here; from the CLI no-op.
     with contextlib.suppress(Exception):  # best-effort: never block the delete on the release path
         # 2c. See #88347.
-        from plugins.memory import import_provider_module
+        from hermes_agent.plugins.memory import import_provider_module
         _released = import_provider_module("holographic", "store").MemoryStore.release_all_under(profile_dir)
         if _released:
             print(f"✓ Released {_released} memory-store connection(s) held by this process")

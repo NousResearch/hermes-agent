@@ -17,8 +17,8 @@ import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from plugins.platforms.telegram import adapter as tg_adapter
-from plugins.platforms.telegram.adapter import TelegramAdapter
+from hermes_agent.plugins.platforms.telegram import adapter as tg_adapter
+from hermes_agent.plugins.platforms.telegram.adapter import TelegramAdapter
 
 
 async def _hang_forever(**kwargs):

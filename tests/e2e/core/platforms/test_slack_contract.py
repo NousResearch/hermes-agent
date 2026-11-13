@@ -1,4 +1,4 @@
-"""Messaging-adapter contract, Slack leg: the REAL gateway + REAL ``plugins/platforms/slack`` adapter.
+"""Messaging-adapter contract, Slack leg: the REAL gateway + REAL ``hermes_agent/plugins/platforms/slack`` adapter.
 
 The child is ``hermes gateway run`` on a throwaway HOME; the adapter's own SDK (slack_bolt Socket Mode + slack_sdk via the ``slack_shim`` sitecustomize) talks to
 ``tests/fakes/platforms/slack_standin.py``, a local stand-in shaped per the platform's published

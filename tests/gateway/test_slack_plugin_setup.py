@@ -9,7 +9,7 @@ those source modules.
 """
 import hermes_agent.hermes_cli.config as config_mod
 import hermes_agent.hermes_cli.cli_output as cli_output_mod
-from plugins.platforms.slack.adapter import interactive_setup
+from hermes_agent.plugins.platforms.slack.adapter import interactive_setup
 
 
 def _patch_setup_io(monkeypatch, prompts, saved, removed, existing):

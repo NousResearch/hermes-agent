@@ -27,7 +27,7 @@ from tests.tools.conftest import register_all_web_providers
 class TestSearXNGSearchProviderIsConfigured:
     def test_configured_when_url_set(self, monkeypatch):
         monkeypatch.setenv("SEARXNG_URL", "http://localhost:8080")
-        from plugins.web.searxng.provider import SearXNGWebSearchProvider
+        from hermes_agent.plugins.web.searxng.provider import SearXNGWebSearchProvider
         assert SearXNGWebSearchProvider().is_available() is True
 
 
@@ -53,7 +53,7 @@ class TestSearXNGSearchProviderSearch:
 
     def test_happy_path_returns_normalized_results(self, monkeypatch):
         monkeypatch.setenv("SEARXNG_URL", "http://localhost:8080")
-        from plugins.web.searxng.provider import SearXNGWebSearchProvider
+        from hermes_agent.plugins.web.searxng.provider import SearXNGWebSearchProvider
         mock_resp = self._make_mock_response(self._SAMPLE_RESPONSE)
 
         with patch("httpx.get", return_value=mock_resp):
@@ -70,7 +70,7 @@ class TestSearXNGSearchProviderSearch:
     def test_results_sorted_by_score_descending(self, monkeypatch):
         """Results should be sorted by score before limit is applied."""
         monkeypatch.setenv("SEARXNG_URL", "http://localhost:8080")
-        from plugins.web.searxng.provider import SearXNGWebSearchProvider
+        from hermes_agent.plugins.web.searxng.provider import SearXNGWebSearchProvider
         unordered = {
             "results": [
                 {"title": "Low",  "url": "https://low.example.com",  "content": "", "score": 0.1},
@@ -92,7 +92,7 @@ class TestSearXNGSearchProviderSearch:
     def test_trailing_slash_stripped_from_url(self, monkeypatch):
         """Base URL trailing slash should not produce double-slash in endpoint."""
         monkeypatch.setenv("SEARXNG_URL", "http://localhost:8080/")
-        from plugins.web.searxng.provider import SearXNGWebSearchProvider
+        from hermes_agent.plugins.web.searxng.provider import SearXNGWebSearchProvider
         mock_resp = self._make_mock_response({"results": []})
 
         calls = []

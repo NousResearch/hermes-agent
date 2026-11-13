@@ -59,7 +59,7 @@ class TestCommandCodeReasoningWireControls:
         assert top_level == {}
 
     def test_deepseek_effort_matches_native_profile_and_others_noop(self, commandcode_profile):
-        from plugins.model_providers.deepseek import deepseek
+        from hermes_agent.plugins.model_providers.deepseek import deepseek
 
         rc = {"enabled": True, "effort": "low"}
         expected = deepseek.build_api_kwargs_extras(reasoning_config=rc, model="deepseek-v4.1-flash")

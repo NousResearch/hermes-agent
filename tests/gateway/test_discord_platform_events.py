@@ -73,7 +73,7 @@ _ensure_discord_mock()
 # checks in the adapter match the class our fixtures instantiate.
 _DiscordThread = sys.modules["discord"].Thread
 
-from plugins.platforms.discord.adapter import DiscordAdapter
+from hermes_agent.plugins.platforms.discord.adapter import DiscordAdapter
 
 
 def _adapter() -> DiscordAdapter:

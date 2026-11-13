@@ -1,6 +1,6 @@
 """Tests for the disk-cleanup plugin.
 
-Covers the bundled plugin at ``plugins/disk-cleanup/``:
+Covers the bundled plugin at ``hermes_agent/plugins/disk-cleanup/``:
 
   * ``disk_cleanup`` library: track / forget / dry_run / quick / status,
     ``is_safe_path`` and ``guess_category`` filtering.
@@ -42,7 +42,7 @@ def _isolate_env(tmp_path, monkeypatch):
 def _load_lib():
     """Import the plugin's library module directly from the repo path."""
     repo_root = Path(__file__).resolve().parents[2]
-    lib_path = repo_root / "plugins" / "disk-cleanup" / "disk_cleanup.py"
+    lib_path = repo_root / "hermes_agent" / "plugins" / "disk-cleanup" / "disk_cleanup.py"
     spec = importlib.util.spec_from_file_location(
         "disk_cleanup_under_test", lib_path
     )
@@ -67,7 +67,7 @@ def _run_tool(pi, tool_name, args, create=None, result="OK", **ids):
 def _load_plugin_init():
     """Import the plugin's __init__.py (which depends on the library)."""
     repo_root = Path(__file__).resolve().parents[2]
-    plugin_dir = repo_root / "plugins" / "disk-cleanup"
+    plugin_dir = repo_root / "hermes_agent" / "plugins" / "disk-cleanup"
     # Use the PluginManager's module naming convention so relative imports work.
     spec = importlib.util.spec_from_file_location(
         "hermes_plugins.disk_cleanup",
@@ -700,7 +700,7 @@ class TestBundledDiscovery:
         assert loaded.error == "listed in both plugins.enabled and plugins.disabled — disabled wins"
 
     def test_memory_and_context_engine_subdirs_skipped(self, _isolate_env):
-        """Bundled scan must NOT pick up plugins/memory or plugins/context_engine
+        """Bundled scan must NOT pick up hermes_agent/plugins/memory or hermes_agent/plugins/context_engine
         as top-level plugins — they have their own discovery paths."""
         self._write_enabled_config(
             _isolate_env, ["memory", "context_engine", "disk-cleanup"]

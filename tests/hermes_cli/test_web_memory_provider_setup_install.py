@@ -55,7 +55,7 @@ def test_setup_admits_real_provider_union_and_keeps_selection_on_failure(tmp_pat
     monkeypatch.setattr("pm.paths.repo_root", lambda: core)
     monkeypatch.setattr("pm._uv._toolchain", lambda **kwargs: (Path(uv), Path(sys.executable)))
     monkeypatch.setattr("pm.client.is_runtime", lambda: True)
-    monkeypatch.setattr("plugins.memory.find_provider_dir", lambda name: candidate)
+    monkeypatch.setattr("hermes_agent.plugins.memory.find_provider_dir", lambda name: candidate)
     # An importable ambient module must not bypass admission or pin checks.
     (tmp_path / "provider_dep.py").write_text('VALUE="ambient, not admitted"\n')
     monkeypatch.syspath_prepend(str(tmp_path))
@@ -115,7 +115,7 @@ def test_setup_reports_restart_and_preserves_external_steps(tmp_path, monkeypatc
             {"name": "external-sidecar", "check": f'{shlex.quote(sys.executable)} -c "pass"'},
         ],
     }))
-    monkeypatch.setattr("plugins.memory.find_provider_dir", lambda name: provider)
+    monkeypatch.setattr("hermes_agent.plugins.memory.find_provider_dir", lambda name: provider)
     monkeypatch.setattr(mp, "_load_memory_provider", lambda name: None)
     monkeypatch.setattr(mp, "_discover_memory_provider_statuses", list)
     # The resolver seam is isolated; real union behavior is exercised above.
@@ -135,7 +135,7 @@ def test_setup_reports_restart_and_preserves_external_steps(tmp_path, monkeypatc
 
 def test_malformed_candidate_manifest_is_not_a_successful_noop(tmp_path, monkeypatch):
     (tmp_path / "plugin.yaml").write_text('name: [unterminated\n')
-    monkeypatch.setattr("plugins.memory.find_provider_dir", lambda name: tmp_path)
+    monkeypatch.setattr("hermes_agent.plugins.memory.find_provider_dir", lambda name: tmp_path)
     [row] = mp._install_memory_provider_python_dependencies("broken")
     assert row["status"] == "failed"
 
@@ -147,7 +147,7 @@ def test_setup_lists_the_requirements_pm_would_install(tmp_path, monkeypatch, ma
     }))
     (tmp_path / "pyproject.toml").write_text(
         '[project]\nname = "provider"\nversion = "1"\ndependencies = ["provider_dep>=1,<2", "hermes-agent"]\n')
-    monkeypatch.setattr("plugins.memory.find_provider_dir", lambda name: tmp_path)
+    monkeypatch.setattr("hermes_agent.plugins.memory.find_provider_dir", lambda name: tmp_path)
     monkeypatch.setattr("pm.venv_is_current", lambda **inputs: True)
     from hermes_agent.hermes_cli.web_server_memory import _memory_provider_setup_info
 

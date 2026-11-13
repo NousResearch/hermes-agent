@@ -10,7 +10,7 @@ from hermes_agent.hermes_cli.subcommands._shared import add_json_flag
 def _exit_if_plugin_backend(*, doctor: bool = False) -> None:
     """cua-driver checks do not apply when ``computer_use.backend`` selects another backend: report it
     (running its own ``doctor()`` when asked and it ships one) and exit; return for the built-in."""
-    from plugins.computer_use import DEFAULT_BACKEND, configured_backend_name, get_active_provider
+    from hermes_agent.plugins.computer_use import DEFAULT_BACKEND, configured_backend_name, get_active_provider
     if configured_backend_name() == DEFAULT_BACKEND:
         return
     try:

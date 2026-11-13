@@ -23,7 +23,7 @@ def operator_env(monkeypatch):
 
 
 def test_bridge_env_drops_operator_credentials_keeps_bridge_config(operator_env):
-    from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
+    from hermes_agent.plugins.platforms.whatsapp.adapter import WhatsAppAdapter
 
     adapter = WhatsAppAdapter(PlatformConfig(enabled=True, extra={"reply_prefix": "Bot: "}))
     env = adapter._bridge_env()

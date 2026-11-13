@@ -25,7 +25,7 @@ Edit and extend are intentionally out of scope. Most backends don't support them
 
 Hermes scans for video-gen backends in three places:
 
-1. **Bundled** — `<repo>/plugins/video_gen/<name>/` (auto-loaded with `kind: backend`)
+1. **Bundled** — `<repo>/hermes_agent/plugins/video_gen/<name>/` (auto-loaded with `kind: backend`)
 2. **User** — `~/.hermes/plugins/video_gen/<name>/` (opt-in via `plugins.enabled`)
 3. **Pip** — packages declaring a `hermes_agent.plugins` entry point
 
@@ -207,7 +207,7 @@ The user picks `veo3.1` once in `hermes tools`. The agent never thinks about end
 
 ## Selection precedence
 
-For per-instance model knobs (see `plugins/video_gen/fal/__init__.py`):
+For per-instance model knobs (see `hermes_agent/plugins/video_gen/fal/__init__.py`):
 
 1. `<PROVIDER>_VIDEO_MODEL` env var
 2. `video_gen.<provider>.model` in `config.yaml`

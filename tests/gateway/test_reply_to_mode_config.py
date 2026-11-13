@@ -39,7 +39,7 @@ def test_config_set_off_disables_reply_threading_for_a_secondary_profile(seconda
     (secondary / "config.yaml").write_text("platforms:\n  telegram:\n    enabled: true\n", encoding="utf-8")
     monkeypatch.setenv("HERMES_HOME", str(secondary))
     cli_config.set_config_value("platforms.telegram.reply_to_mode", "off")
-    from plugins.platforms.telegram.adapter import TelegramAdapter
+    from hermes_agent.plugins.platforms.telegram.adapter import TelegramAdapter
 
     cfg = _load_in_scope(secondary)
 

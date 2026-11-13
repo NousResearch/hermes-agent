@@ -33,7 +33,7 @@ class _EchoingClient:
 
 @pytest.fixture
 def slack(monkeypatch):
-    from plugins.platforms.slack import adapter as slack_mod
+    from hermes_agent.plugins.platforms.slack import adapter as slack_mod
 
     for name in ENV_PROXY_VARS:
         monkeypatch.delenv(name, raising=False)

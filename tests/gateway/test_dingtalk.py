@@ -35,7 +35,7 @@ class _FakeChatbotMessage(SimpleNamespace):
 @pytest.fixture(autouse=True)
 def _fake_dingtalk_optional_sdks(monkeypatch):
     """Keep DingTalk adapter tests hermetic when optional SDKs are absent."""
-    import plugins.platforms.dingtalk.adapter as dt
+    import hermes_agent.plugins.platforms.dingtalk.adapter as dt
 
     card_models = SimpleNamespace(**{
         name: _FakeDingTalkModel
@@ -86,12 +86,12 @@ class TestDingTalkRequirements:
 
     def test_returns_false_when_env_vars_missing(self, monkeypatch):
         monkeypatch.setattr(
-            "plugins.platforms.dingtalk.adapter.DINGTALK_STREAM_AVAILABLE", True
+            "hermes_agent.plugins.platforms.dingtalk.adapter.DINGTALK_STREAM_AVAILABLE", True
         )
-        monkeypatch.setattr("plugins.platforms.dingtalk.adapter.HTTPX_AVAILABLE", True)
+        monkeypatch.setattr("hermes_agent.plugins.platforms.dingtalk.adapter.HTTPX_AVAILABLE", True)
         monkeypatch.delenv("DINGTALK_CLIENT_ID", raising=False)
         monkeypatch.delenv("DINGTALK_CLIENT_SECRET", raising=False)
-        from plugins.platforms.dingtalk.adapter import check_dingtalk_requirements
+        from hermes_agent.plugins.platforms.dingtalk.adapter import check_dingtalk_requirements
         assert check_dingtalk_requirements() is False
 
 # ---------------------------------------------------------------------------
@@ -110,7 +110,7 @@ class TestSend:
 
     @pytest.mark.asyncio
     async def test_send_posts_to_webhook(self):
-        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        from hermes_agent.plugins.platforms.dingtalk.adapter import DingTalkAdapter
         adapter = DingTalkAdapter(PlatformConfig(enabled=True))
 
         mock_response = MagicMock()
@@ -135,7 +135,7 @@ class TestSend:
 
     @pytest.mark.asyncio
     async def test_send_image_renders_markdown_image(self):
-        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        from hermes_agent.plugins.platforms.dingtalk.adapter import DingTalkAdapter
         adapter = DingTalkAdapter(PlatformConfig(enabled=True))
 
         mock_response = MagicMock()
@@ -167,9 +167,9 @@ class TestConnect:
     @pytest.mark.asyncio
     async def test_connect_fails_without_sdk(self, monkeypatch):
         monkeypatch.setattr(
-            "plugins.platforms.dingtalk.adapter.DINGTALK_STREAM_AVAILABLE", False
+            "hermes_agent.plugins.platforms.dingtalk.adapter.DINGTALK_STREAM_AVAILABLE", False
         )
-        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        from hermes_agent.plugins.platforms.dingtalk.adapter import DingTalkAdapter
         adapter = DingTalkAdapter(PlatformConfig(enabled=True))
         result = await adapter.connect()
         assert result is False
@@ -178,7 +178,7 @@ class TestConnect:
     async def test_disconnect_finalizes_open_streaming_cards(self):
         """Streaming cards must be finalized before HTTP client closes."""
         from unittest.mock import AsyncMock
-        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        from hermes_agent.plugins.platforms.dingtalk.adapter import DingTalkAdapter
         adapter = DingTalkAdapter(PlatformConfig(enabled=True))
         adapter._http_client = AsyncMock()
         adapter._stream_task = None
@@ -221,13 +221,13 @@ class TestWebhookDomainAllowlist:
     """
 
     def test_api_domain_accepted(self):
-        from plugins.platforms.dingtalk.adapter import _DINGTALK_WEBHOOK_RE
+        from hermes_agent.plugins.platforms.dingtalk.adapter import _DINGTALK_WEBHOOK_RE
         assert _DINGTALK_WEBHOOK_RE.match(
             "https://api.dingtalk.com/robot/send?access_token=x"
         )
 
     def test_oapi_domain_accepted(self):
-        from plugins.platforms.dingtalk.adapter import _DINGTALK_WEBHOOK_RE
+        from hermes_agent.plugins.platforms.dingtalk.adapter import _DINGTALK_WEBHOOK_RE
         assert _DINGTALK_WEBHOOK_RE.match(
             "https://oapi.dingtalk.com/robot/send?access_token=x"
         )
@@ -243,7 +243,7 @@ class TestExtractText:
 
     def test_text_as_textcontent_object(self):
         """SDK >= 0.20 shape: object with ``.content`` attribute."""
-        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        from hermes_agent.plugins.platforms.dingtalk.adapter import DingTalkAdapter
 
         class FakeTextContent:
             content = "hello from new sdk"
@@ -261,7 +261,7 @@ class TestExtractText:
 
     def test_rich_text_content_new_shape(self):
         """SDK >= 0.20 exposes rich text as ``message.rich_text_content.rich_text_list``."""
-        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        from hermes_agent.plugins.platforms.dingtalk.adapter import DingTalkAdapter
 
         class FakeRichText:
             rich_text_list = [{"text": "hello "}, {"text": "world"}]
@@ -274,7 +274,7 @@ class TestExtractText:
         assert "hello" in result and "world" in result
 
     def test_empty_message(self):
-        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        from hermes_agent.plugins.platforms.dingtalk.adapter import DingTalkAdapter
         msg = MagicMock()
         msg.text = None
         msg.rich_text_content = None
@@ -285,7 +285,7 @@ class TestExtractText:
 
     def test_card_with_dict_content_and_url(self):
         """card msgtype with extensions.card.content as dict with url key."""
-        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        from hermes_agent.plugins.platforms.dingtalk.adapter import DingTalkAdapter
         msg = MagicMock()
         msg.text = None
         msg.rich_text = None
@@ -300,7 +300,7 @@ class TestExtractText:
 
     def test_card_with_dict_content_docurl(self):
         """card msgtype with extensions.card.content as dict with docUrl key."""
-        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        from hermes_agent.plugins.platforms.dingtalk.adapter import DingTalkAdapter
         msg = MagicMock()
         msg.text = None
         msg.rich_text = None
@@ -315,7 +315,7 @@ class TestExtractText:
 
     def test_interactive_card_with_title_and_url(self):
         """interactiveCard msgtype with both title and biz_custom_action_url."""
-        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        from hermes_agent.plugins.platforms.dingtalk.adapter import DingTalkAdapter
         msg = MagicMock()
         msg.text = None
         msg.rich_text = None
@@ -345,7 +345,7 @@ class TestExtractMedia:
         VOICE — the ``msg_type_str == "richText"`` re-derivation used to
         reset it to TEXT, dropping the voice note from the STT path
         (#38211, #38219)."""
-        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        from hermes_agent.plugins.platforms.dingtalk.adapter import DingTalkAdapter
         from hermes_agent.gateway.platforms.event import MessageType
 
         msg = self._msg_with_rich_text(
@@ -361,7 +361,7 @@ class TestExtractMedia:
 
     def test_image_no_filename_still_photo(self):
         """msgtype='image' without fileName → still PHOTO (MIME heuristic)."""
-        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        from hermes_agent.plugins.platforms.dingtalk.adapter import DingTalkAdapter
         from hermes_agent.gateway.platforms.event import MessageType
 
         msg = MagicMock()
@@ -398,7 +398,7 @@ def _make_gating_adapter(monkeypatch, *, extra=None, env=None):
         monkeypatch.delenv(key, raising=False)
     for key, value in (env or {}).items():
         monkeypatch.setenv(key, value)
-    from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+    from hermes_agent.plugins.platforms.dingtalk.adapter import DingTalkAdapter
     return DingTalkAdapter(PlatformConfig(enabled=True, extra=extra or {}))
 
 class TestAllowedUsersGate:
@@ -462,7 +462,7 @@ class TestIncomingHandlerProcess:
     async def test_process_returns_ack_immediately(self):
         """process() must not block on _on_message — it should return
         the ACK tuple before the message is fully processed."""
-        from plugins.platforms.dingtalk.adapter import _IncomingHandler, DingTalkAdapter
+        from hermes_agent.plugins.platforms.dingtalk.adapter import _IncomingHandler, DingTalkAdapter
 
         processing_started = asyncio.Event()
         processing_gate = asyncio.Event()
@@ -505,7 +505,7 @@ class TestExtractTextMentions:
         Stripping all @handles collateral-damages emails, SSH URLs, and
         literal references the user wrote.
         """
-        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        from hermes_agent.plugins.platforms.dingtalk.adapter import DingTalkAdapter
         cases = [
             ("@bot hello", "@bot hello"),
             ("contact alice@example.com", "contact alice@example.com"),
@@ -536,7 +536,7 @@ class TestCardLifecycle:
 
     @pytest.fixture
     def adapter_with_card(self):
-        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        from hermes_agent.plugins.platforms.dingtalk.adapter import DingTalkAdapter
         a = DingTalkAdapter(PlatformConfig(
             enabled=True,
             extra={"card_template_id": "tmpl-1"},
@@ -607,7 +607,7 @@ class TestCardLifecycle:
     @pytest.mark.parametrize("missing", ["template", "sdk"])
     async def test_edit_message_rejects_when_ai_cards_are_unavailable(self, missing):
         """Edits must not access the card SDK on webhook-only installations."""
-        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        from hermes_agent.plugins.platforms.dingtalk.adapter import DingTalkAdapter
 
         extra = {} if missing == "template" else {"card_template_id": "tmpl-1"}
         adapter = DingTalkAdapter(PlatformConfig(enabled=True, extra=extra))

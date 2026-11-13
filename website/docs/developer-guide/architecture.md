@@ -122,19 +122,19 @@ hermes-agent/
 │   │   └── platforms/            # Core ingress adapters: api_server, webhook,
 │   │                             #   msgraph_webhook
 │   │
+│   ├── plugins/platforms/        # Bundled platform plugins: telegram, discord, slack,
+│   │                             #   whatsapp, matrix, mattermost, email, sms, dingtalk,
+│   │                             #   feishu, wecom, irc, line, teams, google_chat,
+│   │                             #   buzz, ntfy, photon, raft, simplex, whatsapp_cloud,
+│   │                             #   signal, weixin, bluebubbles, qqbot
+│   │                             #   (Home Assistant: `homeassistant` catalog plugin;
+│   │                             #    Yuanbao: `yuanbao` Hermes Labs plugin)
+│   │
 │   ├── acp_adapter/              # ACP server (VS Code / Zed / JetBrains)
-│   └── cron/                     # Scheduler (jobs.py, scheduler.py)
+│   ├── cron/                     # Scheduler (jobs.py, scheduler.py)
+│   ├── plugins/memory/           # Memory provider plugins
+│   └── plugins/context_engine/   # Context engine plugins
 │
-├── plugins/platforms/        # Bundled platform plugins: telegram, discord, slack,
-│                             #   whatsapp, matrix, mattermost, email, sms, dingtalk,
-│                             #   feishu, wecom, irc, line, teams, google_chat,
-│                             #   buzz, ntfy, photon, raft, simplex, whatsapp_cloud,
-│                             #   signal, weixin, bluebubbles, qqbot
-│                             #   (Home Assistant: `homeassistant` catalog plugin;
-│                             #    Yuanbao: `yuanbao` Hermes Labs plugin)
-│
-├── plugins/memory/           # Memory provider plugins
-├── plugins/context_engine/   # Context engine plugins
 ├── skills/                   # Bundled skills (always available)
 ├── optional-skills/          # Official optional skills (install explicitly)
 ├── website/                  # Docusaurus documentation site
@@ -237,7 +237,7 @@ Long-running process with 25+ platform adapters (built-in + bundled plugins), un
 
 ### Plugin System
 
-Three discovery sources: `~/.hermes/plugins/` (user), `.hermes/plugins/` (project), and pip entry points. Plugins register tools, hooks, and CLI commands through a context API. Two specialized plugin types exist: memory providers (`plugins/memory/`) and context engines (`plugins/context_engine/`). Both are single-select — only one of each can be active at a time, configured via `hermes plugins` or `config.yaml`.
+Three discovery sources: `~/.hermes/plugins/` (user), `.hermes/plugins/` (project), and pip entry points. Plugins register tools, hooks, and CLI commands through a context API. Two specialized plugin types exist: memory providers (`hermes_agent/plugins/memory/`) and context engines (`hermes_agent/plugins/context_engine/`). Both are single-select — only one of each can be active at a time, configured via `hermes plugins` or `config.yaml`.
 
 → [Plugin Guide](./plugins/index.md), [Memory Provider Plugin](./memory-provider-plugin.md)
 

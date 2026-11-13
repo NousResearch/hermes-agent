@@ -28,7 +28,7 @@ def _clear_provider_caches():
     # Evict any cached plugin modules so the next import re-executes.
     for mod in list(sys.modules.keys()):
         if (
-            mod.startswith("plugins.model_providers")
+            mod.startswith("hermes_agent.plugins.model_providers")
             or mod.startswith("_hermes_user_provider")
         ):
             del sys.modules[mod]
@@ -67,6 +67,20 @@ def test_all_profiles_register():
     assert len(names) >= plugin_dir_count, (
         f"Expected at least {plugin_dir_count} profiles (one per plugin dir), got {len(names)}: {names}"
     )
+
+
+def test_a_bundled_provider_module_keeps_the_name_it_had_before_the_package_move():
+    """A plugin written before the move imports a bundled profile from ``plugins.model_providers.<name>``.
+    No folder has that name (the folder is ``model-providers``), so only the loader can keep it importable."""
+    import importlib
+
+    _clear_provider_caches()
+    from hermes_agent.providers import list_providers
+
+    list_providers()
+    module = importlib.import_module("plugins.model_providers.custom")
+    assert module is sys.modules["hermes_agent.plugins.model_providers.custom"]
+    assert module.CustomProfile.__module__ == "hermes_agent.plugins.model_providers.custom"
 
 
 def test_user_plugin_overrides_bundled(tmp_path, monkeypatch):

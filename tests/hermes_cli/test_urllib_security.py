@@ -306,7 +306,7 @@ def test_anthropic_profile_drops_x_api_key_on_redirect(monkeypatch):
     import importlib
 
     AnthropicProfile = importlib.import_module(
-        "plugins.model-providers.anthropic"
+        "hermes_agent.plugins.model-providers.anthropic"
     ).AnthropicProfile
 
     source = _server()

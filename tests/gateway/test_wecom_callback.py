@@ -6,9 +6,9 @@ from xml.etree import ElementTree as ET
 import pytest
 
 from hermes_agent.gateway.config import PlatformConfig
-from plugins.platforms.wecom import callback_adapter as _callback_mod
-from plugins.platforms.wecom.callback_adapter import WecomCallbackAdapter
-from plugins.platforms.wecom.wecom_crypto import WXBizMsgCrypt
+from hermes_agent.plugins.platforms.wecom import callback_adapter as _callback_mod
+from hermes_agent.plugins.platforms.wecom.callback_adapter import WecomCallbackAdapter
+from hermes_agent.plugins.platforms.wecom.wecom_crypto import WXBizMsgCrypt
 
 # ``_build_event`` parses inbound XML with defusedxml, which ships with the
 # ``wecom`` extra (and transitively with ``youtube``, hence ``[all]`` in CI). A
@@ -204,7 +204,7 @@ class TestWecomCallbackBodySizeLimit:
 
     @pytest.mark.asyncio
     async def test_oversized_body_rejected_with_413(self):
-        from plugins.platforms.wecom.callback_adapter import _MAX_BODY
+        from hermes_agent.plugins.platforms.wecom.callback_adapter import _MAX_BODY
 
         adapter = WecomCallbackAdapter(_config())
         oversized = b"<xml>" + b"A" * (_MAX_BODY + 1) + b"</xml>"

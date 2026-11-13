@@ -103,7 +103,7 @@ async def test_flood_refused_finalize_edit_is_not_retried_as_plain_text():
     """The MarkdownV2 -> plain fallback is for parse errors; on a flood it was a second refused call."""
     from unittest.mock import AsyncMock
 
-    from plugins.platforms.telegram.adapter import TelegramAdapter
+    from hermes_agent.plugins.platforms.telegram.adapter import TelegramAdapter
 
     class RetryAfter(Exception):
         retry_after = 30

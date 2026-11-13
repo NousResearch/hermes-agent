@@ -19,7 +19,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-import plugins.dashboard_auth.session_token as session_token_plugin
+import hermes_agent.plugins.dashboard_auth.session_token as session_token_plugin
 from hermes_agent.hermes_cli.dashboard_auth import RefreshExpiredError, assert_protocol_compliance
 from hermes_agent.hermes_cli.dashboard_auth import registry
 

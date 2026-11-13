@@ -24,7 +24,7 @@ def _clear_provider_caches():
     providers._PROVIDER_LIST_CACHE = None
     providers._discovered = False
     for mod in list(sys.modules.keys()):
-        if mod.startswith("plugins.model_providers") or mod.startswith(
+        if mod.startswith("hermes_agent.plugins.model_providers") or mod.startswith(
             "_hermes_user_provider"
         ):
             del sys.modules[mod]
@@ -37,7 +37,7 @@ def _restore_real_discovery():
     These tests monkeypatch ``importlib.metadata.entry_points`` and evict the
     ``plugins.model_providers`` submodules to force re-discovery. Without an
     explicit restore, the emptied registry / ``sys.modules`` would leak into
-    later tests (e.g. ``from plugins.model_providers.custom import ...``).
+    later tests (e.g. ``from hermes_agent.plugins.model_providers.custom import ...``).
 
     This fixture is autouse and declared before ``monkeypatch`` is requested,
     so it tears down LAST — after ``entry_points`` is restored to the real

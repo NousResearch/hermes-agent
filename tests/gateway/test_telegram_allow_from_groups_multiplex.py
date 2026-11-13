@@ -44,7 +44,7 @@ def _wire(home, secondary, profile):
     from hermes_agent.gateway.config import GatewayConfig, load_gateway_config
     from hermes_agent.gateway.pairing import PairingStore
     from hermes_agent.gateway.run import GatewayRunner, _profile_runtime_scope
-    from plugins.platforms.telegram.adapter import TelegramAdapter
+    from hermes_agent.plugins.platforms.telegram.adapter import TelegramAdapter
 
     runner = object.__new__(GatewayRunner)
     runner.pairing_store = PairingStore(profile="default")

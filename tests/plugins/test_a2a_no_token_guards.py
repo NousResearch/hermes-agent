@@ -8,7 +8,7 @@ from email.message import Message
 
 import pytest
 
-from plugins.platforms.a2a import security
+from hermes_agent.plugins.platforms.a2a import security
 from tests.plugins.test_a2a_plugin import _get_json, _make_live_adapter, _post_json, _send_body
 
 

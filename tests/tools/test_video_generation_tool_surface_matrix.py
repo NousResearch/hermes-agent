@@ -101,13 +101,13 @@ def matrix_env(tmp_path, monkeypatch):
                 },
                 "model": payload.get("model", "grok-imagine-video"),
             })
-    import plugins.video_gen.xai as xai_plugin
+    import hermes_agent.plugins.video_gen.xai as xai_plugin
     monkeypatch.setattr(xai_plugin.httpx, "AsyncClient", lambda: _Client())
     async def _no_sleep(*a, **k): return None
     monkeypatch.setattr(asyncio, "sleep", _no_sleep)
 
     # Reset FAL plugin's lazy fal_client cache so it picks up the stub
-    from plugins.video_gen import fal as fal_plugin
+    from hermes_agent.plugins.video_gen import fal as fal_plugin
     fal_plugin._fal_client = None
 
     # Force discovery
@@ -139,20 +139,20 @@ def _invoke_tool(home, cfg: dict, args: dict, tool_name: str = "video_generate")
 # automatically. If someone adds 'sora-2' to FAL_FAMILIES, this matrix
 # picks it up — no test changes needed beyond confirming the endpoints.
 def _all_fal_families():
-    from plugins.video_gen.fal import FAL_FAMILIES
+    from hermes_agent.plugins.video_gen.fal import FAL_FAMILIES
     return list(FAL_FAMILIES.keys())
 
 
 def _t2v_fal_families():
     """Families that advertise a text-to-video endpoint."""
-    from plugins.video_gen.fal import FAL_FAMILIES
+    from hermes_agent.plugins.video_gen.fal import FAL_FAMILIES
     return [fid for fid, meta in FAL_FAMILIES.items() if meta.get("text_endpoint")]
 
 
 @pytest.mark.parametrize("family_id", _t2v_fal_families())
 def test_fal_text_only_routes_to_text_endpoint(matrix_env, family_id):
     home, fal_calls, _ = matrix_env
-    from plugins.video_gen.fal import FAL_FAMILIES
+    from hermes_agent.plugins.video_gen.fal import FAL_FAMILIES
 
     result = _invoke_tool(
         home,
@@ -177,14 +177,14 @@ def test_fal_text_only_routes_to_text_endpoint(matrix_env, family_id):
 
 def _i2v_fal_families():
     """Every family that can animate an existing image."""
-    from plugins.video_gen.fal import FAL_FAMILIES
+    from hermes_agent.plugins.video_gen.fal import FAL_FAMILIES
     return [fid for fid, meta in FAL_FAMILIES.items() if meta.get("image_endpoint")]
 
 
 @pytest.mark.parametrize("family_id", _i2v_fal_families())
 def test_fal_image_to_video_routes_to_image_endpoint(matrix_env, family_id):
     home, fal_calls, _ = matrix_env
-    from plugins.video_gen.fal import FAL_FAMILIES
+    from hermes_agent.plugins.video_gen.fal import FAL_FAMILIES
 
     result = _invoke_tool(
         home,

@@ -9,8 +9,8 @@ import pytest
 
 from hermes_agent.gateway.config import PlatformConfig
 from hermes_agent.gateway.config import GatewayConfig, Platform
-from plugins.platforms.weixin import adapter as weixin
-from plugins.platforms.weixin.adapter import ContextTokenStore, WeixinAdapter
+from hermes_agent.plugins.platforms.weixin import adapter as weixin
+from hermes_agent.plugins.platforms.weixin.adapter import ContextTokenStore, WeixinAdapter
 from hermes_agent.tools.send_message_targets import _parse_target_ref
 
 
@@ -168,7 +168,7 @@ class TestWeixinStatePersistence:
         def fake_write(path, data, *args, **kwargs):
             write_threads.append(threading.get_ident())
 
-        with patch("plugins.platforms.weixin.adapter.atomic_json_write", side_effect=fake_write):
+        with patch("hermes_agent.plugins.platforms.weixin.adapter.atomic_json_write", side_effect=fake_write):
             await store.set("acct-1", "user-1", "ctx-token-abc")
 
         assert store.get("acct-1", "user-1") == "ctx-token-abc"
@@ -194,7 +194,7 @@ class TestWeixinStatePersistence:
                 time.sleep(0.05)
             writes.append(dict(data))
 
-        with patch("plugins.platforms.weixin.adapter.atomic_json_write", side_effect=slow_first_write):
+        with patch("hermes_agent.plugins.platforms.weixin.adapter.atomic_json_write", side_effect=slow_first_write):
             first = _asyncio.create_task(store.set("acct-1", "user-1", "t1"))
             await _asyncio.sleep(0.005)
             second = _asyncio.create_task(store.set("acct-1", "user-2", "t2"))
@@ -223,8 +223,8 @@ class TestWeixinChunkDelivery:
         return adapter
 
 
-    @patch("plugins.platforms.weixin.adapter.asyncio.sleep", new_callable=AsyncMock)
-    @patch("plugins.platforms.weixin.adapter._send_message", new_callable=AsyncMock)
+    @patch("hermes_agent.plugins.platforms.weixin.adapter.asyncio.sleep", new_callable=AsyncMock)
+    @patch("hermes_agent.plugins.platforms.weixin.adapter._send_message", new_callable=AsyncMock)
     def test_send_retries_failed_chunk_before_continuing(self, send_message_mock, sleep_mock):
         adapter = self._connected_adapter()
         adapter.MAX_MESSAGE_LENGTH = 12
@@ -249,8 +249,8 @@ class TestWeixinChunkDelivery:
         assert first_try["text"] == retry["text"]
         assert first_try["client_id"] == retry["client_id"]
 
-    @patch("plugins.platforms.weixin.adapter.asyncio.sleep", new_callable=AsyncMock)
-    @patch("plugins.platforms.weixin.adapter._send_message", new_callable=AsyncMock)
+    @patch("hermes_agent.plugins.platforms.weixin.adapter.asyncio.sleep", new_callable=AsyncMock)
+    @patch("hermes_agent.plugins.platforms.weixin.adapter._send_message", new_callable=AsyncMock)
     def test_repeated_rate_limits_open_circuit_for_followup_sends(self, send_message_mock, sleep_mock):
         adapter = self._connected_adapter()
         adapter._send_chunk_retries = 3
@@ -279,7 +279,7 @@ class TestWeixinChunkDelivery:
         assert sleep_mock.await_count == 1
 
     @pytest.mark.parametrize("error_field", ["ret", "errcode"])
-    @patch("plugins.platforms.weixin.adapter._send_message", new_callable=AsyncMock)
+    @patch("hermes_agent.plugins.platforms.weixin.adapter._send_message", new_callable=AsyncMock)
     def test_prepare_failed_retries_without_context_token(self, send_message_mock, error_field):
         adapter = self._connected_adapter()
         adapter._rate_limit_circuit_threshold = 1
@@ -294,7 +294,7 @@ class TestWeixinChunkDelivery:
         assert adapter._rate_limit_circuit_until == 0.0
 
     @pytest.mark.parametrize("stored_token", [None, "ctx-token"])
-    @patch("plugins.platforms.weixin.adapter._send_message", new_callable=AsyncMock)
+    @patch("hermes_agent.plugins.platforms.weixin.adapter._send_message", new_callable=AsyncMock)
     def test_prepare_failed_without_recovery_is_not_a_rate_limit(self, send_message_mock, stored_token):
         """No token to drop (fresh pairing, #80125) or a tokenless re-send that still fails: the error names the
         real cause and the rate-limit breaker stays closed, instead of "rate limited; cooldown active" for 30s."""
@@ -314,7 +314,7 @@ class TestWeixinChunkDelivery:
         assert [call.kwargs["context_token"] for call in send_message_mock.await_args_list] == (
             [None] if stored_token is None else ["ctx-token", None])
 
-    @patch("plugins.platforms.weixin.adapter._send_message", new_callable=AsyncMock)
+    @patch("hermes_agent.plugins.platforms.weixin.adapter._send_message", new_callable=AsyncMock)
     def test_tokenless_resend_does_not_consume_retry_budget(self, send_message_mock):
         """With ``send_chunk_retries=0`` the stale-session re-send must still happen: it is a different payload,
         not a failed attempt, so it must not eat the (only) retry slot and fall out of the loop (#112709)."""
@@ -392,10 +392,10 @@ class TestWeixinOutboundMedia:
         aes_key = bytes(range(16))
         expected_aes_key = base64.b64encode(aes_key.hex().encode("ascii")).decode("ascii")
 
-        with patch("plugins.platforms.weixin.adapter._get_upload_url", new=AsyncMock(return_value={"upload_full_url": "https://upload.example.com/media"})), \
-             patch("plugins.platforms.weixin.adapter._api_post", new_callable=AsyncMock) as api_post_mock, \
-             patch("plugins.platforms.weixin.adapter.secrets.token_hex", return_value="filekey-123"), \
-             patch("plugins.platforms.weixin.adapter.secrets.token_bytes", return_value=aes_key):
+        with patch("hermes_agent.plugins.platforms.weixin.adapter._get_upload_url", new=AsyncMock(return_value={"upload_full_url": "https://upload.example.com/media"})), \
+             patch("hermes_agent.plugins.platforms.weixin.adapter._api_post", new_callable=AsyncMock) as api_post_mock, \
+             patch("hermes_agent.plugins.platforms.weixin.adapter.secrets.token_hex", return_value="filekey-123"), \
+             patch("hermes_agent.plugins.platforms.weixin.adapter.secrets.token_bytes", return_value=aes_key):
             message_id = asyncio.run(adapter._send_file("wxid_test123", str(image_path), ""))
 
         assert message_id.startswith("hermes-weixin-")

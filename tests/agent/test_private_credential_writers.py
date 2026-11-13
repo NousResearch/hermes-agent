@@ -80,10 +80,10 @@ def _writers(home: Path, monkeypatch):
     from hermes_agent.hermes_cli import auth as auth_mod
     from hermes_agent.hermes_cli import process_identity
     from hermes_agent.tools import mcp_oauth
-    from plugins.google_meet import cli as meet_cli
-    from plugins.google_meet.node.registry import NodeRegistry
-    from plugins.google_meet.node.server import NodeServer
-    from plugins.platforms.photon import adapter as photon_adapter
+    from hermes_agent.plugins.google_meet import cli as meet_cli
+    from hermes_agent.plugins.google_meet.node.registry import NodeRegistry
+    from hermes_agent.plugins.google_meet.node.server import NodeServer
+    from hermes_agent.plugins.platforms.photon import adapter as photon_adapter
 
     photon_record = home / "runtime" / "photon.json"
     monkeypatch.setattr(photon_adapter, "_runtime_record_path", lambda: photon_record)

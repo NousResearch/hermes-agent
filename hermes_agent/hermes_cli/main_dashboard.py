@@ -702,7 +702,7 @@ def _maybe_setup_dashboard_auth_interactively(args) -> None:
         _cancel("  ✗ Passwords don't match — aborting.")
 
     try:
-        from plugins.dashboard_auth.basic import hash_password
+        from hermes_agent.plugins.dashboard_auth.basic import hash_password
     except Exception as exc:
         _cancel(f"  ✗ Could not load the password provider: {exc}")
 

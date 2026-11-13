@@ -27,7 +27,7 @@ from cryptography.x509.oid import NameOID
 from telegram import Bot
 
 from hermes_agent.gateway.config import PlatformConfig
-from plugins.platforms.telegram.adapter import TelegramAdapter
+from hermes_agent.plugins.platforms.telegram.adapter import TelegramAdapter
 
 _RESET_ABOVE = 1400
 

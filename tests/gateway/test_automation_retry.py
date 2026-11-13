@@ -14,7 +14,7 @@ async def test_coalesced_siblings_survive_lost_ack_and_owner_restart(tmp_path, m
     from hermes_agent.gateway.session_ingress_context import native_callback
     from hermes_agent.hermes_state_runtime import list_session_admissions
     from tests.gateway.test_completion_admission import pending
-    from plugins.platforms.discord.adapter import DiscordAdapter
+    from hermes_agent.plugins.platforms.discord.adapter import DiscordAdapter
     from hermes_agent.tools import async_delegation as delegation
 
     # Fault boundary: stop after the actual SQLite commit but before execution.
@@ -66,7 +66,7 @@ async def test_unowned_completion_refunds_every_sibling_without_consuming_budget
     from hermes_agent.hermes_constants import get_hermes_home
     from hermes_agent.hermes_state_runtime import list_session_admissions
     from tests.gateway.test_completion_admission import pending
-    from plugins.platforms.discord.adapter import DiscordAdapter
+    from hermes_agent.plugins.platforms.discord.adapter import DiscordAdapter
     from hermes_agent.tools import async_delegation as delegation
 
     monkeypatch.setattr(SessionAuthority, '_schedule', lambda self, ref: None)

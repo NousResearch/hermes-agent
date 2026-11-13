@@ -26,7 +26,7 @@ import pytest
 
 from tests.gateway._plugin_adapter_loader import load_plugin_adapter
 
-# Load plugins/platforms/line/adapter.py under plugin_adapter_line so it
+# Load hermes_agent/plugins/platforms/line/adapter.py under plugin_adapter_line so it
 # cannot collide with sibling platform-plugin tests in the same process.
 _line = load_plugin_adapter("line")
 

@@ -45,7 +45,7 @@ def _no_proxy(monkeypatch: pytest.MonkeyPatch) -> None:
                                    "<script>", "<em ", "</ i>"])
 def test_non_telegram_angle_brackets_take_the_markdown_branch(
         monkeypatch: pytest.MonkeyPatch, prose: str) -> None:
-    from plugins.platforms.telegram.standalone import _telegram_format
+    from hermes_agent.plugins.platforms.telegram.standalone import _telegram_format
 
     _install_telegram_mock(monkeypatch, MagicMock())
     message = f"**Заголовок** и {prose} в тексте"
@@ -68,7 +68,7 @@ def test_non_telegram_angle_brackets_take_the_markdown_branch(
 ])
 def test_telegram_tags_take_the_html_branch(
         monkeypatch: pytest.MonkeyPatch, markup: str) -> None:
-    from plugins.platforms.telegram.standalone import _telegram_format
+    from hermes_agent.plugins.platforms.telegram.standalone import _telegram_format
 
     _install_telegram_mock(monkeypatch, MagicMock())
     formatted, parse_mode, has_html = _telegram_format(markup)
@@ -85,7 +85,7 @@ def test_telegram_tags_take_the_html_branch(
 ])
 def test_html_send_escapes_markup_telegram_does_not_support(
         monkeypatch: pytest.MonkeyPatch, message: str, sent: str) -> None:
-    from plugins.platforms.telegram.standalone import _send_telegram
+    from hermes_agent.plugins.platforms.telegram.standalone import _send_telegram
 
     _no_proxy(monkeypatch)
     bot = MagicMock()
@@ -101,7 +101,7 @@ def test_html_send_escapes_markup_telegram_does_not_support(
 @pytest.mark.parametrize("code", ["`<b>x</b>`", "``<b>x</b>``", "`` a ` <b>x</b> ``"])
 def test_tag_shown_only_as_markdown_code_keeps_the_markdown_branch(
         monkeypatch: pytest.MonkeyPatch, code: str) -> None:
-    from plugins.platforms.telegram.standalone import _telegram_format
+    from hermes_agent.plugins.platforms.telegram.standalone import _telegram_format
 
     _install_telegram_mock(monkeypatch, MagicMock())
     formatted, parse_mode, has_html = _telegram_format(f"**Note**: example {code} here")
@@ -112,7 +112,7 @@ def test_tag_shown_only_as_markdown_code_keeps_the_markdown_branch(
 
 def test_a_quoted_gt_inside_an_attribute_does_not_break_the_tag(
         monkeypatch: pytest.MonkeyPatch) -> None:
-    from plugins.platforms.telegram.standalone import _telegram_format
+    from hermes_agent.plugins.platforms.telegram.standalone import _telegram_format
 
     _install_telegram_mock(monkeypatch, MagicMock())
     markup = '<a href="https://x.y/?q=a>b">link</a> and <b>bold</b>'

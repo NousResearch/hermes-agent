@@ -6,7 +6,7 @@ description: "如何为 Hermes Agent 构建网页搜索/提取/爬取后端插�
 
 # 构建网页搜索提供商插件
 
-网页搜索提供商插件注册一个后端，用于处理 `web_search`、`web_extract` 以及（可选的）深度爬取工具调用。内置提供商——Firecrawl、SearXNG、Tavily、Exa、Parallel、Brave Search（免费层）和 DDGS——均以插件形式存放于 `plugins/web/<name>/` 目录下。你可以在该目录旁新建一个目录来添加新提供商，或覆盖已有的内置提供商。
+网页搜索提供商插件注册一个后端，用于处理 `web_search`、`web_extract` 以及（可选的）深度爬取工具调用。内置提供商——Firecrawl、SearXNG、Tavily、Exa、Parallel、Brave Search（免费层）和 DDGS——均以插件形式存放于 `hermes_agent/plugins/web/<name>/` 目录下。你可以在该目录旁新建一个目录来添加新提供商，或覆盖已有的内置提供商。
 
 :::tip
 网页搜索是 Hermes 支持的多种**后端插件**之一。其他插件（各有其 ABC）包括：[图像生成提供商插件](./image-gen-provider-plugin.md)、[视频生成提供商插件](./video-gen-provider-plugin.md)、[记忆提供商插件](./memory-provider-plugin.md)、[上下文引擎插件](./context-engine-plugin.md)和[模型提供商插件](./model-provider-plugin.md)。通用工具/hook/CLI 插件请参阅[构建 Hermes 插件](./plugins/index.md)。
@@ -16,7 +16,7 @@ description: "如何为 Hermes Agent 构建网页搜索/提取/爬取后端插�
 
 Hermes 在三个位置扫描网页搜索后端：
 
-1. **内置** — `<repo>/plugins/web/<name>/`（以 `kind: backend` 自动加载，始终可用）
+1. **内置** — `<repo>/hermes_agent/plugins/web/<name>/`（以 `kind: backend` 自动加载，始终可用）
 2. **用户** — `~/.hermes/plugins/web/<name>/`（通过 `plugins.enabled` 或 `hermes plugins enable <name>` 按需启用）
 3. **Pip** — 声明了 `hermes_agent.plugins` 入口点的包
 
@@ -115,7 +115,7 @@ class MyBackendWebSearchProvider(WebSearchProvider):
 
 ```python
 # plugins/web/my-backend/__init__.py
-from plugins.web.my_backend.provider import MyBackendWebSearchProvider
+from hermes_agent.plugins.web.my_backend.provider import MyBackendWebSearchProvider
 
 
 def register(ctx) -> None:
@@ -241,11 +241,11 @@ web:
 
 ## 参考实现
 
-- **`plugins/web/brave_free/`** — 小型、需要 API key 的纯搜索 HTTP 提供商。适合作为起始模板。
-- **`plugins/web/ddgs/`** — 无需 key、懒加载 SDK 的提供商。适用于封装 Python 包的后端。
-- **`plugins/web/firecrawl/`** — 完整的多能力提供商（搜索 + 提取 + 爬取），支持多种格式模式。
-- **`plugins/web/searxng/`** — 自托管、通过 URL 配置、无需认证的后端。
-- **`plugins/web/xai/`** — 通过 Grok 服务端 `web_search` 工具实现的 LLM 驱动搜索。展示了如何复用现有的 OAuth/环境变量凭据（`hermes_agent/tools/xai_http.py`）而无需新增环境变量，以及如何编写遵守无网络调用约定的轻量 `is_available()`。
+- **`hermes_agent/plugins/web/brave_free/`** — 小型、需要 API key 的纯搜索 HTTP 提供商。适合作为起始模板。
+- **`hermes_agent/plugins/web/ddgs/`** — 无需 key、懒加载 SDK 的提供商。适用于封装 Python 包的后端。
+- **`hermes_agent/plugins/web/firecrawl/`** — 完整的多能力提供商（搜索 + 提取 + 爬取），支持多种格式模式。
+- **`hermes_agent/plugins/web/searxng/`** — 自托管、通过 URL 配置、无需认证的后端。
+- **`hermes_agent/plugins/web/xai/`** — 通过 Grok 服务端 `web_search` 工具实现的 LLM 驱动搜索。展示了如何复用现有的 OAuth/环境变量凭据（`hermes_agent/tools/xai_http.py`）而无需新增环境变量，以及如何编写遵守无网络调用约定的轻量 `is_available()`。
 
 ## 通过 pip 分发
 

@@ -27,7 +27,7 @@ from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
 # Mock the telegram package if it's not installed
 # ---------------------------------------------------------------------------
 # Now we can safely import
-from plugins.platforms.telegram.adapter import TelegramAdapter
+from hermes_agent.plugins.platforms.telegram.adapter import TelegramAdapter
 from tests.waiting import async_wait_until
 
 
@@ -323,7 +323,7 @@ class TestVideoDownloadBlock:
             Document=SimpleNamespace(ALL=_Names("DOCUMENT")), Sticker=SimpleNamespace(ALL=_Names("STICKER")),
             Dice=SimpleNamespace(ALL=_Names("DICE")), StatusUpdate=None, MessageFilter=_Filter)
         registered = {}
-        with patch.multiple("plugins.platforms.telegram.adapter", filters=fake_filters,
+        with patch.multiple("hermes_agent.plugins.platforms.telegram.adapter", filters=fake_filters,
                             TelegramMessageHandler=lambda flt, callback: registered.setdefault(callback, flt)):
             adapter._register_handlers(MagicMock())
         assert {"VIDEO", "VIDEO_NOTE"} <= registered[adapter._handle_media_message].names
@@ -409,7 +409,7 @@ class TestMediaGroups:
         msg2 = _make_message(photo=[second_photo])
 
         with patch(
-            "plugins.platforms.telegram.adapter.cache_image_from_bytes_async",
+            "hermes_agent.plugins.platforms.telegram.adapter.cache_image_from_bytes_async",
             new=AsyncMock(side_effect=["/tmp/burst-one.jpg", "/tmp/burst-two.jpg"]),
         ):
             await adapter._handle_media_message(_make_update(msg1), MagicMock())
@@ -585,8 +585,8 @@ class TestTelegramPhotoBatching:
         )
 
         with (
-            patch("plugins.platforms.telegram.adapter.asyncio.current_task", return_value=old_task),
-            patch("plugins.platforms.telegram.adapter.asyncio.sleep", new=AsyncMock()),
+            patch("hermes_agent.plugins.platforms.telegram.adapter.asyncio.current_task", return_value=old_task),
+            patch("hermes_agent.plugins.platforms.telegram.adapter.asyncio.sleep", new=AsyncMock()),
         ):
             await adapter._flush_photo_batch(batch_key)
 

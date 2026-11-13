@@ -9,15 +9,15 @@ from pathlib import Path
 import pytest
 
 from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
-from plugins.teams_pipeline.meetings import (
+from hermes_agent.plugins.teams_pipeline.meetings import (
     TeamsMeetingError,
     looks_like_transcript_id,
     parse_graph_meeting_resource,
     resolve_meeting_reference,
 )
-from plugins.teams_pipeline.models import MeetingArtifact
-from plugins.teams_pipeline.pipeline import TeamsMeetingPipeline
-from plugins.teams_pipeline.store import TeamsPipelineStore
+from hermes_agent.plugins.teams_pipeline.models import MeetingArtifact
+from hermes_agent.plugins.teams_pipeline.pipeline import TeamsMeetingPipeline
+from hermes_agent.plugins.teams_pipeline.store import TeamsPipelineStore
 
 
 class FakeGraphClient:
@@ -28,7 +28,7 @@ class FakeGraphClient:
 async def _transcript_meeting_resolver(
     client, *, meeting_id=None, join_web_url=None, tenant_id=None, organizer_user_id=None
 ):
-    from plugins.teams_pipeline.models import TeamsMeetingRef
+    from hermes_agent.plugins.teams_pipeline.models import TeamsMeetingRef
 
     return TeamsMeetingRef(
         meeting_id=str(meeting_id),
@@ -43,7 +43,7 @@ async def _no_call_record(*args, **kwargs):
 
 
 def test_runtime_config_uses_existing_teams_platform_settings():
-    from plugins.teams_pipeline.runtime import build_pipeline_runtime_config
+    from hermes_agent.plugins.teams_pipeline.runtime import build_pipeline_runtime_config
 
     gateway_config = GatewayConfig(
         platforms={
@@ -76,7 +76,7 @@ def test_runtime_config_uses_existing_teams_platform_settings():
 
 @pytest.mark.anyio
 async def test_bind_gateway_runtime_attaches_scheduler(monkeypatch, tmp_path):
-    from plugins.teams_pipeline import runtime as runtime_module
+    from hermes_agent.plugins.teams_pipeline import runtime as runtime_module
 
     class FakeAdapter:
         def __init__(self) -> None:
@@ -156,7 +156,7 @@ def test_store_persists_subscription_event_and_job_state(tmp_path):
 @pytest.mark.anyio
 class TestTeamsMeetingPipeline:
     async def test_transcript_first_path_persists_state_and_skips_recording(self, tmp_path, monkeypatch):
-        from plugins.teams_pipeline import pipeline as pipeline_module
+        from hermes_agent.plugins.teams_pipeline import pipeline as pipeline_module
 
         monkeypatch.setattr(pipeline_module, "resolve_meeting_reference", _transcript_meeting_resolver)
 
@@ -216,7 +216,7 @@ class TestTeamsMeetingPipeline:
         assert stored["status"] == "completed"
 
     async def test_recording_fallback_uses_stt_and_updates_sink_records(self, tmp_path, monkeypatch):
-        from plugins.teams_pipeline import pipeline as pipeline_module
+        from hermes_agent.plugins.teams_pipeline import pipeline as pipeline_module
 
         monkeypatch.setattr(pipeline_module, "resolve_meeting_reference", _transcript_meeting_resolver)
 
@@ -315,7 +315,7 @@ class TestTeamsMeetingPipeline:
 
 
     async def test_missing_transcript_and_recording_schedules_retry(self, tmp_path, monkeypatch):
-        from plugins.teams_pipeline import pipeline as pipeline_module
+        from hermes_agent.plugins.teams_pipeline import pipeline as pipeline_module
 
         monkeypatch.setattr(pipeline_module, "resolve_meeting_reference", _transcript_meeting_resolver)
         monkeypatch.setattr(pipeline_module, "fetch_preferred_transcript_text", lambda *a, **kw: asyncio.sleep(0, result=(None, None)))
@@ -343,7 +343,7 @@ class TestTeamsMeetingPipeline:
         assert "Recording unavailable" in job.error_info["message"]
 
     async def test_duplicate_notification_reuses_completed_job(self, tmp_path, monkeypatch):
-        from plugins.teams_pipeline import pipeline as pipeline_module
+        from hermes_agent.plugins.teams_pipeline import pipeline as pipeline_module
 
         monkeypatch.setattr(pipeline_module, "resolve_meeting_reference", _transcript_meeting_resolver)
 
@@ -529,8 +529,8 @@ def test_create_job_from_quoted_user_odata_id_uses_meeting_id_not_transcript_id(
 async def test_run_job_reparses_quoted_user_odata_id_when_stored_meeting_id_is_transcript(
     tmp_path, monkeypatch
 ):
-    from plugins.teams_pipeline import pipeline as pipeline_module
-    from plugins.teams_pipeline.models import TeamsMeetingRef
+    from hermes_agent.plugins.teams_pipeline import pipeline as pipeline_module
+    from hermes_agent.plugins.teams_pipeline.models import TeamsMeetingRef
 
     captured: dict[str, str | None] = {}
 

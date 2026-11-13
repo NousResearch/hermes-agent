@@ -57,7 +57,7 @@ def test_a_partial_standalone_split_send_counts_as_reached(monkeypatch):
     from types import SimpleNamespace
     from unittest.mock import AsyncMock
 
-    from plugins.platforms.telegram.standalone import _send_telegram
+    from hermes_agent.plugins.platforms.telegram.standalone import _send_telegram
     from tests.tools.test_telegram_send_message_chunk_mdv2 import _install_telegram_mock, _no_proxy
 
     _no_proxy(monkeypatch)
@@ -95,7 +95,7 @@ def test_a_report_whose_delivery_answer_was_lost_is_not_echoed(monkeypatch, lost
     from types import SimpleNamespace
     from unittest.mock import AsyncMock
 
-    from plugins.platforms.telegram.standalone import _send_telegram
+    from hermes_agent.plugins.platforms.telegram.standalone import _send_telegram
     from tests.tools.test_telegram_send_message_chunk_mdv2 import _install_telegram_mock, _no_proxy
 
     _no_proxy(monkeypatch)

@@ -29,9 +29,9 @@ import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 
-import plugins.dashboard_auth._shared as shared
-import plugins.dashboard_auth.nous as nous_plugin
-import plugins.dashboard_auth.self_hosted as oidc_plugin
+import hermes_agent.plugins.dashboard_auth._shared as shared
+import hermes_agent.plugins.dashboard_auth.nous as nous_plugin
+import hermes_agent.plugins.dashboard_auth.self_hosted as oidc_plugin
 from hermes_agent.hermes_cli.dashboard_auth import InvalidCodeError, ProviderError
 
 _ISSUER = "https://auth.example.com/application/o/hermes"

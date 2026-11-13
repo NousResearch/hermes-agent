@@ -20,7 +20,7 @@ from hermes_agent.gateway.config import PlatformConfig
 
 def _make_adapter():
     """Create a MatrixAdapter with mocked config and a one-user allowlist."""
-    from plugins.platforms.matrix.adapter import MatrixAdapter
+    from hermes_agent.plugins.platforms.matrix.adapter import MatrixAdapter
 
     config = PlatformConfig(
         enabled=True,

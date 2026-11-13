@@ -215,7 +215,7 @@ def resolve_timeout(key: str, *, default: Optional[float], env_var: Optional[str
 
 
 # --------------------------------------------------------------------------- Bounded execution — async
-# flavor. Generalizes plugins/platforms/telegram/adapter.py:_await_with_thread_deadline (the #63309 fix):
+# flavor. Generalizes hermes_agent/plugins/platforms/telegram/adapter.py:_await_with_thread_deadline (the #63309 fix):
 # the deadline is driven by a daemon threading.Timer so a blocked event loop cannot disable it, and a second
 # timer dumps all thread stacks when the loop provably failed to process the expiry — the one piece of
 # information loop-blocked hangs otherwise never surface.

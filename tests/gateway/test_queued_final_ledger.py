@@ -68,7 +68,7 @@ def _source(*, chat_id=CHAT, thread_id=None, chat_type="dm"):
 
 def _telegram_adapter(send_result=None):
     """A real Telegram adapter (the base contract) whose transport send is a mock."""
-    from plugins.platforms.telegram.adapter import TelegramAdapter
+    from hermes_agent.plugins.platforms.telegram.adapter import TelegramAdapter
 
     adapter = TelegramAdapter(PlatformConfig(enabled=True, token="test-token", extra={}))
     runner = MagicMock()

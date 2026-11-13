@@ -7,7 +7,7 @@ description: "随 Hermes Agent 附带并通过生命周期 hook 自动运行的�
 
 # 内置插件
 
-Hermes 随仓库附带了一小组插件。它们位于 `<repo>/plugins/<name>/`，与用户安装在 `~/.hermes/plugins/` 中的插件一同自动加载。它们使用与第三方插件相同的插件接口——hook、工具、斜杠命令——只是在仓库内维护。
+Hermes 随仓库附带了一小组插件。它们位于 `<repo>/hermes_agent/plugins/<name>/`，与用户安装在 `~/.hermes/plugins/` 中的插件一同自动加载。它们使用与第三方插件相同的插件接口——hook、工具、斜杠命令——只是在仓库内维护。
 
 请参阅 [插件](./plugins.md) 页面了解通用插件系统，以及 [构建 Hermes 插件](../../developer-guide/plugins/index.md) 了解如何编写自己的插件。
 
@@ -15,14 +15,14 @@ Hermes 随仓库附带了一小组插件。它们位于 `<repo>/plugins/<name>/`
 
 `PluginManager` 按顺序扫描四个来源：
 
-1. **内置（Bundled）** — `<repo>/plugins/<name>/`（本页所记录的内容）
+1. **内置（Bundled）** — `<repo>/hermes_agent/plugins/<name>/`（本页所记录的内容）
 2. **用户（User）** — `~/.hermes/plugins/<name>/`
 3. **项目（Project）** — `./.hermes/plugins/<name>/`（需要 `HERMES_ENABLE_PROJECT_PLUGINS=1`）
 4. **Pip 入口点（Entry points）** — `hermes_agent.plugins`
 
 名称冲突时，后面的来源优先——名为 `disk-cleanup` 的用户插件会替换内置版本。
 
-`plugins/memory/` 和 `plugins/context_engine/` 被刻意排除在内置扫描之外。这两个目录使用各自的发现路径，因为内存提供者和上下文引擎是通过 `hermes memory setup` / 配置中的 `context.engine` 进行单选配置的提供者。
+`hermes_agent/plugins/memory/` 和 `hermes_agent/plugins/context_engine/` 被刻意排除在内置扫描之外。这两个目录使用各自的发现路径，因为内存提供者和上下文引擎是通过 `hermes memory setup` / 配置中的 `context.engine` 进行单选配置的提供者。
 
 ## 内置插件默认不启用
 
@@ -51,7 +51,7 @@ hermes plugins disable disk-cleanup
 
 ## 当前附带的插件
 
-仓库在 `plugins/` 下附带了以下内置插件。所有插件均需手动启用——通过 `hermes plugins enable <name>` 启用。
+仓库在 `hermes_agent/plugins/` 下附带了以下内置插件。所有插件均需手动启用——通过 `hermes plugins enable <name>` 启用。
 
 | 插件 | 类型 | 用途 |
 |---|---|---|
@@ -63,7 +63,7 @@ hermes plugins disable disk-cleanup
 | `hermes-achievements` | 仪表盘标签页 | Steam 风格的可收集徽章，根据你真实的 Hermes 会话历史生成 |
 | `kanban/dashboard` | 仪表盘标签页 | 多智能体调度器的看板（Kanban）UI——任务、评论、扇出、切换看板。参见 [Kanban 多智能体](./kanban.md)。 |
 
-内存提供者（`plugins/memory/*`）和上下文引擎（`plugins/context_engine/*`）在 [内存提供者](./memory-providers.md) 中单独列出——它们分别通过 `hermes memory` 和 `hermes plugins` 管理。以下是两个长期运行的基于 hook 的插件的详细说明。
+内存提供者（`hermes_agent/plugins/memory/*`）和上下文引擎（`hermes_agent/plugins/context_engine/*`）在 [内存提供者](./memory-providers.md) 中单独列出——它们分别通过 `hermes memory` 和 `hermes plugins` 管理。以下是两个长期运行的基于 hook 的插件的详细说明。
 
 ### disk-cleanup
 
@@ -204,13 +204,13 @@ agent 会启动会议加入流程，在通话进行时将转录内容流式传�
 
 **启用：** 无需启用——`hermes-achievements` 是一个仅限仪表盘的插件（无生命周期 hook，无模型可见工具）。它在 `hermes dashboard` 首次启动时自动注册为标签页。`plugins.enabled` 配置仅控制生命周期/工具插件；仪表盘插件完全通过其 `dashboard/manifest.json` 发现。
 
-**退出：** 删除或重命名 `plugins/hermes-achievements/dashboard/manifest.json`，或在 `~/.hermes/plugins/hermes-achievements/` 中用同名用户插件覆盖它（该插件不包含仪表盘）。`$HERMES_HOME/plugins/hermes-achievements/` 下的插件状态文件会保留——重新安装后你的解锁历史依然存在。
+**退出：** 删除或重命名 `hermes_agent/plugins/hermes-achievements/dashboard/manifest.json`，或在 `~/.hermes/plugins/hermes-achievements/` 中用同名用户插件覆盖它（该插件不包含仪表盘）。`$HERMES_HOME/plugins/hermes-achievements/` 下的插件状态文件会保留——重新安装后你的解锁历史依然存在。
 
 ## 添加内置插件
 
 内置插件的编写方式与其他 Hermes 插件完全相同——参见 [构建 Hermes 插件](../../developer-guide/plugins/index.md)。唯一的区别是：
 
-- 目录位于 `<repo>/plugins/<name>/`，而非 `~/.hermes/plugins/<name>/`
+- 目录位于 `<repo>/hermes_agent/plugins/<name>/`，而非 `~/.hermes/plugins/<name>/`
 - 在 `hermes plugins list` 中，manifest 来源显示为 `bundled`
 - 同名用户插件会覆盖内置版本
 

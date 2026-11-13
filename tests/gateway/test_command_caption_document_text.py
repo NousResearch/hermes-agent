@@ -28,7 +28,7 @@ def test_inline_document_text_keeps_a_command_caption_first(caption, injection, 
 
 @pytest.mark.asyncio
 async def test_whatsapp_cloud_command_caption_on_a_text_file_stays_a_command(tmp_path, monkeypatch):
-    from plugins.platforms.whatsapp_cloud import adapter as wac
+    from hermes_agent.plugins.platforms.whatsapp_cloud import adapter as wac
     from tests.gateway.test_whatsapp_cloud import _make_adapter
 
     monkeypatch.setenv("WHATSAPP_ALLOW_ALL_USERS", "true")  # the dispatch-mechanics opt-in its test file uses
@@ -59,7 +59,7 @@ async def test_feishu_self_mentioned_command_caption_on_a_text_file_stays_a_comm
     check, so the file body does not become the goal's arguments."""
     import json
     from types import SimpleNamespace
-    from plugins.platforms.feishu.adapter import FeishuAdapter
+    from hermes_agent.plugins.platforms.feishu.adapter import FeishuAdapter
 
     adapter = FeishuAdapter.__new__(FeishuAdapter)
     adapter._bot_open_id, adapter._bot_user_id, adapter._bot_name = "ou_bot", "", "Hermes"
@@ -97,7 +97,7 @@ async def _telegram_album(tmp_path, monkeypatch, captions):
     from tests.waiting import async_wait_until
 
     from hermes_agent.gateway.config import PlatformConfig
-    from plugins.platforms.telegram.adapter import TelegramAdapter
+    from hermes_agent.plugins.platforms.telegram.adapter import TelegramAdapter
 
     for attr in ("DOCUMENT_CACHE_DIR", "IMAGE_CACHE_DIR"):
         monkeypatch.setattr(f"hermes_agent.gateway.platforms.base.{attr}", tmp_path / attr)

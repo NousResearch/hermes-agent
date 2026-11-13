@@ -1,4 +1,4 @@
-"""Tests for plugins/plugin_utils.py — thread-safe lazy singleton helpers.
+"""Tests for hermes_agent/plugins/plugin_utils.py — thread-safe lazy singleton helpers.
 
 These exercise the actual concurrency guarantee with real threads (not mocks):
 a barrier releases N threads simultaneously into the accessor, and we assert
@@ -9,7 +9,7 @@ import threading
 
 import pytest
 
-from plugins.plugin_utils import SingletonSlot, lazy_singleton
+from hermes_agent.plugins.plugin_utils import SingletonSlot, lazy_singleton
 
 
 # --- lazy_singleton -------------------------------------------------------

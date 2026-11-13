@@ -789,7 +789,7 @@ def register(ctx):
 
 ## 专用插件类型
 
-Hermes 在通用接口之外还有五种专用插件类型。每种都以目录形式存放在 `plugins/<category>/<name>/`（内置）或 `~/.hermes/plugins/<category>/<name>/`（用户）下。各类别的约定不同——选择你需要的类型，然后阅读其完整指南。
+Hermes 在通用接口之外还有五种专用插件类型。每种都以目录形式存放在 `hermes_agent/plugins/<category>/<name>/`（内置）或 `~/.hermes/plugins/<category>/<name>/`（用户）下。各类别的约定不同——选择你需要的类型，然后阅读其完整指南。
 
 ### 模型提供商插件——添加 LLM 后端
 
@@ -882,14 +882,14 @@ optional_env:
     password: false
 ```
 
-**完整指南：** [添加平台适配器](../adding-platform-adapters.md)——完整的 `BasePlatformAdapter` 约定、消息路由、认证限制、设置向导集成。参考 `plugins/platforms/irc/` 获取仅使用标准库的可用示例。
+**完整指南：** [添加平台适配器](../adding-platform-adapters.md)——完整的 `BasePlatformAdapter` 约定、消息路由、认证限制、设置向导集成。参考 `hermes_agent/plugins/platforms/irc/` 获取仅使用标准库的可用示例。
 
 ### 记忆提供商插件——添加跨会话知识后端
 
-在 `plugins/memory/<name>/` 下实现 `MemoryProvider`：
+在 `$HERMES_HOME/plugins/<name>/` 下实现 `MemoryProvider`（内置的位于 `hermes_agent/plugins/memory/<name>/`）：
 
 ```python
-# plugins/memory/my-memory/__init__.py
+# $HERMES_HOME/plugins/my-memory/__init__.py
 from hermes_agent.agent.memory_provider import MemoryProvider
 
 class MyMemoryProvider(MemoryProvider):
@@ -970,7 +970,7 @@ description: Custom image generation backend
 
 **完整指南：** [图像生成提供商插件](../image-gen-provider-plugin.md)——完整的 `ImageGenProvider` ABC、`list_models()` / `get_setup_schema()` 元数据、`success_response()`/`error_response()` 辅助函数、base64 与 URL 输出、用户覆盖、pip 分发。
 
-**参考示例：** `plugins/image_gen/openai/`（DALL-E / GPT-Image via OpenAI SDK）、`plugins/image_gen/openai-codex/`、`plugins/image_gen/xai/`（Grok 图像生成）。
+**参考示例：** `hermes_agent/plugins/image_gen/openai/`（DALL-E / GPT-Image via OpenAI SDK）、`hermes_agent/plugins/image_gen/openai-codex/`、`hermes_agent/plugins/image_gen/xai/`（Grok 图像生成）。
 
 ## 非 Python 扩展接口
 

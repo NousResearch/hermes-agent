@@ -75,5 +75,5 @@ class TestWhatsAppCloudParity:
 
     @pytest.mark.parametrize("mime,expected", sorted(CASES.items()))
     def test_pinned_overrides(self, mime, expected):
-        from plugins.platforms.whatsapp_cloud.adapter import _ext_for_mime
+        from hermes_agent.plugins.platforms.whatsapp_cloud.adapter import _ext_for_mime
         assert _ext_for_mime(mime) == expected

@@ -15,7 +15,7 @@ from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
 
 
 def _adapter():
-    from plugins.platforms.telegram.adapter import TelegramAdapter
+    from hermes_agent.plugins.platforms.telegram.adapter import TelegramAdapter
 
     adapter = TelegramAdapter(PlatformConfig(enabled=True, token="test-token"))
     adapter._text_batch_delay_seconds = adapter._text_batch_split_delay_seconds = 60

@@ -2,8 +2,8 @@
 from __future__ import annotations
 
 from hermes_agent.hermes_cli.config_backend import ConfigBackendUnavailable, write_config_key
-from plugins.config_backends import remote as remote_pkg
-from plugins.config_backends.remote import backend as backend_mod
+from hermes_agent.plugins.config_backends import remote as remote_pkg
+from hermes_agent.plugins.config_backends.remote import backend as backend_mod
 
 from . import test_remote_backend as _base
 

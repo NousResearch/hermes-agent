@@ -7,8 +7,8 @@ from hermes_agent.gateway.config import PlatformConfig
 
 
 def test_register_declares_the_former_core_wiring(monkeypatch):
-    from plugins.platforms.signal import adapter
-    from plugins.platforms.signal.register import register
+    from hermes_agent.plugins.platforms.signal import adapter
+    from hermes_agent.plugins.platforms.signal.register import register
 
     captured = {}
     register(SimpleNamespace(register_platform=lambda **kw: captured.update(kw)))

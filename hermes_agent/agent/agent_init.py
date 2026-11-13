@@ -1765,7 +1765,7 @@ def _select_context_engine(_agent_cfg):
     _selected_engine = None
     _copy_failed = False
     try:
-        from plugins.context_engine import load_context_engine
+        from hermes_agent.plugins.context_engine import load_context_engine
         _selected_engine = load_context_engine(_engine_name)
     except Exception as _ce_load_err:
         _ra().logger.debug("Context engine load from plugins/context_engine/: %s", _ce_load_err)

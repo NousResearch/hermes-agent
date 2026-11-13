@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-import plugins.image_gen.openai as openai_plugin
+import hermes_agent.plugins.image_gen.openai as openai_plugin
 
 
 # 1×1 transparent PNG — valid bytes for save_b64_image()
@@ -368,7 +368,7 @@ class TestGenerate:
         )
 
         with _patched_openai(fake_client), patch(
-            "plugins.image_gen._common.save_url_image",
+            "hermes_agent.plugins.image_gen._common.save_url_image",
             return_value=Path("/tmp/openai_gpt-image-2_20260524_000000_deadbeef.png"),
         ) as mock_save_url:
             result = provider.generate("a cat")

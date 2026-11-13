@@ -24,7 +24,7 @@ class _RunningAgent:
 @pytest.mark.asyncio
 @pytest.mark.parametrize('mode', ['interrupt', 'queue'])
 async def test_busy_plaintext_yes_resolves_blocking_approval_not_interrupt_or_queue(tmp_path, monkeypatch, mode):
-    from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
+    from hermes_agent.plugins.platforms.whatsapp.adapter import WhatsAppAdapter
     from hermes_agent.tools.approval import _gateway_queues
     from hermes_agent.tools.approval_gateway_wait import _ApprovalEntry
     monkeypatch.setenv('WHATSAPP_ALLOWED_USERS', '15551234567')

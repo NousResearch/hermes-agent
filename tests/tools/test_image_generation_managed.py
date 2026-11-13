@@ -3,7 +3,7 @@
 from unittest.mock import patch
 
 import hermes_agent.tools.image_generation_managed as managed
-from plugins.image_gen.krea import KREA_MODEL_IDS
+from hermes_agent.plugins.image_gen.krea import KREA_MODEL_IDS
 from hermes_agent.tools.image_generation_catalog import DEFAULT_MODEL, FAL_MODELS
 
 

@@ -34,7 +34,7 @@ from cryptography.x509.oid import NameOID
 from telegram import Bot
 from telegram.request import HTTPXRequest
 
-import plugins.platforms.telegram.telegram_network as tnet
+import hermes_agent.plugins.platforms.telegram.telegram_network as tnet
 
 pytestmark = pytest.mark.platforms("linux")
 
@@ -316,7 +316,7 @@ async def test_failed_tls_through_a_proxy_tunnel_frees_its_pool_slot(tmp_path, m
 def test_pool_size_override_fits_the_process_descriptor_budget(monkeypatch):
     """HERMES_TELEGRAM_HTTP_POOL_SIZE=512 across 2 clients × (fallback IPs + hostname) pools must not
     promise more sockets than a quarter of RLIMIT_NOFILE (#82678); a small override is kept."""
-    from plugins.platforms.telegram import telegram_pool
+    from hermes_agent.plugins.platforms.telegram import telegram_pool
 
     soft = 1024  # a common Linux default; the host's own limit may be large enough to need no cap
     monkeypatch.setattr(telegram_pool, "_nofile_soft_limit", lambda: soft)
@@ -359,7 +359,7 @@ async def test_a_retired_busy_pool_is_released_once_it_drains(monkeypatch):
     import gc
     import weakref
 
-    from plugins.platforms.telegram import telegram_pool
+    from hermes_agent.plugins.platforms.telegram import telegram_pool
 
     class _Inner(httpx.AsyncBaseTransport):
         def __init__(self, **_kwargs):
@@ -406,7 +406,7 @@ async def test_aclosed_transport_serves_the_next_request_on_a_fresh_pool(monkeyp
             self.closed = True
 
     monkeypatch.setattr(tnet.httpx, "AsyncHTTPTransport", _Inner)
-    from plugins.platforms.telegram import telegram_pool
+    from hermes_agent.plugins.platforms.telegram import telegram_pool
     monkeypatch.setattr(telegram_pool.httpx, "AsyncHTTPTransport", _Inner)
     transport = tnet.TelegramFallbackTransport(["149.154.166.110"], proxy=None)
     request = httpx.Request("POST", "https://api.telegram.org/bot1/getMe")
@@ -445,7 +445,7 @@ async def test_a_hung_pool_close_does_not_strand_the_other_pools(monkeypatch):
                 await hang.wait()  # the primary's close wedges
             self.closed = True
 
-    from plugins.platforms.telegram import telegram_pool
+    from hermes_agent.plugins.platforms.telegram import telegram_pool
     monkeypatch.setattr(telegram_pool.httpx, "AsyncHTTPTransport", _Inner)
     transport = tnet.TelegramFallbackTransport(["149.154.166.110", "149.154.167.220"], proxy=None)
     idle_fallback = await transport._get_fallback("149.154.166.110")
@@ -468,7 +468,7 @@ async def test_no_proxy_custom_base_url_is_reached_directly(tmp_path, monkeypatc
     adapter's request builder decided "no proxy" for it, and the transport must not re-resolve the
     proxy against api.telegram.org and route the base_url host through it (#47188)."""
     from hermes_agent.gateway.config import PlatformConfig
-    from plugins.platforms.telegram.adapter import TelegramAdapter
+    from hermes_agent.plugins.platforms.telegram.adapter import TelegramAdapter
 
     server_ctx, client_ctx = _tls_pair(tmp_path)
     edge = _Edge(server_ctx)
@@ -478,7 +478,7 @@ async def test_no_proxy_custom_base_url_is_reached_directly(tmp_path, monkeypatc
     monkeypatch.setenv("HTTPS_PROXY", f"http://127.0.0.1:{dead_proxy.getsockname()[1]}")
     monkeypatch.setenv("NO_PROXY", "127.0.0.1")
     monkeypatch.setenv("HERMES_TELEGRAM_HTTP_CONNECT_TIMEOUT", "3")
-    monkeypatch.setattr("plugins.platforms.telegram.adapter.platform_ssl_context", lambda: client_ctx)
+    monkeypatch.setattr("hermes_agent.plugins.platforms.telegram.adapter.platform_ssl_context", lambda: client_ctx)
     base_url = f"https://127.0.0.1:{edge.port}/bot"
     adapter = TelegramAdapter(PlatformConfig(enabled=True, token="123:abc", extra={
         "base_url": base_url, "base_file_url": f"https://127.0.0.1:{edge.port}/file/bot",

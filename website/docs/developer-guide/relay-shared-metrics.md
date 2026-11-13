@@ -329,7 +329,7 @@ Each task run is a Relay `Function` scope named `hermes.task_run`, parented to
 the owning Hermes session. The start counter contains only bounded execution
 surface and entrypoint values plus, for gateway tasks, the built-in messaging
 `platform` (`telegram`, `discord`, `slack`, ...; platforms Hermes ships under
-`plugins/platforms/` by name, a `plugin-catalog/` platform by its catalog entry
+`hermes_agent/plugins/platforms/` by name, a `plugin-catalog/` platform by its catalog entry
 name only when the installer's own record proves a catalog install, every other
 plugin platform `plugin`, every other surface `none`). The terminal counter
 (`hermes.task_run.finished`) contains the start fields plus bounded outcome, end
@@ -542,7 +542,7 @@ local database, so each fires once per install however many processes reach it.
 #### Per-model quality, friction and context pressure
 
 Provider and model follow the model-route rules: a provider Hermes ships (built in,
-an in-tree `plugins/model-providers/` profile or a public models.dev id) and its
+an in-tree `hermes_agent/plugins/model-providers/` profile or a public models.dev id) and its
 model id; custom endpoints, provider plugins installed under
 `$HERMES_HOME/plugins/model-providers/` or from pip (names and aliases included),
 the local-server aliases of `custom` (`ollama`, `local`, `vllm`, `llamacpp`,

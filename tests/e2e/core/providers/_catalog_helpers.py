@@ -2,7 +2,7 @@
 
 The provider list is NEVER hardcoded: :func:`discover_catalog` runs the real plugin discovery
 (``providers.list_providers()``) in a clean child interpreter, so a new plugin under
-``plugins/model-providers/`` joins every matrix automatically. Each row is driven through the
+``hermes_agent/plugins/model-providers/`` joins every matrix automatically. Each row is driven through the
 real ``python -m hermes_agent.hermes_cli.main`` in a hermetic HOME against
 :class:`tests.fakes.providers.catalog_fake.CatalogFake`, redirected the way the product documents
 (``model.provider`` + ``model.base_url`` in config.yaml; ``/anthropic`` path for the Anthropic

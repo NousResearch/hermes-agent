@@ -60,7 +60,7 @@ def test_routed_profile_flows_into_prune_via_send_metadata(tmp_path: Path):
     by the gateway carries the routed profile, and prune uses it over the
     adapter's own stamp (#76423)."""
     from hermes_agent.gateway.run import GatewayRunner
-    from plugins.platforms.telegram.adapter import TelegramAdapter
+    from hermes_agent.plugins.platforms.telegram.adapter import TelegramAdapter
 
     runner = object.__new__(GatewayRunner)
     runner._thread_metadata_for_target = lambda *a, **k: {"thread_id": "99"}

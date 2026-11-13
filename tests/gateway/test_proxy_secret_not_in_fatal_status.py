@@ -45,7 +45,7 @@ def _aiohttp_proxy_error(proxy):
 
 
 def _discord(monkeypatch, proxy):
-    from plugins.platforms.discord import adapter as dc
+    from hermes_agent.plugins.platforms.discord import adapter as dc
 
     if not dc.DISCORD_AVAILABLE:
         pytest.skip("discord.py not installed")
@@ -61,7 +61,7 @@ def _discord(monkeypatch, proxy):
 
 
 def _qqbot(monkeypatch, proxy):
-    from plugins.platforms.qqbot import adapter as qq
+    from hermes_agent.plugins.platforms.qqbot import adapter as qq
 
     for name in ENV_PROXY_VARS:
         monkeypatch.setenv(name, proxy)
@@ -77,7 +77,7 @@ def _qqbot(monkeypatch, proxy):
 
 
 def _wecom(monkeypatch, proxy):
-    from plugins.platforms.wecom import adapter as wc
+    from hermes_agent.plugins.platforms.wecom import adapter as wc
 
     for name in ENV_PROXY_VARS:
         monkeypatch.setenv(name, proxy)
@@ -137,7 +137,7 @@ def test_qq_connect_redacts_the_https_proxy_httpx_parses_beside_a_clean_wss_prox
     # The WebSocket dials the clean WSS_PROXY, but the httpx token client is built from HTTPS_PROXY
     # and fails first with ``Invalid port: '<pw>'``: no SDK mocks, the real client construction.
     pytest.importorskip("httpx")
-    from plugins.platforms.qqbot.adapter import QQAdapter
+    from hermes_agent.plugins.platforms.qqbot.adapter import QQAdapter
 
     for name in (*ENV_PROXY_VARS, "NO_PROXY", "no_proxy"):
         monkeypatch.delenv(name, raising=False)

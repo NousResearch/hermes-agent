@@ -36,7 +36,7 @@ class TestRouting:
     def test_unconfigured_remote_backend_fails_closed_on_read(self, home, monkeypatch):
         # Selected from the env alone; without its plane identity the first read exits, and the
         # local config.yaml is never used as a fallback (D2).
-        from plugins.config_backends import remote
+        from hermes_agent.plugins.config_backends import remote
         (home / "config.yaml").write_text("a: 1\n", encoding="utf-8")
         monkeypatch.setenv(cb.BACKEND_ENV, "remote")
         monkeypatch.delenv("HERMES_CONFIG_INSTANCE_ID", raising=False)
@@ -65,7 +65,7 @@ class TestBootstrapSelector:
 
     @pytest.fixture(autouse=True)
     def fresh_bootstrap(self, home, monkeypatch):
-        from plugins.config_backends import remote
+        from hermes_agent.plugins.config_backends import remote
         monkeypatch.setenv("HERMES_HOME", str(home))
         monkeypatch.delenv("HERMES_CONFIG_INSTANCE_ID", raising=False)
         monkeypatch.setattr(cb, "_BOOTSTRAPPED", False)
@@ -97,7 +97,7 @@ class TestRemoteBackendShape:
     def test_remote_backend_is_not_a_file_backend(self):
         # probe_config_readable and every FileBackend-typed path must never treat the remote
         # layer as a local file.
-        from plugins.config_backends.remote.backend import RemoteBackend
+        from hermes_agent.plugins.config_backends.remote.backend import RemoteBackend
         assert not issubclass(RemoteBackend, cb.FileBackend)
         for member in ("read_user_doc", "read_user_doc_readonly", "version", "exists",
                        "probe_readable", "write_changes"):

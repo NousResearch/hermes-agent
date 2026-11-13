@@ -14,7 +14,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from hermes_agent.gateway.config import PlatformConfig
-from plugins.platforms.buzz.adapter import (
+from hermes_agent.plugins.platforms.buzz.adapter import (
     _CHAT_KIND,
     _DISPATCH_KINDS,
     BuzzAdapter,

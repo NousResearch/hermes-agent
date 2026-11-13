@@ -35,7 +35,7 @@ class TestMattermostWSAuthRetry:
             headers=MagicMock(),
         )
 
-        from plugins.platforms.mattermost.adapter import MattermostAdapter
+        from hermes_agent.plugins.platforms.mattermost.adapter import MattermostAdapter
 
         adapter = MattermostAdapter.__new__(MattermostAdapter)
         adapter._closing = False
@@ -77,7 +77,7 @@ class TestMattermostWSAuthRetry:
         "401" (e.g. a proxy error body with digits) must not be mistaken
         for a genuine auth rejection. The loop should log a warning and
         retry, not return."""
-        from plugins.platforms.mattermost.adapter import MattermostAdapter
+        from hermes_agent.plugins.platforms.mattermost.adapter import MattermostAdapter
 
         adapter = MattermostAdapter.__new__(MattermostAdapter)
         adapter._closing = False
@@ -107,7 +107,7 @@ class TestMattermostWSAuthRetry:
         """Existing self._closing early-return behavior is unaffected by
         the substring-fallback removal: once _closing is set, the loop
         must not attempt to connect at all."""
-        from plugins.platforms.mattermost.adapter import MattermostAdapter
+        from hermes_agent.plugins.platforms.mattermost.adapter import MattermostAdapter
 
         adapter = MattermostAdapter.__new__(MattermostAdapter)
         adapter._closing = True

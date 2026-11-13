@@ -44,7 +44,7 @@ def _install_fake_scope(monkeypatch, secrets):
 
 class TestRequirementGateSeesExternalSecrets:
     def test_externally_managed_key_passes_gate(self, monkeypatch):
-        from plugins.platforms.buzz import adapter
+        from hermes_agent.plugins.platforms.buzz import adapter
 
         monkeypatch.delenv("BUZZ_RELAY_URL", raising=False)
         monkeypatch.delenv("BUZZ_PRIVATE_KEY", raising=False)
@@ -57,7 +57,7 @@ class TestRequirementGateSeesExternalSecrets:
         assert adapter.check_requirements() is True
 
     def test_gate_fails_cleanly_when_nothing_resolves(self, monkeypatch):
-        from plugins.platforms.buzz import adapter
+        from hermes_agent.plugins.platforms.buzz import adapter
 
         monkeypatch.delenv("BUZZ_RELAY_URL", raising=False)
         monkeypatch.delenv("BUZZ_PRIVATE_KEY", raising=False)
@@ -66,7 +66,7 @@ class TestRequirementGateSeesExternalSecrets:
         assert adapter.check_requirements() is False
 
     def test_relay_from_env_still_passes_with_external_key(self, monkeypatch):
-        from plugins.platforms.buzz import adapter
+        from hermes_agent.plugins.platforms.buzz import adapter
 
         monkeypatch.setenv("BUZZ_RELAY_URL", "wss://relay.example")
         monkeypatch.delenv("BUZZ_PRIVATE_KEY", raising=False)
@@ -78,7 +78,7 @@ class TestRequirementGateSeesExternalSecrets:
         self, monkeypatch
     ):
         from hermes_agent.agent import secret_scope
-        from plugins.platforms.buzz import adapter
+        from hermes_agent.plugins.platforms.buzz import adapter
 
         monkeypatch.delenv("BUZZ_RELAY_URL", raising=False)
         monkeypatch.delenv("BUZZ_PRIVATE_KEY", raising=False)
@@ -90,7 +90,7 @@ class TestRequirementGateSeesExternalSecrets:
         assert adapter.check_requirements() is False
 
     def test_scope_snapshot_is_built_once_and_cached(self, monkeypatch):
-        from plugins.platforms.buzz import adapter
+        from hermes_agent.plugins.platforms.buzz import adapter
 
         monkeypatch.setenv("BUZZ_RELAY_URL", "wss://relay.example")
         monkeypatch.delenv("BUZZ_PRIVATE_KEY", raising=False)
@@ -109,7 +109,7 @@ class TestScopedSemanticsUnchanged:
         """A scoped miss must keep returning default: the unscoped build is
         only for the no-scope startup gate, never a cross-profile borrow."""
         from hermes_agent.agent import secret_scope
-        from plugins.platforms.buzz import adapter
+        from hermes_agent.plugins.platforms.buzz import adapter
 
         monkeypatch.setenv("BUZZ_RELAY_URL", "wss://relay.example")
         monkeypatch.delenv("BUZZ_PRIVATE_KEY", raising=False)

@@ -45,28 +45,28 @@ class TestFleetCapabilityCoverage(unittest.TestCase):
         capabilities dict — source grep can't see inherited keys."""
         checked = 0
         # fal
-        from plugins.video_gen.fal import FALVideoGenProvider
+        from hermes_agent.plugins.video_gen.fal import FALVideoGenProvider
 
         caps = FALVideoGenProvider().capabilities()
         for axis in CAPABILITY_AXES:
             self.assertIn(axis, caps, f"fal missing {axis}")
         checked += 1
         # xai
-        from plugins.video_gen.xai import XAIVideoGenProvider
+        from hermes_agent.plugins.video_gen.xai import XAIVideoGenProvider
 
         caps = XAIVideoGenProvider().capabilities()
         for axis in CAPABILITY_AXES:
             self.assertIn(axis, caps, f"xai missing {axis}")
         checked += 1
         # deepinfra
-        from plugins.video_gen.deepinfra import DeepInfraVideoGenProvider
+        from hermes_agent.plugins.video_gen.deepinfra import DeepInfraVideoGenProvider
 
         caps = DeepInfraVideoGenProvider().capabilities()
         for axis in CAPABILITY_AXES:
             self.assertIn(axis, caps, f"deepinfra missing {axis}")
         checked += 1
         # openrouter
-        from plugins.video_gen.openrouter import OpenRouterVideoGenProvider
+        from hermes_agent.plugins.video_gen.openrouter import OpenRouterVideoGenProvider
 
         caps = OpenRouterVideoGenProvider().capabilities()
         for axis in CAPABILITY_AXES:
@@ -93,7 +93,7 @@ class TestFleetCapabilityCoverage(unittest.TestCase):
             self.assertIn(axis, caps, f"ABC default missing {axis}")
 
     def test_every_fal_family_declares_per_family_keys(self):
-        from plugins.video_gen.fal import FAL_FAMILIES
+        from hermes_agent.plugins.video_gen.fal import FAL_FAMILIES
 
         for fam, meta in FAL_FAMILIES.items():
             with self.subTest(family=fam):

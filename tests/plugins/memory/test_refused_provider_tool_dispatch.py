@@ -105,7 +105,7 @@ def _scoped(home):
 
 
 def _build_manager(home):
-    from plugins.memory import load_memory_provider
+    from hermes_agent.plugins.memory import load_memory_provider
     with _scoped(home):
         provider = load_memory_provider("sharedmem")
         manager = MemoryManager()

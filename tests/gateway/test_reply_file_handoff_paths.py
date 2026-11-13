@@ -6,8 +6,8 @@ import pytest
 from hermes_agent.gateway.config import PlatformConfig
 from hermes_agent.gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
 from tests.gateway.test_reply_file_handoff import _telegram, _body, _Bot
-from plugins.platforms.telegram.adapter import TelegramAdapter
-from plugins.platforms.telegram import adapter as tg
+from hermes_agent.plugins.platforms.telegram.adapter import TelegramAdapter
+from hermes_agent.plugins.platforms.telegram import adapter as tg
 
 @pytest.fixture(autouse=True)
 def parse(monkeypatch):
@@ -34,7 +34,7 @@ async def test_discord_tool_long_reply_uses_file(monkeypatch):
     import aiohttp
     from hermes_agent.gateway.config import Platform
     from hermes_agent.tools.send_message_tool import _send_to_platform
-    from plugins.platforms.discord import adapter as dc
+    from hermes_agent.plugins.platforms.discord import adapter as dc
     from tests.tools.test_send_message_tool import _StreamingAiohttpResponse, _discord_entry
     calls = []
     class Session:

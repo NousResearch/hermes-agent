@@ -294,7 +294,7 @@ class Platform(Enum):
 
     @classmethod
     def _scan_bundled_plugin_platforms(cls) -> tuple[set, dict]:
-        """Directory names of bundled platform plugins under ``plugins/platforms/``, plus a map of
+        """Directory names of bundled platform plugins under ``hermes_agent/plugins/platforms/``, plus a map of
         manifest ``name:`` keys that differ from their directory (alias -> directory name). Aliases
         never shadow a directory name, so the directory stays the canonical platform value."""
         try:
@@ -858,13 +858,13 @@ def load_gateway_config() -> GatewayConfig:
     except Exception as e:
         logger.warning(
             # DingTalk settings → env vars: migrated to the dingtalk plugin's apply_yaml_config_fn hook
-            # (plugins/platforms/dingtalk/adapter.py). #41112 / #3823.
-            # Mattermost config bridge moved into plugins/platforms/mattermost/
+            # (hermes_agent/plugins/platforms/dingtalk/adapter.py). #41112 / #3823.
+            # Mattermost config bridge moved into hermes_agent/plugins/platforms/mattermost/
             # adapter.py::_apply_yaml_config — see #25443 (apply_yaml_config_fn).
             # Matrix settings → env vars: migrated to the matrix plugin's apply_yaml_config_fn hook
-            # (plugins/platforms/matrix/adapter.py). #41112 / #3823.
+            # (hermes_agent/plugins/platforms/matrix/adapter.py). #41112 / #3823.
             # Feishu settings → env vars: migrated to the feishu plugin's apply_yaml_config_fn hook
-            # (plugins/platforms/feishu/adapter.py). #41112 / #3823.
+            # (hermes_agent/plugins/platforms/feishu/adapter.py). #41112 / #3823.
             "Failed to process config.yaml — falling back to .env / gateway.json values. "
             "Check %s for syntax errors. Error: %s",
             _home / "config.yaml", e,

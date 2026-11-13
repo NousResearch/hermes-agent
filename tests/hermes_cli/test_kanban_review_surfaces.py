@@ -402,7 +402,7 @@ def test_cli_and_dashboard_receive_graph_aware_deadlock_diagnostic(
         for item in payload[0]["diagnostics"]
     )
 
-    from plugins.kanban.dashboard.plugin_api import _compute_task_diagnostics
+    from hermes_agent.plugins.kanban.dashboard.plugin_api import _compute_task_diagnostics
 
     with kbc.connect() as conn:
         dashboard = _compute_task_diagnostics(conn, task_ids=[parent_id])

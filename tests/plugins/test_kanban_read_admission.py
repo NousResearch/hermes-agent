@@ -34,7 +34,7 @@ async def test_board_burst_preserves_http_worker_capacity(tmp_path, monkeypatch)
     kb.init_db()
     plugin_path = Path(os.environ.get(
         "HERMES_TEST_KANBAN_PLUGIN",
-        str(Path(__file__).resolve().parents[2] / "plugins/kanban/dashboard/plugin_api.py"),
+        str(Path(__file__).resolve().parents[2] / "hermes_agent/plugins/kanban/dashboard/plugin_api.py"),
     ))
     spec = importlib.util.spec_from_file_location("kanban_admission_test", plugin_path)
     plugin = importlib.util.module_from_spec(spec)

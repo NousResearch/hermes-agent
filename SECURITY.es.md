@@ -175,7 +175,7 @@ modelo de autorización, pero las reglas a continuación se aplican uniformement
 
 - **Adaptadores de plataforma del gateway.** La mayoría de las integraciones
   de mensajería se distribuyen como plugins empaquetados en
-  `plugins/platforms/<name>/` (Telegram, Discord, Slack, email, SMS, etc.).
+  `hermes_agent/plugins/platforms/<name>/` (Telegram, Discord, Slack, email, SMS, etc.).
   Los tipos base compartidos y un conjunto menor de adaptadores
   legacy/directos viven en `hermes_agent/gateway/platforms/` (`base.py`, Signal, servidor
   API, webhooks, …), con descubrimiento y carga diferida vía

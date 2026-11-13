@@ -820,8 +820,8 @@ The dashboard scans three directories for `dashboard/manifest.json`:
 | Priority | Directory | Source label |
 |----------|-----------|--------------|
 | 1 (wins on conflict) | `~/.hermes/plugins/<name>/dashboard/` | `user` |
-| 2 | `<repo>/plugins/memory/<name>/dashboard/` | `bundled` |
-| 2 | `<repo>/plugins/<name>/dashboard/` | `bundled` |
+| 2 | `<repo>/hermes_agent/plugins/memory/<name>/dashboard/` | `bundled` |
+| 2 | `<repo>/hermes_agent/plugins/<name>/dashboard/` | `bundled` |
 | 3 | `./.hermes/plugins/<name>/dashboard/` | `project` — only when `HERMES_ENABLE_PROJECT_PLUGINS` is set |
 
 On a gateway serving several profiles, a request for a profile other than the one the gateway started

@@ -213,7 +213,7 @@ class TestExtractCacheBustingConfig:
     @staticmethod
     def _install_fake_provider(monkeypatch, provider):
         """Route ``load_memory_provider`` to ``provider`` and start from an empty memo."""
-        import plugins.memory as plugins_memory
+        import hermes_agent.plugins.memory as plugins_memory
         from hermes_agent.gateway.run_agent_cache import GatewayAgentCacheMixin
 
         calls = []

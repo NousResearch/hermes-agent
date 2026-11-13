@@ -1,6 +1,6 @@
 """Telegram Bot API stand-in (https://core.telegram.org/bots/api).
 
-The real ``plugins/platforms/telegram`` adapter reaches it through python-telegram-bot's own
+The real ``hermes_agent/plugins/platforms/telegram`` adapter reaches it through python-telegram-bot's own
 ``base_url``/``base_file_url`` (``platforms.telegram.extra.base_url``), so every request crosses the
 real PTB HTTP stack: ``POST {base}/bot<token>/<method>`` with form/JSON/multipart parameters, and
 long-poll ``getUpdates`` that returns queued ``Update`` objects. Only the methods the adapter calls

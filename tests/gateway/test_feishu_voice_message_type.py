@@ -10,7 +10,7 @@ untranscribable audio. Follow-up to #28993 (Discord + DingTalk).
 """
 
 from hermes_agent.gateway.platforms.event import MessageType
-from plugins.platforms.feishu.adapter import FeishuAdapter, FeishuNormalizedMessage
+from hermes_agent.plugins.platforms.feishu.adapter import FeishuAdapter, FeishuNormalizedMessage
 
 
 def _resolve(preferred: str, media_types):

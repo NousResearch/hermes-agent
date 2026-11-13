@@ -28,7 +28,7 @@ from tests.gateway.feishu_helpers import (
     ],
 )
 def test_feishu_load_settings_require_mention(monkeypatch, env_value, extra, expected):
-    from plugins.platforms.feishu.adapter import FeishuAdapter
+    from hermes_agent.plugins.platforms.feishu.adapter import FeishuAdapter
 
     monkeypatch.setenv("FEISHU_APP_ID", "cli_test")
     monkeypatch.setenv("FEISHU_APP_SECRET", "secret_test")
@@ -45,7 +45,7 @@ def test_feishu_load_settings_require_mention(monkeypatch, env_value, extra, exp
 
 
 def test_sender_identity_collects_every_non_empty_id_variant():
-    from plugins.platforms.feishu.adapter import _sender_identity
+    from hermes_agent.plugins.platforms.feishu.adapter import _sender_identity
 
     sender = SimpleNamespace(
         sender_id=SimpleNamespace(open_id="ou_x", user_id="", union_id="un_x"),
@@ -55,7 +55,7 @@ def test_sender_identity_collects_every_non_empty_id_variant():
 
 @pytest.mark.parametrize("sender_type", ["bot", "app"])
 def test_is_bot_sender_treats_bot_and_app_as_bot_origin(sender_type):
-    from plugins.platforms.feishu.adapter import _is_bot_sender
+    from hermes_agent.plugins.platforms.feishu.adapter import _is_bot_sender
 
     assert _is_bot_sender(SimpleNamespace(sender_type=sender_type)) is True
 
@@ -297,7 +297,7 @@ def test_dm_pairing_mode_forwards_unknown_sender_to_gateway_intake(monkeypatch):
 def test_hydrate_bot_identity_populates_self_ids_from_bot_v3_info(monkeypatch):
     import asyncio
 
-    import plugins.platforms.feishu.adapter as feishu_mod
+    import hermes_agent.plugins.platforms.feishu.adapter as feishu_mod
     FeishuAdapter = feishu_mod.FeishuAdapter
 
     class _FakeBaseRequestBuilder:
@@ -358,7 +358,7 @@ def test_hydrate_bot_identity_populates_self_ids_from_bot_v3_info(monkeypatch):
 def test_resolve_sender_profile_uses_open_id_for_bot_name_lookup():
     import asyncio
 
-    from plugins.platforms.feishu.adapter import FeishuAdapter
+    from hermes_agent.plugins.platforms.feishu.adapter import FeishuAdapter
 
     adapter = object.__new__(FeishuAdapter)
     adapter._client = object()
@@ -412,7 +412,7 @@ def _group_case(
 
 
 def _group_rule(policy: str, **kwargs):
-    from plugins.platforms.feishu.adapter import FeishuGroupRule
+    from hermes_agent.plugins.platforms.feishu.adapter import FeishuGroupRule
     return FeishuGroupRule(policy=policy, **kwargs)
 
 
@@ -577,7 +577,7 @@ def test_dm_admission_config_resolves_from_profile_scope_under_multiplex(tmp_pat
     app-scoped, so the default allow-list can never match the role app's
     senders, and the role profile's allow-all flag must be honored."""
     import hermes_agent.agent.secret_scope as ss
-    from plugins.platforms.feishu.adapter import FeishuAdapter
+    from hermes_agent.plugins.platforms.feishu.adapter import FeishuAdapter
 
     monkeypatch.setenv("FEISHU_APP_ID", "cli_default")
     monkeypatch.setenv("FEISHU_APP_SECRET", "secret_default")
@@ -627,7 +627,7 @@ def test_dm_admission_config_resolves_from_profile_scope_under_multiplex(tmp_pat
 
 def test_dm_admission_config_falls_back_to_os_environ_when_unscoped(monkeypatch):
     """Single-profile behavior unchanged: process env still configures DMs."""
-    from plugins.platforms.feishu.adapter import FeishuAdapter
+    from hermes_agent.plugins.platforms.feishu.adapter import FeishuAdapter
 
     monkeypatch.setenv("FEISHU_APP_ID", "cli_test")
     monkeypatch.setenv("FEISHU_APP_SECRET", "secret_test")
@@ -655,7 +655,7 @@ class _SdkMessage:
 
 def _chat_get_info(chat_id: str, chat_mode):
     """get_chat_info built from a real chat.get body: chat_type is private/public, chat_mode the DM marker."""
-    from plugins.platforms.feishu.adapter import FeishuAdapter
+    from hermes_agent.plugins.platforms.feishu.adapter import FeishuAdapter
 
     adapter = object.__new__(FeishuAdapter)
     adapter._chat_info_cache = {}
@@ -756,7 +756,7 @@ def test_group_reaction_ignores_mention_requirement(monkeypatch):
 
 
 def test_group_reaction_respects_per_chat_disabled_rule(monkeypatch):
-    from plugins.platforms.feishu.adapter import FeishuGroupRule
+    from hermes_agent.plugins.platforms.feishu.adapter import FeishuGroupRule
 
     adapter = _reaction_adapter(group_policy="open")
     adapter._group_rules = {"oc_locked": FeishuGroupRule(policy="disabled")}
@@ -805,7 +805,7 @@ def test_group_card_click_from_non_allowlisted_user_is_dropped():
 
 
 def test_group_card_click_respects_per_chat_disabled_rule():
-    from plugins.platforms.feishu.adapter import FeishuGroupRule
+    from hermes_agent.plugins.platforms.feishu.adapter import FeishuGroupRule
 
     adapter = _reaction_adapter(group_policy="open")
     adapter._group_rules = {"oc_locked": FeishuGroupRule(policy="disabled")}
@@ -821,7 +821,7 @@ def test_dm_card_click_from_non_allowlisted_user_is_dropped(monkeypatch):
 
 
 def test_group_reaction_per_chat_allowlist_excludes_globally_allowed_user():
-    from plugins.platforms.feishu.adapter import FeishuGroupRule
+    from hermes_agent.plugins.platforms.feishu.adapter import FeishuGroupRule
 
     adapter = _reaction_adapter(group_policy="allowlist")
     adapter._allowed_group_users = frozenset({"ou_owner", "ou_dm_only"})
@@ -876,13 +876,13 @@ def test_synthetic_group_drop_warns_once_for_empty_default_allowlist(event_kind,
             return _run_reaction(adapter, "ou_nonmember", chat_id="oc_unconfigured")
         return _run_card_click(adapter, "ou_nonmember", chat_id="oc_unconfigured")
 
-    with caplog.at_level("WARNING", logger="plugins.platforms.feishu.adapter"):
+    with caplog.at_level("WARNING", logger="hermes_agent.plugins.platforms.feishu.adapter"):
         assert drop() == []
         assert drop() == []
 
     warnings = [
         record.getMessage() for record in caplog.records
-        if record.name == "plugins.platforms.feishu.adapter" and record.levelname == "WARNING"
+        if record.name == "hermes_agent.plugins.platforms.feishu.adapter" and record.levelname == "WARNING"
     ]
     assert len(warnings) == 1
     assert "FEISHU_ALLOWED_USERS is empty" in warnings[0]

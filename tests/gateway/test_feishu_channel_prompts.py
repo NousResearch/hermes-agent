@@ -15,7 +15,7 @@ from hermes_agent.gateway.config import PlatformConfig
 
 
 def _build_adapter(extra=None):
-    from plugins.platforms.feishu.adapter import FeishuAdapter
+    from hermes_agent.plugins.platforms.feishu.adapter import FeishuAdapter
 
     adapter = FeishuAdapter.__new__(FeishuAdapter)
     adapter.config = PlatformConfig(extra=extra or {})

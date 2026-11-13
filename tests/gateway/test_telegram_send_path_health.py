@@ -12,8 +12,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from hermes_agent.gateway.config import PlatformConfig
-from plugins.platforms.telegram import adapter as tg_adapter
-from plugins.platforms.telegram.adapter import TelegramAdapter
+from hermes_agent.plugins.platforms.telegram import adapter as tg_adapter
+from hermes_agent.plugins.platforms.telegram.adapter import TelegramAdapter
 
 
 def _make_adapter() -> TelegramAdapter:
@@ -51,7 +51,7 @@ async def test_send_long_flood_fails_closed_without_inline_sleep(monkeypatch):
     adapter._rich_send_disabled = True
     adapter._bot.send_message = AsyncMock(side_effect=_FloodError(5827.0))
     sleep = AsyncMock()
-    monkeypatch.setattr("plugins.platforms.telegram.adapter.asyncio.sleep", sleep)
+    monkeypatch.setattr("hermes_agent.plugins.platforms.telegram.adapter.asyncio.sleep", sleep)
 
     result = await adapter.send("123", "hello")
 
@@ -70,7 +70,7 @@ async def test_send_short_flood_still_retries_inline(monkeypatch):
     ok = MagicMock(message_id=7)
     adapter._bot.send_message = AsyncMock(side_effect=[_FloodError(2.0), ok])
     sleep = AsyncMock()
-    monkeypatch.setattr("plugins.platforms.telegram.adapter.asyncio.sleep", sleep)
+    monkeypatch.setattr("hermes_agent.plugins.platforms.telegram.adapter.asyncio.sleep", sleep)
 
     result = await adapter.send("123", "hello")
 

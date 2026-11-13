@@ -16,7 +16,7 @@ import pytest
 
 from hermes_agent.gateway.config import PlatformConfig
 from hermes_agent.gateway.platforms.event import MessageEvent
-from plugins.platforms.photon.adapter import PhotonAdapter
+from hermes_agent.plugins.platforms.photon.adapter import PhotonAdapter
 
 
 def _make_adapter(monkeypatch: pytest.MonkeyPatch, extra: dict | None = None) -> PhotonAdapter:
@@ -120,7 +120,7 @@ def test_invalid_pattern_skipped(monkeypatch: pytest.MonkeyPatch) -> None:
 async def test_unmentioned_group_attachment_is_not_cached(
         monkeypatch: pytest.MonkeyPatch, caption: str, cached_calls: int, dispatched: int) -> None:
     """The group mention gate must run BEFORE inline attachment bytes hit the media cache."""
-    import plugins.platforms.photon.adapter as photon_adapter
+    import hermes_agent.plugins.platforms.photon.adapter as photon_adapter
 
     adapter = _make_adapter(monkeypatch, extra={"require_mention": True})
     captured = _capture(adapter, monkeypatch)

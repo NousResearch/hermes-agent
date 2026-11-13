@@ -95,7 +95,7 @@ async def test_media_then_quick_text_keep_arrival_order(tmp_path, monkeypatch, b
 
 async def _held_owner(tmp_path, monkeypatch):
     """Real authority over SQLite, WhatsApp sources, the capture held on an Event; no drain."""
-    from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
+    from hermes_agent.plugins.platforms.whatsapp.adapter import WhatsAppAdapter
     monkeypatch.setenv('WHATSAPP_ALLOWED_USERS', '15551234567,15557654321')
     monkeypatch.setattr(SessionAuthority, '_schedule', lambda self, ref: None)
     entered, release = _hold_capture(monkeypatch)

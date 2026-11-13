@@ -14,7 +14,7 @@ def _resolve_flow(provider: str):
     """Return a provider's ``oauth_flow`` module (bundled or user-dir copy), or raise 404."""
     if not provider.isidentifier():
         raise HTTPException(status_code=404, detail=f"unknown memory provider {provider!r}")
-    from plugins.memory import import_provider_module
+    from hermes_agent.plugins.memory import import_provider_module
 
     try:
         return import_provider_module(provider, "oauth_flow")

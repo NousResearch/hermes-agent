@@ -886,7 +886,7 @@ def _no_auth_provider_message(host: str) -> str:
     """
     skip_reasons: list[str] = []
     try:
-        from plugins.dashboard_auth import nous as _nous_plugin
+        from hermes_agent.plugins.dashboard_auth import nous as _nous_plugin
 
         if _nous_plugin.LAST_SKIP_REASON:
             skip_reasons.append(f"  • nous: {_nous_plugin.LAST_SKIP_REASON}")
@@ -927,7 +927,7 @@ def _no_auth_provider_message(host: str) -> str:
         "  • Password: set dashboard.basic_auth.username + "
         "password_hash in config.yaml\n"
         "    (hash with: python -c \"from "
-        "plugins.dashboard_auth.basic import hash_password; "
+        "hermes_agent.plugins.dashboard_auth.basic import hash_password; "
         "print(hash_password('your-password'))\")\n"
         "  • OAuth: run `hermes dashboard register` (Nous Portal) or "
         "install a DashboardAuthProvider plugin.\n"

@@ -117,7 +117,7 @@ def test_an_approval_with_no_requester_is_answered_only_by_approvers_and_admins(
 ])
 async def test_discord_buttons_use_the_approvals_own_admin_scope(chat_type, clicker, allowed, monkeypatch):
     from hermes_agent.gateway.session_context import clear_session_vars, set_session_vars
-    from plugins.platforms.discord.adapter import DiscordAdapter
+    from hermes_agent.plugins.platforms.discord.adapter import DiscordAdapter
     from tests.gateway.test_discord_exec_approval_content import _capture_channel
     from hermes_agent.tools import approval as approval_mod
     from hermes_agent.tools.approval_gateway_wait import _ApprovalEntry

@@ -10,7 +10,7 @@ import textwrap
 
 import pytest
 
-import plugins.config_backends
+import hermes_agent.plugins.config_backends
 from hermes_agent.hermes_cli import config_backend as cb
 
 FAKE = "fakekind_p21"
@@ -56,7 +56,7 @@ def fake_kind(tmp_path, monkeypatch):
     root = tmp_path / "backends"
     (root / FAKE).mkdir(parents=True)
     (root / FAKE / "__init__.py").write_text(textwrap.dedent(_FAKE_PACKAGE.format(name=FAKE)), encoding="utf-8")
-    monkeypatch.setattr(plugins.config_backends, "__path__", [*plugins.config_backends.__path__, str(root)])
+    monkeypatch.setattr(hermes_agent.plugins.config_backends, "__path__", [*hermes_agent.plugins.config_backends.__path__, str(root)])
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
@@ -64,7 +64,7 @@ def fake_kind(tmp_path, monkeypatch):
     monkeypatch.delenv("FAKE_P21_PLANE", raising=False)
     monkeypatch.setattr(cb, "_BOOTSTRAPPED", False)
     yield home
-    for name in [m for m in sys.modules if m.startswith(f"plugins.config_backends.{FAKE}")]:
+    for name in [m for m in sys.modules if m.startswith(f"hermes_agent.plugins.config_backends.{FAKE}")]:
         del sys.modules[name]
 
 
@@ -78,7 +78,7 @@ def test_unknown_kind_is_served_through_protocol_methods_only(fake_kind):
 
     backend = cb.get_config_backend()
     assert backend.name == FAKE
-    fake = sys.modules[f"plugins.config_backends.{FAKE}"]
+    fake = sys.modules[f"hermes_agent.plugins.config_backends.{FAKE}"]
     assert backend is fake.get_backend()
     # bootstrap_env_names(): published from the launch home's .env before the first read
     assert os.environ["FAKE_P21_PLANE"] == "https://plane.test"
@@ -119,7 +119,7 @@ def test_absent_kind_fails_closed(monkeypatch):
 
 
 def test_broken_backend_package_shows_its_own_import_error(fake_kind):
-    pkg = plugins.config_backends.__path__[-1]
+    pkg = hermes_agent.plugins.config_backends.__path__[-1]
     with open(f"{pkg}/{FAKE}/__init__.py", "w", encoding="utf-8") as fh:
         fh.write("import hermes_missing_dependency_p21\n")
     with pytest.raises(ModuleNotFoundError, match="hermes_missing_dependency_p21"):

@@ -18,7 +18,7 @@ DETAIL = "proxy refused CONNECT: 407 Proxy Authentication Required"
 
 
 def _adapter(monkeypatch, proxy):
-    from plugins.platforms.telegram import adapter as tg
+    from hermes_agent.plugins.platforms.telegram import adapter as tg
 
     monkeypatch.setenv("TELEGRAM_PROXY", proxy)
     monkeypatch.setenv("HERMES_TELEGRAM_DISABLE_FALLBACK_IPS", "true")
@@ -100,7 +100,7 @@ def test_secret_free_proxy_keeps_error_text_at_every_site(monkeypatch, caplog, p
         "callback-network": "Telegram network error, scheduling reconnect:",
         "callback-error": "Telegram polling error:",
     }
-    records = [r for r in caplog.records if r.name.startswith("plugins.platforms.telegram")]
+    records = [r for r in caplog.records if r.name.startswith("hermes_agent.plugins.platforms.telegram")]
     for site, marker in sites.items():
         hits = [r for r in records if marker in r.getMessage()]
         assert hits, f"{site}: no log line"

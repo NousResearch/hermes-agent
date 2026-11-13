@@ -12,7 +12,7 @@ from unittest.mock import Mock
 import discord
 
 from hermes_agent.gateway.platforms.helpers import MessageDeduplicator
-from plugins.platforms.discord.adapter import DiscordAdapter
+from hermes_agent.plugins.platforms.discord.adapter import DiscordAdapter
 
 BOT_ID = 99
 THREAD_ID = 7
@@ -73,7 +73,7 @@ def test_third_party_mention_in_a_plain_channel_is_still_dropped_and_logged(monk
     # Outside a bot thread the gate keeps its meaning (don't barge into a conversation
     # addressed to someone else) and now says so, instead of dropping silently.
     monkeypatch.delenv("DISCORD_IGNORE_NO_MENTION", raising=False)
-    caplog.set_level("DEBUG", logger="plugins.platforms.discord.adapter")
+    caplog.set_level("DEBUG", logger="hermes_agent.plugins.platforms.discord.adapter")
 
     admitted, _ = _adapter()._discord_message_admission(
         _mentions_third_party(SimpleNamespace(id=THREAD_ID, parent_id=None)), claim=False)

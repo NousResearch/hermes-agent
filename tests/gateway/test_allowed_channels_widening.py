@@ -24,7 +24,7 @@ from hermes_agent.gateway.config import Platform, PlatformConfig
 # ---------------------------------------------------------------------------
 
 def _make_telegram_adapter(*, allowed_chats=None, require_mention=None, guest_mode=False):
-    from plugins.platforms.telegram.adapter import TelegramAdapter
+    from hermes_agent.plugins.platforms.telegram.adapter import TelegramAdapter
 
     extra = {"guest_mode": guest_mode}
     if allowed_chats is not None:
@@ -122,8 +122,8 @@ class TestTelegramAllowedChats:
 
 def _make_dingtalk_adapter(*, allowed_chats=None, require_mention=None):
     # Import lazily — DingTalk SDK may not be installed.
-    pytest.importorskip("plugins.platforms.dingtalk.adapter", reason="DingTalk adapter not importable")
-    from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+    pytest.importorskip("hermes_agent.plugins.platforms.dingtalk.adapter", reason="DingTalk adapter not importable")
+    from hermes_agent.plugins.platforms.dingtalk.adapter import DingTalkAdapter
 
     extra = {}
     if allowed_chats is not None:

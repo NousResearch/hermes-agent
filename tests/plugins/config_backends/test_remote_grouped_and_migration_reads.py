@@ -14,9 +14,9 @@ from pathlib import Path
 
 import pytest
 
-from plugins.config_backends import remote as remote_pkg
-from plugins.config_backends.remote import backend as backend_mod
-from plugins.config_backends.remote import credentials as cred_mod
+from hermes_agent.plugins.config_backends import remote as remote_pkg
+from hermes_agent.plugins.config_backends.remote import backend as backend_mod
+from hermes_agent.plugins.config_backends.remote import credentials as cred_mod
 from hermes_agent.hermes_cli.config_backend import ConfigLockedError, get_config_backend
 
 from .stub_plane import StubPlane, remote_env

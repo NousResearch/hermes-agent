@@ -7,8 +7,8 @@ import hermes_agent.agent.file_safety as fs
 
 import pytest
 
-from plugins.memory import retaindb
-from plugins.memory.retaindb import RetainDBMemoryProvider
+from hermes_agent.plugins.memory import retaindb
+from hermes_agent.plugins.memory.retaindb import RetainDBMemoryProvider
 
 
 def test_write_queue_closes_owner_connection(tmp_path):
@@ -97,7 +97,7 @@ def _capture_initialized_client(monkeypatch, tmp_path):
     """Patch _Client/_WriteQueue/get_hermes_home; return a dict capturing args."""
     from hermes_agent import hermes_constants
 
-    import plugins.memory.retaindb as retaindb_module
+    import hermes_agent.plugins.memory.retaindb as retaindb_module
 
     captured: dict = {}
 

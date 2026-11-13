@@ -319,14 +319,14 @@ ctx.register_platform(
 
 为何需要此 hook：内置平台（Telegram、Discord、Slack 等）在 `hermes_agent/tools/send_message_tool.py` 中内置了直接 REST 辅助函数，使 cron 无需在同一进程中持有 gateway 即可投递。Plugin 平台历史上依赖 `_gateway_runner_ref()`，该函数在 gateway 进程外返回 `None`，因此若没有 `standalone_sender_fn`，cron 端发送会失败并报 `No live adapter for platform '<name>'`。
 
-该函数接收与实时适配器相同的 `pconfig` 和 `chat_id`，以及可选的 `thread_id`、`media_files` 和 `force_document` 关键字参数。返回 `{"success": True, "message_id": ...}` 视为成功投递；返回 `{"error": "..."}` 会将消息记录到 cron 的 `delivery_errors` 中。函数内抛出的异常由调度器捕获并报告为 `Plugin standalone send failed: <reason>`。参考实现位于 `plugins/platforms/{irc,teams,google_chat}/adapter.py`。
+该函数接收与实时适配器相同的 `pconfig` 和 `chat_id`，以及可选的 `thread_id`、`media_files` 和 `force_document` 关键字参数。返回 `{"success": True, "message_id": ...}` 视为成功投递；返回 `{"error": "..."}` 会将消息记录到 cron 的 `delivery_errors` 中。函数内抛出的异常由调度器捕获并报告为 `Plugin standalone send failed: <reason>`。参考实现位于 `hermes_agent/plugins/platforms/{irc,teams,google_chat}/adapter.py`。
 
 ## 在 `hermes config` 中暴露环境变量 {#surfacing-env-vars-in-hermes-config}
 
-`hermes_agent/hermes_cli/config.py` 在导入时扫描 `plugins/platforms/*/plugin.yaml`，并从 `requires_env` 和（可选的）`optional_env` 块自动填充 `OPTIONAL_ENV_VARS`。使用富字典形式可提供完整的描述、prompt、password 标志和 URL — CLI 设置 UI 会自动识别。
+`hermes_agent/hermes_cli/config.py` 在导入时扫描 `hermes_agent/plugins/platforms/*/plugin.yaml`，并从 `requires_env` 和（可选的）`optional_env` 块自动填充 `OPTIONAL_ENV_VARS`。使用富字典形式可提供完整的描述、prompt、password 标志和 URL — CLI 设置 UI 会自动识别。
 
 ```yaml
-# plugins/platforms/my_platform/plugin.yaml
+# hermes_agent/plugins/platforms/my_platform/plugin.yaml
 name: my_platform-platform
 label: My Platform
 kind: platform
@@ -445,11 +445,11 @@ LINE 两者都支持：阈值默认为 45 秒用于免费 postback 获取，`LIN
 
 ### 参考实现
 
-完整的 LINE postback 实现参见 `plugins/platforms/line/adapter.py` — 包含 `RequestCache` 状态机（`PENDING → READY → DELIVERED`，以及 `/stop` 的 `ERROR`）、在阈值时触发 Template Buttons 气泡的 `_keep_typing` 覆盖、通过缓存路由的 `send` 覆盖，以及解决孤立 PENDING 条目的 `interrupt_session_activity` 覆盖。
+完整的 LINE postback 实现参见 `hermes_agent/plugins/platforms/line/adapter.py` — 包含 `RequestCache` 状态机（`PENDING → READY → DELIVERED`，以及 `/stop` 的 `ERROR`）、在阈值时触发 Template Buttons 气泡的 `_keep_typing` 覆盖、通过缓存路由的 `send` 覆盖，以及解决孤立 PENDING 条目的 `interrupt_session_activity` 覆盖。
 
 ### 参考实现（Plugin 路径）
 
-完整的工作示例参见仓库中的 `plugins/platforms/irc/` — 一个无外部依赖的完整异步 IRC 适配器。`plugins/platforms/teams/` 涵盖 Bot Framework / Adaptive Cards，`plugins/platforms/google_chat/` 涵盖基于 OAuth 的 REST API，`plugins/platforms/line/` 涵盖带平台专属慢速 LLM UX 的 webhook 驱动消息 API。
+完整的工作示例参见仓库中的 `hermes_agent/plugins/platforms/irc/` — 一个无外部依赖的完整异步 IRC 适配器。`hermes_agent/plugins/platforms/teams/` 涵盖 Bot Framework / Adaptive Cards，`hermes_agent/plugins/platforms/google_chat/` 涵盖基于 OAuth 的 REST API，`hermes_agent/plugins/platforms/line/` 涵盖带平台专属慢速 LLM UX 的 webhook 驱动消息 API。
 
 ---
 
@@ -471,7 +471,7 @@ class Platform(str, Enum):
 
 ### 2. 适配器文件
 
-创建 `plugins/platforms/newplat/adapter.py`：
+创建 `hermes_agent/plugins/platforms/newplat/adapter.py`：
 
 ```python
 from hermes_agent.gateway.config import Platform, PlatformConfig
@@ -677,7 +677,7 @@ async def disconnect(self):
 
 | 适配器 | 模式 | 复杂度 | 适合参考的场景 |
 |---------|---------|------------|-------------------|
-| `plugins/platforms/bluebubbles/adapter.py` | REST + webhook | 中 | 简单 REST API 集成 |
-| `plugins/platforms/weixin/adapter.py` | 长轮询 + CDN | 高 | 媒体处理、加密 |
+| `hermes_agent/plugins/platforms/bluebubbles/adapter.py` | REST + webhook | 中 | 简单 REST API 集成 |
+| `hermes_agent/plugins/platforms/weixin/adapter.py` | 长轮询 + CDN | 高 | 媒体处理、加密 |
 | `wecom_callback.py` | 回调/webhook | 中 | HTTP 服务器、AES 加密、多应用 |
-| `plugins/platforms/irc/adapter.py` | 长轮询 + IRC 协议 | 高 | 带作用域令牌锁的全功能插件适配器 |
+| `hermes_agent/plugins/platforms/irc/adapter.py` | 长轮询 + IRC 协议 | 高 | 带作用域令牌锁的全功能插件适配器 |

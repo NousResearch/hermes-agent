@@ -201,7 +201,7 @@ def test_every_surface_has_both_opt_outs(launch, monkeypatch):
 
 
 def test_a_clone_reaches_the_selected_memory_providers_create_hook_once(launch, monkeypatch):
-    import plugins.memory as memory_pkg
+    import hermes_agent.plugins.memory as memory_pkg
     from hermes_agent.agent.memory_provider import MemoryProvider
     from hermes_agent.hermes_constants import get_hermes_home
 

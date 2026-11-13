@@ -200,8 +200,8 @@ def _autodetect_provider() -> Optional[BrowserProvider]:
     """Browser Use, then Browserbase, from credentials; never raises. Third-party plugins are only reachable
     through an explicit ``browser.cloud_provider``."""
     # Late import: a core tool must not execute bundled plugin code before a session is resolved.
-    from plugins.browser.browser_use.provider import BrowserUseBrowserProvider
-    from plugins.browser.browserbase.provider import BrowserbaseBrowserProvider
+    from hermes_agent.plugins.browser.browser_use.provider import BrowserUseBrowserProvider
+    from hermes_agent.plugins.browser.browserbase.provider import BrowserbaseBrowserProvider
     try:
         for cls in (BrowserUseBrowserProvider, BrowserbaseBrowserProvider):
             provider = cls()

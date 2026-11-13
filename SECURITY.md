@@ -178,7 +178,7 @@ authorization model, but the rules below apply uniformly.
 **Surfaces in Hermes Agent:**
 
 - **Gateway platform adapters.** Most messaging integrations ship as
-  bundled plugins under `plugins/platforms/<name>/` (Telegram, Discord,
+  bundled plugins under `hermes_agent/plugins/platforms/<name>/` (Telegram, Discord,
   Slack, email, SMS, etc.). Shared base types and a smaller set of
   legacy/direct adapters live under `hermes_agent/gateway/platforms/`
   (`base.py`, Signal, API server, webhooks, …), with discovery and

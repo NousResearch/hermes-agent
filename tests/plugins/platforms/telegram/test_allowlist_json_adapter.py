@@ -7,7 +7,7 @@ from hermes_agent.gateway.config import Platform, PlatformConfig
 
 
 def _adapter(extra):
-    from plugins.platforms.telegram.adapter import TelegramAdapter
+    from hermes_agent.plugins.platforms.telegram.adapter import TelegramAdapter
 
     adapter = object.__new__(TelegramAdapter)
     adapter.platform = Platform.TELEGRAM

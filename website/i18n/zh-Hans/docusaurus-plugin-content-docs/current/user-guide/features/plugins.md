@@ -110,7 +110,7 @@ def register(ctx):
 | 注册图像生成后端 | `ctx.register_image_gen_provider(provider)` — 参见 [Image Generation Provider Plugins](../../developer-guide/image-gen-provider-plugin.md) |
 | 注册视频生成后端 | `ctx.register_video_gen_provider(provider)` — 参见 [Video Generation Provider Plugins](../../developer-guide/video-gen-provider-plugin.md) |
 | 注册上下文压缩引擎 | `ctx.register_context_engine(engine)` — 参见 [Context Engine Plugins](../../developer-guide/context-engine-plugin.md) |
-| 注册 memory 后端 | 在 `plugins/memory/<name>/__init__.py` 中继承 `MemoryProvider` — 参见 [Memory Provider Plugins](../../developer-guide/memory-provider-plugin.md)（使用独立发现系统） |
+| 注册 memory 后端 | 在 `$HERMES_HOME/plugins/<name>/__init__.py` 中继承 `MemoryProvider`（内置的位于 `hermes_agent/plugins/memory/<name>/`） — 参见 [Memory Provider Plugins](../../developer-guide/memory-provider-plugin.md)（使用独立发现系统） |
 | 调用宿主 LLM | `ctx.llm.complete(...)` / `ctx.llm.complete_structured(...)` — 借用用户当前激活的模型和认证，进行一次性补全，支持可选 JSON schema 验证。参见 [Plugin LLM Access](../../developer-guide/plugin-llm-access.md) |
 | 注册推理后端（LLM provider） | 在 `plugins/model-providers/<name>/__init__.py` 中调用 `register_provider(ProviderProfile(...))` — 参见 [Model Provider Plugins](../../developer-guide/model-provider-plugin.md)（使用独立发现系统） |
 
@@ -118,7 +118,7 @@ def register(ctx):
 
 | 来源 | 路径 | 使用场景 |
 |--------|------|----------|
-| 内置 | `<repo>/plugins/` | 随 Hermes 附带 — 参见 [Built-in Plugins](./built-in-plugins.md) |
+| 内置 | `<repo>/hermes_agent/plugins/` | 随 Hermes 附带 — 参见 [Built-in Plugins](./built-in-plugins.md) |
 | 用户 | `~/.hermes/plugins/` | 个人插件 |
 | 项目 | `.hermes/plugins/` | 项目专属插件（需要 `HERMES_ENABLE_PROJECT_PLUGINS=true`） |
 | pip | `hermes_agent.plugins` entry_points | 分发包 |
@@ -135,8 +135,8 @@ def register(ctx):
 | `plugins/`（根目录） | 通用插件 — 工具、hook、斜杠命令、CLI 命令、打包 skill | `PluginManager`（kind: `standalone` 或 `backend`） |
 | `plugins/platforms/<name>/` | Gateway 频道适配器（`ctx.register_platform()`） | `PluginManager`（kind: `platform`，深一层） |
 | `plugins/image_gen/<name>/` | 图像生成后端（`ctx.register_image_gen_provider()`） | `PluginManager`（kind: `backend`，深一层） |
-| `plugins/memory/<name>/` | Memory provider（继承 `MemoryProvider`） | **独立加载器**，位于 `plugins/memory/__init__.py`（kind: `exclusive` — 同时只有一个激活） |
-| `plugins/context_engine/<name>/` | 上下文压缩引擎（`ctx.register_context_engine()`） | **独立加载器**，位于 `plugins/context_engine/__init__.py`（同时只有一个激活） |
+| `plugins/memory/<name>/` | Memory provider（继承 `MemoryProvider`） | **独立加载器**，位于 `hermes_agent/plugins/memory/__init__.py`（kind: `exclusive` — 同时只有一个激活） |
+| `plugins/context_engine/<name>/` | 上下文压缩引擎（`ctx.register_context_engine()`） | **独立加载器**，位于 `hermes_agent/plugins/context_engine/__init__.py`（同时只有一个激活） |
 | `plugins/model-providers/<name>/` | LLM provider profile（`register_provider(ProviderProfile(...))`） | **独立加载器**，位于 `hermes_agent/providers/__init__.py`（首次调用 `get_provider_profile()` 时懒加载扫描） |
 
 `~/.hermes/plugins/model-providers/<name>/` 和 `~/.hermes/plugins/memory/<name>/` 下的用户插件会覆盖同名内置插件 — `register_provider()` / `register_memory_provider()` 中后写者胜出。放入一个目录即可替换内置实现，无需修改仓库。
@@ -174,11 +174,11 @@ hermes plugins disable <name>     # 从允许列表移除并添加到禁用列�
 
 | 插件类型 | 激活方式 |
 |---|---|
-| **内置平台插件**（IRC、Teams 等，位于 `plugins/platforms/`） | 自动加载，使所有内置 gateway 频道可用。实际频道通过 `config.yaml` 中的 `gateway.platforms.<name>.enabled` 开启。 |
-| **内置后端**（`plugins/image_gen/` 等下的图像生成 provider） | 自动加载，使默认后端"开箱即用"。通过 `config.yaml` 中的 `<category>.provider` 选择（例如 `image_gen.provider: openai`）。 |
-| **Memory provider**（`plugins/memory/`） | 全部发现；同时只有一个激活，由 `config.yaml` 中的 `memory.provider` 选择。 |
-| **Context engine**（`plugins/context_engine/`） | 全部发现；同时只有一个激活，由 `config.yaml` 中的 `context.engine` 选择。 |
-| **Model provider**（`plugins/model-providers/`） | `plugins/model-providers/` 下的所有内置 provider 在首次调用 `get_provider_profile()` 时发现并注册。用户通过 `--provider` 或 `config.yaml` 一次选择一个。 |
+| **内置平台插件**（IRC、Teams 等，位于 `hermes_agent/plugins/platforms/`） | 自动加载，使所有内置 gateway 频道可用。实际频道通过 `config.yaml` 中的 `gateway.platforms.<name>.enabled` 开启。 |
+| **内置后端**（`hermes_agent/plugins/image_gen/` 等下的图像生成 provider） | 自动加载，使默认后端"开箱即用"。通过 `config.yaml` 中的 `<category>.provider` 选择（例如 `image_gen.provider: openai`）。 |
+| **Memory provider**（`hermes_agent/plugins/memory/`） | 全部发现；同时只有一个激活，由 `config.yaml` 中的 `memory.provider` 选择。 |
+| **Context engine**（`hermes_agent/plugins/context_engine/`） | 全部发现；同时只有一个激活，由 `config.yaml` 中的 `context.engine` 选择。 |
+| **Model provider**（`hermes_agent/plugins/model-providers/`） | `hermes_agent/plugins/model-providers/` 下的所有内置 provider 在首次调用 `get_provider_profile()` 时发现并注册。用户通过 `--provider` 或 `config.yaml` 一次选择一个。 |
 | **pip 安装的 `backend` 插件** | 通过 `plugins.enabled` 选择加入（与通用插件相同）。 |
 | **用户安装的平台**（位于 `~/.hermes/plugins/platforms/`） | 通过 `plugins.enabled` 选择加入 — 第三方 gateway 适配器需要明确同意。 |
 
@@ -207,9 +207,9 @@ Hermes 有四种插件：
 | 类型 | 作用 | 选择方式 | 位置 |
 |------|-------------|-----------|----------|
 | **通用插件** | 添加工具、hook、斜杠命令、CLI 命令 | 多选（启用/禁用） | `~/.hermes/plugins/` |
-| **Memory provider** | 替换或增强内置 memory | 单选（同时只有一个激活） | `plugins/memory/` |
-| **Context engine** | 替换内置上下文压缩器 | 单选（同时只有一个激活） | `plugins/context_engine/` |
-| **Model provider** | 声明推理后端（OpenRouter、Anthropic 等） | 多注册，通过 `--provider` / `config.yaml` 选择 | `plugins/model-providers/` |
+| **Memory provider** | 替换或增强内置 memory | 单选（同时只有一个激活） | `hermes_agent/plugins/memory/` |
+| **Context engine** | 替换内置上下文压缩器 | 单选（同时只有一个激活） | `hermes_agent/plugins/context_engine/` |
+| **Model provider** | 声明推理后端（OpenRouter、Anthropic 等） | 多注册，通过 `--provider` / `config.yaml` 选择 | `hermes_agent/plugins/model-providers/` |
 
 Memory provider 和 context engine 是 **provider 插件** — 每种类型同时只能有一个激活。Model provider 也是插件，但可以同时加载多个；用户通过 `--provider` 或 `config.yaml` 一次选择一个。通用插件可以任意组合启用。
 
@@ -226,7 +226,7 @@ Memory provider 和 context engine 是 **provider 插件** — 每种类型同�
 | 插件附带的**skill** | Python 插件 — `ctx.register_skill()` | [Creating Skills](../../developer-guide/creating-skills.md) |
 | **推理后端**（LLM provider：OpenAI 兼容、Codex、Anthropic-Messages、Bedrock） | Provider 插件 — 在 `plugins/model-providers/<name>/` 中调用 `register_provider(ProviderProfile(...))` | **[Model Provider Plugins](../../developer-guide/model-provider-plugin.md)** · [Adding Providers](../../developer-guide/adding-providers.md) |
 | **Gateway 频道**（Discord / Telegram / IRC / Teams 等） | 平台插件 — 在 `plugins/platforms/<name>/` 中调用 `ctx.register_platform()` | [Adding Platform Adapters](../../developer-guide/adding-platform-adapters.md) |
-| **Memory 后端**（Honcho、Mem0、Supermemory 等） | Memory 插件 — 在 `plugins/memory/<name>/` 中继承 `MemoryProvider` | [Memory Provider Plugins](../../developer-guide/memory-provider-plugin.md) |
+| **Memory 后端**（Honcho、Mem0、Supermemory 等） | Memory 插件 — 在 `$HERMES_HOME/plugins/<name>/` 中继承 `MemoryProvider`（内置的位于 `hermes_agent/plugins/memory/<name>/`） | [Memory Provider Plugins](../../developer-guide/memory-provider-plugin.md) |
 | **上下文压缩策略** | Context-engine 插件 — `ctx.register_context_engine()` | [Context Engine Plugins](../../developer-guide/context-engine-plugin.md) |
 | **图像生成后端**（DALL·E、SDXL 等） | 后端插件 — `ctx.register_image_gen_provider()` | [Image Generation Provider Plugins](../../developer-guide/image-gen-provider-plugin.md) |
 | **视频生成后端**（Veo、Kling、Pixverse、Grok-Imagine、Runway 等） | 后端插件 — `ctx.register_video_gen_provider()` | [Video Generation Provider Plugins](../../developer-guide/video-gen-provider-plugin.md) |
@@ -273,7 +273,7 @@ hermes plugins enable image_gen/openai               # 添加到允许列表（�
 hermes plugins disable my-plugin                     # 从允许列表移除并添加到禁用列表
 ```
 
-对于子分类目录下的插件（例如 `plugins/image_gen/openai/`、`plugins/platforms/teams/`），使用完整的 `<category>/<plugin>` key — 这正是 `hermes plugins list` 在 **Name** 列中显示的内容。
+对于子分类目录下的插件（例如 `hermes_agent/plugins/image_gen/openai/`、`hermes_agent/plugins/platforms/teams/`），使用完整的 `<category>/<plugin>` key — 这正是 `hermes plugins list` 在 **Name** 列中显示的内容。
 
 ### 更新检查、来源与依赖
 

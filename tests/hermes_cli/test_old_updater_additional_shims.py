@@ -63,7 +63,7 @@ def test_retired_ensure_reports_unavailable_without_installing(prompt, no_extern
 
 
 def test_live_dingtalk_dependencies_use_pm_not_retired_installer(monkeypatch):
-    from plugins.platforms.dingtalk import adapter
+    from hermes_agent.plugins.platforms.dingtalk import adapter
     from pm import extras
 
     requested = []

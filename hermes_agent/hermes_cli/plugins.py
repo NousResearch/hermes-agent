@@ -70,12 +70,12 @@ from hermes_agent.hermes_cli._startup_fast import project_root_str
 
 
 def get_bundled_plugins_dir() -> Path:
-    """Bundled ``plugins/`` dir: ``HERMES_BUNDLED_PLUGINS`` (Nix wrapper / packaged installs, read-only
-    store paths) first, else the in-repo path."""
+    """Bundled ``hermes_agent/plugins/`` dir: ``HERMES_BUNDLED_PLUGINS`` (Nix wrapper / packaged installs,
+    read-only store paths) first, else the in-repo path."""
     env_override = os.getenv("HERMES_BUNDLED_PLUGINS")
     if env_override:
         return Path(env_override)
-    return Path(project_root_str()) / "plugins"
+    return Path(project_root_str()) / "hermes_agent" / "plugins"
 
 
 class PluginToolOverrideError(PermissionError):
@@ -217,7 +217,7 @@ VALID_HOOKS: set[str] = {
 # the shell-hook allow-list, so these are refused loudly instead of having output silently ignored.
 SHELL_UNSUPPORTED_HOOKS: set[str] = {"transform_api_error_classification"}
 
-_env_enabled = env_var_enabled  # imported by plugins/memory
+_env_enabled = env_var_enabled  # imported by hermes_agent/plugins/memory
 
 
 @dataclass

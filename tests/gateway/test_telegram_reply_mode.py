@@ -11,7 +11,7 @@ from unittest.mock import MagicMock, AsyncMock, patch
 import pytest
 
 from hermes_agent.gateway.config import PlatformConfig, GatewayConfig, Platform, _apply_env_overrides, load_gateway_config
-from plugins.platforms.telegram.adapter import TelegramAdapter
+from hermes_agent.plugins.platforms.telegram.adapter import TelegramAdapter
 
 
 @pytest.fixture()

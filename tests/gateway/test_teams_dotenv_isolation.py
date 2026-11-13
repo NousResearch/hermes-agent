@@ -108,8 +108,8 @@ def _install_fake_teams_sdk(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def _purge_teams_adapter_modules() -> None:
     for name in list(sys.modules):
-        if name == "plugins.platforms.teams" or name.startswith(
-            "plugins.platforms.teams."
+        if name == "hermes_agent.plugins.platforms.teams" or name.startswith(
+            "hermes_agent.plugins.platforms.teams."
         ):
             del sys.modules[name]
 
@@ -126,7 +126,7 @@ class TestTeamsAdapterImportDoesNotLeakDotenv:
                 monkeypatch.delitem(sys.modules, name, raising=False)
         _purge_teams_adapter_modules()
 
-        import plugins.platforms.teams.adapter as teams_adapter
+        import hermes_agent.plugins.platforms.teams.adapter as teams_adapter
 
         # Import must succeed even when the parent namespace is absent
         # (CI: no microsoft-teams-apps). Symbols stay unbound until connect.
@@ -146,7 +146,7 @@ class TestTeamsAdapterImportDoesNotLeakDotenv:
         monkeypatch.setitem(sys.modules, "microsoft_teams", ns)
         _purge_teams_adapter_modules()
 
-        import plugins.platforms.teams.adapter as teams_adapter
+        import hermes_agent.plugins.platforms.teams.adapter as teams_adapter
 
         assert teams_adapter.App is None
         assert teams_adapter.TEAMS_SDK_AVAILABLE is False
@@ -156,7 +156,7 @@ class TestTeamsAdapterImportDoesNotLeakDotenv:
         _install_fake_teams_sdk(monkeypatch)
         _purge_teams_adapter_modules()
 
-        import plugins.platforms.teams.adapter as teams_adapter
+        import hermes_agent.plugins.platforms.teams.adapter as teams_adapter
 
         assert CANARY_KEY not in os.environ
         assert teams_adapter.App is None  # SDK symbols deferred
@@ -169,7 +169,7 @@ class TestTeamsAdapterImportDoesNotLeakDotenv:
         _install_fake_teams_sdk(monkeypatch)
         _purge_teams_adapter_modules()
 
-        from plugins.platforms.teams.summary_writer import TeamsSummaryWriter
+        from hermes_agent.plugins.platforms.teams.summary_writer import TeamsSummaryWriter
 
         assert CANARY_KEY not in os.environ
         assert TeamsSummaryWriter is not None
@@ -182,7 +182,7 @@ class TestTeamsAdapterImportDoesNotLeakDotenv:
 
         import dotenv
 
-        import plugins.platforms.teams.adapter as teams_adapter
+        import hermes_agent.plugins.platforms.teams.adapter as teams_adapter
 
         def _marking_load_dotenv(*args, **kwargs):
             os.environ[CANARY_KEY] = "leaked-from-sdk-import"

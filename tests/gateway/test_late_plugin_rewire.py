@@ -23,7 +23,7 @@ import pytest
 from hermes_agent.gateway.config import PlatformConfig, Platform
 from hermes_agent.gateway.run_plugin_rewire import GatewayPluginRewireMixin
 from hermes_agent.hermes_cli.plugins import PluginContext, PluginManager, PluginManifest, discover_plugins, get_plugin_manager
-from plugins.platforms.telegram.adapter import TelegramAdapter
+from hermes_agent.plugins.platforms.telegram.adapter import TelegramAdapter
 
 
 def _write_plugin(home: Path, name: str = "late_cmd") -> None:
@@ -114,7 +114,7 @@ def test_telegram_late_plugin_handler_precedes_core_catch_all():
 
 
 def test_slack_late_action_handler_registers_one_listener():
-    from plugins.platforms.slack.adapter import SlackAdapter
+    from hermes_agent.plugins.platforms.slack.adapter import SlackAdapter
     adapter = SlackAdapter(PlatformConfig(enabled=True, token="xoxb-t", extra={}))
     adapter._app = MagicMock()
     mgr = PluginManager()

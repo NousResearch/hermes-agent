@@ -5,7 +5,7 @@ Slack represents a pasted table as ``table`` blocks — usually nested inside
 ``text`` nor the file list, so the agent used to receive the sentence before it and nothing else.
 """
 
-from plugins.platforms.slack.adapter import (
+from hermes_agent.plugins.platforms.slack.adapter import (
     _SLACK_TABLE_MAX_CHARS,
     SlackAdapter,
     _extract_additional_text_from_slack_blocks,

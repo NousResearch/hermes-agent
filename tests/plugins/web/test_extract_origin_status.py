@@ -11,10 +11,10 @@ from unittest.mock import patch
 
 import pytest
 
-from plugins.web import keyless_mcp
-from plugins.web.exa import provider as exa_provider
-from plugins.web.firecrawl import provider as firecrawl_provider
-from plugins.web.parallel import provider as parallel_provider
+from hermes_agent.plugins.web import keyless_mcp
+from hermes_agent.plugins.web.exa import provider as exa_provider
+from hermes_agent.plugins.web.firecrawl import provider as firecrawl_provider
+from hermes_agent.plugins.web.parallel import provider as parallel_provider
 
 STUB_HTML = "<!DOCTYPE html><html><body></body></html>"
 

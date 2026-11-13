@@ -25,7 +25,7 @@ def _stt(transcript):
 
 
 def _telegram(voice_mention_patterns):
-    from plugins.platforms.telegram.adapter import TelegramAdapter
+    from hermes_agent.plugins.platforms.telegram.adapter import TelegramAdapter
     extra = {"require_mention": True, "mention_patterns": PATTERNS, "allowed_chats": [], "allowed_topics": [],
              "group_allowed_chats": []}
     if voice_mention_patterns is not None:
@@ -101,7 +101,7 @@ async def test_the_turn_reuses_the_gate_transcript(tmp_path):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("spoken,admitted", [("hermes, what is on today", True), ("lunch?", False)])
 async def test_whatsapp_group_voice_note_wakes_on_the_spoken_wake_word(tmp_path, monkeypatch, spoken, admitted):
-    from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
+    from hermes_agent.plugins.platforms.whatsapp.adapter import WhatsAppAdapter
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     clip = tmp_path / "cache" / "audio" / "aud_1.ogg"
     clip.parent.mkdir(parents=True)
@@ -131,7 +131,7 @@ async def test_whatsapp_group_voice_note_wakes_on_the_spoken_wake_word(tmp_path,
 @pytest.mark.parametrize("spoken,admitted", [("hermes, what is on today", True), ("lunch?", False)])
 async def test_photon_group_voice_note_wakes_on_the_spoken_wake_word(tmp_path, monkeypatch, spoken, admitted):
     import base64
-    from plugins.platforms.photon.adapter import PhotonAdapter
+    from hermes_agent.plugins.platforms.photon.adapter import PhotonAdapter
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setenv("PHOTON_PROJECT_ID", "p")
     monkeypatch.setenv("PHOTON_PROJECT_SECRET", "s")
@@ -156,7 +156,7 @@ async def test_photon_grouped_voice_payload_matches_spoken_wake_word(tmp_path, m
     """Photon's ``group`` envelope can carry the voice item (with a photo beside it): only the audio is
     transcribed, and a rejected envelope leaves none of its cached files behind."""
     import base64
-    from plugins.platforms.photon.adapter import PhotonAdapter
+    from hermes_agent.plugins.platforms.photon.adapter import PhotonAdapter
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setenv("PHOTON_PROJECT_ID", "p")
     monkeypatch.setenv("PHOTON_PROJECT_SECRET", "s")
@@ -183,7 +183,7 @@ async def test_photon_grouped_voice_payload_matches_spoken_wake_word(tmp_path, m
 async def test_bluebubbles_group_voice_memo_wakes_on_the_spoken_wake_word(tmp_path, monkeypatch, spoken, admitted):
     import asyncio
     import json
-    from plugins.platforms.bluebubbles.adapter import BlueBubblesAdapter
+    from hermes_agent.plugins.platforms.bluebubbles.adapter import BlueBubblesAdapter
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     adapter = BlueBubblesAdapter(PlatformConfig(enabled=True, extra={
         "server_url": "http://localhost:1234", "password": "secret", "require_mention": True,
@@ -214,7 +214,7 @@ async def test_a_bluebubbles_memo_from_an_unauthorized_sender_is_never_fetched_o
     neither downloaded nor sent to STT, so the spoken gate drops it even when it says the wake word."""
     import asyncio
     import json
-    from plugins.platforms.bluebubbles.adapter import BlueBubblesAdapter
+    from hermes_agent.plugins.platforms.bluebubbles.adapter import BlueBubblesAdapter
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     adapter = BlueBubblesAdapter(PlatformConfig(enabled=True, extra={
         "server_url": "http://localhost:1234", "password": "secret", "require_mention": True,
@@ -299,7 +299,7 @@ async def test_photon_gate_stt_never_holds_the_inbound_reader(tmp_path, monkeypa
     import base64
     import json
     import threading
-    from plugins.platforms.photon.adapter import PhotonAdapter
+    from hermes_agent.plugins.platforms.photon.adapter import PhotonAdapter
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setenv("PHOTON_PROJECT_ID", "p")
     monkeypatch.setenv("PHOTON_PROJECT_SECRET", "s")
@@ -435,7 +435,7 @@ async def test_photon_caf_attachment_voice_note_wakes_on_the_spoken_wake_word(tm
     """iMessage voice notes also arrive as ``attachment`` payloads named ``.caf``: the gate treats
     them as voice exactly as normalisation does."""
     import base64
-    from plugins.platforms.photon.adapter import PhotonAdapter
+    from hermes_agent.plugins.platforms.photon.adapter import PhotonAdapter
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setenv("PHOTON_PROJECT_ID", "p")
     monkeypatch.setenv("PHOTON_PROJECT_SECRET", "s")
@@ -460,7 +460,7 @@ async def test_photon_document_first_envelope_still_sends_its_spoken_audio_to_st
     transcribes; admitted by speech, its audio must still reach the turn's STT pass."""
     import base64
     from hermes_agent.gateway.run_inbound import GatewayInboundMixin
-    from plugins.platforms.photon.adapter import PhotonAdapter
+    from hermes_agent.plugins.platforms.photon.adapter import PhotonAdapter
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setenv("PHOTON_PROJECT_ID", "p")
     monkeypatch.setenv("PHOTON_PROJECT_SECRET", "s")
@@ -489,7 +489,7 @@ async def test_a_group_control_command_never_waits_on_an_earlier_voice_check(tmp
     import base64
     import json
     import threading
-    from plugins.platforms.photon.adapter import PhotonAdapter
+    from hermes_agent.plugins.platforms.photon.adapter import PhotonAdapter
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setenv("PHOTON_PROJECT_ID", "p")
     monkeypatch.setenv("PHOTON_PROJECT_SECRET", "s")
@@ -531,7 +531,7 @@ async def test_a_busy_session_sends_only_the_admitted_envelopes_audio_to_stt(tmp
     drain) only its audio enters STT, never the photo or PDF beside it."""
     import base64
     from hermes_agent.gateway.run_inbound_transcription import GatewayInboundTranscriptionMixin
-    from plugins.platforms.photon.adapter import PhotonAdapter
+    from hermes_agent.plugins.platforms.photon.adapter import PhotonAdapter
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setenv("PHOTON_PROJECT_ID", "p")
     monkeypatch.setenv("PHOTON_PROJECT_SECRET", "s")
@@ -561,7 +561,7 @@ async def test_a_session_command_keeps_its_place_behind_an_earlier_voice_note(tm
     import base64
     import json
     import threading
-    from plugins.platforms.photon.adapter import PhotonAdapter
+    from hermes_agent.plugins.platforms.photon.adapter import PhotonAdapter
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setenv("PHOTON_PROJECT_ID", "p")
     monkeypatch.setenv("PHOTON_PROJECT_SECRET", "s")
@@ -598,7 +598,7 @@ async def test_a_photon_caf_sent_as_octet_stream_is_transcribed_as_the_voice_it_
     reaches gate STT (and the turn's) like any other voice note instead of being dropped unheard."""
     import base64
     from hermes_agent.gateway.run_inbound import GatewayInboundMixin
-    from plugins.platforms.photon.adapter import PhotonAdapter
+    from hermes_agent.plugins.platforms.photon.adapter import PhotonAdapter
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setenv("PHOTON_PROJECT_ID", "p")
     monkeypatch.setenv("PHOTON_PROJECT_SECRET", "s")
@@ -627,7 +627,7 @@ async def test_a_threaded_reply_stop_never_waits_on_an_earlier_voice_check(tmp_p
     import base64
     import json
     import threading
-    from plugins.platforms.photon.adapter import PhotonAdapter
+    from hermes_agent.plugins.platforms.photon.adapter import PhotonAdapter
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setenv("PHOTON_PROJECT_ID", "p")
     monkeypatch.setenv("PHOTON_PROJECT_SECRET", "s")
@@ -666,7 +666,7 @@ async def test_a_bluebubbles_memo_beside_a_file_sends_only_its_audio_to_stt_and_
     import asyncio
     import json
     from hermes_agent.gateway.run_inbound import GatewayInboundMixin
-    from plugins.platforms.bluebubbles.adapter import BlueBubblesAdapter
+    from hermes_agent.plugins.platforms.bluebubbles.adapter import BlueBubblesAdapter
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     adapter = BlueBubblesAdapter(PlatformConfig(enabled=True, extra={
         "server_url": "http://localhost:1234", "password": "secret", "require_mention": True,

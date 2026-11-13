@@ -86,8 +86,8 @@ class GatewayAgentCacheMixin:
         try:
             instance = cls._MEMORY_IDENTITY_PROVIDER_MEMO.get(name)
             if instance is None:
-                from plugins.memory import load_memory_provider
-                from plugins.plugin_loader import bounded_load_wait
+                from hermes_agent.plugins.memory import load_memory_provider
+                from hermes_agent.plugins.plugin_loader import bounded_load_wait
                 with bounded_load_wait():  # runs every turn: never stall on another thread's hung import
                     instance = load_memory_provider(name, register_skills=False)
                 if instance is None:

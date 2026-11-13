@@ -10,7 +10,7 @@ HOME.mkdir(parents=True, exist_ok=True)
 )
 from hermes_agent.gateway.run import GatewayRunner
 from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
-from plugins.platforms.discord.adapter import DiscordAdapter
+from hermes_agent.plugins.platforms.discord.adapter import DiscordAdapter
 from hermes_agent.gateway.platforms.base import SendResult
 from hermes_agent.gateway.session_context import set_session_vars, clear_session_vars
 from hermes_agent.tools.terminal_tool_background import spawn_background_process

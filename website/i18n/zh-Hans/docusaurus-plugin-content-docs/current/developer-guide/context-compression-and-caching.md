@@ -28,7 +28,7 @@ context:
 - 追踪 API 响应中的 token 用量
 
 通过 `config.yaml` 中的 `context.engine` 进行配置驱动选择。解析顺序：
-1. 检查 `plugins/context_engine/<name>/` 目录
+1. 检查 `hermes_agent/plugins/context_engine/<name>/` 目录
 2. 检查通用插件系统（`register_context_engine()`）
 3. 回退到内置 `ContextCompressor`
 

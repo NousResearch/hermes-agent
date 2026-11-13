@@ -7,7 +7,7 @@ attachment count while the top-level ``blocks`` path is capped once.
 """
 
 from hermes_agent.agent.compression_marker import _COMPRESSION_MARKER_RE
-from plugins.platforms.slack.adapter import SlackAdapter
+from hermes_agent.plugins.platforms.slack.adapter import SlackAdapter
 
 
 def _rich_blocks(sections: int = 8, size: int = 400) -> list:

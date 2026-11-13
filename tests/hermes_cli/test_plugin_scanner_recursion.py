@@ -1,7 +1,7 @@
 """Tests for PR1 pluggable image gen: scanner recursion, kinds, path keys.
 
 Covers ``_scan_directory`` recursion into category namespaces
-(``plugins/image_gen/openai/``), ``kind`` parsing, path-derived registry
+(``hermes_agent/plugins/image_gen/openai/``), ``kind`` parsing, path-derived registry
 keys, and the new gate logic (bundled backends auto-load; user backends
 still opt-in; exclusive kind skipped; unknown kinds → standalone warning).
 """
@@ -256,7 +256,7 @@ class TestBackendGate:
 
 class TestBundledBackendAutoLoad:
     def test_bundled_image_gen_openai_autoloads(self, tmp_path, monkeypatch):
-        """The bundled ``plugins/image_gen/openai/`` plugin loads without
+        """The bundled ``hermes_agent/plugins/image_gen/openai/`` plugin loads without
         any opt-in — it's ``kind: backend`` and shipped in-repo."""
         mgr = PluginManager()
         mgr.discover_and_load()

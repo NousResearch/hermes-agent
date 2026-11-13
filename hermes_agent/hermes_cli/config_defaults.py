@@ -1028,7 +1028,7 @@ DEFAULT_CONFIG = {
         # no-op. Env HERMES_DASHBOARD_BASIC_AUTH_USERNAME / _PASSWORD_HASH / _PASSWORD / _SECRET /
         # _TTL_SECONDS win when non-empty. secret signs session tokens; empty = random per-process
         # key (sessions die on restart, no multi-worker) — set 32+ random bytes. Hash:
-        # plugins.dashboard_auth.basic.hash_password('PW').
+        # hermes_agent.plugins.dashboard_auth.basic.hash_password('PW').
         "basic_auth": {
             "username": "",
             "password_hash": "",  # scrypt$...
@@ -1579,7 +1579,7 @@ DEFAULT_CONFIG = {
         # Minimum seconds before force-stopping a VC playback; the adapter probes clip duration and
         # extends this floor so long TTS isn't cut off.
         "voice_playback_timeout_seconds": 120,
-        # Voice-channel software mixer (plugins/platforms/discord/voice_mixer.py): ambient
+        # Voice-channel software mixer (hermes_agent/plugins/platforms/discord/voice_mixer.py): ambient
         # "thinking" bed, verbal acks and TTS OVERLAP (ambient ducked) vs stop-and-swap.
         "voice_fx": {
             "enabled": False,  # master switch for the mixer subsystem

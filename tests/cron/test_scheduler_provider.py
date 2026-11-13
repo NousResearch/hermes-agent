@@ -200,7 +200,7 @@ def test_cron_provider_package_does_not_shadow_core_cron_package(monkeypatch):
     repo_root = Path(__file__).resolve().parents[2]
 
     monkeypatch.syspath_prepend(str(repo_root))
-    monkeypatch.syspath_prepend(str(repo_root / "plugins"))
+    monkeypatch.syspath_prepend(str(repo_root / "hermes_agent" / "plugins"))
 
     package = repo_root / "hermes_agent"
     cron_spec = PathFinder.find_spec("hermes_agent.cron", [str(package)])
@@ -245,7 +245,7 @@ def test_resolve_unknown_provider_falls_back_to_builtin(monkeypatch):
 def test_resolve_unavailable_provider_falls_back(monkeypatch):
     """A provider that loads but reports is_available()==False → built-in."""
     import hermes_agent.hermes_cli.config as cfg
-    import plugins.cron_providers as pc
+    import hermes_agent.plugins.cron_providers as pc
     from hermes_agent.cron import scheduler_provider as sp
     from hermes_agent.cron.scheduler_provider import CronScheduler
 
@@ -269,7 +269,7 @@ def test_resolve_unavailable_provider_falls_back(monkeypatch):
 def test_resolve_available_provider_is_used(monkeypatch):
     """A provider that loads and is available is returned (not the fallback)."""
     import hermes_agent.hermes_cli.config as cfg
-    import plugins.cron_providers as pc
+    import hermes_agent.plugins.cron_providers as pc
     from hermes_agent.cron import scheduler_provider as sp
     from hermes_agent.cron.scheduler_provider import CronScheduler
 

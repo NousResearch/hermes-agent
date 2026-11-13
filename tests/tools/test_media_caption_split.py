@@ -12,7 +12,7 @@ the platforms can't diverge.
 """
 
 from hermes_agent.tools.send_message_tool import _DEFAULT_CAPTION_LIMIT, _media_caption_split
-from plugins.platforms.telegram.standalone import _TELEGRAM_CAPTION_LIMIT
+from hermes_agent.plugins.platforms.telegram.standalone import _TELEGRAM_CAPTION_LIMIT
 
 
 def test_single_image_short_text_becomes_caption():

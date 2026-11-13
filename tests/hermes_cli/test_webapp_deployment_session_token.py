@@ -11,7 +11,7 @@ from types import SimpleNamespace
 
 import pytest
 
-import plugins.dashboard_auth.session_token as session_token_plugin
+import hermes_agent.plugins.dashboard_auth.session_token as session_token_plugin
 from tests.hermes_cli import test_webapp_gated_sign_out as webapp_gate
 from tests.hermes_cli.test_webapp_gated_sign_out import (
     _bearer, _gateway_socket_with, _native_app_sign_in, _renew, _refused)

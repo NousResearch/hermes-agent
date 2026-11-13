@@ -56,7 +56,7 @@ _HOLDER_POLITE = (
 
 def _wait_port_held(port: int, held: bool = True, timeout: float = 10.0) -> None:
     """Wait until a real bind probe agrees the port is (not) free — the holder is a fresh child."""
-    from plugins.platforms.whatsapp.bridge_ownership import port_is_free
+    from hermes_agent.plugins.platforms.whatsapp.bridge_ownership import port_is_free
 
     deadline = time.monotonic() + timeout
     while port_is_free(port) is held and time.monotonic() < deadline:
@@ -79,7 +79,7 @@ def _spawn_holder(script: str, port: int, node_named_dir: Optional[Path] = None)
 @pytest.fixture(autouse=True)
 def _pm_node(monkeypatch):
     """Stand-in for PM's Node/npm; the user's PATH copy is never picked up."""
-    from plugins.platforms.whatsapp import adapter as whatsapp_adapter
+    from hermes_agent.plugins.platforms.whatsapp import adapter as whatsapp_adapter
     monkeypatch.setattr(whatsapp_adapter, "find_node_executable", lambda name: f"/pm/{name}")
 
 
@@ -88,14 +88,14 @@ def _fast_grace(monkeypatch):
     """Shorten the SIGTERM grace and the port-free wait so the escalation tests stay fast
     (``raising=False``: on the unfixed base these knobs do not exist and the tests must fail on
     behavior, not on the fixture)."""
-    from plugins.platforms.whatsapp import adapter as whatsapp_adapter
+    from hermes_agent.plugins.platforms.whatsapp import adapter as whatsapp_adapter
     monkeypatch.setattr(whatsapp_adapter, "_SIGTERM_GRACE_S", 1.2, raising=False)
     monkeypatch.setattr(whatsapp_adapter, "_BRIDGE_PORT_FREE_TIMEOUT_S", 1.5, raising=False)
 
 
 def _make_adapter(bridge_script: str, session_path: Path, port: int):
     """Create a WhatsAppAdapter with test attributes (bypass __init__)."""
-    from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
+    from hermes_agent.plugins.platforms.whatsapp.adapter import WhatsAppAdapter
 
     adapter = WhatsAppAdapter.__new__(WhatsAppAdapter)
     adapter.platform = Platform.WHATSAPP
@@ -151,7 +151,7 @@ def _mock_health_refused():
 
 def _setup_bridge_dir(tmp_path: Path) -> Path:
     """Real bridge dir with bridge.js + package.json + a fresh node_modules dep stamp + creds."""
-    from plugins.platforms.whatsapp.adapter import _file_content_hash
+    from hermes_agent.plugins.platforms.whatsapp.adapter import _file_content_hash
 
     bridge_dir = tmp_path / "whatsapp-bridge"
     bridge_dir.mkdir()
@@ -178,9 +178,9 @@ def _connect_patches(adapter, spawn_bridge):
         return real_popen(cmd, *args, **kwargs)
 
     return (
-        patch("plugins.platforms.whatsapp.adapter.check_whatsapp_requirements", return_value=True),
+        patch("hermes_agent.plugins.platforms.whatsapp.adapter.check_whatsapp_requirements", return_value=True),
         patch("aiohttp.ClientSession", _mock_health_refused()),
-        patch("plugins.platforms.whatsapp.adapter.asyncio.sleep", new_callable=AsyncMock),
+        patch("hermes_agent.plugins.platforms.whatsapp.adapter.asyncio.sleep", new_callable=AsyncMock),
         patch("subprocess.Popen", side_effect=_popen),
         patch.object(adapter, "_acquire_platform_lock", return_value=True, create=True),
     )
@@ -204,8 +204,8 @@ class TestPortReleasedBeforeSpawn:
     async def test_slow_exiting_bridge_is_escalated_and_port_is_free_at_spawn(self, tmp_path):
         """The full connect() flow against a real bridge that ignores SIGTERM: the reap waits out the
         grace, SIGKILLs it, and the new bridge is spawned ONCE — with the port already free."""
-        from plugins.platforms.whatsapp import adapter as whatsapp_adapter
-        from plugins.platforms.whatsapp.bridge_ownership import port_is_free
+        from hermes_agent.plugins.platforms.whatsapp import adapter as whatsapp_adapter
+        from hermes_agent.plugins.platforms.whatsapp.bridge_ownership import port_is_free
 
         bridge_dir = _setup_bridge_dir(tmp_path)
         port = _free_port()
@@ -253,7 +253,7 @@ class TestPortReleasedBeforeSpawn:
     async def test_stranger_holding_port_is_left_alone_and_no_spawn(self, tmp_path):
         """A non-node holder that never answers /health is not ours: never signalled, and connect()
         fails with the named retryable port-busy error instead of spawning onto a busy port."""
-        from plugins.platforms.whatsapp import adapter as whatsapp_adapter
+        from hermes_agent.plugins.platforms.whatsapp import adapter as whatsapp_adapter
 
         bridge_dir = _setup_bridge_dir(tmp_path)
         port = _free_port()
@@ -283,7 +283,7 @@ class TestListenerDiscovery:
     async def test_time_wait_from_old_bridge_does_not_block_respawn(self):
         """The old bridge closed its keep-alive connections first, so its port sits in TIME_WAIT
         (up to 60s) with no listener. node's listen (SO_REUSEADDR) succeeds; the wait must too."""
-        from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
+        from hermes_agent.plugins.platforms.whatsapp.adapter import WhatsAppAdapter
 
         srv = socket.socket()
         srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)  # as libuv does for the bridge
@@ -314,7 +314,7 @@ class TestListenerDiscovery:
     def test_psutil_fallback_when_lsof_and_ss_missing(self, monkeypatch):
         """Neither lsof nor ss on PATH (the repo image ships neither): the psutil TCP scan still
         finds the listener, so the port holder can be identified and reaped."""
-        from plugins.platforms.whatsapp.adapter import _listener_pids_on_port
+        from hermes_agent.plugins.platforms.whatsapp.adapter import _listener_pids_on_port
 
         srv = socket.socket()
         srv.bind(("127.0.0.1", 0))
@@ -338,7 +338,7 @@ class TestPidfileHygiene:
         """A bridge that dies during the post-spawn health wait must not leave a dead-PID
         bridge.pid: the next connect()'s pidfile reap would find nothing there while the real
         port holder (if any) survives its port scan."""
-        from plugins.platforms.whatsapp.adapter import _write_bridge_pidfile
+        from hermes_agent.plugins.platforms.whatsapp.adapter import _write_bridge_pidfile
 
         adapter = _make_adapter("/tmp/test-bridge.js", tmp_path / "session", 19876)
         (tmp_path / "session").mkdir(exist_ok=True)
@@ -347,7 +347,7 @@ class TestPidfileHygiene:
         dead_proc.poll.return_value = 1
         dead_proc.returncode = 1
         adapter._bridge_process = dead_proc
-        with patch("plugins.platforms.whatsapp.adapter.asyncio.sleep", new_callable=AsyncMock), \
+        with patch("hermes_agent.plugins.platforms.whatsapp.adapter.asyncio.sleep", new_callable=AsyncMock), \
              patch.object(adapter, "_probe_bridge_health", side_effect=AssertionError("must not probe a dead process")):
             assert await adapter._wait_for_bridge() is False
 
@@ -358,7 +358,7 @@ class TestPidfileHygiene:
         """A pidfile-identified bridge that ignores SIGTERM is SIGKILLed after the grace window —
         identity re-checked first, so only the recorded bridge itself is escalated."""
         from hermes_agent.gateway.status import get_process_start_time
-        from plugins.platforms.whatsapp.adapter import _kill_stale_bridge_by_pidfile, _write_bridge_pidfile
+        from hermes_agent.plugins.platforms.whatsapp.adapter import _kill_stale_bridge_by_pidfile, _write_bridge_pidfile
 
         port = _free_port()
         holder = _spawn_holder(_HOLDER_IGNORING_SIGTERM, port, node_named_dir=tmp_path)
@@ -386,7 +386,7 @@ class TestDisconnectWaits:
     async def test_disconnect_force_kill_waits_for_exit(self, tmp_path):
         """disconnect() escalates to force kill for a bridge that ignores SIGTERM and then WAITS
         for the exit, so an in-process restart does not race the dying bridge for the port."""
-        from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
+        from hermes_agent.plugins.platforms.whatsapp.adapter import WhatsAppAdapter
 
         adapter = WhatsAppAdapter.__new__(WhatsAppAdapter)
         adapter.platform = Platform.WHATSAPP
@@ -405,7 +405,7 @@ class TestDisconnectWaits:
             _wait_port_held(port, held=True)
             adapter._bridge_process = holder
 
-            with patch("plugins.platforms.whatsapp.adapter.asyncio.sleep", new_callable=AsyncMock):
+            with patch("hermes_agent.plugins.platforms.whatsapp.adapter.asyncio.sleep", new_callable=AsyncMock):
                 await adapter.disconnect()
 
             assert holder.poll() is not None, "disconnect() returned before the force-killed bridge exited"

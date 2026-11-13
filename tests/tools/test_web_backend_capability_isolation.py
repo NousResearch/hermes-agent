@@ -52,7 +52,7 @@ def test_ladder_derived_firecrawl_takes_managed_path_on_gateway_ready_install(mo
     resolves through the Tool Gateway exactly like a never-configured install."""
     from types import SimpleNamespace
 
-    import plugins.web.firecrawl.provider as prov
+    import hermes_agent.plugins.web.firecrawl.provider as prov
 
     _ladder_env(monkeypatch, {"extract_backend": "keenable"})
     gw = SimpleNamespace(nous_user_token="tok", gateway_origin="https://gw.example")

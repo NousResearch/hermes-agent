@@ -241,7 +241,7 @@ def test_slack_measures_the_formatted_text_its_edit_cuts():
     limit that formats past it is never finished in place, where its tail would be lost."""
     from hermes_agent.gateway.config import PlatformConfig
     from hermes_agent.gateway.run_turn_final_reconcile import owns_reconcilable_preview
-    from plugins.platforms.slack.adapter import SlackAdapter
+    from hermes_agent.plugins.platforms.slack.adapter import SlackAdapter
 
     slack = SlackAdapter(PlatformConfig(enabled=True, token="xoxb-fake"))
     preview = SimpleNamespace(message_id="1700000000.000100", adapter=slack)

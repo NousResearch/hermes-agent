@@ -14,7 +14,7 @@ import pytest
 from hermes_agent.gateway.config import PlatformConfig
 from hermes_agent.gateway.platforms.base import utf16_len
 from hermes_agent.gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
-from plugins.platforms.telegram.adapter import TelegramAdapter
+from hermes_agent.plugins.platforms.telegram.adapter import TelegramAdapter
 from tests.waiting import async_wait_until
 
 

@@ -64,9 +64,9 @@ def _run_setup_feishu(
          patch("hermes_agent.hermes_cli.cli_output.print_success"), \
          patch("hermes_agent.hermes_cli.cli_output.print_warning"), \
          patch("hermes_agent.hermes_cli.cli_output.print_error"), \
-         patch("plugins.platforms.feishu.adapter.qr_register", return_value=qr_result):
+         patch("hermes_agent.plugins.platforms.feishu.adapter.qr_register", return_value=qr_result):
 
-        from plugins.platforms.feishu.adapter import interactive_setup
+        from hermes_agent.plugins.platforms.feishu.adapter import interactive_setup
         interactive_setup()
 
     return saved_env, removed_keys
@@ -86,7 +86,7 @@ class TestSetupFeishuConnectionMode:
     """Connection mode: QR always websocket, manual path lets user choose."""
 
 
-    @patch("plugins.platforms.feishu.adapter.probe_bot", return_value=None)
+    @patch("hermes_agent.plugins.platforms.feishu.adapter.probe_bot", return_value=None)
     def test_manual_path_websocket(self, _mock_probe):
         env, _ = _run_setup_feishu(
             qr_result=None,
@@ -199,7 +199,7 @@ class TestSetupFeishuAdapterIntegration:
 
         with patch.dict(os.environ, {**_SYS_ENV, **env}, clear=True):
             from hermes_agent.gateway.config import PlatformConfig
-            from plugins.platforms.feishu.adapter import FeishuAdapter
+            from hermes_agent.plugins.platforms.feishu.adapter import FeishuAdapter
             adapter = FeishuAdapter(PlatformConfig())
             assert adapter._app_id == "cli_test_app"
             assert adapter._app_secret == "test_secret_value"

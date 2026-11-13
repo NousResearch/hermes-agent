@@ -18,8 +18,8 @@ if importlib.util.find_spec("lark_oapi") is None and "lark_oapi" not in sys.modu
         sys.modules.setdefault(_name, _mod)
 
 from hermes_agent.gateway.config import PlatformConfig
-import plugins.platforms.feishu.adapter as feishu_module
-from plugins.platforms.feishu.adapter import FeishuAdapter
+import hermes_agent.plugins.platforms.feishu.adapter as feishu_module
+from hermes_agent.plugins.platforms.feishu.adapter import FeishuAdapter
 from hermes_agent.tools import clarify_gateway as cg
 
 CHAT = "oc_chat"

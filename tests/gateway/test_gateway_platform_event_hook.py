@@ -36,7 +36,7 @@ if _repo not in sys.path:
     sys.path.insert(0, _repo)
 
 
-from plugins.platforms.telegram.adapter import TelegramAdapter
+from hermes_agent.plugins.platforms.telegram.adapter import TelegramAdapter
 from hermes_agent.gateway.run import GatewayRunner
 from hermes_agent.gateway.profile_routing import ProfileRoute
 from hermes_agent.hermes_cli.plugins import (
@@ -626,14 +626,14 @@ class TestRegisterHandlers:
         builder.concurrent_updates.return_value = builder
         builder.build.side_effect = [first_app, rebuilt_app]
         monkeypatch.setattr(
-            "plugins.platforms.telegram.adapter.Application",
+            "hermes_agent.plugins.platforms.telegram.adapter.Application",
             SimpleNamespace(builder=MagicMock(return_value=builder)),
         )
         monkeypatch.setattr(
-            "plugins.platforms.telegram.adapter.HTTPXRequest", lambda **kwargs: MagicMock(),
+            "hermes_agent.plugins.platforms.telegram.adapter.HTTPXRequest", lambda **kwargs: MagicMock(),
         )
         monkeypatch.setattr(
-            "plugins.platforms.telegram.adapter.discover_fallback_ips",
+            "hermes_agent.plugins.platforms.telegram.adapter.discover_fallback_ips",
             lambda: _async_value([]),
         )
         monkeypatch.setattr("asyncio.sleep", MagicMock(return_value=_async_value(None)))

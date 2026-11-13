@@ -12,8 +12,8 @@ import argparse
 import pytest
 
 from hermes_agent.hermes_cli.config import get_env_value
-from plugins.platforms.photon.adapter import _env_enablement
-from plugins.platforms.photon import cli
+from hermes_agent.plugins.platforms.photon.adapter import _env_enablement
+from hermes_agent.plugins.platforms.photon import cli
 
 
 def test_autoconfigure_access_fills_unset(monkeypatch: pytest.MonkeyPatch) -> None:

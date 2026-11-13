@@ -48,41 +48,41 @@ def _served(monkeypatch, default_env: dict, secondary_env: dict, build):
 
 # (module, env var, default-profile value, secondary value, resolver(module) -> value)
 _SETTINGS = [
-    ("plugins.platforms.slack.adapter", "SLACK_REQUIRE_MENTION", "true", "false",
+    ("hermes_agent.plugins.platforms.slack.adapter", "SLACK_REQUIRE_MENTION", "true", "false",
      lambda m: _slack(m, "_slack_require_mention")),
-    ("plugins.platforms.slack.adapter", "SLACK_REACTIONS", "true", "false",
+    ("hermes_agent.plugins.platforms.slack.adapter", "SLACK_REACTIONS", "true", "false",
      lambda m: _slack(m, "_reactions_enabled")),
-    ("plugins.platforms.slack.adapter", "SLACK_REACTION_TRIGGER_TARGET", "C_DEFAULT", "C_SECONDARY",
+    ("hermes_agent.plugins.platforms.slack.adapter", "SLACK_REACTION_TRIGGER_TARGET", "C_DEFAULT", "C_SECONDARY",
      lambda m: _slack(m, "_slack_reaction_trigger_target")),
-    ("plugins.platforms.matrix.adapter", "MATRIX_REQUIRE_MENTION", "true", "false",
+    ("hermes_agent.plugins.platforms.matrix.adapter", "MATRIX_REQUIRE_MENTION", "true", "false",
      lambda m: m.MatrixAdapter._parse_require_mention(PlatformConfig(enabled=True))),
-    ("plugins.platforms.matrix.adapter", "MATRIX_THREAD_REQUIRE_MENTION", "false", "true",
+    ("hermes_agent.plugins.platforms.matrix.adapter", "MATRIX_THREAD_REQUIRE_MENTION", "false", "true",
      lambda m: m.MatrixAdapter._parse_thread_require_mention(PlatformConfig(enabled=True))),
-    ("plugins.platforms.matrix.adapter", "MATRIX_MAX_MESSAGE_LENGTH", "1111", "2222",
+    ("hermes_agent.plugins.platforms.matrix.adapter", "MATRIX_MAX_MESSAGE_LENGTH", "1111", "2222",
      lambda m: m._resolve_max_message_length(PlatformConfig(enabled=True))),
-    ("plugins.platforms.matrix.adapter", "MATRIX_E2EE_MODE", "required", "off",
+    ("hermes_agent.plugins.platforms.matrix.adapter", "MATRIX_E2EE_MODE", "required", "off",
      lambda m: m._resolve_e2ee_mode({})),
-    ("plugins.platforms.matrix.adapter", "MATRIX_ALLOW_PUBLIC_ROOMS", "true", "false",
+    ("hermes_agent.plugins.platforms.matrix.adapter", "MATRIX_ALLOW_PUBLIC_ROOMS", "true", "false",
      lambda m: m._env_truthy("MATRIX_ALLOW_PUBLIC_ROOMS")),
-    ("plugins.platforms.teams.adapter", "TEAMS_PORT", "18001", "18101",
+    ("hermes_agent.plugins.platforms.teams.adapter", "TEAMS_PORT", "18001", "18101",
      lambda m: (m._env_enablement() or {}).get("port")),
-    ("plugins.platforms.feishu.adapter", "FEISHU_WEBHOOK_PORT", "18073", "18173",
+    ("hermes_agent.plugins.platforms.feishu.adapter", "FEISHU_WEBHOOK_PORT", "18073", "18173",
      lambda m: m.FeishuAdapter._load_settings({}).webhook_port),
-    ("plugins.platforms.feishu.adapter", "FEISHU_CONNECTION_MODE", "websocket", "webhook",
+    ("hermes_agent.plugins.platforms.feishu.adapter", "FEISHU_CONNECTION_MODE", "websocket", "webhook",
      lambda m: m.FeishuAdapter._load_settings({}).connection_mode),
-    ("plugins.platforms.bluebubbles.adapter", "BLUEBUBBLES_WEBHOOK_PORT", "18010", "18110",
+    ("hermes_agent.plugins.platforms.bluebubbles.adapter", "BLUEBUBBLES_WEBHOOK_PORT", "18010", "18110",
      lambda m: m._extra_or_secret({}, "webhook_port", "BLUEBUBBLES_WEBHOOK_PORT", "0")),
-    ("plugins.platforms.signal.adapter", "SIGNAL_REACTIONS", "true", "false",
+    ("hermes_agent.plugins.platforms.signal.adapter", "SIGNAL_REACTIONS", "true", "false",
      lambda m: _signal_reactions(m)),
-    ("plugins.platforms.line.adapter", "LINE_PORT", "18015", "18115",
+    ("hermes_agent.plugins.platforms.line.adapter", "LINE_PORT", "18015", "18115",
      lambda m: (m._env_enablement() or {}).get("port")),
-    ("plugins.platforms.buzz.adapter", "BUZZ_RELAY_URL", "wss://default.relay", "wss://secondary.relay",
+    ("hermes_agent.plugins.platforms.buzz.adapter", "BUZZ_RELAY_URL", "wss://default.relay", "wss://secondary.relay",
      lambda m: (m._env_enablement() or {}).get("relay_url")),
-    ("plugins.platforms.a2a.adapter", "A2A_AGENT_NAME", "default-agent", "secondary-agent",
+    ("hermes_agent.plugins.platforms.a2a.adapter", "A2A_AGENT_NAME", "default-agent", "secondary-agent",
      lambda m: m._default_agent_name()),
-    ("plugins.platforms.discord.adapter", "DISCORD_COMMAND_SYNC_POLICY", "full", "off",
+    ("hermes_agent.plugins.platforms.discord.adapter", "DISCORD_COMMAND_SYNC_POLICY", "full", "off",
      lambda m: _discord(m, "_get_discord_command_sync_policy")),
-    ("plugins.platforms.discord.adapter", "DISCORD_ALLOW_MENTION_EVERYONE", "true", "false",
+    ("hermes_agent.plugins.platforms.discord.adapter", "DISCORD_ALLOW_MENTION_EVERYONE", "true", "false",
      lambda m: m._env_bool("DISCORD_ALLOW_MENTION_EVERYONE", False)),
 ]
 
@@ -123,7 +123,7 @@ def test_served_secondary_resolves_its_own_setting(monkeypatch, module, var, def
 def test_signal_startup_gate_reads_the_profile_env(monkeypatch):
     """A secondary whose SIGNAL_HTTP_URL/SIGNAL_ACCOUNT live only in its own .env must pass the startup
     gate served exactly as it does standalone; a secondary WITHOUT them must not borrow the default's."""
-    from plugins.platforms.signal import adapter as sig
+    from hermes_agent.plugins.platforms.signal import adapter as sig
     for k in ("SIGNAL_HTTP_URL", "SIGNAL_ACCOUNT"):
         monkeypatch.delenv(k, raising=False)
     ss.set_multiplex_active(True)
@@ -142,7 +142,7 @@ def test_signal_startup_gate_reads_the_profile_env(monkeypatch):
 
 
 def test_sms_webhook_listener_is_profile_scoped(monkeypatch):
-    from plugins.platforms.sms import adapter as sms
+    from hermes_agent.plugins.platforms.sms import adapter as sms
     for k, v in {"TWILIO_ACCOUNT_SID": "AC0", "TWILIO_AUTH_TOKEN": "tok", "TWILIO_PHONE_NUMBER": "+1",
                  "SMS_WEBHOOK_PORT": "18039", "SMS_WEBHOOK_HOST": "default-host", "SMS_WEBHOOK_URL": "http://d/"}.items():
         monkeypatch.setenv(k, v)

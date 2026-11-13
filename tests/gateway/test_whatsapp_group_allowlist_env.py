@@ -10,7 +10,7 @@ from hermes_agent.gateway.config import PlatformConfig
 
 
 def _adapter_with_extra(extra):
-    from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
+    from hermes_agent.plugins.platforms.whatsapp.adapter import WhatsAppAdapter
     return WhatsAppAdapter(PlatformConfig(enabled=True, extra=extra))
 
 

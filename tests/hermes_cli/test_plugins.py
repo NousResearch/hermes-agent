@@ -535,7 +535,7 @@ class TestPluginLoading:
 
     def test_user_memory_plugin_auto_coerced_to_exclusive(self, tmp_path, monkeypatch):
         """User-installed memory plugins must NOT be loaded by the general
-        PluginManager — they belong to plugins/memory discovery.
+        PluginManager — they belong to hermes_agent/plugins/memory discovery.
 
         Regression test for the mempalace crash:
             'PluginContext' object has no attribute 'register_memory_provider'
@@ -544,7 +544,7 @@ class TestPluginLoading:
         ``__init__.py`` should be auto-detected and treated as
         ``kind: exclusive`` so the general loader records the manifest but
         does not import/register() it. The real activation happens through
-        ``plugins/memory/__init__.py`` via ``memory.provider`` config.
+        ``hermes_agent/plugins/memory/__init__.py`` via ``memory.provider`` config.
         """
         plugins_dir = tmp_path / "hermes_test" / "plugins"
         plugin_dir = plugins_dir / "mempalace"
@@ -579,7 +579,7 @@ class TestPluginLoading:
         assert "exclusive" in (entry.error or "").lower()
 
     def test_bundled_cron_provider_is_not_loaded_by_general_manager(self, tmp_path, monkeypatch):
-        """``plugins/cron_providers/`` has its own discovery (``plugins.cron_providers``); the general
+        """``hermes_agent/plugins/cron_providers/`` has its own discovery (``hermes_agent.plugins.cron_providers``); the general
         manager's PluginContext has no ``register_cron_scheduler``, so importing chronos from here
         warned ``Failed to load plugin 'chronos'`` on every start it was enabled (#62951)."""
         bundled = tmp_path / "bundled"
@@ -601,7 +601,7 @@ class TestPluginLoading:
         assert not any(key.endswith("chronos") for key in mgr._plugins)
 
     def test_user_cron_plugin_auto_coerced_to_exclusive(self, tmp_path, monkeypatch):
-        """A user-installed cron provider (no ``kind:``) routes to ``plugins.cron_providers`` like a
+        """A user-installed cron provider (no ``kind:``) routes to ``hermes_agent.plugins.cron_providers`` like a
         memory provider does, instead of being imported by the general manager (#62951)."""
         hermes_home = tmp_path / "hermes_test"
         plugin_dir = hermes_home / "plugins" / "mycron"
@@ -632,7 +632,7 @@ class TestPluginLoading:
         → onnxruntime, ~60 MB RSS) even though the import registered
         nothing. Entry-point manifests now get the same source-scan
         classification as directory plugins: recorded, never imported.
-        Activation stays with plugins/memory discovery via
+        Activation stays with hermes_agent/plugins/memory discovery via
         ``memory.provider`` config.
         """
         from importlib.metadata import EntryPoint
@@ -798,7 +798,7 @@ class TestPluginLoading:
         )
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
         monkeypatch.setattr(
-            "plugins.memory._get_user_plugins_dir", lambda: plugins_dir
+            "hermes_agent.plugins.memory._get_user_plugins_dir", lambda: plugins_dir
         )
 
         mgr = PluginManager()
@@ -814,7 +814,7 @@ class TestPluginLoading:
 
         # Directory copy still activates through memory-provider discovery,
         # exactly once.
-        from plugins.memory import discover_memory_providers, load_memory_provider
+        from hermes_agent.plugins.memory import discover_memory_providers, load_memory_provider
 
         names = [n for n, _, _ in discover_memory_providers()]
         assert names.count("mempalace_dup") == 1

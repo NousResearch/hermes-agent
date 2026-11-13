@@ -12,7 +12,7 @@ import pytest
 # The plugin directory uses a hyphen, which is not a valid Python identifier
 # for the dotted-import form. Load it via importlib so tests don't need to
 # touch sys.path or rename the directory.
-meta_plugin = importlib.import_module("plugins.image_gen.meta-ai")
+meta_plugin = importlib.import_module("hermes_agent.plugins.image_gen.meta-ai")
 
 
 # 1×1 transparent PNG — valid bytes for save_b64_image()

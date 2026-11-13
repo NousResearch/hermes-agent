@@ -1,8 +1,8 @@
 """A2A forwarded tasks: a resend stays a retry after the process-local id memory forgot it
 (andrexibiza 5480715949 P2c)."""
 from hermes_agent.gateway.config import PlatformConfig
-from plugins.platforms.a2a import protocol
-from plugins.platforms.a2a.adapter import A2AAdapter
+from hermes_agent.plugins.platforms.a2a import protocol
+from hermes_agent.plugins.platforms.a2a.adapter import A2AAdapter
 
 
 def _adapter():

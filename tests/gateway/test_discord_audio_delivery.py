@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from hermes_agent.gateway.config import PlatformConfig
-from plugins.platforms.discord.adapter import DiscordAdapter
+from hermes_agent.plugins.platforms.discord.adapter import DiscordAdapter
 
 
 def _ogg_opus(seconds: float, pre_skip: int = 312, last_packet: bytes = b"\xfc" * 8) -> bytes:

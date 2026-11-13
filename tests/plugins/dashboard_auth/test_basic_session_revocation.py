@@ -11,7 +11,7 @@ import secrets
 import pytest
 
 from hermes_agent.hermes_cli.dashboard_auth import RefreshExpiredError
-from plugins.dashboard_auth import basic
+from hermes_agent.plugins.dashboard_auth import basic
 
 SECRET = secrets.token_bytes(32)
 

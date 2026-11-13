@@ -24,7 +24,7 @@ import pytest
 import os
 import socket
 
-from plugins.platforms.whatsapp.adapter import (
+from hermes_agent.plugins.platforms.whatsapp.adapter import (
     _kill_stale_bridge_by_pidfile,
     _listener_pids_on_port,
     _write_bridge_pidfile,

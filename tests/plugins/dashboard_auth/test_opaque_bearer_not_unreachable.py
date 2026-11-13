@@ -41,7 +41,7 @@ from hermes_agent.hermes_cli.dashboard_auth import (
     register_provider,
 )
 from hermes_agent.hermes_cli.dashboard_auth.cookies import SESSION_AT_COOKIE, SESSION_RT_COOKIE
-import plugins.dashboard_auth.nous as nous_plugin
+import hermes_agent.plugins.dashboard_auth.nous as nous_plugin
 
 OPAQUE_PEER_KEY = "hk_live_opaque_peer_key_0123456789abcdef"
 # Well-formed RS256 JWT header with an unknown kid, bogus payload/signature.
@@ -161,7 +161,7 @@ def test_opaque_bearer_with_unreachable_portal_is_still_just_not_ours():
 # ── self-hosted OIDC provider (sibling site of the same hunk) ──────────────
 
 def test_self_hosted_provider_shares_the_classification(empty_jwks_server, monkeypatch):
-    import plugins.dashboard_auth.self_hosted as sh
+    import hermes_agent.plugins.dashboard_auth.self_hosted as sh
 
     provider = object.__new__(sh.SelfHostedOIDCProvider)
     provider._jwks_client = None
@@ -257,7 +257,7 @@ def test_gated_api_refresh_minting_foreign_token_is_401_not_503(gated_portal, po
     # The __Host- names the server sets over HTTPS (bare names are not read there, #136772).
     gated_portal.cookies.set(f"__Host-{SESSION_AT_COOKIE}", foreign)
     gated_portal.cookies.set(f"__Host-{SESSION_RT_COOKIE}", "rt-old")
-    with patch("plugins.dashboard_auth._shared.httpx.post", return_value=grant) as post:
+    with patch("hermes_agent.plugins.dashboard_auth._shared.httpx.post", return_value=grant) as post:
         r = gated_portal.get("/api/auth/me")
     assert post.called
     assert r.status_code == 401, r.text
@@ -270,7 +270,7 @@ def test_forged_alg_with_published_kid_is_rejected_without_a_drift_warning(porta
     before any signature check: a 401, and no attacker-sized log line."""
     forged = jwt.encode({"iss": "x" * 4000, "aud": "y"}, "k" * 32, algorithm="HS256", headers={"kid": _KID})
     provider = _nous(portal[0])
-    with caplog.at_level(logging.WARNING, logger="plugins.dashboard_auth._shared"):
+    with caplog.at_level(logging.WARNING, logger="hermes_agent.plugins.dashboard_auth._shared"):
         assert provider.verify_session(access_token=forged) is None
     assert "verification failed" not in caplog.text
 

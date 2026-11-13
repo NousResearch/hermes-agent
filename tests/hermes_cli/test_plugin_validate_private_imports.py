@@ -131,7 +131,7 @@ def test_skill_catalog_seams_are_public_and_drive_the_skills_tools(tmp_path, mon
 
 def test_documented_session_helper_and_own_install_path_fallback_are_not_flagged(tmp_path):
     """onebot-platform reads session identity through the documented ``get_session_env``; openltm
-    falls back to its own install path (``plugins.memory.openltm._db``) when the relative import
+    falls back to its own install path (``hermes_agent.plugins.memory.openltm._db``) when the relative import
     fails. Neither is a core internal. A real core path beside them still warns."""
     plugin = _plugin(tmp_path / "openltm", {
         "__init__.py": (

@@ -43,7 +43,7 @@ class _Scope:
 # -- ByteRover ---------------------------------------------------------------------------------------
 
 def test_byterover_binds_the_home_initialize_receives(homes):
-    from plugins.memory.byterover import ByteRoverMemoryProvider
+    from hermes_agent.plugins.memory.byterover import ByteRoverMemoryProvider
     alpha, _ = homes
     provider = ByteRoverMemoryProvider({})
     provider.initialize("s", hermes_home=str(alpha))  # no context override: the ambient home is the root
@@ -51,7 +51,7 @@ def test_byterover_binds_the_home_initialize_receives(homes):
 
 
 def test_byterover_two_profiles_interleaving_stay_in_their_own_trees(homes, monkeypatch):
-    from plugins.memory import byterover
+    from hermes_agent.plugins.memory import byterover
     calls: list = []
     lock = threading.Lock()
 
@@ -100,7 +100,7 @@ class _FakeClient:
 
 @pytest.fixture
 def fake_retaindb(monkeypatch):
-    from plugins.memory import retaindb
+    from hermes_agent.plugins.memory import retaindb
     _FakeClient.calls = []
     monkeypatch.setattr(retaindb, "_Client", _FakeClient)
     monkeypatch.setattr(retaindb, "get_secret", lambda name, default=None: "rdb-key" if name == "RETAINDB_API_KEY" else default)

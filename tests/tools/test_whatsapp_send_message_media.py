@@ -16,7 +16,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from plugins.platforms.whatsapp.adapter import _bridge_media_type, _standalone_send
+from hermes_agent.plugins.platforms.whatsapp.adapter import _bridge_media_type, _standalone_send
 from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
 
@@ -71,7 +71,7 @@ def _session_with(responses, health=None, *, token="standalone-test-token-012345
     adapter spawned), GET /health answers *health* (default an empty 200), POSTs return *responses* in order; every
     POST and the /health GET are recorded as (url, json_payload) — the proof handshake is not part of the recorded
     delivery sequence."""
-    from plugins.platforms.whatsapp.adapter import _bridge_auth_proof
+    from hermes_agent.plugins.platforms.whatsapp.adapter import _bridge_auth_proof
 
     calls = []
     idx = [0]
@@ -109,7 +109,7 @@ def _session_with(responses, health=None, *, token="standalone-test-token-012345
 @pytest.fixture(autouse=True)
 def _persisted_bridge_token(monkeypatch):
     """Standalone senders only READ the token the gateway persisted; stand in for that file."""
-    monkeypatch.setattr("plugins.platforms.whatsapp.adapter._read_bridge_token",
+    monkeypatch.setattr("hermes_agent.plugins.platforms.whatsapp.adapter._read_bridge_token",
                         lambda session_path: "standalone-test-token-0123456789abcdef")
 
 

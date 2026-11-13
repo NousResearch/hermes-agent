@@ -15,7 +15,7 @@ import pytest
 
 from hermes_agent.gateway.config import PlatformConfig
 from hermes_agent.gateway.platforms.base import SendResult
-from plugins.platforms.telegram.adapter import TelegramAdapter
+from hermes_agent.plugins.platforms.telegram.adapter import TelegramAdapter
 
 
 def _make_adapter() -> TelegramAdapter:
@@ -147,7 +147,7 @@ async def test_reset_after_the_request_was_written_is_never_resent():
     refused = NetworkError("httpx.ConnectError: All connection attempts failed")
     refused.__cause__ = httpx.ConnectError("All connection attempts failed")
     adapter._bot.send_message = AsyncMock(side_effect=[refused, MagicMock(message_id=9)])
-    with patch("plugins.platforms.telegram.adapter.asyncio.sleep", AsyncMock()):
+    with patch("hermes_agent.plugins.platforms.telegram.adapter.asyncio.sleep", AsyncMock()):
         assert (await adapter.send("4242", "hello")).success  # never left: retried and delivered
 
 

@@ -253,6 +253,9 @@ def test_bare_url_reaches_the_chat_as_literal_text(adapter, url):
     ("*Open https://archive.example/web/* now* and https://b.example/*",
      "_Open https://archive\\.example/web/\\* now_ and https://b\\.example/\\*"),
     ("*See https://a.example/x and https://b.example/*", "_See https://a\\.example/x and https://b\\.example/_"),
+    ('"*https://example.com/*"', '"_https://example\\.com/_"'),
+    ('"**https://example.com/**"', '"*https://example\\.com/*"'),
+    ('"~~https://example.com/~~"', '"~https://example\\.com/~"'),
 ])
 def test_emphasis_wrapping_a_url_that_ends_in_slash_still_renders(adapter, wrapped, rendered):
     """A trailing mark after ``/`` is URL text (``/web/*``) unless it closes emphasis opened before the URL."""

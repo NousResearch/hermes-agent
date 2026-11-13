@@ -423,10 +423,14 @@ class GatewayVoiceMixin:
         # so an owner-side synthesis would be a paid provider call nobody hears.
         if event.source.platform == Platform.LOCAL:
             return False
-        chat_id = event.source.chat_id
-        voice_mode = self._voice_mode.get(self._voice_key_for_source(event.source))
-        is_voice_input = event.message_type == MessageType.VOICE
-        adapter = self._delivery_adapter_for(event.source)
+        voice_event = getattr(event, "_terminal_voice_event", event)
+        chat_id = voice_event.source.chat_id
+        voice_mode = self._voice_mode.get(self._voice_key_for_source(voice_event.source))
+        is_voice_input = getattr(event, "_terminal_voice_origin", None)
+        if is_voice_input is None:
+            is_voice_input = (event.message_type == MessageType.VOICE or
+                              (event.source.platform == Platform.TELEGRAM and event.internal and getattr(event, '_trusted_voice_origin', False) is True))
+        adapter = self._delivery_adapter_for(voice_event.source)
         adapter_auto_tts = False
         with suppress(Exception):  # adapters without the probe read as False
             adapter_auto_tts = bool(adapter._should_auto_tts_for_chat(chat_id))
@@ -438,16 +442,16 @@ class GatewayVoiceMixin:
                 "Auto voice reply skipped: mode=%s adapter_auto_tts=%s chat=%s platform=%s",
                 voice_mode, adapter_auto_tts, chat_id, event.source.platform.value)
             return False
-        # Dedup: agent already called the TTS tool in THIS turn (from the last user message on).
+        # Resolved through the tool_call bridge: a deferred text_to_speech is recorded under it.
         start = next((i for i, m in reversed(list(enumerate(agent_messages)))
                       if m.get("role") == "user"), 0)
-        # Resolved through the tool_call bridge: a deferred text_to_speech is recorded under it.
         from gateway.media_repair import tool_name_by_call_id
         if "text_to_speech" in tool_name_by_call_id(agent_messages[start:]).values():
             return False
-        # Dedup: base adapter auto-TTS already handles voice input (play_tts plays in VC when
-        # connected) — unless streaming consumed the text (already_sent): then the runner must.
-        return not (is_voice_input and not already_sent)
+        # The adapter receives the opener, not the queued terminal event; defer only when
+        # its own voice-input check can handle this response. Streaming bypasses that path.
+        return not (event.message_type == MessageType.VOICE and voice_event.message_type == MessageType.VOICE
+                    and is_voice_input and not already_sent)
 
     def _should_echo_stt_transcripts(self) -> bool:
         return bool(getattr(self.config, "stt_echo_transcripts", True))
@@ -492,12 +496,23 @@ class GatewayVoiceMixin:
         """Play the files in the connected voice channel, else send them as voice messages."""
         adapter = self._delivery_adapter_for(event.source)
         guild_id = self._get_guild_id(event)
+        if guild_id is None and event.internal and getattr(event, "_trusted_voice_origin", False):
+            # A restored event has no raw Discord message. Only use an active binding that
+            # agrees with the persisted source's guild and text channel.
+            bound_guild = self._voice_ack_guild_for(event.source)
+            source_guild = getattr(event.source, "guild_id", None)
+            if bound_guild is not None and source_guild is not None and str(bound_guild) == str(source_guild):
+                guild_id = bound_guild
+            elif event.source.platform == Platform.DISCORD and event.source.chat_type != "dm":
+                return  # Never turn a guild voice-call result into a public text-channel upload.
         play = getattr(adapter, "play_in_voice_channel", None)
         is_in_vc = getattr(adapter, "is_in_voice_channel", None)
         if guild_id and callable(play) and callable(is_in_vc) and is_in_vc(guild_id):
             for path in audio_paths:
                 await play(guild_id, path)
             return
+        if event.internal and getattr(event, "_trusted_voice_origin", False) and event.source.platform == Platform.DISCORD and event.source.chat_type != "dm":
+            return  # A disconnected guild call must never fall back to a public upload.
         if not callable(send_voice := getattr(adapter, "send_voice", None)):
             return
         reply_anchor = self._reply_anchor_for_event(event)

@@ -24,6 +24,29 @@ def producer_identity(runner, event):
     return json.dumps(identity, separators=(',', ':'))
 
 
+def _delegation_voice_origin(authority, owner, route, identity):
+    """Resolve only the owner-recorded dispatch admission, never producer metadata."""
+    try:
+        parts = json.loads(identity)
+        if not isinstance(parts, list) or len(parts) != 3 or parts[0] != 'async_delegation':
+            return False
+        with authority.db._read_ctx() as conn:
+            row = conn.execute('SELECT task_json, origin_session FROM async_delegations WHERE delegation_id=?', (parts[1],)).fetchone()
+        if not row or row[1] != route:
+            return False
+        task = json.loads(row[0] or '{}')
+        if task.get('_origin_owner') != owner:
+            return False
+        from hermes_state_runtime import get_session_admission
+        origin = get_session_admission(authority.db, admission_id=task.get('_origin_admission') or '')
+        if not origin or origin['target_session_id'] != owner:
+            return False
+        native = origin['payload'].get('native_text_v1', {})
+        return 'automation' not in native and native.get('message_type') == MessageType.VOICE.value
+    except (ValueError, TypeError, KeyError):
+        return False
+
+
 def completion_admission(runner, event):
     from gateway.session_authorities import active_authority
     authority = active_authority(runner)
@@ -586,6 +609,9 @@ def snapshot_automation(authority, adapter, event, identity):
         'event': {'message_id': identity}, 'provenance': provenance,
         'automation': {'identity': identity, 'owner': owner}}
     envelope['automation'].update(notification)
+    identities = event.metadata.get('automation_identities') or [identity]
+    if event.source.platform == Platform.TELEGRAM and event.source.chat_type == 'dm' and identities and all(_delegation_voice_origin(authority, owner, entry.session_key, item) for item in identities):
+        envelope['automation']['voice_origin'] = True
     if getattr(event, '_heartbeat_session_id', None):
         envelope['automation']['heartbeat'] = event._heartbeat_session_id
     identities = event.metadata.get('automation_identities')

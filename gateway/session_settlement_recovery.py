@@ -317,7 +317,10 @@ async def settle_and_deliver(authority, live, ref, row, response, outcome):
                 from gateway.session_ingress import fire_post_delivery
                 await fire_post_delivery(authority, admission_id)
             from gateway.session_ingress import waiter_replies
-            waiter_replies(authority).pop(admission_id, None)
+            waiting_delivery = waiter_replies(authority).pop(admission_id, None)
+            if settled is not None and not discarded and waiting_delivery is not None:
+                from gateway.session_ingress import deliver_committed_voice
+                await deliver_committed_voice(authority, admission_id, waiting_delivery[1], waiting_delivery[4])
             # Taken on every exit, so a turn that never settled leaves no reset for a later one.
             reset = authority.deferred_resets.pop(live.route, None)
         await authority._run_deferred_reset(live.route, reset)

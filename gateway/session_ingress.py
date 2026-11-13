@@ -2,7 +2,7 @@
 import asyncio
 import logging
 from contextvars import ContextVar
-from contextlib import asynccontextmanager, nullcontext
+from contextlib import asynccontextmanager, contextmanager, nullcontext
 from dataclasses import replace
 
 from gateway.platforms.event import MessageEvent, ProcessingOutcome
@@ -17,6 +17,16 @@ logger = logging.getLogger(__name__)
 
 admission_author = ContextVar('admission_author', default=None)
 executing_admission = ContextVar('executing_admission', default=False)
+_dispatch_admission = ContextVar('dispatch_admission', default=None)
+
+@contextmanager
+def dispatch_admission_scope(session_id, admission_id):
+    token = _dispatch_admission.set((session_id, admission_id) if session_id and admission_id else None)
+    try:
+        yield
+    finally:
+        _dispatch_admission.reset(token)
+
 # The live session while the executing turn is one its viewer submitted (``is_viewer_input``), else None.
 viewer_turn: ContextVar = ContextVar('viewer_turn', default=None)
 # Set by a busy-path caller that must be released once its input is durably queued.
@@ -372,7 +382,8 @@ async def execute_admission(authority, ref, row):
             authority.pending_results[row['admission_id']] = {
                 'result': result, 'usage': captured.get('usage', {}),
                 **({'session_usage': captured['session_usage']} if 'session_usage' in captured else {})}
-            if not is_api and response:
+            bind_deferred_voice(event, result, authority.pending_results[row['admission_id']])
+            if not is_api and (response or getattr(event, "_deferred_voice_reply", None)):
                 adapter = authority.runner._adapter_for_source(event.source)
                 if adapter is not None:
                     # A recovered turn with no live delivery waiter: the drain sends this only after
@@ -420,7 +431,7 @@ async def _admission_scope(authority, ref, home, row, event, captured):
     turn (``session_producer_lifecycle``; a no-op for every other admission)."""
     from agent.runtime_scope import bind_turn, claim_fence
     async with producer_turn(authority, row, event, captured):
-        with await _execution_scope(authority, home), bind_turn(ref.session_id, row['admission_id'], claim_fence(row)):
+        with await _execution_scope(authority, home), bind_turn(ref.session_id, row['admission_id'], claim_fence(row)), dispatch_admission_scope(ref.session_id, row['admission_id']):
             yield
 
 
@@ -446,6 +457,58 @@ async def _execution_scope(authority, home):
     return nullcontext() if scope_home is None else _profile_runtime_scope(scope_home, secrets)
 
 
+def bind_deferred_voice(event, result, pending):
+    """Attach a receipt only for the exact raw result that generated this display."""
+    import hashlib, hmac
+    proof = getattr(event, '_deferred_voice_proof', None)
+    raw_final = result.get('final_response') if isinstance(result, dict) else None
+    if proof and isinstance(raw_final, str):
+        key, fingerprint, receipt = proof
+        if hmac.compare_digest(fingerprint, hmac.digest(key, raw_final.encode(), hashlib.sha256)):
+            pending['_voice_receipt'] = receipt
+    if hasattr(event, '_deferred_voice_proof'):
+        del event._deferred_voice_proof
+    if proof:
+        event._deferred_voice_receipt = proof[2]
+
+
+_SCOPE_ALREADY_BOUND = object()
+
+
+async def deliver_deferred_voice(authority, event, home=_SCOPE_ALREADY_BOUND, *, committed_response=None, committed_receipt=None):
+    """Deliver once only when the exact execution's opaque receipt was committed.
+
+    The receipt is durable, but display text and routing are process-local: a crash
+    before delivery loses audio. Retrying after an uncertain send risks duplicates,
+    so this is deliberately not a durable delivery queue.
+    """
+    response = getattr(event, "_deferred_voice_reply", None)
+    receipt = getattr(event, "_deferred_voice_receipt", None)
+    voice_event = getattr(event, "_deferred_voice_event", event)
+    for name in ("_deferred_voice_reply", "_deferred_voice_receipt", "_deferred_voice_committed_response", "_deferred_voice_event"):
+        if hasattr(event, name):
+            delattr(event, name)
+    if not response or not receipt or receipt != committed_receipt:
+        return
+    try:
+        scope = nullcontext() if home is _SCOPE_ALREADY_BOUND else await _execution_scope(authority, home)
+        with scope:
+            await authority.runner._send_voice_reply(voice_event, response)
+    except Exception:
+        logger.exception('Deferred voice delivery failed after settlement')
+
+
+async def deliver_committed_voice(authority, admission_id, event, home=_SCOPE_ALREADY_BOUND):
+    """Optional voice verification must never interfere with settlement or text delivery."""
+    try:
+        from gateway.session_results import admission_result
+        committed = admission_result(authority.db, admission_id)
+        receipt = (committed or {}).get('_voice_receipt')
+        await deliver_deferred_voice(authority, event, home, committed_receipt=receipt)
+    except Exception:
+        logger.exception('Deferred voice verification failed for admission %s', admission_id)
+
+
 async def deliver_settled(authority, admission_id):
     """Send a recovered no-waiter turn's reply after its terminal outcome committed. A send
     failure cannot rewrite that outcome; it is logged, and inference never runs again."""
@@ -457,6 +520,7 @@ async def deliver_settled(authority, admission_id):
         authority.native_waiters.discard(admission_id)
         _hand_back_post_delivery(authority, admission_id)
         authority.pending_deliveries.pop(admission_id)
+        await deliver_committed_voice(authority, admission_id, delivery[1], delivery[4])
         adopter = _marker_adopters(authority).get(admission_id)
         if held is not None and adopter is not None:
             _move_marker(held, adopter)
@@ -473,6 +537,7 @@ async def deliver_settled(authority, admission_id):
     delivered = False
     try:
         with await _execution_scope(authority, home):
+            await deliver_committed_voice(authority, admission_id, event)
             delivered = await deliver_response(adapter, event, session_key, response)
     except Exception:
         logger.exception('Delivery of settled admission %s failed', admission_id)

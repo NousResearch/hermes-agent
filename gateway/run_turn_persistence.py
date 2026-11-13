@@ -793,7 +793,22 @@ class GatewayTurnPersistenceMixin:
         if not _streaming_tts_done and self._should_send_voice_reply(
             event, response, agent_messages, already_sent=bool(agent_result.get("already_sent")),
         ):
-            await self._send_voice_reply(event, response)
+            from gateway.session_ingress import executing_admission
+            voice_event = getattr(event, "_terminal_voice_event", event)
+            if executing_admission.get() and voice_event.internal and getattr(voice_event, "_trusted_voice_origin", False) is True:
+                from gateway.session_results import _redacted
+                event._deferred_voice_reply = _redacted(response)
+                event._deferred_voice_event = voice_event
+                # A one-use keyed fingerprint never stores the unredacted answer.  Redacted
+                # equality is not proof: distinct secrets can have the same stored text.
+                import hashlib, hmac, secrets
+                raw_final = agent_result.get("final_response")
+                if isinstance(raw_final, str) and raw_final:
+                    key = secrets.token_bytes(32)
+                    event._deferred_voice_proof = (key, hmac.digest(key, raw_final.encode(), hashlib.sha256),
+                                                   secrets.token_hex(32))
+            else:
+                await self._send_voice_reply(voice_event, response)
 
         # Streamed responses still need MEDIA: files delivered (chunks carry the tags verbatim). Never
         # skip when the agent failed: the error text is new content streaming didn't show.

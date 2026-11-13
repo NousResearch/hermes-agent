@@ -4078,7 +4078,9 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
         generation = getattr(interrupt_event, "_hermes_run_generation", None)
         return bool(
             self._should_auto_tts_for_chat(event.source.chat_id)
-            and event.message_type == MessageType.VOICE and text_content and not media_files
+            and event.message_type == MessageType.VOICE
+            and getattr(event, '_terminal_voice_origin', True) is not False
+            and text_content and not media_files
             and not self._streaming_tts_turn_completed(session_key, generation, event=event))
 
     async def _play_tts_file(

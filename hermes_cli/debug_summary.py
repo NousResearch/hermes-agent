@@ -70,9 +70,15 @@ def _install_kind() -> str:
 
 
 def _platform_names() -> str:
+    """Connected platforms, by name only when core ships the adapter (a built-in ``Platform``
+    member or a bundled ``plugins/platforms/`` plugin); user plugins register arbitrary names at
+    runtime, so those are counted, not named."""
     from gateway.config import load_gateway_config
-    names = sorted(str(p.value) for p in load_gateway_config().get_connected_platforms())
-    return ", ".join(names) or "none"
+    from gateway.platform_registry import core_ships_platform
+    connected = [str(p.value) for p in load_gateway_config().get_connected_platforms()]
+    names = sorted(name for name in connected if core_ships_platform(name))
+    custom = len(connected) - len(names)
+    return ", ".join(names + ([f"+{custom} custom"] if custom else [])) or "none"
 
 
 def _toolset_names(raw_config: dict[str, Any]) -> str:
@@ -126,15 +132,24 @@ def _resolve_module(name: str) -> tuple[str, Path | None] | None:
     dirs = [Path(d) for d in (getattr(spec, "submodule_search_locations", None) or [])]
     origin = getattr(spec, "origin", None)
     source = Path(origin) if origin and origin.endswith(".py") else None
+    # A symlink below the package can point at any file on the host; its source must not vouch.
+    roots = tuple(d.resolve() for d in dirs) or ((source.resolve().parent,) if source else ())
     kept = [segments[0]]
     for seg in segments[1:]:
-        hit = next((d / seg for d in dirs if (d / seg).is_dir() or (d / f"{seg}.py").is_file()), None)
-        if hit is None:
+        hit = seg and next(
+            (d / seg for d in dirs if (d / seg).is_dir() or (d / f"{seg}.py").is_file()), None)
+        if not hit:
             return ".".join(kept) + ".*", None
         kept.append(seg)
         dirs = [hit] if hit.is_dir() else []
         source = hit / "__init__.py" if hit.is_dir() else hit.with_name(f"{seg}.py")
-    return ".".join(kept), source
+    return ".".join(kept), source if source and _contained(source, roots) else None
+
+
+def _contained(path: Path, roots: tuple[Path, ...]) -> bool:
+    """``path``'s canonical file lies under one of ``roots`` (symlinks resolved)."""
+    real = path.resolve()
+    return any(real.is_relative_to(root) for root in roots)
 
 
 def _module_path(name: str) -> str | None:
@@ -151,8 +166,11 @@ def _module_names(source: Path) -> frozenset[str]:
     ``from .x import *`` re-exports (``asyncio.CancelledError``) are followed one level."""
     text = _source_text(source)
     names = set(re.findall(r"[A-Za-z_]\w*", text))
+    package = (source.resolve().parent,)
     for star in re.findall(r"^from \.(\w+) import \*", text, re.MULTILINE):
-        names.update(re.findall(r"[A-Za-z_]\w*", _source_text(source.with_name(f"{star}.py"))))
+        sibling = source.with_name(f"{star}.py")
+        if _contained(sibling, package):
+            names.update(re.findall(r"[A-Za-z_]\w*", _source_text(sibling)))
     return frozenset(names)
 
 

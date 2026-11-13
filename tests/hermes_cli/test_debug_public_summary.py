@@ -222,3 +222,56 @@ def test_info_lines_and_unknown_logger_roots_name_nothing():
     by_logger, exceptions, codes, _n = _log_counts(log)
     assert {name for _level, name in by_logger} == {"(other)"}
     assert not exceptions and not codes
+
+
+def test_custom_platform_plugin_names_are_counted_not_printed(pii_home):
+    """Plugins register platform identifiers at runtime under any name (a person, a phone number);
+    only platforms core ships (built-in members and bundled plugins) are named."""
+    from gateway.platform_registry import PlatformEntry, platform_registry
+    from hermes_cli.debug_summary import _platform_names
+
+    private = "alice_private_oncall_15551234567"
+    (pii_home / "config.yaml").write_text(
+        "platforms:\n"
+        "  telegram: {enabled: true, token: '123:abc'}\n"
+        "  irc: {enabled: true, token: x}\n"
+        f"  {private}: {{enabled: true, token: x}}\n")
+    platform_registry.register(PlatformEntry(
+        name=private, label="x", adapter_factory=lambda _cfg: None, check_fn=lambda: True,
+        source="plugin"))
+    try:
+        assert _platform_names() == "irc, telegram, +1 custom"
+    finally:
+        platform_registry.unregister(private)
+
+
+def test_symlinked_source_outside_the_package_does_not_vouch_for_a_class(
+        tmp_path, monkeypatch):
+    """A module file symlinked out of a known package (or a star-import sibling that is) can hold
+    any text; a class name quoted there is not verified, and empty dotted segments never match."""
+    import sys
+
+    from hermes_cli import debug_summary as ds
+
+    outside = tmp_path / "private.py"
+    outside.write_text("# AliceOncall15551234567Error\n")
+    pkg = tmp_path / "site" / "zzpkg"
+    pkg.mkdir(parents=True)
+    (pkg / "__init__.py").write_text("from .stars import *\nclass RealError(Exception): ...\n")
+    (pkg / "linked.py").symlink_to(outside)
+    (pkg / "stars.py").symlink_to(outside)
+    (pkg / "real.py").write_text("class RealError(Exception): ...\n")
+    monkeypatch.syspath_prepend(str(pkg.parent))
+    monkeypatch.setattr(ds, "_KNOWN_LOGGER_ROOTS", ds._KNOWN_LOGGER_ROOTS | {"zzpkg"})
+    monkeypatch.delitem(sys.modules, "zzpkg", raising=False)
+    ds._resolve_module.cache_clear()
+    ds._module_names.cache_clear()
+    try:
+        assert ds._exception_label("zzpkg.real.RealError") == "zzpkg.real.RealError"
+        assert ds._exception_label("zzpkg.linked.AliceOncall15551234567Error") == "(other)"
+        assert ds._exception_label("zzpkg.AliceOncall15551234567Error") == "(other)"
+        assert ds._module_path("zzpkg...real") == "zzpkg.*"
+        assert ds._module_path("agent...conversation_loop") == "agent.*"
+    finally:
+        ds._resolve_module.cache_clear()
+        ds._module_names.cache_clear()

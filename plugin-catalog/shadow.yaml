@@ -1,6 +1,6 @@
 name: shadow
 repo: https://github.com/akinduroifedayo/shadow
-sha: "38173bc9c696df3b1f87b5b9b60ccecd36a260ab"
+sha: "a38baa78f9db2918f6a035003e1910cd49fe3f02"
 description: >-
   Try a model on your real Hermes conversations with blind judging in both
   orders and switch models with undo, warning first if a saved test does not

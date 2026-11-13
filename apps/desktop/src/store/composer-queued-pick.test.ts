@@ -20,8 +20,10 @@ describe('a queued launch pick follows its profile', () => {
   it('to its new name on rename', () => {
     queueOn('work')
     migrateTilesForProfile('work', 'home')
-    expect([window.localStorage.getItem(key('work')), JSON.parse(window.localStorage.getItem(key('home')) ?? 'null')])
-      .toEqual([null, { model: 'm', provider: 'p', sessionId: 's1' }])
+    expect([
+      window.localStorage.getItem(key('work')),
+      JSON.parse(window.localStorage.getItem(key('home')) ?? 'null')
+    ]).toEqual([null, { model: 'm', provider: 'p', sessionId: 's1' }])
   })
 
   it('out of storage on delete, leaving other profiles', () => {
@@ -34,7 +36,7 @@ describe('a queued launch pick follows its profile', () => {
     ])
   })
 
-  it('out of a direct remote\'s storage when that remote deletes it, not the same-named local one', () => {
+  it("out of a direct remote's storage when that remote deletes it, not the same-named local one", () => {
     queueOn('work')
     setConnection({ baseUrl: 'https://box', mode: 'remote', profile: 'work' } as never)
     noteQueuedLaunchPick('s1', { model: 'm', provider: 'p' }, getComposerSelectionScope())
@@ -47,7 +49,7 @@ describe('a queued launch pick follows its profile', () => {
     ])
   })
 
-  it('out of local storage for a local route, not the active remote\'s', () => {
+  it("out of local storage for a local route, not the active remote's", () => {
     queueOn('work')
     setConnection({ baseUrl: 'https://box', connectionId: 'box', mode: 'remote', profile: 'work' } as never)
     noteQueuedLaunchPick('s1', { model: 'm', provider: 'p' }, getComposerSelectionScope())

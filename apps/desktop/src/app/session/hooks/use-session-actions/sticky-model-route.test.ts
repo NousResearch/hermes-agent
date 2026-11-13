@@ -39,11 +39,17 @@ const picked = { model: 'grok-4.7', provider: 'xai-oauth' }
 const launched = async () => (await desktopSessionCreateParams('')).model
 
 const pick = (reply: unknown, model = 'queued', sessionId = 'busy') =>
-  renderHook(() => useModelControls({ queryClient: new QueryClient(), requestGateway: vi.fn(async () => reply) as never }))
-    .result.current.selectModel({ model, provider: 'p', sessionId })
+  renderHook(() =>
+    useModelControls({ queryClient: new QueryClient(), requestGateway: vi.fn(async () => reply) as never })
+  ).result.current.selectModel({ model, provider: 'p', sessionId })
 
 // The owner's verdict on a pick queued for the next turn.
-function verdict(payload: Record<string, unknown>, session = 'busy', viewing = 'busy', source?: Record<string, string>) {
+function verdict(
+  payload: Record<string, unknown>,
+  session = 'busy',
+  viewing = 'busy',
+  source?: Record<string, string>
+) {
   const full = { operation: 'model', session_id: session, target_model: 'queued', ...payload }
   handleDeferredPickEvent({
     deps: {
@@ -109,27 +115,30 @@ describe('new chats launch on the picked route', () => {
   it.each([
     { switched: false, launches: undefined },
     { switched: true, launches: 'queued' }
-  ])('after a switch that fails once its chat is left, not the failed pick (owner switched: $switched)', async ({ switched, launches }) => {
-    const failed = deferred<never>()
-    const switching = pick(failed.promise)
-    $activeSessionId.set('elsewhere')
+  ])(
+    'after a switch that fails once its chat is left, not the failed pick (owner switched: $switched)',
+    async ({ switched, launches }) => {
+      const failed = deferred<never>()
+      const switching = pick(failed.promise)
+      $activeSessionId.set('elsewhere')
 
-    if (switched) {
-      switchToOwnerB()
+      if (switched) {
+        switchToOwnerB()
+      }
+
+      failed.reject(new Error('refused'))
+      await expect(switching).resolves.toBe(false)
+      expect(await launched()).toBe(launches)
+
+      if (switched) {
+        // The failed pick was the first owner's: it is released there, not left to launch its new chats.
+        backToA()
+        expect(await launched()).toBeUndefined()
+      }
     }
+  )
 
-    failed.reject(new Error('refused'))
-    await expect(switching).resolves.toBe(false)
-    expect(await launched()).toBe(launches)
-
-    if (switched) {
-      // The failed pick was the first owner's: it is released there, not left to launch its new chats.
-      backToA()
-      expect(await launched()).toBeUndefined()
-    }
-  })
-
-  it('which a fresh draft repaints without the outgoing route\'s effort label', () => {
+  it("which a fresh draft repaints without the outgoing route's effort label", () => {
     setCurrentProviderTransient('opencode-go')
     setCurrentReasoningEffortWire('max')
     restoreComposerModelSelection()
@@ -142,12 +151,28 @@ describe('a pick queued for the next turn', () => {
     { when: 'is refused', then: () => refuse(), launches: undefined },
     { when: 'is refused after switching chats', then: () => refuse('busy', 'elsewhere'), launches: undefined },
     { when: 'is overtaken by a newer pick', then: () => (setCurrentModel('newer'), refuse()), launches: 'newer' },
-    { when: 'is overtaken by its model on another provider', then: () => (setCurrentProvider('other'), refuse()), launches: 'queued' },
-    { when: "is replaced by another client's pick that is refused", then: () => verdict({ status: 'refused', target_model: 'other' }), launches: 'queued' },
-    { when: 'has a same-model tile pick refused', then: async () => (await pick({ deferred: true }, 'queued', 'tile'), refuse('tile')), launches: 'queued' },
+    {
+      when: 'is overtaken by its model on another provider',
+      then: () => (setCurrentProvider('other'), refuse()),
+      launches: 'queued'
+    },
+    {
+      when: "is replaced by another client's pick that is refused",
+      then: () => verdict({ status: 'refused', target_model: 'other' }),
+      launches: 'queued'
+    },
+    {
+      when: 'has a same-model tile pick refused',
+      then: async () => (await pick({ deferred: true }, 'queued', 'tile'), refuse('tile')),
+      launches: 'queued'
+    },
     {
       when: 'is followed by a tile pick on its session that is refused',
-      then: async () => ($activeSessionId.set('elsewhere'), await pick({ deferred: true }), refuse('busy', 'elsewhere')),
+      then: async () => (
+        $activeSessionId.set('elsewhere'),
+        await pick({ deferred: true }),
+        refuse('busy', 'elsewhere')
+      ),
       launches: 'queued'
     }
   ])('$when', async ({ then, launches }) => {
@@ -172,8 +197,16 @@ describe('a pick queued for the next turn', () => {
     }
 
     await pick({ deferred: true }, 'queued', session)
-    verdict({ committed_model: picked.model, confirm: 'token', payload: { model: 'queued', provider: 'p' },
-      status: 'confirmation_required' }, session, session)
+    verdict(
+      {
+        committed_model: picked.model,
+        confirm: 'token',
+        payload: { model: 'queued', provider: 'p' },
+        status: 'confirmation_required'
+      },
+      session,
+      session
+    )
 
     if (switched) {
       switchToOwnerB()
@@ -194,7 +227,7 @@ describe('a pick queued for the next turn', () => {
     { from: 'its owner', source: { connectionId: 'conn-a', profile: 'work' }, launches: undefined },
     // Another owner's session that shares the id (an import) never queued this pick.
     { from: 'another owner', source: { connectionId: 'conn-c', profile: 'work' }, launches: 'queued' }
-  ])('that is refused on $from\'s connection while another owner is active', async ({ source, launches }) => {
+  ])("that is refused on $from's connection while another owner is active", async ({ source, launches }) => {
     setComposerSelectionOwner('conn-a', 'work')
     setCurrentModel(picked.model)
     setCurrentProvider(picked.provider)

@@ -433,7 +433,9 @@ async function settleServerOutcome(
       return 'persisted'
     }
 
-    return result && typeof result === 'object' && result.applied && typeof result.applied === 'object' ? 'failed' : 'unsupported'
+    return result && typeof result === 'object' && result.applied && typeof result.applied === 'object'
+      ? 'failed'
+      : 'unsupported'
   } catch (error) {
     // The pooled local backend keeps the documented fallback: its local copy is the save.
     if (!routed || rpcMethodMissing(error)) {
@@ -579,7 +581,9 @@ export async function saveBotMeta(
   //                   unchanged ui_meta wins again on reconnect.
   // A routed row that answered the read but whose write then failed for any
   // reason other than a missing method is 'failed', never 'unsupported'.
-  const serverOutcome = serverRequest ? await settleServerOutcome(serverRequest, Boolean(route), progress) : 'unsupported'
+  const serverOutcome = serverRequest
+    ? await settleServerOutcome(serverRequest, Boolean(route), progress)
+    : 'unsupported'
 
   if (serverRequest) {
     // Re-stamp now that the server write settled: a roster snapshot fetched

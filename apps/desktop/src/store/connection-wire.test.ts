@@ -3,7 +3,14 @@ import { afterEach, expect, it } from 'vitest'
 import type { HermesConnection } from '@/global'
 
 import { serverOwnsComposerQueue } from './composer-queue'
-import { $connectionWires, connectionWire, primaryWireSource, recordConnectionWire, recordSecondaryWire, UNNAMED_REMOTE_WIRE_KEY } from './connection-wire'
+import {
+  $connectionWires,
+  connectionWire,
+  primaryWireSource,
+  recordConnectionWire,
+  recordSecondaryWire,
+  UNNAMED_REMOTE_WIRE_KEY
+} from './connection-wire'
 import { $connection, _resetSessionOwnerHintsForTests, setSessionOwnerHint } from './session'
 
 afterEach(() => {
@@ -15,7 +22,11 @@ afterEach(() => {
 // A foregrounded secondary keeps `$connection` while the primary reconnects in the background. An
 // anonymous (local) primary's ready frame must not overwrite the foreground connection's wire.
 it('records an anonymous primary under the local source, not the foreground connection', () => {
-  $connection.set({ connectionId: 'vps', mode: 'remote', wsUrl: 'wss://vps.example/api/ws?ticket=public' } as HermesConnection)
+  $connection.set({
+    connectionId: 'vps',
+    mode: 'remote',
+    wsUrl: 'wss://vps.example/api/ws?ticket=public'
+  } as HermesConnection)
   setSessionOwnerHint('chat', { connectionId: 'vps', mode: 'remote', profile: 'default' })
   recordConnectionWire('vps', 'legacy')
 
@@ -28,7 +39,10 @@ it('records an anonymous primary under the local source, not the foreground conn
 
 it('names an established primary by its own route and an unrecorded one by the window', () => {
   const vps = { connectionId: 'vps', mode: 'remote' }
-  expect(primaryWireSource({ connectionId: 'home', mode: 'remote' }, vps)).toEqual({ connectionId: 'home', mode: 'remote' })
+  expect(primaryWireSource({ connectionId: 'home', mode: 'remote' }, vps)).toEqual({
+    connectionId: 'home',
+    mode: 'remote'
+  })
   expect(primaryWireSource({ connectionId: null, mode: 'remote' }, vps)).toEqual({ connectionId: null, mode: 'remote' })
   expect(primaryWireSource({ connectionId: null, mode: null }, vps)).toBe(vps)
 })

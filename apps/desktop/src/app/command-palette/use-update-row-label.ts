@@ -6,7 +6,13 @@ import { rollbackSentence } from '@/lib/update-copy'
 import { resolveVersionStatus } from '@/lib/version-status'
 import { $cloudOwnsUpdates, updateTargetFor } from '@/store/cloud-updates'
 import { $connection } from '@/store/session'
-import { $backendUpdateApply, $backendUpdateStatus, $desktopVersion, $updateApply, $updateStatus } from '@/store/updates'
+import {
+  $backendUpdateApply,
+  $backendUpdateStatus,
+  $desktopVersion,
+  $updateApply,
+  $updateStatus
+} from '@/store/updates'
 
 /**
  * The palette's Update row label: the same install the statusbar names, same

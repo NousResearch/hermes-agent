@@ -18,7 +18,10 @@ import type { RosterRow } from './types'
  *  breaking @mentions for customized bots (@wesleysimplicio, #16). */
 function messagingProtocolSection(name: string, roster: RosterRow[] | null | undefined): string {
   const teammates = (roster || []).filter(b => b.name !== name)
-  const handle = botHandle(name, (roster || []).find(b => b.name === name))
+  const handle = botHandle(
+    name,
+    (roster || []).find(b => b.name === name)
+  )
 
   return [
     '## Messaging other agents',

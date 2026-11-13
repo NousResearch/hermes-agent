@@ -42,7 +42,9 @@ export function publicUrl(server: FixtureServer): string {
 export async function shut(client: HermesGateway, server: FixtureServer): Promise<void> {
   client.close()
 
-  for (const socket of server.clients) { socket.terminate() }
+  for (const socket of server.clients) {
+    socket.terminate()
+  }
   await new Promise<void>(resolve => server.close(() => resolve()))
 }
 

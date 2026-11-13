@@ -123,7 +123,16 @@ class GatewayReplyMixin:
         if text.startswith(streamed):
             remainder = text[len(streamed):]
             # An unstreamed final the owner already published as an interim segment.
-            return "" if not streamed and text.strip() in {s.strip() for s in shown} else remainder
+            if not streamed and text.strip() in {s.strip() for s in shown}:
+                return ""
+            # A segment closed between the stream and the settle (an interim, a tool round) and
+            # nothing streamed after it. That closed segment IS this final's body, so only what
+            # follows it is new. Without this the settle re-sends the whole reply — the runtime
+            # footer the gateway appends to the final text included — under a fresh messageId, and
+            # the editor paints the reply twice.
+            if not streamed and shown and shown[-1] and text.startswith(shown[-1]):
+                return text[len(shown[-1]):]
+            return remainder
         if text.strip() == streamed.strip():
             return ""
         return "\n\n" + text

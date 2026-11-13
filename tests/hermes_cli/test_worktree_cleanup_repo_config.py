@@ -71,34 +71,6 @@ def test_cleanup_deletes_the_session_branch_without_running_repository_hooks(
     assert "cleaned up" in out
 
 
-def test_cleanup_keeps_the_branch_when_the_repository_environment_is_unbuildable(
-        session_worktree, monkeypatch, tmp_path):
-    from hermes_cli import _subprocess_compat
-
-    repo, worktree, markers = session_worktree
-    monkeypatch.setenv("HOME", str(tmp_path))
-    real_env = _subprocess_compat.noninteractive_repo_git_env
-    # Unbuildable only for the main checkout, where `branch -D` runs: the dirty check and the
-    # removal checks inside the worktree still get their real environment and pass.
-    monkeypatch.setattr(_subprocess_compat, "noninteractive_repo_git_env",
-                        lambda cwd, base=None: None if Path(cwd) == repo else real_env(cwd, base))
-    spawned: list[list[str]] = []
-    real_run = subprocess.run
-
-    def counting_run(argv, *args, **kwargs):
-        spawned.append(list(argv))
-        return real_run(argv, *args, **kwargs)
-
-    monkeypatch.setattr(subprocess, "run", counting_run)
-
-    _cleanup(monkeypatch, repo, worktree)
-
-    assert not worktree.exists()
-    assert ["git", "branch", "-D", "hermes/session"] not in spawned
-    assert _git(repo, "branch", "--list", "hermes/session").strip() == "hermes/session"
-    assert not (markers / "reference-transaction").exists()
-
-
 def test_worktree_removal_steps_still_run_under_the_inherited_environment(session_worktree, monkeypatch, tmp_path):
     repo, worktree, _markers = session_worktree
     monkeypatch.setenv("HOME", str(tmp_path))

@@ -590,10 +590,8 @@ def _cleanup_worktree(info: dict[str, str] | None = None) -> None:
     _git_quiet(["worktree", "unlock", wt_path], repo_root, log="git worktree unlock failed (non-fatal)")
     _git_quiet(["worktree", "remove", wt_path, "--force"], repo_root, timeout=15, log="Failed to remove worktree")
     # `branch -D` runs the repository's reference-transaction hook under a plain environment.
-    from hermes_cli._subprocess_compat import noninteractive_repo_git_env
-    branch_env = noninteractive_repo_git_env(repo_root)
-    if branch_env is not None:  # unbuildable: the branch is kept, like any failed cleanup git call
-        _git_quiet(["branch", "-D", branch], repo_root, log=f"Failed to delete branch {branch}", env=branch_env)
+    from hermes_cli._subprocess_compat import noninteractive_git_env
+    _git_quiet(["branch", "-D", branch], repo_root, log=f"Failed to delete branch {branch}", env=noninteractive_git_env())
     _cprint(f"\033[32m{_t('cli.worktree.cleaned_up', path=wt_path)}\033[0m")
 
 

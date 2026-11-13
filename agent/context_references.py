@@ -10,6 +10,7 @@ import os
 import re
 import subprocess
 import threading
+import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -26,6 +27,7 @@ from hermes_cli._subprocess_compat import (
 )
 from hermes_cli.sqlite_safe_read import LiveConnectionError, offline_file_access
 from hermes_cli.sizefmt import format_bytes
+from tools.binary_extensions import AUDIO_EXTENSIONS
 
 # ── Plugin context-reference provider API ────────────────────────────────────
 
@@ -695,7 +697,49 @@ def _on_disk_reference_block(ref: ContextReference, path: Path, descriptor: str,
     )
 
 
+# Audio the `transcribe_audio` tool can decode. A recording attached to the chat is a dead end as a
+# generic "binary file" stub even though the model can act on it, so the block names the tool.
+_AUDIO_TOOL_TTL_SECONDS = 30.0
+_audio_tool_checked_at = 0.0
+_audio_tool_available = False
+
+
+def _audio_transcription_available() -> bool:
+    """Cached probe for the ``transcribe_audio`` agent tool. The probe imports the transcription
+    stack and reads config, so it is memoized; False keeps the block generic rather than
+    advertising a call the tool loop would reject."""
+    global _audio_tool_checked_at, _audio_tool_available
+    now = time.monotonic()
+    if now - _audio_tool_checked_at < _AUDIO_TOOL_TTL_SECONDS:
+        return _audio_tool_available
+    try:
+        from tools.transcription_tool import _check_transcription_requirements
+        available = bool(_check_transcription_requirements())
+    except Exception:
+        available = False
+    _audio_tool_checked_at = now
+    _audio_tool_available = available
+    return available
+
+
+def _audio_reference_block(ref: ContextReference, path: Path) -> str:
+    if _audio_transcription_available():
+        guidance = ("Call the transcribe_audio tool with the path above to turn this recording "
+                    "into text; do not tell the user the file type is unsupported.")
+    else:
+        guidance = ("Audio transcription is not enabled, so this recording cannot be converted "
+                    "to text here; do not tell the user the file type is unsupported.")
+    return _on_disk_reference_block(
+        ref, path,
+        descriptor="audio file, not inlined as text.",
+        reason="audio is not readable as text.",
+        guidance=guidance,
+    )
+
+
 def _binary_reference_block(ref: ContextReference, path: Path) -> str:
+    if path.suffix.lower() in AUDIO_EXTENSIONS:
+        return _audio_reference_block(ref, path)
     mime = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
     return _on_disk_reference_block(
         ref, path,

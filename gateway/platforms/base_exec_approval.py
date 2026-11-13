@@ -178,9 +178,11 @@ async def card_shows_whole_command(adapter: Any, chat_id: str, session_key: str,
 
 def send_cannot_prove_whole(adapter: Any, chat_id: str, content: str) -> bool:
     """True when ``adapter.send(chat_id, content)`` can lose the tail and still report success."""
-    # ``send`` reports success even when a chunk cap (Discord's) swapped the tail for a notice.
+    # ``send`` reports success even when a chunk cap (Discord's, Telegram's) swapped the tail for a notice;
+    # count chunks in the chat's own units (Telegram splits by UTF-16) so the count matches ``send``.
     cap = getattr(adapter, "MAX_SPLIT_MESSAGES", 0)
-    if cap and len(adapter.truncate_message(adapter.format_message(content), adapter.MAX_MESSAGE_LENGTH)) > cap:
+    if cap and len(adapter.truncate_message(adapter.format_message(content), adapter.MAX_MESSAGE_LENGTH,
+                                            len_fn=adapter.message_len_fn_for_chat(chat_id))) > cap:
         return True
     # A send that cannot report a lost chunk (the relay: its connector splits, and the wire result has no
     # partial field) proves delivery only when the content fits one message.

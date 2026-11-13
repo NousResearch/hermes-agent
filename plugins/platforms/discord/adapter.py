@@ -303,9 +303,9 @@ from gateway.approval_actor import clarify_refusal, refusal_text, slash_confirm_
 
 from gateway.platforms.helpers import (
     MessageDeduplicator, ThreadParticipationTracker, convert_table_to_bullets, is_discord_channel_obfuscated,
-    numbered_clarify_choices,
+    numbered_clarify_choices, tag_safe_display_name,
 )
-from gateway.platforms.helpers import cancel_task
+from gateway.platforms.helpers import cancel_task, inline_document_text
 from utils import atomic_json_write, env_float
 from gateway.platforms.base import (
     BasePlatformAdapter, ExecApprovalPrompt, SendResult, unauthorized_action_notice,
@@ -317,8 +317,8 @@ from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from tools.url_safety import is_safe_url
 from gateway.platforms._shared import (
     decode_json_list_literal as _decode_json_list_literal, env_is_connected as _env_is_connected,
-    extra_or_secret as _extra_or_secret, platform_gate_env as _scoped_gate_env, send_error,
-    yaml_env_setter as _yaml_env_setter
+    extra_or_secret as _extra_or_secret, platform_gate_env as _scoped_gate_env, request_never_left,
+    send_error, yaml_env_setter as _yaml_env_setter
 )
 
 
@@ -1170,6 +1170,7 @@ def _env_bool(name: str, default: bool = False) -> bool:
 
 
 from plugins.platforms.discord.adapter_media import DiscordMediaMixin
+from plugins.platforms.discord.standalone_rest import api_url as _rest_url, post_paced as _post_paced
 from plugins.platforms.discord.adapter_opus import load_opus_codec
 from plugins.platforms.discord.adapter_authorization import DiscordAuthorizationMixin
 from plugins.platforms.discord.adapter_slash_auth import DiscordSlashAuthMixin
@@ -1187,10 +1188,8 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
     supports_code_blocks = True  # Discord markdown renders fenced code blocks natively
     allow_from_covers_groups = True  # no group_allow_from: allow_from is the one user allowlist
     splits_long_messages = True  # send() chunks via truncate_message(MAX_MESSAGE_LENGTH)
-    # Safety ceiling on split deliveries: chunks beyond the cap become a notice (degenerate turns).
-    # Safety ceiling on split deliveries (#86581): a degenerate turn can produce tens of thousands of
-    # characters — without a cap the adapter posts every 2000-char chunk back-to-back and floods the channel
-    # (the incident delivered 60,698 chars as 31 messages).
+    # A reply needing more messages goes out as one .md file (#152012; the #86581 flood was 31 messages).
+    # If that upload fails the reply is still sent in full, paced by discord.py's rate-limit buckets.
     MAX_SPLIT_MESSAGES = 8
 
     # Voice auto-disconnect after N idle seconds (discord.voice_channel_inactivity_timeout_seconds; 0 off).
@@ -3135,26 +3134,6 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
             logger.debug("Could not build reply-to reference: %s", e)
             return None
 
-    def _cap_split_chunks(self, chunks: list[str]) -> list[str]:
-        """Cap chunks at ``MAX_SPLIT_MESSAGES``: keep the first N-1 and replace the rest with a
-        notice so a degenerate turn can't flood the channel (full text stays in session history).
-
-        Cap the number of chunks sent for one logical response (#86581).
-        A degenerate turn can produce tens of thousands of characters; the 86581 incident delivered 60,698
-        chars as 31 back-to-back Discord messages. The full response remains available in the gateway
-        session history / logs. See #86581.
-        """
-        if len(chunks) <= self.MAX_SPLIT_MESSAGES:
-            return chunks
-        kept = chunks[: self.MAX_SPLIT_MESSAGES - 1]
-        dropped_chars = sum(len(c) for c in chunks[self.MAX_SPLIT_MESSAGES - 1 :])
-        notice = "\n\n" + t(
-            "platform.discord.limits.response_truncated",
-            max_messages=str(self.MAX_SPLIT_MESSAGES), dropped_chars=str(dropped_chars))
-        if self.warning_text(notice):
-            kept.append(notice)
-        return kept
-
     async def send(
         self,
         chat_id: str,
@@ -3195,9 +3174,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                 result = await self._send_to_forum(channel, content)
                 return await self._record_response_async(reply_to, result, content, final_delivery, metadata)
             formatted = self.format_message(content)
-            chunks = self._cap_split_chunks(
-                self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
-            )
+            chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
             message_ids = []
             reference = self._reply_reference_for_send(reply_to, channel)
             for i, chunk in enumerate(chunks):
@@ -3257,7 +3234,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         """Create a forum thread post with the message as starter (forum channels reject direct
         sends; name from the first line). Chunk failures land in ``raw_response['warnings']``."""
         formatted = self.format_message(content)
-        chunks = self._cap_split_chunks(self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH))
+        chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
         thread_name = _derive_forum_thread_name(content)
         starter_content = chunks[0] if chunks else thread_name
         try:
@@ -3422,7 +3399,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         A continuation failure still reports success plus ``partial_overflow`` so the consumer
         delivers the tail; only a first-chunk edit failure returns ``success=False``."""
         formatted = self.format_message(content)
-        chunks = self._cap_split_chunks(self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH))
+        chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
         if len(chunks) <= 1:
             # Defensive: pre-flight should guarantee >1 chunk; otherwise edit normally.
             await msg.edit(content=chunks[0] if chunks else formatted)
@@ -5168,9 +5145,12 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                     content = "(attachment)"
                 if not content:
                     return None
+                # Display names are sender-set: one line without the tag's own delimiters, so "Ann] Smith"
+                # cannot end the [name] tag early; a name made only of delimiters falls back to the id.
                 name = (
-                    getattr(msg.author, "display_name", None)
-                    or getattr(msg.author, "name", None)
+                    tag_safe_display_name(getattr(msg.author, "display_name", None) or "")
+                    or tag_safe_display_name(getattr(msg.author, "name", None) or "")
+                    or str(getattr(msg.author, "id", "") or "")
                     or "unknown"
                 )
                 if is_bot_author:
@@ -6190,9 +6170,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         )
         media_urls, media_types, media_text_inlined, pending_text_injection = await self._collect_attachment_media(
             all_attachments)
-        event_text = normalized_content
-        if pending_text_injection:
-            event_text = f"{pending_text_injection}\n\n{event_text}" if event_text else pending_text_injection
+        event_text, media_text_inlined = inline_document_text(normalized_content, pending_text_injection, media_text_inlined)
         # ── History backfill ─────────────────────────────────────────
         # With require_mention, messages between bot turns never reach the transcript; fetch
         # history after the bot's last message (cold start: last N, stop at first self-message)
@@ -6932,7 +6910,8 @@ async def _standalone_response_json_or_error(resp: Any, error_prefix: str):
     with the (size-capped) body text appended to ``error_prefix``."""
     if resp.status not in {200, 201}:
         body = await _standalone_read_text_limited(resp, _DISCORD_STANDALONE_ERROR_BODY_LIMIT_BYTES)
-        return None, send_error(f"{error_prefix} ({resp.status}): {body}")
+        # A 4xx (429 too) is a refusal: nothing posted, and no caller has landed a message yet. 5xx stays unmarked.
+        return None, send_error(f"{error_prefix} ({resp.status}): {body}", nothing_sent=400 <= resp.status < 500)
     return await _standalone_read_json_limited(resp, _DISCORD_STANDALONE_JSON_BODY_LIMIT_BYTES), None
 
 
@@ -6951,7 +6930,7 @@ async def _standalone_is_forum(aiohttp, chat_id: str, json_headers: dict, sess_k
         return cached
     is_forum = False
     try:
-        info_url = f"https://discord.com/api/v10/channels/{chat_id}"
+        info_url = _rest_url(f"channels/{chat_id}")
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15), **sess_kw) as info_sess:
             async with info_sess.get(info_url, headers=json_headers, **req_kw) as info_resp:
                 if info_resp.status == 200:
@@ -6967,10 +6946,9 @@ async def _standalone_send(
     pconfig, chat_id: str, message: str, *, thread_id: Optional[str] = None,
     media_files: Optional[list] = None, force_document: bool = False, caption: Optional[str] = None,
 ) -> dict[str, Any]:
-    """Send via Discord REST without a live gateway adapter (token: ``pconfig.token`` then env var).
-    Forum channels (type 15) reject ``POST /messages``, so a thread post is created via
-    ``POST /channels/{id}/threads`` with media as multipart attachments. Channel type: directory
-    cache → process-local probe cache → memoized GET. ``force_document`` accepted but unused."""
+    """Send via Discord REST without a live gateway adapter (token: ``pconfig.token`` then env var). Forum
+    channels (type 15) reject ``POST /messages``: a thread post is created via ``POST /channels/{id}/threads``
+    (media as multipart). Channel type: directory → probe cache → memoized GET. ``force_document`` unused."""
     try:
         import aiohttp
     except ImportError:
@@ -6981,23 +6959,22 @@ async def _standalone_send(
         from agent.secret_scope import get_secret
         token = (get_secret("DISCORD_BOT_TOKEN", "") or "").strip()
     if not token:
-        return send_error("Discord standalone send: DISCORD_BOT_TOKEN is not set")
+        return send_error("Discord standalone send: DISCORD_BOT_TOKEN is not set", nothing_sent=True)
     from gateway.platforms.base import describe_proxy_error, resolve_proxy_url, proxy_kwargs_for_aiohttp
-    _proxy = resolve_proxy_url(platform_env_var="DISCORD_PROXY")
+    _proxy, last_data = resolve_proxy_url(platform_env_var="DISCORD_PROXY"), None
     try:
         _sess_kw, _req_kw = proxy_kwargs_for_aiohttp(_proxy)
         auth_headers = {"Authorization": f"Bot {token}"}
         json_headers = {**auth_headers, "Content-Type": "application/json"}
         media_files = media_files or []
-        last_data = None
         warnings = []
         if thread_id:
-            url = f"https://discord.com/api/v10/channels/{thread_id}/messages"
+            url = _rest_url(f"channels/{thread_id}/messages")
         else:
             # Forum channels (type 15) reject POST /messages — create a thread post.
             if await _standalone_is_forum(aiohttp, chat_id, json_headers, _sess_kw, _req_kw):
                 thread_name = _derive_forum_thread_name(message)
-                thread_url = f"https://discord.com/api/v10/channels/{chat_id}/threads"
+                thread_url = _rest_url(f"channels/{chat_id}/threads")
                 # Filter readable media first to pick JSON vs multipart before opening a session.
                 valid_media = []
                 for media_path, _is_voice in media_files:
@@ -7046,13 +7023,13 @@ async def _standalone_send(
                 if warnings:
                     result["warnings"] = warnings
                 return result
-            url = f"https://discord.com/api/v10/channels/{chat_id}/messages"
+            url = _rest_url(f"channels/{chat_id}/messages")
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30), **_sess_kw) as session:
             if message.strip() or not media_files:
-                async with session.post(url, headers=json_headers, json={"content": message}, **_req_kw) as resp:
-                    last_data, err = await _standalone_response_json_or_error(resp, "Discord API error")
-                    if err:
-                        return err
+                last_data, err = await _post_paced(session, url, _standalone_response_json_or_error, "Discord API error",
+                                                   headers=json_headers, json={"content": message}, **_req_kw)
+                if err:  # paced: a 429 waits retry_after and retries, so a long split never floods (#152012)
+                    return err
             # One multipart upload per file; a MEDIA:<path> caption rides as the attachment message's
             # content, and caption_pending makes a missing file fall back to a plain message.
             caption_pending = bool(caption)
@@ -7106,7 +7083,7 @@ async def _standalone_send(
         # Include the exception type: str(TimeoutError()) is empty. The text may echo the proxy URL.
         shown = describe_proxy_error(e, _proxy)
         logger.error("Discord standalone send failed%s", f": {shown}" if shown else "", exc_info=not shown)
-        return send_error(f"Discord send failed: {shown or f'{type(e).__name__}: {e}'}")
+        return send_error(f"Discord send failed: {shown or f'{type(e).__name__}: {e}'}", nothing_sent=last_data is None and request_never_left(e))
 
 
 # ── Plugin entry point ────────────────────────────────────────────────────────

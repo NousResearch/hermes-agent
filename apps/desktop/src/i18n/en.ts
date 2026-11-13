@@ -1206,6 +1206,9 @@ export const en: Translations = {
       voiceShortcutHintTitle: 'Voice recording shortcut',
       voiceShortcutHintDesc:
         'Set the voice recording shortcut in Settings → Keyboard Shortcuts ("Start / stop voice conversation"). The voice.record_key config value only applies to the CLI and TUI.',
+      desktopReadAloudTitle: 'Read replies aloud in this app',
+      desktopReadAloudDesc:
+        'Speak each finished reply in Desktop. Same switch as the composer button; it applies to every open window, and turning it off stops a reply mid-sentence. "Read Responses Aloud" below is for messaging and the CLI.',
       showOptions: 'Show options'
     },
     hudModifier: {

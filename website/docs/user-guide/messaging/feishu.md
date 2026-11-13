@@ -478,6 +478,8 @@ In webhook mode, the adapter enforces per-IP rate limiting to protect against ab
 
 Requests that exceed the limit receive HTTP 429 (Too Many Requests).
 
+Only requests that pass the verification-token and signature checks count toward the limit, so forged traffic can't use up the window for real Feishu callbacks. An unsigned `url_verification` challenge counts only when a verification token authenticated it.
+
 ### Webhook Anomaly Tracking
 
 The adapter tracks consecutive error responses per IP address. After 25 consecutive errors from the same IP within a 6-hour window, a warning is logged. This helps detect misconfigured clients or probing attempts.
@@ -600,7 +602,7 @@ WebSocket and per-group ACL settings are configured via `config.yaml` under `pla
 | Peer bots show as `ou_xxxxxx` instead of by name | Grant the `application:bot.basic_info:read` scope. |
 | Error 200340 (also seen as 220340) when clicking approval buttons | Feishu has no valid card callback for the published app version: add `card.action.trigger` under the **Callback Configuration** tab (not Event Configuration), pick Long Connection / the request URL, enable **Interactive Card**, then publish a new version. See [Required Feishu App Configuration](#required-feishu-app-configuration). The click never reaches Hermes, so nothing appears in `gateway.log`. |
 | Error 200342 / 200343 when clicking approval buttons | Webhook mode: Feishu cannot connect to / resolve the callback request URL. Fix the URL or switch to Long Connection. |
-| `Webhook rate limit exceeded` | More than 120 requests/minute from the same IP. This is usually a misconfiguration or loop. |
+| `Webhook rate limit exceeded` | More than 120 authenticated requests/minute from the same IP. This is usually a misconfiguration or loop. |
 
 ## Toolset
 

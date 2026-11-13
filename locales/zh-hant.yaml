@@ -647,8 +647,6 @@ gateway:
     media_delivery_failed_with_name: "⚠️ 無法傳送{kind}附件（{file_name}）。"
     delivery_failed_retry: "⚠️ 多次嘗試後訊息仍無法送達。請再試一次 — 你的請求已處理完成，但回應無法送出。"
     plain_fallback_prefix: "（回應格式化失敗，以純文字顯示：）\n\n{content}"
-    turn_error_no_details: "沒有可用的詳細資訊"
-    turn_error_detailed: "抱歉，我遇到了錯誤（{error_type}）。\n{error_detail}\n請再試一次，或使用 /reset 開始新的工作階段。"
     turn_error: "抱歉，我遇到了錯誤。"
     context_injection_refused: "上下文注入已被拒絕。"
     no_home_channel: "📬 {platform} 尚未設定主頻道。主頻道是 Hermes 傳送排程任務結果與跨平台訊息的地方。\n\n輸入 {sethome_cmd} 將這個聊天設為主頻道，或忽略此訊息以略過。"
@@ -982,6 +980,7 @@ platform:
     denied: "❌ 已拒絕。"
     approval_expired: "⌛ 批准已逾期 — 指令未執行（已逾時或已在其他地方處理）。"
   shared:
+    response_as_file: "📎 回覆較長：完整內容已附為檔案。"
     truncated_suffix: "\n...（已截斷）"
     unknown: "未知"
     approval_expired: "⌛ 批准已逾期 — 指令未執行（已逾時或已在其他地方處理）。"
@@ -1172,8 +1171,6 @@ platform:
         unknown: "未知技能：`{name}`。開始輸入即可取得自動完成建議。"
       auto_args_description: "引數：{args_hint}"
       auto_description_fallback: "執行 /{name}"
-    limits:
-      response_truncated: "⚠️ **回應已截斷** — 此回覆超過傳送上限（{max_messages} 則訊息）。有 {dropped_chars} 個字元未送達；完整回應請見工作階段記錄。"
     forum:
       default_title: "新貼文"
     voice:

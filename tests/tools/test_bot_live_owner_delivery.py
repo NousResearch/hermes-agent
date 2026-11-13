@@ -371,3 +371,21 @@ def test_pre_dial_failure_on_a_retried_intent_stays_ambiguous(tmp_path, monkeypa
     with pytest.raises(live.PreDialError):
         bot_mode_dm._admit_live_dm(None, dm_file)
     assert intent.exists() and Path(dm_file).exists()
+
+
+@pytest.mark.parametrize("reply", ["안녕하세요, 내일 회의는 3시예요.", "สวัสดีครับ ได้รับแล้ว", "了解しました 👍"])
+def test_live_wait_prints_a_non_latin_reply_as_text_not_escapes(tmp_path, monkeypatch, capsys, reply):
+    """The runner's stdout is the completion the sender reads, cut to a character budget (#152837):
+    ``\\uXXXX`` escapes made each non-Latin character six long, so the sender saw a sixth of it."""
+    from tools import bot_mode_dm
+
+    monkeypatch.setattr(mailbox, "_POLL_SECONDS", 0.01)
+    key = "e" * 32
+    with mailbox._locked(tmp_path) as root:
+        mailbox._write(root / f"{key}.json", dict(
+            delivery_id=key, profile_home=str(tmp_path.resolve()), session_id="bot", principal_id="owner",
+            message="hello", admission_id="adm-1", status="settled", reply=reply))
+    assert bot_mode_dm._wait_live_dm(str(tmp_path), key) == 0
+    out = capsys.readouterr().out
+    assert json.loads(out)["reply"] == reply
+    assert reply in out and "\\u" not in out

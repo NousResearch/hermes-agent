@@ -651,7 +651,9 @@ def _wait_live_dm(home: str, delivery_id: str, *, dm_file: str | os.PathLike | N
     from tools.bot_mode_dm_outcome import outcome_line
 
     who = f"@{Path(home).name}" if Path(home).parent.name == "profiles" else "Your teammate"
-    print(json.dumps({"outcome": outcome_line(who, payload), **payload}))
+    # Literal text: the completion that carries this line is cut to a character budget, and a
+    # ``\uXXXX`` escape spends six of them on one Korean or Thai character (#152837).
+    print(json.dumps({"outcome": outcome_line(who, payload), **payload}, ensure_ascii=False))
     return 0 if status in ("settled", "queued", "claimed") else 1
 
 

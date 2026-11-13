@@ -135,6 +135,8 @@ def _stdio_launch(config: dict) -> tuple:
     cwd = config.get("cwd")
     if cwd is None:
         cwd = _runtime_cwd.resolve_context_cwd() or None
+    elif isinstance(cwd, str):
+        cwd = os.path.expanduser(cwd)  # like `command:`; the spawn never runs a shell to expand `~`
     return command, env, cwd
 
 

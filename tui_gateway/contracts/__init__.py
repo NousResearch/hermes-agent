@@ -11,6 +11,7 @@ from . import (
     events,
     groups_bot_relay,
     i18n,
+    memory_review,
     liveness,
     machine,
     profiles_vault_complete_foreign_subagents,

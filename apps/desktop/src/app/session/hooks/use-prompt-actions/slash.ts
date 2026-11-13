@@ -28,6 +28,7 @@ import { openCommandPalettePage } from '@/store/command-palette'
 import { markCompressDeferred } from '@/store/compaction'
 import { $composerAttachments, setComposerDraft } from '@/store/composer'
 import { applyGoalStatusText } from '@/store/goals'
+import { memoryReviewScopeGeneration, openMemoryReview } from '@/store/memory-review'
 import { dismissNotification, notify, notifyError } from '@/store/notifications'
 import { setPetScale } from '@/store/pet-gallery'
 import { $petGenInput, openPetGenerate } from '@/store/pet-generate'
@@ -646,6 +647,24 @@ export function useSlashCommand(deps: SlashCommandDeps) {
           withSlashOutput
         }),
         ...desktopReadCommandHandlers<SlashActionCtx>({ requestGateway, updateSessionState, withSlashOutput }),
+        memory: async ctx => {
+          if (ctx.arg.trim()) {return runExec(ctx)}
+          const generation = memoryReviewScopeGeneration()
+          const sid = await ensureSessionId(ctx.sessionHint)
+
+          if (!sid || generation !== memoryReviewScopeGeneration()) {return}
+
+          try {
+            await requestGateway('memory.pending', { session_id: sid })
+
+            if (generation === memoryReviewScopeGeneration()) {openMemoryReview(requestGateway, sid)}
+          } catch (error) {
+            if (generation !== memoryReviewScopeGeneration()) {return}
+
+            if (isMissingRpcMethod(error)) {return runExec(ctx)}
+            notifyError(error, copy.memoryReviewLoadFailed)
+          }
+        },
         new: async () => {
           prepareDefaultNewSession()
           startFreshSessionDraft()

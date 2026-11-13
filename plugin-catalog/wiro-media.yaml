@@ -3,22 +3,7 @@ title: Wiro AI Media
 repo: https://github.com/wiroai/Wiro-Hermes
 sha: be81dea413b700757d44771519fdd3307e92dc3f
 subdir: wiro-media
-description: >-
-  Wiro AI's image, video, speech, music, transcription and 3D models as thirteen wiro_* tools:
-  generate and edit images (upscale, remove backgrounds, prompt edits), text or image to video,
-  text to speech, music, transcription, image to 3D, catalog search with prices, any catalog model,
-  task follow-up and Wiro AI workflows. It also registers Wiro AI as an opt-in backend for
-  image_generate, video_generate, text_to_speech and speech-to-text, and ships the wiro-media:wiro
-  skill. Every tool takes any catalog model; outputs are saved in cache/generated/ with MEDIA:
-  tags, and every result reports its cost. Disclosure: prompts, settings and input files go to
-  https://api.wiro.ai/v1 with WIRO_API_KEY, read per call through Hermes secret scope; every
-  generation spends the user's Wiro AI balance with no Hermes approval prompt, and the model can
-  pick costly options such as high resolution or long video. Local input files are read only from
-  Hermes' media cache, or from the workspace when the terminal backend is local (system and
-  credential folders excluded), and only when their bytes are media of the expected kind; they are
-  uploaded to the user's Wiro AI storage. Output files are downloaded only from *.wiro.ai hosts.
-  Ogg Opus voice notes and bmp, tiff or avif images are converted with the local ffmpeg when it is
-  installed. No hooks, middleware, background work, telemetry or self-update.
+description: "Wiro AI's image, video, speech, music, transcription and 3D models as thirteen wiro_* tools: generate and edit images (upscale, remove backgrounds, prompt edits), text or image to video, text to speech, music, transcription, image to 3D, catalog search with prices, any catalog model, task follow-up and Wiro AI workflows. It also registers Wiro AI as an opt-in backend for image_generate, video_generate, text_to_speech and speech-to-text, and ships the wiro-media:wiro skill. Every tool takes any catalog model; outputs are saved in cache/generated/ with MEDIA: tags, and every result reports its cost. Disclosure — prompts, settings and input files go to https://api.wiro.ai/v1 with WIRO_API_KEY, read per call through Hermes secret scope; every generation spends the user's Wiro AI balance with no Hermes approval prompt, and the model can pick costly options such as high resolution or long video. Local input files are read only from Hermes' media cache, or from anywhere the user can read when the terminal backend is local (system and credential folders and the rest of the Hermes home excluded), and only when their bytes are media or documents of the expected kind; they are uploaded to the user's Wiro AI storage. Output files are downloaded only from *.wiro.ai hosts. Ogg Opus voice notes and bmp, tiff or avif images are converted with the local ffmpeg when it is installed."
 maintainer: wiroai
 tier: community
 category: tools

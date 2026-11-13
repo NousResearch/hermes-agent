@@ -13,8 +13,8 @@ import json
 import threading
 
 from hermes_agent import hermes_state
-from gateway.config import GatewayConfig, Platform
-from gateway.session import SessionSource, SessionStore
+from hermes_agent.gateway.config import GatewayConfig, Platform
+from hermes_agent.gateway.session import SessionSource, SessionStore
 
 
 def _source(user_id: str = "user-1") -> SessionSource:

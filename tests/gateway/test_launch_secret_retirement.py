@@ -6,12 +6,12 @@ import pytest
 
 @pytest.mark.asyncio
 async def test_delete_prunes_launch_and_config_secrets(tmp_path, monkeypatch):
-    from gateway import run, session_mutations
-    from gateway.config import GatewayConfig
-    from gateway.session import SessionStore
-    from gateway.session_authority import initialize_session_authority
-    from gateway.session_controls import AuthorityConnection
-    from gateway.session_local import create_local_session
+    from hermes_agent.gateway import run, session_mutations
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.session import SessionStore
+    from hermes_agent.gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway.session_local import create_local_session
     config = {'platform_toolsets': {'cli': []}, 'model': {
         'provider': 'custom', 'api_key': 'config-secret', 'base_url': 'http://127.0.0.1:9/v1'}}
     monkeypatch.setattr(run, '_load_gateway_config', lambda *a, **k: config)
@@ -43,12 +43,12 @@ async def test_delete_prunes_launch_and_config_secrets(tmp_path, monkeypatch):
 
 async def _branching_owner(tmp_path, monkeypatch):
     """An owner whose sessions carry a config secret, with the mutate and next-turn key helpers."""
-    from gateway import run, session_mutations
-    from gateway.config import GatewayConfig
-    from gateway.session import SessionStore
-    from gateway.session_authority import initialize_session_authority
-    from gateway.session_controls import AuthorityConnection
-    from gateway.session_policy import launch_key, policy_for_source
+    from hermes_agent.gateway import run, session_mutations
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.session import SessionStore
+    from hermes_agent.gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway.session_policy import launch_key, policy_for_source
     config = {'platform_toolsets': {'cli': []}, 'model': {
         'provider': 'custom', 'api_key': 'config-secret', 'base_url': 'http://127.0.0.1:9/v1'}}
     monkeypatch.setattr(run, '_load_gateway_config', lambda *a, **k: config)
@@ -73,7 +73,7 @@ async def _branching_owner(tmp_path, monkeypatch):
 
 
 def _create(owner, connection, tmp_path, api_key):
-    from gateway.session_local import create_local_session
+    from hermes_agent.gateway.session_local import create_local_session
     return create_local_session(owner, connection.actor, {'request_id': 'parent', 'source': 'cli',
         'cwd': str(tmp_path), 'model': 'm', 'toolsets': [], **({'api_key': api_key} if api_key else {})})
 
@@ -84,7 +84,7 @@ async def test_branches_keep_the_secrets_their_parent_bound_until_the_last_delet
     """A branch's policy names its parent's launch-key slot and config-secret reference: deleting
     either side keeps them for the survivors (#134889 RV-13). A delete releases only its own
     sessions' slots, so the parent's go with the parent's delete when no branch is left, else at restart."""
-    from gateway.session_contract import SessionRef
+    from hermes_agent.gateway.session_contract import SessionRef
     owner, connection, mutate, key = await _branching_owner(tmp_path, monkeypatch)
     try:
         parent = _create(owner, connection, tmp_path, 'launch-parent')
@@ -110,9 +110,9 @@ async def test_a_branch_rebinds_after_its_parent_is_deleted(tmp_path, monkeypatc
     """A branch whose deleted parent's secrets it still uses rebinds them under its own name (here a
     reasoning change) and keeps running; its own delete releases what it bound."""
     import copy
-    from gateway import run
-    from gateway.session_contract import SessionRef
-    from gateway.session_policy import policy_for_source
+    from hermes_agent.gateway import run
+    from hermes_agent.gateway.session_contract import SessionRef
+    from hermes_agent.gateway.session_policy import policy_for_source
     owner, connection, mutate, key = await _branching_owner(tmp_path, monkeypatch)
     try:
         parent = _create(owner, connection, tmp_path, api_key)
@@ -142,9 +142,9 @@ async def test_an_unpublished_edit_keeps_the_secret_it_reuses(tmp_path, monkeypa
     import asyncio
     import copy
     import threading
-    from gateway import run, session_mutations
-    from gateway.session_contract import SessionRef
-    from gateway.session_policy import policy_for_source
+    from hermes_agent.gateway import run, session_mutations
+    from hermes_agent.gateway.session_contract import SessionRef
+    from hermes_agent.gateway.session_policy import policy_for_source
     owner, connection, mutate, _ = await _branching_owner(tmp_path, monkeypatch)
     entered, release, pending = threading.Event(), threading.Event(), None
 
@@ -195,10 +195,10 @@ async def test_a_prune_keeps_the_parents_secret_for_a_branch_not_yet_published(t
     import asyncio
     import copy
     import threading
-    from gateway import run, session_mutations
-    from gateway.session_contract import SessionRef
-    from gateway.session_policy import policy_for_source, rebind_launch_key
-    from gateway.session_prune import _apply
+    from hermes_agent.gateway import run, session_mutations
+    from hermes_agent.gateway.session_contract import SessionRef
+    from hermes_agent.gateway.session_policy import policy_for_source, rebind_launch_key
+    from hermes_agent.gateway.session_prune import _apply
     owner, connection, mutate, key = await _branching_owner(tmp_path, monkeypatch)
     committed, release, pending = threading.Event(), threading.Event(), None
     try:

@@ -4,14 +4,14 @@ from types import SimpleNamespace
 
 import pytest
 
-import gateway.run  # load bootstrap before the per-test home I/O guard
-from gateway.config import Platform
-from gateway.session import SessionSource
-from gateway.turn_context import TurnContext
+import hermes_agent.gateway.run  # load bootstrap before the per-test home I/O guard
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.session import SessionSource
+from hermes_agent.gateway.turn_context import TurnContext
 
 _CHAT = SessionSource(platform=Platform.TELEGRAM, chat_id="a", chat_type="dm", user_id="u")
-from gateway.run_turn_runner import TurnRunner
-from gateway.run_turn_runner_approval_transport import approval_transport
+from hermes_agent.gateway.run_turn_runner import TurnRunner
+from hermes_agent.gateway.run_turn_runner_approval_transport import approval_transport
 
 
 def test_background_prompt_ignores_completed_stream(monkeypatch):
@@ -71,7 +71,7 @@ def test_background_transport_refusal_fails_closed(monkeypatch, buttons):
         return fut
 
     monkeypatch.setattr(TurnRunner, "_schedule", schedule)
-    monkeypatch.setattr(gateway.run, "_approval_send_outcome", lambda *args, **kw: "declined")
+    monkeypatch.setattr(hermes_agent.gateway.run, "_approval_send_outcome", lambda *args, **kw: "declined")
     with pytest.raises(RuntimeError):
         transport.background_notify({"command": "print(1)"})
     assert sent == [("origin-chat", "origin-session")] if buttons else sent == ["text"]

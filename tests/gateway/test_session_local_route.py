@@ -31,12 +31,12 @@ def home(tmp_path, monkeypatch):
 
 
 def _config():
-    from gateway.run import _load_gateway_config
+    from hermes_agent.gateway.run import _load_gateway_config
     return _load_gateway_config()
 
 
 def test_alias_launch_carries_alias_endpoint_and_key(home):
-    from gateway.session_local_route import resolve_launch_route
+    from hermes_agent.gateway.session_local_route import resolve_launch_route
     literal = resolve_launch_route({"model": "alias-host", "source": "cli"}, _config())
     assert (literal["model"], literal["provider"], literal["base_url"], literal["api_key"]) == (
         "model-alias", "custom", "http://127.0.0.1:3/v1", "sk-alias-literal")
@@ -55,8 +55,8 @@ def test_alias_launch_carries_alias_endpoint_and_key(home):
 def test_alias_key_is_a_launch_key_not_durable_policy(home):
     """The alias's credential rides ``api_key`` (authority memory, revoked by restart), and the
     frozen policy config carries the alias endpoint, never the profile default's."""
-    from gateway.session_local_route import resolve_launch_route
-    from gateway.session_policy import build_policy
+    from hermes_agent.gateway.session_local_route import resolve_launch_route
+    from hermes_agent.gateway.session_policy import build_policy
     params = resolve_launch_route({"model": "alias-host", "source": "cli", "cwd": str(home)}, _config())
     policy = build_policy(params, _config(), private_secrets={})
     assert policy.model == "model-alias" and policy.base_url == "http://127.0.0.1:3/v1"

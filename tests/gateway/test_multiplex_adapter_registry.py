@@ -10,11 +10,11 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-import gateway.run as gateway_run
-from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.helpers import MessageDeduplicator
-from gateway.run import GatewayRunner
-from gateway.status import flush_runtime_status
+import hermes_agent.gateway.run as gateway_run
+from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+from hermes_agent.gateway.platforms.helpers import MessageDeduplicator
+from hermes_agent.gateway.run import GatewayRunner
+from hermes_agent.gateway.status import flush_runtime_status
 
 
 class _FakeAdapter:
@@ -158,7 +158,7 @@ class TestProfileMessageHandler:
 
 class TestProfileRuntimeStatus:
     def test_base_adapter_uses_namespaced_platform_key(self, monkeypatch):
-        from gateway.platforms.base import BasePlatformAdapter
+        from hermes_agent.gateway.platforms.base import BasePlatformAdapter
 
         class _ConcreteAdapter(BasePlatformAdapter):
             async def connect(self):
@@ -178,7 +178,7 @@ class TestProfileRuntimeStatus:
         adapter._runtime_status_platform_key = "reviewer:discord"
         writes = []
         monkeypatch.setattr(
-            "gateway.status.publish_runtime_status",
+            "hermes_agent.gateway.status.publish_runtime_status",
             lambda **kwargs: writes.append(kwargs),
         )
 
@@ -260,7 +260,7 @@ def _install_secondary_reconnect_context(
         "hermes_cli.profiles.get_profile_dir", lambda name: Path("/profiles") / name
     )
     monkeypatch.setattr(
-        "gateway.config.load_gateway_config",
+        "hermes_agent.gateway.config.load_gateway_config",
         lambda: GatewayConfig(
             multiplex_profiles=True,
             platforms={
@@ -425,7 +425,7 @@ class TestSecondaryProfileFatalRecovery:
     async def test_dropped_bot_is_never_swapped_for_the_primary(self, monkeypatch):
         """A routed profile whose own bot dropped (disconnect pending, then no reconnect for a dead
         credential) is still that bot's owner: its notices must not resolve the primary bot."""
-        from gateway.profile_routing import ProfileRoute
+        from hermes_agent.gateway.profile_routing import ProfileRoute
         runner = _secondary_recovery_runner()
         runner._adapter_disconnect_timeout_secs = lambda: 5
         primary = object()
@@ -727,7 +727,7 @@ class TestSecondaryStartupFailureRecovery:
             runner, "_schedule_secondary_profile_reconnect", explode_at_handoff
         )
 
-        with caplog.at_level(logging.ERROR, logger="gateway.run"):
+        with caplog.at_level(logging.ERROR, logger="hermes_agent.gateway.run"):
             connected = await runner._start_one_profile_adapters(
                 "reviewer", "/tmp/reviewer", {}
             )
@@ -759,7 +759,7 @@ class TestSecondaryProfileConfigHandling:
         """A secondary's inbound-port platforms are NOT refused: they are built without a port and
         served at /p/<profile>/ by the default's listener; api_server/webhook (already mirrored
         there) are skipped, never a second instance."""
-        from gateway.config import GatewayConfig, Platform, PlatformConfig
+        from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
 
         runner = GatewayRunner.__new__(GatewayRunner)
         runner.config = GatewayConfig(multiplex_profiles=True)
@@ -774,7 +774,7 @@ class TestSecondaryProfileConfigHandling:
             Platform.WEBHOOK: PlatformConfig(enabled=True, extra={"port": 8644}),
             Platform.TELEGRAM: PlatformConfig(enabled=True, token="t"),
         }
-        monkeypatch.setattr("gateway.config.load_gateway_config", lambda: reviewer_cfg)
+        monkeypatch.setattr("hermes_agent.gateway.config.load_gateway_config", lambda: reviewer_cfg)
         created = {}
 
         def fake_create(platform, platform_config):
@@ -820,7 +820,7 @@ class TestSecondaryProfileConfigHandling:
         adapter.config = config.platforms[Platform.DISCORD]
         writes = []
 
-        monkeypatch.setattr("gateway.config.load_gateway_config", lambda: config)
+        monkeypatch.setattr("hermes_agent.gateway.config.load_gateway_config", lambda: config)
         monkeypatch.setattr(runner, "_create_adapter", lambda _p, _c: adapter)
         monkeypatch.setattr(
             runner,
@@ -868,7 +868,7 @@ class TestSecondaryProfileConfigHandling:
         adapter.config = config.platforms[platform]
         writes = []
 
-        monkeypatch.setattr("gateway.config.load_gateway_config", lambda: config)
+        monkeypatch.setattr("hermes_agent.gateway.config.load_gateway_config", lambda: config)
         monkeypatch.setattr(runner, "_create_adapter", lambda _p, _c: adapter)
         monkeypatch.setattr(
             runner,
@@ -890,7 +890,7 @@ class TestSecondaryProfileConfigHandling:
     @pytest.mark.asyncio
     async def test_multiplexer_skips_bad_profile_and_continues(self, monkeypatch, caplog):
         from pathlib import Path
-        from gateway.config import GatewayConfig
+        from hermes_agent.gateway.config import GatewayConfig
 
         runner = GatewayRunner.__new__(GatewayRunner)
         runner.config = GatewayConfig(multiplex_profiles=True)
@@ -928,11 +928,11 @@ class TestSecondaryProfileConfigHandling:
         monkeypatch.setattr(runner, "_start_one_profile_adapters", fake_start_one)
         status = {}
         monkeypatch.setattr(
-            "gateway.status.publish_runtime_status",
+            "hermes_agent.gateway.status.publish_runtime_status",
             lambda **kwargs: status.update(kwargs),
         )
 
-        caplog.set_level(logging.WARNING, logger="gateway.run")
+        caplog.set_level(logging.WARNING, logger="hermes_agent.gateway.run")
         connected = await runner._start_secondary_profile_adapters()
 
         assert connected == 2
@@ -947,7 +947,7 @@ class TestSecondaryProfileConfigHandling:
         ``served_profiles`` survived into a later single-profile run and every `hermes -p X` surface
         kept treating X as served (exit 78 on start, "running via multiplexer" on status)."""
         import json
-        from gateway.status import read_runtime_status
+        from hermes_agent.gateway.status import read_runtime_status
 
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         (tmp_path / "gateway_state.json").write_text(json.dumps(
@@ -962,8 +962,8 @@ class TestSecondaryProfileConfigHandling:
     @pytest.mark.asyncio
     async def test_multiplexer_propagates_security_config_error(self, monkeypatch):
         from pathlib import Path
-        from gateway.config import GatewayConfig
-        from gateway.run import MultiplexConfigError
+        from hermes_agent.gateway.config import GatewayConfig
+        from hermes_agent.gateway.run import MultiplexConfigError
 
         runner = GatewayRunner.__new__(GatewayRunner)
         runner.config = GatewayConfig(multiplex_profiles=True)
@@ -997,7 +997,7 @@ class TestSecondaryProfileConfigHandling:
         self, monkeypatch
     ):
         """Multiplexing remains supported when Photon sidecars cannot collide."""
-        from gateway.config import GatewayConfig, Platform, PlatformConfig
+        from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
 
         class _PhotonAdapter:
             def __init__(self, secret, port):
@@ -1036,7 +1036,7 @@ class TestSecondaryProfileConfigHandling:
             adapter.connected = True
             return True
 
-        monkeypatch.setattr("gateway.config.load_gateway_config", lambda: reviewer_cfg)
+        monkeypatch.setattr("hermes_agent.gateway.config.load_gateway_config", lambda: reviewer_cfg)
         monkeypatch.setattr(runner, "_create_adapter", lambda p, c: secondary)
         monkeypatch.setattr(runner, "_connect_adapter_with_timeout", _connect)
         monkeypatch.setattr(
@@ -1057,7 +1057,7 @@ class TestSecondaryProfileConfigHandling:
         self, monkeypatch
     ):
         """A failed sidecar must not reserve an endpoint it never owned."""
-        from gateway.config import GatewayConfig, Platform, PlatformConfig
+        from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
 
         class _PhotonAdapter:
             def __init__(self, secret, should_connect):
@@ -1094,7 +1094,7 @@ class TestSecondaryProfileConfigHandling:
         async def _connect(adapter, platform, **_kw):
             return adapter.should_connect
 
-        monkeypatch.setattr("gateway.config.load_gateway_config", lambda: profile_cfg)
+        monkeypatch.setattr("hermes_agent.gateway.config.load_gateway_config", lambda: profile_cfg)
         monkeypatch.setattr(runner, "_create_adapter", lambda p, c: next(adapters))
         monkeypatch.setattr(runner, "_connect_adapter_with_timeout", _connect)
         monkeypatch.setattr(
@@ -1126,7 +1126,7 @@ class TestSecondaryProfileConfigHandling:
         statuses = []
         monkeypatch.setattr(runner, "_update_platform_runtime_status", lambda *a, **kw: statuses.append((a, kw)))
         monkeypatch.setattr(
-            "gateway.config.load_gateway_config",
+            "hermes_agent.gateway.config.load_gateway_config",
             lambda: GatewayConfig(
                 multiplex_profiles=True,
                 platforms={
@@ -1179,7 +1179,7 @@ class TestSecondaryProfileHookRegistration:
     ):
         runner = _secondary_recovery_runner()
         config = GatewayConfig(multiplex_profiles=True, platforms={})
-        monkeypatch.setattr("gateway.config.load_gateway_config", lambda: config)
+        monkeypatch.setattr("hermes_agent.gateway.config.load_gateway_config", lambda: config)
 
         profile_cfg = {
             "hooks": {
@@ -1215,8 +1215,8 @@ class TestFeishuPortBindingConditional:
     @pytest.mark.asyncio
     async def test_feishu_websocket_mode_not_rejected(self, monkeypatch):
         """Feishu in websocket mode (the default) should NOT raise MultiplexConfigError."""
-        from gateway.run import MultiplexConfigError
-        from gateway.config import GatewayConfig, Platform, PlatformConfig
+        from hermes_agent.gateway.run import MultiplexConfigError
+        from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
 
         runner = GatewayRunner.__new__(GatewayRunner)
         runner.config = GatewayConfig(multiplex_profiles=True)
@@ -1229,7 +1229,7 @@ class TestFeishuPortBindingConditional:
                 extra={"app_id": "cli_xxx", "app_secret": "sec", "connection_mode": "websocket"},
             ),
         }
-        monkeypatch.setattr("gateway.config.load_gateway_config", lambda: reviewer_cfg)
+        monkeypatch.setattr("hermes_agent.gateway.config.load_gateway_config", lambda: reviewer_cfg)
         monkeypatch.setattr(runner, "_create_adapter", lambda p, c: None)
 
         connected = await runner._start_one_profile_adapters("reviewer", "/tmp/x", {})
@@ -1261,7 +1261,7 @@ class TestSecondarySkipsCredentiallessPlatforms:
             created.append((platform, platform_config))
             return _FakeAdapter(token=platform_config.token or None)
 
-        monkeypatch.setattr("gateway.config.load_gateway_config", lambda: profile_cfg)
+        monkeypatch.setattr("hermes_agent.gateway.config.load_gateway_config", lambda: profile_cfg)
         monkeypatch.setattr(runner, "_create_adapter", fake_create)
         monkeypatch.setattr(runner, "_configure_profile_adapter", lambda *a, **k: None)
         monkeypatch.setattr(
@@ -1274,7 +1274,7 @@ class TestSecondarySkipsCredentiallessPlatforms:
     @pytest.mark.asyncio
     async def test_credentialless_platform_builds_no_adapter(self, monkeypatch, tmp_path):
         """Enabled-in-YAML but no credential in the profile scope -> no adapter."""
-        from gateway.config import GatewayConfig, Platform, PlatformConfig
+        from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
 
         profile_cfg = GatewayConfig(multiplex_profiles=True)
         profile_cfg.platforms = {
@@ -1298,7 +1298,7 @@ class TestSecondarySkipsCredentiallessPlatforms:
     @pytest.mark.asyncio
     async def test_profile_with_own_credential_still_connects(self, monkeypatch, tmp_path):
         """A profile that defines its own credential keeps its adapter."""
-        from gateway.config import GatewayConfig, Platform, PlatformConfig
+        from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
 
         profile_cfg = GatewayConfig(multiplex_profiles=True)
         profile_cfg.platforms = {

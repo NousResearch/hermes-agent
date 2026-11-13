@@ -76,7 +76,7 @@ def _writers(home: Path, monkeypatch):
     from agent.secret_sources._cache import CachedFetch, DiskCache
     from agent.proxy_sources import iron_proxy
     from agent.vault_store import VaultStore
-    from gateway import pairing
+    from hermes_agent.gateway import pairing
     from hermes_cli import auth as auth_mod
     from hermes_cli import process_identity
     from tools import mcp_oauth

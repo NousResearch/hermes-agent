@@ -28,7 +28,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from gateway.config import Platform, PlatformConfig
+from hermes_agent.gateway.config import Platform, PlatformConfig
 
 
 _repo = str(Path(__file__).resolve().parents[2])
@@ -37,8 +37,8 @@ if _repo not in sys.path:
 
 
 from plugins.platforms.telegram.adapter import TelegramAdapter
-from gateway.run import GatewayRunner
-from gateway.profile_routing import ProfileRoute
+from hermes_agent.gateway.run import GatewayRunner
+from hermes_agent.gateway.profile_routing import ProfileRoute
 from hermes_cli.plugins import (
     PluginContext,
     PluginManager,
@@ -519,7 +519,7 @@ class TestProfileScopedPlatformEventHandler:
         # checks _multiplex_profile_homes); declare "work" as served so the
         # route stamps rather than fail-closing to profile=None.
         with patch(
-            "gateway.run._multiplex_profile_homes",
+            "hermes_agent.gateway.run._multiplex_profile_homes",
             return_value=[("work", Path("/profiles/work"))],
         ):
             source = adapter._source_from_reaction_for_auth(
@@ -534,7 +534,7 @@ class TestProfileScopedPlatformEventHandler:
         dispatch = AsyncMock()
         runner._handle_gateway_platform_event = dispatch
         handler = runner._make_default_profile_platform_event_handler()
-        with patch("gateway.run._profile_runtime_scope", side_effect=lambda _home: nullcontext()):
+        with patch("hermes_agent.gateway.run._profile_runtime_scope", side_effect=lambda _home: nullcontext()):
             asyncio.run(handler({"event_type": "reaction"}, source))
 
         resolver.assert_called_once_with(source)
@@ -638,7 +638,7 @@ class TestRegisterHandlers:
         )
         monkeypatch.setattr("asyncio.sleep", MagicMock(return_value=_async_value(None)))
         monkeypatch.setattr(
-            "gateway.status.acquire_scoped_lock",
+            "hermes_agent.gateway.status.acquire_scoped_lock",
             lambda scope, identity, metadata=None: (True, None),
         )
         a._register_handlers = MagicMock()

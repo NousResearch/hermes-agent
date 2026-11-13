@@ -27,15 +27,15 @@ except ImportError:
 AIOHTTP_AVAILABLE = aiohttp is not None
 HTTPX_AVAILABLE = httpx is not None
 
-from gateway.config import Platform, PlatformConfig
-from gateway.platforms.helpers import MessageDeduplicator, bounded_put, send_chunks
-from gateway.platforms.access_policy_mixin import OwnAccessPolicyMixin
-from gateway.platforms.base import gateway_trust_env, BasePlatformAdapter, SendResult, describe_proxy_error, env_proxy_for_redaction
-from gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.config import Platform, PlatformConfig
+from hermes_agent.gateway.platforms.helpers import MessageDeduplicator, bounded_put, send_chunks
+from hermes_agent.gateway.platforms.access_policy_mixin import OwnAccessPolicyMixin
+from hermes_agent.gateway.platforms.base import gateway_trust_env, BasePlatformAdapter, SendResult, describe_proxy_error, env_proxy_for_redaction
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
 from utils import env_float
 
-from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret, send_error
-from gateway.platforms.send_targets import StandaloneSendPolicy, parse_nonempty
+from hermes_agent.gateway.platforms._shared import get_scoped_secret as _get_scoped_secret, send_error
+from hermes_agent.gateway.platforms.send_targets import StandaloneSendPolicy, parse_nonempty
 from plugins.platforms.wecom.send_queue import ChatSendQueueMixin
 from plugins.platforms.wecom.media import WeComMediaMixin, APP_CMD_SEND
 from plugins.platforms.wecom.streaming import (
@@ -169,7 +169,7 @@ class WeComAdapter(WeComStreamMixin, WeComMediaMixin, ChatSendQueueMixin, OwnAcc
         try:
             # Tighter keepalive so idle CLOSE_WAIT drains promptly.
             # See #18451.
-            from gateway.platforms.helpers import platform_http_client
+            from hermes_agent.gateway.platforms.helpers import platform_http_client
             self._http_client = platform_http_client(trust_env=gateway_trust_env())  # must match the redaction below
             await self._open_connection()
             self._mark_connected()
@@ -845,7 +845,7 @@ _WECOM_PLATFORM_HINT = (
 
 def register(ctx) -> None:
     common = dict(install_hint="Run `hermes setup` to install WeCom support.", emoji="💼", allow_update_command=True)
-    from . import gateway_env  # env -> GatewayConfig bridge (gateway.config_env)
+    from . import gateway_env  # env -> GatewayConfig bridge (hermes_agent.gateway.config_env)
     ctx.register_platform(
         target_ref_syntax_fn=parse_nonempty,
         standalone_send=StandaloneSendPolicy(text_direct=True),

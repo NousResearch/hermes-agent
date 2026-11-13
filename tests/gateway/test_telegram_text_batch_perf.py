@@ -16,7 +16,7 @@ import math
 from types import SimpleNamespace
 
 
-from gateway.config import PlatformConfig
+from hermes_agent.gateway.config import PlatformConfig
 from plugins.platforms.telegram.adapter import TelegramAdapter
 
 

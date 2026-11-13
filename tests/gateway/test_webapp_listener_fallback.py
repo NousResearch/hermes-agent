@@ -123,7 +123,7 @@ def test_on_windows_the_webapps_fixed_port_is_held_exclusively():
     # specific address then takes those connections). Main's private ephemeral listener is unchanged.
     import socket
 
-    from gateway import run_api
+    from hermes_agent.gateway import run_api
     with run_api._listener_socket(socket.AF_INET, socket.SOCK_STREAM, 0, _free_port()) as fixed, \
             run_api._listener_socket(socket.AF_INET, socket.SOCK_STREAM, 0, 0) as ephemeral:
         assert fixed.getsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE) == 1

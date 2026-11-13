@@ -63,7 +63,7 @@ def _canonical_approval_turn(owner, decisions):
     """A controlled canonical turn: the real blocking gateway wait, published through the
     authority's shared controls exactly as ``TurnRunner._approval_notify_sync`` does."""
     async def handle(event):
-        from gateway.session_results import execution_result
+        from hermes_agent.gateway.session_results import execution_result
         from tools.approval_gateway_wait import _await_gateway_decision
         sid = event.source.chat_id
         live, generation = owner.sessions[sid], owner.db.get_session(sid)['runtime_generation']

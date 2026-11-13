@@ -2,8 +2,8 @@
 
 import pytest
 
-from gateway.config import Platform
-from gateway.run import (
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.run import (
     _GATEWAY_CONNECTION_ERROR_RE,
     _gateway_provider_error_reply,
     _looks_like_gateway_provider_error,
@@ -108,7 +108,7 @@ class TestGatewayConnectionErrorReply:
         """Each shaped reply must give the chat user something they can run; 'provider' and
         'gateway logs' are operator words (the log pointer is the `hermes logs` command)."""
         from agent.i18n import t
-        from gateway.run import _PROVIDER_ERROR_REPLIES
+        from hermes_agent.gateway.run import _PROVIDER_ERROR_REPLIES
         replies = [t(reply_key) for _, reply_key in _PROVIDER_ERROR_REPLIES] + [_gateway_provider_error_reply("zzz")]
         for reply in replies:
             assert any(cmd in reply for cmd in ("/login", "/retry", "/model")), reply
@@ -193,11 +193,11 @@ class TestQuotaExhaustedIsNotAnAuthFailure:
         """Production entry: TurnRunner.run_sync with credential resolution raising the quota
         RuntimeError the gateway wraps around a ``codex_rate_limited`` AuthError."""
         from types import SimpleNamespace
-        import gateway.run as gateway_run
-        from gateway.config import Platform
-        from gateway.run_turn_runner import TurnRunner
-        from gateway.session import SessionSource
-        from gateway.turn_context import TurnContext
+        import hermes_agent.gateway.run as gateway_run
+        from hermes_agent.gateway.config import Platform
+        from hermes_agent.gateway.run_turn_runner import TurnRunner
+        from hermes_agent.gateway.session import SessionSource
+        from hermes_agent.gateway.turn_context import TurnContext
         from hermes_cli.auth import AuthError
         from hermes_cli.auth_constants import CODEX_RATE_LIMITED_CODE
 
@@ -224,11 +224,11 @@ class TestQuotaExhaustedIsNotAnAuthFailure:
         ``hermes chat -q`` on a bare ``custom`` must print the no-credentials error and exit
         non-zero, not ``rc 0`` with a /login hint (C11 bare_custom_without_base_url_fails_fast)."""
         from types import SimpleNamespace
-        import gateway.run as gateway_run
-        from gateway.config import Platform
-        from gateway.run_turn_runner import TurnRunner
-        from gateway.session import SessionSource
-        from gateway.turn_context import TurnContext
+        import hermes_agent.gateway.run as gateway_run
+        from hermes_agent.gateway.config import Platform
+        from hermes_agent.gateway.run_turn_runner import TurnRunner
+        from hermes_agent.gateway.session import SessionSource
+        from hermes_agent.gateway.turn_context import TurnContext
 
         detail = "provider 'custom' resolved without credentials (no endpoint or API key configured)."
 
@@ -256,10 +256,10 @@ def test_turn_runner_host_side_resolution_failure_does_not_send_user_to_login(mo
     is not a credential verdict: messaging users get the gateway-log reply, never /login (#140344).
     An AuthError in the chain keeps the sign-in reply, also when it wraps a network OSError."""
     from types import SimpleNamespace
-    import gateway.run as gateway_run
-    from gateway.run_turn_runner import TurnRunner
-    from gateway.session import SessionSource
-    from gateway.turn_context import TurnContext
+    import hermes_agent.gateway.run as gateway_run
+    from hermes_agent.gateway.run_turn_runner import TurnRunner
+    from hermes_agent.gateway.session import SessionSource
+    from hermes_agent.gateway.turn_context import TurnContext
     from hermes_cli.auth import AuthError
 
     def _raising(cause):

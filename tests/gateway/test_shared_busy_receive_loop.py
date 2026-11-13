@@ -8,9 +8,9 @@ import asyncio
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.base import BasePlatformAdapter, SendResult
-from gateway.platforms.event import MessageEvent
+from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+from hermes_agent.gateway.platforms.base import BasePlatformAdapter, SendResult
+from hermes_agent.gateway.platforms.event import MessageEvent
 
 
 class Adapter(BasePlatformAdapter):
@@ -40,9 +40,9 @@ class Adapter(BasePlatformAdapter):
 
 async def _busy_owner(monkeypatch, turns):
     """Real runner + authority over SQLite; turn production is a gated stand-in (no model)."""
-    import gateway.session_finite as finite
-    from gateway.run import GatewayRunner
-    from gateway.session_authority import initialize_session_authority
+    import hermes_agent.gateway.session_finite as finite
+    from hermes_agent.gateway.run import GatewayRunner
+    from hermes_agent.gateway.session_authority import initialize_session_authority
 
     monkeypatch.setenv('TELEGRAM_ALLOWED_USERS', 'fixture-user')
 

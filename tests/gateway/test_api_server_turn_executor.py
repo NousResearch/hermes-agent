@@ -10,7 +10,7 @@ import threading
 
 import pytest
 
-from gateway.platforms import api_server_runs as api_runs
+from hermes_agent.gateway.platforms import api_server_runs as api_runs
 
 
 def _default_pool_size() -> int:
@@ -58,8 +58,8 @@ async def test_cron_fire_body_keeps_contextvars_off_the_default_pool():
 
 @pytest.mark.asyncio
 async def test_adapter_disconnect_leaves_no_api_turn_thread_behind():
-    from gateway.config import PlatformConfig
-    from gateway.platforms.api_server import APIServerAdapter
+    from hermes_agent.gateway.config import PlatformConfig
+    from hermes_agent.gateway.platforms.api_server import APIServerAdapter
 
     loop = asyncio.get_running_loop()
     ran_on = []

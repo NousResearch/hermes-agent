@@ -8,7 +8,7 @@ from contextlib import ExitStack, suppress
 
 import pytest
 
-from gateway.session_context import clear_session_vars, reset_session_vars, set_session_vars
+from hermes_agent.gateway.session_context import clear_session_vars, reset_session_vars, set_session_vars
 from tools.connectors import live
 from tools.connectors.contract import Actor, TargetState
 from tools.connectors.operation import ConnectionOperation, Target

@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.run_turn import GatewayTurnMixin
+from hermes_agent.gateway.run_turn import GatewayTurnMixin
 
 _HISTORY = [{"role": "user", "content": "x" * 400}, {"role": "assistant", "content": "y" * 400}] * 4
 _COMPRESSED = [{"role": "user", "content": "summary"}, {"role": "assistant", "content": "ok"}]
@@ -37,7 +37,7 @@ async def _adopt(agent, caplog):
     attempt = SimpleNamespace(agent=agent, history=_HISTORY)
     plan = SimpleNamespace(msg_count=len(_HISTORY), approx_tokens=4_000, warn_token_threshold=10**9)
     entry = SimpleNamespace(session_id="sid-1", last_prompt_tokens=4_000)
-    with caplog.at_level(logging.WARNING, logger="gateway.run_turn"):
+    with caplog.at_level(logging.WARNING, logger="hermes_agent.gateway.run_turn"):
         result = await runner._hmwa_hygiene_adopt_transcript(
             attempt, _COMPRESSED, _HISTORY, plan, session_entry=entry, source=None, _quick_key=None, run_generation=0,
         )

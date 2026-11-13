@@ -11,9 +11,9 @@ and the standalone ``DeadTargetRegistry`` persistence/classification contract.
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform
-from gateway.delivery import DeliveryRouter, DeliveryTarget
-from gateway.dead_targets import DeadTargetRegistry
+from hermes_agent.gateway.config import GatewayConfig, Platform
+from hermes_agent.gateway.delivery import DeliveryRouter, DeliveryTarget
+from hermes_agent.gateway.dead_targets import DeadTargetRegistry
 
 
 class ForbiddenThenOkAdapter:
@@ -37,8 +37,8 @@ class TransientFailAdapter:
 
 @pytest.fixture
 def isolate(tmp_path, monkeypatch):
-    monkeypatch.setattr("gateway.delivery.get_hermes_home", lambda: tmp_path)
-    monkeypatch.setattr("gateway.dead_targets.get_hermes_home", lambda: tmp_path)
+    monkeypatch.setattr("hermes_agent.gateway.delivery.get_hermes_home", lambda: tmp_path)
+    monkeypatch.setattr("hermes_agent.gateway.dead_targets.get_hermes_home", lambda: tmp_path)
     return tmp_path
 
 
@@ -134,12 +134,12 @@ class TestNotFoundBlastRadius:
 
     @pytest.mark.parametrize("message", _SUBCHAT_NOT_FOUND_MESSAGES)
     def test_is_chat_level_not_found_subchat(self, message):
-        from gateway.platforms.base import is_chat_level_not_found
+        from hermes_agent.gateway.platforms.base import is_chat_level_not_found
 
         assert is_chat_level_not_found(error_text=message) is False
 
     def test_subchat_marker_wins_when_both_present(self):
-        from gateway.platforms.base import is_chat_level_not_found
+        from hermes_agent.gateway.platforms.base import is_chat_level_not_found
 
         # Conservative: if a sub-chat marker is present, never kill the whole chat.
         assert is_chat_level_not_found(error_text="chat not found; message thread not found") is False

@@ -18,7 +18,7 @@ import asyncio
 import logging
 from typing import Any, Awaitable, Callable, Optional
 
-from gateway.platforms.base import SendResult
+from hermes_agent.gateway.platforms.base import SendResult
 from plugins.platforms.telegram import telegram_send_errors as kinds
 
 logger = logging.getLogger("plugins.platforms.telegram.adapter")

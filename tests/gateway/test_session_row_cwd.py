@@ -7,9 +7,9 @@ import pytest
 
 
 def _authority_fixture(tmp_path, monkeypatch):
-    from gateway import run
-    from gateway.config import GatewayConfig
-    from gateway.session import SessionStore
+    from hermes_agent.gateway import run
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.session import SessionStore
     monkeypatch.setattr(run, '_load_gateway_config', lambda: {'platform_toolsets': {'cli': []}})
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
     runner = SimpleNamespace(session_store=store, _session_db=store._db, adapters={}, _draining=False,
@@ -20,10 +20,10 @@ def _authority_fixture(tmp_path, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_row_cwd_is_recorded_apart_from_the_execution_cwd(tmp_path, monkeypatch):
-    from gateway.session_authority import initialize_session_authority
-    from gateway.session_controls import AuthorityConnection
-    from gateway.session_local import create_local_session
-    from gateway.session_policy import restore_policy
+    from hermes_agent.gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway.session_local import create_local_session
+    from hermes_agent.gateway.session_policy import restore_policy
     from hermes_agent.hermes_state_local import local_receipt
 
     store, runner = _authority_fixture(tmp_path, monkeypatch)

@@ -8,8 +8,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway import run_runtime
-from gateway.session_authority import LiveSession
+from hermes_agent.gateway import run_runtime
+from hermes_agent.gateway.session_authority import LiveSession
 from hermes_agent.hermes_state import SessionDB
 from hermes_agent.hermes_state_runtime import admit_session_input, begin_runtime_epoch
 from tools.bot_live_delivery import _locked, _write
@@ -111,15 +111,15 @@ async def test_failed_hot_serve_retires_session_and_bot_recovery_tasks(monkeypat
     unbound = []
     monkeypatch.setattr(run_runtime, "_build_profile_authority", build)
     monkeypatch.setattr(
-        "gateway.session_local_recovery.recover_local_sessions", recover_local)
+        "hermes_agent.gateway.session_local_recovery.recover_local_sessions", recover_local)
     monkeypatch.setattr(
-        "gateway.platforms.webhook_ingress.recover_webhook_finalizations",
+        "hermes_agent.gateway.platforms.webhook_ingress.recover_webhook_finalizations",
         recover_webhook,
     )
     monkeypatch.setattr(
-        "gateway.session_hosted_service._ensure_hosted_service", fail_hosted)
+        "hermes_agent.gateway.session_hosted_service._ensure_hosted_service", fail_hosted)
     monkeypatch.setattr(
-        "gateway.session_cron.unbind_owner", lambda value: unbound.append(value))
+        "hermes_agent.gateway.session_cron.unbind_owner", lambda value: unbound.append(value))
 
     try:
         with pytest.raises(RuntimeError, match="late hot-serve failure"):
@@ -167,9 +167,9 @@ async def test_failed_hot_serve_with_a_live_writer_parks_without_aborting_or_re_
     """A serve-time failure whose retirement misses its deadline keeps the reservation and the
     retiring authority, parks the profile without adapters, lets the rest of the batch serve, and
     is never handed back as served by the next reconcile."""
-    from gateway.run_profile_reconcile import GatewayProfileReconcileMixin
-    from gateway.runtime_ownership import process_ownership
-    from gateway.session_authorities import SessionAuthorities
+    from hermes_agent.gateway.run_profile_reconcile import GatewayProfileReconcileMixin
+    from hermes_agent.gateway.runtime_ownership import process_ownership
+    from hermes_agent.gateway.session_authorities import SessionAuthorities
 
     launch = tmp_path / "root"
     homes = {n: (tmp_path / "profiles" / n).resolve() for n in ("beta", "gamma")}
@@ -215,10 +215,10 @@ async def test_failed_hot_serve_with_a_live_writer_parks_without_aborting_or_re_
     monkeypatch.setattr(run_runtime, "_build_profile_authority", build)
     monkeypatch.setattr(run_runtime, "TURN_SETTLE_SECONDS", 0.05)
     monkeypatch.setattr(run_runtime, "_record_parked_profiles", lambda value: parked.update(value))
-    monkeypatch.setattr("gateway.session_bot.recover_bot_deliveries", recover_bot)
-    monkeypatch.setattr("gateway.session_local_recovery.recover_local_sessions", lambda a, schedule: None)
-    monkeypatch.setattr("gateway.platforms.webhook_ingress.recover_webhook_finalizations", no_webhooks)
-    monkeypatch.setattr("gateway.session_cron.unbind_owner", lambda authority: None)
+    monkeypatch.setattr("hermes_agent.gateway.session_bot.recover_bot_deliveries", recover_bot)
+    monkeypatch.setattr("hermes_agent.gateway.session_local_recovery.recover_local_sessions", lambda a, schedule: None)
+    monkeypatch.setattr("hermes_agent.gateway.platforms.webhook_ingress.recover_webhook_finalizations", no_webhooks)
+    monkeypatch.setattr("hermes_agent.gateway.session_cron.unbind_owner", lambda authority: None)
     monkeypatch.setattr("hermes_cli.profiles.profiles_to_serve", lambda **kw: list(homes.items()))
     try:
         for attempt in range(2):

@@ -7,8 +7,8 @@ import threading
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.session import SessionSource
+from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+from hermes_agent.gateway.session import SessionSource
 from tests.gateway.test_approval_requester_binding import pending_from, write_approvers
 
 
@@ -22,7 +22,7 @@ def _clean_queues():
 
 
 def _group_pending(user_id, user_name, session_key):
-    from gateway.session_context import clear_session_vars, set_session_vars
+    from hermes_agent.gateway.session_context import clear_session_vars, set_session_vars
     from tools import approval as approval_mod
     from tools.approval_gateway_wait import _ApprovalEntry
 
@@ -39,8 +39,8 @@ def _group_pending(user_id, user_name, session_key):
 def test_a_dm_admin_is_not_a_group_admin_on_buttons_either():
     """``allow_admin_from`` is the DM scope (slash_access.policy_from_extra): a native button in a group
     refused it exactly as ``/approve`` does, instead of unioning both scopes."""
-    from gateway.approval_actor import approval_refusal
-    from gateway.slash_access import policy_for_runner_source
+    from hermes_agent.gateway.approval_actor import approval_refusal
+    from hermes_agent.gateway.slash_access import policy_for_runner_source
     from types import SimpleNamespace
 
     write_approvers([])
@@ -58,7 +58,7 @@ def test_an_id_less_tap_settles_nothing_even_for_the_requester():
     """A card tap without a request id cannot say which request it answers, so it resolves nothing,
     whoever taps (#62359); the requester then answers their own card by id. Bob's request expiring
     never lets his id-less tap reach Alice's, and Bob may not answer Alice's by id either."""
-    from gateway.approval_actor import approval_refusal
+    from hermes_agent.gateway.approval_actor import approval_refusal
     from tools import approval
 
     write_approvers([])
@@ -101,7 +101,7 @@ async def test_a_telegram_tap_settles_only_what_the_tapper_may_answer(monkeypatc
 
 
 def _wait_in_thread(user, session_key, notify, outcomes):
-    from gateway.session_context import clear_session_vars, set_session_vars
+    from hermes_agent.gateway.session_context import clear_session_vars, set_session_vars
     from tools.approval_gateway_wait import _await_gateway_decision
 
     tokens = set_session_vars(platform="telegram", user_id=user, user_name=user.title(), session_key=session_key)

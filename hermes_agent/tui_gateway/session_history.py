@@ -8,7 +8,7 @@ import re
 from .method_ctx import bind_module
 from agent.prompt_builder import STEER_DISPLAY_KIND
 
-# Discord routing note (gateway/run_inbound.py::discord_triggering_note) persisted as user
+# Discord routing note (hermes_agent/gateway/run_inbound.py::discord_triggering_note) persisted as user
 # ``content`` by gateways before the authored-text fix; presentation-only heal for those rows.
 _DISCORD_TRIGGERING_NOTE_RE = re.compile(
     r"(^|\n)\[Triggering message id: `[^`\n]*` — use as `message_id` for reply/react/pin via the discord tools\.\]\n*"

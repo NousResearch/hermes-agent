@@ -45,11 +45,11 @@ def endpoints():
 @pytest.fixture
 def home(monkeypatch):
     from agent import models_dev
-    from gateway import run
+    from hermes_agent.gateway import run
     from hermes_constants import get_hermes_home
     home = get_hermes_home()
     home.mkdir(parents=True, exist_ok=True)
-    # gateway.run binds its home at first import; the loader itself is real.
+    # hermes_agent.gateway.run binds its home at first import; the loader itself is real.
     monkeypatch.setattr(run, '_hermes_home', home)
     catalog = {'custom': {'id': 'custom', 'models': {
         name: {'id': name, 'name': name, 'tool_call': True, 'cost': {'input': 0, 'output': 0},
@@ -71,7 +71,7 @@ async def _pick(owner, authority, sid, payload, request_id='model-pick'):
 
 
 def _bind_resolver(runner):
-    from gateway.run_turn_prepare import GatewayTurnPrepareMixin
+    from hermes_agent.gateway.run_turn_prepare import GatewayTurnPrepareMixin
     runner._peek_session_state = lambda key: None
     runner._resolve_session_agent_runtime = GatewayTurnPrepareMixin._resolve_session_agent_runtime.__get__(runner)
 
@@ -397,9 +397,9 @@ async def test_a_named_entry_that_moves_never_sends_its_old_launch_key_to_the_ne
 async def test_a_level_picked_with_the_model_survives_a_profile_edit_and_a_resume_refresh(home, endpoints):
     """Desktop's model picker sends the reasoning level with the model. On a following session that level
     is the next turn's, after the profile's default moves and after a resume re-reads the profile."""
-    from gateway.session_contract import SessionRef
-    from gateway.session_policy import policy_for_source
-    from gateway.session_policy_refresh import commit_refresh
+    from hermes_agent.gateway.session_contract import SessionRef
+    from hermes_agent.gateway.session_policy import policy_for_source
+    from hermes_agent.gateway.session_policy_refresh import commit_refresh
     (_, url), _ = endpoints
 
     def profile(effort):

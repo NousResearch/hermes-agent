@@ -15,7 +15,7 @@ async def test_session_history_returns_the_display_transcript_with_row_ids(tmp_p
         return 'ok'
     store, db, authority, owner, ref = _owner(tmp_path, monkeypatch, handle)
     try:
-        from gateway.session_local_recovery import transcript_target
+        from hermes_agent.gateway.session_local_recovery import transcript_target
         target = transcript_target(authority, ref)
         first = db.append_message(target, 'user', 'first question')
         answer = db.append_message(target, 'assistant', 'first answer')
@@ -35,8 +35,8 @@ async def test_session_history_returns_the_display_transcript_with_row_ids(tmp_p
 
 @pytest.mark.asyncio
 async def test_session_history_of_a_compressed_messaging_session_reads_its_continuation(tmp_path, monkeypatch):
-    from gateway.config import Platform
-    from gateway.session_authority import LiveSession
+    from hermes_agent.gateway.config import Platform
+    from hermes_agent.gateway.session_authority import LiveSession
 
     async def handle(event):
         return 'ok'

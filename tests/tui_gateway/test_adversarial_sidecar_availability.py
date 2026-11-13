@@ -1,9 +1,9 @@
 """Native interactive viewers retain registered presentation sidecars."""
 from types import SimpleNamespace
 import pytest
-from gateway.runtime_bootstrap import _PURPOSE_CAPABILITIES
-from gateway.session_authority import SessionAuthority
-from gateway.session_controls import AuthorityConnection
+from hermes_agent.gateway.runtime_bootstrap import _PURPOSE_CAPABILITIES
+from hermes_agent.gateway.session_authority import SessionAuthority
+from hermes_agent.gateway.session_controls import AuthorityConnection
 from hermes_agent.hermes_state import SessionDB
 from hermes_agent.hermes_state_runtime import begin_runtime_epoch
 from hermes_agent.tui_gateway import server

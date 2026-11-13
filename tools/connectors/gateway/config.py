@@ -157,13 +157,13 @@ def operation_session_key(session_id: Optional[str]) -> str:
     (``HERMES_SESSION_KEY``), falling back to the agent's session id where no gateway bound one.
     The agent id alone is wrong on the desktop: compaction rotates it mid-turn while the gateway
     key stays, and a card keyed by the old id can no longer be driven."""
-    from gateway.session_context import get_session_env
+    from hermes_agent.gateway.session_context import get_session_env
 
     return get_session_env("HERMES_SESSION_KEY", "") or str(session_id or "")
 
 
 def session_platform() -> str:
-    from gateway.session_context import get_session_env
+    from hermes_agent.gateway.session_context import get_session_env
 
     platform = get_session_env("HERMES_SESSION_PLATFORM", "") or get_session_env("HERMES_SESSION_SOURCE", "")
     return str(platform or "").strip().lower()

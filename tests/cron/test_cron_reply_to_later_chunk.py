@@ -15,11 +15,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from hermes_agent.cron.scheduler import _deliver_result
-from gateway import rich_sent_store
-from gateway.config import Platform, PlatformConfig
-from gateway.platforms.event import MessageEvent
-from gateway.run import GatewayRunner
-from gateway.session import SessionSource
+from hermes_agent.gateway import rich_sent_store
+from hermes_agent.gateway.config import Platform, PlatformConfig
+from hermes_agent.gateway.platforms.event import MessageEvent
+from hermes_agent.gateway.run import GatewayRunner
+from hermes_agent.gateway.session import SessionSource
 from tests.waiting import wait_until
 
 CHAT_ID = "-1001234567890"
@@ -87,10 +87,10 @@ def _deliver(live_result=None, standalone_result=None, release=None):
         return standalone_result
 
     live = live_result is not None
-    with patch("gateway.config.load_gateway_config", return_value=_gateway_config()), \
+    with patch("hermes_agent.gateway.config.load_gateway_config", return_value=_gateway_config()), \
          patch("hermes_agent.cron.scheduler.load_config", return_value={"cron": {"wrap_response": True}}), \
          patch("hermes_agent.cron.scheduler_delivery._record_delivery_verification"), \
-         patch("gateway.delivery.DeliveryRouter", return_value=router), \
+         patch("hermes_agent.gateway.delivery.DeliveryRouter", return_value=router), \
          patch("tools.send_message_tool._send_to_platform", _send_to_platform), \
          patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro):
         adapters = {Platform.TELEGRAM: MagicMock()} if live else None
@@ -118,7 +118,7 @@ def test_chunks_of_a_partial_send_and_a_send_past_the_confirm_wait_are_tagged(mo
     """Ids are tagged when the send itself finishes: a partial split send raises with the landed
     chunks, and a slow one is still running when the scheduler stops waiting (60 s)."""
     from hermes_agent.cron import scheduler_delivery as sd
-    from gateway.delivery import PartialDeliveryError
+    from hermes_agent.gateway.delivery import PartialDeliveryError
 
     partial = SimpleNamespace(success=False, message_id=None, error="flood", raw_response={
         "partial_overflow": True, "last_message_id": "202", "continuation_message_ids": ("202",),
@@ -164,7 +164,7 @@ def test_a_partial_standalone_split_send_frames_replies_to_its_landed_chunks(mon
     only if the failed send's landed ids were tagged."""
     from tests.tools.test_telegram_send_message_chunk_mdv2 import _install_telegram_mock, _no_proxy
     from plugins.platforms.telegram.standalone import _send_telegram
-    from gateway.inbound_reply_context import reply_pointer
+    from hermes_agent.gateway.inbound_reply_context import reply_pointer
 
     _no_proxy(monkeypatch)
     bot = MagicMock()
@@ -180,7 +180,7 @@ def test_a_partial_standalone_split_send_frames_replies_to_its_landed_chunks(mon
     async def send(platform, pconfig, chat_id, text, **kwargs):
         return await _send_telegram("tok", chat_id, text)
 
-    with patch("gateway.config.load_gateway_config", return_value=cfg), \
+    with patch("hermes_agent.gateway.config.load_gateway_config", return_value=cfg), \
          patch("hermes_agent.cron.scheduler.load_config", return_value={"cron": {"wrap_response": True}}), \
          patch("tools.send_message_tool._send_to_platform", send), \
          patch("hermes_agent.cron.jobs.update_job"):

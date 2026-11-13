@@ -23,8 +23,8 @@ import asyncio
 
 import pytest
 
-import gateway.relay.ws_transport as ws_transport_mod
-from gateway.relay.ws_transport import WebSocketRelayTransport, WEBSOCKETS_AVAILABLE
+import hermes_agent.gateway.relay.ws_transport as ws_transport_mod
+from hermes_agent.gateway.relay.ws_transport import WebSocketRelayTransport, WEBSOCKETS_AVAILABLE
 
 pytestmark = pytest.mark.skipif(not WEBSOCKETS_AVAILABLE, reason="websockets not installed")
 

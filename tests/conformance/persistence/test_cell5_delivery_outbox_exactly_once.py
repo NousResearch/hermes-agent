@@ -6,7 +6,7 @@ the provider send and its durable record must not double-deliver on catch-up
 cell 2 pins that exactly one claimant WINS a parked row; this cell pins the
 observable SIDE EFFECT — how many copies of a reply the platform received.
 
-Hermes' outbox is ``gateway/delivery_ledger.py``. Because a send and its
+Hermes' outbox is ``hermes_agent/gateway/delivery_ledger.py``. Because a send and its
 ``mark_delivered`` can never be one atomic step, the ledger promises honest
 at-least-once rather than a silent resend: a row that was never sent
 ('pending') is redelivered plainly; a row whose send may have landed
@@ -245,7 +245,7 @@ asyncio.run(main())
 
 def _strip_marker(content: str) -> tuple[str, bool]:
     """(reply body, carried a recovery marker?) for one journaled send."""
-    from gateway.delivery_ledger import FLOOD_MARKER, RECONNECTED_MARKER, RECOVERED_MARKER
+    from hermes_agent.gateway.delivery_ledger import FLOOD_MARKER, RECONNECTED_MARKER, RECOVERED_MARKER
 
     for marker in (RECOVERED_MARKER, RECONNECTED_MARKER, FLOOD_MARKER):
         if content.startswith(marker):

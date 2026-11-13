@@ -58,7 +58,7 @@ def test_routed_local_profile_cwd_matches_standalone_gateway(tmp_path, two_homes
     assert build_profile_terminal_scope(a)["TERMINAL_CWD"] == str(tmp_path)
     with install_and_reset_profile_terminal_scope(a):
         assert resolve_agent_cwd() == tmp_path
-    # Non-local backends stay unset (sandbox default), exactly like gateway/run.py's placeholder rule.
+    # Non-local backends stay unset (sandbox default), exactly like hermes_agent/gateway/run.py's placeholder rule.
     assert "TERMINAL_CWD" not in build_profile_terminal_scope(two_homes[1])
 
 
@@ -87,7 +87,7 @@ def test_launch_artifact_context_cwd_follows_routed_profile(two_homes, tmp_path)
 def test_terminal_backend_consumers_read_the_routed_scope(two_homes):
     """Every ``TERMINAL_ENV`` reader that shapes a turn (image-source locality, credential-file path
     translation, image-gen cache base, skill readiness) resolves the ROUTED profile's backend."""
-    from gateway.run import _profile_runtime_scope
+    from hermes_agent.gateway.run import _profile_runtime_scope
     from tools import credential_files, image_generation_tool, image_source
 
     a, b = two_homes

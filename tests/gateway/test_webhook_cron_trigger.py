@@ -24,8 +24,8 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-from gateway.config import PlatformConfig
-from gateway.platforms.webhook import WebhookAdapter, _INSECURE_NO_AUTH
+from hermes_agent.gateway.config import PlatformConfig
+from hermes_agent.gateway.platforms.webhook import WebhookAdapter, _INSECURE_NO_AUTH
 
 # ---------------------------------------------------------------------------
 # Helpers

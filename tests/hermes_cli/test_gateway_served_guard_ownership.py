@@ -22,8 +22,8 @@ from pathlib import Path
 import pytest
 
 import hermes_constants
-from gateway import host_attach
-from gateway.host_attach import HostGateway
+from hermes_agent.gateway import host_attach
+from hermes_agent.gateway.host_attach import HostGateway
 
 
 def _use_home(monkeypatch, fake_home: Path, hermes_home: Path) -> None:
@@ -32,7 +32,7 @@ def _use_home(monkeypatch, fake_home: Path, hermes_home: Path) -> None:
     monkeypatch.setenv("HOME", str(fake_home))
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
     monkeypatch.setattr(hermes_constants, "_default_hermes_root_memo", None)
-    monkeypatch.setattr("gateway.status._get_process_hermes_home", lambda: hermes_home)
+    monkeypatch.setattr("hermes_agent.gateway.status._get_process_hermes_home", lambda: hermes_home)
 
 
 def _publish_host(monkeypatch, home: Path, served: tuple[str, ...]) -> HostGateway:
@@ -105,7 +105,7 @@ def test_satellite_served_by_same_tenants_multiplexer_is_still_refused(tmp_path,
 
 def test_cron_status_restart_hint_names_the_profile_hosting_the_scheduler(tmp_path, monkeypatch, gw):
     """#120871: `hermes -p argus cron status` on a standalone fleet points at argus, not default."""
-    from gateway.host_topology import HostGatewayTopology
+    from hermes_agent.gateway.host_topology import HostGatewayTopology
     from hermes_cli import cron as cron_mod
 
     fake_home = tmp_path / "fakehome"
@@ -114,7 +114,7 @@ def test_cron_status_restart_hint_names_the_profile_hosting_the_scheduler(tmp_pa
     _publish_host(monkeypatch, own_home, ("argus",))
     monkeypatch.setattr(cron_mod, "_active_cron_provider_name", lambda: "builtin")
     monkeypatch.setattr("hermes_cli.profiles.get_active_profile_name", lambda: "argus")
-    monkeypatch.setattr("gateway.host_topology.host_gateway_serving",
+    monkeypatch.setattr("hermes_agent.gateway.host_topology.host_gateway_serving",
                         lambda name=None: HostGatewayTopology(4242, ("argus",), "host_record"))
     seen = []
 

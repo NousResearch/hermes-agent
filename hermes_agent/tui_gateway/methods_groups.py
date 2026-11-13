@@ -49,7 +49,7 @@ def start_hosted_room_service():
     global _service
     if _bound_server is None:
         return None
-    from gateway.hosted_rooms import default_db_path
+    from hermes_agent.gateway.hosted_rooms import default_db_path
     from hermes_agent.tui_gateway.hosted_room_service import HostedRoomService
     db_path = default_db_path()
     with _service_lock:
@@ -135,7 +135,7 @@ def _profile_execution_policy(profile: str) -> dict:
     """Resolve execution policy under the exact multiplexed profile's FULL runtime scope: the policy
     reads provider credentials (``_xai_credentials_present`` -> ``get_env_value``), which under a
     home-only override resolved from the launch process env (or raised once hosting fails closed)."""
-    from gateway.hosted_room_execution_policy import execution_policy_mapping
+    from hermes_agent.gateway.hosted_room_execution_policy import execution_policy_mapping
     if _bound_server is None:
         return execution_policy_mapping(target_profile=profile)
     home = None if profile in {_current_profile(), _profile_name()} else _foreign_profile_home(profile)
@@ -152,7 +152,7 @@ def _room_link_run_storage_durable() -> bool:
     if store is None:
         # This process does not construct the API adapter that owns the store; open the
         # same shared SQLite store lazily so negotiation reflects the real replay boundary.
-        from gateway.platforms.api_server_run_idempotency import RunIdempotencyStore
+        from hermes_agent.gateway.platforms.api_server_run_idempotency import RunIdempotencyStore
         with _run_store_lock:
             store = getattr(_bound_server, "_run_idempotency_store", None)
             if store is None:
@@ -162,7 +162,7 @@ def _room_link_run_storage_durable() -> bool:
 
 def _local_catalog(installation_id: str, profile: str, execution_policy: dict) -> dict:
     """Advertise this gateway's direct-only, text-only RoomLink catalog."""
-    from gateway.hosted_room_peer import PROTOCOL_VERSION, local_catalog_mapping
+    from hermes_agent.gateway.hosted_room_peer import PROTOCOL_VERSION, local_catalog_mapping
     return local_catalog_mapping(
         installation_id=installation_id, protocol_versions=(PROTOCOL_VERSION,),
         link_modes=("direct",), text=True, attachments=False, target_profile=profile,
@@ -179,9 +179,9 @@ def _include_disbanded(params: dict) -> bool:
 
 def _room_error_class(replica_only: bool) -> type:
     if replica_only:
-        from gateway.hosted_room_replicas import ReplicaError
+        from hermes_agent.gateway.hosted_room_replicas import ReplicaError
         return ReplicaError
-    from gateway.hosted_rooms import HostedRoomError
+    from hermes_agent.gateway.hosted_rooms import HostedRoomError
     return HostedRoomError
 
 
@@ -210,7 +210,7 @@ def _room_method(
                     return _err(rid, service_code, service_message, {"admitted": False} if admits else None)
                 args += (service,)
             if db:
-                from gateway.hosted_rooms import default_db_path
+                from hermes_agent.gateway.hosted_rooms import default_db_path
                 args += (default_db_path(),)
             try:
                 return fn(*args)
@@ -232,14 +232,14 @@ def _(rid, params: dict, _catalog=_local_catalog, _methods=_METHODS, _owner=_for
     """Describe the hosted-room protocol implemented by this gateway."""
     if (forwarded := _owner(rid, "groups.capabilities", params)) is not None:
         return forwarded
-    from gateway.hosted_rooms import MAX_LOG_LIMIT, PROTOCOL_VERSION, local_authority_gateway_id
+    from hermes_agent.gateway.hosted_rooms import MAX_LOG_LIMIT, PROTOCOL_VERSION, local_authority_gateway_id
     service = get_hosted_room_service()
     driver_ready = bool(service and service.runtime.status()["running"])
-    # The first missing piece, named as gateway/session_group_peers.py::room_link names it: an
+    # The first missing piece, named as hermes_agent/gateway/session_group_peers.py::room_link names it: an
     # approvals-off profile is a policy refusal, not a missing room key.
     reason = "gateway_roomlink_secret_unavailable"
     try:
-        from gateway.hosted_room_peer import gateway_room_grant_secret
+        from hermes_agent.gateway.hosted_room_peer import gateway_room_grant_secret
         profile = _requested_profile(params)
         reason = "durable_run_storage_required"
         if not _room_link_run_storage_durable():
@@ -268,9 +268,9 @@ def _(rid, params: dict, _catalog=_local_catalog, _methods=_METHODS, _owner=_for
 @_room_method("groups.peer.invite", code=4120, db=True)
 def _(rid, params: dict, db_path, _catalog=_local_catalog, _expiry=_grant_expiry) -> dict:
     """Mint one target-issued room/profile grant for a prospective home."""
-    from gateway.hosted_room_peer import (
+    from hermes_agent.gateway.hosted_room_peer import (
         decode_room_grant, gateway_room_grant_secret, issue_room_grant)
-    from gateway.hosted_rooms import local_authority_gateway_id, reserve_peer_room
+    from hermes_agent.gateway.hosted_rooms import local_authority_gateway_id, reserve_peer_room
     if not _room_link_run_storage_durable():
         raise ValueError("durable run idempotency storage is required")
     installation_id = local_authority_gateway_id()
@@ -300,8 +300,8 @@ def _(rid, params: dict, db_path, _catalog=_local_catalog, _expiry=_grant_expiry
 @_room_method("groups.peer.revoke", code=4122, db=True)
 def _(rid, params: dict, db_path, _expiry=_grant_expiry) -> dict:
     """Revoke one target-issued grant using its exact profile scope."""
-    from gateway.hosted_room_peer import decode_room_grant, gateway_room_grant_secret
-    from gateway.hosted_rooms import local_authority_gateway_id, revoke_room_grant_scope
+    from hermes_agent.gateway.hosted_room_peer import decode_room_grant, gateway_room_grant_secret
+    from hermes_agent.gateway.hosted_rooms import local_authority_gateway_id, revoke_room_grant_scope
     profile = _requested_profile(params)
     claims = decode_room_grant(
         gateway_room_grant_secret(), str(params.get("grant") or ""), permission="status")
@@ -315,10 +315,10 @@ def _(rid, params: dict, db_path, _expiry=_grant_expiry) -> dict:
 @_room_method("groups.peer.register", code=5120, service_code=4121)
 def _(rid, params: dict, service) -> dict:
     """Register and probe one scoped target route on the room home."""
-    from gateway.hosted_room_peer import (
+    from hermes_agent.gateway.hosted_room_peer import (
         GatewayRoomCatalog, PROTOCOL_VERSION as ROOM_LINK_PROTOCOL_VERSION,
         room_grant_matches_scope, validate_room_link_url)
-    from gateway.hosted_rooms import (
+    from hermes_agent.gateway.hosted_rooms import (
         AuthorityConflictError, OwedRevokesFullError, RoomNotFoundError,
         local_authority_gateway_id, room_state)
     from hermes_agent.tui_gateway.hosted_room_peer_http import PeerRunsHTTPClient
@@ -427,7 +427,7 @@ def _(rid, params: dict, service) -> dict:
 @_room_method("groups.list", code=5110, db=True)
 def _(rid, params: dict, db_path) -> dict:
     """List rooms hosted by this gateway."""
-    from gateway.hosted_rooms import MAX_ROOM_LIST_LIMIT, list_rooms
+    from hermes_agent.gateway.hosted_rooms import MAX_ROOM_LIST_LIMIT, list_rooms
     limit = params.get("limit", MAX_ROOM_LIST_LIMIT)
     offset = params.get("offset", 0)
     rooms = list_rooms(
@@ -451,11 +451,11 @@ def _(rid, params: dict, service) -> dict:
 @_room_method("groups.state", code=5115, room_code=4114, db=True)
 def _(rid, params: dict, db_path) -> dict:
     """Return one hosted room's replay cursor and fenced authority state."""
-    from gateway.hosted_rooms import room_state
+    from hermes_agent.gateway.hosted_rooms import room_state
     room = room_state(
         db_path, room_id=params.get("room_id"),
         include_disbanded=params.get("include_disbanded") is True)
-    from gateway.hosted_room_context import groups_state_result
+    from hermes_agent.gateway.hosted_room_context import groups_state_result
     return _ok(rid, groups_state_result(db_path, room, get_hosted_room_service()))
 
 
@@ -464,7 +464,7 @@ def _(rid, params: dict, db_path) -> dict:
     service_message=_WORKER_UNAVAILABLE, admits=True)
 def _(rid, params: dict, service) -> dict:
     """Append one typed event idempotently (inert ``message.user`` only; actor is server-owned)."""
-    from gateway.hosted_rooms import user_event_id
+    from hermes_agent.gateway.hosted_rooms import user_event_id
     client_event_id = params.get("event_id")
     event = service.send(
         room_id=params.get("room_id"), event_id=user_event_id(client_event_id),
@@ -479,7 +479,7 @@ def _(rid, params: dict, service) -> dict:
     service_message=_WORKER_UNAVAILABLE)
 def _(rid, params: dict, service) -> dict:
     """Retain one composer file for a later ``groups.send`` manifest (same store as the gateway route)."""
-    from gateway.session_hosted_attachments import store_upload
+    from hermes_agent.gateway.session_hosted_attachments import store_upload
     room_id = params.get("room_id")
     service._owned_authority(room_id)
     service._room(room_id)
@@ -489,7 +489,7 @@ def _(rid, params: dict, service) -> dict:
 @_room_method("groups.attachment.download", code=5123, room_code=4126, service_code=4115)
 def _(rid, params: dict, service) -> dict:
     """Read one committed room file for a viewer of this gateway's room."""
-    from gateway.session_hosted_attachments import read_download
+    from hermes_agent.gateway.session_hosted_attachments import read_download
     room_id = params.get("room_id")
     service._room(room_id)
     return _ok(rid, read_download(service, room_id, params))
@@ -500,7 +500,7 @@ def _(rid, params: dict, service) -> dict:
     service_message=_WORKER_UNAVAILABLE)
 def _(rid, params: dict, service) -> dict:
     """Permanently tombstone a hosted room id."""
-    from gateway.hosted_rooms import (
+    from hermes_agent.gateway.hosted_rooms import (
         AuthorityConflictError, RoomHeldGrantsPendingError, RoomHistoryExpiredError, disband_room, local_authority_gateway_id,
         _room_id, room_state)
     room_id = _room_id(params.get("room_id"))
@@ -614,28 +614,28 @@ def _passthrough(
 
 
 _passthrough(
-    "groups.rename", "gateway.hosted_rooms", "rename_room",
+    "groups.rename", "hermes_agent.gateway.hosted_rooms", "rename_room",
     """Rename one hosted room atomically with its replay event.""",
     code=5117, room_code=4117, params=("room_id", "event_id", "name"), wrap="room")
 _passthrough(
-    "groups.context", "gateway.hosted_room_context", "set_room_context",
+    "groups.context", "hermes_agent.gateway.hosted_room_context", "set_room_context",
     """Set one hosted room's purpose, shared notes and routing (``everyone`` or ``lead``).""",
     code=5121, room_code=4125, params=("room_id", "event_id", "purpose", "notes", "routing", "lead_member_id"))
 _passthrough(
-    "groups.log", "gateway.hosted_rooms", "read_events",
+    "groups.log", "hermes_agent.gateway.hosted_rooms", "read_events",
     """Return a monotonic room-log delta after ``since_seq``.""",
     code=5113, room_code=4112,
     params=(
         "room_id", ("since_seq", lambda p: p.get("since_seq", 0)),
         ("limit", lambda p: p.get("limit", 100)), ("include_disbanded", _include_disbanded)))
 _passthrough(
-    "groups.replicate", "gateway.hosted_room_replicas", "ingest_page",
+    "groups.replicate", "hermes_agent.gateway.hosted_room_replicas", "ingest_page",
     """Persist one authority-stamped replay page (a verbatim ``groups.log`` result) into
     the local replica store; idempotent, refuses sequence gaps and epoch regressions.""",
     code=5116, room_code=4116, params=("room_id", "room_name", "members", "page"),
     replica_only=True)
 _passthrough(
-    "groups.replica_state", "gateway.hosted_room_replicas", "replica_state",
+    "groups.replica_state", "hermes_agent.gateway.hosted_room_replicas", "replica_state",
     """Report the local replica's coverage and authority lineage.""",
     code=5117, room_code=4117, params=("room_id",), replica_only=True)
 
@@ -644,7 +644,7 @@ _passthrough(
 def _(rid, params: dict, db_path) -> dict:
     """Continue a replicated room on THIS gateway at ``epoch + 1``. Requires ``confirm:
     true`` — the caller asserts the previous authority can no longer commit."""
-    from gateway.hosted_room_replicas import promote_replica
+    from hermes_agent.gateway.hosted_room_replicas import promote_replica
     if params.get("confirm") is not True:
         return _err(rid, 4118, "promotion requires confirm=true acknowledging the previous "
                     "authority can no longer commit")
@@ -653,7 +653,7 @@ def _(rid, params: dict, db_path) -> dict:
 
 
 _passthrough(
-    "groups.demote", "gateway.hosted_room_replicas", "demote_room",
+    "groups.demote", "hermes_agent.gateway.hosted_room_replicas", "demote_room",
     """Fence this gateway's stale room authority against a proven newer epoch.""",
     code=5119, room_code=4119, params=("room_id", "observed_gateway_id", "observed_epoch"),
     replica_only=True)

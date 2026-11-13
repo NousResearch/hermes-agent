@@ -61,7 +61,7 @@ def _cleanup(model, first, children, daemon, startup, ensured_pid, home, receipt
             daemon.kill()
             daemon.wait(timeout=5)
     if startup and not ensured_pid:
-        from gateway.status import get_running_pid_identity_strict
+        from hermes_agent.gateway.status import get_running_pid_identity_strict
         identity = get_running_pid_identity_strict(home / 'gateway.pid')
         ensured_pid = identity[0] if identity else None
     if ensured_pid:
@@ -198,7 +198,7 @@ def run():
                     assert first[0].poll() is None, bytes(first[2]).decode(errors='replace')
                     time.sleep(.1)
                 (Path(sys.argv[1]) / 'startup.pty').write_bytes(first[2])
-                from gateway.status import get_running_pid_identity_strict
+                from hermes_agent.gateway.status import get_running_pid_identity_strict
                 identity = get_running_pid_identity_strict(home / 'gateway.pid')
                 assert identity is not None, bytes(first[2]).decode(errors='replace')[-8000:]
                 ensured_pid = identity[0]
@@ -220,7 +220,7 @@ def run():
                 assert receipts['prepared_journal_cleared']
                 return
             log = (base / 'daemon.log').open('w+')
-            daemon_argv = [sys.executable, '-m', 'gateway.run']
+            daemon_argv = [sys.executable, '-m', 'hermes_agent.gateway.run']
             if stopping:
                 daemon_argv = [sys.executable, str(ROOT / 'ui-tui/scripts/native_stop_probe.py')]
             daemon = subprocess.Popen(daemon_argv, cwd=ROOT, env=env,

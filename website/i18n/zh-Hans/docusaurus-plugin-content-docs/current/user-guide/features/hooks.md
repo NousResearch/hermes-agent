@@ -262,7 +262,7 @@ def _run_boot_agent(content: str) -> None:
     against custom endpoints, aggregators, and OAuth-based providers alike.
     """
     try:
-        from gateway.run import _resolve_gateway_model, _resolve_runtime_agent_kwargs
+        from hermes_agent.gateway.run import _resolve_gateway_model, _resolve_runtime_agent_kwargs
         from run_agent import AIAgent
 
         agent = AIAgent(
@@ -889,7 +889,7 @@ def my_callback(event, gateway, session_store, **kwargs):
 | `gateway` | `GatewayRunner` | 活跃的 gateway 运行器，插件可调用 `gateway.adapters[platform].send(...)` 进行旁路回复（所有者通知等）。 |
 | `session_store` | `SessionStore` | 用于通过 `session_store.append_to_transcript(...)` 静默摄入转录。 |
 
-**触发位置：** `gateway/run.py` 中的 `GatewayRunner._handle_message()` 内，`is_internal` 计算后立即触发。**内部事件完全跳过此 hook**（它们是系统生成的——后台进程完成等——不得被面向用户的策略拦截）。
+**触发位置：** `hermes_agent/gateway/run.py` 中的 `GatewayRunner._handle_message()` 内，`is_internal` 计算后立即触发。**内部事件完全跳过此 hook**（它们是系统生成的——后台进程完成等——不得被面向用户的策略拦截）。
 
 **返回值：** `None` 或字典。第一个被识别的 action 字典生效；其余插件结果被忽略。插件回调中的异常会被捕获并记录；gateway 在出错时始终回退到正常分发。
 
@@ -1191,7 +1191,7 @@ blocked transition 提交后触发（含 dependency-wait），回调可读写看
 - **向下一个 LLM 轮次注入上下文** — 在用户消息前追加 `git status` 输出、当前星期几或检索到的文档（参见 [`pre_llm_call`](#pre_llm_call)）。
 - **观察生命周期事件** — 在子 agent 完成（`subagent_stop`）或会话开始（`on_session_start`）时写入日志行。
 
-Shell hooks 通过在 CLI 启动（`hermes_cli/main.py`）和 gateway 启动（`gateway/run.py`）时调用 `agent.shell_hooks.register_from_config(cfg)` 来注册。它们与 Python 插件 hook 自然组合——两者都流经同一个分发器。
+Shell hooks 通过在 CLI 启动（`hermes_cli/main.py`）和 gateway 启动（`hermes_agent/gateway/run.py`）时调用 `agent.shell_hooks.register_from_config(cfg)` 来注册。它们与 Python 插件 hook 自然组合——两者都流经同一个分发器。
 
 ### 对比一览
 

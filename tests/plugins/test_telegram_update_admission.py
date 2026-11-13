@@ -18,12 +18,12 @@ from telegram import InlineQuery, Message, PhotoSize, Sticker, Update
 from telegram.ext import Application, ApplicationHandlerStop, ConversationHandler, Defaults, MessageHandler, TypeHandler, filters
 from telegram.request import BaseRequest
 
-from gateway.config import PlatformConfig
-from gateway.config import GatewayConfig, Platform
-from gateway.platforms.event import MessageEvent, MessageType
-from gateway.run import GatewayRunner
-from gateway.session import SessionSource, build_session_context
-from gateway.session_context import get_session_env
+from hermes_agent.gateway.config import PlatformConfig
+from hermes_agent.gateway.config import GatewayConfig, Platform
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.run import GatewayRunner
+from hermes_agent.gateway.session import SessionSource, build_session_context
+from hermes_agent.gateway.session_context import get_session_env
 from tests.waiting import async_wait_until
 from plugins.platforms.telegram import adapter as tg_adapter, telegram_media_fetch
 from plugins.platforms.telegram.adapter import TelegramAdapter
@@ -157,8 +157,8 @@ async def connected(monkeypatch, *, extra=None, bot_id=111, is_reconnect=False):
 ])
 @pytest.mark.parametrize("concurrent", [False, True])
 async def test_replay_is_admitted_once_before_dispatch(monkeypatch, tmp_path, kind, mode, concurrent):
-    from gateway.config import GatewayConfig
-    from gateway.session import SessionStore
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.session import SessionStore
     from hermes_constants import set_hermes_home_override, reset_hermes_home_override
     import hermes_cli.lifecycle
 
@@ -254,7 +254,7 @@ async def test_replay_is_admitted_once_before_dispatch(monkeypatch, tmp_path, ki
 
 
 async def _check_sticker_handoff(monkeypatch, adapter, app, delivered, stage):
-    from gateway import sticker_cache
+    from hermes_agent.gateway import sticker_cache
     from tools import vision_tools
 
     entered = asyncio.Event()
@@ -295,8 +295,8 @@ async def _check_sticker_handoff(monkeypatch, adapter, app, delivered, stage):
 
 
 async def _check_caught_preparation(monkeypatch, tmp_path, adapter, app, stage):
-    from gateway.config import GatewayConfig
-    from gateway.session import SessionStore
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.session import SessionStore
     from plugins.platforms.telegram import inline_picker
     import sqlite3
 

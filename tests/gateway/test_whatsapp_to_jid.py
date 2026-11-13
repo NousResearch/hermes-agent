@@ -1,4 +1,4 @@
-"""Unit tests for gateway.whatsapp_identity.to_whatsapp_jid.
+"""Unit tests for hermes_agent.gateway.whatsapp_identity.to_whatsapp_jid.
 
 ``to_whatsapp_jid`` is the outbound inverse of
 ``normalize_whatsapp_identifier``: it builds the bridge-safe JID a send
@@ -9,7 +9,7 @@ before it reaches the bridge.
 
 import pytest
 
-from gateway.whatsapp_identity import to_whatsapp_jid
+from hermes_agent.gateway.whatsapp_identity import to_whatsapp_jid
 
 
 class TestToWhatsappJid:

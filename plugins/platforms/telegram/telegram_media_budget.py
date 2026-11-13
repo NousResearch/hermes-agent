@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from typing import Any, Iterable, Mapping
 
-from gateway.platforms.helpers import (
+from hermes_agent.gateway.platforms.helpers import (
     MEDIA_UPLOAD_DEADLINE_MAX as DEADLINE_MAX, MIN_MEDIA_UPLOAD_RATE as MIN_UPLOAD_RATE, media_upload_seconds,
     scaled_upload_deadline)
 

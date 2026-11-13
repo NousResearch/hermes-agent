@@ -48,7 +48,7 @@ def _ensure_slack_mock():
 _ensure_slack_mock()
 
 from plugins.platforms.slack.adapter import SlackAdapter
-from gateway.config import PlatformConfig, Platform
+from hermes_agent.gateway.config import PlatformConfig, Platform
 
 
 def _make_adapter():
@@ -627,8 +627,8 @@ class TestSlackModelPickerGatewayIntegration:
 
         import hermes_yaml as yaml
 
-        from gateway.platforms.event import MessageEvent, MessageType
-        from gateway.session import SessionSource
+        from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
+        from hermes_agent.gateway.session import SessionSource
 
         captured = {}
 
@@ -640,7 +640,7 @@ class TestSlackModelPickerGatewayIntegration:
 
         adapter = SlackPickerAdapter()
 
-        from gateway.run import GatewayRunner
+        from hermes_agent.gateway.run import GatewayRunner
         runner = object.__new__(GatewayRunner)
         runner.adapters = {Platform.SLACK: adapter}
         runner._voice_mode = {}
@@ -658,7 +658,7 @@ class TestSlackModelPickerGatewayIntegration:
             encoding="utf-8",
         )
 
-        import gateway.run as gateway_run
+        import hermes_agent.gateway.run as gateway_run
         monkeypatch.setattr(gateway_run, "_hermes_home", hermes_home)
         monkeypatch.setattr("agent.models_dev.fetch_models_dev", dict)
         monkeypatch.setattr(
@@ -683,15 +683,15 @@ class TestSlackModelPickerGatewayIntegration:
     async def test_text_fallback_when_no_picker(self, tmp_path, monkeypatch):
         import hermes_yaml as yaml
 
-        from gateway.platforms.event import MessageEvent, MessageType
-        from gateway.session import SessionSource
+        from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
+        from hermes_agent.gateway.session import SessionSource
 
         class SlackNoPickerAdapter:
             pass  # no send_model_picker
 
         adapter = SlackNoPickerAdapter()
 
-        from gateway.run import GatewayRunner
+        from hermes_agent.gateway.run import GatewayRunner
         runner = object.__new__(GatewayRunner)
         runner.adapters = {Platform.SLACK: adapter}
         runner._voice_mode = {}
@@ -709,7 +709,7 @@ class TestSlackModelPickerGatewayIntegration:
             encoding="utf-8",
         )
 
-        import gateway.run as gateway_run
+        import hermes_agent.gateway.run as gateway_run
         monkeypatch.setattr(gateway_run, "_hermes_home", hermes_home)
         monkeypatch.setattr("agent.models_dev.fetch_models_dev", dict)
         monkeypatch.setattr(

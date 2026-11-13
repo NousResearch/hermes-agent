@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from gateway.platforms import base
+from hermes_agent.gateway.platforms import base
 
 
 @pytest.mark.asyncio

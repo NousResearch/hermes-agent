@@ -1,6 +1,6 @@
 """A failed turn must not leave its accepted user row as the durable conversation tail.
 
-The gateway closes failed turns itself (``gateway/run_turn.py::_hmwa_close_failed_turn``);
+The gateway closes failed turns itself (``hermes_agent/gateway/run_turn.py::_hmwa_close_failed_turn``);
 standalone ACP hands ``result["messages"]`` straight back as history, so the terminal-failure
 paths that persist the user row and return before ``finalize_turn`` used to leave ``user`` as
 the tail. The next prompt then appended a second user row and ``repair_message_sequence``

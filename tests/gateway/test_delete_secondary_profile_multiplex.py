@@ -9,13 +9,13 @@ from tests.gateway.test_session_authorities_multiplex import _reserve_homes, _ru
 
 @pytest.mark.asyncio
 async def test_delete_of_secondary_profile_session_does_not_409(tmp_path, monkeypatch):
-    from gateway import run
-    from gateway.run import _profile_runtime_scope
-    from gateway.run_runtime import initialize_gateway_runtime
-    from gateway.runtime_ownership import process_ownership
-    from gateway.session_contract import SessionActor
-    from gateway.session_local import create_local_session
-    from gateway.session_mutations import mutate_session
+    from hermes_agent.gateway import run
+    from hermes_agent.gateway.run import _profile_runtime_scope
+    from hermes_agent.gateway.run_runtime import initialize_gateway_runtime
+    from hermes_agent.gateway.runtime_ownership import process_ownership
+    from hermes_agent.gateway.session_contract import SessionActor
+    from hermes_agent.gateway.session_local import create_local_session
+    from hermes_agent.gateway.session_mutations import mutate_session
 
     monkeypatch.setattr(run, '_load_gateway_config', lambda: {'platform_toolsets': {'cli': []}})
     root, homes = _reserve_homes(tmp_path, monkeypatch, names=('alpha',))
@@ -35,7 +35,7 @@ async def test_delete_of_secondary_profile_session_does_not_409(tmp_path, monkey
                                                           'cwd': str(tmp_path), 'model': 'frozen', 'toolsets': []})
             # A messaging key routed at this session, published to the launch store's durable
             # index — the shape that survives deletes a user actually observes (#138862).
-            from gateway.session import SessionEntry
+            from hermes_agent.gateway.session import SessionEntry
             store = runner.session_store
             now = datetime.now(UTC)
             store._entries['agent:main:telegram:111'] = SessionEntry(
@@ -68,14 +68,14 @@ async def test_a_stale_routing_save_cannot_restore_a_deleted_secondary_route(tmp
     """A whole-index snapshot taken before a secondary profile's delete, saved after it, must not
     put the deleted session's route back in the launch home's shared index: the deletion fence
     has to live in the routing database, not only in the secondary's own store."""
-    from gateway import run
-    from gateway.run import _profile_runtime_scope
-    from gateway.run_runtime import initialize_gateway_runtime
-    from gateway.runtime_ownership import process_ownership
-    from gateway.session import SessionEntry
-    from gateway.session_contract import SessionActor
-    from gateway.session_local import create_local_session
-    from gateway.session_mutations import mutate_session
+    from hermes_agent.gateway import run
+    from hermes_agent.gateway.run import _profile_runtime_scope
+    from hermes_agent.gateway.run_runtime import initialize_gateway_runtime
+    from hermes_agent.gateway.runtime_ownership import process_ownership
+    from hermes_agent.gateway.session import SessionEntry
+    from hermes_agent.gateway.session_contract import SessionActor
+    from hermes_agent.gateway.session_local import create_local_session
+    from hermes_agent.gateway.session_mutations import mutate_session
 
     monkeypatch.setattr(run, '_load_gateway_config', lambda: {'platform_toolsets': {'cli': []}})
     root, homes = _reserve_homes(tmp_path, monkeypatch, names=('alpha',))
@@ -113,7 +113,7 @@ async def test_a_stale_routing_save_cannot_restore_a_deleted_secondary_route(tmp
 
 
 def test_runtime_owns_authority_requires_runner_membership():
-    from gateway.session_mutations import _runtime_owns_authority
+    from hermes_agent.gateway.session_mutations import _runtime_owns_authority
     launch, secondary = SimpleNamespace(runner=None), SimpleNamespace(runner=None)
     runner = SimpleNamespace(session_authorities=[launch, secondary], session_authority=launch)
     launch.runner = runner
@@ -136,12 +136,12 @@ def test_a_failed_shared_fence_fails_the_canonical_delete_not_the_prune(monkeypa
     """The shared-index fence must be durable before a delete reports success: a canonical
     delete refuses ``storage_unavailable`` (its exact retry repeats the fence); a bulk prune,
     which has no retry receipt, keeps its committed result and only logs."""
-    from gateway.session_mutations import retire_live_sessions
+    from hermes_agent.gateway.session_mutations import retire_live_sessions
     from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
-    for target in ('gateway.session_policy.release_launch_secrets',
-                   'gateway.session_local_mcp.release_editor_mcp',
-                   'gateway.session_worker_construct.release_session_prefill'):
+    for target in ('hermes_agent.gateway.session_policy.release_launch_secrets',
+                   'hermes_agent.gateway.session_local_mcp.release_editor_mcp',
+                   'hermes_agent.gateway.session_worker_construct.release_session_prefill'):
         monkeypatch.setattr(target, lambda *a, **k: None)
 
     def broken(ids, **_):

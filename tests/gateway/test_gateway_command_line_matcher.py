@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import pytest
 
-from gateway.status import (
+from hermes_agent.gateway.status import (
     gateway_spawn_intent_subcommand as spawn_intent,
     looks_like_gateway_command_line as matches,
     looks_like_gateway_runtime_command_line as matches_runtime,
@@ -26,6 +26,7 @@ ACCEPT = [
     "python -m hermes_cli/main.py gateway run",
     "python gateway/run.py",
     "python -m gateway.run",   # module spelling of the dedicated entrypoint
+    "python -m hermes_agent.gateway.run",  # the same entrypoint under its moved package name
     "hermes-gateway.exe",
     "hermes gateway",          # bare `hermes gateway` defaults to run
     "hermes gateway run",

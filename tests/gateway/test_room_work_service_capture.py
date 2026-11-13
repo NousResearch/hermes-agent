@@ -11,8 +11,8 @@ from hermes_agent.hermes_state_runtime import begin_runtime_epoch
 
 @pytest.mark.asyncio
 async def test_canonical_send_and_stop_retain_driver_evidence(tmp_path, monkeypatch):
-    from gateway.session_hosted_service import CanonicalHostedRoomService
-    from gateway import hosted_room_work_records as work
+    from hermes_agent.gateway.session_hosted_service import CanonicalHostedRoomService
+    from hermes_agent.gateway import hosted_room_work_records as work
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     with SessionDB(tmp_path / 'state.db') as db:
         authority = SimpleNamespace(db=db, profile_id=str(tmp_path), epoch=begin_runtime_epoch(db, instance_id='test'))

@@ -19,9 +19,9 @@ from unittest.mock import AsyncMock
 import pytest
 
 from agent import memory_caller_scope, secret_scope
-from gateway.config import GatewayConfig, Platform
-from gateway.run import GatewayRunner, _profile_runtime_scope
-from gateway.session import SessionSource
+from hermes_agent.gateway.config import GatewayConfig, Platform
+from hermes_agent.gateway.run import GatewayRunner, _profile_runtime_scope
+from hermes_agent.gateway.session import SessionSource
 from hermes_constants import get_hermes_home
 
 
@@ -110,7 +110,7 @@ async def test_reset_gateway_events_reach_only_the_owning_profile_hooks(tmp_path
     """An unscoped /new must not dispatch B's session events to default's installed hooks. The key
     names the owner of the session that ended, so a source that routes elsewhere (no profile on it)
     must not move the hooks either."""
-    from gateway.hooks import HookRegistry, ProfileHookRegistries
+    from hermes_agent.gateway.hooks import HookRegistry, ProfileHookRegistries
     from hermes_constants import hermes_home_key
 
     prof_b = _profile_b(tmp_path, monkeypatch)
@@ -160,7 +160,7 @@ def test_a_key_whose_profile_home_is_gone_warns_before_releasing_under_root(tmp_
     seen: dict = {}
     secret_scope.set_multiplex_active(True)
     try:
-        with caplog.at_level("WARNING", logger="gateway.run"):
+        with caplog.at_level("WARNING", logger="hermes_agent.gateway.run"):
             runner._run_release_in_profile_scope(lambda: seen.__setitem__("home", str(get_hermes_home())), (),
                                                  "agent:ghost:telegram:dm:1")
     finally:

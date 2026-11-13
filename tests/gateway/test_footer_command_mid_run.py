@@ -1,6 +1,6 @@
 """Regression: /footer must dispatch to its handler while an agent is running.
 
-The gateway runner's running-agent block (``gateway/run.py``) routes the
+The gateway runner's running-agent block (``hermes_agent/gateway/run.py``) routes the
 "session-level toggles that are safe to run mid-agent" through a membership
 set before the catch-all that rejects everything else with
 ``"Agent is running — /<cmd> can't run mid-turn"``.
@@ -28,9 +28,9 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.event import MessageEvent
-from gateway.session import SessionEntry, SessionSource, build_session_key
+from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+from hermes_agent.gateway.platforms.event import MessageEvent
+from hermes_agent.gateway.session import SessionEntry, SessionSource, build_session_key
 
 
 def _make_source() -> SessionSource:
@@ -52,7 +52,7 @@ def _make_event(text: str) -> MessageEvent:
 
 
 def _make_runner(session_entry: SessionEntry):
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
 
     runner = object.__new__(GatewayRunner)
     runner.config = GatewayConfig(

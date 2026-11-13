@@ -13,9 +13,9 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from gateway.config import GatewayConfig, PlatformConfig
-from gateway.run import GatewayRunner
-from gateway.session import Platform, SessionSource
+from hermes_agent.gateway.config import GatewayConfig, PlatformConfig
+from hermes_agent.gateway.run import GatewayRunner
+from hermes_agent.gateway.session import Platform, SessionSource
 
 
 def _source(chat_type, user_id="alice"):

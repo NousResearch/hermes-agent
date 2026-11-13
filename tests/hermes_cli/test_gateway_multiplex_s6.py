@@ -66,7 +66,7 @@ def test_parked_named_slots_do_not_veto_the_unset_default(s6_host):
     """The user's exact scenario: boot parked alpha+beta down, key unset → the guard must let the
     default apply (only an UP named slot is a second gateway). Base refused with 'Restart the container'."""
     _root, fake = s6_host
-    from gateway.config import GatewayConfig
+    from hermes_agent.gateway.config import GatewayConfig
     decision = mode.resolve_multiplex_mode(GatewayConfig.from_dict({}))
     assert (decision.enabled, decision.source) == (True, "default"), decision
     fake.up.add("gateway-alpha")
@@ -117,7 +117,7 @@ def test_resolved_default_is_written_once_and_never_on_a_guard(s6_host):
     # A retired ``false`` is rewritten in place, never silently: the one-time notice reaches the
     # gateway start (log_multiplex_decision prints it) and the next ``hermes update`` summary.
     (root / "config.yaml").write_text("# my config\ngateway:\n  multiplex_profiles: false\n", encoding="utf-8")
-    from gateway.config import GatewayConfig
+    from hermes_agent.gateway.config import GatewayConfig
     decision = mode.resolve_multiplex_mode(GatewayConfig.from_dict({"gateway": {"multiplex_profiles": False}}))
     assert decision.source == "retired-opt-out"
     mode.log_multiplex_decision(decision)

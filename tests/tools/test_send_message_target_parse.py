@@ -9,7 +9,7 @@ import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
-from gateway.config import Platform
+from hermes_agent.gateway.config import Platform
 from tools.send_message_tool import _send_to_platform, send_message_tool
 from tools.send_message_targets import _parse_target_ref
 
@@ -25,7 +25,7 @@ def test_buzz_uuid_target_is_explicit() -> None:
 
 
 def test_live_buzz_media_delivers_every_file_with_reply_metadata(tmp_path) -> None:
-    from gateway.platforms.base import SendResult
+    from hermes_agent.gateway.platforms.base import SendResult
 
     platform = Platform("buzz")
     first = tmp_path / "first.txt"
@@ -44,7 +44,7 @@ def test_live_buzz_media_delivers_every_file_with_reply_metadata(tmp_path) -> No
             return SendResult(success=True, message_id=f"evt-{len(calls)}")
 
     runner = SimpleNamespace(adapters={platform: Adapter()})
-    with patch("gateway.run._gateway_runner_ref", return_value=runner):
+    with patch("hermes_agent.gateway.run._gateway_runner_ref", return_value=runner):
         result = asyncio.run(
             _send_to_platform(
                 platform,
@@ -66,7 +66,7 @@ def test_live_buzz_media_delivers_every_file_with_reply_metadata(tmp_path) -> No
 
 
 def test_live_buzz_single_image_uses_caption_without_duplicate_text(tmp_path) -> None:
-    from gateway.platforms.base import SendResult
+    from hermes_agent.gateway.platforms.base import SendResult
 
     platform = Platform("buzz")
     image = tmp_path / "shot.png"
@@ -83,7 +83,7 @@ def test_live_buzz_single_image_uses_caption_without_duplicate_text(tmp_path) ->
             return SendResult(success=True, message_id="evt-image")
 
     runner = SimpleNamespace(adapters={platform: Adapter()})
-    with patch("gateway.run._gateway_runner_ref", return_value=runner):
+    with patch("hermes_agent.gateway.run._gateway_runner_ref", return_value=runner):
         result = asyncio.run(
             _send_to_platform(
                 platform,
@@ -106,7 +106,7 @@ def test_live_buzz_single_image_uses_caption_without_duplicate_text(tmp_path) ->
 
 
 def test_live_buzz_media_failure_is_explicit_not_omitted(tmp_path) -> None:
-    from gateway.platforms.base import SendResult
+    from hermes_agent.gateway.platforms.base import SendResult
 
     platform = Platform("buzz")
     first = tmp_path / "first.txt"
@@ -126,7 +126,7 @@ def test_live_buzz_media_failure_is_explicit_not_omitted(tmp_path) -> None:
             return SendResult(success=True, message_id="evt-first")
 
     runner = SimpleNamespace(adapters={platform: Adapter()})
-    with patch("gateway.run._gateway_runner_ref", return_value=runner):
+    with patch("hermes_agent.gateway.run._gateway_runner_ref", return_value=runner):
         result = asyncio.run(
             _send_to_platform(
                 platform,
@@ -143,7 +143,7 @@ def test_live_buzz_media_failure_is_explicit_not_omitted(tmp_path) -> None:
 
 
 def test_live_buzz_media_only_send_reaches_adapter(tmp_path) -> None:
-    from gateway.platforms.base import SendResult
+    from hermes_agent.gateway.platforms.base import SendResult
 
     platform = Platform("buzz")
     document = tmp_path / "report.txt"
@@ -159,7 +159,7 @@ def test_live_buzz_media_only_send_reaches_adapter(tmp_path) -> None:
             return SendResult(success=True, message_id="evt-document")
 
     runner = SimpleNamespace(adapters={platform: Adapter()})
-    with patch("gateway.run._gateway_runner_ref", return_value=runner):
+    with patch("hermes_agent.gateway.run._gateway_runner_ref", return_value=runner):
         result = asyncio.run(
             _send_to_platform(
                 platform,
@@ -180,7 +180,7 @@ def test_live_buzz_media_only_send_reaches_adapter(tmp_path) -> None:
 
 
 def test_live_buzz_media_exception_reports_partial_delivery(tmp_path) -> None:
-    from gateway.platforms.base import SendResult
+    from hermes_agent.gateway.platforms.base import SendResult
 
     platform = Platform("buzz")
     first = tmp_path / "first.txt"
@@ -198,7 +198,7 @@ def test_live_buzz_media_exception_reports_partial_delivery(tmp_path) -> None:
             return SendResult(success=True, message_id="evt-first")
 
     runner = SimpleNamespace(adapters={platform: Adapter()})
-    with patch("gateway.run._gateway_runner_ref", return_value=runner):
+    with patch("hermes_agent.gateway.run._gateway_runner_ref", return_value=runner):
         result = asyncio.run(
             _send_to_platform(
                 platform,
@@ -215,7 +215,7 @@ def test_live_buzz_media_exception_reports_partial_delivery(tmp_path) -> None:
 
 
 def test_live_adapter_inherited_media_fallback_is_not_claimed_as_delivery(tmp_path) -> None:
-    from gateway.platforms.base import BasePlatformAdapter, SendResult
+    from hermes_agent.gateway.platforms.base import BasePlatformAdapter, SendResult
 
     platform = Platform("buzz")
     document = tmp_path / "report.txt"
@@ -229,7 +229,7 @@ def test_live_adapter_inherited_media_fallback_is_not_claimed_as_delivery(tmp_pa
             return SendResult(success=True, message_id="warning-text-only")
 
     runner = SimpleNamespace(adapters={platform: Adapter()})
-    with patch("gateway.run._gateway_runner_ref", return_value=runner):
+    with patch("hermes_agent.gateway.run._gateway_runner_ref", return_value=runner):
         result = asyncio.run(
             _send_to_platform(
                 platform,
@@ -252,7 +252,7 @@ def test_live_buzz_adapter_exception_is_bounded() -> None:
             raise RuntimeError("x" * 100_000)
 
     runner = SimpleNamespace(adapters={platform: Adapter()})
-    with patch("gateway.run._gateway_runner_ref", return_value=runner):
+    with patch("hermes_agent.gateway.run._gateway_runner_ref", return_value=runner):
         result = asyncio.run(
             _send_to_platform(
                 platform,
@@ -274,12 +274,12 @@ def test_send_message_routes_buzz_uuid_without_home_fallback() -> None:
     )
     channel_id = "31b543d5-80d4-4df5-8a5c-cefca1a58fdd"
 
-    with patch("gateway.config.load_gateway_config", return_value=config), \
+    with patch("hermes_agent.gateway.config.load_gateway_config", return_value=config), \
          patch("tools.interrupt.is_interrupted", return_value=False), \
-         patch("gateway.channel_directory.resolve_channel_name", side_effect=AssertionError("raw UUID should not resolve via directory")), \
+         patch("hermes_agent.gateway.channel_directory.resolve_channel_name", side_effect=AssertionError("raw UUID should not resolve via directory")), \
          patch("model_tools._run_async", side_effect=_run_async_immediately), \
          patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
-         patch("gateway.mirror.mirror_to_session", return_value=True):
+         patch("hermes_agent.gateway.mirror.mirror_to_session", return_value=True):
         result = json.loads(
             send_message_tool(
                 {
@@ -337,12 +337,12 @@ def test_send_message_routes_whatsapp_group_jid_without_home_fallback() -> None:
         get_home_channel=lambda _platform: SimpleNamespace(chat_id="15551234567@s.whatsapp.net"),
     )
 
-    with patch("gateway.config.load_gateway_config", return_value=config), \
+    with patch("hermes_agent.gateway.config.load_gateway_config", return_value=config), \
          patch("tools.interrupt.is_interrupted", return_value=False), \
-         patch("gateway.channel_directory.resolve_channel_name", side_effect=AssertionError("raw JID should not resolve via directory")), \
+         patch("hermes_agent.gateway.channel_directory.resolve_channel_name", side_effect=AssertionError("raw JID should not resolve via directory")), \
          patch("model_tools._run_async", side_effect=_run_async_immediately), \
          patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
-         patch("gateway.mirror.mirror_to_session", return_value=True):
+         patch("hermes_agent.gateway.mirror.mirror_to_session", return_value=True):
         result = json.loads(
             send_message_tool(
                 {
@@ -367,7 +367,7 @@ def test_send_message_routes_whatsapp_group_jid_without_home_fallback() -> None:
 
 
 def test_resolved_opaque_plugin_target_uses_directory_id() -> None:
-    from gateway.platform_registry import PlatformEntry, platform_registry
+    from hermes_agent.gateway.platform_registry import PlatformEntry, platform_registry
 
     platform_name = "opaque-resolved-test"
     entry = PlatformEntry(
@@ -384,10 +384,10 @@ def test_resolved_opaque_plugin_target_uses_directory_id() -> None:
         get_home_channel=lambda _platform: None,
     )
     try:
-        with patch("gateway.config.load_gateway_config", return_value=config), \
+        with patch("hermes_agent.gateway.config.load_gateway_config", return_value=config), \
              patch("tools.interrupt.is_interrupted", return_value=False), \
              patch(
-                 "gateway.channel_directory.resolve_channel_name",
+                 "hermes_agent.gateway.channel_directory.resolve_channel_name",
                  return_value="opaque:directory-id",
              ), \
              patch("model_tools._run_async", side_effect=_run_async_immediately), \
@@ -395,7 +395,7 @@ def test_resolved_opaque_plugin_target_uses_directory_id() -> None:
                  "tools.send_message_tool._send_to_platform",
                  new=AsyncMock(return_value={"success": True}),
              ) as send_mock, \
-             patch("gateway.mirror.mirror_to_session", return_value=True):
+             patch("hermes_agent.gateway.mirror.mirror_to_session", return_value=True):
             result = json.loads(
                 send_message_tool(
                     {
@@ -421,7 +421,7 @@ def test_resolved_opaque_plugin_target_uses_directory_id() -> None:
 
 
 def test_unresolved_plugin_target_requires_explicit_parser() -> None:
-    from gateway.platform_registry import PlatformEntry, platform_registry
+    from hermes_agent.gateway.platform_registry import PlatformEntry, platform_registry
 
     platform_name = "opaque-verbatim-test"
     entry = PlatformEntry(
@@ -442,10 +442,10 @@ def test_unresolved_plugin_target_requires_explicit_parser() -> None:
         get_home_channel=lambda _platform: None,
     )
     try:
-        with patch("gateway.config.load_gateway_config", return_value=config), \
+        with patch("hermes_agent.gateway.config.load_gateway_config", return_value=config), \
              patch("tools.interrupt.is_interrupted", return_value=False), \
              patch(
-                 "gateway.channel_directory.resolve_channel_name",
+                 "hermes_agent.gateway.channel_directory.resolve_channel_name",
                  return_value=None,
              ), \
              patch(
@@ -457,7 +457,7 @@ def test_unresolved_plugin_target_requires_explicit_parser() -> None:
                  "tools.send_message_tool._send_to_platform",
                  new=AsyncMock(return_value={"success": True}),
              ) as send_mock, \
-             patch("gateway.mirror.mirror_to_session", return_value=True):
+             patch("hermes_agent.gateway.mirror.mirror_to_session", return_value=True):
             result = json.loads(
                 send_message_tool(
                     {
@@ -482,8 +482,8 @@ def test_unresolved_builtin_target_keeps_directory_error() -> None:
         get_home_channel=lambda _platform: None,
     )
 
-    with patch("gateway.config.load_gateway_config", return_value=config), \
-         patch("gateway.channel_directory.resolve_channel_name", return_value=None), \
+    with patch("hermes_agent.gateway.config.load_gateway_config", return_value=config), \
+         patch("hermes_agent.gateway.channel_directory.resolve_channel_name", return_value=None), \
          patch(
              "tools.send_message_tool._send_to_platform",
              new=AsyncMock(return_value={"success": True}),
@@ -511,7 +511,7 @@ def test_unresolved_builtin_target_passes_through_when_requested() -> None:
     took over these callers."""
     from tools.send_message_tool import resolve_send_target
 
-    with patch("gateway.channel_directory.resolve_channel_name", return_value=None):
+    with patch("hermes_agent.gateway.channel_directory.resolve_channel_name", return_value=None):
         chat_id, thread_id, error = resolve_send_target(
             "telegram", "ops-room", pass_unresolved_references=True
         )
@@ -534,7 +534,7 @@ def test_photon_group_guid_passes_through_when_requested() -> None:
     )
 
     prepare_send_message_platforms()
-    with patch("gateway.channel_directory.resolve_channel_name", return_value=None):
+    with patch("hermes_agent.gateway.channel_directory.resolve_channel_name", return_value=None):
         chat_id, thread_id, error = resolve_send_target(
             "photon", "iMessage;+;chat527148912345", pass_unresolved_references=True
         )
@@ -547,7 +547,7 @@ def test_photon_group_guid_passes_through_when_requested() -> None:
 def test_parserless_plugin_target_passes_through_when_requested() -> None:
     """A plugin platform that declares no parser has no explicit syntax at
     all, so passing the raw id through is the only way cron can target it."""
-    from gateway.platform_registry import PlatformEntry, platform_registry
+    from hermes_agent.gateway.platform_registry import PlatformEntry, platform_registry
     from tools.send_message_tool import resolve_send_target
 
     platform_name = "opaque-cron-fallback-test"
@@ -559,7 +559,7 @@ def test_parserless_plugin_target_passes_through_when_requested() -> None:
     )
     platform_registry.register(entry)
     try:
-        with patch("gateway.channel_directory.resolve_channel_name", return_value=None):
+        with patch("hermes_agent.gateway.channel_directory.resolve_channel_name", return_value=None):
             chat_id, thread_id, error = resolve_send_target(
                 platform_name, "dm:panyaozhen", pass_unresolved_references=True
             )
@@ -575,7 +575,7 @@ def test_plugin_parser_stays_authoritative_despite_fallback() -> None:
     """A plugin that DOES declare a parser stays strict for every caller:
     its parser is the authority on native syntax, so an unrecognized
     target errors even with pass_unresolved_references."""
-    from gateway.platform_registry import PlatformEntry, platform_registry
+    from hermes_agent.gateway.platform_registry import PlatformEntry, platform_registry
     from tools.send_message_tool import resolve_send_target
 
     platform_name = "opaque-parser-strict-test"
@@ -588,7 +588,7 @@ def test_plugin_parser_stays_authoritative_despite_fallback() -> None:
     )
     platform_registry.register(entry)
     try:
-        with patch("gateway.channel_directory.resolve_channel_name", return_value=None):
+        with patch("hermes_agent.gateway.channel_directory.resolve_channel_name", return_value=None):
             chat_id, _thread_id, error = resolve_send_target(
                 platform_name, "dm:panyaozhen", pass_unresolved_references=True
             )
@@ -601,7 +601,7 @@ def test_plugin_parser_stays_authoritative_despite_fallback() -> None:
 
 def test_unknown_platform_that_left_core_names_its_install_command(tmp_path, monkeypatch):
     """A platform that moved out of core into a catalog plugin, sent to while the plugin is absent."""
-    from gateway.config import GatewayConfig
+    from hermes_agent.gateway.config import GatewayConfig
     from tools.send_message_targets import resolve_send_target
     from tools.send_message_tool import _resolve_platform_config
 
@@ -622,11 +622,11 @@ def test_bare_platform_home_fallback_preserves_thread_id() -> None:
         get_home_channel=lambda _platform: home,
     )
 
-    with patch("gateway.config.load_gateway_config", return_value=config), \
+    with patch("hermes_agent.gateway.config.load_gateway_config", return_value=config), \
          patch("tools.interrupt.is_interrupted", return_value=False), \
          patch("model_tools._run_async", side_effect=_run_async_immediately), \
          patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
-         patch("gateway.mirror.mirror_to_session", return_value=True) as mirror_mock:
+         patch("hermes_agent.gateway.mirror.mirror_to_session", return_value=True) as mirror_mock:
         result = json.loads(
             send_message_tool(
                 {

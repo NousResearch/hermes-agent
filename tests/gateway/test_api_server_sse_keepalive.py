@@ -10,11 +10,11 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-from gateway.config import PlatformConfig
-from gateway.platforms import api_server
-from gateway.platforms import api_server_openai_routes as routes
-from gateway.platforms.api_server import APIServerAdapter
-from gateway.platforms.api_server_openai_routes import _iter_stream_items
+from hermes_agent.gateway.config import PlatformConfig
+from hermes_agent.gateway.platforms import api_server
+from hermes_agent.gateway.platforms import api_server_openai_routes as routes
+from hermes_agent.gateway.platforms.api_server import APIServerAdapter
+from hermes_agent.gateway.platforms.api_server_openai_routes import _iter_stream_items
 
 REMOTE_CLIENT_IDLE_DEADLINE_S = 20.0
 
@@ -68,7 +68,7 @@ async def test_idle_openai_stream_writes_keepalive_before_remote_client_deadline
 async def test_idle_run_events_stream_uses_shared_keepalive_cadence(monkeypatch, adapter):
     """``GET /v1/runs/{id}/events`` follows the same keepalive constant as the OpenAI routes."""
     monkeypatch.setattr(api_server, "CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS", 0.2)
-    from gateway.platforms.api_server_runs import _RunStream
+    from hermes_agent.gateway.platforms.api_server_runs import _RunStream
 
     stream = _RunStream()
     adapter._run_streams["run_idle"] = stream

@@ -1,8 +1,8 @@
-"""Tests for gateway/sticker_cache.py — sticker description cache."""
+"""Tests for hermes_agent/gateway/sticker_cache.py — sticker description cache."""
 
 from unittest.mock import patch
 
-from gateway.sticker_cache import (
+from hermes_agent.gateway.sticker_cache import (
     _load_cache,
     get_cached_description,
     cache_sticker_description,
@@ -14,13 +14,13 @@ class TestLoadSaveCache:
     def test_load_corrupt_file(self, tmp_path):
         bad_file = tmp_path / "bad.json"
         bad_file.write_text("not json{{{")
-        with patch("gateway.sticker_cache.CACHE_PATH", bad_file):
+        with patch("hermes_agent.gateway.sticker_cache.CACHE_PATH", bad_file):
             assert _load_cache() == {}
 
 class TestCacheSticker:
     def test_cache_and_retrieve(self, tmp_path):
         cache_file = tmp_path / "cache.json"
-        with patch("gateway.sticker_cache.CACHE_PATH", cache_file):
+        with patch("hermes_agent.gateway.sticker_cache.CACHE_PATH", cache_file):
             cache_sticker_description("uid_1", "A happy dog", emoji="🐕", set_name="Dogs")
             result = get_cached_description("uid_1")
 

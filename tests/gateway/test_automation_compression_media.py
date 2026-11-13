@@ -6,9 +6,9 @@ import pytest
 
 
 async def _discord_owner(tmp_path, monkeypatch):
-    from gateway.config import GatewayConfig, Platform, PlatformConfig
-    from gateway.run import GatewayRunner
-    from gateway.session_authority import initialize_session_authority, SessionAuthority
+    from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+    from hermes_agent.gateway.run import GatewayRunner
+    from hermes_agent.gateway.session_authority import initialize_session_authority, SessionAuthority
     from plugins.platforms.discord.adapter import DiscordAdapter
 
     monkeypatch.setattr(SessionAuthority, '_schedule', lambda self, ref: None)
@@ -22,7 +22,7 @@ async def _discord_owner(tmp_path, monkeypatch):
 
 
 async def _admit_human(runner, authority, event):
-    from gateway.session_ingress_context import native_callback
+    from hermes_agent.gateway.session_ingress_context import native_callback
     from hermes_constants import get_hermes_home
     with native_callback(runner, event, get_hermes_home()):
         return await authority.admit_native(event)
@@ -30,7 +30,7 @@ async def _admit_human(runner, authority, event):
 
 @pytest.mark.asyncio
 async def test_completion_after_compression_admits_to_the_logical_root(tmp_path, monkeypatch):
-    from gateway.platforms.event import MessageEvent
+    from hermes_agent.gateway.platforms.event import MessageEvent
     from hermes_agent.hermes_state_runtime import list_session_admissions
     from tests.gateway.test_completion_admission import pending
 
@@ -51,16 +51,16 @@ async def test_completion_after_compression_admits_to_the_logical_root(tmp_path,
     assert 'after-compression' in rows[-1]['payload']['text']
     assert list_session_admissions(db, session_id=child, pending_only=False) == []
     # A lost-ACK redelivery is the same admission, found under the root's ledger.
-    from gateway.session_automation import completion_admission
+    from hermes_agent.gateway.session_automation import completion_admission
     assert completion_admission(runner, event)['admission_id'] == rows[-1]['admission_id']
     await asyncio.sleep(0)
 
 
 @pytest.mark.asyncio
 async def test_text_completion_after_a_released_photo_input_is_admitted(tmp_path, monkeypatch):
-    from gateway.platforms.base import get_image_cache_dir
-    from gateway.platforms.event import MessageEvent, MessageType
-    from gateway.session_ingress_media import release_admission_media
+    from hermes_agent.gateway.platforms.base import get_image_cache_dir
+    from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
+    from hermes_agent.gateway.session_ingress_media import release_admission_media
     from hermes_agent.hermes_state_runtime import claim_session_input, list_session_admissions, settle_session_input
     from tests.gateway.test_completion_admission import pending
 

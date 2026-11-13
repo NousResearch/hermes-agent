@@ -17,10 +17,10 @@ def test_runs_adopt_legacy_declared_session_key(tmp_path):
 
 async def probe():
     import aiohttp
-    from gateway.config import Platform, PlatformConfig
-    from gateway.platforms.api_server import APIServerAdapter
-    from gateway.run import GatewayRunner
-    from gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.config import Platform, PlatformConfig
+    from hermes_agent.gateway.platforms.api_server import APIServerAdapter
+    from hermes_agent.gateway.run import GatewayRunner
+    from hermes_agent.gateway.session_authority import initialize_session_authority
 
     runner = GatewayRunner()
     authority = await initialize_session_authority(runner, profile_id='default', instance_id='legacy-test')

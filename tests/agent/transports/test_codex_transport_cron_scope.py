@@ -15,7 +15,7 @@ def transport():
 def execution_context():
     """Binds through ``session_cron.bind_execution`` -- the call ``execute()`` makes -- so the
     admission layout the transport reads is the production one."""
-    from gateway.session_cron import _execution, bind_execution
+    from hermes_agent.gateway.session_cron import _execution, bind_execution
 
     token = _execution.set(None)
     try:

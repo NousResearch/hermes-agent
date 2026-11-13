@@ -8,7 +8,7 @@ from urllib.parse import unquote
 
 import pytest
 
-from gateway.config import PlatformConfig
+from hermes_agent.gateway.config import PlatformConfig
 
 requests = pytest.importorskip("requests")
 http_error = pytest.importorskip("googleapiclient.errors").HttpError

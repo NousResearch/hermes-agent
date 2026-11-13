@@ -5,7 +5,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from gateway.platforms import api_server
+from hermes_agent.gateway.platforms import api_server
 
 
 

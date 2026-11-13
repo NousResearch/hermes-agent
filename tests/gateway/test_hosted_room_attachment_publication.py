@@ -5,8 +5,8 @@ from contextlib import contextmanager
 
 import pytest
 
-from gateway import hosted_rooms
-from gateway.hosted_room_attachments import (
+from hermes_agent.gateway import hosted_rooms
+from hermes_agent.gateway.hosted_room_attachments import (
     AttachmentNotFoundError,
     HostedRoomAttachmentStore,
     UNCOMMITTED_TTL_SECONDS,

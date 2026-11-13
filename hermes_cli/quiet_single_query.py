@@ -170,7 +170,7 @@ def bind_quiet_session_key(session_id: str):
 def _diagnostic_only_wake_muted(events) -> bool:
     """True when every drained event is an automatic diagnostic AND the CLI policy suppresses them."""
     from agent.notification_presentation import diagnostic_process_event
-    from gateway.warning_notifications import warning_notifications_enabled
+    from hermes_agent.gateway.warning_notifications import warning_notifications_enabled
 
     if not events or not all(diagnostic_process_event(e) for e in events if isinstance(e, dict)):
         return False

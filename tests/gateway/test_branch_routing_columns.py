@@ -1,6 +1,6 @@
 """Regression test for /branch losing gateway routing columns (#NNNNN).
 
-``_handle_branch_command`` (gateway/slash_commands.py) creates the branched
+``_handle_branch_command`` (hermes_agent/gateway/slash_commands.py) creates the branched
 child session via ``create_session()`` WITHOUT chat_id/chat_type/thread_id —
 identical in shape to the compression-rotation bug fixed in
 agent/conversation_compression.py. The routing columns are only written
@@ -27,9 +27,9 @@ from __future__ import annotations
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform
-from gateway.platforms.event import MessageEvent
-from gateway.session import SessionSource, SessionStore, build_session_key
+from hermes_agent.gateway.config import GatewayConfig, Platform
+from hermes_agent.gateway.platforms.event import MessageEvent
+from hermes_agent.gateway.session import SessionSource, SessionStore, build_session_key
 from hermes_agent.hermes_state import AsyncSessionDB, SessionDB
 
 
@@ -59,7 +59,7 @@ def _make_event(text: str) -> MessageEvent:
 
 def _make_branch_runner(store: SessionStore):
     """Minimal GatewayRunner stub wired to a REAL session_store/session_db."""
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
 
     runner = object.__new__(GatewayRunner)
     runner.adapters = {}

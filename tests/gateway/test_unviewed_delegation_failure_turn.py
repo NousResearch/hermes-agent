@@ -210,7 +210,7 @@ async def test_unattended_wakes_stop_at_the_limit_until_the_user_returns(tmp_pat
     """A woken parent that re-dispatches into the same failure (billing, a usage limit) would wake
     itself without end. After ``UNATTENDED_WAKE_LIMIT`` wakes in a row nobody watched, the next failure
     is a note; the user's own message starts the count again."""
-    from gateway.session_completion_notes import UNATTENDED_WAKE_LIMIT
+    from hermes_agent.gateway.session_completion_notes import UNATTENDED_WAKE_LIMIT
     runner, authority, ref, _actor = await _local(tmp_path, monkeypatch)
     try:
         route, target = authority.sessions[ref.session_id].route, _target(runner, authority, ref)

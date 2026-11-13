@@ -22,8 +22,8 @@ from unittest.mock import patch
 
 import pytest
 
-import gateway.mirror as mirror_mod
-from gateway.mirror import _find_session_id, mirror_to_session
+import hermes_agent.gateway.mirror as mirror_mod
+from hermes_agent.gateway.mirror import _find_session_id, mirror_to_session
 from hermes_agent.hermes_state import SessionDB
 
 CHAT = "-1001"  # the reported shape: a Telegram forum group

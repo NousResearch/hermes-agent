@@ -12,17 +12,17 @@ description: "消息 gateway 如何启动、授权用户、路由会话以及投
 
 | 文件 | 用途 |
 |------|---------|
-| `gateway/run.py` | `GatewayRunner` — 主循环、斜杠命令、消息分发（大文件；请查看 git 获取当前行数） |
-| `gateway/session.py` | `SessionStore` — 会话持久化与会话键构造 |
-| `gateway/delivery.py` | 向目标平台/频道投递出站消息 |
-| `gateway/pairing.py` | 用于用户授权的 DM 配对流程 |
-| `gateway/channel_directory.py` | 将聊天 ID 映射为可读名称，用于 cron 投递 |
-| `gateway/hooks.py` | Hook（钩子）发现、加载与生命周期事件分发 |
-| `gateway/mirror.py` | 为 `send_message` 提供跨会话消息镜像 |
-| `gateway/status.py` | 面向 profile 范围的 gateway 实例的 token 锁管理 |
-| `gateway/platform_registry.py` | 适配器注册表、工厂，以及对捆绑平台插件的延迟（惰性）加载 |
+| `hermes_agent/gateway/run.py` | `GatewayRunner` — 主循环、斜杠命令、消息分发（大文件；请查看 git 获取当前行数） |
+| `hermes_agent/gateway/session.py` | `SessionStore` — 会话持久化与会话键构造 |
+| `hermes_agent/gateway/delivery.py` | 向目标平台/频道投递出站消息 |
+| `hermes_agent/gateway/pairing.py` | 用于用户授权的 DM 配对流程 |
+| `hermes_agent/gateway/channel_directory.py` | 将聊天 ID 映射为可读名称，用于 cron 投递 |
+| `hermes_agent/gateway/hooks.py` | Hook（钩子）发现、加载与生命周期事件分发 |
+| `hermes_agent/gateway/mirror.py` | 为 `send_message` 提供跨会话消息镜像 |
+| `hermes_agent/gateway/status.py` | 面向 profile 范围的 gateway 实例的 token 锁管理 |
+| `hermes_agent/gateway/platform_registry.py` | 适配器注册表、工厂，以及对捆绑平台插件的延迟（惰性）加载 |
 | `plugins/platforms/<name>/` | 捆绑的消息适配器（多数平台：`adapter.py` + `plugin.yaml`） |
-| `gateway/platforms/` | 共享的 `base.py` 与遗留/直接适配器（Signal、API server、webhooks 等） |
+| `hermes_agent/gateway/platforms/` | 共享的 `base.py` 与遗留/直接适配器（Signal、API server、webhooks 等） |
 
 ## 架构概览
 
@@ -76,15 +76,15 @@ agent:main:{platform}:{chat_type}:{chat_id}
 
 示例：`agent:main:telegram:private:123456789`
 
-支持线程的平台（Telegram 论坛话题、Discord 线程、Slack 线程）可能在 chat_id 部分包含线程 ID。**切勿手动构造会话键** — 请始终使用 `gateway/session.py` 中的 `build_session_key()`。
+支持线程的平台（Telegram 论坛话题、Discord 线程、Slack 线程）可能在 chat_id 部分包含线程 ID。**切勿手动构造会话键** — 请始终使用 `hermes_agent/gateway/session.py` 中的 `build_session_key()`。
 
 ### 两级消息守卫
 
 当 agent 正在运行时，传入消息会依次经过两级守卫：
 
-1. **第一级 — 基础适配器**（`gateway/platforms/base.py`）：检查 `_active_sessions`。若会话处于活跃状态，将消息加入 `_pending_messages` 队列并设置中断事件。此级在消息到达 gateway runner *之前*进行拦截。
+1. **第一级 — 基础适配器**（`hermes_agent/gateway/platforms/base.py`）：检查 `_active_sessions`。若会话处于活跃状态，将消息加入 `_pending_messages` 队列并设置中断事件。此级在消息到达 gateway runner *之前*进行拦截。
 
-2. **第二级 — Gateway runner**（`gateway/run.py`）：检查 `_running_agents`。拦截特定命令（`/stop`、`/new`、`/queue`、`/status`、`/approve`、`/deny`）并进行相应路由。其余所有消息触发 `running_agent.interrupt()`。
+2. **第二级 — Gateway runner**（`hermes_agent/gateway/run.py`）：检查 `_running_agents`。拦截特定命令（`/stop`、`/new`、`/queue`、`/status`、`/approve`、`/deny`）并进行相应路由。其余所有消息触发 `running_agent.interrupt()`。
 
 必须在 agent 被阻塞时到达 runner 的命令（如 `/approve`）通过 `await self._message_handler(event)` **内联**分发 — 绕过后台任务系统以避免竞态条件。
 
@@ -107,7 +107,7 @@ New user: ABC123
 Gateway: "Paired! You're now authorized."
 ```
 
-配对状态持久化于 `gateway/pairing.py`，重启后仍然有效。
+配对状态持久化于 `hermes_agent/gateway/pairing.py`，重启后仍然有效。
 
 ## 斜杠命令分发
 
@@ -144,7 +144,7 @@ Gateway 从多个来源读取配置：
 
 ## 平台适配器
 
-所有消息平台都以插件适配器形式位于 `plugins/platforms/<name>/`；`gateway/platforms/` 只保留基类和 HTTP 入站适配器（`api_server`、`webhook`、`msgraph_webhook`）。它们都继承 `gateway/platforms/base.py` 中的 `BasePlatformAdapter`：
+所有消息平台都以插件适配器形式位于 `plugins/platforms/<name>/`；`hermes_agent/gateway/platforms/` 只保留基类和 HTTP 入站适配器（`api_server`、`webhook`、`msgraph_webhook`）。它们都继承 `hermes_agent/gateway/platforms/base.py` 中的 `BasePlatformAdapter`：
 
 ```text
 plugins/platforms/                  # 插件打包的适配器（每个一个目录）
@@ -169,7 +169,7 @@ plugins/platforms/                  # 插件打包的适配器（每个一个目
 ├── qqbot/                  # QQ Bot（腾讯 QQ，通过官方 API v2）
 └── …                       # google_chat、ntfy、photon、raft、simplex 等
 
-gateway/platforms/                  # 核心 base 与 HTTP 入站适配器
+hermes_agent/gateway/platforms/                  # 核心 base 与 HTTP 入站适配器
 ├── base.py              # BasePlatformAdapter — 所有平台的共享逻辑
 ├── msgraph_webhook.py   # Microsoft Graph 变更通知 webhook（Teams、Outlook 等）
 ├── webhook.py           # 入站/出站 webhook 适配器
@@ -187,7 +187,7 @@ gateway/platforms/                  # 核心 base 与 HTTP 入站适配器
 
 ## 投递路径
 
-出站投递（`gateway/delivery.py`）处理以下场景：
+出站投递（`hermes_agent/gateway/delivery.py`）处理以下场景：
 
 - **直接回复** — 将响应发回原始聊天
 - **主频道投递** — 将 cron 任务输出和后台结果路由至已配置的主频道

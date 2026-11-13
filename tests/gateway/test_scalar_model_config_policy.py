@@ -7,12 +7,12 @@ import pytest
 
 @pytest.mark.asyncio
 async def test_scalar_model_config_creates_sessions(tmp_path, monkeypatch):
-    from gateway import run
-    from gateway.config import GatewayConfig
-    from gateway.session import SessionStore
-    from gateway.session_authority import initialize_session_authority
-    from gateway.session_controls import AuthorityConnection
-    from gateway.session_policy import restore_policy
+    from hermes_agent.gateway import run
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.session import SessionStore
+    from hermes_agent.gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway.session_policy import restore_policy
     from hermes_agent.hermes_state_local import local_receipt
 
     home = tmp_path / 'home'

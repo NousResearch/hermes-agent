@@ -1378,7 +1378,7 @@ def _(rid, params: dict, session: dict) -> dict:
     if not (platform_name := (params.get("platform", "") or "").strip().lower()):
         return _err(rid, 4023, "platform required")
     # Validate up front: an unconfigured platform / missing home channel pends forever.
-    from gateway.config import Platform, load_gateway_config
+    from hermes_agent.gateway.config import Platform, load_gateway_config
     try:
         platform = Platform(platform_name)
     except (ValueError, KeyError):

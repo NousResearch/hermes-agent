@@ -110,7 +110,7 @@ def _reconcile_locked(path, backup, report):
 # held, the scan no longer vouches for it and nothing is written. Under the lock only the cheap drift
 # re-check and the DDL run, cut off by BROWSE_RECONCILE_BUDGET_S (a sqlite progress handler; the DDL
 # rolls back). Busy waiting does not run the progress handler, so each connection's busy timeout is
-# capped at the remaining budget. Gateway boot waits this budget out (gateway.run_bootstrap).
+# capped at the remaining budget. Gateway boot waits this budget out (hermes_agent.gateway.run_bootstrap).
 BROWSE_RECONCILE_BUDGET_S = 3.0
 BROWSE_INTEGRITY_BUDGET_S = BROWSE_RECONCILE_BUDGET_S
 _BUDGET_PROGRESS_OPS = 1000
@@ -132,7 +132,7 @@ def is_declarative_drift_error(exc: BaseException) -> bool:
 
 def _repair_command(home: Path) -> str:
     """The `hermes sessions repair` invocation that targets *home* (no time limit, additive only)."""
-    from gateway.status import _profile_label_for_home  # never raises: None when unknown
+    from hermes_agent.gateway.status import _profile_label_for_home  # never raises: None when unknown
     label = _profile_label_for_home(home)
     if label == 'default':
         return 'hermes sessions repair'
@@ -142,7 +142,7 @@ def _repair_command(home: Path) -> str:
 
 
 def _owner_remedy(home: Path) -> tuple[str, str]:
-    from gateway.status import _profile_label_for_home  # never raises: None when unknown
+    from hermes_agent.gateway.status import _profile_label_for_home  # never raises: None when unknown
     label = _profile_label_for_home(home)
     if label and label != 'default':
         return label, f'hermes -p {label} gateway restart'
@@ -153,8 +153,8 @@ def _owning_gateway_restart(home: Path) -> str:
     """Restart command for the gateway that holds *home*'s lock. A multiplexer launched from another
     home (usually the default) records that home in ``hermes_home``; `hermes -p <named> gateway
     restart` is refused there ("Manage the host gateway instead"), so name the owner's own command."""
-    from gateway.runtime_ownership import canonical_home
-    from gateway.status import _read_gateway_lock_record
+    from hermes_agent.gateway.runtime_ownership import canonical_home
+    from hermes_agent.gateway.status import _read_gateway_lock_record
     record = _read_gateway_lock_record(canonical_home(home) / 'gateway.lock') or {}
     owner_home = record.get('hermes_home')
     if isinstance(owner_home, str) and owner_home and canonical_home(Path(owner_home)) != canonical_home(home):
@@ -325,7 +325,7 @@ class _SiblingStillBusy(RuntimeError):
 def _reserving(home: Path):
     """``exclusive_maintenance`` for a browse. A lock this user cannot open at all (a root-run
     gateway's, #42685) is not drift and not a crash: refuse by name with its recovery text."""
-    from gateway.runtime_ownership import exclusive_maintenance
+    from hermes_agent.gateway.runtime_ownership import exclusive_maintenance
     with contextlib.ExitStack() as stack:
         try:
             stack.enter_context(exclusive_maintenance([home], purpose=BROWSE_RECONCILE_PURPOSE))
@@ -344,7 +344,7 @@ def _reserve_for_ddl(home: Path, path: Path, owned):
     when the store is already current (nothing to do). Raises ``owned(drift)`` when a gateway turns
     out to own it, and :class:`_SiblingStillBusy` past the bound."""
     import time
-    from gateway.runtime_ownership import OwnershipConflict, live_runtime_owner
+    from hermes_agent.gateway.runtime_ownership import OwnershipConflict, live_runtime_owner
     deadline = time.monotonic() + BROWSE_RECONCILE_BUDGET_S + 0.5
     with contextlib.ExitStack() as stack:
         while True:
@@ -398,7 +398,7 @@ def reconcile_drift_for_browse(path: Path) -> bool:
     with a user-facing detail naming the drift and the remedy, and :class:`CorruptStoreError`
     when the lagging store is also damaged. Never touches a store missing its history tables:
     recreating them empty would hide lost sessions."""
-    from gateway.runtime_ownership import OwnershipConflict, live_runtime_owner
+    from hermes_agent.gateway.runtime_ownership import OwnershipConflict, live_runtime_owner
 
     reason = schema_drift_reason(path)
     if reason is None:
@@ -499,7 +499,7 @@ def reconcile_drift_for_browse(path: Path) -> bool:
 
 def repair_declarative_schema(path: Path, *, backup: bool = True):
     """Reuse repair's snapshot/SQLite exclusion beneath the runtime owner lock."""
-    from gateway.runtime_ownership import OwnershipConflict, exclusive_maintenance
+    from hermes_agent.gateway.runtime_ownership import OwnershipConflict, exclusive_maintenance
     from hermes_agent.hermes_state_repair import _cross_process_repair_lock
 
     report = {'repaired': False, 'strategy': None, 'backup_path': None, 'error': None}

@@ -13,7 +13,7 @@ import stat
 
 import pytest
 
-from gateway import webapp_listener as webapp
+from hermes_agent.gateway import webapp_listener as webapp
 
 posix_only = pytest.mark.platforms("posix")
 STORED = "s" * 43
@@ -98,7 +98,7 @@ def test_signing_out_of_a_gateway_not_serving_the_webapp_replaces_the_stored_cre
     import json
     from types import SimpleNamespace
 
-    from gateway.control_socket import GatewayControlServer
+    from hermes_agent.gateway.control_socket import GatewayControlServer
 
     before = webapp.browser_session_token(tmp_path)
     runner = SimpleNamespace(session_control_server=GatewayControlServer(tmp_path), webapp_status=status,

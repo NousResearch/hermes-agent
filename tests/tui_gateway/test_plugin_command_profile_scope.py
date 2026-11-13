@@ -4,7 +4,7 @@
 with a bare (launch-profile) registry lookup and ran it with no secret scope: on a multiplexed
 host a plugin enabled only in the launch profile fired in another profile's chat, and every
 credential read failed closed with ``UnscopedSecretError`` — even in the launch profile's own
-Desktop chat. Mirrors the messaging-gateway dispatch fix (gateway/run_inbound.py).
+Desktop chat. Mirrors the messaging-gateway dispatch fix (hermes_agent/gateway/run_inbound.py).
 """
 
 from __future__ import annotations

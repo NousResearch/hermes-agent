@@ -6,7 +6,7 @@ import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
-from gateway.config import Platform
+from hermes_agent.gateway.config import Platform
 from plugins.platforms.qqbot.constants import (
     MEDIA_TYPE_FILE,
     MEDIA_TYPE_IMAGE,

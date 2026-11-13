@@ -14,13 +14,13 @@ from tests.waiting import wait_until
 
 
 async def probe(mode, peer):
-    from gateway.config import Platform, PlatformConfig
-    from gateway.platforms.base import BasePlatformAdapter, SendResult, cleanup_document_cache
-    from gateway.platforms.event import MessageEvent, MessageType
-    from gateway.run import GatewayRunner
-    from gateway.session import SessionSource
-    from gateway.session_authority import initialize_session_authority
-    from gateway.session_envelope import restore_native, snapshot_native
+    from hermes_agent.gateway.config import Platform, PlatformConfig
+    from hermes_agent.gateway.platforms.base import BasePlatformAdapter, SendResult, cleanup_document_cache
+    from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
+    from hermes_agent.gateway.run import GatewayRunner
+    from hermes_agent.gateway.session import SessionSource
+    from hermes_agent.gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.session_envelope import restore_native, snapshot_native
     from hermes_agent.hermes_state_runtime import RuntimeStoreError, claim_session_input, list_session_admissions
 
     class Adapter(BasePlatformAdapter):
@@ -71,7 +71,7 @@ async def probe(mode, peer):
                              reply_to_author_id='quoted-user', reply_to_author_name='Quoted User')
         # A cache alias must never redirect publication outside managed media.
         import hashlib
-        from gateway.platforms.base import get_document_cache_dir
+        from hermes_agent.gateway.platforms.base import get_document_cache_dir
         root = get_document_cache_dir() / 'native-inputs'
         root.mkdir(parents=True, exist_ok=True)
         escaped = state / 'escaped'

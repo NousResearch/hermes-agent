@@ -16,7 +16,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from gateway.config import PlatformConfig
+from hermes_agent.gateway.config import PlatformConfig
 from plugins.platforms.telegram.adapter import TelegramAdapter
 
 
@@ -53,7 +53,7 @@ def _bot(refuse):
 
 
 def _held_over_cap_bubble(bot, content_resets=1):
-    from gateway.run_turn_progress import GatewayTurnProgressMixin
+    from hermes_agent.gateway.run_turn_progress import GatewayTurnProgressMixin
 
     adapter = TelegramAdapter(PlatformConfig(enabled=True, token="fake-token"))
     adapter._bot = bot

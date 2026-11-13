@@ -334,20 +334,20 @@ class TestNotificationQuietExit:
 
 class TestResponseFiltersNotificationNoReply:
     def test_notification_no_reply_with_empty_text_is_intentional_silence(self):
-        from gateway.response_filters import is_intentional_silence_agent_result
+        from hermes_agent.gateway.response_filters import is_intentional_silence_agent_result
 
         agent_result = {"failed": False, "turn_exit_reason": ter.NOTIFICATION_NO_REPLY_EXIT}
         assert is_intentional_silence_agent_result(agent_result, "") is True
         assert is_intentional_silence_agent_result(agent_result, " ") is True
 
     def test_notification_no_reply_with_non_empty_text_is_not_silence(self):
-        from gateway.response_filters import is_intentional_silence_agent_result
+        from hermes_agent.gateway.response_filters import is_intentional_silence_agent_result
 
         agent_result = {"failed": False, "turn_exit_reason": ter.NOTIFICATION_NO_REPLY_EXIT}
         assert is_intentional_silence_agent_result(agent_result, "got it") is False
 
     def test_notification_no_reply_failed_turn_is_not_silence(self):
-        from gateway.response_filters import is_intentional_silence_agent_result
+        from hermes_agent.gateway.response_filters import is_intentional_silence_agent_result
 
         agent_result = {"failed": True, "turn_exit_reason": ter.NOTIFICATION_NO_REPLY_EXIT}
         assert is_intentional_silence_agent_result(agent_result, "") is False
@@ -356,7 +356,7 @@ class TestResponseFiltersNotificationNoReply:
         """An empty_response_exhausted turn with no text and no silence
         marker is not intentional silence -- it falls through to normal
         delivery."""
-        from gateway.response_filters import is_intentional_silence_agent_result
+        from hermes_agent.gateway.response_filters import is_intentional_silence_agent_result
 
         agent_result = {"failed": False, "turn_exit_reason": "empty_response_exhausted"}
         # "(empty)" is not a LIVE_GATEWAY_SILENT_MARKERS entry; it reaches
@@ -366,12 +366,12 @@ class TestResponseFiltersNotificationNoReply:
         assert is_intentional_silence_agent_result(agent_result, "[SILENT]") is True
 
     def test_notification_no_reply_alongside_real_silence_marker(self):
-        from gateway.response_filters import is_intentional_silence_agent_result
+        from hermes_agent.gateway.response_filters import is_intentional_silence_agent_result
 
         agent_result = {"failed": False, "turn_exit_reason": ter.NOTIFICATION_NO_REPLY_EXIT}
         assert is_intentional_silence_agent_result(agent_result, "[SILENT]") is True
 
     def test_notification_no_reply_none_result_is_not_silence(self):
-        from gateway.response_filters import is_intentional_silence_agent_result
+        from hermes_agent.gateway.response_filters import is_intentional_silence_agent_result
 
         assert is_intentional_silence_agent_result(None, "") is False

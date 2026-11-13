@@ -10,10 +10,10 @@ import os
 import pytest
 import hermes_yaml as yaml
 
-from gateway import relay
-from gateway.config import Platform, load_gateway_config
-from gateway.platform_registry import platform_registry
-from gateway.run_startup import GatewayStartupMixin
+from hermes_agent.gateway import relay
+from hermes_agent.gateway.config import Platform, load_gateway_config
+from hermes_agent.gateway.platform_registry import platform_registry
+from hermes_agent.gateway.run_startup import GatewayStartupMixin
 
 URL = "wss://connector.example/relay"
 DISABLE = {"relay": {"enabled": False}}

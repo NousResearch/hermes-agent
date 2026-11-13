@@ -2,7 +2,7 @@
 
 Bound into ``PluginContext`` (``from hermes_cli.plugin_rpc import ...``), so they are ordinary
 ``ctx.*`` methods and ``register_rpc`` gets the abandoned-load guard of every registrar. The session
-authority serves the methods (``gateway/session_plugin_rpc.py``); unload drops them with the ledger.
+authority serves the methods (``hermes_agent/gateway/session_plugin_rpc.py``); unload drops them with the ledger.
 """
 
 from __future__ import annotations

@@ -10,11 +10,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.config import GatewayConfig, HomeChannel, Platform, PlatformConfig
-from gateway.platforms.event import MessageEvent, MessageType
-from gateway.run import GatewayRunner
-from gateway.session import SessionSource
-from gateway.slash_commands import _restart_notify_payload
+from hermes_agent.gateway.config import GatewayConfig, HomeChannel, Platform, PlatformConfig
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.run import GatewayRunner
+from hermes_agent.gateway.session import SessionSource
+from hermes_agent.gateway.slash_commands import _restart_notify_payload
 
 
 class _Adapter:
@@ -59,7 +59,7 @@ async def test_shutdown_notice_for_secondary_session_uses_its_own_bot():
 
 @pytest.mark.asyncio
 async def test_restart_marker_from_secondary_session_notifies_via_its_own_bot(tmp_path, monkeypatch):
-    import gateway.run as gateway_run
+    import hermes_agent.gateway.run as gateway_run
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     r = _runner()
     src = SessionSource(platform=Platform.TELEGRAM, chat_id="42", chat_type="dm", user_id="42", profile="sec")
@@ -133,7 +133,7 @@ async def test_shutdown_notice_reaches_every_served_profiles_home_channel(monkey
     Telegram id are two private conversations: both are owed a notice. A served profile's own
     ``gateway_restart_notification=false`` opt-out is honoured from ITS config.
     """
-    monkeypatch.setattr("gateway.drain_control.drain_notification_suppressed", lambda: False)
+    monkeypatch.setattr("hermes_agent.gateway.drain_control.drain_notification_suppressed", lambda: False)
     r = _runner()
     r.config = _home_config(Platform.TELEGRAM, "8776018003")
     r._profile_configs = {

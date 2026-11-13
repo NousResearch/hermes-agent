@@ -19,15 +19,15 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import (
+from hermes_agent.gateway.config import Platform, PlatformConfig
+from hermes_agent.gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
     MessageType,
     ProcessingOutcome,
     SendResult,
 )
-from gateway.session import SessionSource
+from hermes_agent.gateway.session import SessionSource
 
 
 class HookRecordingAdapter(BasePlatformAdapter):
@@ -96,7 +96,7 @@ class _RaisingSecondTurnAgent:
 
 
 def _make_runner(adapter):
-    gateway_run = importlib.import_module("gateway.run")
+    gateway_run = importlib.import_module("hermes_agent.gateway.run")
     runner = object.__new__(gateway_run.GatewayRunner)
     runner.adapters = {adapter.platform: adapter}
     runner._voice_mode = {}
@@ -127,7 +127,7 @@ def _install_fake_agent(monkeypatch, tmp_path, agent_cls):
     fake_run_agent.AIAgent = agent_cls
     monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
 
-    gateway_run = importlib.import_module("gateway.run")
+    gateway_run = importlib.import_module("hermes_agent.gateway.run")
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     monkeypatch.setattr(
         gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
@@ -157,7 +157,7 @@ async def test_queue_terminal_presentation_belongs_to_last_turn(monkeypatch, tmp
     assert _TwoTurnAgent.calls == ["first", "follow-up"]
     assert result["final_response"] == "done-2"
     assert result["_notification_reply_muted"] is diagnostic_last
-    from gateway.warning_notifications import diagnostic_wake_muted
+    from hermes_agent.gateway.warning_notifications import diagnostic_wake_muted
     outer = MessageEvent(text="first", source=_source(), internal=not diagnostic_last)
     outer._notification_reply_muted = result["_notification_reply_muted"]
     assert diagnostic_wake_muted(outer) is diagnostic_last

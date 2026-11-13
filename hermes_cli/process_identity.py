@@ -336,7 +336,7 @@ def _pid_alive_matches(
             return (create_time is not None and process_birth(proc) == create_time
                     and proc.is_running() and proc.status() != psutil.STATUS_ZOMBIE)
         # A zombie keeps its create_time until its parent reaps it, but it is already dead: the
-        # dashboard stop check (``gateway.status._pid_exists``) books it stopped, so the ledger must
+        # dashboard stop check (``hermes_agent.gateway.status._pid_exists``) books it stopped, so the ledger must
         # not report it as a live pre-update survivor. Windows has no zombies (and status() is slow there).
         return _same_incarnation(proc, create_time, boot) and (
             os.name == "nt" or proc.status() != getattr(psutil, "STATUS_ZOMBIE", "zombie"))

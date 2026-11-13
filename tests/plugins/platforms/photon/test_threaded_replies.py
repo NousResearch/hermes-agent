@@ -5,7 +5,7 @@ sidecar normalises it to ``{type: "reply", content, targetMessageId, targetDirec
 targetText}``; the adapter must unwrap it instead of emitting
 "[Photon content type not handled: reply]", and carry the quoted message as reply
 context. spectrum usually can't hydrate the text of our own outbound bubbles, so the
-adapter records what it sends in ``gateway.rich_sent_store`` and falls back to that.
+adapter records what it sends in ``hermes_agent.gateway.rich_sent_store`` and falls back to that.
 """
 from __future__ import annotations
 
@@ -14,8 +14,8 @@ from typing import Any, Dict, List, Tuple
 
 import pytest
 
-from gateway.config import PlatformConfig
-from gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.config import PlatformConfig
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
 from plugins.platforms.photon import adapter as photon_adapter
 from plugins.platforms.photon.adapter import PhotonAdapter
 

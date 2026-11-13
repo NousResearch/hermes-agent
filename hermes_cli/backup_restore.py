@@ -164,7 +164,7 @@ def _safe_restore_db(src: Path, dst: Path) -> bool:
     integrity check, when the runtime owns the profile, or when a canonical
     ``state.db`` epoch floor cannot be proven.
     """
-    from gateway.runtime_ownership import OwnershipConflict, exclusive_maintenance
+    from hermes_agent.gateway.runtime_ownership import OwnershipConflict, exclusive_maintenance
     from hermes_cli.backup import verify_sqlite_integrity
 
     # backup() copies pages without validating their contents; its fallback
@@ -576,7 +576,7 @@ def _import_db_member(
     target: Path,
     new_file_mode: Optional[int] = None,
 ) -> None:
-    from gateway.runtime_ownership import OwnershipConflict, exclusive_maintenance
+    from hermes_agent.gateway.runtime_ownership import OwnershipConflict, exclusive_maintenance
     try:
         with exclusive_maintenance([target.absolute().parent, target.resolve().parent]):
             _import_db_member_exclusive(zf, member, target, new_file_mode)

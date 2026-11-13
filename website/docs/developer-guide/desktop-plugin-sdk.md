@@ -1403,7 +1403,7 @@ It reads the canonical activation counter, which changes on every active route
 selection, including same-profile source swaps. Capture `const epoch = gatewayActivationEpoch()`
 alongside the route before asynchronous work, then check both the captured route
 and `gatewayActivationEpoch() === epoch` before mutation or UI publication. This
-read-only counter is not a credential, permission grant, or durable gateway/session identity.
+read-only counter is not a credential, permission grant, or durable hermes_agent/gateway/session identity.
 
 `host.state.gateway` is the WebSocket connection, not whether a chat turn is
 running. A session can be mid-turn while the socket is `open`; another session

@@ -15,8 +15,8 @@ import pytest
 
 from agent import secret_scope
 from agent.secret_scope import UnscopedSecretError, current_secret_scope, get_secret
-from gateway.config import GatewayConfig
-from gateway.run import GatewayRunner
+from hermes_agent.gateway.config import GatewayConfig
+from hermes_agent.gateway.run import GatewayRunner
 from hermes_agent.tui_gateway import launch_profile_policy
 
 INJECTED = "HOSTEDROOM_TEST_INJECTED_KEY"

@@ -23,7 +23,7 @@ from agent.replay_cleanup import (
     is_dangerous_confirmation as _is_dangerous_confirmation,
     strip_stale_dangerous_confirmations as _strip_stale_dangerous_confirmations,
 )
-from gateway.run import _build_gateway_agent_history
+from hermes_agent.gateway.run import _build_gateway_agent_history
 import itertools
 
 
@@ -44,7 +44,7 @@ def _make_history_with_confirmation(
     """Build a synthetic conversation history with a confirmation text.
 
     Uses the real gateway's "timestamp" field (epoch seconds, as set in
-    gateway/run.py:11616, 11650, 11692, etc).
+    hermes_agent/gateway/run.py:11616, 11650, 11692, etc).
     """
     return [
         {"role": "user", "content": "can you force a restart?", "timestamp": user_message_at},

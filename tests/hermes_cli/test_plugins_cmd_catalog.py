@@ -689,7 +689,7 @@ def test_brief_install_prints_the_pin_and_outcome_and_a_restart_hint_only_for_a_
     from rich.panel import Panel
     printed: list = []
     monkeypatch.setattr(pc, "_console", lambda: type("C", (), {"print": lambda self, *a, **k: printed.extend(a)})())
-    monkeypatch.setattr("gateway.status.get_running_pid", lambda *a, **k: gateway_pid)  # no reload answered
+    monkeypatch.setattr("hermes_agent.gateway.status.get_running_pid", lambda *a, **k: gateway_pid)  # no reload answered
     monkeypatch.setattr("hermes_cli.gateway._installed_service_kind", lambda: None)
 
     pc.cmd_install("cat-plugin", enable=True, brief=True)

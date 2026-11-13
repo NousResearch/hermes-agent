@@ -30,9 +30,9 @@ from tools.cronjob_tools import _origin_from_env
 
 
 def _session_env(env: dict):
-    """Patch gateway.session_context.get_session_env with a dict lookup."""
+    """Patch hermes_agent.gateway.session_context.get_session_env with a dict lookup."""
     return patch(
-        "gateway.session_context.get_session_env",
+        "hermes_agent.gateway.session_context.get_session_env",
         side_effect=lambda name, default="": env.get(name, default),
     )
 

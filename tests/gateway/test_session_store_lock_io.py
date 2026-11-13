@@ -16,8 +16,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform
-from gateway.session import SessionEntry, SessionSource, SessionStore
+from hermes_agent.gateway.config import GatewayConfig, Platform
+from hermes_agent.gateway.session import SessionEntry, SessionSource, SessionStore
 
 
 # ---------------------------------------------------------------------------
@@ -71,7 +71,7 @@ def _db_with_rows(rows: dict) -> MagicMock:
 def _make_store(tmp_path, db_mock=None) -> SessionStore:
     """Build a SessionStore with a ``_TrackedLock``, bypassing disk load."""
     config = GatewayConfig()
-    with patch("gateway.session.SessionStore._ensure_loaded"):
+    with patch("hermes_agent.gateway.session.SessionStore._ensure_loaded"):
         store = SessionStore(sessions_dir=tmp_path, config=config)
     if db_mock is not None:
         store._db = db_mock

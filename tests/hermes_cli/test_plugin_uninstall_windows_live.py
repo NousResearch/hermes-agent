@@ -102,7 +102,7 @@ def live_gateway(tmp_path_factory):
     proc = subprocess.Popen([sys.executable, "-m", "hermes_cli.main", "gateway", "run", "--force"],
                             cwd=str(home), env=_child_env(home), stdin=subprocess.DEVNULL, stdout=log,
                             stderr=subprocess.STDOUT, creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)
-    from gateway.control_socket import identify_gateway, reload_gateway_plugins
+    from hermes_agent.gateway.control_socket import identify_gateway, reload_gateway_plugins
     try:
         if not _wait(lambda: proc.poll() is not None or identify_gateway(home, timeout=2.0), 180):
             pytest.fail("gateway never answered identify")

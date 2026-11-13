@@ -9,10 +9,10 @@ which prior message the user is referencing.
 """
 import pytest
 
-from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.event import MessageEvent
-from gateway.run import GatewayRunner
-from gateway.session import SessionSource
+from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+from hermes_agent.gateway.platforms.event import MessageEvent
+from hermes_agent.gateway.run import GatewayRunner
+from hermes_agent.gateway.session import SessionSource
 
 
 def _make_runner() -> GatewayRunner:
@@ -63,7 +63,7 @@ async def test_reply_prefix_injected_when_text_absent_from_history():
 @pytest.mark.asyncio
 async def test_telegram_long_reply_reaches_prompt_without_losing_later_items():
     """The native reply already has the full message; preparation must not trim it."""
-    from gateway.platforms.event import MessageType
+    from hermes_agent.gateway.platforms.event import MessageType
     from tests.gateway.test_telegram_reply_quote import _make_adapter, _make_message
 
     quoted = "\n".join(

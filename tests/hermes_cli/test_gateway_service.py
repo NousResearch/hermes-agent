@@ -19,8 +19,8 @@ grp = pytest.importorskip("grp")
 
 import hermes_cli.gateway as gateway_cli
 from hermes_cli.gateway_launchd import launchd_program_arguments
-from gateway import status
-from gateway.restart import (
+from hermes_agent.gateway import status
+from hermes_agent.gateway.restart import (
     DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT,
     DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT,
     GATEWAY_FATAL_CONFIG_EXIT_CODE,
@@ -316,7 +316,7 @@ class TestGeneratedSystemdUnits:
         assert "TimeoutStopSec=60" in unit
 
     def test_restart_exit_code_is_also_declared_a_success_status(self):
-        """#104251: a planned restart (gateway/restart.py's exit 75) is force-restarted
+        """#104251: a planned restart (hermes_agent/gateway/restart.py's exit 75) is force-restarted
         via RestartForceExitStatus, but without SuccessExitStatus=75 too, systemd still
         classifies the exit as a failure -- the unit flips to ``failed``/``Result=exit-code``
         and any OnFailure= alert unit fires on every routine restart (hermes update,
@@ -483,7 +483,7 @@ class TestLaunchdServiceRecovery:
     def test_wait_for_pid_exit_returns_when_process_gone(self, monkeypatch):
         alive = [True, True, False]
         monkeypatch.setattr(
-            "gateway.status._pid_exists", lambda pid: alive.pop(0) if alive else False
+            "hermes_agent.gateway.status._pid_exists", lambda pid: alive.pop(0) if alive else False
         )
         monkeypatch.setattr(gateway_cli.time, "sleep", lambda s: None)
 
@@ -492,7 +492,7 @@ class TestLaunchdServiceRecovery:
 
     def test_wait_for_pid_exit_times_out_on_wedged_process(self, monkeypatch):
         """A wedged gateway must not block the reload forever."""
-        monkeypatch.setattr("gateway.status._pid_exists", lambda pid: True)
+        monkeypatch.setattr("hermes_agent.gateway.status._pid_exists", lambda pid: True)
 
         assert gateway_cli._wait_for_pid_exit(4242, timeout=0) is False
 
@@ -517,7 +517,7 @@ class TestLaunchdServiceRecovery:
             ),
         )
         # Pretend the gateway is running and that we ARE inside its tree.
-        monkeypatch.setattr("gateway.status.get_running_pid", lambda *a, **k: 4242)
+        monkeypatch.setattr("hermes_agent.gateway.status.get_running_pid", lambda *a, **k: 4242)
         monkeypatch.setattr(
             gateway_cli, "_is_pid_ancestor_of_current_process", lambda pid: pid == 4242
         )
@@ -592,7 +592,7 @@ class TestLaunchdServiceRecovery:
             ),
         )
         # Gateway running, but we are NOT inside its tree.
-        monkeypatch.setattr("gateway.status.get_running_pid", lambda *a, **k: 4242)
+        monkeypatch.setattr("hermes_agent.gateway.status.get_running_pid", lambda *a, **k: 4242)
         monkeypatch.setattr(
             gateway_cli, "_is_pid_ancestor_of_current_process", lambda pid: False
         )
@@ -642,7 +642,7 @@ class TestLaunchdServiceRecovery:
                 "<string>/Users/alice/.hermes</string></plist>"
             ),
         )
-        monkeypatch.setattr("gateway.status.get_running_pid", lambda *a, **k: 4242)
+        monkeypatch.setattr("hermes_agent.gateway.status.get_running_pid", lambda *a, **k: 4242)
         monkeypatch.setattr(
             gateway_cli.subprocess,
             "run",
@@ -694,7 +694,7 @@ class TestLaunchdServiceRecovery:
                 "<string>/Users/alice/.hermes</string></plist>"
             ),
         )
-        monkeypatch.setattr("gateway.status.get_running_pid", lambda *a, **k: 4242)
+        monkeypatch.setattr("hermes_agent.gateway.status.get_running_pid", lambda *a, **k: 4242)
 
         def boom(cmd, **kwargs):
             raise OSError("launchctl submit unavailable")
@@ -767,7 +767,7 @@ class TestLaunchdServiceRecovery:
                 )
             return SimpleNamespace(returncode=0, stdout="", stderr="")
         monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
-        monkeypatch.setattr("gateway.status.get_running_pid", lambda cleanup_stale=False: 88888)
+        monkeypatch.setattr("hermes_agent.gateway.status.get_running_pid", lambda cleanup_stale=False: 88888)
         # Pre-seed the unsupported marker
         monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: tmp_path)
         gateway_cli._write_launchd_unsupported_marker()
@@ -928,7 +928,7 @@ class TestGatewaySystemServiceRouting:
         # Wait budget covers after-turn deferral + drain + headroom (#77184).
         monkeypatch.setattr(gateway_cli, "_get_restart_exit_wait_budget", lambda: 27.0)
         monkeypatch.setattr(
-            "gateway.status.get_running_pid",
+            "hermes_agent.gateway.status.get_running_pid",
             lambda: 654,
         )
         monkeypatch.setattr(
@@ -972,7 +972,7 @@ class TestGatewaySystemServiceRouting:
         monkeypatch.setattr(gateway_cli, "_preflight_user_systemd", lambda **kwargs: None)
         monkeypatch.setattr(gateway_cli, "refresh_systemd_unit_if_needed", lambda system=False: None)
         monkeypatch.setattr(gateway_cli, "_get_restart_exit_wait_budget", lambda: 27.0)
-        monkeypatch.setattr("gateway.status.get_running_pid", lambda: 654)
+        monkeypatch.setattr("hermes_agent.gateway.status.get_running_pid", lambda: 654)
         monkeypatch.setattr(gateway_cli, "_graceful_restart_via_sigusr1", lambda pid, timeout, **_: True)
         waits = iter((False, True))
         monkeypatch.setattr(
@@ -1006,7 +1006,7 @@ class TestGatewaySystemServiceRouting:
         monkeypatch.setattr(gateway_cli, "_preflight_user_systemd", lambda **kwargs: None)
         monkeypatch.setattr(gateway_cli, "refresh_systemd_unit_if_needed", lambda system=False: None)
         monkeypatch.setattr(gateway_cli, "_get_restart_exit_wait_budget", lambda: 27.0)
-        monkeypatch.setattr("gateway.status.get_running_pid", lambda: 654)
+        monkeypatch.setattr("hermes_agent.gateway.status.get_running_pid", lambda: 654)
         monkeypatch.setattr(gateway_cli, "_graceful_restart_via_sigusr1", lambda pid, timeout, **_: True)
         monkeypatch.setattr(
             gateway_cli,
@@ -1033,7 +1033,7 @@ class TestGatewaySystemServiceRouting:
         monkeypatch.setattr(gateway_cli, "_preflight_user_systemd", lambda **kwargs: None)
         monkeypatch.setattr(gateway_cli, "refresh_systemd_unit_if_needed", lambda system=False: None)
         monkeypatch.setattr(gateway_cli, "_get_restart_exit_wait_budget", lambda: 27.0)
-        monkeypatch.setattr("gateway.status.get_running_pid", lambda: 654)
+        monkeypatch.setattr("hermes_agent.gateway.status.get_running_pid", lambda: 654)
         monkeypatch.setattr(gateway_cli, "_graceful_restart_via_sigusr1", lambda pid, timeout, **_: True)
 
         def failed_replacement_wait(
@@ -1063,7 +1063,7 @@ class TestGatewaySystemServiceRouting:
         monkeypatch.setattr(gateway_cli, "_preflight_user_systemd", lambda **kwargs: None)
         monkeypatch.setattr(gateway_cli, "refresh_systemd_unit_if_needed", lambda system=False: None)
         monkeypatch.setattr(gateway_cli, "_get_restart_exit_wait_budget", lambda: 27.0)
-        monkeypatch.setattr("gateway.status.get_running_pid", lambda: 654)
+        monkeypatch.setattr("hermes_agent.gateway.status.get_running_pid", lambda: 654)
         monkeypatch.setattr(gateway_cli, "_graceful_restart_via_sigusr1", lambda pid, timeout, **_: True)
         monkeypatch.setattr(
             gateway_cli,
@@ -1106,7 +1106,7 @@ class TestGatewaySystemServiceRouting:
                 "MainPID": "0",
             },
         )
-        monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)
+        monkeypatch.setattr("hermes_agent.gateway.status.get_running_pid", lambda: None)
         monkeypatch.setattr(
             gateway_cli,
             "_read_gateway_runtime_status",
@@ -1132,7 +1132,7 @@ class TestGatewaySystemServiceRouting:
             "_read_systemd_unit_properties",
             lambda system=False, properties=None: {"ActiveState": "active", "MainPID": "777"},
         )
-        monkeypatch.setattr("gateway.status.get_running_pid", lambda: 777)
+        monkeypatch.setattr("hermes_agent.gateway.status.get_running_pid", lambda: 777)
         monkeypatch.setattr(
             gateway_cli,
             "_read_gateway_runtime_status",
@@ -1158,7 +1158,7 @@ class TestGatewaySystemServiceRouting:
 
         monkeypatch.setattr(gateway_cli, "get_launchd_label", lambda: "ai.hermes.gateway")
         monkeypatch.setattr(gateway_cli, "_launchd_domain", lambda: "gui/501")
-        monkeypatch.setattr("gateway.status.get_running_pid", lambda *a, **k: 654)
+        monkeypatch.setattr("hermes_agent.gateway.status.get_running_pid", lambda *a, **k: 654)
         monkeypatch.setattr(gateway_cli, "_request_gateway_self_restart", lambda pid: False)
         monkeypatch.setattr(
             gateway_cli,
@@ -1225,7 +1225,7 @@ class TestGatewaySystemServiceRouting:
 
         monkeypatch.setattr(gateway_cli, "get_launchd_label", lambda: "ai.hermes.gateway")
         monkeypatch.setattr(gateway_cli, "_launchd_domain", lambda: "gui/501")
-        monkeypatch.setattr("gateway.status.get_running_pid", lambda *a, **k: 654)
+        monkeypatch.setattr("hermes_agent.gateway.status.get_running_pid", lambda *a, **k: 654)
         monkeypatch.setattr(gateway_cli, "_request_gateway_self_restart", lambda pid: False)
         monkeypatch.setattr(
             gateway_cli,
@@ -2645,7 +2645,7 @@ class TestLaunchdUnloadedJobStderrStaysOffTerminal:
         monkeypatch.setattr(gateway_cli, "_clear_launchd_unsupported_marker", lambda: None)
         monkeypatch.setattr(gateway_cli, "_mark_planned_stop", lambda *a, **k: None)
         monkeypatch.setattr(gateway_cli, "_wait_for_gateway_exit", lambda *a, **k: True)
-        monkeypatch.setattr("gateway.status.get_running_pid", lambda *a, **k: None)
+        monkeypatch.setattr("hermes_agent.gateway.status.get_running_pid", lambda *a, **k: None)
         return log
 
     def test_restart_of_unloaded_job_reloads_without_launchctl_noise(self, fake_launchctl, capfd):

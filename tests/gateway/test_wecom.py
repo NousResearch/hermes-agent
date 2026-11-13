@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from gateway.config import PlatformConfig
+from hermes_agent.gateway.config import PlatformConfig
 
 
 
@@ -590,7 +590,7 @@ class TestTextBatchFlushRace:
     async def test_superseded_task_does_not_pop_or_process_event(self):
         """A flush task that has been superseded must leave the event in the
         batch dict for the new task to handle."""
-        from gateway.platforms.event import MessageEvent, MessageType
+        from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
         from plugins.platforms.wecom.adapter import WeComAdapter
 
         adapter = WeComAdapter(PlatformConfig(enabled=True))
@@ -633,7 +633,7 @@ class TestTextBatchFlushRace:
     @pytest.mark.asyncio
     async def test_active_task_processes_event_normally(self):
         """When the task is not superseded it must still process the event."""
-        from gateway.platforms.event import MessageEvent, MessageType
+        from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
         from plugins.platforms.wecom.adapter import WeComAdapter
 
         adapter = WeComAdapter(PlatformConfig(enabled=True))
@@ -747,7 +747,7 @@ class TestAttachmentTextMerge:
         await asyncio.sleep(0.3)
         adapter.handle_message.assert_awaited_once()
         event = adapter.handle_message.await_args.args[0]
-        from gateway.platforms.event import MessageType
+        from hermes_agent.gateway.platforms.event import MessageType
 
         assert event.text == "what is this?"
         assert event.media_urls == ["/tmp/x.png"]
@@ -767,7 +767,7 @@ class TestAttachmentTextMerge:
         await asyncio.sleep(0.3)
         adapter.handle_message.assert_awaited_once()
         event = adapter.handle_message.await_args.args[0]
-        from gateway.platforms.event import MessageType
+        from hermes_agent.gateway.platforms.event import MessageType
 
         assert event.media_urls == ["/tmp/x.png"]
         assert event.message_type == MessageType.PHOTO
@@ -816,7 +816,7 @@ class TestAttachmentTextMerge:
         await asyncio.sleep(0.2)
         adapter.handle_message.assert_awaited_once()
         event = adapter.handle_message.await_args.args[0]
-        from gateway.platforms.event import MessageType
+        from hermes_agent.gateway.platforms.event import MessageType
 
         assert event.text == "just text"
         assert event.media_urls == []
@@ -1293,8 +1293,8 @@ async def test_oversized_cron_output_is_sent_as_successive_markdown_replies():
     """The router hands the full cron payload over and every chunk goes out on the cached reply
     req_id (groups cannot send proactively), each through the rate-limited per-chat queue,
     instead of the tail being sliced off at 4000 chars."""
-    from gateway.config import GatewayConfig
-    from gateway.delivery import DeliveryRouter
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.delivery import DeliveryRouter
     from plugins.platforms.wecom.adapter import MAX_MESSAGE_LENGTH, WeComAdapter
 
     adapter = WeComAdapter(PlatformConfig(enabled=True))

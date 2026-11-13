@@ -49,8 +49,12 @@ API_KEY = "e2e-handoff-api-server-key"
 NEXT_MARKER = "docs/e2e-handoff-next-marker.txt"
 # NEXT moves a module the gateway imports at boot and rewrites its importer, as a layout change does;
 # the relaunched gateway can serve a turn only from the moved file.
-NEXT_MOVE = ("gateway/run_background.py", "gateway/run_turn_background.py")
-NEXT_MOVE_IMPORTER = ("gateway/run_turn.py", "from gateway.run_background import", "from gateway.run_turn_background import")
+NEXT_MOVE = ("hermes_agent/gateway/run_background.py", "hermes_agent/gateway/run_turn_background.py")
+NEXT_MOVE_IMPORTER = (
+    "hermes_agent/gateway/run_turn.py",
+    "from hermes_agent.gateway.run_background import",
+    "from hermes_agent.gateway.run_turn_background import",
+)
 
 
 # -- refs ---------------------------------------------------------------------------------------
@@ -308,7 +312,7 @@ def reply_text(body) -> str:
 def identify(home: Path) -> dict | None:
     """The live gateway's own answer to the control-socket ``identify`` verb: its pid (as the
     sandbox sees it) and the code identity it booted with (per-process, not re-read from disk)."""
-    from gateway.control_socket import identify_gateway
+    from hermes_agent.gateway.control_socket import identify_gateway
 
     return identify_gateway(home, timeout=5.0)
 
@@ -468,7 +472,7 @@ def settle_gateway(inst: Install, old_pid: int, *, timeout: float = 180) -> dict
 
 
 # Which open issue explains a missing relaunch, per column (fix PRs delete their entry). ``n1``: the
-# restart watcher runs on the bare store Python and dies importing gateway.status.
+# restart watcher runs on the bare store Python and dies importing hermes_agent.gateway.status.
 RELAUNCH_GATES = {
     "n1": (r"relaunch armed but never started: no new gateway process booted",
            "gated on #124649: the update restart watcher dies before relaunching a manual gateway"),

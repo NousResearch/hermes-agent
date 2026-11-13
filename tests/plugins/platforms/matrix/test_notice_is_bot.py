@@ -10,7 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.config import PlatformConfig
+from hermes_agent.gateway.config import PlatformConfig
 
 ROOM = "!room:example.org"
 
@@ -98,8 +98,8 @@ async def test_media_content_is_not_over_flagged():
 def test_unlisted_notice_sender_is_denied_even_with_allow_bots_env(monkeypatch, allow_bots):
     """m.notice is sender-chosen: a stranger sending notices must not get past
     MATRIX_ALLOWED_USERS, whatever MATRIX_ALLOW_BOTS says (Matrix does not honour it)."""
-    from gateway.run import GatewayRunner
-    from gateway.session import Platform, SessionSource
+    from hermes_agent.gateway.run import GatewayRunner
+    from hermes_agent.gateway.session import Platform, SessionSource
 
     for var in ("MATRIX_ALLOW_ALL_USERS", "GATEWAY_ALLOW_ALL_USERS", "GATEWAY_ALLOWED_USERS"):
         monkeypatch.delenv(var, raising=False)

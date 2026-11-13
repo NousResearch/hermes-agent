@@ -9,9 +9,9 @@ from unittest.mock import patch
 
 import pytest
 
-from gateway.config import PlatformConfig
-from gateway.platforms.api_server import APIServerAdapter
-from gateway.platforms.base import is_network_accessible
+from hermes_agent.gateway.config import PlatformConfig
+from hermes_agent.gateway.platforms.api_server import APIServerAdapter
+from hermes_agent.gateway.platforms.base import is_network_accessible
 
 
 # ---------------------------------------------------------------------------
@@ -55,7 +55,7 @@ class TestIsNetworkAccessible:
             (socket.AF_INET, socket.SOCK_STREAM, 0, "", ("127.0.0.1", 0)),
             (socket.AF_INET, socket.SOCK_STREAM, 0, "", ("10.0.0.1", 0)),
         ]
-        with patch("gateway.platforms.base._socket.getaddrinfo", return_value=mixed_result):
+        with patch("hermes_agent.gateway.platforms.base._socket.getaddrinfo", return_value=mixed_result):
             assert is_network_accessible("dual-host.local") is True
 
 

@@ -9,7 +9,7 @@ OLD, NEW = 'probe-old-key-long-enough', 'probe-new-key-long-enough'
 
 def _execute(owner, calls):
     async def handle(event):
-        from gateway.session_results import execution_result
+        from hermes_agent.gateway.session_results import execution_result
         calls.append(event.text)
         text = f'execution-{len(calls)}'
         execution_result.get()['result'] = {'final_response': text, 'messages': []}

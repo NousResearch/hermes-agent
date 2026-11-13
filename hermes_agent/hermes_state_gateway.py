@@ -347,7 +347,7 @@ class SessionGatewayMixin:
             if ancestors:
                 # An explicit repoint moved these rows to this lane: the local conversation whose receipt
                 # names one of them goes with it in the same write, or it would match neither lane (#143286).
-                from gateway.session_route_recovery import _messaging_platform
+                from hermes_agent.gateway.session_route_recovery import _messaging_platform
                 from hermes_agent.hermes_state_local import hand_off_conversations, moved_receipts
                 moved = {row[0] for row in conn.execute(
                     f"{_COMPRESSION_LINEAGE_CTE} SELECT id FROM compression_lineage", (session_id,))}
@@ -1023,7 +1023,7 @@ class SessionGatewayMixin:
     def request_handoff(self, session_id: str, platform: str, *, _guard=None) -> bool:
         """Mark a session pending handoff to *platform*; False if a handoff is already in flight.
         ``_guard(conn)`` raises to refuse inside the same write transaction (the owner's durable
-        execution fence, ``gateway.session_handoff.require_settled``)."""
+        execution fence, ``hermes_agent.gateway.session_handoff.require_settled``)."""
         def _do(conn):
             if _guard is not None:
                 _guard(conn)

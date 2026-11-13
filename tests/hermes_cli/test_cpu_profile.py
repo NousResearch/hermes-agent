@@ -57,7 +57,7 @@ def test_gateway_graceful_hard_exit_still_writes_the_profile(tmp_path: Path):
     code = (
         "from hermes_cli.cpu_profile import enable_cpu_profile\n"
         f"enable_cpu_profile({str(target)!r})\n"
-        "from gateway.run import _exit_after_graceful_shutdown\n"
+        "from hermes_agent.gateway.run import _exit_after_graceful_shutdown\n"
         "_exit_after_graceful_shutdown(0)\n"
     )
 

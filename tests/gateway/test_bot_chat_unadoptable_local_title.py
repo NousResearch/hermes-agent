@@ -29,8 +29,8 @@ def _squatter(db, sid, *, column, value, source='tui'):
 
 
 async def _deliver(authority, key, connection=None):
-    from gateway.session_authorities import served_profile_name
-    from gateway.session_bot import deliver
+    from hermes_agent.gateway.session_authorities import served_profile_name
+    from hermes_agent.gateway.session_bot import deliver
     from tools.bot_live_delivery import _bot_chat_tip
     home = Path(authority.db.db_path).parent.resolve()
     # The cron producer's door: ``bot_relay.deliver`` on a local interactive connection, no author,
@@ -83,7 +83,7 @@ async def test_an_unadoptable_stamped_bot_chat_is_moved_aside_and_the_delivery_l
     # No caller can adopt these rows, so they held the title and refused every
     # delivery for good (#143715). Moving one keeps its id, stamp and messages.
     from tests.waiting import async_wait_until
-    import gateway.session_worker_reservation as reservation
+    import hermes_agent.gateway.session_worker_reservation as reservation
     monkeypatch.setattr(reservation, 'owner_worker_subject', lambda: 'uid:1000')  # the fixture's native subject
     db = headless.authority.db
     old = _squatter(db, '20260924_173840_909979', column='user_id', value=stamp, source=source)
@@ -121,7 +121,7 @@ async def test_kept_local_bot_chat_history_is_adopted_in_place(headless, monkeyp
     # A plain pre-upgrade TUI Bot Chat, or one stamped with the host's own OS identity (the subject
     # a same-user native ticket carries, ``owner_worker_subject``), is adopted in place with its
     # history: the bot's forever-chat keeps its context instead of restarting empty.
-    import gateway.session_worker_reservation as reservation
+    import hermes_agent.gateway.session_worker_reservation as reservation
     monkeypatch.setattr(reservation, 'owner_worker_subject', lambda: 'uid:1000')  # the fixture's native subject
     db = headless.authority.db
     old = _squatter(db, 'tui_bot_chat', column='user_id' if stamp else None, value=stamp)
@@ -135,7 +135,7 @@ async def test_kept_local_bot_chat_history_is_adopted_in_place(headless, monkeyp
 async def test_a_bot_chat_stamped_with_a_forwarded_login_subject_is_never_moved_aside(headless, monkeypatch):
     # A structured login subject is the machine owner (the Webapp is single-user), so the owner's
     # delivery adopts the row in place with its history, never moving it aside.
-    import gateway.session_worker_reservation as reservation
+    import hermes_agent.gateway.session_worker_reservation as reservation
     monkeypatch.setattr(reservation, 'owner_worker_subject', lambda: 'uid:1000')  # the fixture's native subject
     db = headless.authority.db
     old = _squatter(db, 'tui_bot_chat', column='user_id', value='auth:v1:["basic","","alice"]')
@@ -170,7 +170,7 @@ async def test_a_lineage_whose_tip_nobody_can_adopt_is_moved_aside(
         headless, monkeypatch, root_stamp, tip_stamp, tip_column, tip_value):
     # The delivery adopts the tip, never the root, so a root the owner could open does not keep a
     # lineage whose tip no open can adopt: that title would refuse every delivery for good.
-    import gateway.session_worker_reservation as reservation
+    import hermes_agent.gateway.session_worker_reservation as reservation
     monkeypatch.setattr(reservation, 'owner_worker_subject', lambda: 'uid:1000')  # the fixture's native subject
     db = headless.authority.db
     _lineage(db, root_stamp, tip_stamp, tip_column, tip_value)
@@ -186,7 +186,7 @@ async def test_a_lineage_whose_tip_nobody_can_adopt_is_moved_aside(
 async def test_a_lineage_whose_tip_the_owner_adopts_stays_in_place(headless, monkeypatch):
     # The converse, a guard against moving too much (main moved this lineage aside): another user's
     # root above the owner's own tip is the owner's chat; the delivery adopts the tip.
-    import gateway.session_worker_reservation as reservation
+    import hermes_agent.gateway.session_worker_reservation as reservation
     monkeypatch.setattr(reservation, 'owner_worker_subject', lambda: 'uid:1000')  # the fixture's native subject
     db = headless.authority.db
     _lineage(db, 'uid:1001', 'basic:alice')

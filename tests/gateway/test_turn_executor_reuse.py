@@ -12,7 +12,7 @@ import contextvars
 import threading
 import time
 
-from gateway.turn_executor import _UnboundedThreadExecutor
+from hermes_agent.gateway.turn_executor import _UnboundedThreadExecutor
 
 
 def _wait_parked(ex, n=1):
@@ -58,7 +58,7 @@ def test_a_reused_worker_sees_none_of_the_previous_turns_thread_state():
 
 
 def test_submit_to_a_parked_worker_starts_no_thread_and_shutdown_releases_it(monkeypatch):
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
 
     runner = GatewayRunner.__new__(GatewayRunner)
     runner._executor_lock = threading.Lock()

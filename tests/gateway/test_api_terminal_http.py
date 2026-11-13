@@ -6,8 +6,8 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-from gateway.config import PlatformConfig
-from gateway.platforms.api_server import APIServerAdapter
+from hermes_agent.gateway.config import PlatformConfig
+from hermes_agent.gateway.platforms.api_server import APIServerAdapter
 
 
 @pytest.mark.asyncio
@@ -34,7 +34,7 @@ async def test_responses_terminal_result_is_not_success(flag, status, stream):
         adapter._run_idempotency_store.close()
 
 def test_chat_interruption_is_not_stop():
-    from gateway.platforms.api_server_openai_routes import _result_flags, _finish_reason
+    from hermes_agent.gateway.platforms.api_server_openai_routes import _result_flags, _finish_reason
     assert _finish_reason(*_result_flags({'completed': False, 'interrupted': True})) != 'stop'
 
 

@@ -12,11 +12,11 @@ from unittest.mock import patch
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.pairing import PairingStore
-from gateway.platforms.base import BasePlatformAdapter
-from gateway.profile_routing import parse_profile_routes
-from gateway.session import SessionSource
+from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+from hermes_agent.gateway.pairing import PairingStore
+from hermes_agent.gateway.platforms.base import BasePlatformAdapter
+from hermes_agent.gateway.profile_routing import parse_profile_routes
+from hermes_agent.gateway.session import SessionSource
 
 
 class _Stub(BasePlatformAdapter):
@@ -37,7 +37,7 @@ def _stub(platform, runner, label):
 def mux(tmp_path, monkeypatch):
     """Default home allows user 777; profile ``ops`` is a shared-bot satellite; ``team_b`` owns a bot."""
     from agent import secret_scope
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
 
     home = tmp_path / "hh"
     for name in ("ops", "team_b"):
@@ -105,7 +105,7 @@ def test_mid_turn_authorization_reads_admitting_transport_allowlist(mux):
     """Inside a routed satellite's turn (its scope has no allowlist) ``_is_user_authorized_for_source``
     must admit the shared bot's owner without an ingress stamp — the seam /topic, sibling /stop, plugin
     injection, voice and auto-resume now use."""
-    from gateway.run import _profile_runtime_scope
+    from hermes_agent.gateway.run import _profile_runtime_scope
 
     source = SessionSource(platform=Platform.TELEGRAM, chat_id="777", chat_type="dm", user_id="777", profile="ops")
     source._transport_adapter_ref = weakref.ref(mux.primary)
@@ -132,7 +132,7 @@ def test_shared_bot_satellite_resolves_primary_transport_for_restored_sources(mu
 def test_completion_preflight_runs_in_target_profile_scope(mux):
     """An async-delegation completion for a secondary session must be classified against THAT
     profile's state.db (the watcher runs unscoped, where the row does not exist → ``terminal``)."""
-    from gateway import run as run_module
+    from hermes_agent.gateway import run as run_module
     from hermes_agent.hermes_state import SessionDB
 
     db_home = mux.home / "profiles" / "team_b"
@@ -162,7 +162,7 @@ def test_raw_api_server_child_notice_follows_the_served_profile_policy(
     import queue
     from typing import cast
 
-    from gateway import run as run_module
+    from hermes_agent.gateway import run as run_module
     from hermes_agent.hermes_state import SessionDB
 
     home = tmp_path / "home"

@@ -7,7 +7,7 @@ Applies on top of the root `AGENTS.md`. Authoring guide + canonical compat contr
 ## Plugins never touch core (Teknium, May 2026)
 
 Plugins live in their own directory and work within the ABCs / hooks / `ctx` surface we provide.
-A plugin MUST NOT modify `run_agent.py`, `cli.py`, `gateway/run.py`, `hermes_cli/main.py`, etc.
+A plugin MUST NOT modify `run_agent.py`, `cli.py`, `hermes_agent/gateway/run.py`, `hermes_cli/main.py`, etc.
 If it needs a capability the framework lacks, widen the **generic** plugin surface (new hook, new
 ctx method) and have the plugin use it — never hardcode plugin-specific logic into core (PR #5295
 removed 95 lines of hardcoded honcho argparse from `main.py`). Plugin setup goes through
@@ -89,7 +89,7 @@ bare names resolve through the catalog or error.
 | Memory provider | `plugins/memory/<name>/` | `plugins/memory/__init__.py`: bundled → `$HERMES_HOME/plugins/` → `./.hermes/plugins/` (opt-in `HERMES_ENABLE_PROJECT_PLUGINS`) → `hermes_agent.memory_providers` entry points; **bundled-first** | Activated by name via `memory.provider`, so a dropped-in dir must not shadow a shipped one (reverse of general later-wins). Enumerates without importing. Implements `MemoryProvider` ABC (`agent/memory_provider.py`), orchestrated by `agent/memory_manager.py`: `sync_turn`, `prefetch`, `shutdown`, optional `post_setup`. `cli.py` with `register_cli(subparser)` is wired by `discover_plugin_cli_commands()` — only for the ACTIVE provider, so `hermes --help` stays clean |
 | Model provider | `plugins/model-providers/<name>/` | `providers/__init__.py._discover_providers()`, **lazy**, on first `get_provider_profile()`/`list_providers()`; bundled → `$HERMES_HOME/plugins/model-providers/` → legacy `providers/<name>.py` | `__init__.py` calls `providers.register_provider(ProviderProfile(...))` at load; **last-writer-wins** so a user plugin overrides a bundled profile. `PluginManager` records `kind: model-provider` manifests but does NOT import them (would double-instantiate); manifests without `kind:` are auto-coerced by source heuristic (`register_provider` + `ProviderProfile`) |
 | Context engine / image-gen / delegation / others | `plugins/context_engine/`, `plugins/image_gen/`, `plugins/delegation/`, ... | ABC + orchestrator + per-plugin directory | Plug into `agent/context_engine.py`, `agent/image_gen_provider.py`, `agent/delegation_provider.py` (`plugins/delegation/default` IS today's delegation routing) |
-| Platform adapters | `plugins/platforms/<name>/adapter.py` | gateway | Token-lock and scoped-secret rules in `gateway/AGENTS.md` (`irc`, `feishu` are canonical) |
+| Platform adapters | `plugins/platforms/<name>/adapter.py` | gateway | Token-lock and scoped-secret rules in `hermes_agent/gateway/AGENTS.md` (`irc`, `feishu` are canonical) |
 
 **Discovery timing pitfall:** `discover_plugins()` runs only as a side effect of importing
 `model_tools.py`. Code that reads plugin state without importing `model_tools.py` first must call
@@ -113,7 +113,7 @@ process serves several profiles, so a provider never caches `hermes_home` from `
 work starts via `agent.memory_provider.spawn_context_thread`, never a bare `threading.Thread`,
 or the worker runs with no scope and fails closed (or writes into the launch profile's tenant).
 Platform plugins never mutate `os.environ`: YAML goes to `PlatformConfig.extra` through
-`_shared.apply_yaml_bridge`, gates through `platform_gate_env` (`gateway/AGENTS.md`).
+`_shared.apply_yaml_bridge`, gates through `platform_gate_env` (`hermes_agent/gateway/AGENTS.md`).
 
 ## Plugin host boundary (`plugins.isolation: host`)
 

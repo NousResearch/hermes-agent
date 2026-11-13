@@ -11,7 +11,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from hermes_agent.cron.scheduler import _deliver_result
-from gateway.config import Platform, PlatformConfig
+from hermes_agent.gateway.config import Platform, PlatformConfig
 from tools.cronjob_tools import _manual_run_completion
 
 GOOD, BAD = "-100111", "-100222"
@@ -28,7 +28,7 @@ def _run_and_complete(deliver):
     async def _send(platform, pconfig, chat_id, text, **kwargs):
         return {"success": True, "message_id": "7"} if chat_id == GOOD else {"error": "chat not found"}
 
-    with patch("gateway.config.load_gateway_config", return_value=config), \
+    with patch("hermes_agent.gateway.config.load_gateway_config", return_value=config), \
          patch("hermes_agent.cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
          patch("tools.send_message_tool._send_to_platform", _send), \
          patch("hermes_agent.cron.jobs.update_job", side_effect=lambda _id, values: stored.update(values)):
@@ -75,7 +75,7 @@ def test_a_partial_standalone_split_send_counts_as_reached(monkeypatch):
     async def _send(platform, pconfig, chat_id, text, **kwargs):
         return await _send_telegram("tok", chat_id, text)
 
-    with patch("gateway.config.load_gateway_config", return_value=config), \
+    with patch("hermes_agent.gateway.config.load_gateway_config", return_value=config), \
          patch("hermes_agent.cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
          patch("tools.send_message_tool._send_to_platform", _send), \
          patch("hermes_agent.cron.jobs.update_job", side_effect=lambda _id, values: stored.update(values)):
@@ -116,7 +116,7 @@ def test_a_report_whose_delivery_answer_was_lost_is_not_echoed(monkeypatch, lost
         results.append(await _send_telegram("tok", chat_id, text))
         return results[-1]
 
-    with patch("gateway.config.load_gateway_config", return_value=config), \
+    with patch("hermes_agent.gateway.config.load_gateway_config", return_value=config), \
          patch("hermes_agent.cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
          patch("tools.send_message_tool._send_to_platform", _send), \
          patch("hermes_agent.cron.jobs.update_job", side_effect=lambda _id, values: stored.update(values)):

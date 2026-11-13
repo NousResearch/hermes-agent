@@ -8,11 +8,11 @@ from pathlib import Path
 
 
 def test_hosted_document_captured_for_a_new_turn_survives_a_concurrent_release(hosted_owner, monkeypatch):
-    from gateway import session_authority
-    from gateway.hosted_room_attachments import HostedRoomAttachmentStore
-    from gateway.hosted_room_driver import TaskIdentity
-    from gateway.session_hosted_rpc import HostedRoomAuthorityRPC
-    from gateway.session_ingress_media import release_unheld_media
+    from hermes_agent.gateway import session_authority
+    from hermes_agent.gateway.hosted_room_attachments import HostedRoomAttachmentStore
+    from hermes_agent.gateway.hosted_room_driver import TaskIdentity
+    from hermes_agent.gateway.session_hosted_rpc import HostedRoomAuthorityRPC
+    from hermes_agent.gateway.session_ingress_media import release_unheld_media
     from hermes_agent.hermes_state_runtime import list_session_admissions
 
     authority, loop, principal, _ = hosted_owner

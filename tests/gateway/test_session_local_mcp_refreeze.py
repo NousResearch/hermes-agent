@@ -11,14 +11,14 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.config import Platform
+from hermes_agent.gateway.config import Platform
 from hermes_agent.hermes_state_runtime import RuntimeStoreError
 from tests.gateway.test_session_authority_cancel_settlement import REF, _authority, _submit
 from tests.waiting import async_wait_until
 
 
 def _local_authority(tmp_path, monkeypatch):
-    from gateway import session_local_recovery
+    from hermes_agent.gateway import session_local_recovery
     db, authority = _authority(tmp_path, monkeypatch, platform=Platform.LOCAL)
     monkeypatch.setattr(session_local_recovery, 'restore_local_session', lambda authority, sid: None)
     monkeypatch.setattr(session_local_recovery, 'reopen_local_session', lambda authority, ref: None)
@@ -30,7 +30,7 @@ def _local_authority(tmp_path, monkeypatch):
                          ids=['runtime-store-error', 'other-exception'])
 async def test_a_failing_editor_mcp_probe_does_not_stop_the_admission(tmp_path, monkeypatch, error):
     from hermes_agent import hermes_state_local
-    from gateway import session_finite, session_local_mcp, session_policy
+    from hermes_agent.gateway import session_finite, session_local_mcp, session_policy
     db, authority = _local_authority(tmp_path, monkeypatch)
     # An editor session whose borrowed servers the probe re-checks; the probe itself fails.
     data = {'scope': 'editor-session:probe', 'schemas': {}, 'names': {'0': 'editor_probe_0'}}
@@ -56,7 +56,7 @@ async def test_a_failing_editor_mcp_probe_does_not_stop_the_admission(tmp_path, 
 
 @pytest.mark.asyncio
 async def test_a_refused_head_triggers_no_editor_mcp_probe(tmp_path, monkeypatch):
-    from gateway import session_local_mcp
+    from hermes_agent.gateway import session_local_mcp
     db, authority = _local_authority(tmp_path, monkeypatch)
     monkeypatch.setattr(authority, '_schedule', lambda ref: None)
     probed = []
@@ -88,7 +88,7 @@ def mcp_loop():
 def test_held_servers_are_relisted_together_under_one_bound(monkeypatch, mcp_loop):
     """Two held servers that never answer cost one bound, not one each: each list only gets past
     its rendezvous while the other's is in flight too."""
-    from gateway import session_local_mcp
+    from hermes_agent.gateway import session_local_mcp
     from tools import mcp_tool
     from tools.mcp_tool_scope import _server_key
     bound = 2

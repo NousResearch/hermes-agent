@@ -113,7 +113,7 @@ def test_a_gateway_shutdown_leaves_a_resumable_record_and_a_user_stop_does_not(c
         sid = out["subagent_ids"][0]
         assert started.wait(10)
         if cause == "gateway":
-            interrupt_all(reason="gateway shutdown (test)", resumable=True)  # gateway/run_shutdown.py's call
+            interrupt_all(reason="gateway shutdown (test)", resumable=True)  # hermes_agent/gateway/run_shutdown.py's call
         else:
             with _active_subagents_lock:
                 assert sid in _active_subagents

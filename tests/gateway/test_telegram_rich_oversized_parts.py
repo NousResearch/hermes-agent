@@ -17,7 +17,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from gateway.config import PlatformConfig
+from hermes_agent.gateway.config import PlatformConfig
 from plugins.platforms.telegram.adapter import TelegramAdapter
 from plugins.platforms.telegram.rich_parts import split_rich_parts
 
@@ -205,7 +205,7 @@ async def test_a_part_refused_after_earlier_parts_landed_is_never_resent_whole(m
     """Part 2 fails on a transient error: _send_with_retry must not re-send the whole message
     (rich or plain), which would duplicate part 1 in the chat."""
     adapter = _make_adapter()
-    monkeypatch.setattr("gateway.platforms.base.asyncio.sleep", AsyncMock())
+    monkeypatch.setattr("hermes_agent.gateway.platforms.base.asyncio.sleep", AsyncMock())
     outcomes = iter([SimpleNamespace(message_id=501)] + [RuntimeError("Bad Gateway")] * 10)
 
     async def do_api_request(method, api_kwargs=None):
@@ -235,7 +235,7 @@ def test_standalone_send_delivers_an_oversized_rich_message_in_parts(monkeypatch
 
     for var in ("TELEGRAM_PROXY", "HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"):
         monkeypatch.delenv(var, raising=False)
-    monkeypatch.setattr("gateway.platforms.base._detect_macos_system_proxy", lambda: None)
+    monkeypatch.setattr("hermes_agent.gateway.platforms.base._detect_macos_system_proxy", lambda: None)
     bot = _make_adapter()._bot
     parse_mode = SimpleNamespace(MARKDOWN_V2="MarkdownV2", HTML="HTML")
     constants = SimpleNamespace(ParseMode=parse_mode)
@@ -314,7 +314,7 @@ async def test_a_later_part_refused_for_good_sends_the_rest_as_markdown_once(mon
     """Part 2 permanently refused: the tail reaches the chat as MarkdownV2 after part 1, and part 1
     is never sent again (redelivery would otherwise re-show it and hit the same refusal)."""
     adapter = _make_adapter()
-    monkeypatch.setattr("gateway.platforms.base.asyncio.sleep", AsyncMock())
+    monkeypatch.setattr("hermes_agent.gateway.platforms.base.asyncio.sleep", AsyncMock())
     _refuse_rich_part(adapter, 2)
     content = _details_content()
 
@@ -366,7 +366,7 @@ async def test_a_streamed_reply_whose_first_preview_failed_shows_rich_part_one_o
     transiently: only the unseen tail goes out again, so every row reaches the chat exactly once."""
     import asyncio
 
-    from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
+    from hermes_agent.gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
     from tests.waiting import async_wait_until
 
     adapter = _make_adapter()
@@ -413,7 +413,7 @@ async def test_a_first_part_that_never_left_keeps_the_normal_retry(monkeypatch):
     import telegram.error as tg_error
 
     adapter = _make_adapter()
-    monkeypatch.setattr("gateway.platforms.base.asyncio.sleep", AsyncMock())
+    monkeypatch.setattr("hermes_agent.gateway.platforms.base.asyncio.sleep", AsyncMock())
     attempts = {"rich": 0}
 
     async def do_api_request(method, api_kwargs=None):
@@ -438,7 +438,7 @@ async def test_a_timed_out_part_names_the_parts_that_never_left():
     ``unattempted_chunks`` and the stream consumer sends them before counting the reply shown."""
     import telegram.error as tg_error
 
-    from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
+    from hermes_agent.gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
 
     adapter = _make_adapter()
     _refuse_rich_part(adapter, 0)
@@ -470,7 +470,7 @@ async def test_a_later_part_that_never_left_is_resent_rich_after_the_parts_shown
     import telegram.error as tg_error
 
     adapter = _make_adapter()
-    monkeypatch.setattr("gateway.platforms.base.asyncio.sleep", AsyncMock())
+    monkeypatch.setattr("hermes_agent.gateway.platforms.base.asyncio.sleep", AsyncMock())
     screen, attempts = [], {"rich": 0}
 
     async def do_api_request(method, api_kwargs=None):
@@ -497,7 +497,7 @@ async def test_a_final_edit_continuation_accepted_before_its_receipt_timed_out_i
     stream fallback sends only the parts after it, so no row shows twice and none is missing."""
     import telegram.error as tg_error
 
-    from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
+    from hermes_agent.gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
 
     adapter = _make_adapter()
     content = _details_content(blocks=4, body_lines=400)

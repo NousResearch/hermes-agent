@@ -8,10 +8,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from gateway.config import HomeChannel, Platform
-from gateway.pairing import PairingStore
-from gateway.run import GatewayRunner
-from gateway.session import SessionSource, build_session_key
+from hermes_agent.gateway.config import HomeChannel, Platform
+from hermes_agent.gateway.pairing import PairingStore
+from hermes_agent.gateway.run import GatewayRunner
+from hermes_agent.gateway.session import SessionSource, build_session_key
 from tests.gateway.restart_test_helpers import make_restart_runner, make_restart_source
 
 
@@ -103,7 +103,7 @@ def _bg_runner():
 async def test_background_task_failure_notice_honors_policy(tmp_path, monkeypatch, setting):
     _configure(tmp_path, monkeypatch, setting)
     runner = _bg_runner()
-    from gateway.platforms.base import BasePlatformAdapter
+    from hermes_agent.gateway.platforms.base import BasePlatformAdapter
     adapter = MagicMock(spec=BasePlatformAdapter)
     adapter.send = AsyncMock()
     adapter.emit_warning = BasePlatformAdapter.emit_warning.__get__(adapter, BasePlatformAdapter)
@@ -112,7 +112,7 @@ async def test_background_task_failure_notice_honors_policy(tmp_path, monkeypatc
     runner.adapters[Platform.TELEGRAM] = adapter
     source = SessionSource(platform=Platform.TELEGRAM, user_id="1", chat_id="c1", user_name="u")
 
-    with patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "k"}), \
+    with patch("hermes_agent.gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "k"}), \
          patch.object(runner, "_resolve_session_agent_runtime", side_effect=RuntimeError("BG_REAL_CRASH")):
         await runner._run_background_task("do the thing", source, "bg_test")
 

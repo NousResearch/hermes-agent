@@ -5,8 +5,8 @@ import sqlite3
 
 import pytest
 
-from gateway import hosted_room_driver as tasks
-from gateway import hosted_rooms
+from hermes_agent.gateway import hosted_room_driver as tasks
+from hermes_agent.gateway import hosted_rooms
 from tests.gateway.test_hosted_room_unserved_member_stop import _disband
 from tests.gateway.test_hosted_room_unserved_member_stop import deferred as deferred_fixture
 

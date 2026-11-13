@@ -2,8 +2,8 @@
 (main forwarded ``body.metadata`` to ``run_conversation(relay_metadata=...)``)."""
 import pytest
 
-from gateway.session_ingress import execute_admission
-from gateway.session_api_turn import admit_api_turn
+from hermes_agent.gateway.session_ingress import execute_admission
+from hermes_agent.gateway.session_api_turn import admit_api_turn
 from tests.gateway.session_claims import claim
 
 
@@ -15,8 +15,8 @@ async def test_request_relay_metadata_reaches_the_executing_turn(api, owner):
     seen = {}
 
     async def handle(event):
-        from gateway.session_api_turn import api_execution
-        from gateway.session_results import execution_result
+        from hermes_agent.gateway.session_api_turn import api_execution
+        from hermes_agent.gateway.session_results import execution_result
         seen['relay_metadata'] = api_execution.get()['relay_metadata']
         execution_result.get()['result'] = {'final_response': 'ok'}
         return 'ok'
@@ -29,9 +29,9 @@ def test_turn_runner_hands_relay_metadata_to_run_conversation(api, owner):
     """The last hop: the TurnRunner passes the admitted relay metadata to run_conversation (N99)."""
     from types import SimpleNamespace
 
-    from gateway.run_turn_runner import TurnRunner
-    from gateway.session_api_turn import api_execution, prepare_api_execution
-    from gateway.turn_context import TurnContext
+    from hermes_agent.gateway.run_turn_runner import TurnRunner
+    from hermes_agent.gateway.session_api_turn import api_execution, prepare_api_execution
+    from hermes_agent.gateway.turn_context import TurnContext
     metadata = {'relay.trace': 'trace-8'}
     _, ref, row = admit_api_turn(api, session_id='relay-hop', user_message='hello',
                                  conversation_history=[], relay_metadata=metadata)

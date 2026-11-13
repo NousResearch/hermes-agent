@@ -28,10 +28,10 @@ class _Transport:
 
 
 async def _desktop(tmp_path, monkeypatch, turns):
-    from gateway.config import GatewayConfig
-    from gateway.session import SessionStore
-    from gateway.session_authority import initialize_session_authority
-    from gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.session import SessionStore
+    from hermes_agent.gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.session_controls import AuthorityConnection
     from hermes_agent.tui_gateway import server
 
     home = tmp_path / ".hermes"
@@ -60,7 +60,7 @@ async def _desktop(tmp_path, monkeypatch, turns):
                 "native_bootstrap": True}
     transport.desktop_local = True  # the Desktop's accepted ``client.capabilities {desktop_local}``
     connection = AuthorityConnection(authority, transport, identity)
-    from gateway.session_local_migration import bind_native_transport
+    from hermes_agent.gateway.session_local_migration import bind_native_transport
     bind_native_transport(authority, connection.actor, identity)
     return SimpleNamespace(authority=authority, connection=connection, transport=transport, db=store._db)
 
@@ -101,7 +101,7 @@ async def test_the_window_resumes_the_chat_onboarding_start_opened(tmp_path, mon
 @pytest.mark.asyncio
 async def test_a_rerun_replaces_the_open_run_and_skip_ends_the_new_one(tmp_path, monkeypatch):
     from agent import onboarding_record
-    from gateway.session_server_requests import ask_viewer_result, waiting
+    from hermes_agent.gateway.session_server_requests import ask_viewer_result, waiting
     turns = []
     desktop = await _desktop(tmp_path, monkeypatch, turns)
     try:
@@ -132,7 +132,7 @@ async def test_a_rerun_with_no_model_opens_no_chat(tmp_path, monkeypatch):
     desktop = await _desktop(tmp_path, monkeypatch, [])
     (tmp_path / ".hermes" / "config.yaml").write_text("{}\n", encoding="utf-8")
     (tmp_path / ".hermes" / ".env").write_text("", encoding="utf-8")
-    monkeypatch.setattr("gateway.run._resolve_gateway_model", lambda config=None: None)
+    monkeypatch.setattr("hermes_agent.gateway.run._resolve_gateway_model", lambda config=None: None)
     try:
         before = {row["id"] for row in desktop.db.search_sessions(limit=100)}
         refused = await _request(desktop, 1, "onboarding.start", {"rerun": True})
@@ -166,8 +166,8 @@ def test_an_onboarding_chat_folds_in_setup_beat_for_its_whole_life(tmp_path):
 def test_the_authority_turn_plays_the_opening_and_skips_the_note_while_a_card_waits(tmp_path):
     from agent import onboarding_record
     from agent.onboarding_text import GREETING
-    from gateway.session_onboarding import arm_onboarding_turn
-    from gateway.session_server_requests import _Pending, _lock, _open
+    from hermes_agent.gateway.session_onboarding import arm_onboarding_turn
+    from hermes_agent.gateway.session_server_requests import _Pending, _lock, _open
     from hermes_agent.hermes_state import SessionDB
     db = SessionDB(db_path=tmp_path / "state.db")
     try:
@@ -204,9 +204,9 @@ async def _settled(desktop, session_id):
 async def test_start_from_a_secondary_profile_claims_in_the_default_home(tmp_path, monkeypatch):
     """Multiplexed host socket on a secondary profile: onboarding runs in ``default``, so the trial claim,
     the provider check and the chat's policy read the default home, never the asking connection's."""
-    from gateway.session_authorities import SessionAuthorities
-    from gateway.session_authority import initialize_session_authority
-    from gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway.session_authorities import SessionAuthorities
+    from hermes_agent.gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.session_controls import AuthorityConnection
     from hermes_constants import get_hermes_home
     from hermes_agent.hermes_state import SessionDB
     desktop = await _desktop(tmp_path, monkeypatch, [])
@@ -294,7 +294,7 @@ async def test_a_fresh_launch_deletes_the_chat_the_last_launch_left_with_no_view
     """The previous launch's chat is still mounted (a backend that outlived the app, or local recovery),
     but no window watches it and no turn runs in it: the new launch's start deletes it and drops it
     from the authority."""
-    from gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway.session_controls import AuthorityConnection
     turns = []
     desktop = await _desktop(tmp_path, monkeypatch, turns)
     first = (await _request(desktop, 1, "onboarding.start", {"rerun": True}))["result"]["stored_session_id"]
@@ -335,7 +335,7 @@ async def test_a_window_that_reopens_the_old_chat_while_a_fresh_launch_starts_ke
     """The start decided the old chat had no viewer, then another window resumed it before the delete
     ran: the chat stays with its messages, and its run ends as replaced."""
     from agent import onboarding_record
-    from gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway.session_controls import AuthorityConnection
     turns = []
     desktop = await _desktop(tmp_path, monkeypatch, turns)
     first = (await _request(desktop, 1, "onboarding.start", {"rerun": True}))["result"]["stored_session_id"]
@@ -375,8 +375,8 @@ async def test_a_window_whose_resume_reads_history_while_a_fresh_launch_claims_t
     messages, and its run ends as replaced."""
     import threading
     from agent import onboarding_record
-    from gateway import session_local_recovery
-    from gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway import session_local_recovery
+    from hermes_agent.gateway.session_controls import AuthorityConnection
     turns = []
     desktop = await _desktop(tmp_path, monkeypatch, turns)
     first = (await _request(desktop, 1, "onboarding.start", {"rerun": True}))["result"]["stored_session_id"]

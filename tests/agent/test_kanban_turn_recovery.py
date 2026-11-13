@@ -5,7 +5,7 @@ loop), then call-site behaviour, then the goal-mode veto as one table.
 
 Under the unified gateway runtime a dispatcher-spawned worker no longer runs the
 agent: ``hermes_cli.kanban_worker_client`` submits the claim to the profile owner,
-and the owner runs the turns in ``gateway.session_kanban.run_worker_turns`` against
+and the owner runs the turns in ``hermes_agent.gateway.session_kanban.run_worker_turns`` against
 the bound frame's db/run/claim carrier. The call-site tests therefore drive that
 real owner seam (real board, real claim, real lease proof) and read the outcome the
 dispatcher books — ``worker_exit_code`` — plus the client's exit/summary half. The
@@ -451,7 +451,7 @@ def owner_worker(tmp_path, clear_kanban_env, monkeypatch):
     from the frame, never from the owner's environment.
     """
     import agent.kanban_turn_recovery as rec
-    from gateway import session_kanban
+    from hermes_agent.gateway import session_kanban
     from hermes_cli import kanban_db as kb
     from hermes_cli.kanban_db_connect import connect_closing
 
@@ -553,7 +553,7 @@ def test_single_turn_route_outcomes(script, code, owner_worker):
 def test_non_worker_frame_is_never_recovered(clear_kanban_env, monkeypatch):
     """A turn whose frame carries no kanban claim is not a worker, even inside an owner
     process whose environment names a task: one model entry, result returned untouched."""
-    from gateway import session_kanban
+    from hermes_agent.gateway import session_kanban
 
     clear_kanban_env.setenv("HERMES_KANBAN_TASK", "t_foreign")
     entered: list[str] = []

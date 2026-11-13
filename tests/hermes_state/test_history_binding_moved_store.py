@@ -31,7 +31,7 @@ def test_binding_still_names_only_its_owner(tmp_path):
 
 
 def test_import_links_a_parent_its_owner_imported_before_the_home_moved(tmp_path):
-    from gateway.session_contract import SessionActor
+    from hermes_agent.gateway.session_contract import SessionActor
     with SessionDB(db_path=tmp_path / 'state.db') as db:
         db.create_session('parent', source='cli')
         db.set_meta(BINDING_PREFIX + 'parent', _bound(tmp_path / 'mac' / 'home'))

@@ -48,7 +48,7 @@ async def test_safe_mode_acp_session_freezes_the_launch_model(monkeypatch, tmp_p
     monkeypatch.setenv('HERMES_SAFE_MODE', '1')  # what main() exports for --safe-mode
     monkeypatch.setenv('HERMES_IGNORE_USER_CONFIG', '1')
     import hermes_agent.acp_adapter.entry
-    from gateway.session_local import _bypass_policy
+    from hermes_agent.gateway.session_local import _bypass_policy
     from hermes_cli.main_agent_cmds import cmd_acp
     monkeypatch.setattr(hermes_agent.acp_adapter.entry, 'main', lambda argv: None)
     cmd_acp(SimpleNamespace(model='anthropic/claude-sonnet-4', provider='openrouter'))

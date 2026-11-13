@@ -162,7 +162,7 @@ def test_only_operator_workspaces_and_listed_directories_are_trusted(tmp_path, m
     monkeypatch.setenv("TERMINAL_CWD", str(sibling))
     assert shell_linted(sibling) == 2
     # ...but not one the model scheduled: a cron job's workdir or a kanban task's workspace...
-    from gateway.session_context import clear_session_vars, set_session_vars
+    from hermes_agent.gateway.session_context import clear_session_vars, set_session_vars
     tokens = set_session_vars(cron_session="1")
     try:
         assert shell_linted(sibling) == 0

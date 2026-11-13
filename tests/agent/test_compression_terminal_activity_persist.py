@@ -115,7 +115,7 @@ def test_stall_interrupted_cooldown_stamp_is_durable_inside_persist_window(sessi
 )
 def test_gateway_hygiene_terminal_stamps_are_durable(session, provenance_name, desc):
     """Every gateway-hygiene terminal transition must converge the durable row too."""
-    from gateway.run import _stamp_hygiene_compression_provenance
+    from hermes_agent.gateway.run import _stamp_hygiene_compression_provenance
 
     _mid_compression_durable_stamp(session.agent, session.db, session.session_id)
 

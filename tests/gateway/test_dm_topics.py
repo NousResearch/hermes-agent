@@ -17,7 +17,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from gateway.config import PlatformConfig
+from hermes_agent.gateway.config import PlatformConfig
 
 
 # Use the shared, comprehensive telegram mock from conftest instead of a
@@ -416,7 +416,7 @@ def _make_mock_message(chat_id=111, chat_type="private", text="hello", thread_id
 
 def test_build_message_event_sets_auto_skill():
     """When topic has a skill binding, auto_skill should be set on the event."""
-    from gateway.platforms.event import MessageType
+    from hermes_agent.gateway.platforms.event import MessageType
 
     adapter = _make_adapter([
         {
@@ -438,7 +438,7 @@ def test_build_message_event_sets_auto_skill():
 
 def test_build_message_event_no_auto_skill_without_binding():
     """Topics without skill binding should have auto_skill=None."""
-    from gateway.platforms.event import MessageType
+    from hermes_agent.gateway.platforms.event import MessageType
 
     adapter = _make_adapter([
         {
@@ -468,7 +468,7 @@ from telegram.constants import ChatType as _ChatType
 
 def test_group_topic_skill_binding():
     """Group topic with skill config should set auto_skill on the event."""
-    from gateway.platforms.event import MessageType
+    from hermes_agent.gateway.platforms.event import MessageType
 
     adapter = _make_adapter(group_topics_config=[
         {
@@ -496,7 +496,7 @@ def test_group_topic_skill_binding():
 
 def test_group_topic_skill_binding_second_topic():
     """A different thread_id in the same group should resolve its own skill."""
-    from gateway.platforms.event import MessageType
+    from hermes_agent.gateway.platforms.event import MessageType
 
     adapter = _make_adapter(group_topics_config=[
         {
@@ -528,7 +528,7 @@ def test_recovered_lobby_message_carries_the_topics_prompt_inputs(lobby_thread_i
     the same prompt inputs as a message sent inside the topic: the session context prompt and
     the channel prompt would otherwise flip between the root's and the topic's every turn."""
     import hermes_yaml as yaml
-    from gateway.platforms.event import MessageType
+    from hermes_agent.gateway.platforms.event import MessageType
 
     dm_topics = [{"chat_id": 111, "topics": [{"name": "Research", "skill": "arxiv", "thread_id": 100}]}]
     # A General-topic lookup misses the cache and hot-reloads config.yaml, so it must hold the topics.
@@ -556,7 +556,7 @@ def test_recovered_lobby_message_carries_the_topics_prompt_inputs(lobby_thread_i
 
 def test_recovered_lobby_message_inherits_the_chat_prompt_without_a_topic_prompt():
     """A topic with no prompt of its own inherits the chat's, as a message sent inside it does."""
-    from gateway.platforms.event import MessageType
+    from hermes_agent.gateway.platforms.event import MessageType
 
     adapter = _make_adapter([{"chat_id": 111, "topics": [{"name": "Research", "thread_id": 100}]}])
     adapter.config.extra["channel_prompts"] = {"111": "root prompt"}
@@ -571,7 +571,7 @@ def test_recovered_lobby_message_inherits_the_chat_prompt_without_a_topic_prompt
 
 def test_unrecovered_group_topic_message_keeps_its_prompt_inputs():
     """Batching runs topic recovery on every text event; one it leaves alone keeps its own inputs."""
-    from gateway.platforms.event import MessageType
+    from hermes_agent.gateway.platforms.event import MessageType
 
     adapter = _make_adapter(group_topics_config=[
         {"chat_id": -1001234567890, "topics": [{"name": "Engineering", "thread_id": 5, "skill": "software-development"}]},

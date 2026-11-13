@@ -13,12 +13,12 @@ import pytest
 @pytest.mark.parametrize('label, title', [('cli', 'old cli'), ('tui', 'old tui'), ('desktop', 'Bot Chat'),
                                           ('gui', 'old gui')])
 async def test_a_turn_on_an_adopted_legacy_row_keeps_its_source(tmp_path, monkeypatch, label, title):
-    from gateway import run
-    from gateway.config import GatewayConfig
-    from gateway.session import SessionStore
-    from gateway.session_authority import initialize_session_authority
-    from gateway.session_contract import SessionActor
-    from gateway.session_local_title import resolve_titled_session
+    from hermes_agent.gateway import run
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.session import SessionStore
+    from hermes_agent.gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.session_contract import SessionActor
+    from hermes_agent.gateway.session_local_title import resolve_titled_session
 
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     monkeypatch.setattr(run, '_load_gateway_config', lambda: {'platform_toolsets': {'cli': []}})

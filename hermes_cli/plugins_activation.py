@@ -154,7 +154,7 @@ def reload_running_gateway() -> Optional[dict[str, Any]]:
     secondary) to force plugin re-discovery, so an enable loads and a disable unloads in the running
     gateway now. The ``reload-plugins`` answer, or None when no gateway answered."""
     try:
-        from gateway.control_socket import reload_gateway_plugins
+        from hermes_agent.gateway.control_socket import reload_gateway_plugins
         from hermes_constants import get_default_hermes_root, get_hermes_home
         home = Path(get_hermes_home())
         answer = reload_gateway_plugins(home)
@@ -234,7 +234,7 @@ def _go_live(name: str) -> Optional[dict[str, Any]]:
 
 def _serve_backend_record():
     """The host-owner record, else the Desktop child's (a Desktop-only box has no host owner)."""
-    from gateway import host_rendezvous as hr
+    from hermes_agent.gateway import host_rendezvous as hr
     for role in (hr.ROLE_SERVE, hr.ROLE_DESKTOP_SERVE):
         record = hr.read_record(role)
         if record is not None and record.port and hr.record_token_is_consistent(record):
@@ -248,7 +248,7 @@ def notify_serve_backend(name: str, home: Path) -> Optional[dict[str, Any]]:
     try:
         import json
         import urllib.request
-        from gateway import host_rendezvous as hr
+        from hermes_agent.gateway import host_rendezvous as hr
         from hermes_cli.url_utils import format_url_host
         record = _serve_backend_record()
         if record is None:
@@ -269,7 +269,7 @@ def notify_serve_backend(name: str, home: Path) -> Optional[dict[str, Any]]:
 def _gateway_present() -> bool:
     """A gateway runs for this profile (its own, or the multiplexer serving it from the root), or a
     gateway service is installed for it."""
-    from gateway.status import get_running_pid
+    from hermes_agent.gateway.status import get_running_pid
     from hermes_cli.gateway import _installed_service_kind
     from hermes_constants import get_default_hermes_root, get_hermes_home
     homes = {Path(get_hermes_home()).resolve(), Path(get_default_hermes_root()).resolve()}

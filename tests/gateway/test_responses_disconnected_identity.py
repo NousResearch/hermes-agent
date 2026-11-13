@@ -12,7 +12,7 @@ from tests.gateway.test_responses_identity_retention import COMPACT, _compact_ro
 
 def _app(api, owner, calls, release, hold=None):
     async def handle(event):
-        from gateway.session_results import execution_result
+        from hermes_agent.gateway.session_results import execution_result
         calls.append(event.text)
         if event.text.startswith('gone'):
             await release.wait()
@@ -58,7 +58,7 @@ async def _await_terminal(owner, count):
 @pytest.fixture
 def fast_keepalive(monkeypatch):
     # An idle stream learns of a closed client from its keepalive write.
-    from gateway.platforms import api_server
+    from hermes_agent.gateway.platforms import api_server
     monkeypatch.setattr(api_server, 'CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS', 0.0)
 
 

@@ -6,7 +6,7 @@ import json
 import pytest
 
 from agent import bot_chain
-from gateway.bot_loop_guard import BotLoopGuardSettings
+from hermes_agent.gateway.bot_loop_guard import BotLoopGuardSettings
 from tools import bot_mode_dm, bot_relay
 from tools.bot_mode_probe import NO_REPLY_MARKER
 

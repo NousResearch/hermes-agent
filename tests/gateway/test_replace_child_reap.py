@@ -18,8 +18,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from gateway import status
-from gateway.config import GatewayConfig
+from hermes_agent.gateway import status
+from hermes_agent.gateway.config import GatewayConfig
 
 
 class _FakeChild:
@@ -50,7 +50,7 @@ class _FakeChild:
 
 
 def _fake_psutil(monkeypatch, *, wait_gone=None, wait_alive=None):
-    """Install a stub psutil module for gateway.status's local imports."""
+    """Install a stub psutil module for hermes_agent.gateway.status's local imports."""
     fake = MagicMock()
     fake.STATUS_ZOMBIE = "zombie"
     fake.NoSuchProcess = type("NoSuchProcess", (Exception,), {})
@@ -179,7 +179,7 @@ async def test_start_gateway_replace_reaps_old_gateway_children_posix(
 
     class _CleanExitRunner:
         def __init__(self, config):
-            from gateway.session import SessionStore
+            from hermes_agent.gateway.session import SessionStore
             from hermes_agent.hermes_state import SessionDB
             from hermes_constants import get_hermes_home
             self.session_store = SessionStore(get_hermes_home() / 'sessions', config)
@@ -202,17 +202,17 @@ async def test_start_gateway_replace_reaps_old_gateway_children_posix(
 
     _pid_state = {"alive": True}
     monkeypatch.setattr(
-        "gateway.status.get_running_pid",
+        "hermes_agent.gateway.status.get_running_pid",
         lambda: 42 if _pid_state["alive"] else None,
     )
     monkeypatch.setattr(
-        "gateway.status.remove_pid_file",
+        "hermes_agent.gateway.status.remove_pid_file",
         lambda: _pid_state.update(alive=False),
     )
     # Ownership guard (#89315): legitimate same-home replace fixture —
     # bound record for target pid 42 in this home.
     monkeypatch.setattr(
-        "gateway.status._read_pid_record",
+        "hermes_agent.gateway.status._read_pid_record",
         lambda path=None: {
             "pid": 42,
             "kind": "hermes-gateway",
@@ -222,17 +222,17 @@ async def test_start_gateway_replace_reaps_old_gateway_children_posix(
         },
     )
     monkeypatch.setattr(
-        "gateway.status._get_process_start_time", lambda pid: 0 if pid == 42 else None
+        "hermes_agent.gateway.status._get_process_start_time", lambda pid: 0 if pid == 42 else None
     )
     monkeypatch.setattr(
-        "gateway.status_scoped_locks.release_all_scoped_locks", lambda **kwargs: 0
+        "hermes_agent.gateway.status_scoped_locks.release_all_scoped_locks", lambda **kwargs: 0
     )
     monkeypatch.setattr(
-        "gateway.status._snapshot_gateway_children",
+        "hermes_agent.gateway.status._snapshot_gateway_children",
         lambda pid: events.append(("snapshot", pid)) or kids,
     )
     monkeypatch.setattr(
-        "gateway.status.reap_gateway_children",
+        "hermes_agent.gateway.status.reap_gateway_children",
         lambda children, *, parent_pid, timeout=5.0: events.append(
             ("reap", parent_pid, children)
         )
@@ -243,11 +243,11 @@ async def test_start_gateway_replace_reaps_old_gateway_children_posix(
         events.append(("terminate", pid, force))
         _pid_state["alive"] = False
 
-    monkeypatch.setattr("gateway.status.terminate_pid", _mock_terminate_pid)
+    monkeypatch.setattr("hermes_agent.gateway.status.terminate_pid", _mock_terminate_pid)
     monkeypatch.setattr(
-        "gateway.status._pid_exists", lambda pid: _pid_state["alive"]
+        "hermes_agent.gateway.status._pid_exists", lambda pid: _pid_state["alive"]
     )
-    monkeypatch.setattr("gateway.run.os.getpid", lambda: 100)
+    monkeypatch.setattr("hermes_agent.gateway.run.os.getpid", lambda: 100)
     monkeypatch.setattr("time.sleep", lambda _: None)
     monkeypatch.setattr("tools.skills_sync.sync_skills", lambda quiet=True: None)
     monkeypatch.setattr(
@@ -256,9 +256,9 @@ async def test_start_gateway_replace_reaps_old_gateway_children_posix(
     monkeypatch.setattr(
         "hermes_logging._add_rotating_handler", lambda *args, **kwargs: None
     )
-    monkeypatch.setattr("gateway.run.GatewayRunner", _CleanExitRunner)
+    monkeypatch.setattr("hermes_agent.gateway.run.GatewayRunner", _CleanExitRunner)
 
-    from gateway.run import start_gateway
+    from hermes_agent.gateway.run import start_gateway
 
     ok = await start_gateway(config=GatewayConfig(), replace=True, verbosity=None)
 

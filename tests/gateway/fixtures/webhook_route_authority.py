@@ -7,10 +7,10 @@ def mount_authority(app, adapter):
     authority = None
     async def start(app):
         nonlocal authority
-        from gateway.config import Platform
-        from gateway.run import GatewayRunner
-        from gateway.session_authority import initialize_session_authority
-        from gateway.session import SessionStore
+        from hermes_agent.gateway.config import Platform
+        from hermes_agent.gateway.run import GatewayRunner
+        from hermes_agent.gateway.session_authority import initialize_session_authority
+        from hermes_agent.gateway.session import SessionStore
         from hermes_constants import get_hermes_home
         runner = GatewayRunner()
         # Route tests mount ONE default-profile authority with no profile reservation; a profiles/

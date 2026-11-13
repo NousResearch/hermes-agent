@@ -37,10 +37,10 @@ def _cli_save(db, fmt, out):
 
 
 def _gateway_save(db, fmt, out):
-    from gateway.config import Platform
-    from gateway.platforms.event import MessageEvent
-    from gateway.run import GatewayRunner
-    from gateway.session import SessionEntry, SessionSource, build_session_key
+    from hermes_agent.gateway.config import Platform
+    from hermes_agent.gateway.platforms.event import MessageEvent
+    from hermes_agent.gateway.run import GatewayRunner
+    from hermes_agent.gateway.session import SessionEntry, SessionSource, build_session_key
     from hermes_agent.hermes_state import AsyncSessionDB
 
     source = SessionSource(platform=Platform.TELEGRAM, user_id="u1", chat_id="c1", user_name="t", chat_type="dm")

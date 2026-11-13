@@ -4,11 +4,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-import gateway.run as gateway_run
-from gateway.config import HomeChannel, Platform
-from gateway.platforms.event import MessageEvent
-from gateway.restart import DEFAULT_GATEWAY_POST_INTERRUPT_GRACE_TIMEOUT, GATEWAY_SERVICE_RESTART_EXIT_CODE
-from gateway.session import build_session_key
+import hermes_agent.gateway.run as gateway_run
+from hermes_agent.gateway.config import HomeChannel, Platform
+from hermes_agent.gateway.platforms.event import MessageEvent
+from hermes_agent.gateway.restart import DEFAULT_GATEWAY_POST_INTERRUPT_GRACE_TIMEOUT, GATEWAY_SERVICE_RESTART_EXIT_CODE
+from hermes_agent.gateway.session import build_session_key
 from tests.gateway.restart_test_helpers import make_restart_runner, make_restart_source
 from tools import browser_session_lifecycle as bt_lifecycle
 
@@ -77,8 +77,8 @@ async def test_gateway_stop_interrupts_running_agents_and_cancels_adapter_tasks(
     running_agent.interrupt.side_effect = lambda *a, **k: runner._running_agents.clear()
 
     with (
-        patch("gateway.status.remove_pid_file"),
-        patch("gateway.status.publish_runtime_status"),
+        patch("hermes_agent.gateway.status.remove_pid_file"),
+        patch("hermes_agent.gateway.status.publish_runtime_status"),
         patch("agent.auxiliary_client.shutdown_cached_clients") as shutdown_cached_clients,
     ):
         await runner.stop()
@@ -128,7 +128,7 @@ async def test_gateway_stop_settles_completion_batch_before_adapter_disconnect()
     await asyncio.sleep(0)
     assert runner._completion_notification_batch_flush_tasks
 
-    with patch("gateway.status.remove_pid_file"), patch("gateway.status.publish_runtime_status"):
+    with patch("hermes_agent.gateway.status.remove_pid_file"), patch("hermes_agent.gateway.status.publish_runtime_status"):
         await runner.stop()
 
     assert await asyncio.wait_for(pending, timeout=1.0) is False
@@ -150,7 +150,7 @@ async def test_planned_service_exit_issues_no_restart_of_its_own(monkeypatch):
         ),
     )
 
-    with patch("gateway.status.remove_pid_file"), patch("gateway.status.publish_runtime_status"):
+    with patch("hermes_agent.gateway.status.remove_pid_file"), patch("hermes_agent.gateway.status.publish_runtime_status"):
         await runner.stop()
 
     assert runner._exit_code == GATEWAY_SERVICE_RESTART_EXIT_CODE
@@ -247,7 +247,7 @@ async def test_gateway_stop_kills_tool_subprocesses_before_adapter_disconnect_on
         lambda *a, **k: runner._running_agents.clear()
     )
 
-    with patch("gateway.status.remove_pid_file"), patch("gateway.status.publish_runtime_status"):
+    with patch("hermes_agent.gateway.status.remove_pid_file"), patch("hermes_agent.gateway.status.publish_runtime_status"):
         await runner.stop()
 
     # First kill_all must precede the first disconnect.  (Both the eager
@@ -303,7 +303,7 @@ async def test_signal_initiated_shutdown_persists_running_not_stopped(tmp_path, 
     adapter.disconnect = AsyncMock()
     runner._signal_initiated_shutdown = True  # set by handler on unmarked signal
 
-    with patch("gateway.status.remove_pid_file"), patch("gateway.status.publish_runtime_status"):
+    with patch("hermes_agent.gateway.status.remove_pid_file"), patch("hermes_agent.gateway.status.publish_runtime_status"):
         await runner.stop()
 
     assert not _stopped_state_persisted(runner), (
@@ -329,7 +329,7 @@ def test_pid_exists_zombie_via_psutil_returns_false(monkeypatch):
     import sys
     import types
 
-    from gateway import status
+    from hermes_agent.gateway import status
 
     fake_psutil = types.SimpleNamespace()
     fake_psutil.STATUS_ZOMBIE = "zombie"

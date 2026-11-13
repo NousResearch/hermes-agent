@@ -9,13 +9,13 @@ import asyncio
 from unittest.mock import MagicMock
 
 
-from gateway.run import _dequeue_pending_event
-from gateway.platforms.base import (
+from hermes_agent.gateway.run import _dequeue_pending_event
+from hermes_agent.gateway.platforms.base import (
     BasePlatformAdapter,
     PlatformConfig,
     Platform,
 )
-from gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
 
 
 # ---------------------------------------------------------------------------
@@ -33,7 +33,7 @@ class _StubAdapter(BasePlatformAdapter):
         self._mark_disconnected()
 
     async def send(self, chat_id, content, reply_to=None, metadata=None):
-        from gateway.platforms.base import SendResult
+        from hermes_agent.gateway.platforms.base import SendResult
         return SendResult(success=True, message_id="msg-1")
 
     async def get_chat_info(self, chat_id):
@@ -119,7 +119,7 @@ class TestQueueConsumptionAfterCompletion:
     def test_promote_stages_overflow_when_slot_already_populated(self):
         """If the slot was re-populated (e.g. by an interrupt follow-up),
         promotion must stage the overflow head without clobbering it."""
-        from gateway.run import GatewayRunner
+        from hermes_agent.gateway.run import GatewayRunner
 
         runner = GatewayRunner.__new__(GatewayRunner)
         adapter = _StubAdapter()
@@ -179,7 +179,7 @@ class TestBusyInputModeQueueFifo:
     """
 
     def _make_runner_and_adapter(self):
-        from gateway.run import GatewayRunner
+        from hermes_agent.gateway.run import GatewayRunner
 
         runner = GatewayRunner.__new__(GatewayRunner)
         adapter = _StubAdapter()

@@ -14,13 +14,13 @@ import asyncio
 
 import pytest
 
-from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import (
+from hermes_agent.gateway.config import Platform, PlatformConfig
+from hermes_agent.gateway.platforms.base import (
     BasePlatformAdapter,
     SendResult,
 )
-from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
-from gateway.session import SessionSource, build_session_key
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
+from hermes_agent.gateway.session import SessionSource, build_session_key
 
 
 class _MediaOutcomeAdapter(BasePlatformAdapter):
@@ -71,7 +71,7 @@ def _allowed_image(tmp_path, monkeypatch, name: str = "photo.png"):
     f = root / name
     f.parent.mkdir(parents=True, exist_ok=True)
     f.write_bytes(b"\x89PNG\r\n\x1a\n" + b"x" * 64)
-    monkeypatch.setattr("gateway.platforms.base.MEDIA_DELIVERY_SAFE_ROOTS", (root,))
+    monkeypatch.setattr("hermes_agent.gateway.platforms.base.MEDIA_DELIVERY_SAFE_ROOTS", (root,))
     return f.resolve()
 
 

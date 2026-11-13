@@ -61,6 +61,17 @@ hermes-agent/
 │   ├── hermes_state.py           # SQLite session/state database facade (+ hermes_state_*.py siblings)
 │   ├── batch_runner.py           # Batch trajectory generation
 │   │
+│   ├── gateway/                  # Messaging platform gateway
+│   │   ├── run.py                # GatewayRunner facade — message dispatch (+ run_*.py siblings)
+│   │   ├── session.py            # SessionStore — conversation persistence
+│   │   ├── delivery.py           # Outbound message delivery
+│   │   ├── pairing.py            # DM pairing authorization
+│   │   ├── hooks.py              # Hook discovery and lifecycle events
+│   │   ├── mirror.py             # Cross-session message mirroring
+│   │   ├── status.py             # Token locks, profile-scoped process tracking
+│   │   └── platforms/            # Core ingress adapters: api_server, webhook,
+│   │                             #   msgraph_webhook
+│   │
 │   ├── acp_adapter/              # ACP server (VS Code / Zed / JetBrains)
 │   └── cron/                     # Scheduler (jobs.py, scheduler.py)
 │
@@ -113,17 +124,6 @@ hermes-agent/
 │   ├── env_passthrough.py    # Env var passthrough for sandboxes
 │   ├── ansi_strip.py         # ANSI escape stripping
 │   └── environments/         # Terminal backends (local, docker, ssh, modal, daytona, vercel_sandbox)
-│
-├── gateway/                  # Messaging platform gateway
-│   ├── run.py                # GatewayRunner facade — message dispatch (+ run_*.py siblings)
-│   ├── session.py            # SessionStore — conversation persistence
-│   ├── delivery.py           # Outbound message delivery
-│   ├── pairing.py            # DM pairing authorization
-│   ├── hooks.py              # Hook discovery and lifecycle events
-│   ├── mirror.py             # Cross-session message mirroring
-│   ├── status.py             # Token locks, profile-scoped process tracking
-│   └── platforms/            # Core ingress adapters: api_server, webhook,
-│                             #   msgraph_webhook
 │
 ├── plugins/platforms/        # Bundled platform plugins: telegram, discord, slack,
 │                             #   whatsapp, matrix, mattermost, email, sms, dingtalk,

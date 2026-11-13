@@ -13,9 +13,9 @@ from types import SimpleNamespace
 import pytest
 
 from agent.redact import redact_for_egress
-from gateway.platforms.base import BasePlatformAdapter
-from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
-from gateway.stream_consumer_redact import redact_settled
+from hermes_agent.gateway.platforms.base import BasePlatformAdapter
+from hermes_agent.gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
+from hermes_agent.gateway.stream_consumer_redact import redact_settled
 from tests.waiting import async_wait_until
 
 _B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"

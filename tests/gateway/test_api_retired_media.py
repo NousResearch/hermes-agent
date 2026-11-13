@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from gateway.session_api_turn import admit_api_turn
+from hermes_agent.gateway.session_api_turn import admit_api_turn
 from hermes_agent.hermes_state_runtime import RuntimeStoreError, claim_session_input, settle_session_input
 
 PNG = base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=')
@@ -16,7 +16,7 @@ def image(data):
 
 
 def test_rejected_api_images_are_collected_and_history_owns_accepted_images(api, owner):
-    from gateway.session_ingress_media import _media_root
+    from hermes_agent.gateway.session_ingress_media import _media_root
     kwargs = dict(session_id='s', request_id='one', conversation_history=[])
     _, _, row = admit_api_turn(api, user_message=image(PNG), **kwargs)
     path = Path(row['payload']['api_turn_v1']['media'][0]['path'])

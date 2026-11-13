@@ -11,7 +11,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.session_contract import SessionActor, SessionRef
+from hermes_agent.gateway.session_contract import SessionActor, SessionRef
 from hermes_agent.hermes_state_local import POLICY_PREFIX
 from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
@@ -20,10 +20,10 @@ _CAPS = frozenset({'session:create', 'session:read', 'session:submit'})
 
 @pytest.fixture
 def authority_for(tmp_path, monkeypatch):
-    from gateway import run
-    from gateway.config import GatewayConfig
-    from gateway.session import SessionStore
-    from gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway import run
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.session import SessionStore
+    from hermes_agent.gateway.session_authority import initialize_session_authority
     monkeypatch.setattr(run, '_load_gateway_config', lambda: {'platform_toolsets': {'cli': []}})
 
     async def build(profile_id, instance_id):
@@ -34,7 +34,7 @@ def authority_for(tmp_path, monkeypatch):
 
 
 def _create(authority, request_id):
-    from gateway.session_local import create_local_session
+    from hermes_agent.gateway.session_local import create_local_session
     actor = SessionActor('owner', authority.profile_id, _CAPS, 'socket')
     params = {'request_id': request_id, 'source': 'gui', 'cwd': '/', 'model': 'frozen', 'toolsets': []}
     return create_local_session(authority, actor, params)
@@ -55,7 +55,7 @@ async def test_local_session_survives_its_home_moving(tmp_path, authority_for):
 async def test_rehomed_receipt_never_restores_under_another_profiles_route(tmp_path, authority_for):
     """The store owns its rows whatever path stamped them; the route namespace still binds the profile:
     a receipt whose route names another profile's namespace is refused, as before the move."""
-    from gateway.session_local_recovery import owned_receipt
+    from hermes_agent.gateway.session_local_recovery import owned_receipt
     authority = await authority_for(str(tmp_path / 'home'), 'i')
     ref = _create(authority, 'mine')
     key = POLICY_PREFIX + ref.session_id
@@ -70,7 +70,7 @@ async def test_rehomed_receipt_never_restores_under_another_profiles_route(tmp_p
 async def test_picker_offers_an_ended_chat_only_when_resume_would_take_it(tmp_path, authority_for):
     """The cold picker judges an ended chat by the checks a resume runs: a moved store's chat is
     offered, one whose route names another profile's namespace is not (resume refuses it)."""
-    from gateway.session_listing import _stored_closed
+    from hermes_agent.gateway.session_listing import _stored_closed
     old_home, new_home = str(tmp_path / 'mac' / 'work'), str(tmp_path / 'cloud' / 'work')
     first = await authority_for(old_home, 'mac')
     kept, foreign = _create(first, 'kept'), _create(first, 'foreign')
@@ -93,8 +93,8 @@ async def test_picker_offers_an_ended_chat_only_when_resume_would_take_it(tmp_pa
     lambda receipt: receipt.update(lineage=['not-the-root', receipt['entry']['session_id']]),
 ], ids=['policy', 'lineage'])
 async def test_picker_leaves_out_a_chat_whose_policy_or_lineage_resume_refuses(tmp_path, authority_for, damage):
-    from gateway.session_listing import _stored_closed
-    from gateway.session_local_recovery import restore_local_session
+    from hermes_agent.gateway.session_listing import _stored_closed
+    from hermes_agent.gateway.session_local_recovery import restore_local_session
     authority = await authority_for(str(tmp_path / 'home'), 'i')
     ref = _create(authority, 'ended')
     key = POLICY_PREFIX + ref.session_id
@@ -116,8 +116,8 @@ async def test_picker_judges_a_pending_compression_catch_up_as_restore_would(tmp
     """An older writer compacted the chat past its receipt: restore adopts the step, then checks the
     lineage. The picker judges that same projected receipt, without writing it."""
     import time
-    from gateway.session_listing import _stored_closed
-    from gateway.session_local_recovery import restorable_receipt
+    from hermes_agent.gateway.session_listing import _stored_closed
+    from hermes_agent.gateway.session_local_recovery import restorable_receipt
     authority = await authority_for(str(tmp_path / 'home'), 'i')
     ref = _create(authority, 'compacted')
     key = POLICY_PREFIX + ref.session_id

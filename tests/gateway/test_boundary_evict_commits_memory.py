@@ -7,7 +7,7 @@ import pytest
 # session.create's resume path imports this lazily mid-request; importing it whole here keeps the
 # conftest server-state fixture from meeting a half-initialized module at teardown.
 import hermes_agent.tui_gateway.server
-from gateway.run import GatewayRunner
+from hermes_agent.gateway.run import GatewayRunner
 
 
 def _runner(monkeypatch):
@@ -80,11 +80,11 @@ def test_plain_evict_still_skips_the_commit(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_reset_and_compress_mutations_use_the_boundary_evict(tmp_path, monkeypatch):
-    from gateway.config import GatewayConfig
-    from gateway.session import SessionStore
-    from gateway.session_authority import initialize_session_authority
-    from gateway.session_controls import AuthorityConnection
-    from gateway import run
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.session import SessionStore
+    from hermes_agent.gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway import run
 
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     monkeypatch.setattr(run, '_load_gateway_config', lambda: {'model': {'default': 'fixture'}, 'platform_toolsets': {'cli': []}})

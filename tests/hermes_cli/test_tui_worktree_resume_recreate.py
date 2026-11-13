@@ -71,7 +71,7 @@ def _resume(session_id, **extra):
 
 def _turn_runs_in(cwd):
     """The owner's readiness gate a resumed turn passes through (``policy_scope``)."""
-    from gateway.session_policy import policy_scope
+    from hermes_agent.gateway.session_policy import policy_scope
     from hermes_agent.hermes_state_runtime import RuntimeStoreError
     try:
         with policy_scope(SimpleNamespace(cwd=str(cwd))):
@@ -183,11 +183,11 @@ async def test_resume_recreates_the_removed_classic_worktree(tmp_path, monkeypat
     """Classic ``hermes -w`` runs its session's tools in the tree (frozen policy cwd) while the row
     keeps main's stamp, the repo root. Quit removes the clean tree; ``-c`` now gets it back."""
     import cli
-    from gateway.config import GatewayConfig
-    from gateway.session import SessionStore
-    from gateway.session_authority import initialize_session_authority
-    from gateway.session_controls import AuthorityConnection
-    from gateway.session_local import create_local_session
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.session import SessionStore
+    from hermes_agent.gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway.session_local import create_local_session
     from hermes_cli import main as m
 
     repo = _repo(tmp_path)
@@ -202,7 +202,7 @@ async def test_resume_recreates_the_removed_classic_worktree(tmp_path, monkeypat
     wt_info = cli._start_worktree_setup(False, False, True, False)()  # the -w launcher
     tree = Path(wt_info['path'])
 
-    from gateway import run
+    from hermes_agent.gateway import run
     monkeypatch.setattr(run, '_load_gateway_config', lambda: {'platform_toolsets': {'cli': []}})
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
     runner = SimpleNamespace(session_store=store, _session_db=store._db, adapters={}, _draining=False,

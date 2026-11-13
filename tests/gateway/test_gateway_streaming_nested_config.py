@@ -7,10 +7,10 @@ import hermes_yaml as yaml
 
 def _load_with_yaml_dict(yaml_dict: dict, tmp_path):
     """Load a real config.yaml through the gateway's shared YAML reader."""
-    from gateway.config import load_gateway_config
+    from hermes_agent.gateway.config import load_gateway_config
 
     (tmp_path / "config.yaml").write_text(yaml.safe_dump(yaml_dict), encoding="utf-8")
-    with patch("gateway.config.get_hermes_home", return_value=tmp_path):
+    with patch("hermes_agent.gateway.config.get_hermes_home", return_value=tmp_path):
         return load_gateway_config()
 
 
@@ -39,14 +39,14 @@ class TestStreamingModeAlias:
     """
 
     def test_mode_auto_enables_streaming(self):
-        from gateway.config import StreamingConfig
+        from hermes_agent.gateway.config import StreamingConfig
 
         sc = StreamingConfig.from_dict({"mode": "auto"})
         assert sc.enabled is True
         assert sc.transport == "auto"
 
     def test_mode_edit_enables_streaming(self):
-        from gateway.config import StreamingConfig
+        from hermes_agent.gateway.config import StreamingConfig
 
         sc = StreamingConfig.from_dict({"mode": "edit"})
         assert sc.enabled is True
@@ -55,7 +55,7 @@ class TestStreamingModeAlias:
 
 
     def test_explicit_enabled_overrides_mode(self):
-        from gateway.config import StreamingConfig
+        from hermes_agent.gateway.config import StreamingConfig
 
         sc = StreamingConfig.from_dict({"mode": "auto", "enabled": False})
         assert sc.enabled is False
@@ -76,7 +76,7 @@ class TestStreamingYamlBooleanQuirk:
     """
 
     def test_mode_bare_off_boolean_disables(self):
-        from gateway.config import StreamingConfig
+        from hermes_agent.gateway.config import StreamingConfig
 
         # yaml.safe_load("off") -> False
         sc = StreamingConfig.from_dict({"mode": False})
@@ -84,7 +84,7 @@ class TestStreamingYamlBooleanQuirk:
         assert sc.transport == "off"
 
     def test_mode_bare_on_boolean_enables(self):
-        from gateway.config import StreamingConfig
+        from hermes_agent.gateway.config import StreamingConfig
 
         # yaml.safe_load("on") -> True
         sc = StreamingConfig.from_dict({"mode": True})
@@ -95,10 +95,10 @@ class TestStreamingYamlBooleanQuirk:
     def test_loader_normalizes_bare_yaml_off(self, tmp_path):
         """End-to-end through load_gateway_config(): unquoted ``mode: off``
         (a YAML boolean) must keep streaming disabled."""
-        from gateway.config import load_gateway_config
+        from hermes_agent.gateway.config import load_gateway_config
 
         (tmp_path / "config.yaml").write_text("streaming:\n  mode: off\n", encoding="utf-8")
-        with patch("gateway.config.get_hermes_home", return_value=tmp_path):
+        with patch("hermes_agent.gateway.config.get_hermes_home", return_value=tmp_path):
             cfg = load_gateway_config()
         assert cfg.streaming.enabled is False
         assert cfg.streaming.transport == "off"

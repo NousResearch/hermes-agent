@@ -9,9 +9,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.event import MessageEvent
-from gateway.session import (
+from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+from hermes_agent.gateway.platforms.event import MessageEvent
+from hermes_agent.gateway.session import (
     AsyncSessionStore,
     SessionEntry,
     SessionSource,
@@ -39,7 +39,7 @@ def _make_event(text: str, *, platform: Platform = Platform.TELEGRAM) -> Message
 
 
 def _make_runner(session_entry: SessionEntry, *, platform: Platform = Platform.TELEGRAM):
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
 
     runner = object.__new__(GatewayRunner)
     runner.config = GatewayConfig(
@@ -270,8 +270,8 @@ async def test_status_command_resolves_window_of_session_only_model_switch():
     runner = _runner_with_session_override(override, last_prompt_tokens=79_455)
     config = {"model": {"default": "default-model", "provider": "openrouter", "context_length": 80_000}}
 
-    with patch("gateway.run._load_gateway_config", return_value=config), patch(
-        "gateway.run._resolve_runtime_agent_kwargs"
+    with patch("hermes_agent.gateway.run._load_gateway_config", return_value=config), patch(
+        "hermes_agent.gateway.run._resolve_runtime_agent_kwargs"
     ) as default_runtime, patch(
         "agent.model_metadata.get_model_context_length", return_value=1_048_576
     ) as lookup:
@@ -303,7 +303,7 @@ async def test_status_command_keeps_occupancy_only_for_unknown_model_window():
         {"model": "proxy-mystery-model", "provider": "custom:proxy", "base_url": "http://127.0.0.1:1/v1"},
         last_prompt_tokens=4_321,
     )
-    with patch("gateway.run._load_gateway_config", return_value={}), patch(
+    with patch("hermes_agent.gateway.run._load_gateway_config", return_value={}), patch(
         "agent.model_metadata.get_model_context_length", _unsized
     ):
         result = await runner._handle_message(_make_event("/status"))
@@ -312,7 +312,7 @@ async def test_status_command_keeps_occupancy_only_for_unknown_model_window():
 
     runner = _runner_with_session_override(
         {"model": "grok-4", "provider": "xai", "base_url": ""}, last_prompt_tokens=4_321)
-    with patch("gateway.run._load_gateway_config", return_value={}), patch(
+    with patch("hermes_agent.gateway.run._load_gateway_config", return_value={}), patch(
         "agent.model_metadata.get_model_context_length", return_value=DEFAULT_FALLBACK_CONTEXT
     ):
         result = await runner._handle_message(_make_event("/status"))
@@ -344,8 +344,8 @@ async def test_status_command_default_route_keeps_runtime_endpoint_and_context_p
         runner._session_db._db.get_session.return_value = session_row
         runner._session_db._db.get_recent_session_model_route.return_value = persisted_route
 
-        with patch("gateway.run._load_gateway_config", return_value=config), patch(
-            "gateway.run._resolve_runtime_agent_kwargs", return_value=runtime
+        with patch("hermes_agent.gateway.run._load_gateway_config", return_value=config), patch(
+            "hermes_agent.gateway.run._resolve_runtime_agent_kwargs", return_value=runtime
         ) as default_runtime, patch(
             "agent.model_metadata.get_model_context_length",
             side_effect=lambda _model, **kw: kw["config_context_length"] or 8_192,
@@ -431,7 +431,7 @@ async def test_tasks_alias_routes_to_agents_command(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_first_run_slack_home_channel_onboarding_uses_parent_command(monkeypatch):
-    import gateway.run as gateway_run
+    import hermes_agent.gateway.run as gateway_run
 
     session_entry = SessionEntry(
         session_key=build_session_key(_make_source(Platform.SLACK)),
@@ -475,7 +475,7 @@ async def test_first_run_slack_home_channel_onboarding_uses_parent_command(monke
 
 @pytest.mark.asyncio
 async def test_handle_message_stale_result_keeps_newer_generation_callback(monkeypatch):
-    import gateway.run as gateway_run
+    import hermes_agent.gateway.run as gateway_run
 
     class _Adapter:
         def __init__(self):
@@ -547,10 +547,10 @@ async def test_status_command_bypasses_active_session_guard():
     """When an agent is running, /status must be dispatched immediately via
     base.handle_message — not queued or treated as an interrupt (#5046)."""
     import asyncio
-    from gateway.platforms.base import BasePlatformAdapter
-    from gateway.platforms.event import MessageEvent, MessageType
-    from gateway.session import build_session_key
-    from gateway.config import Platform, PlatformConfig
+    from hermes_agent.gateway.platforms.base import BasePlatformAdapter
+    from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
+    from hermes_agent.gateway.session import build_session_key
+    from hermes_agent.gateway.config import Platform, PlatformConfig
 
     source = _make_source()
     session_key = build_session_key(source)
@@ -631,7 +631,7 @@ async def test_profile_command_reports_source_stamped_profile(monkeypatch, tmp_p
     assert "**Profile:** `milo`" in result
     # The reply renders display_hermes_home() for the routed profile, which abbreviates a home
     # under $HOME to ``~/…``; compare against the same rendering rather than the raw path.
-    from gateway.run import _profile_runtime_scope
+    from hermes_agent.gateway.run import _profile_runtime_scope
     from hermes_constants import display_hermes_home
 
     with _profile_runtime_scope(profile_home):
@@ -678,8 +678,8 @@ async def test_context_command_keeps_configured_window_without_resident_agent():
         "api_key": "",
     }
 
-    with patch("gateway.run._load_gateway_config", return_value=config), patch(
-        "gateway.run._resolve_runtime_agent_kwargs", return_value=runtime
+    with patch("hermes_agent.gateway.run._load_gateway_config", return_value=config), patch(
+        "hermes_agent.gateway.run._resolve_runtime_agent_kwargs", return_value=runtime
     ), patch(
         "hermes_cli.config.get_compatible_custom_providers",
         return_value=config["custom_providers"],

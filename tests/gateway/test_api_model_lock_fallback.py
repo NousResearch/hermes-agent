@@ -70,8 +70,8 @@ def test_locked_turn_served_by_another_runtime_settles_failed(api):
     """Main's settlement refusal: a locked turn whose agent ran on another provider/model is a
     failed turn carrying the mismatch, never a completed answer from the wrong runtime."""
     from types import SimpleNamespace
-    from gateway.run_turn_runner import _settle_api_runtime_lock
-    from gateway.session_api_turn import api_execution
+    from hermes_agent.gateway.run_turn_runner import _settle_api_runtime_lock
+    from hermes_agent.gateway.session_api_turn import api_execution
 
     agent = SimpleNamespace(provider='custom', model='backup-model', _hermes_api_runtime={'provider': 'custom'})
     result, captured = {'final_response': 'BACKUP_OK', 'completed': True}, {'usage': {}}

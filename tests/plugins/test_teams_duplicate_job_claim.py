@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform
+from hermes_agent.gateway.config import GatewayConfig, Platform
 from plugins.teams_pipeline.pipeline import TeamsMeetingPipeline
 from plugins.teams_pipeline.store import TeamsPipelineStore
 

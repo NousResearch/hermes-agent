@@ -10,9 +10,9 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from gateway.config import Platform, PlatformConfig
-from gateway.run_turn_runner import TurnRunner
-from gateway.turn_context import TurnContext
+from hermes_agent.gateway.config import Platform, PlatformConfig
+from hermes_agent.gateway.run_turn_runner import TurnRunner
+from hermes_agent.gateway.turn_context import TurnContext
 from plugins.platforms.telegram.adapter import TelegramAdapter
 
 

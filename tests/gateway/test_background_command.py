@@ -10,9 +10,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from gateway.config import Platform
-from gateway.platforms.event import MessageEvent
-from gateway.session import SessionSource
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.platforms.event import MessageEvent
+from hermes_agent.gateway.session import SessionSource
 
 def _make_event(text="/bg", platform=Platform.TELEGRAM,
                 user_id="12345", chat_id="67890"):
@@ -27,7 +27,7 @@ def _make_event(text="/bg", platform=Platform.TELEGRAM,
 
 def _make_runner():
     """Create a bare GatewayRunner with minimal mocks."""
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
     runner = object.__new__(GatewayRunner)
     runner.adapters = {}
     runner._voice_mode = {}
@@ -45,7 +45,7 @@ def _make_runner():
     mock_store.get_model_override.return_value = None
     runner.session_store = mock_store
 
-    from gateway.hooks import HookRegistry
+    from hermes_agent.gateway.hooks import HookRegistry
     runner.hooks = HookRegistry()
 
     return runner
@@ -65,7 +65,7 @@ class TestRunBackgroundTask:
     async def test_delegated_result_is_delivered_before_background_task_ends(self, monkeypatch):
         """A /bg session has no consumer for a detached completion (#140569)."""
         import tools.delegate_tool as dt
-        from gateway.session_context import async_delivery_supported, clear_session_vars, set_session_vars
+        from hermes_agent.gateway.session_context import async_delivery_supported, clear_session_vars, set_session_vars
 
         runner = _make_runner()
         adapter = AsyncMock()
@@ -92,8 +92,8 @@ class TestRunBackgroundTask:
         }
         tokens = set_session_vars(platform="telegram", chat_id="67890", async_delivery=True)
         try:
-            with patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "test-key"}), \
-                 patch("gateway.run._load_gateway_config", return_value={}), \
+            with patch("hermes_agent.gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "test-key"}), \
+                 patch("hermes_agent.gateway.run._load_gateway_config", return_value={}), \
                  patch("run_agent.AIAgent", return_value=agent):
                 await runner._run_background_task("inspect workspace", _make_event().source, "bg_test")
             assert async_delivery_supported() is True
@@ -131,8 +131,8 @@ class TestRunBackgroundTask:
                 "max_file_size_mb": 3,
             }
         }
-        with patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "test-key"}), \
-             patch("gateway.run._load_gateway_config", return_value=checkpoint_config), \
+        with patch("hermes_agent.gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "test-key"}), \
+             patch("hermes_agent.gateway.run._load_gateway_config", return_value=checkpoint_config), \
              patch("run_agent.AIAgent") as MockAgent:
             mock_agent_instance = MagicMock()
             mock_agent_instance.shutdown_memory_provider = MagicMock()
@@ -168,8 +168,8 @@ class TestRunBackgroundTask:
         runner._load_daybreak = lambda source: switch
         agent = MagicMock()
         agent.run_conversation.return_value = {"final_response": "done", "messages": []}
-        with patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "test-key"}), \
-             patch("gateway.run._load_gateway_config", return_value={}), \
+        with patch("hermes_agent.gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "test-key"}), \
+             patch("hermes_agent.gateway.run._load_gateway_config", return_value={}), \
              patch("run_agent.AIAgent", return_value=agent):
             await runner._run_background_task("say hello", _make_event().source, "bg_test")
         assert (agent.daybreak_surface, agent.daybreak) == (surface, switch)

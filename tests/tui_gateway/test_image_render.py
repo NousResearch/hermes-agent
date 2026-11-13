@@ -94,7 +94,7 @@ def test_tool_complete_names_the_image_the_tool_looked_at(monkeypatch, photo):
 
 def test_canonical_local_viewer_frames_carry_the_image(photo):
     # The shared gateway's tool.complete for its local CLI/TUI viewer: same field as the sidecar's.
-    from gateway.local_viewer_events import complete_fields
+    from hermes_agent.gateway.local_viewer_events import complete_fields
 
     turn = SimpleNamespace()
     assert complete_fields(turn, "c1", "vision_analyze", {"image_url": photo}, '{"analysis": "a cat"}')["image_path"] == photo
@@ -105,7 +105,7 @@ def test_canonical_local_viewer_frames_carry_the_image(photo):
 
 def test_deeply_nested_tool_result_still_completes(monkeypatch, photo):
     # A result too deep for the JSON decoder must not drop the whole tool.complete.
-    from gateway.local_viewer_events import complete_fields
+    from hermes_agent.gateway.local_viewer_events import complete_fields
 
     deep = "[" * 100_000 + "]" * 100_000
     assert complete_fields(SimpleNamespace(), "c1", "vision_analyze", {"image_url": photo}, deep)["image_path"] == photo

@@ -9,12 +9,12 @@ import pytest
 
 @pytest.mark.asyncio
 async def test_repeated_alias_resumes_from_a_client_with_a_different_alias_map(tmp_path, monkeypatch):
-    from gateway import run
-    from gateway.config import GatewayConfig
-    from gateway.session import SessionStore
-    from gateway.session_authority import initialize_session_authority
-    from gateway.session_controls import AuthorityConnection
-    from gateway.session_local import create_local_session, local_session_info
+    from hermes_agent.gateway import run
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.session import SessionStore
+    from hermes_agent.gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway.session_local import create_local_session, local_session_info
     from hermes_cli import gateway_chat, model_switch
     import hermes_yaml as yaml
 

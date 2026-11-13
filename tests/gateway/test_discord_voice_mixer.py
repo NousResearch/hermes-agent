@@ -64,7 +64,7 @@ class TestVoiceMixerCore:
 
 def _make_adapter(fx_cfg=None):
     from plugins.platforms.discord.adapter import DiscordAdapter
-    from gateway.config import Platform, PlatformConfig
+    from hermes_agent.gateway.config import Platform, PlatformConfig
     config = PlatformConfig(enabled=True, extra={})
     config.token = "fake-token"
     adapter = object.__new__(DiscordAdapter)

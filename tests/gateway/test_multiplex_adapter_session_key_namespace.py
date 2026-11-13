@@ -20,9 +20,9 @@ adapter keys into its own namespace even before the runner stamps the source.
 
 import pytest
 
-from gateway.config import Platform
-from gateway.platforms.base import BasePlatformAdapter
-from gateway.session import SessionSource, build_session_key
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.platforms.base import BasePlatformAdapter
+from hermes_agent.gateway.session import SessionSource, build_session_key
 
 
 UID = "8693894969"

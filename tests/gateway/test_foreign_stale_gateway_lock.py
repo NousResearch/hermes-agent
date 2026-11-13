@@ -20,7 +20,7 @@ def _unreadable_lock(tmp_path):
 def test_reserve_refuses_an_unreadable_lock_with_recovery_command(tmp_path):
     """Linux too: an unheld /proc/locks snapshot cannot stop a holder (a root gateway) locking the
     old inode between the read and the unlink, so nothing short of our own flock replaces it."""
-    from gateway import runtime_ownership
+    from hermes_agent.gateway import runtime_ownership
     home, lock = _unreadable_lock(tmp_path)
     inode = lock.stat().st_ino
     with pytest.raises(PermissionError) as raised:

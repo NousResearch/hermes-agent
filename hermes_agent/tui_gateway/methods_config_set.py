@@ -559,7 +559,7 @@ def _set_display_toggle(rid, params, key, value, session):
 
 
 def _set_daybreak(rid, params, key, value, session):
-    """``agent.daybreak``: profile-wide like the native owner's (gateway/session_tui_config.py). Every turn
+    """``agent.daybreak``: profile-wide like the native owner's (hermes_agent/gateway/session_tui_config.py). Every turn
     reads it (prompt_turn._sync_agent_daybreak); requests check eligibility (agent/codex_service_tiers.py)."""
     on = _BOOL_WORDS.get(str(value).strip().lower())
     if on is None:

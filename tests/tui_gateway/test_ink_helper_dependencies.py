@@ -50,7 +50,7 @@ def _ink_child(script: str, *args: str, scripts: Path = _SCRIPTS, **env: str) ->
 
 
 def test_gateway_bootstrap_reaches_a_verdict_on_the_store_python():
-    """With no owner running, discovery's fallback imports a dependency (gateway.status -> utils ->
+    """With no owner running, discovery's fallback imports a dependency (hermes_agent.gateway.status -> utils ->
     hermes_yaml -> ruamel). The bootstrap must answer with its bounded gateway verdict, not die on
     the import -- which left a fresh `hermes --tui` unable to start or recover a gateway at all."""
     _commit_generation()

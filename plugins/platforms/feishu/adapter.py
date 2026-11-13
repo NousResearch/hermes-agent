@@ -84,24 +84,24 @@ _lark_import_lock = threading.Lock()
 FEISHU_WEBSOCKET_AVAILABLE = websockets is not None
 FEISHU_WEBHOOK_AVAILABLE = aiohttp is not None
 
-from gateway.approval_actor import approval_refusal, refusal_text, update_prompt_refusal
-from gateway.config import Platform, PlatformConfig
+from hermes_agent.gateway.approval_actor import approval_refusal, refusal_text, update_prompt_refusal
+from hermes_agent.gateway.config import Platform, PlatformConfig
 from agent.i18n import t
-from gateway.platforms.base import (
+from hermes_agent.gateway.platforms.base import (
     BasePlatformAdapter, ExecApprovalPrompt, SendResult, describe_proxy_error, env_proxy_for_redaction,
     SUPPORTED_DOCUMENT_TYPES, cache_document_from_bytes_async, cache_image_from_url,
     cache_audio_from_bytes_async, cache_image_from_bytes_async,
 )
-from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
-from gateway.platforms.helpers import caption_is_command, prompt_id_counter, send_chunks
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
+from hermes_agent.gateway.platforms.helpers import caption_is_command, prompt_id_counter, send_chunks
 from plugins.platforms.feishu.adapter_choice_cards import FeishuChoiceCardsMixin
 from plugins.platforms.feishu.adapter_synthetic_events import FeishuSyntheticEventsMixin
-from gateway.status import acquire_scoped_lock
-from gateway.status_scoped_locks import release_scoped_lock
+from hermes_agent.gateway.status import acquire_scoped_lock
+from hermes_agent.gateway.status_scoped_locks import release_scoped_lock
 from hermes_constants import get_hermes_home
 from utils import atomic_json_write, env_float, env_int
 
-from gateway.platforms._shared import (
+from hermes_agent.gateway.platforms._shared import (
     apply_yaml_bridge as _apply_yaml_bridge, extra_or_secret as _shared_extra_or_secret,
     get_scoped_secret as _get_scoped_secret, send_error
 )
@@ -420,7 +420,7 @@ def _render_code_block_element(element: dict[str, Any]) -> str:
 
 def _strip_markdown_to_plain_text(text: str) -> str:
     """Plain-text fallback: shared strip_markdown plus Feishu extras (blockquote, ~~, <u>, hr, CRLF)."""
-    from gateway.platforms.helpers import strip_markdown
+    from hermes_agent.gateway.platforms.helpers import strip_markdown
     plain = text.replace("\r\n", "\n")
     plain = _MARKDOWN_LINK_RE.sub(lambda m: f"{m.group(1)} ({m.group(2).strip()})", plain)
     plain = re.sub(r"^>\s?", "", plain, flags=re.MULTILINE)
@@ -1883,7 +1883,7 @@ class FeishuAdapter(FeishuChoiceCardsMixin, FeishuSyntheticEventsMixin, BasePlat
         transcoded_path: Optional[str] = None
         ext = Path(audio_path).suffix.lower()
         if ext not in _FEISHU_OPUS_UPLOAD_EXTENSIONS:
-            from gateway.platforms.base import transcode_to_ogg_opus
+            from hermes_agent.gateway.platforms.base import transcode_to_ogg_opus
             transcoded_path = await asyncio.to_thread(transcode_to_ogg_opus, audio_path)
             if transcoded_path:
                 audio_path = transcoded_path
@@ -2554,7 +2554,7 @@ class FeishuAdapter(FeishuChoiceCardsMixin, FeishuSyntheticEventsMixin, BasePlat
     # --- Inbound processing pipeline ---
     def _resolve_channel_prompt(self, chat_id: str, parent_id: str | None = None) -> str | None:
         """Honour ``channel_prompts: {<chat_id>: "<prompt>"}`` in PlatformConfig.extra (as Discord/Slack do)."""
-        from gateway.platforms.base import resolve_channel_prompt
+        from hermes_agent.gateway.platforms.base import resolve_channel_prompt
         extra = getattr(getattr(self, "config", None), "extra", None) or {}  # tests build bare adapters
         return resolve_channel_prompt(extra, chat_id, parent_id)
 
@@ -2695,7 +2695,7 @@ class FeishuAdapter(FeishuChoiceCardsMixin, FeishuSyntheticEventsMixin, BasePlat
         return await cache_image_from_url(image_url, ext=ext)
 
     async def _download_remote_document(self, file_url: str, *, default_ext: str, preferred_name: str) -> tuple[str, str]:
-        from gateway.platforms.base import read_httpx_body_with_limit, ssrf_redirect_guard
+        from hermes_agent.gateway.platforms.base import read_httpx_body_with_limit, ssrf_redirect_guard
         from tools.url_safety import create_ssrf_safe_async_client, is_safe_url
         if not is_safe_url(file_url):
             raise ValueError(f"Blocked unsafe URL (SSRF protection): {file_url[:80]}")
@@ -3859,7 +3859,7 @@ class FeishuAdapter(FeishuChoiceCardsMixin, FeishuSyntheticEventsMixin, BasePlat
         app = web.Application(client_max_size=_FEISHU_WEBHOOK_MAX_BODY_BYTES)
         app.router.add_post(self._webhook_path, self._handle_webhook_request)
         # Shared-listener mode (multiplex secondary): no bind; served at /p/<profile>/<webhook_path>.
-        from gateway.platforms.shared_ingress import bind_listener
+        from hermes_agent.gateway.platforms.shared_ingress import bind_listener
         self._webhook_runner = await bind_listener(self, app, self._webhook_host, self._webhook_port, self._webhook_path)
 
     def _prepare_client(self) -> Any:
@@ -4252,10 +4252,10 @@ def _qr_register_inner(*, initial_domain: str, timeout_seconds: int) -> Optional
 
 # ────────────────────────────────────────────────────────────────────────── Plugin migration glue (#41112 /
 # #3823) Added when the Feishu adapter (+ its feishu_comment / feishu_comment_rules / feishu_meeting_invite
-# satellites) moved from gateway/platforms/ into this bundled plugin. Mirrors the Discord (#24356) / Slack
+# satellites) moved from hermes_agent/gateway/platforms/ into this bundled plugin. Mirrors the Discord (#24356) / Slack
 # migrations: a register(ctx) entry point plus hook implementations that replace the per-platform core
-# touchpoints (the Platform.FEISHU elif in gateway/run.py, the feishu_cfg YAML→env block +
-# _PLATFORM_CONNECTED_CHECKERS entry in gateway/config.py, the _setup_feishu wizard + _PLATFORMS["feishu"]
+# touchpoints (the Platform.FEISHU elif in hermes_agent/gateway/run.py, the feishu_cfg YAML→env block +
+# _PLATFORM_CONNECTED_CHECKERS entry in hermes_agent/gateway/config.py, the _setup_feishu wizard + _PLATFORMS["feishu"]
 # static dict in hermes_cli/gateway.py, and the _send_feishu dispatch in tools/send_message_tool.py).
 # ──────────────────────────────────────────────────────────────────────────
 _MIGRATION_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
@@ -4435,7 +4435,7 @@ def register(ctx) -> None:
     from .adapter_hint import PLATFORM_HINT
     from .send_targets import SEND_ENTRY_KWARGS
     from .dashboard_card import DASHBOARD_CARD
-    from . import gateway_env  # env -> GatewayConfig bridge (gateway.config_env)
+    from . import gateway_env  # env -> GatewayConfig bridge (hermes_agent.gateway.config_env)
     ctx.register_platform(
         **SEND_ENTRY_KWARGS,  # send_message target syntax + routing
         name="feishu", label="Feishu / Lark", adapter_factory=FeishuAdapter,

@@ -16,7 +16,7 @@ async def test_exact_streaming_retry_on_named_conversation_replays_the_recorded_
     calls = []
 
     async def handle(event):
-        from gateway.session_results import execution_result
+        from hermes_agent.gateway.session_results import execution_result
         calls.append(event.text)
         execution_result.get()['result'] = {'final_response': 'streamed reply', 'messages': []}
         return 'streamed reply'
@@ -47,7 +47,7 @@ async def test_changed_explicit_history_conflicts_with_same_responses_idempotenc
     calls = []
 
     async def handle(event):
-        from gateway.session_results import execution_result
+        from hermes_agent.gateway.session_results import execution_result
         calls.append(event.text)
         execution_result.get()['result'] = {'final_response': 'reply', 'messages': []}
         return 'reply'
@@ -84,7 +84,7 @@ async def test_a_different_body_under_an_in_flight_key_is_refused_and_the_first_
     calls, release = [], asyncio.Event()
 
     async def handle(event):
-        from gateway.session_results import execution_result
+        from hermes_agent.gateway.session_results import execution_result
         calls.append(event.text)
         if event.text == 'first':
             await release.wait()
@@ -114,7 +114,7 @@ async def test_a_different_body_under_an_in_flight_key_is_refused_and_the_first_
 
 
 def test_idempotency_record_keeps_its_first_writer(tmp_path):
-    from gateway.platforms.api_server_response_store import ResponseStore
+    from hermes_agent.gateway.platforms.api_server_response_store import ResponseStore
     store = ResponseStore(db_path=str(tmp_path / 'responses.db'))
     try:
         settled = {'fingerprint': 'A', 'response': {'id': 'a'}}

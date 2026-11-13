@@ -283,7 +283,7 @@ def _alive(pid: int) -> bool:
     """Cross-platform liveness: no process lives behind a Linux-only ``/proc/<pid>/stat`` read on
     the POSIX hosts this suite declares (macOS has no /proc), and a pid that vanishes between the
     signal probe and the status read is simply dead."""
-    from gateway.status import _pid_exists
+    from hermes_agent.gateway.status import _pid_exists
     return _pid_exists(pid)
 
 

@@ -573,7 +573,7 @@ class TestDeferredFtsRetryInProcess:
 
         from hermes_agent import hermes_state_registry
         from hermes_agent import hermes_state_schema
-        import gateway.run as grun
+        import hermes_agent.gateway.run as grun
 
         monkeypatch.setattr(hermes_state_schema, "_FTS_STALE_RETRY_SECONDS", 0.0)
         db_path = tmp_path / "state.db"

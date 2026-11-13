@@ -9,8 +9,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from gateway.config import Platform
-from gateway.run_turn_runner import TurnRunner
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.run_turn_runner import TurnRunner
 
 
 def _runner(platform, published):

@@ -8,7 +8,7 @@ import pytest
 from websockets.asyncio.client import connect
 from websockets.exceptions import InvalidStatus
 
-from gateway.session_controls import AuthorityConnection
+from hermes_agent.gateway.session_controls import AuthorityConnection
 from hermes_agent.hermes_state import SessionDB
 from tests.gateway.fixtures.local_recovery_probe import child_env, daemon, rpc, websocket
 
@@ -97,7 +97,7 @@ def test_profile_discovery_and_group_controls_enforce_actor_scope(tmp_path, monk
             assert row['last_session'] is None
             assert db.get_session('private')['title'] == 'Bot Chat'
             db.set_session_title('private', 'Other Bot Chat')
-            from gateway.session_identity import authenticated_subject
+            from hermes_agent.gateway.session_identity import authenticated_subject
             db.create_session('mine', source='gui',
                               user_id=authenticated_subject({'user_id': 'reader'}), chat_id='local-mine')
             db.set_session_title('mine', 'Bot Chat')
@@ -116,8 +116,8 @@ def test_profile_discovery_and_group_controls_enforce_actor_scope(tmp_path, monk
 def test_groups_list_pages_the_actor_visible_rooms(tmp_path):
     """keeltrace: pagination is applied to the rooms the actor may see, not to the room table
     before the authorization filter (which returned empty/short pages ahead of visible rooms)."""
-    from gateway import hosted_rooms as rooms
-    from gateway.session_group_controls import _group
+    from hermes_agent.gateway import hosted_rooms as rooms
+    from hermes_agent.gateway.session_group_controls import _group
     from hermes_agent.hermes_state_runtime import RuntimeStoreError
     db_path = tmp_path / 'state.db'
     with SessionDB(db_path) as db:
@@ -252,7 +252,7 @@ def test_profiles_list_survives_an_undecodable_sibling_profile_yaml(tmp_path, mo
     that profile keeps a basic row, and the unreadable file is logged."""
     home = _roster_home(tmp_path, monkeypatch)
     (home / 'profiles' / 'helper' / 'profile.yaml').write_bytes('display_name: Andr\xe9\n'.encode('cp1252'))
-    with caplog.at_level('WARNING', logger='gateway.session_group_controls'):
+    with caplog.at_level('WARNING', logger='hermes_agent.gateway.session_group_controls'):
         reply = _list_profiles(home)
     assert 'result' in reply, reply
     rows = {row['name']: row for row in reply['result']['profiles']}
@@ -305,7 +305,7 @@ def test_profiles_list_cache_sees_changes_inside_one_mtime_tick(tmp_path, monkey
     kernel timestamp tick. Linux stamps mtime AND ctime from the coarse clock, and a dir's size and
     inode survive a file appearing and vanishing in it, so every stat field can be unchanged. The
     test forces that case on every run by making every stat key identical (one frozen tick)."""
-    from gateway import session_group_controls as g
+    from hermes_agent.gateway import session_group_controls as g
     home = _roster_home(tmp_path, monkeypatch)
     root = home / 'profiles'
     monkeypatch.setattr(g, '_stat_key', lambda stat: ('one-tick',))

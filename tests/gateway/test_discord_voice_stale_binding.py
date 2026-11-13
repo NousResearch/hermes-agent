@@ -22,9 +22,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from gateway.config import PlatformConfig
-from gateway.platforms.base import SessionSource
-from gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.config import PlatformConfig
+from hermes_agent.gateway.platforms.base import SessionSource
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
 from plugins.platforms.discord.adapter import DiscordAdapter, VoiceReceiver
 
 _GUILD, _USER = 1, 42
@@ -88,7 +88,7 @@ def _fall_silent(receiver: VoiceReceiver) -> None:
 
 async def _voice_join_from(adapter: DiscordAdapter, chat_id: str, tmp_path: Path) -> None:
     """``/voice join`` through the gateway handler while the bot is already in the voice channel."""
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
     runner = object.__new__(GatewayRunner)
     runner.adapters, runner._voice_mode = {}, {}
     runner._VOICE_MODE_PATH = tmp_path / "gateway_voice_mode.json"

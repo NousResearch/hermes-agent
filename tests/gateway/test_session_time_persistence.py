@@ -3,8 +3,8 @@ from datetime import datetime, timedelta
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform
-from gateway.session import SessionSource, SessionStore
+from hermes_agent.gateway.config import GatewayConfig, Platform
+from hermes_agent.gateway.session import SessionSource, SessionStore
 
 
 @pytest.mark.parametrize("mode", ["idle", "daily", "both", "none"])

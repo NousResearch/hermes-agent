@@ -49,7 +49,7 @@ async def test_live_tool_events_project_exactly_like_replay():
 
 
 def test_gateway_publishes_tool_arguments_and_result_for_live_viewers():
-    from gateway.run_turn_runner import TurnRunner
+    from hermes_agent.gateway.run_turn_runner import TurnRunner
     published = []
 
     class Authority:

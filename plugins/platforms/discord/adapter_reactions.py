@@ -5,7 +5,7 @@ import asyncio
 import logging
 from typing import Any
 
-from gateway.platforms.event import MessageEvent, ProcessingOutcome
+from hermes_agent.gateway.platforms.event import MessageEvent, ProcessingOutcome
 
 logger = logging.getLogger(__name__)
 

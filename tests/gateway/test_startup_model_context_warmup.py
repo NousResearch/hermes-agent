@@ -9,7 +9,7 @@ credential rules as the turn itself, so the probe's caches are primed before
 the inbound gate opens.
 """
 
-import gateway.run as gateway_run
+import hermes_agent.gateway.run as gateway_run
 
 
 def _quiet_tool_side(monkeypatch, tool_count):

@@ -8,9 +8,9 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from gateway.config import PlatformConfig
-from gateway.platforms import webhook_ingress
-from gateway.platforms.webhook import WebhookAdapter, _INSECURE_NO_AUTH
+from hermes_agent.gateway.config import PlatformConfig
+from hermes_agent.gateway.platforms import webhook_ingress
+from hermes_agent.gateway.platforms.webhook import WebhookAdapter, _INSECURE_NO_AUTH
 
 
 def _make_adapter(routes=None):
@@ -34,7 +34,7 @@ def _capture_admissions(adapter, monkeypatch):
     monkeypatch.setattr(webhook_ingress, "admit_producer", _admit)
     monkeypatch.setattr(adapter, "_finalize_delivery", _finalize)
     adapter._message_handler = SimpleNamespace(__self__=SimpleNamespace())
-    monkeypatch.setattr("gateway.session_authorities.authority_for_profile_id", lambda runner, pid: object())
+    monkeypatch.setattr("hermes_agent.gateway.session_authorities.authority_for_profile_id", lambda runner, pid: object())
     return admitted
 
 

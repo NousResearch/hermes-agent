@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 
 import hermes_logging
-from gateway import run
+from hermes_agent.gateway import run
 
 
 @pytest.fixture
@@ -56,8 +56,8 @@ def test_multiplex_gateway_routes_profile_records_to_their_own_logs(
     assert run._enable_multiplex_log_routing(types.SimpleNamespace(multiplex_profiles=False)) is False
     assert run._enable_multiplex_log_routing(types.SimpleNamespace(multiplex_profiles=True)) is True
 
-    _emit_under(beta_home, "gateway.run", logging.WARNING, "BETA-GATEWAY-WARN")
-    _emit_under(default_home, "gateway.run", logging.INFO, "DEFAULT-GATEWAY-INFO")
+    _emit_under(beta_home, "hermes_agent.gateway.run", logging.WARNING, "BETA-GATEWAY-WARN")
+    _emit_under(default_home, "hermes_agent.gateway.run", logging.INFO, "DEFAULT-GATEWAY-INFO")
     hermes_logging.flush_log_queue()
 
     for filename in ("agent.log", "errors.log", "gateway.log"):

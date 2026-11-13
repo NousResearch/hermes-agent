@@ -37,7 +37,7 @@ def _hello(pid):
 
 
 def test_owner_binds_reservation_to_verified_descendant_of_the_handle_only(tmp_path):
-    from gateway.session_worker_reservation import reserve_admission_worker
+    from hermes_agent.gateway.session_worker_reservation import reserve_admission_worker
     launcher = subprocess.Popen([sys.executable, '-c', LAUNCHER], stdin=subprocess.PIPE,
                                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
     stranger = subprocess.Popen([sys.executable, '-c', 'import sys; sys.stdin.read()'], stdin=subprocess.PIPE,

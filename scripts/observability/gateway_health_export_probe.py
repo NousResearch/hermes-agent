@@ -27,7 +27,7 @@ def main() -> None:
     hermes_home = Path(tempfile.mkdtemp(prefix="hermes-otel-smoke-"))
     os.environ["HERMES_HOME"] = str(hermes_home)
 
-    from gateway.status import write_runtime_status
+    from hermes_agent.gateway.status import write_runtime_status
     from agent.monitoring.gateway_health_export import start_gateway_health_export
     from agent.monitoring import emitter
 
@@ -69,7 +69,7 @@ def main() -> None:
         error_code="auth_failed",
         error_message="Bearer *** rejected for smoke@example.com",
     )
-    logging.getLogger("gateway.platforms.slack").warning("Slack token *** rejected for smoke@example.com")
+    logging.getLogger("hermes_agent.gateway.platforms.slack").warning("Slack token *** rejected for smoke@example.com")
     emitter.get_emitter().flush(timeout=2.0)
     time.sleep(args.wait)
     write_runtime_status(gateway_state="stopped", active_agents=0)

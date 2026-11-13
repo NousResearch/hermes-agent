@@ -6,9 +6,9 @@ from unittest.mock import AsyncMock
 import pytest
 
 from evals.heartbeat_idle_wire import WireAdapter
-from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.run import GatewayRunner
-from gateway.session import SessionSource, SessionStore
+from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+from hermes_agent.gateway.run import GatewayRunner
+from hermes_agent.gateway.session import SessionSource, SessionStore
 from hermes_cli.heartbeat import HeartbeatState, migrate_heartbeat_to_session, save_heartbeat
 
 
@@ -78,7 +78,7 @@ async def test_admitted_heartbeat_executes_only_in_own_conversation(tmp_path, bo
 
 @pytest.mark.asyncio
 async def test_restart_does_not_restore_suspended_heartbeat(tmp_path):
-    from gateway.run_heartbeat_restore import restore_heartbeat_watches
+    from hermes_agent.gateway.run_heartbeat_restore import restore_heartbeat_watches
 
     config = GatewayConfig()
     store = SessionStore(tmp_path / "sessions", config)

@@ -1,7 +1,7 @@
 """``pre_command`` fires once, in the gateway, for every local surface, and the classic CLI's ``/plugins``
 reads the gateway's loaded plugins (#134889 PLG-7).
 
-A real daemon (``gateway.run``) loads a user plugin whose ``pre_command`` hook appends one JSON line per
+A real daemon (``hermes_agent.gateway.run``) loads a user plugin whose ``pre_command`` hook appends one JSON line per
 call to a log. Commands reach the gateway the way each client sends them: ``slash.exec`` (classic CLI,
 Ink TUI, Desktop) and ``command.dispatch`` (Ink TUI). The classic CLI runs in this test process, where
 any plugin-manager read fails the test.
@@ -472,11 +472,11 @@ def test_only_the_escape_hatches_skip_pre_command_during_a_turn(monkeypatch, sta
     import asyncio
     from contextlib import nullcontext
     from types import SimpleNamespace
-    from gateway import session_commands
+    from hermes_agent.gateway import session_commands
     calls = []
-    monkeypatch.setattr('gateway.session_local.authorize_local_source', lambda _r, _s: True)
-    monkeypatch.setattr('gateway.session_policy.policy_for_source', lambda _r, _s: SimpleNamespace(platform='tui'))
-    monkeypatch.setattr('gateway.run._profile_runtime_scope', lambda _home: nullcontext())
+    monkeypatch.setattr('hermes_agent.gateway.session_local.authorize_local_source', lambda _r, _s: True)
+    monkeypatch.setattr('hermes_agent.gateway.session_policy.policy_for_source', lambda _r, _s: SimpleNamespace(platform='tui'))
+    monkeypatch.setattr('hermes_agent.gateway.run._profile_runtime_scope', lambda _home: nullcontext())
     monkeypatch.setattr('hermes_cli.plugins.fire_pre_command_hook', lambda **kw: calls.append(kw))
     asyncio.run(session_commands._pre_command_before(_authority(state), SimpleNamespace(session_id='s1'),
                                                      command, command, ''))
@@ -494,7 +494,7 @@ def test_a_hung_pre_command_callback_is_bounded_and_each_session_keeps_its_order
     from concurrent.futures import ThreadPoolExecutor
     from contextlib import nullcontext
     from types import SimpleNamespace
-    from gateway import session_commands
+    from hermes_agent.gateway import session_commands
     from hermes_cli.plugins import PluginManager
     release, seen = threading.Event(), []
 
@@ -508,8 +508,8 @@ def test_a_hung_pre_command_callback_is_bounded_and_each_session_keeps_its_order
     manager._hooks['pre_command'] = [hung, record]
     monkeypatch.setattr('hermes_cli.plugins.get_plugin_manager', lambda: manager)
     monkeypatch.setattr('hermes_cli.plugins._resolve_hook_callback_timeout', lambda: 0.5)
-    monkeypatch.setattr('gateway.session_local.authorize_local_source', lambda _r, _s: True)
-    monkeypatch.setattr('gateway.run._profile_runtime_scope', lambda _home: nullcontext())
+    monkeypatch.setattr('hermes_agent.gateway.session_local.authorize_local_source', lambda _r, _s: True)
+    monkeypatch.setattr('hermes_agent.gateway.run._profile_runtime_scope', lambda _home: nullcontext())
     live = SimpleNamespace(source=object(), route='agent:main:local:dm:s1')
     authority = SimpleNamespace(sessions=dict.fromkeys('ABC', live), runner=object(), profile_id='/tmp/home',
                                 _handle=lambda _ref: SimpleNamespace(execution_state='idle'))
@@ -548,7 +548,7 @@ def test_callbacks_waiting_out_their_bound_hold_no_worker_another_session_needs(
     import asyncio
     from contextlib import nullcontext
     from types import SimpleNamespace
-    from gateway import session_commands
+    from hermes_agent.gateway import session_commands
     from hermes_cli.plugins import PluginManager
     slow, inside, seen, lock = [f'S{n}' for n in range(6)], [], [], threading.Lock()
     release, all_in = threading.Event(), threading.Event()
@@ -566,8 +566,8 @@ def test_callbacks_waiting_out_their_bound_hold_no_worker_another_session_needs(
     manager._hooks['pre_command'] = [callback]
     monkeypatch.setattr('hermes_cli.plugins.get_plugin_manager', lambda: manager)
     monkeypatch.setattr('hermes_cli.plugins._resolve_hook_callback_timeout', lambda: 30)
-    monkeypatch.setattr('gateway.session_local.authorize_local_source', lambda _r, _s: True)
-    monkeypatch.setattr('gateway.run._profile_runtime_scope', lambda _home: nullcontext())
+    monkeypatch.setattr('hermes_agent.gateway.session_local.authorize_local_source', lambda _r, _s: True)
+    monkeypatch.setattr('hermes_agent.gateway.run._profile_runtime_scope', lambda _home: nullcontext())
     live = SimpleNamespace(source=object(), route='agent:main:local:dm:s1')
     authority = SimpleNamespace(sessions=dict.fromkeys([*slow, 'fresh'], live), runner=object(),
                                 profile_id='/tmp/home', _handle=lambda _ref: SimpleNamespace(execution_state='idle'))

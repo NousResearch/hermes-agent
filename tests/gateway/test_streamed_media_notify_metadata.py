@@ -1,7 +1,7 @@
 """A streamed turn's post-stream MEDIA delivery notifies like the non-streamed path (#144897).
 
 The non-streamed chain marks its final content — text and attachments — with
-``_mark_notify_metadata`` (``gateway/platforms/base.py``), so in ``important`` notification
+``_mark_notify_metadata`` (``hermes_agent/gateway/platforms/base.py``), so in ``important`` notification
 mode the attachments ring. The streamed chain handed ``_deliver_media_from_response`` no
 metadata at all: the function fell back to plain thread metadata, and every post-stream
 ``send_voice`` / ``send_document`` / image batch went out silent — a voice-only streamed
@@ -10,10 +10,10 @@ reply in ``important`` mode made no sound at all.
 
 import pytest
 
-from gateway.config import Platform
-from gateway.platforms.base import SendResult
-from gateway.platforms.event import MessageEvent, MessageType, SessionSource
-from gateway.run import GatewayRunner
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.platforms.base import SendResult
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType, SessionSource
+from hermes_agent.gateway.run import GatewayRunner
 from tests.gateway.test_run_progress_topics import ProgressCaptureAdapter, _make_runner
 
 _SESSION_KEY = "agent:main:telegram:group:-1001:17585"
@@ -54,7 +54,7 @@ async def _streamed_completion_seam(adapter, response):
 async def test_streamed_media_delivery_carries_notify_metadata(tmp_path, monkeypatch):
     """In ``important`` notification mode the media completing a streamed turn must ring:
     the post-stream send carries notify metadata like the non-streamed attachments do."""
-    from gateway.platforms import base as platforms_base
+    from hermes_agent.gateway.platforms import base as platforms_base
 
     voice = tmp_path / "note.ogg"
     voice.write_bytes(b"ogg")

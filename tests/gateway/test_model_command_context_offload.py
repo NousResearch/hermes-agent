@@ -16,9 +16,9 @@ import threading
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 
-from gateway.config import Platform
-from gateway.platforms.event import MessageEvent, MessageType
-from gateway.session import SessionSource
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.session import SessionSource
 
 def _make_source() -> SessionSource:
     return SessionSource(
@@ -40,8 +40,8 @@ def _runner_with_store(tmp_path, monkeypatch):
     """Minimal GatewayRunner harness driving the real /model handler."""
     import hermes_yaml as _yaml
 
-    import gateway.run as gateway_run
-    from gateway.run import GatewayRunner
+    import hermes_agent.gateway.run as gateway_run
+    from hermes_agent.gateway.run import GatewayRunner
     from hermes_cli.model_switch import ModelSwitchResult
 
     hermes_home = tmp_path / ".hermes"

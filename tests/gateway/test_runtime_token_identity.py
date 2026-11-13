@@ -18,11 +18,11 @@ from websockets.exceptions import InvalidStatus
 
 @pytest.mark.asyncio
 async def test_authenticated_token_can_create_without_identityless_permissions(tmp_path):
-    from gateway.config import GatewayConfig
-    from gateway.run import GatewayRunner
-    from gateway.run_runtime import initialize_gateway_runtime, start_gateway_runtime_api, publish_gateway_runtime_ready
-    from gateway.runtime_ownership import process_ownership
-    from gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.run import GatewayRunner
+    from hermes_agent.gateway.run_runtime import initialize_gateway_runtime, start_gateway_runtime_api, publish_gateway_runtime_ready
+    from hermes_agent.gateway.runtime_ownership import process_ownership
+    from hermes_agent.gateway.session_controls import AuthorityConnection
     from hermes_constants import get_hermes_home
     from hermes_cli import web_server as web
 
@@ -37,7 +37,7 @@ async def test_authenticated_token_can_create_without_identityless_permissions(t
     runner = GatewayRunner(GatewayConfig())
     try:
         await initialize_gateway_runtime(runner)
-        from gateway.control_socket import GatewayControlServer
+        from hermes_agent.gateway.control_socket import GatewayControlServer
         runner.session_control_server = GatewayControlServer()
         assert await runner.session_control_server.start()
         await start_gateway_runtime_api(runner)
@@ -70,8 +70,8 @@ async def test_authenticated_token_can_create_without_identityless_permissions(t
 @pytest.mark.platforms("linux")
 @pytest.mark.parametrize('layout', ['normal', 'long', 'unicode', 'long-temp'])
 def test_ordinary_daemon_keeps_control_auth_and_loop_witness(tmp_path, layout):
-    from gateway.control_socket import identify_gateway, resolve_client_socket_path
-    from gateway.shutdown_watchdog import get_loop_tick_socket_path
+    from hermes_agent.gateway.control_socket import identify_gateway, resolve_client_socket_path
+    from hermes_agent.gateway.shutdown_watchdog import get_loop_tick_socket_path
     from hermes_cli.gateway import probe_gateway_loop_liveness
 
     async def create(origin, token):
@@ -119,7 +119,7 @@ def test_ordinary_daemon_keeps_control_auth_and_loop_witness(tmp_path, layout):
             temp.mkdir()
             env['TMPDIR'] = str(temp)
         with (tmp_path / 'daemon.log').open('w+') as log:
-            process = subprocess.Popen([sys.executable, '-m', 'gateway.run'], cwd=root, env=env,
+            process = subprocess.Popen([sys.executable, '-m', 'hermes_agent.gateway.run'], cwd=root, env=env,
                                        stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT)
             control_path = None
             try:

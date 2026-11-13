@@ -27,7 +27,7 @@ class _OwnerClient:
     """``GatewayClient``'s surface (``rpc`` + ``events``) over a real ``AuthorityConnection``."""
 
     def __init__(self, authority):
-        from gateway.session_controls import AuthorityConnection
+        from hermes_agent.gateway.session_controls import AuthorityConnection
         self.loop, self.events = asyncio.get_running_loop(), asyncio.Queue()
         self.conn = AuthorityConnection(authority, self, {"user_id": "desktop"})
 
@@ -60,7 +60,7 @@ def _legacy(monkeypatch, db):
 
 
 def _owner(monkeypatch, db, key, epoch):
-    from gateway.session_authority import LiveSession, SessionAuthority
+    from hermes_agent.gateway.session_authority import LiveSession, SessionAuthority
     authority = SessionAuthority(SimpleNamespace(_draining=False), profile_id="owned", instance_id="gateway",
                                  db=db, epoch=epoch)
     authority.sessions[key] = LiveSession(SimpleNamespace(platform=None, user_id="desktop"), "route")
@@ -116,8 +116,8 @@ def test_desktop_prompt_during_a_gateway_turn_runs_after_it_in_the_owner_fifo(mo
         row = claim_session_input(db, epoch=epoch, session_id=key)
         assert row["admission_id"] == mine["admission_id"]
         assert claim_session_input(db, epoch=epoch, session_id=key) is None
-        from gateway.session_contract import SessionRef
-        from gateway.session_settlement_recovery import commit_and_publish
+        from hermes_agent.gateway.session_contract import SessionRef
+        from hermes_agent.gateway.session_settlement_recovery import commit_and_publish
         ref, live = SessionRef("owned", key), authority.sessions[key]
         authority._stamp_claim(ref, live, row)
         with live.event_stream.lock:
@@ -220,7 +220,7 @@ def test_a_receipt_lost_after_the_owner_queued_it_is_unconfirmed_not_resendable(
     SESSION_OWNER_UNCONFIRMED (check the chat, no Retry). Wire-level: a real loopback websockets
     server runs the real ``AuthorityConnection``; the relay uses the real ``GatewayClient``."""
     import json
-    from gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway.session_controls import AuthorityConnection
     from hermes_cli.gateway_client import GatewayClient
     from websockets.asyncio.client import connect
     from websockets.asyncio.server import serve

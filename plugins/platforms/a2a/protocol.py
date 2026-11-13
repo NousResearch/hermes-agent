@@ -17,7 +17,7 @@ from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Any, Optional
 
-from gateway.platforms._shared import coerce_port as _coerce_int
+from hermes_agent.gateway.platforms._shared import coerce_port as _coerce_int
 from hermes_constants import get_hermes_home
 
 PROTOCOL_VERSION = "1.0"

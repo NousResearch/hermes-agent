@@ -39,8 +39,8 @@ async def test_delivery_after_archive_of_delivery_minted_bot_chat_mints_fresh(hi
     --create-if-missing``) and generation 0 reuses an untitled row as an interrupted mint. After a
     sidebar Archive the next delivery must land in a fresh "Bot Chat", never wedge on
     ``admission_conflict`` (visible) nor re-title the archived row (hidden) (#139779)."""
-    from gateway import run
-    from gateway.session_bot import _target
+    from hermes_agent.gateway import run
+    from hermes_agent.gateway.session_bot import _target
     from hermes_constants import get_hermes_home
     from tests.gateway.test_follow_profile_followups import _profile
     from tests.gateway.test_session_follow_profile_config import _owner

@@ -6,8 +6,8 @@ from aiohttp.test_utils import TestClient, TestServer
 
 @pytest.mark.asyncio
 async def test_compressed_receipt_chains_its_snapshot_then_retires_history(api, owner):
-    from gateway.session_api_turn import api_execution
-    from gateway.session_results import admission_result, execution_result
+    from hermes_agent.gateway.session_api_turn import api_execution
+    from hermes_agent.gateway.session_results import admission_result, execution_result
     seen = []
     compressed = [
         {'role': 'assistant', 'content': 'compressed-summary-sentinel', '_compressed_summary': True},

@@ -7,8 +7,8 @@ from unittest.mock import MagicMock
 import pytest
 from multidict import CIMultiDict
 
-from gateway.config import PlatformConfig
-from gateway.platforms.webhook import WebhookAdapter
+from hermes_agent.gateway.config import PlatformConfig
+from hermes_agent.gateway.platforms.webhook import WebhookAdapter
 from hermes_cli.webhook import _load_subscriptions, _mutate_subscriptions, webhook_command
 
 

@@ -5,12 +5,12 @@ from __future__ import annotations
 import logging
 import re
 
-from gateway.run import _gateway_stderr_formatter
+from hermes_agent.gateway.run import _gateway_stderr_formatter
 
 
 def test_gateway_stderr_formatter_includes_timestamp() -> None:
     record = logging.LogRecord(
-        name="gateway.run",
+        name="hermes_agent.gateway.run",
         level=logging.ERROR,
         pathname=__file__,
         lineno=1,

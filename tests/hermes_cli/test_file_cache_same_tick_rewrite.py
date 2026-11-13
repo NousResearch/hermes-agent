@@ -32,7 +32,7 @@ def coarse_clock(monkeypatch):
 
 
 def test_an_in_place_revocation_in_one_tick_is_not_served_from_the_pairing_cache(coarse_clock):
-    from gateway.pairing import PairingStore
+    from hermes_agent.gateway.pairing import PairingStore
     store = PairingStore()
     path = store._approved_path("telegram")
     path.write_text(json.dumps({"111111": {"user_name": "a"}}))
@@ -59,7 +59,7 @@ def test_a_key_rotated_in_place_in_one_tick_reaches_global_auth_store_readers(co
 
 
 def test_a_same_size_env_edit_in_one_tick_changes_the_served_profile_signature(coarse_clock, tmp_path):
-    from gateway.run_profile_reconcile import profile_serve_signature
+    from hermes_agent.gateway.run_profile_reconcile import profile_serve_signature
     (tmp_path / ".env").write_text("OPENROUTER_API_KEY=sk-aaaa\n")
     before = profile_serve_signature(tmp_path)
     (tmp_path / ".env").write_text("OPENROUTER_API_KEY=sk-bbbb\n")

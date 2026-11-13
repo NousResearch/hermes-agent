@@ -10,8 +10,8 @@ import time
 import pytest
 
 from agent.interrupt_control import InterruptControlMixin
-from gateway import session_finite, session_queued_controls
-from gateway.session_contract import SessionRef
+from hermes_agent.gateway import session_finite, session_queued_controls
+from hermes_agent.gateway.session_contract import SessionRef
 from hermes_agent.hermes_state_runtime import (
     begin_runtime_epoch, claim_session_input, find_session_admission, get_session_admission,
     recover_session_inputs,
@@ -180,8 +180,8 @@ def _runner_authority(tmp_path, monkeypatch):
     """``_authority`` whose runner is a real ``GatewayRunner``, so its follow-up handling reads the same
     ``_draining`` a restart sets."""
     from types import SimpleNamespace
-    from gateway.run import GatewayRunner
-    from gateway.session_authority import LiveSession, SessionAuthority
+    from hermes_agent.gateway.run import GatewayRunner
+    from hermes_agent.gateway.session_authority import LiveSession, SessionAuthority
     from hermes_agent.hermes_state import SessionDB
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     db = SessionDB(db_path=tmp_path / 'state.db')
@@ -406,7 +406,7 @@ async def test_a_held_sqlite_writer_never_stalls_the_owner_loop_behind_a_queued_
                 blocker.close()
                 done.set()
         # The control's own store write starts (and then waits on the held writer).
-        from gateway import session_authority
+        from hermes_agent.gateway import session_authority
         target, name = ((session_queued_controls, 'steer_session_input') if verb == 'steer'
                         else (session_authority, 'admit_session_input'))
         original = getattr(target, name)
@@ -487,10 +487,10 @@ def test_a_hosted_room_queued_row_is_offered_no_controls_and_both_verbs_refuse_i
     """A hosted-room settlement has no ``steered`` (or replaced) result: its rows are never offered either
     verb and the verbs refuse them by name, so the room's terminal/results reads stay healthy."""
     from dataclasses import asdict
-    from gateway.hosted_room_driver import TaskIdentity
-    from gateway.session_contract import SessionActor
-    from gateway.session_controls import AuthorityConnection
-    from gateway.session_hosted_rpc import HostedRoomAuthorityRPC
+    from hermes_agent.gateway.hosted_room_driver import TaskIdentity
+    from hermes_agent.gateway.session_contract import SessionActor
+    from hermes_agent.gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway.session_hosted_rpc import HostedRoomAuthorityRPC
     authority, loop, principal, _ = hosted_owner
     rpc = HostedRoomAuthorityRPC(authority, loop, room_id='room', member_id='member', profile='default',
                                  principal=principal, authorize=lambda *args: True)

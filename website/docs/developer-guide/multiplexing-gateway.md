@@ -33,7 +33,7 @@ is documented as a known limitation at the end of this document.
 ## The mode flag
 
 - Config: `gateway.multiplex_profiles` (also accepted at top level). Parsed in
-  `gateway/config.py` with precedence env > config > unset. `GatewayConfig`
+  `hermes_agent/gateway/config.py` with precedence env > config > unset. `GatewayConfig`
   keeps an unset flag as `None` (readers test truthiness, so it reads as off);
   `load_gateway_config_for_runner` then calls `resolve_multiplex_mode`, which
   writes the boot verdict — `True` on a quiet multi-profile default install,
@@ -95,7 +95,7 @@ platform event
 profile_routes match ──► served-set check ──► SessionSource.profile stamped
    │                                           (gateway/profile_routing.py)
    ▼
-_profile_runtime_scope(profile_home)           (gateway/run.py)
+_profile_runtime_scope(profile_home)           (hermes_agent/gateway/run.py)
    ├── set_hermes_home_override(home)          config / state.db / skills /
    │                                           memory / sessions resolve here
    └── set_secret_scope(profile .env + secret sources)
@@ -254,7 +254,7 @@ Pairing stores are constructed per served profile.
 
 Session keys are namespaced by profile (`agent:main` for default,
 `agent:<name>` for named profiles). Every inbound event carries ONE frozen
-`RoutingIdentity` (`gateway/session_identity.py`), resolved by
+`RoutingIdentity` (`hermes_agent/gateway/session_identity.py`), resolved by
 `resolve_identity()` at the runner's ingress handlers and pinned on the source
 as a wire-invisible attribute: `transport_profile` (the bot that received it —
 credential, allowlist, `authorization_home`), `runtime_profile` (the routed
@@ -280,7 +280,7 @@ copy loses its transport and identity.
 ## Intake vs delivery: which bot acts on an event
 
 Two runner seams answer the two questions a multiplexed gateway keeps
-conflating (`gateway/authz_mixin.py`):
+conflating (`hermes_agent/gateway/authz_mixin.py`):
 
 - `_intake_adapter_for(source)` — the bot that **received** the event. Live
   provenance only: the transport ref `build_source` pinned, the process-level
@@ -381,6 +381,6 @@ out of scope for this document.
 
 - [Multi-profile gateways](../user-guide/multi-profile-gateways.md) — user-facing guide, including `profile_routes`
   and the standalone one-gateway-per-profile alternative.
-- `agent/secret_scope.py`, `hermes_constants.py`, `gateway/profile_routing.py`,
-  `gateway/run.py` (`_profile_runtime_scope`), `hermes_cli/profiles.py`
-  (`profiles_to_serve`), `gateway/session.py`, `hermes_agent/tui_gateway/methods_profiles.py`.
+- `agent/secret_scope.py`, `hermes_constants.py`, `hermes_agent/gateway/profile_routing.py`,
+  `hermes_agent/gateway/run.py` (`_profile_runtime_scope`), `hermes_cli/profiles.py`
+  (`profiles_to_serve`), `hermes_agent/gateway/session.py`, `hermes_agent/tui_gateway/methods_profiles.py`.

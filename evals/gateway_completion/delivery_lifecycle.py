@@ -8,14 +8,14 @@ HOME.mkdir(parents=True, exist_ok=True)
 (HOME / "config.yaml").write_text(
     "display:\n  background_process_notifications: concise\n"
 )
-from gateway.run import GatewayRunner
-from gateway.config import GatewayConfig, Platform, PlatformConfig
+from hermes_agent.gateway.run import GatewayRunner
+from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
 from plugins.platforms.discord.adapter import DiscordAdapter
-from gateway.platforms.base import SendResult
-from gateway.session_context import set_session_vars, clear_session_vars
+from hermes_agent.gateway.platforms.base import SendResult
+from hermes_agent.gateway.session_context import set_session_vars, clear_session_vars
 from tools.terminal_tool_background import spawn_background_process
 from tools.process_registry import process_registry as pr
-import gateway.run_notifications as rn
+import hermes_agent.gateway.run_notifications as rn
 
 print("SOURCE", rn.__file__, "HOME", HOME)
 

@@ -57,7 +57,7 @@ class CLIStreamMixin:
         """Called by agent when thinking starts/stops. Updates TUI spinner."""
         if getattr(getattr(self, "agent", None), "_mute_notification_reply", False):
             return
-        from gateway.warning_notifications import DiagnosticText, render_notification
+        from hermes_agent.gateway.warning_notifications import DiagnosticText, render_notification
         def show():
             if not text:
                 self._flush_reasoning_preview(force=True)
@@ -81,7 +81,7 @@ class CLIStreamMixin:
             if not text:
                 return
             level = getattr(notice, "level", "info") or "info"
-            from gateway.warning_notifications import is_diagnostic_notice, render_notification
+            from hermes_agent.gateway.warning_notifications import is_diagnostic_notice, render_notification
             def queue_notice():
                 if not hasattr(self, "_pending_credit_notices"):
                     self._pending_credit_notices = []
@@ -233,7 +233,7 @@ class CLIStreamMixin:
         from cli import ChatConsole, _accent_hex, _cprint
         from tools.process_registry_notifications import TimelineNotification
         if isinstance(user_input, TimelineNotification):
-            from gateway.warning_notifications import render_notification
+            from hermes_agent.gateway.warning_notifications import render_notification
             render_notification(lambda: ChatConsole().print(f"[dim]◈ {_escape(user_input.display_text)}[/dim]"),
                                 platform="cli", diagnostic=user_input.notification_category == "diagnostic")
             return
@@ -636,7 +636,7 @@ class CLIStreamMixin:
         local path is included so the agent can re-examine via ``vision_analyze``."""
         from cli import _DIM, _RST, _cprint
         import asyncio as _asyncio
-        from gateway.warning_notifications import render_notification
+        from hermes_agent.gateway.warning_notifications import render_notification
         from tools.vision_tools import vision_analyze_tool
         analysis_prompt = (
             "Describe everything visible in this image in thorough detail. "

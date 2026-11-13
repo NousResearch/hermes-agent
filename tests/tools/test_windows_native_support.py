@@ -74,17 +74,17 @@ class TestConfigureWindowsStdio:
 
 @pytest.mark.platforms("windows")
 class TestTerminatePidRoutingOnWindows:
-    """``gateway.status.terminate_pid`` must use taskkill /T /F on Windows.
+    """``hermes_agent.gateway.status.terminate_pid`` must use taskkill /T /F on Windows.
 
     ``platforms("windows")``: this used to patch the module-level ``_IS_WINDOWS``
     flag on Linux, which selected the taskkill branch on a host where
-    ``taskkill`` does not exist and ``gateway/status`` cannot even import its
+    ``taskkill`` does not exist and ``hermes_agent/gateway/status`` cannot even import its
     ``msvcrt`` branch. On the Windows runner the flag is genuinely True, so
     only ``subprocess.run`` is mocked — the dependency, not the host.
     """
 
     def test_force_uses_taskkill_on_windows(self, monkeypatch):
-        from gateway import status
+        from hermes_agent.gateway import status
 
         captured = {}
 
@@ -107,7 +107,7 @@ class TestTerminatePidRoutingOnWindows:
         assert "/F" in captured["args"]
 
     def test_force_taskkill_failure_raises_oserror(self, monkeypatch):
-        from gateway import status
+        from hermes_agent.gateway import status
 
         def fake_run(args, **kwargs):
             result = MagicMock()
@@ -128,7 +128,7 @@ class TestTerminatePidRoutingOnWindows:
         and uses ``os.kill`` directly — so platform doesn't actually matter
         for the signal choice.  Verifies the getattr fallback works.
         """
-        from gateway import status
+        from hermes_agent.gateway import status
 
         captured = {}
 
@@ -144,7 +144,7 @@ class TestTerminatePidRoutingOnWindows:
 
     def test_taskkill_not_found_falls_back_to_os_kill(self, monkeypatch):
         """On Windows without taskkill (WinPE, containers), fall back gracefully."""
-        from gateway import status
+        from hermes_agent.gateway import status
 
         captured = {}
 
@@ -168,7 +168,7 @@ class TestTerminatePidRoutingOnWindows:
 # OSError widening on liveness probes
 #
 # Post-#21561, ``ProcessRegistry._is_host_pid_alive`` delegates to
-# ``gateway.status._pid_exists``, which is the cross-platform liveness
+# ``hermes_agent.gateway.status._pid_exists``, which is the cross-platform liveness
 # primitive (psutil-first, ctypes/os.kill fallback). The tests below assert
 # (a) the delegation is correct and (b) ``_pid_exists`` correctly widens
 # Windows' ``OSError(WinError 87)`` / ``PermissionError`` behavior on the
@@ -180,7 +180,7 @@ class TestTerminatePidRoutingOnWindows:
 
 @pytest.mark.platforms("linux")
 class TestPidExistsOSErrorWidening:
-    """gateway.status._pid_exists itself must widen Windows errors correctly.
+    """hermes_agent.gateway.status._pid_exists itself must widen Windows errors correctly.
 
     The POSIX fallback branch (reached when psutil isn't importable) is the
     only path where Python raises ``OSError(WinError 87)`` on Windows for a
@@ -195,7 +195,7 @@ class TestPidExistsOSErrorWidening:
 
     def test_oserror_gone_pid_returns_false(self, monkeypatch):
         """Simulate Windows' OSError(WinError 87) for a gone PID via the POSIX fallback."""
-        from gateway import status
+        from hermes_agent.gateway import status
 
         # Force the psutil-first branch to miss so we exercise the fallback.
         monkeypatch.setitem(
@@ -211,7 +211,7 @@ class TestPidExistsOSErrorWidening:
 
     def test_permission_error_returns_true(self, monkeypatch):
         """POSIX fallback: PermissionError means alive (owned by another user)."""
-        from gateway import status
+        from hermes_agent.gateway import status
 
         monkeypatch.setitem(
             __import__("sys").modules, "psutil",
@@ -466,7 +466,7 @@ class TestWindowlessGatewayRestartSpec:
 
         ``platforms("windows")``: faking this on Linux needed two more fakes to hold
         it up — a pre-import so the lazy ``hermes_cli.gateway`` import didn't
-        re-run ``gateway/status``'s ``import msvcrt`` branch, and a mock of
+        re-run ``hermes_agent/gateway/status``'s ``import msvcrt`` branch, and a mock of
         ``get_hermes_home`` because the real one's ``Path.resolve()`` consults
         sysconfig and blew up under the platform patch. Both workarounds were
         symptoms of testing Windows on a host that isn't Windows; on the
@@ -505,14 +505,14 @@ class TestWindowlessGatewayRestartSpec:
 
 
 # ---------------------------------------------------------------------------
-# gateway/run.py :: GatewayRunner._launch_detached_restart_command
+# hermes_agent/gateway/run.py :: GatewayRunner._launch_detached_restart_command
 # outer watcher Popen breakaway-denied fallback (PR #42993)
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.platforms("windows")
 class TestGatewayRunRestartWatcherOuterPopenFallback:
-    """The Windows ``/restart`` watcher in ``gateway.run`` spawns an outer
+    """The Windows ``/restart`` watcher in ``hermes_agent.gateway.run`` spawns an outer
     detached ``python -c <watcher>`` process with
     ``windows_detach_popen_kwargs()`` (which carries
     ``CREATE_BREAKAWAY_FROM_JOB``).  A restrictive parent job object rejects
@@ -547,7 +547,7 @@ class TestGatewayRunRestartWatcherOuterPopenFallback:
         )
 
     def test_outer_watcher_retries_without_breakaway_on_oserror(self, monkeypatch):
-        import gateway.run as gr
+        import hermes_agent.gateway.run as gr
         from hermes_cli._subprocess_compat import (
             windows_detach_flags_without_breakaway,
             windows_detach_popen_kwargs,
@@ -610,7 +610,7 @@ class TestGatewayRunRestartWatcherOuterPopenFallback:
 
 
     def test_outer_watcher_happy_path_spawns_once(self, monkeypatch):
-        import gateway.run as gr
+        import hermes_agent.gateway.run as gr
 
         monkeypatch.setattr(gr, "_resolve_hermes_bin", lambda: ["hermes"])
 
@@ -630,7 +630,7 @@ class TestGatewayRunRestartWatcherOuterPopenFallback:
     def test_outer_watcher_dual_failure_warns_without_leaking_secrets(
         self, monkeypatch
     ):
-        import gateway.run as gr
+        import hermes_agent.gateway.run as gr
 
         monkeypatch.setattr(gr, "_resolve_hermes_bin", lambda: ["hermes"])
 

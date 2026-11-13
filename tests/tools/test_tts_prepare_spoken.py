@@ -114,8 +114,8 @@ class TestSharedCleanerWiring:
         assert "\n" not in cleaned
 
     def test_gateway_prepare_tts_text_strips_think_blocks(self):
-        from gateway.config import Platform, PlatformConfig
-        from gateway.platforms.base import BasePlatformAdapter
+        from hermes_agent.gateway.config import Platform, PlatformConfig
+        from hermes_agent.gateway.platforms.base import BasePlatformAdapter
 
         class _DummyAdapter(BasePlatformAdapter):
             def __init__(self):

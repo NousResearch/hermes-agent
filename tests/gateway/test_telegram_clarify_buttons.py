@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from gateway.platforms.base import unauthorized_action_notice
+from hermes_agent.gateway.platforms.base import unauthorized_action_notice
 
 # ---------------------------------------------------------------------------
 # Ensure the repo root is importable
@@ -27,7 +27,7 @@ if _repo not in sys.path:
 # ---------------------------------------------------------------------------
 from plugins.platforms.telegram.adapter import TelegramAdapter
 from plugins.platforms.telegram.telegram_clarify_binding import ClarifyPrompt as _ClarifyPrompt
-from gateway.config import PlatformConfig
+from hermes_agent.gateway.config import PlatformConfig
 
 
 def _make_adapter(extra=None):
@@ -364,7 +364,7 @@ class TestBaseAdapterClarifyFallback:
 
     @pytest.mark.asyncio
     async def test_numbered_text_fallback(self):
-        from gateway.platforms.base import BasePlatformAdapter, SendResult
+        from hermes_agent.gateway.platforms.base import BasePlatformAdapter, SendResult
 
         # Subclass just enough to instantiate
         class _Stub(BasePlatformAdapter):

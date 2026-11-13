@@ -101,7 +101,7 @@ def _lock_held(m: Machine) -> bool:
     except OSError:
         return False
     with fh:
-        fh.seek(1024 * 1024)  # gateway/status.py _WINDOWS_LOCK_OFFSET, the same in both releases
+        fh.seek(1024 * 1024)  # hermes_agent/gateway/status.py _WINDOWS_LOCK_OFFSET, the same in both releases
         try:
             msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
         except OSError:

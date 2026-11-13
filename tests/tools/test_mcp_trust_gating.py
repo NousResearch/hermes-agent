@@ -222,7 +222,7 @@ class TestTrustGateApprovalRouting:
 
     def test_api_run_callback_can_resolve_mcp_trust_gate(self, monkeypatch):
         """An API run emits and resolves the exact per-call consent request."""
-        from gateway.session_context import clear_session_vars, set_session_vars
+        from hermes_agent.gateway.session_context import clear_session_vars, set_session_vars
         from tools import approval, approval_prompt
         from tools.approval_context import (
             reset_current_session_key,
@@ -270,7 +270,7 @@ class TestTrustGateApprovalRouting:
         self, monkeypatch, platform, cron, single_query
     ):
         """A registered callback must not widen consent for webhook, cron, or -q workers (#111526)."""
-        from gateway.session_context import clear_session_vars, set_session_vars
+        from hermes_agent.gateway.session_context import clear_session_vars, set_session_vars
         from tools import approval, approval_prompt
         from tools.approval_context import (
             reset_current_session_key,
@@ -309,7 +309,7 @@ class TestTrustGateApprovalRouting:
         """`hermes chat -q`, cron and unattended platforms can keep the CLI panel callback registered, but
         nobody answers it: consent declines at once instead of waiting the approval timeout (the e2e
         hang after ef1faa4cf8)."""
-        from gateway.session_context import clear_session_vars, set_session_vars
+        from hermes_agent.gateway.session_context import clear_session_vars, set_session_vars
         from tools import approval_prompt
         from tools.terminal_tool import set_approval_callback
 

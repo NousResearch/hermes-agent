@@ -28,9 +28,9 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from gateway import delivery_ledger as dl
-from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import BasePlatformAdapter, SendResult
+from hermes_agent.gateway import delivery_ledger as dl
+from hermes_agent.gateway.config import Platform, PlatformConfig
+from hermes_agent.gateway.platforms.base import BasePlatformAdapter, SendResult
 
 SESSION_KEY = "agent:main:telegram:dm:5230977008"
 TOPIC_SESSION_KEY = "agent:main:telegram:group:-1001:topic:7"
@@ -89,14 +89,14 @@ def _plain_adapter():
 
 
 def _runner():
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
 
     return object.__new__(GatewayRunner)
 
 
 async def _deliver(adapter, *, session_key=SESSION_KEY, stream_consumer=None, metadata=None,
                    text=TEXT, source=None, anchor=INBOUND_ID, inbound_id=INBOUND_ID):
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
 
     await GatewayRunner._deliver_queued_first_response(
         _runner(), text, source=source or _source(), adapter=adapter, metadata=metadata,
@@ -148,7 +148,7 @@ async def test_a_flood_refused_queued_final_stays_in_the_ledger_as_failed(caplog
     it."""
     adapter = _telegram_adapter(SendResult(success=False, error="flood_control:185.0"))
 
-    with caplog.at_level(logging.WARNING, logger="gateway.run"):
+    with caplog.at_level(logging.WARNING, logger="hermes_agent.gateway.run"):
         await _deliver(adapter)
 
     rows = _rows()
@@ -194,7 +194,7 @@ async def test_an_adapter_without_the_base_contract_keeps_the_plain_send():
 
 def _chain_runner_and_ctx(followup_return):
     """A runner whose recursive ``_run_agent`` returns ``followup_return``, plus a topic turn."""
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
 
     runner = _runner()
     runner._MAX_INTERRUPT_DEPTH = 8
@@ -222,7 +222,7 @@ async def test_a_chained_queued_turn_carries_its_own_inbound_id():
     """A queued follow-up that itself queues another follow-up (recursive _run_agent) must pass the
     inbound id on, or the chained turn's own queued final would key on None in a forum topic and
     collide with a sibling. The recursive call carries pending_event's raw message id."""
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
 
     runner = _runner()
     runner._MAX_INTERRUPT_DEPTH = 8
@@ -267,7 +267,7 @@ async def test_the_terminal_turn_of_a_chain_is_ledgered_under_its_own_inbound_id
     turn's own inbound id so the rows stay distinct. ``_send_with_retry`` is stubbed here because
     the retry ladder is covered elsewhere and this pins the ledger identity only.
     """
-    from gateway.platforms.base import MessageEvent
+    from hermes_agent.gateway.platforms.base import MessageEvent
 
     same_text = "Done."
     adapter = _telegram_adapter()
@@ -317,7 +317,7 @@ async def test_a_deeper_chain_keeps_the_innermost_inbound_id():
 async def test_ephemeral_delete_targets_the_adapter_that_sent_the_final(tmp_path, monkeypatch):
     """A reconnect between the send and the delete swaps the runner's live adapter; the delete
     must still go to the transport that produced ``result.message_id``."""
-    from gateway.platforms.event import MessageEvent
+    from hermes_agent.gateway.platforms.event import MessageEvent
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     sender = _telegram_adapter()

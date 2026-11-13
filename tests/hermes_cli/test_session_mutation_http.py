@@ -8,8 +8,8 @@ import httpx
 import pytest
 import uvicorn
 from fastapi import FastAPI, WebSocket
-from gateway.session_authority import LiveSession, SessionAuthority
-from gateway.session_controls import AuthorityConnection
+from hermes_agent.gateway.session_authority import LiveSession, SessionAuthority
+from hermes_agent.gateway.session_controls import AuthorityConnection
 from hermes_agent.hermes_state import SessionDB
 from hermes_agent.hermes_state_runtime import begin_runtime_epoch
 
@@ -122,7 +122,7 @@ async def test_delete_reports_already_absent_only_for_rows_that_are_gone(tmp_pat
     for this caller (an unbound API-server row is mounted for its owner only). That is not an
     idempotent success — Desktop would drop the row and it reappears on reload. Only a genuinely
     absent id is ``already_absent``."""
-    from gateway.session_contract import SessionActor
+    from hermes_agent.gateway.session_contract import SessionActor
     from hermes_cli.web_routers.sessions import manage_router
     from hermes_cli import web_server as web
     import hermes_cli.web_server_sessions as web_sessions

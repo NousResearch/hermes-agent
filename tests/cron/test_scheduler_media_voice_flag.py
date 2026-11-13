@@ -12,7 +12,7 @@ class TestSendMediaVoiceFlag:
         media_file = root / name
         media_file.parent.mkdir(parents=True, exist_ok=True)
         media_file.write_bytes(data)
-        monkeypatch.setattr("gateway.platforms.base.MEDIA_DELIVERY_SAFE_ROOTS", (root,))
+        monkeypatch.setattr("hermes_agent.gateway.platforms.base.MEDIA_DELIVERY_SAFE_ROOTS", (root,))
         return media_file.resolve()
 
     @staticmethod

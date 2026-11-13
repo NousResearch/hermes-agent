@@ -172,7 +172,7 @@ def _resolve_restart_drain_timeout() -> float:
         from hermes_cli.gateway import _get_restart_drain_timeout
         return _get_restart_drain_timeout()
     except ImportError:
-        from gateway.restart import DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT
+        from hermes_agent.gateway.restart import DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT
         return DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT
 
 
@@ -292,7 +292,7 @@ def _is_serve_orphaned(
                 # Inconclusive marker: degrade to PID liveness instead of exiting.
 
         if pid_exists is None:
-            from gateway.status import _pid_exists
+            from hermes_agent.gateway.status import _pid_exists
 
             pid_exists = _pid_exists
         return not bool(pid_exists(int(desktop_pid)))
@@ -387,7 +387,7 @@ def _start_parent_death_watchdog() -> None:
 # a bare ERROR + exit 1, indistinguishable from a crash for the Desktop spawn.
 # We probe the exact bind first and emit ONE machine-readable stdout line plus a
 # distinct exit code. 75 == BSD EX_TEMPFAIL, the codebase's "transient
-# environmental condition" convention (gateway/restart.py, kanban_db.py).
+# environmental condition" convention (hermes_agent/gateway/restart.py, kanban_db.py).
 PORT_IN_USE_EXIT_CODE = 75
 _PORT_IN_USE_SENTINEL = "BACKEND_PORT_IN_USE port={port}"
 

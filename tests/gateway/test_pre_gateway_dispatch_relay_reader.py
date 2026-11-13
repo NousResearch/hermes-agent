@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform, PlatformConfig
+from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
 
 pytestmark = pytest.mark.usefixtures("authority_cwd_in_tmp")  # symbolic profile ids are relative homes
 
@@ -35,13 +35,13 @@ async def _relay(tmp_path, monkeypatch, media=None):
     outbound frame. Yields ``(adapter, ws, outgoing, authority, admissions)``: ``admissions`` are the
     tasks ``admit_producer`` ran in."""
     websockets = pytest.importorskip("websockets")
-    import gateway.platforms.webhook_ingress as ingress
-    from gateway.relay.adapter import RelayAdapter
-    from gateway.relay.descriptor import CapabilityDescriptor
-    from gateway.relay.media import RelayMediaClient
-    from gateway.relay.ws_transport import WebSocketRelayTransport
-    from gateway.run import GatewayRunner
-    from gateway.session_authority import SessionAuthority, initialize_session_authority
+    import hermes_agent.gateway.platforms.webhook_ingress as ingress
+    from hermes_agent.gateway.relay.adapter import RelayAdapter
+    from hermes_agent.gateway.relay.descriptor import CapabilityDescriptor
+    from hermes_agent.gateway.relay.media import RelayMediaClient
+    from hermes_agent.gateway.relay.ws_transport import WebSocketRelayTransport
+    from hermes_agent.gateway.run import GatewayRunner
+    from hermes_agent.gateway.session_authority import SessionAuthority, initialize_session_authority
 
     monkeypatch.setattr(SessionAuthority, "_schedule", lambda self, ref: None)  # rows stay queued
     outgoing, ready, admissions = [], asyncio.Queue(), []
@@ -165,7 +165,7 @@ async def test_a_hook_waiting_for_another_chat_does_not_block_it_and_one_chat_st
 async def test_an_admission_cancelled_while_the_hook_waits_releases_its_prepared_media(tmp_path, monkeypatch):
     """A relay disconnect or shutdown cancels the admission while the hook waits: no admission owns
     the copy preparing it made, so it is released, and the cancellation still propagates."""
-    from gateway.session_ingress_media import _media_root
+    from hermes_agent.gateway.session_ingress_media import _media_root
     from tests.waiting import async_wait_until
 
     entered = asyncio.Event()
@@ -196,7 +196,7 @@ async def test_an_admission_cancelled_after_its_write_began_keeps_the_media_the_
         tmp_path, monkeypatch):
     """Cancelled once the shielded admission write is running, the write still commits: the bytes it
     commits stay on disk."""
-    from gateway.session_authority import SessionAuthority
+    from hermes_agent.gateway.session_authority import SessionAuthority
     from tests.waiting import async_wait_until
 
     writing, proceed = threading.Event(), threading.Event()

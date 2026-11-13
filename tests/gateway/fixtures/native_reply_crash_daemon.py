@@ -7,8 +7,8 @@ import os
 import runpy
 import signal
 
-from gateway import session_results
-from gateway.platforms.base import BasePlatformAdapter
+from hermes_agent.gateway import session_results
+from hermes_agent.gateway.platforms.base import BasePlatformAdapter
 
 record = BasePlatformAdapter._record_delivery_obligation
 finish = session_results.finish_result
@@ -28,4 +28,4 @@ def die_before_commit(db, *, row, **kwargs):
 
 BasePlatformAdapter._record_delivery_obligation = die_before_ledger
 session_results.finish_result = die_before_commit
-runpy.run_module('gateway.run', run_name='__main__')
+runpy.run_module('hermes_agent.gateway.run', run_name='__main__')

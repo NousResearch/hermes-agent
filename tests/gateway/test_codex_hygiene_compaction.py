@@ -23,7 +23,7 @@ import pytest
 
 from agent.conversation_compression import compress_context
 from agent.transports.codex_app_server_session import TurnResult
-from gateway.run import run_codex_hygiene_compaction
+from hermes_agent.gateway.run import run_codex_hygiene_compaction
 
 
 class FakeCodexSession:
@@ -301,7 +301,7 @@ def test_timeout_records_persistent_cooldown(tmp_path):
 # ---------------------------------------------------------------------------
 
 def _slash_host(agent, session_key="tg:123"):
-    from gateway.slash_commands import GatewaySlashCommandsMixin
+    from hermes_agent.gateway.slash_commands import GatewaySlashCommandsMixin
 
     host = SimpleNamespace(
         _agent_cache={session_key: (agent, 0.0)} if agent is not None else {},

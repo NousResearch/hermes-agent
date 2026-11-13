@@ -6,7 +6,7 @@ target: the local session the plugin is working for (its command, a hook fired f
 turn); with no session in the calling context (the plugin's own thread), the one attached classic CLI
 session of the plugin's profile; otherwise a named refusal and nothing injected.
 
-A real daemon (``gateway.run``) loads a probe plugin that notes each ``inject_message`` result; a landed
+A real daemon (``hermes_agent.gateway.run``) loads a probe plugin that notes each ``inject_message`` result; a landed
 inject is a queued admission in the profile's ``state.db`` that runs once.
 """
 from contextlib import contextmanager
@@ -212,10 +212,10 @@ def test_a_key_less_inject_from_a_messaging_chat_keeps_mains_refusal_line(tmp_pa
     """A calling route no served profile holds as a local session (a messaging chat) is refused with
     main's plain line, not the other-profile local-session refusal."""
     from types import SimpleNamespace
-    from gateway import plugin_keyless_inject as keyless
+    from hermes_agent.gateway import plugin_keyless_inject as keyless
     authority = SimpleNamespace(sessions={}, db=SimpleNamespace(db_path=str(tmp_path / 'state.db')))
     runner = SimpleNamespace(session_authorities=None, session_authority=authority)
-    with caplog.at_level('WARNING', logger='gateway.run'):
+    with caplog.at_level('WARNING', logger='hermes_agent.gateway.run'):
         assert keyless.resolve(runner, plugin_home=tmp_path, plugin_id='desk',
                                calling_session_key='agent:main:telegram:dm:42') is None
     assert [r.getMessage() for r in caplog.records] == [
@@ -226,11 +226,11 @@ def test_a_refusal_warns_once_per_window_and_expired_marks_are_dropped(monkeypat
     """One warning per (plugin, kind) per window; a mark older than the window is dropped on the next
     refusal, so the map holds only the plugins refused within the last window."""
     from types import SimpleNamespace
-    from gateway import plugin_keyless_inject as keyless
+    from hermes_agent.gateway import plugin_keyless_inject as keyless
     clock = [1000.0]
     monkeypatch.setattr(keyless, 'time', SimpleNamespace(monotonic=lambda: clock[0]))
     monkeypatch.setattr(keyless, '_warned', {})
-    with caplog.at_level('WARNING', logger='gateway.run'):
+    with caplog.at_level('WARNING', logger='hermes_agent.gateway.run'):
         keyless._refuse('old', 'none', 'no classic CLI session is attached in its profile')
         keyless._refuse('old', 'none', 'no classic CLI session is attached in its profile')
         clock[0] += keyless._WARN_WINDOW_S

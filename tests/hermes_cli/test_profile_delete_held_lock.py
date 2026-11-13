@@ -16,7 +16,7 @@ import pytest
 from hermes_cli import profiles, profiles_remove
 
 _HOLDER = (
-    "import sys\nfrom pathlib import Path\nfrom gateway.runtime_ownership import process_ownership\n"
+    "import sys\nfrom pathlib import Path\nfrom hermes_agent.gateway.runtime_ownership import process_ownership\n"
     "home = Path(sys.argv[1])\nprocess_ownership.reserve([home])\nprint('held', flush=True)\n"
     "sys.stdin.readline()\nprocess_ownership.release(home)\n")
 

@@ -9,10 +9,10 @@ from __future__ import annotations
 
 import pytest
 
-from gateway.config import Platform
-from gateway.display_config import resolve_display_setting
-from gateway.platform_registry import PlatformEntry, platform_registry
-from gateway.session import SessionSource
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.display_config import resolve_display_setting
+from hermes_agent.gateway.platform_registry import PlatformEntry, platform_registry
+from hermes_agent.gateway.session import SessionSource
 
 
 @pytest.fixture
@@ -32,7 +32,7 @@ def plugin_platform():
 
 
 def _runner():
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
     runner = object.__new__(GatewayRunner)
     runner.pairing_store = None
     return runner
@@ -91,7 +91,7 @@ def test_core_hint_and_display_tables_hold_no_bundled_plugin_platform():
     """A bundled platform's prompt hint and display defaults live on its PlatformEntry only, so the
     plugin is the single source of truth (no core row silently shadowing what the plugin declares)."""
     from agent.prompt_builder import PLATFORM_HINTS
-    from gateway.display_config import _PLATFORM_DEFAULTS
+    from hermes_agent.gateway.display_config import _PLATFORM_DEFAULTS
 
     bundled = set(Platform._scan_bundled_plugin_platforms()[0])
     assert bundled

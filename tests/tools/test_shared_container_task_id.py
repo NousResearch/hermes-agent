@@ -113,7 +113,7 @@ def test_no_session_key_still_defaults(monkeypatch):
 # The tests above set HERMES_SESSION_KEY through os.environ, which only
 # exercises the os.getenv() *fallback* branch of the scoping logic. Real
 # gateway turns never write this process-global env var — they bind the
-# identity through gateway.session_context.set_session_vars(), which stores it
+# identity through hermes_agent.gateway.session_context.set_session_vars(), which stores it
 # in a ContextVar, and _resolve_container_task_id reads it back via
 # get_session_env(). These companion tests cover that production path with
 # HERMES_SESSION_KEY absent from os.environ.
@@ -122,7 +122,7 @@ def test_no_session_key_still_defaults(monkeypatch):
 def test_session_key_from_contextvar_without_environ(monkeypatch):
     # Prove the fix works on the gateway path: HERMES_SESSION_KEY is NOT in
     # os.environ; the key lives only in the ContextVar bound by the gateway.
-    from gateway.session_context import clear_session_vars, set_session_vars
+    from hermes_agent.gateway.session_context import clear_session_vars, set_session_vars
 
     monkeypatch.delenv("HERMES_SESSION_KEY", raising=False)
     tokens = set_session_vars(session_key="sess-ctx")
@@ -144,7 +144,7 @@ def test_contextvar_session_key_wins_over_environ(monkeypatch):
     # the ContextVar is authoritative even when a *different* value lingers in
     # os.environ (e.g. a CLI-set or previously-leaked global). The container
     # slot must follow the ContextVar-bound session, not the process global.
-    from gateway.session_context import clear_session_vars, set_session_vars
+    from hermes_agent.gateway.session_context import clear_session_vars, set_session_vars
 
     monkeypatch.setenv("HERMES_SESSION_KEY", "sess-ENV")
     tokens = set_session_vars(session_key="sess-CTX")
@@ -173,7 +173,7 @@ def _persistent_docker(monkeypatch):
 def test_persistent_docker_default_profile_shares_default_container(monkeypatch):
     # A gateway session of the default profile lands on the SAME container key
     # CLI mode uses — "default" — not a per-session key.
-    from gateway.session_context import clear_session_vars, set_session_vars
+    from hermes_agent.gateway.session_context import clear_session_vars, set_session_vars
 
     _persistent_docker(monkeypatch)
     tokens = set_session_vars(session_key="agent:main:telegram:dm:123", profile="")
@@ -184,7 +184,7 @@ def test_persistent_docker_default_profile_shares_default_container(monkeypatch)
 
 
 def test_persistent_docker_two_sessions_same_profile_share_container(monkeypatch):
-    from gateway.session_context import clear_session_vars, set_session_vars
+    from hermes_agent.gateway.session_context import clear_session_vars, set_session_vars
 
     _persistent_docker(monkeypatch)
     tokens = set_session_vars(session_key="agent:main:telegram:dm:123", profile="work")
@@ -201,7 +201,7 @@ def test_persistent_docker_two_sessions_same_profile_share_container(monkeypatch
 
 
 def test_persistent_docker_distinct_profiles_get_distinct_containers(monkeypatch):
-    from gateway.session_context import clear_session_vars, set_session_vars
+    from hermes_agent.gateway.session_context import clear_session_vars, set_session_vars
 
     _persistent_docker(monkeypatch)
     tokens = set_session_vars(session_key="sess-X", profile="work")
@@ -222,7 +222,7 @@ def test_persistent_docker_distinct_profiles_get_distinct_containers(monkeypatch
 def test_nonpersistent_docker_keeps_session_scoping(monkeypatch):
     # container_persistent:false is an explicit isolation statement (#82731) —
     # the profile-scope gate must not fire there.
-    from gateway.session_context import clear_session_vars, set_session_vars
+    from hermes_agent.gateway.session_context import clear_session_vars, set_session_vars
 
     monkeypatch.setenv("TERMINAL_ENV", "docker")
     monkeypatch.setenv("TERMINAL_CONTAINER_PERSISTENT", "false")
@@ -236,7 +236,7 @@ def test_nonpersistent_docker_keeps_session_scoping(monkeypatch):
 def test_ssh_backend_keeps_session_scoping(monkeypatch):
     # The original a270c4ade leak: SSH environments must stay session-scoped
     # regardless of profile, or profile A's SSHEnvironment leaks into B.
-    from gateway.session_context import clear_session_vars, set_session_vars
+    from hermes_agent.gateway.session_context import clear_session_vars, set_session_vars
 
     monkeypatch.setenv("TERMINAL_ENV", "ssh")
     tokens = set_session_vars(session_key="sess-A", profile="work")
@@ -250,7 +250,7 @@ def test_ssh_backend_keeps_session_scoping(monkeypatch):
 
 
 def test_shared_key_unifies_profiles(monkeypatch):
-    from gateway.session_context import clear_session_vars, set_session_vars
+    from hermes_agent.gateway.session_context import clear_session_vars, set_session_vars
 
     _persistent_docker(monkeypatch)
     monkeypatch.setenv("TERMINAL_DOCKER_SHARED_CONTAINER_KEY", "team/workspace")
@@ -277,7 +277,7 @@ def test_shared_key_applies_to_cli_no_session(monkeypatch):
 
 
 def test_empty_shared_key_keeps_profile_scoping(monkeypatch):
-    from gateway.session_context import clear_session_vars, set_session_vars
+    from hermes_agent.gateway.session_context import clear_session_vars, set_session_vars
 
     _persistent_docker(monkeypatch)
     monkeypatch.setenv("TERMINAL_DOCKER_SHARED_CONTAINER_KEY", "")
@@ -291,7 +291,7 @@ def test_empty_shared_key_keeps_profile_scoping(monkeypatch):
 def test_shared_key_ignored_outside_persistent_docker(monkeypatch):
     # The opt-in is a persistent-Docker concept only: SSH keeps session
     # scoping even when the key is set.
-    from gateway.session_context import clear_session_vars, set_session_vars
+    from hermes_agent.gateway.session_context import clear_session_vars, set_session_vars
 
     monkeypatch.setenv("TERMINAL_ENV", "ssh")
     monkeypatch.setenv("TERMINAL_DOCKER_SHARED_CONTAINER_KEY", "team/workspace")
@@ -315,7 +315,7 @@ def _use_home(monkeypatch, tmp_path, name):
 
 def test_sessionless_default_profile_stays_default(monkeypatch, tmp_path):
     """Default profile, no session: CLI and workers still share "default"."""
-    from gateway.session_context import reset_session_vars
+    from hermes_agent.gateway.session_context import reset_session_vars
 
     _persistent_docker(monkeypatch)
     monkeypatch.delenv("HERMES_SESSION_KEY", raising=False)
@@ -328,7 +328,7 @@ def test_sessionless_default_profile_stays_default(monkeypatch, tmp_path):
 
 def test_sessionless_named_profile_reuses_profile_container(monkeypatch, tmp_path):
     """Named-profile process, no session: reuse profile:<name>, not "default"."""
-    from gateway.session_context import reset_session_vars
+    from hermes_agent.gateway.session_context import reset_session_vars
 
     _persistent_docker(monkeypatch)
     monkeypatch.delenv("HERMES_SESSION_KEY", raising=False)
@@ -342,7 +342,7 @@ def test_sessionless_named_profile_reuses_profile_container(monkeypatch, tmp_pat
 
 def test_explicit_session_profile_wins_over_process_home(monkeypatch, tmp_path):
     """A bound session profile is authoritative, even if the process home differs."""
-    from gateway.session_context import clear_session_vars, set_session_vars
+    from hermes_agent.gateway.session_context import clear_session_vars, set_session_vars
 
     _persistent_docker(monkeypatch)
     monkeypatch.delenv("HERMES_SESSION_KEY", raising=False)
@@ -361,7 +361,7 @@ def test_explicit_session_profile_wins_over_process_home(monkeypatch, tmp_path):
 
 def test_sessionless_named_profile_ignored_when_not_persistent_docker(monkeypatch, tmp_path):
     """The profile key is a persistent-Docker rule. Local stays "default"."""
-    from gateway.session_context import reset_session_vars
+    from hermes_agent.gateway.session_context import reset_session_vars
 
     monkeypatch.setenv("TERMINAL_ENV", "local")
     monkeypatch.delenv("HERMES_SESSION_KEY", raising=False)
@@ -372,7 +372,7 @@ def test_sessionless_named_profile_ignored_when_not_persistent_docker(monkeypatc
 
 def test_sessionless_home_outside_the_root_stays_default(monkeypatch, tmp_path):
     """A home outside the Hermes root is its own root: it keys "default", never profile:custom."""
-    from gateway.session_context import reset_session_vars
+    from hermes_agent.gateway.session_context import reset_session_vars
 
     _persistent_docker(monkeypatch)
     monkeypatch.delenv("HERMES_SESSION_KEY", raising=False)
@@ -384,7 +384,7 @@ def test_sessionless_home_outside_the_root_stays_default(monkeypatch, tmp_path):
 def test_named_launch_profile_chats_desktop_and_workers_share_one_container(monkeypatch, tmp_path):
     """A gateway launched as a named profile stamps no profile on its own chats; those chats, the
     profile's Desktop sessions and its session-less cron/kanban work must all key one container."""
-    from gateway.session_context import clear_session_vars, reset_session_vars, set_session_vars
+    from hermes_agent.gateway.session_context import clear_session_vars, reset_session_vars, set_session_vars
 
     _persistent_docker(monkeypatch)
     monkeypatch.delenv("HERMES_SESSION_KEY", raising=False)
@@ -404,7 +404,7 @@ def test_named_launch_profile_chats_desktop_and_workers_share_one_container(monk
 
 def test_unnamed_session_in_default_or_outside_root_home_stays_default(monkeypatch, tmp_path):
     """The default root and a home outside the root keep the shared default key."""
-    from gateway.session_context import clear_session_vars, set_session_vars
+    from hermes_agent.gateway.session_context import clear_session_vars, set_session_vars
 
     _persistent_docker(monkeypatch)
     monkeypatch.delenv("TERMINAL_DOCKER_SHARED_CONTAINER_KEY", raising=False)
@@ -420,8 +420,8 @@ def test_unnamed_session_in_default_or_outside_root_home_stays_default(monkeypat
 def test_file_panel_mirror_names_the_unnamed_chat_sandbox(monkeypatch, tmp_path):
     """The file panel's best candidate must be the sandbox an unnamed chat of a named launch
     profile actually uses, with and without a mounted workspace."""
-    from gateway.platforms.docker_media_paths import _docker_sandbox_dir_candidates
-    from gateway.session_context import clear_session_vars, set_session_vars
+    from hermes_agent.gateway.platforms.docker_media_paths import _docker_sandbox_dir_candidates
+    from hermes_agent.gateway.session_context import clear_session_vars, set_session_vars
     from tools.environments.path_utils import sanitize_task_id_for_path
 
     _persistent_docker(monkeypatch)
@@ -446,7 +446,7 @@ def test_file_panel_mirror_names_the_unnamed_chat_sandbox(monkeypatch, tmp_path)
 def test_a_profile_literally_named_custom_keys_its_own_container(monkeypatch, tmp_path):
     """``custom`` is a valid profile name: its chats and workers key ``profile:custom`` like its
     Desktop sessions, never ``default``."""
-    from gateway.session_context import clear_session_vars, reset_session_vars, set_session_vars
+    from hermes_agent.gateway.session_context import clear_session_vars, reset_session_vars, set_session_vars
 
     _persistent_docker(monkeypatch)
     monkeypatch.delenv("HERMES_SESSION_KEY", raising=False)
@@ -468,8 +468,8 @@ def test_a_home_the_tui_stamps_custom_keys_one_container_for_every_path(monkeypa
     """Inside the Hermes root but not a ``profiles/<name>`` home, the TUI stamps Desktop sessions
     ``custom``; that home's chats and session-less work key the same container, and it is the file
     panel's first candidate (the one a Save may write to), plain and mounted."""
-    from gateway.platforms.docker_media_paths import _docker_sandbox_dir_candidates
-    from gateway.session_context import clear_session_vars, reset_session_vars, set_session_vars
+    from hermes_agent.gateway.platforms.docker_media_paths import _docker_sandbox_dir_candidates
+    from hermes_agent.gateway.session_context import clear_session_vars, reset_session_vars, set_session_vars
     from tools.environments.path_utils import sanitize_task_id_for_path
 
     import hermes_constants
@@ -514,7 +514,7 @@ def test_home_profile_name_is_cached_per_home_never_across_homes(monkeypatch, tm
 
 def test_an_unresolvable_home_keeps_the_shared_default_key(monkeypatch):
     import hermes_constants
-    from gateway.platforms.docker_media_paths import _docker_sandbox_dir_candidates
+    from hermes_agent.gateway.platforms.docker_media_paths import _docker_sandbox_dir_candidates
     from tools.terminal_tool_config import home_profile_name
 
     def _boom():

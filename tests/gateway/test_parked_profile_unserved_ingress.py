@@ -36,8 +36,8 @@ async def test_a_coalesced_webhook_profile_routes_send_to_a_parked_profile_is_re
         tmp_path, monkeypatch):
     """A bare ``/webhooks/events`` that ``profile_routes`` sends to beta: a 202 would never be retried
     by the provider, and the flush is refused while beta is parked."""
-    from gateway.platforms.webhook import _INSECURE_NO_AUTH
-    from gateway.profile_routing import ProfileRoute
+    from hermes_agent.gateway.platforms.webhook import _INSECURE_NO_AUTH
+    from hermes_agent.gateway.profile_routing import ProfileRoute
     homes = _homes(tmp_path, monkeypatch)
     beta = homes[1][1].resolve()
     routes = [ProfileRoute(name='hooks', platform='webhook', profile='beta', user_id='webhook:events')]
@@ -65,8 +65,8 @@ async def test_a_coalesced_webhook_profile_routes_send_to_a_parked_profile_is_re
 async def test_a_webhook_prefix_with_no_serving_authority_is_retried(tmp_path, monkeypatch, mode):
     """``/p/beta/`` while beta is on disk but not served and not parked (its own gateway still runs,
     or the watcher has not picked it up): the live registry, not the parked map, decides."""
-    from gateway.platforms.webhook import _INSECURE_NO_AUTH
-    from gateway.run_runtime import unpark_profile
+    from hermes_agent.gateway.platforms.webhook import _INSECURE_NO_AUTH
+    from hermes_agent.gateway.run_runtime import unpark_profile
     homes = _homes(tmp_path, monkeypatch)
     runner = await _runner_with_beta_parked(tmp_path, monkeypatch, homes)
     unpark_profile(runner, 'beta')
@@ -89,11 +89,11 @@ async def test_api_and_shared_listener_requests_to_a_parked_profile_are_retryabl
     """``/p/beta/v1/...`` (chat completions and runs, Responses' admission lookup) and
     ``/p/beta/<platform callback>`` answer 503 while beta is parked, not 409 or 404."""
     from aiohttp import web
-    from gateway.platforms.api_server_authority_runs import store_error_response
-    from gateway.platforms.api_server_response_admissions import find_admission
-    from gateway.platforms.shared_ingress import dispatch_profile_ingress
-    from gateway.run import _profile_runtime_scope
-    from gateway.session_api_turn import admit_api_steps, admit_api_turn_async
+    from hermes_agent.gateway.platforms.api_server_authority_runs import store_error_response
+    from hermes_agent.gateway.platforms.api_server_response_admissions import find_admission
+    from hermes_agent.gateway.platforms.shared_ingress import dispatch_profile_ingress
+    from hermes_agent.gateway.run import _profile_runtime_scope
+    from hermes_agent.gateway.session_api_turn import admit_api_steps, admit_api_turn_async
     from hermes_agent.hermes_state_runtime import RuntimeStoreError
     homes = _homes(tmp_path, monkeypatch)
     runner = await _runner_with_beta_parked(tmp_path, monkeypatch, homes)

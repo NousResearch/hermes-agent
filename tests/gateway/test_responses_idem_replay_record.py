@@ -19,8 +19,8 @@ async def test_in_flight_retry_does_not_win_the_replay_record_without_deltas(api
     calls = []
 
     async def handle(event):
-        from gateway.session_api_turn import publish_api_event
-        from gateway.session_results import execution_result
+        from hermes_agent.gateway.session_api_turn import publish_api_event
+        from hermes_agent.gateway.session_results import execution_result
         calls.append(event.text)
         await release.wait()
         publish_api_event(owner, event.source.chat_id, 'message.delta', {'text': 'answer'})
@@ -28,7 +28,7 @@ async def test_in_flight_retry_does_not_win_the_replay_record_without_deltas(api
             {'role': 'assistant', 'content': 'answer'}]}
         return 'answer'
     owner.runner._handle_message = handle
-    from gateway.platforms import api_server_openai_routes as routes
+    from hermes_agent.gateway.platforms import api_server_openai_routes as routes
     emit, retried = routes._ResponsesStream.emit_completed, asyncio.Event()
 
     async def lagging_publisher(stream):

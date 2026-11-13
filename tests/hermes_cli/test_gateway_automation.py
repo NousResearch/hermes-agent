@@ -15,7 +15,7 @@ class _Conn:
         self.closed = False
 
     def call(self, method, **params):
-        from gateway.session_viewer_automation import invoke
+        from hermes_agent.gateway.session_viewer_automation import invoke
         self.calls.append((params['kind'], params['call']))
         return invoke(SimpleNamespace(), params['kind'], params['session_id'], params['call'],
                       params['args'], params['kwargs'])

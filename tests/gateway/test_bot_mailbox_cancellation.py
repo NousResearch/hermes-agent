@@ -10,8 +10,8 @@ pytest_plugins = ('tests.gateway.test_session_bot_retry',)
 @pytest.mark.asyncio
 @pytest.mark.parametrize('cancel_count', [1, 3])
 async def test_cancelled_startup_recovery_retains_owner_until_receipt_writer_finishes(bot, monkeypatch, cancel_count):
-    from gateway import run_runtime, session_bot_mailbox
-    from gateway.session_bot import deliver, recover_bot_deliveries
+    from hermes_agent.gateway import run_runtime, session_bot_mailbox
+    from hermes_agent.gateway.session_bot import deliver, recover_bot_deliveries
     from tests.gateway.test_session_bot_retry import KEY, _settled
 
     await deliver(bot.connection, dict(id=KEY, profile='default', message='ping'))

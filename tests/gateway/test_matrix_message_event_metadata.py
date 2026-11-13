@@ -42,7 +42,7 @@ def _make_adapter(require_mention=False, auto_thread=False, monkeypatch=None):
 
     from plugins.platforms.matrix.adapter import MatrixAdapter
 
-    from gateway.config import PlatformConfig
+    from hermes_agent.gateway.config import PlatformConfig
 
     config = PlatformConfig(
         enabled=True,
@@ -173,7 +173,7 @@ async def test_reply_carries_target_text_and_author(monkeypatch):
     # The reply target pointer must reach MessageEvent.
     assert msg.reply_to_message_id == "$target1"
     # The replied-to message's body must reach MessageEvent (stripped of
-    # the "> " quote prefix). Used by gateway/run.py:16015 to render
+    # the "> " quote prefix). Used by hermes_agent/gateway/run.py:16015 to render
     # [Replying to: "..."] in the LLM prompt.
     assert msg.reply_to_text is not None
     assert "original question" in msg.reply_to_text

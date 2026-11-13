@@ -9,7 +9,7 @@ from tests.gateway.test_session_authority_cancel_settlement import ACTOR, REF, _
 
 @pytest.mark.asyncio
 async def test_stop_while_the_finished_turn_settles_spares_the_next_turns_agent(tmp_path, monkeypatch):
-    from gateway import session_finite, session_settlement_recovery
+    from hermes_agent.gateway import session_finite, session_settlement_recovery
 
     db, authority = _authority(tmp_path, monkeypatch)
     stops = []

@@ -14,7 +14,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.config import Platform
+from hermes_agent.gateway.config import Platform
 
 USER = "202965502740398090"
 STRANGER = "111111111111111111"
@@ -42,9 +42,9 @@ def config_only_discord(monkeypatch):
 
 
 def _wire(home):
-    from gateway.config import load_gateway_config
-    from gateway.pairing import PairingStore
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.config import load_gateway_config
+    from hermes_agent.gateway.pairing import PairingStore
+    from hermes_agent.gateway.run import GatewayRunner
     from plugins.platforms.discord.adapter import DiscordAdapter
 
     runner = object.__new__(GatewayRunner)
@@ -109,10 +109,10 @@ def test_guild_channel_message_and_button_honor_config_allow_from(config_only_di
 
 def test_telegram_allow_from_admits_the_user_in_groups_too(monkeypatch):
     """Telegram's ``allow_from`` is global (DMs + groups, per telegram.md); a stranger stays denied."""
-    from gateway.config import GatewayConfig, PlatformConfig
-    from gateway.pairing import PairingStore
-    from gateway.run import GatewayRunner
-    from gateway.session import SessionSource
+    from hermes_agent.gateway.config import GatewayConfig, PlatformConfig
+    from hermes_agent.gateway.pairing import PairingStore
+    from hermes_agent.gateway.run import GatewayRunner
+    from hermes_agent.gateway.session import SessionSource
     from plugins.platforms.telegram.adapter import TelegramAdapter
 
     for key in ("TELEGRAM_ALLOWED_USERS", "TELEGRAM_GROUP_ALLOWED_USERS", "GATEWAY_ALLOWED_USERS",
@@ -137,10 +137,10 @@ def test_telegram_allow_from_admits_the_user_in_groups_too(monkeypatch):
 def test_discord_ignores_a_stray_group_allow_from(monkeypatch):
     """Discord has no group list: a ``group_allow_from`` the shared-key bridge copies into its extra
     must not admit that user in a guild channel (the env path has no Discord group list either)."""
-    from gateway.config import GatewayConfig, PlatformConfig
-    from gateway.pairing import PairingStore
-    from gateway.run import GatewayRunner
-    from gateway.session import SessionSource
+    from hermes_agent.gateway.config import GatewayConfig, PlatformConfig
+    from hermes_agent.gateway.pairing import PairingStore
+    from hermes_agent.gateway.run import GatewayRunner
+    from hermes_agent.gateway.session import SessionSource
     from plugins.platforms.discord.adapter import DiscordAdapter
 
     for key in ("DISCORD_ALLOWED_USERS", "GATEWAY_ALLOWED_USERS", "GATEWAY_ALLOW_ALL_USERS", "DISCORD_ALLOW_ALL_USERS"):
@@ -164,7 +164,7 @@ def test_button_click_in_a_thread_resolves_a_thread_scoped_route():
     """A click carries the thread id, so the live verdict resolves a ``thread_id`` profile route
     the same way the thread's messages do (here: the routed profile's pairing store)."""
     from agent import secret_scope
-    from gateway.pairing import PairingStore
+    from hermes_agent.gateway.pairing import PairingStore
 
     home = Path(os.environ["HERMES_HOME"])
     (home / "profiles" / "kody").mkdir(parents=True)
@@ -205,9 +205,9 @@ def test_secondary_profiles_own_bot_honors_its_config_allow_from_in_guild_channe
     where the config loader puts it), as its DMs already do.
     """
     from agent import secret_scope
-    from gateway.config import GatewayConfig, PlatformConfig
-    from gateway.pairing import PairingStore
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.config import GatewayConfig, PlatformConfig
+    from hermes_agent.gateway.pairing import PairingStore
+    from hermes_agent.gateway.run import GatewayRunner
     from plugins.platforms.discord.adapter import DiscordAdapter
 
     home = Path(os.environ["HERMES_HOME"])

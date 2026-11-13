@@ -609,7 +609,7 @@ export interface Usage {
   plan_gauge?: PlanGauge | null
   [key: string]: unknown
 }
-/** ``gateway/session_usage.py::plan_gauge``: a window plan's allowance for the status bar. */
+/** ``hermes_agent/gateway/session_usage.py::plan_gauge``: a window plan's allowance for the status bar. */
 export interface PlanGauge {
   id: string
   label: string
@@ -1546,7 +1546,7 @@ export interface RoomLinkStatus {
   endpoint?: RoomLinkEndpoint | null
   reason?: string | null
 }
-/** ``gateway/hosted_room_peer.py::GatewayRoomCatalog.as_mapping``. */
+/** ``hermes_agent/gateway/hosted_room_peer.py::GatewayRoomCatalog.as_mapping``. */
 export interface RoomLinkCatalog {
   installation_id: string
   protocol_versions: number[]
@@ -1558,7 +1558,7 @@ export interface RoomLinkCatalog {
   catalog_digest: string
   endpoint?: RoomLinkEndpoint | null
 }
-/** ``gateway/hosted_room_execution_policy.py::execution_policy_mapping``. */
+/** ``hermes_agent/gateway/hosted_room_execution_policy.py::execution_policy_mapping``. */
 export interface RoomExecutionPolicy {
   version: number
   target_profile: string
@@ -1584,7 +1584,7 @@ export interface GroupsListResult {
   rooms: Room[]
   next_offset?: number | null
 }
-/** ``gateway/hosted_rooms.py::_room_from_row`` plus the branch-only keys ``create`` (legacy adoption), ``state`` (``authority_claim``) and ``rename`` (``event``) add. */
+/** ``hermes_agent/gateway/hosted_rooms.py::_room_from_row`` plus the branch-only keys ``create`` (legacy adoption), ``state`` (``authority_claim``) and ``rename`` (``event``) add. */
 export interface Room {
   room_id: string
   name: string
@@ -1611,7 +1611,7 @@ export interface RoomMember {
   target?: Record<string, unknown> | null
   [key: string]: unknown
 }
-/** ``gateway/hosted_rooms.py::_event_from_row``. */
+/** ``hermes_agent/gateway/hosted_rooms.py::_event_from_row``. */
 export interface RoomEvent {
   room_id: string
   seq: number
@@ -1691,7 +1691,7 @@ export interface PeerRouteStatus {
   member_id: string
   status: string
 }
-/** ``gateway/hosted_room_context.py::room_context``: the purpose and shared notes every member's turn prompt carries (inside the user-role message). */
+/** ``hermes_agent/gateway/hosted_room_context.py::room_context``: the purpose and shared notes every member's turn prompt carries (inside the user-role message). */
 export interface RoomContext {
   purpose: string
   notes: string
@@ -1739,7 +1739,7 @@ export interface GroupsLogParams {
   limit?: number | null
   include_disbanded?: boolean | null
 }
-/** ``gateway/hosted_rooms.py::read_events`` page — also the ``page`` ``groups.replicate`` ingests. */
+/** ``hermes_agent/gateway/hosted_rooms.py::read_events`` page — also the ``page`` ``groups.replicate`` ingests. */
 export interface GroupsLogResult {
   events: RoomEvent[]
   cursor: number
@@ -4789,7 +4789,7 @@ export interface PromptCancelParams {
   session_id: string
   admission_id: string
 }
-/** ``gateway/session_contract.py::AdmissionReceipt`` as ``dataclasses.asdict`` sends it. */
+/** ``hermes_agent/gateway/session_contract.py::AdmissionReceipt`` as ``dataclasses.asdict`` sends it. */
 export interface AdmissionStatus {
   admission_id: string
   ref: CanonicalSessionRef
@@ -4842,7 +4842,7 @@ export interface CommandObserveResult {
 export interface CanonicalSessionInfoParams {
   session_id: string
 }
-/** ``gateway/session_local_inventory.py::snapshot_info``: ``local_session_info`` + the inventory. */
+/** ``hermes_agent/gateway/session_local_inventory.py::snapshot_info``: ``local_session_info`` + the inventory. */
 export interface CanonicalSessionInfo {
   provider?: string | null
   tools?: Record<string, string[]> | null
@@ -4894,7 +4894,7 @@ export interface CanonicalClientLabel {
 export interface SessionStatsParams {
   session_id: string
 }
-/** ``gateway/session_usage.py::usage_stats``: session-cumulative counters (the agent's ``session_*``), context / compressor figures, rolling latency and throughput, rate-limit state, live subagents. */
+/** ``hermes_agent/gateway/session_usage.py::usage_stats``: session-cumulative counters (the agent's ``session_*``), context / compressor figures, rolling latency and throughput, rate-limit state, live subagents. */
 export interface SessionStats {
   input_tokens: number
   output_tokens: number
@@ -4925,7 +4925,7 @@ export interface RollbackSessionDiffParams {
   session_id: string
   profile?: string | null
 }
-/** ``gateway/session_tui_ops.py::_session_diff``: ``CheckpointManager.session_diff`` under the session's frozen checkpoint policy (``enabled: false`` when that policy does not checkpoint). ``diff`` is bounded to fit one frame; ``diff_lines`` counts the whole body. */
+/** ``hermes_agent/gateway/session_tui_ops.py::_session_diff``: ``CheckpointManager.session_diff`` under the session's frozen checkpoint policy (``enabled: false`` when that policy does not checkpoint). ``diff`` is bounded to fit one frame; ``diff_lines`` counts the whole body. */
 export interface RollbackSessionDiffResult {
   enabled: boolean
   success?: boolean
@@ -4942,7 +4942,7 @@ export interface SessionExportParams {
   format?: string
   redact?: boolean
 }
-/** ``gateway/session_tui_ops.py::export_session``: the rendered ``/save`` body and its default file name. The client writes it (the gateway may be remote); nothing is written on the host. */
+/** ``hermes_agent/gateway/session_tui_ops.py::export_session``: the rendered ``/save`` body and its default file name. The client writes it (the gateway may be remote); nothing is written on the host. */
 export interface SessionExportResult {
   format: string
   filename: string
@@ -4955,7 +4955,7 @@ export interface SessionAutomationParams {
   args?: unknown[] | null
   kwargs?: Record<string, unknown> | null
 }
-/** ``gateway/session_viewer_automation.py``: the manager's persisted state after the call (its own JSON, ``null`` when none) and the call's value, or the refusal main's manager raised. */
+/** ``hermes_agent/gateway/session_viewer_automation.py``: the manager's persisted state after the call (its own JSON, ``null`` when none) and the call's value, or the refusal main's manager raised. */
 export interface SessionAutomationResult {
   state: string | null
   value?: unknown | null
@@ -5083,7 +5083,7 @@ export interface WorkerExecution {
   last_sequence: number
   [key: string]: unknown
 }
-/** The producer claim every worker verb proves (``gateway/session_worker.py::_SCOPE``). */
+/** The producer claim every worker verb proves (``hermes_agent/gateway/session_worker.py::_SCOPE``). */
 export interface WorkerScopeParams {
   profile_id: string
   session_id: string
@@ -5441,7 +5441,7 @@ export interface CanonicalConfigGetResult {
   scope?: string | null
   options?: ('normal' | 'fast' | 'auto' | 'cold' | 'ultrafast')[] | null
 }
-/** Session controls (``busy`` / ``verbose`` / ``yolo`` / ``show_reasoning`` / ``service_tier``, which need ``session_id``) and the TUI's profile preferences (``gateway/session_tui_config.py``; ``session_id`` optional). ``model`` is recognised only to be refused with ``use_session_mutation_model``: a model pick is the revision-fenced ``session.mutate`` operation, never a config write. */
+/** Session controls (``busy`` / ``verbose`` / ``yolo`` / ``show_reasoning`` / ``service_tier``, which need ``session_id``) and the TUI's profile preferences (``hermes_agent/gateway/session_tui_config.py``; ``session_id`` optional). ``model`` is recognised only to be refused with ``use_session_mutation_model``: a model pick is the revision-fenced ``session.mutate`` operation, never a config write. */
 export interface CanonicalConfigSetParams {
   profile?: string | null
   session_id?: string | null
@@ -5520,7 +5520,7 @@ export interface CanonicalBotDeliverParams {
   author?: Record<string, unknown> | null
   notification_category?: string | null
 }
-/** A delivery's receipt. It names its admission, unless ``refused``: the FIFO refused the delivery before anything was committed (``gateway/session_bot.py``), a terminal ``failed`` receipt with no admission that the relay settles as the sender's answer. */
+/** A delivery's receipt. It names its admission, unless ``refused``: the FIFO refused the delivery before anything was committed (``hermes_agent/gateway/session_bot.py``), a terminal ``failed`` receipt with no admission that the relay settles as the sender's answer. */
 export interface CanonicalBotDeliverResult {
   status: string
   delivery_id: string
@@ -5540,7 +5540,7 @@ export interface CanonicalBotCancelParams {
   id: string
   author_id?: string | null
 }
-/** ``gateway/session_bot_cancel.py``: ``cancelled`` (withdrawn before it ran, or its pending automatic retry withdrawn), ``stopping`` (its running turn was told to stop), or ``finished`` (nothing left to cancel); ``receipt_status`` is the delivery receipt's status after it. */
+/** ``hermes_agent/gateway/session_bot_cancel.py``: ``cancelled`` (withdrawn before it ran, or its pending automatic retry withdrawn), ``stopping`` (its running turn was told to stop), or ``finished`` (nothing left to cancel); ``receipt_status`` is the delivery receipt's status after it. */
 export interface CanonicalBotCancelResult {
   delivery_id: string
   status: 'cancelled' | 'stopping' | 'finished'
@@ -5890,7 +5890,7 @@ export interface ErrorPayload {
 export interface NoticePayload {
   message: string
 }
-/** ``message.start``. Empty from the TUI gateway's emitters and for an ordinary admission; ``gateway/session_authority._stamp_claim`` adds an automation admission's async-result card (``session_automation.admission_display``: a background-process completion) and its model text, so a viewer that did not submit the turn paints the same header the submitter would. */
+/** ``message.start``. Empty from the TUI gateway's emitters and for an ordinary admission; ``hermes_agent/gateway/session_authority._stamp_claim`` adds an automation admission's async-result card (``session_automation.admission_display``: a background-process completion) and its model text, so a viewer that did not submit the turn paints the same header the submitter would. */
 export interface MessageStartPayload {
   display_kind?: string | null
   display_text?: string | null
@@ -5998,7 +5998,7 @@ export interface StatusUpdatePayload {
   kind: string
   text: string
 }
-/** ``usage``: the status-bar view (``server._get_usage``), sent by the embedded backend's ticker (``server._start_usage_ticker``) and by a canonical local viewer's gateway after every API call and at turn end (``gateway/session_usage.py::usage_frame``). Read this. Deprecated: the top-level session-cumulative counters (``usage_stats``, the ``session.stats`` dict) that the gateway frame also carries. They are kept for existing readers; new readers use ``usage``, or ``session.stats`` for the raw counters. The embedded ticker never sends them. */
+/** ``usage``: the status-bar view (``server._get_usage``), sent by the embedded backend's ticker (``server._start_usage_ticker``) and by a canonical local viewer's gateway after every API call and at turn end (``hermes_agent/gateway/session_usage.py::usage_frame``). Read this. Deprecated: the top-level session-cumulative counters (``usage_stats``, the ``session.stats`` dict) that the gateway frame also carries. They are kept for existing readers; new readers use ``usage``, or ``session.stats`` for the raw counters. The embedded ticker never sends them. */
 export interface SessionUsagePayload {
   usage?: Usage | null
   input_tokens?: number | null

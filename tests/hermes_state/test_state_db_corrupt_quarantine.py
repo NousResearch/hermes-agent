@@ -307,7 +307,7 @@ class TestVacuumAndMaintenanceRespectQuarantine:
     @pytest.mark.parametrize("flag_name,expected_exc", _QUARANTINE_FLAGS)
     def test_rebuild_fts_refuses_when_quarantined(self, tmp_path, flag_name, expected_exc):
         """rebuild_fts() is reachable outside _execute_write's own quarantine check — the gateway's
-        FTS-corruption transcript-retry path (gateway/session_transcript.py::_rebuild_fts_once)
+        FTS-corruption transcript-retry path (hermes_agent/gateway/session_transcript.py::_rebuild_fts_once)
         calls it directly. Unlike optimize_fts ("merges existing segments"), rebuild_fts "discards
         and recreates the index data entirely" — strictly more destructive — so it must refuse at
         least as eagerly."""

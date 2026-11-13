@@ -33,7 +33,7 @@ def _delegation(ad, monkeypatch, parent):
 @pytest.mark.asyncio
 @pytest.mark.parametrize('when', ['adopted', 'before_adoption'])
 async def test_canonical_stop_hard_cancels_the_turn_and_keeps_background_delegations(tmp_path, monkeypatch, when):
-    from gateway import session_finite
+    from hermes_agent.gateway import session_finite
     from tools import async_delegation as ad
 
     db, authority = _authority(tmp_path, monkeypatch)

@@ -31,7 +31,7 @@ ACK = 0.6
 
 
 def _run(mode, supervise):
-    from gateway.session_managed_worker import HELLO_SECONDS, ManagedWorker
+    from hermes_agent.gateway.session_managed_worker import HELLO_SECONDS, ManagedWorker
     child = subprocess.Popen([sys.executable, '-c', CHILD, mode], stdin=subprocess.PIPE,
                              stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
     worker = ManagedWorker(child)

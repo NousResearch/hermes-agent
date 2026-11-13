@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from gateway import cgroup_cleanup
+from hermes_agent.gateway import cgroup_cleanup
 
 
 class TestOwnCgroupPath:
@@ -68,7 +68,7 @@ class TestLiveGatewayGuard:
         # in-process `gateway restart` on a host without a service manager)
         # must abort the reap before any signal — even under a systemd parent —
         # and main() must report the refusal with a non-zero exit.
-        import gateway.status
+        import hermes_agent.gateway.status
 
         cgroup_path = "/some.slice/some-gateway.service"
         gateway_cmdline = f"/opt/hermes/venv/bin/python -m hermes_cli.main gateway {verb}"
@@ -76,7 +76,7 @@ class TestLiveGatewayGuard:
             cgroup_cleanup, "_read_cgroup_pids", lambda _p: [777, os.getpid()]
         )
         monkeypatch.setattr(
-            gateway.status,
+            hermes_agent.gateway.status,
             "_read_process_cmdline",
             lambda pid: gateway_cmdline if pid == 777 else None,
         )
@@ -94,7 +94,7 @@ class TestLiveGatewayGuard:
         # same cgroup must still be reaped — the guard must not destroy the
         # feature it secures.
         monkeypatch.setattr(
-            gateway.status,
+            hermes_agent.gateway.status,
             "_read_process_cmdline",
             lambda pid: "bash -c adb forward tcp:8888 tcp:8889" if pid == 777 else None,
         )

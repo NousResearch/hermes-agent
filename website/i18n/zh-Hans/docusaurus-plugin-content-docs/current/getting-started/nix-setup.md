@@ -777,7 +777,7 @@ nix flake check
 # 单独检查
 nix build .#checks.x86_64-linux.package-contents   # 二进制文件存在 + 版本
 nix build .#checks.x86_64-linux.entry-points-sync  # pyproject.toml ↔ Nix 包同步
-nix build .#checks.x86_64-linux.cli-commands        # gateway/config 子命令
+nix build .#checks.x86_64-linux.cli-commands        # hermes_agent/gateway/config 子命令
 nix build .#checks.x86_64-linux.managed-guard       # HERMES_MANAGED 屏蔽变更操作
 nix build .#checks.x86_64-linux.bundled-skills      # 包中存在 skills
 nix build .#checks.x86_64-linux.config-roundtrip    # 合并脚本保留用户键

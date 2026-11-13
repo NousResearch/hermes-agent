@@ -8,7 +8,7 @@ from fastapi import HTTPException
 
 
 def _assert_whatsapp_bridge_stopped(session_path: Path) -> None:
-    from gateway.status import _pid_exists, get_process_start_time
+    from hermes_agent.gateway.status import _pid_exists, get_process_start_time
 
     pid_file = session_path / "bridge.pid"
     if not pid_file.exists():

@@ -21,8 +21,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from gateway.config import PlatformConfig
-from gateway.platforms.base import BasePlatformAdapter
+from hermes_agent.gateway.config import PlatformConfig
+from hermes_agent.gateway.platforms.base import BasePlatformAdapter
 from plugins.platforms.telegram.adapter import TelegramAdapter
 
 _SECRET_TOKEN = "123456789:AAFakeSecretTelegramBotTokenABCDEFGHIJ"

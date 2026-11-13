@@ -12,7 +12,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway import run as gateway_run
+from hermes_agent.gateway import run as gateway_run
 
 
 @pytest.fixture

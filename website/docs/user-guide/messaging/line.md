@@ -82,7 +82,7 @@ gateway:
       enabled: true
 ```
 
-That's enough — the bundled-plugin scan in `gateway/config.py` automatically picks up `plugins/platforms/line/`. No `Platform.LINE` enum edit, no `_create_adapter` registration.
+That's enough — the bundled-plugin scan in `hermes_agent/gateway/config.py` automatically picks up `plugins/platforms/line/`. No `Platform.LINE` enum edit, no `_create_adapter` registration.
 
 ---
 

@@ -31,7 +31,7 @@ async def test_handoff_to_telegram_queues_the_row_the_watcher_claims(tmp_path, m
     reply = await _call(owner, 'handoff.request', session_id=ref.session_id, platform='Telegram')
     assert reply.get('result') == {'queued': True, 'session_key': ref.session_id, 'platform': 'telegram',
                                    'home_name': 'Phone'}, reply
-    # The watcher's own read of this store sees it (gateway/run_adapters.py::_handoff_watcher).
+    # The watcher's own read of this store sees it (hermes_agent/gateway/run_adapters.py::_handoff_watcher).
     assert [row['id'] for row in authority.db.list_pending_handoffs()] == [ref.session_id]
     state = await _call(owner, 'handoff.state', session_id=ref.session_id)
     assert state['result'] == {'state': 'pending', 'platform': 'telegram', 'error': ''}
@@ -70,7 +70,7 @@ async def test_handoff_refuses_before_queueing_what_the_watcher_could_never_deli
 
 @pytest.mark.asyncio
 async def test_handoff_is_refused_to_a_viewer_without_control(tmp_path, monkeypatch):
-    from gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway.session_controls import AuthorityConnection
     _telegram_home(tmp_path, monkeypatch)
     _store, authority, owner = _owner(tmp_path, monkeypatch, handle=None)
     ref = _local(authority, owner, tmp_path)

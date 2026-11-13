@@ -120,7 +120,7 @@ Hermes 支持 Linux、macOS、WSL2 和原生 Windows。Windows shell 由 PM 解�
 
 贡献代码时，请遵守以下规则：
 
-- **不得添加未加保护的 `signal.SIGKILL` 引用。** Windows 上未定义该信号。请通过 `gateway.status.terminate_pid(pid, force=True)`（集中式原语，Windows 上执行 `taskkill /T /F`，POSIX 上发送 SIGKILL）路由，或使用 `getattr(signal, "SIGKILL", signal.SIGTERM)` 回退。
+- **不得添加未加保护的 `signal.SIGKILL` 引用。** Windows 上未定义该信号。请通过 `hermes_agent.gateway.status.terminate_pid(pid, force=True)`（集中式原语，Windows 上执行 `taskkill /T /F`，POSIX 上发送 SIGKILL）路由，或使用 `getattr(signal, "SIGKILL", signal.SIGTERM)` 回退。
 - **不要在 Windows 上用 `os.kill(pid, 0)` 检查存活。** 使用 `psutil.pid_exists()`；信号调用不是安全的只读检查。
 - **不得强制终端使用 POSIX 语义。** `os.setsid`、`os.killpg`、`os.getpgid`、`os.fork` 在 Windows 上均会抛出异常 — 使用 `if sys.platform != "win32":` 或 `if os.name != "nt":` 进行条件判断。
 - **打开文件时显式指定 `encoding="utf-8"`。** Windows 上 Python 默认使用系统区域设置（通常为 cp1252），处理非拉丁字符时会出现乱码或崩溃。

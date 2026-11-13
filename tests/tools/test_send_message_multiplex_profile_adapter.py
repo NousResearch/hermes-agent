@@ -9,8 +9,8 @@ from pathlib import Path
 
 import pytest
 
-from gateway.config import Platform
-from gateway.run import GatewayRunner, _profile_runtime_scope
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.run import GatewayRunner, _profile_runtime_scope
 from tools.send_message_senders import _live_adapter
 
 
@@ -26,7 +26,7 @@ def mux_runner(tmp_path, monkeypatch):
     runner.adapters = {Platform.SLACK: default_slack}
     runner._profile_adapters = {"sec": {Platform.SLACK: sec_slack}, "nobot": {}}
     runner._primary_profile_name = "default"
-    import gateway.run as gateway_run
+    import hermes_agent.gateway.run as gateway_run
     monkeypatch.setattr(gateway_run, "_gateway_runner_ref", lambda: runner)
     return home, default_slack, sec_slack
 

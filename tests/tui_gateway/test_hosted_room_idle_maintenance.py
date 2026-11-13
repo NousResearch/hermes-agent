@@ -4,7 +4,7 @@ import sqlite3
 
 import pytest
 
-from gateway import hosted_rooms
+from hermes_agent.gateway import hosted_rooms
 from tests.gateway.test_session_group_peers import gateway as gateway_fixture
 
 gateway = gateway_fixture

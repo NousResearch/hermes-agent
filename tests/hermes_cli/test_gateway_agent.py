@@ -256,7 +256,7 @@ def test_session_usage_event_feeds_mains_status_bar_attributes(make_agent):
 def test_gateway_session_usage_frame_feeds_the_status_bar_mid_turn(make_agent):
     """The frame the gateway really publishes (`usage_frame`: flat counters plus the nested TUI
     `usage` view) lands the flat counters, not the nested view, on main's attributes mid-turn."""
-    from gateway.session_usage import usage_frame
+    from hermes_agent.gateway.session_usage import usage_frame
     usage = dict(SESSION_USAGE, compression_count=2)
     seen = []
     agent, _ = make_agent([frame("session.usage", usage_frame(usage), admission=None),

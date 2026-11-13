@@ -1365,7 +1365,7 @@ def _content_text_for_contains(content: Any) -> str:
     return "" if content is None else content if isinstance(content, str) else str(content)
 
 
-# Gateway reply pointer prepended to a user turn (gateway/run_inbound.py
+# Gateway reply pointer prepended to a user turn (hermes_agent/gateway/run_inbound.py
 # ``_prepend_inbound_reply_context``), optionally behind the Discord triggering note.
 # Non-greedy: a quote that itself contains the closing delimiter is only partly
 # stripped, which over-counts the request and keeps the conservative anchor.

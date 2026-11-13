@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.run_api import GatewayRuntimeAPI
+from hermes_agent.gateway.run_api import GatewayRuntimeAPI
 
 _TICKET_PROTOCOLS = "hermes-gateway-v1, hermes-gateway-ticket.webapp-minted"
 

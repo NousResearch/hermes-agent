@@ -157,7 +157,7 @@ _STOPPED = frozenset({"interrupted", "cancelled"})
 def delegation_wakes_parent(evt: dict) -> bool:
     """True for an async delegation's FINAL result with a failed child (any status other than done or a
     requested stop). Its unviewed local parent runs it as a turn rather than a note
-    (gateway/session_completion_notes.py), so the parent can re-dispatch or report. The early per-task
+    (hermes_agent/gateway/session_completion_notes.py), so the parent can re-dispatch or report. The early per-task
     notice is a diagnostic: the final result that follows it is the one that wakes."""
     if evt.get("type") != "async_delegation" or evt.get("task_failure_notice"):
         return False
@@ -184,7 +184,7 @@ def completion_resumes_parent(evt: dict) -> bool:
     process's exit, whatever its exit code. Its unviewed local parent runs it as a turn, as a watched one
     does, so the work goes on while no client is connected (a laptop asleep, a closed tab).
     ``delegation_wakes_parent`` is the failed-delegation subset, whose wakes are bounded
-    (gateway/session_completion_notes.py); a process exit is never in it."""
+    (hermes_agent/gateway/session_completion_notes.py); a process exit is never in it."""
     if evt.get("type") == "async_delegation":
         if evt.get("task_failure_notice"):
             return False

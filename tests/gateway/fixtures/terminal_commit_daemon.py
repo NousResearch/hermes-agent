@@ -2,7 +2,7 @@
 import os
 import runpy
 import signal
-from gateway import session_results
+from hermes_agent.gateway import session_results
 
 finish = session_results.finish_result
 
@@ -15,4 +15,4 @@ def stop_after_commit(db, *, row, **kwargs):
 
 
 session_results.finish_result = stop_after_commit
-runpy.run_module('gateway.run', run_name='__main__')
+runpy.run_module('hermes_agent.gateway.run', run_name='__main__')

@@ -18,7 +18,7 @@ async def test_context_breakdown_without_a_resident_agent_estimates_the_stored_f
     from its frozen system prompt and tools[] pin, over its stored transcript."""
     from agent import system_prompt
     from agent.context_breakdown import compute_session_context_breakdown
-    from gateway.session_tui_reads import _stored_id
+    from hermes_agent.gateway.session_tui_reads import _stored_id
 
     sid = (await owner.call('session.create', request_id='idle', source='tui', cwd=str(owner.workdir)))['session_id']
     db = owner.authority.db
@@ -45,7 +45,7 @@ async def test_context_breakdown_without_a_resident_agent_estimates_the_stored_f
 async def test_agentless_breakdown_refreshes_when_the_stored_prompt_or_tools_change(owner):
     """A compute worker can freeze the prompt or tools pin without touching the transcript; the cached
     agentless breakdown must not outlive either write."""
-    from gateway.session_tui_reads import _stored_id
+    from hermes_agent.gateway.session_tui_reads import _stored_id
 
     sid = (await owner.call('session.create', request_id='refreeze', source='tui', cwd=str(owner.workdir)))['session_id']
     db = owner.authority.db
@@ -62,7 +62,7 @@ async def test_agentless_breakdown_refreshes_when_the_stored_prompt_or_tools_cha
 
 
 async def _agentless_session(owner, request_id, pin):
-    from gateway.session_tui_reads import _stored_id
+    from hermes_agent.gateway.session_tui_reads import _stored_id
 
     sid = (await owner.call('session.create', request_id=request_id, source='tui', cwd=str(owner.workdir)))['session_id']
     stored = _stored_id(owner.authority, SimpleNamespace(session_id=sid))
@@ -109,7 +109,7 @@ async def test_context_breakdown_measures_only_the_compression_tips_model_histor
     session bookkeeping is model context, in the popover or the TUI's /context table."""
     from agent import system_prompt
     from agent.context_breakdown import compute_session_context_breakdown, render_context_breakdown_lines
-    from gateway.session_tui_reads import _stored_id
+    from hermes_agent.gateway.session_tui_reads import _stored_id
 
     sid = (await owner.call('session.create', request_id='lineage', source='tui', cwd=str(owner.workdir)))['session_id']
     db = owner.authority.db

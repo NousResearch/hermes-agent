@@ -15,7 +15,7 @@ from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
-from gateway.platforms.event import ProcessingOutcome
+from hermes_agent.gateway.platforms.event import ProcessingOutcome
 
 
 if TYPE_CHECKING:
@@ -57,7 +57,7 @@ class TestConfigEnvOverrides(unittest.TestCase):
         "FEISHU_DOMAIN": "feishu",
     }, clear=False)
     def test_feishu_config_loaded_from_env(self):
-        from gateway.config import GatewayConfig, Platform, _apply_env_overrides
+        from hermes_agent.gateway.config import GatewayConfig, Platform, _apply_env_overrides
 
         config = GatewayConfig()
         _apply_env_overrides(config)
@@ -110,7 +110,7 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
         """
         import threading
         from types import SimpleNamespace
-        from gateway.config import PlatformConfig
+        from hermes_agent.gateway.config import PlatformConfig
         from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
@@ -167,7 +167,7 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
         https://github.com/NousResearch/hermes-agent/issues/50656
         https://github.com/NousResearch/hermes-agent/issues/78318
         """
-        from gateway.config import PlatformConfig
+        from hermes_agent.gateway.config import PlatformConfig
         from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
@@ -221,7 +221,7 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
 
     @patch.dict(os.environ, {}, clear=True)
     def test_edit_message_falls_back_to_text_when_post_update_is_rejected(self):
-        from gateway.config import PlatformConfig
+        from hermes_agent.gateway.config import PlatformConfig
         from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
@@ -266,7 +266,7 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
 @patch.dict(os.environ, {}, clear=True)
 class TestDeleteMessage(unittest.TestCase):
     def test_delete_message_calls_im_message_delete(self):
-        from gateway.config import PlatformConfig
+        from hermes_agent.gateway.config import PlatformConfig
         from plugins.platforms.feishu.adapter import FeishuAdapter
 
         captured = {"ids": []}
@@ -374,7 +374,7 @@ def _admits_group(adapter, message, sender_id, chat_id=""):
 class TestAdapterBehavior(unittest.TestCase):
     @patch.dict(os.environ, {}, clear=True)
     def test_build_event_handler_registers_reaction_and_card_processors(self):
-        from gateway.config import PlatformConfig
+        from hermes_agent.gateway.config import PlatformConfig
         from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
@@ -443,7 +443,7 @@ class TestAdapterBehavior(unittest.TestCase):
 
     @patch.dict(os.environ, {}, clear=True)
     def test_bot_origin_reactions_are_dropped_to_avoid_feedback_loops(self):
-        from gateway.config import PlatformConfig
+        from hermes_agent.gateway.config import PlatformConfig
         from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
@@ -467,7 +467,7 @@ class TestAdapterBehavior(unittest.TestCase):
         # Operator-origin filter is enough to prevent feedback loops; we must
         # not additionally swallow user-origin reactions just because their
         # emoji happens to collide with a lifecycle emoji.
-        from gateway.config import PlatformConfig
+        from hermes_agent.gateway.config import PlatformConfig
         from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
@@ -493,7 +493,7 @@ class TestAdapterBehavior(unittest.TestCase):
 
     def _build_reaction_adapter(self, *, msg_sender_id: str):
         """Build a FeishuAdapter wired up to return a single GET-message result."""
-        from gateway.config import PlatformConfig
+        from hermes_agent.gateway.config import PlatformConfig
         from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
@@ -538,7 +538,7 @@ class TestAdapterBehavior(unittest.TestCase):
         adapter._handle_message_with_guards.assert_not_awaited()
 
     def test_per_group_allowlist_policy_gates_by_sender(self):
-        from gateway.config import PlatformConfig
+        from hermes_agent.gateway.config import PlatformConfig
         from plugins.platforms.feishu.adapter import FeishuAdapter
 
         config = PlatformConfig(
@@ -574,7 +574,7 @@ class TestAdapterBehavior(unittest.TestCase):
         )
 
     def test_global_admins_bypass_all_group_rules(self):
-        from gateway.config import PlatformConfig
+        from hermes_agent.gateway.config import PlatformConfig
         from plugins.platforms.feishu.adapter import FeishuAdapter
 
         config = PlatformConfig(
@@ -604,7 +604,7 @@ class TestAdapterBehavior(unittest.TestCase):
         )
 
     def test_default_group_policy_fallback_for_chats_without_explicit_rule(self):
-        from gateway.config import PlatformConfig
+        from hermes_agent.gateway.config import PlatformConfig
         from plugins.platforms.feishu.adapter import FeishuAdapter
 
         config = PlatformConfig(
@@ -632,7 +632,7 @@ class TestAdapterBehavior(unittest.TestCase):
         """Name fallback engages when either side lacks an open_id. When BOTH
         the mention and the bot carry open_ids, IDs are authoritative — a
         same-name human with a different open_id must NOT admit."""
-        from gateway.config import PlatformConfig
+        from hermes_agent.gateway.config import PlatformConfig
         from plugins.platforms.feishu.adapter import FeishuAdapter
 
         # Case 1: bot has only a name (open_id not hydrated / not configured).
@@ -686,7 +686,7 @@ class TestAdapterBehavior(unittest.TestCase):
 
     @patch.dict(os.environ, {}, clear=True)
     def test_extract_post_message_downloads_embedded_resources(self):
-        from gateway.config import PlatformConfig
+        from hermes_agent.gateway.config import PlatformConfig
         from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
@@ -725,7 +725,7 @@ class TestAdapterBehavior(unittest.TestCase):
 
     @patch.dict(os.environ, {}, clear=True)
     def test_extract_audio_message_downloads_and_caches(self):
-        from gateway.config import PlatformConfig
+        from hermes_agent.gateway.config import PlatformConfig
         from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
@@ -754,7 +754,7 @@ class TestAdapterBehavior(unittest.TestCase):
 
     @patch.dict(os.environ, {}, clear=True)
     def test_extract_text_message_starting_with_slash_becomes_command(self):
-        from gateway.config import PlatformConfig
+        from hermes_agent.gateway.config import PlatformConfig
         from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
@@ -792,7 +792,7 @@ class TestAdapterBehavior(unittest.TestCase):
 
     @patch.dict(os.environ, {}, clear=True)
     def test_extract_text_file_injects_content(self):
-        from gateway.config import PlatformConfig
+        from hermes_agent.gateway.config import PlatformConfig
         from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
@@ -810,7 +810,7 @@ class TestAdapterBehavior(unittest.TestCase):
 
     @patch.dict(os.environ, {}, clear=True)
     def test_message_event_submits_to_adapter_loop(self):
-        from gateway.config import PlatformConfig
+        from hermes_agent.gateway.config import PlatformConfig
         from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
@@ -845,7 +845,7 @@ class TestAdapterBehavior(unittest.TestCase):
 
     @patch.dict(os.environ, {}, clear=True)
     def test_webhook_request_uses_same_message_dispatch_path(self):
-        from gateway.config import PlatformConfig
+        from hermes_agent.gateway.config import PlatformConfig
         from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
@@ -875,7 +875,7 @@ class TestAdapterBehavior(unittest.TestCase):
         check, so an unauthenticated remote could prove endpoint control by
         sending an attacker-controlled challenge string.
         """
-        from gateway.config import PlatformConfig
+        from hermes_agent.gateway.config import PlatformConfig
         from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
@@ -897,8 +897,8 @@ class TestAdapterBehavior(unittest.TestCase):
 
     @patch.dict(os.environ, {}, clear=True)
     def test_process_inbound_message_uses_event_sender_identity_only(self):
-        from gateway.config import PlatformConfig
-        from gateway.platforms.event import MessageType
+        from hermes_agent.gateway.config import PlatformConfig
+        from hermes_agent.gateway.platforms.event import MessageType
         from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
@@ -951,10 +951,10 @@ class TestAdapterBehavior(unittest.TestCase):
         clear=True,
     )
     def test_text_batch_flushes_when_message_count_limit_is_hit(self):
-        from gateway.config import PlatformConfig
-        from gateway.platforms.event import MessageEvent, MessageType
+        from hermes_agent.gateway.config import PlatformConfig
+        from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
         from plugins.platforms.feishu.adapter import FeishuAdapter
-        from gateway.session import SessionSource
+        from hermes_agent.gateway.session import SessionSource
 
         adapter = FeishuAdapter(PlatformConfig())
         adapter.handle_message = AsyncMock()
@@ -1010,9 +1010,9 @@ class TestAdapterBehavior(unittest.TestCase):
         clear=False,
     )
     def test_text_batch_preserves_later_message_attachments(self):
-        from gateway.config import PlatformConfig
-        from gateway.platforms.event import MessageEvent, MessageType
-        from gateway.session import SessionSource
+        from hermes_agent.gateway.config import PlatformConfig
+        from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
+        from hermes_agent.gateway.session import SessionSource
         from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
@@ -1054,10 +1054,10 @@ class TestAdapterBehavior(unittest.TestCase):
 
     @patch.dict(os.environ, {}, clear=True)
     def test_media_batch_merges_rapid_photo_messages(self):
-        from gateway.config import PlatformConfig
-        from gateway.platforms.event import MessageEvent, MessageType
+        from hermes_agent.gateway.config import PlatformConfig
+        from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
         from plugins.platforms.feishu.adapter import FeishuAdapter
-        from gateway.session import SessionSource
+        from hermes_agent.gateway.session import SessionSource
 
         adapter = FeishuAdapter(PlatformConfig())
         adapter.handle_message = AsyncMock()
@@ -1114,7 +1114,7 @@ class TestAdapterBehavior(unittest.TestCase):
         """#18451 — snapshot Content-Type + body while the httpx.AsyncClient
         context is still active so pooled connections fully release on
         exit; the body is streamed, so a read after close would fail."""
-        from gateway.config import PlatformConfig
+        from hermes_agent.gateway.config import PlatformConfig
         from plugins.platforms.feishu.adapter import FeishuAdapter
 
         events: list[str] = []
@@ -1179,7 +1179,7 @@ class TestAdapterBehavior(unittest.TestCase):
     def test_download_remote_document_blocks_connect_time_rebind(self):
         import httpcore
         from httpcore._backends.auto import AutoBackend
-        from gateway.config import PlatformConfig
+        from hermes_agent.gateway.config import PlatformConfig
         from plugins.platforms.feishu.adapter import FeishuAdapter
         from tools.url_safety import SSRFConnectionBlocked
 
@@ -1233,7 +1233,7 @@ class TestAdapterBehavior(unittest.TestCase):
         self.assertEqual(connect_attempts, [])
 
     def test_dedup_state_persists_across_adapter_restart(self):
-        from gateway.config import PlatformConfig
+        from hermes_agent.gateway.config import PlatformConfig
         from plugins.platforms.feishu.adapter import FeishuAdapter
 
         with tempfile.TemporaryDirectory() as temp_home:
@@ -1245,7 +1245,7 @@ class TestAdapterBehavior(unittest.TestCase):
 
     @patch.dict(os.environ, {}, clear=True)
     def test_send_document_reply_uses_thread_flag(self):
-        from gateway.config import PlatformConfig
+        from hermes_agent.gateway.config import PlatformConfig
         from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
@@ -1308,7 +1308,7 @@ class TestAdapterBehavior(unittest.TestCase):
         ``**bold``/``## heading``/code fences while later chunks
         rendered correctly.
         """
-        from gateway.config import PlatformConfig
+        from hermes_agent.gateway.config import PlatformConfig
         from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
@@ -1359,7 +1359,7 @@ class TestAdapterBehavior(unittest.TestCase):
 
     @patch.dict(os.environ, {}, clear=True)
     def test_send_splits_fenced_code_blocks_into_separate_post_rows(self):
-        from gateway.config import PlatformConfig
+        from hermes_agent.gateway.config import PlatformConfig
         from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
@@ -1428,7 +1428,7 @@ class TestPendingInboundQueue(unittest.TestCase):
 
     @patch.dict(os.environ, {}, clear=True)
     def test_event_queued_when_loop_not_ready(self):
-        from gateway.config import PlatformConfig
+        from hermes_agent.gateway.config import PlatformConfig
         from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
@@ -1448,7 +1448,7 @@ class TestPendingInboundQueue(unittest.TestCase):
 
     @patch.dict(os.environ, {}, clear=True)
     def test_drainer_replays_queued_events_when_loop_becomes_ready(self):
-        from gateway.config import PlatformConfig
+        from hermes_agent.gateway.config import PlatformConfig
         from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
@@ -1497,7 +1497,7 @@ class TestWebhookSecurity(unittest.TestCase):
     """Tests for webhook signature verification, rate limiting, and body size limits."""
 
     def _make_adapter(self, encrypt_key: str = "") -> "FeishuAdapter":
-        from gateway.config import PlatformConfig
+        from hermes_agent.gateway.config import PlatformConfig
         from plugins.platforms.feishu.adapter import FeishuAdapter
 
         with patch.dict(os.environ, {"FEISHU_APP_ID": "cli", "FEISHU_APP_SECRET": "sec", "FEISHU_ENCRYPT_KEY": encrypt_key}, clear=True):
@@ -1529,7 +1529,7 @@ class TestWebhookSecurity(unittest.TestCase):
         self.assertTrue(adapter._check_webhook_rate_limit(ip))
 
     def test_webhook_request_rejects_oversized_chunked_body_while_reading(self):
-        from gateway.config import PlatformConfig
+        from hermes_agent.gateway.config import PlatformConfig
         from hermes_constants import reset_hermes_home_override, set_hermes_home_override
         from plugins.platforms.feishu.adapter import FeishuAdapter, _FEISHU_WEBHOOK_MAX_BODY_BYTES
 
@@ -1554,7 +1554,7 @@ class TestWebhookSecurity(unittest.TestCase):
 
     @patch.dict(os.environ, {}, clear=True)
     def test_webhook_connect_requires_inbound_auth_secret(self):
-        from gateway.config import PlatformConfig
+        from hermes_agent.gateway.config import PlatformConfig
         from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(
@@ -1567,7 +1567,7 @@ class TestWebhookSecurity(unittest.TestCase):
 
     @patch.dict(os.environ, {}, clear=True)
     def test_webhook_loads_auth_secrets_from_platform_extra(self):
-        from gateway.config import PlatformConfig
+        from hermes_agent.gateway.config import PlatformConfig
         from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(
@@ -1590,7 +1590,7 @@ class TestDedupTTL(unittest.TestCase):
 
     @patch.dict(os.environ, {}, clear=True)
     def test_duplicate_within_ttl_is_rejected(self):
-        from gateway.config import PlatformConfig
+        from hermes_agent.gateway.config import PlatformConfig
         from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
@@ -1606,7 +1606,7 @@ class TestDedupTTL(unittest.TestCase):
         skipped; the rest of the state loads.
         """
         import tempfile
-        from gateway.config import PlatformConfig
+        from hermes_agent.gateway.config import PlatformConfig
         from plugins.platforms.feishu.adapter import FeishuAdapter
 
         with tempfile.TemporaryDirectory() as temp_home:
@@ -1639,7 +1639,7 @@ class TestDedupTTL(unittest.TestCase):
         test_directory_write_runs_off_event_loop_thread in
         test_channel_directory.py for the same #83906 bug class."""
         import threading
-        from gateway.config import PlatformConfig
+        from hermes_agent.gateway.config import PlatformConfig
         from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
@@ -1660,7 +1660,7 @@ class TestDedupTTL(unittest.TestCase):
     def test_concurrent_dedup_persists_land_in_order(self):
         """Two in-flight _is_duplicate() calls (two chats) must not let an
         older seen-ids snapshot overwrite a newer one on disk."""
-        from gateway.config import PlatformConfig
+        from hermes_agent.gateway.config import PlatformConfig
         from plugins.platforms.feishu.adapter import FeishuAdapter
 
         # The class-level env wipe drops the per-test HERMES_HOME, so the adapter resolves
@@ -1698,7 +1698,7 @@ class TestGroupMentionAtAll(unittest.TestCase):
     @patch.dict(os.environ, {"FEISHU_GROUP_POLICY": "allowlist", "FEISHU_ALLOWED_USERS": "ou_allowed"}, clear=True)
     def test_at_all_still_requires_policy_gate(self):
         """@_all bypasses mention gating but NOT the allowlist policy."""
-        from gateway.config import PlatformConfig
+        from hermes_agent.gateway.config import PlatformConfig
         from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
@@ -2077,7 +2077,7 @@ class TestFeishuProcessInboundMessage(unittest.TestCase):
         self.assertEqual(event.media_text_inlined, [True])
 
     def test_non_command_message_with_mentions_injects_hint(self):
-        from gateway.platforms.event import MessageType
+        from hermes_agent.gateway.platforms.event import MessageType
 
         adapter = self._build_adapter()
         alice = SimpleNamespace(
@@ -2406,7 +2406,7 @@ def fake_lark_requests(monkeypatch):
 
 
 def _plain_feishu_adapter():
-    from gateway.config import PlatformConfig
+    from hermes_agent.gateway.config import PlatformConfig
     from plugins.platforms.feishu.adapter import FeishuAdapter
 
     return FeishuAdapter(PlatformConfig())

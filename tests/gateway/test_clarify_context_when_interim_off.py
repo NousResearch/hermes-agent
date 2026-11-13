@@ -68,7 +68,7 @@ async def test_other_commentary_stays_suppressed_when_interim_messages_are_off(m
 async def test_clarify_card_waits_for_an_explanation_still_sending():
     """The agent thread stops waiting for the explanation after its ack window; the card must not
     overtake it anyway (the card path does not take Telegram's text-send lock)."""
-    from gateway.run_turn_runner import TurnRunner
+    from hermes_agent.gateway.run_turn_runner import TurnRunner
 
     order: list[str] = []
     explanation = concurrent.futures.Future()
@@ -111,8 +111,8 @@ async def test_codex_clarify_sends_draft_not_commentary_when_interim_messages_ar
 @pytest.mark.asyncio
 async def test_clarify_card_posts_when_its_explanation_send_never_returns(monkeypatch):
     """An adapter send that hangs must not hold back the question the turn is waiting on."""
-    import gateway.run_turn_runner_clarify_delivery as delivery
-    from gateway.run_turn_runner import TurnRunner
+    import hermes_agent.gateway.run_turn_runner_clarify_delivery as delivery
+    from hermes_agent.gateway.run_turn_runner import TurnRunner
 
     monkeypatch.setattr(delivery, "SEND_ACK_WINDOW", 0.2)
     order: list[str] = []
@@ -130,7 +130,7 @@ async def test_clarify_card_posts_when_its_explanation_send_never_returns(monkey
 @pytest.mark.asyncio
 async def test_a_question_cancelled_while_its_explanation_sends_posts_no_card():
     """/new or a cancel lands while the card waits for its explanation: the withdrawn card stays unsent."""
-    from gateway.run_turn_runner import TurnRunner
+    from hermes_agent.gateway.run_turn_runner import TurnRunner
     from tools import clarify_gateway
 
     cards: list[dict] = []
@@ -158,8 +158,8 @@ async def test_a_question_cancelled_while_its_explanation_sends_posts_no_card():
 @pytest.mark.asyncio
 async def test_the_card_waits_only_for_what_is_left_of_the_explanation_budget(monkeypatch):
     """The agent thread and the card share one explanation budget, not 15 s plus another wait."""
-    import gateway.run_turn_runner_clarify_delivery as delivery
-    from gateway.run_turn_runner import TurnRunner
+    import hermes_agent.gateway.run_turn_runner_clarify_delivery as delivery
+    from hermes_agent.gateway.run_turn_runner import TurnRunner
 
     monkeypatch.setattr(delivery, "SEND_ACK_WINDOW", 0.3)
     hung = concurrent.futures.Future()
@@ -178,8 +178,8 @@ async def test_the_card_waits_only_for_what_is_left_of_the_explanation_budget(mo
                              _run_still_current=lambda: True,
                              source=SimpleNamespace(platform="telegram", is_bot=False)),
         _schedule=lambda coro, _msg: asyncio.run_coroutine_threadsafe(coro, loop))
-    monkeypatch.setattr("gateway.run_turn_progress.local_viewer_turn", lambda _r: False)
-    monkeypatch.setattr("gateway.bot_peer_notices.automatic_notices_allowed", lambda _s: True)
+    monkeypatch.setattr("hermes_agent.gateway.run_turn_progress.local_viewer_turn", lambda _r: False)
+    monkeypatch.setattr("hermes_agent.gateway.bot_peer_notices.automatic_notices_allowed", lambda _s: True)
     sink = delivery.clarify_context_sink(runner)
     started = loop.time()
     await asyncio.to_thread(sink, "Draft: hello")

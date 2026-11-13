@@ -73,7 +73,7 @@ def test_unowned_lagging_store_browses_after_one_reconcile(tmp_path):
 
 
 def test_owned_lagging_store_is_not_written_and_names_the_remedy(tmp_path):
-    from gateway.runtime_ownership import ProfileOwnership
+    from hermes_agent.gateway.runtime_ownership import ProfileOwnership
 
     home = _profile_home(tmp_path)
     path = _pre_merge_store(home / "state.db")
@@ -210,7 +210,7 @@ def _session_columns(path):
 
 
 def _owned(home):
-    from gateway.runtime_ownership import ProfileOwnership
+    from hermes_agent.gateway.runtime_ownership import ProfileOwnership
     owner = ProfileOwnership()  # what a running gateway holds on its profile
     owner.reserve([home])
     return owner
@@ -370,7 +370,7 @@ def test_concurrent_browses_from_processes_all_succeed(tmp_path):
 _PURPOSE_HOLDER = r'''
 import sys, time
 from pathlib import Path
-from gateway.runtime_ownership import ProfileOwnership
+from hermes_agent.gateway.runtime_ownership import ProfileOwnership
 purpose = sys.argv[3] or None
 owner = ProfileOwnership()
 owner.reserve([Path(sys.argv[1])], purpose=purpose)
@@ -418,8 +418,8 @@ def test_gateway_boot_reserve_waits_out_a_browse_reconcile(tmp_path):
     instead of exiting as though another gateway owned the profile. A real owner still refuses."""
     import time
 
-    from gateway.run_bootstrap import _reserve_waiting_out_browse_reconcile
-    from gateway.runtime_ownership import OwnershipConflict, ProfileOwnership
+    from hermes_agent.gateway.run_bootstrap import _reserve_waiting_out_browse_reconcile
+    from hermes_agent.gateway.runtime_ownership import OwnershipConflict, ProfileOwnership
     from hermes_agent.hermes_state_reconcile import BROWSE_RECONCILE_PURPOSE
 
     home = _profile_home(tmp_path)
@@ -472,8 +472,8 @@ def test_gateway_boot_waits_while_the_holder_has_not_published_its_record(tmp_pa
     import sys
     import time
 
-    from gateway.run_bootstrap import _reserve_waiting_out_browse_reconcile
-    from gateway.runtime_ownership import OwnershipConflict, ProfileOwnership
+    from hermes_agent.gateway.run_bootstrap import _reserve_waiting_out_browse_reconcile
+    from hermes_agent.gateway.runtime_ownership import OwnershipConflict, ProfileOwnership
 
     home = _profile_home(tmp_path)
     holder = subprocess.Popen([sys.executable, "-c", _RAW_FLOCK_HOLDER, str(home), "1.0"],
@@ -573,9 +573,9 @@ def test_slow_browse_reconcile_gives_up_inside_its_budget_and_boot_waits_it_out(
     import sys
     import time
 
-    import gateway.run_bootstrap as bootstrap
+    import hermes_agent.gateway.run_bootstrap as bootstrap
     import hermes_agent.hermes_state_reconcile as reconcile
-    from gateway.runtime_ownership import ProfileOwnership
+    from hermes_agent.gateway.runtime_ownership import ProfileOwnership
 
     budget_s = getattr(reconcile, "BROWSE_RECONCILE_BUDGET_S", 2.0)
     wait_s = getattr(bootstrap, "_browse_reconcile_reserve_wait_s", lambda: 5.0)()
@@ -663,7 +663,7 @@ def test_integrity_scan_runs_before_the_lock_is_taken(tmp_path, monkeypatch):
     """alt-glitch C1 / pastels m3: the full integrity scan is read-only and scales with file size.
     It must run BEFORE gateway.lock is reserved, so a booting gateway never waits on it."""
     import hermes_agent.hermes_state_reconcile as reconcile
-    from gateway.runtime_ownership import OwnershipConflict, ProfileOwnership
+    from hermes_agent.gateway.runtime_ownership import OwnershipConflict, ProfileOwnership
 
     home = _profile_home(tmp_path)
     path = _lagging_store_with_history(home, rows=10)
@@ -732,7 +732,7 @@ def test_gateway_boot_never_waits_on_a_slow_integrity_scan(tmp_path):
     import sys
     import time
 
-    from gateway.runtime_ownership import ProfileOwnership
+    from hermes_agent.gateway.runtime_ownership import ProfileOwnership
 
     home = _profile_home(tmp_path)
     path = _lagging_store_with_history(home, rows=50)
@@ -836,8 +836,8 @@ def test_boot_refuses_at_once_when_another_home_has_a_real_owner(tmp_path):
     while deciding are released again (all-or-nothing)."""
     import time
 
-    from gateway.run_bootstrap import _reserve_waiting_out_browse_reconcile
-    from gateway.runtime_ownership import OwnershipConflict, ProfileOwnership
+    from hermes_agent.gateway.run_bootstrap import _reserve_waiting_out_browse_reconcile
+    from hermes_agent.gateway.runtime_ownership import OwnershipConflict, ProfileOwnership
     from hermes_agent.hermes_state_reconcile import BROWSE_RECONCILE_PURPOSE
 
     owned_home = _profile_home(tmp_path, "alpha")

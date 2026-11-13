@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from gateway import shutdown_flush
+from hermes_agent.gateway import shutdown_flush
 
 
 def test_recovery_payload_memory_does_not_scale_with_backlog(

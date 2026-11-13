@@ -1,4 +1,4 @@
-"""Integration tests for slash command access control gating in gateway/run.py.
+"""Integration tests for slash command access control gating in hermes_agent/gateway/run.py.
 
 Drives the real ``GatewayRunner._handle_message`` path with a stub session
 store so we exercise the actual gate inserted at the dispatch site (not a
@@ -25,10 +25,10 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.event import MessageEvent
-from gateway.session import SessionEntry, SessionSource, build_session_key
-from gateway.session_identity import RoutingIdentity
+from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+from hermes_agent.gateway.platforms.event import MessageEvent
+from hermes_agent.gateway.session import SessionEntry, SessionSource, build_session_key
+from hermes_agent.gateway.session_identity import RoutingIdentity
 
 
 def _make_source(
@@ -56,7 +56,7 @@ def _make_event(text: str, source: SessionSource) -> MessageEvent:
 def _make_runner(*, platform_extra: dict | None = None,
                  platform: Platform = Platform.DISCORD,
                  multiplex_profiles: bool = False):
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
 
     runner = object.__new__(GatewayRunner)
     runner.config = GatewayConfig(
@@ -379,8 +379,8 @@ async def test_running_agent_fastpath_allows_admin_command():
 async def test_gating_isolated_per_platform():
     """When Discord is gated and Telegram isn't, the same user_id on
     Telegram must be unrestricted."""
-    from gateway.run import GatewayRunner
-    from gateway.config import GatewayConfig, Platform, PlatformConfig
+    from hermes_agent.gateway.run import GatewayRunner
+    from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
 
     runner = object.__new__(GatewayRunner)
     runner.config = GatewayConfig(

@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.config import Platform
+from hermes_agent.gateway.config import Platform
 
 _FREE_TIER_FULL = {'free_tier': {'kind': 'at_capacity', 'message': 'The free tier is full right now.'},
                    'failure_reason': 'rate_limit', 'failure_retryable': True, 'error': 'HTTP 429'}
@@ -17,10 +17,10 @@ _RATE_LIMITED = {'failure_reason': 'rate_limit', 'failure_retryable': True, 'fai
 def _authority_turn(platform, failure, identity=None):
     """Run one failed turn through the authority's in-process TurnRunner: ``(response, captured)``.
     ``identity`` replaces the result's provider/model with the agent's own attributes."""
-    from gateway.run_turn_runner import TurnRunner
-    from gateway.session import SessionSource
-    from gateway.session_results import execution_result
-    from gateway.turn_context import TurnContext
+    from hermes_agent.gateway.run_turn_runner import TurnRunner
+    from hermes_agent.gateway.session import SessionSource
+    from hermes_agent.gateway.session_results import execution_result
+    from hermes_agent.gateway.turn_context import TurnContext
     from tests.gateway.test_local_viewer_events_submit import _gateway_runner, _RecordingAgent
 
     class _FailingAgent(_RecordingAgent):
@@ -50,8 +50,8 @@ def _authority_turn(platform, failure, identity=None):
 
 
 def _complete(response, captured):
-    from gateway.session_results import prepare_result
-    from gateway.session_settlement_recovery import completion_payload
+    from hermes_agent.gateway.session_results import prepare_result
+    from hermes_agent.gateway.session_settlement_recovery import completion_payload
     row = {'admission_id': 'a1', 'request_id': 'r1', 'payload': {'text': 'hi'}}
     outcome, _stored = prepare_result(row, response, 'completed', captured)
     return completion_payload(row, {'outcome': outcome}, response, captured)

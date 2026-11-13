@@ -8,7 +8,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from gateway.status import normalize_updated_at
+from hermes_agent.gateway.status import normalize_updated_at
 
 
 # What an unverified caller may read of a platform entry: lifecycle enum, the source-controlled

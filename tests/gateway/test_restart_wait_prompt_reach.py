@@ -80,10 +80,10 @@ def test_update_fence_hands_out_only_the_draining_owners_restart_wait(tmp_path):
 
 @pytest.mark.asyncio
 async def test_restart_wait_commits_new_input_queued_and_never_claims_it(tmp_path, monkeypatch):
-    from gateway.config import Platform
-    from gateway.session import SessionSource
-    from gateway.session_authority import LiveSession, SessionAuthority
-    from gateway.session_contract import SessionActor, SessionRef, Submission
+    from hermes_agent.gateway.config import Platform
+    from hermes_agent.gateway.session import SessionSource
+    from hermes_agent.gateway.session_authority import LiveSession, SessionAuthority
+    from hermes_agent.gateway.session_contract import SessionActor, SessionRef, Submission
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     db = SessionDB(tmp_path / "state.db")
@@ -123,7 +123,7 @@ async def test_restart_wait_commits_new_input_queued_and_never_claims_it(tmp_pat
 async def test_restart_wait_serves_only_the_reads_that_open_the_parked_session():
     """Desktop finds and opens the parked conversation over HTTP (sidebar, detail, transcript); every
     write and unrelated route keeps the drain's 503, and stop() withdraws the reads too."""
-    from gateway.run_api import GatewayRuntimeAPI
+    from hermes_agent.gateway.run_api import GatewayRuntimeAPI
 
     reached = []
 
@@ -165,8 +165,8 @@ async def test_restart_wait_ws_serves_the_parked_turn_and_refuses_every_other_ve
     """The interactive socket a restart's after-turn wait admits may resume, read and answer the
     parked prompt; a write verb (config.set, session.save, process.kill, reload.*, ...) is refused
     with runtime_draining before its handler runs on the shutting-down owner."""
-    from gateway.session_authority import LiveSession, SessionAuthority
-    from gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway.session_authority import LiveSession, SessionAuthority
+    from hermes_agent.gateway.session_controls import AuthorityConnection
 
     db = SessionDB(tmp_path / "state.db")
     db.create_session("s", source="test")
@@ -205,10 +205,10 @@ async def test_restart_wait_queues_only_interactive_input(tmp_path, monkeypatch)
     """Only the interactive WS submit commits queued input during the wait; a2a, kanban and hosted
     rooms call ``authority.submit`` directly and keep the plain refusal, so none of them can read a
     released waiter as failure and resubmit the same input under a new request id."""
-    from gateway.config import Platform
-    from gateway.session import SessionSource
-    from gateway.session_authority import LiveSession, SessionAuthority
-    from gateway.session_contract import SessionActor, SessionRef, Submission
+    from hermes_agent.gateway.config import Platform
+    from hermes_agent.gateway.session import SessionSource
+    from hermes_agent.gateway.session_authority import LiveSession, SessionAuthority
+    from hermes_agent.gateway.session_contract import SessionActor, SessionRef, Submission
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     db = SessionDB(tmp_path / "state.db")
@@ -250,8 +250,8 @@ async def test_restart_wait_cuts_sockets_opened_before_it(tmp_path, monkeypatch,
     client reconnects to the next owner instead of pinning the drain to its cap."""
     import json
 
-    from gateway.run_api import GatewayRuntimeAPI
-    from gateway.runtime_bootstrap import TicketStore
+    from hermes_agent.gateway.run_api import GatewayRuntimeAPI
+    from hermes_agent.gateway.runtime_bootstrap import TicketStore
     from hermes_cli import web_server as web
     from hermes_cli import web_server_chat
 
@@ -317,8 +317,8 @@ async def test_restart_wait_lets_a_webapp_tab_dial_back_in_to_answer_the_parked_
 
     import httpx
 
-    from gateway.run_api import GatewayRuntimeAPI
-    from gateway.session_authority import LiveSession, SessionAuthority
+    from hermes_agent.gateway.run_api import GatewayRuntimeAPI
+    from hermes_agent.gateway.session_authority import LiveSession, SessionAuthority
     from tests.hermes_cli.test_webapp_socket_tickets import _SESSION, serve_webapp
     from tests.waiting import async_wait_until
     from hermes_agent.tui_gateway import server as tui_server
@@ -403,7 +403,7 @@ async def test_restart_wait_lets_a_webapp_tab_dial_back_in_to_answer_the_parked_
 async def test_restart_wait_admits_a_browser_ticket_only_where_its_gate_redeems_it(tmp_path, monkeypatch):
     """Off the Webapp the loopback dashboard gate takes the legacy ``?token=`` and never redeems a
     ticket, so a ticket-shaped subprotocol beside it is still closed 1013 during the wait."""
-    from gateway.run_api import GatewayRuntimeAPI
+    from hermes_agent.gateway.run_api import GatewayRuntimeAPI
     from tests.hermes_cli.test_webapp_socket_tickets import _TOKEN, serve_webapp
 
     web = serve_webapp(tmp_path, monkeypatch).server

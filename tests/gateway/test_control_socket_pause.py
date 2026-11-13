@@ -16,7 +16,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.control_socket import (
+from hermes_agent.gateway.control_socket import (
     GatewayControlServer,
     pause_gateway_for_update,
     query_gateway_control,

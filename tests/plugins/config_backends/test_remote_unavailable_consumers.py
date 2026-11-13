@@ -28,7 +28,7 @@ def _outage(*_a, **_kw):
 
 def test_readiness_probe_reports_config_backend_unavailable(tmp_path, monkeypatch):
     """The probe whose job is to report config health reports the outage, never crashes."""
-    from gateway import readiness
+    from hermes_agent.gateway import readiness
     monkeypatch.setattr("hermes_cli.config_backend.config_exists", _outage)
     assert readiness._probe_config(tmp_path) == {"status": "degraded", "detail": "config backend unavailable"}
 
@@ -51,7 +51,7 @@ def test_cron_tick_fails_only_that_fire_and_never_runs_on_defaults(tmp_path, mon
         scheduler._load_cron_job_config({"id": "j", "model": "m"}, "j", "job")
 
     # Through the real run_job as the fire's owner: the pre-agent gates pass, then the read refuses.
-    monkeypatch.setattr("gateway.session_cron.current_execution", lambda: (None, "s", "j", "fire"))
+    monkeypatch.setattr("hermes_agent.gateway.session_cron.current_execution", lambda: (None, "s", "j", "fire"))
     monkeypatch.setattr(scheduler, "_prepare_job_prompt", lambda *a, **k: (None, "do the thing"))
     monkeypatch.setattr(scheduler, "_reload_dotenv_and_publish_delivery_target", lambda job: None)
     monkeypatch.setattr(scheduler, "_get_hermes_home", lambda: tmp_path)
@@ -178,7 +178,7 @@ def test_gateway_turn_owner_contains_the_outage_and_notifies():
     """A platform turn that hits the outage notifies the user and ends that turn only: re-raised,
     a SystemExit out of the background task stops the gateway's event loop."""
     from tests.gateway.test_baseexception_turn_notify import _event, _make_adapter, _raising_handler
-    from gateway.session import build_session_key
+    from hermes_agent.gateway.session import build_session_key
     adapter = _make_adapter(_raising_handler(ConfigBackendUnavailable(OUTAGE)))
     event = _event()
     asyncio.run(adapter._process_message_background(event, build_session_key(event.source)))
@@ -190,7 +190,7 @@ def test_gateway_api_server_answers_503():
     pytest.importorskip("aiohttp")
     from aiohttp import web
     from aiohttp.test_utils import TestClient, TestServer
-    from gateway.platforms.api_server_config_guard import config_unavailable_middleware
+    from hermes_agent.gateway.platforms.api_server_config_guard import config_unavailable_middleware
 
     async def handler(_request):
         _outage()
@@ -209,7 +209,7 @@ def test_gateway_api_server_answers_503():
 def test_gateway_profile_reconcile_parks_the_profile(monkeypatch, tmp_path):
     """Serving a new multiplexed profile whose first config fetch fails parks that profile (the
     rescan retries it) instead of ending the reconcile watcher and the loop."""
-    from gateway import run_profile_reconcile as rpr
+    from hermes_agent.gateway import run_profile_reconcile as rpr
     released = []
 
     class Runner(rpr.GatewayProfileReconcileMixin):
@@ -218,9 +218,9 @@ def test_gateway_profile_reconcile_parks_the_profile(monkeypatch, tmp_path):
     async def serve(runner, name, home):
         _outage()
 
-    monkeypatch.setattr("gateway.run_runtime.reserve_profile_home", lambda *a: None)
-    monkeypatch.setattr("gateway.run_runtime.release_profile_home", lambda runner, home: released.append(home))
-    monkeypatch.setattr("gateway.run_runtime.serve_profile_runtime", serve)
+    monkeypatch.setattr("hermes_agent.gateway.run_runtime.reserve_profile_home", lambda *a: None)
+    monkeypatch.setattr("hermes_agent.gateway.run_runtime.release_profile_home", lambda runner, home: released.append(home))
+    monkeypatch.setattr("hermes_agent.gateway.run_runtime.serve_profile_runtime", serve)
     verdict = asyncio.run(Runner()._serve_profile_runtime("work", Path(tmp_path)))
     assert verdict and "HTTP 503" in verdict and released == [Path(tmp_path)]
 

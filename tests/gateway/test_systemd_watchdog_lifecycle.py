@@ -4,8 +4,8 @@ from __future__ import annotations
 
 
 
-from gateway.config import GatewayConfig
-from gateway.run import GatewayRunner
+from hermes_agent.gateway.config import GatewayConfig
+from hermes_agent.gateway.run import GatewayRunner
 
 
 class _FakeWatchdog:
@@ -38,7 +38,7 @@ def _bare_runner(*, seconds: int, running: bool = True) -> GatewayRunner:
 
 def test_runner_starts_watchdog_only_after_running(monkeypatch):
     _FakeWatchdog.instances.clear()
-    monkeypatch.setattr("gateway.systemd_notify.SystemdWatchdog", _FakeWatchdog)
+    monkeypatch.setattr("hermes_agent.gateway.systemd_notify.SystemdWatchdog", _FakeWatchdog)
     runner = _bare_runner(seconds=120, running=True)
 
     assert runner._start_systemd_watchdog() is True

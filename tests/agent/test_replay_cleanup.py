@@ -1,6 +1,6 @@
 """Tests for agent.replay_cleanup — shared replay-tail sanitizers.
 
-These functions were extracted from gateway/run.py so every resume surface
+These functions were extracted from hermes_agent/gateway/run.py so every resume surface
 (messaging gateway AND TUI/WebUI gateway) strips poisoned tool-call tails the
 same way. Regression coverage for #29086 (WebUI session permanently stuck
 because the dangling tool-call tail was replayed on every resume).

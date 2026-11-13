@@ -467,7 +467,7 @@ async def test_no_proxy_custom_base_url_is_reached_directly(tmp_path, monkeypatc
     """A self-hosted Bot API server in NO_PROXY is reached directly even with HTTPS_PROXY set: the
     adapter's request builder decided "no proxy" for it, and the transport must not re-resolve the
     proxy against api.telegram.org and route the base_url host through it (#47188)."""
-    from gateway.config import PlatformConfig
+    from hermes_agent.gateway.config import PlatformConfig
     from plugins.platforms.telegram.adapter import TelegramAdapter
 
     server_ctx, client_ctx = _tls_pair(tmp_path)

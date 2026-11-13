@@ -81,7 +81,7 @@ def test_keyless_worker_reads_its_own_profile_home_not_the_default(tmp_path, mon
     """The owner launches a secondary profile's worker with that profile's env (``_worker_env``);
     the worker's resolution then sees its own key, never the launch (default) profile's."""
     import os
-    from gateway.session_managed_worker import _worker_env
+    from hermes_agent.gateway.session_managed_worker import _worker_env
     default = tmp_path / '.hermes'
     profile = default / 'profiles' / 'kb5'
     profile.mkdir(parents=True)
@@ -221,7 +221,7 @@ def test_keyless_worker_credential_failure_keeps_the_kanban_start_exit(tmp_path,
     """An AuthError from the key-less worker's own route resolution goes through the worker's real
     start-failure path (``execute`` -> ``_construct_agent`` -> ``record_start_failure``): a quota wall
     books 75, a re-login 78, and the agent is never built."""
-    from gateway import session_kanban
+    from hermes_agent.gateway import session_kanban
     from tests.gateway.test_kanban_result_exit import _bound_claim
     path, context = _bound_claim(tmp_path / 'kanban', monkeypatch)
     frame = _minimax_frame(tmp_path, monkeypatch)
@@ -275,7 +275,7 @@ def test_primary_auth_failure_reaches_the_turns_refreshed_fallback_chain(tmp_pat
 
 
 def test_primary_auth_failure_with_an_unusable_turn_chain_keeps_the_kanban_start_exit(tmp_path, monkeypatch):
-    from gateway import session_kanban
+    from hermes_agent.gateway import session_kanban
     from hermes_cli import kanban_db as kb
     from hermes_cli.auth import AuthError
     from tests.gateway.test_kanban_result_exit import _bound_claim

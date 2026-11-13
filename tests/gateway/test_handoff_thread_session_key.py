@@ -28,9 +28,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from agent.conversation_compression import CONTEXT_OVERFLOW_BLOCKED_WARNING_TEMPLATE
-from gateway.config import GatewayConfig, HomeChannel, Platform, PlatformConfig
-from gateway.run import GatewayRunner, _prepare_gateway_status_message
-from gateway.session import SessionSource, build_session_key
+from hermes_agent.gateway.config import GatewayConfig, HomeChannel, Platform, PlatformConfig
+from hermes_agent.gateway.run import GatewayRunner, _prepare_gateway_status_message
+from hermes_agent.gateway.session import SessionSource, build_session_key
 
 
 def _organic_discord_thread_key(thread_id: str, parent_id: str, user_id: str) -> str:
@@ -117,7 +117,7 @@ def _handoff_destination(platform: Platform, channel_id: str, thread_id: str, sc
     runner.config = config
     runner.adapters = {platform: adapter}
     runner.session_store = None
-    with patch("gateway.delivery.resolve_delivery_transport",
+    with patch("hermes_agent.gateway.delivery.resolve_delivery_transport",
                lambda *_a: SimpleNamespace(adapter=adapter, send=AsyncMock())):
         dest = asyncio.run(runner._handoff_resolve_destination(
             {"id": "cli-session", "title": "work", "handoff_platform": platform.value}, profile_name=None))

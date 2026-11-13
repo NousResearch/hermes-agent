@@ -20,11 +20,11 @@ memory tool output.
 
 class TestSourceLinesAreClamped:
     def test_gateway_run_clamped(self):
-        # The /usage stats handler was extracted from gateway/run.py into
-        # gateway/slash_commands.py and then gateway/slash_commands_status.py.
+        # The /usage stats handler was extracted from hermes_agent/gateway/run.py into
+        # hermes_agent/gateway/slash_commands.py and then hermes_agent/gateway/slash_commands_status.py.
         # Assert the clamp intent behaviourally: the shared ``_pct`` helper every
         # gateway context gauge goes through clamps at 100 and guards a zero window.
-        from gateway.slash_commands_status import _pct
+        from hermes_agent.gateway.slash_commands_status import _pct
 
         assert _pct(210_000, 200_000) == 100
         assert _pct(30_000, 200_000) == 15

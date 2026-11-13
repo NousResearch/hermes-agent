@@ -60,7 +60,7 @@ def client(homes):
 def test_a_gateway_block_for_a_profile_plugin_stays_in_that_profile(client, homes):
     """A ``gateway.<plugin id>`` block next to a token-free built-in must not register the profile's
     plugin process-wide while the dashboard reads the built-in's status."""
-    from gateway.config import Platform
+    from hermes_agent.gateway.config import Platform
 
     _, work = homes
     (work / "config.yaml").write_text(yaml.safe_dump({
@@ -81,7 +81,7 @@ def test_a_gateway_block_for_a_profile_plugin_stays_in_that_profile(client, home
 def test_a_managed_gateway_block_for_a_profile_plugin_stays_in_that_profile(client, homes, tmp_path, monkeypatch):
     """The administrator's config goes through the same filtered steps: a managed ``gateway.<plugin id>``
     block must not register the profile's plugin process-wide either."""
-    from gateway.config import Platform
+    from hermes_agent.gateway.config import Platform
     from hermes_cli import managed_scope
 
     _, work = homes

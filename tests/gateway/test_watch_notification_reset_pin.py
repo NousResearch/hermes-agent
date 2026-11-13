@@ -12,12 +12,12 @@ from tests.waiting import async_wait_until
 
 
 async def _gateway(monkeypatch):
-    from gateway.config import GatewayConfig, Platform, PlatformConfig
-    from gateway.platforms.base import SendResult
-    from gateway.platforms.event import MessageEvent
-    from gateway.run import GatewayRunner
-    from gateway.session_results import execution_result
-    from gateway.session_authority import SessionAuthority, initialize_session_authority
+    from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+    from hermes_agent.gateway.platforms.base import SendResult
+    from hermes_agent.gateway.platforms.event import MessageEvent
+    from hermes_agent.gateway.run import GatewayRunner
+    from hermes_agent.gateway.session_results import execution_result
+    from hermes_agent.gateway.session_authority import SessionAuthority, initialize_session_authority
     from plugins.platforms.discord.adapter import DiscordAdapter
 
     monkeypatch.setenv('DISCORD_ALLOWED_USERS', '42')
@@ -67,7 +67,7 @@ def _notice(entry, pinned_session_id, kind='watch_match'):
 
 def _restart_wait(runner):
     """The restart's after-turn wait: the authority refuses new automation ``runtime_draining``."""
-    from gateway.drain_control import open_restart_wait
+    from hermes_agent.gateway.drain_control import open_restart_wait
     runner._running = runner._draining = True
     open_restart_wait(runner)
 
@@ -89,7 +89,7 @@ async def test_notice_pinned_to_a_reset_session_is_dropped_once(monkeypatch, cap
         pending = queue.Queue()
         pending.put(_notice(entry, retired, kind))
 
-        with caplog.at_level(logging.WARNING, logger='gateway.run'):
+        with caplog.at_level(logging.WARNING, logger='hermes_agent.gateway.run'):
             await runner._drain_watch_notifications(pending)
 
         assert pending.empty(), 'a notice the closed session can never admit must not be requeued'
@@ -116,7 +116,7 @@ async def test_notice_pinned_to_a_compression_ancestor_still_admits(monkeypatch,
         pending = queue.Queue()
         pending.put(_notice(entry, parent))
 
-        with caplog.at_level(logging.WARNING, logger='gateway.run'):
+        with caplog.at_level(logging.WARNING, logger='hermes_agent.gateway.run'):
             await runner._drain_watch_notifications(pending)
 
         assert pending.empty()
@@ -130,7 +130,7 @@ async def test_notice_pinned_to_a_compression_ancestor_still_admits(monkeypatch,
 async def _foreign_pin(runner):
     """A live session of another chat: the authority refuses the notice, but nothing proves the pin
     gone (its owner may still appear, d6635ffe03b), so the refusal stays retryable."""
-    from gateway.config import Platform
+    from hermes_agent.gateway.config import Platform
     adapter = runner.adapters[Platform.DISCORD]
     other = adapter.build_source(chat_id='43', chat_type='dm', user_id='42')
     return runner.session_store.get_or_create_session(other).session_id
@@ -149,8 +149,8 @@ async def test_refused_notice_backs_off_and_only_a_permanent_refusal_drops(monke
     proven-permanent refusal (``not_found``: the route holds no session) drops it at the cap. A
     notice pinned to another chat's live session (``admission_conflict``) or refused by a restart's
     after-turn wait (``runtime_draining``) is never dropped: it waits however long it takes."""
-    from gateway import run_notifications
-    from gateway.run_notifications import _MAX_COMPLETION_INJECTION_ATTEMPTS
+    from hermes_agent.gateway import run_notifications
+    from hermes_agent.gateway.run_notifications import _MAX_COMPLETION_INJECTION_ATTEMPTS
     runner, authority, entry = await _gateway(monkeypatch)
     try:
         pinned = {'permanent': lambda: _route_gone(runner, entry), 'transient': lambda: entry.session_id}.get(
@@ -162,7 +162,7 @@ async def test_refused_notice_backs_off_and_only_a_permanent_refusal_drops(monke
         pending.put(_notice(entry, pinned))
         clock = install_module_clock(monkeypatch, run_notifications)
 
-        with caplog.at_level(logging.WARNING, logger='gateway.run'):
+        with caplog.at_level(logging.WARNING, logger='hermes_agent.gateway.run'):
             for _ in range(2000):  # ~33 simulated minutes of drain ticks
                 if pending.empty():
                     break
@@ -222,7 +222,7 @@ async def test_permanently_refused_completion_converges_to_dropped_across_restar
     delivery attempt in the ledger, so the count survives restarts: three processes that each
     replay the row and retry it for a few minutes converge to ``dropped`` instead of each refunding
     it (#141153)."""
-    from gateway import run_notifications
+    from hermes_agent.gateway import run_notifications
     from tools import async_delegation as delegation
     from tools.process_registry import process_registry
     runner, authority, entry = await _gateway(monkeypatch)
@@ -249,7 +249,7 @@ async def test_live_pinned_completion_survives_a_long_restart_wait(monkeypatch):
     """A completion pinned to the LIVE session that the authority refuses only because a restart's
     after-turn wait is open (``runtime_draining``, up to ``restart_after_turn_timeout``) spends no
     delivery attempt however long the wait lasts, and is delivered once admission reopens."""
-    from gateway import run_notifications
+    from hermes_agent.gateway import run_notifications
     from tools import async_delegation as delegation
     from tools.process_registry import process_registry
     runner, authority, entry = await _gateway(monkeypatch)
@@ -277,7 +277,7 @@ async def test_foreign_pinned_completion_spends_nothing_across_restarts(monkeypa
     """A completion pinned to another chat's live session is refused ``admission_conflict`` but
     nothing proves its owner gone (d6635ffe03b): replayed by three processes for minutes each, it
     spends no delivery attempt, unlike a proven-permanent refusal (#141153)."""
-    from gateway import run_notifications
+    from hermes_agent.gateway import run_notifications
     from tools import async_delegation as delegation
     from tools.process_registry import process_registry
     runner, authority, entry = await _gateway(monkeypatch)

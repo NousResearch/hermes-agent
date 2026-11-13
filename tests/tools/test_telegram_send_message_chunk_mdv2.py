@@ -49,8 +49,8 @@ def _no_proxy(monkeypatch: pytest.MonkeyPatch) -> None:
         "http_proxy", "ALL_PROXY", "all_proxy", "NO_PROXY", "no_proxy",
     ):
         monkeypatch.delenv(var, raising=False)
-    monkeypatch.setattr("gateway.run._gateway_runner_ref", lambda: None, raising=False)
-    monkeypatch.setattr("gateway.platforms.base._detect_macos_system_proxy", lambda: None)
+    monkeypatch.setattr("hermes_agent.gateway.run._gateway_runner_ref", lambda: None, raising=False)
+    monkeypatch.setattr("hermes_agent.gateway.platforms.base._detect_macos_system_proxy", lambda: None)
 
 
 def _long_markdown_message(repeats: int = 250) -> str:
@@ -100,7 +100,7 @@ def test_chunked_code_fence_indicator_separated(monkeypatch: pytest.MonkeyPatch)
     units longer than the raw one, so every chunk must still fit Telegram's 4096
     limit -- worst case: 100+ chunks, each hard-split inside the fence.
     """
-    from gateway.platforms.base import utf16_len
+    from hermes_agent.gateway.platforms.base import utf16_len
     from plugins.platforms.telegram.standalone import _send_telegram
 
     _no_proxy(monkeypatch)

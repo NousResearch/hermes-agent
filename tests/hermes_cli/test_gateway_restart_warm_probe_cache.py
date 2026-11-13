@@ -11,10 +11,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway import control_socket
-from gateway import host_attach
-from gateway import host_rendezvous as hr
-from gateway import status as gateway_status
+from hermes_agent.gateway import control_socket
+from hermes_agent.gateway import host_attach
+from hermes_agent.gateway import host_rendezvous as hr
+from hermes_agent.gateway import status as gateway_status
 from hermes_cli import gateway as gw
 from hermes_constants import get_hermes_home
 

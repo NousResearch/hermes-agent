@@ -8,7 +8,7 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
-import gateway.status as _gw_status
+import hermes_agent.gateway.status as _gw_status
 import hermes_cli.web_server_gateway as _web_server_gateway
 import plugins.dashboard_auth.basic as basic_plugin
 from hermes_cli import web_server

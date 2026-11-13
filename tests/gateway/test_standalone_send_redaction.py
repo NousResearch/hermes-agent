@@ -9,8 +9,8 @@ This drives two real senders end-to-end with a transport that raises a secret-be
 import pytest
 
 import agent.redact as _redact
-from gateway.config import PlatformConfig
-from gateway.platforms._shared import send_error
+from hermes_agent.gateway.config import PlatformConfig
+from hermes_agent.gateway.platforms._shared import send_error
 from tests.gateway._plugin_adapter_loader import load_plugin_adapter
 
 _FAKE_TOKEN = "hermes-test-bearer-credential-ABCDEFGHIJKLMNOPQRSTUVWX"

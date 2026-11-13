@@ -288,7 +288,7 @@ def _write_wav_bytes_as(wav_bytes: bytes, output_path: str) -> str:
 
 def _convert_to_opus(mp3_path: str) -> Optional[str]:
     """Convert any ffmpeg-readable audio file to OGG Opus next to it; None on failure."""
-    from gateway.platforms.base import transcode_to_ogg_opus
+    from hermes_agent.gateway.platforms.base import transcode_to_ogg_opus
     return transcode_to_ogg_opus(mp3_path, bitrate="48k", timeout=30, output_path=mp3_path.rsplit(".", 1)[0] + ".ogg")
 
 
@@ -314,7 +314,7 @@ def _repair_ogg_container(file_str: str) -> str:
     if container in ("ogg", "unknown"):
         return file_str
     logger.info("TTS wrote %s bytes into a .ogg path (%s) — transcoding to real Ogg/Opus", container, file_str)
-    from gateway.platforms.base import transcode_to_ogg_opus
+    from hermes_agent.gateway.platforms.base import transcode_to_ogg_opus
     repaired = transcode_to_ogg_opus(file_str, bitrate="48k", timeout=30, output_path=file_str)
     if repaired:
         return repaired

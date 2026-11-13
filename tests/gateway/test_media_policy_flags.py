@@ -42,7 +42,7 @@ def test_quoted_false_is_false_on_the_config_path(homes):
     """The routed profile's own config path: ``strict: "false"`` / ``trust_recent_files: "false"``
     (yaml.safe_dump of a str writes exactly the quoted spelling a hand edit gets)."""
     _, routed = homes
-    from gateway import media_policy
+    from hermes_agent.gateway import media_policy
 
     _write_gateway(routed, {"strict": "false", "trust_recent_files": "false"})
     assert _under(routed, media_policy.media_delivery_strict) is False
@@ -51,7 +51,7 @@ def test_quoted_false_is_false_on_the_config_path(homes):
 
 def test_quoted_truthy_strings_are_true_on_the_config_path(homes):
     _, routed = homes
-    from gateway import media_policy
+    from hermes_agent.gateway import media_policy
 
     _write_gateway(routed, {"strict": "on", "trust_recent_files": "1"})
     assert _under(routed, media_policy.media_delivery_strict) is True
@@ -67,7 +67,7 @@ def test_config_path_agrees_with_the_env_path_for_every_spelling(
     """Invariant: for any spelling, the routed profile's config answer equals the env reader's
     answer for the same value, and the plain bool spelling keeps its current reading."""
     _, routed = homes
-    from gateway import media_policy
+    from hermes_agent.gateway import media_policy
 
     _write_gateway(routed, {"strict": cfg_value, "trust_recent_files": cfg_value})
     monkeypatch.setenv("HERMES_MEDIA_DELIVERY_STRICT", str(cfg_value))
@@ -89,7 +89,7 @@ def test_unknown_config_value_takes_the_restrictive_reading(homes, stored):
     had strict ON for any non-empty string, so strict stays on and recency trust turns off, on
     the routed path and through the bridge."""
     launch, routed = homes
-    from gateway import media_policy
+    from hermes_agent.gateway import media_policy
     from hermes_cli.config import load_config
 
     _write_gateway(routed, {"strict": stored, "trust_recent_files": stored})
@@ -107,7 +107,7 @@ def test_value_an_older_config_set_stored_keeps_its_meaning(homes, stored, expec
     stored the quotes in the string, and the old bool() reading turned strict ON. After the upgrade
     the stored word must still decide both flags, on the routed path and through the bridge."""
     launch, routed = homes
-    from gateway import media_policy
+    from hermes_agent.gateway import media_policy
     from hermes_cli.config import load_config
 
     _write_gateway(routed, {"strict": stored, "trust_recent_files": stored})
@@ -124,7 +124,7 @@ def test_unset_config_keeps_the_knob_default(homes, cfg):
     """Unset or an explicit null (``hermes config set gateway.strict null``) keeps the knob default;
     ``{}`` alone never reaches the None branch, because the defaults merge fills it in."""
     _, routed = homes
-    from gateway import media_policy
+    from hermes_agent.gateway import media_policy
 
     _write_gateway(routed, cfg)
     assert _under(routed, media_policy.media_delivery_strict) is False
@@ -147,7 +147,7 @@ def test_unset_config_keeps_the_knob_default(homes, cfg):
     ],
 )
 def test_strict_env_reader_is_unchanged(homes, monkeypatch, env_value, expected):
-    from gateway import media_policy
+    from hermes_agent.gateway import media_policy
 
     monkeypatch.setenv("HERMES_MEDIA_DELIVERY_STRICT", env_value)
     assert media_policy.media_delivery_strict() is expected
@@ -169,7 +169,7 @@ def test_strict_env_reader_is_unchanged(homes, monkeypatch, env_value, expected)
     ],
 )
 def test_trust_recent_env_reader_is_unchanged(homes, monkeypatch, env_value, expected):
-    from gateway import media_policy
+    from hermes_agent.gateway import media_policy
 
     monkeypatch.setenv("HERMES_MEDIA_TRUST_RECENT_FILES", env_value)
     assert media_policy.media_delivery_trust_recent() is expected
@@ -179,7 +179,7 @@ def test_bridge_copies_the_same_reading_into_the_launch_env(homes):
     """The launch profile's bridge must bridge the quoted "false" as 0, so a shell that only
     sees the env reads the policy the operator wrote."""
     launch, _ = homes
-    from gateway import media_policy
+    from hermes_agent.gateway import media_policy
     from hermes_cli.config import load_config
 
     _write_gateway(launch, {"strict": "false", "trust_recent_files": "false"})
@@ -195,7 +195,7 @@ def test_bridge_copies_the_same_reading_into_the_launch_env(homes):
 
 def test_bridge_still_bridges_plain_bools(homes):
     launch, _ = homes
-    from gateway import media_policy
+    from hermes_agent.gateway import media_policy
     from hermes_cli.config import load_config
     import os
 
@@ -214,8 +214,8 @@ def test_cli_quoted_media_flags_enforce_strict_allowlist(homes, tmp_path, monkey
     """
     launch, _ = homes
     from hermes_cli.config import load_config, set_config_value
-    from gateway import media_policy
-    from gateway.platforms.base import validate_media_delivery_path
+    from hermes_agent.gateway import media_policy
+    from hermes_agent.gateway.platforms.base import validate_media_delivery_path
 
     monkeypatch.delenv("HERMES_MEDIA_ALLOW_DIRS", raising=False)
     _write_gateway(launch, {"strict": False, "trust_recent_files": True})

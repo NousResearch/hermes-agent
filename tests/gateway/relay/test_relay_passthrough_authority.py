@@ -11,7 +11,7 @@ import pytest
 def _interaction_senders_admitted(monkeypatch):
     """These tests cover how a Discord interaction is decoded and routed, so its sender counts as
     admitted; admission itself: test_relay_discord_command_answer_authority.py."""
-    from gateway.relay import admitted_authors
+    from hermes_agent.gateway.relay import admitted_authors
 
     monkeypatch.setattr(admitted_authors, "interaction_admitted", lambda *_args, **_kwargs: True)
 
@@ -27,12 +27,12 @@ _FRAME = {"type": "passthrough_forward", "bufferId": "b1", "forward": {
 
 @pytest.mark.asyncio
 async def test_relayed_modal_admitted_only_with_reader_proof(tmp_path, monkeypatch):
-    import gateway.run as gr
-    from gateway.config import GatewayConfig, Platform, PlatformConfig
-    from gateway.platforms.base import SendResult
-    from gateway.relay.adapter import RelayAdapter
-    from gateway.relay.ws_transport import WebSocketRelayTransport, _passthrough_from_wire
-    from gateway.session_authority import initialize_session_authority
+    import hermes_agent.gateway.run as gr
+    from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+    from hermes_agent.gateway.platforms.base import SendResult
+    from hermes_agent.gateway.relay.adapter import RelayAdapter
+    from hermes_agent.gateway.relay.ws_transport import WebSocketRelayTransport, _passthrough_from_wire
+    from hermes_agent.gateway.session_authority import initialize_session_authority
     from tests.gateway.relay.test_relay_passthrough import _desc
     from tests.waiting import async_wait_until
 

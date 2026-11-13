@@ -49,7 +49,7 @@ def test_check_only_reports_drift_without_mutation(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize('blocker', ['owner', 'ddl', 'incomplete', 'backup'])
 def test_refused_reconciliation_preserves_original(tmp_path, monkeypatch, blocker):
-    from gateway.runtime_ownership import ProfileOwnership
+    from hermes_agent.gateway.runtime_ownership import ProfileOwnership
     import hermes_agent.hermes_state_repair as repair
     import hermes_agent.hermes_state_schema as schema
 

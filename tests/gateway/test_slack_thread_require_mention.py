@@ -1,7 +1,7 @@
 import asyncio
 import os
 
-from gateway.config import PlatformConfig
+from hermes_agent.gateway.config import PlatformConfig
 from plugins.platforms.slack.adapter import SlackAdapter, _apply_yaml_config
 
 

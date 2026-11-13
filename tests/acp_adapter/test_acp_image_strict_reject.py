@@ -38,7 +38,7 @@ def _blocks(tmp_path, case):
 async def test_mislabeled_or_unadmittable_image_never_rejects_the_prompt(tmp_path, monkeypatch, case, mime):
     monkeypatch.setenv('HERMES_HOME', str(tmp_path / 'home'))
     if case == 'oversize':
-        monkeypatch.setattr('gateway.platforms.base.get_inbound_media_max_bytes', lambda: 8)
+        monkeypatch.setattr('hermes_agent.gateway.platforms.base.get_inbound_media_max_bytes', lambda: 8)
     agent = GatewayACPAgent()
     agent._gateway = _Client(agent)
     agent._snapshots['s'] = {}

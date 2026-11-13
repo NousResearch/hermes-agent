@@ -1,7 +1,7 @@
 """The classic CLI re-supplies its launch-only key on every resume (refs #134889, RV-14).
 
 An owner restart revokes launch keys and takes the same key back on ``session.resume {api_key}``
-(``gateway/session_policy.py::rebind_launch_key``; the thin client sends it). The classic CLI resumed with
+(``hermes_agent/gateway/session_policy.py::rebind_launch_key``; the thin client sends it). The classic CLI resumed with
 the session id only, at startup (``--resume`` / ``-c``), on ``/resume`` and on a reconnect, so the first
 turn after any gateway restart failed with ``launch_credentials_unavailable``.
 
@@ -42,11 +42,11 @@ class _Owners:
     """The profile's gateway across a restart: the first owner made a keyed and a keyless CLI session."""
 
     async def start(self, tmp_path, monkeypatch):
-        from gateway import run
-        from gateway.config import GatewayConfig
-        from gateway.session import SessionStore
-        from gateway.session_controls import AuthorityConnection
-        from gateway.session_local import create_local_session
+        from hermes_agent.gateway import run
+        from hermes_agent.gateway.config import GatewayConfig
+        from hermes_agent.gateway.session import SessionStore
+        from hermes_agent.gateway.session_controls import AuthorityConnection
+        from hermes_agent.gateway.session_local import create_local_session
         monkeypatch.setattr(run, '_load_gateway_config', lambda *a, **k: {'platform_toolsets': {'cli': []}})
         self.profile, self.loop, self.lives = str(tmp_path), asyncio.get_running_loop(), []
         self.identity = {'user_id': 'owner'}  # the CLI's principal on each dial
@@ -60,7 +60,7 @@ class _Owners:
         return self
 
     async def boot(self, instance_id):
-        from gateway.session_authority import initialize_session_authority
+        from hermes_agent.gateway.session_authority import initialize_session_authority
         owner = SimpleNamespace(session_store=self.store, _session_db=self.store._db, adapters={}, _draining=False,
                                 _cached_agent_for=lambda route: None, _evict_cached_agent=lambda route: None)
         owner._adapter_for_source = lambda source: owner.adapters.get(source.platform)
@@ -68,7 +68,7 @@ class _Owners:
         return self.current
 
     async def _open(self):
-        from gateway.session_controls import AuthorityConnection
+        from hermes_agent.gateway.session_controls import AuthorityConnection
         self.lives.append(_Life(AuthorityConnection(self.current, object(), self.identity), self.loop))
         return self.lives[-1]
 
@@ -84,7 +84,7 @@ class _Owners:
 
     def key_of(self, session_id):
         """What the next turn's agent build reads (``launch_key``); ``launch_credentials_unavailable`` on main."""
-        from gateway.session_policy import launch_key, policy_for_source
+        from hermes_agent.gateway.session_policy import launch_key, policy_for_source
         return launch_key(self.current, policy_for_source(self.current.runner, self.current.sessions[session_id].source))
 
     async def close(self, conn):
@@ -134,7 +134,7 @@ async def test_a_reconnect_after_a_restart_resupplies_the_launch_key(tmp_path, m
 def _refuse_the_rebind(monkeypatch, code):
     """The owner refuses the keyed resume with ``code`` where it takes the key back (a receipt read that
     fails is ``storage_unavailable``); a plain resume never gets there."""
-    from gateway import session_policy
+    from hermes_agent.gateway import session_policy
     from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
     def refuse(*_a):
@@ -312,7 +312,7 @@ async def test_branch_after_new_in_a_typed_key_cli_switches_to_the_child(tmp_pat
     fallback. Held to the typed key, the attach raised the ``--api-key`` mismatch after the owner had
     committed the child: the CLI stayed on the parent, and each retry made another child."""
     from datetime import datetime
-    from gateway import run
+    from hermes_agent.gateway import run
     from hermes_cli.cli_init_mixin import CLIInitMixin
     owners = await _Owners().start(tmp_path, monkeypatch)
     monkeypatch.setattr(run, '_load_gateway_config', lambda *a, **k: {'platform_toolsets': {'cli': []}, 'model': 'm'})

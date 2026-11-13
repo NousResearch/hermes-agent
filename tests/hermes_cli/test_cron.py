@@ -606,7 +606,7 @@ class TestStatusSurfacesDeadScheduler:
         monkeypatch.setattr(
             "hermes_cli.gateway.named_profile_served_by_running_multiplexer", lambda: None
         )
-        monkeypatch.setattr("gateway.status.is_gateway_runtime_lock_active", lambda: False)
+        monkeypatch.setattr("hermes_agent.gateway.status.is_gateway_runtime_lock_active", lambda: False)
 
     def _park_next_run(self, job_id, when):
         jobs = load_jobs()

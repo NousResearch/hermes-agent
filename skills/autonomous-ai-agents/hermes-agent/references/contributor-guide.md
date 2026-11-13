@@ -12,6 +12,8 @@ hermes-agent/
 ├── cli.py                # Interactive CLI (HermesCLI)
 ├── hermes_agent/         # the Python package
 │   ├── hermes_state.py       # SQLite session store
+│   ├── gateway/              # Messaging gateway
+│   │   └── platforms/        # Platform adapters (telegram, discord, etc.)
 │   └── cron/                 # Job scheduler
 ├── agent/                # Prompt builder, context compression, memory, model routing, credential pooling, skill dispatch
 ├── hermes_cli/           # CLI subcommands, config, setup, commands
@@ -20,8 +22,6 @@ hermes-agent/
 │   └── main.py           # CLI entry point and argparse
 ├── tools/                # One file per tool
 │   └── registry.py       # Central tool registry
-├── gateway/              # Messaging gateway
-│   └── platforms/        # Platform adapters (telegram, discord, etc.)
 ├── tests/                # Extensive pytest suite (run via scripts/run_tests.sh)
 └── website/              # Docusaurus docs site
 ```
@@ -67,7 +67,7 @@ never hardcode `~/.hermes`. For custom/local-only tools, write a plugin in
 
 1. Add `CommandDef` to `COMMAND_REGISTRY` in `hermes_cli/commands.py`
 2. Add handler in `cli.py` → `process_command()`
-3. (Optional) Add gateway handler in `gateway/run.py`
+3. (Optional) Add gateway handler in `hermes_agent/gateway/run.py`
 
 All consumers (help text, autocomplete, Telegram menu, Slack mapping) derive from the central registry automatically.
 

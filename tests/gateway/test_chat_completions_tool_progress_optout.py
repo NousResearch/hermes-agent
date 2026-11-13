@@ -7,8 +7,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 def _stream_body(platform_cfg):
     from aiohttp import web
-    from gateway.config import PlatformConfig
-    from gateway.platforms.api_server import APIServerAdapter, ThreadSafeAsyncQueue
+    from hermes_agent.gateway.config import PlatformConfig
+    from hermes_agent.gateway.platforms.api_server import APIServerAdapter, ThreadSafeAsyncQueue
 
     # from_dict is the production loader: a top-level platform key lands in ``extra``.
     adapter = APIServerAdapter(PlatformConfig.from_dict(platform_cfg))
@@ -29,7 +29,7 @@ def _stream_body(platform_cfg):
         resp.prepare = AsyncMock()
         req = MagicMock()
         req.headers = {}
-        with patch("gateway.platforms.api_server.web.StreamResponse", return_value=resp):
+        with patch("hermes_agent.gateway.platforms.api_server.web.StreamResponse", return_value=resp):
             await adapter._write_sse_chat_completion(req, "cmpl-1", "m", 1, stream_q, agent_task)
 
     asyncio.run(run())

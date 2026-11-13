@@ -14,7 +14,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from gateway.config import Platform, PlatformConfig
+from hermes_agent.gateway.config import Platform, PlatformConfig
 
 
 class _AsyncResponseContext:
@@ -41,8 +41,8 @@ class TestConfigYamlBridging:
         config_yaml = tmp_path / "config.yaml"
         config_yaml.write_text('whatsapp:\n  reply_prefix: "Custom Bot"\n')
 
-        with patch("gateway.config.get_hermes_home", return_value=tmp_path):
-            from gateway.config import load_gateway_config
+        with patch("hermes_agent.gateway.config.get_hermes_home", return_value=tmp_path):
+            from hermes_agent.gateway.config import load_gateway_config
             # Need to also patch WHATSAPP_ENABLED so the platform exists
             with patch.dict("os.environ", {"WHATSAPP_ENABLED": "true"}, clear=False):
                 config = load_gateway_config()
@@ -56,8 +56,8 @@ class TestConfigYamlBridging:
         config_yaml = tmp_path / "config.yaml"
         config_yaml.write_text('whatsapp:\n  reply_prefix: ""\n')
 
-        with patch("gateway.config.get_hermes_home", return_value=tmp_path):
-            from gateway.config import load_gateway_config
+        with patch("hermes_agent.gateway.config.get_hermes_home", return_value=tmp_path):
+            from hermes_agent.gateway.config import load_gateway_config
             with patch.dict("os.environ", {"WHATSAPP_ENABLED": "true"}, clear=False):
                 config = load_gateway_config()
 

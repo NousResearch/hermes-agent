@@ -9,8 +9,8 @@ from unittest.mock import patch
 
 import pytest
 
-from gateway.config import Platform
-from gateway.status import flush_runtime_status, publish_runtime_status
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.status import flush_runtime_status, publish_runtime_status
 from tests.gateway.test_multiplex_hot_serve import _mkprofile, _runner
 
 

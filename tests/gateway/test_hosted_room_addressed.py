@@ -2,8 +2,8 @@
 
 import pytest
 
-from gateway import hosted_room_discussion as discussion
-from gateway import hosted_rooms
+from hermes_agent.gateway import hosted_room_discussion as discussion
+from hermes_agent.gateway import hosted_rooms
 from tests.gateway.test_hosted_room_discussion import (
     GATEWAY_ID,
     LOCAL_PROFILES,

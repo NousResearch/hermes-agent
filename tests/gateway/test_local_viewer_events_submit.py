@@ -10,16 +10,16 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from gateway.config import Platform
+from hermes_agent.gateway.config import Platform
 
 from tests.gateway.test_surface_admission import _authority
 
 
 @pytest.mark.asyncio
 async def test_cli_turn_fields_are_admitted_and_bound_to_their_own_turn(tmp_path, monkeypatch):
-    from gateway.session_cli_turn import cli_turn
-    from gateway.session_controls import AuthorityConnection
-    from gateway.session_ingress import admission_author
+    from hermes_agent.gateway.session_cli_turn import cli_turn
+    from hermes_agent.gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway.session_ingress import admission_author
     from hermes_agent.hermes_state_runtime import list_session_admissions
 
     seen = []
@@ -106,9 +106,9 @@ def _gateway_runner():
 
 
 def _run_turn(runner, admission_id="adm-1"):
-    from gateway.run_turn_runner import TurnRunner
-    from gateway.session import SessionSource
-    from gateway.turn_context import TurnContext
+    from hermes_agent.gateway.run_turn_runner import TurnRunner
+    from hermes_agent.gateway.session import SessionSource
+    from hermes_agent.gateway.turn_context import TurnContext
     ctx = TurnContext(
         source=SessionSource(platform=Platform.LOCAL, chat_id="c", user_id="u"),
         message="clean text", history=[], session_id="sid", session_key="key", user_config={},
@@ -119,7 +119,7 @@ def _run_turn(runner, admission_id="adm-1"):
 
 
 def test_the_turn_sends_api_text_persists_the_clean_text_and_runs_the_one_turn_model():
-    from gateway.session_cli_turn import cli_turn_scope
+    from hermes_agent.gateway.session_cli_turn import cli_turn_scope
     from hermes_cli.model_switch import ModelSwitchResult
 
     switched = ModelSwitchResult(success=True, new_model="gpt-x", target_provider="openrouter",
@@ -150,7 +150,7 @@ def test_the_turn_sends_api_text_persists_the_clean_text_and_runs_the_one_turn_m
 
 
 def test_an_unresolvable_one_turn_model_fails_the_turn_without_running_it():
-    from gateway.session_cli_turn import cli_turn_scope
+    from hermes_agent.gateway.session_cli_turn import cli_turn_scope
     from hermes_cli.model_switch import ModelSwitchResult
 
     _RecordingAgent.built = []
@@ -174,10 +174,10 @@ class _SteeredAgent(_RecordingAgent):
 
 @pytest.mark.parametrize("classic", [True, False])
 def test_a_classic_cli_receipt_carries_the_run_conversation_keys(classic):
-    from gateway.run_turn_runner import TurnRunner
-    from gateway.session import SessionSource
-    from gateway.session_results import execution_result
-    from gateway.turn_context import TurnContext
+    from hermes_agent.gateway.run_turn_runner import TurnRunner
+    from hermes_agent.gateway.session import SessionSource
+    from hermes_agent.gateway.session_results import execution_result
+    from hermes_agent.gateway.turn_context import TurnContext
     ctx = TurnContext(
         source=SessionSource(platform=Platform.LOCAL, chat_id="c", user_id="u"),
         message="hi", history=[], session_id="sid", session_key="key", user_config={},
@@ -186,7 +186,7 @@ def test_a_classic_cli_receipt_carries_the_run_conversation_keys(classic):
     captured = {}
     token = execution_result.set(captured)
     try:
-        with patch("gateway.session_cli_turn.classic_cli_turn", return_value=classic):
+        with patch("hermes_agent.gateway.session_cli_turn.classic_cli_turn", return_value=classic):
             delivered = TurnRunner(_gateway_runner(), ctx).run_sync()
     finally:
         execution_result.reset(token)
@@ -208,19 +208,19 @@ def test_a_classic_cli_receipt_carries_the_run_conversation_keys(classic):
 
 
 def test_only_a_classic_cli_surface_session_is_a_classic_cli_turn():
-    from gateway.session_cli_turn import classic_cli_turn
+    from hermes_agent.gateway.session_cli_turn import classic_cli_turn
     turn = SimpleNamespace(_approval_owner=("authority", "s", 1), _runner=object(),
                            _ctx=SimpleNamespace(source=SimpleNamespace(platform=Platform.LOCAL)))
     for platform, expected in (("cli", True), ("tui", False), ("desktop", False)):
-        with patch("gateway.session_policy.policy_for_source", return_value=SimpleNamespace(platform=platform)):
+        with patch("hermes_agent.gateway.session_policy.policy_for_source", return_value=SimpleNamespace(platform=platform)):
             assert classic_cli_turn(turn) is expected
     turn._ctx.source.platform = Platform.TELEGRAM
     assert classic_cli_turn(turn) is False
 
 
 def test_a_finite_turn_answers_clarify_headless_at_once():
-    from gateway.run_turn_runner import TurnRunner
-    from gateway.session_finite import FINITE_CLARIFY_NOTICE, finite_turn_scope
+    from hermes_agent.gateway.run_turn_runner import TurnRunner
+    from hermes_agent.gateway.session_finite import FINITE_CLARIFY_NOTICE, finite_turn_scope
     turn = object.__new__(TurnRunner)
     turn._ask_clarify_question = lambda *a, **k: pytest.fail("a finite viewer can never answer")
     questions = [{"qid": "q1", "question": "Which env?", "choices": ["dev", "prod"], "multi_select": False}]
@@ -234,7 +234,7 @@ def test_a_finite_turn_answers_clarify_headless_at_once():
 
 def test_a_finite_managed_worker_answers_clarify_headless():
     from agent.managed_worker import WorkerControls
-    from gateway.session_finite import finite_turn_scope
+    from hermes_agent.gateway.session_finite import finite_turn_scope
     controls = object.__new__(WorkerControls)
     controls._ask = lambda *a: pytest.fail("a finite viewer can never answer")
     with finite_turn_scope(True):
@@ -245,8 +245,8 @@ def test_a_one_turn_model_never_becomes_the_sessions_stored_model():
     """``/moa`` and ``/model --once`` run one admission on another route. The turn's post-run sync
     wrote the executing agent's model to the session row (``default``, the MoA preset), so a /resume
     right after restored onto the preset. Only a turn on the session's own route records its model."""
-    from gateway.run_turn_prepare import GatewayTurnPrepareMixin
-    from gateway.session_cli_turn import cli_turn_scope
+    from hermes_agent.gateway.run_turn_prepare import GatewayTurnPrepareMixin
+    from hermes_agent.gateway.session_cli_turn import cli_turn_scope
     from hermes_cli.model_switch import ModelSwitchResult
 
     written = []

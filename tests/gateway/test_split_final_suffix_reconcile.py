@@ -15,11 +15,11 @@ import asyncio
 
 import pytest
 
-from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
+from hermes_agent.gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
 
 
 def _make_adapter():
-    from gateway.platforms.base import BasePlatformAdapter, SendResult
+    from hermes_agent.gateway.platforms.base import BasePlatformAdapter, SendResult
 
     A = type("SplitAdapter", (BasePlatformAdapter,), {"MAX_MESSAGE_LENGTH": 4096})
     A.__abstractmethods__ = frozenset()

@@ -84,7 +84,7 @@ def _live_adapter(platform, *, lookup_failed_warning=None):
     yields ``None`` (fail closed → the caller's scoped standalone sender or an error), never the
     default bot. Same resolver shape as ``hermes_cli/platform_actions.py::_resolve_adapter``."""
     try:
-        from gateway.run import _gateway_runner_ref
+        from hermes_agent.gateway.run import _gateway_runner_ref
         runner = _gateway_runner_ref()
     except Exception:
         runner = None
@@ -105,7 +105,7 @@ def _live_adapter(platform, *, lookup_failed_warning=None):
 def _plugin_standalone_sender(platform_name, *, label=None, discover=True):
     """``(standalone_sender_fn, None)`` for a registered plugin or ``(None, error_dict)``;
     ``discover`` runs the idempotent plugin scan first."""
-    from gateway.platform_registry import platform_registry
+    from hermes_agent.gateway.platform_registry import platform_registry
     if discover:
         from hermes_cli.plugins import discover_plugins
         discover_plugins()
@@ -149,7 +149,7 @@ async def _resolve_slack_user_target(token, chat_id):
     except ImportError:
         return None, {"error": "aiohttp not installed. Run: "
                       f"{install_hint('messaging')}"}
-    from gateway.platforms.base import describe_proxy_error, resolve_proxy_url, proxy_kwargs_for_aiohttp
+    from hermes_agent.gateway.platforms.base import describe_proxy_error, resolve_proxy_url, proxy_kwargs_for_aiohttp
     proxy = resolve_proxy_url()
     try:
         _sess_kw, _req_kw = proxy_kwargs_for_aiohttp(proxy)
@@ -202,7 +202,7 @@ async def _send_matrix_via_adapter(pconfig, chat_id, message, media_files=None, 
     """
     media_files = media_files or []
     metadata = {"thread_id": thread_id} if thread_id else None
-    from gateway.config import Platform
+    from hermes_agent.gateway.config import Platform
     _, live_adapter = _live_adapter(Platform.MATRIX, lookup_failed_warning=(
         "Matrix: live gateway adapter lookup failed; falling back to an "
         "ephemeral connect (may re-init E2EE per send)"))

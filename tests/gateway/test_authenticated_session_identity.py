@@ -58,7 +58,7 @@ def connection(authority, session, monkeypatch):
     from hermes_cli import web_server as web
     from hermes_cli.dashboard_auth.routes import api_auth_ws_ticket
     from hermes_cli.web_server_chat import _ws_auth_reason
-    from gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway.session_controls import AuthorityConnection
     # Exercise the production ticket endpoint and upgrade stamp, not a made-up SessionActor.
     monkeypatch.setattr(web.app.state, 'auth_required', True, raising=False)
     request = Request({'type': 'http', 'app': web.app, 'state': {'session': session},
@@ -68,12 +68,12 @@ def connection(authority, session, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_every_bundled_sign_in_acts_as_the_owner_and_keeps_durable_receipts(tmp_path, monkeypatch, oidc):
-    from gateway import run
-    from gateway.config import GatewayConfig
-    from gateway.session import SessionStore
-    from gateway.session_authority import initialize_session_authority
-    from gateway.session_local import create_local_session
-    from gateway.session_contract import SessionActor
+    from hermes_agent.gateway import run
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.session import SessionStore
+    from hermes_agent.gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.session_local import create_local_session
+    from hermes_agent.gateway.session_contract import SessionActor
     from hermes_cli.web_server_sessions import _session_mutation_context
     from hermes_agent.hermes_state_runtime import RuntimeStoreError
     from plugins.dashboard_auth.basic import BasicAuthProvider, hash_password
@@ -102,18 +102,18 @@ async def test_every_bundled_sign_in_acts_as_the_owner_and_keeps_durable_receipt
     password = basic.complete_password_login(username='user-a', password='fixture-password')
     owner, by_password = await actor(oauth), await actor(password)
     # The Webapp is single-user: whichever bundled sign-in opened it, the tab acts as the machine
-    # owner, the same subject native Desktop's ticket carries (gateway.owner_identity).
-    from gateway.owner_identity import host_owner_subject
+    # owner, the same subject native Desktop's ticket carries (hermes_agent.gateway.owner_identity).
+    from hermes_agent.gateway.owner_identity import host_owner_subject
     assert owner.subject == by_password.subject == host_owner_subject()
     params = {'request_id': 'same-request', 'source': 'gui', 'cwd': str(tmp_path), 'model': 'fixture', 'toolsets': []}
     ref = create_local_session(authority, owner, params)
-    from gateway.session_mutations import mutate_session
+    from hermes_agent.gateway.session_mutations import mutate_session
     edit = dict(session_id=ref.session_id, request_id='oauth-rename', expected_revision=0,
                 operation='rename', payload={'title': 'OAuth owned'})
     receipt = await mutate_session(authority, owner, ref, edit)
     assert create_local_session(authority, by_password, params) == ref
     assert await mutate_session(authority, by_password, ref, edit) == receipt
-    from gateway.session_identity import authenticated_principal_digest
+    from hermes_agent.gateway.session_identity import authenticated_principal_digest
     assert authenticated_principal_digest({'provider': oauth.provider, 'issuer': oauth.issuer, 'user_id': oauth.user_id}) != authenticated_principal_digest(
         {'provider': oauth.provider, 'issuer': oauth.issuer + '/other', 'user_id': oauth.user_id})
     runner.adapters = {}
@@ -131,14 +131,14 @@ async def test_every_bundled_sign_in_acts_as_the_owner_and_keeps_durable_receipt
 
 @pytest.mark.asyncio
 async def test_private_native_subject_preserves_existing_creation_and_mutation_retries(tmp_path, monkeypatch):
-    from gateway import run
-    from gateway.config import GatewayConfig
-    from gateway.session import SessionStore
-    from gateway.session_authority import initialize_session_authority
-    from gateway.session_controls import AuthorityConnection
-    from gateway.session_contract import SessionActor
-    from gateway.session_local import create_local_session
-    from gateway.session_mutations import mutate_session
+    from hermes_agent.gateway import run
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.session import SessionStore
+    from hermes_agent.gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway.session_contract import SessionActor
+    from hermes_agent.gateway.session_local import create_local_session
+    from hermes_agent.gateway.session_mutations import mutate_session
     from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
     monkeypatch.setattr(run, '_load_gateway_config', lambda: {'platform_toolsets': {'cli': []}})

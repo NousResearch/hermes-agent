@@ -1,8 +1,8 @@
 """Hot-reload tolerance (#72628): new consumer code paired with an old in-memory adapter."""
 from unittest.mock import MagicMock
 
-from gateway.platforms.base import BasePlatformAdapter
-from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
+from hermes_agent.gateway.platforms.base import BasePlatformAdapter
+from hermes_agent.gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
 
 
 def _stale_adapter(legacy_len_fn):

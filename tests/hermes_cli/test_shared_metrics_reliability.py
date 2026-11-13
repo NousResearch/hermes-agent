@@ -116,7 +116,7 @@ def _dead_pid() -> int:
 
 
 def test_dead_markers_report_killed_or_crash_and_live_ones_wait(marks):
-    from gateway.status import get_process_start_time
+    from hermes_agent.gateway.status import get_process_start_time
 
     directory = process_metrics.markers_dir(marks.home)
     directory.mkdir(parents=True)
@@ -250,7 +250,7 @@ def test_a_marker_the_store_did_not_save_is_kept_for_the_next_start(marks):
 
 
 def test_graceful_gateway_exit_stamps_the_marker_clean(marks, monkeypatch):
-    import gateway.run as gateway_run
+    import hermes_agent.gateway.run as gateway_run
 
     monkeypatch.setattr(process_metrics, "_STATE", {})
     monkeypatch.setattr(sys, "excepthook", lambda *a: None)

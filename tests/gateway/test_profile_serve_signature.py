@@ -3,7 +3,7 @@ that keeps mtime and size (``cp -p``, ``rsync -t``, a timestamp-pinning writer).
 import os
 import shutil
 
-from gateway.run_profile_reconcile import profile_serve_signature
+from hermes_agent.gateway.run_profile_reconcile import profile_serve_signature
 from tests.waiting import wait_for_ctime_tick
 
 

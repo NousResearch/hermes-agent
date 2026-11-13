@@ -26,8 +26,8 @@ a context-note prepend into the agent's prompt — both wrong for an explicit
 /new or /reset.
 """
 
-from gateway.config import GatewayConfig, Platform
-from gateway.session import SessionEntry, SessionSource, SessionStore
+from hermes_agent.gateway.config import GatewayConfig, Platform
+from hermes_agent.gateway.session import SessionEntry, SessionSource, SessionStore
 
 
 def _make_store(tmp_path):

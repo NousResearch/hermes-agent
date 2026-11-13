@@ -10,11 +10,11 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from gateway.authz_mixin import GatewayAuthorizationMixin
-from gateway.config import GatewayConfig, HomeChannel, Platform, PlatformConfig
-from gateway.platforms.api_server import APIServerAdapter, _api_request_profile
-from gateway.platforms.base import SendResult
-from gateway.platforms.webhook import WebhookAdapter
+from hermes_agent.gateway.authz_mixin import GatewayAuthorizationMixin
+from hermes_agent.gateway.config import GatewayConfig, HomeChannel, Platform, PlatformConfig
+from hermes_agent.gateway.platforms.api_server import APIServerAdapter, _api_request_profile
+from hermes_agent.gateway.platforms.base import SendResult
+from hermes_agent.gateway.platforms.webhook import WebhookAdapter
 
 
 class _Runner(GatewayAuthorizationMixin):
@@ -97,7 +97,7 @@ async def test_github_comment_authenticates_with_routed_profile_token(profile_ho
         seen["GH_TOKEN"] = kw["env"].get("GH_TOKEN") if kw.get("env") is not None else os.environ.get("GH_TOKEN")
         return MagicMock(returncode=0, stderr="")
 
-    monkeypatch.setattr("gateway.platforms.webhook.subprocess.run", fake_run)
+    monkeypatch.setattr("hermes_agent.gateway.platforms.webhook.subprocess.run", fake_run)
     adapter = _webhook(_Runner({}, {"sec": {}}, profile_homes))
 
     res = await adapter._deliver_github_comment(
@@ -127,7 +127,7 @@ def test_api_server_profile_callback_resolves_routed_profile_adapter_fail_closed
 
 @pytest.mark.asyncio
 async def test_retained_destination_keeps_profile_and_freezes_its_home(profile_homes):
-    from gateway.platforms.webhook_delivery import snapshot_destination
+    from hermes_agent.gateway.platforms.webhook_delivery import snapshot_destination
 
     default, secondary = _target(), _target()
     adapter = _webhook(_Runner({Platform.SLACK: default}, {"sec": {Platform.SLACK: secondary}}, profile_homes))
@@ -148,7 +148,7 @@ async def test_retained_destination_keeps_profile_and_freezes_its_home(profile_h
 def test_destination_missing_profile_home_does_not_borrow_default(profile_homes):
     from hermes_constants import get_hermes_home
     from hermes_agent.hermes_state_runtime import RuntimeStoreError
-    from gateway.platforms.webhook_delivery import snapshot_destination, validate_destination
+    from hermes_agent.gateway.platforms.webhook_delivery import snapshot_destination, validate_destination
 
     (get_hermes_home() / "profiles" / "sec" / "config.yaml").write_text("platforms: {}\n")
     adapter = _webhook(_Runner({}, {}, profile_homes))

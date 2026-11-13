@@ -148,11 +148,11 @@ worker's own `failure_reason` classification via `cli._TERMINAL_PROVIDER_REASONS
 the first attempt, sticky, because no retry can heal it (#114587).
 Process-identity note: `kanban --preserve-cache` contains "serve" — never classify processes by argv
 substring (root). Worker liveness is `(worker_pid, worker_started_at)` — the start-time fingerprint
-(`gateway.status.get_process_start_time`) recorded at claim time — never bare PID existence, or a
+(`hermes_agent.gateway.status.get_process_start_time`) recorded at claim time — never bare PID existence, or a
 recycled PID gets killed on reclaim.
 
 - **Notifications leave through the task's owning profile.** `hermes_cli/kanban_db_notify.py`
-  subscriptions carry the profile; `gateway/kanban_watchers_notifier.py` delivers via THAT
+  subscriptions carry the profile; `hermes_agent/gateway/kanban_watchers_notifier.py` delivers via THAT
   profile's adapter under its scope (`_notify_profile_filter`), never the multiplexer's launch
   adapter; a fail-closed skip logs once at WARNING with the remedy, never a bare `continue`.
   Dispatched workers get `HERMES_KANBAN_BOARD` and the assignee's `HERMES_HOME` pinned in a

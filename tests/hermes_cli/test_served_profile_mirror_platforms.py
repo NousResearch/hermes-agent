@@ -31,7 +31,7 @@ def served_root(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(root))
     monkeypatch.delenv("GATEWAY_MULTIPLEX_PROFILES", raising=False)
     import hermes_constants
-    from gateway import status
+    from hermes_agent.gateway import status
     # Liveness is a verified identity; this pytest process passes as the default gateway only by
     # wearing a gateway command line.
     monkeypatch.setattr(status, "_read_process_cmdline", lambda pid: "hermes gateway run")
@@ -56,7 +56,7 @@ def test_messaging_card_shows_mirrored_api_server_enabled_without_local_config(s
 
 
 def test_served_profile_projects_the_default_listener_mirrors_with_their_url(served_root):
-    from gateway.status import profile_platforms_from_multiplexer, resolve_gateway_liveness
+    from hermes_agent.gateway.status import profile_platforms_from_multiplexer, resolve_gateway_liveness
     alpha = served_root / "profiles" / "alpha"
     live = resolve_gateway_liveness(profile_dir=alpha, health_probe=None, use_cache=False)
     plats = profile_platforms_from_multiplexer(live.runtime, "alpha")
@@ -77,7 +77,7 @@ def test_default_profile_keeps_its_flat_adapters_when_rekeyed(served_root):
     ``gateway.multiplex_profiles`` while its adapters were connected and delivering (#123088).
     A STANDALONE record (``served_profiles: []``, flat keys only) reaches the same re-key through
     the multiplexer rung and must come back unchanged too (#123869)."""
-    from gateway.status import profile_platforms_from_multiplexer, resolve_gateway_liveness
+    from hermes_agent.gateway.status import profile_platforms_from_multiplexer, resolve_gateway_liveness
     standalone = {"gateway_state": "running", "served_profiles": [],
                   "platforms": {"feishu": {"state": "connected"}}}
     assert profile_platforms_from_multiplexer(standalone, "default") == {"feishu": {"state": "connected"}}
@@ -100,7 +100,7 @@ def test_messaging_card_for_the_default_home_rekeys_by_the_profile_not_the_dirna
     custom ``HERMES_HOME`` name, equal to the profile id only for secondaries under
     ``profiles/<name>``. On the default home the fold came back empty and the Channels card read
     "Restart needed" forever while the multiplexer served its flat-keyed adapters (#123088)."""
-    from gateway import status
+    from hermes_agent.gateway import status
     from hermes_cli.web_routers import messaging
     root = tmp_path / ".hermes"  # the shipped default root's literal name — never equal to "default"
     root.mkdir()
@@ -167,7 +167,7 @@ def test_messaging_card_keeps_a_live_own_gateway_record_over_the_multiplexer(ser
     multiplexer still lists it in ``served_profiles``. ``resolve_gateway_liveness`` answers from the
     own record (rung 3) before the multiplexer (rung 4); the card must read the same record, or
     liveness and platform state come from two different gateways."""
-    from gateway import status
+    from hermes_agent.gateway import status
     from hermes_cli.web_routers import messaging
     monkeypatch.setattr(messaging, "_platform_enablement", lambda *a, **k: (True, True, None))
     alpha = served_root / "profiles" / "alpha"
@@ -203,7 +203,7 @@ def test_served_profile_mirrors_the_default_relay(served_root, monkeypatch, rela
     the multiplexer stamps no ``<profile>:relay`` entry when it does. A profile with Relay on must
     read the default's live state, not fall through to ``pending_restart`` ("Restart needed"
     forever for a channel that is answering), and the profile's own enable/disable still decides."""
-    from gateway.status import profile_platforms_from_multiplexer, resolve_gateway_liveness
+    from hermes_agent.gateway.status import profile_platforms_from_multiplexer, resolve_gateway_liveness
     from hermes_cli.web_routers import messaging
     if relay_url:
         monkeypatch.setenv("GATEWAY_RELAY_URL", relay_url)

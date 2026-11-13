@@ -1,7 +1,7 @@
 """WhatsApp (Baileys bridge) env -> gateway config bridge (``PlatformEntry.env_overrides``)."""
 
-from gateway.config import GatewayConfig, Platform
-from gateway.platform_env import enable_from_env, getenv, home_step
+from hermes_agent.gateway.config import GatewayConfig, Platform
+from hermes_agent.gateway.platform_env import enable_from_env, getenv, home_step
 from utils import is_truthy_value
 
 

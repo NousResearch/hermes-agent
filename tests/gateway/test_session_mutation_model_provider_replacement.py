@@ -32,9 +32,9 @@ def peers():
 
 
 async def pick(tmp_path, monkeypatch, before, after, provider, *, request=None, hermes_home=None):
-    from gateway.session_mutation_model import prepare_model
-    from gateway.session_policy import build_policy, bind_launch_key, restore_policy
-    from gateway.run_turn_prepare import _resolve_policy_agent_runtime
+    from hermes_agent.gateway.session_mutation_model import prepare_model
+    from hermes_agent.gateway.session_policy import build_policy, bind_launch_key, restore_policy
+    from hermes_agent.gateway.run_turn_prepare import _resolve_policy_agent_runtime
     from hermes_agent.hermes_state import SessionDB
     monkeypatch.setenv('HERMES_HOME', str(hermes_home or tmp_path))
     (tmp_path / 'config.yaml').write_text(json.dumps(before))
@@ -152,7 +152,7 @@ async def test_pick_expands_provider_refs_against_the_profiles_current_env(tmp_p
     """A ``providers:`` entry whose ``base_url`` is a ``${VAR}`` ref freezes the value in the owning
     profile's CURRENT ``.env``, not the one the daemon started with (also for a multiplexed
     secondary profile, whose state.db lives under ``profiles/<name>``)."""
-    import gateway.run  # the daemon is already up: its import-time .env load is done
+    import hermes_agent.gateway.run  # the daemon is already up: its import-time .env load is done
     home = tmp_path / 'profiles' / 'other' if secondary else tmp_path
     home.mkdir(parents=True, exist_ok=True)
     with peers() as (boot_peer, boot_url, b, bu):

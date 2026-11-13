@@ -1,6 +1,6 @@
 """A turn end's queued lease release is already in effect for the next claim in this process.
 
-The durable registry drop runs on a worker (gateway/active_lease_io.py), but the finished turn's
+The durable registry drop runs on a worker (hermes_agent/gateway/active_lease_io.py), but the finished turn's
 slot must be free the moment the turn ends: the next session's claim at max_concurrent_sessions,
 and a Desktop writer taking over the same session, run on the loop straight after. The worker is
 held busy with an earlier release (registry contention) so its drop provably has not landed.
@@ -8,10 +8,10 @@ held busy with an earlier release (registry contention) so its drop provably has
 
 import threading
 
-import gateway.run as run_mod
-from gateway.active_lease_io import release_soon
-from gateway.config import Platform
-from gateway.session import SessionSource
+import hermes_agent.gateway.run as run_mod
+from hermes_agent.gateway.active_lease_io import release_soon
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.session import SessionSource
 from hermes_cli import active_sessions
 
 

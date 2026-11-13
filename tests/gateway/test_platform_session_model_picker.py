@@ -4,16 +4,16 @@ import asyncio
 
 import pytest
 
-from gateway.config import ChannelOverride, Platform, PlatformConfig
+from hermes_agent.gateway.config import ChannelOverride, Platform, PlatformConfig
 from tests.gateway.test_platform_session_model_settings import _Adapter
 
 
 @pytest.fixture
 def settings_env(tmp_path, monkeypatch):
-    import gateway.run as gateway_run
-    from gateway.config import GatewayConfig
-    from gateway.run import GatewayRunner
-    from gateway.session import SessionSource
+    import hermes_agent.gateway.run as gateway_run
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.run import GatewayRunner
+    from hermes_agent.gateway.session import SessionSource
 
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -125,7 +125,7 @@ def test_unavailable_route_returns_none_without_catalog(settings_env, catalog, u
 
 @pytest.mark.asyncio
 async def test_thread_hop_binds_owning_profile_for_catalog(settings_env, catalog, monkeypatch):
-    from gateway.session_identity import RoutingIdentity
+    from hermes_agent.gateway.session_identity import RoutingIdentity
     from hermes_constants import get_hermes_home
     from agent.secret_scope import get_secret
     from hermes_cli import model_switch_providers
@@ -157,7 +157,7 @@ def test_catalog_fetches_stay_in_the_owning_profile_scope(settings_env, monkeypa
     """With more than three keyed providers, blocking catalogs prefetch in a thread pool that does not
     carry the profile scope; cache-only catalogs keep every fetch in the owning profile."""
     from agent.secret_scope import get_secret
-    from gateway.session_identity import RoutingIdentity
+    from hermes_agent.gateway.session_identity import RoutingIdentity
     from hermes_cli import models
     from hermes_constants import get_hermes_home
 
@@ -183,8 +183,8 @@ def test_catalog_fetches_stay_in_the_owning_profile_scope(settings_env, monkeypa
 
 
 def test_persisted_pick_reaches_catalog_without_rehydration(settings_env, catalog):
-    from gateway.session import SessionStore
-    from gateway.config import GatewayConfig
+    from hermes_agent.gateway.session import SessionStore
+    from hermes_agent.gateway.config import GatewayConfig
 
     adapter, runner, source, home = settings_env
     before_restart = SessionStore(sessions_dir=home / "sessions", config=GatewayConfig())

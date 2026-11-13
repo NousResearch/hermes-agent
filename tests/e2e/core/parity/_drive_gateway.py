@@ -5,12 +5,12 @@ directory, so the documented cwd channel ``terminal.cwd`` is pinned in config.ya
 (``DriveResult.cwd_channel = "terminal.cwd"``) and credentials go in the fixture
 home's ``.env`` exactly as a user configures them.
 
-* ``drive_gateway`` — the REAL gateway entrypoint (``gateway.run.main``: host-attach
+* ``drive_gateway`` — the REAL gateway entrypoint (``hermes_agent.gateway.run.main``: host-attach
   decision, PID claim, MCP discovery, ``GatewayRunner.start()``, signal handlers,
   graceful shutdown tail) in a subprocess; only the Telegram adapter instance is a
   recording fake (``_gateway_child.py``), fed one inbound DM through its normal
   ``handle_message`` path.
-* ``drive_api_server`` — the stock ``python -m gateway.run`` with only the
+* ``drive_api_server`` — the stock ``python -m hermes_agent.gateway.run`` with only the
   ``api_server`` platform enabled (loopback, free port, strong key); one
   non-streaming ``POST /v1/chat/completions``.
 
@@ -44,7 +44,7 @@ GATEWAY_CHILD = Path(__file__).with_name("_gateway_child.py")
 _LINE_PREFIX = "PARITY-GW "
 STOP_TIMEOUT = 60.0
 # Telegram private chats use the user id as chat id; the child reads it from the env
-# (importing the child here would import gateway.run into the test process).
+# (importing the child here would import hermes_agent.gateway.run into the test process).
 PARITY_USER_ID = "424242"
 
 
@@ -102,7 +102,7 @@ def _stop(ph: ParityHome, proc: subprocess.Popen) -> bool:
         if proc.poll() is None:
             marker = subprocess.run(
                 [sys.executable, "-c",
-                 "import sys; from gateway.status import write_planned_stop_marker as w, "
+                 "import sys; from hermes_agent.gateway.status import write_planned_stop_marker as w, "
                  "_get_planned_stop_marker_path as p; ok = w(int(sys.argv[1])); print(p()); "
                  "sys.exit(0 if ok else 1)",
                  str(proc.pid)],
@@ -237,7 +237,7 @@ def drive_api_server(ph: ParityHome, srv: FakeLLMServer, prompt: str) -> DriveRe
         (ph.hermes_home / ".env").write_text(env_before, encoding="utf-8")
         _append_env(ph, {"API_SERVER_ENABLED": "true", "API_SERVER_KEY": key,
                          "API_SERVER_HOST": "127.0.0.1", "API_SERVER_PORT": str(port)})
-        proc = _spawn(ph, [sys.executable, "-m", "gateway.run"], "api_server.stderr.log")
+        proc = _spawn(ph, [sys.executable, "-m", "hermes_agent.gateway.run"], "api_server.stderr.log")
         base = f"http://127.0.0.1:{port}"
         try:
             ready = _await_own_api_server(proc, base, key)

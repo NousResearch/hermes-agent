@@ -8,7 +8,7 @@ clamping happens downstream in the transports/profiles via
 agent.reasoning_effort (#78216's api_server observation).
 """
 
-from gateway.platforms.api_server import _request_reasoning_config
+from hermes_agent.gateway.platforms.api_server import _request_reasoning_config
 from hermes_constants import VALID_REASONING_EFFORTS
 
 

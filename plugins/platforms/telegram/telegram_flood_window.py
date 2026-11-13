@@ -13,7 +13,7 @@ import asyncio
 import logging
 from typing import Any, Awaitable, Callable, Optional
 
-from gateway.platforms.base import SendResult, fit_prefix
+from hermes_agent.gateway.platforms.base import SendResult, fit_prefix
 from plugins.platforms.telegram.telegram_draft_budget import claim_ai_action
 from plugins.platforms.telegram.telegram_media_flood import _MAX_WINDOW_WAITS, flood_wait_seconds
 

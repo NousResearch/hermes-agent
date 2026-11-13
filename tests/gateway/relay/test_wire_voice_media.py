@@ -20,8 +20,8 @@ Pure unit tests: no socket, no websockets dependency.
 
 from __future__ import annotations
 
-from gateway.platforms.event import MessageType
-from gateway.relay.ws_transport import _event_from_wire
+from hermes_agent.gateway.platforms.event import MessageType
+from hermes_agent.gateway.relay.ws_transport import _event_from_wire
 
 
 def _wire_event(message_type: str, **extra):
@@ -128,7 +128,7 @@ class TestSttGate:
     of the wire contract, and it must not silently change."""
 
     def test_new_connector_voice_event_is_stt_eligible(self):
-        from gateway.run import _event_media_is_stt_input
+        from hermes_agent.gateway.run import _event_media_is_stt_input
 
         ev = _event_from_wire(
             _wire_event(
@@ -143,7 +143,7 @@ class TestSttGate:
         """A new-connector/old-gateway-shaped event — voice type, no
         media[] — still fires STT (the gate's VOICE branch doesn't consult
         media_types). Pins the rollout behaviour, not just the new one."""
-        from gateway.run import _event_media_is_stt_input
+        from hermes_agent.gateway.run import _event_media_is_stt_input
 
         ev = _event_from_wire(
             _wire_event("voice", media_urls=["https://gw/relay/media/x"])
@@ -154,7 +154,7 @@ class TestSttGate:
         assert _event_media_is_stt_input(ev, 0) is True
 
     def test_legacy_audio_typed_voice_note_stays_out_of_stt(self):
-        from gateway.run import _event_media_is_stt_input
+        from hermes_agent.gateway.run import _event_media_is_stt_input
 
         ev = _event_from_wire(
             _wire_event(
@@ -166,7 +166,7 @@ class TestSttGate:
         assert _event_media_is_stt_input(ev, 0) is False
 
     def test_music_upload_is_never_stt_eligible(self):
-        from gateway.run import _event_media_is_stt_input
+        from hermes_agent.gateway.run import _event_media_is_stt_input
 
         ev = _event_from_wire(
             _wire_event(
@@ -188,14 +188,14 @@ class TestUrlMimePairingThroughLocalization:
     run.py classifier."""
 
     def _adapter(self):
-        from gateway.relay.adapter import RelayAdapter
+        from hermes_agent.gateway.relay.adapter import RelayAdapter
 
         return RelayAdapter.__new__(RelayAdapter)
 
     def test_dropped_first_attachment_does_not_shift_the_second_mime(self):
         import asyncio
 
-        from gateway.run import _event_media_is_image, _event_media_type_at
+        from hermes_agent.gateway.run import _event_media_is_image, _event_media_type_at
 
         rehost = "https://conn.example/relay/media/dead"
         kept = "https://cdn.discordapp.com/attachments/1/2/kept.png"
@@ -263,7 +263,7 @@ class TestParallelArrayLengthInvariant:
     """media_types must ALWAYS have one slot per media_url.
 
     Not merely an indexing nicety: ``merge_pending_message_event``
-    (gateway/platforms/base.py) EXTENDS both lists when a second media message
+    (hermes_agent/gateway/platforms/base.py) EXTENDS both lists when a second media message
     is merged into a pending one. If a media_types-less event merges with a
     typed one, extend() concatenates lists of different lengths and shifts
     every later mime onto the wrong url. Found by self-review after two
@@ -279,8 +279,8 @@ class TestParallelArrayLengthInvariant:
         assert len(ev.media_types) == len(ev.media_urls)
 
     def test_merging_an_untyped_event_with_a_typed_one_keeps_mimes_on_their_urls(self):
-        from gateway.platforms.base import merge_pending_message_event
-        from gateway.run import _event_media_type_at
+        from hermes_agent.gateway.platforms.base import merge_pending_message_event
+        from hermes_agent.gateway.run import _event_media_type_at
 
         untyped = _event_from_wire(
             _wire_event("image", media_urls=["https://x/old1.png", "https://x/old2.png"])
@@ -305,7 +305,7 @@ class TestParallelArrayLengthInvariant:
     def test_localization_preserves_the_invariant_when_it_drops_entries(self):
         import asyncio
 
-        from gateway.relay.adapter import RelayAdapter
+        from hermes_agent.gateway.relay.adapter import RelayAdapter
 
         rehost = "https://conn.example/relay/media/dead"
         kept = "https://x/kept.png"
@@ -329,8 +329,8 @@ class TestParallelArrayLengthInvariant:
         with the short list passed through."""
         import asyncio
 
-        from gateway.platforms.event import MessageEvent, MessageType
-        from gateway.relay.adapter import RelayAdapter
+        from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
+        from hermes_agent.gateway.relay.adapter import RelayAdapter
 
         ev = MessageEvent(text="", message_type=MessageType.PHOTO)
         ev.media_urls = ["https://x/a.png", "https://x/b.png"]

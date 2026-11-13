@@ -6,8 +6,8 @@ from hermes_agent.hermes_state_runtime import (
     admit_session_input, begin_runtime_epoch, claim_session_input,
     recover_session_inputs,
 )
-from gateway.session_results import retain_result
-from gateway.session_bot import _result
+from hermes_agent.gateway.session_results import retain_result
+from hermes_agent.gateway.session_bot import _result
 
 
 def test_bot_reply_recovery_uses_exact_terminal_admission(tmp_path):
@@ -50,7 +50,7 @@ def test_cancelled_queued_admission_is_a_terminal_cancelled_receipt_not_ambiguou
     import asyncio
     from hermes_agent.hermes_state_runtime import cancel_session_input, settle_session_input
     from tools.bot_live_delivery import _locked, _read, _write
-    from gateway.session_bot import recover_bot_deliveries
+    from hermes_agent.gateway.session_bot import recover_bot_deliveries
     path = tmp_path / 'state.db'
     db = SessionDB(path)
     db.create_session('bot', source='gui')
@@ -94,7 +94,7 @@ def test_a_turn_stopped_mid_run_is_a_cancelled_receipt_not_a_failure(tmp_path):
     its generation): the turn settles ``interrupted`` with its result, and the sender's receipt is
     ``cancelled`` (no error, never retried), not ``failed: Bot Chat delivery failed``."""
     from hermes_agent.hermes_state_runtime import settle_session_input
-    from gateway.session_bot import _delivery_result
+    from hermes_agent.gateway.session_bot import _delivery_result
     db = SessionDB(tmp_path / 'state.db')
     try:
         db.create_session('bot', source='gui')
@@ -145,7 +145,7 @@ def test_owner_startup_recovery_survives_a_denied_mailbox_chmod(tmp_path, monkey
     import asyncio
     from pathlib import Path
     from tools.bot_live_delivery import DELIVERY_DIR_NAME, _locked, _read, _write
-    from gateway.session_bot import recover_bot_deliveries
+    from hermes_agent.gateway.session_bot import recover_bot_deliveries
     path = tmp_path / 'state.db'
     db = SessionDB(path)
     db.create_session('bot', source='gui')
@@ -213,7 +213,7 @@ def test_gateway_startup_skips_bot_recovery_when_the_mailbox_dir_is_unusable(tmp
     ``start_gateway``; the log names the dir, its owner and the remedy."""
     import asyncio
     import logging
-    from gateway import run_api, run_runtime
+    from hermes_agent.gateway import run_api, run_runtime
     root = _deny_mailbox_lock(monkeypatch, tmp_path)
     db = SessionDB(tmp_path / 'state.db')
     try:

@@ -9,8 +9,8 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from agent.conversation_compression import CONTEXT_OVERFLOW_BLOCKED_WARNING_TEMPLATE
-from gateway.config import Platform
-from gateway.session import build_session_key
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.session import build_session_key
 from tests.gateway.test_handoff_thread_session_key import _handoff_destination
 from tests.gateway.test_slack import SlackAdapter  # installs the slack SDK stand-in
 
@@ -19,8 +19,8 @@ WARNING = CONTEXT_OVERFLOW_BLOCKED_WARNING_TEMPLATE.format(tokens=85_000, thresh
 
 def _delivered(source):
     """Run the production status callback for *source*; return what reached the chat."""
-    from gateway.run_turn_runner import TurnRunner
-    from gateway.turn_context import TurnContext
+    from hermes_agent.gateway.run_turn_runner import TurnRunner
+    from hermes_agent.gateway.turn_context import TurnContext
 
     sent = []
 
@@ -46,7 +46,7 @@ def _delivered(source):
 
 @pytest.mark.parametrize(("channel_type", "shown"), [("mpim", False), ("im", True)])
 def test_slack_group_dm_is_not_a_dm_for_the_warning(channel_type, shown):
-    from gateway.config import PlatformConfig
+    from hermes_agent.gateway.config import PlatformConfig
 
     adapter = SlackAdapter(PlatformConfig(enabled=True, token="***"))
     adapter._app = MagicMock()

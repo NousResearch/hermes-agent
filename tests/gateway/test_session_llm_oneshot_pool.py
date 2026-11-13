@@ -13,7 +13,7 @@ import weakref
 
 import pytest
 
-from gateway import session_llm_oneshot as oneshot
+from hermes_agent.gateway import session_llm_oneshot as oneshot
 from hermes_agent.hermes_state_runtime import RuntimeStoreError
 from tests.waiting import async_wait_until
 

@@ -4,7 +4,7 @@ import contextlib
 
 import pytest
 
-from gateway.session_contract import SessionActor, SessionRef
+from hermes_agent.gateway.session_contract import SessionActor, SessionRef
 from hermes_agent.hermes_state_runtime import (ADMISSION_QUEUE_MAX, RuntimeStoreError, admit_session_input,
                                   list_session_admissions)
 
@@ -15,7 +15,7 @@ KEY = 'b' * 32
 
 @pytest.mark.asyncio
 async def test_queue_full_refusal_withdraws_the_pin_and_the_retry_admits(bot):
-    from gateway.session_bot import deliver
+    from hermes_agent.gateway.session_bot import deliver
     from tools.bot_live_delivery import read_delivery_result
     authority = bot.authority
     authority._schedule = lambda ref: None  # hold the backlog: nothing drains until we cancel it

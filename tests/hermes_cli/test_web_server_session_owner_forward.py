@@ -111,7 +111,7 @@ async def test_an_owner_discovery_cannot_identify_is_not_owner_less(tmp_path, mo
     looked applied, then vanished. A lost reservation behind any verdict but ``absent`` answers a
     retryable 503 that names discovery's reason and keeps the reservation's remedy."""
     from contextlib import contextmanager
-    from gateway.runtime_ownership import OwnershipConflict
+    from hermes_agent.gateway.runtime_ownership import OwnershipConflict
     from hermes_cli import web_server_sessions
     from hermes_cli.gateway_runtime import GatewayDiscovery
 
@@ -124,7 +124,7 @@ async def test_an_owner_discovery_cannot_identify_is_not_owner_less(tmp_path, mo
         raise OwnershipConflict('Exclusive maintenance refused: held. Drain and stop the gateway, then retry.')
         yield
 
-    monkeypatch.setattr('gateway.runtime_ownership.exclusive_maintenance', owner_holds_the_lock)
+    monkeypatch.setattr('hermes_agent.gateway.runtime_ownership.exclusive_maintenance', owner_holds_the_lock)
     with pytest.raises(HTTPException) as exc:
         await web_server_sessions._mutate_session_request(
             request, None, 'session-7', request_id='req-7', expected_revision=0,
@@ -372,9 +372,9 @@ async def test_a_signed_in_owner_forwards_through_the_real_ticket_verifier(tmp_p
     get a ticket from the running gateway's real control verifier, and the ticket names the owner.
     The verifier only lets a peer name a structured login subject; the owner's own OS subject is
     the peer's, so naming it explicitly would be refused and every edit would 503."""
-    from gateway.control_socket import GatewayControlServer
-    from gateway.owner_identity import host_owner_subject
-    from gateway.runtime_bootstrap import TicketStore
+    from hermes_agent.gateway.control_socket import GatewayControlServer
+    from hermes_agent.gateway.owner_identity import host_owner_subject
+    from hermes_agent.gateway.runtime_bootstrap import TicketStore
     from hermes_cli import web_server_sessions
 
     request = _standalone_request(monkeypatch, tmp_path)

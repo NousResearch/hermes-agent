@@ -9,11 +9,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 import hermes_yaml as yaml
 
-import gateway.run as gateway_run
-from gateway.config import Platform
-from gateway.platforms.event import MessageEvent
-from gateway.session import SessionSource
-from gateway.session_state import SERVICE_TIER_UNSET
+import hermes_agent.gateway.run as gateway_run
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.platforms.event import MessageEvent
+from hermes_agent.gateway.session import SessionSource
+from hermes_agent.gateway.session_state import SERVICE_TIER_UNSET
 
 
 class _CapturingAgent:

@@ -1,6 +1,6 @@
 """The auto-created Bot Chat target can be replaced: rename and delete spend its creation identity.
 
-``gateway.session_bot._create_bot_chat`` mints the profile's Bot Chat when none is titled so. The
+``hermes_agent.gateway.session_bot._create_bot_chat`` mints the profile's Bot Chat when none is titled so. The
 creation identity of an earlier target is immutable (a retry of it must converge, and a deleted one
 must never be resurrected), so a rename or canonical delete must lead to a FRESH creation instead of
 replaying the old one: retitling the renamed session back, or refusing on the retired id.
@@ -10,15 +10,15 @@ from types import SimpleNamespace
 import pytest
 import pytest_asyncio
 
-from gateway.session_contract import SessionActor
+from hermes_agent.gateway.session_contract import SessionActor
 
 
 @pytest_asyncio.fixture
 async def bot(tmp_path, monkeypatch):
-    from gateway import run
-    from gateway.config import GatewayConfig
-    from gateway.session import SessionStore
-    from gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway import run
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.session import SessionStore
+    from hermes_agent.gateway.session_authority import initialize_session_authority
     from hermes_agent.hermes_state import SessionDB
 
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
@@ -39,7 +39,7 @@ async def bot(tmp_path, monkeypatch):
 
 
 async def _target_id(bot):
-    from gateway.session_bot import _target
+    from hermes_agent.gateway.session_bot import _target
     ref, _live, _entry = await _target(bot.authority, bot.owner)
     return ref.session_id
 

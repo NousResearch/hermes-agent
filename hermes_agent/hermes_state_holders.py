@@ -222,7 +222,7 @@ def _argv_home_selection(
 
     Under one process per host the shared binary path proves nothing about which home a process
     serves; its ``--hermes-home``/``HERMES_HOME=``/``--profile``/``-p`` selection does. Same
-    token-exact parsers ``gateway/run.py::_argv_contradicts_home`` uses.
+    token-exact parsers ``hermes_agent/gateway/run.py::_argv_contradicts_home`` uses.
     """
     home_value = _argv_flag_value(argv, _HOME_FLAGS) or _argv_env_home(argv)
     if home_value:

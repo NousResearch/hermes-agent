@@ -1,7 +1,7 @@
 """Regression test for hardened HERMES_TELEGRAM_FOLLOWUP_GRACE_SECONDS parsing.
 
 Salvage of #13873 by @Junass1 (remaining gap): three of the four timeout knobs
-that PR hardened already route through ``gateway.run._float_env`` on current
+that PR hardened already route through ``hermes_agent.gateway.run._float_env`` on current
 main, but the Telegram follow-up grace window was still parsed with a raw
 ``float(os.getenv(...))``.  A config/env typo (e.g.
 ``HERMES_TELEGRAM_FOLLOWUP_GRACE_SECONDS=abc``) therefore raised ``ValueError``
@@ -18,7 +18,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 import pytest
-from gateway.run import _float_env
+from hermes_agent.gateway.run import _float_env
 
 
 def test_followup_grace_valid_value(monkeypatch):
@@ -56,14 +56,14 @@ async def test_handle_message_queues_followup_when_grace_env_is_malformed(monkey
     import pytest
 
     # Defer imports used only by this handler test so module import stays light.
-    from gateway.platforms.base import (
+    from hermes_agent.gateway.platforms.base import (
         MessageEvent,
         MessageType,
         Platform,
         SessionSource,
         build_session_key,
     )
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
 
     monkeypatch.setenv("HERMES_TELEGRAM_FOLLOWUP_GRACE_SECONDS", "abc")
 

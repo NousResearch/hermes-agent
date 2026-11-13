@@ -15,9 +15,9 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.run import GatewayRunner
-from gateway.runtime_ownership import process_ownership
+from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+from hermes_agent.gateway.run import GatewayRunner
+from hermes_agent.gateway.runtime_ownership import process_ownership
 from tests.waiting import async_wait_until
 
 
@@ -41,9 +41,9 @@ def _admissions(home):
 
 async def _runner_with_beta_parked(tmp_path, monkeypatch, homes, **config_fields):
     """Multiplexed runner whose secondary ``beta`` fails startup Bot recovery once and is parked."""
-    from gateway import run
-    from gateway import session_bot
-    from gateway.run_runtime import initialize_gateway_runtime, parked_profile_map, start_gateway_runtime_api
+    from hermes_agent.gateway import run
+    from hermes_agent.gateway import session_bot
+    from hermes_agent.gateway.run_runtime import initialize_gateway_runtime, parked_profile_map, start_gateway_runtime_api
     monkeypatch.setattr(run, '_load_gateway_config', lambda *a: {'platform_toolsets': {'cli': []}})
     config = GatewayConfig(sessions_dir=tmp_path / 'sessions')
     config.multiplex_profiles = True
@@ -63,7 +63,7 @@ async def _runner_with_beta_parked(tmp_path, monkeypatch, homes, **config_fields
         return SimpleNamespace(api_origin='http://127.0.0.1:1')
 
     monkeypatch.setattr(session_bot, 'recover_bot_deliveries', recover_once_failing)
-    monkeypatch.setattr('gateway.run_api.start_gateway_api', api)
+    monkeypatch.setattr('hermes_agent.gateway.run_api.start_gateway_api', api)
     process_ownership.reserve([home for _, home in homes])
     await initialize_gateway_runtime(runner)
     await start_gateway_runtime_api(runner)
@@ -73,7 +73,7 @@ async def _runner_with_beta_parked(tmp_path, monkeypatch, homes, **config_fields
 
 async def _serve_beta_again(runner, beta):
     """The control-socket rescan serves beta again and lifts its park."""
-    from gateway.run_runtime import unpark_profile
+    from hermes_agent.gateway.run_runtime import unpark_profile
     assert await runner._serve_profile_runtime('beta', beta) is None
     unpark_profile(runner, 'beta')
 
@@ -89,7 +89,7 @@ def _close(runner, homes):
 async def _rescan_retaining_beta(runner, beta, monkeypatch):
     """A rescan whose serve of beta fails again and whose retirement misses its deadline (a turn
     outlived its Stop): beta is parked, its retiring authority and reservation are kept."""
-    from gateway import run_runtime
+    from hermes_agent.gateway import run_runtime
 
     async def failing(authority):
         raise OSError('mailbox write failed again')
@@ -112,11 +112,11 @@ async def test_a_relay_frame_for_a_parked_profile_is_refused_to_its_sender_not_h
     default profile and is sent only once b1 is acknowledged: holding b1 for the park would hold b2.
     Also when the park retained beta's retiring authority, which refuses every admission."""
     websockets = pytest.importorskip('websockets')
-    from gateway.parked_route_refusal import PARKED_ROUTE_NOTICE
-    from gateway.profile_routing import ProfileRoute
-    from gateway.relay.adapter import RelayAdapter
-    from gateway.relay.descriptor import CapabilityDescriptor
-    from gateway.relay.ws_transport import WebSocketRelayTransport
+    from hermes_agent.gateway.parked_route_refusal import PARKED_ROUTE_NOTICE
+    from hermes_agent.gateway.profile_routing import ProfileRoute
+    from hermes_agent.gateway.relay.adapter import RelayAdapter
+    from hermes_agent.gateway.relay.descriptor import CapabilityDescriptor
+    from hermes_agent.gateway.relay.ws_transport import WebSocketRelayTransport
     homes = _homes(tmp_path, monkeypatch)
     runner = await _runner_with_beta_parked(
         tmp_path, monkeypatch, homes,
@@ -201,7 +201,7 @@ def _webhook_request(delivery_id, body, route='events', profile='beta'):
 
 
 def _webhook(runner, routes):
-    from gateway.platforms.webhook import WebhookAdapter
+    from hermes_agent.gateway.platforms.webhook import WebhookAdapter
     adapter = WebhookAdapter(PlatformConfig(enabled=True, extra={
         'host': '127.0.0.1', 'port': 0, 'routes': routes, 'rate_limit': 100}))
     adapter.gateway_runner = runner
@@ -217,7 +217,7 @@ def _cancel(adapter):
 
 @pytest.mark.asyncio
 async def test_a_coalesced_webhook_for_a_parked_profile_is_retried_not_lost(tmp_path, monkeypatch):
-    from gateway.platforms.webhook import _INSECURE_NO_AUTH
+    from hermes_agent.gateway.platforms.webhook import _INSECURE_NO_AUTH
     homes = _homes(tmp_path, monkeypatch)
     beta = homes[1][1].resolve()
     runner = await _runner_with_beta_parked(tmp_path, monkeypatch, homes)
@@ -243,8 +243,8 @@ async def test_a_coalesced_webhook_to_a_served_profile_prefix_ignores_a_parked_p
     applies only when it is unset), so a ``profile_routes`` rule that sends the bare route's
     ``webhook:<route>`` user to parked beta must not 503 the same route delivered to a served
     ``/p/default/``. The bare delivery is still the one the rule routes to beta, so it is retried."""
-    from gateway.platforms.webhook import _INSECURE_NO_AUTH
-    from gateway.profile_routing import ProfileRoute
+    from hermes_agent.gateway.platforms.webhook import _INSECURE_NO_AUTH
+    from hermes_agent.gateway.profile_routing import ProfileRoute
     homes = _homes(tmp_path, monkeypatch)
     runner = await _runner_with_beta_parked(tmp_path, monkeypatch, homes, profile_routes=[
         ProfileRoute(name='events-to-beta', platform='webhook', profile='beta', user_id='webhook:events')])
@@ -267,8 +267,8 @@ async def test_an_explicit_profile_prefix_wins_over_a_profile_route(tmp_path, mo
     """``/p/default/`` names the profile: a ``profile_routes`` rule sending the route's
     ``webhook:<route>`` user to beta must not re-home it. The delivery is admitted on default, never
     acknowledged and then dropped at flush as ``profile_mismatch``."""
-    from gateway.platforms.webhook import _INSECURE_NO_AUTH
-    from gateway.profile_routing import ProfileRoute
+    from hermes_agent.gateway.platforms.webhook import _INSECURE_NO_AUTH
+    from hermes_agent.gateway.profile_routing import ProfileRoute
     homes = _homes(tmp_path, monkeypatch)
     root, beta = homes[0][1].resolve(), homes[1][1].resolve()
     runner = await _runner_with_beta_parked(tmp_path, monkeypatch, homes, profile_routes=[
@@ -297,8 +297,8 @@ async def test_an_explicit_parked_profile_prefix_is_retried_even_when_a_route_po
         tmp_path, monkeypatch, coalesced):
     """``/p/beta/`` with beta parked is a retryable 503, never a 202, even when a ``profile_routes``
     rule would send the route's user to the served default."""
-    from gateway.platforms.webhook import _INSECURE_NO_AUTH
-    from gateway.profile_routing import ProfileRoute
+    from hermes_agent.gateway.platforms.webhook import _INSECURE_NO_AUTH
+    from hermes_agent.gateway.profile_routing import ProfileRoute
     homes = _homes(tmp_path, monkeypatch)
     root = homes[0][1].resolve()
     runner = await _runner_with_beta_parked(tmp_path, monkeypatch, homes, profile_routes=[
@@ -324,8 +324,8 @@ async def test_a_coalesced_bare_route_to_an_unserved_profile_is_refused_like_the
     has not parked (``standalone: true``, or no such profile) is refused by admission for good. The
     coalesced route must give the immediate route's answer before its delivery id is recorded, not
     ``202 coalesced`` followed by a flush that drops the event (providers never resend a 202)."""
-    from gateway.platforms.webhook import _INSECURE_NO_AUTH
-    from gateway.profile_routing import ProfileRoute
+    from hermes_agent.gateway.platforms.webhook import _INSECURE_NO_AUTH
+    from hermes_agent.gateway.profile_routing import ProfileRoute
     homes = _homes(tmp_path, monkeypatch)
     root, beta = homes[0][1].resolve(), homes[1][1].resolve()
     name = 'gamma' if target == 'standalone' else 'ghost'
@@ -361,8 +361,8 @@ async def test_a_route_rule_admission_never_matches_does_not_refuse_the_coalesce
     ``webhook:<route>``: a ``profile_routes`` rule keyed on ``chat_id: webhook:<route>`` never matches
     there, so the delivery is admitted on default. The coalesced route's edge check must ask that
     same source and answer what the immediate route answers (202), not a 503 forever."""
-    from gateway.platforms.webhook import _INSECURE_NO_AUTH
-    from gateway.profile_routing import ProfileRoute
+    from hermes_agent.gateway.platforms.webhook import _INSECURE_NO_AUTH
+    from hermes_agent.gateway.profile_routing import ProfileRoute
     homes = _homes(tmp_path, monkeypatch)
     root, beta = homes[0][1].resolve(), homes[1][1].resolve()
     runner = await _runner_with_beta_parked(tmp_path, monkeypatch, homes, profile_routes=[
@@ -393,7 +393,7 @@ async def test_a_non_durable_webhook_for_a_parked_profile_is_refused_before_its_
         tmp_path, monkeypatch, mode):
     """``deliver_only`` and ``cron_job`` act without an admission: the in-memory delivery id is their
     only replay guard, so a parked profile must refuse before recording it."""
-    from gateway.platforms.webhook import _INSECURE_NO_AUTH
+    from hermes_agent.gateway.platforms.webhook import _INSECURE_NO_AUTH
     homes = _homes(tmp_path, monkeypatch)
     runner = await _runner_with_beta_parked(tmp_path, monkeypatch, homes)
     route = {'secret': _INSECURE_NO_AUTH, 'prompt': 'event {id}', 'profile': 'beta', mode: True}
@@ -413,8 +413,8 @@ async def test_a_non_durable_webhook_for_a_parked_profile_is_refused_before_its_
 async def test_a_coalesced_batch_whose_admission_fails_releases_its_delivery_ids(tmp_path, monkeypatch):
     """The provider got 202 ``coalesced`` for every delivery of the batch. If the flush cannot admit
     it, a resend of any of them must be processed, not answered as a duplicate."""
-    from gateway.platforms import webhook_ingress
-    from gateway.platforms.webhook import _INSECURE_NO_AUTH, _WebhookDeliveryIdentity
+    from hermes_agent.gateway.platforms import webhook_ingress
+    from hermes_agent.gateway.platforms.webhook import _INSECURE_NO_AUTH, _WebhookDeliveryIdentity
     homes = _homes(tmp_path, monkeypatch)
     runner = await _runner_with_beta_parked(tmp_path, monkeypatch, homes)
     await _serve_beta_again(runner, homes[1][1].resolve())

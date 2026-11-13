@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from gateway.parked_route_refusal import drop_rejected_route
+from hermes_agent.gateway.parked_route_refusal import drop_rejected_route
 from tests.gateway import test_discord_missed_message_backfill as discord_tests
 
 adapter = discord_tests.adapter

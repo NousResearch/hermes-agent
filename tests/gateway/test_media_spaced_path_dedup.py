@@ -8,11 +8,11 @@ prefix is itself a real file, a second, unrelated file was attached.
 
 import os
 
-from gateway.platforms.base import BasePlatformAdapter
+from hermes_agent.gateway.platforms.base import BasePlatformAdapter
 
 
 def _allow(monkeypatch, root):
-    monkeypatch.setattr("gateway.platforms.base.MEDIA_DELIVERY_SAFE_ROOTS", (str(root),))
+    monkeypatch.setattr("hermes_agent.gateway.platforms.base.MEDIA_DELIVERY_SAFE_ROOTS", (str(root),))
     monkeypatch.delenv("HERMES_MEDIA_DELIVERY_STRICT", raising=False)
 
 

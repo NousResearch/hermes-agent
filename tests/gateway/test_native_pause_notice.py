@@ -29,11 +29,11 @@ async def test_paused_fifo_releases_the_messaging_waiter_with_one_notice_per_epi
     """No daemon: the authority alone. A refused head pauses the FIFO; every messaging waiter
     parked on that session returns (never hangs), the first gets the notice, the rest None,
     and once the FIFO moves again the next pause is a fresh episode with its own notice."""
-    from gateway.platforms.event import MessageEvent
-    from gateway.session_authority import SessionAuthority
-    from gateway.session_contract import SessionActor, Submission
-    from gateway.session_controls import AuthorityConnection
-    from gateway.session_ingress import admit_message
+    from hermes_agent.gateway.platforms.event import MessageEvent
+    from hermes_agent.gateway.session_authority import SessionAuthority
+    from hermes_agent.gateway.session_contract import SessionActor, Submission
+    from hermes_agent.gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway.session_ingress import admit_message
     from tests.gateway.test_authority_unknown_resolution import Peer, _restarted_owner_with_unknown_head
 
     executed = []
@@ -53,7 +53,7 @@ async def test_paused_fifo_releases_the_messaging_waiter_with_one_notice_per_epi
         assert executed == []
         # A restart drain is transient: the saved row runs on the next owner, so the notice must
         # not tell the user to /reset (that would discard the very message that is about to run).
-        from gateway.session_ingress import pause_notice
+        from hermes_agent.gateway.session_ingress import pause_notice
         authority.sessions['s'].pause_notified = False
         draining = pause_notice(authority, ref, 'runtime_draining')
         assert 'restarting' in draining and '/reset' not in draining, draining

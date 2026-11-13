@@ -1,8 +1,8 @@
-"""Tests for gateway.whatsapp_identity alias resolution path."""
+"""Tests for hermes_agent.gateway.whatsapp_identity alias resolution path."""
 
 import json
 
-from gateway.whatsapp_identity import expand_whatsapp_aliases
+from hermes_agent.gateway.whatsapp_identity import expand_whatsapp_aliases
 
 
 def test_aliases_resolve_on_modern_platforms_layout(tmp_path, monkeypatch):

@@ -9,7 +9,7 @@ repo, out = map(Path, sys.argv[1:3])
 out.mkdir(parents=True, exist_ok=True)
 producer = '''
 import json, shlex, sys
-from gateway.session_context import scoped_current_session_id
+from hermes_agent.gateway.session_context import scoped_current_session_id
 from tools.terminal_tool import terminal_tool
 from tools.process_registry import process_registry
 with scoped_current_session_id("receipt-owner"):
@@ -23,7 +23,7 @@ with scoped_current_session_id("receipt-owner"):
 '''
 consumer = '''
 import json,sys
-from gateway.session_context import scoped_current_session_id
+from hermes_agent.gateway.session_context import scoped_current_session_id
 from tools.process_registry import process_registry
 with scoped_current_session_id(sys.argv[2]):
     print(json.dumps({'log':process_registry.read_log(sys.argv[1]),

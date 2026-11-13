@@ -77,7 +77,7 @@ def main():
                 'provider': 'custom', 'default': name + '-model', 'base_url': 'http://127.0.0.1:1/v1'}}), encoding='utf-8')
         log = (output / 'multiplexer.log').open('w', encoding='utf-8')
         logs.append(log)
-        process = subprocess.Popen([python, '-m', 'gateway.run'], cwd=REPO, env=env,
+        process = subprocess.Popen([python, '-m', 'hermes_agent.gateway.run'], cwd=REPO, env=env,
                                    stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT)
         processes.append(process)
         identity = ready(process, state, {state.resolve(), *(p.resolve() for p in profiles.values())})

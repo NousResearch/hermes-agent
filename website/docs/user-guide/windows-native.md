@@ -166,7 +166,7 @@ replacement for Git for Windows with Bash.
 
 Python's default stdio on Windows uses the console's active code page (usually cp1252 or cp437). Hermes's banner, slash-command list, tool feed, Rich panels, and skill descriptions all contain Unicode. Without intervention, any of that crashes with `UnicodeEncodeError: 'charmap' codec can't encode character…`.
 
-The fix is in `hermes_cli/stdio.py::configure_windows_stdio()`, called early in every entry point (`cli.py::main`, `hermes_cli/main.py::main`, `gateway/run.py::main`). It:
+The fix is in `hermes_cli/stdio.py::configure_windows_stdio()`, called early in every entry point (`cli.py::main`, `hermes_cli/main.py::main`, `hermes_agent/gateway/run.py::main`). It:
 
 1. Flips the console code page to CP_UTF8 (65001) via `kernel32.SetConsoleCP` / `SetConsoleOutputCP`.
 2. Reconfigures `sys.stdout` / `sys.stderr` / `sys.stdin` to UTF-8 with `errors='replace'`.
@@ -335,7 +335,7 @@ This is background material — skip unless you're debugging an "it's killing it
 
 On Linux and macOS, the POSIX idiom `os.kill(pid, 0)` is a no-op permission check: "is this PID alive and can I signal it?" On Windows, Python's `os.kill` maps `sig=0` to `CTRL_C_EVENT` — they collide at integer value 0 — and routes it through `GenerateConsoleCtrlEvent(0, pid)`, which broadcasts Ctrl+C to the **entire console process group** containing the target PID. That's [bpo-14484](https://bugs.python.org/issue14484), open since 2012. It won't be fixed because changing it would break scripts that depend on the current behavior.
 
-Consequence: any codepath that said "check if this PID is alive" via `os.kill(pid, 0)` on Windows was silently killing the target. Hermes migrated every such site (14 across 11 files) to `gateway.status._pid_exists()`, which uses `psutil.pid_exists()` (which in turn uses `OpenProcess + GetExitCodeProcess` on Windows — no signals). If you're writing a plugin or patch, use `psutil.pid_exists()` directly or `gateway.status._pid_exists()` — never `os.kill(pid, 0)`.
+Consequence: any codepath that said "check if this PID is alive" via `os.kill(pid, 0)` on Windows was silently killing the target. Hermes migrated every such site (14 across 11 files) to `hermes_agent.gateway.status._pid_exists()`, which uses `psutil.pid_exists()` (which in turn uses `OpenProcess + GetExitCodeProcess` on Windows — no signals). If you're writing a plugin or patch, use `psutil.pid_exists()` directly or `hermes_agent.gateway.status._pid_exists()` — never `os.kill(pid, 0)`.
 
 `scripts/check-windows-footguns.py` enforces this in CI: any new `os.kill(pid, 0)` call fails the `Windows footguns (blocking)` check unless the line carries a `# windows-footgun: ok — <reason>` marker.
 

@@ -14,12 +14,12 @@ async def test_follower_is_claimed_only_after_the_settled_turn_released_its_adop
     reply is in the delivery ledger (seconds with auto-TTS). Claiming the follower first lets its
     mark_turn_active overwrite that one-slot marker: a kill in between leaves the follower's marker
     (cleared at boot as unknown) and turn one's persisted reply is never sent."""
-    from gateway.platforms.base import BasePlatformAdapter
-    from gateway.platforms.event import MessageEvent
-    from gateway.run import GatewayRunner
-    from gateway.session import AsyncSessionStore
-    from gateway.session_contract import SessionActor, SessionRef, Submission
-    from gateway.session_ingress import admit_message
+    from hermes_agent.gateway.platforms.base import BasePlatformAdapter
+    from hermes_agent.gateway.platforms.event import MessageEvent
+    from hermes_agent.gateway.run import GatewayRunner
+    from hermes_agent.gateway.session import AsyncSessionStore
+    from hermes_agent.gateway.session_contract import SessionActor, SessionRef, Submission
+    from hermes_agent.gateway.session_ingress import admit_message
     from tests.gateway.test_prompt_attachments import _authority
 
     one_running, follower_queued = asyncio.Event(), asyncio.Event()

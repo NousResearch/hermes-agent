@@ -3,7 +3,7 @@ import os
 import sqlite3
 import time
 
-from gateway import delivery_ledger as dl
+from hermes_agent.gateway import delivery_ledger as dl
 
 
 def record(oid, *, profile=None):

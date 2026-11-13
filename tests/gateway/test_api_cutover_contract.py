@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.session_api_turn import admit_api_turn, api_execution
+from hermes_agent.gateway.session_api_turn import admit_api_turn, api_execution
 from tests.gateway.session_claims import claim
 
 
@@ -29,9 +29,9 @@ def test_declared_key_is_durable_and_cannot_rebind(api, owner):
 
 @pytest.mark.asyncio
 async def test_structured_content_bypasses_text_parser_without_losing_parts(api, owner, monkeypatch):
-    from gateway.session_ingress import execute_admission
-    from gateway.run_turn_runner import TurnRunner
-    from gateway.session_results import execution_result
+    from hermes_agent.gateway.session_ingress import execute_admission
+    from hermes_agent.gateway.run_turn_runner import TurnRunner
+    from hermes_agent.gateway.session_results import execution_result
     content = [{'type': 'text', 'text': '/literal prompt'},
                {'type': 'image_url', 'image_url': {'url': 'https://example.com/image.png', 'detail': 'high'}}]
     _, ref, row = admit_api_turn(api, session_id='image', user_message=content, conversation_history=[])
@@ -53,9 +53,9 @@ async def test_structured_content_bypasses_text_parser_without_losing_parts(api,
 
 
 def test_api_author_is_admission_scoped_not_session_identity(api, owner):
-    from gateway.session_api_turn import prepare_api_execution
-    from gateway.run_turn_runner import TurnRunner
-    from gateway.turn_context import TurnContext
+    from hermes_agent.gateway.session_api_turn import prepare_api_execution
+    from hermes_agent.gateway.run_turn_runner import TurnRunner
+    from hermes_agent.gateway.turn_context import TurnContext
     from hermes_agent.hermes_state_runtime import RuntimeStoreError
     author = {'id': 'bot:peer', 'name': 'Peer', 'is_bot': True}
     args = dict(session_id='author', request_id='one', user_message='hello', conversation_history=[], turn_author=author)
@@ -65,7 +65,7 @@ def test_api_author_is_admission_scoped_not_session_identity(api, owner):
     with pytest.raises(RuntimeStoreError, match='admission_conflict'):
         admit_api_turn(api, **args)
     owner.sessions.clear()
-    from gateway.session_api import restore_api_session
+    from hermes_agent.gateway.session_api import restore_api_session
     restore_api_session(owner, ref.session_id)
     seen = []
     def run(message, *, turn_author=None, **kwargs):
@@ -86,8 +86,8 @@ def test_api_author_is_admission_scoped_not_session_identity(api, owner):
 
 
 def test_persisted_owner_scope_is_private_strict_and_legacy_safe(api, owner):
-    from gateway.platforms.api_server_authority_runs import run_projection
-    from gateway.session_api_turn import owns_api_run, prepare_api_execution
+    from hermes_agent.gateway.platforms.api_server_authority_runs import run_projection
+    from hermes_agent.gateway.session_api_turn import owns_api_run, prepare_api_execution
     from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
     scope = 'a' * 64
@@ -117,7 +117,7 @@ def test_compressed_api_conversation_keeps_its_root_queue_and_follows_the_tip(ap
     binding stays on the root, which remains the FIFO identity. The next request on the same
     declared conversation (and a follower already queued behind the compressing turn) must keep
     admitting/executing on the root instead of failing ``admission_conflict``."""
-    from gateway.session_api_turn import check_api_turn
+    from hermes_agent.gateway.session_api_turn import check_api_turn
     from hermes_agent.hermes_state_runtime import claim_session_input, list_session_admissions
 
     def admit(request_id):
@@ -149,9 +149,9 @@ def test_compressed_api_conversation_keeps_its_root_queue_and_follows_the_tip(ap
 async def test_a_turn_queued_with_browser_control_recovers_and_runs_without_it(api, owner, monkeypatch):
     """Admissions queued before browser-extension control was removed carry ``browser_control`` in their
     stored payload. After the upgrade, startup recovery accepts them and they run; the key reaches nothing."""
-    from gateway.session_api_turn import recover_api_turns
-    from gateway.session_ingress import execute_admission
-    from gateway.session_results import execution_result
+    from hermes_agent.gateway.session_api_turn import recover_api_turns
+    from hermes_agent.gateway.session_ingress import execute_admission
+    from hermes_agent.gateway.session_results import execution_result
     from hermes_agent.hermes_state_runtime import list_session_admissions
     _, ref, row = admit_api_turn(api, session_id='legacy-browser-control', request_id='queued-turn',
                                  user_message='hello', conversation_history=[])

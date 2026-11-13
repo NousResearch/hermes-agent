@@ -641,7 +641,7 @@ def _authority_for_ticket_home(authority, home: str):
     or None when this process does not serve it."""
     from pathlib import Path
 
-    from gateway.session_authorities import authority_for_home
+    from hermes_agent.gateway.session_authorities import authority_for_home
     if Path(authority.profile_id).resolve() == Path(home).resolve():
         return authority
     return authority_for_home(getattr(authority, 'runner', None), home)
@@ -683,7 +683,7 @@ async def gateway_ws(ws: WebSocket) -> None:
         return
     if ticket_home and identity is not None:
         # A Webapp tab's ticket names its profile (``webapp.issue_gateway_ticket``): bind the socket
-        # to that home's authority, as a native ticket does (``gateway/run_api.py``), so a request
+        # to that home's authority, as a native ticket does (``hermes_agent/gateway/run_api.py``), so a request
         # that names no profile is answered for the tab's profile, not the launch profile.
         served = _authority_for_ticket_home(authority, ticket_home)
         if served is None:
@@ -691,12 +691,12 @@ async def gateway_ws(ws: WebSocket) -> None:
             return
         ws.scope['hermes.session_authority'] = served
         identity = {**identity, 'profile_id': served.profile_id, 'instance_id': served.instance_id}
-    # The socket runs in the served profile's scope, as a native ticket's does (``gateway/run_api.py``):
+    # The socket runs in the served profile's scope, as a native ticket's does (``hermes_agent/gateway/run_api.py``):
     # legacy handlers (billing, usage, subscription) read that profile's secrets with no scope of
     # their own, and a multiplexed gateway refuses an unscoped read.
     profile_scope = contextlib.nullcontext()
     if served is not None:
-        from gateway.session_authorities import owner_scope
+        from hermes_agent.gateway.session_authorities import owner_scope
         profile_scope = owner_scope(served)
     with profile_scope:
         await handle_ws(

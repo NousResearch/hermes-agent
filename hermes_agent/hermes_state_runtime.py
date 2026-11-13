@@ -245,7 +245,7 @@ def claim_session_input(db, *, epoch: int, session_id: str, _guard=None, head=_A
 def settle_session_input(db, *, epoch: int, admission_id: str, generation: int, outcome: str,
                          result: dict | None = None, _transfers=None, _terminal_write=None) -> dict:
     """``_terminal_write(conn, row)`` is the owner's same-transaction effect (a transcript notice,
-    ``gateway.session_results.finish_result``); like ``resolve_unknown_session_input``'s it must
+    ``hermes_agent.gateway.session_results.finish_result``); like ``resolve_unknown_session_input``'s it must
     not commit, may run again on SQLite retry, and raising rolls the settlement back."""
     if outcome not in ('completed', 'interrupted', 'rejected', 'failed'):
         raise RuntimeStoreError('invalid_params')
@@ -904,7 +904,7 @@ def _worker_usage(db, conn, session_id, payload, *, auxiliary=False):
         db._update_token_counts_in_transaction(conn, session_id, **payload)
         # The managed worker's platform is the policy label (gui), not the in-process
         # agent surface (desktop). Stamp the same created_surface the insert uses.
-        from gateway.session_policy import created_surface
+        from hermes_agent.gateway.session_policy import created_surface
         from hermes_agent.hermes_state_compression import _UNSET_CREATED_SQL, stamp_compression_ancestors
         surfaced = created_surface(source)
         if surfaced:

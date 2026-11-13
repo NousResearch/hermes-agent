@@ -141,7 +141,7 @@ sys.__stdout__.write(json.dumps(results) + '\\n')
                 'unauthenticated_ws': 'rejected', 'foreign_profile': 'rejected'}
 
     with (tmp_path / 'gateway.log').open('w+') as log:
-        process = subprocess.Popen([sys.executable, '-m', 'gateway.run'], cwd=root, env=env,
+        process = subprocess.Popen([sys.executable, '-m', 'hermes_agent.gateway.run'], cwd=root, env=env,
                                    stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT)
         try:
             descriptor = {}
@@ -186,7 +186,7 @@ sys.__stdout__.write(json.dumps(results) + '\\n')
 async def test_discovery_authorizes_before_scanning(tmp_path, monkeypatch):
     from agent import skill_commands
     from hermes_cli import plugins
-    from gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway.session_controls import AuthorityConnection
 
     def forbidden(*args, **kwargs):
         pytest.fail('unauthorized request reached discovery')

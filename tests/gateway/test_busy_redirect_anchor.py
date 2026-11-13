@@ -8,12 +8,12 @@ busy path and the priority path — must move the anchor; a refused redirect mus
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform
-from gateway.platforms.base import _reply_anchor_for_event
-from gateway.platforms.event import MessageEvent
-from gateway.run import GatewayRunner
-from gateway.session import SessionSource
-from gateway.turn_context import TurnContext
+from hermes_agent.gateway.config import GatewayConfig, Platform
+from hermes_agent.gateway.platforms.base import _reply_anchor_for_event
+from hermes_agent.gateway.platforms.event import MessageEvent
+from hermes_agent.gateway.run import GatewayRunner
+from hermes_agent.gateway.session import SessionSource
+from hermes_agent.gateway.turn_context import TurnContext
 
 
 class Receiver:

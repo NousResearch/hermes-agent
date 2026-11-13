@@ -12,8 +12,8 @@ from types import SimpleNamespace
 import pytest
 
 from agent.secret_scope import set_multiplex_active
-from gateway.config import Platform
-from gateway.run import GatewayRunner
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.run import GatewayRunner
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_db_dispatch as kbd
@@ -76,7 +76,7 @@ class RecordingAdapter:
         self.sent = []
 
     async def send(self, chat_id, text, metadata=None):
-        from gateway.media_policy import media_delivery_strict
+        from hermes_agent.gateway.media_policy import media_delivery_strict
         self.sent.append({"text": text, "home": str(get_hermes_home()), "strict": media_delivery_strict()})
         return SimpleNamespace(success=True, error=None)
 

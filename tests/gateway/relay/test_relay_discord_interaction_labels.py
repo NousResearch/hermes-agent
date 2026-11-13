@@ -13,11 +13,11 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-import gateway.run as gateway_run
-import gateway.session as gateway_session
-from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.relay.ws_transport import _event_from_wire
-from gateway.session import SessionStore, build_session_context, build_session_key
+import hermes_agent.gateway.run as gateway_run
+import hermes_agent.gateway.session as gateway_session
+from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+from hermes_agent.gateway.relay.ws_transport import _event_from_wire
+from hermes_agent.gateway.session import SessionStore, build_session_context, build_session_key
 from tests.gateway.relay.test_relay_interactive import _adapter
 
 

@@ -11,7 +11,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.config import PlatformConfig
+from hermes_agent.gateway.config import PlatformConfig
 from tests.gateway.conftest import _ensure_telegram_mock
 
 _ensure_telegram_mock()

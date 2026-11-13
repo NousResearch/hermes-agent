@@ -14,8 +14,8 @@ import hermes_yaml as yaml
 
 from hermes_agent.cron.scheduler import _deliver_result
 from hermes_agent.cron.scheduler_preflight import SharedRouteAdapters, _primary_profile_routes_for_current_home
-from gateway.config import Platform, PlatformConfig
-from gateway.profile_routing import ProfileRoute
+from hermes_agent.gateway.config import Platform, PlatformConfig
+from hermes_agent.gateway.profile_routing import ProfileRoute
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
 PRIMARY_YAML = {
@@ -53,7 +53,7 @@ def _run(job, adapters):
     config = MagicMock()
     config.platforms = {Platform.DISCORD: PlatformConfig(enabled=True)}
     config.get_home_channel = lambda p: None
-    with patch("gateway.config.load_gateway_config", return_value=config), \
+    with patch("hermes_agent.gateway.config.load_gateway_config", return_value=config), \
          patch("hermes_agent.cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
          patch("tools.send_message_tool._send_to_platform", _fake_send_to_platform), \
          patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro):
@@ -135,7 +135,7 @@ def test_guild_scoped_route_authorizes_cron_target_even_when_satellite_has_no_pl
             config = MagicMock()
             config.platforms = satellite_platforms
             config.get_home_channel = lambda p: None
-            with patch("gateway.config.load_gateway_config", return_value=config):
+            with patch("hermes_agent.gateway.config.load_gateway_config", return_value=config):
                 error, standalone = _run(_job("C1"), shared)
             assert error is None, error
             assert primary.sent == ["C1"] and standalone == []
@@ -275,7 +275,7 @@ def test_satellite_cron_job_reaches_its_telegram_dm_through_the_primary_bot(tmp_
         for chat, delivered in (("399611999", True), ("42", False)):
             primary.sent.clear()
             job = {"id": "a7ae1520356c", "name": "reminder", "deliver": f"telegram:{chat}"}
-            with patch("gateway.config.load_gateway_config", return_value=config):
+            with patch("hermes_agent.gateway.config.load_gateway_config", return_value=config):
                 error, _standalone = _run(job, shared)
             assert (error is None) is delivered, error
             assert primary.sent == ([chat] if delivered else [])

@@ -19,8 +19,8 @@ import threading
 from datetime import datetime, timedelta
 from unittest.mock import patch
 
-from gateway.config import GatewayConfig, Platform
-from gateway.session import SessionEntry, SessionStore
+from hermes_agent.gateway.config import GatewayConfig, Platform
+from hermes_agent.gateway.session import SessionEntry, SessionStore
 
 def test_session_store_default_db_uses_runtime_hermes_home(tmp_path, monkeypatch):
     """SessionStore must honor runtime HERMES_HOME when opening the default DB.
@@ -34,7 +34,7 @@ def test_session_store_default_db_uses_runtime_hermes_home(tmp_path, monkeypatch
     fake_home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(fake_home))
 
-    with patch("gateway.session.SessionStore._ensure_loaded"):
+    with patch("hermes_agent.gateway.session.SessionStore._ensure_loaded"):
         store = SessionStore(sessions_dir=tmp_path / "sessions", config=config)
 
     try:
@@ -50,7 +50,7 @@ def _make_store(tmp_path, max_age_days: int = 90, has_active_processes_fn=None):
 
         session_store_max_age_days=max_age_days,
     )
-    with patch("gateway.session.SessionStore._ensure_loaded"):
+    with patch("hermes_agent.gateway.session.SessionStore._ensure_loaded"):
         store = SessionStore(
             sessions_dir=tmp_path,
             config=config,
@@ -99,7 +99,7 @@ class TestPruneBasics:
 
         The callback is keyed by session_key — matching what
         process_registry.has_active_for_session() actually consumes in
-        gateway/run.py.  Prior to the fix this test passed the callback a
+        hermes_agent/gateway/run.py.  Prior to the fix this test passed the callback a
         session_id, which silently matched an implementation bug where
         prune_old_entries was also passing session_id; real-world usage
         (via process_registry) takes a session_key and never matched, so

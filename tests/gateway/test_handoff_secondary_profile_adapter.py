@@ -20,9 +20,9 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from gateway.config import GatewayConfig, HomeChannel, Platform, PlatformConfig
-from gateway.run import GatewayRunner
-from gateway.session import SessionEntry
+from hermes_agent.gateway.config import GatewayConfig, HomeChannel, Platform, PlatformConfig
+from hermes_agent.gateway.run import GatewayRunner
+from hermes_agent.gateway.session import SessionEntry
 
 
 def _adapter(tag):
@@ -124,11 +124,11 @@ async def test_secondary_profile_handoff_uses_its_own_adapter(monkeypatch):
 
     used = {}
     monkeypatch.setattr(
-        "gateway.delivery.resolve_delivery_transport", _spy_transport_factory(used),
+        "hermes_agent.gateway.delivery.resolve_delivery_transport", _spy_transport_factory(used),
     )
     # The watcher would already be inside _profile_runtime_scope here, so a
     # fresh load resolves the secondary's config.
-    monkeypatch.setattr("gateway.run.load_gateway_config", lambda: _config("2222"))
+    monkeypatch.setattr("hermes_agent.gateway.run.load_gateway_config", lambda: _config("2222"))
 
     await runner._process_handoff(
         {"id": "cli-session", "title": "work", "handoff_platform": "telegram"},
@@ -160,7 +160,7 @@ async def test_default_profile_handoff_keeps_primary_adapter(monkeypatch):
 
     used = {}
     monkeypatch.setattr(
-        "gateway.delivery.resolve_delivery_transport", _spy_transport_factory(used),
+        "hermes_agent.gateway.delivery.resolve_delivery_transport", _spy_transport_factory(used),
     )
 
     await runner._process_handoff(
@@ -186,9 +186,9 @@ async def test_secondary_profile_config_load_failure_fails_closed(monkeypatch):
         raise RuntimeError("config.yaml exploded")
 
     monkeypatch.setattr(
-        "gateway.delivery.resolve_delivery_transport", _spy_transport_factory(used),
+        "hermes_agent.gateway.delivery.resolve_delivery_transport", _spy_transport_factory(used),
     )
-    monkeypatch.setattr("gateway.run.load_gateway_config", _boom)
+    monkeypatch.setattr("hermes_agent.gateway.run.load_gateway_config", _boom)
 
     with pytest.raises(RuntimeError, match="could not load config"):
         await runner._process_handoff(
@@ -211,7 +211,7 @@ async def test_secondary_profile_without_live_adapters_fails_loudly(monkeypatch)
     runner._profile_adapters = {}
 
     monkeypatch.setattr(
-        "gateway.delivery.resolve_delivery_transport", _spy_transport_factory({}),
+        "hermes_agent.gateway.delivery.resolve_delivery_transport", _spy_transport_factory({}),
     )
 
     with pytest.raises(RuntimeError, match="no live adapters"):

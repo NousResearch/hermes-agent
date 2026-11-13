@@ -180,9 +180,9 @@ authorization model, but the rules below apply uniformly.
 - **Gateway platform adapters.** Most messaging integrations ship as
   bundled plugins under `plugins/platforms/<name>/` (Telegram, Discord,
   Slack, email, SMS, etc.). Shared base types and a smaller set of
-  legacy/direct adapters live under `gateway/platforms/`
+  legacy/direct adapters live under `hermes_agent/gateway/platforms/`
   (`base.py`, Signal, API server, webhooks, …), with discovery and
-  deferred loading via `gateway/platform_registry.py`.
+  deferred loading via `hermes_agent/gateway/platform_registry.py`.
 - **Network-exposed HTTP surfaces.** The API server adapter, the
   dashboard plugin, the kanban plugin's HTTP endpoints, and any
   other plugin that binds a listening socket.

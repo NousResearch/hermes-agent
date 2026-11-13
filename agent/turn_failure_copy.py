@@ -51,7 +51,7 @@ def stamp_failure(result: dict[str, Any], reason: str, retryable: bool) -> dict[
 # transcript boundary, NOT the model's answer: no provider/model error or refusal detail is
 # ever interpolated (that rides ``final_response``). Owned here so the core closer
 # (``agent/conversation_loop.py::run_conversation``) and the gateway's own writer
-# (``gateway/run_turn.py::_hmwa_close_failed_turn``) say the same thing.
+# (``hermes_agent/gateway/run_turn.py::_hmwa_close_failed_turn``) say the same thing.
 
 FAILED_TURN_NOTICE = (
     "Your request was not processed. Send it again if you still want me to carry it out."
@@ -360,7 +360,7 @@ _ONE_OFF_COPY: dict[str, str] = {
         "your settings (compression.enabled). Run /compress to shrink it now, /new to start "
         "fresh, or pick a model with a bigger context window."
     ),
-    # Wording deliberately avoids the overflow phrases gateway/run_turn.py matches on
+    # Wording deliberately avoids the overflow phrases hermes_agent/gateway/run_turn.py matches on
     # (``_CONTEXT_OVERFLOW_ERROR_PHRASES``): this failure is transient, so the user's
     # message must stay in the transcript and the session must not be auto-reset.
     "server_context_rejection": (

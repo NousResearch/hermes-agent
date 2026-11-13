@@ -14,10 +14,10 @@ from tests.gateway.test_session_authorities_multiplex import _reserve_homes, _ru
 
 @pytest.mark.asyncio
 async def test_api_binding_pins_runtime_to_the_admitting_profile(tmp_path, monkeypatch):
-    from gateway.run_runtime import initialize_gateway_runtime
-    from gateway.runtime_ownership import process_ownership
-    from gateway.session_api import bind_api_session, restore_api_session
-    from gateway.session_identity import identity_of
+    from hermes_agent.gateway.run_runtime import initialize_gateway_runtime
+    from hermes_agent.gateway.runtime_ownership import process_ownership
+    from hermes_agent.gateway.session_api import bind_api_session, restore_api_session
+    from hermes_agent.gateway.session_identity import identity_of
     root, homes = _reserve_homes(tmp_path, monkeypatch)
     process_ownership.reserve([home for _, home in homes])
     runner = None

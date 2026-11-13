@@ -79,8 +79,8 @@ def exit_capture(monkeypatch):
 class TestContracts:
     def test_restart_code_parity_with_gateway_restart(self):
         """The stdlib-only module duplicates the exit-code constant; keep it
-        in lockstep with the canonical gateway.restart definition."""
-        from gateway.restart import GATEWAY_SERVICE_RESTART_EXIT_CODE
+        in lockstep with the canonical hermes_agent.gateway.restart definition."""
+        from hermes_agent.gateway.restart import GATEWAY_SERVICE_RESTART_EXIT_CODE
 
         assert SERVICE_RESTART_EXIT_CODE == GATEWAY_SERVICE_RESTART_EXIT_CODE
 
@@ -409,7 +409,7 @@ class TestFire:
             marked["code"] = code
             marked["reason"] = reason
 
-        import gateway.lifecycle_ledger as ledger
+        import hermes_agent.gateway.lifecycle_ledger as ledger
 
         monkeypatch.setattr(ledger, "mark_exited", _fake_mark_exited)
         arm_startup_watchdog(timeout_s=0.1)

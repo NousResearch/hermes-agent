@@ -496,7 +496,7 @@ def _launcher_script(name: str, repo_root: Path, dependencies: Path | None) -> s
     return (
         # The repair's own stdlib, bound before the checkout root goes on sys.path: a stdlib-named
         # file in the tree must not run in its place ahead of the closure's verification. The first
-        # line stays the shape gateway.status._BOOTSTRAPS recognises as this launcher (#124318).
+        # line stays the shape hermes_agent.gateway.status._BOOTSTRAPS recognises as this launcher (#124318).
         "import os, re, sys\n"
         "import contextlib, hashlib, io, pathlib, shutil, subprocess\n"
         "os.environ.pop('PYTHONHOME', None)\n"

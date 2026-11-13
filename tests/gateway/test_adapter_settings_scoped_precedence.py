@@ -17,7 +17,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from agent.secret_scope import set_multiplex_active
-from gateway.config import Platform, load_gateway_config
+from hermes_agent.gateway.config import Platform, load_gateway_config
 from hermes_cli.plugins import discover_plugins
 
 
@@ -54,7 +54,7 @@ def homes(tmp_path, monkeypatch):
 
 @contextlib.contextmanager
 def _secondary_scope(home):
-    from gateway.run import _profile_runtime_scope
+    from hermes_agent.gateway.run import _profile_runtime_scope
     set_multiplex_active(True)
     try:
         with _profile_runtime_scope(home, prepared_secret_scope={}):
@@ -117,8 +117,8 @@ def test_explicit_env_beats_yaml_for_the_owning_profile(homes, monkeypatch):
 
 
 def test_central_allow_bots_gate_honours_a_secondary_yaml_policy(homes):
-    from gateway.run import GatewayRunner
-    from gateway.session import SessionSource
+    from hermes_agent.gateway.run import GatewayRunner
+    from hermes_agent.gateway.session import SessionSource
     from plugins.platforms.discord.adapter import DiscordAdapter
     from plugins.platforms.slack.adapter import SlackAdapter
     _, secondary = homes

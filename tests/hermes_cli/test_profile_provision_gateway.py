@@ -458,7 +458,7 @@ def test_a_create_with_no_gateway_url_loads_no_gateway_platforms_or_pydantic():
     import sys
     probe = ("import sys; from hermes_cli.profile_provision_gateway import _where; "
              "from hermes_cli.profile_provision import ProfileCreateReceipt; _where(''); "
-             "print([m for m in ('gateway.platforms', 'pydantic') if m in sys.modules])")
+             "print([m for m in ('hermes_agent.gateway.platforms', 'pydantic') if m in sys.modules])")
     out = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True, check=True,
                          cwd=Path(__file__).resolve().parents[2])
     assert out.stdout.strip() == "[]"

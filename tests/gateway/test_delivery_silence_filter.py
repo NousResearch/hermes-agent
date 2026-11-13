@@ -7,8 +7,8 @@ loop that crashes a model with "no content after all retries".
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform
-from gateway.delivery import (
+from hermes_agent.gateway.config import GatewayConfig, Platform
+from hermes_agent.gateway.delivery import (
     DeliveryRouter,
     DeliveryTarget,
     _is_silence_narration,
@@ -81,7 +81,7 @@ class RecordingAdapter:
 
 @pytest.mark.asyncio
 async def test_silence_narration_dropped_pre_send(tmp_path, monkeypatch):
-    monkeypatch.setattr("gateway.delivery.get_hermes_home", lambda: tmp_path)
+    monkeypatch.setattr("hermes_agent.gateway.delivery.get_hermes_home", lambda: tmp_path)
     adapter = RecordingAdapter()
     router = DeliveryRouter(GatewayConfig(), adapters={Platform.DISCORD: adapter})
     target = DeliveryTarget.parse("discord:99887766")
@@ -98,7 +98,7 @@ async def test_silence_narration_dropped_pre_send(tmp_path, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_config_opt_out_lets_silence_through(tmp_path, monkeypatch):
-    monkeypatch.setattr("gateway.delivery.get_hermes_home", lambda: tmp_path)
+    monkeypatch.setattr("hermes_agent.gateway.delivery.get_hermes_home", lambda: tmp_path)
     adapter = RecordingAdapter()
     config = GatewayConfig(filter_silence_narration=False)
     router = DeliveryRouter(config, adapters={Platform.DISCORD: adapter})
@@ -114,7 +114,7 @@ async def test_config_opt_out_lets_silence_through(tmp_path, monkeypatch):
 @pytest.mark.asyncio
 async def test_env_does_not_override_config_opt_out(tmp_path, monkeypatch):
     # env shouldn't override config when filter is turned off
-    monkeypatch.setattr("gateway.delivery.get_hermes_home", lambda: tmp_path)
+    monkeypatch.setattr("hermes_agent.gateway.delivery.get_hermes_home", lambda: tmp_path)
     monkeypatch.setenv("HERMES_FILTER_SILENCE_NARRATION", "1")
     adapter = RecordingAdapter()
     config = GatewayConfig(filter_silence_narration=False)
@@ -131,7 +131,7 @@ async def test_env_does_not_override_config_opt_out(tmp_path, monkeypatch):
 @pytest.mark.asyncio
 async def test_env_does_not_disable_filter_when_config_enabled(tmp_path, monkeypatch):
     # env shouldn't disable filter when config has it on
-    monkeypatch.setattr("gateway.delivery.get_hermes_home", lambda: tmp_path)
+    monkeypatch.setattr("hermes_agent.gateway.delivery.get_hermes_home", lambda: tmp_path)
     monkeypatch.setenv("HERMES_FILTER_SILENCE_NARRATION", "0")
     adapter = RecordingAdapter()
     config = GatewayConfig(filter_silence_narration=True)
@@ -151,7 +151,7 @@ async def test_env_does_not_disable_filter_when_config_enabled(tmp_path, monkeyp
 @pytest.mark.asyncio
 async def test_multiplex_profiles_independent_silence_narration_filtering(tmp_path, monkeypatch):
     # secondary profile keeps its own setting under multiplex regardless of process env
-    monkeypatch.setattr("gateway.delivery.get_hermes_home", lambda: tmp_path)
+    monkeypatch.setattr("hermes_agent.gateway.delivery.get_hermes_home", lambda: tmp_path)
     monkeypatch.setenv("HERMES_FILTER_SILENCE_NARRATION", "1")
     adapter_a = RecordingAdapter()
     adapter_b = RecordingAdapter()
@@ -180,7 +180,7 @@ async def test_multiplex_profiles_independent_silence_narration_filtering(tmp_pa
 
 @pytest.mark.asyncio
 async def test_cron_job_id_metadata_bypasses_the_filter(tmp_path, monkeypatch):
-    monkeypatch.setattr("gateway.delivery.get_hermes_home", lambda: tmp_path)
+    monkeypatch.setattr("hermes_agent.gateway.delivery.get_hermes_home", lambda: tmp_path)
     adapter = RecordingAdapter()
     router = DeliveryRouter(GatewayConfig(), adapters={Platform.DISCORD: adapter})
     target = DeliveryTarget.parse("discord:99887766")
@@ -198,7 +198,7 @@ async def test_cron_job_id_metadata_bypasses_the_filter(tmp_path, monkeypatch):
 @pytest.mark.asyncio
 async def test_non_cron_metadata_still_filters(tmp_path, monkeypatch):
     """The exemption keys on job_id alone — everything else is unchanged."""
-    monkeypatch.setattr("gateway.delivery.get_hermes_home", lambda: tmp_path)
+    monkeypatch.setattr("hermes_agent.gateway.delivery.get_hermes_home", lambda: tmp_path)
     adapter = RecordingAdapter()
     router = DeliveryRouter(GatewayConfig(), adapters={Platform.DISCORD: adapter})
     target = DeliveryTarget.parse("discord:99887766")

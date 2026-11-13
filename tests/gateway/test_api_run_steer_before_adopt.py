@@ -6,9 +6,9 @@ from types import SimpleNamespace
 import pytest
 
 from agent.interrupt_control import InterruptControlMixin
-from gateway.config import GatewayConfig
-from gateway.session import SessionStore
-from gateway.session_authority import initialize_session_authority
+from hermes_agent.gateway.config import GatewayConfig
+from hermes_agent.gateway.session import SessionStore
+from hermes_agent.gateway.session_authority import initialize_session_authority
 from hermes_agent.hermes_state import SessionDB
 from tests.gateway.test_api_unknown_resolution import _AUTH_HEADERS, _adapter, _runs_client
 
@@ -32,7 +32,7 @@ async def test_run_steer_before_adoption_reaches_the_turns_agent_not_the_cached_
     seen = {}
 
     async def answer(event):
-        from gateway.session_results import execution_result
+        from hermes_agent.gateway.session_results import execution_result
         authority = runner.session_authority
         sid = next(iter(authority.sessions))
         claimed.set()

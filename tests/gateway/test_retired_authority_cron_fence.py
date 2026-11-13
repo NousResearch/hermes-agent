@@ -8,8 +8,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway import run_runtime, session_bot, session_cron
-from gateway.session_contract import SessionActor, Submission
+from hermes_agent.gateway import run_runtime, session_bot, session_cron
+from hermes_agent.gateway.session_contract import SessionActor, Submission
 from hermes_agent.hermes_state_runtime import RuntimeStoreError, list_session_admissions
 from tests.gateway.test_profile_retire_stops_turns import REF, _Agent, _authority
 
@@ -51,7 +51,7 @@ async def _submit_more(authority, receipt):
 
 
 async def _worker_adopt(authority, receipt):
-    from gateway.session_worker import worker_request
+    from hermes_agent.gateway.session_worker import worker_request
     connection = SimpleNamespace(authority=authority, actor=CRON)
     await worker_request(connection, REF, {}, operation='adopt')
 
@@ -80,7 +80,7 @@ SITES = {
 async def test_retired_authority_refuses_writes_before_successor_epoch(tmp_path, monkeypatch, site):
     call, arrange, untouched = SITES[site]
     db, authority, _execute, _returned = _authority(tmp_path, _Agent())
-    monkeypatch.setattr('gateway.session_cron.unbind_owner', lambda authority: None)
+    monkeypatch.setattr('hermes_agent.gateway.session_cron.unbind_owner', lambda authority: None)
     monkeypatch.setattr(authority, '_schedule', lambda ref: None)  # the row stays queued for the next owner
     try:
         with db:

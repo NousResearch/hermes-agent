@@ -36,8 +36,8 @@ async def test_a_compaction_between_the_cursor_lookup_and_the_page_read_skips_no
 
 
 def test_a_result_is_labelled_by_its_own_call_when_the_provider_id_repeats(tmp_path, monkeypatch):
-    from gateway.session_controls import display_projection
-    from gateway.session_stored_reads import _call_context
+    from hermes_agent.gateway.session_controls import display_projection
+    from hermes_agent.gateway.session_stored_reads import _call_context
 
     def call(path):
         return [{'id': 'c1', 'type': 'function',
@@ -98,7 +98,7 @@ async def test_a_reply_a_later_compaction_wraps_in_a_summary_carrier_is_not_show
 @pytest.mark.asyncio
 @pytest.mark.parametrize('order', ['oldest', 'latest'])
 async def test_sql_paged_rows_get_the_resumes_normalization_across_a_page_edge(tmp_path, monkeypatch, order):
-    import gateway.session_stored_reads as stored
+    import hermes_agent.gateway.session_stored_reads as stored
     # No tool-run slack: the SQL window is exactly ``limit`` rows, so the harness prompt and its reply land
     # in two windows (with the default 64 extra rows this whole fixture is one window).
     monkeypatch.setattr(stored, '_TOOL_RUN', 0)
@@ -122,8 +122,8 @@ async def test_sql_paged_rows_get_the_resumes_normalization_across_a_page_edge(t
 
 def test_a_result_is_labelled_by_its_occurrence_of_a_provider_id_repeated_in_one_row(tmp_path, monkeypatch):
     """Two folded turns in one assistant row call ``c1`` twice; ``tool_call_uids`` holds one uid per occurrence."""
-    from gateway.session_controls import display_projection
-    from gateway.session_stored_reads import _call_context
+    from hermes_agent.gateway.session_controls import display_projection
+    from hermes_agent.gateway.session_stored_reads import _call_context
     with _session(tmp_path, monkeypatch) as (db, _authority, _owner, _ref, target):
         db.append_message(target, 'user', 'write two files')
         calls = [{'id': 'c1', 'type': 'function', 'function': {'name': 'write_file', 'arguments': json.dumps(
@@ -159,7 +159,7 @@ async def test_a_compaction_committing_inside_a_lineage_read_drops_nothing(tmp_p
     """A rotated lineage reads its display rows and its removed rows' identities; a compaction that carries
     the tip's last reply commits between those two statements. Both must see one generation."""
     from agent.context_compressor import SUMMARY_PREFIX
-    from gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.session_authority import initialize_session_authority
     from tests.gateway.test_session_stored_reads import _legacy_owner, _native
 
     store, db, runner = _legacy_owner(tmp_path, monkeypatch)

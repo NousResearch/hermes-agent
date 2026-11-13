@@ -15,7 +15,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from gateway.shutdown_flush import (
+from hermes_agent.gateway.shutdown_flush import (
     QUARANTINE_SUFFIX,
     TRANSCRIPT_CAP_DROP_REASON,
     _order_flush_files,
@@ -32,9 +32,9 @@ def flush_dir(tmp_path, monkeypatch):
     directory = tmp_path / "pending_messages"
     directory.mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(
-        "gateway.shutdown_flush._get_flush_dir", lambda: directory
+        "hermes_agent.gateway.shutdown_flush._get_flush_dir", lambda: directory
     )
-    monkeypatch.setattr("gateway.shutdown_flush._REPLAYED_UNREMOVABLE", set())
+    monkeypatch.setattr("hermes_agent.gateway.shutdown_flush._REPLAYED_UNREMOVABLE", set())
     return directory
 
 
@@ -42,11 +42,11 @@ def flush_dir(tmp_path, monkeypatch):
 def make_store(tmp_path):
     """Build a real ``SessionStore`` whose transcript writes go to *db*. It goes through the
     constructor, so new store state does not break these tests."""
-    from gateway.config import GatewayConfig
-    from gateway.session import SessionStore
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.session import SessionStore
 
     def build(db):
-        with patch("gateway.session.SessionStore._ensure_loaded"):
+        with patch("hermes_agent.gateway.session.SessionStore._ensure_loaded"):
             store = SessionStore(sessions_dir=tmp_path / "sessions", config=GatewayConfig())
         store._loaded = True
         store._db = db
@@ -223,7 +223,7 @@ def test_a_failed_replay_holds_back_that_sessions_later_messages_only(flush_dir,
 
     mock_db.append_message.side_effect = append_message
 
-    with caplog.at_level("INFO", logger="gateway.shutdown_flush"):
+    with caplog.at_level("INFO", logger="hermes_agent.gateway.shutdown_flush"):
         assert recover_pending_to_db(mock_db) == 1
 
     assert _contents(mock_db) == ["first", "other-session"]
@@ -446,10 +446,10 @@ def test_boot_recovery_runs_before_resume_turns_and_queued_inbound(monkeypatch):
     run's spool until recovery has run, so a live row written first lands ahead of it for good."""
     import asyncio
 
-    import gateway.run as gateway_run
+    import hermes_agent.gateway.run as gateway_run
 
     order = []
-    monkeypatch.setattr("gateway.shutdown_flush.recover_gateway_pending",
+    monkeypatch.setattr("hermes_agent.gateway.shutdown_flush.recover_gateway_pending",
                         lambda runner: order.append("recover") or 0)
     monkeypatch.setattr(gateway_run, "_restart_notification_pending", lambda: False)
     monkeypatch.setattr(gateway_run, "_planned_restart_notification_pending", lambda: False)

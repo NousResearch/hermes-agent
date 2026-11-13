@@ -5,10 +5,10 @@ import time
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.event import MessageEvent
-from gateway.run import GatewayRunner
-from gateway.session import SessionSource, build_session_key
+from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+from hermes_agent.gateway.platforms.event import MessageEvent
+from hermes_agent.gateway.run import GatewayRunner
+from hermes_agent.gateway.session import SessionSource, build_session_key
 from hermes_agent.hermes_state import SessionDB
 from plugins.platforms.discord.adapter import DiscordAdapter
 from tools import async_delegation as delegation
@@ -100,7 +100,7 @@ async def test_unavailable_raw_route_is_quiet_without_hiding_invalid_routes(tmp_
     runner = GatewayRunner(GatewayConfig())
     runner.adapters = {}
     evt = pending("opaque-client-session", "raw-admission")
-    caplog.set_level(logging.WARNING, logger="gateway.run")
+    caplog.set_level(logging.WARNING, logger="hermes_agent.gateway.run")
     for _ in range(3):
         assert await runner._deliver_async_delegation_group([evt]) is False
     assert not caplog.records
@@ -109,7 +109,7 @@ async def test_unavailable_raw_route_is_quiet_without_hiding_invalid_routes(tmp_
     assert await runner._inject_watch_notification("watch", {"type": "watch_match", "session_key": "agent:broken"}) is None
     assert any("unresolvable" in record.message for record in caplog.records)
     # API recovery writes only the delivery row, never starts a model turn.
-    from gateway.platforms.api_server import APIServerAdapter
+    from hermes_agent.gateway.platforms.api_server import APIServerAdapter
     api = APIServerAdapter(PlatformConfig())
     db = SessionDB(tmp_path / "api.db")
     db.create_session(evt["session_key"], "api_server")

@@ -1,4 +1,4 @@
-"""Unit tests for gateway.runtime_footer — the opt-in runtime-metadata footer
+"""Unit tests for hermes_agent.gateway.runtime_footer — the opt-in runtime-metadata footer
 appended to final gateway replies."""
 
 from __future__ import annotations
@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import pytest
 
-from gateway.runtime_footer import (
+from hermes_agent.gateway.runtime_footer import (
     _home_relative_cwd,
     _model_short,
     build_footer_line,
@@ -111,7 +111,7 @@ def test_resolve_platform_can_add_fields_only():
 
 
 # ---------------------------------------------------------------------------
-# build_footer_line — top-level entry point used by gateway/run.py
+# build_footer_line — top-level entry point used by hermes_agent/gateway/run.py
 # ---------------------------------------------------------------------------
 
 
@@ -154,7 +154,7 @@ def test_build_footer_per_platform_off_suppresses():
     ],
 )
 def test_format_latency(seconds, expected):
-    from gateway.runtime_footer import _format_latency
+    from hermes_agent.gateway.runtime_footer import _format_latency
 
     assert _format_latency(seconds) == expected
 

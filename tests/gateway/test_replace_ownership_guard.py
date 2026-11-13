@@ -58,24 +58,24 @@ def _record(pid=424242, start=111222333, home=None, argv=None):
 
 class TestRecordAuthority:
     def test_valid_bound_same_home_record_allows(self, profile_env):
-        from gateway.run import _replace_target_belongs_to_other_profile
+        from hermes_agent.gateway.run import _replace_target_belongs_to_other_profile
 
         with (
             patch(
-                "gateway.status._read_pid_record",
+                "hermes_agent.gateway.status._read_pid_record",
                 return_value=_record(home=str(profile_env / ".hermes")),
             ),
             patch(
-                "gateway.status._get_pid_path",
+                "hermes_agent.gateway.status._get_pid_path",
                 return_value=profile_env / ".hermes" / "gateway.pid",
             ),
             patch(
-                "gateway.status._get_process_start_time",
+                "hermes_agent.gateway.status._get_process_start_time",
                 return_value=111222333,
             ),
-            patch("gateway.status._read_process_cmdline", return_value=None),
+            patch("hermes_agent.gateway.status._read_process_cmdline", return_value=None),
             patch(
-                "gateway.status._get_process_hermes_home",
+                "hermes_agent.gateway.status._get_process_hermes_home",
                 return_value=profile_env / ".hermes",
             ),
         ):
@@ -84,26 +84,26 @@ class TestRecordAuthority:
     def test_foreign_home_record_refuses(self, profile_env):
         """Exact-home equality: another root/profile in the record refuses,
         even with a bare argv that substring matching would have passed."""
-        from gateway.run import _replace_target_belongs_to_other_profile
+        from hermes_agent.gateway.run import _replace_target_belongs_to_other_profile
 
         with (
             patch(
-                "gateway.status._read_pid_record",
+                "hermes_agent.gateway.status._read_pid_record",
                 return_value=_record(
                     home="/home/other/.hermes/profiles/timothy"
                 ),
             ),
             patch(
-                "gateway.status._get_pid_path",
+                "hermes_agent.gateway.status._get_pid_path",
                 return_value=profile_env / ".hermes" / "gateway.pid",
             ),
             patch(
-                "gateway.status._get_process_start_time",
+                "hermes_agent.gateway.status._get_process_start_time",
                 return_value=111222333,
             ),
-            patch("gateway.status._read_process_cmdline", return_value=None),
+            patch("hermes_agent.gateway.status._read_process_cmdline", return_value=None),
             patch(
-                "gateway.status._get_process_hermes_home",
+                "hermes_agent.gateway.status._get_process_hermes_home",
                 return_value=profile_env / ".hermes" / "profiles" / "tim",
             ),
         ):
@@ -111,16 +111,16 @@ class TestRecordAuthority:
 
     def test_missing_record_refuses(self, profile_env):
         """No valid record → ownership unprovable → refuse."""
-        from gateway.run import _replace_target_belongs_to_other_profile
+        from hermes_agent.gateway.run import _replace_target_belongs_to_other_profile
 
         with (
-            patch("gateway.status._read_pid_record", return_value=None),
+            patch("hermes_agent.gateway.status._read_pid_record", return_value=None),
             patch(
-                "gateway.status._get_pid_path",
+                "hermes_agent.gateway.status._get_pid_path",
                 return_value=profile_env / ".hermes" / "gateway.pid",
             ),
             patch(
-                "gateway.status._get_process_hermes_home",
+                "hermes_agent.gateway.status._get_process_hermes_home",
                 return_value=profile_env / ".hermes",
             ),
         ):
@@ -128,26 +128,26 @@ class TestRecordAuthority:
 
     def test_legacy_record_without_home_refuses(self, profile_env):
         """A pre-hermes_home-stamping record cannot prove ownership."""
-        from gateway.run import _replace_target_belongs_to_other_profile
+        from hermes_agent.gateway.run import _replace_target_belongs_to_other_profile
 
         legacy = _record(home=None)
         legacy.pop("hermes_home")
 
         with (
             patch(
-                "gateway.status._read_pid_record",
+                "hermes_agent.gateway.status._read_pid_record",
                 return_value=legacy,
             ),
             patch(
-                "gateway.status._get_pid_path",
+                "hermes_agent.gateway.status._get_pid_path",
                 return_value=profile_env / ".hermes" / "gateway.pid",
             ),
             patch(
-                "gateway.status._get_process_start_time",
+                "hermes_agent.gateway.status._get_process_start_time",
                 return_value=111222333,
             ),
             patch(
-                "gateway.status._get_process_hermes_home",
+                "hermes_agent.gateway.status._get_process_hermes_home",
                 return_value=profile_env / ".hermes",
             ),
         ):
@@ -155,23 +155,23 @@ class TestRecordAuthority:
 
     def test_unbound_record_wrong_pid_refuses(self, profile_env):
         """A record naming a DIFFERENT pid proves nothing (poisoned shape)."""
-        from gateway.run import _replace_target_belongs_to_other_profile
+        from hermes_agent.gateway.run import _replace_target_belongs_to_other_profile
 
         with (
             patch(
-                "gateway.status._read_pid_record",
+                "hermes_agent.gateway.status._read_pid_record",
                 return_value=_record(pid=999999, home=str(profile_env / ".hermes")),
             ),
             patch(
-                "gateway.status._get_pid_path",
+                "hermes_agent.gateway.status._get_pid_path",
                 return_value=profile_env / ".hermes" / "gateway.pid",
             ),
             patch(
-                "gateway.status._get_process_start_time",
+                "hermes_agent.gateway.status._get_process_start_time",
                 return_value=111222333,
             ),
             patch(
-                "gateway.status._get_process_hermes_home",
+                "hermes_agent.gateway.status._get_process_hermes_home",
                 return_value=profile_env / ".hermes",
             ),
         ):
@@ -180,33 +180,33 @@ class TestRecordAuthority:
     def test_unbound_record_stale_start_time_refuses(self, profile_env):
         """PID reused since the record was written (start_time drift) → the
         record no longer describes the live process → refuse."""
-        from gateway.run import _replace_target_belongs_to_other_profile
+        from hermes_agent.gateway.run import _replace_target_belongs_to_other_profile
 
         with (
             patch(
-                "gateway.status._read_pid_record",
+                "hermes_agent.gateway.status._read_pid_record",
                 return_value=_record(start=1, home=str(profile_env / ".hermes")),
             ),
             patch(
-                "gateway.status._get_pid_path",
+                "hermes_agent.gateway.status._get_pid_path",
                 return_value=profile_env / ".hermes" / "gateway.pid",
             ),
             patch(
-                "gateway.status._get_process_start_time",
+                "hermes_agent.gateway.status._get_process_start_time",
                 return_value=42,
             ),
             patch(
-                "gateway.status._get_process_hermes_home",
+                "hermes_agent.gateway.status._get_process_hermes_home",
                 return_value=profile_env / ".hermes",
             ),
         ):
             assert _replace_target_belongs_to_other_profile(424242) is True
 
     def test_probe_exception_fails_closed(self, profile_env):
-        from gateway.run import _replace_target_belongs_to_other_profile
+        from hermes_agent.gateway.run import _replace_target_belongs_to_other_profile
 
         with patch(
-            "gateway.status._read_pid_record",
+            "hermes_agent.gateway.status._read_pid_record",
             side_effect=RuntimeError("probe exploded"),
         ):
             assert _replace_target_belongs_to_other_profile(424242) is True
@@ -218,7 +218,7 @@ class TestArgvConsistencyCheck:
     def test_prefix_collision_is_not_a_conflict(self, profile_env):
         """``--profile timothy`` must NOT read as our profile ``tim``:
         substring matching would have false-allowed the foreign gateway."""
-        from gateway.run import (
+        from hermes_agent.gateway.run import (
             _looks_like_profile_conflict_from_cmdline as conflict,
         )
 
@@ -240,7 +240,7 @@ class TestArgvConsistencyCheck:
 
     def test_explicit_home_flag_exact_compare(self, profile_env):
         """HERMES_HOME= on the argv compares path-exactly, not by prefix."""
-        from gateway.run import (
+        from hermes_agent.gateway.run import (
             _looks_like_profile_conflict_from_cmdline as conflict,
         )
 
@@ -261,7 +261,7 @@ class TestArgvConsistencyCheck:
         )
 
     def test_default_home_refuses_any_named_profile_flag(self):
-        from gateway.run import (
+        from hermes_agent.gateway.run import (
             _looks_like_profile_conflict_from_cmdline as conflict,
         )
 
@@ -275,27 +275,27 @@ class TestArgvConsistencyCheck:
     ):
         """Record says same-home but the argv explicitly advertises another
         profile → refuse (argv contradiction wins the conservative call)."""
-        from gateway.run import _replace_target_belongs_to_other_profile
+        from hermes_agent.gateway.run import _replace_target_belongs_to_other_profile
 
         with (
             patch(
-                "gateway.status._read_pid_record",
+                "hermes_agent.gateway.status._read_pid_record",
                 return_value=_record(home=str(profile_env / ".hermes")),
             ),
             patch(
-                "gateway.status._get_pid_path",
+                "hermes_agent.gateway.status._get_pid_path",
                 return_value=profile_env / ".hermes" / "gateway.pid",
             ),
             patch(
-                "gateway.status._get_process_start_time",
+                "hermes_agent.gateway.status._get_process_start_time",
                 return_value=111222333,
             ),
             patch(
-                "gateway.status._read_process_cmdline",
+                "hermes_agent.gateway.status._read_process_cmdline",
                 return_value="python -m hermes_cli.main --profile other-profile gateway run",
             ),
             patch(
-                "gateway.status._get_process_hermes_home",
+                "hermes_agent.gateway.status._get_process_hermes_home",
                 return_value=profile_env / ".hermes",
             ),
         ):
@@ -306,7 +306,7 @@ class TestSignalBoundary:
     """Integration witness at the destructive boundary (#89315 review req)."""
 
     def _run_replace(self, agent_patches):
-        from gateway import run as gateway_run
+        from hermes_agent.gateway import run as gateway_run
 
         calls = {"terminate": 0, "marker": 0, "status": []}
 
@@ -320,11 +320,11 @@ class TestSignalBoundary:
             calls["status"].append(fields)
 
         base = [
-            patch("gateway.status.get_running_pid", return_value=424242),
+            patch("hermes_agent.gateway.status.get_running_pid", return_value=424242),
             patch.object(gateway_run, "_replace_target_belongs_to_other_profile"),
-            patch("gateway.status.write_runtime_status", side_effect=_fake_status),
-            patch("gateway.status.terminate_pid", side_effect=_fake_terminate),
-            patch("gateway.status.write_takeover_marker", side_effect=_fake_marker),
+            patch("hermes_agent.gateway.status.write_runtime_status", side_effect=_fake_status),
+            patch("hermes_agent.gateway.status.terminate_pid", side_effect=_fake_terminate),
+            patch("hermes_agent.gateway.status.write_takeover_marker", side_effect=_fake_marker),
         ]
         import contextlib
 
@@ -346,7 +346,7 @@ class TestSignalBoundary:
         def configure(stack):
             guard = stack.enter_context(
                 patch(
-                    "gateway.run._replace_target_belongs_to_other_profile",
+                    "hermes_agent.gateway.run._replace_target_belongs_to_other_profile",
                     return_value=True,
                 )
             )
@@ -372,7 +372,7 @@ class TestSignalBoundary:
         def configure(stack):
             stack.enter_context(
                 patch(
-                    "gateway.run._replace_target_belongs_to_other_profile",
+                    "hermes_agent.gateway.run._replace_target_belongs_to_other_profile",
                     return_value=True,
                 )
             )
@@ -391,17 +391,17 @@ class TestSignalBoundary:
         def configure(stack):
             stack.enter_context(
                 patch(
-                    "gateway.run._replace_target_belongs_to_other_profile",
+                    "hermes_agent.gateway.run._replace_target_belongs_to_other_profile",
                     return_value=False,
                 )
             )
             stack.enter_context(
                 patch(
-                    "gateway.status.get_process_start_time",
+                    "hermes_agent.gateway.status.get_process_start_time",
                     return_value=111222333,
                 )
             )
-            stack.enter_context(patch("gateway.run.time.sleep"))
+            stack.enter_context(patch("hermes_agent.gateway.run.time.sleep"))
 
         _result, calls = self._run_replace(configure)
 
@@ -488,7 +488,7 @@ class TestStampDurability:
 
         verify = subprocess.run(
             [sys.executable, "-c",
-             "import gateway.status as s; print(s.get_runtime_status_running_pid())"],
+             "import hermes_agent.gateway.status as s; print(s.get_runtime_status_running_pid())"],
             env=env, capture_output=True, text=True, timeout=60, cwd=repo_root, check=False,
         )
         assert verify.stdout.strip() == "None", (

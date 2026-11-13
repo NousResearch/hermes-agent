@@ -12,7 +12,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
-from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
+from hermes_agent.gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
 
 
 def _make_consumer() -> GatewayStreamConsumer:

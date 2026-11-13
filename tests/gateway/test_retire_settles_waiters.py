@@ -5,21 +5,21 @@ import asyncio
 
 import pytest
 
-from gateway import run_runtime
+from hermes_agent.gateway import run_runtime
 from hermes_agent.hermes_state_runtime import RuntimeStoreError, list_session_admissions
 from tests.gateway.test_profile_retire_stops_turns import ACTOR, REF, _Agent, _authority
-from gateway.session_contract import Submission
+from hermes_agent.gateway.session_contract import Submission
 from tests.waiting import async_wait_until
 
 
 @pytest.mark.asyncio
 async def test_successful_retirement_fails_pending_waiters_and_keeps_rows_queued(tmp_path, monkeypatch):
-    from gateway import session_finite
+    from hermes_agent.gateway import session_finite
     agent = _Agent()
     db, authority, execute, _returned = _authority(tmp_path, agent)
     monkeypatch.setattr(session_finite, 'execute_finite_admission', execute)
     monkeypatch.setattr(run_runtime, 'TURN_SETTLE_SECONDS', 1.0, raising=False)
-    monkeypatch.setattr('gateway.session_cron.unbind_owner', lambda authority: None)
+    monkeypatch.setattr('hermes_agent.gateway.session_cron.unbind_owner', lambda authority: None)
     try:
         with db:
             await authority.submit(ACTOR, Submission(request_id='running', ref=REF, payload={'text': 'a'}, intent='queue'))

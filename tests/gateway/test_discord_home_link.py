@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
-from gateway.config import HomeChannel, Platform, load_gateway_config
+from hermes_agent.gateway.config import HomeChannel, Platform, load_gateway_config
 from plugins.platforms.discord.adapter import DiscordAdapter
 
 

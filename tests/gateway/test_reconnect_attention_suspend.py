@@ -8,11 +8,11 @@ from unittest.mock import patch
 
 import pytest
 
-import gateway.run as gateway_run
-from gateway import run_adapters
-from gateway import run_adapters_recovery
-from gateway.config import Platform, PlatformConfig
-from gateway.run import GatewayRunner
+import hermes_agent.gateway.run as gateway_run
+from hermes_agent.gateway import run_adapters
+from hermes_agent.gateway import run_adapters_recovery
+from hermes_agent.gateway.config import Platform, PlatformConfig
+from hermes_agent.gateway.run import GatewayRunner
 from tests.gateway.test_platform_reconnect import StubAdapter, _make_runner
 
 _SUSPEND = 13.1 * 3600

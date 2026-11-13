@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-from gateway.session_context import get_session_env
+from hermes_agent.gateway.session_context import get_session_env
 
 # Sources that label the human conversation an interactive UI transport hosts. A finite ``hermes chat -q`` /
 # one-shot child spawned from such a session inherits HERMES_SESSION_SOURCE (the terminal tool bridges the
@@ -32,7 +32,7 @@ ATTENDED_SOURCES = UI_TRANSPORT_SOURCES | {"cli", "acp"}
 
 def create_surface(source: str) -> str:
     """The ``session.create`` label for a session source: ``desktop`` is the Desktop's platform name for
-    the ``gui`` surface (gateway.session_policy.SURFACES), which the create contract does not list."""
+    the ``gui`` surface (hermes_agent.gateway.session_policy.SURFACES), which the create contract does not list."""
     return "gui" if source == "desktop" else source
 
 
@@ -66,7 +66,7 @@ def is_attended(agent: Any) -> bool:
         return False
     # A gateway-admitted ``hermes chat -q`` / ``-z`` turn carries its one-shot fact on the admission,
     # not in HERMES_SINGLE_QUERY_SESSION (the daemon never had that env).
-    from gateway.session_finite import finite_turn_required
+    from hermes_agent.gateway.session_finite import finite_turn_required
     if finite_turn_required() is True:
         return False
     return session_source_for(platform) in ATTENDED_SOURCES

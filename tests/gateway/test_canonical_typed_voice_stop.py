@@ -3,7 +3,7 @@ instead of reaching the agent. Ink sends prompts to the canonical ``prompt.submi
 goes through the real ``AuthorityConnection.dispatch`` (contract parse, handler, result check)."""
 import pytest
 
-from gateway import run_api
+from hermes_agent.gateway import run_api
 from hermes_agent.hermes_state_runtime import list_session_admissions
 from tests.gateway.test_prompt_queued_controls import _call, _connection
 from tests.gateway.test_session_authority_cancel_settlement import _authority
@@ -13,7 +13,7 @@ from tests.gateway.test_session_authority_cancel_settlement import _authority
 def voice_owner(tmp_path, monkeypatch):
     from types import SimpleNamespace
 
-    from gateway.config import Platform
+    from hermes_agent.gateway.config import Platform
     from hermes_agent.tui_gateway import server
     db, authority = _authority(tmp_path, monkeypatch, platform=Platform.LOCAL)  # TUI-26 is the local voice chat
     # The owner's voice mode is keyed by the session's source (``_voice_key_for_source``). Ending the
@@ -21,7 +21,7 @@ def voice_owner(tmp_path, monkeypatch):
     # tests/tui_gateway/test_canonical_voice_mode_writers.py.
     authority.sessions['s'].source.chat_id = 's'
     # A LOCAL session belongs to its launching user: the viewer ``_connection`` attaches as.
-    from gateway.session_identity import authenticated_subject
+    from hermes_agent.gateway.session_identity import authenticated_subject
     authority.sessions['s'].source.user_id = authenticated_subject({'user_id': 'human'})
     monkeypatch.setattr(authority, '_schedule', lambda ref: None)  # admit only; never run a turn
     runner = authority.runner
@@ -91,7 +91,7 @@ async def test_a_stranger_cannot_end_the_voice_chat(voice_owner):
 async def test_a_messaging_lane_viewer_typing_stop_is_admitted_untouched(voice_owner):
     """TUI-26 is the LOCAL voice chat: a Telegram lane whose chat ran ``/voice on``, viewed from
     Desktop or Ink, keeps its voice mode and gets the typed text admitted as a turn."""
-    from gateway.config import Platform
+    from hermes_agent.gateway.config import Platform
     voice_owner.authority.sessions['s'].source.platform = Platform.TELEGRAM
     voice_owner.runner._voice_mode['s'] = 'voice_only'
     with voice_owner.db:

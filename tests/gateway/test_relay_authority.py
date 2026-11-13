@@ -24,15 +24,15 @@ def test_authenticated_relay_uses_canonical_admission(tmp_path):
 
 async def probe(peer):
     import websockets
-    from gateway.config import Platform, PlatformConfig
-    from gateway.relay.adapter import RelayAdapter
-    from gateway.relay.descriptor import CapabilityDescriptor
-    from gateway.relay.ws_transport import WebSocketRelayTransport, _event_from_wire
-    from gateway.run import GatewayRunner
-    from gateway.run_api import start_gateway_api, stop_gateway_api
-    from gateway.session_authority import initialize_session_authority
-    from gateway.session_contract import SessionRef
-    from gateway.session_envelope import prepare_native, restore_native
+    from hermes_agent.gateway.config import Platform, PlatformConfig
+    from hermes_agent.gateway.relay.adapter import RelayAdapter
+    from hermes_agent.gateway.relay.descriptor import CapabilityDescriptor
+    from hermes_agent.gateway.relay.ws_transport import WebSocketRelayTransport, _event_from_wire
+    from hermes_agent.gateway.run import GatewayRunner
+    from hermes_agent.gateway.run_api import start_gateway_api, stop_gateway_api
+    from hermes_agent.gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.session_contract import SessionRef
+    from hermes_agent.gateway.session_envelope import prepare_native, restore_native
     from hermes_cli import web_server
     from hermes_agent.hermes_state_runtime import RuntimeStoreError, list_session_admissions
     from tests.waiting import async_wait_until
@@ -195,8 +195,8 @@ async def probe(peer):
                         pass
                     else:
                         raise AssertionError('forged source accepted: ' + mutate)
-                from gateway.session import SessionSource
-                from gateway.session_ingress_context import restore_provenance
+                from hermes_agent.gateway.session import SessionSource
+                from hermes_agent.gateway.session_ingress_context import restore_provenance
                 untrusted = SessionSource.from_dict(payload['native_text_v1']['source'])
                 forged_proof = dict(payload['native_text_v1']['provenance'], relay='forged')
                 try:

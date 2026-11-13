@@ -5,11 +5,11 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from gateway.config import Platform
+from hermes_agent.gateway.config import Platform
 
 
 def _local_turn(published):
-    from gateway.run_turn_runner import TurnRunner
+    from hermes_agent.gateway.run_turn_runner import TurnRunner
     turn = object.__new__(TurnRunner)
     turn._ctx = SimpleNamespace(
         source=SimpleNamespace(platform=Platform.LOCAL, chat_id='chat', chat_type='dm'),
@@ -24,7 +24,7 @@ def _local_turn(published):
 
 def test_only_a_real_compaction_reaches_local_viewers_as_compacting():
     from agent.conversation_compression import COMPACTION_STATUS
-    from gateway.warning_notifications import DiagnosticText
+    from hermes_agent.gateway.warning_notifications import DiagnosticText
 
     published = []
     turn = _local_turn(published)

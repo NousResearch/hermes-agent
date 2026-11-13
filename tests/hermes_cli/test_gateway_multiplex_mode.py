@@ -17,7 +17,7 @@ from pathlib import Path
 import pytest
 
 import hermes_constants
-from gateway.config import GatewayConfig, load_gateway_config
+from hermes_agent.gateway.config import GatewayConfig, load_gateway_config
 from hermes_cli import gateway_migrate as gm
 from hermes_cli import gateway_multiplex_mode as mode
 from datetime import UTC
@@ -105,7 +105,7 @@ def test_standalone_named_profile_leaves_nothing_to_multiplex(fleet):
 
 @pytest.mark.parametrize("flag", ["", "  multiplex_profiles: true\n", "  multiplex_profiles: false\n"])
 def test_standalone_launcher_never_multiplexes_other_profiles(fleet, flag):
-    from gateway.run import _profile_runtime_scope
+    from hermes_agent.gateway.run import _profile_runtime_scope
 
     root, _services, _pids = fleet
     solo = root / "profiles/coder"
@@ -165,7 +165,7 @@ def test_live_record_outranks_the_raw_flag_for_other_processes(fleet, monkeypatc
     """A CLI process asks the LIVE default gateway (which settled the unset default itself) before
     reading config; a gateway that stayed standalone recorded an empty served set."""
     root, _services, _pids = fleet
-    from gateway import status
+    from hermes_agent.gateway import status
     monkeypatch.setattr(status, "_read_process_cmdline", lambda pid: "hermes gateway run")
     (root / "gateway.pid").write_text(json.dumps({"pid": os.getpid(), "hermes_home": str(root)}))
     record = {"pid": os.getpid(), "hermes_home": str(root), "gateway_state": "running", "served_profiles": []}
@@ -179,7 +179,7 @@ def test_live_record_outranks_the_raw_flag_for_other_processes(fleet, monkeypatc
 def test_guard_refusal_is_recorded_in_runtime_status_and_cleared_on_default(tmp_path, monkeypatch):
     """A guard refusal must be visible to `hermes gateway status`, not only in the boot log; a later
     boot that multiplexes clears it (a stale reason would misdescribe the live gateway)."""
-    from gateway import status as gw_status
+    from hermes_agent.gateway import status as gw_status
     from hermes_cli.gateway_multiplex_mode import MultiplexDecision, record_multiplex_decision
     monkeypatch.setattr(gw_status, "_get_runtime_status_path", lambda: tmp_path / "gateway_state.json")
     monkeypatch.setattr(gw_status, "owns_gateway_runtime_lock", lambda: True)  # the serving gateway records
@@ -246,7 +246,7 @@ def test_pre_lock_decision_never_publishes_a_rival_gateway_owner(tmp_path):
 
 def test_recorded_standalone_warning_lines_suppressed_for_dead_or_stale_record(tmp_path, monkeypatch):
     """Dead or stale gateway_state.json must not emit standalone warnings (#120991)."""
-    import gateway.status as gw_status
+    import hermes_agent.gateway.status as gw_status
     from datetime import datetime, timezone
 
     state_file = tmp_path / "gateway_state.json"

@@ -9,7 +9,7 @@ rendezvous actually uses it, and that the host lock still works on that path.
 
 import pytest
 
-from gateway import host_rendezvous as hr
+from hermes_agent.gateway import host_rendezvous as hr
 
 pytestmark = pytest.mark.platforms("windows")
 

@@ -30,11 +30,11 @@ from urllib.parse import urlsplit, urlunsplit
 # secret; only an UNSCOPED read under multiplex (default-profile startup loop) falls back to the process
 # env, which is that profile's own value.
 from agent.secret_scope import is_multiplex_active as _is_multiplex_active
-from gateway.platforms._shared import (
+from hermes_agent.gateway.platforms._shared import (
     apply_yaml_bridge as _apply_yaml_bridge, get_scoped_secret as _shared_scoped_secret, profile_scoped as _profile_scoped,
     seed_extra_from_env as _seed_extra_from_env,
 )
-from gateway.platforms._shared import send_error
+from hermes_agent.gateway.platforms._shared import send_error
 
 
 def _get_scoped_secret(name, default=None):
@@ -62,12 +62,12 @@ def _scoped_platform_setting(env_name, extra, key):
 
 logger = logging.getLogger(__name__)
 
-from gateway.platforms.base import (
+from hermes_agent.gateway.platforms.base import (
     BasePlatformAdapter, CachedMedia, SendResult, cache_media_bytes_async,
 )
-from gateway.platforms.helpers import cancel_task
-from gateway.platforms.event import MessageEvent, MessageType
-from gateway.config import Platform
+from hermes_agent.gateway.platforms.helpers import cancel_task
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.config import Platform
 from plugins.platforms.buzz.buzz_cursors import _SEEN_CAP, BuzzCursorMixin
 
 
@@ -239,7 +239,7 @@ def _load_sibling_file(name: str):
 _nostr_auth = _load_sibling("nostr_auth")
 
 # bech32 (BIP-173) npub <-> hex so mention detection and allow-lists accept either form.
-from gateway.authz_mixin import (
+from hermes_agent.gateway.authz_mixin import (
     _BECH32_CHARSET, _bech32_hrp_expand, _bech32_polymod, _convertbits, _npub_to_hex as npub_to_hex,
 )
 
@@ -585,7 +585,7 @@ class BuzzAdapter(BuzzCursorMixin, BasePlatformAdapter):
     def normalize_user_id(user_id: str) -> Optional[str]:
         """Normalize a user reference (hex or npub) to hex — authz_mixin allowlist hook.
 
-        Optional hook consumed by ``gateway/authz_mixin`` when matching the profile allowlist carried in
+        Optional hook consumed by ``hermes_agent/gateway/authz_mixin`` when matching the profile allowlist carried in
         ``config.extra.allowed_users`` (#98738): entries may be npubs while inbound ``user_id`` is always
         the hex pubkey, so a plain string compare would deny listed users.
         """
@@ -1337,7 +1337,7 @@ class BuzzAdapter(BuzzCursorMixin, BasePlatformAdapter):
             await self._handle_event(channel_id, state, event)
         self._trim_seen(state)
         if self._cursor_mark(state) != before:  # never past a busy input held uncommitted (serial reader)
-            from gateway.session_ingress_burst import when_returned_inputs_durable
+            from hermes_agent.gateway.session_ingress_burst import when_returned_inputs_durable
             await when_returned_inputs_durable(self, self._cursor_writer())
 
     @staticmethod
@@ -1681,7 +1681,7 @@ class BuzzAdapter(BuzzCursorMixin, BasePlatformAdapter):
         media_urls: list[str] = []
         media_types: list[str] = []
         media_kinds: list[str] = []
-        from gateway.platforms.base import cache_media_bytes_async, validate_inbound_media_size
+        from hermes_agent.gateway.platforms.base import cache_media_bytes_async, validate_inbound_media_size
         for url in urls:
             path_match = _MEDIA_PATH_RE.fullmatch(urlsplit(url).path)
             if path_match is None:
@@ -1767,7 +1767,7 @@ def _profile_buzz_extra() -> dict:
     if not _profile_scoped():
         return {}
     try:
-        from gateway.config_loader import platform_section
+        from hermes_agent.gateway.config_loader import platform_section
         from hermes_constants import get_hermes_home
         from hermes_cli.config import read_user_config_raw
         cfg = read_user_config_raw(Path(get_hermes_home()) / "config.yaml")

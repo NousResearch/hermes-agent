@@ -66,7 +66,7 @@ async def standalone_lifespan(app: "FastAPI"):
     # Snapshot the checkout revision so lazy-import paths (model picker) can
     # refuse with "restart required" after `hermes update` replaced the code
     # (#86207); the update flow does not reliably restart the dashboard.
-    from gateway.code_skew import record_boot_fingerprint
+    from hermes_agent.gateway.code_skew import record_boot_fingerprint
 
     record_boot_fingerprint()
 

@@ -9,9 +9,9 @@ import json
 
 import pytest
 
-from gateway.hosted_room_execution_policy import current_room_execution_policy
-from gateway.hosted_room_peer import catalog_mapping
-from gateway.session_api_turn import admit_api_turn, api_execution, api_policy_scope, check_api_turn
+from hermes_agent.gateway.hosted_room_execution_policy import current_room_execution_policy
+from hermes_agent.gateway.hosted_room_peer import catalog_mapping
+from hermes_agent.gateway.session_api_turn import admit_api_turn, api_execution, api_policy_scope, check_api_turn
 from hermes_agent.hermes_state_runtime import RuntimeStoreError, list_session_admissions
 from tests.gateway.test_hosted_room_execution_policy import _dispatch, _policy
 
@@ -24,7 +24,7 @@ def test_admission_with_a_policy_but_no_dispatch_is_refused(api, owner):
 
 
 def test_queued_policy_only_admission_from_an_older_build_is_not_recovered(api, owner, monkeypatch):
-    from gateway.session_api_turn import recover_api_turns
+    from hermes_agent.gateway.session_api_turn import recover_api_turns
     _, ref, row = admit_api_turn(api, session_id='legacy-policy', request_id='queued-turn',
                                  user_message='hello', conversation_history=[])
     stored = json.loads(json.dumps(row['payload']))
@@ -42,8 +42,8 @@ def test_queued_policy_only_admission_from_an_older_build_is_not_recovered(api, 
 
 
 def test_dispatch_with_its_catalog_policy_is_admitted_and_bound(api, owner, monkeypatch):
-    from gateway import hosted_rooms
-    from gateway.platforms import api_server_room_grants
+    from hermes_agent.gateway import hosted_rooms
+    from hermes_agent.gateway.platforms import api_server_room_grants
     policy = _policy()
     dispatch = _dispatch(policy).as_mapping()
     catalog = catalog_mapping(installation_id='install-peer', persistent_process=True,

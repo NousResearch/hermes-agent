@@ -1,6 +1,6 @@
 """Which profiles does the LIVE default multiplexer serve? One answer for every CLI/dashboard surface.
 
-``gateway/run_adapters.py::_record_served_profiles`` writes ``served_profiles`` into the default
+``hermes_agent/gateway/run_adapters.py::_record_served_profiles`` writes ``served_profiles`` into the default
 home's ``gateway_state.json`` at startup. That record is the truth about the running process; the
 default ``config.yaml`` plus ``GATEWAY_MULTIPLEX_PROFILES`` as seen by the *CLI* process is only a
 guess (``hermes -p coder ...`` loads coder's ``.env``, so an env-only opt-in on the default profile
@@ -19,14 +19,14 @@ logger = logging.getLogger(__name__)
 def live_default_gateway_pid() -> Optional[int]:
     """PID of the default profile's gateway when a VERIFIED live process owns it, else None.
 
-    ``gateway.status.live_gateway_pid_for_home``: pid file + lock, then the runtime record the gateway
+    ``hermes_agent.gateway.status.live_gateway_pid_for_home``: pid file + lock, then the runtime record the gateway
     itself writes, each proven against the live process (start time, gateway command line, home). A
     launch-service gateway can be live with no ``gateway.pid`` at all, and a stale record whose PID was
     recycled by an unrelated process must not make its ``served_profiles`` authoritative. Never key this
     off the record's ``updated_at``: an idle gateway never advances it.
     """
     from hermes_constants import get_default_hermes_root
-    from gateway.status import live_gateway_pid_for_home
+    from hermes_agent.gateway.status import live_gateway_pid_for_home
     return live_gateway_pid_for_home(get_default_hermes_root())
 
 
@@ -35,7 +35,7 @@ def recorded_served_profiles(default_root: Optional[Path] = None) -> Optional[li
     from before the multiplexer recorded it, or a stopped/absent gateway). Callers fall back to config
     derivation only on None: an empty list is an authoritative "serves nobody else"."""
     from hermes_constants import get_default_hermes_root
-    from gateway.status import read_runtime_status
+    from hermes_agent.gateway.status import read_runtime_status
     if live_default_gateway_pid() is None:
         return None
     runtime = read_runtime_status((default_root or get_default_hermes_root()) / "gateway_state.json")
@@ -50,10 +50,10 @@ def multiplexer_served_secondaries() -> list[str]:
 
 def served_profile_unserved_platforms(profile: str) -> dict[str, str]:
     """``{platform: reason}`` for a served profile's platforms the multiplexer deliberately does not run
-    (unpaired WhatsApp or Relay shared ingress; ``gateway.run_adapters`` stamps
+    (unpaired WhatsApp or Relay shared ingress; ``hermes_agent.gateway.run_adapters`` stamps
     ``<profile>:<platform>`` as ``disabled`` with a reason and remedy)."""
     from hermes_constants import get_default_hermes_root
-    from gateway.status import read_runtime_status
+    from hermes_agent.gateway.status import read_runtime_status
     if not profile or live_default_gateway_pid() is None:
         return {}
     runtime = read_runtime_status(get_default_hermes_root() / "gateway_state.json") or {}
@@ -74,7 +74,7 @@ def served_profile_ingress_urls(profile: Optional[str] = None) -> dict[str, dict
     serves on its shared listener (``<profile>:<platform>`` entries carrying ``ingress_url``). This is
     what the user pastes into the vendor console (Twilio, LINE, Teams, ...). ``profile`` narrows the map."""
     from hermes_constants import get_default_hermes_root
-    from gateway.status import read_runtime_status, shared_listener_mirror_platforms
+    from hermes_agent.gateway.status import read_runtime_status, shared_listener_mirror_platforms
     if live_default_gateway_pid() is None:
         return {}
     runtime = read_runtime_status(get_default_hermes_root() / "gateway_state.json") or {}
@@ -113,7 +113,7 @@ def notify_multiplexer_profiles_changed(profile_name: str, *, timeout: float = 8
     gateway, single-profile gateway, or a gateway predating the verb). Never raises."""
     try:
         from hermes_constants import get_default_hermes_root
-        from gateway.control_socket import rescan_gateway_profiles
+        from hermes_agent.gateway.control_socket import rescan_gateway_profiles
         if live_default_gateway_pid() is None:
             return None
         answer = rescan_gateway_profiles(get_default_hermes_root(), timeout=timeout)

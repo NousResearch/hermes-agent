@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from gateway.config import PlatformConfig
+from hermes_agent.gateway.config import PlatformConfig
 
 
 # ---------------------------------------------------------------------------
@@ -95,7 +95,7 @@ class TestFormatMessageCodeBlocks:
         queued progress bubble and the native stream-consumer path."""
         import queue
 
-        from gateway.run_turn_progress import GatewayTurnProgressMixin as M
+        from hermes_agent.gateway.run_turn_progress import GatewayTurnProgressMixin as M
 
         progress = "💻 terminal\n```\nssh -F /opt/data/home/.ssh/config fed...\n```"
         native_lines = []

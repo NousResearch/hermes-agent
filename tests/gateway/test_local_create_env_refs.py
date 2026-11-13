@@ -6,11 +6,11 @@ import pytest
 
 
 async def _owner(home, monkeypatch):
-    from gateway import run
-    from gateway.config import GatewayConfig
-    from gateway.session import SessionStore
-    from gateway.session_authority import initialize_session_authority
-    from gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway import run
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.session import SessionStore
+    from hermes_agent.gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.session_controls import AuthorityConnection
     monkeypatch.setattr(run, '_hermes_home', home)
     monkeypatch.setenv('HERMES_HOME', str(home))  # a single-profile owner: this IS the launch home
     store = SessionStore(home / 'sessions', GatewayConfig())
@@ -22,8 +22,8 @@ async def _owner(home, monkeypatch):
 
 
 def _created_model(owner, actor, home, request_id):
-    from gateway.session_local import create_local_session
-    from gateway.session_policy import restore_policy
+    from hermes_agent.gateway.session_local import create_local_session
+    from hermes_agent.gateway.session_policy import restore_policy
     from hermes_agent.hermes_state_local import local_receipt
     ref = create_local_session(owner, actor, {'request_id': request_id, 'source': 'cli', 'cwd': str(home),
                                               'toolsets': []})
@@ -64,10 +64,10 @@ async def test_exact_create_retry_after_an_env_rotation_returns_the_original_ses
     retried after the profile's ``.env`` rotated: the exact retry returns the original session and its
     frozen policy, never ``invalid_params`` or a re-expanded route. Also for a ``-m`` alias launch
     whose endpoint is a ``${VAR}`` ref (the resolved route rides the frozen request)."""
-    from gateway import session_local
-    from gateway.run import _load_gateway_config
-    from gateway.session_local import create_local_session
-    from gateway.session_policy import restore_policy
+    from hermes_agent.gateway import session_local
+    from hermes_agent.gateway.run import _load_gateway_config
+    from hermes_agent.gateway.session_local import create_local_session
+    from hermes_agent.gateway.session_policy import restore_policy
     from hermes_cli import model_switch
     from hermes_agent.hermes_state_local import local_receipt
     home = tmp_path / 'home'
@@ -103,8 +103,8 @@ async def test_new_alias_session_uses_the_current_profile_env(tmp_path, monkeypa
     """A ``-m`` alias whose endpoint is a ``${VAR}`` ref resolves from the same fresh config snapshot
     as the rest of the policy: not the daemon's start env, and not an alias cache that only notices
     ``config.yaml`` edits."""
-    from gateway.session_local import create_local_session
-    from gateway.session_policy import restore_policy
+    from hermes_agent.gateway.session_local import create_local_session
+    from hermes_agent.gateway.session_policy import restore_policy
     from hermes_cli import model_switch
     from hermes_agent.hermes_state_local import local_receipt
     home = tmp_path / 'home'
@@ -139,7 +139,7 @@ def test_bound_scope_is_kept(tmp_path, monkeypatch):
     """A served profile's owner scope (multiplex) is already the right source: never rebuilt from
     another home."""
     from agent.secret_scope import reset_secret_scope, set_secret_scope
-    from gateway.session_local import load_profile_config
+    from hermes_agent.gateway.session_local import load_profile_config
     home = tmp_path / 'home'
     home.mkdir()
     (home / 'config.yaml').write_text('model: {base_url: "${CFG4_BASE_URL}"}\n')

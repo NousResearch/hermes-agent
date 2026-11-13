@@ -1,7 +1,7 @@
 """The classic CLI's `/cron` as plain lines: the overview, the list and every store write.
 
 Shared by the classic CLI off the gateway (`CLICommandsMixin._handle_cron_command`) and the shared gateway, which runs
-`/cron` for a local session's `slash.exec` (gateway/session_commands.py, gateway/session_cron_commands.py), so the
+`/cron` for a local session's `slash.exec` (hermes_agent/gateway/session_commands.py, hermes_agent/gateway/session_cron_commands.py), so the
 profile's cron store has one writer: the gateway that owns it.
 """
 from __future__ import annotations
@@ -19,7 +19,7 @@ def _cron(**kwargs) -> dict:
 
 def cron_overview_lines() -> list[str]:
     """Bare ``/cron``: the command card, then the current jobs. Plain text (the shared gateway serves
-    the same lines to every local session, gateway/session_cron_commands.py)."""
+    the same lines to every local session, hermes_agent/gateway/session_cron_commands.py)."""
     out = ["", "+" + "-" * 68 + "+", "|" + _t("cron.overview_title").center(68) + "|",
            "+" + "-" * 68 + "+", "", f"  {_t('cron.overview_commands')}",
            *_lines(_t("cron.overview_usage"), pad="    "), ""]

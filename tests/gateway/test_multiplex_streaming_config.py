@@ -9,11 +9,11 @@ from types import SimpleNamespace
 
 import pytest
 
-import gateway.run as gateway_run
-from gateway.config import GatewayConfig, Platform, StreamingConfig
-from gateway.run_turn import GatewayTurnMixin
-from gateway.run_turn_runner import TurnRunner
-from gateway.session import SessionSource
+import hermes_agent.gateway.run as gateway_run
+from hermes_agent.gateway.config import GatewayConfig, Platform, StreamingConfig
+from hermes_agent.gateway.run_turn import GatewayTurnMixin
+from hermes_agent.gateway.run_turn_runner import TurnRunner
+from hermes_agent.gateway.session import SessionSource
 
 
 class _Consumer:
@@ -50,7 +50,7 @@ CASES = [
 @pytest.mark.parametrize(("host", "served", "profile", "multiplex", "expect"), CASES)
 def test_turn_stream_consumer_follows_the_profile_running_the_turn(monkeypatch, host, served, profile,
                                                                     multiplex, expect):
-    monkeypatch.setattr("gateway.stream_consumer.GatewayStreamConsumer", _Consumer)
+    monkeypatch.setattr("hermes_agent.gateway.stream_consumer.GatewayStreamConsumer", _Consumer)
     ctx = SimpleNamespace(
         mute_notification_reply=False, streaming_tts_consumer_holder=[None], user_config={},
         resolve_display_setting=lambda *_args: None, scheduled_heartbeat=False,
@@ -67,7 +67,7 @@ def test_turn_stream_consumer_follows_the_profile_running_the_turn(monkeypatch, 
 @pytest.mark.parametrize(("host", "served", "profile", "multiplex", "expect"), CASES)
 def test_proxy_stream_consumer_follows_the_profile_running_the_turn(monkeypatch, host, served, profile,
                                                                      multiplex, expect):
-    monkeypatch.setattr("gateway.stream_consumer.GatewayStreamConsumer", _Consumer)
+    monkeypatch.setattr("hermes_agent.gateway.stream_consumer.GatewayStreamConsumer", _Consumer)
     monkeypatch.setattr(gateway_run, "_load_gateway_config", dict)
     consumer = GatewayTurnMixin._proxy_stream_consumer(
         _runner(host, served, multiplex=multiplex), _source(profile), None, None, lambda: True)

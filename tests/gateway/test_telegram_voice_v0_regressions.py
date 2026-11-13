@@ -13,12 +13,12 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import BasePlatformAdapter, SendResult
-from gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.config import Platform, PlatformConfig
+from hermes_agent.gateway.platforms.base import BasePlatformAdapter, SendResult
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
 from plugins.platforms.telegram.adapter import TelegramAdapter
-from gateway.run import GatewayRunner
-from gateway.session import SessionSource
+from hermes_agent.gateway.run import GatewayRunner
+from hermes_agent.gateway.session import SessionSource
 
 
 def _source():
@@ -202,8 +202,8 @@ async def test_monitor_to_drain_transcribes_and_echoes_pending_voice_once(
     _PendingVoiceAgent.messages = []
 
     with (
-        patch("gateway.run._hermes_home", tmp_path),
-        patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "fake"}),
+        patch("hermes_agent.gateway.run._hermes_home", tmp_path),
+        patch("hermes_agent.gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "fake"}),
         patch(
             "tools.transcription_tools.transcribe_audio",
             return_value={"success": True, "transcript": "hello once", "provider": "mock"},
@@ -291,7 +291,7 @@ def _voice_event(source, urls, text=""):
 async def test_voice_note_merged_during_pending_stt_is_transcribed():
     """A 2nd voice note merged into the pending event while the interrupt monitor's STT is in
     flight must not be dropped by the monitor publishing a transcript of the 1st note only."""
-    from gateway.platforms.base import merge_pending_message_event
+    from hermes_agent.gateway.platforms.base import merge_pending_message_event
 
     runner = _runner()
     source = _source()
@@ -325,7 +325,7 @@ async def test_voice_note_merged_during_pending_stt_is_transcribed():
 async def test_caption_of_voice_note_merged_during_pending_stt_is_kept():
     """The interrupt path hands over a snapshot of the caption; the merged note's caption lands on
     ``event.text`` during the STT await and must reach both the interrupt and the cached drain text."""
-    from gateway.platforms.base import merge_pending_message_event
+    from hermes_agent.gateway.platforms.base import merge_pending_message_event
 
     runner = _runner()
     source = _source()
@@ -365,7 +365,7 @@ async def test_caption_of_voice_note_merged_during_pending_stt_is_kept():
 async def test_burst_of_merged_voice_notes_transcribes_each_clip_once():
     """STT is paid and delays the interrupt: a re-run after a merge must transcribe only the new
     clips, and so must the drain path's re-run after a later merge drops the cached result."""
-    from gateway.platforms.base import merge_pending_message_event
+    from hermes_agent.gateway.platforms.base import merge_pending_message_event
 
     runner = _runner()
     source = _source()

@@ -11,9 +11,9 @@ import pytest
 @pytest.mark.platforms("linux")
 @pytest.mark.parametrize('timed_out', [False, True])
 def test_exit_state_keeps_runtime_reserved_until_final_cleanup(tmp_path, monkeypatch, timed_out):
-    from gateway import run
-    from gateway.run_shutdown import GatewayShutdownMixin
-    from gateway.status import acquire_gateway_runtime_lock, release_gateway_runtime_lock, write_pid_file, remove_pid_file
+    from hermes_agent.gateway import run
+    from hermes_agent.gateway.run_shutdown import GatewayShutdownMixin
+    from hermes_agent.gateway.status import acquire_gateway_runtime_lock, release_gateway_runtime_lock, write_pid_file, remove_pid_file
 
     home = tmp_path / 'runtime'
     home.mkdir()
@@ -27,7 +27,7 @@ def test_exit_state_keeps_runtime_reserved_until_final_cleanup(tmp_path, monkeyp
     )
     ctx = SimpleNamespace(timed_out=timed_out, active_agents={}, elapsed=lambda: 0)
     probe = '''
-from gateway.status import acquire_gateway_runtime_lock, release_gateway_runtime_lock
+from hermes_agent.gateway.status import acquire_gateway_runtime_lock, release_gateway_runtime_lock
 claimed = acquire_gateway_runtime_lock()
 print('CLAIMED', claimed)
 if claimed:

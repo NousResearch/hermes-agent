@@ -5,7 +5,7 @@ import io
 
 import pytest
 
-from gateway.runtime_ownership import OwnershipConflict, ProfileOwnership
+from hermes_agent.gateway.runtime_ownership import OwnershipConflict, ProfileOwnership
 from hermes_agent.tui_gateway import entry
 
 

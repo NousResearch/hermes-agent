@@ -49,7 +49,7 @@ def _gate_mocks(
     holder_sha: str | None = DISK_SHA, holder_status_stale: bool = False,
 ):
     """Point the yield gate's process and holder-status probes at fixed answers."""
-    from gateway import status as gateway_status
+    from hermes_agent.gateway import status as gateway_status
 
     monkeypatch.setattr(scheduler_mod, "_detect_gateway_code_skew", lambda: skew)
     # `raising=False`: `_current_gateway_code_sha` is introduced by this PR, so on the base tree
@@ -138,7 +138,7 @@ class TestTickYieldGate:
     def test_lock_probe_exception_proceeds(self, monkeypatch, tmp_path):
         """Fail-open: the lock probe raising must not yield or crash the
         tick."""
-        from gateway import status as gateway_status
+        from hermes_agent.gateway import status as gateway_status
 
         monkeypatch.setattr(scheduler_mod, "_detect_gateway_code_skew", lambda: SKEW)
 
@@ -296,7 +296,7 @@ class TestGatewayLockOwnershipProbe:
     """The self-ownership accessor backing the gate, against the real lock."""
 
     def test_ownership_follows_acquire_and_release(self, tmp_path, monkeypatch):
-        from gateway import status as gateway_status
+        from hermes_agent.gateway import status as gateway_status
 
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         assert gateway_status.owns_gateway_runtime_lock() is False
@@ -316,7 +316,7 @@ class TestGatewayLockOwnershipProbe:
         """The gateway lock is a process-level identity file (#56986): under
         a multiplex profile-home override the probe must still resolve the
         launch home's lock, not the overridden profile's."""
-        from gateway import status as gateway_status
+        from hermes_agent.gateway import status as gateway_status
         from hermes_constants import (
             reset_hermes_home_override,
             set_hermes_home_override,

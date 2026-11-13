@@ -336,7 +336,7 @@ def bound(request, cwd_mount):
     if request.param == "session row":
         yield cwd_mount
         return
-    from gateway.session_policy import unbind_turn_workspace
+    from hermes_agent.gateway.session_policy import unbind_turn_workspace
     from tools.terminal_tool import register_task_env_overrides, workspace_key_for
 
     workspace = str(cwd_mount["workspace"])
@@ -371,7 +371,7 @@ def test_a_session_on_a_shared_container_never_reads_or_saves_its_unmounted_work
     """``terminal.docker_shared_container_key``: every session reuses ONE ``shared:<key>`` container,
     which mounts the cwd of the session that created it (P), so ``sess-ws``'s own W is not its
     ``/workspace``. Nothing records P, so reads keep the profile cwd and Save refuses."""
-    from gateway.session_policy import unbind_turn_workspace
+    from hermes_agent.gateway.session_policy import unbind_turn_workspace
     from tools.terminal_tool import _resolve_container_task_id, register_task_env_overrides, workspace_key_for
 
     monkeypatch.setenv("TERMINAL_DOCKER_SHARED_CONTAINER_KEY", "team")

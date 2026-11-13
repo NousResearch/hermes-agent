@@ -6,8 +6,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from gateway.config import PlatformConfig
-from gateway.platforms.base import SendResult
+from hermes_agent.gateway.config import PlatformConfig
+from hermes_agent.gateway.platforms.base import SendResult
 
 FENCED = "echo '```' " + "A" * 4000 + " && rm -rf ~ # TAIL"  # cannot be fenced verbatim -> Deny only
 

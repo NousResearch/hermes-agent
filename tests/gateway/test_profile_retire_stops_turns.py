@@ -10,9 +10,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway import run_runtime
-from gateway.session_authority import LiveSession, SessionAuthority
-from gateway.session_contract import SessionActor, SessionRef, Submission
+from hermes_agent.gateway import run_runtime
+from hermes_agent.gateway.session_authority import LiveSession, SessionAuthority
+from hermes_agent.gateway.session_contract import SessionActor, SessionRef, Submission
 from hermes_agent.hermes_state import SessionDB
 from hermes_agent.hermes_state_runtime import begin_runtime_epoch, list_session_admissions
 from tests.waiting import async_wait_until
@@ -70,12 +70,12 @@ def _authority(tmp_path, agent):
 @pytest.mark.asyncio
 @pytest.mark.parametrize('honours_stop', [True, False])
 async def test_unserve_stops_and_joins_the_running_turn_before_release(tmp_path, monkeypatch, honours_stop):
-    from gateway import session_finite
+    from hermes_agent.gateway import session_finite
     agent = _Agent(honours_stop=honours_stop)
     db, authority, execute, returned = _authority(tmp_path, agent)
     monkeypatch.setattr(session_finite, 'execute_finite_admission', execute)
     monkeypatch.setattr(run_runtime, 'TURN_SETTLE_SECONDS', 1.0, raising=False)
-    monkeypatch.setattr('gateway.session_cron.unbind_owner', lambda authority: None)
+    monkeypatch.setattr('hermes_agent.gateway.session_cron.unbind_owner', lambda authority: None)
     try:
         with db:
             await authority.submit(ACTOR, Submission(request_id='running', ref=REF, payload={'text': 'a'}, intent='queue'))
@@ -114,13 +114,13 @@ class _RoomService:
 
 @pytest.mark.asyncio
 async def test_retire_stops_the_turn_a_hosted_room_stop_waits_for(tmp_path, monkeypatch):
-    from gateway import session_finite
+    from hermes_agent.gateway import session_finite
     agent = _Agent()
     db, authority, execute, returned = _authority(tmp_path, agent)
     authority.hosted_room_service = _RoomService(returned)
     monkeypatch.setattr(session_finite, 'execute_finite_admission', execute)
     monkeypatch.setattr(run_runtime, 'TURN_SETTLE_SECONDS', 1.0, raising=False)
-    monkeypatch.setattr('gateway.session_cron.unbind_owner', lambda authority: None)
+    monkeypatch.setattr('hermes_agent.gateway.session_cron.unbind_owner', lambda authority: None)
     try:
         with db:
             await authority.submit(ACTOR, Submission(request_id='running', ref=REF, payload={'text': 'a'}, intent='queue'))

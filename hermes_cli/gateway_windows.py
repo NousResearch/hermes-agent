@@ -1085,7 +1085,7 @@ def _live_gateway_pids(
     files (a still-running sibling must not vouch for a per-profile spawn, #110959); otherwise the
     process-table discovery for the active profile or the whole fleet."""
     if home is not None:
-        from gateway.status import get_running_pid
+        from hermes_agent.gateway.status import get_running_pid
 
         pid = get_running_pid(home / "gateway.pid", cleanup_stale=False)
         pids = [pid] if pid else []
@@ -1262,7 +1262,7 @@ def _attested_pid_exited_cleanly(pid: int, create_time: float | None = None, hom
     has run since and the marker is stale; "unknown" must never read as "dead". A missing sentinel
     still reads as dead (the attested process never booted far enough to claim it)."""
     try:
-        from gateway.lifecycle_ledger import get_lifecycle_sentinel_path
+        from hermes_agent.gateway.lifecycle_ledger import get_lifecycle_sentinel_path
 
         sentinel = get_lifecycle_sentinel_path(home if home is not None else _hermes_home())
         data = json.loads(sentinel.read_text(encoding="utf-8-sig"))
@@ -1635,7 +1635,7 @@ def _probe_lock_file(lock_path: Path) -> None:
     if _probe_missing(2, lock_path, "Lock file"):
         return
     try:
-        from gateway.status import is_gateway_runtime_lock_active
+        from hermes_agent.gateway.status import is_gateway_runtime_lock_active
 
         _probe(2, is_gateway_runtime_lock_active(lock_path), f"Lock file held by a live process: {lock_path}")
     except Exception as exc:
@@ -1644,7 +1644,7 @@ def _probe_lock_file(lock_path: Path) -> None:
 
 def _probe_running_pid() -> int | None:
     try:
-        from gateway.status import get_running_pid
+        from hermes_agent.gateway.status import get_running_pid
 
         running_pid = get_running_pid(cleanup_stale=False)
         _probe(3, running_pid is not None, f"get_running_pid() => {running_pid}")
@@ -1659,7 +1659,7 @@ def _probe_pid_exists(candidate_pid: int | None) -> None:
         _probe(4, False, "No candidate PID to verify")
         return
     try:
-        from gateway.status import _pid_exists
+        from hermes_agent.gateway.status import _pid_exists
 
         alive = bool(_pid_exists(candidate_pid))
         _probe(4, alive, f"_pid_exists({candidate_pid}) => {alive}")
@@ -1805,7 +1805,7 @@ def _drain_gateway_pid(pid: int, drain_timeout: float) -> bool:
     if pid <= 0:
         return False
     try:
-        from gateway.status import write_planned_stop_marker, _pid_exists
+        from hermes_agent.gateway.status import write_planned_stop_marker, _pid_exists
     except ImportError:
         return False
 
@@ -1832,7 +1832,7 @@ def _gateway_pid_identities(pids: list[int]) -> dict[int, int | None]:
     """``{pid: start_time}`` fingerprints, captured BEFORE any drain/wait so a later force-kill can
     detect that the PID was recycled meanwhile."""
     try:
-        from gateway.status import get_process_start_time
+        from hermes_agent.gateway.status import get_process_start_time
     except ImportError:
         return {pid: None for pid in pids}
     return {pid: get_process_start_time(pid) for pid in pids}
@@ -1844,7 +1844,7 @@ def _force_terminate_known_gateway_pids(identities: dict[int, int | None]) -> in
     ``terminate_pid`` refuses the kill when the live process no longer matches. Re-reading the start
     time here would compare the process with itself and taskkill whatever now owns the PID."""
     try:
-        from gateway.status import _pid_exists, terminate_pid
+        from hermes_agent.gateway.status import _pid_exists, terminate_pid
     except ImportError:
         return 0
 
@@ -1886,7 +1886,7 @@ def stop() -> None:
     ``resume_pending`` (Windows asyncio can't receive SIGTERM — the marker is our only IPC), then
     ``schtasks /End``, then a bounded hard-kill of known PIDs."""
     _assert_windows()
-    from gateway.status import get_running_pid
+    from hermes_agent.gateway.status import get_running_pid
 
     # A user-initiated stop is a planned death: don't later report it as a silent crash.
     _clear_start_attestation()
@@ -1922,7 +1922,7 @@ def stop() -> None:
 def _wait_for_gateway_absent(timeout_s: float = 30.0, interval_s: float = 0.5) -> bool:
     """Block until no gateway is detectable (authoritative ``get_running_pid()`` plus the strict
     ``_gateway_pids()`` scan) or the timeout elapses, so a relaunch never races a draining process."""
-    from gateway.status import get_running_pid
+    from hermes_agent.gateway.status import get_running_pid
 
     def _absent() -> bool:
         return get_running_pid() is None and not _gateway_pids()
@@ -1941,7 +1941,7 @@ def _mark_planned_restart() -> None:
     for that window a flapping platform can reconnect, replay the notice and unlink the marker the
     new process then never finds.
     """
-    from gateway.restart_notice import write_planned_restart_marker
+    from hermes_agent.gateway.restart_notice import write_planned_restart_marker
     write_planned_restart_marker()
 
 

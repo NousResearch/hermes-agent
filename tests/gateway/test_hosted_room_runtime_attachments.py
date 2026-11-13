@@ -5,10 +5,10 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
-from gateway import hosted_room_driver as state
-from gateway import hosted_rooms
-from gateway.hosted_room_attachments import HostedRoomAttachmentStore
-from gateway.session_hosted_rpc import HostedRoomAuthorityRPC
+from hermes_agent.gateway import hosted_room_driver as state
+from hermes_agent.gateway import hosted_rooms
+from hermes_agent.gateway.hosted_room_attachments import HostedRoomAttachmentStore
+from hermes_agent.gateway.session_hosted_rpc import HostedRoomAuthorityRPC
 from hermes_agent.hermes_state_runtime import list_session_admissions
 from hermes_agent.tui_gateway.hosted_room_driver import HostedRoomBinding, HostedRoomRuntime
 from tests.waiting import wait_until

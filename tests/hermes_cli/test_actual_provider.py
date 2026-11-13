@@ -32,7 +32,7 @@ def _clear_actual_env(monkeypatch):
     monkeypatch.delenv("ACTUAL_API_MODE", raising=False)
 
 def _clear_ca_bundle_env(monkeypatch):
-    # Importing gateway.run (any earlier test in the same process) writes
+    # Importing hermes_agent.gateway.run (any earlier test in the same process) writes
     # SSL_CERT_FILE into os.environ; an explicit CA env var disables the
     # scoped certifi default these tests assert.
     for key in (

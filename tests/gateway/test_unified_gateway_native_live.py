@@ -1,9 +1,9 @@
 """Native live proof of the unified gateway runtime on the CURRENT host OS.
 
-An ordinary ``python -m gateway.run`` in a disposable HERMES_HOME with a loopback
+An ordinary ``python -m hermes_agent.gateway.run`` in a disposable HERMES_HOME with a loopback
 model must, on Linux, macOS and native Windows alike: publish discovery + tickets;
 attach WebSockets; admit/execute/receipt prompts; keep two clients FIFO on one
-session; survive an owner hard-kill (``gateway.status.terminate_pid``) with the
+session; survive an owner hard-kill (``hermes_agent.gateway.status.terminate_pid``) with the
 committed queued admission executed exactly once; branch/delete with retryable
 receipts; run the safe-mode CLI turn in an out-of-process managed worker that
 opens no writable canonical SQLite; refuse a second owner while the first holds
@@ -78,10 +78,10 @@ def control(home, verb, params=None):
     """Bootstrap control channel: private named pipe on Windows, AF_UNIX elsewhere."""
     request = json.dumps({'protocol': 1, 'id': 1, 'verb': verb, 'params': params or {}}).encode() + b'\n'
     if os.name == 'nt':
-        from gateway.runtime_bootstrap_windows import query_runtime_control
+        from hermes_agent.gateway.runtime_bootstrap_windows import query_runtime_control
         raw = query_runtime_control(home, request, 2)
     else:
-        from gateway.control_socket import resolve_client_socket_path
+        from hermes_agent.gateway.control_socket import resolve_client_socket_path
         path = resolve_client_socket_path(home)
         if path is None:
             raise FileNotFoundError('control socket absent')
@@ -128,13 +128,13 @@ def websocket(home, desc, purpose='interactive'):
 
 
 def process_start_time(pid):
-    from gateway.status import get_process_start_time
+    from hermes_agent.gateway.status import get_process_start_time
     return get_process_start_time(pid)
 
 
 def hard_kill(proc):
     """Owner death without cleanup: identity-guarded force kill, never a raw SIGKILL."""
-    from gateway.status import terminate_pid
+    from hermes_agent.gateway.status import terminate_pid
     terminate_pid(proc.pid, force=True, expected_start_time=process_start_time(proc.pid))
     proc.wait(timeout=30)
 
@@ -163,7 +163,7 @@ def planned_stop(home, proc, desc):
 
 @contextmanager
 def daemon(home, env, log_name, *, fixture=None, expect_ready=True):
-    command = [sys.executable, str(ROOT / 'tests/gateway/fixtures' / fixture)] if fixture else [sys.executable, '-m', 'gateway.run']
+    command = [sys.executable, str(ROOT / 'tests/gateway/fixtures' / fixture)] if fixture else [sys.executable, '-m', 'hermes_agent.gateway.run']
     with (home.parent / log_name).open('w+', encoding='utf-8', errors='replace') as log:
         proc = subprocess.Popen(command, cwd=ROOT, env=env, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT)
         try:
@@ -378,12 +378,12 @@ def test_native_gateway_runtime_live(harness):
         return child
 
     def lock_exclusion(owner, desc):
-        from gateway.runtime_ownership import exclusive_maintenance, OwnershipConflict
+        from hermes_agent.gateway.runtime_ownership import exclusive_maintenance, OwnershipConflict
         with pytest.raises(OwnershipConflict):
             with exclusive_maintenance([home]):
                 pass
         with (home.parent / 'second.log').open('w+', encoding='utf-8', errors='replace') as log:
-            second = subprocess.Popen([sys.executable, '-m', 'gateway.run'], cwd=ROOT, env=env,
+            second = subprocess.Popen([sys.executable, '-m', 'hermes_agent.gateway.run'], cwd=ROOT, env=env,
                                       stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT)
             try:
                 code = second.wait(timeout=120)
@@ -404,7 +404,7 @@ def test_native_gateway_runtime_live(harness):
         assert control(home, 'identify')['instance_id'] == desc['instance_id']
         return code
 
-    # Same ordinary gateway.run entry; the wrapper only dumps every thread's stack to
+    # Same ordinary hermes_agent.gateway.run entry; the wrapper only dumps every thread's stack to
     # logs/stacks.txt after 60s so a readiness stall on a native runner names its frame.
     with daemon(home, {**env, 'UGW_STACK_DUMP_AFTER': '20'}, 'first.log', fixture='stack_dump_daemon.py') as (owner, desc, _):
         receipt['first_pid'] = owner.pid
@@ -419,7 +419,7 @@ def test_native_gateway_runtime_live(harness):
     assert not (home / 'gateway.sock').exists()
     assert control_absent(home)
     assert not port_open(port)
-    from gateway.runtime_ownership import exclusive_maintenance
+    from hermes_agent.gateway.runtime_ownership import exclusive_maintenance
     with exclusive_maintenance([home]):
         receipt['lock_released'] = True
     print(json.dumps(receipt))

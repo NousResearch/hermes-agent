@@ -16,14 +16,14 @@ import time
 import uuid
 from typing import Any, Dict, List, Optional
 
-from gateway.platforms._shared import (
+from hermes_agent.gateway.platforms._shared import (
     coerce_port, get_scoped_secret as _get_scoped_secret, seed_extra_from_env as _seed_extra_from_env, send_error
 )
 from agent.i18n import t
-from gateway.platforms.base import BasePlatformAdapter, SendResult
-from gateway.platforms.helpers import cancel_task
-from gateway.platforms.event import MessageEvent, MessageType
-from gateway.config import Platform
+from hermes_agent.gateway.platforms.base import BasePlatformAdapter, SendResult
+from hermes_agent.gateway.platforms.helpers import cancel_task
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.config import Platform
 
 
 logger = logging.getLogger(__name__)
@@ -141,7 +141,7 @@ class IRCAdapter(BasePlatformAdapter):
         max_msg = extra.get("max_message_length")
         if max_msg is None:
             with contextlib.suppress(Exception):
-                from gateway.platform_registry import platform_registry
+                from hermes_agent.gateway.platform_registry import platform_registry
                 max_msg = platform_registry.get("irc").max_message_length
         self.max_message_length = int(max_msg or 450)
         self._reader: Optional[asyncio.StreamReader] = None

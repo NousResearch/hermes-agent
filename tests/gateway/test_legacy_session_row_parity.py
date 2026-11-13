@@ -11,11 +11,11 @@ import pytest
 
 
 async def _owner(tmp_path, monkeypatch):
-    from gateway import run
-    from gateway.config import GatewayConfig
-    from gateway.session import SessionStore
-    from gateway.session_authority import initialize_session_authority
-    from gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway import run
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.session import SessionStore
+    from hermes_agent.gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.session_controls import AuthorityConnection
 
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     monkeypatch.setattr(run, '_load_gateway_config', lambda: {'platform_toolsets': {'cli': []}})
@@ -56,7 +56,7 @@ async def test_resumed_main_session_keeps_source_and_end_stamp(tmp_path, monkeyp
     assert sid in {r['id'] for r in db.search_sessions(source=[label])}
 
     # The first admitted turn reopens the row, as main's sidecar did.
-    from gateway.session_local_recovery import reopen_local_session
-    from gateway.session_contract import SessionRef
+    from hermes_agent.gateway.session_local_recovery import reopen_local_session
+    from hermes_agent.gateway.session_contract import SessionRef
     reopen_local_session(authority, SessionRef(authority.profile_id, sid))
     assert db.get_session(sid)['end_reason'] is None

@@ -44,7 +44,7 @@ def _launch_bot_token_names() -> set[str]:
     from hermes_cli.env_loader import launch_dotenv_keys, source_supplied_names
     from hermes_constants import get_routing_process_hermes_home
     from tools.environments.local_env_policy import _ADAPTER_SECRET_ENV, _home_adapter_secret_env
-    from gateway.restart import is_supervised_gateway_launch
+    from hermes_agent.gateway.restart import is_supervised_gateway_launch
     adapter_secrets = _ADAPTER_SECRET_ENV | _home_adapter_secret_env()
     if is_supervised_gateway_launch():
         # Under systemd/launchd (``/update`` sent to a service gateway) there is no user shell: an

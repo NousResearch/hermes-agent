@@ -28,11 +28,11 @@ class HookAdapter(Adapter):
 
 @pytest.mark.asyncio
 async def test_busy_followup_fires_processing_hooks_once(monkeypatch):
-    from gateway.config import GatewayConfig, Platform
-    from gateway.platforms.event import MessageEvent, ProcessingOutcome
-    from gateway.run import GatewayRunner
-    from gateway.session_authority import initialize_session_authority
-    from gateway.session_results import execution_result
+    from hermes_agent.gateway.config import GatewayConfig, Platform
+    from hermes_agent.gateway.platforms.event import MessageEvent, ProcessingOutcome
+    from hermes_agent.gateway.run import GatewayRunner
+    from hermes_agent.gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.session_results import execution_result
 
     monkeypatch.setenv('TELEGRAM_ALLOWED_USERS', 'fixture-user')
     runner = GatewayRunner(GatewayConfig())
@@ -66,10 +66,10 @@ async def test_busy_followup_fires_processing_hooks_once(monkeypatch):
 
 
 async def _busy_hook_owner(monkeypatch, adapter):
-    from gateway.config import GatewayConfig, Platform
-    from gateway.run import GatewayRunner
-    from gateway.session_authority import initialize_session_authority
-    from gateway.session_results import execution_result
+    from hermes_agent.gateway.config import GatewayConfig, Platform
+    from hermes_agent.gateway.run import GatewayRunner
+    from hermes_agent.gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.session_results import execution_result
 
     monkeypatch.setenv('TELEGRAM_ALLOWED_USERS', 'fixture-user')
     runner = GatewayRunner(GatewayConfig())
@@ -92,8 +92,8 @@ async def _busy_hook_owner(monkeypatch, adapter):
 async def test_busy_followup_success_waits_for_its_reply_and_a_failed_send_reports_failure(monkeypatch):
     """The follow-up's observer sends its reply after settlement: SUCCESS only once that send
     succeeded, FAILURE when it failed (a thumbs-up on an unanswered message misleads the user)."""
-    from gateway.platforms.base import SendResult
-    from gateway.platforms.event import MessageEvent, ProcessingOutcome
+    from hermes_agent.gateway.platforms.base import SendResult
+    from hermes_agent.gateway.platforms.event import MessageEvent, ProcessingOutcome
 
     send_gate, send_entered = asyncio.Event(), asyncio.Event()
 
@@ -124,8 +124,8 @@ async def test_busy_followup_success_waits_for_its_reply_and_a_failed_send_repor
 async def test_busy_followup_released_by_a_pause_keeps_its_lifecycle_when_it_runs(monkeypatch):
     """A pause releases the follow-up's observer with a notice while its row stays queued. The turn
     still owes its lifecycle: when the queue moves on it gets its start and completion hooks."""
-    from gateway.platforms.event import MessageEvent, ProcessingOutcome
-    from gateway.session_contract import SessionRef
+    from hermes_agent.gateway.platforms.event import MessageEvent, ProcessingOutcome
+    from hermes_agent.gateway.session_contract import SessionRef
 
     adapter = HookAdapter()
     authority, source, gate = await _busy_hook_owner(monkeypatch, adapter)
@@ -144,7 +144,7 @@ async def test_busy_followup_released_by_a_pause_keeps_its_lifecycle_when_it_run
 @pytest.mark.asyncio
 async def test_rewritten_busy_followup_preserves_processing_hooks(monkeypatch):
     """A pre_gateway_dispatch rewrite must retain a busy follow-up's executor-owned lifecycle."""
-    from gateway.platforms.event import MessageEvent, ProcessingOutcome
+    from hermes_agent.gateway.platforms.event import MessageEvent, ProcessingOutcome
 
     async def rewrite(name, **kwargs):
         if name == 'pre_gateway_dispatch' and kwargs['event'].text == 'two':

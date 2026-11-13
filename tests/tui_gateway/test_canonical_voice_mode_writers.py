@@ -12,9 +12,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway import run_api
-from gateway.config import Platform
-from gateway.slash_commands import GatewaySlashCommandsMixin
+from hermes_agent.gateway import run_api
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.slash_commands import GatewaySlashCommandsMixin
 from hermes_agent.tui_gateway import server
 from hermes_agent.tui_gateway.transport import bind_transport, reset_transport
 

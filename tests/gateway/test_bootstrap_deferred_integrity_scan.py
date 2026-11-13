@@ -4,11 +4,11 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from gateway import run_bootstrap
+from hermes_agent.gateway import run_bootstrap
 
 
 def test_scan_runs_on_a_daemon_thread_with_the_1800s_deadline(monkeypatch):
-    from gateway import lifecycle_ledger as ledger
+    from hermes_agent.gateway import lifecycle_ledger as ledger
     seen, release, done = {}, threading.Event(), threading.Event()
 
     def scan(evidence, *, deadline_s):
@@ -30,8 +30,8 @@ def test_scan_runs_on_a_daemon_thread_with_the_1800s_deadline(monkeypatch):
 def _startup(monkeypatch, tmp_path):
     """Drive the real ``start_gateway`` with a fake runner; record the order of startup milestones."""
     from agent import memory_provider
-    from gateway import lifecycle_ledger as ledger
-    from gateway import run_api, run_runtime
+    from hermes_agent.gateway import lifecycle_ledger as ledger
+    from hermes_agent.gateway import run_api, run_runtime
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     events, release, scan_entered = [], threading.Event(), threading.Event()
@@ -39,7 +39,7 @@ def _startup(monkeypatch, tmp_path):
 
     class _LiveRunner:
         def __init__(self, config):
-            from gateway.session import SessionStore
+            from hermes_agent.gateway.session import SessionStore
             from hermes_constants import get_hermes_home
             from hermes_agent.hermes_state import SessionDB
             self.session_store = SessionStore(get_hermes_home() / "sessions", config)
@@ -84,12 +84,12 @@ def _startup(monkeypatch, tmp_path):
     async def wait_runtime(runner):
         events.append(("runtime_waited", release.is_set()))
 
-    monkeypatch.setattr("gateway.run._host_attach_or_none", AsyncMock(return_value=None))
-    monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)
+    monkeypatch.setattr("hermes_agent.gateway.run._host_attach_or_none", AsyncMock(return_value=None))
+    monkeypatch.setattr("hermes_agent.gateway.status.get_running_pid", lambda: None)
     monkeypatch.setattr("tools.skills_sync.sync_skills", lambda quiet=True: None)
     monkeypatch.setattr("hermes_logging.setup_logging", lambda hermes_home, mode: tmp_path)
     monkeypatch.setattr("hermes_logging._add_rotating_handler", lambda *args, **kwargs: None)
-    monkeypatch.setattr("gateway.run.GatewayRunner", _LiveRunner)
+    monkeypatch.setattr("hermes_agent.gateway.run.GatewayRunner", _LiveRunner)
     monkeypatch.setattr(ledger, "record_startup", lambda: state["evidence"])
     monkeypatch.setattr(ledger, "run_deferred_integrity_check", scan)
     monkeypatch.setattr(memory_provider, "spawn_context_thread", spawn)
@@ -101,14 +101,14 @@ def _startup(monkeypatch, tmp_path):
     monkeypatch.setattr(run_api, "warm_gateway_dashboard", lambda runner: None)
     yield events, state, scan_entered
     release.set()
-    from gateway import host_rendezvous as hr
+    from hermes_agent.gateway import host_rendezvous as hr
     hr.release_host_lock(hr.ROLE_GATEWAY)
     hr.clear_record(hr.ROLE_GATEWAY)
 
 
 @pytest.mark.asyncio
 async def test_unclean_exit_scan_starts_after_the_runner_and_does_not_hold_startup(_startup):
-    from gateway.config import GatewayConfig
+    from hermes_agent.gateway.config import GatewayConfig
     events, state, scan_entered = _startup
     state["evidence"] = evidence = {"prior_pid": 1234}
 
@@ -121,7 +121,7 @@ async def test_unclean_exit_scan_starts_after_the_runner_and_does_not_hold_start
 
 @pytest.mark.asyncio
 async def test_clean_previous_exit_launches_no_scan(_startup):
-    from gateway.config import GatewayConfig
+    from hermes_agent.gateway.config import GatewayConfig
     events, _, scan_entered = _startup
 
     assert await run_bootstrap.start_gateway(config=GatewayConfig(), replace=False, verbosity=None) is True

@@ -4,9 +4,9 @@ import json
 
 import pytest
 
-from gateway.config import Platform
-from gateway.session import SessionEntry, SessionSource
-from gateway.session_api import bind_api_session
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.session import SessionEntry, SessionSource
+from hermes_agent.gateway.session_api import bind_api_session
 from hermes_agent.hermes_state_local import API_BINDING_PREFIX
 from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
@@ -55,7 +55,7 @@ def test_a_finalized_bound_row_keeps_its_route_across_later_runs(owner):
 
 @pytest.mark.asyncio
 async def test_the_next_admitted_turn_reopens_a_finalized_api_row(tmp_path, monkeypatch):
-    from gateway import session_api_turn, session_finite
+    from hermes_agent.gateway import session_api_turn, session_finite
     from tests.gateway.test_session_authority_cancel_settlement import REF, _authority, _submit
 
     db, authority = _authority(tmp_path, monkeypatch, platform=Platform.API_SERVER)

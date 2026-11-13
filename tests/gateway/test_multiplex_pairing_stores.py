@@ -1,6 +1,6 @@
 """Regression: per-profile PairingStore creation in _start_secondary_profile_adapters.
 
-``gateway/run.py`` referenced ``PairingStore`` at method scope in
+``hermes_agent/gateway/run.py`` referenced ``PairingStore`` at method scope in
 ``_start_secondary_profile_adapters`` while the class's only import was
 method-local inside ``__init__`` — a ``NameError`` at runtime, silently
 swallowed by the enclosing ``try/except``, so multiplexing gateways never
@@ -15,7 +15,7 @@ the per-profile stores actually materialize.
 import asyncio
 from unittest.mock import MagicMock, patch
 
-from gateway.run import GatewayRunner
+from hermes_agent.gateway.run import GatewayRunner
 
 
 def _bare_runner(multiplex: bool = True):
@@ -94,8 +94,8 @@ def test_routed_pairing_grant_mirror_stays_in_profile_scope(tmp_path, monkeypatc
     import os
 
     from agent import secret_scope as ss
-    from gateway.pairing import _sync_allowlist_add
-    from gateway.run import _profile_runtime_scope
+    from hermes_agent.gateway.pairing import _sync_allowlist_add
+    from hermes_agent.gateway.run import _profile_runtime_scope
     from hermes_cli.config import save_env_value
 
     root = tmp_path / ".hermes"
@@ -141,7 +141,7 @@ def test_allowlist_env_read_never_borrows_on_scope_failure(tmp_path, monkeypatch
     import pytest
 
     from agent import secret_scope as ss
-    from gateway import pairing
+    from hermes_agent.gateway import pairing
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
     monkeypatch.setenv("DISCORD_ALLOWED_USERS", "default-admin")
@@ -176,7 +176,7 @@ def test_allowlist_sync_does_not_persist_foreign_allowlist(tmp_path, monkeypatch
     import pytest
 
     from agent import secret_scope as ss
-    from gateway import pairing
+    from hermes_agent.gateway import pairing
 
     root = tmp_path / ".hermes"
     root.mkdir(parents=True)
@@ -207,8 +207,8 @@ def test_allowlist_scoped_miss_configures_nothing(tmp_path, monkeypatch):
     import os
 
     from agent import secret_scope as ss
-    from gateway import pairing
-    from gateway.run import _profile_runtime_scope
+    from hermes_agent.gateway import pairing
+    from hermes_agent.gateway.run import _profile_runtime_scope
 
     root = tmp_path / ".hermes"
     prof = root / "profiles" / "b"

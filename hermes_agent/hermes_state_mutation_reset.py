@@ -21,9 +21,9 @@ def reset_in_transaction(db, conn, session_id, payload):
     require_target_advanceable(db, conn, list({session_id, target}))
     parent = conn.execute('SELECT * FROM sessions WHERE id=?', (target,)).fetchone()
     policy = receipt['policy']
-    from gateway.session import SessionEntry
+    from hermes_agent.gateway.session import SessionEntry
     previous = SessionEntry.from_dict(receipt['entry'])
-    from gateway.session_lifecycle import _now
+    from hermes_agent.gateway.session_lifecycle import _now
     now = _now()
     child_id = uuid.uuid4().hex
     entry = SessionEntry(previous.session_key, child_id, now, now,

@@ -1,6 +1,6 @@
 """The Channels page must say WHY Team Gateway turned a platform off (#141175).
 
-With the ``GATEWAY_RELAY_URL`` env stamp, ``gateway/config_env.py::_relay`` disables every
+With the ``GATEWAY_RELAY_URL`` env stamp, ``hermes_agent/gateway/config_env.py::_relay`` disables every
 directly-connected messaging platform, explicitly enabled ones included, unless
 ``GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS`` is set. The dashboard used to see only the
 resulting ``enabled: False`` and rendered a plain "Disabled": the user flips the toggle on,

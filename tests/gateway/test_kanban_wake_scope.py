@@ -11,10 +11,10 @@ import asyncio
 from dataclasses import replace
 from unittest.mock import AsyncMock, MagicMock
 
-from gateway.config import Platform, PlatformConfig
-from gateway.kanban_watchers_notifier import _wake_scope_id
-from gateway.run import GatewayRunner
-from gateway.session import build_session_key
+from hermes_agent.gateway.config import Platform, PlatformConfig
+from hermes_agent.gateway.kanban_watchers_notifier import _wake_scope_id
+from hermes_agent.gateway.run import GatewayRunner
+from hermes_agent.gateway.session import build_session_key
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_db_notify as kbn

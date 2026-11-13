@@ -28,12 +28,12 @@ async def _poll_run_terminal(client, url, headers):
 async def probe(peer):
     import aiohttp
     import websockets
-    from gateway.config import Platform, PlatformConfig
-    from gateway.platforms.api_server import APIServerAdapter
-    from gateway.run import GatewayRunner
-    from gateway.run_api import start_gateway_api, stop_gateway_api
-    from gateway.session_authority import initialize_session_authority
-    from gateway.session_contract import SessionRef
+    from hermes_agent.gateway.config import Platform, PlatformConfig
+    from hermes_agent.gateway.platforms.api_server import APIServerAdapter
+    from hermes_agent.gateway.run import GatewayRunner
+    from hermes_agent.gateway.run_api import start_gateway_api, stop_gateway_api
+    from hermes_agent.gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.session_contract import SessionRef
     from hermes_cli import web_server
     from hermes_agent.hermes_state_runtime import list_session_admissions
 

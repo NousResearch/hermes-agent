@@ -3,7 +3,7 @@
 custom provider whose resolver returned an empty ``base_url``.
 
 Root cause: both the picker-tap path (``_on_model_selected`` in
-``gateway/slash_commands.py``) and the typed ``/model X --global`` path
+``hermes_agent/gateway/slash_commands.py``) and the typed ``/model X --global`` path
 (``_finish_switch``) guarded the persist block with two *independent*
 ``if``s:
 
@@ -28,10 +28,10 @@ import types
 import hermes_yaml as yaml
 import pytest
 
-from gateway.config import Platform
-from gateway.platforms.event import MessageEvent, MessageType
-from gateway.run import GatewayRunner
-from gateway.session import SessionSource
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.run import GatewayRunner
+from hermes_agent.gateway.session import SessionSource
 
 
 class _FakePickerAdapter:
@@ -77,7 +77,7 @@ def _fake_switch_result(*, base_url="", api_mode=""):
 
 
 def _setup_isolated_home(tmp_path, monkeypatch, model_yaml_value, *, base_url="", api_mode=""):
-    import gateway.run as gateway_run
+    import hermes_agent.gateway.run as gateway_run
 
     hermes_home = tmp_path / ".hermes"
     hermes_home.mkdir()

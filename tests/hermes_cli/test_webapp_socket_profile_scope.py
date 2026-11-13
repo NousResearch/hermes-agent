@@ -1,7 +1,7 @@
 """The Webapp's gateway socket answers for the profile its ticket names, on a multiplexed gateway.
 
 A browser tab's ``/api/ws`` reaches the gateway through the dashboard mount (``chat_ws.gateway_ws``),
-not the native ticket path (``gateway/run_api.py``) that wraps the socket in ``owner_scope``. The
+not the native ticket path (``hermes_agent/gateway/run_api.py``) that wraps the socket in ``owner_scope``. The
 authority answers ``-32601`` for ``billing.state``, so the frame falls back to the legacy handler,
 which reads the Nous Portal override through the socket's scope: unbound, a multiplexed gateway
 refused the read (``UnscopedSecretError`` -> "no profile secret scope on a multiplexed call") and the
@@ -50,9 +50,9 @@ def _home(home, label):
 def gateway(tmp_path, monkeypatch):
     """A multiplexed runner serving the launch home and profile ``b``, each with its own authority."""
     from agent import secret_scope
-    from gateway.config import GatewayConfig
-    from gateway.session import SessionStore
-    from gateway.session_authority import SessionAuthority
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.session import SessionStore
+    from hermes_agent.gateway.session_authority import SessionAuthority
     from hermes_cli import auth, nous_account, nous_billing
     from hermes_agent.hermes_state import SessionDB
     from hermes_agent.hermes_state_runtime import begin_runtime_epoch

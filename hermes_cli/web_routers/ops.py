@@ -72,7 +72,7 @@ def _pairing_store(profile: Optional[str] = None):
     (``default`` maps to the global store); only the name is validated here,
     so nothing process-global is swapped across the ``await`` boundary.
     """
-    from gateway.pairing import PairingStore
+    from hermes_agent.gateway.pairing import PairingStore
 
     requested = (profile or "").strip()
     if not requested or requested.lower() == "current":

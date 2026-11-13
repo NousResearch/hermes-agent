@@ -8,11 +8,11 @@ import pytest
 
 
 async def _owner(home, monkeypatch):
-    from gateway import run
-    from gateway.config import GatewayConfig
-    from gateway.session import SessionStore
-    from gateway.session_authority import initialize_session_authority
-    from gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway import run
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.session import SessionStore
+    from hermes_agent.gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.session_controls import AuthorityConnection
     monkeypatch.setattr(run, '_hermes_home', home)
     monkeypatch.setenv('HERMES_HOME', str(home))
     store = SessionStore(home / 'sessions', GatewayConfig())
@@ -21,7 +21,7 @@ async def _owner(home, monkeypatch):
                              _evict_cached_agent=lambda route: None)
     owner = await initialize_session_authority(runner, profile_id=str(home), instance_id='fixture')
     # This fixture's runner has no adapter table: hand session.info the session's frozen policy.
-    from gateway import session_policy
+    from hermes_agent.gateway import session_policy
     from hermes_agent.hermes_state_local import local_receipt
     monkeypatch.setattr(session_policy, 'policy_for_source', lambda runner, source: session_policy.restore_policy(
         local_receipt(owner.db, source.chat_id)['policy']))
@@ -30,7 +30,7 @@ async def _owner(home, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_an_opted_in_session_is_told_project_plugins_do_not_load(tmp_path, monkeypatch, caplog):
-    from gateway.session_local import create_local_session, local_session_info
+    from hermes_agent.gateway.session_local import create_local_session, local_session_info
     home = tmp_path / 'home'
     home.mkdir()
     (home / 'config.yaml').write_text(
@@ -95,7 +95,7 @@ async def test_an_unlistable_plugins_folder_never_blocks_the_session(tmp_path, m
     """``is_dir`` can pass while listing fails (no read permission): the optional notice is skipped and
     the session is still created and described."""
     import pathlib
-    from gateway.session_local import create_local_session, local_session_info
+    from hermes_agent.gateway.session_local import create_local_session, local_session_info
     home, folder = tmp_path / 'home', tmp_path / 'repo' / '.hermes' / 'plugins'
     home.mkdir()
     (home / 'config.yaml').write_text(

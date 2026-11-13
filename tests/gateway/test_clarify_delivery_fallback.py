@@ -14,7 +14,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.platforms.base import BasePlatformAdapter, SendResult
+from hermes_agent.gateway.platforms.base import BasePlatformAdapter, SendResult
 from tools import clarify_gateway as cm
 
 UNDELIVERED = "[clarify prompt could not be delivered"  # prefix shared by every delivery notice
@@ -71,7 +71,7 @@ def loop():
 
 
 def _runner(adapter, loop, monkeypatch, timeout=5):
-    from gateway.run_turn_runner import TurnRunner
+    from hermes_agent.gateway.run_turn_runner import TurnRunner
 
     runner = object.__new__(TurnRunner)
     runner._ctx = SimpleNamespace(
@@ -119,7 +119,7 @@ def test_declined_card_is_never_reasked_as_text(loop, monkeypatch):
 
 
 def test_card_failing_after_the_ack_window_falls_back_to_text_instead_of_waiting(loop, monkeypatch):
-    from gateway import run_turn_runner_clarify_delivery as delivery
+    from hermes_agent.gateway import run_turn_runner_clarify_delivery as delivery
 
     monkeypatch.setattr(delivery, "SEND_ACK_WINDOW", 0.2)
 
@@ -143,7 +143,7 @@ def test_card_resolving_ambiguous_after_the_ack_window_stays_armed_for_a_button_
     invariant ``_abort_for_outcome`` keeps for an immediate ambiguous outcome. Before: the late watch
     treated it like a definitive failure, released the wait with the delivery notice and the tap was
     lost (no pending entry)."""
-    from gateway import run_turn_runner_clarify_delivery as delivery
+    from hermes_agent.gateway import run_turn_runner_clarify_delivery as delivery
 
     monkeypatch.setattr(delivery, "SEND_ACK_WINDOW", 0.2)
 
@@ -175,7 +175,7 @@ def test_card_and_text_both_failing_late_release_the_wait_with_the_delivery_noti
     """Before: a card whose send failed after the window left the agent blocked for the whole
     clarify_timeout and then reported ``[user did not respond within Nm]`` for a question the user
     never saw."""
-    from gateway import run_turn_runner_clarify_delivery as delivery
+    from hermes_agent.gateway import run_turn_runner_clarify_delivery as delivery
 
     monkeypatch.setattr(delivery, "SEND_ACK_WINDOW", 0.2)
 
@@ -200,7 +200,7 @@ def test_card_and_text_both_failing_late_release_the_wait_with_the_delivery_noti
 def test_card_declined_after_the_ack_window_releases_with_the_declined_notice(loop, monkeypatch):
     """A late connector DECLINE is as definitive as an immediate one: no text retry, and the
     notice names the refusal (``UNDELIVERED_DECLINED``) instead of the generic delivery failure."""
-    from gateway import run_turn_runner_clarify_delivery as delivery
+    from hermes_agent.gateway import run_turn_runner_clarify_delivery as delivery
 
     monkeypatch.setattr(delivery, "SEND_ACK_WINDOW", 0.2)
 

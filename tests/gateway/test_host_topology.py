@@ -11,7 +11,7 @@ import pytest
 
 @pytest.fixture
 def host_gateway(tmp_path, monkeypatch):
-    from gateway import host_rendezvous as hr
+    from hermes_agent.gateway import host_rendezvous as hr
 
     root = tmp_path / "hermes"
     (root / "profiles" / "coder").mkdir(parents=True)
@@ -29,7 +29,7 @@ def host_gateway(tmp_path, monkeypatch):
 def test_default_home_is_reported_as_served_by_the_host_gateway(host_gateway):
     import os
 
-    from gateway import status
+    from hermes_agent.gateway import status
 
     for home in (host_gateway, host_gateway / "profiles" / "coder"):
         resolved = status.multiplexer_liveness_for_profile(home)
@@ -38,7 +38,7 @@ def test_default_home_is_reported_as_served_by_the_host_gateway(host_gateway):
 
 
 def test_unserved_profile_is_not_claimed_by_the_host_gateway(host_gateway, monkeypatch):
-    from gateway import status
+    from hermes_agent.gateway import status
 
     monkeypatch.setattr("hermes_cli.gateway.named_profile_served_by_running_multiplexer", lambda *a: False)
     (host_gateway / "profiles" / "other").mkdir()
@@ -48,9 +48,9 @@ def test_unserved_profile_is_not_claimed_by_the_host_gateway(host_gateway, monke
 def test_unprovable_record_is_a_candidate_not_the_host_gateway(host_gateway, monkeypatch):
     """A leftover record whose (pid, createTime) cannot be POSITIVELY matched must never be
     reported as the live host gateway — otherwise it is a permanent "running" lie."""
-    from gateway import host_topology
+    from hermes_agent.gateway import host_topology
 
-    monkeypatch.setattr("gateway.host_rendezvous.liveness_is_proven", lambda record: False)
+    monkeypatch.setattr("hermes_agent.gateway.host_rendezvous.liveness_is_proven", lambda record: False)
     monkeypatch.setattr("hermes_cli.gateway_multiplex_served.live_default_gateway_pid", lambda: None)
     assert host_topology.host_gateway_topology() is None
 
@@ -63,8 +63,8 @@ def test_record_without_createtime_is_never_the_host_gateway(host_gateway, monke
     `sleep 60` made every surface report a live host gateway."""
     import json
 
-    from gateway import host_rendezvous as hr
-    from gateway import host_topology
+    from hermes_agent.gateway import host_rendezvous as hr
+    from hermes_agent.gateway import host_topology
 
     monkeypatch.setattr("hermes_cli.gateway_multiplex_served.live_default_gateway_pid", lambda: None)
     path = hr.record_path(hr.ROLE_GATEWAY)
@@ -84,8 +84,8 @@ def test_topology_ignores_another_tenants_record_and_reads_the_launch_homes_stat
     import json
     import os
 
-    from gateway import host_rendezvous as hr
-    from gateway import host_topology, status
+    from hermes_agent.gateway import host_rendezvous as hr
+    from hermes_agent.gateway import host_topology, status
 
     root_a, root_b = tmp_path / "hermes-a", tmp_path / "hermes-b"
     argus = root_b / "profiles" / "argus"
@@ -122,9 +122,9 @@ def test_a_live_looking_pid_with_a_free_host_lock_is_not_the_host_gateway(tmp_pa
     import subprocess
     import sys
 
-    from gateway import host_rendezvous as hr
-    from gateway import host_topology
-    from gateway.status import get_process_start_time
+    from hermes_agent.gateway import host_rendezvous as hr
+    from hermes_agent.gateway import host_topology
+    from hermes_agent.gateway.status import get_process_start_time
 
     root = tmp_path / "hermes"
     root.mkdir()

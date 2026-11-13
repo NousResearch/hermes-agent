@@ -10,10 +10,10 @@ import time
 from types import SimpleNamespace
 
 import hermes_agent.cron.scheduler as sched
-from gateway.run import GatewayRunner
-from gateway.session_state import SessionState
+from hermes_agent.gateway.run import GatewayRunner
+from hermes_agent.gateway.session_state import SessionState
 from hermes_cli.update_cmd_drain_report import describe_active_work_unit, drain_progress_reporter
-from gateway.status import flush_runtime_status
+from hermes_agent.gateway.status import flush_runtime_status
 
 
 class _FakeAgent:
@@ -71,7 +71,7 @@ def test_draining_status_names_each_managed_worker_by_session_and_process(tmp_pa
 
 
 def test_a_profile_scoped_active_work_answer_names_its_managed_workers():
-    from gateway.run_active_work_verb import _profile_units
+    from hermes_agent.gateway.run_active_work_verb import _profile_units
 
     worker = SimpleNamespace(closed=threading.Event(), process=SimpleNamespace(pid=4343), worker=(4344, 1.0))
     authority = SimpleNamespace(_managed_workers={"kanban-t_2": worker}, _cron_cancellations={}, _side_agents={})

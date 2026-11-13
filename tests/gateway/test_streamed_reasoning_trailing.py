@@ -8,14 +8,14 @@ follows the streamed answer as its own message.
 
 import pytest
 
-from gateway.config import Platform
-from gateway.platforms.event import MessageEvent, MessageType, SessionSource
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType, SessionSource
 from tests.gateway.test_run_progress_topics import ProgressCaptureAdapter, _make_runner
 
 
 async def _deliver(monkeypatch, *, show_reasoning: bool, already_sent: bool, is_bot: bool = False,
                    uncertain: bool = False, ledger=None, saved: bool = True):
-    import gateway.run as gateway_run
+    import hermes_agent.gateway.run as gateway_run
 
     monkeypatch.setattr(gateway_run, "_load_gateway_config",
                         lambda: {"display": {"show_reasoning": show_reasoning}})
@@ -100,7 +100,7 @@ async def test_an_uncertain_streamed_final_with_the_ledger_off_still_shows_its_r
 @pytest.mark.parametrize("enabled", [True, False])
 async def test_the_base_ledger_reports_whether_it_saved_a_redelivery(monkeypatch, tmp_path, enabled):
     """The real adapter seam: with ``gateway.delivery_ledger`` off nothing is saved, and it says so."""
-    from gateway import delivery_ledger as dl
+    from hermes_agent.gateway import delivery_ledger as dl
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setattr(dl, "ledger_enabled", lambda config=None: enabled)

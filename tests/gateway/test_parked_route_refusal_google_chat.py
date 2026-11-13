@@ -12,10 +12,10 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from gateway.config import Platform, PlatformConfig
-from gateway.platforms.api_server import APIServerAdapter
-from gateway.platforms.base import SendResult
-from gateway.profile_routing import ProfileRoute
+from hermes_agent.gateway.config import Platform, PlatformConfig
+from hermes_agent.gateway.platforms.api_server import APIServerAdapter
+from hermes_agent.gateway.platforms.base import SendResult
+from hermes_agent.gateway.profile_routing import ProfileRoute
 from tests.gateway.test_google_chat import GoogleChatAdapter, _make_chat_envelope
 from tests.gateway.test_parked_profile_ingress import (
     _admissions, _close, _homes, _runner_with_beta_parked, _serve_beta_again,

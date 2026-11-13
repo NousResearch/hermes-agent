@@ -7,7 +7,7 @@ import time
 
 import pytest
 
-from gateway import hosted_rooms
+from hermes_agent.gateway import hosted_rooms
 from hermes_agent.tui_gateway import server
 
 

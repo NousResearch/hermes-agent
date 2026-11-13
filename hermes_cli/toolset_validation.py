@@ -58,7 +58,7 @@ def is_known_platform_bundle(platform: object, name: str) -> bool:
 
     if any(feature.platform == key for feature in LEFT_CORE):
         return True
-    from gateway.platform_registry import platform_registry
+    from hermes_agent.gateway.platform_registry import platform_registry
 
     return platform_registry.is_registered(key)
 
@@ -71,7 +71,7 @@ def _platform_default_is_valid(
     # Dynamic plugin platforms are resolved by toolsets.resolve_toolset() even though their synthesized
     # hermes-<platform> name is not in TOOLSETS.
     try:
-        from gateway.platform_registry import platform_registry
+        from hermes_agent.gateway.platform_registry import platform_registry
 
         return platform_registry.is_registered(platform)
     except Exception:

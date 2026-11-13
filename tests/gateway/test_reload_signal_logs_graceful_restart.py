@@ -8,8 +8,8 @@ import signal
 
 import pytest
 
-import gateway.run as gateway_run
-from gateway.config import GatewayConfig
+import hermes_agent.gateway.run as gateway_run
+from hermes_agent.gateway.config import GatewayConfig
 
 
 class _AbortedStartupRunner:
@@ -18,7 +18,7 @@ class _AbortedStartupRunner:
     def __init__(self, config):
         # The unified bootstrap builds the session authority against the runner's real store
         # and stops it on every exit path (same shape as test_startup_restart_race.py).
-        from gateway.session import SessionStore
+        from hermes_agent.gateway.session import SessionStore
         from hermes_agent.hermes_state import SessionDB
         from hermes_constants import get_hermes_home
         self.session_store = SessionStore(get_hermes_home() / 'sessions', config)
@@ -55,11 +55,11 @@ class _AbortedStartupRunner:
 async def test_sigusr1_handler_installed_by_start_gateway_logs_graceful_restart(tmp_path, monkeypatch, caplog):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     for target, value in (
-        ("gateway.status.get_running_pid", lambda: None),
-        ("gateway.status.acquire_gateway_runtime_lock", lambda: True),
-        ("gateway.status.write_pid_file", lambda: None),
-        ("gateway.status.remove_pid_file", lambda: None),
-        ("gateway.status.release_gateway_runtime_lock", lambda: None),
+        ("hermes_agent.gateway.status.get_running_pid", lambda: None),
+        ("hermes_agent.gateway.status.acquire_gateway_runtime_lock", lambda: True),
+        ("hermes_agent.gateway.status.write_pid_file", lambda: None),
+        ("hermes_agent.gateway.status.remove_pid_file", lambda: None),
+        ("hermes_agent.gateway.status.release_gateway_runtime_lock", lambda: None),
         ("tools.skills_sync.sync_skills", lambda quiet=True: None),
         ("hermes_logging.setup_logging", lambda hermes_home, mode: None),
         ("tools.mcp_tool_lifecycle.shutdown_mcp_servers", lambda: None),
@@ -81,7 +81,7 @@ async def test_sigusr1_handler_installed_by_start_gateway_logs_graceful_restart(
     await gateway_run.start_gateway(config=GatewayConfig(), replace=False, verbosity=None)
 
     handler, args = installed[signal.SIGUSR1]
-    with caplog.at_level(logging.INFO, logger="gateway.run"):
+    with caplog.at_level(logging.INFO, logger="hermes_agent.gateway.run"):
         handler(*args)
 
     assert runners[0].restart_calls == [{"detached": False, "via_service": True}]

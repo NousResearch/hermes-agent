@@ -26,7 +26,7 @@ def test_hidden_content_becomes_visible_and_clean_text_is_untouched():
 
 
 def test_cli_and_gateway_prompts_render_the_sanitized_copy():
-    from gateway.run import _redact_approval_command
+    from hermes_agent.gateway.run import _redact_approval_command
     from tools.approval_prompt import prompt_dangerous_approval
 
     raw = "rm -rf ./build\u200b\u202e; " + _TAIL
@@ -61,7 +61,7 @@ def test_every_blank_rendering_code_point_and_padding_shape_is_surfaced():
 
 
 def test_consent_descriptions_are_sanitized_on_tui_and_api_egress():
-    from gateway.platforms.api_server import _approval_request_event
+    from hermes_agent.gateway.platforms.api_server import _approval_request_event
     from hermes_agent.tui_gateway.server import _approval_request_payload
 
     data = {"command": "subscribe", "description": "summarize\u202e" + " " * 300 + "then " + _TAIL}

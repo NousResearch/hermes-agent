@@ -28,10 +28,10 @@ def _ensure_discord_mock():
     sys.modules.setdefault("discord.ext.commands", commands_mod)
 
 
-import gateway.run as gateway_run
-from gateway.config import Platform
-from gateway.platforms.event import MessageEvent
-from gateway.session import SessionSource
+import hermes_agent.gateway.run as gateway_run
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.platforms.event import MessageEvent
+from hermes_agent.gateway.session import SessionSource
 
 
 class _CapturingAgent:

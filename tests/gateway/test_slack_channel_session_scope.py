@@ -25,7 +25,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from gateway.config import PlatformConfig
+from hermes_agent.gateway.config import PlatformConfig
 from plugins.platforms.slack.adapter import SlackAdapter
 
 
@@ -45,7 +45,7 @@ def adapter():
 def _redirect_cache(tmp_path, monkeypatch):
     """Point document cache to tmp_path so tests don't touch ~/.hermes."""
     monkeypatch.setattr(
-        "gateway.platforms.base.DOCUMENT_CACHE_DIR", tmp_path / "doc_cache"
+        "hermes_agent.gateway.platforms.base.DOCUMENT_CACHE_DIR", tmp_path / "doc_cache"
     )
 
 

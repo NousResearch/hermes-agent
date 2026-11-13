@@ -7,7 +7,7 @@ import threading
 
 import pytest
 
-from gateway.config import PlatformConfig
+from hermes_agent.gateway.config import PlatformConfig
 
 SK = "agent:main:qqbot:dm:u-42"
 
@@ -72,7 +72,7 @@ def test_a_published_request_is_deny_only_before_its_card_is_rendered():
 
 @pytest.mark.asyncio
 async def test_a_card_that_shows_the_whole_command_lifts_the_mark(monkeypatch):
-    from gateway.platforms.base import SendResult
+    from hermes_agent.gateway.platforms.base import SendResult
     from plugins.platforms.qqbot.adapter import QQAdapter
     from tools import approval
     from tools.approval_gateway_wait import _ApprovalEntry

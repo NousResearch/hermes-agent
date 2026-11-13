@@ -11,8 +11,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.config import Platform
-from gateway.run_turn_runner import TurnRunner
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.run_turn_runner import TurnRunner
 
 
 def _turn(platform, published, *, live=None):
@@ -59,7 +59,7 @@ def test_messaging_route_never_publishes_the_boundary():
 
 
 def test_turn_sinks_publish_and_restore_on_the_shared_agent():
-    from gateway import local_viewer_events
+    from hermes_agent.gateway import local_viewer_events
     published = []
     turn = _turn(Platform.LOCAL, published)
     sentinel = object()
@@ -76,7 +76,7 @@ def test_turn_sinks_publish_and_restore_on_the_shared_agent():
 def test_status_lines_the_agent_prints_reach_the_viewer():
     """``_safe_print`` (subagent completion, compaction, errors) routes through ``_print_fn``."""
     from agent.status_output import StatusOutputMixin
-    from gateway import local_viewer_events
+    from hermes_agent.gateway import local_viewer_events
     published = []
     agent = type('A', (StatusOutputMixin,), {})()
     agent._print_fn = None
@@ -107,7 +107,7 @@ def test_wire_contract_accepts_the_boundary_frame():
 
 
 def test_thinking_and_reaction_publish_and_reasoning_waits_for_the_session_flag():
-    from gateway import local_viewer_events
+    from hermes_agent.gateway import local_viewer_events
     published = []
     live = SimpleNamespace(tool_progress_mode=None)
     turn = _turn(Platform.LOCAL, published, live=live)
@@ -130,7 +130,7 @@ def test_thinking_and_reaction_publish_and_reasoning_waits_for_the_session_flag(
 
 @pytest.mark.parametrize('classic', [True, False])
 def test_progress_projects_reasoning_available_and_moa(monkeypatch, classic):
-    from gateway import session_cli_turn
+    from hermes_agent.gateway import session_cli_turn
     monkeypatch.setattr(session_cli_turn, 'classic_cli_turn', lambda turn: classic)
     published = []
     live = SimpleNamespace(tool_progress_mode=None)
@@ -165,7 +165,7 @@ def test_messaging_progress_never_publishes_reasoning():
 
 @pytest.mark.asyncio
 async def test_show_reasoning_is_a_session_scoped_config_key(tmp_path, monkeypatch):
-    from gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway.session_controls import AuthorityConnection
     from tests.gateway.test_surface_admission import _authority
 
     async def answer(event):
@@ -231,7 +231,7 @@ def test_messaging_tool_events_carry_no_diff_or_todo_frame():
 
 @pytest.mark.parametrize('platform', [Platform.LOCAL, Platform.TELEGRAM])
 def test_prompts_carry_the_gateway_wait_window_only_for_local_viewers(monkeypatch, platform):
-    from gateway.session_pending_controls import PendingControls
+    from hermes_agent.gateway.session_pending_controls import PendingControls
     import threading
     monkeypatch.setattr('tools.approval_context._get_approval_timeout', lambda: 90)
     monkeypatch.setattr('tools.clarify_gateway.get_clarify_timeout', lambda: 600)
@@ -248,7 +248,7 @@ def test_prompts_carry_the_gateway_wait_window_only_for_local_viewers(monkeypatc
     turn._ctx.session_key = 'k'
     turn._approval_notify_sync({'request_id': 'a1', 'command': 'rm -rf build', 'description': 'delete'})
     entry = SimpleNamespace(clarify_id='c1', question='Which?', choices=['x'], multi_select=False)
-    from gateway import local_viewer_events
+    from hermes_agent.gateway import local_viewer_events
     authority.register_clarify('s', 1, entry, timeout_s=local_viewer_events.prompt_timeout_s(turn, 'clarify'))
     approval, clarify = published[0][1], published[1][1]
     if platform == Platform.LOCAL:
@@ -264,8 +264,8 @@ def test_prompts_carry_the_gateway_wait_window_only_for_local_viewers(monkeypatc
 async def test_service_tier_is_a_session_scoped_fast_override(tmp_path, monkeypatch):
     """The classic CLI's /fast: config.set service_tier writes the session's tier override (what the
     next turn's agent reads), never config.yaml; an unknown tier is refused."""
-    from gateway.session_controls import AuthorityConnection
-    from gateway.session_state import SERVICE_TIER_UNSET
+    from hermes_agent.gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway.session_state import SERVICE_TIER_UNSET
     from tests.gateway.test_surface_admission import _authority
 
     async def answer(event):
@@ -273,7 +273,7 @@ async def test_service_tier_is_a_session_scoped_fast_override(tmp_path, monkeypa
     authority = await _authority(tmp_path, monkeypatch, answer)
     # The fixture runner is a bare namespace: give it the real runner's per-session state methods.
     from types import MethodType
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
     for name in ('_sessions_map', '_session_state', '_peek_session_state', '_set_session_service_tier_override'):
         setattr(authority.runner, name, MethodType(getattr(GatewayRunner, name), authority.runner))
     connection = AuthorityConnection(authority, object(), {'user_id': 'owner'})
@@ -301,10 +301,10 @@ async def test_service_tier_is_a_session_scoped_fast_override(tmp_path, monkeypa
 def test_completion_payload_forwards_billing_failure_and_response_flags():
     """TUI-6: ``message.complete`` carries ``billing``, ``failure_reason``, ``warning``, ``response_previewed`` and ``response_transformed`` from the turn result on local-viewer turns only."""
     from agent.billing_links import build_billing_block
-    from gateway.session import SessionSource
-    from gateway.session_results import execution_result
-    from gateway.session_settlement_recovery import completion_payload
-    from gateway.turn_context import TurnContext
+    from hermes_agent.gateway.session import SessionSource
+    from hermes_agent.gateway.session_results import execution_result
+    from hermes_agent.gateway.session_settlement_recovery import completion_payload
+    from hermes_agent.gateway.turn_context import TurnContext
     from tests.gateway.test_local_viewer_events_submit import _gateway_runner, _SteeredAgent
     from hermes_agent.tui_gateway.contracts.registry import EVENTS
 
@@ -379,7 +379,7 @@ def test_completion_payload_forwards_billing_failure_and_response_flags():
 def test_progress_publishes_subagent_lifecycle_events_for_local_viewers():
     """TUI-4: ``_ChildProgressRelay`` events reach the viewer stream on ``Platform.LOCAL`` (including registered background children descending from the spawning turn's agent after the turn settles, without borrowing a later turn's execution identity) and never on messaging platforms."""
     import weakref
-    from gateway.session_events import SessionEvents
+    from hermes_agent.gateway.session_events import SessionEvents
     from tools.delegate_tool_progress import _build_child_progress_callback
     from tools.delegate_tool_registry import _register_subagent, _unregister_subagent
     from hermes_agent.tui_gateway.contracts.registry import EVENTS
@@ -465,7 +465,7 @@ def test_progress_publishes_subagent_lifecycle_events_for_local_viewers():
     assert live.event_stream.stamp_writes == []
 
     # In-turn event with no live viewer: the real publish_execution records it in replay and reports no delivery; it is stored once, with the turn's identity.
-    from gateway.session_authority import SessionAuthority
+    from hermes_agent.gateway.session_authority import SessionAuthority
     authority = turn._approval_owner[0]
     authority.executing = {'s': 1}
     live.event_stream = SessionEvents()
@@ -515,7 +515,7 @@ def test_progress_publishes_subagent_lifecycle_events_for_local_viewers():
 def test_a_failed_viewer_publish_is_logged_and_still_reaches_the_failure_notice(monkeypatch, caplog):
     """A viewer publish error stays best-effort: logged, and the failed-subagent notice still runs."""
     import logging
-    from gateway import local_viewer_events
+    from hermes_agent.gateway import local_viewer_events
 
     def boom(*_a, **_k):
         raise RuntimeError('viewer down')
@@ -524,7 +524,7 @@ def test_a_failed_viewer_publish_is_logged_and_still_reaches_the_failure_notice(
     turn = _turn(Platform.LOCAL, [])
     notices = []
     turn._progress_subagent_notice = lambda preview, kwargs: notices.append(kwargs.get('status'))
-    with caplog.at_level(logging.DEBUG, logger='gateway.run'):
+    with caplog.at_level(logging.DEBUG, logger='hermes_agent.gateway.run'):
         turn.progress_callback('subagent.complete', None, 'child', None, status='failed')
     assert notices == ['failed']
     assert any('Local viewer progress publish failed for subagent.complete' in r.getMessage() and r.exc_info for r in caplog.records)
@@ -533,8 +533,8 @@ def test_a_failed_viewer_publish_is_logged_and_still_reaches_the_failure_notice(
 def test_subagent_roster_retains_running_child_after_fallback_evicts_parent():
     """TUI-4 fallback roster: when ``_run_agent_evict_on_fallback`` evicts the parent after a successful provider fallback, ``_owner_objects`` and ``subagent_records`` keep the child visible for the owning profile DB and route without transferring control/tail ownership or leaking across independent DB or route mismatches."""
     import weakref
-    from gateway.run_turn import GatewayTurnMixin
-    from gateway.session_ancillary import _owner_objects, subagent_records
+    from hermes_agent.gateway.run_turn import GatewayTurnMixin
+    from hermes_agent.gateway.session_ancillary import _owner_objects, subagent_records
     from tools.delegate_tool_registry import _register_subagent, _unregister_subagent
 
     class Parent:
@@ -640,7 +640,7 @@ def test_subagent_roster_survives_a_parent_rebuild():
     the conversation (durable owner id in this session's lineage, same session DB file), so the dock
     keeps the child; another conversation or another profile's DB never sees it."""
     import weakref
-    from gateway.session_ancillary import subagent_records
+    from hermes_agent.gateway.session_ancillary import subagent_records
     from tools.delegate_tool_registry import _register_subagent, _unregister_subagent
 
     class Parent:

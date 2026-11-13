@@ -11,8 +11,8 @@ Verifies that:
 import pytest
 from unittest.mock import AsyncMock, patch
 
-from gateway.platforms.base import BasePlatformAdapter, SendResult
-from gateway.platforms.base import Platform, PlatformConfig
+from hermes_agent.gateway.platforms.base import BasePlatformAdapter, SendResult
+from hermes_agent.gateway.platforms.base import Platform, PlatformConfig
 
 
 # ---------------------------------------------------------------------------

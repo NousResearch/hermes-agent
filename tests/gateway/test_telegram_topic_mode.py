@@ -18,9 +18,9 @@ from agent.context_compressor import (
     _SUMMARY_END_MARKER,
 )
 from hermes_agent.hermes_state import SessionDB
-from gateway.config import GatewayConfig, HomeChannel, Platform, PlatformConfig
-from gateway.platforms.event import MessageEvent
-from gateway.session import SessionEntry, SessionSource, build_session_key
+from hermes_agent.gateway.config import GatewayConfig, HomeChannel, Platform, PlatformConfig
+from hermes_agent.gateway.platforms.event import MessageEvent
+from hermes_agent.gateway.session import SessionEntry, SessionSource, build_session_key
 
 
 def _make_source(*, thread_id: str | None = None) -> SessionSource:
@@ -62,7 +62,7 @@ def _make_group_event(text: str, *, thread_id: str | None = None) -> MessageEven
 
 
 def _make_runner(session_db=None):
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
 
     runner = object.__new__(GatewayRunner)
     runner.config = GatewayConfig(
@@ -282,7 +282,7 @@ async def test_topic_restore_quote_unwraps_merged_assistant_carrier(tmp_path):
 async def test_internal_root_telegram_dm_event_bypasses_topic_lobby(
     monkeypatch, thread_id
 ):
-    import gateway.run as gateway_run
+    import hermes_agent.gateway.run as gateway_run
 
     runner = _make_runner()
     runner._telegram_topic_mode_enabled = lambda source: True
@@ -307,7 +307,7 @@ async def test_internal_root_telegram_dm_event_bypasses_topic_lobby(
 
 @pytest.mark.asyncio
 async def test_root_telegram_dm_new_shows_create_topic_instruction(monkeypatch):
-    import gateway.run as gateway_run
+    import hermes_agent.gateway.run as gateway_run
 
     runner = _make_runner()
     runner._telegram_topic_mode_enabled = lambda source: True
@@ -331,7 +331,7 @@ async def test_root_telegram_dm_new_shows_create_topic_instruction(monkeypatch):
 async def test_managed_topic_binding_reuses_restored_session_over_static_lane_session(
     tmp_path, monkeypatch
 ):
-    import gateway.run as gateway_run
+    import hermes_agent.gateway.run as gateway_run
 
     session_db = SessionDB(db_path=tmp_path / "state.db")
     session_db.enable_telegram_topic_mode(chat_id="208214988", user_id="208214988")
@@ -376,7 +376,7 @@ async def test_managed_topic_binding_reuses_restored_session_over_static_lane_se
 async def test_telegram_group_prompt_is_not_topic_lobby_even_when_dm_topic_mode_enabled(
     tmp_path, monkeypatch
 ):
-    import gateway.run as gateway_run
+    import hermes_agent.gateway.run as gateway_run
 
     session_db = SessionDB(db_path=tmp_path / "state.db")
     session_db.enable_telegram_topic_mode(chat_id="208214988", user_id="208214988")
@@ -398,7 +398,7 @@ async def test_telegram_group_prompt_is_not_topic_lobby_even_when_dm_topic_mode_
 async def test_group_new_keeps_existing_reset_semantics_when_dm_topic_mode_enabled(
     tmp_path, monkeypatch
 ):
-    import gateway.run as gateway_run
+    import hermes_agent.gateway.run as gateway_run
 
     session_db = SessionDB(db_path=tmp_path / "state.db")
     session_db.enable_telegram_topic_mode(chat_id="208214988", user_id="208214988")
@@ -442,7 +442,7 @@ async def test_new_inside_telegram_topic_rewrites_binding_to_new_session(tmp_pat
     the next inbound message would look up the stale binding and switch
     back to the old session, making /new a no-op.
     """
-    import gateway.run as gateway_run
+    import hermes_agent.gateway.run as gateway_run
 
     session_db = SessionDB(db_path=tmp_path / "state.db")
     session_db.enable_telegram_topic_mode(chat_id="208214988", user_id="208214988")
@@ -506,7 +506,7 @@ async def test_topic_binding_follows_compression_tip_on_read(tmp_path, monkeypat
     The read path now walks ``SessionDB.get_compression_tip()`` and rewrites
     the binding to the descendant.
     """
-    import gateway.run as gateway_run
+    import hermes_agent.gateway.run as gateway_run
 
     session_db = SessionDB(db_path=tmp_path / "state.db")
     session_db.enable_telegram_topic_mode(chat_id="208214988", user_id="208214988")
@@ -644,7 +644,7 @@ async def test_topic_binding_heal_drops_binding_whose_target_row_is_gone(tmp_pat
         session_id=snapshot.session_id, source="telegram", user_id="208214988",
     )
 
-    with caplog.at_level(logging.WARNING, logger="gateway.run"):
+    with caplog.at_level(logging.WARNING, logger="hermes_agent.gateway.run"):
         healed = await runner._hmwa_heal_telegram_topic_binding(topic_source, snapshot, topic_key)
 
     runner.session_store.switch_session.assert_not_called()
@@ -739,7 +739,7 @@ async def test_rowless_binding_repair_does_not_recreate_a_binding_cleared_mid_lo
 
 @pytest.mark.asyncio
 async def test_topic_root_command_lists_unlinked_sessions_for_restore(tmp_path, monkeypatch):
-    import gateway.run as gateway_run
+    import hermes_agent.gateway.run as gateway_run
 
     session_db = SessionDB(db_path=tmp_path / "state.db")
     session_db.enable_telegram_topic_mode(chat_id="208214988", user_id="208214988")
@@ -791,7 +791,7 @@ async def test_topic_root_command_lists_unlinked_sessions_for_restore(tmp_path, 
 async def test_topic_restore_renames_topic_to_restored_session_title(
     tmp_path, monkeypatch
 ):
-    import gateway.run as gateway_run
+    import hermes_agent.gateway.run as gateway_run
 
     session_db = SessionDB(db_path=tmp_path / "state.db")
     session_db.enable_telegram_topic_mode(chat_id="208214988", user_id="208214988")
@@ -829,7 +829,7 @@ async def test_topic_restore_renames_topic_to_restored_session_title(
 
 @pytest.mark.asyncio
 async def test_first_message_inside_topic_records_topic_binding(tmp_path, monkeypatch):
-    import gateway.run as gateway_run
+    import hermes_agent.gateway.run as gateway_run
 
     session_db = SessionDB(db_path=tmp_path / "state.db")
     session_db.enable_telegram_topic_mode(chat_id="208214988", user_id="208214988")
@@ -966,7 +966,7 @@ async def test_auto_generated_title_renames_bound_telegram_topic(tmp_path):
 @pytest.mark.asyncio
 async def test_topic_refuses_unauthorized_user(tmp_path, monkeypatch):
     """Unauthorized DMs cannot flip multi-session mode on."""
-    import gateway.run as gateway_run
+    import hermes_agent.gateway.run as gateway_run
 
     db = SessionDB(db_path=tmp_path / "state.db")
     runner = _make_runner(session_db=db)

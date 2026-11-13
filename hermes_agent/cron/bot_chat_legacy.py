@@ -64,7 +64,7 @@ def _malformed(record: dict) -> str:
 def _dispose(path: Path, record: dict) -> bool:
     """Decide one queued record in place; False leaves it queued for a later tick."""
     from hermes_agent.cron.scheduler_delivery import BOT_CHAT_POLICY_PLATFORM, bot_chat_message
-    from gateway.warning_notifications import warning_notifications_enabled
+    from hermes_agent.gateway.warning_notifications import warning_notifications_enabled
     from hermes_cli.config_effective import load_user_config_effective
     from tools.bot_live_delivery import deliver_to_live_owner, find_canonical_live_owner
 

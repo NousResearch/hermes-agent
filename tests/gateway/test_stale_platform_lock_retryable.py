@@ -24,7 +24,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from gateway.platforms.base import BasePlatformAdapter
+from hermes_agent.gateway.platforms.base import BasePlatformAdapter
 
 class _StubAdapter(BasePlatformAdapter):
     """Minimal concrete subclass for testing _acquire_platform_lock."""
@@ -62,7 +62,7 @@ def adapter():
 def test_stale_lock_failure_is_retryable(adapter):
     """Lock failure must be retryable, not permanently fatal (#54167)."""
     with patch(
-        "gateway.status.acquire_scoped_lock",
+        "hermes_agent.gateway.status.acquire_scoped_lock",
         return_value=(False, {"pid": 99999, "start_time": "2026-01-01T00:00:00Z"}),
     ), patch.object(adapter, "_write_runtime_status_safe"):
         result = adapter._acquire_platform_lock(
@@ -84,8 +84,8 @@ def test_explicit_replace_takeover_reacquires_lock_once(adapter):
     acquire = MagicMock(side_effect=[(False, existing), (True, None)])
     adapter._platform_lock_takeover_allowed = True
 
-    with patch("gateway.status.acquire_scoped_lock", acquire), patch(
-        "gateway.status.take_over_scoped_lock_holder",
+    with patch("hermes_agent.gateway.status.acquire_scoped_lock", acquire), patch(
+        "hermes_agent.gateway.status.take_over_scoped_lock_holder",
         return_value=4242,
     ) as takeover, patch.object(
         adapter, "_write_runtime_status_safe"
@@ -110,7 +110,7 @@ def test_lock_conflict_names_owning_profile(adapter):
     }
 
     with patch(
-        "gateway.status.acquire_scoped_lock",
+        "hermes_agent.gateway.status.acquire_scoped_lock",
         return_value=(False, existing),
     ), patch.object(adapter, "_write_runtime_status_safe"):
         result = adapter._acquire_platform_lock(
@@ -134,7 +134,7 @@ def test_lock_conflict_infers_profile_from_legacy_hermes_home(adapter):
     }
 
     with patch(
-        "gateway.status.acquire_scoped_lock",
+        "hermes_agent.gateway.status.acquire_scoped_lock",
         return_value=(False, existing),
     ), patch.object(adapter, "_write_runtime_status_safe"):
         result = adapter._acquire_platform_lock(

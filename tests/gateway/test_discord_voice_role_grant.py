@@ -12,9 +12,9 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-import gateway.run as gateway_run
-from gateway.config import Platform, PlatformConfig
-from gateway.session import SessionSource
+import hermes_agent.gateway.run as gateway_run
+from hermes_agent.gateway.config import Platform, PlatformConfig
+from hermes_agent.gateway.session import SessionSource
 from plugins.platforms.discord.adapter import DiscordAdapter
 
 _ROLE, _GUILD, _TEXT, _JOINER = 1234, 1, 700, 42

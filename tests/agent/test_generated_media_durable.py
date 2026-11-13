@@ -27,7 +27,7 @@ import pytest
 
 from agent.image_gen_provider import save_b64_image
 from agent.video_gen_provider import save_b64_video
-from gateway.platforms import base
+from hermes_agent.gateway.platforms import base
 
 PNG_1PX = bytes.fromhex(
     "89504e470d0a1a0a0000000d49484452000000010000000108020000009077"

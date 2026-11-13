@@ -25,7 +25,7 @@ def _profile(home, model, port, key, **extra):
 
 @pytest.fixture
 def home(monkeypatch):
-    from gateway import run
+    from hermes_agent.gateway import run
     from hermes_constants import get_hermes_home
     home = get_hermes_home()
     home.mkdir(parents=True, exist_ok=True)
@@ -35,8 +35,8 @@ def home(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_rotated_key_reaches_follow_and_held_pick_on_a_fresh_owner_and_routes_are_never_mixed(home, monkeypatch):
-    from gateway import run
-    from gateway.session_policy import policy_for_source, policy_scope
+    from hermes_agent.gateway import run
+    from hermes_agent.gateway.session_policy import policy_for_source, policy_scope
     _profile(home, 'old', 1, 'k-old')
     store, runner, authority, owner = _owner(home)
     runner._peek_session_state = lambda key: None
@@ -76,8 +76,8 @@ async def test_rotated_key_reaches_follow_and_held_pick_on_a_fresh_owner_and_rou
 
 @pytest.mark.asyncio
 async def test_explicit_create_choices_win_and_session_info_reports_the_next_turn(home):
-    from gateway.session_local import local_session_info
-    from gateway.session_policy import policy_for_source
+    from hermes_agent.gateway.session_local import local_session_info
+    from hermes_agent.gateway.session_policy import policy_for_source
     _profile(home, 'old', 1, 'k', agent={'reasoning_effort': 'low'})
     store, runner, authority, owner = _owner(home)
     runner._peek_session_state = lambda key: None
@@ -122,9 +122,9 @@ async def test_a_session_reasoning_pick_wins_over_the_followed_default_after_a_r
     """Desktop's reasoning picker and ``/reasoning <level>`` on a Bot Chat (created without ``reasoning``):
     the acknowledged level is the next turn's, through a profile edit and a fresh owner; an unpicked
     following chat still runs the profile's current level."""
-    from gateway.session_local import local_session_info
-    from gateway.session_local_recovery import restore_local_session
-    from gateway.session_policy import policy_for_source
+    from hermes_agent.gateway.session_local import local_session_info
+    from hermes_agent.gateway.session_local_recovery import restore_local_session
+    from hermes_agent.gateway.session_policy import policy_for_source
     _profile(home, 'm', 1, 'k', agent={'reasoning_effort': 'low'})
     store, runner, authority, owner = _owner(home)
     runner._peek_session_state = lambda key: None
@@ -163,12 +163,12 @@ async def test_a_later_reasoning_command_replaces_the_pick_after_a_restart(home,
     """After a pick, ``/reasoning <level> [--global]`` or ``/reasoning reset`` from Desktop, Ink or
     ``slash.exec`` is the session's level from then on: a fresh owner and a resume keep the command's level,
     and a reset follows the profile (here moved to ``medium``), on a Bot Chat and on a frozen session."""
-    from gateway.session_contract import SessionRef
-    from gateway.session_local_recovery import restore_local_session
-    from gateway.session_policy import policy_for_source
-    from gateway.session_policy_refresh import commit_refresh
+    from hermes_agent.gateway.session_contract import SessionRef
+    from hermes_agent.gateway.session_local_recovery import restore_local_session
+    from hermes_agent.gateway.session_policy import policy_for_source
+    from hermes_agent.gateway.session_policy_refresh import commit_refresh
 
-    from gateway import session_local
+    from hermes_agent.gateway import session_local
 
     async def reply(event):  # the messaging handler: its reply and --global's config.yaml write
         return 'ok'
@@ -210,7 +210,7 @@ async def test_a_later_reasoning_command_replaces_the_pick_after_a_restart(home,
 @pytest.mark.asyncio
 async def test_follow_session_runs_the_profiles_current_toolsets_and_a_frozen_one_does_not(home):
     """C03 (main #124211): ``hermes tools disable`` reaches a following Bot Chat's next turn."""
-    from gateway.session_policy import active_policy, policy_for_source, policy_scope
+    from hermes_agent.gateway.session_policy import active_policy, policy_for_source, policy_scope
     _profile(home, 'old', 1, 'k')
     store, runner, authority, owner = _owner(home)
     try:

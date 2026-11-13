@@ -13,14 +13,14 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.session_controls import AuthorityConnection
+from hermes_agent.gateway.session_controls import AuthorityConnection
 
 
 async def _owner(tmp_path, monkeypatch, instance_id):
-    from gateway import run
-    from gateway.config import GatewayConfig
-    from gateway.session import SessionStore
-    from gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway import run
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.session import SessionStore
+    from hermes_agent.gateway.session_authority import initialize_session_authority
 
     monkeypatch.setattr(run, '_load_gateway_config', lambda: {'platform_toolsets': {'cli': []}})
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
@@ -60,9 +60,9 @@ def _compact_chain_like_0_22_2(db, parent_id, child_ids):
 
 def _unrecovered_owner(tmp_path, instance_id):
     """An owner of the same store whose boot recovery never reached the session: its first read restores."""
-    from gateway.config import GatewayConfig
-    from gateway.session import SessionStore
-    from gateway.session_authority import SessionAuthority
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.session import SessionStore
+    from hermes_agent.gateway.session_authority import SessionAuthority
     from hermes_agent.hermes_state_runtime import begin_runtime_epoch
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
     runner = SimpleNamespace(session_store=store, _session_db=store._db, adapters={}, _draining=False,
@@ -79,7 +79,7 @@ def _receipt(db, sid):
 
 @pytest.mark.asyncio
 async def test_a_session_compacted_by_0_22_2_resumes_on_its_compressed_tip(tmp_path, monkeypatch):
-    from gateway.session_local import create_local_session
+    from hermes_agent.gateway.session_local import create_local_session
 
     first, connection = await _owner(tmp_path, monkeypatch, 'first')
     ref = create_local_session(first, connection.actor, {'request_id': 'r', 'source': 'tui',
@@ -114,8 +114,8 @@ async def test_a_session_compacted_by_0_22_2_resumes_on_its_compressed_tip(tmp_p
 async def test_a_child_without_the_receipts_route_is_not_adopted(tmp_path, monkeypatch):
     """Only a child that carries the receipt's own route, owner and principal continues it. Any other
     compression child (a row that never had the route) keeps the receipt refused, unchanged."""
-    from gateway.session_local import create_local_session
-    from gateway.session_local_recovery import restore_local_session
+    from hermes_agent.gateway.session_local import create_local_session
+    from hermes_agent.gateway.session_local_recovery import restore_local_session
     from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
     first, connection = await _owner(tmp_path, monkeypatch, 'first')
@@ -146,7 +146,7 @@ async def test_a_child_without_the_receipts_route_is_not_adopted(tmp_path, monke
 async def test_a_compacted_receipt_with_a_foreign_origin_stays_refused(tmp_path, monkeypatch):
     """The catch-up runs only for a receipt that already matches this owner: one naming another
     profile in its origin is refused, unchanged, even with a well-formed compression child."""
-    from gateway.session_local import create_local_session
+    from hermes_agent.gateway.session_local import create_local_session
     from hermes_agent.hermes_state_local import POLICY_PREFIX
 
     first, connection = await _owner(tmp_path, monkeypatch, 'first')
@@ -178,12 +178,12 @@ async def test_a_compacted_receipt_with_a_foreign_origin_stays_refused(tmp_path,
 async def test_a_compacted_secondary_receipt_missing_its_origin_profile_restores(tmp_path, monkeypatch):
     """LC-18's one tolerance (an origin without ``profile``) still composes with the catch-up: the
     receipt advances to the compressed tip and keeps its own entry, changed only in its target."""
-    from gateway import run
-    from gateway.run import _profile_runtime_scope
-    from gateway.run_runtime import initialize_gateway_runtime
-    from gateway.runtime_ownership import process_ownership
-    from gateway.session_contract import SessionActor
-    from gateway.session_local import create_local_session
+    from hermes_agent.gateway import run
+    from hermes_agent.gateway.run import _profile_runtime_scope
+    from hermes_agent.gateway.run_runtime import initialize_gateway_runtime
+    from hermes_agent.gateway.runtime_ownership import process_ownership
+    from hermes_agent.gateway.session_contract import SessionActor
+    from hermes_agent.gateway.session_local import create_local_session
     from hermes_agent.hermes_state_local import POLICY_PREFIX
     from tests.gateway.test_session_authorities_multiplex import _reserve_homes, _runner
 
@@ -232,7 +232,7 @@ async def test_a_compression_chain_longer_than_one_walk_is_adopted_whole(tmp_pat
     """The catch-up walks the untracked steps in ``_CHAIN_CAP`` batches: a chain one step longer than a
     single walk is still complete and valid, so it is adopted to its real tip instead of being refused
     (and rolled back) on every restore."""
-    from gateway.session_local import create_local_session
+    from hermes_agent.gateway.session_local import create_local_session
     from hermes_agent.hermes_state_compression import _CHAIN_CAP
 
     first, connection = await _owner(tmp_path, monkeypatch, 'first')
@@ -263,7 +263,7 @@ async def test_a_compression_chain_longer_than_one_walk_is_adopted_whole(tmp_pat
 async def test_a_chain_that_loops_back_past_one_walk_is_not_adopted(tmp_path, monkeypatch):
     """Cycle detection holds across batches: a chain longer than one walk whose last step leads back
     into the receipt's lineage is never adopted, and the receipt stays as stored."""
-    from gateway.session_local import create_local_session
+    from hermes_agent.gateway.session_local import create_local_session
     from hermes_agent.hermes_state_compression import _CHAIN_CAP
 
     first, connection = await _owner(tmp_path, monkeypatch, 'first')
@@ -300,9 +300,9 @@ async def test_a_restore_on_the_owner_loop_hands_the_catch_up_to_a_worker(tmp_pa
     import asyncio
     import threading
     import hermes_agent.hermes_state_local_lineage as lineage
-    from gateway.session_local import create_local_session
-    from gateway.session_local_recovery import restore_local_session
-    from gateway.session_runtime_workers import mutation_tasks
+    from hermes_agent.gateway.session_local import create_local_session
+    from hermes_agent.gateway.session_local_recovery import restore_local_session
+    from hermes_agent.gateway.session_runtime_workers import mutation_tasks
     from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
     first, connection = await _owner(tmp_path, monkeypatch, 'first')
@@ -332,8 +332,8 @@ async def test_a_restore_on_the_owner_loop_hands_the_catch_up_to_a_worker(tmp_pa
 async def test_a_restore_with_nothing_to_adopt_checks_the_stored_entry_once(tmp_path, monkeypatch):
     """The catch-up re-checks the receipt only when it moved it. Every LOCAL turn claim restores, so a
     receipt with no untracked step costs one read of its stored session row, not two."""
-    from gateway.session_local import create_local_session
-    from gateway.session_local_recovery import restore_local_session
+    from hermes_agent.gateway.session_local import create_local_session
+    from hermes_agent.gateway.session_local_recovery import restore_local_session
 
     authority, connection = await _owner(tmp_path, monkeypatch, 'first')
     try:
@@ -352,7 +352,7 @@ async def test_a_restore_with_nothing_to_adopt_checks_the_stored_entry_once(tmp_
 async def test_the_resume_hint_the_tui_prints_opens_the_session(tmp_path, monkeypatch):
     """The TUI's exit epilogue prints ``_short_resume_id`` (``local-`` + 16 hex); in-TUI ``/resume``
     sends that hint as ``session_id``."""
-    from gateway.session_local import create_local_session
+    from hermes_agent.gateway.session_local import create_local_session
     from hermes_cli.main_tui_launch import _short_resume_id
 
     authority, connection = await _owner(tmp_path, monkeypatch, 'first')

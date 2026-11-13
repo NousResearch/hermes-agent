@@ -3,7 +3,7 @@ import os
 import runpy
 import signal
 
-from gateway.session_authority import SessionAuthority
+from hermes_agent.gateway.session_authority import SessionAuthority
 from hermes_agent.hermes_state_runtime import list_session_admissions
 
 schedule = SessionAuthority._schedule
@@ -21,4 +21,4 @@ def crash_barrier(self, ref):
 
 SessionAuthority._schedule = crash_barrier
 # submit's ordinary path must use the same production scheduler for this barrier.
-runpy.run_module('gateway.run', run_name='__main__')
+runpy.run_module('hermes_agent.gateway.run', run_name='__main__')

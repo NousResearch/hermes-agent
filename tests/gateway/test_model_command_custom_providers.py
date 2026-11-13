@@ -5,10 +5,10 @@ import threading
 import pytest
 import hermes_yaml as yaml
 
-from gateway.config import Platform
-from gateway.platforms.event import MessageEvent, MessageType
-from gateway.run import GatewayRunner
-from gateway.session import SessionSource
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.run import GatewayRunner
+from hermes_agent.gateway.session import SessionSource
 
 
 def _make_runner():
@@ -40,7 +40,7 @@ async def test_direct_model_switch_runs_off_the_event_loop(tmp_path, monkeypatch
         encoding="utf-8",
     )
 
-    import gateway.run as gateway_run
+    import hermes_agent.gateway.run as gateway_run
 
     monkeypatch.setattr(gateway_run, "_hermes_home", hermes_home)
 

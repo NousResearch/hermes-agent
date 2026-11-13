@@ -8,14 +8,14 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway import hosted_room_driver as tasks, hosted_rooms, session_hosted_transport as transport
-from gateway.config import GatewayConfig
-from gateway.runtime_ownership import ProfileOwnership
-from gateway.session import SessionStore
-from gateway.session_authority import initialize_session_authority
-from gateway.session_group_controls import _disband
-from gateway.session_hosted_member_homes import _HOMES, record_member_home
-from gateway.session_hosted_service import CanonicalHostedRoomService
+from hermes_agent.gateway import hosted_room_driver as tasks, hosted_rooms, session_hosted_transport as transport
+from hermes_agent.gateway.config import GatewayConfig
+from hermes_agent.gateway.runtime_ownership import ProfileOwnership
+from hermes_agent.gateway.session import SessionStore
+from hermes_agent.gateway.session_authority import initialize_session_authority
+from hermes_agent.gateway.session_group_controls import _disband
+from hermes_agent.gateway.session_hosted_member_homes import _HOMES, record_member_home
+from hermes_agent.gateway.session_hosted_service import CanonicalHostedRoomService
 from hermes_agent.hermes_state import SessionDB
 from hermes_agent.hermes_state_runtime import (
     begin_runtime_epoch, claim_session_input, list_session_admissions, settle_session_input,

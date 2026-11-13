@@ -27,11 +27,11 @@ async def test_host_socket_answers_a_sibling_profiles_sudo_request(tmp_path, mon
     a response frame (which carries no profile): the waiting tool gets the password, not a timeout. A
     second socket's beta session stays its own: the first socket's beta sibling is not attached there,
     so its answer to that request id is refused and the owning socket's answer settles it."""
-    from gateway.run_runtime import initialize_gateway_runtime
-    from gateway.runtime_ownership import process_ownership
-    from gateway.session_authorities import authority_for_profile_id, owner_scope
-    from gateway.session_controls import AuthorityConnection
-    from gateway.session_server_requests import ask_viewer, waiting
+    from hermes_agent.gateway.run_runtime import initialize_gateway_runtime
+    from hermes_agent.gateway.runtime_ownership import process_ownership
+    from hermes_agent.gateway.session_authorities import authority_for_profile_id, owner_scope
+    from hermes_agent.gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway.session_server_requests import ask_viewer, waiting
     root, homes = _reserve_homes(tmp_path, monkeypatch)
     process_ownership.reserve([home for _, home in homes])
     connections, runner = [], None

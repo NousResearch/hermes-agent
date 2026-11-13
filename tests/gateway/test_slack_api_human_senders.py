@@ -48,7 +48,7 @@ _slack_mod.SLACK_AVAILABLE = True
 
 from plugins.platforms.slack.adapter import SlackAdapter
 
-from gateway.config import Platform, PlatformConfig
+from hermes_agent.gateway.config import Platform, PlatformConfig
 
 
 HUMAN_ID = "U_human"

@@ -356,7 +356,7 @@ class SessionCoverageMixin:
         content, width = message.get("content"), message.get(MERGED_DURABLE_ROWS)
         if message.get("role") != "user" or not isinstance(content, str) or type(width) is not int or width < 2:
             return []
-        from gateway.message_timestamps import strip_leading_message_timestamps
+        from hermes_agent.gateway.message_timestamps import strip_leading_message_timestamps
 
         content, _ = strip_leading_message_timestamps(content)
         bound = watermark is not None

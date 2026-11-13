@@ -2,7 +2,7 @@
 
 Since #106742 the profile's gateway owns its sessions. Chats written before that (main's CLI, TUI and
 Desktop rows) carry no gateway receipt until one native, same-OS-user client resumes them, which
-adopts them (``gateway/session_local_migration.py::adopt_legacy_session``). A Webapp browser reaches
+adopts them (``hermes_agent/gateway/session_local_migration.py::adopt_legacy_session``). A Webapp browser reaches
 the gateway through its dashboard mount as the login it authenticated, never natively, so it may not
 make that first claim. Run this once on the host instead: it is what opening each old chat in the
 native TUI or Desktop would do, and afterwards the browser continues every adopted chat through
@@ -24,7 +24,7 @@ def adoptable_sessions(path) -> list[dict]:
     count a dry run reports is what an adoption run attempts. A row the owner already bound is not
     offered again, which makes a second run a no-op."""
     from hermes_agent.hermes_state import SessionDB
-    from gateway.owner_identity import host_owner_subject
+    from hermes_agent.gateway.owner_identity import host_owner_subject
     from hermes_agent.hermes_state_local import POLICY_PREFIX
     from hermes_agent.hermes_state_local_migration import LEGACY_LOCAL_SOURCES, LEGACY_PREFIX, not_client_labels, validate_legacy_row
     from hermes_agent.hermes_state_runtime import RuntimeStoreError

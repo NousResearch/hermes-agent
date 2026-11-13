@@ -1121,7 +1121,7 @@ class TestSharedBoardPaths:
         default_home.mkdir()
         self._set_home(monkeypatch, tmp_path, default_home)
 
-        from gateway import session_context as sc
+        from hermes_agent.gateway import session_context as sc
 
         # A dispatcher can launch before the gateway binds its first session.
         monkeypatch.setattr(sc, "_session_context_engaged", False)

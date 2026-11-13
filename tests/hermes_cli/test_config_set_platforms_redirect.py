@@ -2,7 +2,7 @@
 
 `hermes config set platforms.<name>.<display_setting> <value>` must write to
 `display.platforms.<name>.<display_setting>` — the path the gateway actually
-reads (gateway/display_config.py::resolve_display_setting). Writing to the
+reads (hermes_agent/gateway/display_config.py::resolve_display_setting). Writing to the
 top-level `platforms.<name>` block is silently ignored by the runtime, so the
 edit appeared to succeed while having no effect.
 """
@@ -90,7 +90,7 @@ class TestRedirectSiblingSurfaces:
     """
 
     def test_get_mirrors_gateway_resolution_after_set(self, hermes_home, monkeypatch, capsys):
-        from gateway.display_config import resolve_display_setting
+        from hermes_agent.gateway.display_config import resolve_display_setting
         from hermes_cli.config import get_config_value
 
         _set(monkeypatch, hermes_home, "platforms.telegram.streaming", "false")
@@ -122,7 +122,7 @@ class TestRedirectSiblingSurfaces:
 
 
     def test_redirect_helper_only_touches_known_display_keys(self):
-        from gateway.display_config import OVERRIDEABLE_KEYS
+        from hermes_agent.gateway.display_config import OVERRIDEABLE_KEYS
         from hermes_cli.config import _redirect_platform_display_key
 
         for setting in OVERRIDEABLE_KEYS:

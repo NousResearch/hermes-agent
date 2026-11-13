@@ -101,7 +101,7 @@ class TestCheckRequirements:
 
     def test_gateway_tool_prompt_gate_uses_active_profile_token(self, monkeypatch):
         from agent import secret_scope
-        from gateway.session import _discord_tools_loaded
+        from hermes_agent.gateway.session import _discord_tools_loaded
 
         monkeypatch.setenv("DISCORD_BOT_TOKEN", "another-profile-token")
         secret_scope.set_multiplex_active(True)

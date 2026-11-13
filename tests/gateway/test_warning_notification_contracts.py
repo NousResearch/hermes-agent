@@ -11,11 +11,11 @@ from agent import empty_response_guard
 from agent.status_output import StatusOutputMixin
 from agent.turn_api_call import nous_rate_limit_guard
 from agent.turn_empty_response import _terminal_empty
-from gateway.config import Platform
-from gateway.run import GatewayRunner, _load_gateway_config
-from gateway.run_turn_runner import TurnRunner
-from gateway.session import SessionSource
-from gateway.turn_context import TurnContext
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.run import GatewayRunner, _load_gateway_config
+from hermes_agent.gateway.run_turn_runner import TurnRunner
+from hermes_agent.gateway.session import SessionSource
+from hermes_agent.gateway.turn_context import TurnContext
 
 
 class Agent(StatusOutputMixin):
@@ -45,7 +45,7 @@ class Agent(StatusOutputMixin):
 
 @pytest.mark.parametrize("enabled", [False, True])
 def test_real_retry_producers_keep_final_failure_and_persistence(tmp_path, monkeypatch, caplog, enabled):
-    from gateway import run
+    from hermes_agent.gateway import run
 
     (tmp_path / "config.yaml").write_text(f"display: {{suppress_warning_notifications: {str(not enabled).lower()}}}")
     monkeypatch.setattr(run, "_hermes_home", tmp_path)
@@ -89,7 +89,7 @@ def test_real_retry_producers_keep_final_failure_and_persistence(tmp_path, monke
     ("display: {suppress_warning_notifications: true, platforms: broken}", False),
 ])
 def test_bad_config_containers_do_not_abort_startup_warning(tmp_path, monkeypatch, yaml_text, expected):
-    from gateway import run
+    from hermes_agent.gateway import run
 
     (tmp_path / "config.yaml").write_text(yaml_text)
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))

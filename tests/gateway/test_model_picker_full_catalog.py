@@ -7,11 +7,11 @@ import types
 
 import pytest
 
-import gateway.run as gateway_run
-from gateway.config import Platform
-from gateway.platforms.base import MessageEvent, MessageType
-from gateway.run import GatewayRunner
-from gateway.session import SessionSource
+import hermes_agent.gateway.run as gateway_run
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.platforms.base import MessageEvent, MessageType
+from hermes_agent.gateway.run import GatewayRunner
+from hermes_agent.gateway.session import SessionSource
 
 _MODELS = [f"bigcat-model-{i:02d}" for i in range(1, 81)]
 

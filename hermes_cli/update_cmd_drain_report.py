@@ -75,7 +75,7 @@ def describe_active_work_unit(unit: dict, home: Optional[Path] = None) -> str:
 def read_active_work(home: Optional[Path] = None) -> Optional[list]:
     """``active_work`` as the gateway last published it, or None (old gateway / not draining / unreadable)."""
     try:
-        from gateway.status import read_runtime_status
+        from hermes_agent.gateway.status import read_runtime_status
 
         record = read_runtime_status(home / "gateway_state.json" if home else None) or {}
         work = record.get("active_work")

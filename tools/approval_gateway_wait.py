@@ -34,7 +34,7 @@ class _ApprovalEntry:
         self.data.setdefault("request_id", uuid.uuid4().hex)
         # True: a card tap may only deny until a renderer proves its card shows the whole command (#62359).
         self.card_deny_only = False
-        # Who may answer (gateway.approval_actor): the turn's actor, approvers and admins. Kept off
+        # Who may answer (hermes_agent.gateway.approval_actor): the turn's actor, approvers and admins. Kept off
         # ``data`` so the prompt and replay payloads sent to clients stay exactly what was raised.
         self.authority = _ctx.prompt_authority()
         self.acknowledged = False

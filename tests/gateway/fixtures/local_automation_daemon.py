@@ -3,7 +3,7 @@ import os
 import runpy
 import signal
 
-from gateway.session_authority import SessionAuthority
+from hermes_agent.gateway.session_authority import SessionAuthority
 from hermes_agent.hermes_state_runtime import list_session_admissions
 
 original = SessionAuthority._schedule
@@ -17,4 +17,4 @@ def schedule(self, ref):
 
 
 SessionAuthority._schedule = schedule
-runpy.run_module('gateway.run', run_name='__main__')
+runpy.run_module('hermes_agent.gateway.run', run_name='__main__')

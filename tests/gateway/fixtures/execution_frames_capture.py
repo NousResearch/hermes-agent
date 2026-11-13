@@ -36,11 +36,11 @@ class Peer:
 
 
 async def capture(tmp):
-    from gateway.config import GatewayConfig, Platform
-    from gateway.session import SessionSource, SessionStore
-    from gateway.session_authority import LiveSession, initialize_session_authority
-    from gateway.session_contract import SessionRef, Submission
-    from gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway.config import GatewayConfig, Platform
+    from hermes_agent.gateway.session import SessionSource, SessionStore
+    from hermes_agent.gateway.session_authority import LiveSession, initialize_session_authority
+    from hermes_agent.gateway.session_contract import SessionRef, Submission
+    from hermes_agent.gateway.session_controls import AuthorityConnection
 
     store = SessionStore(tmp / 'sessions', GatewayConfig())
     db = store._db

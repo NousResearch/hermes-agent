@@ -165,7 +165,7 @@ def _primary_profile_routes_for_current_home() -> list:
         # Same layers the primary gateway's own loader reads: routes pinned in the managed scope
         # (/etc/hermes/config.yaml) never reached the raw user-file read (#121212), so preflight
         # false-blocked and routed delivery failed closed on centrally-managed installs.
-        from gateway.config_loader import read_yaml_layers
+        from hermes_agent.gateway.config_loader import read_yaml_layers
         # The caller runs inside the SATELLITE's secret scope (the gateway drain walks satellites under
         # their own profile scope), and ``${env:...}`` refs resolve through whatever scope is bound,
         # fail-closed. Expanding the primary's YAML there resolved its refs against the satellite's
@@ -184,7 +184,7 @@ def _primary_profile_routes_for_current_home() -> list:
         if not isinstance(routes_raw, list):
             return []
 
-        from gateway.profile_routing import parse_profile_routes
+        from hermes_agent.gateway.profile_routing import parse_profile_routes
         from hermes_cli.profiles import profile_matches_home
         return [
             route for route in parse_profile_routes(routes_raw)
@@ -305,7 +305,7 @@ def _preflight_check_delivery(job: dict) -> Optional[str]:
             )
         if connected is None:
             try:
-                from gateway.config import load_gateway_config
+                from hermes_agent.gateway.config import load_gateway_config
                 gateway_config = load_gateway_config()
                 connected = {p.value for p in gateway_config.get_connected_platforms()}
                 connected |= _delivery._relay_fronted_delivery_platforms(connected)

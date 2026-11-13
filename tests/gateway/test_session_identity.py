@@ -1,4 +1,4 @@
-"""Invariants for ``gateway/session_identity.py`` (#88715 phase 1).
+"""Invariants for ``hermes_agent/gateway/session_identity.py`` (#88715 phase 1).
 
 One frozen ``RoutingIdentity`` per inbound event, resolved by the real ``GatewayRunner`` resolvers
 (no patched predicates) against a temp ``HERMES_HOME`` with two served profiles.
@@ -12,12 +12,12 @@ from unittest.mock import patch
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.pairing import PairingStore
-from gateway.platforms.base import BasePlatformAdapter
-from gateway.profile_routing import parse_profile_routes
-from gateway.session import SessionSource, build_session_key
-from gateway.session_identity import (
+from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+from hermes_agent.gateway.pairing import PairingStore
+from hermes_agent.gateway.platforms.base import BasePlatformAdapter
+from hermes_agent.gateway.profile_routing import parse_profile_routes
+from hermes_agent.gateway.session import SessionSource, build_session_key
+from hermes_agent.gateway.session_identity import (
     IdentityUnresolved, RoutingIdentity, identity_of, replace_source, resolve_identity,
 )
 
@@ -38,7 +38,7 @@ def _stub(platform, runner, label):
 
 
 def _runner(home, *, multiplex, routes=()):
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
 
     runner = object.__new__(GatewayRunner)
     runner.config = GatewayConfig(multiplex_profiles=multiplex)

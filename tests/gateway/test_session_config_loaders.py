@@ -22,10 +22,10 @@ class _Built(Exception):
 def test_in_process_turn_routes_with_the_sessions_own_provider_routing(tmp_path, monkeypatch):
     """The routing the in-process turn hands its agent is the session's, not the runner's
     daemon-start ``_provider_routing``."""
-    from gateway import session_policy
-    from gateway.config import Platform
-    from gateway.run_turn_runner import TurnRunner
-    from gateway.session_policy import build_policy
+    from hermes_agent.gateway import session_policy
+    from hermes_agent.gateway.config import Platform
+    from hermes_agent.gateway.run_turn_runner import TurnRunner
+    from hermes_agent.gateway.session_policy import build_policy
     policy = build_policy({'cwd': str(tmp_path), **LAUNCH}, {'provider_routing': {'only': ['Fresh'], 'sort': 'price'}})
     monkeypatch.setattr(session_policy, 'policy_for_source', lambda runner, source: policy)
     runner = SimpleNamespace(
@@ -55,10 +55,10 @@ def test_a_local_turn_reloads_the_profiles_env_file_and_keeps_its_own_turn_budge
     session's own, never the profile's ``agent.max_turns``. A ``--ignore-user-config`` session never
     reads the profile's ``.env``."""
     import os
-    from gateway import run as gateway_run, session_policy
-    from gateway.config import Platform
-    from gateway.run_turn_runner import TurnRunner
-    from gateway.session_policy import build_policy
+    from hermes_agent.gateway import run as gateway_run, session_policy
+    from hermes_agent.gateway.config import Platform
+    from hermes_agent.gateway.run_turn_runner import TurnRunner
+    from hermes_agent.gateway.session_policy import build_policy
     home = tmp_path / 'home'
     home.mkdir()
     (home / 'config.yaml').write_text(json.dumps({'agent': {'max_turns': 90}}))
@@ -92,9 +92,9 @@ def test_each_new_session_reads_its_profiles_prefill_once_and_workers_match(tmp_
     """The prefill path and file contents a session gets are its own profile's when it was created; a
     later edit reaches the next new session and never an existing one (main: one read per CLI
     process). Bypass sessions never load the profile's file."""
-    from gateway.session_local import _bypass_policy
-    from gateway.session_policy import build_policy
-    from gateway.session_worker_construct import construct_inputs
+    from hermes_agent.gateway.session_local import _bypass_policy
+    from hermes_agent.gateway.session_policy import build_policy
+    from hermes_agent.gateway.session_worker_construct import construct_inputs
     monkeypatch.delenv('HERMES_PREFILL_MESSAGES_FILE', raising=False)
     _prefill(tmp_path, 'prefill.json', 'FIRST')
     runner = SimpleNamespace(config=None, _prefill_messages=STALE, _refresh_fallback_model=lambda: None,
@@ -103,7 +103,7 @@ def test_each_new_session_reads_its_profiles_prefill_once_and_workers_match(tmp_
     launch = {'cwd': str(tmp_path), **LAUNCH}
     first = build_policy(launch, {'prefill_messages_file': 'prefill.json'})
     assert construct_inputs(authority, first, 'sid-1')['prefill_messages'] == [{'role': 'user', 'content': 'FIRST'}]
-    from gateway.session_worker_construct import session_prefill
+    from hermes_agent.gateway.session_worker_construct import session_prefill
     _prefill(tmp_path, 'prefill.json', 'EDITED')
     _prefill(tmp_path, 'moved.json', 'MOVED')
     # The open session keeps what it read (no per-turn re-read); the in-process helper agrees.
@@ -120,8 +120,8 @@ def test_each_new_session_reads_its_profiles_prefill_once_and_workers_match(tmp_
 
 def _in_process_prefill(authority, policy, monkeypatch, chat_id):
     """The prefill an in-process agent (re)build hands ``AIAgent`` (``_build_fresh_agent``)."""
-    from gateway import session_policy
-    from gateway.session_execution import GatewaySessionAgentMixin
+    from hermes_agent.gateway import session_policy
+    from hermes_agent.gateway.session_execution import GatewaySessionAgentMixin
     monkeypatch.setattr(session_policy, 'policy_for_source', lambda runner, source: policy)
     built = {}
     turn = GatewaySessionAgentMixin.__new__(GatewaySessionAgentMixin)
@@ -138,8 +138,8 @@ def _in_process_prefill(authority, policy, monkeypatch, chat_id):
 def test_an_open_sessions_prefill_survives_cache_pressure_and_file_edits(tmp_path, monkeypatch):
     """However many other sessions read prefill meanwhile, an open session keeps the examples it
     started with on every later construction: a managed worker's and an in-process rebuild's."""
-    from gateway.session_policy import build_policy
-    from gateway.session_worker_construct import construct_inputs, session_prefill
+    from hermes_agent.gateway.session_policy import build_policy
+    from hermes_agent.gateway.session_worker_construct import construct_inputs, session_prefill
     monkeypatch.delenv('HERMES_PREFILL_MESSAGES_FILE', raising=False)
     _prefill(tmp_path, 'prefill.json', 'ORIGINAL')
     runner = SimpleNamespace(config=None, _prefill_messages=STALE, _refresh_fallback_model=lambda: None,
@@ -158,8 +158,8 @@ def test_an_open_sessions_prefill_survives_cache_pressure_and_file_edits(tmp_pat
 async def test_prefill_is_read_when_the_session_is_created_and_dropped_with_it(tmp_path, monkeypatch):
     """An edit between ``session.create`` and the first turn never reaches the session (main's CLI
     read the file at startup); deleting the session releases its snapshot."""
-    from gateway.session_mutations import retire_live_sessions
-    from gateway.session_worker_construct import construct_inputs
+    from hermes_agent.gateway.session_mutations import retire_live_sessions
+    from hermes_agent.gateway.session_worker_construct import construct_inputs
     from tests.gateway.test_local_create_env_refs import _owner
     monkeypatch.delenv('HERMES_PREFILL_MESSAGES_FILE', raising=False)
     home = tmp_path / 'home'
@@ -184,8 +184,8 @@ def test_bg_side_agent_uses_the_sessions_provider_routing(tmp_path):
     ``provider_routing``, not the runner's daemon-start copy."""
     import asyncio
     import run_agent
-    from gateway import session_tui_side
-    from gateway.session_contract import SessionRef
+    from hermes_agent.gateway import session_tui_side
+    from hermes_agent.gateway.session_contract import SessionRef
     from tests.gateway.test_local_create_env_refs import _owner
     home = tmp_path / 'home'
     home.mkdir()
@@ -230,8 +230,8 @@ CONFIG = ('platform_toolsets: {cli: []}\n'
 
 
 def _create(owner, connection, home, request_id):
-    from gateway.session_local import create_local_session
-    from gateway.session_policy import restore_policy
+    from hermes_agent.gateway.session_local import create_local_session
+    from hermes_agent.gateway.session_policy import restore_policy
     from hermes_agent.hermes_state_local import local_receipt
     ref = create_local_session(owner, connection.actor, {'request_id': request_id, 'source': 'cli',
                                                          'cwd': str(home), 'toolsets': []})
@@ -250,14 +250,14 @@ async def _prefill_owner(tmp_path, monkeypatch):
 
 
 def _stage(owner, connection, cwd, request_id):
-    from gateway.session_local import stage_local_session
+    from hermes_agent.gateway.session_local import stage_local_session
     return stage_local_session(owner, connection.actor, {'request_id': request_id, 'source': 'cli',
                                                          'cwd': str(cwd), 'toolsets': []})
 
 
 def _commit(owner, staged):
     """The off-loop commit and publication every async create runs after staging."""
-    from gateway.session_local_recovery import restore_local_session
+    from hermes_agent.gateway.session_local_recovery import restore_local_session
     from hermes_agent.hermes_state_local import commit_local_session
     commit_local_session(owner.db, epoch=owner.epoch, receipt=staged)
     return restore_local_session(owner, staged['session_id'])
@@ -269,8 +269,8 @@ async def test_the_prefill_file_is_read_by_the_off_loop_commit_not_while_staging
     the prefill file, possibly on a slow mount, is read by this attempt's commit, never while staging."""
     import threading
     from functools import partial
-    from gateway.session_local_recovery import restore_local_session
-    from gateway.session_runtime_workers import tracked_write
+    from hermes_agent.gateway.session_local_recovery import restore_local_session
+    from hermes_agent.gateway.session_runtime_workers import tracked_write
     from hermes_cli import cli_config_load
     from hermes_agent.hermes_state_local import commit_local_session
     home, owner, connection = await _prefill_owner(tmp_path, monkeypatch)
@@ -291,8 +291,8 @@ async def test_the_prefill_file_is_read_by_the_off_loop_commit_not_while_staging
 
 def _seen(owner, monkeypatch, sid):
     """The prefill a managed worker and an in-process build of ``sid`` get (they must agree)."""
-    from gateway.session_policy import restore_policy
-    from gateway.session_worker_construct import construct_inputs
+    from hermes_agent.gateway.session_policy import restore_policy
+    from hermes_agent.gateway.session_worker_construct import construct_inputs
     from hermes_agent.hermes_state_local import local_receipt
     policy = restore_policy(local_receipt(owner.db, sid)['policy'])
     worker = construct_inputs(owner, policy, sid)['prefill_messages'][0]['content']
@@ -345,7 +345,7 @@ async def test_a_conflicting_losing_create_never_replaces_the_winners_prefill(tm
 async def test_a_create_refused_by_a_retirement_tombstone_holds_no_prefill(tmp_path, monkeypatch):
     """Retrying the create of a deleted session is refused at commit (``not_found``); the attempt
     must not leave a snapshot behind for a session that cannot exist."""
-    from gateway.session_mutations import mutate_session
+    from hermes_agent.gateway.session_mutations import mutate_session
     from hermes_agent.hermes_state_runtime import RuntimeStoreError
     home, owner, connection = await _prefill_owner(tmp_path, monkeypatch)
     owner.runner.session_store._db = owner.db  # one routing store: the delete's live guard requires it
@@ -368,8 +368,8 @@ async def test_a_create_refused_by_a_retirement_tombstone_holds_no_prefill(tmp_p
 async def test_retried_restored_and_branched_sessions_load_prefill_once_and_keep_it(tmp_path, monkeypatch):
     """A sequential exact retry keeps the original snapshot; a session restored by an owner that
     holds nothing for it (a restart) and a new branch read the file on first use, then keep it."""
-    from gateway.session_local_recovery import restore_local_session
-    from gateway.session_mutations import mutate_session
+    from hermes_agent.gateway.session_local_recovery import restore_local_session
+    from hermes_agent.gateway.session_mutations import mutate_session
     home, owner, connection = await _prefill_owner(tmp_path, monkeypatch)
     try:
         ref, _policy = _create(owner, connection, home, 'kept')

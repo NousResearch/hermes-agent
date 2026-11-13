@@ -11,11 +11,11 @@ import pytest
 
 
 def _owner(home, monkeypatch, config):
-    from gateway import run
-    from gateway.config import GatewayConfig
-    from gateway.session import SessionStore
-    from gateway.session_authority import SessionAuthority
-    from gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway import run
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.session import SessionStore
+    from hermes_agent.gateway.session_authority import SessionAuthority
+    from hermes_agent.gateway.session_controls import AuthorityConnection
     import hermes_agent.hermes_state_runtime as rt
     home.mkdir(parents=True, exist_ok=True)
     (home / 'config.yaml').write_text(json.dumps(config))
@@ -34,7 +34,7 @@ def _owner(home, monkeypatch, config):
 
 
 async def _create(owner, authority, request_id, cwd, **extra):
-    from gateway.session_policy import policy_for_source
+    from hermes_agent.gateway.session_policy import policy_for_source
     response = await owner.dispatch({'id': request_id, 'method': 'session.create', 'params': dict(
         request_id=request_id, source='gui', cwd=str(cwd), toolsets=[], model='m', **extra)})
     if 'error' in response:

@@ -6,16 +6,16 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.base import (
+from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+from hermes_agent.gateway.platforms.base import (
     BasePlatformAdapter,
     SendResult,
     SessionSource,
     build_session_key,
 )
-from gateway.platforms.event import MessageEvent, MessageType
-from gateway.profile_routing import ProfileRoute
-from gateway.run import GatewayRunner
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.profile_routing import ProfileRoute
+from hermes_agent.gateway.run import GatewayRunner
 
 
 class _ProfileAdapter(BasePlatformAdapter):
@@ -435,7 +435,7 @@ async def test_effective_mode_uses_startup_snapshot_without_rereading_config(
     tmp_path,
     monkeypatch,
 ):
-    import gateway.run as gateway_run
+    import hermes_agent.gateway.run as gateway_run
 
     runner = _runner(default_mode="interrupt")
     await _load_profile_snapshot(runner, tmp_path / "research", "steer")
@@ -468,7 +468,7 @@ async def test_primary_adapter_busy_origin_uses_routed_privacy(
     secondary.mkdir(parents=True)
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     monkeypatch.setenv("HERMES_HOME", str(home))
-    monkeypatch.setattr("gateway.run._hermes_home", home)
+    monkeypatch.setattr("hermes_agent.gateway.run._hermes_home", home)
     monkeypatch.setenv("HERMES_GATEWAY_BUSY_ACK_ENABLED", "false")
     for directory, privacy in ((home, not secondary_privacy), (secondary, secondary_privacy)):
         (directory / "config.yaml").write_text(
@@ -543,7 +543,7 @@ async def test_secondary_busy_text_timing_follows_profile_config_not_process_env
 def test_busy_text_timing_rejects_non_numeric_config(caplog):
     """A typo in the timing keys warns and falls back instead of crashing or silently coercing."""
     import logging
-    with caplog.at_level(logging.WARNING, logger="gateway.run_config_loaders"):
+    with caplog.at_level(logging.WARNING, logger="hermes_agent.gateway.run_config_loaders"):
         timing = GatewayRunner._busy_text_timing_from_config(
             {"display": {"busy_text_debounce_seconds": "fast", "busy_text_hard_cap_seconds": -3}})
     assert timing == (0.35, 1.0)

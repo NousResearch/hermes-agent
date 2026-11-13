@@ -12,7 +12,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from gateway.config import Platform, PlatformConfig
+from hermes_agent.gateway.config import Platform, PlatformConfig
 
 PROXY = "http://alice:S3cretPass@127.0.0.1:3128"
 SECRET = "S3cretPass"
@@ -84,7 +84,7 @@ def test_standalone_telegram_sender_logs_proxy_without_credentials(monkeypatch, 
     import sys
     import telegram
     import telegram.request
-    from gateway.platforms import base as gw_base
+    from hermes_agent.gateway.platforms import base as gw_base
     from plugins.platforms.telegram import standalone as send_message_senders  # 150996 moved _telegram_bot here
 
     monkeypatch.setattr(gw_base, "resolve_proxy_url", lambda *a, **k: PROXY)
@@ -113,7 +113,7 @@ def _assert_socks_warning_without_secret(caplog):
 def test_shared_socks_connector_warning_logs_proxy_without_credentials(monkeypatch, caplog):
     import sys
 
-    from gateway.platforms import base as gw_base
+    from hermes_agent.gateway.platforms import base as gw_base
 
     monkeypatch.setitem(sys.modules, "aiohttp_socks", None)  # import raises ImportError
     with caplog.at_level(logging.WARNING):
@@ -196,7 +196,7 @@ def test_proxy_secret_never_logged_in_any_shape(monkeypatch, caplog, shape):
 
     import telegram
     import telegram.request
-    from gateway.platforms import base as gw_base
+    from hermes_agent.gateway.platforms import base as gw_base
     from plugins.platforms.matrix import adapter as matrix_adapter
     from plugins.platforms.telegram import standalone as send_message_senders  # 150996 moved _telegram_bot here
 
@@ -223,8 +223,8 @@ def test_proxy_secret_never_logged_in_any_shape(monkeypatch, caplog, shape):
 ])
 def test_gateway_proxy_mode_logs_upstream_url_without_credentials(monkeypatch, caplog, status, chunks):
     """``GATEWAY_PROXY_URL`` is logged on every proxied turn; its userinfo must not be."""
-    from gateway.run import GatewayRunner
-    from gateway.session import SessionSource
+    from hermes_agent.gateway.run import GatewayRunner
+    from hermes_agent.gateway.session import SessionSource
 
     monkeypatch.setenv("GATEWAY_PROXY_URL", f"http://bob:{TOKEN}@127.0.0.1:8642")
     monkeypatch.delenv("GATEWAY_PROXY_KEY", raising=False)
@@ -264,7 +264,7 @@ def test_gateway_proxy_mode_logs_upstream_url_without_credentials(monkeypatch, c
     aiohttp_stub = types.SimpleNamespace(ClientSession=lambda **kw: _Session(), ClientTimeout=MagicMock())
     source = SessionSource(platform=Platform.MATRIX, chat_id="!r:s", chat_type="group", user_id="@u:s")
     with patch.dict("sys.modules", {"aiohttp": aiohttp_stub}), \
-            patch("gateway.run._load_gateway_config", return_value={}), \
+            patch("hermes_agent.gateway.run._load_gateway_config", return_value={}), \
             caplog.at_level(logging.INFO):
         asyncio.run(runner._run_agent_via_proxy(
             message="hi", context_prompt="", history=[], source=source, session_id="s"))
@@ -285,8 +285,8 @@ def test_gateway_proxy_mode_malformed_url_error_never_echoes_secret(monkeypatch,
     """aiohttp's InvalidUrlClientError/NonHttpUrlClientError text is the whole request URL; the
     turn logs it and sends it to the chat as the error reply."""
     pytest.importorskip("aiohttp")
-    from gateway.run import GatewayRunner
-    from gateway.session import SessionSource
+    from hermes_agent.gateway.run import GatewayRunner
+    from hermes_agent.gateway.session import SessionSource
 
     monkeypatch.setenv("GATEWAY_PROXY_URL", proxy_url)
     monkeypatch.delenv("GATEWAY_PROXY_KEY", raising=False)
@@ -294,7 +294,7 @@ def test_gateway_proxy_mode_malformed_url_error_never_echoes_secret(monkeypatch,
     runner.adapters, runner._running_agents, runner._agent_cache = {}, {}, {}
     runner.config = MagicMock()
     source = SessionSource(platform=Platform.MATRIX, chat_id="!r:s", chat_type="group", user_id="@u:s")
-    with patch("gateway.run._load_gateway_config", return_value={}), caplog.at_level(logging.INFO):
+    with patch("hermes_agent.gateway.run._load_gateway_config", return_value={}), caplog.at_level(logging.INFO):
         result = asyncio.run(runner._run_agent_via_proxy(
             message="hi", context_prompt="", history=[], source=source, session_id="s"))
     assert any("Proxy connection error" in r.getMessage() for r in caplog.records)

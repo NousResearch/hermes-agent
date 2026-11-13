@@ -14,7 +14,7 @@ def _compact_rows(store):
 
 def _app(api, owner, calls, gate=None):
     async def handle(event):
-        from gateway.session_results import execution_result
+        from hermes_agent.gateway.session_results import execution_result
         calls.append(event.text)
         if gate is not None and event.text == 'slow':
             gate[0].set()

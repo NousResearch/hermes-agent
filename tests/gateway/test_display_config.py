@@ -1,4 +1,4 @@
-"""Tests for gateway.display_config — per-platform display/verbosity resolver."""
+"""Tests for hermes_agent.gateway.display_config — per-platform display/verbosity resolver."""
 
 # ---------------------------------------------------------------------------
 # Resolver: resolution order
@@ -6,7 +6,7 @@
 
 class TestToolProgressProvenance:
     def test_winning_source_controls_mode_and_intent(self):
-        from gateway.display_config import resolve_tool_progress
+        from hermes_agent.gateway.display_config import resolve_tool_progress
         from hermes_cli.plugins import discover_plugins
 
         discover_plugins()  # slack's "off" default ships on its PlatformEntry (display_overrides)
@@ -29,7 +29,7 @@ class TestResolveDisplaySetting:
 
     def test_explicit_platform_override_wins(self):
         """display.platforms.<plat>.<key> takes top priority."""
-        from gateway.display_config import resolve_display_setting
+        from hermes_agent.gateway.display_config import resolve_display_setting
 
         config = {
             "display": {
@@ -43,7 +43,7 @@ class TestResolveDisplaySetting:
 
     def test_global_setting_when_no_platform_override(self):
         """Falls back to display.<key> when no platform override exists."""
-        from gateway.display_config import resolve_display_setting
+        from hermes_agent.gateway.display_config import resolve_display_setting
 
         config = {
             "display": {
@@ -55,7 +55,7 @@ class TestResolveDisplaySetting:
 
     def test_platform_override_only_affects_that_platform(self):
         """Other platforms are unaffected by a specific platform override."""
-        from gateway.display_config import resolve_display_setting
+        from hermes_agent.gateway.display_config import resolve_display_setting
 
         config = {
             "display": {
@@ -77,7 +77,7 @@ class TestBackwardCompat:
 
     def test_legacy_overrides_read(self):
         """tool_progress_overrides is read when no platforms entry exists."""
-        from gateway.display_config import resolve_display_setting
+        from hermes_agent.gateway.display_config import resolve_display_setting
 
         config = {
             "display": {
@@ -100,13 +100,13 @@ class TestYAMLNormalisation:
 
     def test_tool_progress_false_normalised_to_off(self):
         """YAML's bare `off` parses as False — normalised to 'off' string."""
-        from gateway.display_config import resolve_display_setting
+        from hermes_agent.gateway.display_config import resolve_display_setting
 
         config = {"display": {"tool_progress": False}}
         assert resolve_display_setting(config, "telegram", "tool_progress") == "off"
 
     def test_only_long_running_visibility_accepts_generic_mode(self):
-        from gateway.display_config import resolve_display_setting
+        from hermes_agent.gateway.display_config import resolve_display_setting
 
         config = {
             "display": {
@@ -124,7 +124,7 @@ class TestYAMLNormalisation:
         assert resolve_display_setting(config, "whatsapp", "long_running_notifications") == "generic"
 
     def test_thinking_progress_string_false_normalised_to_false(self):
-        from gateway.display_config import resolve_display_setting
+        from hermes_agent.gateway.display_config import resolve_display_setting
 
         config = {"display": {"platforms": {"whatsapp": {"thinking_progress": "false"}}}}
         assert resolve_display_setting(config, "whatsapp", "thinking_progress") is False
@@ -139,8 +139,8 @@ def assert_keeps_platform_display_defaults(cfg):
 
     Shared by every config seeder's regression test: a seeded global ``display.<key>`` beats each
     platform tier, because the gateway loader merges no DEFAULT_CONFIG (#121230)."""
-    from gateway.display_config import _PLATFORM_DEFAULTS, _platform_defaults, resolve_display_setting, resolve_tool_progress
-    from gateway.platform_registry import platform_registry
+    from hermes_agent.gateway.display_config import _PLATFORM_DEFAULTS, _platform_defaults, resolve_display_setting, resolve_tool_progress
+    from hermes_agent.gateway.platform_registry import platform_registry
     from hermes_cli.plugins import discover_plugins
 
     # Core-only rows plus every plugin platform that declares display defaults on its PlatformEntry.
@@ -173,14 +173,14 @@ class TestInstallerSeededConfigThroughGatewayResolver:
     def test_shipped_template_keeps_every_platform_default(self, tmp_path):
         """The installers, the Docker first boot and ``doctor --fix`` copy cli-config.yaml.example
         verbatim, so an uncommented ``display.<key>`` there becomes an explicit global value."""
-        from gateway.config import Platform
-        from gateway.run import _load_gateway_config, _resolve_gateway_display_bool
+        from hermes_agent.gateway.config import Platform
+        from hermes_agent.gateway.run import _load_gateway_config, _resolve_gateway_display_bool
 
         seeded = _load_gateway_config(self._seed_like_installer(tmp_path / "hermes-home"))
         assert "display" in seeded  # the loader fails open to {}, which would pass vacuously
 
         assert_keeps_platform_display_defaults(seeded)
-        # ...and through the resolver the gateway turn actually calls (same arguments as gateway/run_turn.py).
+        # ...and through the resolver the gateway turn actually calls (same arguments as hermes_agent/gateway/run_turn.py).
         assert _resolve_gateway_display_bool(
             seeded, "qqbot", "show_reasoning", default=False, platform=Platform.QQBOT,
             require_platform_override_for={Platform.MATTERMOST},
@@ -188,8 +188,8 @@ class TestInstallerSeededConfigThroughGatewayResolver:
 
     def test_explicit_global_opt_in_still_reaches_gateway_platforms(self, tmp_path):
         """Control: an operator who deliberately writes ``display.show_reasoning: true`` still gets it (#7148)."""
-        from gateway.config import Platform
-        from gateway.run import _load_gateway_config, _resolve_gateway_display_bool
+        from hermes_agent.gateway.config import Platform
+        from hermes_agent.gateway.run import _load_gateway_config, _resolve_gateway_display_bool
 
         (tmp_path / "config.yaml").write_text("display:\n  show_reasoning: true\n")
         cfg = _load_gateway_config(tmp_path / "config.yaml")
@@ -244,7 +244,7 @@ class TestStreamingPerPlatform:
 
     def test_explicit_false_disables(self):
         """Explicit False disables streaming for that platform."""
-        from gateway.display_config import resolve_display_setting
+        from hermes_agent.gateway.display_config import resolve_display_setting
 
         config = {
             "display": {
@@ -262,7 +262,7 @@ class TestCleanupProgress:
 
     def test_yaml_true_string_normalises_to_true(self):
         """String 'true'/'yes'/'on' all resolve to True."""
-        from gateway.display_config import resolve_display_setting
+        from hermes_agent.gateway.display_config import resolve_display_setting
 
         for val in ("true", "yes", "on", "1"):
             config = {

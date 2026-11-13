@@ -40,8 +40,8 @@ def _under(home: Path, fn):
 
 def test_max_turns_and_fallback_chain_follow_routed_profile(two_homes, monkeypatch):
     a, b = two_homes
-    from gateway import run as gateway_run
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway import run as gateway_run
+    from hermes_agent.gateway.run import GatewayRunner
 
     monkeypatch.setattr(gateway_run, "_hermes_home", a)
     monkeypatch.setattr("agent.secret_scope.is_multiplex_active", lambda: True)
@@ -88,7 +88,7 @@ async def test_gateway_hooks_fire_per_routed_profile(two_homes):
     a, b = two_homes
     _write_hook(a, "hook-a")
     _write_hook(b, "hook-b")
-    from gateway.hooks import ProfileHookRegistries
+    from hermes_agent.gateway.hooks import ProfileHookRegistries
 
     hooks = ProfileHookRegistries()
     ctx_a: dict = {}
@@ -106,7 +106,7 @@ async def test_gateway_hooks_fire_per_routed_profile(two_homes):
 
 def test_media_policy_reads_routed_profile_config_not_env(two_homes, monkeypatch):
     a, b = two_homes
-    from gateway import media_policy
+    from hermes_agent.gateway import media_policy
 
     (a / "config.yaml").write_text(yaml.safe_dump(
         {"gateway": {"strict": True, "media_delivery_allow_dirs": ["/srv/a"]}}), encoding="utf-8")
@@ -128,7 +128,7 @@ def test_routed_media_policy_bridge_never_writes_the_shared_env(two_homes, monke
     """A routed profile's cron delivery runs the bridge under its override; its policy must not
     land in os.environ, where the launch profile's own deliveries and children read it."""
     a, b = two_homes
-    from gateway import media_policy
+    from hermes_agent.gateway import media_policy
     from hermes_cli.config import load_config
 
     (b / "config.yaml").write_text(yaml.safe_dump(

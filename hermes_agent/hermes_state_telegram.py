@@ -259,7 +259,7 @@ class SessionTelegramTopicsMixin:
     def delete_telegram_topic_binding(self, *, chat_id: str, thread_id: str, profile_name: str = "default") -> int:
         """Remove the binding row for one (chat, thread) pair. Called when the Bot API confirms
         a topic was deleted externally (``Thread not found`` after the same-thread retry
-        failed); otherwise ``gateway.run._recover_telegram_topic_thread_id`` keeps
+        failed); otherwise ``hermes_agent.gateway.run._recover_telegram_topic_thread_id`` keeps
         redirecting inbound messages to the dead topic. If this removes the chat's *last*
         binding, ``telegram_dm_topic_mode`` is flipped to ``enabled = 0`` in the same
         transaction, or a user who disabled topics in the Telegram client (not via
@@ -267,7 +267,7 @@ class SessionTelegramTopicsMixin:
         unmigrated tables are silent no-ops (never raise from a cleanup hot path).
 
         Without this prune, the stale row keeps living in ``telegram_dm_topic_bindings`` and the recovery
-        logic in ``gateway.run._recover_telegram_topic_thread_id`` cheerfully redirects future inbound
+        logic in ``hermes_agent.gateway.run._recover_telegram_topic_thread_id`` cheerfully redirects future inbound
         messages to the deleted topic, causing tool progress, approvals, and replies to land in the wrong
         place. Issue #31501.
         """

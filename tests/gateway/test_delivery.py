@@ -5,12 +5,12 @@ from pathlib import Path
 import pytest
 from typing import Any, cast
 
-from gateway.config import GatewayConfig, HomeChannel, Platform, PlatformConfig
-from gateway.delivery import DeliveryRouter, DeliveryTarget
-from gateway.platforms.base import SendResult
-from gateway.relay.adapter import RelayAdapter
-from gateway.relay.descriptor import CONTRACT_VERSION, CapabilityDescriptor
-from gateway.session import SessionSource
+from hermes_agent.gateway.config import GatewayConfig, HomeChannel, Platform, PlatformConfig
+from hermes_agent.gateway.delivery import DeliveryRouter, DeliveryTarget
+from hermes_agent.gateway.platforms.base import SendResult
+from hermes_agent.gateway.relay.adapter import RelayAdapter
+from hermes_agent.gateway.relay.descriptor import CONTRACT_VERSION, CapabilityDescriptor
+from hermes_agent.gateway.session import SessionSource
 
 
 class TestParseTargetPlatformChat:
@@ -97,7 +97,7 @@ def _make_relay(transport, platform="slack", max_message_length=4000):
 @pytest.mark.parametrize("content", ["scheduled result", "x" * 5000], ids=["short", "oversized"])
 async def test_relay_fronted_target_delivers_without_prior_inbound_chat_state(tmp_path, monkeypatch, content):
     """A persisted Slack home receives the complete payload from the gateway."""
-    monkeypatch.setattr("gateway.delivery.get_hermes_home", lambda: tmp_path)
+    monkeypatch.setattr("hermes_agent.gateway.delivery.get_hermes_home", lambda: tmp_path)
     transport = _RelayDeliveryTransport()
     relay = _make_relay(transport)
     config = GatewayConfig(
@@ -155,7 +155,7 @@ class RecordingAdapter:
 
 @pytest.mark.asyncio
 async def test_native_adapter_wins_when_relay_also_fronts_platform(tmp_path, monkeypatch):
-    monkeypatch.setattr("gateway.delivery.get_hermes_home", lambda: tmp_path)
+    monkeypatch.setattr("hermes_agent.gateway.delivery.get_hermes_home", lambda: tmp_path)
     native = RecordingAdapter()
     transport = _RelayDeliveryTransport()
     relay = _make_relay(transport)
@@ -184,7 +184,7 @@ async def test_native_adapter_wins_when_relay_also_fronts_platform(tmp_path, mon
 
 @pytest.mark.asyncio
 async def test_disabled_native_adapter_does_not_shadow_relay(tmp_path, monkeypatch):
-    monkeypatch.setattr("gateway.delivery.get_hermes_home", lambda: tmp_path)
+    monkeypatch.setattr("hermes_agent.gateway.delivery.get_hermes_home", lambda: tmp_path)
     native = RecordingAdapter()
     transport = _RelayDeliveryTransport()
     relay = _make_relay(transport)
@@ -238,7 +238,7 @@ class StaleTopicAdapter:
 
 @pytest.mark.asyncio
 async def test_named_telegram_private_topic_is_created_before_delivery(tmp_path, monkeypatch):
-    monkeypatch.setattr("gateway.delivery.get_hermes_home", lambda: tmp_path)
+    monkeypatch.setattr("hermes_agent.gateway.delivery.get_hermes_home", lambda: tmp_path)
     adapter = RecordingAdapter()
     router = DeliveryRouter(GatewayConfig(), adapters={Platform.TELEGRAM: adapter})
     target = DeliveryTarget.parse("telegram:722341991:Hermes API Test")
@@ -262,7 +262,7 @@ async def test_named_telegram_private_topic_is_created_before_delivery(tmp_path,
 
 @pytest.mark.asyncio
 async def test_explicit_telegram_private_thread_uses_reply_fallback_with_anchor(tmp_path, monkeypatch):
-    monkeypatch.setattr("gateway.delivery.get_hermes_home", lambda: tmp_path)
+    monkeypatch.setattr("hermes_agent.gateway.delivery.get_hermes_home", lambda: tmp_path)
     adapter = RecordingAdapter()
     router = DeliveryRouter(GatewayConfig(), adapters={Platform.TELEGRAM: adapter})
     target = DeliveryTarget.parse("telegram:722341991:32344")
@@ -321,7 +321,7 @@ class NonChunkingAdapter:
 @pytest.mark.asyncio
 async def test_long_output_truncated_for_non_chunking_adapter(tmp_path, monkeypatch):
     """Non-chunking adapters receive truncated content with a footer + file save."""
-    monkeypatch.setattr("gateway.delivery.get_hermes_home", lambda: tmp_path)
+    monkeypatch.setattr("hermes_agent.gateway.delivery.get_hermes_home", lambda: tmp_path)
     adapter = NonChunkingAdapter()
     router = DeliveryRouter(GatewayConfig(), adapters={Platform.DISCORD: adapter})
     target = DeliveryTarget.parse("discord:123")
@@ -373,7 +373,7 @@ async def test_oversized_non_ascii_output_is_delivered_on_windows_codepage(tmp_p
     UnicodeEncodeError on a Windows code page, aborting the whole
     truncate-and-send path so the user receives nothing.
     """
-    monkeypatch.setattr("gateway.delivery.get_hermes_home", lambda: tmp_path)
+    monkeypatch.setattr("hermes_agent.gateway.delivery.get_hermes_home", lambda: tmp_path)
     _simulate_windows_codepage_write(monkeypatch)
 
     adapter = RecordingAdapter()
@@ -398,7 +398,7 @@ async def test_oversized_non_ascii_output_is_delivered_on_windows_codepage(tmp_p
 
 def test_local_delivery_writes_non_ascii_on_windows_codepage(tmp_path, monkeypatch):
     """Local file delivery must persist emoji/CJK content as UTF-8."""
-    monkeypatch.setattr("gateway.delivery.get_hermes_home", lambda: tmp_path)
+    monkeypatch.setattr("hermes_agent.gateway.delivery.get_hermes_home", lambda: tmp_path)
     _simulate_windows_codepage_write(monkeypatch)
 
     router = DeliveryRouter(GatewayConfig())
@@ -419,7 +419,7 @@ async def test_relay_fronted_telegram_target_receives_payload_above_its_own_limi
     The connector splits egress against the negotiated max_message_length
     (4096 for Telegram), so the full payload must reach the transport intact.
     """
-    monkeypatch.setattr("gateway.delivery.get_hermes_home", lambda: tmp_path)
+    monkeypatch.setattr("hermes_agent.gateway.delivery.get_hermes_home", lambda: tmp_path)
     transport = _RelayDeliveryTransport(platform="telegram")
     relay = _make_relay(transport, platform="telegram", max_message_length=4096)
     config = GatewayConfig(

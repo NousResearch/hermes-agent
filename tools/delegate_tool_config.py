@@ -134,7 +134,7 @@ def gateway_delegation_inline(user_config: Any, platform_key: str, *, interim_en
     ``display.interim_assistant_messages``, platform overrides included): there the "status, end your turn" reply
     the background path asks for would be delivered as the turn's answer, then the real answer as a second message.
     API, local and webhook surfaces keep the background path under ``auto``."""
-    from gateway.session_context import NON_MESSAGING_SESSION_SURFACES
+    from hermes_agent.gateway.session_context import NON_MESSAGING_SESSION_SURFACES
     section = user_config.get("delegation") if isinstance(user_config, dict) else None
     mode = str(section.get("gateway_mode") or "auto").strip().lower() if isinstance(section, dict) else "auto"
     if mode in _GATEWAY_MODES:

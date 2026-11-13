@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 # ``session.resume`` refusals that mean "this viewer may not open that session": the caller keeps the
 # session it is on instead of adopting the target (startup resume, bare -c fallback).
 RESUME_REFUSALS = frozenset({"not_found", "permission_denied"})
-# Resume refusals meaning the session itself is gone for this viewer (gateway/session_controls): the
+# Resume refusals meaning the session itself is gone for this viewer (hermes_agent/gateway/session_controls): the
 # above plus profile_mismatch, raised for another profile's session (reconnect, /resume switch).
 RESUME_GONE = RESUME_REFUSALS | {"profile_mismatch"}
 # Keyed-resume refusals a plain resume answers as main did: the key does not apply to this session

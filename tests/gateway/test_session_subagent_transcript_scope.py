@@ -8,10 +8,10 @@ from pathlib import Path
 
 import pytest
 
-from gateway.config import GatewayConfig
-from gateway.run import GatewayRunner
-from gateway.run_runtime import initialize_gateway_runtime
-from gateway.runtime_ownership import process_ownership
+from hermes_agent.gateway.config import GatewayConfig
+from hermes_agent.gateway.run import GatewayRunner
+from hermes_agent.gateway.run_runtime import initialize_gateway_runtime
+from hermes_agent.gateway.runtime_ownership import process_ownership
 
 
 def _reserve_homes(tmp_path, monkeypatch, names=('beta',)):
@@ -38,11 +38,11 @@ def _seed_child(db, parent, text):
 
 @pytest.mark.asyncio
 async def test_secondary_profile_child_transcript_reads_its_own_store_in_its_scope(tmp_path, monkeypatch):
-    from gateway import run, session_stored_reads
-    from gateway.session_ancillary import physical_target
-    from gateway.session_authorities import owner_scope
-    from gateway.session_controls import AuthorityConnection
-    from gateway.session_local import create_local_session
+    from hermes_agent.gateway import run, session_stored_reads
+    from hermes_agent.gateway.session_ancillary import physical_target
+    from hermes_agent.gateway.session_authorities import owner_scope
+    from hermes_agent.gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway.session_local import create_local_session
     from hermes_constants import get_hermes_home
 
     monkeypatch.setattr(run, '_load_gateway_config', lambda *a: {

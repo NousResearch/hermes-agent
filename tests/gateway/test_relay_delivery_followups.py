@@ -35,15 +35,15 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from gateway.config import Platform
-from gateway.relay.ws_transport import (
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.relay.ws_transport import (
     _DISCONNECT_DRAIN_GRACE_S,
     _TEARDOWN_AWAIT_TIMEOUT_S,
     _disconnect_drain_grace_s,
     WebSocketRelayTransport,
 )
-from gateway.run import GatewayRunner, _USER_BOUNDARY_END_REASONS
-from gateway.session import AsyncSessionStore, SessionEntry
+from hermes_agent.gateway.run import GatewayRunner, _USER_BOUNDARY_END_REASONS
+from hermes_agent.gateway.session import AsyncSessionStore, SessionEntry
 
 
 # ---------------------------------------------------------------------------
@@ -180,7 +180,7 @@ def test_drain_grace_uses_threaded_remaining_budget(monkeypatch):
 async def test_adapter_disconnect_threads_remaining_budget():
     """RelayAdapter.disconnect must pass budget_s to the transport, and the
     value must be <= the full budget (its own spend subtracted)."""
-    from gateway.relay.adapter import RelayAdapter
+    from hermes_agent.gateway.relay.adapter import RelayAdapter
 
     adapter = object.__new__(RelayAdapter)
     adapter._revocation_monitor = None
@@ -204,7 +204,7 @@ async def test_adapter_disconnect_threads_remaining_budget():
     await adapter.disconnect()
 
     assert "budget_s" in seen, "transport.disconnect never received budget_s"
-    from gateway.relay.ws_transport import _env_disconnect_budget_s
+    from hermes_agent.gateway.relay.ws_transport import _env_disconnect_budget_s
 
     full = _env_disconnect_budget_s()
     assert seen["budget_s"] is not None
@@ -217,7 +217,7 @@ async def test_adapter_disconnect_threads_remaining_budget():
 async def test_adapter_disconnect_tolerates_legacy_transport_signature():
     """A transport without the budget_s keyword (stubs) must still be torn
     down through the legacy no-arg call, not crash."""
-    from gateway.relay.adapter import RelayAdapter
+    from hermes_agent.gateway.relay.adapter import RelayAdapter
 
     adapter = object.__new__(RelayAdapter)
     adapter._revocation_monitor = None
@@ -373,7 +373,7 @@ def test_durable_dispatch_persists_and_recovers_scope_id(tmp_path, monkeypatch):
     simulate owner death, recover — the recovered completion event must carry
     scope_id/user_id, and the reconstructed SessionSource must prime them."""
     import tools.async_delegation as ad
-    from gateway.session_context import clear_session_vars, set_session_vars
+    from hermes_agent.gateway.session_context import clear_session_vars, set_session_vars
 
     ad._reset_for_tests()
     monkeypatch.setattr(ad, "_db_path", lambda: tmp_path / "state.db")
@@ -406,7 +406,7 @@ def test_durable_dispatch_persists_and_recovers_scope_id(tmp_path, monkeypatch):
 
     # Simulate the owner process being gone: recovery marks the row unknown
     # and rebuilds the completion event from the durable task_json.
-    monkeypatch.setattr("gateway.status._pid_exists", lambda pid: False)
+    monkeypatch.setattr("hermes_agent.gateway.status._pid_exists", lambda pid: False)
     ad.recover_abandoned_delegations()
 
     with ad._transaction() as conn:

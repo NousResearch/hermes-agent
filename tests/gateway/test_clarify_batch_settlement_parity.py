@@ -1,6 +1,6 @@
 """One settlement rule for a batch clarify, whichever registry holds it.
 
-Main's sidecar (``hermes_agent/tui_gateway/server_requests.py``) and the session owner (``gateway/session_server_requests.py``)
+Main's sidecar (``hermes_agent/tui_gateway/server_requests.py``) and the session owner (``hermes_agent/gateway/session_server_requests.py``)
 each keep open server→client requests, and each used to compute a batch's terminal ``{answers, outcome}``
 in its own code, which drifted twice (#140472 review). Both now call ``tools.clarify_batch.settle_batch``.
 These cases drive each real registry through the same ending, one ``clarify.lock`` on ``q0`` first, and
@@ -66,8 +66,8 @@ def _sidecar(monkeypatch, ending):
 
 
 def _owner(ending):
-    from gateway.session_events import SessionEvents
-    from gateway.session_server_requests import ask_viewer_result, lock_answer, resolve
+    from hermes_agent.gateway.session_events import SessionEvents
+    from hermes_agent.gateway.session_server_requests import ask_viewer_result, lock_answer, resolve
 
     class Peer:
         frames = []

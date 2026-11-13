@@ -86,7 +86,7 @@ def test_wecom_connect_under_trust_env_false_never_shows_the_proxy_secret(tmp_pa
     ``HTTPS_PROXY`` raises with the raw proxy URL in its text."""
     import logging
 
-    from gateway.config import PlatformConfig
+    from hermes_agent.gateway.config import PlatformConfig
     from plugins.platforms.wecom.adapter import WeComAdapter
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))

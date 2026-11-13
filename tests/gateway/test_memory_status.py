@@ -1,4 +1,4 @@
-"""Tests for gateway.memory_status — the /api/status memory rollup (NS-656)."""
+"""Tests for hermes_agent.gateway.memory_status — the /api/status memory rollup (NS-656)."""
 
 from __future__ import annotations
 
@@ -6,9 +6,9 @@ import json
 from datetime import datetime, timedelta, timezone, UTC
 from pathlib import Path
 
-from gateway.memory_status import classify_pressure, collect_memory_status
-from gateway.shutdown_watchdog import get_loop_heartbeat_path
-from gateway.lifecycle_ledger import get_lifecycle_sentinel_path
+from hermes_agent.gateway.memory_status import classify_pressure, collect_memory_status
+from hermes_agent.gateway.shutdown_watchdog import get_loop_heartbeat_path
+from hermes_agent.gateway.lifecycle_ledger import get_lifecycle_sentinel_path
 
 _NOW = datetime(2026, 8, 13, 12, 0, 0, tzinfo=UTC)
 

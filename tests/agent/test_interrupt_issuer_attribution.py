@@ -64,10 +64,10 @@ def test_gateway_lifecycle_producers_name_a_system_issuer():
     import asyncio
     from types import SimpleNamespace
 
-    from gateway.platforms.api_server import _abandon_agent_task
-    from gateway.run_agent_cache import GatewayAgentCacheMixin
-    from gateway.run_inbound import GatewayInboundMixin
-    from gateway.run_shutdown import GatewayShutdownMixin
+    from hermes_agent.gateway.platforms.api_server import _abandon_agent_task
+    from hermes_agent.gateway.run_agent_cache import GatewayAgentCacheMixin
+    from hermes_agent.gateway.run_inbound import GatewayInboundMixin
+    from hermes_agent.gateway.run_shutdown import GatewayShutdownMixin
 
     try:
         stopping_agent = _bare_agent()
@@ -171,7 +171,7 @@ def test_soft_interrupt_with_tool_reason_is_attributed_to_the_system():
 
             with (
                 patch.object(tab, "_TerminalBatch", _Batch),
-                patch("gateway.session_context.get_session_env", return_value="desktop"),
+                patch("hermes_agent.gateway.session_context.get_session_env", return_value="desktop"),
                 patch("tools.approval._gateway_notify_cb", lambda _k: object()),
                 patch.object(te, "_parse_tool_call", _parse),
                 tab.terminal_approval_batch(agent, [1, 2], [], "t"),

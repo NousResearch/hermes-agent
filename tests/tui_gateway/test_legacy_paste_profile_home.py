@@ -3,7 +3,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import hermes_agent.tui_gateway.server as srv
-from gateway.runtime_bootstrap import _PURPOSE_CAPABILITIES
+from hermes_agent.gateway.runtime_bootstrap import _PURPOSE_CAPABILITIES
 from hermes_agent.tui_gateway.ws_legacy_fallback import dispatch_legacy
 
 

@@ -12,7 +12,7 @@ from datetime import datetime
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Optional
 
-from gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
 
 if TYPE_CHECKING:
     from plugins.platforms.feishu.adapter import RejectReason

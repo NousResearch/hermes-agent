@@ -21,7 +21,7 @@ from tests.waiting import wait_until
 @pytest.fixture
 def runner_with_home(tmp_path, monkeypatch):
     """Create a runner with a writable HERMES_HOME."""
-    monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
+    monkeypatch.setattr("hermes_agent.gateway.run._hermes_home", tmp_path)
     runner, _adapter = make_restart_runner()
     return runner, tmp_path
 
@@ -71,7 +71,7 @@ class TestStuckLoopDetection:
     def test_concurrent_clears_do_not_resurrect_each_others_counter(self, runner_with_home, monkeypatch):
         """Two sessions completing at once each clear their counter; neither may rewrite the other's
         stale snapshot (race audit lostupdate-6: a resurrected counter can later auto-suspend a healthy session)."""
-        import gateway.stuck_loop_counts as counts_module
+        import hermes_agent.gateway.stuck_loop_counts as counts_module
         import utils
         runner, home = runner_with_home
         path = home / runner._STUCK_LOOP_FILE

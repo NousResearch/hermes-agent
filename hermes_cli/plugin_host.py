@@ -621,7 +621,7 @@ def _run_on_gateway_loop(coro: Any) -> Any:
     it runs there when a gateway is up; otherwise on a private loop. Always called off-loop (a
     channel thread), never from the loop itself."""
     try:
-        from gateway.run import _gateway_runner_ref
+        from hermes_agent.gateway.run import _gateway_runner_ref
         runner = _gateway_runner_ref()
     except Exception:
         runner = None

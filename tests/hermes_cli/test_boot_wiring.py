@@ -4,7 +4,7 @@ the cadence has a production caller.
 Proven with real imports against a temp HERMES_HOME; the external
 boundaries (pm store, network check seams, process identity) are
 stubbed — the wiring itself is exercised through the exact public
-invocation (``hermes_cli.main.main()``, ``gateway.run`` housekeeping).
+invocation (``hermes_cli.main.main()``, ``hermes_agent.gateway.run`` housekeeping).
 """
 
 from __future__ import annotations

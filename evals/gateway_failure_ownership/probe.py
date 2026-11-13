@@ -134,13 +134,13 @@ server = ThreadingHTTPServer(("127.0.0.1", 0), Peer)
 threading.Thread(target=server.serve_forever, daemon=True).start()
 from run_agent import AIAgent
 from hermes_agent.hermes_state import SessionDB
-from gateway.session import SessionStore, AsyncSessionStore, SessionSource
-from gateway.config import GatewayConfig, Platform
-from gateway.platforms.event import MessageEvent
-from gateway.run import GatewayRunner
+from hermes_agent.gateway.session import SessionStore, AsyncSessionStore, SessionSource
+from hermes_agent.gateway.config import GatewayConfig, Platform
+from hermes_agent.gateway.platforms.event import MessageEvent
+from hermes_agent.gateway.run import GatewayRunner
 
 
-import gateway.run as gateway_run
+import hermes_agent.gateway.run as gateway_run
 
 fault = None
 faults = []
@@ -193,7 +193,7 @@ def voice_policy(*args, **kwargs):
 
 
 runner._should_send_voice_reply = voice_policy
-from gateway.session_transcript import TranscriptReadError
+from hermes_agent.gateway.session_transcript import TranscriptReadError
 
 original_load = runner.session_store.load_transcript
 

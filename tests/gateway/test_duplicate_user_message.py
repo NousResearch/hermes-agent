@@ -22,11 +22,11 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from agent.turn_failure_copy import FAILED_TURN_NOTICE, PARTIAL_FAILED_TURN_NOTICE
-import gateway.run as gateway_run
-from gateway.config import GatewayConfig, Platform
-from gateway.platforms.event import MessageEvent
-from gateway.session import SessionEntry, SessionSource
-from gateway.session_transcript import TranscriptReadError
+import hermes_agent.gateway.run as gateway_run
+from hermes_agent.gateway.config import GatewayConfig, Platform
+from hermes_agent.gateway.platforms.event import MessageEvent
+from hermes_agent.gateway.session import SessionEntry, SessionSource
+from hermes_agent.gateway.session_transcript import TranscriptReadError
 
 
 def _bootstrap(monkeypatch, tmp_path):
@@ -66,7 +66,7 @@ def _bootstrap(monkeypatch, tmp_path):
     runner.session_store.load_transcript.return_value = []
     runner.session_store.append_to_transcript = MagicMock()
     # Mock has_platform_message_id to return False so the dedupe guard
-    # (#47237) in gateway/run.py does not skip the append_to_transcript call.
+    # (#47237) in hermes_agent/gateway/run.py does not skip the append_to_transcript call.
     runner.session_store.has_platform_message_id.return_value = False
     # The durable tail after the user row landed (gateway write or agent flush) is that user row.
     runner.session_store.transcript_tail_role.return_value = "user"

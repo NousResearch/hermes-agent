@@ -6,10 +6,10 @@ import acp
 import pytest
 
 from hermes_agent.acp_adapter.gateway_server import GatewayACPAgent
-from gateway.config import GatewayConfig, Platform
-from gateway.session import SessionSource, SessionStore
-from gateway.session_authority import LiveSession, initialize_session_authority
-from gateway.session_controls import AuthorityConnection
+from hermes_agent.gateway.config import GatewayConfig, Platform
+from hermes_agent.gateway.session import SessionSource, SessionStore
+from hermes_agent.gateway.session_authority import LiveSession, initialize_session_authority
+from hermes_agent.gateway.session_controls import AuthorityConnection
 from hermes_cli.gateway_client import GatewayClientError, GatewayRPCError
 from hermes_agent.hermes_state_runtime import list_session_admissions
 from tests.waiting import async_wait_until
@@ -44,7 +44,7 @@ async def test_retry_after_lost_submit_ack_is_one_admission(tmp_path, monkeypatc
     executed = []
 
     async def answer(event):
-        from gateway.session_results import execution_result
+        from hermes_agent.gateway.session_results import execution_result
         executed.append(event.text)
         execution_result.get()['result'] = {'final_response': 'ACK_' + event.text, 'completed': True, 'messages': []}
         return 'ACK_' + event.text
@@ -98,7 +98,7 @@ async def test_repeated_prompt_after_other_work_is_new_work(tmp_path, monkeypatc
     executed = []
 
     async def answer(event):
-        from gateway.session_results import execution_result
+        from hermes_agent.gateway.session_results import execution_result
         executed.append(event.text)
         execution_result.get()['result'] = {'final_response': 'ACK_' + event.text, 'completed': True, 'messages': []}
         return 'ACK_' + event.text

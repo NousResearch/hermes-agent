@@ -59,7 +59,7 @@ class NamespaceContract:
 
 
 METHODS: dict[str, MethodContract] = {}
-# ``hermes-gateway-v1`` verbs only ``gateway/session_controls.py::AuthorityConnection`` serves
+# ``hermes-gateway-v1`` verbs only ``hermes_agent/gateway/session_controls.py::AuthorityConnection`` serves
 # (``contracts/canonical.py``), plus explicit overrides where a shared name has a different wire.
 CANONICAL_METHODS: dict[str, MethodContract] = {}
 SERVER_REQUESTS: dict[str, ServerRequestContract] = {}

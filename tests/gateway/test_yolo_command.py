@@ -4,10 +4,10 @@ import os
 
 import pytest
 
-import gateway.run as gateway_run
-from gateway.config import Platform
-from gateway.platforms.event import MessageEvent
-from gateway.session import SessionSource
+import hermes_agent.gateway.run as gateway_run
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.platforms.event import MessageEvent
+from hermes_agent.gateway.session import SessionSource
 from tools.approval import disable_session_yolo, is_session_yolo_enabled
 
 
@@ -63,9 +63,9 @@ async def test_yolo_command_toggles_only_current_session(monkeypatch):
 def test_launch_yolo_revocation_survives_the_next_turn(monkeypatch):
     """`hermes chat --yolo` seeds the bypass once; a later `/yolo` off is not re-enabled per turn."""
     from types import SimpleNamespace
-    from gateway import session_policy
-    from gateway.run_turn_runner import TurnRunner
-    from gateway.turn_context import TurnContext
+    from hermes_agent.gateway import session_policy
+    from hermes_agent.gateway.run_turn_runner import TurnRunner
+    from hermes_agent.gateway.turn_context import TurnContext
 
     runner = _make_runner()
     source = SessionSource(platform=Platform.LOCAL, chat_id="launch-yolo", user_id="u", chat_type="dm")
@@ -98,8 +98,8 @@ def test_launch_yolo_revocation_survives_the_next_turn(monkeypatch):
 async def test_yolo_survives_gateway_restart_and_dies_at_session_boundary(tmp_path):
     """/yolo is persisted on the routing entry: a fresh process re-arms it on the next turn, and a
     conversation boundary (/new, /resume) clears both copies so a restart cannot revive it."""
-    from gateway.config import GatewayConfig
-    from gateway.session import SessionStore
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.session import SessionStore
     from tools.approval_yolo import restore_session_yolo
 
     def _runner():
@@ -131,9 +131,9 @@ async def test_owner_yolo_off_is_not_revived_by_the_persisted_restore(tmp_path):
     """The owner's `config.set key=yolo` (TUI/Desktop/`hermes chat` /yolo) writes the route's persisted
     copy too: switching off a persisted /yolo must not be re-armed by the next turn's restore."""
     from types import SimpleNamespace
-    from gateway.config import GatewayConfig
-    from gateway.session import SessionStore
-    from gateway.session_busy_controls import busy_config
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.session import SessionStore
+    from hermes_agent.gateway.session_busy_controls import busy_config
     from tools.approval_yolo import restore_session_yolo
 
     runner = _make_runner()

@@ -12,9 +12,9 @@ from pathlib import Path
 
 import pytest
 
-from gateway.control_resolve import resolve_profile_handler
-from gateway.control_socket import GatewayControlServer
-from gateway.runtime_bootstrap import TicketStore
+from hermes_agent.gateway.control_resolve import resolve_profile_handler
+from hermes_agent.gateway.control_socket import GatewayControlServer
+from hermes_agent.gateway.runtime_bootstrap import TicketStore
 from hermes_cli.gateway_client import private_control_query
 from hermes_cli.gateway_runtime import discover_gateway_endpoint, ensure_gateway_runtime
 
@@ -124,7 +124,7 @@ def test_owner_states_match_discovery(layout, state, drain_reason, attachable):
 
 def test_a_secondary_whose_own_owner_is_starting_matches_discovery(layout):
     """A standalone secondary that holds its lock but has not published a socket yet."""
-    from gateway.runtime_ownership import ProfileOwnership
+    from hermes_agent.gateway.runtime_ownership import ProfileOwnership
     _solo, root, secondary = layout
     owner = ProfileOwnership()
     owner.reserve([secondary])
@@ -142,7 +142,7 @@ def test_an_absent_or_stale_owner_has_no_socket_to_ask(layout):
     with pytest.raises(FileNotFoundError):
         _ask(solo, "resolve-profile", {"home": str(solo)})
     import socket
-    from gateway.control_socket import resolve_server_socket_path
+    from hermes_agent.gateway.control_socket import resolve_server_socket_path
     bind_path, pointer = resolve_server_socket_path(solo)  # where a gateway for this home listens
     if pointer is not None:
         bind_path.parent.mkdir(mode=0o700, exist_ok=True)
@@ -342,7 +342,7 @@ def test_the_gateway_bootstrap_installs_the_verb_over_its_identify_descriptor(tm
     """The listener ``start_gateway`` brings up answers ``resolve-profile`` from the runtime
     descriptor its ``identify`` verb answers with."""
     from types import SimpleNamespace
-    from gateway.run_bootstrap import _start_gateway_start_control_socket
+    from hermes_agent.gateway.run_bootstrap import _start_gateway_start_control_socket
 
     home = tmp_path / "boot"
     home.mkdir(mode=0o700)
@@ -391,7 +391,7 @@ def test_install_code_sha_leaves_the_gateways_boot_identity_alone(layout, monkey
 def test_install_code_sha_and_read_checkout_sha_share_one_lookup(monkeypatch, stamp, repo, expected):
     """The gateway's ``install_code_sha`` and the CLI's ``read_checkout_sha`` come from one reader,
     so they cannot drift apart on which commit is installed."""
-    from gateway import control_resolve
+    from hermes_agent.gateway import control_resolve
     from hermes_cli import version_info
     monkeypatch.setattr(version_info, "_stamp_or_none",
                         lambda: version_info.VersionInfo("1.0.0", "1.0.0", None, stamp, None, "stamp") if stamp else None)

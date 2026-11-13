@@ -15,8 +15,8 @@ import urllib.parse
 from dataclasses import dataclass
 from typing import Optional
 from agent.proxy_bypass import is_loopback_host
-from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret
-from gateway.platforms._shared import profile_scoped as _profile_scoped
+from hermes_agent.gateway.platforms._shared import get_scoped_secret as _get_scoped_secret
+from hermes_agent.gateway.platforms._shared import profile_scoped as _profile_scoped
 
 logger = logging.getLogger(__name__)
 

@@ -18,7 +18,7 @@ import pytest
     ("loud", None, "important"),
 ])
 def test_factory_reads_notifications_mode_from_config_yaml(tmp_path, monkeypatch, yaml_mode, env_mode, expected):
-    from gateway.config import PlatformConfig
+    from hermes_agent.gateway.config import PlatformConfig
     from plugins.platforms.telegram.adapter import _build_adapter
 
     if yaml_mode is not None:
@@ -37,7 +37,7 @@ def test_factory_reads_notifications_mode_from_config_yaml(tmp_path, monkeypatch
 
 @pytest.mark.parametrize("content", ["\u200b", "\u200b\u2060\ufeff", " \u00ad\u200e\n", ""])
 def test_send_skips_invisible_only_content(content):
-    from gateway.config import PlatformConfig
+    from hermes_agent.gateway.config import PlatformConfig
     from plugins.platforms.telegram.adapter import TelegramAdapter
 
     adapter = TelegramAdapter(PlatformConfig(enabled=True, token="1:x"))

@@ -5,7 +5,7 @@ For every ``COMMAND_REGISTRY`` command it records what each local client does wi
 shared gateway -- the classic CLI (main's ``HermesCLI`` dispatch table, ``cli.py``), Ink
 (``ui-tui/src/app/slash/commands/*.ts``), Desktop (``apps/desktop/src/lib/desktop-slash-commands.ts``
 + the registry's ``desktop=`` dump), ACP (``hermes_agent/acp_adapter/gateway_commands.py``) -- and the
-gateway's own ``slash.exec`` verdict for a local session (``gateway/session_commands.py``).
+gateway's own ``slash.exec`` verdict for a local session (``hermes_agent/gateway/session_commands.py``).
 Every column is derived from source, so a verdict that changes without a regenerated table
 fails ``tests/hermes_cli/test_gateway_command_parity.py``. ``--check`` writes nothing and exits 1
 on drift.
@@ -22,7 +22,7 @@ ROOT = Path(__file__).resolve().parent.parent
 OUT = ROOT / "website" / "docs" / "developer-guide" / "gateway-command-parity.md"
 
 # Per-session settings: slash.exec runs their messaging handler, which applies a setting to the local
-# session it came from (gateway/session_setting_commands.py; tests/gateway/test_session_setting_commands.py).
+# session it came from (hermes_agent/gateway/session_setting_commands.py; tests/gateway/test_session_setting_commands.py).
 TOGGLES = frozenset({"fast", "reasoning", "yolo", "footer", "personality", "busy", "voice", "approvals",
                      "verbose", "codex-runtime"})
 # Why a command with a gateway handler is NOT a read for a local session (probe: the real handler
@@ -46,13 +46,13 @@ READ_FORMS = {"usage": "bare only (`reset` refused)", "memory": "bare / `pending
 
 def _served_methods():
     from unittest.mock import MagicMock
-    from gateway.session_controls import AuthorityConnection
-    from gateway.session_group_controls import GROUP_METHODS
+    from hermes_agent.gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway.session_group_controls import GROUP_METHODS
     return set(AuthorityConnection.handlers(MagicMock())) | set(GROUP_METHODS) | {"profiles.list"}
 
 
 def gateway_cell(name):
-    from gateway.session_commands import command_verdict
+    from hermes_agent.gateway.session_commands import command_verdict
     verdict = command_verdict(name)
     if verdict == "read":
         return "read" + (f" ({READ_FORMS[name]})" if name in READ_FORMS else "")
@@ -63,7 +63,7 @@ def gateway_cell(name):
     return "refused"
 
 
-# Reads a TUI session gets as main's TUI sidecar rendered them (gateway/session_tui_reads.py).
+# Reads a TUI session gets as main's TUI sidecar rendered them (hermes_agent/gateway/session_tui_reads.py).
 TUI_READS = {"status": "TUI session: main's `Hermes TUI Status`",
              "context": "TUI session: main's live /context with the category table"}
 

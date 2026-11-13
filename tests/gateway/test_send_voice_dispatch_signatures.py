@@ -16,10 +16,10 @@ async def test_media_dispatch_delivers_audio_through_mattermost_send_voice(tmp_p
     attachment was recorded as a failed delivery; now the file reaches the adapter's uploader."""
     from unittest.mock import AsyncMock
 
-    from gateway.config import PlatformConfig
-    from gateway.platforms.base import SendResult
-    from gateway.platforms.event import MessageEvent
-    from gateway.session import Platform, SessionSource
+    from hermes_agent.gateway.config import PlatformConfig
+    from hermes_agent.gateway.platforms.base import SendResult
+    from hermes_agent.gateway.platforms.event import MessageEvent
+    from hermes_agent.gateway.session import Platform, SessionSource
     from plugins.platforms.mattermost.adapter import MattermostAdapter
 
     adapter = MattermostAdapter(PlatformConfig(enabled=True, token="mm-token", extra={"url": "https://mm.example"}))

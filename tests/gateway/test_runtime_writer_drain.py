@@ -12,9 +12,9 @@ import pytest
 @pytest.mark.platforms("linux")
 @pytest.mark.parametrize('partial_start', [False, True])
 def test_live_runtime_writers_prevent_final_lock_release(tmp_path, monkeypatch, partial_start):
-    from gateway import run
-    from gateway.run_bootstrap import _start_gateway_start_cron_and_housekeeping
-    from gateway.status import acquire_gateway_runtime_lock, release_gateway_runtime_lock
+    from hermes_agent.gateway import run
+    from hermes_agent.gateway.run_bootstrap import _start_gateway_start_cron_and_housekeeping
+    from hermes_agent.gateway.status import acquire_gateway_runtime_lock, release_gateway_runtime_lock
     from hermes_agent.cron import scheduler_provider
 
     home = tmp_path / 'runtime'
@@ -49,7 +49,7 @@ def test_live_runtime_writers_prevent_final_lock_release(tmp_path, monkeypatch, 
         return _start_gateway_start_cron_and_housekeeping(runner)
 
     probe = '''
-from gateway.status import acquire_gateway_runtime_lock, release_gateway_runtime_lock
+from hermes_agent.gateway.status import acquire_gateway_runtime_lock, release_gateway_runtime_lock
 claimed = acquire_gateway_runtime_lock()
 print('CLAIMED', claimed)
 if claimed:

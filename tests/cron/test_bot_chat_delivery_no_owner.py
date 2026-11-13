@@ -9,7 +9,7 @@ from tools import bot_live_delivery as mailbox
 def test_bot_chat_target_without_live_owner_is_parked_and_admitted_later(tmp_path, monkeypatch):
     from hermes_agent.cron import jobs
     from hermes_agent.cron.bot_chat_legacy import drain_legacy_pending
-    from gateway import config
+    from hermes_agent.gateway import config
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.delenv("_HERMES_CRON_EXTERNAL_WORKER", raising=False)

@@ -3,10 +3,10 @@
 import pytest
 import hermes_yaml as yaml
 
-from gateway.config import ChannelOverride, GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.event import MessageEvent, MessageType
-from gateway.run import GatewayRunner
-from gateway.session import SessionSource
+from hermes_agent.gateway.config import ChannelOverride, GatewayConfig, Platform, PlatformConfig
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.run import GatewayRunner
+from hermes_agent.gateway.session import SessionSource
 
 
 def _runner():
@@ -31,7 +31,7 @@ def home(tmp_path, monkeypatch):
     hermes_home.mkdir()
     (hermes_home / "config.yaml").write_text(
         yaml.safe_dump({"model": {"default": "global/default-model", "provider": "openrouter"}}), encoding="utf-8")
-    import gateway.run as gateway_run
+    import hermes_agent.gateway.run as gateway_run
     monkeypatch.setattr(gateway_run, "_hermes_home", hermes_home)
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
     return hermes_home

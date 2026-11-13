@@ -49,7 +49,7 @@ def local_gateway(tmp_path, monkeypatch):
                    HERMES_STATE_DB_GUARD_BYPASS="1")
         log = (home / f"fixture-gateway-{len(children)}.log").open("w+", encoding="utf-8")
         logs.append(log)
-        process = subprocess.Popen([sys.executable, "-m", "gateway.run"], cwd=root, env=env,
+        process = subprocess.Popen([sys.executable, "-m", "hermes_agent.gateway.run"], cwd=root, env=env,
                                    stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT)
         children.append(process)
         return process
@@ -177,7 +177,7 @@ def test_snapshot_restore_rejoins_the_restored_authority(local_gateway, multiple
     retained = mode != "missing"
     rescans = []
     if multiplex:
-        from gateway.control_socket import rescan_gateway_profiles
+        from hermes_agent.gateway.control_socket import rescan_gateway_profiles
         from hermes_cli import profiles_remove
         unowned = profiles_remove.wait_profile_unowned
 

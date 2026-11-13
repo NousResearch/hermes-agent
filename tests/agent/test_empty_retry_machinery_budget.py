@@ -12,8 +12,8 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 from agent import turn_empty_response as ter
-from gateway import response_filters as gateway_filters
-from gateway.response_filters import MACHINERY_DISPLAY_KINDS as gateway_machinery_kinds
+from hermes_agent.gateway import response_filters as gateway_filters
+from hermes_agent.gateway.response_filters import MACHINERY_DISPLAY_KINDS as gateway_machinery_kinds
 
 
 def _agent():
@@ -103,7 +103,7 @@ class TestMachineryKindsMirrorGateway:
         # Cross-layer drift guard: the agent-side mirror
         # (agent/turn_empty_response.py _MACHINERY_DISPLAY_KINDS) must stay equal to the
         # set the gateway actually derives its machinery kinds from
-        # (gateway/response_filters.py MACHINERY_DISPLAY_KINDS). If the gateway ever grows
+        # (hermes_agent/gateway/response_filters.py MACHINERY_DISPLAY_KINDS). If the gateway ever grows
         # a new machinery kind, this mirror must follow, otherwise the quiet exit silently
         # keeps the new machinery turn on the paid human retry ladder.
         assert ter._MACHINERY_DISPLAY_KINDS == gateway_machinery_kinds

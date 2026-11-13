@@ -490,7 +490,7 @@ def _run_single_query_mode(cli, query, image, quiet, oneshot, stream_json: bool 
     # cold-start bound before its first (and only) tool snapshot. See #51316.
     # Mark single-query for the approval gate. cli.py sets HERMES_INTERACTIVE earlier for interactive sudo
     # prompts, but a -q run has NO user waiting to answer approval prompts. The gate reads this marker (via
-    # gateway.session_context.get_session_env, which falls back to os.environ when the session-context layer
+    # hermes_agent.gateway.session_context.get_session_env, which falls back to os.environ when the session-context layer
     # isn't engaged) and takes the deterministic approvals.single_query_mode path instead of waiting the
     # full timeout. See #86878.
     os.environ["HERMES_SINGLE_QUERY_SESSION"] = "1"

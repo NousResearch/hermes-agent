@@ -33,7 +33,7 @@ the issue/PR that decided the flip in the module docstring above, extending
 the flip history. Do not "fix" a failure here by inverting an assertion
 without that citation.
 
-Tests drive the REAL owner bridge (``gateway.session_cron.execute``, the path
+Tests drive the REAL owner bridge (``hermes_agent.gateway.session_cron.execute``, the path
 ``hermes_agent.cron.scheduler.run_job`` hands a fire to) and capture the actual kwargs the
 scheduler passes to AIAgent (patched at ``run_agent.AIAgent``, matching
 tests/cron/test_scheduler.py's pattern). The ON direction (default

@@ -6,7 +6,7 @@ and the owner builds the event with the ordinary turn's payload builder (real au
 from types import SimpleNamespace
 
 from agent.managed_worker import encode_frame, read_frame, tool_frame
-from gateway.session_authority import LiveSession, SessionAuthority
+from hermes_agent.gateway.session_authority import LiveSession, SessionAuthority
 from hermes_agent.hermes_state import SessionDB
 from hermes_agent.hermes_state_runtime import admit_session_input, begin_runtime_epoch, claim_session_input
 
@@ -17,7 +17,7 @@ def _wire(frame):
 
 
 def test_worker_tool_frames_publish_the_in_process_payload(tmp_path):
-    from gateway.run_turn_progress import _tool_complete_payload, _tool_lifecycle_payload, publish_worker_tool_event
+    from hermes_agent.gateway.run_turn_progress import _tool_complete_payload, _tool_lifecycle_payload, publish_worker_tool_event
     db = SessionDB(db_path=tmp_path / 'state.db')
     try:
         db.create_session('s', source='cli')

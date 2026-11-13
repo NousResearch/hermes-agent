@@ -10,8 +10,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from gateway.config import GatewayConfig
-from gateway.session import SessionStore
+from hermes_agent.gateway.config import GatewayConfig
+from hermes_agent.gateway.session import SessionStore
 from hermes_agent.hermes_state import SessionDB
 from hermes_agent.hermes_state_rewind import RewindTargetUnavailableError
 

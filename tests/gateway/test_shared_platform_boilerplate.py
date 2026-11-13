@@ -1,4 +1,4 @@
-"""Invariants for the shared adapter boilerplate in ``gateway/platforms/_shared.py``.
+"""Invariants for the shared adapter boilerplate in ``hermes_agent/gateway/platforms/_shared.py``.
 
 Contract under test: every plugin platform's env-driven enablement reads through the ONE
 profile-scoped reader (never an ambient ``os.environ``/``get_env_value`` read), and the table-driven
@@ -13,7 +13,7 @@ import os
 import pytest
 
 import agent.secret_scope as ss
-import gateway.platforms._shared as shared
+import hermes_agent.gateway.platforms._shared as shared
 import hermes_cli.config as cli_config
 
 _ENV_ENABLEMENT_PLUGINS = ("buzz", "google_chat", "irc", "line", "ntfy", "photon", "simplex", "teams")

@@ -17,7 +17,7 @@ import sys
 import time
 from xml.parsers.expat import ExpatError
 
-from gateway.runtime_contract import RuntimeState
+from hermes_agent.gateway.runtime_contract import RuntimeState
 from hermes_cli._subprocess_compat import windows_hide_flags
 
 

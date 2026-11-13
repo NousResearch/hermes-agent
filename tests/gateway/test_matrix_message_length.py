@@ -1,7 +1,7 @@
 """Tests for Matrix outbound message length configuration (#53026)."""
 
 
-from gateway.config import PlatformConfig
+from hermes_agent.gateway.config import PlatformConfig
 
 
 def _make_adapter(**extra):

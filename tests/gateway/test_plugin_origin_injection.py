@@ -12,11 +12,11 @@ from unittest.mock import patch
 import pytest
 import hermes_yaml as yaml
 
-import gateway.run as gateway_run
-from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType, SendResult
-from gateway.profile_routing import parse_profile_routes
-from gateway.run import GatewayRunner
+import hermes_agent.gateway.run as gateway_run
+from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+from hermes_agent.gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType, SendResult
+from hermes_agent.gateway.profile_routing import parse_profile_routes
+from hermes_agent.gateway.run import GatewayRunner
 from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
 
 PLUGIN = "desk"

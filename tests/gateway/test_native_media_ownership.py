@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from gateway.session_ingress_media import _media_root, capture_native_media, release_admission_media
+from hermes_agent.gateway.session_ingress_media import _media_root, capture_native_media, release_admission_media
 from hermes_agent.hermes_state import SessionDB
 from hermes_agent.hermes_state_runtime import admit_session_input, begin_runtime_epoch, cancel_session_input
 
@@ -12,7 +12,7 @@ PNG = b'\x89PNG\r\n\x1a\n' + b'\x00' * 8
 
 
 def _staged(name, size):
-    from gateway.platforms.base import get_image_cache_dir
+    from hermes_agent.gateway.platforms.base import get_image_cache_dir
     path = get_image_cache_dir() / name
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(PNG + b'\x00' * max(0, size - len(PNG)))
@@ -23,7 +23,7 @@ def test_rejected_batch_publishes_nothing(tmp_path, monkeypatch):
     """(a) File B trips the aggregate budget after A was published: A must not stay retained
     with no admission to release it — while a file an EARLIER capture published (and so an
     earlier admission may own) is not rolled back with the rejected batch."""
-    from gateway.platforms import base
+    from hermes_agent.gateway.platforms import base
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     monkeypatch.setattr(base, 'get_inbound_media_max_bytes', lambda: 3 * 1024)
     from hermes_agent.hermes_state_runtime import RuntimeStoreError

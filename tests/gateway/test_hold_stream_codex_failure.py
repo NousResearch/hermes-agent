@@ -14,12 +14,12 @@ from tests.gateway.test_run_progress_topics import _make_runner
 @pytest.mark.asyncio
 @pytest.mark.parametrize('error', [None, 'codex app-server subprocess exited unexpectedly'], ids=['completed', 'failed_after_text'])
 async def test_codex_held_partial_final_reaches_chat_only_rewritten(error, monkeypatch):
-    import gateway.run as gateway_run
+    import hermes_agent.gateway.run as gateway_run
     from hermes_cli import plugins
     from agent.transports.codex_app_server_session import CodexAppServerSession, TurnResult
-    from gateway.config import Platform, StreamingConfig
-    from gateway.session import SessionSource
-    from gateway.platforms.event import MessageEvent, MessageType
+    from hermes_agent.gateway.config import Platform, StreamingConfig
+    from hermes_agent.gateway.session import SessionSource
+    from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
 
     home = Path(os.environ['HERMES_HOME'])
     redactor_home(home, 'http://127.0.0.1:9/v1', hold=True)

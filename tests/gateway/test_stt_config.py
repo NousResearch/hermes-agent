@@ -6,9 +6,9 @@ from unittest.mock import AsyncMock, patch
 import pytest
 import hermes_yaml as yaml
 
-from gateway.config import GatewayConfig, Platform, load_gateway_config
-from gateway.platforms.event import MessageEvent, MessageType
-from gateway.session import SessionSource
+from hermes_agent.gateway.config import GatewayConfig, Platform, load_gateway_config
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.session import SessionSource
 
 
 def test_gateway_config_stt_disabled_from_dict_nested():
@@ -45,7 +45,7 @@ async def test_enrich_message_with_transcription_returns_tuple_for_empty_content
     string here raised ``ValueError: too many values to unpack`` and dropped the
     whole voice message on the floor.
     """
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
 
     runner = GatewayRunner.__new__(GatewayRunner)
     runner.config = GatewayConfig(stt_enabled=True)
@@ -75,7 +75,7 @@ async def test_enrich_message_with_transcription_returns_tuple_for_empty_content
 async def test_enrich_message_with_transcription_guards_empty_transcript():
     """success=True with an empty/whitespace transcript must not emit empty
     quotes — it gets a sentinel note and is excluded from transcripts (#41603)."""
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
 
     runner = GatewayRunner.__new__(GatewayRunner)
     runner.config = GatewayConfig(stt_enabled=True)
@@ -105,7 +105,7 @@ async def test_successful_transcription_keeps_the_audio_path():
     used to drop it, so the better STT got, the more recordings became
     unreachable even though the bytes were still in the cache.
     """
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
 
     runner = GatewayRunner.__new__(GatewayRunner)
     runner.config = GatewayConfig(stt_enabled=True)
@@ -142,7 +142,7 @@ async def test_successful_transcription_uses_the_media_placeholder_grammar():
     leaving the attachment unrecoverable, a fix that looks right in the diff and
     changes nothing for the consumer. This pins the grammar, not just the path.
     """
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
 
     runner = GatewayRunner.__new__(GatewayRunner)
     runner.config = GatewayConfig(stt_enabled=True)
@@ -170,7 +170,7 @@ async def test_transcript_precedes_the_media_marker():
     would reintroduce exactly that — the model leads with the attachment rather
     than the content — so the transcript stays on the first line.
     """
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
 
     runner = GatewayRunner.__new__(GatewayRunner)
     runner.config = GatewayConfig(stt_enabled=True)
@@ -196,7 +196,7 @@ async def test_empty_transcript_still_emits_no_media_marker():
     before the append — so it must not start emitting a media marker either, or
     a silent clip would look to a consumer like a normal voice note.
     """
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
 
     runner = GatewayRunner.__new__(GatewayRunner)
     runner.config = GatewayConfig(stt_enabled=True)
@@ -223,7 +223,7 @@ async def test_each_clip_in_a_batch_keeps_its_own_path():
     A shared or last-wins marker would silently collapse a multi-clip turn to
     one recoverable attachment, which is the same data loss one layer in.
     """
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
 
     runner = GatewayRunner.__new__(GatewayRunner)
     runner.config = GatewayConfig(stt_enabled=True)

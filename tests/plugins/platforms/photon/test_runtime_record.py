@@ -20,7 +20,7 @@ from typing import Any
 
 import pytest
 
-from gateway.config import PlatformConfig
+from hermes_agent.gateway.config import PlatformConfig
 from plugins.platforms.photon import adapter as photon_adapter
 from plugins.platforms.photon import sidecar_paths
 from plugins.platforms.photon.adapter import PhotonAdapter

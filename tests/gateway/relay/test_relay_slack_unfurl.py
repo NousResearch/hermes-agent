@@ -12,9 +12,9 @@ Contract under test:
 
 import pytest
 
-from gateway.config import Platform, PlatformConfig
-from gateway.relay.adapter import RelayAdapter
-from gateway.relay.descriptor import CONTRACT_VERSION, CapabilityDescriptor
+from hermes_agent.gateway.config import Platform, PlatformConfig
+from hermes_agent.gateway.relay.adapter import RelayAdapter
+from hermes_agent.gateway.relay.descriptor import CONTRACT_VERSION, CapabilityDescriptor
 
 
 def make_desc(**kw) -> CapabilityDescriptor:
@@ -61,8 +61,8 @@ def _slack_adapter(extra):
 
 
 def _mark_slack_chat(a, chat_id="chan-1"):
-    from gateway.platforms.event import MessageEvent, MessageType
-    from gateway.session import SessionSource
+    from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
+    from hermes_agent.gateway.session import SessionSource
 
     src = SessionSource(
         platform=Platform.SLACK, chat_id=chat_id, chat_type="channel", scope_id="w-1"
@@ -128,8 +128,8 @@ class TestSendStampsUnfurl:
     async def test_non_slack_chat_never_stamped(self):
         a = _slack_adapter({"slack": {"unfurl_links": False}})
         # A chat mapped to discord, not slack, must not carry the hint.
-        from gateway.platforms.event import MessageEvent, MessageType
-        from gateway.session import SessionSource
+        from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
+        from hermes_agent.gateway.session import SessionSource
 
         src = SessionSource(
             platform=Platform.DISCORD,
@@ -202,7 +202,7 @@ class TestSendForPlatformStampsUnfurl:
     @pytest.mark.asyncio
     async def test_cron_lane_stamps_explicit_bools(self):
         a = _slack_adapter({"slack": {"unfurl_links": False, "unfurl_media": False}})
-        from gateway.config import Platform as P
+        from hermes_agent.gateway.config import Platform as P
 
         res = await a.send_for_platform(P.SLACK, "C123", "brief https://x.dev")
         assert res.success is True
@@ -212,7 +212,7 @@ class TestSendForPlatformStampsUnfurl:
     @pytest.mark.asyncio
     async def test_cron_lane_omits_when_unconfigured(self):
         a = _slack_adapter({"slack": {}})
-        from gateway.config import Platform as P
+        from hermes_agent.gateway.config import Platform as P
 
         await a.send_for_platform(P.SLACK, "C123", "brief")
         assert "unfurl_links" not in a._transport.sent["metadata"]
@@ -348,7 +348,7 @@ class TestConsumerRoutesForceOnFinalAsFreshSend:
 
     @pytest.mark.asyncio
     async def test_url_arriving_late_finalizes_as_stamped_fresh_send(self):
-        from gateway.stream_consumer import (
+        from hermes_agent.gateway.stream_consumer import (
             GatewayStreamConsumer,
             StreamConsumerConfig,
         )
@@ -385,7 +385,7 @@ class TestConsumerRoutesForceOnFinalAsFreshSend:
 
     @pytest.mark.asyncio
     async def test_false_only_hints_finalize_via_edit_unchanged(self):
-        from gateway.stream_consumer import (
+        from hermes_agent.gateway.stream_consumer import (
             GatewayStreamConsumer,
             StreamConsumerConfig,
         )
@@ -445,7 +445,7 @@ class TestMultiplexPerChatFreshFinalSeam:
             return self.descriptors.get(platform)
 
     def _consumer(self, adapter, chat_id):
-        from gateway.stream_consumer import (
+        from hermes_agent.gateway.stream_consumer import (
             GatewayStreamConsumer,
             StreamConsumerConfig,
         )
@@ -534,7 +534,7 @@ class TestDeleteOpForFreshFinalCleanup:
 
     @pytest.mark.asyncio
     async def test_consumer_fresh_final_deletes_preview_when_supported(self):
-        from gateway.stream_consumer import (
+        from hermes_agent.gateway.stream_consumer import (
             GatewayStreamConsumer,
             StreamConsumerConfig,
         )

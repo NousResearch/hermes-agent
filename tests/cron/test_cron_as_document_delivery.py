@@ -13,7 +13,7 @@ import pytest
 
 from hermes_agent.cron.scheduler import _deliver_result
 from hermes_agent.cron.scheduler_delivery_media import _send_media_via_adapter
-from gateway.config import Platform, PlatformConfig
+from hermes_agent.gateway.config import Platform, PlatformConfig
 from hermes_constants import get_hermes_home
 
 
@@ -79,7 +79,7 @@ def test_live_lane_sends_an_as_document_image_as_a_document(loop):
     adapter = _FakeTelegram()
     content = f"Full-resolution chart.\n[[as_document]]\nMEDIA:{_media('chart.png')}"
 
-    with patch("gateway.config.load_gateway_config", return_value=_gateway_config()):
+    with patch("hermes_agent.gateway.config.load_gateway_config", return_value=_gateway_config()):
         error = _deliver_result(dict(_JOB), content, adapters={Platform.TELEGRAM: adapter}, loop=loop)
 
     assert error is None
@@ -96,7 +96,7 @@ def test_standalone_lane_passes_force_document(monkeypatch):
                     media=[os.path.basename(p) for p, _ in media_files or []])
         return {"success": True, "platform": "telegram", "chat_id": chat_id, "message_id": 9}
 
-    import gateway.platform_registry as reg_mod
+    import hermes_agent.gateway.platform_registry as reg_mod
     import hermes_cli.plugins as hp
 
     if reg_mod.platform_registry.get("telegram") is None:
@@ -108,7 +108,7 @@ def test_standalone_lane_passes_force_document(monkeypatch):
     monkeypatch.setattr(hp, "discover_plugins", lambda *a, **k: None)
 
     content = f"Full-resolution chart.\n[[as_document]]\nMEDIA:{_media('chart.png')}"
-    with patch("gateway.config.load_gateway_config", return_value=_gateway_config()):
+    with patch("hermes_agent.gateway.config.load_gateway_config", return_value=_gateway_config()):
         error = _deliver_result(dict(_JOB), content, adapters=None, loop=None)
 
     assert error is None
@@ -142,7 +142,7 @@ def test_directive_in_the_job_name_does_not_force_a_document(loop):
     job = dict(_JOB, name="How to use [[as_document]]")
     content = f"Preview.\nMEDIA:{_media('chart.png')}"
 
-    with patch("gateway.config.load_gateway_config", return_value=_gateway_config()):
+    with patch("hermes_agent.gateway.config.load_gateway_config", return_value=_gateway_config()):
         error = _deliver_result(job, content, adapters={Platform.TELEGRAM: adapter}, loop=loop)
 
     assert error is None

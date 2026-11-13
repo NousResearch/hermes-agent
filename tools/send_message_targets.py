@@ -17,7 +17,7 @@ def _target_syntax_fn(platform_name: str):
     """The plugin's declared native target syntax, or None. A fresh CLI/cron process can parse a
     target before plugin discovery registered the platform, so discover first when the name is
     unknown (idempotent manifest scan; only this platform's adapter is materialized)."""
-    from gateway.platform_registry import platform_registry
+    from hermes_agent.gateway.platform_registry import platform_registry
     if not platform_registry.is_registered(platform_name):
         from hermes_cli.plugins import discover_plugins
         discover_plugins()
@@ -29,7 +29,7 @@ def _parse_target_ref(platform_name: str, target_ref: str):
     """(chat_id, thread_id, explicit): the plugin's ``target_ref_syntax_fn`` first, then in order
     E.164 phone numbers (keeping the '+'), bare numeric ids, Matrix ``!room``/``@user``, XMPP JIDs.
     Anything else goes to channel-directory resolution."""
-    from gateway.platforms.send_targets import NOT_EXPLICIT
+    from hermes_agent.gateway.platforms.send_targets import NOT_EXPLICIT
     parser = _target_syntax_fn(platform_name)
     if parser is not None:
         parsed = parser(target_ref)
@@ -59,8 +59,8 @@ def resolve_send_target(
     (no model in the loop: cron, react/unreact on native ids) hands an unresolvable target on a
     built-in platform, or a plugin platform without a parser, to the adapter as written; a plugin
     WITH a parser stays strict. The optional validator has the final say over every returned id."""
-    from gateway.config import Platform
-    from gateway.platform_registry import platform_registry
+    from hermes_agent.gateway.config import Platform
+    from hermes_agent.gateway.platform_registry import platform_registry
     entry = platform_registry.get(platform_name)
 
     def _validated(chat_id, thread_id):
@@ -92,7 +92,7 @@ def resolve_send_target(
         return _validated(parsed_chat_id, parsed_thread_id)
     resolution_failed = False
     try:
-        from gateway.channel_directory import resolve_channel_name
+        from hermes_agent.gateway.channel_directory import resolve_channel_name
         resolved = resolve_channel_name(platform_name, target_ref)
     except Exception:
         resolved = None

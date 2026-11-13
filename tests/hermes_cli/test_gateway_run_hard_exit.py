@@ -1,7 +1,7 @@
 """Regression tests for CLI gateway run exit behavior.
 
-``hermes gateway run`` enters through hermes_cli.gateway, not gateway.run.main().
-After graceful teardown it must use the same hard-exit backstop as gateway.run.main()
+``hermes gateway run`` enters through hermes_cli.gateway, not hermes_agent.gateway.run.main().
+After graceful teardown it must use the same hard-exit backstop as hermes_agent.gateway.run.main()
 so Python finalization does not wait on non-daemon worker threads (for example
 in-flight cron ThreadPoolExecutor jobs) and delay service-managed restarts.
 """
@@ -21,7 +21,7 @@ class _HardExitObserved(BaseException):
 
 def _prepare(monkeypatch):
     import hermes_cli.gateway as gateway_cli
-    import gateway.run as gateway_run
+    import hermes_agent.gateway.run as gateway_run
 
     monkeypatch.setattr(gateway_cli, "_guard_official_docker_root_gateway", lambda: None)
     monkeypatch.setattr(gateway_cli, "_guard_named_profile_under_multiplexer", lambda force=False: None)

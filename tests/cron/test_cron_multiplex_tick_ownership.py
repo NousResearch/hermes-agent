@@ -84,7 +84,7 @@ class TestPerProfileYieldGate:
             sched, "_detect_gateway_code_skew", lambda: (boot[:10], disk[:10]))
         monkeypatch.setattr(sched, "_current_gateway_code_sha", lambda: disk)
         # A live foreign gateway holding the runtime lock, serving profile A's home only.
-        from gateway import status as gateway_status
+        from hermes_agent.gateway import status as gateway_status
 
         monkeypatch.setattr(gateway_status, "owns_gateway_runtime_lock", lambda: False)
         monkeypatch.setattr(
@@ -116,7 +116,7 @@ class TestPerProfileYieldGate:
         monkeypatch.setattr(
             sched, "_detect_gateway_code_skew", lambda: (boot[:10], disk[:10]))
         monkeypatch.setattr(sched, "_current_gateway_code_sha", lambda: disk)
-        from gateway import status as gateway_status
+        from hermes_agent.gateway import status as gateway_status
 
         monkeypatch.setattr(gateway_status, "owns_gateway_runtime_lock", lambda: True)
         ownership.register_ticked_homes([home_a])

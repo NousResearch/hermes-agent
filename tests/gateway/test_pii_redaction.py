@@ -1,12 +1,12 @@
 """Tests for PII redaction in gateway session context prompts."""
 
-from gateway.session import (
+from hermes_agent.gateway.session import (
     SessionContext,
     SessionSource,
     build_session_context_prompt,
     _hash_chat_id,
 )
-from gateway.config import Platform, HomeChannel
+from hermes_agent.gateway.config import Platform, HomeChannel
 
 
 # ---------------------------------------------------------------------------

@@ -17,8 +17,8 @@ from tests.waiting import async_wait_until
 ], ids=['level-model-level', 'model-with-level-then-level', 'level-then-model-with-level'])
 async def test_levels_picked_during_a_running_turn_apply_to_the_next_turn_in_pick_order(
         tmp_path, monkeypatch, picks, expected):
-    from gateway.session_contract import Submission
-    from gateway.session_policy import policy_for_source
+    from hermes_agent.gateway.session_contract import Submission
+    from hermes_agent.gateway.session_policy import policy_for_source
     started, release = threading.Event(), asyncio.Event()
     seen, state = [], {}
 
@@ -58,9 +58,9 @@ async def test_levels_picked_during_a_running_turn_apply_to_the_next_turn_in_pic
 ], ids=['level', 'model'])
 async def test_a_pick_committed_after_the_turn_settles_supersedes_only_what_it_picks(
         tmp_path, monkeypatch, operation, payload, effort):
-    from gateway import session_deferred_pick
-    from gateway.session_contract import Submission
-    from gateway.session_policy import policy_for_source
+    from hermes_agent.gateway import session_deferred_pick
+    from hermes_agent.gateway.session_contract import Submission
+    from hermes_agent.gateway.session_policy import policy_for_source
     import hermes_agent.hermes_state_runtime as rt
     started, release = threading.Event(), asyncio.Event()
     seen, state = [], {}

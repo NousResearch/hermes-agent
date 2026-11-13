@@ -21,7 +21,7 @@ _VALID_BOT_TOKEN = "123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZ_1234"
 def _gateway_state(home: Path) -> None:
     """A live gateway record: this pytest process's PID wearing a gateway command
     line, with the Telegram adapter reported ``connected``."""
-    import gateway.status as _gw_status
+    import hermes_agent.gateway.status as _gw_status
 
     start_time = _gw_status._get_process_start_time(os.getpid())
     (home / "gateway.pid").write_text(
@@ -41,7 +41,7 @@ def client(monkeypatch, _isolate_hermes_home):
 
     from hermes_agent import hermes_state
     import hermes_constants
-    import gateway.status as _gw_status
+    import hermes_agent.gateway.status as _gw_status
     from hermes_constants import get_hermes_home
     from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
 
@@ -114,7 +114,7 @@ def test_connected_with_gateway_allowed_users_reports_allowlist(client, monkeypa
 def test_connected_with_pairing_grant_counts_it(client):
     """An approved pairing request is a first-class grant (authz union): a store
     with one approved user is reachable, not deny-all."""
-    from gateway.pairing import PairingStore
+    from hermes_agent.gateway.pairing import PairingStore
 
     store = PairingStore()
     store._approve_user("telegram", "42", "operator")
@@ -129,7 +129,7 @@ def test_connected_with_pairing_grant_counts_it(client):
 def test_connected_deny_all_mentions_pending_pairing_requests(client):
     import time as _time
 
-    from gateway.pairing import PairingStore
+    from hermes_agent.gateway.pairing import PairingStore
 
     store = PairingStore()
     with store._lock:
@@ -153,7 +153,7 @@ def test_profile_scoped_posture_ignores_root_env_and_reports_profile_grants(
     """The dashboard process env belongs to the ROOT install: a named profile's
     Test must neither borrow the root's allowlist nor miss the profile's own.
     Regression for the false deny-all/false green in the #66055 review."""
-    import gateway.status as _gw_status
+    import hermes_agent.gateway.status as _gw_status
     from hermes_cli import profiles as profiles_mod
     from hermes_constants import get_hermes_home
 

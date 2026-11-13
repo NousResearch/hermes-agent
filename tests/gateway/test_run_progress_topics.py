@@ -11,11 +11,11 @@ from urllib.parse import quote
 
 import pytest
 
-import gateway.platforms.base as base_platform
-from gateway.config import Platform, PlatformConfig, StreamingConfig
-from gateway.platforms.base import BasePlatformAdapter, SendResult
-from gateway.platforms.event import MessageEvent, MessageType
-from gateway.session import SessionSource
+import hermes_agent.gateway.platforms.base as base_platform
+from hermes_agent.gateway.config import Platform, PlatformConfig, StreamingConfig
+from hermes_agent.gateway.platforms.base import BasePlatformAdapter, SendResult
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.session import SessionSource
 
 
 class ProgressCaptureAdapter(BasePlatformAdapter):
@@ -230,7 +230,7 @@ class FakeAgent:
     def __init__(self, **kwargs):
         # Capture anything passed via kwargs (older code path) but don't
         # freeze it — production now assigns tool_progress_callback after
-        # construction (see gateway/run.py around the agent-cache hit),
+        # construction (see hermes_agent/gateway/run.py around the agent-cache hit),
         # so we must read it at call time, not at init.
         self.tool_progress_callback = kwargs.get("tool_progress_callback")
         self.tools = []
@@ -449,7 +449,7 @@ class DelayedInterimAgent:
 
 
 def _make_runner(adapter):
-    gateway_run = importlib.import_module("gateway.run")
+    gateway_run = importlib.import_module("hermes_agent.gateway.run")
     GatewayRunner = gateway_run.GatewayRunner
 
     runner = object.__new__(GatewayRunner)
@@ -479,7 +479,7 @@ def test_tool_progress_mode_reads_profile_scope_not_process_environ(monkeypatch,
     into every other profile's turns (#116898)."""
     from agent import secret_scope
 
-    gateway_run = importlib.import_module("gateway.run")
+    gateway_run = importlib.import_module("hermes_agent.gateway.run")
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
 
     # Simulates a leaked env var from whichever profile's process env loaded last.
@@ -559,7 +559,7 @@ async def test_run_agent_progress_uses_event_message_id_for_slack_dm(monkeypatch
 
     adapter = ProgressCaptureAdapter(platform=Platform.SLACK)
     runner = _make_runner(adapter)
-    gateway_run = importlib.import_module("gateway.run")
+    gateway_run = importlib.import_module("hermes_agent.gateway.run")
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"})
 
@@ -600,7 +600,7 @@ async def test_scheduled_heartbeat_suppresses_routine_progress_and_typing(monkey
 
     adapter = ProgressCaptureAdapter()
     runner = _make_runner(adapter)
-    gateway_run = importlib.import_module("gateway.run")
+    gateway_run = importlib.import_module("hermes_agent.gateway.run")
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"})
 
@@ -651,7 +651,7 @@ async def test_progress_carries_anchor_for_relay_discord_auto_thread(monkeypatch
 
     adapter = ProgressCaptureAdapter(platform=Platform.RELAY)
     runner = _make_runner(adapter)
-    gateway_run = importlib.import_module("gateway.run")
+    gateway_run = importlib.import_module("hermes_agent.gateway.run")
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"})
 
@@ -710,7 +710,7 @@ async def test_progress_no_anchor_for_native_discord_thread_event(monkeypatch, t
 
     adapter = ProgressCaptureAdapter(platform=Platform.RELAY)
     runner = _make_runner(adapter)
-    gateway_run = importlib.import_module("gateway.run")
+    gateway_run = importlib.import_module("hermes_agent.gateway.run")
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"})
 
@@ -795,7 +795,7 @@ def _run_long_preview_helper(monkeypatch, tmp_path, preview_length=0):
 
     adapter = ProgressCaptureAdapter()
     runner = _make_runner(adapter)
-    gateway_run = importlib.import_module("gateway.run")
+    gateway_run = importlib.import_module("hermes_agent.gateway.run")
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"})
 
@@ -855,7 +855,7 @@ def test_discord_truncated_tool_url_links_to_full_destination(monkeypatch, tmp_p
 
     adapter = DiscordProgressCaptureAdapter()
     runner = _make_runner(adapter)
-    gateway_run = importlib.import_module("gateway.run")
+    gateway_run = importlib.import_module("hermes_agent.gateway.run")
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     monkeypatch.setattr(
         gateway_run,
@@ -1101,7 +1101,7 @@ async def _run_with_agent(
     adapter = adapter_cls(platform=platform)
     _ACTIVE_ADAPTER["adapter"] = adapter
     runner = _make_runner(adapter)
-    gateway_run = importlib.import_module("gateway.run")
+    gateway_run = importlib.import_module("hermes_agent.gateway.run")
     if config_data and "streaming" in config_data:
         runner.config.streaming = StreamingConfig.from_dict(config_data["streaming"])
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
@@ -1830,7 +1830,7 @@ async def test_run_agent_drops_tool_progress_after_generation_invalidation(monke
 
     adapter = ProgressCaptureAdapter(platform=Platform.DISCORD)
     runner = _make_runner(adapter)
-    gateway_run = importlib.import_module("gateway.run")
+    gateway_run = importlib.import_module("hermes_agent.gateway.run")
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"})
 
@@ -1891,7 +1891,7 @@ async def test_run_agent_drops_interim_commentary_after_generation_invalidation(
 
     adapter = ProgressCaptureAdapter(platform=Platform.DISCORD)
     runner = _make_runner(adapter)
-    gateway_run = importlib.import_module("gateway.run")
+    gateway_run = importlib.import_module("hermes_agent.gateway.run")
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"})
 
@@ -2028,7 +2028,7 @@ async def test_terminal_progress_renders_fenced_code_block(monkeypatch, tmp_path
 
     adapter = CodeBlockProgressAdapter(platform=Platform.TELEGRAM)
     runner = _make_runner(adapter)
-    gateway_run = importlib.import_module("gateway.run")
+    gateway_run = importlib.import_module("hermes_agent.gateway.run")
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"})
 
@@ -2081,7 +2081,7 @@ async def test_terminal_progress_verbose_shows_full_command(monkeypatch, tmp_pat
 
     adapter = CodeBlockProgressAdapter(platform=Platform.TELEGRAM)
     runner = _make_runner(adapter)
-    gateway_run = importlib.import_module("gateway.run")
+    gateway_run = importlib.import_module("hermes_agent.gateway.run")
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"})
 
@@ -2132,7 +2132,7 @@ async def test_per_platform_streaming_does_not_override_global_disabled(monkeypa
         adapter = ProgressCaptureAdapter(platform=Platform.TELEGRAM)
         runner = _make_runner(adapter)
         runner.config.streaming = StreamingConfig.from_dict(config_data["streaming"])
-        gateway_run = importlib.import_module("gateway.run")
+        gateway_run = importlib.import_module("hermes_agent.gateway.run")
         monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: config_data)
         source = SessionSource(platform=Platform.TELEGRAM, chat_id="-1001", chat_type="dm")
         assert runner._proxy_stream_consumer(source, None, None, lambda: True) is None
@@ -2155,7 +2155,7 @@ class TestSlackReplyInThreadProgressRouting:
     """#18859: reply_in_thread=false must stop progress from creating threads."""
 
     def test_slack_reply_in_thread_false_drops_synthetic_thread(self):
-        from gateway.run import _resolve_progress_thread_id
+        from hermes_agent.gateway.run import _resolve_progress_thread_id
 
         # source.thread_id == event ts is the adapter's synthetic
         # session-keying thread for top-level messages — not a real thread.
@@ -2168,7 +2168,7 @@ class TestSlackReplyInThreadProgressRouting:
 
     def test_buzz_uses_event_message_id_as_progress_thread(self):
         """Buzz has no native thread_id; progress must reply-to the trigger."""
-        from gateway.run import _resolve_progress_thread_id
+        from hermes_agent.gateway.run import _resolve_progress_thread_id
 
         assert _resolve_progress_thread_id(
             "buzz",

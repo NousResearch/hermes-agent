@@ -1,6 +1,6 @@
 """``hermes webapp`` where nothing checks who redeems a one-use launch link (macOS, the BSDs, illumos, WSL).
 
-The gateway marks such a link private (``gateway.webapp_listener._one_use_links_work``). The command never
+The gateway marks such a link private (``hermes_agent.gateway.webapp_listener._one_use_links_work``). The command never
 hands it to a browser launcher, whose command line other local users can read, and never prints it when it
 can open a browser: it writes the link into a page in the gateway home's user-only ``webapp`` folder and
 opens that page, so the launcher's command line carries only the page's path. It prints the link only
@@ -114,7 +114,7 @@ def test_where_no_user_only_page_can_carry_it_the_link_is_printed_and_no_page_is
     if case == "wsl":
         monkeypatch.setattr("hermes_constants.is_wsl", lambda: True)
     if case == "folder others can read":
-        monkeypatch.setattr("gateway.webapp_listener._readable_by_other_users", lambda path: True)
+        monkeypatch.setattr("hermes_agent.gateway.webapp_listener._readable_by_other_users", lambda path: True)
     assert launcher.cmd_webapp(_args(no_open=case == "no-open")) == 0
     assert all("ticket" not in url for url in private["calls"]["opened"])
     if case != "no browser":

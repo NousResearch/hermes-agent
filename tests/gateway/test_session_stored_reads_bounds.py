@@ -12,7 +12,7 @@ from tests.gateway.test_session_stored_reads import _call, _compact_carrying_tai
 
 @contextmanager
 def _session(tmp_path, monkeypatch):
-    from gateway.session_local_recovery import transcript_target
+    from hermes_agent.gateway.session_local_recovery import transcript_target
 
     async def handle(event):
         return 'ok'
@@ -42,8 +42,8 @@ def _forbid_nested_reads(monkeypatch, db):
 
 @pytest.mark.asyncio
 async def test_no_stored_read_opens_a_read_inside_another(tmp_path, monkeypatch):
-    from gateway.session_picker_fields import current_segments, fill_picker_fields
-    from gateway.session_stored_reads import read_page
+    from hermes_agent.gateway.session_picker_fields import current_segments, fill_picker_fields
+    from hermes_agent.gateway.session_stored_reads import read_page
     with _session(tmp_path, monkeypatch) as (db, authority, owner, ref, target):
         db.append_message(target, 'user', 'question 1')
         db.append_message(target, 'assistant', 'answer 1')
@@ -61,7 +61,7 @@ async def test_no_stored_read_opens_a_read_inside_another(tmp_path, monkeypatch)
 
 @pytest.mark.asyncio
 async def test_a_row_too_large_for_a_page_is_bounded_whole(tmp_path, monkeypatch):
-    from gateway.session_stored_reads import PAGE_BYTES
+    from hermes_agent.gateway.session_stored_reads import PAGE_BYTES
     with _session(tmp_path, monkeypatch) as (db, _authority, owner, ref, target):
         db.append_message(target, 'user', 'é' * 3_000_000)  # 6 bytes a character once JSON-escaped
         db.append_message(target, 'assistant', 'short', reasoning='r' * 3_000_000)

@@ -19,7 +19,7 @@ from pathlib import Path
 
 import pytest
 
-from gateway import runtime_bootstrap_windows as native
+from hermes_agent.gateway import runtime_bootstrap_windows as native
 
 OWN = "S-1-5-21-1-2-3-1001"
 OTHER = "S-1-5-21-1-2-3-1002"

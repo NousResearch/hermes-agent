@@ -96,7 +96,7 @@ class PlatformActions:
     def _resolve_adapter(self, platform: str):
         """Return ``(adapter, error_dict)``; exactly one is non-None."""
         try:
-            from gateway.run import _gateway_runner_ref
+            from hermes_agent.gateway.run import _gateway_runner_ref
 
             runner = _gateway_runner_ref()
         except Exception:
@@ -104,7 +104,7 @@ class PlatformActions:
         if runner is None:
             return None, _err("gateway_unavailable", "no gateway runner is active in this process")
         try:
-            from gateway.config import Platform
+            from hermes_agent.gateway.config import Platform
 
             platform_enum = Platform(str(platform).strip().lower())
         except Exception:

@@ -400,7 +400,7 @@ class GatewayChatView:
                 print('\n'.join(result['lines']))
                 return True
             if result.get('status') == 'noop':
-                # Nothing removable (gateway/session_mutation_compress.py), or a `/model reset` already
+                # Nothing removable (hermes_agent/gateway/session_mutation_compress.py), or a `/model reset` already
                 # on the configured default (its note): main's report, nothing committed.
                 self.mutations.acknowledge(original, operation, payload)
                 summary = result.get('summary') or {'note': result.get('note')}

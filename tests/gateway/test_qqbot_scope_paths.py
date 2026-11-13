@@ -8,7 +8,7 @@ same per-profile ``QQ_*`` values independently:
 - gateway authorization (``AuthorizationMixin._is_user_authorized``) reads
   ``QQ_ALLOW_ALL_USERS`` when deciding whether to honor an allow-all opt-in;
 - secondary-profile startup validation
-  (``gateway.run._own_policy_open_startup_violation``) reads the platform
+  (``hermes_agent.gateway.run._own_policy_open_startup_violation``) reads the platform
   opt-in while running inside ``_profile_runtime_scope``;
 - the ``send_message`` tool's direct REST path (``_send_qqbot``) falls back to
   ``QQ_APP_ID`` / ``QQ_CLIENT_SECRET``.
@@ -27,8 +27,8 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from agent import secret_scope as ss
-from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.session import SessionSource
+from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+from hermes_agent.gateway.session import SessionSource
 
 
 @pytest.fixture(autouse=True)
@@ -50,7 +50,7 @@ def _reset_scope_state(monkeypatch):
 
 def _make_qq_runner():
     """Minimal runner whose authz path reaches the QQ env checks."""
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
 
     runner = object.__new__(GatewayRunner)
     runner.config = GatewayConfig(multiplex_profiles=True)
@@ -189,7 +189,7 @@ class TestStartupValidatorScope:
     def test_scoped_opt_in_clears_violation(self):
         # Mirrors _start_one_profile_adapters: the validator runs inside the
         # profile scope, so the profile's own opt-in must clear the violation.
-        from gateway.run import _own_policy_open_startup_violation
+        from hermes_agent.gateway.run import _own_policy_open_startup_violation
 
         ss.set_multiplex_active(True)
         tok = ss.set_secret_scope({"QQ_ALLOW_ALL_USERS": "true"})
@@ -201,7 +201,7 @@ class TestStartupValidatorScope:
     def test_scope_does_not_inherit_environ_opt_in(self, monkeypatch):
         # Primary's environ opt-in must not silently bless a secondary
         # profile whose own scope never opted in.
-        from gateway.run import _own_policy_open_startup_violation
+        from hermes_agent.gateway.run import _own_policy_open_startup_violation
 
         monkeypatch.setenv("QQ_ALLOW_ALL_USERS", "true")
         ss.set_multiplex_active(True)
@@ -215,7 +215,7 @@ class TestStartupValidatorScope:
 
     def test_unscoped_environ_unchanged(self, monkeypatch):
         # Single-profile startup (no scope installed) keeps reading environ.
-        from gateway.run import _own_policy_open_startup_violation
+        from hermes_agent.gateway.run import _own_policy_open_startup_violation
 
         monkeypatch.setenv("QQ_ALLOW_ALL_USERS", "true")
         assert _own_policy_open_startup_violation(self._open_dm_config()) is None

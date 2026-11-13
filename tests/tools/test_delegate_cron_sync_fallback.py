@@ -132,7 +132,7 @@ def test_cron_sync_fallback_returns_and_spawns_no_review_fork(monkeypatch):
         # delegate_task must run the batch synchronously.
         with (
             patch(
-                "gateway.session_context.async_delivery_supported",
+                "hermes_agent.gateway.session_context.async_delivery_supported",
                 return_value=False,
             ),
             patch(

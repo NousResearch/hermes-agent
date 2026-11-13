@@ -92,7 +92,7 @@ def load_completed_results(prefix: str = "") -> dict:
     """Restore read-only snapshots; no process handles, watchers, or queue events."""
     from tools.process_registry import ProcessSession
 
-    from gateway.session_context import get_session_env
+    from hermes_agent.gateway.session_context import get_session_env
     from tools.environments.sandbox_scope import hosted_scope
 
     owner = get_session_env("HERMES_SESSION_ID", "")

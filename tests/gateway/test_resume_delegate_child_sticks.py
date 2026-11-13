@@ -5,8 +5,8 @@ A session the user deliberately switched the chat onto is the conversation, so `
 adopts it (drops the marker) and the route self-heal keeps it. Real ``SessionStore`` + ``SessionDB``.
 """
 
-from gateway.config import GatewayConfig, Platform
-from gateway.session import SessionSource, SessionStore
+from hermes_agent.gateway.config import GatewayConfig, Platform
+from hermes_agent.gateway.session import SessionSource, SessionStore
 from hermes_agent.hermes_state import SessionDB
 
 
@@ -90,7 +90,7 @@ def test_a_resumed_delegate_keeps_the_route_through_a_compression_rotation(tmp_p
         parent_session_id=child, child_session_id=tip, source="subagent", system_prompt="p",
         messages=[{"role": "user", "content": "summary"}], compression_lock_holder="holder",
         model_config={"_delegate_from": entry.session_id})
-    from gateway.session_lifecycle import is_delegate_child_row
+    from hermes_agent.gateway.session_lifecycle import is_delegate_child_row
 
     # The route guard reads the tip compression published, not a row switch_session touched again.
     row = db.get_session(tip)

@@ -18,7 +18,7 @@ def validate_action(operation, payload):
     if operation == 'branch' and _valid_branch_payload(payload):
         return
     # Session-scope ``/reasoning <level>`` and Desktop's Move to project: revision-fenced edits of
-    # the frozen policy (gateway/session_mutation_policy.py).
+    # the frozen policy (hermes_agent/gateway/session_mutation_policy.py).
     if operation == 'reasoning' and set(payload) == {'effort'} and payload['effort'] is None:
         return  # ``/reasoning reset``: the session's level goes back to the profile
     if operation == 'reasoning' and set(payload) == {'effort'} and isinstance(payload['effort'], str):
@@ -27,11 +27,11 @@ def validate_action(operation, payload):
             return
     if operation == 'workspace' and set(payload) == {'cwd'} and isinstance(payload['cwd'], str) and payload['cwd'].strip():
         return
-    # The editor's MCP servers (gateway/session_local_mcp.py): the owner keeps the list in memory and
+    # The editor's MCP servers (hermes_agent/gateway/session_local_mcp.py): the owner keeps the list in memory and
     # hands the store only its fingerprint, so no transport credential reaches a receipt.
     if operation == 'editor_mcp' and set(payload) == {'mcp_servers'} and _valid_editor_fingerprint(payload):
         return
-    # An ACP session's edit approval policy (gateway/session_mutation_policy.py prepare_edit_policy).
+    # An ACP session's edit approval policy (hermes_agent/gateway/session_mutation_policy.py prepare_edit_policy).
     if (operation == 'edit_policy' and set(payload) == {'policy'} and isinstance(payload['policy'], str)
             and payload['policy'] in {'ask', 'workspace_session', 'session'}):
         return

@@ -14,14 +14,14 @@ from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
 
-# Module level on purpose: gateway.run's import side effects stat the checkout's git dir, which the
+# Module level on purpose: hermes_agent.gateway.run's import side effects stat the checkout's git dir, which the
 # fixture-scoped home-I/O guard would refuse inside a test.
-import gateway.run as gateway_run
-from gateway.config import Platform
-from gateway.platforms.base import SendResult
-from gateway.run_turn_runner import TurnRunner
-from gateway.session import SessionSource
-from gateway.turn_context import TurnContext
+import hermes_agent.gateway.run as gateway_run
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.platforms.base import SendResult
+from hermes_agent.gateway.run_turn_runner import TurnRunner
+from hermes_agent.gateway.session import SessionSource
+from hermes_agent.gateway.turn_context import TurnContext
 
 SESSION = "agent:main:telegram:dm:111"
 
@@ -64,7 +64,7 @@ def test_turn_approval_card_goes_through_the_replacement_adapter(tmp_path, monke
     """Wire the turn the way ``_run_agent_inner`` does, rebuild the adapter, then raise an approval."""
     (tmp_path / "config.yaml").write_text("display: {}")
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
-    monkeypatch.setattr("gateway.platforms.base_exec_approval.approval_timeout_seconds", lambda: 300)
+    monkeypatch.setattr("hermes_agent.gateway.platforms.base_exec_approval.approval_timeout_seconds", lambda: 300)
     retired, live = _Adapter("old"), _Adapter("new")
     runner = _bare_runner(retired)
     source = SessionSource(platform=Platform.TELEGRAM, chat_id="111", chat_type="dm", user_id="111")
@@ -96,7 +96,7 @@ def test_update_prompt_after_reconnect_reaches_the_replacement(tmp_path):
         {"platform": "telegram", "chat_id": "111", "user_id": "111", "session_key": SESSION}))
 
     async def scenario():
-        with patch("gateway.run._hermes_home", tmp_path):
+        with patch("hermes_agent.gateway.run._hermes_home", tmp_path):
             target = runner._resolve_update_target(runner._update_paths())
             retired.connected = False
             runner.adapters[Platform.TELEGRAM] = live

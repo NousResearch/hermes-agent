@@ -169,7 +169,7 @@ def _systemd_verified_active(profile: str, *, run: Callable[..., Any]) -> bool:
 
 
 def _host_state_dir() -> str:
-    """The path ``gateway.host_rendezvous.host_state_dir()`` resolves, computed locally.
+    """The path ``hermes_agent.gateway.host_rendezvous.host_state_dir()`` resolves, computed locally.
 
     This module imports no Hermes code at runtime — importing the freshly pulled tree is exactly
     what aborted the phase that calls us — so the rule is duplicated here rather than shared.

@@ -1,6 +1,6 @@
 """Shared GFM table → bullet conversion helpers."""
 
-from gateway.platforms.helpers import (
+from hermes_agent.gateway.platforms.helpers import (
     convert_table_to_bullets,
 )
 

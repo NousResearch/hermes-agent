@@ -10,8 +10,8 @@ from pathlib import Path
 
 import pytest
 
-from gateway.hosted_room_execution_policy import execution_policy_mapping
-from gateway.hosted_room_peer import (
+from hermes_agent.gateway.hosted_room_execution_policy import execution_policy_mapping
+from hermes_agent.gateway.hosted_room_peer import (
     GatewayRoomCatalog,
     HostedMemberDispatch,
     HostedRoomGrantError,
@@ -282,7 +282,7 @@ def test_room_grant_fails_closed_for_tamper_expiry_and_permission():
 
 
 def test_local_catalog_is_honest_for_app_managed_process(monkeypatch):
-    from gateway.hosted_room_peer import local_catalog_mapping
+    from hermes_agent.gateway.hosted_room_peer import local_catalog_mapping
 
     monkeypatch.setenv("HERMES_DESKTOP", "1")
     catalog = local_catalog_mapping(target_profile="default", installation_id="install-desktop")
@@ -302,7 +302,7 @@ def test_local_catalog_is_honest_for_app_managed_process(monkeypatch):
 def test_self_advertised_endpoint_is_explicit_and_validated(
     monkeypatch, configured, available, reason, security
 ):
-    from gateway.hosted_room_peer import local_catalog_mapping
+    from hermes_agent.gateway.hosted_room_peer import local_catalog_mapping
 
     if configured is None:
         monkeypatch.delenv("HERMES_ROOM_LINK_URL", raising=False)

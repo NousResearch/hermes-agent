@@ -128,7 +128,7 @@ def test_resume_predicate_covers_results_not_diagnostics():
 async def test_successes_do_not_spend_the_failure_wake_budget(tmp_path, monkeypatch):
     """A long unattended pipeline (dispatch, finish, dispatch again) keeps going; only failed results in
     a row are bounded by ``UNATTENDED_WAKE_LIMIT``."""
-    from gateway.session_completion_notes import UNATTENDED_WAKE_LIMIT
+    from hermes_agent.gateway.session_completion_notes import UNATTENDED_WAKE_LIMIT
     runner, authority, ref, _actor = await _local(tmp_path, monkeypatch)
     try:
         route, target = authority.sessions[ref.session_id].route, _target(runner, authority, ref)
@@ -152,11 +152,11 @@ async def test_successes_do_not_spend_the_failure_wake_budget(tmp_path, monkeypa
 async def test_close_pending_across_a_restart_still_decides(tmp_path, monkeypatch, reason, resumes):
     """The user exits while the result is queued (the close waits for the idle FIFO), then the gateway
     restarts: recovery re-arms the stored close, but the in-memory dispatch refusal is gone."""
-    from gateway.config import GatewayConfig
-    from gateway.run import GatewayRunner
-    from gateway.session_authority import initialize_session_authority
-    from gateway.session_local_recovery import recover_local_sessions
-    from gateway.session_viewer_close import _PendingClose, _store_and_settle
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.run import GatewayRunner
+    from hermes_agent.gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.session_local_recovery import recover_local_sessions
+    from hermes_agent.gateway.session_viewer_close import _PendingClose, _store_and_settle
     from hermes_agent.hermes_state import AsyncSessionDB, SessionDB
     runner, authority, ref, _actor = await _local(tmp_path, monkeypatch)
     target = _target(runner, authority, ref)

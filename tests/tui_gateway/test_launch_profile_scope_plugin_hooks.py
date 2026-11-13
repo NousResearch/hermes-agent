@@ -103,7 +103,7 @@ def _fire_off_turn_workers(launch_manager_hook_seen):
 def test_launch_profile_turn_hooks_see_bound_scope_a_b_a(two_homes):
     launch, routed, seen = two_homes
     set_multiplex_active(True)
-    from gateway.run import _profile_runtime_scope
+    from hermes_agent.gateway.run import _profile_runtime_scope
 
     with lpp.launch_profile_runtime_scope(launch):
         _fire_from_tool_worker()

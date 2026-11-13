@@ -21,7 +21,7 @@ class Agent:
 
 @pytest.mark.asyncio
 async def test_a_stop_after_the_turn_finished_does_not_cancel_the_next_turn(tmp_path, monkeypatch):
-    from gateway import session_finite
+    from hermes_agent.gateway import session_finite
 
     db, authority = _authority(tmp_path, monkeypatch)
     agent = Agent()

@@ -73,7 +73,7 @@ def _reset_session_context_vars():
     variables to explicit empty values, which would otherwise shadow legacy env
     fallbacks used by later approval tests in the same process.
     """
-    from gateway.session_context import _UNSET, _VAR_MAP
+    from hermes_agent.gateway.session_context import _UNSET, _VAR_MAP
 
     def _reset_all():
         for var in _VAR_MAP.values():
@@ -90,8 +90,8 @@ def owner_execution_runner():
     This is not admission/RPC coverage: the real scheduler runs under the exact owner-store
     identity and profile scope. A plain function so a subprocess tick can install it too.
     """
-    from gateway.session_contract import SessionRef
-    from gateway.session_cron import current_execution, execute
+    from hermes_agent.gateway.session_contract import SessionRef
+    from hermes_agent.gateway.session_cron import current_execution, execute
     from hermes_agent.hermes_state_registry import acquire, release
 
     def run(job, *, extra_prompt=None, cancel_event=None, execution_id=None):

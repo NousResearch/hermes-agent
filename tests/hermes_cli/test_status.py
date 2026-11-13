@@ -254,8 +254,8 @@ def test_status_defaults_to_summary_and_full_or_all_prints_every_section(monkeyp
 
 def test_platform_rows_follow_the_gateway_verdict_not_check_fn(monkeypatch, capsys, tmp_path):
     """check_fn only says the SDK imports; each platform gets ONE row, judged like the summary line."""
-    import gateway.config as gateway_config
-    from gateway.platform_registry import platform_registry
+    import hermes_agent.gateway.config as gateway_config
+    from hermes_agent.gateway.platform_registry import platform_registry
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     entries = [SimpleNamespace(name=n, label=n.title(), check_fn=lambda: True) for n in ("telegram", "discord")]

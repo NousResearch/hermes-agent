@@ -9,9 +9,9 @@ async def test_model_switch_to_a_keyed_direct_alias_runs_the_next_turn_with_its_
     committed selection, or the next turn sends ``no-key-required`` to the alias host."""
     from dataclasses import asdict
     from types import SimpleNamespace
-    from gateway.run_turn_prepare import _resolve_policy_agent_runtime
-    from gateway.session_mutation_model import prepare_model
-    from gateway.session_policy import bind_launch_key, build_policy, restore_policy
+    from hermes_agent.gateway.run_turn_prepare import _resolve_policy_agent_runtime
+    from hermes_agent.gateway.session_mutation_model import prepare_model
+    from hermes_agent.gateway.session_policy import bind_launch_key, build_policy, restore_policy
     from hermes_agent.hermes_state import SessionDB
     from hermes_cli import model_switch
     old_url, far_url = 'http://127.0.0.1:9/v1', 'http://127.0.0.3:9/v1'

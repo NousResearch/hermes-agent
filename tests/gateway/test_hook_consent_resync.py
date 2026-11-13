@@ -7,8 +7,8 @@ from pathlib import Path
 import pytest
 
 from agent import shell_hooks
-from gateway.config import GatewayConfig
-from gateway.run import GatewayRunner
+from hermes_agent.gateway.config import GatewayConfig
+from hermes_agent.gateway.run import GatewayRunner
 from tests.waiting import async_wait_until
 
 

@@ -18,7 +18,7 @@ import pytest
 def served_host(tmp_path, monkeypatch):
     """A host gateway (this PID) serving ``default`` + ``served``; the active profile is ``served``,
     which owns no gateway.pid / gateway_state.json of its own (#97120)."""
-    from gateway import host_rendezvous as hr
+    from hermes_agent.gateway import host_rendezvous as hr
 
     root = tmp_path / "hermes"
     home = root / "profiles" / "served"
@@ -30,7 +30,7 @@ def served_host(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(locks))
     monkeypatch.setattr("hermes_constants.get_default_hermes_root", lambda: root)
     monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", list)
-    monkeypatch.setattr("gateway.status.is_gateway_runtime_lock_active", lambda lock_path=None: False)
+    monkeypatch.setattr("hermes_agent.gateway.status.is_gateway_runtime_lock_active", lambda lock_path=None: False)
     # A live owner holds the host lock for its lifetime (run.py claims before it publishes).
     assert hr.claim_host_lock(hr.ROLE_GATEWAY)[0] is hr.HostLockOutcome.ACQUIRED
     hr.publish_record(hr.ROLE_GATEWAY, profiles=("default", "served"))
@@ -89,7 +89,7 @@ def test_doctor_raises_an_issue_when_nothing_owns_the_gateway_role(served_host, 
         def list_profile_gateways(self):
             return ["default", "served", "legacy"]
 
-    monkeypatch.setattr("gateway.host_topology.host_gateway_topology", lambda: None)
+    monkeypatch.setattr("hermes_agent.gateway.host_topology.host_gateway_topology", lambda: None)
     monkeypatch.setattr("hermes_cli.service_manager.detect_service_manager", lambda: "s6")
     monkeypatch.setattr("hermes_cli.service_manager.S6ServiceManager", _Mgr)
     issues: list[str] = []

@@ -14,11 +14,11 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.base import BasePlatformAdapter, SendResult, TextDebounceState
-from gateway.platforms.event import MessageEvent, MessageType
-from gateway.session import SessionSource, build_session_key
-from gateway.session_ingress_burst import holds_busy_burst
+from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+from hermes_agent.gateway.platforms.base import BasePlatformAdapter, SendResult, TextDebounceState
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.session import SessionSource, build_session_key
+from hermes_agent.gateway.session_ingress_burst import holds_busy_burst
 from tests.gateway.test_slash_access_dispatch import _make_event, _make_runner, _make_source
 from tests.waiting import async_wait_until
 
@@ -220,7 +220,7 @@ async def test_a_pre_gateway_dispatch_rewrite_does_not_hide_an_accepted_stop(mon
 async def test_accepted_stop_drops_a_held_burst_before_its_slow_reply(monkeypatch):
     """A non-serial adapter's held busy burst whose window ends while the /stop reply is still in
     flight: dropped at the runner's acceptance, it never commits past the stop's route fence."""
-    from gateway.session_ingress_burst import holds_busy_burst
+    from hermes_agent.gateway.session_ingress_burst import holds_busy_burst
     from tests.gateway.test_busy_burst_serial_reader import _busy_owner, _signal
     adapter, source = _signal(monkeypatch)
     monkeypatch.setattr(adapter, "serial_receive_loop", False, raising=False)  # Telegram/Matrix-like

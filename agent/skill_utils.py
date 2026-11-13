@@ -284,7 +284,7 @@ def get_disabled_skill_names(platform: str | None = None) -> set[str]:
     skills_cfg = _skills_cfg()
     if skills_cfg is None:
         return set()
-    from gateway.session_context import get_session_env
+    from hermes_agent.gateway.session_context import get_session_env
     resolved_platform = platform or os.getenv("HERMES_PLATFORM") or get_session_env("HERMES_SESSION_PLATFORM")
     disabled = _normalize_string_set(skills_cfg.get("disabled"))
     platform_disabled = (skills_cfg.get("platform_disabled") or {}).get(resolved_platform) if resolved_platform else None

@@ -1,6 +1,6 @@
 """#120937: session chat on the gateway API server must never silently truncate a long message.
 
-Real ``python -m gateway.run`` with the API-server platform enabled through the profile ``.env``
+Real ``python -m hermes_agent.gateway.run`` with the API-server platform enabled through the profile ``.env``
 (``API_SERVER_ENABLED``/``API_SERVER_KEY``/host/port, as a user configures it), sandboxed
 HOME/HERMES_HOME, the model routed to ``FakeLLMServer`` — which records every request, so the cell
 reads exactly what the model was sent.

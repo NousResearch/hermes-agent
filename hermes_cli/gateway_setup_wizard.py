@@ -70,7 +70,7 @@ def _all_platforms() -> list[dict]:
     by_key = {p["key"]: p for p in platforms}
 
     try:
-        from gateway.platform_registry import platform_registry
+        from hermes_agent.gateway.platform_registry import platform_registry
     except Exception:
         return platforms
 
@@ -93,7 +93,7 @@ def _platform_status(platform: dict) -> str:
         # to check_fn when is_connected returned False, or "SDK installed" would override "no token".
         try:
             if entry.is_connected is not None:
-                from gateway.config import PlatformConfig
+                from hermes_agent.gateway.config import PlatformConfig
                 configured = bool(entry.is_connected(PlatformConfig(enabled=True)))
             else:
                 configured = bool(entry.check_fn())

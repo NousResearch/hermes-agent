@@ -13,7 +13,7 @@ PNG = bytes.fromhex(
 
 
 async def _authority(tmp_path, monkeypatch):
-    from gateway.session_authority import SessionAuthority
+    from hermes_agent.gateway.session_authority import SessionAuthority
     from tests.gateway.test_prompt_attachments import _authority as store_authority
 
     async def answer(event):
@@ -24,7 +24,7 @@ async def _authority(tmp_path, monkeypatch):
 
 
 def _submit(authority, request_id, staged, text='look'):
-    from gateway.session_contract import SessionActor, SessionRef, Submission
+    from hermes_agent.gateway.session_contract import SessionActor, SessionRef, Submission
     actor = SessionActor('human', 'p', frozenset({'session:submit'}), 't')
     return authority.submit(actor, Submission(request_id, SessionRef('p', 's'), {'text': text, 'attachments': [
         {'path': staged, 'mime': 'image/png'}]}, 'queue'))
@@ -36,11 +36,11 @@ async def test_same_bytes_captured_for_a_new_turn_survive_an_older_turns_cleanup
     """The same staged image is sent again (a queued prompt edited: cancel + resubmit, or a re-send
     while the previous turn settles): admit_attachments reuses the content-addressed path the older
     row holds, and that row's cleanup runs while the new admission write is still in flight."""
-    from gateway import session_authority
-    from gateway.session_ingress_media import release_admission_media, restore_attachments
+    from hermes_agent.gateway import session_authority
+    from hermes_agent.gateway.session_ingress_media import release_admission_media, restore_attachments
     from hermes_agent.hermes_state_runtime import (cancel_session_input, claim_session_input, get_session_admission,
                                       settle_session_input)
-    from gateway.platforms.base import cache_image_from_bytes
+    from hermes_agent.gateway.platforms.base import cache_image_from_bytes
     authority = await _authority(tmp_path, monkeypatch)
     staged = cache_image_from_bytes(PNG, '.png')
     old = await _submit(authority, 'old', staged)
@@ -72,17 +72,17 @@ async def test_same_bytes_captured_for_a_new_turn_survive_an_older_turns_cleanup
 async def test_refused_native_admission_leaves_no_fresh_capture(tmp_path, monkeypatch):
     """admit_native captured the message's media, then the write refused it (admission_conflict
     on a changed redelivery): the fresh capture no admission owns must not stay retained."""
-    from gateway import session_authority
-    from gateway.session_ingress_media import _media_root, capture_native_media
+    from hermes_agent.gateway import session_authority
+    from hermes_agent.gateway.session_ingress_media import _media_root, capture_native_media
     from hermes_agent.hermes_state_runtime import RuntimeStoreError
     authority = await _authority(tmp_path, monkeypatch)
-    from gateway.platforms.base import cache_image_from_bytes
+    from hermes_agent.gateway.platforms.base import cache_image_from_bytes
 
     async def prepare(runner, event):
         return {'text': 'x', 'native_text_v1': {'source': {}, 'event': {'message_id': 'm'},
                 'media': capture_native_media([cache_image_from_bytes(PNG + b'fresh', '.png')])}}
-    monkeypatch.setattr('gateway.session_envelope.prepare_native', prepare)
-    monkeypatch.setattr('gateway.session_envelope.restore_native_source',
+    monkeypatch.setattr('hermes_agent.gateway.session_envelope.prepare_native', prepare)
+    monkeypatch.setattr('hermes_agent.gateway.session_envelope.restore_native_source',
                         lambda payload: authority.sessions['s'].source)
 
     def refused(*args, **kwargs):

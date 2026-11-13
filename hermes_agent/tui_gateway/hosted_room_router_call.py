@@ -1,4 +1,4 @@
-"""The router call behind ``routing: auto`` rooms (``gateway/hosted_room_router.py``).
+"""The router call behind ``routing: auto`` rooms (``hermes_agent/gateway/hosted_room_router.py``).
 
 One tool-less ``auxiliary.group_router`` request per unaddressed message, made off the policy lock on its own
 thread so a Send RPC never waits on a model. Its answer is recorded as ``room.routed`` only when the planner,
@@ -17,8 +17,8 @@ from pathlib import Path
 from typing import Any
 
 from agent.memory_provider import spawn_context_thread
-from gateway import hosted_room_router as router
-from gateway import hosted_rooms
+from hermes_agent.gateway import hosted_room_router as router
+from hermes_agent.gateway import hosted_rooms
 
 logger = logging.getLogger(__name__)
 
@@ -55,7 +55,7 @@ def ask_router(*, root: Path, db_path: Path, room: Mapping[str, Any], discussion
     """Member ids the router picked (``()`` = everyone), or None when the call failed or answered invalidly.
     Runs under the room owner's profile scope: its ``auxiliary.group_router`` config and credentials."""
     from agent.auxiliary_client import call_llm, extract_content_or_reasoning
-    from gateway.run import _profile_runtime_scope
+    from hermes_agent.gateway.run import _profile_runtime_scope
 
     payload = discussion.get("payload") or {}
     prompt = router.router_prompt(

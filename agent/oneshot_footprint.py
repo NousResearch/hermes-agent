@@ -37,7 +37,7 @@ def is_single_query_session() -> bool:
     one-shot fact is the frozen launch policy's ``oneshot`` source, a property of the SESSION, not of one
     admission, so the cached agent's tools[] and system prompt stay byte-stable across its turns."""
     try:
-        from gateway.session_policy import active_policy
+        from hermes_agent.gateway.session_policy import active_policy
     except ImportError:  # install without the gateway package: no owner-bound session
         pass
     else:
@@ -45,7 +45,7 @@ def is_single_query_session() -> bool:
         if policy is not None:
             return policy.source == "oneshot"
     try:
-        from gateway.session_context import get_session_env
+        from hermes_agent.gateway.session_context import get_session_env
     except Exception:
         import os
         get_session_env = os.environ.get

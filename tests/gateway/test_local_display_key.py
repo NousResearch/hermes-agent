@@ -76,7 +76,7 @@ def test_reasoning_hide_and_footer_reach_the_local_clients_config_read(tmp_path)
 
 def test_launch_default_reads_the_local_key():
     """An Ink/Desktop session with no session flag streams per ``display.platforms.cli.show_reasoning``."""
-    from gateway.local_viewer_events import launch_shows_reasoning
+    from hermes_agent.gateway.local_viewer_events import launch_shows_reasoning
 
     class _Policy:
         source = 'tui'
@@ -95,8 +95,8 @@ def test_launch_default_reads_the_local_key():
 
 def test_quoted_local_false_stays_off():
     """A quoted ``"false"`` under the local key is off on every surface, not a truthy string."""
-    from gateway.display_config import local_display_config
-    from gateway.local_viewer_events import launch_shows_reasoning
+    from hermes_agent.gateway.display_config import local_display_config
+    from hermes_agent.gateway.local_viewer_events import launch_shows_reasoning
 
     display = {'show_reasoning': False, 'platforms': {'cli': {'show_reasoning': 'false'}}}
 
@@ -111,7 +111,7 @@ def test_quoted_local_false_stays_off():
 
 
 def test_classic_cli_display_reads_the_local_key():
-    from gateway.display_config import local_display_config
+    from hermes_agent.gateway.display_config import local_display_config
 
     display = local_display_config({'show_reasoning': True, 'runtime_footer': {'enabled': False},
                                     'platforms': {'cli': {'show_reasoning': False,
@@ -141,10 +141,10 @@ def test_classic_cli_reasoning_hide_saves_the_local_key(monkeypatch):
     ('local', ('display', 'platforms', 'cli', 'runtime_footer', 'enabled')),  # local: the cli key
 ])
 def test_footer_writes_global_from_chat_and_cli_key_locally(tmp_path, monkeypatch, platform, path):
-    from gateway import run
-    from gateway.config import Platform
-    from gateway.platforms.base import MessageEvent
-    from gateway.session import SessionSource
+    from hermes_agent.gateway import run
+    from hermes_agent.gateway.config import Platform
+    from hermes_agent.gateway.platforms.base import MessageEvent
+    from hermes_agent.gateway.session import SessionSource
     from hermes_cli.config import read_user_config_raw
 
     (tmp_path / 'config.yaml').write_text(json.dumps({'display': {'runtime_footer': {'enabled': False}}}))
@@ -172,8 +172,8 @@ def test_settings_reasoning_toggle_wins_after_a_local_reasoning_hide(tmp_path, m
     from starlette.testclient import TestClient
 
     import hermes_cli.config as config_mod
-    from gateway.local_viewer_events import launch_shows_reasoning
-    from gateway.session_config import _client_config
+    from hermes_agent.gateway.local_viewer_events import launch_shows_reasoning
+    from hermes_agent.gateway.session_config import _client_config
     from hermes_cli.web_server import _SESSION_HEADER_NAME, _SESSION_TOKEN, app
 
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))

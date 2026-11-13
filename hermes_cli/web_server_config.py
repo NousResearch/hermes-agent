@@ -482,7 +482,7 @@ def _dashboard_code_skew_guard() -> Optional[str]:
     ``/api/model/options`` 500 after the update added ``agent.model_metadata.is_grok_46_family`` while the
     running process kept serving the pre-update module (#86207).
     """
-    from gateway.code_skew import detect_code_skew
+    from hermes_agent.gateway.code_skew import detect_code_skew
 
     skew = detect_code_skew()
     if not skew:

@@ -9,10 +9,10 @@ binds it once for the whole table instead of each handler re-entering the scope.
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform
-from gateway.platforms.base import MessageEvent, MessageType
-from gateway.run import GatewayRunner, _profile_runtime_scope
-from gateway.session import SessionSource
+from hermes_agent.gateway.config import GatewayConfig, Platform
+from hermes_agent.gateway.platforms.base import MessageEvent, MessageType
+from hermes_agent.gateway.run import GatewayRunner, _profile_runtime_scope
+from hermes_agent.gateway.session import SessionSource
 from hermes_constants import get_hermes_home
 from tools import write_approval as wa
 

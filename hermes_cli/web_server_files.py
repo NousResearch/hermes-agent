@@ -145,7 +145,7 @@ def _translate_agent_path(
     mount sources in place of real host files. Quiet: fs callers also see ordinary host
     paths, which are not MEDIA misses worth a warning. ``own_sandbox_only`` (a session's
     Save) refuses with 409 a file the translator found only in a fallback sandbox."""
-    from gateway.platforms.base import _docker_env_active, _translate_docker_container_media_path
+    from hermes_agent.gateway.platforms.base import _docker_env_active, _translate_docker_container_media_path
     from tools.terminal_tool import _ensure_terminal_env_bridged
 
     _ensure_terminal_env_bridged()
@@ -169,7 +169,7 @@ def _in_fallback_sandbox(target: Path, workspace_key: str) -> bool:
     translator's order (then the profile's shared ones). The session's own is that first name
     whether or not its directory exists: reads fall through to the shared copies when the session's
     file or its whole sandbox is gone, and a Save that did would change another sandbox's file."""
-    from gateway.platforms.docker_media_paths import _docker_sandbox_dir_candidates
+    from hermes_agent.gateway.platforms.docker_media_paths import _docker_sandbox_dir_candidates
     from tools.environments.base import get_sandbox_dir
 
     base = get_sandbox_dir() / "docker"
@@ -182,7 +182,7 @@ def _in_shared_cwd_mount_guess(target: Path, workspace_key: str) -> bool:
     """Whether *target* is in the cwd a shared container's ``/workspace`` is only assumed to mount:
     that container mounts its first session's cwd, which nothing records, so a Save there could
     change a file the agent never sees."""
-    from gateway.platforms.docker_media_paths import _shared_cwd_mount_guess
+    from hermes_agent.gateway.platforms.docker_media_paths import _shared_cwd_mount_guess
 
     return any(_path_is_under(root, target) for root in _shared_cwd_mount_guess(workspace_key))
 
@@ -326,7 +326,7 @@ def _is_unmapped_container_path(raw: str, *, profile_home: Path | None = None) -
     if not raw.startswith("/") or raw.startswith("//"):
         return False
     try:
-        from gateway.platforms.base import _docker_env_active, _parse_docker_volume_mounts
+        from hermes_agent.gateway.platforms.base import _docker_env_active, _parse_docker_volume_mounts
         from tools.environments.local import _msys_to_windows_path
 
         with _agent_path_scope(profile_home):

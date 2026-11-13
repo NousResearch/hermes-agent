@@ -45,8 +45,8 @@ def _wired(event="pre_tool_call"):
 
 
 def test_gateway_resync_follows_config_and_allowlist_without_prompting(home, tmp_path, monkeypatch):
-    from gateway import run
-    from gateway.session_policy import accept_launch_hooks, build_policy, refresh_profile_hooks
+    from hermes_agent.gateway import run
+    from hermes_agent.gateway.session_policy import accept_launch_hooks, build_policy, refresh_profile_hooks
     a, b = _script(tmp_path, "a.sh"), _script(tmp_path, "b.sh")
     cfg = _cfg(a)
     monkeypatch.setattr(run, "_load_gateway_config", lambda: cfg)
@@ -109,8 +109,8 @@ def test_resync_keeps_in_memory_consent_and_never_disarms_on_bad_input(home, tmp
     a malformed allowlist record never breaks the valid ones; an older snapshot never lands after a
     newer one."""
     import threading
-    from gateway import run
-    from gateway.session_policy import accept_launch_hooks, build_policy, refresh_profile_hooks
+    from hermes_agent.gateway import run
+    from hermes_agent.gateway.session_policy import accept_launch_hooks, build_policy, refresh_profile_hooks
     a, b = _script(tmp_path, "a.sh"), _script(tmp_path, "b.sh")
     cfg = _cfg(a)
     monkeypatch.setattr(run, "_load_gateway_config", lambda: cfg)

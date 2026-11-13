@@ -13,7 +13,7 @@ had just cancelled.
 
 from typing import Any
 
-from gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
 
 
 def contact_text(contact) -> str:

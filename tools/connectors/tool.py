@@ -153,7 +153,7 @@ registry.register(
     # connectors never sees the tool, so the model cannot call it and read the gateway's
     # 404 back to them. The handler runs the same gate so the RPC path (methods_connectors) and
     # a cached schema agree. Read as a module attribute so tests patch
-    # ``gateway.config.connectors_available`` at one seam.
+    # ``hermes_agent.gateway.config.connectors_available`` at one seam.
     handler=lambda args, **kw: manage_connections(
         args, session_id=kw.get("session_id"), tool_call_id=kw.get("tool_call_id"),
         connectors_available=gateway_config.connectors_available,

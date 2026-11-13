@@ -27,7 +27,7 @@ import pytest
 from hermes_agent.cron import scheduler_delivery as sched_delivery
 from hermes_agent.cron.scheduler import _deliver_result
 from hermes_agent.cron.scheduler_delivery import _confirm_adapter_delivery
-from gateway.config import Platform, PlatformConfig
+from hermes_agent.gateway.config import Platform, PlatformConfig
 
 
 # ---------------------------------------------------------------------------
@@ -160,11 +160,11 @@ def _run(job, content, send_result, relay=False, standalone_result=None, cron_cf
         standalone_calls.append({"chat_id": chat_id, "text": text, "kwargs": kwargs})
         return standalone_result if standalone_result is not None else {}
 
-    with patch("gateway.config.load_gateway_config", return_value=_gateway_config(relay)), \
+    with patch("hermes_agent.gateway.config.load_gateway_config", return_value=_gateway_config(relay)), \
          patch("hermes_agent.cron.scheduler.load_config",
                return_value={"cron": {"wrap_response": False, **(cron_cfg or {})}}), \
          patch("hermes_agent.cron.scheduler_delivery._record_delivery_verification", side_effect=_record_verification), \
-         patch("gateway.delivery.DeliveryRouter", return_value=router), \
+         patch("hermes_agent.gateway.delivery.DeliveryRouter", return_value=router), \
          patch("tools.send_message_tool._send_to_platform", _fake_send_to_platform), \
          patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro):
         error = _deliver_result(job, content, adapters=_adapters(relay), loop=loop)
@@ -270,7 +270,7 @@ class TestLiveDeliveryIsAFinalNotification:
             return []
 
         with patch("hermes_agent.cron.scheduler_delivery._send_media_via_adapter", side_effect=fake_send_media), \
-             patch("gateway.platforms.base.BasePlatformAdapter.filter_media_delivery_paths",
+             patch("hermes_agent.gateway.platforms.base.BasePlatformAdapter.filter_media_delivery_paths",
                    side_effect=lambda files: files):
             error, router_calls, _ = _run(
                 _job(), f"Nightly report.\nMEDIA:{media}", _SendResult(message_id=1),
@@ -311,7 +311,7 @@ class TestNotifyIsConfigurable:
             return []
 
         with patch("hermes_agent.cron.scheduler_delivery._send_media_via_adapter", side_effect=fake_send_media), \
-             patch("gateway.platforms.base.BasePlatformAdapter.filter_media_delivery_paths",
+             patch("hermes_agent.gateway.platforms.base.BasePlatformAdapter.filter_media_delivery_paths",
                    side_effect=lambda files: files):
             _run(
                 _job(), f"Nightly report.\nMEDIA:{media}", _SendResult(message_id=1),
@@ -367,7 +367,7 @@ class TestStandaloneSendIsBounded:
     @staticmethod
     def _deliver_standalone(sender, cron_cfg):
         """Drive the production entry point with no live adapters (the standalone lane)."""
-        with patch("gateway.config.load_gateway_config", return_value=_gateway_config()), \
+        with patch("hermes_agent.gateway.config.load_gateway_config", return_value=_gateway_config()), \
              patch("hermes_agent.cron.scheduler.load_config",
                    return_value={"cron": {"wrap_response": False, **cron_cfg}}), \
              patch("hermes_agent.cron.scheduler_delivery._record_delivery_verification"), \
@@ -399,9 +399,9 @@ class TestStandaloneSendIsBounded:
             await asyncio.sleep(2)  # health: allow HX013 -- an upload outlasting the configured bound IS the case
             return {"success": True, "message_id": 7}
 
-        with patch("gateway.platforms.base.BasePlatformAdapter.filter_media_delivery_paths",
+        with patch("hermes_agent.gateway.platforms.base.BasePlatformAdapter.filter_media_delivery_paths",
                    side_effect=lambda files, **_kw: files), \
-             patch("gateway.config.load_gateway_config", return_value=_gateway_config()), \
+             patch("hermes_agent.gateway.config.load_gateway_config", return_value=_gateway_config()), \
              patch("hermes_agent.cron.scheduler.load_config", return_value={
                  "cron": {"wrap_response": False, "standalone_send_timeout_seconds": 1}}), \
              patch("hermes_agent.cron.scheduler_delivery._record_delivery_verification"), \

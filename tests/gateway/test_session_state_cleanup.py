@@ -18,7 +18,7 @@ from unittest.mock import MagicMock
 
 def _make_runner():
     """Bare GatewayRunner wired with just the state the helper touches."""
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
 
     runner = GatewayRunner.__new__(GatewayRunner)
     runner._running_agents = {}

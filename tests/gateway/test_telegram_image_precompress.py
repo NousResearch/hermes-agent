@@ -17,7 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 PIL = pytest.importorskip("PIL")
 from PIL import Image
 
-from gateway.platforms.base import PlatformConfig
+from hermes_agent.gateway.platforms.base import PlatformConfig
 from plugins.platforms.telegram.adapter import TelegramAdapter
 
 

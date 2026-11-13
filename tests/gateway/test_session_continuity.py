@@ -202,10 +202,10 @@ class TestPeerResolutionRecency:
 
 class TestLoadTranscriptReroutes:
     def test_load_transcript_raises_when_message_read_fails(self, tmp_path, monkeypatch):
-        from gateway.session import SessionStore
-        from gateway.session_transcript import TranscriptReadError
+        from hermes_agent.gateway.session import SessionStore
+        from hermes_agent.gateway.session_transcript import TranscriptReadError
 
-        from gateway.config import GatewayConfig
+        from hermes_agent.gateway.config import GatewayConfig
 
         store = SessionStore(sessions_dir=tmp_path / "gw-failed-read", config=GatewayConfig())
         db = store._db
@@ -225,9 +225,9 @@ class TestLoadTranscriptReroutes:
         assert isinstance(exc_info.value.__cause__, RuntimeError)
 
     def test_load_transcript_follows_reroute_chain(self, tmp_path):
-        from gateway.session import SessionStore
+        from hermes_agent.gateway.session import SessionStore
 
-        from gateway.config import GatewayConfig
+        from hermes_agent.gateway.config import GatewayConfig
 
         store = SessionStore(sessions_dir=tmp_path / "gw", config=GatewayConfig())
         db = store._db
@@ -243,9 +243,9 @@ class TestLoadTranscriptReroutes:
         )
 
     def test_load_transcript_follows_durable_compression_tip(self, tmp_path):
-        from gateway.session import SessionStore
+        from hermes_agent.gateway.session import SessionStore
 
-        from gateway.config import GatewayConfig
+        from hermes_agent.gateway.config import GatewayConfig
 
         store = SessionStore(sessions_dir=tmp_path / "gw2", config=GatewayConfig())
         db = store._db

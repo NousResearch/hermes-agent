@@ -17,10 +17,10 @@ from tests.waiting import async_wait_until, wait_until
 from tests.tui_gateway.test_hosted_room_service import _FakeRPC, _server
 
 from hermes_cli import urllib_security
-from gateway import hosted_room_driver as driver
-from gateway.config import PlatformConfig
-from gateway.hosted_rooms import local_authority_gateway_id
-from gateway.platforms.api_server import APIServerAdapter
+from hermes_agent.gateway import hosted_room_driver as driver
+from hermes_agent.gateway.config import PlatformConfig
+from hermes_agent.gateway.hosted_rooms import local_authority_gateway_id
+from hermes_agent.gateway.platforms.api_server import APIServerAdapter
 from hermes_agent.tui_gateway.hosted_room_peer_http import PeerRunsHTTPClient
 from hermes_agent.tui_gateway.hosted_room_peer_transport import PeerMemberRoute
 from hermes_agent.tui_gateway.hosted_room_service import HostedRoomService
@@ -50,7 +50,7 @@ async def _linked_home(tmp_path: Path, **runtime):
         PlatformConfig(enabled=True, extra={"key": "target-peer-key-1234567890"})
     )
     target._run_idempotency_store.close()
-    from gateway.platforms.api_server_run_idempotency import RunIdempotencyStore
+    from hermes_agent.gateway.platforms.api_server_run_idempotency import RunIdempotencyStore
 
     target._run_idempotency_store = RunIdempotencyStore(
         str(tmp_path / "target-runs.db")

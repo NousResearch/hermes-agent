@@ -423,7 +423,7 @@ def test_replacement_stops_only_an_orphaned_router(tmp_path, monkeypatch, owner)
     """Stale-preset replacement and the rescan bounce stop the recorded router only when its owner
     is gone; a live owner's router keeps running (its watchdog would respawn it anyway). POSIX: a
     Windows router dies with its owner's job object, so no orphan exists to stop."""
-    from gateway.status import get_process_start_time
+    from hermes_agent.gateway.status import get_process_start_time
     from hermes_cli.local_runtime import bootstrap, endpoint, supervisor
 
     monkeypatch.setattr(supervisor, "runtimes_root", lambda: tmp_path)

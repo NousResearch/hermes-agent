@@ -4,13 +4,13 @@ import threading
 
 import pytest
 
-from gateway.session_contract import Submission
+from hermes_agent.gateway.session_contract import Submission
 from tests.gateway.test_local_authority_transitions import local_session
 
 
 @pytest.mark.asyncio
 async def test_submit_waiting_on_delete_reports_not_found(tmp_path, monkeypatch):
-    from gateway import session_mutations
+    from hermes_agent.gateway import session_mutations
     from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
     owner, connection, ref = await local_session(tmp_path, monkeypatch)

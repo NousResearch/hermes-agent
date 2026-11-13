@@ -29,7 +29,7 @@ def _bare_adapter():
     a = TelegramAdapter.__new__(TelegramAdapter)
     # `name` / `has_fatal_error` are read-only base-class properties; set the
     # backing fields they derive from instead.
-    from gateway.config import Platform
+    from hermes_agent.gateway.config import Platform
 
     a.platform = Platform.TELEGRAM
     a._fatal_error_code = None

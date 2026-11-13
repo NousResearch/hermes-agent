@@ -16,7 +16,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from gateway.config import Platform, PlatformConfig
+from hermes_agent.gateway.config import Platform, PlatformConfig
 
 
 # ---------------------------------------------------------------------------
@@ -95,7 +95,7 @@ class TestTelegramAllowedChats:
 
     def test_config_bridge(self, monkeypatch, tmp_path):
         """slack-style config.yaml → env var bridge works."""
-        from gateway.config import load_gateway_config
+        from hermes_agent.gateway.config import load_gateway_config
 
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()
@@ -179,7 +179,7 @@ class TestMattermostAllowedChannels:
 
 
     def test_config_bridge(self, monkeypatch, tmp_path):
-        from gateway.config import load_gateway_config
+        from hermes_agent.gateway.config import load_gateway_config
 
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()

@@ -13,7 +13,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
 
-from gateway.platforms.api_server_runs import _RunStream
+from hermes_agent.gateway.platforms.api_server_runs import _RunStream
 from tests.gateway.test_api_server_runs import (
     _create_runs_app,
     _make_adapter,
@@ -177,9 +177,9 @@ class TestHostedRoomRuns:
     async def test_scoped_grant_refresh_requires_live_dispatch_authority(
         self, auth_adapter, monkeypatch
     ):
-        from gateway import hosted_rooms
-        from gateway.hosted_room_peer import decode_room_grant, issue_room_grant
-        from gateway.hosted_rooms import local_authority_gateway_id
+        from hermes_agent.gateway import hosted_rooms
+        from hermes_agent.gateway.hosted_room_peer import decode_room_grant, issue_room_grant
+        from hermes_agent.gateway.hosted_rooms import local_authority_gateway_id
 
         old_grant = issue_room_grant(
             auth_adapter._room_grant_secret(),
@@ -207,7 +207,7 @@ class TestHostedRoomRuns:
             expires_at=1000,
             now=100,
         )
-        monkeypatch.setattr("gateway.platforms.api_server.time.time", lambda: 200)
+        monkeypatch.setattr("hermes_agent.gateway.platforms.api_server.time.time", lambda: 200)
         app = _create_runs_app(auth_adapter)
         async with TestClient(TestServer(app)) as cli:
             refreshed = await cli.post(
@@ -298,9 +298,9 @@ class TestHostedRoomRuns:
         """Renewal must pause for reauthorization when the target's execution
         policy changed since the grant was issued — never silently mint a
         grant against the drifted policy (blocker 2, #97681 review)."""
-        from gateway import hosted_rooms
-        from gateway.hosted_room_peer import issue_room_grant, decode_room_grant
-        from gateway.hosted_rooms import local_authority_gateway_id
+        from hermes_agent.gateway import hosted_rooms
+        from hermes_agent.gateway.hosted_room_peer import issue_room_grant, decode_room_grant
+        from hermes_agent.gateway.hosted_rooms import local_authority_gateway_id
 
         stale_digest = "c" * 64
         drifted = issue_room_grant(
@@ -330,7 +330,7 @@ class TestHostedRoomRuns:
             expires_at=1000,
             now=100,
         )
-        monkeypatch.setattr("gateway.platforms.api_server.time.time", lambda: 200)
+        monkeypatch.setattr("hermes_agent.gateway.platforms.api_server.time.time", lambda: 200)
         app = _create_runs_app(auth_adapter)
         async with TestClient(TestServer(app)) as cli:
             refused = await cli.post(
@@ -346,10 +346,10 @@ class TestHostedRoomRuns:
     async def test_scoped_grant_refresh_fails_after_secret_rotation(
         self, auth_adapter, monkeypatch
     ):
-        from gateway.hosted_room_peer import issue_room_grant
-        from gateway.hosted_rooms import local_authority_gateway_id
+        from hermes_agent.gateway.hosted_room_peer import issue_room_grant
+        from hermes_agent.gateway.hosted_rooms import local_authority_gateway_id
 
-        monkeypatch.setattr("gateway.platforms.api_server.time.time", lambda: 200)
+        monkeypatch.setattr("hermes_agent.gateway.platforms.api_server.time.time", lambda: 200)
         revoked = issue_room_grant(
             b"x" * 32,
             grant_id="grant-revoked",
@@ -380,9 +380,9 @@ class TestHostedRoomRuns:
     ):
         from types import SimpleNamespace
 
-        from gateway import hosted_rooms
-        from gateway.hosted_room_peer import decode_room_grant, issue_room_grant
-        from gateway.hosted_rooms import local_authority_gateway_id
+        from hermes_agent.gateway import hosted_rooms
+        from hermes_agent.gateway.hosted_room_peer import decode_room_grant, issue_room_grant
+        from hermes_agent.gateway.hosted_rooms import local_authority_gateway_id
 
         common = {
             "room_id": "room-1",
@@ -435,13 +435,13 @@ class TestHostedRoomRuns:
     async def test_scoped_grant_revoke_is_idempotent_and_fences_prior_lineage(
         self, auth_adapter, monkeypatch
     ):
-        from gateway import hosted_rooms
-        from gateway.hosted_room_peer import decode_room_grant, issue_room_grant
-        from gateway.hosted_rooms import local_authority_gateway_id
+        from hermes_agent.gateway import hosted_rooms
+        from hermes_agent.gateway.hosted_room_peer import decode_room_grant, issue_room_grant
+        from hermes_agent.gateway.hosted_rooms import local_authority_gateway_id
 
         for target in (
-            "gateway.platforms.api_server.time.time",
-            "gateway.hosted_rooms_common.time.time",
+            "hermes_agent.gateway.platforms.api_server.time.time",
+            "hermes_agent.gateway.hosted_rooms_common.time.time",
         ):
             monkeypatch.setattr(target, lambda: 200)
         claims = {
@@ -607,7 +607,7 @@ class TestHostedRoomRuns:
     async def test_scoped_grant_admits_group_session_run_without_peer_api_key(
         self, auth_adapter, tmp_path
     ):
-        from gateway import hosted_rooms
+        from hermes_agent.gateway import hosted_rooms
 
         adapter = auth_adapter
         _use_idempotency_db(adapter, tmp_path / "idem.db")

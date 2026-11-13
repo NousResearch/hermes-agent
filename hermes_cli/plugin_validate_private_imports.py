@@ -102,7 +102,7 @@ def _private_target(module: str, name: str, core: frozenset, local: set[str]) ->
     hermes = module.split(".")[0] in core and module not in local and not own
     public_api, old = _public_api(), original_module(module)
     public = original_module(target) in public_api or f"{old}:{name}" in public_api \
-        or (old in public_api and not name.startswith("_"))  # ``from gateway.platforms import base`` too
+        or (old in public_api and not name.startswith("_"))  # ``from hermes_agent.gateway.platforms import base`` too
     return target if hermes and not public else ""
 
 

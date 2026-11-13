@@ -18,11 +18,11 @@ TODOS = {'todos': [{'id': '1', 'content': 'ship it', 'status': 'in_progress'}]}
 
 
 async def _local_session(tmp_path, monkeypatch):
-    from gateway import run, session_local
-    from gateway.config import GatewayConfig
-    from gateway.session import SessionStore
-    from gateway.session_authority import initialize_session_authority
-    from gateway.session_contract import SessionActor
+    from hermes_agent.gateway import run, session_local
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.session import SessionStore
+    from hermes_agent.gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.session_contract import SessionActor
     from hermes_agent.hermes_state_local import local_receipt
     monkeypatch.setattr(run, '_load_gateway_config', dict)
     monkeypatch.setattr(session_local, 'local_session_info', lambda *a: {})
@@ -38,7 +38,7 @@ async def _local_session(tmp_path, monkeypatch):
 
 
 async def _resume(authority, actor, ref, **params):
-    from gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway.session_controls import AuthorityConnection
     conn = AuthorityConnection(authority, object(), {'user_id': 'owner'})
     conn.actor = actor
     authority.events[actor.transport_id] = object()
@@ -65,7 +65,7 @@ async def test_omit_messages_resume_reads_no_transcript(tmp_path, monkeypatch):
     _seed_compacted(authority.db, physical)
     full = await _resume(authority, actor, ref)
     assert any(row.get('archived') for row in full['messages'])  # the default resume still shows archived turns
-    from gateway import session_local_recovery
+    from hermes_agent.gateway import session_local_recovery
 
     def lineage_read(*_args):
         raise AssertionError('an omit_messages resume read the transcript lineage')
@@ -81,7 +81,7 @@ async def test_omit_messages_resume_reads_no_transcript(tmp_path, monkeypatch):
 @pytest.mark.asyncio
 async def test_omitted_resume_keeps_an_undone_plan_gone_after_a_rotated_compression(tmp_path, monkeypatch):
     """The rewind removes the child's copy of the Todo turn; the parent's copy must not restore its plan."""
-    from gateway.session_mutations import mutate_session
+    from hermes_agent.gateway.session_mutations import mutate_session
     authority, actor, ref, physical = await _local_session(tmp_path, monkeypatch)
     db = authority.db
     call = {'id': 'todo-1', 'type': 'function', 'function': {'name': 'todo', 'arguments': '{}'}}
@@ -114,8 +114,8 @@ async def test_omitted_resume_keeps_an_undone_plan_gone_after_a_rotated_compress
 @pytest.mark.asyncio
 async def test_omitted_resume_reply_passes_the_wire_contract(tmp_path, monkeypatch):
     """Through ``dispatch``, which checks the reply against ``CanonicalSnapshot`` (strict under tests)."""
-    from gateway.session_controls import AuthorityConnection
-    from gateway import session_local
+    from hermes_agent.gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway import session_local
     authority, actor, ref, physical = await _local_session(tmp_path, monkeypatch)
     monkeypatch.setattr(session_local, 'local_session_info', lambda *a: {'desktop_protocol': 'hermes-gateway-v1'})
     _seed_compacted(authority.db, physical)
@@ -131,7 +131,7 @@ async def test_omitted_resume_reply_passes_the_wire_contract(tmp_path, monkeypat
 @pytest.mark.asyncio
 async def test_omitted_resume_racing_a_delete_answers_not_found(tmp_path, monkeypatch):
     """A delete committing after the attach, before the omitted reply's count/plan read, is ``not_found``."""
-    from gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway.session_controls import AuthorityConnection
     authority, actor, ref, physical = await _local_session(tmp_path, monkeypatch)
     _seed_compacted(authority.db, physical)
     attach = authority.attach

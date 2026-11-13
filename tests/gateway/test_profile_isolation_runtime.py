@@ -81,11 +81,11 @@ class TestSkillsHubPathResolution:
 
 
 class TestGatewayCacheDirResolution:
-    """gateway/platforms/base.py cache getters must follow the active profile."""
+    """hermes_agent/gateway/platforms/base.py cache getters must follow the active profile."""
 
     def test_image_cache_dir_follows_override(self, two_profiles):
         prof_a, prof_b = two_profiles
-        import gateway.platforms.base as gb
+        import hermes_agent.gateway.platforms.base as gb
 
         a_seen = _under_override(prof_a, lambda: gb.get_image_cache_dir())
         b_seen = _under_override(prof_b, lambda: gb.get_image_cache_dir())
@@ -98,13 +98,13 @@ class TestGatewayCacheDirResolution:
 
 
 class TestRichSentStorePathResolution:
-    """gateway/rich_sent_store.py must honor the override, not read os.environ."""
+    """hermes_agent/gateway/rich_sent_store.py must honor the override, not read os.environ."""
 
     def test_store_path_follows_override(self, two_profiles, monkeypatch):
         _prof_a, prof_b = two_profiles
         # Ensure no ambient HERMES_HOME env masks the test.
         monkeypatch.delenv("HERMES_HOME", raising=False)
-        import gateway.rich_sent_store as rss
+        import hermes_agent.gateway.rich_sent_store as rss
 
         b_seen = _under_override(prof_b, lambda: rss._store_path())
         assert b_seen.startswith(str(prof_b))
@@ -112,14 +112,14 @@ class TestRichSentStorePathResolution:
 
 
 class TestGatewayHooksDirResolution:
-    """gateway/hooks.py's HookRegistry must discover hooks from the active
+    """hermes_agent/gateway/hooks.py's HookRegistry must discover hooks from the active
     profile's directory — otherwise one profile's HookRegistry loads and
     executes a DIFFERENT profile's hook handlers (arbitrary Python) against
     its own live event context under the multiplexed gateway."""
 
     def test_hooks_dir_follows_override(self, two_profiles):
         prof_a, prof_b = two_profiles
-        import gateway.hooks as gh
+        import hermes_agent.gateway.hooks as gh
 
         a_seen = _under_override(prof_a, lambda: gh._resolve_hooks_dir())
         b_seen = _under_override(prof_b, lambda: gh._resolve_hooks_dir())
@@ -133,7 +133,7 @@ class TestGatewayHooksDirResolution:
         must not be discovered when profile A's override is active, and vice
         versa — proving the registry doesn't fall back to a frozen profile."""
         prof_a, prof_b = two_profiles
-        import gateway.hooks as gh
+        import hermes_agent.gateway.hooks as gh
 
         b_hook_dir = prof_b / "hooks" / "only-in-b"
         b_hook_dir.mkdir(parents=True)
@@ -182,13 +182,13 @@ class TestCheckpointManagerPathResolution:
 
 
 class TestStickerCachePathResolution:
-    """gateway/sticker_cache.py's cache file must honor the active profile —
+    """hermes_agent/gateway/sticker_cache.py's cache file must honor the active profile —
     otherwise one profile's Telegram sticker-description cache leaks into a
     different profile's under the multiplexed gateway."""
 
     def test_cache_path_follows_override(self, two_profiles):
         prof_a, prof_b = two_profiles
-        import gateway.sticker_cache as sc
+        import hermes_agent.gateway.sticker_cache as sc
 
         a_seen = _under_override(prof_a, lambda: sc._resolve_cache_path())
         b_seen = _under_override(prof_b, lambda: sc._resolve_cache_path())

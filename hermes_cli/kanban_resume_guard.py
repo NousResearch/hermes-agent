@@ -31,7 +31,7 @@ def _dispatcher_owned_run() -> bool:
     run the dispatcher owns — task, run id, claim, heartbeat — may continue a worker
     transcript, so it is exempt from the guard."""
     try:
-        from gateway.session_context import get_session_env
+        from hermes_agent.gateway.session_context import get_session_env
     except ImportError:  # no gateway context (plain CLI child) — read the process env
         get_session_env = os.environ.get
     return bool(str(get_session_env("HERMES_KANBAN_TASK", "") or "").strip())

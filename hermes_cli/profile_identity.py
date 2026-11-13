@@ -96,7 +96,7 @@ def _purge_profile_identity(canon: str, live_mux: bool) -> bool:
         from hermes_constants import get_default_hermes_root
         root = get_default_hermes_root()
         try:
-            from gateway.control_socket import purge_gateway_profile_identity
+            from hermes_agent.gateway.control_socket import purge_gateway_profile_identity
             answer = purge_gateway_profile_identity(root, canon)
         except Exception as exc:
             reason = f"{type(exc).__name__}: {exc}"
@@ -155,7 +155,7 @@ def _gateway_accepts_profile_identity_verb(root: Path) -> bool:
     """True when the gateway at *root* answers a verb it has always had. Distinguishes a failed
     migration verb caused by an older gateway process from one caused by no gateway at all."""
     try:
-        from gateway.control_socket import identify_gateway
+        from hermes_agent.gateway.control_socket import identify_gateway
         return identify_gateway(root) is not None
     except Exception:
         return False
@@ -196,7 +196,7 @@ def _migrate_profile_identity(old_canon: str, new_canon: str, live_mux: bool) ->
         from hermes_constants import get_default_hermes_root
         root = get_default_hermes_root()
         try:
-            from gateway.control_socket import migrate_gateway_profile_identity
+            from hermes_agent.gateway.control_socket import migrate_gateway_profile_identity
             answer = migrate_gateway_profile_identity(root, old_canon, new_canon)
         except Exception as exc:
             reason = f"{type(exc).__name__}: {exc}"

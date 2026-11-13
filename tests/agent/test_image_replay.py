@@ -8,7 +8,7 @@ import pytest
 from agent.image_routing import build_native_content_parts
 from agent.session_persistence import _durable_content
 from agent.turn_context import build_api_messages
-from gateway.session_ingress_media import capture_native_media
+from hermes_agent.gateway.session_ingress_media import capture_native_media
 from hermes_agent.hermes_state import SessionDB
 
 _PNG = bytes.fromhex(
@@ -147,7 +147,7 @@ def test_api_server_image_replays_with_its_position_and_detail(tmp_path, parts):
     rebuilt from the DB replays the same parts."""
     import base64
 
-    from gateway.session_api_media import commit_api_images, restore_api_images
+    from hermes_agent.gateway.session_api_media import commit_api_images, restore_api_images
 
     _config()
     url = "data:image/png;base64," + base64.b64encode(_PNG).decode()

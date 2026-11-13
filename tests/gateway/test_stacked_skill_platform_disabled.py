@@ -3,7 +3,7 @@ per-platform ``skills.platform_disabled`` gate.
 
 ``/skill-a /skill-b do XYZ`` loads every leading skill (up to 5), not just
 the first (``agent.skill_commands.split_stacked_skill_commands`` /
-``build_stacked_skill_invocation_message``). ``gateway.run.GatewayRunner.
+``build_stacked_skill_invocation_message``). ``hermes_agent.gateway.run.GatewayRunner.
 _handle_message`` already re-checks the FIRST skill against the
 per-platform disabled list before dispatch (``get_skill_commands()`` only
 applies the *global* disabled list at scan time), but did not extend that
@@ -18,9 +18,9 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.event import MessageEvent
-from gateway.session import SessionEntry, SessionSource, build_session_key
+from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+from hermes_agent.gateway.platforms.event import MessageEvent
+from hermes_agent.gateway.session import SessionEntry, SessionSource, build_session_key
 
 
 def _make_source() -> SessionSource:
@@ -38,7 +38,7 @@ def _make_event(text: str) -> MessageEvent:
 
 
 def _make_runner():
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
 
     runner = object.__new__(GatewayRunner)
     runner.config = GatewayConfig(
@@ -79,7 +79,7 @@ def _make_runner():
     runner._is_user_authorized = lambda _source: True
     runner._set_session_env = lambda _context: None
     runner._should_send_voice_reply = lambda *_args, **_kwargs: False
-    from gateway.run import GatewayRunner as _GR
+    from hermes_agent.gateway.run import GatewayRunner as _GR
     runner._session_key_for_source = _GR._session_key_for_source.__get__(runner, _GR)
     return runner
 
@@ -108,7 +108,7 @@ async def test_stacked_second_skill_disabled_for_platform_is_blocked(monkeypatch
     """The whole stacked invocation is rejected when a NON-leading stacked
     skill is disabled for the message's platform — it must not silently load
     that skill's content just because only the first skill was checked."""
-    import gateway.run as gateway_run
+    import hermes_agent.gateway.run as gateway_run
     import agent.skill_utils as skill_utils_mod
 
     _make_skill(skills_env, "allowed-skill")

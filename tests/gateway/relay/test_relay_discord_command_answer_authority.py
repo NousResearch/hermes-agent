@@ -34,19 +34,19 @@ def _frame(interaction_type, user, data):
 
 @pytest.fixture(autouse=True)
 def _no_admitted_authors(monkeypatch):
-    from gateway.relay import admitted_authors
+    from hermes_agent.gateway.relay import admitted_authors
 
     monkeypatch.setattr(admitted_authors, "_admitted", type(admitted_authors._admitted)())
 
 
 @pytest_asyncio.fixture
 async def gateway(tmp_path, monkeypatch):
-    import gateway.run as gr
-    from gateway.config import GatewayConfig, Platform, PlatformConfig
-    from gateway.platforms.base import SendResult
-    from gateway.relay.adapter import RelayAdapter
-    from gateway.relay.ws_transport import WebSocketRelayTransport
-    from gateway.session_authority import initialize_session_authority
+    import hermes_agent.gateway.run as gr
+    from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+    from hermes_agent.gateway.platforms.base import SendResult
+    from hermes_agent.gateway.relay.adapter import RelayAdapter
+    from hermes_agent.gateway.relay.ws_transport import WebSocketRelayTransport
+    from hermes_agent.gateway.session_authority import initialize_session_authority
     from tests.gateway.relay.test_relay_passthrough import _desc
     from tools import approval
 
@@ -74,8 +74,8 @@ async def gateway(tmp_path, monkeypatch):
 
 
 def _thread_session_key(runner):
-    from gateway.config import Platform
-    from gateway.session import SessionSource
+    from hermes_agent.gateway.config import Platform
+    from hermes_agent.gateway.session import SessionSource
 
     return runner._session_key_for_source(SessionSource(
         platform=Platform.DISCORD, chat_id=THREAD, chat_type="thread", thread_id=THREAD, user_id="alice",
@@ -83,7 +83,7 @@ def _thread_session_key(runner):
 
 
 def _alice_approval(session_key):
-    from gateway.session_context import clear_session_vars, set_session_vars
+    from hermes_agent.gateway.session_context import clear_session_vars, set_session_vars
     from tools import approval
     from tools.approval_gateway_wait import _ApprovalEntry
 
@@ -138,11 +138,11 @@ async def test_typed_answer_from_an_unadmitted_discord_sender_is_refused(gateway
                                                                          refused):
     """The runner's typed slash-confirm and clarify checks: a relayed Discord sender is admitted once
     the connector delivered their message here (``approvers: ["*"]``, any admitted member answers)."""
-    from gateway.relay.admitted_authors import note_delivered
-    from gateway.config import Platform
-    from gateway.platforms.event import MessageEvent
-    from gateway.session import SessionSource
-    from gateway.session_context import clear_session_vars, set_session_vars
+    from hermes_agent.gateway.relay.admitted_authors import note_delivered
+    from hermes_agent.gateway.config import Platform
+    from hermes_agent.gateway.platforms.event import MessageEvent
+    from hermes_agent.gateway.session import SessionSource
+    from hermes_agent.gateway.session_context import clear_session_vars, set_session_vars
     from tools import clarify_gateway, slash_confirm
 
     runner, _transport, _adapter = gateway
@@ -201,10 +201,10 @@ def test_admission_follows_the_sender_through_rebuilds_and_merges():
     of two senders clears its user: none of them changes who the connector admitted."""
     import dataclasses
 
-    from gateway.config import Platform
-    from gateway.platforms.event import MessageEvent
-    from gateway.relay.admitted_authors import answer_admitted, note_delivered
-    from gateway.session import SessionSource
+    from hermes_agent.gateway.config import Platform
+    from hermes_agent.gateway.platforms.event import MessageEvent
+    from hermes_agent.gateway.relay.admitted_authors import answer_admitted, note_delivered
+    from hermes_agent.gateway.session import SessionSource
 
     def relayed(user, platform=Platform.DISCORD):
         return SessionSource(platform=platform, chat_id=THREAD, chat_type="thread", user_id=user,
@@ -287,10 +287,10 @@ async def test_an_unadmitted_discord_interaction_reaches_no_command(gateway, mon
 @pytest.mark.parametrize("sender", ["alice", "owner-admin"])
 async def test_a_discord_interaction_from_an_admitted_sender_or_an_admin_runs(gateway, monkeypatch, sender):
     """A member whose message the connector delivered here, or an admin of the scope, still runs commands."""
-    import gateway.run as gr
-    from gateway.config import Platform, PlatformConfig
-    from gateway.relay.admitted_authors import note_delivered
-    from gateway.session import SessionSource
+    import hermes_agent.gateway.run as gr
+    from hermes_agent.gateway.config import Platform, PlatformConfig
+    from hermes_agent.gateway.relay.admitted_authors import note_delivered
+    from hermes_agent.gateway.session import SessionSource
     from tests.waiting import async_wait_until
 
     runner, transport, adapter = gateway

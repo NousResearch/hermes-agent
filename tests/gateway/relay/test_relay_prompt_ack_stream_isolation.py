@@ -26,9 +26,9 @@ import json
 
 import pytest
 
-from gateway.config import PlatformConfig
-from gateway.relay.adapter import RelayAdapter
-from gateway.relay.descriptor import CapabilityDescriptor
+from hermes_agent.gateway.config import PlatformConfig
+from hermes_agent.gateway.relay.adapter import RelayAdapter
+from hermes_agent.gateway.relay.descriptor import CapabilityDescriptor
 
 
 def _descriptor(**overrides):

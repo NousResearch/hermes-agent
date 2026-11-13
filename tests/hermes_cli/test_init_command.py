@@ -90,7 +90,7 @@ class TestSessionActiveDirectory:
         # Dispatch surfaces that don't pass an explicit key (e.g. a CLI
         # inheriting a bound session env) resolve the key from
         # HERMES_SESSION_KEY.
-        from gateway.session_context import set_session_vars
+        from hermes_agent.gateway.session_context import set_session_vars
         from tools.terminal_tool import clear_session_cwd, record_session_cwd
 
         workspace = tmp_path / "proj"

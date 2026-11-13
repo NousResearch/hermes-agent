@@ -117,5 +117,5 @@ def emit_plugin_session_event(plugin_id: str, session_id: str, event: str,
     body = json.loads(json.dumps(payload or {}, allow_nan=False))
     if _session_event_forwarder is not None:
         return bool(_session_event_forwarder(plugin_id, session_id, event, body))
-    from gateway.session_plugin_rpc import publish_session_event
+    from hermes_agent.gateway.session_plugin_rpc import publish_session_event
     return publish_session_event(session_id, name, body)

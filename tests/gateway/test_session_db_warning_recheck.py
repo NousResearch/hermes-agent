@@ -6,11 +6,11 @@ import threading
 
 import pytest
 
-import gateway.run as gateway_run
+import hermes_agent.gateway.run as gateway_run
 from hermes_agent import hermes_state
 from hermes_agent import hermes_state_registry
-from gateway.run import _SESSION_DB_UNPINNED
-from gateway.session_db_recovery import RecoverableHandleCache
+from hermes_agent.gateway.run import _SESSION_DB_UNPINNED
+from hermes_agent.gateway.session_db_recovery import RecoverableHandleCache
 
 
 class _Clock:

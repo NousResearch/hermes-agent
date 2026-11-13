@@ -214,7 +214,7 @@ def _rebind_caller_session_context(agent) -> None:
         from hermes_logging import set_session_context
         set_session_context(agent.session_id)
     try:
-        from gateway.session_context import set_current_session_id
+        from hermes_agent.gateway.session_context import set_current_session_id
         if agent.session_id:
             set_current_session_id(agent.session_id)
     except Exception:

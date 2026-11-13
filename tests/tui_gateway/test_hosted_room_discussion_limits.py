@@ -9,8 +9,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway import hosted_room_discussion as discussion
-from gateway import hosted_room_driver as driver
+from hermes_agent.gateway import hosted_room_discussion as discussion
+from hermes_agent.gateway import hosted_room_driver as driver
 from hermes_agent.tui_gateway.hosted_room_service import HostedRoomService
 
 
@@ -155,7 +155,7 @@ def test_stop_still_fences_work_after_the_previous_ten_reply_ceiling(tmp_path):
 
 
 def test_owner_settings_do_not_leak_from_a_member_scope_and_defaults_are_unchanged(tmp_path):
-    from gateway.run import _profile_runtime_scope
+    from hermes_agent.gateway.run import _profile_runtime_scope
 
     owner, member = tmp_path / "owner", tmp_path / "member"
     owner.mkdir()

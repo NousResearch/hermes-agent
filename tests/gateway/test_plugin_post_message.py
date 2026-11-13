@@ -6,11 +6,11 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform
-from gateway.platforms.base import BasePlatformAdapter, PlatformConfig, SendResult
-from gateway.run import GatewayRunner
-from gateway.session import SessionSource, SessionStore
-from gateway.session_context import scoped_session_key
+from hermes_agent.gateway.config import GatewayConfig, Platform
+from hermes_agent.gateway.platforms.base import BasePlatformAdapter, PlatformConfig, SendResult
+from hermes_agent.gateway.run import GatewayRunner
+from hermes_agent.gateway.session import SessionSource, SessionStore
+from hermes_agent.gateway.session_context import scoped_session_key
 from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
 
 
@@ -80,7 +80,7 @@ async def _in_session(session_key, fn):
 async def test_post_then_edit_targets_the_calling_session(tmp_path, adapter_cls, edited):
     adapter = adapter_cls()
     runner, ctx, entry = _setup(tmp_path, adapter)
-    with patch("gateway.run._gateway_runner_ref", lambda: runner), \
+    with patch("hermes_agent.gateway.run._gateway_runner_ref", lambda: runner), \
             patch.object(GatewayRunner, "_plugin_messaging_session_owned", return_value=True):
         handle = await _in_session(entry.session_key, lambda: ctx.post_message("step 1/2"))
         assert handle.ok and handle.message_id == "m1"
@@ -97,7 +97,7 @@ async def test_post_then_edit_targets_the_calling_session(tmp_path, adapter_cls,
 async def test_no_bound_session_is_refused_without_sending(tmp_path):
     adapter = _EditingAdapter()
     runner, ctx, _entry = _setup(tmp_path, adapter)
-    with patch("gateway.run._gateway_runner_ref", lambda: runner):
+    with patch("hermes_agent.gateway.run._gateway_runner_ref", lambda: runner):
         handle = await asyncio.to_thread(ctx.post_message, "from a timer")
         edit = await asyncio.to_thread(handle.edit, "still nothing")
     assert (handle.ok, handle.error, edit["ok"]) == (False, "no_conversation", False)

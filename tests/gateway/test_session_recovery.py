@@ -3,8 +3,8 @@ session_key → session_id resolution (profile aware)."""
 
 from unittest.mock import patch
 
-from gateway.config import GatewayConfig
-from gateway.session import SessionStore
+from hermes_agent.gateway.config import GatewayConfig
+from hermes_agent.gateway.session import SessionStore
 
 
 class _FakeGatewayDB:
@@ -21,7 +21,7 @@ class _FakeGatewayDB:
 
 def _store(tmp_path, db):
     config = GatewayConfig(multiplex_profiles=True)
-    with patch("gateway.session.SessionStore._ensure_loaded"):
+    with patch("hermes_agent.gateway.session.SessionStore._ensure_loaded"):
         store = SessionStore(sessions_dir=tmp_path, config=config)
     store._loaded = True
     store._db = db  # pin: _db_for_key returns this db for every key (no profile I/O)

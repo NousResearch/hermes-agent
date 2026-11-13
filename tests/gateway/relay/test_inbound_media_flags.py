@@ -3,10 +3,10 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from gateway.platforms.event import MessageEvent
-from gateway.relay.adapter import RelayAdapter
-from gateway.relay.media import RelayMediaClient
-from gateway.session_envelope import _media_clause
+from hermes_agent.gateway.platforms.event import MessageEvent
+from hermes_agent.gateway.relay.adapter import RelayAdapter
+from hermes_agent.gateway.relay.media import RelayMediaClient
+from hermes_agent.gateway.session_envelope import _media_clause
 
 
 @pytest.mark.asyncio

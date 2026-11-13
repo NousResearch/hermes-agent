@@ -16,7 +16,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from gateway.session_context import set_session_vars
+from hermes_agent.gateway.session_context import set_session_vars
 from tools.process_registry import process_registry
 
 LIVE_CONTROL = {"action", "subagent_id", "message"}
@@ -24,7 +24,7 @@ LIVE_CONTROL = {"action", "subagent_id", "message"}
 
 @pytest.fixture(autouse=True)
 def _clean_queue_and_context(monkeypatch):
-    import gateway.session_context as sc
+    import hermes_agent.gateway.session_context as sc
 
     monkeypatch.delenv("HERMES_SINGLE_QUERY_SESSION", raising=False)
     yield
@@ -95,7 +95,7 @@ def test_a_session_keeps_its_mode_until_a_new_session():
 
 @pytest.mark.parametrize("refresh", [
     {"content_aware": True},  # the compaction boundary (agent/conversation_compression.py)
-    {},  # /reload-mcp over the cached agents (gateway/run_turn.py)
+    {},  # /reload-mcp over the cached agents (hermes_agent/gateway/run_turn.py)
 ], ids=["compaction-refresh", "reload-mcp"])
 @pytest.mark.parametrize("pinned_inline", [True, False], ids=["pinned-inline", "pinned-background"])
 def test_a_restored_mode_survives_a_later_tools_refresh(refresh, pinned_inline):

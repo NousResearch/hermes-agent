@@ -89,7 +89,7 @@ def test_warnings_that_mention_compression_are_not_compaction(server, monkeypatc
         COMPRESSION_RETRY_MESSAGES_STATUS_TEMPLATE,
         CONTEXT_OVERFLOW_BLOCKED_WARNING_TEMPLATE,
     )
-    from gateway.warning_notifications import DiagnosticText
+    from hermes_agent.gateway.warning_notifications import DiagnosticText
 
     events = _capture(server, monkeypatch)
     lines = [

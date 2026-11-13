@@ -11,7 +11,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway import webapp_listener as webapp
+from hermes_agent.gateway import webapp_listener as webapp
 from tests.gateway.fixtures.webapp_fallback_peer import free_port, run
 
 WEBAPP_URL = "https://webapp.example.net"

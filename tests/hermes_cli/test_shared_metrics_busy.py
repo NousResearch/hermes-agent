@@ -8,11 +8,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.config import Platform
-from gateway.platforms.base import BasePlatformAdapter
-from gateway.platforms.event import MessageEvent
-from gateway.session import SessionSource
-from gateway.session_ingress_burst import discard_busy_burst, dispatch_busy_burst
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.platforms.base import BasePlatformAdapter
+from hermes_agent.gateway.platforms.event import MessageEvent
+from hermes_agent.gateway.session import SessionSource
+from hermes_agent.gateway.session_ingress_burst import discard_busy_burst, dispatch_busy_burst
 from hermes_cli.observability import relay_shared_metrics as rsm
 from hermes_cli.observability import shared_metrics_busy as busy
 from hermes_cli.observability import shared_metrics_contract as contract
@@ -92,7 +92,7 @@ def test_every_busy_arrival_counts_once_when_its_fate_is_known(rows):
         tasks = [asyncio.create_task(dispatch_busy_burst(queue, e, KEY)) for e in (_message("a"), _message("b"))]
         await asyncio.sleep(0)
         queue.__dict__["_shared_bursts"][KEY].timer.cancel()
-        from gateway.session_ingress_burst import _flush
+        from hermes_agent.gateway.session_ingress_burst import _flush
         await _flush(queue, KEY, queue.__dict__["_shared_bursts"][KEY])
         await asyncio.gather(*tasks)
         await asyncio.gather(*queue._background_tasks)
@@ -149,10 +149,10 @@ def test_day_row_reports_each_profiles_peak_of_chats_running_at_once(tmp_path, m
     """Profile A runs two chats at once, then one; profile B one. Each profile's closed day row
     carries its own peak (claimed in the owning profile's scope, not the launch profile's), and a
     row recorded before the field existed still packages."""
-    from gateway.run_agent_cache import GatewayAgentCacheMixin
+    from hermes_agent.gateway.run_agent_cache import GatewayAgentCacheMixin
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
-    monkeypatch.setattr("gateway.run._write_runtime_status_quiet", lambda **_: None)
+    monkeypatch.setattr("hermes_agent.gateway.run._write_runtime_status_quiet", lambda **_: None)
     monkeypatch.setattr(busy, "_running", {})
     monkeypatch.setattr(busy, "_peaks", {})
     clock = {"now": DAY1}
@@ -208,9 +208,9 @@ def test_a_busy_message_saved_behind_a_pause_is_not_dropped(rows, monkeypatch, r
     """The user is told the message is saved and its FIFO row stays ``queued``: no ``dropped``
     row. When this process later runs that row (a ``session_busy`` pause lifting), it counts as
     ``queued`` with its wait; after a restart the next process runs it and nothing is counted."""
-    import gateway.session_authority  # binds the real reader before the patch below
+    import hermes_agent.gateway.session_authority  # binds the real reader before the patch below
     from hermes_agent import hermes_state_runtime
-    from gateway.session_ingress import admit_message
+    from hermes_agent.gateway.session_ingress import admit_message
     from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
     monkeypatch.setattr(hermes_state_runtime, "get_session_admission",
@@ -239,10 +239,10 @@ def test_a_busy_message_saved_behind_a_pause_is_not_dropped(rows, monkeypatch, r
 def test_an_auto_resumed_chat_counts_toward_its_owning_profiles_peak(tmp_path, monkeypatch):
     """The startup auto-resume loop claims chats from the launch profile's scope; a resumed chat
     of another profile counts toward that profile's peak, not the launch profile's."""
-    from gateway.session import SessionEntry
+    from hermes_agent.gateway.session import SessionEntry
     from tests.gateway.restart_test_helpers import make_restart_runner, make_restart_source
 
-    monkeypatch.setattr("gateway.run._write_runtime_status_quiet", lambda **_: None)
+    monkeypatch.setattr("hermes_agent.gateway.run._write_runtime_status_quiet", lambda **_: None)
     monkeypatch.setattr(busy, "_running", {})
     monkeypatch.setattr(busy, "_peaks", {})
     monkeypatch.setattr(busy, "_now", lambda: DAY1)
@@ -272,7 +272,7 @@ def test_a_held_burst_dropped_by_stop_counts_under_its_own_profile_not_the_chats
     """Two profiles serve one Discord channel through different bots; the other profile ran the
     chat's latest turn. A burst held for this profile's bot and dropped by /stop is recorded under
     the profile its routing identity names, so that profile's collection setting decides."""
-    from gateway.session_identity import RoutingIdentity
+    from hermes_agent.gateway.session_identity import RoutingIdentity
     from hermes_constants import get_hermes_home, reset_hermes_home_override, set_hermes_home_override
 
     homes = []
@@ -335,10 +335,10 @@ def test_a_closing_day_keeps_a_peak_reached_just_before_midnight(tmp_path, monke
 async def _real_runner(monkeypatch):
     """Real GatewayRunner busy dispatch, real DiscordAdapter, real authority over a real SessionDB;
     the drain is not scheduled, so a queued row waits until the test runs or cancels it."""
-    from gateway.config import GatewayConfig, PlatformConfig
-    from gateway.platforms.base import SendResult
-    from gateway.run import GatewayRunner
-    from gateway.session_authority import SessionAuthority, initialize_session_authority
+    from hermes_agent.gateway.config import GatewayConfig, PlatformConfig
+    from hermes_agent.gateway.platforms.base import SendResult
+    from hermes_agent.gateway.run import GatewayRunner
+    from hermes_agent.gateway.session_authority import SessionAuthority, initialize_session_authority
     from plugins.platforms.discord.adapter import DiscordAdapter
 
     monkeypatch.setattr(SessionAuthority, "_schedule", lambda self, ref: None)
@@ -374,9 +374,9 @@ async def test_a_message_the_adapter_saw_idle_counts_when_it_waits_behind_a_runn
     """A's adapter task ended while queued B runs as a FIFO turn (outside the adapter's session
     guard): C reaches the runner as a fresh message, is admitted behind B, and counts once when
     its own turn starts."""
-    from gateway.session_contract import SessionRef
-    from gateway.session_authority import SessionAuthority
-    from gateway.session_ingress_context import native_callback
+    from hermes_agent.gateway.session_contract import SessionRef
+    from hermes_agent.gateway.session_authority import SessionAuthority
+    from hermes_agent.gateway.session_ingress_context import native_callback
     from hermes_constants import get_hermes_home
 
     runner, authority, source, key = await _real_runner(monkeypatch)
@@ -405,8 +405,8 @@ async def test_a_message_the_adapter_saw_idle_counts_when_it_waits_behind_a_runn
 async def test_a_busy_message_cancelled_before_admission_reads_its_row_counts_as_dropped(rows, monkeypatch):
     """/stop cancels the queued row while ``admit_message`` is still committing it: the re-read
     finds it terminal ``cancelled``. It never reached the agent: ``dropped`` / ``never``."""
-    from gateway.session_ingress import admit_message
-    from gateway.session_ingress_context import native_callback
+    from hermes_agent.gateway.session_ingress import admit_message
+    from hermes_agent.gateway.session_ingress_context import native_callback
     from hermes_constants import get_hermes_home
 
     runner, authority, source, _key = await _real_runner(monkeypatch)

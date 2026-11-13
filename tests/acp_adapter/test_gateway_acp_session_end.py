@@ -12,14 +12,14 @@ pytestmark = pytest.mark.usefixtures("authority_cwd_in_tmp")  # symbolic profile
 
 @pytest.mark.asyncio
 async def test_last_viewer_or_shutdown_ends_only_idle_acp_sessions(tmp_path, monkeypatch):
-    from gateway import run
-    from gateway.config import GatewayConfig
-    from gateway.run_runtime import settle_gateway_runtime
-    from gateway.session import SessionStore
-    from gateway.session_authority import initialize_session_authority
-    from gateway.session_contract import Submission
-    from gateway.session_controls import AuthorityConnection
-    from gateway.session_local import create_local_session
+    from hermes_agent.gateway import run
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.run_runtime import settle_gateway_runtime
+    from hermes_agent.gateway.session import SessionStore
+    from hermes_agent.gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.session_contract import Submission
+    from hermes_agent.gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway.session_local import create_local_session
     from hermes_agent.hermes_state_local import local_receipt
 
     monkeypatch.setattr(run, '_load_gateway_config', lambda: {'platform_toolsets': {'cli': [], 'acp': []}})
@@ -82,13 +82,13 @@ async def test_last_viewer_or_shutdown_ends_only_idle_acp_sessions(tmp_path, mon
 async def test_acp_session_left_mid_turn_ends_once_its_fifo_drains(tmp_path, monkeypatch):
     """The last viewer leaving during a turn cannot end the session; the drain going idle must."""
     import asyncio
-    from gateway import run
-    from gateway.config import GatewayConfig
-    from gateway.session import SessionStore
-    from gateway.session_authority import initialize_session_authority
-    from gateway.session_contract import Submission
-    from gateway.session_controls import AuthorityConnection
-    from gateway.session_local import create_local_session
+    from hermes_agent.gateway import run
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.session import SessionStore
+    from hermes_agent.gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.session_contract import Submission
+    from hermes_agent.gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway.session_local import create_local_session
     from hermes_agent.hermes_state_local import local_receipt
 
     release, started = asyncio.Event(), asyncio.Event()
@@ -98,7 +98,7 @@ async def test_acp_session_left_mid_turn_ends_once_its_fifo_drains(tmp_path, mon
         await release.wait()
         return 'done'
 
-    monkeypatch.setattr('gateway.session_finite.execute_finite_admission', execute)
+    monkeypatch.setattr('hermes_agent.gateway.session_finite.execute_finite_admission', execute)
     monkeypatch.setattr(run, '_load_gateway_config', lambda: {'platform_toolsets': {'acp': [], 'gui': []}})
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
     runner = SimpleNamespace(session_store=store, _session_db=store._db, adapters={}, _draining=False,

@@ -11,9 +11,9 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from gateway.config import PlatformConfig
-from gateway.platforms.base import utf16_len
-from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
+from hermes_agent.gateway.config import PlatformConfig
+from hermes_agent.gateway.platforms.base import utf16_len
+from hermes_agent.gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
 from plugins.platforms.telegram.adapter import TelegramAdapter
 from tests.waiting import async_wait_until
 
@@ -146,7 +146,7 @@ def test_plain_drafts_reaches_the_adapter_from_config_yaml(tmp_path, monkeypatch
     """Both documented nestings load through the gateway's config loader into the adapter."""
     import json
 
-    from gateway.config import Platform, load_gateway_config
+    from hermes_agent.gateway.config import Platform, load_gateway_config
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     for doc in ({"telegram": {"extra": {"plain_drafts": True}}},

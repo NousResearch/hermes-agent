@@ -3,7 +3,7 @@ the fresh session: it would answer out of order (#137565 review). Real GatewayRu
 and SessionAuthority over SQLite; the turn is a stand-in."""
 import pytest
 
-from gateway.session_results import execution_result
+from hermes_agent.gateway.session_results import execution_result
 from tests.gateway import test_native_fifo_context_exhaustion as fifo
 
 _admit = fifo._admit

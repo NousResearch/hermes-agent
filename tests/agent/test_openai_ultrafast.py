@@ -20,7 +20,7 @@ SOL_SPELLINGS = ("gpt-6.1-sol", "openai/gpt-6.1-sol", "gpt-6.1-sol-900k", "opena
 
 
 def test_every_config_loader_parses_tiers_through_the_same_table(monkeypatch):
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
     from hermes_cli.cli_config_load import _parse_service_tier_config
     import hermes_agent.tui_gateway.server as tui
 
@@ -80,7 +80,7 @@ def test_desktop_surfaces_carry_the_exact_tier_ultrafast_is_never_plain_fast():
 @pytest.mark.parametrize("provider", ["openai", "openai-api"])
 def test_cli_and_gateway_turn_routes_send_the_static_tier(provider):
     import cli as cli_mod
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
 
     stub = SimpleNamespace(model="gpt-6-astra", api_key="k", base_url="https://api.openai.com/v1", provider=provider,
                            api_mode="codex_responses", acp_command=None, acp_args=[], _credential_pool=None,

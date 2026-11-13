@@ -15,7 +15,7 @@ def _image(data):
 def _orphan(data):
     """An API image file no admission holds (its chat was deleted while the owner was down)."""
     import hashlib
-    from gateway.session_ingress_media import _media_root
+    from hermes_agent.gateway.session_ingress_media import _media_root
     digest = hashlib.sha256(data).hexdigest()
     path = _media_root() / digest / f'api_{digest[:32]}.png'
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -26,14 +26,14 @@ def _orphan(data):
 @pytest.mark.asyncio
 async def test_restart_recovery_keeps_every_profiles_held_images_and_collects_each_profiles_orphans(
         tmp_path, monkeypatch):
-    from gateway.config import GatewayConfig, PlatformConfig
-    from gateway.platforms.api_server import APIServerAdapter
-    from gateway.run import _profile_runtime_scope
-    from gateway.session import SessionStore
-    from gateway.session_api_media import commit_api_images
-    from gateway.session_api_turn import recover_api_turns
-    from gateway.session_authorities import SessionAuthorities
-    from gateway.session_authority import SessionAuthority
+    from hermes_agent.gateway.config import GatewayConfig, PlatformConfig
+    from hermes_agent.gateway.platforms.api_server import APIServerAdapter
+    from hermes_agent.gateway.run import _profile_runtime_scope
+    from hermes_agent.gateway.session import SessionStore
+    from hermes_agent.gateway.session_api_media import commit_api_images
+    from hermes_agent.gateway.session_api_turn import recover_api_turns
+    from hermes_agent.gateway.session_authorities import SessionAuthorities
+    from hermes_agent.gateway.session_authority import SessionAuthority
     from hermes_agent.hermes_state import SessionDB
     from hermes_agent.hermes_state_runtime import admit_session_input, begin_runtime_epoch, claim_session_input, settle_session_input
 

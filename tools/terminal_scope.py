@@ -238,14 +238,14 @@ def build_profile_terminal_scope(
 
 def _resolve_scope_cwd_placeholder(scope: dict[str, str]) -> None:
     """Give a scope with no explicit ``terminal.cwd`` the same resolved ``TERMINAL_CWD`` a standalone
-    gateway computes at import (``gateway/run.py``: local backend → ``$HOME``; docker with the
+    gateway computes at import (``hermes_agent/gateway/run.py``: local backend → ``$HOME``; docker with the
     workspace mount → the host cwd signal; other backends → unset). Without it a routed turn's
     ``resolve_agent_cwd()`` falls back to the multiplexer PROCESS cwd (wherever ``hermes gateway``
     was launched), so the system prompt, context-file discovery and the local terminal all run in
     a directory the profile's standalone gateway would never have used."""
     if scope.get("TERMINAL_CWD"):
         return
-    from gateway.cwd_placeholder import resolve_placeholder_terminal_cwd
+    from hermes_agent.gateway.cwd_placeholder import resolve_placeholder_terminal_cwd
 
     resolved = resolve_placeholder_terminal_cwd(
         configured_cwd="", terminal_backend=scope.get("TERMINAL_ENV", ""),

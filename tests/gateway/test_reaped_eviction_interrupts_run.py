@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import pytest
 
-from gateway.run import (
+from hermes_agent.gateway.run import (
     GatewayRunner,
     _AGENT_PENDING_SENTINEL,
     _INTERRUPT_REASON_EVICTED,
     _is_control_interrupt_message,
 )
-from gateway.run_inbound import GatewayInboundMixin
+from hermes_agent.gateway.run_inbound import GatewayInboundMixin
 
 
 KEY = "agent:main:telegram:dm:106963"
@@ -143,7 +143,7 @@ def test_one_shot_override_settles_on_stop_and_stale_finalizer_is_a_noop() -> No
 
 @pytest.mark.asyncio
 async def test_turn_lease_rebind_preserves_parent_lock_domain_and_releases() -> None:
-    from gateway.turn_lease import SessionTurnLeaseRegistry
+    from hermes_agent.gateway.turn_lease import SessionTurnLeaseRegistry
 
     registry = SessionTurnLeaseRegistry()
     token = await registry.acquire("parent-session", owner_key="key-1", generation=1, timeout=5)
@@ -169,7 +169,7 @@ async def test_turn_lease_rebind_preserves_parent_lock_domain_and_releases() -> 
 
 
 def test_displaced_turn_lease_release_by_owning_generation() -> None:
-    from gateway.turn_lease import SessionTurnLeaseRegistry
+    from hermes_agent.gateway.turn_lease import SessionTurnLeaseRegistry
 
     events: list[tuple] = []
     gateway, state = _build_gateway(object(), events)

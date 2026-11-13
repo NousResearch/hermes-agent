@@ -26,8 +26,8 @@ def _reserve_homes(tmp_path, monkeypatch, names=('alpha', 'beta')):
 
 
 def _runner(root, homes):
-    from gateway.config import GatewayConfig
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.run import GatewayRunner
     config = GatewayConfig()
     config.multiplex_profiles = True
     config._runtime_profile_homes = tuple(homes)
@@ -37,8 +37,8 @@ def _runner(root, homes):
 
 @pytest.mark.asyncio
 async def test_multiplex_builds_one_authority_per_reserved_home(tmp_path, monkeypatch):
-    from gateway.run_runtime import initialize_gateway_runtime
-    from gateway.runtime_ownership import process_ownership
+    from hermes_agent.gateway.run_runtime import initialize_gateway_runtime
+    from hermes_agent.gateway.runtime_ownership import process_ownership
     from hermes_constants import hermes_home_key
     root, homes = _reserve_homes(tmp_path, monkeypatch)
     process_ownership.reserve([home for _, home in homes])
@@ -73,10 +73,10 @@ async def test_multiplex_builds_one_authority_per_reserved_home(tmp_path, monkey
 
 @pytest.mark.asyncio
 async def test_scoped_lookup_follows_routed_home_and_never_borrows_launch(tmp_path, monkeypatch):
-    from gateway.run import _profile_runtime_scope
-    from gateway.run_runtime import initialize_gateway_runtime
-    from gateway.runtime_ownership import process_ownership
-    from gateway.session_authorities import active_authority, authority_for_home
+    from hermes_agent.gateway.run import _profile_runtime_scope
+    from hermes_agent.gateway.run_runtime import initialize_gateway_runtime
+    from hermes_agent.gateway.runtime_ownership import process_ownership
+    from hermes_agent.gateway.session_authorities import active_authority, authority_for_home
     root, homes = _reserve_homes(tmp_path, monkeypatch)
     process_ownership.reserve([home for _, home in homes])
     try:
@@ -101,8 +101,8 @@ async def test_scoped_lookup_follows_routed_home_and_never_borrows_launch(tmp_pa
 
 def test_single_profile_runtime_is_a_map_of_one(tmp_path, monkeypatch):
     """Without multiplex the registry holds only the launch home and every lookup returns it."""
-    from gateway.run import _profile_runtime_scope
-    from gateway.session_authorities import SessionAuthorities, active_authority
+    from hermes_agent.gateway.run import _profile_runtime_scope
+    from hermes_agent.gateway.session_authorities import SessionAuthorities, active_authority
     root, _ = _reserve_homes(tmp_path, monkeypatch, names=())
     registry = SessionAuthorities(root)
     authority = SimpleNamespace(profile_id=str(root), epoch=1)
@@ -119,10 +119,10 @@ def test_single_profile_runtime_is_a_map_of_one(tmp_path, monkeypatch):
 async def test_removed_last_secondary_never_resolves_to_launch(tmp_path, monkeypatch):
     """Once a multiplexed runtime unserves its last secondary only the launch slot remains; a late
     callback scoped to the removed home must get None, not the launch profile's ledger."""
-    from gateway.run import _profile_runtime_scope
-    from gateway.run_runtime import initialize_gateway_runtime, unserve_profile_runtime
-    from gateway.runtime_ownership import process_ownership
-    from gateway.session_authorities import active_authority
+    from hermes_agent.gateway.run import _profile_runtime_scope
+    from hermes_agent.gateway.run_runtime import initialize_gateway_runtime, unserve_profile_runtime
+    from hermes_agent.gateway.runtime_ownership import process_ownership
+    from hermes_agent.gateway.session_authorities import active_authority
     root, homes = _reserve_homes(tmp_path, monkeypatch, names=('alpha',))
     process_ownership.reserve([home for _, home in homes])
     alpha = homes[1][1]

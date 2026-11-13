@@ -8,10 +8,10 @@ import stat
 
 import pytest
 
-from gateway.config import PlatformConfig
-from gateway.platforms import helpers
-from gateway.platforms.helpers import hash_for_log
-from gateway.platforms.webhook import WebhookAdapter
+from hermes_agent.gateway.config import PlatformConfig
+from hermes_agent.gateway.platforms import helpers
+from hermes_agent.gateway.platforms.helpers import hash_for_log
+from hermes_agent.gateway.platforms.webhook import WebhookAdapter
 
 _SECRET_TEXT = "my bank PIN is 4321, call me at alice@example.com"
 
@@ -27,7 +27,7 @@ def test_hash_for_log_is_stable_short_and_hides_the_value():
 @pytest.mark.parametrize("deliver", ["_deliver_to", "_direct_deliver"])
 async def test_webhook_log_delivery_keeps_the_body_out_of_info(caplog, deliver):
     adapter = WebhookAdapter(PlatformConfig(enabled=True, extra={"port": 0, "routes": {}}))
-    caplog.set_level(logging.DEBUG, logger="gateway.platforms.webhook")
+    caplog.set_level(logging.DEBUG, logger="hermes_agent.gateway.platforms.webhook")
     args = ({"deliver": "log"}, "webhook:x", _SECRET_TEXT) if deliver == "_deliver_to" else (
         _SECRET_TEXT, {"deliver": "log"})
     result = await getattr(adapter, deliver)(*args)

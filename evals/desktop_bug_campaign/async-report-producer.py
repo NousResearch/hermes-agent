@@ -17,7 +17,7 @@ with tempfile.TemporaryDirectory(prefix="async-report-producer-") as temporary:
             os.environ.pop(key, None)
     os.environ.update(HOME=str(home), HERMES_HOME=str(home / ".hermes"))
     from hermes_agent.cron.jobs import create_job, save_job_output
-    from gateway.wake import persist_delegation_delivery
+    from hermes_agent.gateway.wake import persist_delegation_delivery
     from hermes_agent.hermes_state import SessionDB
     from tools.cronjob_tools import _manual_run_completion
     from tools.process_registry_notifications import format_process_notification

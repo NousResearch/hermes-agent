@@ -14,7 +14,7 @@ import pytest
 
 
 def _resolve(display: dict, platform: str = "telegram", env: str | None = None) -> tuple[str, bool]:
-    from gateway.display_config import resolve_tool_progress
+    from hermes_agent.gateway.display_config import resolve_tool_progress
 
     return resolve_tool_progress({"display": display}, platform, env)
 
@@ -29,7 +29,7 @@ def _plugin_platform_tiers():
 
 @pytest.fixture(autouse=True)
 def _fresh_warning_memory():
-    from gateway import display_config
+    from hermes_agent.gateway import display_config
 
     def clear():
         warned = getattr(display_config, "_UNSUPPORTED_DISPLAY_WARNED", None)
@@ -60,7 +60,7 @@ class TestUnsupportedToolProgress:
         assert _resolve(display) == ("new", True)
 
     def test_the_invalid_value_is_named_once_in_the_log(self, caplog):
-        with caplog.at_level(logging.WARNING, logger="gateway.display_config"):
+        with caplog.at_level(logging.WARNING, logger="hermes_agent.gateway.display_config"):
             for _ in range(3):
                 _resolve({"tool_progress": "errors"})
         named = [r.getMessage() for r in caplog.records if "errors" in r.getMessage()]
@@ -93,12 +93,12 @@ class TestUnsupportedLiveStatus:
     """``live_status`` shares the tristate normaliser, so it fails open the same way."""
 
     def test_unknown_value_falls_back_to_the_resolved_default(self):
-        from gateway.display_config import resolve_display_setting
+        from hermes_agent.gateway.display_config import resolve_display_setting
 
         assert resolve_display_setting({"display": {"live_status": "verbose"}}, "slack", "live_status") == "full"
 
     def test_supported_choice_still_resolves(self):
-        from gateway.display_config import resolve_display_setting
+        from hermes_agent.gateway.display_config import resolve_display_setting
 
         config = {"display": {"live_status": "verb"}}
         assert resolve_display_setting(config, "slack", "live_status") == "verb"

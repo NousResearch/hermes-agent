@@ -12,8 +12,8 @@ from types import SimpleNamespace
 
 import pytest
 
-import gateway.run as gw_mod
-from gateway import run_shutdown
+import hermes_agent.gateway.run as gw_mod
+from hermes_agent.gateway import run_shutdown
 from tests.gateway.test_shutdown_executor_quiesce import _FakeGateway
 
 

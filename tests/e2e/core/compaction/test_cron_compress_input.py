@@ -1,7 +1,7 @@
 """EP-2 rig (#145171): cron delivery -> ``/compress`` -> human input through the REAL gateway.
 
 Scripted rebuild of the manual live check NF5 in #134889 ("cron -> /compress -> human"). The
-gateway is the shipped entry point (``python -m gateway.run``) with the chaos lane's in-memory
+gateway is the shipped entry point (``python -m hermes_agent.gateway.run``) with the chaos lane's in-memory
 platform loaded as a real user plugin, its own in-process cron ticker and its real session
 store, state.db and slash dispatch. Only the LLM (``tests/fakes/fake_llm_provider``) and the
 chat platform are fake.

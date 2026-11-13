@@ -715,13 +715,13 @@ def _truncate(text: str, limit: int) -> str:
 
 
 def _pid_alive(pid: int) -> bool:
-    """Liveness via ``gateway.status._pid_exists`` (psutil + ctypes/POSIX fallback). Never uses
+    """Liveness via ``hermes_agent.gateway.status._pid_exists`` (psutil + ctypes/POSIX fallback). Never uses
     ``os.kill(pid, 0)``: on Windows that routes to CTRL_C_EVENT and hard-kills the target's console
     group (bpo-14484)."""
     if not pid or pid <= 0:
         return False
     try:
-        from gateway.status import _pid_exists
+        from hermes_agent.gateway.status import _pid_exists
 
         return bool(_pid_exists(int(pid)))
     except Exception:

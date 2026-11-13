@@ -215,7 +215,7 @@ class TestWhoWaits:
         """Nobody sits at a gateway's console, and its token reads can run on the event loop. (A
         gateway never carries the free model, so its only challenged exchange is a managed-tool
         token against a NAS from before the connectors purpose.)"""
-        from gateway import status
+        from hermes_agent.gateway import status
         monkeypatch.setattr(status, "owns_gateway_runtime_lock", lambda: True)
         monkeypatch.setattr(anon_challenge, "CHALLENGE_WAIT_SECONDS", 0.05)
         nas.honours_purpose = False

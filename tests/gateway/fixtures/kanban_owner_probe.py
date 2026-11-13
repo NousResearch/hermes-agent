@@ -153,7 +153,7 @@ def main():
                     swept = dispatch.dispatch_once(conn, board='owned', max_spawn=0)
                     task = kb.get_task(conn, tid)
                     run = dict(conn.execute('SELECT * FROM task_runs WHERE id=?', (params['run_id'],)).fetchone())
-                    from gateway.session_kanban import worker_exit_code
+                    from hermes_agent.gateway.session_kanban import worker_exit_code
                     assert worker_exit_code(kb.kanban_db_path(board='owned'), params | {'claim_lock': 'foreign'}) == 1
                     receipt.update(task_status=task.status, failures=task.consecutive_failures, run_outcome=run['outcome'],
                         run_metadata=kb._json_dict(run['metadata']), rate_limited=swept.rate_limited,

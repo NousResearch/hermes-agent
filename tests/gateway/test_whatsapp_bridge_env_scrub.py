@@ -2,7 +2,7 @@
 
 import pytest
 
-from gateway.config import PlatformConfig
+from hermes_agent.gateway.config import PlatformConfig
 
 _OPERATOR_SECRETS = {
     "OPENAI_API_KEY": "sk-operator-openai",

@@ -27,7 +27,7 @@ def _accepted_then_orphaned(tmp_path: Path, monkeypatch, *, home_writable: bool)
     """Record a pause of this process, request its stop, let it accept the request while the record
     refuses the consumer's checkpoint (read-only record directory), then age the request past its
     TTL and orphan the record. Returns ``(marker, pause_id)``."""
-    from gateway import status
+    from hermes_agent.gateway import status
     root, home = tmp_path / "root", tmp_path / "root" / "profiles" / "p"
     home.mkdir(parents=True)
     monkeypatch.setenv("HERMES_HOME", str(home))

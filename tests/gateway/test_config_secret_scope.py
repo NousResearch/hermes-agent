@@ -26,7 +26,7 @@ _LATER_FIELDS = ('kanban_json', 'safe_mode', 'ignore_user_config', 'skills_promp
 
 
 def _home(monkeypatch):
-    from gateway import run
+    from hermes_agent.gateway import run
     from hermes_constants import get_hermes_home
     home = get_hermes_home()
     home.mkdir(parents=True, exist_ok=True)
@@ -38,7 +38,7 @@ def _home(monkeypatch):
 def _older_gateway_reference(policy):
     """The reference the first release of frozen config secrets wrote for *policy*: the whole-policy hash
     over the fields it had, no ``bound`` endpoints."""
-    from gateway.session_policy_credentials import PREFIX
+    from hermes_agent.gateway.session_policy_credentials import PREFIX
     source = json.loads(policy.config_secret_ref[len(PREFIX):])
     data = {k: v for k, v in asdict(policy).items()
             if k not in ('credential_ref', 'config_secret_ref', *_LATER_FIELDS)}
@@ -58,7 +58,7 @@ def _store_reference(store, sid, ref):
 
 
 def _stored_policy(store, sid):
-    from gateway.session_policy import restore_policy
+    from hermes_agent.gateway.session_policy import restore_policy
     from hermes_agent.hermes_state_local import local_receipt
     return restore_policy(local_receipt(store._db, sid)['policy'])
 
@@ -97,7 +97,7 @@ async def test_a_reference_stamped_by_an_older_gateway_still_runs_its_session(tm
 @pytest.mark.asyncio
 async def test_model_re_stamps_a_reference_an_older_gateway_wrote(tmp_path, monkeypatch):
     from hermes_cli import model_switch
-    from gateway.session_policy_credentials import PREFIX, policy_identity
+    from hermes_agent.gateway.session_policy_credentials import PREFIX, policy_identity
     monkeypatch.setattr(model_switch, 'switch_model', lambda **k: model_switch.ModelSwitchResult(
         success=True, new_model='m2', target_provider='custom', base_url='http://127.0.0.1:9/v1'))
     _home_dir, store, cold, sid = await _older_session(tmp_path, monkeypatch)
@@ -154,7 +154,7 @@ async def test_a_non_secret_profile_edit_keeps_the_session_and_its_model_switch(
 
 
 def _bound_policy(tmp_path, monkeypatch):
-    from gateway.session_policy import bind_launch_key, build_policy
+    from hermes_agent.gateway.session_policy import bind_launch_key, build_policy
     home = tmp_path / 'profile'
     home.mkdir()
     monkeypatch.setenv('HERMES_HOME', str(home))
@@ -223,7 +223,7 @@ def test_a_secret_paired_with_a_moved_endpoint_is_refused_by_name(tmp_path, monk
 
 
 def _bind(tmp_path, monkeypatch, cfg):
-    from gateway.session_policy import bind_launch_key, build_policy
+    from hermes_agent.gateway.session_policy import bind_launch_key, build_policy
     home = tmp_path / 'profile'
     home.mkdir(exist_ok=True)
     monkeypatch.setenv('HERMES_HOME', str(home))
@@ -458,8 +458,8 @@ def test_a_moved_route_never_sends_its_frozen_key_to_the_new_endpoint(tmp_path, 
             authority = owner()
             if route == 'fallback_providers_dict':
                 from openai import OpenAI
-                from gateway.run_turn_prepare import _resolve_policy_agent_runtime
-                from gateway.session_policy import policy_scope
+                from hermes_agent.gateway.run_turn_prepare import _resolve_policy_agent_runtime
+                from hermes_agent.gateway.session_policy import policy_scope
                 with policy_scope(frozen, authority=authority):
                     model, runtime = _resolve_policy_agent_runtime(SimpleNamespace(session_authority=authority), frozen)
                     _send(OpenAI(api_key=runtime['api_key'], base_url=runtime['base_url']), model)

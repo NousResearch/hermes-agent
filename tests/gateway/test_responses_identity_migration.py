@@ -22,7 +22,7 @@ def _to_pre_settlement_schema(store):
 
 @pytest.mark.asyncio
 async def test_migrated_terminal_identities_age_out_but_a_live_one_is_kept(api, owner):
-    from gateway.platforms.api_server_response_store import ResponseStore
+    from hermes_agent.gateway.platforms.api_server_response_store import ResponseStore
     calls, gate = [], (asyncio.Event(), asyncio.Event())
     path = api._response_store._db_path
     async with TestClient(TestServer(_app(api, owner, calls, gate))) as client:

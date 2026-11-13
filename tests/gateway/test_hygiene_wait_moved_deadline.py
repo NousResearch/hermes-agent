@@ -10,7 +10,7 @@ import asyncio
 import time
 from types import SimpleNamespace
 
-from gateway.run import GatewayRunner
+from hermes_agent.gateway.run import GatewayRunner
 
 
 class _ReadingFence:

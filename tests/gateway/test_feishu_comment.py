@@ -145,15 +145,15 @@ class TestResolveModelAndRuntime(unittest.TestCase):
         surface, so ``agent.reasoning_effort: none`` must ride ``runtime_kwargs`` (resolved against the
         comment agent's model, so per-model overrides apply)."""
         cfg = {"agent": {"reasoning_effort": "none", "reasoning_overrides": {"gpt-5.6": "high"}}}
-        with patch("gateway.run._load_gateway_config", return_value=cfg), \
-             patch("gateway.run._resolve_gateway_model", return_value="gpt-4o-mini"), \
-             patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"provider": "openai-api", "api_key": "k"}):
+        with patch("hermes_agent.gateway.run._load_gateway_config", return_value=cfg), \
+             patch("hermes_agent.gateway.run._resolve_gateway_model", return_value="gpt-4o-mini"), \
+             patch("hermes_agent.gateway.run._resolve_runtime_agent_kwargs", return_value={"provider": "openai-api", "api_key": "k"}):
             model, runtime_kwargs = _resolve_model_and_runtime()
         self.assertEqual(model, "gpt-4o-mini")
         self.assertEqual(runtime_kwargs["reasoning_config"], {"enabled": False})
-        with patch("gateway.run._load_gateway_config", return_value=cfg), \
-             patch("gateway.run._resolve_gateway_model", return_value="gpt-5.6"), \
-             patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"provider": "openai-api", "api_key": "k"}):
+        with patch("hermes_agent.gateway.run._load_gateway_config", return_value=cfg), \
+             patch("hermes_agent.gateway.run._resolve_gateway_model", return_value="gpt-5.6"), \
+             patch("hermes_agent.gateway.run._resolve_runtime_agent_kwargs", return_value={"provider": "openai-api", "api_key": "k"}):
             _model, runtime_kwargs = _resolve_model_and_runtime()
         self.assertEqual(runtime_kwargs["reasoning_config"], {"enabled": True, "effort": "high"})
 

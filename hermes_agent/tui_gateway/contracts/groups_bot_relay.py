@@ -1,8 +1,8 @@
 """Hosted Group Chat rooms (``groups.*``) and cross-connection bot relay (``bot_relay.*``).
 
 Handlers: ``hermes_agent/tui_gateway/methods_groups.py``, ``hermes_agent/tui_gateway/methods_bot_relay.py``. Room / event / page shapes are produced by
-``gateway/hosted_rooms.py`` (``_room_from_row`` / ``_event_from_row`` / ``read_events``) and
-``gateway/hosted_room_replicas.py``; the RoomLink catalog by ``gateway/hosted_room_peer.py``.
+``hermes_agent/gateway/hosted_rooms.py`` (``_room_from_row`` / ``_event_from_row`` / ``read_events``) and
+``hermes_agent/gateway/hosted_room_replicas.py``; the RoomLink catalog by ``hermes_agent/gateway/hosted_room_peer.py``.
 """
 
 from __future__ import annotations
@@ -42,7 +42,7 @@ class RoomActor(Result):
 
 
 class RoomEvent(Result):
-    """``gateway/hosted_rooms.py::_event_from_row``."""
+    """``hermes_agent/gateway/hosted_rooms.py::_event_from_row``."""
 
     room_id: str
     seq: int
@@ -56,7 +56,7 @@ class RoomEvent(Result):
 
 
 class Room(Result):
-    """``gateway/hosted_rooms.py::_room_from_row`` plus the branch-only keys ``create`` (legacy
+    """``hermes_agent/gateway/hosted_rooms.py::_room_from_row`` plus the branch-only keys ``create`` (legacy
     adoption), ``state`` (``authority_claim``) and ``rename`` (``event``) add."""
 
     room_id: str
@@ -102,7 +102,7 @@ class RoomParams(ProfileParams):
 
 
 class RoomExecutionPolicy(Result):
-    """``gateway/hosted_room_execution_policy.py::execution_policy_mapping``."""
+    """``hermes_agent/gateway/hosted_room_execution_policy.py::execution_policy_mapping``."""
 
     version: int
     target_profile: str
@@ -123,7 +123,7 @@ class RoomLinkEndpoint(Result):
 
 
 class RoomLinkCatalog(Result):
-    """``gateway/hosted_room_peer.py::GatewayRoomCatalog.as_mapping``."""
+    """``hermes_agent/gateway/hosted_room_peer.py::GatewayRoomCatalog.as_mapping``."""
 
     installation_id: str
     protocol_versions: list[int]
@@ -171,7 +171,7 @@ class GroupsCapabilitiesResult(Result):
     #: On the canonical gateway, owning requires groups.peer.register; lending requires groups.peer.invite.
     methods: list[str]
     max_log_limit: int
-    #: Local profiles THIS caller may seat in a new group (``gateway/session_hosted_members``): served
+    #: Local profiles THIS caller may seat in a new group (``hermes_agent/gateway/session_hosted_members``): served
     #: bots, minus retiring/unaddressable ones, plus usable ``hosted_rooms.profiles`` entries; only a
     #: host-scoped caller gets served siblings. Absent on gateways that predate it.
     seatable_profiles: list[str] | None = None
@@ -264,7 +264,7 @@ class RoomDriverStatus(Result):
 
 
 class RoomContext(Result):
-    """``gateway/hosted_room_context.py::room_context``: the purpose and shared notes every member's turn
+    """``hermes_agent/gateway/hosted_room_context.py::room_context``: the purpose and shared notes every member's turn
     prompt carries (inside the user-role message)."""
 
     purpose: str
@@ -345,7 +345,7 @@ class GroupsLogParams(RoomParams):
 
 
 class GroupsLogResult(Result):
-    """``gateway/hosted_rooms.py::read_events`` page — also the ``page`` ``groups.replicate`` ingests."""
+    """``hermes_agent/gateway/hosted_rooms.py::read_events`` page — also the ``page`` ``groups.replicate`` ingests."""
 
     events: list[RoomEvent]
     cursor: int

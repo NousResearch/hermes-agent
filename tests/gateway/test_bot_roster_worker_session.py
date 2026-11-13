@@ -2,7 +2,7 @@
 
 The unified gateway's ``profiles.list`` producer filled ``canonical_session`` / ``last_session``
 but left ``worker_session`` at the ``None`` initializer it was born with
-(``gateway/session_group_controls.py``, from 3e896bc390). The field is declared on the wire contract
+(``hermes_agent/gateway/session_group_controls.py``, from 3e896bc390). The field is declared on the wire contract
 (``ProfileWorkerSession``) and the Bot Mode roster reads it to light a profile up while a kanban/tool
 worker runs (``workerActiveAt`` is ``bot?.worker_session?.last_active``), so with no producer that
 indicator could never light on the unified gateway.
@@ -17,8 +17,8 @@ two fields already share (no extra cost for the 5 s poll, #117257).
 """
 import pytest
 
-from gateway.session_contract import SessionActor
-from gateway.session_group_controls import _bot_sessions, _read_bot_sessions, _sibling_sessions
+from hermes_agent.gateway.session_contract import SessionActor
+from hermes_agent.gateway.session_group_controls import _bot_sessions, _read_bot_sessions, _sibling_sessions
 from hermes_agent.hermes_state import SessionDB
 
 READER = SessionActor('uid:desk', 'alpha', frozenset({'session:operator'}), 'transport:test')

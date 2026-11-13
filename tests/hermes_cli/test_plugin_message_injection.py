@@ -56,9 +56,9 @@ def test_cli_running_injection_keeps_existing_interrupt_behaviour():
 
 
 def test_key_less_gateway_injection_lets_the_gateway_pick_the_chat(tmp_path, monkeypatch):
-    """No key and no origin: the live gateway picks the chat (gateway/plugin_keyless_inject.py) from
+    """No key and no origin: the live gateway picks the chat (hermes_agent/gateway/plugin_keyless_inject.py) from
     the session bound in the caller's own context, read here; none bound is passed as ``""``."""
-    from gateway.session_context import scoped_session_key
+    from hermes_agent.gateway.session_context import scoped_session_key
     _write_plugin_config(
         tmp_path,
         monkeypatch,

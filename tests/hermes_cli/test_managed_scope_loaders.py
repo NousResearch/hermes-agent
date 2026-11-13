@@ -58,7 +58,7 @@ def test_timezone_honors_managed(homes, monkeypatch):
 def test_gateway_env_bridge_honors_managed(homes, monkeypatch):
     """The gateway config→env bridge must bridge MANAGED values, not user ones.
 
-    gateway/run.py bridges config.yaml settings into os.environ at startup and on
+    hermes_agent/gateway/run.py bridges config.yaml settings into os.environ at startup and on
     every turn (HERMES_TIMEZONE, HERMES_REDACT_SECRETS, HERMES_MAX_ITERATIONS,
     ...). A managed value must win at that env layer too — otherwise the bridge
     writes the user's value into the env that the whole process then reads. This

@@ -553,7 +553,7 @@ def test_the_default_profiles_key_is_the_one_the_gateway_loads(tmp_path, monkeyp
 
 @pytest.mark.parametrize(("env_key", "env_port", "expected"), [
     # A usable API_SERVER_KEY makes the gateway load API_SERVER_PORT over the configured port
-    # (gateway/config_env.py ``_api_server``).
+    # (hermes_agent/gateway/config_env.py ``_api_server``).
     ("env-key-0123456789abcdef", "8700", "http://127.0.0.1:8700"),
     # An unusable key: the gateway ignores both env values and binds the configured port.
     ("short", "8700", "http://127.0.0.1:8650"),

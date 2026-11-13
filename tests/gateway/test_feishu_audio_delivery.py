@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 import pytest
 
-from gateway.config import PlatformConfig
+from hermes_agent.gateway.config import PlatformConfig
 from plugins.platforms.feishu.adapter import FeishuAdapter
 
 
@@ -42,7 +42,7 @@ def test_plain_audio_media_is_a_named_file_not_a_transcoded_voice_note(tmp_path,
         raise AssertionError("plain audio must not be transcoded into a voice note")
 
     with patch("plugins.platforms.feishu.adapter.asyncio.to_thread", side_effect=_direct), \
-         patch("gateway.platforms.base.transcode_to_ogg_opus", transcode_must_not_run):
+         patch("hermes_agent.gateway.platforms.base.transcode_to_ogg_opus", transcode_must_not_run):
         result = asyncio.run(adapter.send_voice("oc_chat", str(path), is_voice=False))
 
     assert result.success

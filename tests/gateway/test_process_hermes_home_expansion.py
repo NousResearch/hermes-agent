@@ -1,6 +1,6 @@
 """Gateway identity-file readers expand a literal ``~`` in HERMES_HOME.
 
-``python -m gateway.run`` never passes through the CLI's ``normalize_hermes_home_env()``, so the
+``python -m hermes_agent.gateway.run`` never passes through the CLI's ``normalize_hermes_home_env()``, so the
 process-level home readers (PID/lock/status, lifecycle ledger, heartbeat) must expand on their own
 or a fish-style ``HERMES_HOME='~/.hermes'`` lands the identity files under ``<cwd>/~/.hermes``.
 """
@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from gateway import lifecycle_ledger, shutdown_watchdog, status
+from hermes_agent.gateway import lifecycle_ledger, shutdown_watchdog, status
 
 
 @pytest.mark.parametrize(

@@ -14,8 +14,8 @@ import logging
 
 import pytest
 
-from gateway import config_env as gateway_config_env
-from gateway.config import Platform, load_gateway_config
+from hermes_agent.gateway import config_env as gateway_config_env
+from hermes_agent.gateway.config import Platform, load_gateway_config
 
 # platform -> env credentials that trigger its env-enable branch
 CRED_ENV = {
@@ -134,7 +134,7 @@ def test_explicit_disable_with_env_credentials_warns_once(platform, tmp_path, mo
         f"platforms:\n  {platform}:\n    enabled: false\n", encoding="utf-8"
     )
 
-    with caplog.at_level(logging.WARNING, logger="gateway.config"):
+    with caplog.at_level(logging.WARNING, logger="hermes_agent.gateway.config"):
         load_gateway_config()
         load_gateway_config()  # reload: must not repeat
 
@@ -154,7 +154,7 @@ def test_no_warning_when_yaml_has_no_opinion_or_is_enabled(tmp_path, monkeypatch
         "platforms:\n  qqbot:\n    enabled: true\n", encoding="utf-8"
     )
 
-    with caplog.at_level(logging.WARNING, logger="gateway.config"):
+    with caplog.at_level(logging.WARNING, logger="hermes_agent.gateway.config"):
         config = load_gateway_config()
 
     assert config.platforms[Platform.WEIXIN].enabled is True
@@ -169,7 +169,7 @@ def test_no_warning_when_disabled_and_no_env_credentials(tmp_path, monkeypatch, 
         "platforms:\n  weixin:\n    enabled: false\n", encoding="utf-8"
     )
 
-    with caplog.at_level(logging.WARNING, logger="gateway.config"):
+    with caplog.at_level(logging.WARNING, logger="hermes_agent.gateway.config"):
         config = load_gateway_config()
 
     assert config.platforms[Platform.WEIXIN].enabled is False

@@ -5,9 +5,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway import run_runtime
-from gateway.run_shutdown import GatewayShutdownMixin
-from gateway.session_authorities import SessionAuthorities
+from hermes_agent.gateway import run_runtime
+from hermes_agent.gateway.run_shutdown import GatewayShutdownMixin
+from hermes_agent.gateway.session_authorities import SessionAuthorities
 
 
 @pytest.mark.asyncio
@@ -67,7 +67,7 @@ async def test_profile_timeout_keeps_authority_until_physical_worker_exits(tmp_p
     runner = SimpleNamespace(session_authorities=registry, session_runtime_descriptor={},
                              session_ticket_store=SimpleNamespace(profile_ids=registry.profile_ids()))
     unbound = []
-    monkeypatch.setattr('gateway.session_cron.unbind_owner', lambda a: unbound.append(a))
+    monkeypatch.setattr('hermes_agent.gateway.session_cron.unbind_owner', lambda a: unbound.append(a))
     authority.runner = runner
     monkeypatch.setattr(run_runtime, 'TURN_SETTLE_SECONDS', 0)
     try:
@@ -105,7 +105,7 @@ async def test_whole_runtime_settle_logs_late_work_and_finishes_shutdown(monkeyp
     authority.runner = runner
     async def stop_api(handle):
         stopped.append(handle)
-    monkeypatch.setattr('gateway.run_api.stop_gateway_api', stop_api)
+    monkeypatch.setattr('hermes_agent.gateway.run_api.stop_gateway_api', stop_api)
     monkeypatch.setattr(run_runtime, 'TURN_SETTLE_SECONDS', 0.05)
     try:
         await asyncio.wait_for(run_runtime.settle_gateway_runtime(runner), 5)
@@ -120,7 +120,7 @@ async def test_whole_runtime_settle_logs_late_work_and_finishes_shutdown(monkeyp
 async def test_unserve_keeps_ownership_without_aborting_the_reconcile(tmp_path, monkeypatch):
     """A profile whose writer outlived its Stop is unrouted but keeps its reservation and store
     handles; the reconcile is not aborted, so the other removed profile is still unserved."""
-    from gateway.run_profile_reconcile import GatewayProfileReconcileMixin
+    from hermes_agent.gateway.run_profile_reconcile import GatewayProfileReconcileMixin
     stuck, gone = tmp_path / 'stuck', tmp_path / 'gone'
     async def unserve(runner, home):
         return home != stuck
@@ -146,8 +146,8 @@ async def test_persisted_work_count_returns_to_zero_when_the_drain_ends():
     """gateway_state.json's active_agents is written at the agent-slot release, while the owner's
     drain (counted until it ends) is still live; the drain's end must write it again, or the
     persisted count stays at 1 after every messaging turn and the gateway never reads idle."""
-    from gateway.session_authority import SessionAuthority
-    from gateway.session_runtime_workers import uncounted_runtime_work
+    from hermes_agent.gateway.session_authority import SessionAuthority
+    from hermes_agent.gateway.session_runtime_workers import uncounted_runtime_work
 
     persisted, release = [], asyncio.Event()
     authority = SessionAuthority.__new__(SessionAuthority)
@@ -175,9 +175,9 @@ async def test_side_agent_is_owner_work_until_its_thread_unwinds(monkeypatch):
     The restart wait, stop drain, SessionDB close gate and idle exit must count it, and retirement
     must interrupt and join it, or a planned restart exits under it and its result never arrives."""
     import contextlib
-    from gateway import session_tui_side
-    from gateway.session_contract import SessionRef
-    from gateway.session_runtime_workers import join_authority_work, uncounted_runtime_work
+    from hermes_agent.gateway import session_tui_side
+    from hermes_agent.gateway.session_contract import SessionRef
+    from hermes_agent.gateway.session_runtime_workers import join_authority_work, uncounted_runtime_work
 
     started, release, persisted, interrupts = threading.Event(), threading.Event(), [], []
     def run_conversation(**_):
@@ -216,9 +216,9 @@ async def test_side_agent_thread_killed_by_a_base_exception_releases_owner_work(
     """The agent re-raises cancellation and exit (``agent/turn_facade.py``). A side-agent thread
     that dies that way must still leave the ledger, or idle exit, retirement, the persisted count
     and the SessionDB close gate stay blocked on work that no longer exists."""
-    from gateway import session_tui_side
-    from gateway.session_contract import SessionRef
-    from gateway.session_runtime_workers import join_authority_work, uncounted_runtime_work
+    from hermes_agent.gateway import session_tui_side
+    from hermes_agent.gateway.session_contract import SessionRef
+    from hermes_agent.gateway.session_runtime_workers import join_authority_work, uncounted_runtime_work
 
     started, threads, failures, persisted = threading.Event(), [], [], []
     authority = SimpleNamespace(sessions={}, pending_stops={}, adopted={})
@@ -250,9 +250,9 @@ async def test_btw_side_question_does_not_hold_profile_retirement(monkeypatch, p
     ``timeout=180.0``) is an uncancellable aux call that never mutates anything, so retirement
     abandons it instead of keeping the profile's reservation for the full settle window."""
     import contextlib
-    from gateway import session_tui_side
-    from gateway.session_contract import SessionRef
-    from gateway.session_runtime_workers import join_authority_work, uncounted_runtime_work
+    from hermes_agent.gateway import session_tui_side
+    from hermes_agent.gateway.session_contract import SessionRef
+    from hermes_agent.gateway.session_runtime_workers import join_authority_work, uncounted_runtime_work
     from agent import side_question
 
     started, release, interrupts, events = threading.Event(), threading.Event(), [], []
@@ -303,7 +303,7 @@ def test_shutdown_interrupt_reaches_counted_side_agents():
     """The stop drain waits for counted side agents (/bg, /btw, preview restart), so the timed-out
     drain's interrupt must reach them too, or a long /bg holds the whole drain and is then
     abandoned mid-tool when the process exits."""
-    from gateway.run_shutdown import GatewayShutdownMixin
+    from hermes_agent.gateway.run_shutdown import GatewayShutdownMixin
     interrupts = []
     agent = SimpleNamespace(hard_interrupt=lambda message=None, **_: interrupts.append(message))
     authority = SimpleNamespace(sessions={}, pending_stops={}, adopted={},

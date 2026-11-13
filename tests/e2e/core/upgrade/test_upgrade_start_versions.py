@@ -57,9 +57,9 @@ def test_an_explicit_ref_and_the_older_variable_both_pin_the_start(monkeypatch):
 def test_a_published_move_renames_the_file_in_the_new_release(tmp_path):
     origin = I.make_origin(tmp_path, _git("rev-parse", "HEAD"))
     target = I.publish_commit(origin, tmp_path, "release: move", {"docs/marker.txt": "x\n"},
-                              moves={"gateway/run_background.py": "gateway/run_turn_background.py"})
+                              moves={"hermes_agent/gateway/run_background.py": "hermes_agent/gateway/run_turn_background.py"})
     status = I.git("diff", "--name-status", "-M", f"{target}~1", target, cwd=origin)
-    assert "R100\tgateway/run_background.py\tgateway/run_turn_background.py" in status.splitlines()
+    assert "R100\thermes_agent/gateway/run_background.py\thermes_agent/gateway/run_turn_background.py" in status.splitlines()
 
 
 def test_a_scenario_generation_wins_over_the_suite_override(monkeypatch):

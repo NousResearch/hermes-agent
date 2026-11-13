@@ -2,7 +2,7 @@
 
 mode id -> (edit approval policy, display name, description). On the gateway path the policy is the
 session's own on the owner (``session.mutate edit_policy``), enforced where the edit runs
-(``gateway/session_local_editor.py``); sensitive paths always ask.
+(``hermes_agent/gateway/session_local_editor.py``); sensitive paths always ask.
 """
 
 DEFAULT_MODE = "default"

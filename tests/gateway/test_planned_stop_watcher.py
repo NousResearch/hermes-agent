@@ -1,4 +1,4 @@
-"""Tests for the planned-stop marker watcher thread (gateway/run.py).
+"""Tests for the planned-stop marker watcher thread (hermes_agent/gateway/run.py).
 
 The watcher is the Windows-fallback path for the v0.13.0 session-resume
 feature — on Windows ``asyncio.add_signal_handler`` raises
@@ -19,8 +19,8 @@ import time
 from unittest.mock import MagicMock
 
 
-from gateway.run import _run_planned_stop_watcher
-from gateway import status as status_mod
+from hermes_agent.gateway.run import _run_planned_stop_watcher
+from hermes_agent.gateway import status as status_mod
 
 
 def _write_self_marker(marker, *, stale: bool = False):
@@ -97,7 +97,7 @@ def test_watcher_fires_shutdown_when_marker_appears(tmp_path, monkeypatch):
 
 def test_watcher_tolerates_marker_path_resolution_errors(tmp_path, monkeypatch, caplog):
     """If _get_planned_stop_marker_path() raises, the watcher logs and continues."""
-    from gateway import status as status_mod
+    from hermes_agent.gateway import status as status_mod
 
     call_count = [0]
     def explode():
@@ -209,8 +209,8 @@ def test_cli_sigterm_after_watcher_consumed_the_marker_stays_planned(tmp_path, m
     import signal
     from types import SimpleNamespace
 
-    import gateway.run as run_mod
-    import gateway.shutdown_forensics as forensics
+    import hermes_agent.gateway.run as run_mod
+    import hermes_agent.gateway.shutdown_forensics as forensics
 
     marker = tmp_path / ".gateway-planned-stop.json"
     monkeypatch.setattr(status_mod, "_get_planned_stop_marker_path", lambda: marker)

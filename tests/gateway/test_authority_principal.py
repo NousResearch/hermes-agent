@@ -3,8 +3,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.session_authority import LiveSession, SessionAuthority
-from gateway.session_controls import AuthorityConnection
+from hermes_agent.gateway.session_authority import LiveSession, SessionAuthority
+from hermes_agent.gateway.session_controls import AuthorityConnection
 from hermes_agent.hermes_state import SessionDB
 from hermes_agent.hermes_state_runtime import begin_runtime_epoch
 
@@ -38,7 +38,7 @@ async def test_connection_preserves_server_grant(tmp_path, binding):
 
 @pytest.mark.asyncio
 async def test_question_response_does_not_grant_execution_control(tmp_path):
-    from gateway.session_contract import SessionActor, SessionRef
+    from hermes_agent.gateway.session_contract import SessionActor, SessionRef
     from hermes_agent.hermes_state_runtime import RuntimeStoreError, admit_session_input, claim_session_input
     from tools import clarify_gateway
 

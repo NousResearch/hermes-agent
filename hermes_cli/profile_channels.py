@@ -83,7 +83,7 @@ def _registry_entries() -> list:
     with contextlib.suppress(Exception):
         from hermes_cli.plugins import discover_plugins
         discover_plugins()  # idempotent per profile scope
-        from gateway.platform_registry import platform_registry
+        from hermes_agent.gateway.platform_registry import platform_registry
         return list(platform_registry.all_entries())
     return []
 
@@ -111,7 +111,7 @@ def _shared_with_tools(source_dir: Optional[Path] = None) -> dict[str, tuple[str
 def platform_ids(source_dir: Optional[Path] = None) -> list[str]:
     """Every messaging platform id: built-in ``Platform`` members, platforms that left core, plus the
     plugin adapters registered in ``source_dir``'s scope (ambient scope when ``None``)."""
-    from gateway.config import Platform
+    from hermes_agent.gateway.config import Platform
     ids = {m.value for m in Platform.__members__.values() if m.value != "local"}
     ids.update(feature.platform for feature in _left_core_platforms())
     with _plugin_scope(source_dir):
@@ -120,7 +120,7 @@ def platform_ids(source_dir: Optional[Path] = None) -> list[str]:
 
 
 def _cred_row_envs(row) -> set[str]:
-    """Every env name a ``gateway.platform_env.EnvCred`` row reads."""
+    """Every env name a ``hermes_agent.gateway.platform_env.EnvCred`` row reads."""
     names: set[str] = set()
 
     def _flatten(spec) -> None:
@@ -147,8 +147,8 @@ def config_env_table_keys(entries: Iterable = ()) -> dict[str, str]:
     enable-credential sets plus, for each given registry entry, its ``env_enable_credentials`` and
     every ``EnvCred`` row of its ``env_overrides``. With no *entries* it is registry-free (core rows
     only), so it stays cheap at import time; raises if the core table cannot be read."""
-    from gateway import config_env
-    from gateway.platform_env import EnvCred
+    from hermes_agent.gateway import config_env
+    from hermes_agent.gateway.platform_env import EnvCred
     keys: dict[str, str] = {}
     for platform, names in config_env._ENV_ENABLE_CREDENTIALS.items():
         keys.update(dict.fromkeys(names, platform.value))
@@ -197,7 +197,7 @@ def _policy_env_keys(source_dir: Optional[Path] = None) -> set[str]:
         for entry in entries:
             names.update(n for n in (entry.allowed_users_env, entry.allow_all_env, entry.cron_deliver_env_var) if n)
     with contextlib.suppress(Exception):
-        from gateway.platform_env import EnvCred
+        from hermes_agent.gateway.platform_env import EnvCred
         for step in _env_override_steps(entries):
             if isinstance(step, EnvCred) and step.home:
                 names.update({step.home, f"{step.home}_NAME", f"{step.home}_THREAD_ID"})
@@ -225,8 +225,8 @@ def credential_env_keys() -> dict[str, str]:
     for entry in entries:
         keys.update(dict.fromkeys(entry.required_env, entry.name))
     with contextlib.suppress(Exception):
-        from gateway import config_env
-        from gateway.platform_env import EnvCred
+        from hermes_agent.gateway import config_env
+        from hermes_agent.gateway.platform_env import EnvCred
         for platform, names in config_env._ENV_ENABLE_CREDENTIALS.items():
             keys.update(dict.fromkeys(names, platform.value))
         for entry in entries:
@@ -268,7 +268,7 @@ def _explicit_enabled(raw: dict, pid: str) -> Optional[bool]:
 def _shared_adapters_active(source_dir: Optional[Path], shared: dict[str, tuple[str, ...]]) -> set[str]:
     """Shared-prefix platforms the SOURCE runs as a channel: explicitly enabled in its config.yaml, or
     auto-enabled by a complete credential set in its ``.env`` and not explicitly disabled — the same
-    gate ``gateway.platform_env.EnvCred`` applies at gateway start."""
+    gate ``hermes_agent.gateway.platform_env.EnvCred`` applies at gateway start."""
     from hermes_cli.config_backend import config_exists
     if source_dir is None:
         return set(shared)  # no source to consult: the historical (strip) behaviour
@@ -280,7 +280,7 @@ def _shared_adapters_active(source_dir: Optional[Path], shared: dict[str, tuple[
     env = _env_values(source_dir / ".env")
     creds_by_platform: dict[str, set[str]] = {}
     with contextlib.suppress(Exception):
-        from gateway import config_env
+        from hermes_agent.gateway import config_env
         for platform, names in config_env._ENV_ENABLE_CREDENTIALS.items():
             creds_by_platform[platform.value] = set(names)
     with _plugin_scope(source_dir):

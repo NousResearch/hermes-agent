@@ -8,7 +8,7 @@ async def test_an_unrestored_local_parent_is_restored_before_its_stand_in_is_bui
     from hermes_agent.hermes_state_local import end_idle_local_session
     from tests.gateway.test_session_end_delegations import _local
     from tests.gateway.test_unviewed_completion_notes import _restart, _target
-    from gateway import run_auto_resume
+    from hermes_agent.gateway import run_auto_resume
     runner, authority, ref, _actor = await _local(tmp_path, monkeypatch)
     route, target = authority.sessions[ref.session_id].route, _target(runner, authority, ref)
     assert end_idle_local_session(authority.db, epoch=authority.epoch, session_id=ref.session_id,

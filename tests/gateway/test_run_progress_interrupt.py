@@ -16,9 +16,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import BasePlatformAdapter, SendResult
-from gateway.session import SessionSource
+from hermes_agent.gateway.config import Platform, PlatformConfig
+from hermes_agent.gateway.platforms.base import BasePlatformAdapter, SendResult
+from hermes_agent.gateway.session import SessionSource
 
 
 class ProgressCaptureAdapter(BasePlatformAdapter):
@@ -130,7 +130,7 @@ class PartialTruncationAgent:
 
 
 def _make_runner(adapter):
-    gateway_run = importlib.import_module("gateway.run")
+    gateway_run = importlib.import_module("hermes_agent.gateway.run")
     GatewayRunner = gateway_run.GatewayRunner
 
     runner = object.__new__(GatewayRunner)
@@ -165,7 +165,7 @@ async def _run_once(monkeypatch, tmp_path, agent_cls, session_id):
 
     adapter = ProgressCaptureAdapter()
     runner = _make_runner(adapter)
-    gateway_run = importlib.import_module("gateway.run")
+    gateway_run = importlib.import_module("hermes_agent.gateway.run")
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     monkeypatch.setattr(
         gateway_run,
@@ -254,7 +254,7 @@ def test_partial_site_code_result_is_delivered_verbatim_not_double_wrapped():
     """A truncated-tool-call exit already carries the curated site copy; the gateway must not
     prefix it with 'I had to stop before finishing:' and cut it at 200 chars."""
     from agent.turn_failure_copy import site_copy
-    from gateway.run import _normalize_empty_agent_response
+    from hermes_agent.gateway.run import _normalize_empty_agent_response
     curated = site_copy("truncated")
     result = {"final_response": None, "messages": [], "api_calls": 2, "completed": False, "partial": True,
               "error": curated, "failure_reason": "truncated", "failure_retryable": True}
@@ -265,7 +265,7 @@ def test_partial_site_code_result_is_delivered_verbatim_not_double_wrapped():
 
 
 def test_partial_without_site_code_keeps_the_generic_wrapper():
-    from gateway.run import _normalize_empty_agent_response
+    from hermes_agent.gateway.run import _normalize_empty_agent_response
     result = {"final_response": None, "messages": [], "api_calls": 2, "completed": False, "partial": True,
               "error": "Response truncated due to output length limit"}
     text = _normalize_empty_agent_response(result, "", history_len=0)

@@ -8,8 +8,8 @@ JSONL/spool fallback and no FTS surgery runs on the damaged file.
 import json
 import sqlite3
 
-from gateway.config import GatewayConfig
-from gateway.session import SessionStore
+from hermes_agent.gateway.config import GatewayConfig
+from hermes_agent.gateway.session import SessionStore
 
 
 class _MalformedConn:

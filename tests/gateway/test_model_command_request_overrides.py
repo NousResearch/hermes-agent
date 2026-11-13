@@ -2,10 +2,10 @@
 
 import pytest
 
-from gateway.config import Platform
-from gateway.platforms.event import MessageEvent, MessageType
-from gateway.run import GatewayRunner
-from gateway.session import SessionSource
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.run import GatewayRunner
+from hermes_agent.gateway.session import SessionSource
 
 
 def _make_runner():
@@ -40,7 +40,7 @@ async def test_handle_model_command_stores_request_overrides_for_named_custom_pr
     tmp_path,
     monkeypatch,
 ):
-    import gateway.run as gateway_run
+    import hermes_agent.gateway.run as gateway_run
     from hermes_cli.model_switch import ModelSwitchResult
 
     hermes_home = tmp_path / ".hermes"

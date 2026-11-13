@@ -11,7 +11,7 @@ async def test_streaming_retry_after_delete_replays_terminal_receipt(api, owner)
     calls = []
 
     async def handle(event):
-        from gateway.session_results import execution_result
+        from hermes_agent.gateway.session_results import execution_result
         calls.append(event.text)
         execution_result.get()['result'] = {'final_response': 'answer', 'messages': []}
         return 'answer'

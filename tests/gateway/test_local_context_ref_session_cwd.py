@@ -8,10 +8,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway import session_policy
-from gateway.config import Platform
-from gateway.run import GatewayRunner
-from gateway.session import SessionSource
+from hermes_agent.gateway import session_policy
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.run import GatewayRunner
+from hermes_agent.gateway.session import SessionSource
 
 
 async def _context_length(_source, _session_key):

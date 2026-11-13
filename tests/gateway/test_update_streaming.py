@@ -15,9 +15,9 @@ from unittest.mock import patch, MagicMock, AsyncMock
 
 import pytest
 
-from gateway.config import Platform
-from gateway.platforms.event import MessageEvent
-from gateway.session import SessionSource
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.platforms.event import MessageEvent
+from hermes_agent.gateway.session import SessionSource
 
 def _make_event(text="/update", platform=Platform.TELEGRAM,
                 user_id="12345", chat_id="67890"):
@@ -32,7 +32,7 @@ def _make_event(text="/update", platform=Platform.TELEGRAM,
 
 def _make_runner(hermes_home=None):
     """Create a bare GatewayRunner without calling __init__."""
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
     runner = object.__new__(GatewayRunner)
     runner.adapters = {}
     runner._voice_mode = {}
@@ -101,8 +101,8 @@ class TestUpdateCommandGatewayFlag:
         hermes_home.mkdir()
 
         mock_popen = MagicMock()
-        with patch("gateway.run._hermes_home", hermes_home), \
-             patch("gateway.slash_commands.project_root_str", lambda: str(fake_root)), \
+        with patch("hermes_agent.gateway.run._hermes_home", hermes_home), \
+             patch("hermes_agent.gateway.slash_commands.project_root_str", lambda: str(fake_root)), \
              patch("shutil.which", side_effect=lambda x: f"/usr/bin/{x}"), \
              patch("subprocess.Popen", mock_popen):
             await runner._handle_update_command(event)
@@ -149,7 +149,7 @@ class TestWatchUpdateProgress:
 
         mock_adapter.send.side_effect = receive
 
-        with patch("gateway.run._hermes_home", hermes_home):
+        with patch("hermes_agent.gateway.run._hermes_home", hermes_home):
             watcher = asyncio.create_task(runner._watch_update_progress(
                 poll_interval=0.01, stream_interval=0.02, timeout=15.0,
             ))
@@ -197,7 +197,7 @@ class TestWatchUpdateProgress:
             await asyncio.sleep(0.2)
             (hermes_home / ".update_exit_code").write_text("0")
 
-        with patch("gateway.run._hermes_home", hermes_home):
+        with patch("hermes_agent.gateway.run._hermes_home", hermes_home):
             task = asyncio.create_task(simulate_prompt_cycle())
             await runner._watch_update_progress(
                 poll_interval=0.1,
@@ -238,7 +238,7 @@ class TestWatchUpdateProgress:
         adapter1 = AsyncMock()
         runner1.adapters = {Platform.TELEGRAM: adapter1}
 
-        with patch("gateway.run._hermes_home", hermes_home):
+        with patch("hermes_agent.gateway.run._hermes_home", hermes_home):
             watch1 = asyncio.create_task(
                 runner1._watch_update_progress(
                     poll_interval=0.05,
@@ -310,7 +310,7 @@ class TestUpdatePromptInterception:
         runner._handle_reset_command = AsyncMock(return_value="reset ok")
         (hermes_home / ".update_prompt.json").write_text(json.dumps({"prompt": "test"}))
 
-        with patch("gateway.run._hermes_home", hermes_home):
+        with patch("hermes_agent.gateway.run._hermes_home", hermes_home):
             result = await runner._handle_message(event)
 
         assert result == "reset ok"

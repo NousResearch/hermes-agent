@@ -13,7 +13,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from hermes_agent.cron import scheduler
-from gateway import session_cron
+from hermes_agent.gateway import session_cron
 
 
 @pytest.fixture

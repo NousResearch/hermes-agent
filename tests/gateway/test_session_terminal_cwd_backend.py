@@ -3,7 +3,7 @@
 It runs on every messaging turn, terminal or not, so a typo in an unrelated terminal setting
 (a timeout, an SSH port) must not fail the turn; the terminal tool reports those itself.
 """
-from gateway.session_terminal_cwd import _local_backend
+from hermes_agent.gateway.session_terminal_cwd import _local_backend
 
 
 def test_an_unrelated_terminal_typo_does_not_fail_the_check(monkeypatch):

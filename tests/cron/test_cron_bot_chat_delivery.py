@@ -136,7 +136,7 @@ def test_failure_notice_reaches_the_owner_as_a_diagnostic(tmp_path, monkeypatch)
 
     monkeypatch.setattr(mailbox, "find_canonical_live_owner", lambda home: {"session_id": "local-bot"})
     monkeypatch.setattr(mailbox, "deliver_to_live_owner", fake_deliver)
-    monkeypatch.setattr("gateway.warning_notifications.warning_notifications_enabled", lambda *a, **k: True)
+    monkeypatch.setattr("hermes_agent.gateway.warning_notifications.warning_notifications_enabled", lambda *a, **k: True)
     job = {"id": "j1", "name": "n", "execution_id": "r1"}
     assert _deliver_to_bot_chat(job, "boom", "", for_failure=True) is None
     assert _deliver_to_bot_chat(dict(job, execution_id="r2"), "ok", "") is None

@@ -47,7 +47,7 @@ def test_code_root_requires_absolute_path(tmp_path, monkeypatch):
 def test_gateway_root_uses_pid_guarded_status_argv(tmp_path, monkeypatch):
     root = _checkout(tmp_path, "pinned")
     monkeypatch.setattr(
-        "gateway.status.read_runtime_status",
+        "hermes_agent.gateway.status.read_runtime_status",
         lambda _path: {"pid": 42, "argv": [str(root / "hermes_cli" / "main.py")]},
     )
     assert update_receipt._gateway_code_root(42, tmp_path / "home") == root.resolve()
@@ -56,7 +56,7 @@ def test_gateway_root_uses_pid_guarded_status_argv(tmp_path, monkeypatch):
 def test_gateway_root_uses_virtualenv_when_module_path_is_absent(tmp_path, monkeypatch):
     root = _checkout(tmp_path, "pinned")
     venv = root / "venv"
-    monkeypatch.setattr("gateway.status.read_runtime_status", lambda _path: {"pid": 42, "argv": ["-m"]})
+    monkeypatch.setattr("hermes_agent.gateway.status.read_runtime_status", lambda _path: {"pid": 42, "argv": ["-m"]})
     fake_process = SimpleNamespace(
         environ=lambda: {"VIRTUAL_ENV": str(venv)},
         exe=lambda: "/usr/bin/python",
@@ -120,7 +120,7 @@ def test_collect_fleet_versions_classifies_separate_checkout_gateway(tmp_path, m
     monkeypatch.setattr("hermes_cli.profiles._get_default_hermes_home", lambda: home)
     monkeypatch.setattr("hermes_cli.profiles._get_profiles_root", lambda: tmp_path / "no_profiles")
     monkeypatch.setattr(update_receipt, "_socket_identity", lambda _home: None)
-    monkeypatch.setattr("gateway.status.live_gateway_pid_for_home", lambda _home: 4242)
+    monkeypatch.setattr("hermes_agent.gateway.status.live_gateway_pid_for_home", lambda _home: 4242)
 
     fleet = update_receipt.collect_fleet_versions()
 

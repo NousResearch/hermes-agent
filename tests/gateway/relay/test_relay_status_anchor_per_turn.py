@@ -18,9 +18,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.run import GatewayRunner
-from gateway.session_results import execution_result
+from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+from hermes_agent.gateway.run import GatewayRunner
+from hermes_agent.gateway.session_results import execution_result
 from tests.waiting import async_wait_until
 
 websockets = pytest.importorskip('websockets')
@@ -35,10 +35,10 @@ async def _gateway(tmp_path, instance, extra):
     """Yields ``(runner, send, outgoing, adapter)``; ``send(message_id, chat_id, text, ...)`` delivers
     one inbound Slack message through the fixture connector. A chat message runs as a producer
     admission (``session_producer_lifecycle``), a command through ``_process_message_background``."""
-    from gateway.relay.adapter import RelayAdapter
-    from gateway.relay.descriptor import CapabilityDescriptor
-    from gateway.relay.ws_transport import WebSocketRelayTransport
-    from gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway.relay.adapter import RelayAdapter
+    from hermes_agent.gateway.relay.descriptor import CapabilityDescriptor
+    from hermes_agent.gateway.relay.ws_transport import WebSocketRelayTransport
+    from hermes_agent.gateway.session_authority import initialize_session_authority
 
     runner = GatewayRunner(GatewayConfig(sessions_dir=tmp_path / 'sessions'))
     authority = await initialize_session_authority(runner, profile_id='default', instance_id=instance)
@@ -264,14 +264,14 @@ async def test_a_channel_thread_turn_keeps_its_thread_status(tmp_path, monkeypat
 
 
 def _dm_event(message_id, chat_id='D7'):
-    from gateway.platforms.event import MessageEvent, MessageType
-    from gateway.session import SessionSource
+    from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
+    from hermes_agent.gateway.session import SessionSource
     source = SessionSource(platform=Platform.SLACK, chat_id=chat_id, chat_type='dm', user_id='U1', scope_id='T1')
     return MessageEvent(text='hi', source=source, message_type=MessageType.TEXT, message_id=message_id)
 
 
 def _stub_adapter(extra):
-    from gateway.relay.adapter import RelayAdapter
+    from hermes_agent.gateway.relay.adapter import RelayAdapter
     from tests.gateway.relay.stub_connector import StubConnector
     from tests.gateway.relay.test_relay_slack_prompt_dm_root import _slack_desc
 
@@ -316,7 +316,7 @@ async def _adapter_with_two_inbounds(extra):
 async def test_progress_restores_the_status_on_the_turns_own_message():
     """``_progress_restore_typing`` re-sets the status after a progress bubble: on this turn's message,
     also when the progress metadata names no thread (flat replies)."""
-    from gateway.run_turn_progress import GatewayTurnProgressMixin
+    from hermes_agent.gateway.run_turn_progress import GatewayTurnProgressMixin
 
     adapter, stub, event = await _adapter_with_two_inbounds(FLAT_REPLIES)
     progress = GatewayTurnProgressMixin()

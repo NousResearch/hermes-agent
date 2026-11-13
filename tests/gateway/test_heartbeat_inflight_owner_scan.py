@@ -4,9 +4,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.config import Platform
-from gateway.session import SessionSource
-from gateway.session_authority import SessionAuthority
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.session import SessionSource
+from hermes_agent.gateway.session_authority import SessionAuthority
 from hermes_cli.heartbeat import HeartbeatState, save_heartbeat
 from hermes_agent.hermes_state import SessionDB
 from hermes_agent.hermes_state_runtime import admit_session_input, begin_runtime_epoch
@@ -18,7 +18,7 @@ from hermes_agent.hermes_state_runtime import admit_session_input, begin_runtime
     {'local_automation_v1': {'heartbeat': 'root'}},
 ], ids=['native', 'local'])
 async def test_inflight_heartbeat_on_the_logical_owner_blocks_another(tmp_path, monkeypatch, envelope):
-    from gateway.run_heartbeat_acceptance import admit_heartbeat
+    from hermes_agent.gateway.run_heartbeat_acceptance import admit_heartbeat
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     db = SessionDB(tmp_path / 'state.db')
     try:

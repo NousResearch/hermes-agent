@@ -9,8 +9,8 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-from gateway.config import PlatformConfig
-from gateway.platforms.api_server import APIServerAdapter
+from hermes_agent.gateway.config import PlatformConfig
+from hermes_agent.gateway.platforms.api_server import APIServerAdapter
 from hermes_agent.hermes_state import SessionDB
 
 
@@ -299,7 +299,7 @@ async def test_run_agent_binds_api_session_context_for_tool_env(adapter, monkeyp
             self.session_id = session_id
 
         def run_conversation(self, user_message, conversation_history, task_id):
-            from gateway.session_context import get_session_env
+            from hermes_agent.gateway.session_context import get_session_env
             from tools.environments.local import _make_run_env
 
             observed["task_id"] = task_id
@@ -434,7 +434,7 @@ async def test_session_chat_stream_disconnect_keeps_control_refs_until_executor_
         "_create_agent",
         side_effect=_create_agent,
     ), patch(
-        "gateway.platforms.api_server.web.StreamResponse",
+        "hermes_agent.gateway.platforms.api_server.web.StreamResponse",
         return_value=DisconnectingStreamResponse(),
     ):
         handler_task = asyncio.create_task(adapter._handle_session_chat_stream(request))
@@ -696,7 +696,7 @@ def _register_session_model_route(app, adapter):
 
 def _patch_api_server_runtime(monkeypatch):
     monkeypatch.setattr(
-        "gateway.run._resolve_runtime_agent_kwargs",
+        "hermes_agent.gateway.run._resolve_runtime_agent_kwargs",
         lambda: {
             "provider": "openrouter",
             "api_key": "sk-global",
@@ -704,20 +704,20 @@ def _patch_api_server_runtime(monkeypatch):
             "api_mode": "chat_completions",
         },
     )
-    monkeypatch.setattr("gateway.run._resolve_gateway_model", lambda: "global/model")
-    monkeypatch.setattr("gateway.run._load_gateway_config", dict)
+    monkeypatch.setattr("hermes_agent.gateway.run._resolve_gateway_model", lambda: "global/model")
+    monkeypatch.setattr("hermes_agent.gateway.run._load_gateway_config", dict)
     monkeypatch.setattr(
-        "gateway.run.GatewayRunner._load_reasoning_config",
+        "hermes_agent.gateway.run.GatewayRunner._load_reasoning_config",
         staticmethod(lambda model="": {}),
     )
     monkeypatch.setattr(
-        "gateway.run.GatewayRunner._load_fallback_model",
+        "hermes_agent.gateway.run.GatewayRunner._load_fallback_model",
         staticmethod(lambda: None),
     )
-    monkeypatch.setattr("gateway.run._current_max_iterations", lambda: 90)
+    monkeypatch.setattr("hermes_agent.gateway.run._current_max_iterations", lambda: 90)
     monkeypatch.setattr("hermes_cli.tools_config._get_platform_tools", lambda *_: set())
     monkeypatch.setattr(
-        "gateway.run._resolve_runtime_agent_kwargs_for_provider",
+        "hermes_agent.gateway.run._resolve_runtime_agent_kwargs_for_provider",
         lambda provider, target_model=None: {
             "provider": provider,
             "api_key": f"sk-{provider}",
@@ -1037,7 +1037,7 @@ def test_confirmed_runtime_lock_accepts_resolved_provider_identity(
 def test_confirmed_runtime_lock_disables_global_fallback_model(adapter, monkeypatch):
     _patch_api_server_runtime(monkeypatch)
     monkeypatch.setattr(
-        "gateway.run.GatewayRunner._load_fallback_model",
+        "hermes_agent.gateway.run.GatewayRunner._load_fallback_model",
         staticmethod(lambda: "openrouter/fallback-model"),
     )
     captured = {}
@@ -1304,7 +1304,7 @@ async def test_session_stream_records_reply_text_for_post_disconnect_recovery(
     ), patch.object(
         adapter, "_create_agent", side_effect=lambda **kw: FakeAgent(kw["stream_delta_callback"])
     ), patch(
-        "gateway.platforms.api_server.web.StreamResponse",
+        "hermes_agent.gateway.platforms.api_server.web.StreamResponse",
         return_value=DisconnectingStreamResponse(),
     ):
         handler_task = asyncio.create_task(adapter._handle_session_chat_stream(request))
@@ -1339,7 +1339,7 @@ async def test_worker_events_reach_the_session_stream_before_its_terminal_frames
     before ``assistant.completed``/``done``, however late the loop applies that hand-off (it is
     not ordered against the worker's own completion; CI saw it land after ``None`` and vanish)."""
     session_id = session_db.create_session("late-hop-session", "api_server")
-    monkeypatch.setattr("gateway.run._load_gateway_config", dict)
+    monkeypatch.setattr("hermes_agent.gateway.run._load_gateway_config", dict)
     loop = asyncio.get_running_loop()
     real_threadsafe = loop.call_soon_threadsafe
 
@@ -1424,7 +1424,7 @@ async def test_interim_commentary_reaches_session_sse_and_responses_stream(adapt
     # Display gate: the callback is dropped before it reaches AIAgent, like the gateway/TUI.
     _patch_api_server_runtime(monkeypatch)
     monkeypatch.setattr(
-        "gateway.run._load_gateway_config", lambda: {"display": {"interim_assistant_messages": False}})
+        "hermes_agent.gateway.run._load_gateway_config", lambda: {"display": {"interim_assistant_messages": False}})
     captured = {}
 
     class CapturingAgent:

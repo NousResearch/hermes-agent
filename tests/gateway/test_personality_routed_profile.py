@@ -10,9 +10,9 @@ the profile currently in scope (``run_sync`` runs inside
 
 from __future__ import annotations
 
-import gateway.run as gateway_run
-from gateway.config import Platform
-from gateway.run import GatewayRunner, _profile_runtime_scope
+import hermes_agent.gateway.run as gateway_run
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.run import GatewayRunner, _profile_runtime_scope
 
 
 def test_routed_profile_prompt_resolves_from_its_own_config(tmp_path, monkeypatch):

@@ -33,19 +33,19 @@ async def test_http_lifespan_does_not_start_or_stop_runtime_services(monkeypatch
 @pytest.mark.asyncio
 @pytest.mark.parametrize('shared', [False, True])
 async def test_owner_serves_existing_routes_and_ws_without_signal_ownership(monkeypatch, tmp_path, shared):
-    from gateway.run_api import start_gateway_api, stop_gateway_api
+    from hermes_agent.gateway.run_api import start_gateway_api, stop_gateway_api
     from hermes_cli import web_server as web
 
-    from gateway.run import GatewayRunner
-    from gateway.config import GatewayConfig
+    from hermes_agent.gateway.run import GatewayRunner
+    from hermes_agent.gateway.config import GatewayConfig
 
     runner = GatewayRunner(GatewayConfig(sessions_dir=tmp_path / "gateway-sessions"))
     assert runner.adapters == {}
     request = {"jsonrpc": "2.0", "id": 1, "method": "ping", "params": {}}
     if shared:
-        from gateway.config import Platform
-        from gateway.session import SessionSource
-        from gateway.session_authority import initialize_session_authority
+        from hermes_agent.gateway.config import Platform
+        from hermes_agent.gateway.session import SessionSource
+        from hermes_agent.gateway.session_authority import initialize_session_authority
         authority = await initialize_session_authority(runner, profile_id='fixture', instance_id='api-owner')
         ref = authority.register(SessionSource(platform=Platform.TELEGRAM, chat_id='api-test', user_id='fixture'))
         request.update(method='session.resume', params={'session_id': ref.session_id})

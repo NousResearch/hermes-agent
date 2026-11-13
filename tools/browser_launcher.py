@@ -400,12 +400,12 @@ def running_instance(user_data_dir: str) -> Optional[tuple[int, str, int]]:
 
 
 def _pid_alive(pid: int) -> bool:
-    from gateway.status import _pid_exists
+    from hermes_agent.gateway.status import _pid_exists
     return pid > 0 and _pid_exists(pid)
 
 
 def _start_time(pid: int) -> Optional[int]:
-    from gateway.status import get_process_start_time
+    from hermes_agent.gateway.status import get_process_start_time
     return get_process_start_time(pid)
 
 
@@ -858,7 +858,7 @@ def _shared_profiles_root() -> Path:
     """Launcher state of persistent (shared) profiles, per OS user rather than per HERMES_HOME: two homes pinning
     one ``browser.user_data_dir`` drive its one Chromium, so they must see one launch record, one lease set and
     one lock. The host rendezvous root the gateway's own cross-profile locks use."""
-    from gateway.status import _get_lock_dir
+    from hermes_agent.gateway.status import _get_lock_dir
     return _get_lock_dir() / "browser-shared-profiles"
 
 

@@ -20,8 +20,8 @@ transcript) or, failing recovery, to a fresh session.
 from datetime import datetime, timedelta
 from unittest.mock import MagicMock, patch
 
-from gateway.config import GatewayConfig, Platform
-from gateway.session import SessionEntry, SessionSource, SessionStore
+from hermes_agent.gateway.config import GatewayConfig, Platform
+from hermes_agent.gateway.session import SessionEntry, SessionSource, SessionStore
 
 
 # ---------------------------------------------------------------------------
@@ -59,7 +59,7 @@ def _db_returning(rows: dict) -> MagicMock:
 def _make_store_with_db(tmp_path, db_mock) -> SessionStore:
     """Build a SessionStore with a mock SessionDB, bypassing disk load."""
     config = GatewayConfig()
-    with patch("gateway.session.SessionStore._ensure_loaded"):
+    with patch("hermes_agent.gateway.session.SessionStore._ensure_loaded"):
         store = SessionStore(sessions_dir=tmp_path, config=config)
     store._db = db_mock
     store._loaded = True

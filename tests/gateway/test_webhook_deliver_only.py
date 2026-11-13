@@ -20,10 +20,10 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import SendResult
-from gateway.platforms.event import MessageEvent
-from gateway.platforms.webhook import WebhookAdapter, _INSECURE_NO_AUTH
+from hermes_agent.gateway.config import Platform, PlatformConfig
+from hermes_agent.gateway.platforms.base import SendResult
+from hermes_agent.gateway.platforms.event import MessageEvent
+from hermes_agent.gateway.platforms.webhook import WebhookAdapter, _INSECURE_NO_AUTH
 
 
 # ---------------------------------------------------------------------------

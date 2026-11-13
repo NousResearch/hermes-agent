@@ -26,7 +26,7 @@ from pathlib import Path
 import psutil
 import pytest
 
-from gateway import status
+from hermes_agent.gateway import status
 from tests.waiting import wait_until
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]

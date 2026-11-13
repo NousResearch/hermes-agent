@@ -44,7 +44,7 @@ def resolve_room_target(job: dict, address: str) -> Optional[dict]:
 def _room_stores(profile: Optional[str]) -> list[Path]:
     """Where a room can live: the hosting profile's session store (rooms its gateway owns), then the
     install's shared room store (rooms the dashboard backend owns)."""
-    from gateway.hosted_rooms import default_db_path
+    from hermes_agent.gateway.hosted_rooms import default_db_path
     from hermes_constants import get_hermes_home
     if profile:
         from hermes_cli.profiles import get_profile_dir
@@ -58,7 +58,7 @@ def _find_room_store(room_id: str, profile: Optional[str]) -> Optional[Path]:
     """The store whose worker serves ``room_id``. The session store counts only when its gateway holds
     the room's owner entry: the shared-store import copies rooms out of ``state.db`` without deleting
     them, and nothing serves that leftover copy, so a post there would never reach the visible room."""
-    from gateway.hosted_rooms import probe_hosted_room
+    from hermes_agent.gateway.hosted_rooms import probe_hosted_room
     session_store, shared_store = _room_stores(profile)
     if _serves(session_store, room_id):
         return session_store
@@ -66,7 +66,7 @@ def _find_room_store(room_id: str, profile: Optional[str]) -> Optional[Path]:
         return None
     # A shared room the root gateway imported is fenced here and lives on in the ROOT home's state.db
     # (only that gateway imports), whichever profile's view advertised the target.
-    from gateway.hosted_rooms_gateway_import import handed_room_ids
+    from hermes_agent.gateway.hosted_rooms_gateway_import import handed_room_ids
     root_store = shared_store.with_name("state.db")
     if room_id in handed_room_ids(shared_store) and _serves(root_store, room_id):
         return root_store
@@ -74,16 +74,16 @@ def _find_room_store(room_id: str, profile: Optional[str]) -> Optional[Path]:
 
 
 def _serves(store: Path, room_id: str) -> bool:
-    from gateway.hosted_rooms import probe_hosted_room
-    from gateway.session_hosted_service import probe_native_room_owner
+    from hermes_agent.gateway.hosted_rooms import probe_hosted_room
+    from hermes_agent.gateway.session_hosted_service import probe_native_room_owner
     return probe_hosted_room(store, room_id=room_id) and probe_native_room_owner(store, room_id=room_id)
 
 
 def deliver_to_room(job: dict, content: str, address: str, *, for_failure: bool = False) -> Optional[str]:
     """Post one cron output into a hosted room. None on success, else an error string."""
     from hermes_agent.cron.scheduler_delivery import _redact_cron_payload
-    from gateway.hosted_room_context import post_scheduled_message
-    from gateway.hosted_rooms import AuthorityConflictError
+    from hermes_agent.gateway.hosted_room_context import post_scheduled_message
+    from hermes_agent.gateway.hosted_rooms import AuthorityConflictError
 
     target = f"room:{address}"
     match = _ROOM_TOKEN_RE.fullmatch(address)

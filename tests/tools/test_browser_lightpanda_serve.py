@@ -293,7 +293,7 @@ class TestReapOrphans:
 
     def test_live_other_owner_is_skipped(self, _isolate):
         rec = self._record(_isolate, "lp_x", owner_pid=12345)
-        with patch("gateway.status._pid_exists", return_value=True), \
+        with patch("hermes_agent.gateway.status._pid_exists", return_value=True), \
              patch("tools.process_registry.ProcessRegistry._terminate_host_pid") as kill:
             assert lp.reap_orphaned_lightpanda() == 0
         kill.assert_not_called()
@@ -310,7 +310,7 @@ class TestReapOrphans:
 
     def test_dead_owner_verified_process_is_killed(self, _isolate):
         rec = self._record(_isolate, "lp_x", owner_pid=12345, pid=999)
-        with patch("gateway.status._pid_exists", return_value=False), \
+        with patch("hermes_agent.gateway.status._pid_exists", return_value=False), \
              patch.object(lp, "_is_lightpanda_process", return_value=True), \
              patch("tools.process_registry.ProcessRegistry._terminate_host_pid") as kill:
             assert lp.reap_orphaned_lightpanda() == 1
@@ -327,7 +327,7 @@ class TestReapOrphans:
 
     def test_unverified_pid_is_never_signalled(self, _isolate):
         rec = self._record(_isolate, "lp_x", owner_pid=12345, pid=999)
-        with patch("gateway.status._pid_exists", return_value=False), \
+        with patch("hermes_agent.gateway.status._pid_exists", return_value=False), \
              patch.object(lp, "_is_lightpanda_process", return_value=False), \
              patch("tools.process_registry.ProcessRegistry._terminate_host_pid") as kill:
             assert lp.reap_orphaned_lightpanda() == 0
@@ -355,10 +355,10 @@ class TestProcessIdentity:
     def test_matches_name_port_and_start_time(self):
         proc = self._P("lightpanda", ["/opt/lightpanda", "serve", "--host", "127.0.0.1", "--port", "43111"])
         with patch("psutil.Process", return_value=proc), \
-             patch("gateway.status.get_process_start_time", return_value=111):
+             patch("hermes_agent.gateway.status.get_process_start_time", return_value=111):
             assert lp._is_lightpanda_process(999, 43111, 111) is True
         with patch("psutil.Process", return_value=proc), \
-             patch("gateway.status.get_process_start_time", return_value=222):
+             patch("hermes_agent.gateway.status.get_process_start_time", return_value=222):
             assert lp._is_lightpanda_process(999, 43111, 111) is False
 
     def test_rejects_other_process_on_recycled_pid(self):

@@ -229,7 +229,7 @@ def load_background_review_settings() -> tuple[bool, dict[str, Any]]:
     """Single config read -> ``(enabled, task_cfg)``. Fail-open (``enabled=True``) so a broken
     config never silently disables reviews — but WARN so the cost is visible."""
     from agent.safe_worker_policy import safe_worker_enabled
-    from gateway.session_finite import finite_turn_required
+    from hermes_agent.gateway.session_finite import finite_turn_required
 
     # A finite gateway turn (`chat -q` / `-z`) is one-shot like the in-process run, whose exit
     # takes the daemon review thread with it; the long-lived gateway would otherwise fork a

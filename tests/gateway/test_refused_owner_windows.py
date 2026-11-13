@@ -17,7 +17,7 @@ pytestmark = pytest.mark.platforms("windows")
 
 
 def test_own_session_and_elevation_are_read_from_the_real_token():
-    from gateway import runtime_bootstrap_windows as native
+    from hermes_agent.gateway import runtime_bootstrap_windows as native
     from hermes_dir_acl import process_elevation, process_is_elevated
     import os
 
@@ -28,7 +28,7 @@ def test_own_session_and_elevation_are_read_from_the_real_token():
 
 
 def test_a_same_token_owner_is_not_misnamed():
-    from gateway import runtime_bootstrap_windows as native
+    from hermes_agent.gateway import runtime_bootstrap_windows as native
 
     child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
     try:
@@ -50,7 +50,7 @@ def _session_zero_pid() -> int | None:
 def test_a_session_zero_owner_reads_as_another_logon_session():
     import os
 
-    from gateway import runtime_bootstrap_windows as native
+    from hermes_agent.gateway import runtime_bootstrap_windows as native
 
     if native._session_of(os.getpid()) == 0:
         pytest.skip("this runner itself runs in session 0")

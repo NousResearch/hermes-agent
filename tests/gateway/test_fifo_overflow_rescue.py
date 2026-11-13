@@ -16,13 +16,13 @@ orphan in the slot, so FIFO order (#28503) holds and nothing runs twice.
 
 from unittest.mock import MagicMock
 
-from gateway.platforms.base import (
+from hermes_agent.gateway.platforms.base import (
     BasePlatformAdapter,
     Platform,
     PlatformConfig,
 )
-from gateway.platforms.event import MessageEvent, MessageType
-from gateway.run import GatewayRunner
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.run import GatewayRunner
 
 
 class _StubAdapter(BasePlatformAdapter):
@@ -36,7 +36,7 @@ class _StubAdapter(BasePlatformAdapter):
         self._mark_disconnected()
 
     async def send(self, chat_id, content, reply_to=None, metadata=None):
-        from gateway.platforms.base import SendResult
+        from hermes_agent.gateway.platforms.base import SendResult
 
         return SendResult(success=True, message_id="msg-1")
 

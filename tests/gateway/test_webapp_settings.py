@@ -10,7 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway import webapp_listener as webapp
+from hermes_agent.gateway import webapp_listener as webapp
 
 MALFORMED = [
     ("webapp: yes\n", "webapp in"),
@@ -104,8 +104,8 @@ def test_the_webapp_and_its_sign_in_gate_agree_on_which_hosts_stay_on_this_machi
 
 def _gateway(monkeypatch, tmp_path, config):
     """The runtime's listener start for *config*, with the listener itself replaced by a stand-in."""
-    from gateway import run_api, run_runtime
-    from gateway.control_socket import GatewayControlServer
+    from hermes_agent.gateway import run_api, run_runtime
+    from hermes_agent.gateway.control_socket import GatewayControlServer
 
     home = _home(tmp_path, config)
     monkeypatch.setenv("HERMES_HOME", str(home))

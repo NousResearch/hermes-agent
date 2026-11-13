@@ -209,7 +209,7 @@ def _log_file_samples() -> dict:
     return {
         "agent": _python_log_line("run_agent"),
         "errors": _python_log_line("run_agent"),
-        "gateway": _python_log_line("gateway.run"),
+        "gateway": _python_log_line("hermes_agent.gateway.run"),
         "gui": _python_log_line("hermes_cli.web_server"),
         # Written by TypeScript; apps/desktop/electron/desktop-log-line.test.ts pins the same shape.
         "desktop": "2026-09-28 13:18:46,062 [hermes] [boot] ready",

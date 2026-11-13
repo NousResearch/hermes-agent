@@ -330,7 +330,7 @@ See **[Platform Support](../getting-started/platform-support.md)**. Native Windo
 
 When contributing code, keep these rules in mind:
 
-- **Don't add unguarded `signal.SIGKILL` references.** It's not defined on Windows. Either route through `gateway.status.terminate_pid(pid, force=True)` (the centralized primitive that does `taskkill /T /F` on Windows and SIGKILL on POSIX), or fall back with `getattr(signal, "SIGKILL", signal.SIGTERM)`.
+- **Don't add unguarded `signal.SIGKILL` references.** It's not defined on Windows. Either route through `hermes_agent.gateway.status.terminate_pid(pid, force=True)` (the centralized primitive that does `taskkill /T /F` on Windows and SIGKILL on POSIX), or fall back with `getattr(signal, "SIGKILL", signal.SIGTERM)`.
 - **Use `psutil.pid_exists()` for process liveness.** Do not use `os.kill(pid, 0)` on Windows; it is not a safe probe.
 - **Don't force the terminal to POSIX semantics.** `os.setsid`, `os.killpg`, `os.getpgid`, `os.fork` all raise on Windows — gate them with `if sys.platform != "win32":` or `if os.name != "nt":`.
 - **Use explicit text encodings.** User-authored UTF-8 reads use `utf-8-sig` to accept a leading BOM. Writes use `utf-8` without adding a BOM.

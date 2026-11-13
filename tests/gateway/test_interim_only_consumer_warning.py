@@ -15,7 +15,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.run_turn import GatewayTurnMixin
+from hermes_agent.gateway.run_turn import GatewayTurnMixin
 
 
 class _InterimOnlyHarness(GatewayTurnMixin):
@@ -33,7 +33,7 @@ def _run_mark_streamed_delivery(consumer, caplog):
         source=SimpleNamespace(platform="telegram"),
         session_key="sess-105341",
     )
-    with caplog.at_level("WARNING", logger="gateway.run_turn"):
+    with caplog.at_level("WARNING", logger="hermes_agent.gateway.run_turn"):
         asyncio.run(
             harness._run_agent_mark_streamed_delivery(
                 {"final_response": "olá"}, turn_ctx

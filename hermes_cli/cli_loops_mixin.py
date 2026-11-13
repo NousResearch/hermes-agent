@@ -833,7 +833,7 @@ class CLILoopsMixin:
         message already queued preempts judging (re-judged after their turn). Ctrl+C
         AUTO-PAUSES instead of judging — the judge on partial output nearly always says
         "continue" and would re-queue exactly what was cancelled; pausing is recoverable
-        via ``/goal resume``. Empty-response skip mirrors ``gateway/run.py``."""
+        via ``/goal resume``. Empty-response skip mirrors ``hermes_agent/gateway/run.py``."""
         from cli import _DIM, _RST, _cprint, _looks_like_slash_command
         mgr = self._get_goal_manager()
         if mgr is None or not mgr.is_active():

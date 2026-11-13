@@ -17,7 +17,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from gateway.platforms.base import should_send_media_as_audio, transcode_to_ogg_opus
+from hermes_agent.gateway.platforms.base import should_send_media_as_audio, transcode_to_ogg_opus
 
 
 class TestVoiceRouting(unittest.TestCase):
@@ -108,7 +108,7 @@ class TestTelegramSendVoiceTranscode(unittest.TestCase):
             return fake_ogg
 
         try:
-            with patch("gateway.platforms.base.transcode_to_ogg_opus", side_effect=fake_transcode), \
+            with patch("hermes_agent.gateway.platforms.base.transcode_to_ogg_opus", side_effect=fake_transcode), \
                  patch("plugins.platforms.telegram.adapter._probe_voice_duration_seconds", return_value=1):
                 result = asyncio.run(
                     adapter.send_voice("123", mp3, is_voice=True)

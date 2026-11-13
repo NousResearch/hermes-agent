@@ -142,7 +142,7 @@ def test_a_launch_refused_for_a_stale_bundle_asks_for_a_build_not_a_restart(worl
     """A bundle that is missing or that hermes update could not rebuild is served as soon as it is
     built, and a restart keeps the stale mark: the refusal says to build it and never sends the user
     to restart the gateway, as --status already does."""
-    from gateway.webapp_listener import NOT_REBUILT
+    from hermes_agent.gateway.webapp_listener import NOT_REBUILT
     world["answers"]["webapp-launch"] = {"ok": False, "error": f"RuntimeError: The Webapp is unavailable: {NOT_REBUILT}"}
     world["answers"]["webapp-status"] = {"ok": True, "result": {"state": "unavailable", "url": None,
                                                                "reason": NOT_REBUILT}}
@@ -291,7 +291,7 @@ def test_sign_out_on_a_gateway_that_does_not_report_what_it_closed_asks_for_a_re
 
 
 def test_a_sign_out_the_gateway_refuses_is_reported_as_not_done(world, capsys):
-    from gateway.webapp_listener import TOKEN_PATH, browser_session_token
+    from hermes_agent.gateway.webapp_listener import TOKEN_PATH, browser_session_token
     before = browser_session_token(world["root"])
     world["answers"]["webapp-sign-out"] = {"ok": False, "error": "PermissionError: authenticated private request required"}
     assert launcher.cmd_webapp(_args(sign_out=True)) == 1
@@ -311,7 +311,7 @@ def test_a_gateway_that_will_not_start_is_reported(world, capsys):
 
 
 def test_signing_out_with_no_gateway_running_still_replaces_the_stored_credential(world, capsys):
-    from gateway.webapp_listener import TOKEN_PATH, browser_session_token
+    from hermes_agent.gateway.webapp_listener import TOKEN_PATH, browser_session_token
     before = browser_session_token(world["root"])
     world["answers"]["webapp-sign-out"] = launcher.GatewayUnreachable("no gateway")
     assert launcher.cmd_webapp(_args(sign_out=True)) == 0
@@ -324,7 +324,7 @@ def test_signing_out_with_no_gateway_and_a_credential_that_cannot_be_stored_says
     """With no gateway running, sign-out replaces the stored credential itself. When the home cannot
     store one (a stray file where its folder goes, a folder another user owns), it says nobody was
     signed out and names the file."""
-    from gateway.webapp_listener import TOKEN_PATH
+    from hermes_agent.gateway.webapp_listener import TOKEN_PATH
     (world["root"] / "webapp").write_text("not a folder\n", encoding="utf-8")
     world["answers"]["webapp-sign-out"] = launcher.GatewayUnreachable("no gateway")
     assert launcher.cmd_webapp(_args(sign_out=True)) == 1
@@ -341,7 +341,7 @@ SIGNED_OUT = {"ok": True, "result": {"signed_out": True, "serving": True, "sign_
 def test_sign_out_waits_for_a_starting_gateway_and_signs_out_there(world, capsys, first):
     """A starting gateway may already hold the stored credential in memory, so rewriting the file
     would sign nobody out: the command waits for the gateway to answer instead."""
-    from gateway.webapp_listener import TOKEN_PATH, browser_session_token
+    from hermes_agent.gateway.webapp_listener import TOKEN_PATH, browser_session_token
     before = browser_session_token(world["root"])
     world["answers"]["webapp-sign-out"] = [first, first, SIGNED_OUT]
     world["states"][:] = ["starting"]
@@ -353,7 +353,7 @@ def test_sign_out_waits_for_a_starting_gateway_and_signs_out_there(world, capsys
 
 
 def test_sign_out_on_a_gateway_that_stays_starting_says_nobody_was_signed_out(world, capsys):
-    from gateway.webapp_listener import TOKEN_PATH, browser_session_token
+    from hermes_agent.gateway.webapp_listener import TOKEN_PATH, browser_session_token
     before = browser_session_token(world["root"])
     world["answers"]["webapp-sign-out"] = [STARTING]
     world["states"][:] = ["starting"]
@@ -365,7 +365,7 @@ def test_sign_out_on_a_gateway_that_stays_starting_says_nobody_was_signed_out(wo
 
 
 def test_sign_out_on_a_gateway_that_does_not_answer_signs_nobody_out(world, capsys):
-    from gateway.webapp_listener import TOKEN_PATH, browser_session_token
+    from hermes_agent.gateway.webapp_listener import TOKEN_PATH, browser_session_token
     before = browser_session_token(world["root"])
     world["answers"]["webapp-sign-out"] = launcher.GatewayUnreachable("timed out")
     world["states"][:] = ["inaccessible"]
@@ -385,7 +385,7 @@ def test_a_home_whose_gateway_never_ran_reads_as_having_none(tmp_path):
 def test_a_hermes_home_at_a_deleted_profile_is_refused_like_its_profile_flag(world, capsys, deleted, action):
     """``HERMES_HOME`` naming a deleted profile is refused exactly as ``-p <name>`` is, so signing
     out never replaces the default gateway's credential instead."""
-    from gateway.webapp_listener import TOKEN_PATH, browser_session_token
+    from hermes_agent.gateway.webapp_listener import TOKEN_PATH, browser_session_token
     from hermes_constants import mark_named_profile_deleted
 
     gone = world["root"] / "profiles" / "gone"

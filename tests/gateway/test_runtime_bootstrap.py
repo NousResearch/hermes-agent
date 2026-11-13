@@ -9,13 +9,13 @@ import pytest
 @pytest.mark.platforms("linux")
 @pytest.mark.asyncio
 async def test_private_control_peer_mints_profile_bound_ticket(tmp_path):
-    from gateway.control_socket import GatewayControlServer, resolve_client_socket_path
+    from hermes_agent.gateway.control_socket import GatewayControlServer, resolve_client_socket_path
     home = tmp_path / 'home'
     home.mkdir(mode=0o700)
     server = GatewayControlServer(home)
     # The actual service must implement this closed verb; unknown-verb is the pre-feature RED.
     try:
-        from gateway.runtime_bootstrap import TicketStore
+        from hermes_agent.gateway.runtime_bootstrap import TicketStore
         server.ticket_store = TicketStore('instance', frozenset({str(home.resolve())}))
     except ImportError:
         pass
@@ -47,9 +47,9 @@ async def test_private_control_peer_mints_profile_bound_ticket(tmp_path):
 
 
 def test_ticket_atomic_single_use_profile_purpose_expiry_and_capacity(monkeypatch):
-    from gateway.runtime_bootstrap import TicketStore
+    from hermes_agent.gateway.runtime_bootstrap import TicketStore
     clock = [0.0]
-    monkeypatch.setattr('gateway.runtime_bootstrap.time.monotonic', lambda: clock[0])
+    monkeypatch.setattr('hermes_agent.gateway.runtime_bootstrap.time.monotonic', lambda: clock[0])
     store = TicketStore('boot', frozenset({'a', 'b'}))
     ticket = store.mint(profile_id='a', subject='uid:1', purpose='interactive')
     for profile, purpose in [('b', 'interactive'), ('a', 'exposure')]:
@@ -81,7 +81,7 @@ def test_ticket_atomic_single_use_profile_purpose_expiry_and_capacity(monkeypatc
 @pytest.mark.platforms("linux")
 @pytest.mark.asyncio
 async def test_old_socket_cleanup_cannot_unlink_replacement(tmp_path):
-    from gateway.control_socket import GatewayControlServer, resolve_client_socket_path
+    from hermes_agent.gateway.control_socket import GatewayControlServer, resolve_client_socket_path
     home = tmp_path / 'private'
     home.mkdir(mode=0o700)
     old = GatewayControlServer(home)
@@ -105,7 +105,7 @@ async def test_old_socket_cleanup_cannot_unlink_replacement(tmp_path):
 @pytest.mark.platforms("windows")
 def test_native_pipe_authenticated_peer_and_deadline(tmp_path):
     import time
-    from gateway.runtime_bootstrap_windows import NativeControlServer, query_runtime_control
+    from hermes_agent.gateway.runtime_bootstrap_windows import NativeControlServer, query_runtime_control
     import threading
     stalled = threading.Event()  # the stalled handler hangs until teardown releases it
 
@@ -137,7 +137,7 @@ def _serve_one_child_query(tmp_path, monkeypatch):
     one-shot ``gateway ensure`` child has already exited (#139084). Returns (subjects, child)."""
     import subprocess
     import sys
-    import gateway.runtime_bootstrap_windows as rbw
+    import hermes_agent.gateway.runtime_bootstrap_windows as rbw
     real_process_sid, own = rbw._process_sid, os.getpid()
 
     def process_sid(pid):
@@ -155,7 +155,7 @@ def _serve_one_child_query(tmp_path, monkeypatch):
     try:
         child = subprocess.run(
             [sys.executable, '-c', 'import sys; from pathlib import Path; '
-             'from gateway.runtime_bootstrap_windows import query_runtime_control as q; '
+             'from hermes_agent.gateway.runtime_bootstrap_windows import query_runtime_control as q; '
              'sys.stdout.write(q(Path(sys.argv[1]), b"hello", 10).decode())', str(tmp_path)],
             check=False, capture_output=True, text=True, timeout=30, cwd=os.getcwd())
     finally:
@@ -167,7 +167,7 @@ def _serve_one_child_query(tmp_path, monkeypatch):
 def test_native_pipe_identifies_a_peer_whose_process_is_gone(tmp_path, monkeypatch):
     """The peer's identity comes from the token captured when it opened the pipe, so a same-user
     client is served even when its PID can no longer be opened (#139084)."""
-    import gateway.runtime_bootstrap_windows as rbw
+    import hermes_agent.gateway.runtime_bootstrap_windows as rbw
     owner = rbw._process_sid(os.getpid())
     subjects, child = _serve_one_child_query(tmp_path, monkeypatch)
     assert child.returncode == 0, child.stderr
@@ -178,7 +178,7 @@ def test_native_pipe_identifies_a_peer_whose_process_is_gone(tmp_path, monkeypat
 @pytest.mark.platforms("windows")
 def test_native_pipe_refuses_a_peer_it_cannot_identify(tmp_path, monkeypatch):
     """No token and no readable process: the peer stays refused, never served as anonymous."""
-    import gateway.runtime_bootstrap_windows as rbw
+    import hermes_agent.gateway.runtime_bootstrap_windows as rbw
 
     def no_token(handle):
         raise PermissionError('cannot impersonate named-pipe peer')
@@ -195,7 +195,7 @@ def test_native_pipe_handler_may_dial_its_own_pipe(tmp_path):
     accept that nested request, so the outer call timed out; a slow handler must also still be
     able to answer once its own (client-bounded) work finishes."""
     import time
-    from gateway.runtime_bootstrap_windows import NativeControlServer, query_runtime_control
+    from hermes_agent.gateway.runtime_bootstrap_windows import NativeControlServer, query_runtime_control
 
     def handler(raw, subject):
         if raw == b'outer':
@@ -223,7 +223,7 @@ def test_native_pipe_never_drops_a_client_that_lands_between_idle_accepts(tmp_pa
     with DisconnectNamedPipe there dropped that client mid-request (WinError 233). The client is
     injected at the server's first DisconnectNamedPipe, the widest point of that window."""
     import threading
-    import gateway.runtime_bootstrap_windows as rbw
+    import hermes_agent.gateway.runtime_bootstrap_windows as rbw
     real_disconnect, injected, armed = rbw._disconnect_pipe, {}, threading.Event()
     real_native, real_accept = rbw._native, rbw._accept
     landed, idle = threading.Event(), threading.Event()
@@ -296,8 +296,8 @@ def test_client_reads_a_real_gateway_pipes_owner_dacl_and_session(tmp_path):
     (#140706), read from a live gateway pipe through the client's own handle: owner this user, or
     Administrators when this process is elevated; a DACL of exactly this user; this session."""
     import _winapi
-    import gateway.runtime_bootstrap_windows as rbw
-    from gateway.control_socket import windows_pipe_name
+    import hermes_agent.gateway.runtime_bootstrap_windows as rbw
+    from hermes_agent.gateway.control_socket import windows_pipe_name
     from hermes_dir_acl import process_is_elevated
     server = rbw.NativeControlServer(tmp_path, lambda raw, subject: b'{}\n')
     server.start()

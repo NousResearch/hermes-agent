@@ -17,7 +17,7 @@ if importlib.util.find_spec("lark_oapi") is None and "lark_oapi" not in sys.modu
     for _name in ("lark_oapi", "lark_oapi.api.im.v1", "lark_oapi.event", "lark_oapi.event.callback_type"):
         sys.modules.setdefault(_name, _mod)
 
-from gateway.config import PlatformConfig
+from hermes_agent.gateway.config import PlatformConfig
 import plugins.platforms.feishu.adapter as feishu_module
 from plugins.platforms.feishu.adapter import FeishuAdapter
 from tools import clarify_gateway as cg

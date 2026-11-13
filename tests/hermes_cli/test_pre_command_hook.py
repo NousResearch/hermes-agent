@@ -3,7 +3,7 @@
 The hook fires when a recognized slash command is about to be dispatched,
 BEFORE the handler runs, on both the interactive CLI (cli.py
 process_command) and the gateway canonical-command dispatch
-(gateway/run.py _handle_message). Observer-only in v1: return values are
+(hermes_agent/gateway/run.py _handle_message). Observer-only in v1: return values are
 ignored (directives are logged at debug for discoverability).
 
 The gateway running-agent intercept path (/stop, /approve, busy_policy
@@ -163,13 +163,13 @@ def test_cli_hook_before_handler(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Gateway surface (gateway/run.py _handle_message)
+# Gateway surface (hermes_agent/gateway/run.py _handle_message)
 # ---------------------------------------------------------------------------
 
 
 def _make_source():
-    from gateway.config import Platform
-    from gateway.session import SessionSource
+    from hermes_agent.gateway.config import Platform
+    from hermes_agent.gateway.session import SessionSource
 
     return SessionSource(
         platform=Platform.TELEGRAM,
@@ -181,7 +181,7 @@ def _make_source():
 
 
 def _make_event(text: str):
-    from gateway.platforms.event import MessageEvent, MessageType
+    from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
 
     return MessageEvent(
         text=text,
@@ -193,8 +193,8 @@ def _make_event(text: str):
 
 
 def _session_entry():
-    from gateway.config import Platform
-    from gateway.session import SessionEntry, build_session_key
+    from hermes_agent.gateway.config import Platform
+    from hermes_agent.gateway.session import SessionEntry, build_session_key
 
     return SessionEntry(
         session_key=build_session_key(_make_source()),
@@ -208,8 +208,8 @@ def _session_entry():
 
 
 def _make_runner():
-    from gateway.config import GatewayConfig, Platform, PlatformConfig
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+    from hermes_agent.gateway.run import GatewayRunner
 
     runner = object.__new__(GatewayRunner)
     runner.config = GatewayConfig(

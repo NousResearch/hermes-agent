@@ -17,7 +17,7 @@ from types import ModuleType, SimpleNamespace
 import hermes_yaml as yaml
 import pytest
 
-from gateway.config import Platform, PlatformConfig
+from hermes_agent.gateway.config import Platform, PlatformConfig
 from plugins.platforms.discord.adapter import DiscordAdapter
 
 GUILD_ID = 222222
@@ -95,7 +95,7 @@ def test_legacy_top_level_allowed_roles_still_authorize(_home):
 def _multiplexed_profile(home):
     """The scope the gateway loads and serves a multiplexed profile in: its own secret scope."""
     from agent.secret_scope import reset_multiplex_context, set_multiplex_context
-    from gateway.run import _profile_runtime_scope
+    from hermes_agent.gateway.run import _profile_runtime_scope
     token = set_multiplex_context(True)
     try:
         with _profile_runtime_scope(home):

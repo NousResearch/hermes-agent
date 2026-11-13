@@ -3,7 +3,7 @@ from dataclasses import asdict
 
 
 def test_resume_lists_pending_admission_text_capped_and_terminal_safe(capsys):
-    from gateway.session_authority import SessionAuthority
+    from hermes_agent.gateway.session_authority import SessionAuthority
     from hermes_cli.gateway_chat_view import GatewayChatView
 
     authority = object.__new__(SessionAuthority)

@@ -93,7 +93,7 @@ def test_tick_holds_agent_jobs_while_gateway_is_starting_or_silent(cron_home, mo
         fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         keep.append(lock)
     else:
-        from gateway.control_socket import resolve_server_socket_path
+        from hermes_agent.gateway.control_socket import resolve_server_socket_path
         bind_path, pointer = resolve_server_socket_path(cron_home)  # same sun_path fallback as the daemon
         bind_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -146,7 +146,7 @@ def test_headless_receipt_recovery_never_connects_or_spawns(cron_home, monkeypat
         "receipt": None,
     }), encoding="utf-8")
 
-    monkeypatch.setattr("gateway.session_cron.owner_for_home", lambda home: None)
+    monkeypatch.setattr("hermes_agent.gateway.session_cron.owner_for_home", lambda home: None)
     monkeypatch.setattr(
         gateway_client, "connect_gateway",
         lambda *a, **k: pytest.fail("headless recovery must not connect/ensure a gateway"))

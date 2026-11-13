@@ -35,7 +35,7 @@ from typing import Any, Callable
 import pytest
 from websockets.sync.client import connect
 
-from gateway.control_socket import resolve_client_socket_path
+from hermes_agent.gateway.control_socket import resolve_client_socket_path
 from hermes_agent.hermes_state_mutation_retirement import VIEWER_CLOSE_PREFIX
 from tests.e2e.core.chaos._helpers import (
     hermetic_env, kill_tagged, new_tag, persisted_messages, python_exe, write_chaos_home)

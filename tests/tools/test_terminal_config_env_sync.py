@@ -5,7 +5,7 @@ terminal_tool._get_env_config() reads ALL terminal settings from os.environ
 at startup, by THREE separate code paths:
 
   1. cli.py            -> ``env_mappings`` dict (CLI / TUI startup)
-  2. gateway/run.py    -> ``_terminal_env_map`` dict (gateway / messaging
+  2. hermes_agent/gateway/run.py    -> ``_terminal_env_map`` dict (gateway / messaging
                           platforms)
   3. hermes_cli/config.py:set_config_value
                        -> bridges via the canonical ``TERMINAL_CONFIG_ENV_MAP``
@@ -33,7 +33,7 @@ def _cli_env_map() -> dict[str, str]:
 
 def _gateway_env_map() -> dict[str, str]:
     """terminal config key -> env var actually written by the gateway bridge."""
-    from gateway.run import _bridge_terminal_config_to_env
+    from hermes_agent.gateway.run import _bridge_terminal_config_to_env
     from hermes_cli import config as hc_config
 
     class _KeyRecorder(dict):
@@ -91,7 +91,7 @@ def _save_config_env_sync_keys() -> set[str]:
 
 
 # Keys present in cli.py env_mappings but intentionally absent from
-# gateway/run.py or set_config_value.  Each entry must be justified.
+# hermes_agent/gateway/run.py or set_config_value.  Each entry must be justified.
 _CLI_ONLY_OK = frozenset({
     # `env_type` is a legacy YAML key alias for `backend` that cli.py
     # accepts for backwards-compat with older cli-config.yaml.  The
@@ -106,7 +106,7 @@ _CLI_ONLY_OK = frozenset({
 
 
 def test_cli_and_gateway_env_maps_agree():
-    """cli.py and gateway/run.py must bridge each terminal key to the same env var.
+    """cli.py and hermes_agent/gateway/run.py must bridge each terminal key to the same env var.
 
     Both feed the same downstream consumer (terminal_tool).  Drift between
     them means a config.yaml setting that "works in CLI mode but not gateway

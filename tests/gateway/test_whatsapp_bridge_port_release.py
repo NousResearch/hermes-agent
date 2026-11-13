@@ -26,7 +26,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from gateway.config import Platform
+from hermes_agent.gateway.config import Platform
 
 linux = pytest.mark.platforms("linux")  # real POSIX signals + psutil /proc listening scan
 
@@ -357,7 +357,7 @@ class TestPidfileHygiene:
     def test_pidfile_reap_escalates_to_sigkill(self, tmp_path):
         """A pidfile-identified bridge that ignores SIGTERM is SIGKILLed after the grace window —
         identity re-checked first, so only the recorded bridge itself is escalated."""
-        from gateway.status import get_process_start_time
+        from hermes_agent.gateway.status import get_process_start_time
         from plugins.platforms.whatsapp.adapter import _kill_stale_bridge_by_pidfile, _write_bridge_pidfile
 
         port = _free_port()

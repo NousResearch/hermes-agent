@@ -3,8 +3,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.session_authority import LiveSession, SessionAuthority
-from gateway.session_controls import AuthorityConnection
+from hermes_agent.gateway.session_authority import LiveSession, SessionAuthority
+from hermes_agent.gateway.session_controls import AuthorityConnection
 from hermes_agent.hermes_state import SessionDB
 from hermes_agent.hermes_state_runtime import begin_runtime_epoch
 from hermes_agent.tui_gateway.contracts.registry import CANONICAL_METHODS, METHODS, ContractViolation, validate_params
@@ -20,7 +20,7 @@ async def test_canonical_resume_rejects_unknown_keys_and_validates_real_snapshot
         authority = SessionAuthority(SimpleNamespace(), profile_id='test', instance_id='test', db=db, epoch=epoch)
         authority.sessions['s'] = LiveSession(None, 'route')
         viewer = AuthorityConnection(authority, object(), {'user_id': 'human'})
-        from gateway.session_group_controls import GROUP_METHODS
+        from hermes_agent.gateway.session_group_controls import GROUP_METHODS
         assert set(viewer.handlers()) | set(GROUP_METHODS) | {'profiles.list'} <= set(METHODS) | set(CANONICAL_METHODS)
         refused = await viewer.dispatch({'id': 1, 'method': 'session.resume', 'params': {
             'session_id': 's', 'execution_generaton': 100}})

@@ -4,10 +4,10 @@ import time
 
 import pytest
 
-from gateway.config import Platform
-from gateway.session import SessionSource
-from gateway.session_authority import LiveSession
-from gateway.session_contract import SessionRef
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.session import SessionSource
+from hermes_agent.gateway.session_authority import LiveSession
+from hermes_agent.gateway.session_contract import SessionRef
 from hermes_agent.hermes_state_runtime import admit_session_input, claim_session_input, get_session_admission
 
 
@@ -15,11 +15,11 @@ from hermes_agent.hermes_state_runtime import admit_session_input, claim_session
 @pytest.mark.parametrize('platform', [Platform.LOCAL, Platform.TELEGRAM])
 @pytest.mark.parametrize('late_result', [False, True])
 async def test_timeout_diagnostic_keeps_failed_receipt_after_string_projection(owner, platform, late_result):
-    from gateway.run import GatewayRunner
-    from gateway.run_turn_persistence import GatewayTurnPersistenceMixin
-    from gateway.session_ingress import execute_admission
-    from gateway.session_results import execution_result, finish_result, admission_result
-    from gateway.turn_context import TurnContext
+    from hermes_agent.gateway.run import GatewayRunner
+    from hermes_agent.gateway.run_turn_persistence import GatewayTurnPersistenceMixin
+    from hermes_agent.gateway.session_ingress import execute_admission
+    from hermes_agent.gateway.session_results import execution_result, finish_result, admission_result
+    from hermes_agent.gateway.turn_context import TurnContext
     owner.db.create_session('s', source='cli')
     source = SessionSource(platform, 's', user_id='human')
     owner.sessions['s'] = LiveSession(source, 'route')
@@ -56,8 +56,8 @@ async def test_timeout_diagnostic_keeps_failed_receipt_after_string_projection(o
 
 @pytest.mark.asyncio
 async def test_owner_notice_without_execution_is_still_completed(owner):
-    from gateway.session_ingress import execute_admission
-    from gateway.session_results import finish_result
+    from hermes_agent.gateway.session_ingress import execute_admission
+    from hermes_agent.gateway.session_results import finish_result
     owner.db.create_session('notice', source='telegram')
     source = SessionSource(Platform.TELEGRAM, 'notice', user_id='human')
     owner.sessions['notice'] = LiveSession(source, 'notice-route')

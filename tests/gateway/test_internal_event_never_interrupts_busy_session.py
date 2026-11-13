@@ -39,12 +39,12 @@ sys.modules.setdefault("telegram", _tg)
 sys.modules.setdefault("telegram.constants", _tg.constants)
 sys.modules.setdefault("telegram.ext", types.ModuleType("telegram.ext"))
 
-from gateway.platforms.base import (
+from hermes_agent.gateway.platforms.base import (
     SessionSource,
     build_session_key,
 )
-from gateway.platforms.event import MessageEvent, MessageType
-from gateway.run import GatewayRunner
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.run import GatewayRunner
 
 
 def _make_internal_event(text: str = "[async delegation completed]") -> MessageEvent:

@@ -9,12 +9,12 @@ from tests.waiting import async_wait_until
 
 
 def _owner(tmp_path, monkeypatch, handle):
-    from gateway import run
-    from gateway.config import GatewayConfig
-    from gateway.session import SessionStore
-    from gateway.session_authority import SessionAuthority
-    from gateway.session_controls import AuthorityConnection
-    from gateway.session_local import create_local_session
+    from hermes_agent.gateway import run
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.session import SessionStore
+    from hermes_agent.gateway.session_authority import SessionAuthority
+    from hermes_agent.gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway.session_local import create_local_session
     from hermes_cli import model_switch
     import hermes_agent.hermes_state_runtime as rt
     monkeypatch.setattr(run, '_load_gateway_config', lambda *a: {})
@@ -36,15 +36,15 @@ def _owner(tmp_path, monkeypatch, handle):
 
 
 def _running_model(authority, ref):
-    from gateway.config import Platform
-    from gateway.session_local_recovery import local_adapter_map
+    from hermes_agent.gateway.config import Platform
+    from hermes_agent.gateway.session_local_recovery import local_adapter_map
     live = authority.sessions[ref.session_id]
     return local_adapter_map(authority)[Platform.LOCAL].policies[live.source.chat_id].model
 
 
 @pytest.mark.asyncio
 async def test_model_pick_during_a_running_turn_applies_to_the_next_turn(tmp_path, monkeypatch):
-    from gateway.session_contract import Submission
+    from hermes_agent.gateway.session_contract import Submission
     import hermes_agent.hermes_state_runtime as rt
     started, release = threading.Event(), asyncio.Event()
     seen = []
@@ -117,7 +117,7 @@ async def _mutate(owner, db, ref, rid, model, snap=None, *, call=1):
 
 
 async def _run_turn(authority, owner, db, ref, name):
-    from gateway.session_contract import Submission
+    from hermes_agent.gateway.session_contract import Submission
     import hermes_agent.hermes_state_runtime as rt
     turn = await authority.submit(owner.actor, Submission(name, ref, {'text': name}, 'queue'))
     await async_wait_until(
@@ -127,7 +127,7 @@ async def _run_turn(authority, owner, db, ref, name):
 
 @pytest.mark.asyncio
 async def test_a_retried_deferred_pick_does_not_undo_a_newer_pick(tmp_path, monkeypatch):
-    from gateway.session_contract import Submission
+    from hermes_agent.gateway.session_contract import Submission
     started, release = threading.Event(), asyncio.Event()
     seen = []
     state = {}
@@ -163,7 +163,7 @@ async def test_a_retried_deferred_pick_does_not_undo_a_newer_pick(tmp_path, monk
 
 @pytest.mark.asyncio
 async def test_a_newer_idle_pick_replaces_an_older_pending_pick(tmp_path, monkeypatch):
-    from gateway.session_deferred_pick import defer_pick
+    from hermes_agent.gateway.session_deferred_pick import defer_pick
     seen = []
     state = {}
 
@@ -191,7 +191,7 @@ async def test_a_newer_idle_pick_replaces_an_older_pending_pick(tmp_path, monkey
 @pytest.mark.asyncio
 async def test_pending_pick_writes_do_not_stall_the_event_loop(tmp_path, monkeypatch):
     import time
-    from gateway.session_contract import Submission
+    from hermes_agent.gateway.session_contract import Submission
     started, release = threading.Event(), asyncio.Event()
     state = {}
 
@@ -235,7 +235,7 @@ async def test_pending_pick_writes_do_not_stall_the_event_loop(tmp_path, monkeyp
 @pytest.mark.asyncio
 async def test_a_guarded_deferred_pick_asks_for_confirmation_instead_of_being_dropped(tmp_path, monkeypatch):
     from agent.usage_anchor import USAGE_ANCHOR_MODEL_CONFIG_KEY, capture_usage_anchor
-    from gateway.session_contract import Submission
+    from hermes_agent.gateway.session_contract import Submission
     from hermes_cli import model_selection_guards
     monkeypatch.setattr(model_selection_guards, '_context_cache_threshold', lambda: 1000)
     started, release = threading.Event(), asyncio.Event()
@@ -292,7 +292,7 @@ async def test_a_guarded_deferred_pick_asks_for_confirmation_instead_of_being_dr
 
 @pytest.mark.asyncio
 async def test_a_refused_deferred_pick_names_the_reason_and_the_committed_model(tmp_path, monkeypatch):
-    from gateway.session_contract import Submission
+    from hermes_agent.gateway.session_contract import Submission
     from hermes_cli import model_switch
     started, release = threading.Event(), asyncio.Event()
     events = []
@@ -330,8 +330,8 @@ async def test_a_refused_deferred_pick_names_the_reason_and_the_committed_model(
 @pytest.mark.asyncio
 @pytest.mark.parametrize('error', [RuntimeError, OSError])
 async def test_a_deferred_pick_that_raises_is_refused_and_the_queue_keeps_draining(tmp_path, monkeypatch, error):
-    from gateway.session_contract import Submission
-    from gateway.session_deferred_pick import _PREFIX
+    from hermes_agent.gateway.session_contract import Submission
+    from hermes_agent.gateway.session_deferred_pick import _PREFIX
     from hermes_cli import model_switch
     import hermes_agent.hermes_state_runtime as rt
     started, release = threading.Event(), asyncio.Event()
@@ -381,8 +381,8 @@ async def test_a_deferred_pick_that_raises_is_refused_and_the_queue_keeps_draini
 
 @pytest.mark.asyncio
 async def test_a_deferred_model_and_reasoning_pick_commits_both_together(tmp_path, monkeypatch):
-    from gateway.session_contract import Submission
-    from gateway.session_policy import policy_for_source
+    from hermes_agent.gateway.session_contract import Submission
+    from hermes_agent.gateway.session_policy import policy_for_source
     started, release = threading.Event(), asyncio.Event()
     seen = []
     state = {}
@@ -422,11 +422,11 @@ async def test_a_reasoning_command_during_a_running_turn_is_committed_for_the_ne
     the owner as ``config.set``: run by the messaging handler as on main (never refused ``session_busy``),
     then committed to the session's policy when the turn ends, so the next turn and an owner restart run
     them. A messaging chat viewed in Desktop has no policy: its handler alone runs, as on main."""
-    from gateway.config import Platform
-    from gateway.session import SessionSource
-    from gateway.session_authority import LiveSession
-    from gateway.session_contract import Submission
-    from gateway.session_policy import policy_for_source
+    from hermes_agent.gateway.config import Platform
+    from hermes_agent.gateway.session import SessionSource
+    from hermes_agent.gateway.session_authority import LiveSession
+    from hermes_agent.gateway.session_contract import Submission
+    from hermes_agent.gateway.session_policy import policy_for_source
     started, release = threading.Event(), asyncio.Event()
     seen, handled, state = [], [], {}
 
@@ -471,8 +471,8 @@ async def test_a_reasoning_command_raced_by_another_mutation_is_not_refused(tmp_
     moved (``revision_conflict``) failed the command, where main always applied it. The fence moving is not
     a verdict on this command: it re-reads the fences and commits; a fence that keeps moving defers it to the
     next boundary like a busy session."""
-    from gateway import session_mutations
-    from gateway.session_policy import policy_for_source
+    from hermes_agent.gateway import session_mutations
+    from hermes_agent.gateway.session_policy import policy_for_source
     from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
     async def handle(event):

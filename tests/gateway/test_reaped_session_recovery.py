@@ -16,14 +16,14 @@ import time
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from gateway.config import (
+from hermes_agent.gateway.config import (
     GatewayConfig,
     Platform,
     PlatformConfig,
 )
-from gateway.platforms.event import MessageEvent, MessageType
-from gateway.run import GatewayRunner, _INTERRUPT_REASON_EVICTED
-from gateway.session import SessionSource, SessionStore
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.run import GatewayRunner, _INTERRUPT_REASON_EVICTED
+from hermes_agent.gateway.session import SessionSource, SessionStore
 
 
 class _FakeAdapter:

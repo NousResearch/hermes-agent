@@ -3,7 +3,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from gateway import hosted_room_driver as state
+from hermes_agent.gateway import hosted_room_driver as state
 from tests.tui_gateway import test_hosted_room_driver_runtime as runtime_fixtures
 from tests.tui_gateway.test_hosted_room_driver_runtime import (
     BINDING, PROFILE, ROOM_ID, FakeSessionRPC, _admit, _identity, _runtime,

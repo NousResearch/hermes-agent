@@ -63,7 +63,7 @@ def test_standalone_send_result_never_carries_the_proxy_secret(monkeypatch, send
         monkeypatch.setenv(name, proxy)
     for name in ("NO_PROXY", "no_proxy"):
         monkeypatch.delenv(name, raising=False)
-    with patch("gateway.platforms.base.gateway_trust_env", return_value=True):
+    with patch("hermes_agent.gateway.platforms.base.gateway_trust_env", return_value=True):
         result = asyncio.run(asyncio.wait_for(SENDERS[sender](monkeypatch, proxy), 30))
     text = json.dumps(result)
     assert result.get("error"), result

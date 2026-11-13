@@ -19,7 +19,7 @@ REPLY_FILE_MAX_BYTES = 45 * 1024 * 1024
 def reply_message_count(adapter: Any, content: str, metadata: Optional[dict[str, Any]]) -> int:
     """Messages ``send(content)`` would post: its rich parts when it goes out rich, else its
     MarkdownV2 chunks (escaping can push a raw-sized text past 4,096 UTF-16 units)."""
-    from gateway.platforms.base import utf16_len
+    from hermes_agent.gateway.platforms.base import utf16_len
     from plugins.platforms.telegram.rich_parts import rich_part_count
     parts = rich_part_count(adapter, content, metadata)
     if parts is not None:
@@ -39,7 +39,7 @@ async def send_reply_document(adapter: Any, chat_id: str, file_path: str, captio
     would post a text notice and report it sent). A short flood wait is retried inline; a longer
     one fails, and the deferred re-upload it schedules does nothing: the reply has already gone out
     as messages by then."""
-    from gateway.platforms.base import SendResult
+    from hermes_agent.gateway.platforms.base import SendResult
     from plugins.platforms.telegram.telegram_media_flood import _FLOOD_STAGE
 
     def build(handle: Any) -> dict[str, Any]:

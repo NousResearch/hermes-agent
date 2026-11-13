@@ -14,10 +14,10 @@ from hermes_cli.process_identity import worker_birth
 
 @pytest.mark.asyncio
 async def test_worker_register_requires_the_owners_launched_worker(tmp_path, monkeypatch):
-    from gateway.config import Platform
-    from gateway.session_authority import LiveSession, SessionAuthority
-    from gateway.session_contract import SessionActor, SessionRef
-    from gateway.session_worker import worker_request
+    from hermes_agent.gateway.config import Platform
+    from hermes_agent.gateway.session_authority import LiveSession, SessionAuthority
+    from hermes_agent.gateway.session_contract import SessionActor, SessionRef
+    from hermes_agent.gateway.session_worker import worker_request
     from hermes_agent.hermes_state import SessionDB
     from hermes_agent.hermes_state_runtime import RuntimeStoreError, begin_runtime_epoch
 

@@ -69,7 +69,7 @@ class _FakeEvent:
 
 def _make_gateway_stub():
     """Minimal object exposing the mixin's _handle_topup_command."""
-    from gateway.slash_commands import GatewaySlashCommandsMixin
+    from hermes_agent.gateway.slash_commands import GatewaySlashCommandsMixin
 
     class _Stub(GatewaySlashCommandsMixin):
         def __init__(self):

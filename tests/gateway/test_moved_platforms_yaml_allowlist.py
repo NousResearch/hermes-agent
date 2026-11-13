@@ -10,8 +10,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.session import SessionSource
+from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+from hermes_agent.gateway.session import SessionSource
 
 _MOVED = ("signal", "weixin", "bluebubbles", "qqbot", "whatsapp_cloud")
 
@@ -20,7 +20,7 @@ _MOVED = ("signal", "weixin", "bluebubbles", "qqbot", "whatsapp_cloud")
 def test_yaml_allowed_users_admits_listed_dm_sender_only(monkeypatch, platform):
     import os
 
-    from gateway.run import GatewayRunner
+    from hermes_agent.gateway.run import GatewayRunner
     from hermes_cli.plugins import discover_plugins
 
     for key in list(os.environ):

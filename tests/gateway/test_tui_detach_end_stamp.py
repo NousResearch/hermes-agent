@@ -11,10 +11,10 @@ import pytest
 
 
 async def _owner(tmp_path, monkeypatch):
-    from gateway import run
-    from gateway.config import GatewayConfig
-    from gateway.session import SessionStore
-    from gateway.session_authority import initialize_session_authority
+    from hermes_agent.gateway import run
+    from hermes_agent.gateway.config import GatewayConfig
+    from hermes_agent.gateway.session import SessionStore
+    from hermes_agent.gateway.session_authority import initialize_session_authority
 
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     monkeypatch.setattr(run, '_load_gateway_config', lambda: {'platform_toolsets': {'cli': []}})
@@ -27,7 +27,7 @@ async def _owner(tmp_path, monkeypatch):
 
 
 def _native(authority, tmp_path):
-    from gateway.session_controls import AuthorityConnection
+    from hermes_agent.gateway.session_controls import AuthorityConnection
     return AuthorityConnection(authority, SimpleNamespace(write=lambda frame: None), {
         'provider': 'local', 'user_id': 'native', 'profile_id': str(tmp_path), 'instance_id': 'owner'})
 
@@ -84,7 +84,7 @@ async def test_plain_detach_never_stamps(tmp_path, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_a_closed_session_stays_in_the_stored_picker_after_a_restart(tmp_path, monkeypatch):
-    from gateway.session_local import create_local_session
+    from hermes_agent.gateway.session_local import create_local_session
 
     db, authority = await _owner(tmp_path, monkeypatch)
     viewer = _native(authority, tmp_path)

@@ -13,8 +13,8 @@ from pathlib import Path
 
 import pytest
 
-from gateway.control_socket import GatewayControlServer
-from gateway.runtime_bootstrap import TicketStore
+from hermes_agent.gateway.control_socket import GatewayControlServer
+from hermes_agent.gateway.runtime_bootstrap import TicketStore
 
 pytestmark = pytest.mark.platforms("posix")
 
@@ -70,7 +70,7 @@ def _server(spec: dict) -> GatewayControlServer:
     server = GatewayControlServer(Path(spec["home"]))
     server.ticket_store = TicketStore(spec["instance_id"], frozenset(spec["profile_ids"]))
     if "identify" in spec and "resolve-profile" not in spec.get("without_verbs", []):
-        from gateway.control_resolve import resolve_profile_handler
+        from hermes_agent.gateway.control_resolve import resolve_profile_handler
         server.resolve_handler = resolve_profile_handler(lambda: dict(spec["identify"]))
     if spec.get("update_marker"):
         # A marker still being written fences for its grace period (update_lock.EMPTY_MARKER_GRACE_SECONDS).
@@ -115,7 +115,7 @@ def test_vector(vector, tmp_path):
 def test_a_resolved_endpoint_mints_one_single_use_ticket_over_the_real_socket(tmp_path):
     """The client sequence end to end: resolve-profile, then session-ticket with the answer's
     identity on the socket that answered, then the WebSocket admission's one redeem."""
-    from gateway.control_resolve import resolve_profile_handler
+    from hermes_agent.gateway.control_resolve import resolve_profile_handler
     from hermes_cli.gateway_client import private_control_query
 
     names = _layout(tmp_path)

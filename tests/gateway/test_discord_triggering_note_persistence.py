@@ -7,11 +7,11 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform
-from gateway.platforms.event import MessageEvent
-from gateway.run import GatewayRunner
-from gateway.run_inbound import discord_triggering_note
-from gateway.session import SessionSource
+from hermes_agent.gateway.config import GatewayConfig, Platform
+from hermes_agent.gateway.platforms.event import MessageEvent
+from hermes_agent.gateway.run import GatewayRunner
+from hermes_agent.gateway.run_inbound import discord_triggering_note
+from hermes_agent.gateway.session import SessionSource
 
 
 def _runner() -> GatewayRunner:
@@ -31,7 +31,7 @@ def _discord_source() -> SessionSource:
 async def test_discord_note_rides_model_text_but_not_persisted_content(monkeypatch):
     """Real inbound prep → persist seam: the model sees the note (outermost, ahead of the reply
     pointer); the durable row keeps the reply pointer and the authored text only."""
-    monkeypatch.setattr("gateway.session._discord_tools_loaded", lambda: True)
+    monkeypatch.setattr("hermes_agent.gateway.session._discord_tools_loaded", lambda: True)
     runner = _runner()
     source = _discord_source()
     event = MessageEvent(

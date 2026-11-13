@@ -1,5 +1,5 @@
 """Unit tests for the TurnContext/TurnRunner seam extracted from
-``GatewayRunner._run_agent_inner`` (gateway/turn_context.py + gateway/run.py).
+``GatewayRunner._run_agent_inner`` (hermes_agent/gateway/turn_context.py + hermes_agent/gateway/run.py).
 
 The extraction contract: the closure bodies moved onto ``TurnRunner`` methods
 byte-identically (modulo local -> ctx.field rewrites), with every closed-over
@@ -14,13 +14,13 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 
-from gateway.config import Platform
-from gateway.session import SessionSource
-from gateway.turn_context import TurnContext
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.session import SessionSource
+from hermes_agent.gateway.turn_context import TurnContext
 
 
 def _make_runner(ctx):
-    from gateway.run_turn_runner import TurnRunner
+    from hermes_agent.gateway.run_turn_runner import TurnRunner
 
     class _StubGatewayRunner:
         def _delivery_adapter_for(self, source):
@@ -121,7 +121,7 @@ class TestTurnRunner:
             _hooks_ref=SimpleNamespace(loaded_hooks=False),
         )
 
-        from gateway.run_turn_runner import TurnRunner
+        from hermes_agent.gateway.run_turn_runner import TurnRunner
 
         result = TurnRunner(gateway_runner, ctx).run_sync()
 

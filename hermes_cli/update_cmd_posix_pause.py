@@ -228,7 +228,7 @@ def _respawning_service(pid: int) -> str | None:
 
 def _discover_bare(service_pids: set[int]) -> tuple[list[dict], list[str]]:
     """``(bare gateways, notices)``: this install's ``gateway run`` processes outside any unit."""
-    from gateway.status import get_process_start_time
+    from hermes_agent.gateway.status import get_process_start_time
     from hermes_cli.gateway import _capture_gateway_argv, _get_service_pids, find_gateway_pids
     from hermes_cli.update_cmd_fleet import _scoped_manual_gateway_pids
     from hermes_cli.update_fleet_scope import gateway_pid_home
@@ -267,7 +267,7 @@ def _escape_cgroup(unit: dict) -> bool:
         return False
     if not _inside(own, unit_cgroup):
         return True
-    from gateway.status import looks_like_gateway_command_line
+    from hermes_agent.gateway.status import looks_like_gateway_command_line
     pids, pid = [], os.getpid()
     while pid > 1 and pid != unit["pid"] and _inside(_pid_cgroup(pid), unit["cgroup"]):
         with suppress(OSError):
@@ -401,7 +401,7 @@ def _start_job(job: dict) -> None:
 
 
 def _alive(pid: int, ct) -> bool:
-    from gateway.status import _pid_exists, get_process_start_time
+    from hermes_agent.gateway.status import _pid_exists, get_process_start_time
     try:
         if not _pid_exists(int(pid)):
             return False
@@ -428,7 +428,7 @@ def _ask_to_drain(entry: dict) -> bool:
     signal-stop path, and could fire before the request lands. The caller records the request
     (``mark_stop_sent``) BEFORE sending it, so a request that reaches the gateway after this update
     died still leaves the evidence that keeps the drained gateway's restart debt."""
-    from gateway.control_socket import pause_gateway_for_update
+    from hermes_agent.gateway.control_socket import pause_gateway_for_update
     if not entry.get("home"):
         return False
     try:
@@ -513,7 +513,7 @@ def _gateway_on_home(home: str, exclude: set[int]) -> int | None:
     """The gateway serving *home*, by the canonical identity reader (PID file + runtime lock,
     then the runtime status record), never a process scan: a replayed ``gateway run`` matches the
     process matcher for the moment before it finds the home already served and exits."""
-    from gateway.status import live_gateway_pid_for_home
+    from hermes_agent.gateway.status import live_gateway_pid_for_home
     try:
         pid = live_gateway_pid_for_home(Path(home))
     except Exception:  # health: allow BLE001 -- unreadable identity files: nothing proven to adopt
@@ -614,7 +614,7 @@ def _pause(token: dict) -> str | None:
     supervised = units + jobs
     if not supervised and not bare:
         return None
-    from gateway.status import get_process_start_time
+    from hermes_agent.gateway.status import get_process_start_time
     from hermes_cli.update_cmd_windows import _planned_stop_marker_path
     before = copy.deepcopy(token)  # what this attempt may add; a failed record puts it back
     for entry in supervised + bare:

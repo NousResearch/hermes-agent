@@ -5,11 +5,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.config import Platform, PlatformConfig
-from gateway.platforms.event import MessageEvent, MessageType
-from gateway.relay.adapter import RelayAdapter
-from gateway.session import SessionSource
-from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
+from hermes_agent.gateway.config import Platform, PlatformConfig
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.relay.adapter import RelayAdapter
+from hermes_agent.gateway.session import SessionSource
+from hermes_agent.gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
 from hermes_cli.observability import shared_metrics_gateway as smg
 from tests.gateway.relay.test_relay_adapter import _CaptureTransport, make_desc
 from tests.gateway.test_platform_shared_metrics import rows

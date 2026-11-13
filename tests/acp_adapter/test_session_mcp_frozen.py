@@ -5,7 +5,7 @@ import time
 
 import pytest
 
-from gateway.session_policy import policy_scope
+from hermes_agent.gateway.session_policy import policy_scope
 from hermes_agent.hermes_state_runtime import RuntimeStoreError
 from tests.acp_adapter.test_session_mcp_policy import owner, policy
 

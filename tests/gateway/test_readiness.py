@@ -5,7 +5,7 @@ import os
 import sqlite3
 from pathlib import Path
 
-from gateway.readiness import collect_runtime_readiness
+from hermes_agent.gateway.readiness import collect_runtime_readiness
 
 
 def test_collect_runtime_readiness_reports_healthy_local_runtime(tmp_path, monkeypatch):

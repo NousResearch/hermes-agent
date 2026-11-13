@@ -1114,7 +1114,7 @@ def _handle_create(args: dict, **kw) -> str:
     _check(model_override or not provider_override, "'provider' requires 'model' to be set as well")
     parents = _coerce_str_list(args.get("parents") or [], "parents", "task ids")
     with _board(args.get("board")) as (kb, conn):
-        from gateway.session_context import get_session_env
+        from hermes_agent.gateway.session_context import get_session_env
         from tools.async_delegation import _current_origin_session_id
         self_tid = (os.environ.get("HERMES_KANBAN_TASK")
                     if _is_dispatcher_owned_worker() else None)
@@ -1186,7 +1186,7 @@ def _resolve_notify_target() -> Optional[dict[str, Any]]:
     those are cleared but the subprocess inherits ``HERMES_SESSION_KEY`` -> ``platform="tui"``
     for the TUI poller. ``HERMES_SESSION_ID`` is deliberately NOT a fallback: it is set for
     every CLI/ACP invocation and would auto-subscribe every CLI run."""
-    from gateway.session_context import get_session_env as env
+    from hermes_agent.gateway.session_context import get_session_env as env
     platform, chat_id = env("HERMES_SESSION_PLATFORM", ""), env("HERMES_SESSION_CHAT_ID", "")
     if not platform or not chat_id:
         session_key = env("HERMES_SESSION_KEY", "") or os.environ.get("HERMES_SESSION_KEY", "")

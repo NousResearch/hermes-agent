@@ -4,8 +4,8 @@ from pathlib import Path
 
 import pytest
 
-from gateway.config import GatewayConfig
-from gateway.delivery import DeliveryRouter, DeliveryTarget
+from hermes_agent.gateway.config import GatewayConfig
+from hermes_agent.gateway.delivery import DeliveryRouter, DeliveryTarget
 
 
 @pytest.mark.asyncio

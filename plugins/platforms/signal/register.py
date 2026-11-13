@@ -2,10 +2,10 @@
 
 import logging
 
-from gateway.config import PlatformConfig
-from gateway.platforms._shared import env_is_connected
-from gateway.platforms._shared import config_connected_extra
-from gateway.platforms.send_targets import NOT_EXPLICIT, StandaloneSendPolicy
+from hermes_agent.gateway.config import PlatformConfig
+from hermes_agent.gateway.platforms._shared import env_is_connected
+from hermes_agent.gateway.platforms._shared import config_connected_extra
+from hermes_agent.gateway.platforms.send_targets import NOT_EXPLICIT, StandaloneSendPolicy
 
 # Absolute imports (see __init__.py): one canonical module per file.
 from plugins.platforms.signal.adapter import (
@@ -51,7 +51,7 @@ def _parse_send_target(ref):
 
 def register(ctx) -> None:
     """Plugin entry point — called by the Hermes plugin system."""
-    from . import gateway_env  # env -> GatewayConfig bridge (gateway.config_env)
+    from . import gateway_env  # env -> GatewayConfig bridge (hermes_agent.gateway.config_env)
     ctx.register_platform(
         target_ref_syntax_fn=_parse_send_target,
         # Attachments ride the JSON-RPC param on the final chunk.

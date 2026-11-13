@@ -49,7 +49,7 @@ def _key(path: Path) -> str:
 
 
 def test_readiness_probe_is_tracked(state_db, tracked):
-    from gateway.readiness import _probe_state_db
+    from hermes_agent.gateway.readiness import _probe_state_db
     _probe_state_db(state_db.parent)
     assert _key(state_db) in tracked
 
@@ -58,7 +58,7 @@ def test_readiness_probe_opens_the_tracked_file_with_reserved_home_characters(
     state_db, tmp_path, monkeypatch, tracked,
 ):
     """URI parsing must not redirect a tracked readiness open to a different file."""
-    from gateway.readiness import _probe_state_db
+    from hermes_agent.gateway.readiness import _probe_state_db
 
     home = tmp_path / "profile # with spaces"  # no "?": Windows rejects it in a file name
     state_db.parent.rename(home)
@@ -79,7 +79,7 @@ def test_readiness_probe_opens_the_tracked_file_with_reserved_home_characters(
 
 
 def test_integrity_check_and_journal_mode_are_tracked(state_db, tracked):
-    from gateway.lifecycle_ledger import _state_db_journal_mode, check_state_db_integrity
+    from hermes_agent.gateway.lifecycle_ledger import _state_db_journal_mode, check_state_db_integrity
     check_state_db_integrity(state_db.parent)
     _state_db_journal_mode(state_db)
     assert tracked.count(_key(state_db)) >= 2

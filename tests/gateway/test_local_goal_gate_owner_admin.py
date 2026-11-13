@@ -68,10 +68,10 @@ def test_local_session_owner_adds_a_goal_gate(tmp_path):
 
 @pytest.mark.asyncio
 async def test_messaging_goal_gate_add_stays_admin_only():
-    from gateway.config import Platform
-    from gateway.platforms.base import MessageEvent
-    from gateway.run import GatewayRunner
-    from gateway.session import SessionSource
+    from hermes_agent.gateway.config import Platform
+    from hermes_agent.gateway.platforms.base import MessageEvent
+    from hermes_agent.gateway.run import GatewayRunner
+    from hermes_agent.gateway.session import SessionSource
 
     runner = object.__new__(GatewayRunner)
 

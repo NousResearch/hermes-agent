@@ -14,10 +14,10 @@ brackets, so they are deliberately untouched).
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-from gateway.config import Platform
-from gateway.platforms.event import MessageEvent
-from gateway.run_inbound import GatewayInboundMixin
-from gateway.session import SessionSource
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.platforms.event import MessageEvent
+from hermes_agent.gateway.run_inbound import GatewayInboundMixin
+from hermes_agent.gateway.session import SessionSource
 
 
 def _prefix(user_name, message_text="go AB12", platform=Platform.TELEGRAM, user_id="u1"):

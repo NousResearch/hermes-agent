@@ -12,8 +12,8 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-from gateway.config import GatewayConfig, PlatformConfig
-from gateway.platforms.api_server import (
+from hermes_agent.gateway.config import GatewayConfig, PlatformConfig
+from hermes_agent.gateway.platforms.api_server import (
     APIServerAdapter,
     _PROFILE_REJECTED,
     _api_request_profile,
@@ -210,7 +210,7 @@ class TestApiServerSessionProfileBinding:
     """
 
     def test_profile_is_bound_into_session_vars(self):
-        from gateway.session_context import clear_session_vars, get_session_env
+        from hermes_agent.gateway.session_context import clear_session_vars, get_session_env
 
         adapter = _make_adapter(multiplex=True)
         tokens = adapter._bind_api_server_session(
@@ -227,7 +227,7 @@ class TestApiServerSessionProfileBinding:
     def test_bound_profile_selects_profile_scoped_container_key(self, monkeypatch):
         """Persistent-Docker container keys honour the api_server-bound profile (real resolver chain)."""
         import tools.terminal_tool as tt
-        from gateway.session_context import clear_session_vars
+        from hermes_agent.gateway.session_context import clear_session_vars
 
         adapter = _make_adapter(multiplex=True)
         monkeypatch.setattr(tt, "_ensure_terminal_env_bridged", lambda: None)

@@ -9,10 +9,10 @@ Telegram's ``int()`` as ``reply_to`` (#139611).
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform
-from gateway.platforms.event import MessageEvent
-from gateway.run import GatewayRunner
-from gateway.session import SessionSource
+from hermes_agent.gateway.config import GatewayConfig, Platform
+from hermes_agent.gateway.platforms.event import MessageEvent
+from hermes_agent.gateway.run import GatewayRunner
+from hermes_agent.gateway.session import SessionSource
 
 WAKE_ID = '["plugin","demo","agent:main:telegram:dm:42","0f1e2d3c4b5a69788796a5b4c3d2e1f0"]'
 

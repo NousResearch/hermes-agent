@@ -1,11 +1,11 @@
 """Invariants for the env -> GatewayConfig bridge that platform plugins declare on their
 ``PlatformEntry`` (``env_overrides`` / ``env_enable_credentials``, applied by
-``gateway.config_env._apply_env_overrides``)."""
+``hermes_agent.gateway.config_env._apply_env_overrides``)."""
 
-from gateway.config import Platform
-from gateway.platform_registry import platform_registry
+from hermes_agent.gateway.config import Platform
+from hermes_agent.gateway.platform_registry import platform_registry
 
-# Core-only platforms keep their env rows in gateway/config_env.py.
+# Core-only platforms keep their env rows in hermes_agent/gateway/config_env.py.
 _CORE_ONLY = {"local", "api_server", "webhook", "msgraph_webhook", "relay"}
 
 

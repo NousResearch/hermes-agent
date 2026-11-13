@@ -22,12 +22,12 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
+from hermes_agent.gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
 
 
 def _make_draft_adapter():
     """BasePlatformAdapter subclass with stream-is-the-message drafts."""
-    from gateway.platforms.base import BasePlatformAdapter, SendResult
+    from hermes_agent.gateway.platforms.base import BasePlatformAdapter, SendResult
 
     A = type("StreamIsMsgAdapter", (BasePlatformAdapter,), {"MAX_MESSAGE_LENGTH": 39000})
     A.__abstractmethods__ = frozenset()
@@ -224,7 +224,7 @@ class TestFinalAdoptionGuards:
 class TestQueuedLaneReconcile:
     @pytest.mark.asyncio
     async def test_queued_first_response_edits_in_place(self):
-        from gateway.run import GatewayRunner
+        from hermes_agent.gateway.run import GatewayRunner
 
         runner = object.__new__(GatewayRunner)
         adapter = _make_draft_adapter()
@@ -248,7 +248,7 @@ class TestQueuedLaneReconcile:
 
     @pytest.mark.asyncio
     async def test_queued_first_response_falls_back_without_message(self):
-        from gateway.run import GatewayRunner
+        from hermes_agent.gateway.run import GatewayRunner
 
         runner = object.__new__(GatewayRunner)
         adapter = _make_draft_adapter()

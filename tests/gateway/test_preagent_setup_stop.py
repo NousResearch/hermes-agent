@@ -10,11 +10,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.base import BasePlatformAdapter, SendResult
-from gateway.platforms.event import MessageEvent, MessageType
-from gateway.run import GatewayRunner, _AGENT_PENDING_SENTINEL
-from gateway.session import SessionSource
+from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+from hermes_agent.gateway.platforms.base import BasePlatformAdapter, SendResult
+from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
+from hermes_agent.gateway.run import GatewayRunner, _AGENT_PENDING_SENTINEL
+from hermes_agent.gateway.session import SessionSource
 
 
 class _Adapter(BasePlatformAdapter):
@@ -102,7 +102,7 @@ async def test_a_stalled_setup_is_a_failed_turn_so_goal_never_grades_the_resend_
     """The stalled notice is the turn's reply, not its answer: with ``/goal`` active the judge must
     not grade "Turn setup stalled … Please resend" and queue a continuation into a setup that may
     hang again. ``_turn_failed`` reads the owner's captured result, as for any turn that never ran."""
-    from gateway.session_results import execution_result
+    from hermes_agent.gateway.session_results import execution_result
     captured: dict = {}
     token = execution_result.set(captured)  # the owner's capture around _handle_message
     try:

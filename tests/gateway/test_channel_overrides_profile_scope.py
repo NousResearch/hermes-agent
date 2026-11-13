@@ -14,11 +14,11 @@ from types import SimpleNamespace
 import pytest
 
 from agent.secret_scope import set_multiplex_active
-from gateway.config import Platform, load_gateway_config
-from gateway.run import GatewayRunner, _profile_runtime_scope
-from gateway.run_turn_runner import TurnRunner
-from gateway.session import SessionSource
-from gateway.session_identity import RoutingIdentity
+from hermes_agent.gateway.config import Platform, load_gateway_config
+from hermes_agent.gateway.run import GatewayRunner, _profile_runtime_scope
+from hermes_agent.gateway.run_turn_runner import TurnRunner
+from hermes_agent.gateway.session import SessionSource
+from hermes_agent.gateway.session_identity import RoutingIdentity
 
 
 @pytest.fixture
@@ -72,7 +72,7 @@ def test_managed_worker_prompt_reads_the_serving_profiles_override(homes):
     """A managed worker's prompt is resolved owner-side; it must match the in-process turn's."""
     from contextlib import nullcontext
 
-    from gateway.session_worker_construct import _ephemeral_prompt
+    from hermes_agent.gateway.session_worker_construct import _ephemeral_prompt
 
     _launch, b2 = homes
     raw = json.loads((b2 / "config.yaml").read_text(encoding="utf-8"))

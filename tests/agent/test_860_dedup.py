@@ -80,15 +80,15 @@ class TestAppendToTranscriptSkipDb:
 
     def test_skip_db_prevents_sqlite_write(self, tmp_path):
         """With skip_db=True and a real DB, message does NOT appear in SQLite."""
-        from gateway.config import GatewayConfig
-        from gateway.session import SessionStore
+        from hermes_agent.gateway.config import GatewayConfig
+        from hermes_agent.gateway.session import SessionStore
         from hermes_agent.hermes_state import SessionDB
 
         db_path = tmp_path / "test_skip.db"
         db = SessionDB(db_path=db_path)
 
         config = GatewayConfig()
-        with patch("gateway.session.SessionStore._ensure_loaded"):
+        with patch("hermes_agent.gateway.session.SessionStore._ensure_loaded"):
             store = SessionStore(sessions_dir=tmp_path, config=config)
         store._db = db
         store._loaded = True

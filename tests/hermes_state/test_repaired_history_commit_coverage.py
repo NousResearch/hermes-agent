@@ -56,7 +56,7 @@ CASES = {
 
 @pytest.mark.parametrize("case", list(CASES))
 def test_repaired_reload_commit_archives_only_held_rows(tmp_path, case):
-    from gateway.run import _build_gateway_agent_history
+    from hermes_agent.gateway.run import _build_gateway_agent_history
 
     unseen, suffix, render, late, expected, tail_count = CASES[case]
     db = SessionDB(tmp_path / "state.db")

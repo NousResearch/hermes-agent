@@ -93,7 +93,7 @@ def classic_session(tmp_path):
         return [line.split("Session ID: ", 1)[1].strip() for line in shown.splitlines() if "Session ID: " in line][-1]
 
     with (home / "gw.log").open("w") as log:
-        daemon = subprocess.Popen([sys.executable, "-m", "gateway.run"], cwd=root, env=env,
+        daemon = subprocess.Popen([sys.executable, "-m", "hermes_agent.gateway.run"], cwd=root, env=env,
                                   stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT)
         try:
             deadline, desc = time.monotonic() + 60, {}

@@ -86,7 +86,7 @@ _CHAIN_CAP = 1000
 # carries them onto the child (per-segment keys such as usage anchors stay behind).
 # ``prompt_refresh_epoch`` too: without it a rotated child looks older than any past
 # ``hermes sessions refresh-prompts`` request and rebuilds its prompt once more after eviction.
-# ``_chat_adopted`` (``gateway.session_lifecycle.CHAT_ADOPTED_MARKER``): a delegate row the user resumed a
+# ``_chat_adopted`` (``hermes_agent.gateway.session_lifecycle.CHAT_ADOPTED_MARKER``): a delegate row the user resumed a
 # chat onto stays that chat's conversation past a rotation, or the route guard rejects the new tip.
 _CONVERSATION_MODEL_CONFIG_KEYS = ("onboarding_run", "prompt_refresh_epoch", "_chat_adopted")
 
@@ -344,7 +344,7 @@ class SessionCompressionMixin:
         # so those stay NULL. Compression sets ``_session_db_created`` and does not
         # create the child again. The turn's ``update_token_counts(source=...)`` fills
         # that NULL; auxiliary usage must not write ``unknown`` into it first.
-        from gateway.session_policy import created_surface
+        from hermes_agent.gateway.session_policy import created_surface
         created_source = created_surface(parent["created_source"]) or created_surface(source)
         # The child continues the parent's tools[] pin (the compaction refresh re-pinned it just
         # before publish), or its first hop to another surface re-derives the array.

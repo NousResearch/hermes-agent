@@ -12,9 +12,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.platforms.base import SendResult
-from gateway.run_turn import GatewayTurnMixin
-from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
+from hermes_agent.gateway.platforms.base import SendResult
+from hermes_agent.gateway.run_turn import GatewayTurnMixin
+from hermes_agent.gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
 from tests.waiting import async_wait_until
 
 
@@ -81,7 +81,7 @@ async def _flood_frozen_turn(adapter: _FloodedChat, final: str):
 
 @pytest.mark.asyncio
 async def test_flood_frozen_preview_is_finished_in_place_not_sent_twice(monkeypatch):
-    monkeypatch.setattr("gateway.run_turn_final_reconcile._FLOOD_WAIT_SLACK_SECS", 0.05)
+    monkeypatch.setattr("hermes_agent.gateway.run_turn_final_reconcile._FLOOD_WAIT_SLACK_SECS", 0.05)
     adapter = _FloodedChat(flood_secs=0.6)  # long enough to outlast the consumer's own retries
     final = "The answer begins here and then " + "continues with more words " * 8 + "until the end."
     consumer = await _flood_frozen_turn(adapter, final)
@@ -100,8 +100,8 @@ async def test_flood_frozen_preview_is_finished_in_place_not_sent_twice(monkeypa
 async def test_preview_still_flooded_past_the_retry_leaves_the_normal_send(monkeypatch):
     """A window that outlasts the bounded wait is not a delivery: ``already_sent`` stays unset so
     the normal ledgered final send (and its redelivery) still owns the answer."""
-    monkeypatch.setattr("gateway.run_turn_final_reconcile._FLOOD_WAIT_SLACK_SECS", 0.0)
-    monkeypatch.setattr("gateway.run_turn_final_reconcile._MAX_FLOOD_WAITS", 1)
+    monkeypatch.setattr("hermes_agent.gateway.run_turn_final_reconcile._FLOOD_WAIT_SLACK_SECS", 0.0)
+    monkeypatch.setattr("hermes_agent.gateway.run_turn_final_reconcile._MAX_FLOOD_WAITS", 1)
     adapter = _FloodedChat(flood_secs=0.6)
     final = "Short answer that is long enough to stream in two pieces."
     consumer = await _flood_frozen_turn(adapter, final)
@@ -157,7 +157,7 @@ async def test_consumer_cancelled_mid_final_leaves_one_complete_message():
 @pytest.mark.asyncio
 async def test_turn_replaced_during_the_flood_wait_publishes_nothing(monkeypatch):
     """``/new`` or ``/stop`` during the flood wait: the old answer is neither edited in nor sent."""
-    monkeypatch.setattr("gateway.run_turn_final_reconcile._FLOOD_WAIT_SLACK_SECS", 0.05)
+    monkeypatch.setattr("hermes_agent.gateway.run_turn_final_reconcile._FLOOD_WAIT_SLACK_SECS", 0.05)
     adapter = _FloodedChat(flood_secs=0.6)
     final = "The answer begins here and then " + "continues with more words " * 8 + "until the end."
     consumer = await _flood_frozen_turn(adapter, final)
@@ -191,7 +191,7 @@ async def test_finishing_edit_carries_the_topic_routing_metadata():
             return await super().edit_message(chat_id, message_id, content, finalize=finalize)
 
     adapter = _Topic(flood_secs=0.0)
-    from gateway.run_turn_final_reconcile import edit_preview_to_final
+    from hermes_agent.gateway.run_turn_final_reconcile import edit_preview_to_final
     await edit_preview_to_final(adapter, "chat-1", "1", "answer", {"thread_id": "77"})
     assert seen == [{"thread_id": "77"}]
 
@@ -239,8 +239,8 @@ async def test_an_edit_that_would_truncate_leaves_the_normal_send():
 def test_slack_measures_the_formatted_text_its_edit_cuts():
     """Slack escapes ``& < >`` before ``chat.update`` keeps one 39k chunk: a raw reply under the
     limit that formats past it is never finished in place, where its tail would be lost."""
-    from gateway.config import PlatformConfig
-    from gateway.run_turn_final_reconcile import owns_reconcilable_preview
+    from hermes_agent.gateway.config import PlatformConfig
+    from hermes_agent.gateway.run_turn_final_reconcile import owns_reconcilable_preview
     from plugins.platforms.slack.adapter import SlackAdapter
 
     slack = SlackAdapter(PlatformConfig(enabled=True, token="xoxb-fake"))
@@ -254,7 +254,7 @@ def test_slack_measures_the_formatted_text_its_edit_cuts():
 @pytest.mark.asyncio
 async def test_a_replaced_turn_and_a_receiptless_edit_are_distinguishable():
     """The queued lane drops the reply only for a replaced turn; an edit with no receipt is not that."""
-    from gateway.run_turn_final_reconcile import TURN_REPLACED, edit_preview_to_final
+    from hermes_agent.gateway.run_turn_final_reconcile import TURN_REPLACED, edit_preview_to_final
 
     class _NoReceipt:
         async def edit_message(self, chat_id, message_id, content, *, finalize=False):

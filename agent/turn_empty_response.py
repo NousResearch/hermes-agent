@@ -27,7 +27,7 @@ _INLINE_THINK_RE = re.compile(r'<think>|<thinking>|<reasoning>', re.IGNORECASE)
 
 # The persisted user-row display kinds the gateway types as machinery: the self-injected
 # internal_notification turn plus the producer-notice cards (background-process completions,
-# async delegation results). Mirrors gateway.response_filters.MACHINERY_DISPLAY_KINDS;
+# async delegation results). Mirrors hermes_agent.gateway.response_filters.MACHINERY_DISPLAY_KINDS;
 # agent/ cannot import gateway/.
 _MACHINERY_DISPLAY_KINDS = frozenset({"internal_notification", "process_complete", "async_delegation_complete"})
 
@@ -35,7 +35,7 @@ _MACHINERY_DISPLAY_KINDS = frozenset({"internal_notification", "process_complete
 NOTIFICATION_NO_REPLY_EXIT = "notification_no_reply"
 
 # Assistant row persisted for that exit: the same marker a deliberate no-reply on a human
-# turn already leaves in the transcript (gateway.response_filters.LIVE_GATEWAY_SILENT_MARKERS).
+# turn already leaves in the transcript (hermes_agent.gateway.response_filters.LIVE_GATEWAY_SILENT_MARKERS).
 MACHINERY_NO_REPLY_ROW = "[SILENT]"
 
 
@@ -180,7 +180,7 @@ def _terminal_empty(agent: Any, assistant_message: Any, finish_reason: str, mess
             agent.provider,
         )
         # The gateway's final reply explains this turn's empty result, so a chat drops this copy.
-        from gateway.warning_notifications import TerminalFailureText
+        from hermes_agent.gateway.warning_notifications import TerminalFailureText
         agent._emit_diagnostic_status(TerminalFailureText(
             "❌ Model returned no content after all retries"
             + (" and fallback attempts." if agent._fallback_chain else
@@ -193,7 +193,7 @@ def _terminal_empty(agent: Any, assistant_message: Any, finish_reason: str, mess
         "(model=%s provider=%s)",
         agent._empty_content_retries, agent.model, agent.provider,
     )
-    from gateway.warning_notifications import TerminalFailureText
+    from hermes_agent.gateway.warning_notifications import TerminalFailureText
     agent._emit_diagnostic_status(TerminalFailureText(
         "⚠️ Model produced reasoning but no visible response after all retries. Returning empty."
     ))

@@ -14,7 +14,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway import webapp_listener as webapp
+from hermes_agent.gateway import webapp_listener as webapp
 
 
 def _home(tmp_path, config=None):
@@ -101,7 +101,7 @@ def test_a_credential_the_browser_would_refuse_is_replaced(tmp_path, stored):
 def _start_runtime_api(monkeypatch, tmp_path, config, *, busy=False, refuse=None, while_starting=None):
     """Start the runtime's listener for *config* with the listener itself stood in; *while_starting*
     (a list) records what each Webapp verb answers while the Webapp's listener starts."""
-    from gateway import run_api, run_runtime
+    from hermes_agent.gateway import run_api, run_runtime
     home = _home(tmp_path, config)
     monkeypatch.setenv("HERMES_HOME", str(home))
     calls = []
@@ -117,7 +117,7 @@ def _start_runtime_api(monkeypatch, tmp_path, config, *, busy=False, refuse=None
         return SimpleNamespace(api_origin=f"http://127.0.0.1:{port or 50001}")
 
     monkeypatch.setattr(run_api, "start_gateway_api", start)
-    from gateway.control_socket import GatewayControlServer
+    from hermes_agent.gateway.control_socket import GatewayControlServer
     runner = SimpleNamespace(session_runtime_descriptor={}, session_authorities=[],
                              session_control_server=GatewayControlServer(home))
     asyncio.run(run_runtime.start_gateway_runtime_api(runner))
@@ -151,7 +151,7 @@ def test_the_webapp_verbs_answer_while_the_webapps_listener_starts(monkeypatch, 
 def test_the_gateway_registers_the_webapp_verbs_before_its_control_socket_answers(monkeypatch, tmp_path):
     """The gateway's control socket answers from the moment it starts; the Webapp's verbs are on it
     from that moment too (``starting`` until the listener settles), not only once the listener is up."""
-    from gateway import control_socket, run_bootstrap
+    from hermes_agent.gateway import control_socket, run_bootstrap
     home = _home(tmp_path)
     monkeypatch.setenv("HERMES_HOME", str(home))
     seen = {}
@@ -370,7 +370,7 @@ def test_cancelling_the_gateway_while_the_webapp_listener_starts_cancels_it(monk
 def _reuse_address(port: int) -> bool:
     import socket
 
-    from gateway import run_api
+    from hermes_agent.gateway import run_api
     with run_api._listener_socket(socket.AF_INET, socket.SOCK_STREAM, 0, port) as listener:
         return bool(listener.getsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR))
 
@@ -395,7 +395,7 @@ def test_a_dual_stack_listener_takes_ipv4_too():
     Webapp, and its exclusive hold on the port leaves 0.0.0.0 free for another program."""
     import socket
 
-    from gateway import run_api
+    from hermes_agent.gateway import run_api
     with run_api._listener_socket(socket.AF_INET6, socket.SOCK_STREAM, 0, webapp.DEFAULT_PORT,
                                   dual_stack=True) as wildcard:
         assert wildcard.getsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY) == 0
@@ -404,7 +404,7 @@ def test_a_dual_stack_listener_takes_ipv4_too():
 @pytest.mark.parametrize(("host", "dual_stack"), [("::", True), ("::1", False), ("127.0.0.1", False)])
 def test_the_webapp_listener_is_dual_stack_only_on_the_ipv6_wildcard(monkeypatch, host, dual_stack):
     """Only a ``::`` bind takes IPv4 as well; ``::1`` stays the IPv6 loopback address it names."""
-    from gateway import run_api
+    from hermes_agent.gateway import run_api
 
     asked = []
 
@@ -427,7 +427,7 @@ def test_a_fixed_port_binds_again_while_the_last_gateways_connections_linger():
     # The server closing first leaves its side of the connection in TIME_WAIT on the fixed port.
     import socket
 
-    from gateway import run_api
+    from hermes_agent.gateway import run_api
     with socket.socket() as probe:
         probe.bind(("127.0.0.1", 0))
         port = probe.getsockname()[1]

@@ -20,7 +20,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform, PlatformConfig
+from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
 
 
 @pytest.fixture(autouse=True)
@@ -34,7 +34,7 @@ def _reset_multiplex_flag():
 
 class TestLoadGatewayConfigForRunner:
     def test_unscoped_when_multiplex_off(self, tmp_path, monkeypatch):
-        from gateway import run as run_mod
+        from hermes_agent.gateway import run as run_mod
 
         home = tmp_path / "home"
         home.mkdir()
@@ -61,7 +61,7 @@ class TestLoadGatewayConfigForRunner:
         through the profile scope.
         """
         from agent import secret_scope as ss
-        from gateway import run as run_mod
+        from hermes_agent.gateway import run as run_mod
 
         home = tmp_path / "home"
         home.mkdir()
@@ -110,7 +110,7 @@ class TestLoadGatewayConfigForRunner:
 
 class TestPlatformHasBotCredential:
     def test_telegram_empty_token_false(self):
-        from gateway.run import _platform_has_bot_credential
+        from hermes_agent.gateway.run import _platform_has_bot_credential
 
         assert _platform_has_bot_credential(
             Platform.TELEGRAM, PlatformConfig(enabled=True, token="")
@@ -128,7 +128,7 @@ class TestPlatformHasBotCredential:
         transient failure, so a momentary DNS blip took Matrix down until
         the gateway was restarted by hand.
         """
-        from gateway.run import _platform_has_bot_credential
+        from hermes_agent.gateway.run import _platform_has_bot_credential
 
         cfg = PlatformConfig(enabled=True)
         cfg.extra = {
@@ -155,7 +155,7 @@ class TestPlatformHasBotCredential:
         Guards the #64674 intent, and specifically pins "read extra, not the
         environment". A fully-populated MATRIX_* environment is set here on
         purpose: on a real host those vars are present (build_config exports
-        them, and importing gateway.run loads ~/.hermes/.env), so an
+        them, and importing hermes_agent.gateway.run loads ~/.hermes/.env), so an
         implementation that falls back to os.getenv would report every Matrix
         config as credentialed and never evict anything.
 
@@ -163,7 +163,7 @@ class TestPlatformHasBotCredential:
         environment, so without these explicit setenv calls this test would
         pass against an env-reading implementation and guard nothing.
         """
-        from gateway.run import _platform_has_bot_credential
+        from hermes_agent.gateway.run import _platform_has_bot_credential
 
         monkeypatch.setenv("MATRIX_HOMESERVER", "https://env.example.org")
         monkeypatch.setenv("MATRIX_USER_ID", "@envbot:env.example.org")
@@ -177,7 +177,7 @@ class TestPlatformHasBotCredential:
 class TestPrimaryStartupSkipsEmptyTokenUnderMultiplex:
     @pytest.mark.asyncio
     async def test_skips_empty_telegram_when_multiplex_on(self, monkeypatch):
-        from gateway.run import GatewayRunner
+        from hermes_agent.gateway.run import GatewayRunner
 
         cfg = GatewayConfig(multiplex_profiles=True)
         cfg.platforms[Platform.TELEGRAM] = PlatformConfig(
@@ -214,7 +214,7 @@ class TestPrimaryStartupSkipsEmptyTokenUnderMultiplex:
         # stand-in by invoking the real loop logic via a partial start is
         # heavy. Instead assert the skip helper path by simulating the
         # condition the start() loop uses.
-        from gateway.run import _platform_has_bot_credential
+        from hermes_agent.gateway.run import _platform_has_bot_credential
 
         skipped = []
         for platform, platform_config in cfg.platforms.items():
@@ -237,8 +237,8 @@ class TestPrimaryMessageRuntimeScope:
         self, tmp_path, monkeypatch
     ):
         from agent import secret_scope
-        from gateway import run as run_mod
-        from gateway.run import GatewayRunner
+        from hermes_agent.gateway import run as run_mod
+        from hermes_agent.gateway.run import GatewayRunner
 
         home = tmp_path / "home"
         home.mkdir()
@@ -256,7 +256,7 @@ class TestPrimaryMessageRuntimeScope:
         runner.config = GatewayConfig(multiplex_profiles=True)
 
         async def _handle_message(_event):
-            from gateway.session import _discord_tools_loaded
+            from hermes_agent.gateway.session import _discord_tools_loaded
 
             return _discord_tools_loaded()
 
@@ -280,9 +280,9 @@ class TestPrimaryMessageRuntimeScope:
         Sharik's unrelated secret scope.
         """
         from agent import secret_scope
-        from gateway import run as run_mod
-        from gateway.run import GatewayRunner
-        from gateway.session import SessionSource
+        from hermes_agent.gateway import run as run_mod
+        from hermes_agent.gateway.run import GatewayRunner
+        from hermes_agent.gateway.session import SessionSource
 
         home = tmp_path / "home"
         home.mkdir()
@@ -331,8 +331,8 @@ class TestPrimaryMessageRuntimeScope:
 class TestReconnectDropsEmptyToken:
     @pytest.mark.asyncio
     async def test_empty_token_removed_from_queue(self):
-        from gateway.run import GatewayRunner, _platform_has_bot_credential
-        from gateway.config import Platform, PlatformConfig
+        from hermes_agent.gateway.run import GatewayRunner, _platform_has_bot_credential
+        from hermes_agent.gateway.config import Platform, PlatformConfig
 
         # Unit-level: the branch condition the watcher uses.
         platform = Platform.TELEGRAM

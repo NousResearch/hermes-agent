@@ -205,7 +205,7 @@ def test_a_build_or_a_current_bundle_clears_the_out_of_date_mark(tmp_path: Path,
     reports the Webapp unavailable while the mark is there. The next build that succeeds (``hermes
     webapp``, Web Access Start or the next update), or that finds the bundle current, clears it.
     Reusing the bundle with ``--skip-build`` writes nothing and leaves it marked."""
-    from gateway.webapp_listener import bundle_missing_reason
+    from hermes_agent.gateway.webapp_listener import bundle_missing_reason
     from hermes_cli import source_build
 
     _workspace_tree(tmp_path)

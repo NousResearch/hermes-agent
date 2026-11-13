@@ -31,7 +31,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from gateway.config import PlatformConfig
+from hermes_agent.gateway.config import PlatformConfig
 
 
 def _load_installed_package(name):

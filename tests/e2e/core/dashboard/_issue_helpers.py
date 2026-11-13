@@ -5,7 +5,7 @@
   terminal. The master end is held open and never written to (nobody watches that console).
   Teardown SIGKILLs the whole process group: a server wedged in a worker thread never finishes
   a graceful shutdown (the default executor is joined on exit).
-* ``GatewayApiServer``: a real ``python -m gateway.run`` with the API-server platform enabled via
+* ``GatewayApiServer``: a real ``python -m hermes_agent.gateway.run`` with the API-server platform enabled via
   the profile ``.env`` exactly as a user configures it (``API_SERVER_ENABLED``/``_KEY``/``_HOST``/
   ``_PORT``), retrying the pick-then-bind port race like the parity lane's driver.
 * ``KnownIssue`` assertion subclasses: a KNOWN cell gates its final check with
@@ -158,7 +158,7 @@ def http_json(method: str, url: str, *, key: str | None = None, body: Any = None
 
 
 class GatewayApiServer:
-    """``python -m gateway.run`` serving the API-server platform on 127.0.0.1:<port>."""
+    """``python -m hermes_agent.gateway.run`` serving the API-server platform on 127.0.0.1:<port>."""
 
     def __init__(self, sb: Sandbox, hermes_home: Path, log_path: Path, ready_timeout: float = 120.0) -> None:
         self.sb, self.hermes_home, self.log_path = sb, hermes_home, log_path
@@ -172,7 +172,7 @@ class GatewayApiServer:
                 "API_SERVER_HOST": "127.0.0.1", "API_SERVER_PORT": str(port)}.items()), encoding="utf-8")
             self._log = open(log_path, "a", encoding="utf-8")
             self.proc = subprocess.Popen(
-                [sys.executable, "-m", "gateway.run"], cwd=str(sb.home), env=sb.env({"HERMES_HOME": str(hermes_home)}),
+                [sys.executable, "-m", "hermes_agent.gateway.run"], cwd=str(sb.home), env=sb.env({"HERMES_HOME": str(hermes_home)}),
                 stdin=subprocess.DEVNULL, stdout=self._log, stderr=subprocess.STDOUT, start_new_session=True,
             )
             self.base = f"http://127.0.0.1:{port}"

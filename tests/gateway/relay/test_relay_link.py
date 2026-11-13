@@ -72,7 +72,7 @@ def connector(monkeypatch):
 
 
 def test_link_code_is_minted_with_the_gateway_bearer_and_points_at_the_shared_bot(connector, monkeypatch):
-    from gateway.relay.link import relay_link_verb
+    from hermes_agent.gateway.relay.link import relay_link_verb
 
     monkeypatch.delenv("GATEWAY_RELAY_SECRET", raising=False)
     not_ready = relay_link_verb({"action": "request", "platform": "telegram"})
@@ -98,7 +98,7 @@ def test_link_code_is_minted_with_the_gateway_bearer_and_points_at_the_shared_bo
 def test_portal_managed_agent_is_sent_to_the_portal_instead_of_a_code_that_binds_nothing(connector, monkeypatch):
     """On a Portal-managed agent a gateway-bearer code carries no owner, so its redeem binds no
     account (connector scopeService: managed agents take only the Portal setting)."""
-    from gateway.relay.link import relay_link_verb
+    from hermes_agent.gateway.relay.link import relay_link_verb
 
     monkeypatch.setenv("GATEWAY_RELAY_SECRET", _SECRET)
     connector.managed_by = "portal"

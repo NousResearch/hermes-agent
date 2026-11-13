@@ -1,7 +1,7 @@
 """SMS (Twilio) env -> gateway config bridge (``PlatformEntry.env_overrides``)."""
 
-from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platform_env import EnvCred, getenv, home_step
+from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+from hermes_agent.gateway.platform_env import EnvCred, getenv, home_step
 
 
 def _api_key(config: GatewayConfig, sms_config: PlatformConfig) -> None:

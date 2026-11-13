@@ -8,9 +8,9 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-import gateway.run_adapters_recovery as recovery
-from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.run import GatewayRunner
+import hermes_agent.gateway.run_adapters_recovery as recovery
+from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
+from hermes_agent.gateway.run import GatewayRunner
 from plugins.platforms.telegram.adapter import TelegramAdapter
 from tests.gateway.test_multiplex_adapter_registry import _secondary_recovery_runner
 
@@ -38,7 +38,7 @@ async def test_secondary_polling_conflict_reconnects_then_parks_a_foreign_holder
     monkeypatch.setattr(recovery, "_TOKEN_CONTENTION_RECONNECT_DELAYS", (0.01, 0.01, 0.01), raising=False)
     runner = _secondary_recovery_runner()
     monkeypatch.setattr("hermes_cli.profiles.get_profile_dir", lambda name: Path("/profiles") / name)
-    monkeypatch.setattr("gateway.run_adapters.record_platform_disconnect", lambda *a, **k: None)
+    monkeypatch.setattr("hermes_agent.gateway.run_adapters.record_platform_disconnect", lambda *a, **k: None)
     monkeypatch.setattr(runner, "_safe_adapter_disconnect", AsyncMock())
     writes = _record_status(monkeypatch, runner)
     reconnected = asyncio.Queue()

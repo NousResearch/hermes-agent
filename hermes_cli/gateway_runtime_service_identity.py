@@ -111,7 +111,7 @@ def verify_gateway_argv(argv: list[str], home: Path, *, wrapped: bool = False) -
     one this root's installer writes (``_own_store_launcher``). The stderr-timestamp wrapper holds its inner
     ``hermes`` to the same rule. A bare unwrapped ``hermes`` keeps verifying by name, as older
     systemd/schtasks/launchd definitions persisted it (binding those is a separate change)."""
-    from gateway.status import looks_like_gateway_command_line
+    from hermes_agent.gateway.status import looks_like_gateway_command_line
 
     # The installer wraps launchd stderr with this fixed, non-shell module.
     wrapper = _launch_module(argv, legacy=not wrapped)

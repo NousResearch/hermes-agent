@@ -15,9 +15,9 @@ import threading
 
 import pytest
 
-from gateway.control_socket import GatewayControlServer
-from gateway.runtime_bootstrap import TicketStore
-from gateway.session_contract import CANONICAL_GATEWAY_PROTOCOL
+from hermes_agent.gateway.control_socket import GatewayControlServer
+from hermes_agent.gateway.runtime_bootstrap import TicketStore
+from hermes_agent.gateway.session_contract import CANONICAL_GATEWAY_PROTOCOL
 
 REPO = Path(__file__).resolve().parents[2]
 

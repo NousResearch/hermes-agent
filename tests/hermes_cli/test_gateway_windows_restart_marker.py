@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import pytest
 
-from gateway import run as gateway_run
+from hermes_agent.gateway import run as gateway_run
 
 MARKER = ".restart_pending.json"
 

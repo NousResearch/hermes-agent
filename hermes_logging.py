@@ -509,6 +509,28 @@ class _ManagedRotatingFileHandler(RotatingFileHandler):
         On failure the stream is left ``None`` so the next emit bails rather than
         writing to a stale inode.
         """
+        # Instrumentation for RCA §8.2 (t_5c1db04a): log file + offset + reason
+        # BEFORE the reopen fires. This is the handler's own response to an
+        # externally-caused file change (unlink/rename/inode swap) — the
+        # leading hypothesis for the 330-line gateway.log excision in the
+        # 2026-11-10/11 incident. Logged here rather than only in the two
+        # call sites so every reopen (missing file AND inode-swap) is covered
+        # by one line, with the triggering stat (if any) telling us which.
+        try:
+            _pre_size = (
+                os.path.getsize(self.baseFilename) if os.path.exists(self.baseFilename) else 0
+            )
+            _reason = (
+                "inode_changed_externally" if stat_result is not None
+                else "file_missing_or_unlinked"
+            )
+            logging.getLogger(__name__).warning(
+                "[LOGFILE] reopening %s offset=%d reason=%s "
+                "(old_inode=%s:%s) — handle lost, not our own doRollover",
+                self.baseFilename, _pre_size, _reason, self._stat_dev, self._stat_ino,
+            )
+        except Exception:
+            pass
         if self.stream is not None:
             _quietly(self.stream.close)
         self.stream = None  # type: ignore[assignment]
@@ -591,6 +613,24 @@ class _ManagedRotatingFileHandler(RotatingFileHandler):
         super().handleError(record)
 
     def _open(self):
+        # Instrumentation for RCA §8.2 (t_5c1db04a): this is the ONLY place a
+        # gateway.log file object is opened. ``RotatingFileHandler``/
+        # ``FileHandler`` always open in append mode ('a') here — never
+        # truncate — so this line is the evidence trail that confirms/denies
+        # "did the gateway's own startup logic truncate gateway.log" for a
+        # future incident. Logged BEFORE the open so it survives even if
+        # ``_open`` itself raises.
+        try:
+            _pre_size = (
+                os.path.getsize(self.baseFilename) if os.path.exists(self.baseFilename) else 0
+            )
+            logging.getLogger(__name__).debug(
+                "[LOGFILE] opening %s mode=%r existing_size=%d bytes "
+                "(append — no truncation)",
+                self.baseFilename, getattr(self, "mode", "a"), _pre_size,
+            )
+        except Exception:
+            pass
         stream = super()._open()
         self._chmod_if_managed()
         return stream
@@ -604,6 +644,23 @@ class _ManagedRotatingFileHandler(RotatingFileHandler):
             previous = os.stat(self.baseFilename)
         except OSError:
             previous = None
+        # Instrumentation for RCA §8.2 (t_5c1db04a): log file, current offset
+        # (size before rollover), and reason BEFORE the rollover fires — this
+        # is the gateway's own log-rotation logic, the leading hypothesis for
+        # the 330-line gateway.log excision in the 2026-11-10/11 incident.
+        # ``doRollover()`` renames baseFilename to ``.1`` etc. and opens a
+        # fresh (empty) file — it does not truncate in place, but the net
+        # effect at the canonical path is the same "lines disappear from
+        # gateway.log" symptom, so this must be visible in the logs.
+        try:
+            logging.getLogger(__name__).warning(
+                "[LOGFILE] rollover firing: file=%s offset=%d backup_count=%d "
+                "reason=size_exceeded(maxBytes=%d)",
+                self.baseFilename, previous.st_size if previous is not None else -1,
+                self.backupCount, self.maxBytes,
+            )
+        except Exception:
+            pass
         super().doRollover()
         if previous is not None:
             try:

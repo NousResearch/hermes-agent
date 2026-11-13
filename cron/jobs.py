@@ -2552,6 +2552,18 @@ def mark_job_run(
         else:
             quota_hold.clear_state(job)
         save_jobs(jobs)
+        # Record the write for the in-process write-path watchdog
+        # (gateway/writepath_watchdog.py) — this is the exact write that
+        # silently stalled for 9+ hours in the 2026-11-10/11 incident
+        # before any external signal caught it. Best-effort + lazy
+        # import: the gateway isn't always the caller (CLI also runs cron
+        # jobs standalone) and this must never affect job bookkeeping if
+        # the watchdog module is unavailable.
+        try:
+            from gateway.writepath_watchdog import record_cron_output_write
+            record_cron_output_write(job_id, success=True)
+        except Exception:
+            pass
         return True
 
     def locked():

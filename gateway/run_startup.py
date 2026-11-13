@@ -1782,6 +1782,17 @@ class GatewayStartupMixin:
         self._start_spawn_background_watchers()
         from hermes_cli.observability.shared_metrics_startup import record_process_ready
         record_process_ready("gateway_boot", background=True)
+        # Start the in-process write-path watchdog (RCA §10 follow-up,
+        # t_5c1db04a): logs a state.db write-lock probe plus cron-output
+        # write staleness every 60s, so a future write-path stall is
+        # visible in gateway.log within a minute instead of only via the
+        # external 15-min hermes-artifact-loss-watchdog CronJob.
+        try:
+            from gateway.writepath_watchdog import start_writepath_monitoring
+            from hermes_constants import get_hermes_home
+            start_writepath_monitoring(get_hermes_home() / "state.db", interval_seconds=60.0)
+        except Exception as _e:
+            logger.debug("Failed to start write-path watchdog: %s", _e)
         logger.info("Press Ctrl+C to stop")
         return True
 

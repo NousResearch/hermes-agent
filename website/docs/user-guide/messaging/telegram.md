@@ -1240,6 +1240,8 @@ gateway:
         allow_cjk_rich_messages: false
 ```
 
+`rich_messages` also accepts `always`: instead of selecting rich rendering only for constructs MarkdownV2 degrades, every non-empty reply is sent as a native Rich Message. Use it when you want one consistent rendering and native copied text across all replies, not just tables and math.
+
 This setting is for client-rendering/copy compatibility; Hermes already falls back automatically when Telegram rejects the rich API call. `rich_drafts` controls whether the DM streaming preview *renders* rich (`sendRichMessageDraft`) and stays off by default because Telegram Desktop/macOS can visually overlay rich draft frames until the chat redraws; with it off, the preview streams plain and the final still arrives as a native Rich Message.
 
 The same setting applies to sends made outside the gateway process: `hermes send`, the `send_message` tool, and cron deliveries that fall back to the standalone sender take the rich path under the same rules. They also escape the `(1/2)` chunk marker on long messages, and treat only Telegram's own HTML tags (`<b>`, `<a>`, `<code>`, ...) as HTML. A `<details>` block or an angle-bracket placeholder therefore keeps its Markdown formatting. A message the Bot API still rejects as HTML is retried as MarkdownV2 before falling back to plain text. Two or more photos sent together arrive as a native album (`sendMediaGroup`, 10 per album).

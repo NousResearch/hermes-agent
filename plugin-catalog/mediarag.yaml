@@ -11,7 +11,7 @@ description: 'Local, offline semantic search across your documents, notes, image
 
   - Reads the folders you point it at, outside the plugin directory.
 
-  - Runs pandoc, pdftotext, ffmpeg and curl from PATH.
+  - Runs pandoc, pdftotext, ffmpeg and curl from PATH; ffmpeg samples video files at 0.5 frames per second (first 240 frames) into its local cache to index them.
 
   - Fetches the http(s) URLs you add, from public hosts only, re-checked on every redirect.
 

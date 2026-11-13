@@ -25,3 +25,16 @@ def test_egress_preserves_ascii_embedded_bearer_shape():
     text = f"useBearer {token} suffix"
 
     assert redact_for_egress(text) == text
+
+
+def test_egress_redacts_unicode_glued_prefix_tokens():
+    """The prefix half of #81073: a CJK / fullwidth-digit neighbour must not hide ``sk-…``."""
+    token = "sk-" + "a" * 20
+    for glue in ("xx\u4e2d", "xx\uff11", "\u8ba4\u8bc1"):
+        assert token not in redact_for_egress(glue + token)
+
+
+def test_egress_redacts_cjk_glued_bearer_residue():
+    token = "g" * 24
+    out = redact_for_egress(f"\u8ba4\u8bc1Bearer {token}")
+    assert token not in out

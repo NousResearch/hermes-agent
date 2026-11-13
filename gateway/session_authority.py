@@ -966,6 +966,8 @@ class SessionAuthority:
         # Stop hard-cancels this turn (aborts compression too). Background delegations are not the
         # turn: they keep running and report back; `/stop` and session close/reset end them.
         from agent.interrupt_compat import request_hard_interrupt
+        from gateway.run_plugin_injection import wake_background_wait
+        wake_background_wait(self, ref, person_input=True)  # a Stop never sits out a plugin turn's grace
         if agent is not None:
             request_hard_interrupt(agent)
         return self._handle(ref)
@@ -1003,6 +1005,8 @@ class SessionAuthority:
         resident one is the previous turn's cached agent, which this turn may replace, so *text* is
         latched for the agent this generation adopts (adopt_agent, under the same lock):
         ``(None, True)``. A claim with no steer seam (cron, managed worker) latches nothing."""
+        from gateway.run_plugin_injection import wake_background_wait
+        wake_background_wait(self, ref, person_input=True)  # a steer/redirect ends a plugin turn's grace
         adopted_generation, agent = self.adopted.get(ref.session_id, (None, None))
         if adopted_generation != generation:
             agent = self.agent(ref) if self._runs_own_agent(ref) else None

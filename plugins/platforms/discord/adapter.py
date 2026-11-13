@@ -318,7 +318,7 @@ from tools.url_safety import is_safe_url
 from gateway.platforms._shared import (
     decode_json_list_literal as _decode_json_list_literal, env_is_connected as _env_is_connected,
     extra_or_secret as _extra_or_secret, platform_gate_env as _scoped_gate_env, request_never_left,
-    send_error, yaml_env_setter as _yaml_env_setter
+    replace_bridged_env as _replace_bridged_env, send_error, yaml_env_setter as _yaml_env_setter
 )
 
 
@@ -1174,12 +1174,13 @@ from plugins.platforms.discord.standalone_rest import api_url as _rest_url, post
 from plugins.platforms.discord.adapter_opus import load_opus_codec
 from plugins.platforms.discord.adapter_authorization import DiscordAuthorizationMixin, is_automated_message
 from plugins.platforms.discord.adapter_slash_auth import DiscordSlashAuthMixin
+from plugins.platforms.discord.adapter_live_gates import DiscordLiveGatesMixin
 from plugins.platforms.discord.adapter_thread_titles import DiscordThreadTitlesMixin, SemanticThreadRenames
 from plugins.platforms.discord.adapter_voice_info import DiscordVoiceInfoMixin
 from plugins.platforms.discord.adapter_reactions import DiscordReactionsMixin
 
 
-class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceInfoMixin,
+class DiscordAdapter(DiscordLiveGatesMixin, DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceInfoMixin,
                      DiscordSlashAuthMixin, DiscordReactionsMixin, BasePlatformAdapter):
     """Discord bot adapter: guild/DM messages, threads, slash commands, button approvals, reactions."""
 
@@ -1210,6 +1211,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         self._ready_event = asyncio.Event()
         self._allowed_user_ids: set = set()  # For button approval authorization
         self._username_resolved_ids: set = set()  # IDs resolved from username entries (gateway authz union)
+        self._username_to_id: dict[str, str] = {}  # lowercased username -> ID, kept across gate refreshes
         self._allowed_role_ids: set = set()  # For DISCORD_ALLOWED_ROLES filtering
         # Gate env snapshot captured in connect() inside the owning profile's scope; None until then.
         # None until then; accessors fall back to live scope-aware reads (issue #72348).
@@ -1414,10 +1416,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                 return False
             # Snapshot this profile's gate env vars inside its runtime scope (#72348): immune to the
             # first-writer-wins process-global env bridge under multiplex.
-            self._snapshot_gate_env()
-            self._allowed_user_ids = self._get_allowed_users()
-            # DISCORD_ALLOWED_ROLES: comma-separated role IDs; ANY match grants access.
-            self._allowed_role_ids = self._get_allowed_roles()
+            self._derive_connect_gates()  # users/roles; later config.yaml edits apply per event
             # Intents: Server Members only when usernames must be resolved — an unenabled privileged
             # intent can keep the bot offline. ``"*"`` is the open-mode wildcard, not a username.
             intents = Intents.default()
@@ -1637,6 +1636,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
             return False, False
         if message.type not in {discord.MessageType.default, discord.MessageType.reply}:
             return False, False
+        self._refresh_live_gates()  # the bot branch never reaches _is_allowed_user's refresh
         role_authorized = False
         if is_automated_message(message):
             allow_bots = self._get_allow_bots()
@@ -3999,6 +3999,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         context may pass on DISCORD_ALLOWED_CHANNELS (never voice). Role checks are guild-scoped:
         DMs use user IDs only unless ``discord.dm_role_auth_guild`` names one guild (no escalation).
         """
+        self._refresh_live_gates()
         # getattr fallbacks: test fixtures build the adapter via object.__new__ and skip __init__.
         allowed_users = getattr(self, "_allowed_user_ids", set())
         allowed_roles = getattr(self, "_allowed_role_ids", set())
@@ -4299,12 +4300,18 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         Only the account username is matched: it is unique, while a display name or server nickname is
         chosen by the member and can copy an allowlisted name.
         """
-        self._username_resolved_ids = set()
-        if not self._allowed_user_ids or not self._client:
+        # A re-IDENTIFY on the same connection sees the IDs the first resolution wrote into the
+        # snapshot/env; keep the username each still stands for, or the next refresh reads the
+        # configured username and can no longer map it (#154562). connect() starts the map empty.
+        prior = getattr(self, "_username_to_id", None) or {}
+        entries = self._allowed_user_ids or set()
+        self._username_to_id = {name: uid for name, uid in prior.items() if uid in entries}
+        self._username_resolved_ids = set(self._username_to_id.values())
+        if not entries or not self._client:
             return
         numeric_ids = set()
         to_resolve = set()
-        for entry in self._allowed_user_ids:
+        for entry in entries:
             if entry.isdigit():
                 numeric_ids.add(entry)
             elif entry == "*":
@@ -4331,6 +4338,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                     uid = str(member.id)
                     numeric_ids.add(uid)
                     self._username_resolved_ids.add(uid)
+                    self._username_to_id[name_lower] = uid
                     to_resolve.discard(name_lower)
                     print(f"[{self.name}] Resolved '{name_lower}' -> {uid} ({member.name}#{member.discriminator})")
                     continue
@@ -4357,7 +4365,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
             snap["DISCORD_ALLOWED_USERS"] = ",".join(sorted(numeric_ids))
         if not _multiplex_active():
             # Single-profile: legacy env rewrite so gateway env-based auth sees numeric IDs.
-            os.environ["DISCORD_ALLOWED_USERS"] = ",".join(sorted(numeric_ids))
+            _replace_bridged_env("DISCORD_ALLOWED_USERS", ",".join(sorted(numeric_ids)))
         if self._username_resolved_ids:
             print(f"[{self.name}] Updated DISCORD_ALLOWED_USERS with {len(self._username_resolved_ids)} resolved ID(s)")
 
@@ -4908,27 +4916,6 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
     def _get_no_thread_channels(self) -> set:
         """This adapter's DISCORD_NO_THREAD_CHANNELS list (per-profile)."""
         return self._gate_csv_set(self._gate_raw("no_thread_channels", "DISCORD_NO_THREAD_CHANNELS"))
-
-    def _get_allowed_users(self) -> set:
-        """This adapter's DISCORD_ALLOWED_USERS entries (per-profile, cleaned)."""
-        raw = self._gate_raw("allow_from", "DISCORD_ALLOWED_USERS")
-        if raw is None:
-            extra = getattr(getattr(self, "config", None), "extra", None)
-            if isinstance(extra, dict):
-                raw = extra.get("allowed_users")
-        return {
-            _clean_discord_id(str(entry))
-            for entry in self._gate_csv_set(raw)
-            if _clean_discord_id(str(entry))
-        }
-
-    def _get_allowed_roles(self) -> set:
-        """This adapter's DISCORD_ALLOWED_ROLES role IDs (per-profile)."""
-        raw = self._gate_raw("allowed_roles", "DISCORD_ALLOWED_ROLES")
-        return {
-            int(str(entry).strip()) for entry in self._gate_csv_set(raw)
-            if str(entry).strip().isdigit()
-        }
 
     def _component_live_auth(self, interaction) -> Optional[bool]:
         """The gateway's live allowlist verdict for a component click (None when no check is wired):
@@ -5542,6 +5529,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
             send_kwargs, view = build(channel)
             if view is not None:
                 view.live_auth, view.answer_extra = self._component_live_auth, getattr(self.config, "extra", None) or {}
+                view.current_gates = self._current_gate_sets
             msg = await channel.send(**send_kwargs)
             if view is not None:
                 view._message = msg
@@ -6257,14 +6245,14 @@ def _define_discord_view_classes() -> None:
             self.allowed_user_ids = allowed_user_ids
             self.allowed_role_ids = allowed_role_ids or set()
             # The adapter's live allowlist check and platform extra, bound in ``_send_prompt``.
-            self.live_auth, self.answer_extra = None, {}
+            self.live_auth, self.answer_extra, self.current_gates = None, {}, None
             self.resolved = False
             self._message = None
 
         def _check_auth(self, interaction: discord.Interaction) -> bool:
             from plugins.platforms.discord.adapter_component_auth import _component_check_auth
-            return _component_check_auth(
-                interaction, self.allowed_user_ids, self.allowed_role_ids, live_auth=self.live_auth)
+            users, roles = self.current_gates() if self.current_gates else (self.allowed_user_ids, self.allowed_role_ids)
+            return _component_check_auth(interaction, users, roles, live_auth=self.live_auth)
 
         async def _gate(self, interaction: discord.Interaction, *, resolved_msg: Optional[str], unauth_msg: str, refusal=None) -> bool:
             """Reject (ephemerally) an already-resolved or unauthorized click, or one ``refusal(user_id)``

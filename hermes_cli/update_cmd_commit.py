@@ -84,6 +84,7 @@ POST_MOVE_MODULES = (
     "agent.provider_registry",
     "agent.terminal_env_provider",
     "agent.terminal_env_registry",
+    "gateway.bridged_env",
     "gateway.config_loader",
     "gateway.platform_registry",
     "gateway.runtime_ownership",

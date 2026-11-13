@@ -7,6 +7,8 @@ import os
 import re
 from typing import Any, Iterable, Optional
 
+from gateway.bridged_env import BRIDGED_ENV_MARKER_PREFIX
+
 # Prefix a caller uses in ``extra_env`` to force a blocklisted var through.
 _HERMES_PROVIDER_ENV_FORCE_PREFIX = "_HERMES_FORCE_"
 
@@ -341,8 +343,13 @@ def _is_hermes_internal_secret(key: str) -> bool:
     ``hermes_cli.config_secret_refs``) and
     ``GATEWAY_RELAY_*_SECRET``/``_KEY``/``_TOKEN`` (relay auth; non-secret routing hints stay
     visible). Stripped on every spawn path regardless of env_passthrough registration or
-    ``inherit_credentials``."""
+    ``inherit_credentials``. Also the YAML bridge's ``HERMES_BRIDGED_*`` ownership markers
+    (``gateway.platforms._shared``): a child that is not the launch profile's own restart has
+    no use for them, and ``served_profile_child_env`` puts back the ones whose value the child
+    kept."""
     upper = key.upper()
+    if upper.startswith(BRIDGED_ENV_MARKER_PREFIX):
+        return True
     if upper.startswith("AUXILIARY_") and upper.endswith(("_API_KEY", "_BASE_URL")):
         return True
     if upper in {"HERMES_MODEL_API_KEY", "HERMES_DELEGATION_API_KEY"} or (

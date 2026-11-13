@@ -445,9 +445,10 @@ def _runtime_provider_credentials(v: dict, explicit_request_overrides, explicit_
 
     api_key = runtime.get("api_key", "")
     if not api_key:
+        endpoint_hint = f", or set delegation.api_key for {explicit_base_url}" if explicit_base_url else ""
         raise ValueError(
             f"Delegation provider '{configured_provider}' resolved but has no API key. "
-            f"Set the appropriate environment variable or run 'hermes auth'."
+            f"Set the appropriate environment variable or run 'hermes auth'{endpoint_hint}."
         )
     # A pinned ACP transport command must exist — refuse the spawn loudly rather than letting the child
     # silently fall back to another transport (#80450).

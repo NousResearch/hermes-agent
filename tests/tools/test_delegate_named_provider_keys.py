@@ -34,6 +34,10 @@ def test_same_provider_alternate_path_keeps_working(monkeypatch):
 
     assert (resolved["provider"], resolved["base_url"], resolved["api_key"]) == (
         "minimax", "https://api.minimax.io/v1", "minimax-env-key")
+    # Without a cached models.dev catalog the resolver keeps MiniMax's declared Messages wire on /v1;
+    # an explicit delegation.api_mode is the operator's override and must reach the child.
+    config["api_mode"] = "chat_completions"
+    assert _resolve_delegation_credentials(config, _parent())["api_mode"] == "chat_completions"
 
 
 def test_parent_key_never_reaches_another_providers_base_url(monkeypatch):
@@ -47,7 +51,25 @@ def test_parent_key_never_reaches_another_providers_base_url(monkeypatch):
         _resolve_delegation_credentials(config, _parent("minimax-parent-key"))
 
 
-@pytest.mark.parametrize("provider", ["", "custom"])
+def test_withheld_key_error_names_delegation_api_key(monkeypatch):
+    """OpenRouter on a mirror: host gating withholds OPENROUTER_API_KEY, so the refusal must name the recovery."""
+    monkeypatch.setenv("OPENROUTER_API_KEY", "openrouter-env-key")
+    config = {"provider": "openrouter", "model": "m", "base_url": "https://or-mirror.example/api/v1"}
+    with pytest.raises(ValueError, match="delegation.api_key"):
+        _resolve_delegation_credentials(config, _parent())
+
+
+def test_resolver_that_ignores_base_url_is_refused(monkeypatch):
+    """A provider whose resolver keeps its own endpoint must not silently reroute the child off delegation.base_url."""
+    from hermes_cli import runtime_provider
+    monkeypatch.setattr(runtime_provider, "resolve_runtime_provider", lambda **_: {
+        "provider": "minimax-oauth", "base_url": "https://api.minimax.io/anthropic", "api_key": "oauth-token"})
+    config = {"provider": "minimax-oauth", "model": "MiniMax-M2", "base_url": "https://llm-proxy.example/anthropic"}
+    with pytest.raises(ValueError, match="does not accept delegation.base_url"):
+        _resolve_delegation_credentials(config, _parent())
+
+
+@pytest.mark.parametrize("provider", ["", "custom", "auto"])
 def test_unnamed_endpoint_still_inherits_parent_key(provider):
     """Bare / custom base_url keeps the documented direct-endpoint behaviour (parent key filled in later)."""
     config = {"provider": provider, "model": "m", "base_url": "https://llm.internal.example/v1"}

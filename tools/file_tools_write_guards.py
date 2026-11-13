@@ -250,21 +250,25 @@ def _protected_instruction_reason(filepath: str, task_id: str = "default",
     except (OSError, ValueError, RuntimeError):
         resolved = normalized if hosted else os.path.realpath(normalized)
 
-    # ~/.hermes itself is governed by its own guards (config.yaml hard-block,
-    # mirror guard, write_approval); this gate targets PROJECT-LOCAL files only.
-    # Must run before the ``.hermes`` component rule, which would match the home.
-    # ``_hermes_exempt_homes`` also covers the ROOT when the active home is a named
-    # profile, so ~/.hermes/<file> cannot read as project-local ``.hermes`` config.
-    for real_home in _hermes_exempt_homes():
-        if resolved == real_home or resolved.startswith(real_home + os.sep):
-            return None
-
+    # Basenames and operator patterns gate EVERYWHERE, the Hermes home included:
+    # the live SOUL.md / AGENTS.md and cron ``scripts/`` there steer the agent and
+    # no other file-tool guard covers them (#92146).
     for candidate in (normalized, resolved):
         base = os.path.basename(candidate)
         base_lower = base.lower()
         if base_lower in _PROTECTED_INSTRUCTION_BASENAMES or any(
                 fnmatch.fnmatch(base_lower, pattern.lower()) for pattern in extra_patterns):
             return base
+
+    # The ``.hermes`` component rule below targets PROJECT-LOCAL config, and the home
+    # itself is usually named ``.hermes``; without this every state/cache/session write
+    # there would prompt. ``_hermes_exempt_homes`` also covers the ROOT when the active
+    # home is a named profile (#110630).
+    for real_home in _hermes_exempt_homes():
+        if resolved == real_home or resolved.startswith(real_home + os.sep):
+            return None
+
+    for candidate in (normalized, resolved):
         # Project-local .hermes config dirs (<repo>/.hermes/config.yaml) steer
         # behavior too. Only the IMMEDIATE parent counts — matching any ancestor
         # would gate every write inside a checkout living under ~/.hermes.

@@ -447,12 +447,19 @@ describe('preview requests act for the session that asked (#73890)', () => {
     setActiveSessionId('rt-a')
     setSelectedStoredSessionId('stored-a')
     $sessionTiles.set([{ dir: 'right', runtimeId: 'rt-b', storedSessionId: 'stored-b' } as never])
+    const reboundState = createClientSessionState('stored-b')
+    deps.sessionStateByRuntimeIdRef.current.set('rt-b', reboundState)
+    deps.sessionStateByRuntimeIdRef.current.set('rt-b-next', reboundState)
+    publishSessionState('rt-b-next', reboundState)
   })
 
   afterEach(() => {
     noteActiveTreeGroup(null)
     $layoutTree.set(null)
     $sessionTiles.set([])
+    dropSessionState('rt-b-next')
+    deps.sessionStateByRuntimeIdRef.current.delete('rt-b')
+    deps.sessionStateByRuntimeIdRef.current.delete('rt-b-next')
     setActiveSessionId(null)
     setSelectedStoredSessionId(null)
     closeRightRail()
@@ -465,7 +472,11 @@ describe('preview requests act for the session that asked (#73890)', () => {
     noteActiveTreeGroup('grp-b')
   }
 
-  it("drives the focused tile's own page rather than refusing it as a background session", async () => {
+  it.each([
+    ['rt-b', false],
+    ['rt-b-next', false],
+    ['rt-b-next', true]
+  ] as const)("drives the focused tile's own page (runtime=%s, queued replay=%s)", async (runtimeId, replayed) => {
     openPreview({ kind: 'url', label: 'a', source: 'https://a.example', url: 'https://a.example' }, 'stored-a')
     openPreview({ kind: 'url', label: 'b', source: 'https://b.example', url: 'https://b.example' }, 'stored-b')
     const [a, b] = $previewTabs.get()
@@ -478,15 +489,35 @@ describe('preview requests act for the session that asked (#73890)', () => {
     ]
 
     focusTileB()
+    const previous = deps.activeSessionIdRef.current
+
+    if (replayed) {
+      deps.activeSessionIdRef.current = null
+      $sessionTiles.set([])
+    }
 
     try {
-      const { respond } = deliver('preview.act', { action: 'back', session_id: 'rt-b' }, 'rt-a')
+      const { decline, respond } = deliver(
+        'preview.act',
+        { action: 'back', session_id: runtimeId },
+        replayed ? null : 'rt-a',
+        replayed
+      )
+
+      if (replayed) {
+        $sessionTiles.set([{ dir: 'right', runtimeId: 'rt-b', storedSessionId: 'stored-b' } as never])
+        deps.activeSessionIdRef.current = 'rt-a'
+        await new Promise(resolve => setTimeout(resolve, 0))
+      }
+
+      expect(decline).not.toHaveBeenCalled()
 
       await vi.waitFor(() => expect(respond).toHaveBeenCalledTimes(1), { timeout: 30_000 })
       expect(JSON.parse(respond.mock.calls[0][0].value)).toMatchObject({ acted: 'back', success: true })
       expect(backA).not.toHaveBeenCalled()
       expect(backB).toHaveBeenCalledTimes(1)
     } finally {
+      deps.activeSessionIdRef.current = previous
       unbind.forEach(stop => stop())
     }
   })
@@ -510,6 +541,28 @@ describe('preview requests act for the session that asked (#73890)', () => {
     const { decline, respond } = deliver(method, { action: 'elements', session_id: 'rt-a' }, 'rt-a')
     expect(decline).toHaveBeenCalledTimes(1)
     expect(respond).not.toHaveBeenCalled()
+  })
+
+  it('does not claim a rebound branch sibling as a hosted tile', () => {
+    setSessions([
+      { id: 'stored-b', _lineage_root_id: 'shared-root' } as SessionInfo,
+      { id: 'stored-c', _lineage_root_id: 'shared-root' } as SessionInfo
+    ])
+    deps.sessionStateByRuntimeIdRef.current.set('rt-b-next', createClientSessionState('stored-c'))
+
+    try {
+      expect(
+        previewSessionRoute({
+          activeSessionId: 'rt-a',
+          method: 'tour',
+          replayed: false,
+          sessionId: 'rt-b-next',
+          storedIdForRuntimeId: id => deps.sessionStateByRuntimeIdRef.current.get(id)?.storedSessionId ?? undefined
+        })
+      ).toBe('ignore')
+    } finally {
+      setSessions([])
+    }
   })
 
   it.each(['preview.act', 'tour'])(
@@ -569,7 +622,7 @@ describe('preview requests act for the session that asked (#73890)', () => {
       deps.activeSessionIdRef.current = 'rt-a'
 
       try {
-        const { respond } = deliver('tour', { action: 'start', preset: 'quick', session_id: 'rt-b' }, 'rt-a')
+        const { respond } = deliver('tour', { action: 'start', preset: 'quick', session_id: 'rt-b-next' }, 'rt-a')
         await vi.waitFor(() => expect(readLocalSetupEligibility).toHaveBeenCalledTimes(1))
 
         if (changed) {

@@ -183,7 +183,11 @@ export function windowHostsSession(
 ): boolean {
   return (
     requestNamesActiveSession({ activeSessionId, sessionId, storedIdForRuntimeId }) ||
-    $sessionTiles.get().some(tile => tile.runtimeId === sessionId)
+    $sessionTiles
+      .get()
+      .some(tile =>
+        requestNamesActiveSession({ activeSessionId: tile.runtimeId ?? null, sessionId, storedIdForRuntimeId })
+      )
   )
 }
 

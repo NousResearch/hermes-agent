@@ -490,7 +490,7 @@ def is_shell_rc_path(path: str) -> bool:
     cannot silently authorize the other. This predicate lets the caller
     select the right key across the same guarded homes as the write predicate.
     """
-    homes, resolved = _homes_and_resolved(path)
+    homes, resolved = _homes_and_resolved(local_drive_spelling(path))
     return any(resolved in build_shell_rc_approval_paths(home) for home in homes)
 
 

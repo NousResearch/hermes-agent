@@ -79,3 +79,22 @@ def test_unknown_choice_id_renders_verbatim():
 
     assert _approval_choice_label("custom-id") == "custom-id"
     assert _approval_choice_label("deny") == i18n.t("cli.tui.approval_deny")
+
+
+def test_none_deadline_hides_the_secret_prompt_countdown():
+    """A secret prompt waiting indefinitely (clarify_timeout <= 0, deadline None) must not
+    render a frozen countdown — the clarify path already hides it, the modal hints must match."""
+    cli = HermesCLI.__new__(HermesCLI)
+    cli._connection_state = None
+    cli._clarify_state = None
+    cli._secret_state = cli._approval_state = cli._slash_confirm_state = None
+    cli._sudo_state = {"response_queue": queue.Queue()}
+    cli._sudo_deadline = None
+
+    rows = cli._tui_hint_text()
+    assert rows[0][0] == "class:hint" and rows[0][1].strip()
+    assert rows[1] == ("class:clarify-countdown", "")
+
+    # A numeric deadline still counts down.
+    cli._sudo_deadline = time.monotonic() + 30
+    assert cli._tui_hint_text()[1][1].strip().endswith("s)")

@@ -95,9 +95,9 @@ def _refusal_name(authority: dict, commands: tuple[str, ...], admitted: bool = T
 
 
 def answer_admitted(event: Any) -> bool:
-    """Whether *event*'s sender passed an allowlist (``may_answer``'s ``admitted``). The relay marks a
-    Discord interaction (``_unadmitted_author``): the connector forwards it without its author check."""
-    return getattr(event, "_unadmitted_author", False) is not True
+    """Whether *event*'s sender passed an allowlist (``may_answer``'s ``admitted``): False for a relayed
+    Discord interaction (``MessageEvent.unadmitted_author``), forwarded without the connector's author check."""
+    return getattr(event, "unadmitted_author", False) is not True
 
 
 def runner_answer_policy(source: Any):

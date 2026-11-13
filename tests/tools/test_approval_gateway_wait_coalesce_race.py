@@ -7,6 +7,8 @@ where the leader's prompt goes away without an answer and where two identical re
 
 import threading
 
+import pytest
+
 from tools import approval as mod
 from tools import approval_gateway_wait as wait_mod
 
@@ -203,3 +205,41 @@ def test_followers_released_by_once_share_one_fresh_prompt(monkeypatch):
             thread.join(0.05)
     assert (prompts, queued) == (2, 1)
     assert [r["choice"] for r in results] == ["once"] * 3
+
+
+@pytest.mark.parametrize("choice", ["session", "always"])
+def test_broader_answer_to_a_once_only_prompt_releases_the_follower_to_ask(monkeypatch, choice):
+    """A prompt that offered only Once (an ``approve_every_call`` MCP server, an elicitation): a typed
+    ``/approve session`` or ``always`` covers the leader alone, so the follower asks for itself."""
+    from tests.waiting import wait_until
+
+    _clear()
+    monkeypatch.setattr(wait_mod._ctx, "_fire_approval_hook", lambda name, **kw: None)
+    monkeypatch.setattr(wait_mod._ctx, "_get_approval_timeout", lambda: APPROVAL_TIMEOUT)
+    notified: list[str] = []
+    follows: list[str] = []
+    real_follow = wait_mod._await_coalesced_leader
+
+    def follow(session_key, leader, payload):
+        follows.append(leader.data["request_id"])
+        return real_follow(session_key, leader, payload)
+
+    monkeypatch.setattr(wait_mod, "_await_coalesced_leader", follow)
+    once_only = {**APPROVAL, "allow_session": False, "allow_permanent": False}
+    results: list[dict] = []
+
+    def run():
+        results.append(wait_mod._await_gateway_decision(SESSION_KEY, notified.append, dict(once_only)))
+
+    threads = [threading.Thread(target=run, daemon=True) for _ in range(2)]
+    threads[0].start()
+    wait_until(lambda: len(notified) == 1, what="the leader's prompt")
+    threads[1].start()
+    wait_until(lambda: len(follows) == 1, what="the follower waiting on the leader")
+
+    assert mod.resolve_gateway_approval(SESSION_KEY, choice) == 1
+    wait_until(lambda: len(notified) == 2, what="the follower's own prompt")
+    assert mod.resolve_gateway_approval(SESSION_KEY, "once") == 1
+    for thread in threads:
+        thread.join(10)
+    assert sorted(r["choice"] for r in results) == sorted([choice, "once"])

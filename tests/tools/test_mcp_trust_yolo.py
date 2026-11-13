@@ -3,7 +3,8 @@
 Invariants: when every approval is bypassed for the calling session (session ``/yolo``, process
 ``--yolo``, ``approvals.mode: off``), a write-capable call on a ``trust: untrusted`` server runs
 without the trust prompt, and only for that session; the declared spend limit is a budget, not an
-approval, so a call that would cross it still asks, and where nobody can answer it is refused.
+approval, so a call that would cross it still asks, and where nobody can answer it is refused. An
+``approve_every_call`` server is never bypassed: each write-capable call asks, or is refused unanswered.
 """
 
 import json
@@ -77,6 +78,35 @@ def test_yolo_and_mode_off_skip_the_trust_prompt_for_the_calling_session_only():
     with _Chat("tg:other") as other:
         assert handlers._trust_gate_check("srv", "write") is None
     assert other.cards == []
+
+
+@pytest.mark.parametrize("bypass", ["session_yolo", "process_yolo", "mode_off", "allowlist"])
+def test_approve_every_call_asks_through_every_bypass_and_refuses_when_nobody_can_answer(monkeypatch, bypass):
+    """``approve_every_call`` is never skipped: not by ``/yolo``, ``--yolo``, ``approvals.mode: off``,
+    nor an ``mcp:<server>/<tool>`` grant written before the option was set."""
+    _register({"trust": "untrusted", "approve_every_call": True})
+    config = {}
+    if bypass == "session_yolo":
+        approval.enable_session_yolo("tg:yolo")
+    elif bypass == "process_yolo":
+        monkeypatch.setattr(approval, "_YOLO_MODE_FROZEN", True)
+    elif bypass == "mode_off":
+        config = {"approvals": {"mode": "off"}}
+    else:
+        config = {"command_allowlist": ["mcp:srv/write"]}
+    (get_hermes_home() / "config.yaml").write_text(json.dumps(config))
+    with _Chat("tg:yolo", "once") as chat:
+        assert handlers._trust_gate_check("srv", "write") is None
+        assert handlers._trust_gate_check("srv", "write") is None
+    assert len(chat.cards) == 2
+
+    tokens, key = set_session_vars(cron_session="1"), set_current_session_key("cron:job")
+    try:
+        refused = handlers._trust_gate_check("srv", "write")
+    finally:
+        reset_current_session_key(key)
+        clear_session_vars(tokens)
+    assert "did not approve" in json.loads(refused)["error"]
 
 
 def test_spend_limit_still_asks_under_yolo_and_refuses_when_nobody_can_answer():

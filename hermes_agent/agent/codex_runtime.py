@@ -15,11 +15,11 @@ from contextlib import suppress
 from types import SimpleNamespace
 from typing import Any, Callable, Dict, List
 
-from agent.stream_single_writer import claim_stream_writer, stream_writer_is_current
-from agent.transports.hermes_tools_mcp_server import HERMES_TOOLS_MCP_SERVER_NAME
-from agent.sdk_transform_bypass import bypass_sdk_request_transform
-from agent.stream_diag import buffer_connect_exhausted_notice
-from agent.usage_anchor import set_usage_anchor
+from hermes_agent.agent.stream_single_writer import claim_stream_writer, stream_writer_is_current
+from hermes_agent.agent.transports.hermes_tools_mcp_server import HERMES_TOOLS_MCP_SERVER_NAME
+from hermes_agent.agent.sdk_transform_bypass import bypass_sdk_request_transform
+from hermes_agent.agent.stream_diag import buffer_connect_exhausted_notice
+from hermes_agent.agent.usage_anchor import set_usage_anchor
 
 logger = logging.getLogger(__name__)
 _codex_watchdog_state_var: contextvars.ContextVar[Any | None] = contextvars.ContextVar(
@@ -140,7 +140,7 @@ def _queue_token_counts(agent, fail_msg: str, *fail_extra: Any, counts: Callable
     try:
         if not agent._session_db_created:
             agent._ensure_db_session()
-        from agent.turn_usage import _agent_session_source
+        from hermes_agent.agent.turn_usage import _agent_session_source
         agent._session_db.queue_token_counts(agent.session_id, source=_agent_session_source(agent), **counts())
     except Exception as exc:
         logger.debug(fail_msg, agent.session_id, *fail_extra, exc)
@@ -167,7 +167,7 @@ def _record_codex_app_server_usage(agent, turn, messages=None) -> dict[str, Any]
         _queue_token_counts(agent, "Codex app-server api-call persistence failed (session=%s): %s",
                             counts=lambda: billing(billing_mode="subscription_included"))
         return {}
-    from agent.usage_pricing import CanonicalUsage, estimate_usage_cost
+    from hermes_agent.agent.usage_pricing import CanonicalUsage, estimate_usage_cost
     # ``inputTokens`` is INCLUSIVE of ``cachedInputTokens`` (same contract as the Responses API, see
     # normalize_usage's codex_responses branch); CanonicalUsage.prompt_tokens re-adds cache_read on top of
     # input_tokens, so the canonical input bucket must be the UNCACHED remainder or cached tokens count twice.
@@ -193,7 +193,7 @@ def _record_codex_app_server_usage(agent, turn, messages=None) -> dict[str, Any]
         except Exception:
             logger.debug("codex app-server usage update failed", exc_info=True)
     if isinstance(messages, list):
-        from agent.usage_anchor import capture_usage_anchor, set_usage_anchor
+        from hermes_agent.agent.usage_anchor import capture_usage_anchor, set_usage_anchor
 
         anchor = capture_usage_anchor(prompt_tokens, canonical_usage.output_tokens, messages)
         if anchor is not None:
@@ -226,7 +226,7 @@ def _record_codex_app_server_compaction(agent, turn, *, approx_tokens: int | Non
                 getattr(agent, "session_id", None) or "none", thread_id, turn_id, force)
     if not force:
         with suppress(Exception):
-            from agent.conversation_compression import COMPACTION_STATUS
+            from hermes_agent.agent.conversation_compression import COMPACTION_STATUS
             agent._emit_status(COMPACTION_STATUS)
     compressor = getattr(agent, "context_compressor", None)
     if compressor is not None:
@@ -253,7 +253,7 @@ def _record_codex_app_server_compaction(agent, turn, *, approx_tokens: int | Non
                   }))
     if not force:
         # Hermes-forced compactions are recorded by their compress_context attempt; this one Codex ran alone.
-        from agent.compaction_events import publish_provider_native
+        from hermes_agent.agent.compaction_events import publish_provider_native
         publish_provider_native(agent)
     return True
 
@@ -262,7 +262,7 @@ def _record_codex_app_server_compaction(agent, turn, *, approx_tokens: int | Non
 # The app-server bypasses the Hermes tool loop, so the bridge translates JSON-RPC notifications
 # into the callbacks the standard runtime fires (tool_progress_callback, _fire_stream_delta, ...).
 
-# Item types that project to a Hermes tool_call (keep in sync with agent/transports/codex_event_projector.py
+# Item types that project to a Hermes tool_call (keep in sync with hermes_agent/agent/transports/codex_event_projector.py
 # so UI names match recorded names). webSearch is codex's built-in tool; the projector records it under the same id.
 _CODEX_TOOL_ITEM_TYPES = frozenset({"commandExecution", "fileChange", "mcpToolCall", "dynamicToolCall", "webSearch"})
 # Text-delta notifications → the agent stream hook each one feeds. Single source for both the display
@@ -365,7 +365,7 @@ def _codex_item_completion_payload(item: dict) -> tuple[str, bool]:
 
 def _stable_call_id(item: dict, name: str) -> str:
     """Deterministic tool_call id mirroring CodexEventProjector (live TUI card correlates with projected history)."""
-    from agent.transports.codex_event_projector import _deterministic_call_id
+    from hermes_agent.agent.transports.codex_event_projector import _deterministic_call_id
     item_type = item.get("type") or ""
     tool = item.get("tool") or "unknown"
     prefix = {"mcpToolCall": f"mcp__{item.get('server') or 'mcp'}__{tool}", "dynamicToolCall": f"dyn_{tool}"}.get(item_type)
@@ -528,7 +528,7 @@ def _start_codex_thread(agent) -> str:
     """``ensure_started`` with the fail-closed resume policy: a stored thread that codex cannot hand back
     (unknown id, rollout locked by a killed app-server, different thread) is dropped from the session row,
     the user is told once on the status rail, and a fresh thread starts on the same client."""
-    from agent.transports.codex_app_server_session import CodexThreadResumeError
+    from hermes_agent.agent.transports.codex_app_server_session import CodexThreadResumeError
     try:
         return agent._codex_session.ensure_started()
     except CodexThreadResumeError as exc:
@@ -553,7 +553,7 @@ def _codex_wire_model(agent, model_provider: str | None) -> str | None:
     ("not supported when using Codex with a ChatGPT account"); codex applies the catalog's extended window
     to the base slug itself. On codex's own provider the slug is bare (``openai/gpt-5.5`` -> ``gpt-5.5``),
     as for openai-codex; a named custom provider's model ids are its own and pass through."""
-    from agent.model_metadata import strip_codex_context_variant_suffix
+    from hermes_agent.agent.model_metadata import strip_codex_context_variant_suffix
     model = strip_codex_context_variant_suffix(getattr(agent, "model", None)) or None
     if model and model_provider is None:
         from hermes_cli.model_normalize import normalize_model_for_provider
@@ -571,9 +571,9 @@ def _codex_turn_effort(agent, model: str | None) -> str | None:
     if not isinstance(reasoning_config, dict) or not (
             reasoning_config.get("enabled") is False or reasoning_config.get("effort")):
         return None
-    from agent.codex_responses_adapter import classify_responses_route
-    from agent.reasoning_effort import route_supported_efforts
-    from agent.transports.codex import _resolve_reasoning
+    from hermes_agent.agent.codex_responses_adapter import classify_responses_route
+    from hermes_agent.agent.reasoning_effort import route_supported_efforts
+    from hermes_agent.agent.transports.codex import _resolve_reasoning
     route = classify_responses_route(agent)
     effort, _enabled = _resolve_reasoning(model or "", {
         "reasoning_config": reasoning_config, "provider": getattr(agent, "provider", None),
@@ -592,7 +592,7 @@ def _codex_turn_service_tier(agent) -> str | None:
     """``turn/start.serviceTier``: the tier Hermes' own Responses path would request this turn (a static
     ``/fast`` tier pinned in request_overrides, or an open ``auto``/``cold`` window), in codex's words: the
     OpenAI ``priority`` tier is codex's ``fast``. A tier codex has no word for (``ultrafast``) is not sent."""
-    from agent.fast_mode import CODEX_TIER_WORDS, effective_request_overrides
+    from hermes_agent.agent.fast_mode import CODEX_TIER_WORDS, effective_request_overrides
     return CODEX_TIER_WORDS.get(effective_request_overrides(agent).get("service_tier"))
 
 
@@ -615,8 +615,8 @@ def _ensure_codex_session(agent, messages: list[dict[str, Any]] | None = None) -
             return
         _close_codex_session(agent)
     resume_thread_id = None if getattr(agent, "_codex_session_prompt", None) is not None else _stored_codex_thread_id(agent)
-    from agent.runtime_cwd import resolve_agent_cwd
-    from agent.transports.codex_app_server_session import CodexAppServerSession, _ServerRequestRouting
+    from hermes_agent.agent.runtime_cwd import resolve_agent_cwd
+    from hermes_agent.agent.transports.codex_app_server_session import CodexAppServerSession, _ServerRequestRouting
     from hermes_cli.codex_runtime_switch import get_configured_codex_binary
     from hermes_cli.config import load_config
     # Approval callback: Hermes' standard prompt flow when a CLI thread installed one. `hermes chat -q`, cron and
@@ -648,7 +648,7 @@ def _ensure_codex_session(agent, messages: list[dict[str, Any]] | None = None) -
     # The recorded composition stays the bare prompt: the seed must not make the next turn retire the thread.
     agent._codex_session_prompt = developer_instructions
     agent._codex_session_model_provider = model_provider
-    from agent.codex_runtime_history_seed import render_history_seed
+    from hermes_agent.agent.codex_runtime_history_seed import render_history_seed
     history_seed = render_history_seed(messages) or None
     # The model always rides along: codex's home is shared, while the Hermes model is per profile/session,
     # so omitting it ran codex's own default instead of the selection.
@@ -672,7 +672,7 @@ def _persist_projected_messages(agent, turn, messages: list[dict[str, Any]]) -> 
     gateway re-write would re-INSERT the user turn."""
     if not turn.projected_messages:
         return False
-    from agent.message_metadata import append_message
+    from hermes_agent.agent.message_metadata import append_message
     projected_messages = turn.projected_messages
     # Turn-start persistence owns the accepted input. Codex's leading user item
     # only echoes its coerced wire text; later/nonmatching events remain real.
@@ -732,7 +732,7 @@ def _transform_codex_reply(agent, turn, turn_id: Any) -> dict[str, Any]:
     held = getattr(agent, "_hold_stream", False)
     if not turn.final_text or (turn.interrupted and not held):
         return {"final_response": turn.final_text}
-    from agent.turn_finalizer import apply_llm_output_transform, public_pre_transform
+    from hermes_agent.agent.turn_finalizer import apply_llm_output_transform, public_pre_transform
     final, transformed, pre_transform = apply_llm_output_transform(agent, turn.final_text, turn_id=turn_id)
     rows = [m for m in turn.projected_messages or [] if m.get("role") == "assistant" and m.get("content")]
     final_row = next((m for m in reversed(rows) if m.get("content") == turn.final_text), None)
@@ -753,7 +753,7 @@ def run_codex_app_server_turn(agent, *, user_message: str, original_user_message
     # Defense in depth for compression.checkpoint_required: agent init refuses the combination, but
     # api_mode is mutable. Explicit-True check matches compress_context().
     if getattr(agent, "compression_checkpoint_required", False) is True:
-        from agent.conversation_compression_checkpoint import _checkpoint_blocked
+        from hermes_agent.agent.conversation_compression_checkpoint import _checkpoint_blocked
         raise _checkpoint_blocked("codex_app_server owns the authoritative thread and compacts it "
                                   "without a truthful pre-compaction transcript boundary")
     _ensure_codex_session(agent, messages)
@@ -845,7 +845,7 @@ def _codex_event_has_content(event: Any) -> bool:
 def _raise_stream_error(event: Any) -> None:
     """Raise ``_StreamErrorEvent`` from a ``type=error`` SSE frame. The spec puts code/message/param at the
     top level, but the SDK and several proxies nest them under ``error``; read top-level first, then the envelope."""
-    from run_agent import _StreamErrorEvent
+    from hermes_agent.run_agent import _StreamErrorEvent
     nested = _event_field(event, "error")
 
     def _error_field(name: str) -> Any:
@@ -1193,7 +1193,7 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
     """One streaming Responses API request over raw ``responses.create(stream=True)`` events."""
     import httpx as _httpx
     from openai import APIConnectionError as _APIConnectionError
-    from agent import relay_llm
+    from hermes_agent.agent import relay_llm
     transport_errors = (_httpx.RemoteProtocolError, _httpx.ReadTimeout, _httpx.ReadError, _httpx.ConnectError, ConnectionError)
     active_client = client or agent._ensure_primary_openai_client(reason="codex_stream_direct")
     max_stream_retries, model = 1, api_kwargs.get("model")
@@ -1314,7 +1314,7 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
         budget = _stream_drain_timeout()
         if budget <= 0:
             return
-        from agent.agent_runtime_helpers import _socket_from_response
+        from hermes_agent.agent.agent_runtime_helpers import _socket_from_response
 
         # Only the raw SDK stream carries ``.response``; any lookup failure means "not interruptible".
         try:
@@ -1334,7 +1334,7 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
             timed_out.set()
             # FD-safe from a stranger thread: never close here. The owner continues the iteration,
             # observes EOF/error, and performs the real close from the same thread that was reading.
-            from agent.agent_runtime_helpers import _shutdown_socket
+            from hermes_agent.agent.agent_runtime_helpers import _shutdown_socket
             _shutdown_socket(sock)
 
         watchdog = threading.Timer(budget, _wake_owner)

@@ -37,7 +37,7 @@ def _validate(action, args):
 async def _subgoal(connection, ref, params, action, args):
     """A criterion button on the session's goal manager. A goal that is gone or an index that no longer exists is a refusal the card shows; the typed /subgoal command reports the same cases as text."""
     from pathlib import Path
-    from agent.i18n import t
+    from hermes_agent.agent.i18n import t
     from hermes_agent.gateway.platforms.base import MessageEvent
     from hermes_agent.gateway.run import _profile_runtime_scope
     from hermes_agent.gateway.session_busy_controls import authorize

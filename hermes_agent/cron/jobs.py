@@ -30,7 +30,7 @@ except ImportError:  # pragma: no cover - non-Windows
 # (compute_next_run/create_job) would shadow it, and everything here uses ``UTC`` instead.
 from datetime import datetime, timedelta, UTC
 from pathlib import Path
-from agent.deadline import poll_until
+from hermes_agent.agent.deadline import poll_until
 from hermes_constants import get_hermes_home
 from hermes_agent.cron.constants import CLAIM_TTL_INACTIVITY_HEADROOM, FIRE_CLAIM_SKEW_SECONDS, FIRE_CLAIM_TTL_SECONDS
 from hermes_agent.cron.env_settings import cron_env_setting
@@ -3375,7 +3375,7 @@ def _canonical_skill_ref(raw: Any) -> str:
     if not value:
         return ""
     try:
-        from agent.skill_utils import normalize_skill_lookup_name
+        from hermes_agent.agent.skill_utils import normalize_skill_lookup_name
         value = normalize_skill_lookup_name(value) or value
     except Exception:
         logger.debug("referenced_skill_names: could not normalize skill ref %r", raw, exc_info=True)

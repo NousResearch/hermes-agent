@@ -62,7 +62,7 @@ def test_compress_session_history_raises_on_lock_skip():
 
     with (
         patch(
-            "agent.model_metadata.estimate_request_tokens_rough", return_value=100
+            "hermes_agent.agent.model_metadata.estimate_request_tokens_rough", return_value=100
         ),
         pytest.raises(CompressionLockHeld) as exc_info,
     ):
@@ -90,7 +90,7 @@ def test_session_compress_rpc_returns_lock_held_payload():
             patch.object(server, "_session_uses_compute_host", return_value=False),
             patch.object(server, "_status_update"),
             patch(
-                "agent.model_metadata.estimate_request_tokens_rough",
+                "hermes_agent.agent.model_metadata.estimate_request_tokens_rough",
                 return_value=100,
             ),
         ):
@@ -121,7 +121,7 @@ def test_command_dispatch_compress_reports_lock_skip_as_output_not_error():
         with (
             patch.object(server, "_session_uses_compute_host", return_value=False),
             patch(
-                "agent.model_metadata.estimate_request_tokens_rough",
+                "hermes_agent.agent.model_metadata.estimate_request_tokens_rough",
                 return_value=100,
             ),
         ):
@@ -154,7 +154,7 @@ def test_mirror_slash_side_effects_reports_lock_skip():
             patch.object(server, "_sync_session_key_after_compress"),
             patch.object(server, "_emit"),
             patch(
-                "agent.model_metadata.estimate_request_tokens_rough",
+                "hermes_agent.agent.model_metadata.estimate_request_tokens_rough",
                 return_value=100,
             ),
         ):

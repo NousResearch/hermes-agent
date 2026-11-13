@@ -1,14 +1,14 @@
 """Plain-language copy for chat-turn failures shown in the CLI response panel.
 
 The chat panel used to echo ``Error: HTTP 401: Invalid API key`` as the assistant's answer. These
-helpers map the classifier verdict (``agent/error_classifier.py``) to WHAT happened + WHAT TO DO,
+helpers map the classifier verdict (``hermes_agent/agent/error_classifier.py``) to WHAT happened + WHAT TO DO,
 and demote the raw provider text to a ``Details:`` line. Copy lives in the i18n catalog under
 ``cli.error.*`` and is resolved at render time for the active language.
 """
 
 from __future__ import annotations
 
-from agent.i18n import t
+from hermes_agent.agent.i18n import t
 
 _SUMMARY_LIMIT = 120
 
@@ -43,7 +43,7 @@ def refusal_text(error: BaseException | str) -> str:
     reads exactly as before."""
     if str(error) == "launch_credentials_unavailable":
         # The chat's launch key changed: every retry repeats the refusal, so name the way out.
-        from agent.turn_failure_copy import launch_credentials_copy
+        from hermes_agent.agent.turn_failure_copy import launch_credentials_copy
 
         return launch_credentials_copy(error)
     data = getattr(error, "data", None)
@@ -60,19 +60,19 @@ def chat_error_response(
     """Two-line panel text: plain sentence with the fix command, then ``Details: <raw>``.
 
     ``failure_reason`` is the verdict the turn loop already stamped on its result
-    (``agent/turn_failure_copy.stamp_failure``). When present it is used as-is instead of
+    (``hermes_agent/agent/turn_failure_copy.stamp_failure``). When present it is used as-is instead of
     re-classifying a summarised string (which has no status code and almost always lands on
     'unknown'); for the loop's own site codes the ``error`` text is already the user-facing copy,
     so it is returned verbatim rather than wrapped and demoted to a Details line."""
     reason = str(failure_reason or "").strip()
     if reason:
-        from agent.turn_failure_copy import SITE_FAILURE_CODES
+        from hermes_agent.agent.turn_failure_copy import SITE_FAILURE_CODES
 
         text = str(error or "").strip()
         if reason in SITE_FAILURE_CODES and text:
             return text
     else:
-        from agent.error_classifier import classify_api_error
+        from hermes_agent.agent.error_classifier import classify_api_error
 
         exc = error if isinstance(error, Exception) else Exception(str(error))
         reason = classify_api_error(exc, provider=provider or "", model=model or "").reason.value

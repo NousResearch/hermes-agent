@@ -14,7 +14,7 @@ import dataclasses
 import logging
 from typing import Any, Optional
 
-from agent.i18n import t
+from hermes_agent.agent.i18n import t
 from hermes_agent.gateway.platforms.event import MessageEvent
 from hermes_cli.config import atomic_config_write
 from utils import base_url_host_matches
@@ -335,7 +335,7 @@ class GatewayModelCommandsMixin:
             custom_providers=ctx.custom_provs, config_context_length=config_ctx,
         )
         if ctx_len:
-            from agent.context_pin import context_window_suffix
+            from hermes_agent.agent.context_pin import context_window_suffix
             lines.append(t("gateway.model.context_label", tokens=f"{ctx_len:,}") + context_window_suffix(
                 ctx_len, config_ctx, model=result.new_model, provider=result.target_provider, base_url=base_url))
         if mi and mi.max_output:
@@ -599,7 +599,7 @@ class GatewayModelCommandsMixin:
         session_key = self._session_key_for_source(source)
         ctx = _ModelSwitchContext(
             # Gateway routing columns — forward ALL of them at CREATE time, same fix as the
-            # compression-rotation bug in agent/conversation_compression.py. Without these, the branched
+            # compression-rotation bug in hermes_agent/agent/conversation_compression.py. Without these, the branched
             # child row has NULL routing columns until switch_session() below calls
             # _record_gateway_session_peer() — a crash/kill anywhere between here and there (most plausibly
             # mid-history-copy, since each append_message call a few lines down is independently
@@ -725,7 +725,7 @@ class GatewayModelCommandsMixin:
 
     async def _offer_usage_limit_switch(self, event: MessageEvent, limit: dict,
                                         generation: Optional[int] = None) -> None:
-        from agent.plan_limits import limit_next_steps_from_payload
+        from hermes_agent.agent.plan_limits import limit_next_steps_from_payload
         try:
             suggestions = [s for s in (limit.get("suggestions") or []) if isinstance(s, dict) and s.get("model")]
             source = event.source
@@ -991,7 +991,7 @@ class GatewayModelCommandsMixin:
         rc = self._reasoning_config
         # Labels tell the truth about the route: a Hermes-internal step (``ultra``) that the wire
         # clamps is shown as "ultra (sends max on this route)" instead of a distinct level (#61634).
-        from agent.reasoning_effort import effort_display_label
+        from hermes_agent.agent.reasoning_effort import effort_display_label
         from hermes_agent.gateway.run import _load_gateway_config
         from hermes_cli.codex_runtime_switch import get_current_runtime
         _session_route = ((getattr(self, "_session_model_overrides", {}) or {}).get(session_key) or {})
@@ -1071,7 +1071,7 @@ class GatewayModelCommandsMixin:
     async def _handle_fast_command(self, event: MessageEvent) -> Optional[str]:
         """Handle /fast — the CLI Priority Processing toggle; session-scoped unless ``--global``
         (persists agent.service_tier, parity with /model)."""
-        from agent.fast_mode import FAST_ARG_ALIASES, service_tier_word
+        from hermes_agent.agent.fast_mode import FAST_ARG_ALIASES, service_tier_word
         from hermes_agent.gateway.run import _load_gateway_config, _resolve_gateway_model
 
         # The /reasoning parser strips --global (any position) and normalizes unicode dashes.
@@ -1092,7 +1092,7 @@ class GatewayModelCommandsMixin:
         if not _fast_route_supports(model, runtime):
             return t("gateway.fast.not_supported")
         args = FAST_ARG_ALIASES.get(args, args)
-        from agent.codex_service_tiers import ultrafast_offered
+        from hermes_agent.agent.codex_service_tiers import ultrafast_offered
         ultrafast = ultrafast_offered(model, provider=runtime.get("provider"), base_url=runtime.get("base_url"),
                                       access_token=runtime.get("api_key"))
         if args == "ultrafast" and not ultrafast:

@@ -21,8 +21,8 @@ import time
 
 import pytest
 
-from agent.memory_provider import MemoryProvider
-from agent.memory_manager import MemoryManager
+from hermes_agent.agent.memory_provider import MemoryProvider
+from hermes_agent.agent.memory_manager import MemoryManager
 
 
 class _SlowProvider(MemoryProvider):
@@ -134,7 +134,7 @@ def test_shutdown_drains_queued_writes_and_boundary_in_fifo_order():
 
 def test_shutdown_timeout_abandons_queued_write_with_state_and_log(monkeypatch, caplog):
     """A wedged active write bounds shutdown and reports queued data loss."""
-    import agent.memory_manager as memory_manager_module
+    import hermes_agent.agent.memory_manager as memory_manager_module
 
     started = threading.Event()
     release = threading.Event()
@@ -154,7 +154,7 @@ def test_shutdown_timeout_abandons_queued_write_with_state_and_log(monkeypatch, 
     assert started.wait(timeout=1)
     mgr.sync_all("queued", "response")
 
-    with caplog.at_level(logging.WARNING, logger="agent.memory_manager"):
+    with caplog.at_level(logging.WARNING, logger="hermes_agent.agent.memory_manager"):
         t0 = time.monotonic()
         mgr.shutdown_all()
         elapsed = time.monotonic() - t0

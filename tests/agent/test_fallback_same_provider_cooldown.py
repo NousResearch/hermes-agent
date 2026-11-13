@@ -9,8 +9,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from agent.error_classifier import FailoverReason
-from run_agent import AIAgent
+from hermes_agent.agent.error_classifier import FailoverReason
+from hermes_agent.run_agent import AIAgent
 
 _PRIMARY_URL = "http://127.0.0.1:9101/v1"
 _FALLBACK_URL = "http://127.0.0.1:9102/v1"
@@ -20,8 +20,8 @@ def _agent(fallback):
     with (
         patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]),
         patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
-        patch("agent.process_bootstrap.OpenAI"),
-        patch("agent.context_compressor.get_model_context_length", return_value=200_000),
+        patch("hermes_agent.agent.process_bootstrap.OpenAI"),
+        patch("hermes_agent.agent.context_compressor.get_model_context_length", return_value=200_000),
     ):
         agent = AIAgent(
             api_key="sk-test-primary", provider="custom", base_url=_PRIMARY_URL, model="primary-model",
@@ -44,7 +44,7 @@ def _fallback_client(base_url):
 ])
 def test_fallback_429_does_not_bench_a_primary_sharing_its_provider_name(fb_model, fb_url):
     agent = _agent([{"provider": "custom", "model": fb_model, "base_url": fb_url}])
-    with patch("agent.auxiliary_client.resolve_provider_client",
+    with patch("hermes_agent.agent.auxiliary_client.resolve_provider_client",
                return_value=(_fallback_client(fb_url), fb_model)):
         assert agent._try_activate_fallback(reason=FailoverReason.server_error) is True
         assert (agent.provider, agent.model) == ("custom", fb_model)
@@ -59,7 +59,7 @@ def test_fallback_429_does_not_bench_a_primary_sharing_its_provider_name(fb_mode
 def test_primary_429_still_benches_the_primary():
     """The guard narrows only chain-switches: leaving the primary on a 429 still arms its cooldown."""
     agent = _agent([{"provider": "custom", "model": "fallback-model", "base_url": _FALLBACK_URL}])
-    with patch("agent.auxiliary_client.resolve_provider_client",
+    with patch("hermes_agent.agent.auxiliary_client.resolve_provider_client",
                return_value=(_fallback_client(_FALLBACK_URL), "fallback-model")):
         assert agent._try_activate_fallback(reason=FailoverReason.rate_limit) is True
 

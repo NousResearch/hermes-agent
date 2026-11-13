@@ -11,7 +11,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 from tests.fakes.fake_llm_provider import FakeLLMServer, Text, write_hermes_home
 
 
@@ -74,7 +74,7 @@ def test_voice_turn_routes_then_restores(tmp_path, monkeypatch, voice_window_ok)
 def test_reasoning_off_falls_to_the_lowest_valid_level(model, api_mode, expected):
     from types import SimpleNamespace
 
-    from agent.voice_turn_route import _voice_reasoning
+    from hermes_agent.agent.voice_turn_route import _voice_reasoning
 
     agent = SimpleNamespace(model=model, api_mode=api_mode, provider="custom",
                             base_url="https://api.openai.com/v1" if "gpt" in model else "https://api.anthropic.com")
@@ -83,7 +83,7 @@ def test_reasoning_off_falls_to_the_lowest_valid_level(model, api_mode, expected
 
 
 def test_session_runtime_view_preserves_requested_provider_during_voice_turn():
-    from agent.voice_turn_route import session_runtime_view
+    from hermes_agent.agent.voice_turn_route import session_runtime_view
 
     main = SimpleNamespace(
         model="voice-model", provider="custom", requested_provider="custom:voice",
@@ -119,7 +119,7 @@ def test_voice_usage_never_becomes_the_session_route(tmp_path):
 def test_mid_voice_turn_reports_the_sessions_own_route(tmp_path, monkeypatch, separate_voice_model):
     """Desktop adopts session.info's effort/model into the composer that seeds new chats: a live
     voice turn's reasoning-off (and voice model) must never be reported or persisted as the chat's."""
-    from agent.voice_turn_route import begin_voice_turn_route, end_voice_turn_route
+    from hermes_agent.agent.voice_turn_route import begin_voice_turn_route, end_voice_turn_route
     from hermes_agent.tui_gateway.server import _runtime_model_config, _session_info
 
     with FakeLLMServer([]) as main, FakeLLMServer([]) as voice:

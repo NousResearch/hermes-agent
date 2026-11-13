@@ -5,7 +5,7 @@ into: the context compressor (``update_from_response`` + the compression-budget 
 latch), the usage anchor for display/compression math, per-session token/cost counters,
 the state.db token-delta queue, and the observability log line. MoA sessions additionally
 fold advisor fan-out usage into the reported counts and price the aggregator at its REAL
-model/provider. Logger name stays ``agent.conversation_loop`` for caplog parity.
+model/provider. Logger name stays ``hermes_agent.agent.conversation_loop`` for caplog parity.
 """
 
 from __future__ import annotations
@@ -15,17 +15,17 @@ from contextlib import suppress
 from dataclasses import dataclass
 from typing import Any, Dict, List
 
-from agent.image_token_cost import calibrate_from_usage
-from agent.usage_anchor import capture_usage_anchor, set_usage_anchor
-from agent.usage_pricing import estimate_usage_cost, normalize_usage, with_served_service_tier
+from hermes_agent.agent.image_token_cost import calibrate_from_usage
+from hermes_agent.agent.usage_anchor import capture_usage_anchor, set_usage_anchor
+from hermes_agent.agent.usage_pricing import estimate_usage_cost, normalize_usage, with_served_service_tier
 
-logger = logging.getLogger("agent.conversation_loop")
+logger = logging.getLogger("hermes_agent.agent.conversation_loop")
 
 
 def _agent_session_source(agent: Any) -> str:
     """The surface the agent's own row create would stamp (``_ensure_db_session``), so an
     accounting guard that wins the row-creation race never mints an anonymous session."""
-    from agent.session_source import session_source_for
+    from hermes_agent.agent.session_source import session_source_for
     return session_source_for(getattr(agent, "platform", None))
 
 
@@ -50,8 +50,8 @@ def note_response_reasoning_tokens(agent: Any, response: Any) -> None:
 
 
 def _loop_mod():
-    """Lazy ``agent.conversation_loop`` import (avoids an import cycle)."""
-    import agent.conversation_loop as _cl
+    """Lazy ``hermes_agent.agent.conversation_loop`` import (avoids an import cycle)."""
+    import hermes_agent.agent.conversation_loop as _cl
 
     return _cl
 
@@ -182,7 +182,7 @@ def record_response_usage(
     if getattr(compressor, "_context_probed", False):
         ctx = compressor.context_length
         if getattr(compressor, "_context_probe_persistable", False):
-            from agent.model_metadata import save_provider_context_length
+            from hermes_agent.agent.model_metadata import save_provider_context_length
 
             save_provider_context_length(agent.model, agent.base_url, ctx, agent.provider)
             agent._safe_print(f"{agent.log_prefix}💾 Cached context length: {ctx:,} tokens for {agent.model}")
@@ -229,7 +229,7 @@ def record_response_usage(
     # nous.anthropic_wire=auto: the session's wire is decided once, from this first response.
     if agent.session_api_calls == 1 and (agent.provider or "") == "nous":
         with suppress(Exception):
-            from agent.nous_wire import maybe_switch_wire_after_first_response
+            from hermes_agent.agent.nous_wire import maybe_switch_wire_after_first_response
             maybe_switch_wire_after_first_response(agent, response, agent.session_api_calls)
 
     # MoA: agent.model/provider are the virtual preset/"moa" with no pricing entry, silently

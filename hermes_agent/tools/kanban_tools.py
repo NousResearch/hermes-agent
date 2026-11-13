@@ -15,7 +15,7 @@ import time
 from contextlib import contextmanager
 from typing import Any, Callable, Optional
 
-from agent.redact import redact_sensitive_text
+from hermes_agent.agent.redact import redact_sensitive_text
 from hermes_cli.goals import judge_goal
 from hermes_agent.tools.registry import no_cache_check_fn, registry, tool_error
 from hermes_cli.config import cfg_get, load_config
@@ -62,9 +62,9 @@ def _profile_has_kanban_toolset() -> bool:
 
 
 def _delegation_ctx(predicate: str, default: bool) -> bool:
-    """``agent.delegation_context.<predicate>()``; ``default`` when it cannot be evaluated."""
+    """``hermes_agent.agent.delegation_context.<predicate>()``; ``default`` when it cannot be evaluated."""
     try:
-        from agent import delegation_context
+        from hermes_agent.agent import delegation_context
         return getattr(delegation_context, predicate)()
     except Exception:
         return default
@@ -273,7 +273,7 @@ def _worker_guard(tool_name: str, args: dict) -> str:
     ``block_task`` / ``request_review`` / ``request_changes`` only append
     ``AND current_run_id = ?`` when the value is not ``None``), so an unbound
     stale worker could complete a card a live successor owns. This mirrors
-    ``agent/kanban_stop.py``, which already treats an unbound run id as unknown
+    ``hermes_agent/agent/kanban_stop.py``, which already treats an unbound run id as unknown
     and fails closed. CLI / human / orchestrator paths (no ``HERMES_KANBAN_TASK``)
     legitimately pass ``expected_run_id=None`` and are unaffected. Non-lifecycle
     worker tools (heartbeat / attach / attach_url) do not terminate a run and are
@@ -456,7 +456,7 @@ def _goal_judge_available() -> bool:
     indistinguishable from "not done yet" and would wedge every goal_mode
     worker; so the gate is enforced only when a judge is actually reachable."""
     try:
-        from agent.auxiliary_client import get_text_auxiliary_client
+        from hermes_agent.agent.auxiliary_client import get_text_auxiliary_client
         client, model = get_text_auxiliary_client("goal_judge")
     except Exception:
         return False
@@ -493,7 +493,7 @@ def _goal_gate(tool_name: str, task, tid: str, evidence: str) -> None:
     try:
         # Headless gate runs outside any agent turn: bind the per-task relay-affinity scope
         # (mirrors kanban_specify) so the relay does not reject the judge call (#113669).
-        from agent.portal_tags import get_affinity_scope, reset_affinity_scope, set_affinity_scope
+        from hermes_agent.agent.portal_tags import get_affinity_scope, reset_affinity_scope, set_affinity_scope
         affinity_token = None if get_affinity_scope() else set_affinity_scope(f"kanban:{tid}")
         try:
             verdict, reason, _, _, transport_failed = judge_goal(

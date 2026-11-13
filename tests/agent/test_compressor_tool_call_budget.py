@@ -13,7 +13,7 @@ ineffective. The fix routes all three walks through
 import pytest
 from unittest.mock import patch
 
-from agent.context_compressor import (
+from hermes_agent.agent.context_compressor import (
     ContextCompressor,
     _CHARS_PER_TOKEN,
     _estimate_msg_budget_tokens,
@@ -68,7 +68,7 @@ class TestToolCallEnvelopeEstimate:
 
 @pytest.fixture()
 def compressor():
-    with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+    with patch("hermes_agent.agent.context_compressor.get_model_context_length", return_value=100000):
         return ContextCompressor(
             model="test/model",
             threshold_percent=0.85,

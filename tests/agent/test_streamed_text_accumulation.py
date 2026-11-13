@@ -13,7 +13,7 @@ import pytest
 
 
 def _make_agent():
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     agent = AIAgent(
         api_key="test-key",

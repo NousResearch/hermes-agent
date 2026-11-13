@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from agent.context_references import (
+from hermes_agent.agent.context_references import (
     BUILTIN_PREFIXES,
     ContextCompletionItem,
     ContextReferenceProvider,
@@ -109,7 +109,7 @@ def test_parse_plugin_reference_ignored_when_not_registered():
 
 @pytest.mark.asyncio
 async def test_expand_plugin_reference(tmp_path: Path):
-    from agent.context_references import preprocess_context_references_async
+    from hermes_agent.agent.context_references import preprocess_context_references_async
 
     register_context_reference_provider(_DummyProvider())
     result = await preprocess_context_references_async(
@@ -123,7 +123,7 @@ async def test_expand_plugin_reference(tmp_path: Path):
 
 @pytest.mark.asyncio
 async def test_expand_plugin_returns_none(tmp_path: Path):
-    from agent.context_references import preprocess_context_references_async
+    from hermes_agent.agent.context_references import preprocess_context_references_async
 
     register_context_reference_provider(_NoneExpandProvider())
     result = await preprocess_context_references_async(
@@ -136,7 +136,7 @@ async def test_expand_plugin_returns_none(tmp_path: Path):
 
 @pytest.mark.asyncio
 async def test_expand_plugin_error(tmp_path: Path):
-    from agent.context_references import preprocess_context_references_async
+    from hermes_agent.agent.context_references import preprocess_context_references_async
 
     register_context_reference_provider(_ErrorProvider())
     result = await preprocess_context_references_async(

@@ -1,7 +1,7 @@
 """Boot probes run inside the launch profile's scope under multiplex.
 
 ``get_tool_definitions`` runs every ``check_fn``; the vision probe resolves Nous runtime
-credentials, whose Portal / inference routing overrides read through ``agent.secret_scope.get_secret``.
+credentials, whose Portal / inference routing overrides read through ``hermes_agent.agent.secret_scope.get_secret``.
 With multiplex active and no scope on the executor thread that read fails closed, the override is
 absent, and a non-production Portal's refresh token is POSTed to the production Portal. The warm-up
 must run under the same binding a routed turn gets, and the binding must reach the executor thread.
@@ -13,7 +13,7 @@ import types
 
 import pytest
 
-from agent import secret_scope
+from hermes_agent.agent import secret_scope
 from hermes_agent.gateway import run as gateway_run
 from hermes_agent.gateway.run_startup import GatewayStartupMixin
 

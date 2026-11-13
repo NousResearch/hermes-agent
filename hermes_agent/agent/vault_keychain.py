@@ -84,10 +84,10 @@ def read_ref(path: Path) -> Optional[dict]:
     except FileNotFoundError:
         return None
     except (OSError, ValueError) as exc:
-        from agent.vault_store import VaultError
+        from hermes_agent.agent.vault_store import VaultError
         raise VaultError(f"{path.name} is unreadable ({type(exc).__name__}); see `hermes vault key`") from exc
     if not isinstance(data, dict) or data.get("storage") != "keychain" or not data.get("account"):
-        from agent.vault_store import VaultError
+        from hermes_agent.agent.vault_store import VaultError
         raise VaultError(f"{path.name} does not describe a keychain entry; see `hermes vault key`")
     return data
 
@@ -104,7 +104,7 @@ def save_new_ref(path: Path, ref: dict) -> None:
     try:
         write_ref(path, ref)
     except OSError:
-        from agent.vault_store import VaultError
+        from hermes_agent.agent.vault_store import VaultError
         with suppress(VaultError):
             if (read_ref(path) or {}).get("account") == ref["account"]:
                 raise

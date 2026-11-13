@@ -121,7 +121,7 @@ async def test_unavailable_or_busy_session_leaves_persisted_tick_due(poller):
 async def test_emergency_stop_holds_due_tick_without_messaging_until_resume(poller, monkeypatch):
     """`hermes pause` must not turn a due heartbeat into a chat message on every poll (prod: ~10k
     identical paused notices in 5h); the tick fires normally after `hermes resume`."""
-    from agent import estop
+    from hermes_agent.agent import estop
 
     runner, adapter, watch, _key, clock = poller
     runner._is_user_authorized = lambda source: True
@@ -160,7 +160,7 @@ async def test_emergency_stop_holds_due_tick_without_messaging_until_resume(poll
 
 @pytest.mark.asyncio
 async def test_emergency_stop_gate_drops_heartbeat_silently_but_tells_real_users(poller, monkeypatch):
-    from agent import estop
+    from hermes_agent.agent import estop
 
     runner, adapter, watch, key, _clock = poller
     source = watch[key][0]

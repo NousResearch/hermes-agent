@@ -4,7 +4,7 @@ import subprocess
 import sys
 import threading
 
-from agent.client_lifecycle import ClientLifecycleMixin
+from hermes_agent.agent.client_lifecycle import ClientLifecycleMixin
 
 
 class Agent(ClientLifecycleMixin):

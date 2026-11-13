@@ -4,7 +4,7 @@ import json
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from agent import tool_executor
+from hermes_agent.agent import tool_executor
 
 
 def _tool_call(name: str, args: dict, call_id: str) -> SimpleNamespace:

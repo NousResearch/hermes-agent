@@ -22,10 +22,10 @@ class TestOAuthUserAgentPrefix:
 
     def test_build_anthropic_client_oauth_ua(self):
         """build_anthropic_client (INFERENCE) with OAuth token must use claude-code UA."""
-        from agent.anthropic_adapter import build_anthropic_client
+        from hermes_agent.agent.anthropic_adapter import build_anthropic_client
 
         mock_sdk = MagicMock()
-        with patch("agent.anthropic_adapter._get_anthropic_sdk", return_value=mock_sdk):
+        with patch("hermes_agent.agent.anthropic_adapter._get_anthropic_sdk", return_value=mock_sdk):
             build_anthropic_client("sk-ant-oauth-abc123", "https://api.anthropic.com")
 
         # Inspect the kwargs passed to Anthropic()

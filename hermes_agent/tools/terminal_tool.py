@@ -34,7 +34,7 @@ logger = logging.getLogger(__name__)
 
 def _redact_terminal_error_text(value: Any) -> str:
     """Force-redact text before serializing a terminal error envelope."""
-    from agent.redact import redact_sensitive_text
+    from hermes_agent.agent.redact import redact_sensitive_text
 
     return redact_sensitive_text("" if value is None else str(value), force=True)
 
@@ -1595,7 +1595,7 @@ def terminal_tool(
             # but its cwd is its own: seed_workspace records it under the child's task id, and
             # sibling children share the parent's key, so reading cwd by that key runs one child
             # in another's directory (its isolation worktree).
-            from agent.delegation_context import is_delegated_child_context
+            from hermes_agent.agent.delegation_context import is_delegated_child_context
 
             cwd_key = (task_id or session_key) if is_delegated_child_context() else session_key
 
@@ -1607,7 +1607,7 @@ def terminal_tool(
             # guard that never rendered a verdict fails CLOSED: these checks apply
             # unconditionally (``force`` cannot bypass them), so the command is
             # refused with a retryable error instead of running unguarded.
-            from agent.deadline import run_bounded_sync
+            from hermes_agent.agent.deadline import run_bounded_sync
             from hermes_agent.tools.interrupt import acting_for_tid
 
             # The guard chain runs on the deadline worker; keep it answerable to /stop
@@ -1738,7 +1738,7 @@ TERMINAL_SCHEMA = {
 
 
 def _handle_terminal(args, **kw):
-    from agent.terminal_approval_batch import validate_prepared_terminal
+    from hermes_agent.agent.terminal_approval_batch import validate_prepared_terminal
     validate_prepared_terminal(args)
     # Models sometimes send execute_code's ``code`` here; name the stray
     # argument and the right tool instead of failing on command=None.

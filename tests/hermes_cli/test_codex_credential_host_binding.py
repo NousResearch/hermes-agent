@@ -227,14 +227,14 @@ def test_full_picker_discovers_codex_models_with_pinned_canonical_url(monkeypatc
 
     monkeypatch.setattr(httpx, "get", catalog_get)
     # Unrelated metadata sources stay offline; config, auth, discovery, cache and picker are real.
-    monkeypatch.setattr("agent.models_dev.fetch_models_dev", dict)
+    monkeypatch.setattr("hermes_agent.agent.models_dev.fetch_models_dev", dict)
     monkeypatch.setattr("hermes_cli.models.get_curated_nous_model_ids", list)
     monkeypatch.setattr("hermes_cli.models.fetch_ollama_cloud_models", lambda **kw: [])
     monkeypatch.setattr("hermes_cli.models_pricing.get_pricing_for_provider", lambda *a, **kw: {})
     # The picker's background usage refresh outlives this test: left running, it sends the JWT
     # through whatever ``httpx.Client`` a LATER case has patched in, polluting that case's recorder.
-    monkeypatch.setattr("agent.account_usage_cache.refresh_account_usage_async", lambda *a, **kw: [])
-    monkeypatch.setattr("agent.account_usage_cache.refresh_account_usage_entries_async", lambda *a, **kw: [])
+    monkeypatch.setattr("hermes_agent.agent.account_usage_cache.refresh_account_usage_async", lambda *a, **kw: [])
+    monkeypatch.setattr("hermes_agent.agent.account_usage_cache.refresh_account_usage_entries_async", lambda *a, **kw: [])
     # Offline, and any HTTP a background worker attempts is recorded: that work outlives the test.
     stray = []
     test_thread = threading.current_thread()
@@ -274,7 +274,7 @@ def test_picker_refuses_opaque_key_aimed_at_chatgpt(picker_http):
 
 @pytest.fixture
 def probe_http(monkeypatch):
-    from agent import model_metadata as mm
+    from hermes_agent.agent import model_metadata as mm
     seen = []
     monkeypatch.setattr(mm.model_metadata_http, "get", _catalog_recorder(seen))
     monkeypatch.setattr(mm, "_codex_oauth_context_cache", {})
@@ -285,7 +285,7 @@ def probe_http(monkeypatch):
 def test_context_probe_asks_the_gateway_with_its_own_key(probe_http, key):
     """The route's base is bound to its key: a gateway key (opaque or JWT) probes that gateway's
     catalog, never chatgpt.com."""
-    from agent import model_metadata as mm
+    from hermes_agent.agent import model_metadata as mm
 
     live, fresh = mm._fetch_codex_oauth_context_lengths_with_source(key, base_url=GW)
 
@@ -294,14 +294,14 @@ def test_context_probe_asks_the_gateway_with_its_own_key(probe_http, key):
 
 
 def test_context_probe_refuses_opaque_key_on_the_chatgpt_default(probe_http):
-    from agent import model_metadata as mm
+    from hermes_agent.agent import model_metadata as mm
 
     assert mm._fetch_codex_oauth_context_lengths_with_source(OPAQUE, base_url="") == ({}, False)
     assert probe_http == []
 
 
 def test_context_probe_direct_chatgpt_positive_control(probe_http):
-    from agent import model_metadata as mm
+    from hermes_agent.agent import model_metadata as mm
 
     mm._fetch_codex_oauth_context_lengths_with_source(JWT, base_url=CHATGPT)
 
@@ -315,7 +315,7 @@ def test_aux_codex_client_binds_pool_key_to_model_base_url_gateway(monkeypatch):
     home = _home(monkeypatch)
     _write_config(home, base_url=GW)
     _write_pool(home, OPAQUE)
-    from agent import auxiliary_client as aux
+    from hermes_agent.agent import auxiliary_client as aux
 
     token, base_url = aux._resolve_codex_credential_and_base()
 
@@ -326,7 +326,7 @@ def test_aux_codex_client_singleton_positive_control(monkeypatch):
     home = _home(monkeypatch)
     _write_config(home)
     _write_singleton(home, JWT)
-    from agent import auxiliary_client as aux
+    from hermes_agent.agent import auxiliary_client as aux
 
     assert aux._resolve_codex_credential_and_base() == (JWT, CHATGPT)
 
@@ -431,7 +431,7 @@ def test_pool_selection_quota_probe_asks_the_gateway(monkeypatch, usage_probe_ht
     home = _home(monkeypatch)
     _write_config(home, base_url=GW)
     _exhausted_jwt_pool(home)
-    from agent.credential_pool import load_pool
+    from hermes_agent.agent.credential_pool import load_pool
 
     pool = load_pool("openai-codex")
     (entry,) = pool.entries()
@@ -454,7 +454,7 @@ def test_quota_restored_probe_direct_chatgpt_positive_control(monkeypatch, usage
 
 def test_usage_pool_fallback_tier_sends_gateway_key_to_the_gateway(monkeypatch):
     """``/usage`` tier 3 (runtime resolver raised): the pooled key is paired with its route."""
-    from agent import account_usage
+    from hermes_agent.agent import account_usage
 
     home = _home(monkeypatch)
     _write_config(home, base_url=GW)
@@ -476,7 +476,7 @@ def test_usage_pool_fallback_tier_sends_gateway_key_to_the_gateway(monkeypatch):
 def test_usage_forced_refresh_keeps_the_refreshed_pool_key_on_the_gateway(monkeypatch):
     """The 401 retry refreshes the live agent's own pool entry; the row's canonical URL must not
     pull the refreshed gateway key over to chatgpt.com."""
-    from agent import account_usage
+    from hermes_agent.agent import account_usage
 
     home = _home(monkeypatch)
     _write_config(home, base_url=GW)
@@ -486,7 +486,7 @@ def test_usage_forced_refresh_keeps_the_refreshed_pool_key_on_the_gateway(monkey
         def try_refresh_matching(self, api_key_hint=None, credential_id=None):
             return SimpleNamespace(runtime_api_key="fresh-gw-key", runtime_base_url=CHATGPT)
 
-    monkeypatch.setattr("agent.credential_pool.load_pool", lambda provider: Pool())
+    monkeypatch.setattr("hermes_agent.agent.credential_pool.load_pool", lambda provider: Pool())
 
     token, base_url, _acct = account_usage._resolve_codex_usage_credentials(
         GW, "stale-gw-key", force_refresh=True)
@@ -497,8 +497,8 @@ def test_usage_forced_refresh_keeps_the_refreshed_pool_key_on_the_gateway(monkey
 def test_route_fallback_reads_the_profile_scoped_override_not_a_sibling_process_env(monkeypatch):
     """If route resolution itself fails, the fallback still honours only the routed profile's
     ``HERMES_CODEX_BASE_URL`` — never a multiplexed sibling's process env."""
-    from agent import secret_scope
-    from agent.secret_scope import reset_secret_scope, set_secret_scope
+    from hermes_agent.agent import secret_scope
+    from hermes_agent.agent.secret_scope import reset_secret_scope, set_secret_scope
     from hermes_cli import runtime_provider
     from hermes_cli.auth_codex import _codex_pool_route_base_url
 
@@ -524,8 +524,8 @@ def test_singleton_credential_reports_the_routed_profiles_host_not_a_siblings_en
     base resolved from the launch process env sends a routed sibling's token to the launch profile's
     gateway. Parity with the pooled return is the oracle — both returns of the same function.
     """
-    from agent import secret_scope
-    from agent.secret_scope import reset_secret_scope, set_secret_scope
+    from hermes_agent.agent import secret_scope
+    from hermes_agent.agent.secret_scope import reset_secret_scope, set_secret_scope
     from hermes_cli.auth_codex import resolve_codex_runtime_credentials
 
     home = _home(monkeypatch)
@@ -556,7 +556,7 @@ def test_unscoped_multiplexed_read_degrades_to_canonical_like_the_pooled_route(m
     """With multiplexing on and no scope installed, the owning profile is unknowable: both returns
     resolve the canonical host rather than the launch profile's env (and neither raises on the
     credential path)."""
-    from agent import secret_scope
+    from hermes_agent.agent import secret_scope
     from hermes_cli.auth_codex import resolve_codex_runtime_credentials
 
     home = _home(monkeypatch)
@@ -576,7 +576,7 @@ def test_unscoped_multiplexed_base_url_fallback_is_logged(monkeypatch, caplog):
     whose gateway override was ignored has something to go on."""
     import logging
 
-    from agent import secret_scope
+    from hermes_agent.agent import secret_scope
     from hermes_cli.auth_codex import _codex_base_url
 
     _home(monkeypatch)
@@ -596,8 +596,8 @@ def test_singleton_credential_respects_config_only_codex_gateway(monkeypatch):
     Otherwise a routed profile sends its singleton token directly to chatgpt.com
     while the pool route correctly uses its configured gateway (#121486).
     """
-    from agent import secret_scope
-    from agent.secret_scope import reset_secret_scope, set_secret_scope
+    from hermes_agent.agent import secret_scope
+    from hermes_agent.agent.secret_scope import reset_secret_scope, set_secret_scope
     from hermes_cli.auth_codex import resolve_codex_runtime_credentials
 
     home = _home(monkeypatch)

@@ -4,7 +4,7 @@ One process at a time may load -> run -> flush a session shared through state.db
 resume, gateway, background delivery). ``admit_durable_turn_lease`` acquires the row lease (or
 returns the early result the façade must hand back); ``DurableTurnLease`` owns the periodic
 refresher, the turn-liveness watchdog wiring, and the lease-loss / stall interrupt plumbing. Both
-timers run via the shared scheduler (``agent/periodic_scheduler.py``; timer thread orders,
+timers run via the shared scheduler (``hermes_agent/agent/periodic_scheduler.py``; timer thread orders,
 bodies run on per-handle workers), not per-turn threads.
 """
 import logging
@@ -18,7 +18,7 @@ from typing import Any, Dict, List, Optional
 from hermes_agent.hermes_state_pidns import holder_namespace_token
 
 # Same logger name as the origin module so log records / caplog filters are unchanged.
-logger = logging.getLogger("run_agent")
+logger = logging.getLogger("hermes_agent.run_agent")
 
 # ``tool_reason`` for a lost session turn lease: attributes the stop to the lease, not the user (#112647).
 _REASON_LEASE_LOST = "session turn lease lost"
@@ -68,7 +68,7 @@ class DurableTurnLease:
             liveness_config = load_config_readonly() or {}
         except Exception:
             liveness_config = {}
-        from agent import turn_liveness
+        from hermes_agent.agent import turn_liveness
 
         timeout_s, poll_s = turn_liveness.resolve_turn_liveness_settings(liveness_config)
         if timeout_s is not None:
@@ -88,7 +88,7 @@ class DurableTurnLease:
         self.agent._touch_activity("starting new turn")
         from hermes_cli.observability.shared_metrics_process import arm_turn
         arm_turn(self.agent)
-        from agent.periodic_scheduler import schedule
+        from hermes_agent.agent.periodic_scheduler import schedule
 
         self.timer_handles.append(schedule(self.refresh_tick, self.refresh_interval))
         if self.watchdog is not None:
@@ -392,7 +392,7 @@ def admit_durable_turn_lease(
             if durable or reloaded:
                 # A follow-up that aborted an earlier wait carries that turn's never-persisted
                 # input only in memory (see carry_unadmitted_user_message); the reload drops it.
-                from agent.session_persistence import _PERSIST_AFTER_ADMISSION_INTERRUPT
+                from hermes_agent.agent.session_persistence import _PERSIST_AFTER_ADMISSION_INTERRUPT
                 reloaded.extend(
                     m for m in (conversation_history or [])
                     if isinstance(m, dict) and m.get(_PERSIST_AFTER_ADMISSION_INTERRUPT)
@@ -420,8 +420,8 @@ def carry_unadmitted_user_message(
     hard_interrupted = early_result.pop("_hard_interrupted", False)
     if hard_interrupted or not early_result.get("interrupted") or user_message in (None, ""):
         return
-    from agent.message_metadata import append_message
-    from agent.session_persistence import _PERSIST_AFTER_ADMISSION_INTERRUPT
+    from hermes_agent.agent.message_metadata import append_message
+    from hermes_agent.agent.session_persistence import _PERSIST_AFTER_ADMISSION_INTERRUPT
 
     durable_content = user_message
     if persist_user_message is not None and (

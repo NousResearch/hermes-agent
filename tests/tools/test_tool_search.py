@@ -512,7 +512,7 @@ class TestRegression_ToolsetScoping:
 
     The fix threads the session's enabled/disabled toolsets into the bridge
     dispatch (hermes_agent.model_tools.handle_function_call) and the executor unwrap
-    (agent.tool_executor), scoping both the searchable catalog and the
+    (hermes_agent.agent.tool_executor), scoping both the searchable catalog and the
     invocable set to the session's own toolsets.
     """
 

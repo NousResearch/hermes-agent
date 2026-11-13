@@ -35,7 +35,7 @@ def _thinking_delta(thinking):
 
 
 def _agent():
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     agent = AIAgent(
         api_key="test-key",
@@ -94,8 +94,8 @@ def test_anthropic_message_stop_accepts_completed_stream_without_retry():
 
 
 def test_auxiliary_anthropic_eof_before_message_stop_raises_empty_stream():
-    from agent.anthropic_adapter import _stream_final_message
-    from agent.errors import EmptyStreamError
+    from hermes_agent.agent.anthropic_adapter import _stream_final_message
+    from hermes_agent.agent.errors import EmptyStreamError
 
     partial = SimpleNamespace(content=[SimpleNamespace(type="text", text="HALF")], stop_reason="end_turn")
     with pytest.raises(EmptyStreamError, match="message_stop"):

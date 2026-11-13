@@ -211,7 +211,7 @@ def test_put_api_env_materializes_credential_pool_entry(hermes_home):
     # And: a fresh load_pool() must surface the just-saved token to the
     # runtime. This is the actual end-to-end contract — anything weaker
     # means the OpenAI client will 401 because it never receives the new key.
-    from agent.credential_pool import load_pool
+    from hermes_agent.agent.credential_pool import load_pool
     pool_obj = load_pool("opencode-go")
     runtime_entries = pool_obj.entries()
     matched_runtime = [

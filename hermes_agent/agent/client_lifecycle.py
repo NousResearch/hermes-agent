@@ -9,11 +9,11 @@ import time
 from contextlib import suppress
 from typing import Any, Optional
 
-from agent.lazy_forward import forward as _forward, forward_static as _forward_static, lazy_attr as _lazy_attr
+from hermes_agent.agent.lazy_forward import forward as _forward, forward_static as _forward_static, lazy_attr as _lazy_attr
 from hermes_cli.timeouts import get_provider_request_timeout
 from utils import base_url_host_matches, env_float
 
-logger = logging.getLogger("run_agent")  # origin module's logger name: log records / caplog filters unchanged
+logger = logging.getLogger("hermes_agent.run_agent")  # origin module's logger name: log records / caplog filters unchanged
 _QWEN_CODE_VERSION = "0.14.1"  # Qwen Portal mimics the QwenCode CLI
 # Per-request cache slot attribute names (OpenAI-style and Anthropic clients).
 _OPENAI_SLOT = "_request_client_cache"
@@ -39,13 +39,13 @@ def _qwen_portal_headers() -> dict:
 # Route-specific default headers; first host match wins (order preserved from the original chain).
 # Builders resolve their module lazily so run_agent keeps its import-time cost and avoids cycles.
 _ROUTE_DEFAULT_HEADERS = (
-    ("openrouter.ai", lambda self, url: _lazy_attr("agent.auxiliary_client", "build_or_headers")()),
-    ("ai-gateway.vercel.sh", lambda self, url: _lazy_attr("agent.auxiliary_client", "_ai_gateway_headers")()),
-    ("integrate.api.nvidia.com", lambda self, url: _lazy_attr("agent.auxiliary_client", "build_nvidia_nim_headers")(url)),
+    ("openrouter.ai", lambda self, url: _lazy_attr("hermes_agent.agent.auxiliary_client", "build_or_headers")()),
+    ("ai-gateway.vercel.sh", lambda self, url: _lazy_attr("hermes_agent.agent.auxiliary_client", "_ai_gateway_headers")()),
+    ("integrate.api.nvidia.com", lambda self, url: _lazy_attr("hermes_agent.agent.auxiliary_client", "build_nvidia_nim_headers")(url)),
     ("api.routermint.com", lambda self, url: _routermint_headers()),
-    ("api.kimi.com", lambda self, url: _lazy_attr("agent.auxiliary_client", "_ai_gateway_headers")()),
+    ("api.kimi.com", lambda self, url: _lazy_attr("hermes_agent.agent.auxiliary_client", "_ai_gateway_headers")()),
     ("portal.qwen.ai", lambda self, url: _qwen_portal_headers()),
-    ("chatgpt.com", lambda self, url: _lazy_attr("agent.codex_headers", "codex_cloudflare_headers")(
+    ("chatgpt.com", lambda self, url: _lazy_attr("hermes_agent.agent.codex_headers", "codex_cloudflare_headers")(
         self._client_kwargs.get("api_key", ""), base_url=url)),
     # Covers provider=xai and provider=xai-oauth (api.x.ai).
     ("x.ai", lambda self, url: _lazy_attr("hermes_agent.tools.xai_http", "hermes_xai_default_headers")()),
@@ -68,15 +68,15 @@ def _swap_fallback_clients(agent, fb_client, fb_provider: str, fb_model: str, fb
     timeout = get_provider_request_timeout(fb_provider, fb_model)
     if fb_provider == "bedrock" and fb_api_mode in ("anthropic_messages", "bedrock_converse"):
         # Non-Mantle Bedrock: boto3-chain auth, no OpenAI/Anthropic SDK client to carry over.
-        from agent.bedrock_adapter import bind_bedrock_runtime
+        from hermes_agent.agent.bedrock_adapter import bind_bedrock_runtime
         bind_bedrock_runtime(agent, fb_base_url, fb_api_mode)
         return
     # The SDK exposes an empty/stale api_key when a rotating source is installed.
     key_provider = vars(fb_client).get("_api_key_provider")
     credential = key_provider if callable(key_provider) else fb_client.api_key
     if fb_api_mode == "anthropic_messages":
-        from agent.anthropic_adapter import build_anthropic_client
-        from agent.anthropic_credentials import resolve_anthropic_token, anthropic_route_is_oauth
+        from hermes_agent.agent.anthropic_adapter import build_anthropic_client
+        from hermes_agent.agent.anthropic_credentials import resolve_anthropic_token, anthropic_route_is_oauth
         is_anthropic = fb_provider == "anthropic"
         effective_key = credential or (resolve_anthropic_token(model=getattr(agent, "model", None)) if is_anthropic else None) or ""
         agent.api_key = agent._anthropic_api_key = effective_key
@@ -102,7 +102,7 @@ def _swap_fallback_clients(agent, fb_client, fb_provider: str, fb_model: str, fb
 class ClientLifecycleMixin:
     def _close_task_resources(self, task_id: str) -> None:
         """Release task resources without treating a shared environment as process ownership."""
-        from run_agent import _quietly, cleanup_browser, cleanup_vm
+        from hermes_agent.run_agent import _quietly, cleanup_browser, cleanup_vm
 
         def kill_processes() -> None:
             from hermes_agent.tools.process_registry import process_registry
@@ -185,14 +185,14 @@ class ClientLifecycleMixin:
     @staticmethod
     def _build_keepalive_http_client(base_url: str = "", *, verify: Any = True) -> Any:
         """Build the shared OpenAI httpx client used by main and aux paths."""
-        from agent.process_bootstrap import build_keepalive_http_client
+        from hermes_agent.agent.process_bootstrap import build_keepalive_http_client
         return build_keepalive_http_client(base_url, verify=verify)
 
-    _create_openai_client = _forward("agent.agent_runtime_helpers", "create_openai_client")
-    _force_close_tcp_sockets = _forward_static("agent.agent_runtime_helpers", "force_close_tcp_sockets")
-    _cleanup_dead_connections = _forward("agent.agent_runtime_helpers_dead_connections", "cleanup_dead_connections")
-    _run_codex_stream = _forward("agent.codex_runtime", "run_codex_stream")
-    _recover_with_credential_pool = _forward("agent.agent_runtime_helpers", "recover_with_credential_pool")
+    _create_openai_client = _forward("hermes_agent.agent.agent_runtime_helpers", "create_openai_client")
+    _force_close_tcp_sockets = _forward_static("hermes_agent.agent.agent_runtime_helpers", "force_close_tcp_sockets")
+    _cleanup_dead_connections = _forward("hermes_agent.agent.agent_runtime_helpers_dead_connections", "cleanup_dead_connections")
+    _run_codex_stream = _forward("hermes_agent.agent.codex_runtime", "run_codex_stream")
+    _recover_with_credential_pool = _forward("hermes_agent.agent.agent_runtime_helpers", "recover_with_credential_pool")
 
     def _close_openai_client(self, client: Any, *, reason: str, shared: bool) -> None:
         if client is None:
@@ -290,7 +290,7 @@ class ClientLifecycleMixin:
             try:
                 # MoA's ``client`` is an in-process facade, not an SDK client; generic rebuilds must preserve that.
                 if (getattr(self, "provider", "") or "").strip().lower() == "moa":
-                    from agent.moa_loop import build_moa_facade
+                    from hermes_agent.agent.moa_loop import build_moa_facade
                     new_client = build_moa_facade(self, self.model)
                 else:
                     new_client = self._create_openai_client(self._client_kwargs, reason=reason, shared=True)
@@ -451,7 +451,7 @@ class ClientLifecycleMixin:
         request_kwargs["max_retries"] = 0
         if self._api_kwargs_have_image_parts(api_kwargs or {}):
             # Image requests get the route's image client headers on a request-scoped client (cache-keyed apart).
-            from agent.provider_route_hooks import route_answer
+            from hermes_agent.agent.provider_route_hooks import route_answer
             image_headers = route_answer("client_headers", provider=self.provider or "", scope=self,
                                          base_url=str(request_kwargs.get("base_url", "")),
                                          api_key=str(request_kwargs.get("api_key", "") or ""), has_images=True)
@@ -499,16 +499,16 @@ class ClientLifecycleMixin:
 
     def _build_direct_anthropic_client(self, token: str, base_url: Any) -> Any:
         """Native Anthropic client for ``token``/``base_url`` with the provider/model request timeout."""
-        from agent.anthropic_adapter import build_anthropic_client
+        from hermes_agent.agent.anthropic_adapter import build_anthropic_client
         return build_anthropic_client(token, base_url, timeout=get_provider_request_timeout(self.provider, self.model))
 
     def _anthropic_oauth_flag(self, token: str) -> bool:
         """OAuth flag only on native Anthropic routes; third-party Anthropic-protocol endpoints must not trip OAuth paths."""
-        from agent.anthropic_credentials import anthropic_route_is_oauth
+        from hermes_agent.agent.anthropic_credentials import anthropic_route_is_oauth
         return anthropic_route_is_oauth(getattr(self, "_anthropic_base_url", None), token, provider=self.provider)
 
     def _build_anthropic_client_for_key(self, key: tuple) -> Any:
-        from agent.anthropic_adapter import build_anthropic_bedrock_client, build_anthropic_client
+        from hermes_agent.agent.anthropic_adapter import build_anthropic_bedrock_client, build_anthropic_client
         if key[0] == "bedrock":
             return build_anthropic_bedrock_client(key[1], timeout=key[2])
         return build_anthropic_client(key[1], key[2], timeout=key[3], drop_context_1m_beta=key[4])
@@ -568,7 +568,7 @@ class ClientLifecycleMixin:
 
     def _adopt_openai_credentials(self, api_key: str, base_url: str, *, reason: str) -> bool:
         """Apply a fresh key/base_url to the OpenAI-style kwargs and rebuild the shared client."""
-        from agent.route_verdicts import reset_route_verdicts_if_moved
+        from hermes_agent.agent.route_verdicts import reset_route_verdicts_if_moved
         prior_base_url = self.base_url
         self.api_key, self.base_url = api_key.strip(), base_url.strip().rstrip("/")
         reset_route_verdicts_if_moved(self, prior_base_url)
@@ -646,7 +646,7 @@ class ClientLifecycleMixin:
                 )
                 return False
         if self.api_mode == "anthropic_messages":
-            from agent.route_verdicts import reset_route_verdicts_if_moved
+            from hermes_agent.agent.route_verdicts import reset_route_verdicts_if_moved
             prior_base_url = self.base_url
             self.api_key, self.base_url = api_key.strip(), base_url.strip().rstrip("/")
             reset_route_verdicts_if_moved(self, prior_base_url)
@@ -700,7 +700,7 @@ class ClientLifecycleMixin:
         Covers registry api-key providers and named custom providers with ``key_env``.
         """
         try:
-            from agent.credential_pool import get_env_prefer_dotenv
+            from hermes_agent.agent.credential_pool import get_env_prefer_dotenv
             from hermes_cli.auth import PROVIDER_REGISTRY
         except ImportError:
             return None
@@ -780,7 +780,7 @@ class ClientLifecycleMixin:
         route_changed = normalize_route_base_url(self.base_url) != normalize_route_base_url(base_url)
         prior_api_key, prior_base_url = self.api_key, self.base_url
         prior_client_kwargs = dict(self._client_kwargs)
-        from agent.route_verdicts import apply_route_verdicts, snapshot_route_verdicts
+        from hermes_agent.agent.route_verdicts import apply_route_verdicts, snapshot_route_verdicts
         prior_verdicts = snapshot_route_verdicts(self)
         self.api_key, self.base_url = api_key, base_url
         self._sync_client_kwargs_credentials()
@@ -795,7 +795,7 @@ class ClientLifecycleMixin:
             return False
         # Rebind the pool entry id to the adopted key, or the next 429 quarantines the wrong credential.
         try:
-            from agent.agent_runtime_helpers import sync_credential_pool_entry_id
+            from hermes_agent.agent.agent_runtime_helpers import sync_credential_pool_entry_id
             sync_credential_pool_entry_id(self)
         except Exception:
             logger.debug("sync_credential_pool_entry_id after env refresh failed", exc_info=True)
@@ -808,7 +808,7 @@ class ClientLifecycleMixin:
         if self.api_mode != "chat_completions" or self.provider != "vertex":
             return False
         try:
-            from agent.vertex_adapter import get_vertex_config
+            from hermes_agent.agent.vertex_adapter import get_vertex_config
             token, base_url = get_vertex_config()
         except Exception as exc:
             logger.debug("Vertex credential refresh failed: %s", exc)
@@ -824,8 +824,8 @@ class ClientLifecycleMixin:
         """Re-mint the live credential through the provider profile's ``refresh_runtime_credentials``
         and rebuild the shared client (caller enforces the single-shot guard). ``reason``:
         ``unauthorized`` (401) or ``stale`` (a non-auth error the profile reads as a stale credential)."""
-        from agent.conversation_loop import _credential_refresh_profile
-        from agent.provider_route_hooks import ask_on_error_path
+        from hermes_agent.agent.conversation_loop import _credential_refresh_profile
+        from hermes_agent.agent.provider_route_hooks import ask_on_error_path
         profile = _credential_refresh_profile(self)
         refreshed = ask_on_error_path(profile, "refresh_runtime_credentials", None, reason=reason) if profile else None
         if not (isinstance(refreshed, (tuple, list)) and len(refreshed) == 2 and refreshed[0]):
@@ -833,7 +833,7 @@ class ClientLifecycleMixin:
         token, base_url = refreshed
         self.api_key = token
         if base_url:
-            from agent.route_verdicts import reset_route_verdicts_if_moved
+            from hermes_agent.agent.route_verdicts import reset_route_verdicts_if_moved
             prior_base_url, self.base_url = self.base_url, base_url.rstrip("/")
             reset_route_verdicts_if_moved(self, prior_base_url)
         self._sync_client_kwargs_credentials()
@@ -859,7 +859,7 @@ class ClientLifecycleMixin:
         if not official_host and not (current_key.startswith("sk-ant-") or getattr(self, "_is_anthropic_oauth", False)):
             return False
         try:
-            from agent.anthropic_credentials import resolve_anthropic_token
+            from hermes_agent.agent.anthropic_credentials import resolve_anthropic_token
             new_token = resolve_anthropic_token(model=self.model)
         except Exception as exc:
             logger.debug("Anthropic credential refresh failed: %s", exc)
@@ -892,7 +892,7 @@ class ClientLifecycleMixin:
                 rt[k] = new_token
         # The turn's aux runtime was published before the first request triggered this refresh, so
         # same-turn `auto` aux calls (approvals, goal judge, plugin llm) would still send the revoked token.
-        from agent.auxiliary_key_rotation import rotate_runtime_main_api_key
+        from hermes_agent.agent.auxiliary_key_rotation import rotate_runtime_main_api_key
         rotate_runtime_main_api_key(old_token, new_token)
         return True
 
@@ -905,7 +905,7 @@ class ClientLifecycleMixin:
         else:
             # No URL-specific headers — a profile's endpoint headers, else profile.default_headers, else clear.
             self._client_kwargs.pop("default_headers", None)
-            from agent.provider_route_hooks import route_answer
+            from hermes_agent.agent.provider_route_hooks import route_answer
             route_headers = route_answer("client_headers", provider=self.provider or "", base_url=base_url, scope=self,
                                          api_key=str(self._client_kwargs.get("api_key", "") or ""))
             if route_headers:
@@ -930,10 +930,10 @@ class ClientLifecycleMixin:
 
     def _apply_user_default_headers(self) -> None:
         """Merge config ``model.default_headers`` onto the OpenAI client (user wins; WAFs rejecting SDK headers).
-        Delegates to ``agent.auxiliary_client`` so main and aux clients cannot drift. No-op for Anthropic/Bedrock."""
+        Delegates to ``hermes_agent.agent.auxiliary_client`` so main and aux clients cannot drift. No-op for Anthropic/Bedrock."""
         if self.api_mode in ("anthropic_messages", "bedrock_converse"):
             return
-        from agent.auxiliary_client import _apply_user_default_headers as _merge_user_headers
+        from hermes_agent.agent.auxiliary_client import _apply_user_default_headers as _merge_user_headers
         merged = _merge_user_headers(self._client_kwargs.get("default_headers"))
         if merged:
             self._client_kwargs["default_headers"] = merged
@@ -970,7 +970,7 @@ class ClientLifecycleMixin:
             self._is_anthropic_oauth = self._anthropic_oauth_flag(runtime_key)
             self.api_key, self.base_url = runtime_key, stripped_base
             if route_changed:
-                from agent.route_verdicts import reset_route_verdicts
+                from hermes_agent.agent.route_verdicts import reset_route_verdicts
                 reset_route_verdicts(self)
             return True
         self.api_key, self.base_url = runtime_key, stripped_base
@@ -989,7 +989,7 @@ class ClientLifecycleMixin:
         new endpoint inherits the old config (including the old endpoint's rejection verdicts).
         """
         if route_changed:
-            from agent.route_verdicts import reset_route_verdicts
+            from hermes_agent.agent.route_verdicts import reset_route_verdicts
             reset_route_verdicts(self)
         self._client_kwargs.pop("ssl_verify", None)
         self._client_kwargs.pop("ssl_ca_cert", None)
@@ -1009,7 +1009,7 @@ class ClientLifecycleMixin:
         if client is None and self.api_mode == "anthropic_messages":
             self._try_refresh_anthropic_client_credentials()
         # Strips Responses-only kwargs that leak in under an api_mode-flip race.
-        from agent.anthropic_adapter import create_anthropic_message
+        from hermes_agent.agent.anthropic_adapter import create_anthropic_message
         # on_response: rate-limit + credits state live in response headers, which the parsed Message drops.
         return create_anthropic_message(
             client or self._anthropic_client, api_kwargs, log_prefix=getattr(self, "log_prefix", ""),

@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, List
 
-logger = logging.getLogger("run_agent")
+logger = logging.getLogger("hermes_agent.run_agent")
 
 
 def _fallback_entries(fallback_model) -> list[dict[str, Any]]:
@@ -22,7 +22,7 @@ def _fallback_entries(fallback_model) -> list[dict[str, Any]]:
 def _init_fallback_chain(agent, fallback_model):
     # Stable pool-entry identity: OAuth refreshes can replace the token before a failed
     # request is recovered, so the key value alone can't attribute the failure.
-    from agent.agent_runtime_helpers import sync_credential_pool_entry_id
+    from hermes_agent.agent.agent_runtime_helpers import sync_credential_pool_entry_id
     sync_credential_pool_entry_id(agent)
 
     # Ordered backups tried when the primary is exhausted (legacy single-dict or list).
@@ -51,7 +51,7 @@ def recompute_init_fallback_api_mode(agent, fb_client) -> None:
     ``_primary_runtime`` snapshot so ``restore_primary_runtime`` replays the recomputed mode.
     A detection failure keeps the primary's mode and never blocks the fallback itself.
     """
-    from agent.chat_completion_helpers import _fallback_api_mode_resolved
+    from hermes_agent.agent.chat_completion_helpers import _fallback_api_mode_resolved
     try:
         agent.api_mode = _fallback_api_mode_resolved(
             agent, agent.provider, agent.model, str(getattr(fb_client, "base_url", "") or ""))

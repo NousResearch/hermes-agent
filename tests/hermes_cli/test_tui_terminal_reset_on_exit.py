@@ -125,7 +125,7 @@ class TestRunCleanupWiring(unittest.TestCase):
                 ),
                 patch("hermes_agent.tools.mcp_tool_lifecycle.shutdown_mcp_servers", lambda *a, **k: None),
                 patch(
-                    "agent.auxiliary_client.shutdown_cached_clients",
+                    "hermes_agent.agent.auxiliary_client.shutdown_cached_clients",
                     lambda *a, **k: None,
                 ),
                 patch("hermes_cli.plugins.invoke_hook", lambda *a, **k: None),

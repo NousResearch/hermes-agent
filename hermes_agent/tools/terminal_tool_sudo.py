@@ -83,7 +83,7 @@ def _in_delegated_child_context() -> bool:
     child for the full timeout, so children are always headless for sudo prompting. The ContextVar
     is set by ``delegated_child_context()`` and propagates via ``copy_context``."""
     try:
-        from agent.delegation_context import is_delegated_child_context
+        from hermes_agent.agent.delegation_context import is_delegated_child_context
         return is_delegated_child_context()
     except Exception:
         return False
@@ -485,7 +485,7 @@ def _transform_sudo_command(
     # Scope-aware read: under multiplex the process env may hold another profile's SUDO_PASSWORD;
     # unscoped callers (UnscopedSecretError) keep the os.environ read.
     try:
-        from agent.secret_scope import get_secret
+        from hermes_agent.agent.secret_scope import get_secret
         _configured_password = get_secret("SUDO_PASSWORD")
     except Exception:
         _configured_password = os.environ.get("SUDO_PASSWORD")

@@ -29,7 +29,7 @@ _AZURE_OPENAI_PROBE_API_VERSIONS = (
     "2024-10-21",  # oldest GA that supports /models
 )
 
-# Matches the value ``agent/anthropic_adapter.py`` uses when building the Anthropic client.
+# Matches the value ``hermes_agent/agent/anthropic_adapter.py`` uses when building the Anthropic client.
 _AZURE_ANTHROPIC_API_VERSION = "2025-04-15"
 _AZURE_DETECT_JSON_BODY_MAX_BYTES = 1024 * 1024
 _AZURE_DETECT_ERROR_BODY_MAX_BYTES = 64 * 1024
@@ -253,7 +253,7 @@ def lookup_context_length(model: str, base_url: str, api_key: Any = "", *,
     if not model_id:
         return None
     try:
-        from agent.model_metadata import DEFAULT_FALLBACK_CONTEXT, get_model_context_length
+        from hermes_agent.agent.model_metadata import DEFAULT_FALLBACK_CONTEXT, get_model_context_length
     except Exception:
         return None
 

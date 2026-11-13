@@ -18,7 +18,7 @@ import os
 
 import pytest
 
-from agent import secret_scope
+from hermes_agent.agent import secret_scope
 from hermes_agent.gateway import relay
 from hermes_agent.gateway.run_startup import GatewayStartupMixin
 

@@ -5,7 +5,7 @@ failures; API observers get the real arguments and result. The worker forwards i
 and the owner builds the event with the ordinary turn's payload builder (real authority over SQLite)."""
 from types import SimpleNamespace
 
-from agent.managed_worker import encode_frame, read_frame, tool_frame
+from hermes_agent.agent.managed_worker import encode_frame, read_frame, tool_frame
 from hermes_agent.gateway.session_authority import LiveSession, SessionAuthority
 from hermes_agent.hermes_state import SessionDB
 from hermes_agent.hermes_state_runtime import admit_session_input, begin_runtime_epoch, claim_session_input

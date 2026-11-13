@@ -174,11 +174,11 @@ class TestColonProviderPrefixIsStrippedLikeSlash:
     def test_agent_init_strips_colon_prefix_before_the_wire(self, tmp_path, monkeypatch):
         """Production path: ``AIAgent(model="openai-codex:gpt-5.6-sol", provider="openai-codex")`` —
         the form that survives ``-m provider:model --provider X``, programmatic construction and
-        gateway config — must leave ``agent.model`` without the prefix (agent/agent_init.py)."""
+        gateway config — must leave ``agent.model`` without the prefix (hermes_agent/agent/agent_init.py)."""
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         (tmp_path / ".env").write_text("", encoding="utf-8")
         (tmp_path / "config.yaml").write_text("{}\n", encoding="utf-8")
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         agent = AIAgent(
             model="openai-codex:gpt-5.6-sol", provider="openai-codex", api_key="sk-dummy",

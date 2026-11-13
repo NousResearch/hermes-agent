@@ -3,7 +3,7 @@
 
 Two facts anchor this module:
 
-* ``agent.secret_scope.get_secret`` fails closed ONLY while ``set_multiplex_active(True)`` holds.
+* ``hermes_agent.agent.secret_scope.get_secret`` fails closed ONLY while ``set_multiplex_active(True)`` holds.
   A ``serve`` backend that hosts a second profile home never flipped it, so every unscoped read
   for a secondary profile silently returned the LAUNCH profile's ``os.environ`` value. The flip
   happens here, at the moment the process first learns it hosts another profile home.
@@ -46,7 +46,7 @@ def capture_launch_env() -> dict[str, str]:
 def activate_multi_profile_hosting() -> None:
     """This process now hosts a profile home other than its launch home: freeze the launch env
     and make unscoped credential reads fail closed (``get_secret`` raises instead of borrowing)."""
-    from agent.secret_scope import set_multiplex_active
+    from hermes_agent.agent.secret_scope import set_multiplex_active
     capture_launch_env()
     set_multiplex_active(True)
 
@@ -90,7 +90,7 @@ def activate_multi_profile_hosting_eagerly() -> bool:
     is single-profile, and the lazy backstop only fires once a request has already been answered.
     Returns True when this call activated hosting.
     """
-    from agent.secret_scope import is_multiplex_active
+    from hermes_agent.agent.secret_scope import is_multiplex_active
     if is_multiplex_active():
         return False
     try:
@@ -118,7 +118,7 @@ def _launch_env() -> dict[str, str]:
     """The launch profile's env: frozen once multiplexing is active; the LIVE process env before
     (no secondary has run yet, so it is provably the launch profile's, and freezing it early would
     miss values the launch process still bridges at startup)."""
-    from agent.secret_scope import is_multiplex_active
+    from hermes_agent.agent.secret_scope import is_multiplex_active
     return capture_launch_env() if is_multiplex_active() else dict(os.environ)
 
 
@@ -147,7 +147,7 @@ def launch_secret_scope(launch_home: str | Path) -> dict[str, str]:
     two values it sees. Env-only keys (systemd ``Environment=``, ``op run``, Compose) are unaffected:
     nothing in the files shadows them.
     """
-    from agent.secret_scope import _is_global_env, build_profile_secret_scope
+    from hermes_agent.agent.secret_scope import _is_global_env, build_profile_secret_scope
     scope = {k: v for k, v in _launch_env().items() if not _is_global_env(k)}
     scope.update(build_profile_secret_scope(Path(launch_home)))
     return scope
@@ -161,7 +161,7 @@ def owner_secret_scope(home: str | Path) -> dict[str, str]:
     per-home binding point (routed gateway turns, cron fires, kanban ticks) builds through here, so
     the launch profile keeps its env-only credentials when a single-profile gateway starts
     multiplexing in place."""
-    from agent.secret_scope import _is_process_home, build_profile_secret_scope
+    from hermes_agent.agent.secret_scope import _is_process_home, build_profile_secret_scope
     if _is_process_home(Path(home)):
         return launch_secret_scope(home)
     return build_profile_secret_scope(Path(home))
@@ -173,7 +173,7 @@ def launch_body() -> Iterator[None]:
     while single-profile, so its reads keep the process-env semantics they always had; if a second
     profile switches the gateway to fail-closed mid-body, an unscoped read resolves from
     ``launch_secret_scope`` (frozen env + ``.env``) instead of raising ``UnscopedSecretError``."""
-    from agent.secret_scope import reset_launch_body_scope, set_launch_body_scope
+    from hermes_agent.agent.secret_scope import reset_launch_body_scope, set_launch_body_scope
     from hermes_constants import get_process_hermes_home
     home = get_process_hermes_home()
     token = set_launch_body_scope(lambda: launch_secret_scope(home))
@@ -196,7 +196,7 @@ def launch_profile_runtime_scope(launch_home: str | Path) -> Iterator[None]:
     override), so a launch-profile turn without it was indistinguishable from no turn at all and
     every plugin hook it fired saw an unscoped process (#118538). Routed turns already bind theirs
     (``hermes_agent/gateway/run.py::_profile_runtime_scope``); the launch profile is a tenant like any other."""
-    from agent.runtime_scope import bind_state, scope_for_profile
+    from hermes_agent.agent.runtime_scope import bind_state, scope_for_profile
 
     home = Path(launch_home)
     # Own home: secrets unstamped (no foreign-home stamp), terminal policy over the frozen overlay.
@@ -217,7 +217,7 @@ def profile_config_scope(home: str | Path, *, launch_home: str | Path | None = N
     body), or the full :func:`launch_profile_runtime_scope` once the process multiplexes. Any other
     home gets only its own files, stamped as foreign. No external-source hydration.
     """
-    from agent.secret_scope import build_profile_secret_scope, is_multiplex_active, reset_secret_scope, set_secret_scope
+    from hermes_agent.agent.secret_scope import build_profile_secret_scope, is_multiplex_active, reset_secret_scope, set_secret_scope
     from hermes_constants import get_process_hermes_home, reset_hermes_home_override, set_hermes_home_override
     from hermes_agent.tools.terminal_scope import install_profile_terminal_scope, reset_terminal_scope, set_terminal_scope
 
@@ -254,7 +254,7 @@ def launch_profile_scope_if_multiplexed():
     profile's, so binding nothing is still correct (and keeps single-profile hosts byte-identical —
     callers assert the returned object is literally a ``nullcontext``).
     """
-    from agent.secret_scope import is_multiplex_active
+    from hermes_agent.agent.secret_scope import is_multiplex_active
     if not is_multiplex_active():
         return contextlib.nullcontext()
     from hermes_constants import get_process_hermes_home

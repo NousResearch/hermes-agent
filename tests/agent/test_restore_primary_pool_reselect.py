@@ -12,7 +12,7 @@ import time
 from unittest.mock import MagicMock
 
 
-from agent.credential_pool import (
+from hermes_agent.agent.credential_pool import (
     AUTH_TYPE_OAUTH,
     PooledCredential,
 )
@@ -44,7 +44,7 @@ def _make_entry(
 
 def _build_mock_pool(entries: list[dict], *, strategy: str = "round_robin"):
     """Build a mock CredentialPool with the given entries."""
-    from agent.credential_pool import CredentialPool
+    from hermes_agent.agent.credential_pool import CredentialPool
 
     pool = CredentialPool(
         provider="openai-codex",
@@ -59,7 +59,7 @@ class TestRestorePrimaryPoolReselect:
 
     def _make_agent(self, pool):
         """Create a minimal AIAgent with the given credential pool."""
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         agent = AIAgent.__new__(AIAgent)
         agent.model = "gpt-5.5"

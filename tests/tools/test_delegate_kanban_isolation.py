@@ -75,7 +75,7 @@ def test_delegated_child_context_suppresses_env_gated_kanban_tools(monkeypatch, 
     monkeypatch.setenv("HERMES_HOME", str(home))
 
     import hermes_agent.tools.kanban_tools
-    from agent.delegation_context import delegated_child_context
+    from hermes_agent.agent.delegation_context import delegated_child_context
     from hermes_agent.model_tools import _clear_tool_defs_cache, get_tool_definitions
     from hermes_agent.tools.registry import invalidate_check_fn_cache
 
@@ -100,7 +100,7 @@ def test_build_child_agent_strips_kanban_toolset_even_when_parent_is_worker(monk
             self.session_id = "child-session"
             self._session_db = kwargs.get("session_db")
 
-    import run_agent
+    from hermes_agent import run_agent
     from hermes_agent.tools import delegate_tool
     from hermes_agent.tools import delegate_tool_config
 
@@ -155,7 +155,7 @@ def test_delegate_child_execute_code_env_bridges_contextvar_and_scrubs_kanban(
     monkeypatch.setenv("HERMES_KANBAN_CLAIM_LOCK", "lock")
     monkeypatch.delenv("HERMES_DELEGATED_CHILD_CONTEXT", raising=False)
 
-    from agent.delegation_context import delegated_child_context
+    from hermes_agent.agent.delegation_context import delegated_child_context
     from hermes_agent.tools.code_execution_env import _scrub_child_env
 
     with delegated_child_context():
@@ -185,7 +185,7 @@ def test_auto_heartbeat_reports_failure_without_mutating_fenced_child_board(
     so once at WARNING (the DEBUG-only refusal hid a starving claim for a day). An in-process
     delegate child stays fenced too, quietly, without consuming the worker's heartbeat window."""
     kb, tid, _workspace, _attachments_root = _make_running_kanban_task(monkeypatch, tmp_path)
-    from agent.delegation_context import delegated_child_context
+    from hermes_agent.agent.delegation_context import delegated_child_context
     from hermes_cli import kanban_db_connect as kbc
     from hermes_agent.tools import kanban_tools
 
@@ -231,7 +231,7 @@ def test_delegate_child_kanban_cli_cannot_delete_parent_board(
     kb.create_board("victim")
     assert kb.board_exists("victim")
 
-    from agent.delegation_context import delegated_child_context
+    from hermes_agent.agent.delegation_context import delegated_child_context
     from hermes_agent.tools.environments.local import LocalEnvironment
 
     code = (
@@ -263,7 +263,7 @@ def test_delegate_child_attach_url_guard_leaves_no_row_or_file(monkeypatch, tmp_
     kb, tid, _workspace, attachments_root = _make_running_kanban_task(monkeypatch, tmp_path)
     from hermes_cli import kanban_db_connect as kbc
 
-    from agent.delegation_context import delegated_child_context
+    from hermes_agent.agent.delegation_context import delegated_child_context
     from hermes_agent.tools import kanban_tools
 
     def forbidden_download(*_args, **_kwargs):

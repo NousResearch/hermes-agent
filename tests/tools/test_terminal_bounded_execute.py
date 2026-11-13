@@ -31,7 +31,7 @@ def test_execute_returns_when_wait_loop_never_returns(monkeypatch):
     killed: list = []
     monkeypatch.setattr(env, "_kill_process", lambda proc: killed.append(("kill", proc)))
     monkeypatch.setattr(
-        "agent.deadline.kill_process_tree",
+        "hermes_agent.agent.deadline.kill_process_tree",
         lambda pid, **_k: killed.append(("tree", pid)),
     )
     monkeypatch.setattr(env, "_update_cwd", lambda _result: None)

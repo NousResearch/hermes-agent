@@ -23,7 +23,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 from tests.agent.test_run_agent import (
     _make_tool_defs,
     _mock_response,
@@ -54,7 +54,7 @@ def agent():
             return_value=_make_tool_defs("web_search"),
         ),
         patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
-        patch("agent.process_bootstrap.OpenAI"),
+        patch("hermes_agent.agent.process_bootstrap.OpenAI"),
     ):
         a = AIAgent(
             api_key="test-key-1234567890",
@@ -101,8 +101,8 @@ def _run_with_hooks(agent, message="hi"):
 class TestStreamHelperStashesFirstChunkAt:
     """interruptible_streaming_api_call's success/failure stash behavior."""
 
-    @patch("run_agent.AIAgent._create_request_openai_client")
-    @patch("run_agent.AIAgent._close_request_openai_client")
+    @patch("hermes_agent.run_agent.AIAgent._create_request_openai_client")
+    @patch("hermes_agent.run_agent.AIAgent._close_request_openai_client")
     def test_stream_success_sets_timestamp(self, _mock_close, mock_create, agent):
         chunks = [
             _make_stream_chunk(content="Hello"),
@@ -124,8 +124,8 @@ class TestStreamHelperStashesFirstChunkAt:
         assert isinstance(stamped, float)
         assert before <= stamped <= after
 
-    @patch("run_agent.AIAgent._create_request_openai_client")
-    @patch("run_agent.AIAgent._close_request_openai_client")
+    @patch("hermes_agent.run_agent.AIAgent._create_request_openai_client")
+    @patch("hermes_agent.run_agent.AIAgent._close_request_openai_client")
     def test_failed_stream_leaves_timestamp_none(
         self, _mock_close, mock_create, agent
     ):
@@ -147,8 +147,8 @@ class TestStreamHelperStashesFirstChunkAt:
 
         assert agent._last_api_first_chunk_at is None
 
-    @patch("run_agent.AIAgent._create_request_openai_client")
-    @patch("run_agent.AIAgent._close_request_openai_client")
+    @patch("hermes_agent.run_agent.AIAgent._create_request_openai_client")
+    @patch("hermes_agent.run_agent.AIAgent._close_request_openai_client")
     def test_partial_stream_stub_leaves_timestamp_none(
         self, _mock_close, mock_create, agent
     ):
@@ -183,8 +183,8 @@ class TestStreamHelperStashesFirstChunkAt:
 class TestPostApiRequestFirstChunkAtPayload:
     """The first_chunk_at kwarg observed by post_api_request subscribers."""
 
-    @patch("run_agent.AIAgent._create_request_openai_client")
-    @patch("run_agent.AIAgent._close_request_openai_client")
+    @patch("hermes_agent.run_agent.AIAgent._create_request_openai_client")
+    @patch("hermes_agent.run_agent.AIAgent._close_request_openai_client")
     def test_streamed_success_emits_non_null_first_chunk_at(
         self, _mock_close, mock_create, agent
     ):
@@ -211,8 +211,8 @@ class TestPostApiRequestFirstChunkAtPayload:
         # TTFB must be derivable and sane: started_at <= first_chunk_at <= ended_at.
         assert post[0]["started_at"] <= stamped <= post[0]["ended_at"]
 
-    @patch("run_agent.AIAgent._create_request_openai_client")
-    @patch("run_agent.AIAgent._close_request_openai_client")
+    @patch("hermes_agent.run_agent.AIAgent._create_request_openai_client")
+    @patch("hermes_agent.run_agent.AIAgent._close_request_openai_client")
     def test_each_streamed_attempt_emits_its_own_timestamp(
         self, _mock_close, mock_create, agent
     ):

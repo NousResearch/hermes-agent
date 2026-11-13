@@ -5,7 +5,7 @@ import logging
 import os
 from fastapi import HTTPException
 from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
-from agent.model_metadata import is_local_endpoint
+from hermes_agent.agent.model_metadata import is_local_endpoint
 from hermes_cli.config import (
     DEFAULT_CONFIG,
     cfg_get,
@@ -333,9 +333,9 @@ def _custom_provider_options(kind: str, builtin_names: list[str], cfg: dict[str,
 
     try:
         if kind == "tts":
-            from agent.tts_registry import list_providers as _list_voice_providers
+            from hermes_agent.agent.tts_registry import list_providers as _list_voice_providers
         else:
-            from agent.transcription_registry import list_providers as _list_voice_providers
+            from hermes_agent.agent.transcription_registry import list_providers as _list_voice_providers
         for _p in _list_voice_providers():
             _add(getattr(_p, "name", None))
     except Exception:  # pragma: no cover - registry import should not break schema
@@ -479,7 +479,7 @@ def _dashboard_code_skew_guard() -> Optional[str]:
     Mirrors the gateway's ``_model_switch_skew_guard``: refuse the risky call with an
     actionable message. Never a false positive (non-git installs return None).
 
-    ``/api/model/options`` 500 after the update added ``agent.model_metadata.is_grok_46_family`` while the
+    ``/api/model/options`` 500 after the update added ``hermes_agent.agent.model_metadata.is_grok_46_family`` while the
     running process kept serving the pre-update module (#86207).
     """
     from hermes_agent.gateway.code_skew import detect_code_skew

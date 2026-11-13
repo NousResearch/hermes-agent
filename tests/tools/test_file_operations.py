@@ -10,7 +10,7 @@ from unittest.mock import MagicMock
 
 from tests.tools.file_ops_fakes import READ_SENTINEL_RE, compound_read_output
 from hermes_agent.tools.environments.local import _find_bash, LocalEnvironment
-from agent.file_safety import is_write_denied as _is_write_denied
+from hermes_agent.agent.file_safety import is_write_denied as _is_write_denied
 from hermes_agent.tools.file_operations_common import SearchMatch
 from hermes_agent.tools.file_operations import (
     ReadResult,

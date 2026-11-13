@@ -56,7 +56,7 @@ class _SyncThread:
 
 def test_background_review_matches_parent_toolset_config():
     """Fork must receive parent's toolset config so ``tools[]`` cache key matches."""
-    import run_agent
+    from hermes_agent import run_agent
 
     agent = _make_agent_stub(run_agent.AIAgent)
     captured = {}
@@ -93,7 +93,7 @@ def test_background_review_installs_thread_local_whitelist():
     deny terminal/send_message/delegate_task at dispatch time. Verify the
     whitelist is set with exactly the memory+skills tool names.
     """
-    import run_agent
+    from hermes_agent import run_agent
     from hermes_cli import plugins as _plugins
 
     captured = {}
@@ -223,7 +223,7 @@ def test_background_review_whitelist_includes_configured_extra_tools(
     )
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
 
-    import run_agent
+    from hermes_agent import run_agent
     from hermes_cli import config as config_module
     from hermes_cli import plugins as _plugins
 

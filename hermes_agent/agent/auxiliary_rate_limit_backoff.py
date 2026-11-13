@@ -12,7 +12,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Callable, Optional
 
-from agent import retry_utils
+from hermes_agent.agent import retry_utils
 
 logger = logging.getLogger(__name__)
 
@@ -50,8 +50,8 @@ def rate_limit_retry_rungs(failure: Any, route: Any, kwargs: dict[str, Any], acc
     """Ladder rungs: wait, then re-send on the route's client, up to ``RATE_LIMIT_RETRIES`` times while
     the refusal stays a per-key rate limit. ``accept``: the caller's acceptance (a parameter rung may already have
     been spent on ``kwargs``). Returns ``(response, None)`` or ``(None, last_failure)``."""
-    from agent import auxiliary_error_policy as aux_errors
-    from agent.auxiliary_client import _LadderStep, _rung
+    from hermes_agent.agent import auxiliary_error_policy as aux_errors
+    from hermes_agent.agent.auxiliary_client import _LadderStep, _rung
 
     label = f"{route.task or 'call'}{route.tag}"
     for attempt in range(1, RATE_LIMIT_RETRIES + 1):

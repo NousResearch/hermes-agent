@@ -16,7 +16,7 @@ The threat model and high-level design are summarised on the user page; this pag
 pm/security_packages.py              Pinned binary acquisition and publication
                                        through PM. Release provenance staging.
 
-agent/proxy_sources/iron_proxy.py     Core: binary lookup, GPG checks, CA gen, config build,
+hermes_agent/agent/proxy_sources/iron_proxy.py     Core: binary lookup, GPG checks, CA gen, config build,
                                        subprocess lifecycle, mappings I/O, PID/nonce
                                        defense.  Pure-function surface where possible.
 
@@ -69,7 +69,7 @@ tests/agent/test_iron_proxy_e2e.py          Live E2E (gated on HERMES_RUN_E2E=1)
 
 ```text
 hermes egress install
-  -> agent.proxy_sources.iron_proxy.install_iron_proxy(force=...)
+  -> hermes_agent.agent.proxy_sources.iron_proxy.install_iron_proxy(force=...)
        pm.ensure("iron-proxy", explicit=True) installs or repairs the entry.
        PM checks archive and provenance hashes against pm/lock.json.
        Package staging checks that release checksums cover the pinned archive,

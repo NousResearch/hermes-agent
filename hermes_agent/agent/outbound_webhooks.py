@@ -24,8 +24,8 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 from urllib import error as urlerror
 from urllib import request as urlrequest
 
-from agent.deadline import poll_until
-from agent.shell_hooks import (
+from hermes_agent.agent.deadline import poll_until
+from hermes_agent.agent.shell_hooks import (
     _TOOL_EVENTS as _TOOL_SCOPED_EVENTS,
     _ToolMatcherMixin,
     _forget_home_registrations,
@@ -72,7 +72,7 @@ class WebhookTarget(_ToolMatcherMixin):
 def register_from_config(cfg: Optional[dict[str, Any]]) -> list[WebhookTarget]:
     """Register every configured outbound webhook on the plugin manager.  Malformed ``hooks.outbound``
     means zero targets — never raises.  Returns the targets that ended up wired (deduplicated)."""
-    from agent.safe_worker_policy import safe_worker_enabled
+    from hermes_agent.agent.safe_worker_policy import safe_worker_enabled
 
     if safe_worker_enabled():
         return []
@@ -136,7 +136,7 @@ def re_register_config_hooks() -> None:
     current home's idempotence keys are cleared so a force-reload in one profile cannot
     invalidate another profile's still-live registration.
 
-    Mirrors ``agent.shell_hooks.re_register_config_hooks``: config-owned outbound-webhook callbacks live in
+    Mirrors ``hermes_agent.agent.shell_hooks.re_register_config_hooks``: config-owned outbound-webhook callbacks live in
     the same ``_hooks`` dict that ``PluginManager.discover_and_load(force=True)`` clears via ``unload()``,
     so without this the force-reloaded profile's outbound webhooks go silently inert (#92682 review).
     """
@@ -208,7 +208,7 @@ def _parse_single_target(index: int, raw: Any) -> Optional[WebhookTarget]:
     # secret (or leave them unsigned when the var lives only in the secondary's .env).
     secret_env = raw.get("secret_env")
     if isinstance(secret_env, str) and secret_env.strip():
-        from agent.secret_scope import get_secret
+        from hermes_agent.agent.secret_scope import get_secret
         secret = get_secret(secret_env.strip(), "") or None
         if secret is None:
             warn(".secret_env=%r is not set in the environment — deliveries will be UNSIGNED", secret_env.strip())
@@ -225,7 +225,7 @@ def _make_callback(event: str, target: WebhookTarget):
     """Build the notify-only closure ``invoke_hook()`` calls per firing."""
 
     def _callback(**kwargs: Any) -> None:
-        from agent.safe_worker_policy import safe_worker_enabled
+        from hermes_agent.agent.safe_worker_policy import safe_worker_enabled
 
         if safe_worker_enabled():
             return

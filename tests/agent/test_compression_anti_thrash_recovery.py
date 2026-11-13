@@ -30,7 +30,7 @@ The recovery contract pinned here:
 
 from unittest.mock import patch
 
-from agent.context_compressor import ContextCompressor
+from hermes_agent.agent.context_compressor import ContextCompressor
 from hermes_agent.hermes_state import SessionDB
 
 
@@ -60,10 +60,10 @@ class TestRecoveryWindow:
         cc = _compressor()
         _trip(cc)
         base = 1000.0
-        with patch("agent.context_compressor.time.time", return_value=base):
+        with patch("hermes_agent.agent.context_compressor.time.time", return_value=base):
             assert cc.should_compress(cc.threshold_tokens + 1) is False
         with patch(
-            "agent.context_compressor.time.time",
+            "hermes_agent.agent.context_compressor.time.time",
             return_value=base + cc._ANTI_THRASH_RECOVERY_SECONDS + 1,
         ):
             assert cc.should_compress(cc.threshold_tokens + 1) is True
@@ -103,10 +103,10 @@ class TestRestartSemantics:
         # No stored deadline yet -> the clock comes up disarmed.
         assert cc._anti_thrash_recovery_deadline == 0.0
         base = 5000.0
-        with patch("agent.context_compressor.time.time", return_value=base):
+        with patch("hermes_agent.agent.context_compressor.time.time", return_value=base):
             assert cc.should_compress(cc.threshold_tokens + 1) is False
         with patch(
-            "agent.context_compressor.time.time",
+            "hermes_agent.agent.context_compressor.time.time",
             return_value=base + cc._ANTI_THRASH_RECOVERY_SECONDS + 1,
         ):
             assert cc.should_compress(cc.threshold_tokens + 1) is True
@@ -118,7 +118,7 @@ class TestRestartSemantics:
         cc = _compressor()
         _trip(cc)
         base = 1000.0
-        with patch("agent.context_compressor.time.time", return_value=base):
+        with patch("hermes_agent.agent.context_compressor.time.time", return_value=base):
             assert cc.should_compress(cc.threshold_tokens + 1) is False
         assert cc._anti_thrash_recovery_deadline > 0.0
         cc.on_session_reset()
@@ -140,7 +140,7 @@ class TestDurableDeadline:
         db.set_compression_ineffective_count("sess-1", 2)
         base = 5000.0
         first = self._bound(db)
-        with patch("agent.context_compressor.time.time", return_value=base):
+        with patch("hermes_agent.agent.context_compressor.time.time", return_value=base):
             assert first.should_compress(first.threshold_tokens + 1) is False
         # Deadline is durable, as a wall-clock epoch.
         assert db.get_compression_recovery_deadline("sess-1") == (
@@ -153,7 +153,7 @@ class TestDurableDeadline:
             base + first._ANTI_THRASH_RECOVERY_SECONDS
         )
         with patch(
-            "agent.context_compressor.time.time",
+            "hermes_agent.agent.context_compressor.time.time",
             return_value=base + first._ANTI_THRASH_RECOVERY_SECONDS + 1,
         ):
             assert second.should_compress(second.threshold_tokens + 1) is True
@@ -166,10 +166,10 @@ class TestDurableDeadline:
         db.set_compression_ineffective_count("sess-1", 2)
         base = 5000.0
         first = self._bound(db)
-        with patch("agent.context_compressor.time.time", return_value=base):
+        with patch("hermes_agent.agent.context_compressor.time.time", return_value=base):
             assert first.should_compress(first.threshold_tokens + 1) is False
         second = self._bound(db)
-        with patch("agent.context_compressor.time.time", return_value=base + 10):
+        with patch("hermes_agent.agent.context_compressor.time.time", return_value=base + 10):
             assert second.should_compress(second.threshold_tokens + 1) is False
         assert db.get_compression_ineffective_count("sess-1") == 2
 
@@ -181,7 +181,7 @@ class TestDurableDeadline:
         db.set_compression_recovery_deadline("sess-1", 1_000_000.0)
         cc = self._bound(db)
         # Wall clock now far BEFORE the stored deadline (clock stepped back).
-        with patch("agent.context_compressor.time.time", return_value=100.0):
+        with patch("hermes_agent.agent.context_compressor.time.time", return_value=100.0):
             assert cc.should_compress(cc.threshold_tokens + 1) is False
         assert db.get_compression_recovery_deadline("sess-1") == 100.0 + window
 
@@ -190,11 +190,11 @@ class TestDurableDeadline:
         db.create_session(session_id="sess-1", source="telegram")
         db.set_compression_ineffective_count("sess-1", 2)
         cc = self._bound(db)
-        with patch("agent.context_compressor.time.time", return_value=5000.0):
+        with patch("hermes_agent.agent.context_compressor.time.time", return_value=5000.0):
             assert cc.should_compress(cc.threshold_tokens + 1) is False
         assert db.get_compression_recovery_deadline("sess-1") > 0.0
         cc._record_ineffective_compression_verdict(0)
-        with patch("agent.context_compressor.time.time", return_value=5001.0):
+        with patch("hermes_agent.agent.context_compressor.time.time", return_value=5001.0):
             assert cc.should_compress(cc.threshold_tokens + 1) is True
         assert db.get_compression_recovery_deadline("sess-1") == 0.0
 

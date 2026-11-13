@@ -89,7 +89,7 @@ def test_keepalive_refreshes_stale_pool_entry(monkeypatch):
             return _Entry()
 
     pool = _Pool()
-    monkeypatch.setattr("agent.credential_pool.load_pool", lambda provider: pool)
+    monkeypatch.setattr("hermes_agent.agent.credential_pool.load_pool", lambda provider: pool)
 
     assert keepalive.refresh_nous_auth_keepalive_once() is True
     assert pool.refreshed is True
@@ -110,7 +110,7 @@ def test_keepalive_falls_back_to_singleton_state(monkeypatch):
             "base_url": "https://inference-api.nousresearch.com/v1",
         }
 
-    monkeypatch.setattr("agent.credential_pool.load_pool", lambda provider: _Pool())
+    monkeypatch.setattr("hermes_agent.agent.credential_pool.load_pool", lambda provider: _Pool())
     monkeypatch.setattr(
         keepalive,
         "get_provider_auth_state",
@@ -128,7 +128,7 @@ def test_keepalive_falls_back_to_singleton_state(monkeypatch):
 
 def test_keepalive_binds_launch_scope_for_multiplexed_singleton_refresh(tmp_path, monkeypatch, caplog):
     """The daemon tick must not lose the launch profile's routing secrets."""
-    from agent.secret_scope import is_multiplex_active, set_multiplex_active
+    from hermes_agent.agent.secret_scope import is_multiplex_active, set_multiplex_active
     from hermes_cli.auth_nous import _nous_inference_env_override, _nous_portal_env_override
 
     launch_home = tmp_path / ".hermes"
@@ -139,7 +139,7 @@ def test_keepalive_binds_launch_scope_for_multiplexed_singleton_refresh(tmp_path
         encoding="utf-8",
     )
     monkeypatch.setenv("HERMES_HOME", str(launch_home))
-    monkeypatch.setattr("agent.credential_pool.load_pool", lambda provider: None)
+    monkeypatch.setattr("hermes_agent.agent.credential_pool.load_pool", lambda provider: None)
     monkeypatch.setattr(
         keepalive, "get_provider_auth_state", lambda provider: {"access_token": "stored-token"}
     )
@@ -166,7 +166,7 @@ def test_keepalive_binds_launch_scope_for_multiplexed_singleton_refresh(tmp_path
 
 def test_keepalive_binds_launch_scope_for_multiplexed_pool_refresh(tmp_path, monkeypatch):
     """Pool refreshes run under the same launch scope as singleton refreshes."""
-    from agent.secret_scope import current_secret_scope, is_multiplex_active, set_multiplex_active
+    from hermes_agent.agent.secret_scope import current_secret_scope, is_multiplex_active, set_multiplex_active
 
     launch_home = tmp_path / ".hermes"
     launch_home.mkdir()
@@ -194,7 +194,7 @@ def test_keepalive_binds_launch_scope_for_multiplexed_pool_refresh(tmp_path, mon
         def try_refresh_current(self):
             return _Entry()
 
-    monkeypatch.setattr("agent.credential_pool.load_pool", lambda provider: _Pool())
+    monkeypatch.setattr("hermes_agent.agent.credential_pool.load_pool", lambda provider: _Pool())
     previous_multiplex = is_multiplex_active()
     set_multiplex_active(True)
     try:

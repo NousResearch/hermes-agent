@@ -26,8 +26,8 @@ import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from agent.deadline import poll_until
-from agent.proxy_bypass import is_loopback_host
+from hermes_agent.agent.deadline import poll_until
+from hermes_agent.agent.proxy_bypass import is_loopback_host
 from hermes_constants import get_hermes_home
 
 logger = logging.getLogger(__name__)

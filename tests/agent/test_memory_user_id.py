@@ -7,8 +7,8 @@ so each gateway user gets their own memory bucket instead of sharing a static on
 import json
 from unittest.mock import MagicMock, patch
 
-from agent.memory_provider import MemoryProvider
-from agent.memory_manager import MemoryManager
+from hermes_agent.agent.memory_provider import MemoryProvider
+from hermes_agent.agent.memory_manager import MemoryManager
 
 # ---------------------------------------------------------------------------
 # Concrete test provider that records init kwargs
@@ -92,7 +92,7 @@ class TestMemoryManagerUserIdThreading:
         assert p2._init_kwargs.get("platform") == "slack"
 
     def test_session_title_provenance_and_cwd_reach_provider(self, tmp_path):
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         provider = RecordingProvider()
         session_db = MagicMock()
@@ -106,7 +106,7 @@ class TestMemoryManagerUserIdThreading:
             "hermes_agent.model_tools.check_toolset_requirements",
             return_value={},
         ), patch(
-            "agent.process_bootstrap.OpenAI",
+            "hermes_agent.agent.process_bootstrap.OpenAI",
         ), patch(
             "hermes_cli.config.load_config_readonly",
             return_value={"memory": {"provider": "recording"}},

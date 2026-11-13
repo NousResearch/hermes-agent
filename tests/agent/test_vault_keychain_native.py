@@ -1,7 +1,7 @@
 """The vault key against the host's REAL OS keychain (macOS Keychain, Windows Credential Manager).
 
 Everything else in the vault suite uses an in-memory keyring, which proves Hermes' plumbing but not
-that the platform store accepts, returns and deletes an entry the way ``agent.vault_keychain``
+that the platform store accepts, returns and deletes an entry the way ``hermes_agent.agent.vault_keychain``
 expects. These run only on the macOS and Windows CI lanes (never on Linux, so a developer's Secret
 Service is never touched), use uniquely named dummy entries, and delete them in teardown.
 """
@@ -13,8 +13,8 @@ import uuid
 import pytest
 from cryptography.fernet import Fernet
 
-from agent import vault_keychain as kc
-from agent.vault_store import VaultStore
+from hermes_agent.agent import vault_keychain as kc
+from hermes_agent.agent.vault_store import VaultStore
 
 _LOGIN = {"identifier_type": "email", "identifier": "ci@example.com", "password": "dummy-pw-not-real-42"}
 

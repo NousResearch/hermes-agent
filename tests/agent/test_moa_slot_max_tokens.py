@@ -14,7 +14,7 @@ class TestRunReferenceSlotMaxTokens:
 
     def test_legacy_slot_max_tokens_cannot_override_internal_budget(self):
         """An explicit internal caller budget wins over a stale user setting."""
-        from agent.moa_loop import _run_reference
+        from hermes_agent.agent.moa_loop import _run_reference
 
         captured_kwargs: dict = {}
 
@@ -27,9 +27,9 @@ class TestRunReferenceSlotMaxTokens:
 
         slot = {"provider": "openrouter", "model": "deepseek/deepseek-v4-pro", "max_tokens": 600}
 
-        with patch("agent.moa_loop._slot_runtime", return_value={"provider": "openrouter", "model": "deepseek/deepseek-v4-pro"}), \
-             patch("agent.moa_loop.call_llm", side_effect=fake_call_llm), \
-             patch("agent.moa_loop._maybe_apply_moa_cache_control", side_effect=lambda msgs, rt, **kwargs: msgs):
+        with patch("hermes_agent.agent.moa_loop._slot_runtime", return_value={"provider": "openrouter", "model": "deepseek/deepseek-v4-pro"}), \
+             patch("hermes_agent.agent.moa_loop.call_llm", side_effect=fake_call_llm), \
+             patch("hermes_agent.agent.moa_loop._maybe_apply_moa_cache_control", side_effect=lambda msgs, rt, **kwargs: msgs):
             _run_reference(slot, [{"role": "user", "content": "hi"}], max_tokens=2000)
 
         assert captured_kwargs.get("max_tokens") == 2000

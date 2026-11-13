@@ -263,7 +263,7 @@ scoop install shellcheck    # Windows
 
 **服务器已启动但从不返回诊断结果**
 
-检查 `~/.hermes/logs/agent.log` 中的 `[agent.lsp.client]` 条目——语言服务器的
+检查 `~/.hermes/logs/agent.log` 中的 `[hermes_agent.agent.lsp.client]` 条目——语言服务器的
 stderr 输出和协议错误均记录于此。部分服务器（尤其是 rust-analyzer）需要完成
 全项目索引后才会输出单文件诊断；服务器启动后的第一次编辑可能没有诊断结果，
 后续编辑才会获取到。

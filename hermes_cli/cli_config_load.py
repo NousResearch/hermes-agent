@@ -51,7 +51,7 @@ def _load_prefill_messages(file_path: str, base_dir: Path | None = None) -> list
 
 def _resolve_prefill_messages_file(config: dict[str, Any]) -> str:
     """Prefill file path: env, then top-level ``prefill_messages_file``, then legacy ``agent.*``."""
-    from agent.session_client_env import session_env
+    from hermes_agent.agent.session_client_env import session_env
     agent_cfg = config.get("agent", {})
     return (
         session_env("HERMES_PREFILL_MESSAGES_FILE").strip()
@@ -71,7 +71,7 @@ def _parse_reasoning_config(effort) -> dict | None:
 
 def _parse_service_tier_config(raw: str) -> str | None:
     """Parse a persisted fast-mode preference: None, "priority", "ultrafast", "auto", or "cold"."""
-    from agent.fast_mode import NORMAL_TIER_WORDS, parse_service_tier
+    from hermes_agent.agent.fast_mode import NORMAL_TIER_WORDS, parse_service_tier
 
     tier = parse_service_tier(raw)
     if tier is None and str(raw or "").strip().lower() not in NORMAL_TIER_WORDS:
@@ -217,7 +217,7 @@ def _cli_config_defaults():
         "auxiliary": {"vision": {"provider": "auto", "model": "", "base_url": "", "api_key": ""}},
         # delegation: empty model/provider = inherit parent; api_key falls back to OPENAI_API_KEY
         "delegation": {"max_iterations": cfg_get(shared, "delegation", "max_iterations"), "model": "", "provider": "", "base_url": "", "api_key": ""},
-        "onboarding": {"seen": {}},  # first-touch hint flags (agent/onboarding.py), latched once shown
+        "onboarding": {"seen": {}},  # first-touch hint flags (hermes_agent/agent/onboarding.py), latched once shown
     }
 
 
@@ -305,8 +305,8 @@ def _init_logging_and_display_from_config() -> None:
         lambda: _im("hermes_logging").setup_logging(mode="cli"),
         lambda: _im("hermes_cli.config").print_config_warnings(),
         lambda: _im("hermes_cli.skin_engine").init_skin_from_config(_cli().CLI_CONFIG),
-        lambda: _im("agent.display").set_tool_preview_max_len(int(_display("tool_preview_length", 0) or 0)),
-        lambda: _im("agent.display").set_friendly_tool_labels(bool(_display("friendly_tool_labels", True))),
+        lambda: _im("hermes_agent.agent.display").set_tool_preview_max_len(int(_display("tool_preview_length", 0) or 0)),
+        lambda: _im("hermes_agent.agent.display").set_friendly_tool_labels(bool(_display("friendly_tool_labels", True))),
     ):
         try:
             step()

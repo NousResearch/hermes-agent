@@ -1,7 +1,7 @@
 """Regression coverage for image-only user content across native compaction."""
 
-from agent.codex_responses_adapter import _chat_messages_to_responses_input
-from agent.native_compaction import prune_pre_checkpoint_items
+from hermes_agent.agent.codex_responses_adapter import _chat_messages_to_responses_input
+from hermes_agent.agent.native_compaction import prune_pre_checkpoint_items
 
 
 _IMAGE_URL = "data:image/png;base64,AAAA"

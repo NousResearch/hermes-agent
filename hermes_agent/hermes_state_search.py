@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from functools import partial
 from typing import Any, Callable, Collection, Dict, List, Optional, Tuple
 
-from agent.skill_commands import describe_skill_invocation
+from hermes_agent.agent.skill_commands import describe_skill_invocation
 from hermes_agent.hermes_state_errors import is_malformed_db_error
 from hermes_agent.hermes_state_common import (
     FTS_SQL, FTS_STALE_KEY, FTS_STORAGE_VERSION, FTS_TOOL_CONTENT_PREFIX_CHARS,
@@ -901,7 +901,7 @@ class SessionSearchMixin:
                 "ORDER BY id DESC LIMIT ?",
                 (session_id, int(limit) * 2 + 5),
             ).fetchall()
-        from agent.context_compressor import ContextCompressor
+        from hermes_agent.agent.context_compressor import ContextCompressor
         result: list[dict[str, Any]] = []
         for row in rows:
             if len(result) >= int(limit):

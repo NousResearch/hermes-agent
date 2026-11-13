@@ -12,9 +12,9 @@ def test_run_conversation_exports_session_and_turn_cwds(tmp_path, monkeypatch):
     if getattr(relay, "_native", None) is None:
         pytest.skip("NeMo Relay native binding is unavailable on this platform")
 
-    from agent import relay_runtime
+    from hermes_agent.agent import relay_runtime
     from hermes_cli.lifecycle import finalize_session
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
     from hermes_agent.tools.terminal_tool import clear_session_cwd, record_session_cwd
 
     hermes_home = tmp_path / "hermes-home"
@@ -52,7 +52,7 @@ mode = "overwrite"
     monkeypatch.setenv(relay_runtime.RELAY_PLUGINS_CONFIG_ENV, str(config))
     monkeypatch.chdir(session_cwd)
     monkeypatch.setattr(
-        "agent.conversation_loop.run_conversation",
+        "hermes_agent.agent.conversation_loop.run_conversation",
         lambda *_args, **_kwargs: {"final_response": "ok", "completed": True},
     )
 

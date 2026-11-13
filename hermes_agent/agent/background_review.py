@@ -16,9 +16,9 @@ from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 
-from agent.i18n import t
-from agent.prompt_cache_scope import conversation_id, resolve_prompt_cache_scope_safe
-from agent.thread_scoped_output import thread_scoped_silence
+from hermes_agent.agent.i18n import t
+from hermes_agent.agent.prompt_cache_scope import conversation_id, resolve_prompt_cache_scope_safe
+from hermes_agent.agent.thread_scoped_output import thread_scoped_silence
 
 logger = logging.getLogger(__name__)
 
@@ -114,7 +114,7 @@ def _interrupt_background_review(
     """
     def _interrupt() -> None:
         try:
-            from agent.interrupt_compat import request_hard_interrupt
+            from hermes_agent.agent.interrupt_compat import request_hard_interrupt
 
             request_hard_interrupt(review_agent, message, tool_reason=tool_reason)
         except Exception:
@@ -228,7 +228,7 @@ def _review_input_token_budget(
 def load_background_review_settings() -> tuple[bool, dict[str, Any]]:
     """Single config read -> ``(enabled, task_cfg)``. Fail-open (``enabled=True``) so a broken
     config never silently disables reviews — but WARN so the cost is visible."""
-    from agent.safe_worker_policy import safe_worker_enabled
+    from hermes_agent.agent.safe_worker_policy import safe_worker_enabled
     from hermes_agent.gateway.session_finite import finite_turn_required
 
     # A finite gateway turn (`chat -q` / `-z`) is one-shot like the in-process run, whose exit
@@ -987,7 +987,7 @@ def build_cache_parity_fork(
     ``(fork_agent, runtime_dict, routed)``; ``routed`` means a different model (cache cold —
     replay a digest). The caller owns registration, whitelisting, running, usage attribution and
     teardown."""
-    from run_agent import AIAgent  # local: avoids a circular import at load
+    from hermes_agent.run_agent import AIAgent  # local: avoids a circular import at load
     # Inherit the parent's live runtime: AIAgent.__init__'s env auto-resolution fails for
     # OAuth-only providers, session-scoped creds and credential pools.
     _rt = _resolve_review_runtime(agent, task_cfg)
@@ -1357,7 +1357,7 @@ def spawn_background_review_thread(
     explicit: bool = False,
 ):
     """Return ``(target, prompt)``; the caller builds the ``threading.Thread`` so test patches of
-    ``run_agent.threading.Thread`` keep working. ``focus`` (``/refine [instructions]``) is appended
+    ``hermes_agent.run_agent.threading.Thread`` keep working. ``focus`` (``/refine [instructions]``) is appended
     to the chosen prompt; automatic reviews pass ``None``. ``task_cfg`` is the pre-loaded
     ``auxiliary.background_review`` block; when omitted it is read once here. ``explicit``
     (/refine) propagates to the fork's write origin so user-requested reviews keep the full

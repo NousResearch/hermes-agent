@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
-from agent.context_engine import ContextEngine
+from hermes_agent.agent.context_engine import ContextEngine
 
 # Reuse the minimal agent harness that exercises the real finalize_turn path.
 from tests.agent.test_turn_finalizer_cleanup_guard import _StubAgent, _run
@@ -110,7 +110,7 @@ def test_finalization_seam_observes_interrupted_turn_with_none_usage():
     requires a full ``run_conversation`` harness, and unifying all terminal
     paths behind one seam is a separate follow-up.
     """
-    from agent.turn_finalizer import finalize_turn
+    from hermes_agent.agent.turn_finalizer import finalize_turn
 
     agent = _agent_with_engine()
     if hasattr(agent, "_last_turn_usage"):

@@ -2,8 +2,8 @@
 
 Tool-call arguments are no longer rewritten by the compressor, but legacy sessions may still
 carry this marker inside replayed tool-call arguments. Dependency-free leaf shared by the
-elision renderers (``agent.context_compressor``) and the dispatch-boundary detector
-(``agent.tool_dispatch_helpers``), so the matcher is derived from the template instead of
+elision renderers (``hermes_agent.agent.context_compressor``) and the dispatch-boundary detector
+(``hermes_agent.agent.tool_dispatch_helpers``), so the matcher is derived from the template instead of
 re-typing its wording.
 """
 

@@ -15,7 +15,7 @@ ROUTING = {'only': ['Anthropic'], 'ignore': ['DeepInfra'], 'order': ['Anthropic'
 
 @pytest.mark.parametrize('tier, overrides', [('priority', {'service_tier': 'priority'}), ('', None)])
 def test_managed_worker_agent_gets_the_session_provider_routing(tmp_path, monkeypatch, tier, overrides):
-    from agent import managed_worker as worker
+    from hermes_agent.agent import managed_worker as worker
     frame, _ = assignment(tmp_path, monkeypatch)
     config = json.loads(frame['policy']['config_json'])
     config.update(provider_routing=ROUTING, openrouter={'min_coding_score': 0.8})
@@ -50,11 +50,11 @@ def test_managed_worker_agent_gets_the_session_provider_routing(tmp_path, monkey
     monkeypatch.setattr(worker, 'discover_profile_mcp', lambda policy: None)
     monkeypatch.setattr(worker, 'retire_agent', lambda agent: None)
     monkeypatch.setattr(worker, 'WorkerControls', Controls)
-    monkeypatch.setattr('agent.runtime_session_store.WorkerRPC', lambda home: lambda *a, **k: {'owner_epoch': 1})
-    monkeypatch.setattr('agent.runtime_session_store.RuntimeSessionStore', Store)
+    monkeypatch.setattr('hermes_agent.agent.runtime_session_store.WorkerRPC', lambda home: lambda *a, **k: {'owner_epoch': 1})
+    monkeypatch.setattr('hermes_agent.agent.runtime_session_store.RuntimeSessionStore', Store)
     monkeypatch.setattr('hermes_agent.tools.process_registry.process_registry.recover_from_checkpoint', lambda: None)
-    monkeypatch.setattr('run_agent.AIAgent', Agent)
-    monkeypatch.setattr('agent.title_generator.wait_for_title_upgrades', lambda: None)
+    monkeypatch.setattr('hermes_agent.run_agent.AIAgent', Agent)
+    monkeypatch.setattr('hermes_agent.agent.title_generator.wait_for_title_upgrades', lambda: None)
     worker.execute(frame, SimpleNamespace(send=lambda kind, **payload: None))
     assert {k: built.get(k) for k in ('providers_allowed', 'providers_ignored', 'providers_order', 'provider_sort',
                                       'provider_require_parameters', 'provider_data_collection')} == {

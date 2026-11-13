@@ -7,7 +7,7 @@ interactive gate inside a child, found no thread-local sudo callback, and
 fell through to the raw ``/dev/tty`` password prompt — printed mid-TUI from
 a background thread and blocking the child for the full 45s timeout.
 
-The delegated-child ContextVar (``agent.delegation_context``) is the
+The delegated-child ContextVar (``hermes_agent.agent.delegation_context``) is the
 authoritative "this execution context has no user" signal: it is set around
 every child run and propagates through ``contextvars.copy_context`` onto the
 executor thread.
@@ -19,7 +19,7 @@ import threading
 
 import pytest
 
-from agent.delegation_context import delegated_child_context
+from hermes_agent.agent.delegation_context import delegated_child_context
 from hermes_agent.tools import terminal_tool as tt
 from hermes_agent.tools import terminal_tool_sudo as tts
 

@@ -4,7 +4,7 @@ Without it the review fork saved guesses (trait inferences, a one-off "make it s
 into "user prefers concise responses") as durable memory.
 """
 
-from agent.background_review import _COMBINED_REVIEW_PROMPT, _MEMORY_REVIEW_PROMPT, _SKILL_REVIEW_PROMPT
+from hermes_agent.agent.background_review import _COMBINED_REVIEW_PROMPT, _MEMORY_REVIEW_PROMPT, _SKILL_REVIEW_PROMPT
 
 _RULE_MARKERS = ("GROUNDED in this conversation", "never turn a one-off request into a standing preference")
 

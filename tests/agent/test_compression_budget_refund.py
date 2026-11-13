@@ -23,8 +23,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from agent.conversation_loop import _should_rearm_compression_budget
-from run_agent import AIAgent
+from hermes_agent.agent.conversation_loop import _should_rearm_compression_budget
+from hermes_agent.run_agent import AIAgent
 
 
 # ---------------------------------------------------------------------------
@@ -174,7 +174,7 @@ def agent():
     with (
         patch("hermes_agent.model_tools.get_tool_definitions", return_value=_make_tool_defs("web_search")),
         patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
-        patch("agent.process_bootstrap.OpenAI"),
+        patch("hermes_agent.agent.process_bootstrap.OpenAI"),
     ):
         a = AIAgent(
             api_key="test-key-1234567890",

@@ -1,5 +1,5 @@
 """Pre-turn dead-connection sweep over an agent's OpenAI client pools (primary + cached request
-client). Sibling of ``agent.agent_runtime_helpers``, which owns the pool-socket walk."""
+client). Sibling of ``hermes_agent.agent.agent_runtime_helpers``, which owns the pool-socket walk."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ import contextlib
 import logging
 from typing import Any
 
-logger = logging.getLogger("run_agent")  # origin module's logger name: log records / caplog filters unchanged
+logger = logging.getLogger("hermes_agent.run_agent")  # origin module's logger name: log records / caplog filters unchanged
 
 
 def _socket_is_dead(sock) -> bool:
@@ -27,7 +27,7 @@ def _socket_is_dead(sock) -> bool:
 
 def _count_dead_pool_sockets(client: Any) -> int:
     """Return the number of sockets in ``client``'s pool that have reached EOF (CLOSE-WAIT)."""
-    from agent.agent_runtime_helpers import _iter_pool_sockets
+    from hermes_agent.agent.agent_runtime_helpers import _iter_pool_sockets
     return sum(1 for sock in _iter_pool_sockets(client) if _socket_is_dead(sock))
 
 

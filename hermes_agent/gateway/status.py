@@ -1162,7 +1162,7 @@ def _emit_runtime_status_transition(
     previous_payload: dict[str, Any], payload: dict[str, Any]
 ) -> None:
     with contextlib.suppress(Exception):
-        from agent.monitoring.gateway_health import emit_runtime_status_transition
+        from hermes_agent.agent.monitoring.gateway_health import emit_runtime_status_transition
         emit_runtime_status_transition(previous_payload, payload)
 
 def write_runtime_status(

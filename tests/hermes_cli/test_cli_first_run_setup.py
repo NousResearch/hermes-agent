@@ -19,7 +19,7 @@ import types
 import pytest
 
 from hermes_cli.auth import AuthError
-from agent.i18n import t
+from hermes_agent.agent.i18n import t
 
 
 def _reset_modules(prefixes: tuple[str, ...]):
@@ -45,7 +45,7 @@ def _restore_cli_and_tool_modules():
 
 def _import_cli():
     for name in list(sys.modules):
-        if name == "cli" or name == "run_agent" or name == "hermes_agent.tools" or name.startswith("hermes_agent.tools."):
+        if name == "cli" or name == "hermes_agent.run_agent" or name == "hermes_agent.tools" or name.startswith("hermes_agent.tools."):
             sys.modules.pop(name, None)
     if "firecrawl" not in sys.modules:
         sys.modules["firecrawl"] = types.SimpleNamespace(Firecrawl=object)
@@ -281,7 +281,7 @@ def test_empty_key_error_names_actual_provider(monkeypatch, capsys):
 
 def _bench_nous_pool(monkeypatch, **entry_fields):
     import time
-    from agent.credential_pool import STATUS_EXHAUSTED, CredentialPool, PooledCredential
+    from hermes_agent.agent.credential_pool import STATUS_EXHAUSTED, CredentialPool, PooledCredential
 
     benched = PooledCredential(id="e1", provider="nous", auth_type="oauth", access_token="x",
                                refresh_token="r", label="portal", source="manual:device_code",
@@ -292,7 +292,7 @@ def _bench_nous_pool(monkeypatch, **entry_fields):
     monkeypatch.setattr(pool, "has_available", lambda **kw: False, raising=False)
     monkeypatch.setattr(pool, "next_available_at", lambda **kw: time.time() + 55, raising=False)
     monkeypatch.setattr(pool, "entries", lambda: [benched], raising=False)
-    monkeypatch.setattr("agent.credential_pool.load_pool", lambda provider: pool)
+    monkeypatch.setattr("hermes_agent.agent.credential_pool.load_pool", lambda provider: pool)
 
 
 def _forbid_wizard(monkeypatch, shell):

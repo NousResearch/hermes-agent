@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import pytest
 
-from agent.think_scrubber import StreamingThinkScrubber
+from hermes_agent.agent.think_scrubber import StreamingThinkScrubber
 
 
 def _drive(scrubber: StreamingThinkScrubber, deltas: list[str]) -> str:
@@ -193,7 +193,7 @@ class TestChineseReasoningTags:
         assert _drive(s, deltas) == "\n答案是 42"
 
     def test_final_response_strip_hides_chinese_tags(self) -> None:
-        from agent.agent_runtime_helpers import strip_think_blocks
+        from hermes_agent.agent.agent_runtime_helpers import strip_think_blocks
 
         out = strip_think_blocks(None, "<反思>内部推理</反思>最终答案\n<推理>未闭合的推理")
         assert "内部推理" not in out and "未闭合" not in out
@@ -214,7 +214,7 @@ class TestNamespacedReasoningTags:
         assert _drive(s, deltas) == "Answer."
 
     def test_final_response_strip_hides_block_orphan_and_unterminated(self) -> None:
-        from agent.agent_runtime_helpers import strip_think_blocks
+        from hermes_agent.agent.agent_runtime_helpers import strip_think_blocks
 
         out = strip_think_blocks(None, "a <mm:think>hidden</mm:think> b. Report.</mm:think>Fixed.\n<mm:think>open")
         assert out == "a  b. Report.Fixed."

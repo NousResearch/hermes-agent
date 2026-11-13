@@ -1,7 +1,7 @@
 """Pool-aware model-picker usage: per-account rows, cache isolation, honest failures.
 
 Real-path regression tests for ``hermes_cli/inventory.py::_apply_usage`` and
-``agent/account_usage_cache`` against actual auth stores on disk (no pool mocks): a
+``hermes_agent/agent/account_usage_cache`` against actual auth stores on disk (no pool mocks): a
 multi-entry pool must report per-account windows/state, one profile's snapshot must
 never leak into another's picker, a failed/401 fetch must not hide or mutate its
 siblings, and a late background fetch must not replace fresher per-turn data.
@@ -16,9 +16,9 @@ from datetime import datetime, timedelta, timezone, UTC
 
 import pytest
 
-from agent import account_usage
-from agent.account_usage import AccountUsageSnapshot, AccountUsageWindow
-from agent.account_usage_cache import _snapshots, remember_account_usage
+from hermes_agent.agent import account_usage
+from hermes_agent.agent.account_usage import AccountUsageSnapshot, AccountUsageWindow
+from hermes_agent.agent.account_usage_cache import _snapshots, remember_account_usage
 from hermes_cli.inventory import _apply_usage
 
 pytestmark = pytest.mark.usefixtures("_join_refresh_workers_autouse")
@@ -384,7 +384,7 @@ def test_non_supporting_pool_provider_reports_unknown_without_fetching(monkeypat
             raise AssertionError("no fetch may run for a non-supporting provider")
 
         # The background refresh worker must not fetch for this provider either.
-        import agent.account_usage_cache as cache_mod
+        import hermes_agent.agent.account_usage_cache as cache_mod
         m.setattr(cache_mod, "_refresh_entries", lambda requests: None)
         _apply_usage([row])
 

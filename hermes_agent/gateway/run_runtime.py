@@ -341,7 +341,7 @@ def stop_authority_turns(authority, *, in_process=False, reason=None):
     signalled += _stop_spawning_managed(authority, workers, reason)
     if not in_process:
         return signalled
-    from agent.interrupt_compat import request_hard_interrupt
+    from hermes_agent.agent.interrupt_compat import request_hard_interrupt
     from hermes_agent.gateway.run import _AGENT_PENDING_SENTINEL
     running = getattr(authority.runner, '_running_agents', {})
     for sid, live in list(authority.sessions.items()):

@@ -12,7 +12,7 @@ import os
 
 import pytest
 
-from agent.lsp.servers import ServerContext, find_server_for_file
+from hermes_agent.agent.lsp.servers import ServerContext, find_server_for_file
 
 
 def _stage(tmp_path, monkeypatch, vue_version: str, *, js_sdk: bool):
@@ -57,7 +57,7 @@ def test_vue_spawns_only_a_self_hosting_server_with_a_js_typescript_sdk(tmp_path
 def test_js_toolchain_recipes_pin_a_javascript_typescript_sdk():
     """Both TypeScript-hosting recipes co-install a JS-based TypeScript line (7+ is the Go port with no
     ``tsserver.js``), and the Vue recipe stays below the tunnel-only 3.x major."""
-    from agent.lsp.install import INSTALL_RECIPES
+    from hermes_agent.agent.lsp.install import INSTALL_RECIPES
 
     def major(spec: str, name: str) -> int:
         assert spec.startswith(f"{name}@"), spec  # unpinned = floats onto the next major

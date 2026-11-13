@@ -9,7 +9,7 @@ Grafted from PR #69502 (@byungsker) onto the Relay-backed ``run_codex_stream``.
 
 from types import SimpleNamespace
 
-from agent.codex_runtime import run_codex_stream
+from hermes_agent.agent.codex_runtime import run_codex_stream
 
 
 class _FakeCodexClient:

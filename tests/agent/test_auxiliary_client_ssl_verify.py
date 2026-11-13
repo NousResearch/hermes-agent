@@ -1,9 +1,9 @@
 """Regression: auxiliary-client keepalive httpx client must honor custom CA bundles.
 
 The main OpenAI client resolves per-provider ``ssl_ca_cert`` / ``ssl_verify`` and
-``HERMES_CA_BUNDLE`` via ``agent.ssl_verify.resolve_httpx_verify``. Auxiliary calls
+``HERMES_CA_BUNDLE`` via ``hermes_agent.agent.ssl_verify.resolve_httpx_verify``. Auxiliary calls
 (compression, vision, web_extract, title generation, session_search) build their own
-keepalive client through ``agent.process_bootstrap.build_keepalive_http_client`` and must
+keepalive client through ``hermes_agent.agent.process_bootstrap.build_keepalive_http_client`` and must
 apply the same TLS settings — otherwise an HTTPS custom_providers endpoint signed by a
 private CA works for chat but fails ``APIConnectionError`` on every auxiliary task.
 """
@@ -14,7 +14,7 @@ import certifi
 import httpx
 import pytest
 
-from agent.process_bootstrap import build_keepalive_http_client
+from hermes_agent.agent.process_bootstrap import build_keepalive_http_client
 
 _CA_ENV_VARS = ("HERMES_CA_BUNDLE", "SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "HTTPS_PROXY")
 
@@ -41,7 +41,7 @@ def test_build_keepalive_http_client_forwards_verify_context(clean_tls_env):
 def test_resolve_aux_verify_ssl_verify_false(clean_tls_env, monkeypatch):
     import hermes_cli.config as cfg
     from hermes_cli import config_providers
-    from agent import auxiliary_client
+    from hermes_agent.agent import auxiliary_client
 
     monkeypatch.setattr(
         cfg,

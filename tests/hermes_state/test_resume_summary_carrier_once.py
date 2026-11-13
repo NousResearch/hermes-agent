@@ -7,7 +7,7 @@ inside the carrier: every word of that reply twice after ``/compress`` and on re
 resume/compress E2E caught it on the v0.22.3 release attempt). Real SessionDB, real
 ``archive_and_compact``.
 """
-from agent.context_compressor import (
+from hermes_agent.agent.context_compressor import (
     SUMMARY_PREFIX,
     _MERGED_PRIOR_CONTEXT_HEADER,
     _MERGED_SUMMARY_DELIMITER,

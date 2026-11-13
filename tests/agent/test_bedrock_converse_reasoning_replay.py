@@ -14,7 +14,7 @@ import copy
 
 import pytest
 
-from agent.transports.bedrock import BedrockTransport
+from hermes_agent.agent.transports.bedrock import BedrockTransport
 
 CLAUDE = "us.anthropic.claude-opus-4-8-v1:0"
 
@@ -115,7 +115,7 @@ def test_claude_on_converse_requests_thinking():
 ])
 def test_converse_reasoning_survives_a_reload_from_state_db(model, expect):
     """``bedrock_content_blocks`` is live-only; the persisted ``reasoning_details`` must carry the turn."""
-    from agent.bedrock_adapter import convert_messages_to_converse, normalize_converse_response
+    from hermes_agent.agent.bedrock_adapter import convert_messages_to_converse, normalize_converse_response
 
     live = normalize_converse_response({"output": {"message": {"content": [
         {"reasoningContent": {"reasoningText": {"text": "plan", "signature": "SIG"}}},

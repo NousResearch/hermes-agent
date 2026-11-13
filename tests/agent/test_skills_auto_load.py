@@ -13,7 +13,7 @@ def _write_skill(root, name, body):
 
 
 def _bare_agent(session_id="auto-load-test"):
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     agent = AIAgent.__new__(AIAgent)
     agent.valid_tool_names = {"skills_list", "skill_view", "skill_manage"}
@@ -40,7 +40,7 @@ def _bare_agent(session_id="auto-load-test"):
 class TestBuildAutoLoadPrompt:
     def test_loads_configured_skills_and_reports_missing(self, tmp_path):
         """Config AND skill lookup resolve under *home_override* (profile-scoped), not the ambient home."""
-        from agent.skill_commands import build_auto_load_prompt
+        from hermes_agent.agent.skill_commands import build_auto_load_prompt
 
         home = tmp_path / "profile-home"
         _write_skill(home / "skills", "pinned-skill", "PINNED CONTENT")
@@ -53,7 +53,7 @@ class TestBuildAutoLoadPrompt:
         assert prompt.count("auto-loaded via config (skills.auto_load)") == 1
 
     def test_explicit_preload_dedupes_against_auto_loaded_names(self, tmp_path):
-        from agent.skill_commands import build_preloaded_skills_prompt
+        from hermes_agent.agent.skill_commands import build_preloaded_skills_prompt
 
         _write_skill(tmp_path, "pinned-skill", "PINNED CONTENT")
         _write_skill(tmp_path, "extra-skill", "EXTRA CONTENT")

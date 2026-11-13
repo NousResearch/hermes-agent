@@ -13,10 +13,10 @@ import copy
 
 import pytest
 
-from agent.anthropic_thinking_policy import native_anthropic_preserves_prior_thinking
-from agent.anthropic_thinking_replay import tracks_rejected_thinking
-from agent.message_sanitization import stale_thinking_reaches_wire
-from agent.transports.anthropic import AnthropicTransport
+from hermes_agent.agent.anthropic_thinking_policy import native_anthropic_preserves_prior_thinking
+from hermes_agent.agent.anthropic_thinking_replay import tracks_rejected_thinking
+from hermes_agent.agent.message_sanitization import stale_thinking_reaches_wire
+from hermes_agent.agent.transports.anthropic import AnthropicTransport
 
 BEDROCK = "https://bedrock-runtime.us-east-1.amazonaws.com"
 VERTEX = "https://us-east5-aiplatform.googleapis.com/v1/projects/p/locations/us-east5/publishers/anthropic/models"

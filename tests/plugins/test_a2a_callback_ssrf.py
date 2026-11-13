@@ -106,7 +106,7 @@ def test_dns_name_is_judged_by_what_it_resolves_to(monkeypatch):
 def test_push_follows_the_owning_profiles_private_url_policy(monkeypatch, serve, tmp_path):
     """The push runs on an HTTP handler thread, which carries no profile scope: a secondary
     profile's own ``security.allow_private_urls`` must decide, not the launch profile's."""
-    from agent.runtime_scope import bind_state, scope_for_profile
+    from hermes_agent.agent.runtime_scope import bind_state, scope_for_profile
     from hermes_agent.gateway.config import PlatformConfig
     from plugins.platforms.a2a.adapter import A2AAdapter
 

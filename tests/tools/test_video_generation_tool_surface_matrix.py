@@ -24,7 +24,7 @@ import hermes_yaml as yaml
 
 @pytest.fixture(autouse=True)
 def _reset_registry():
-    from agent import video_gen_registry
+    from hermes_agent.agent import video_gen_registry
     video_gen_registry._reset_for_tests()
     yield
     video_gen_registry._reset_for_tests()

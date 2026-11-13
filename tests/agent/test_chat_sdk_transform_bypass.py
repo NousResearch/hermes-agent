@@ -17,7 +17,7 @@ sys.modules.setdefault("fal_client", types.SimpleNamespace())
 import httpx
 import openai
 
-from agent.sdk_transform_bypass import ESCAPE_HATCH_ENV, bypass_chat_sdk_request_transform
+from hermes_agent.agent.sdk_transform_bypass import ESCAPE_HATCH_ENV, bypass_chat_sdk_request_transform
 from openai.resources.chat import completions as _sdk_completions
 
 _SSE = (
@@ -117,7 +117,7 @@ def _capture_sdk_create(monkeypatch) -> list[dict]:
 def test_auxiliary_completion_path_hands_the_sdk_only_the_placeholder(monkeypatch):
     """Aux tasks (compression, summaries) reach the SDK via ``_create_with_progress_once``;
     the bulk conversation must ride in ``extra_body`` so the SDK's typed walk sees only ``[]``."""
-    from agent import auxiliary_client
+    from hermes_agent.agent import auxiliary_client
 
     seen = _capture_sdk_create(monkeypatch)
     client = _Recorder().client
@@ -133,7 +133,7 @@ def test_auxiliary_completion_path_hands_the_sdk_only_the_placeholder(monkeypatc
 def test_iteration_summary_path_hands_the_sdk_only_the_placeholder(monkeypatch):
     """The iteration-limit summary builds the full main-loop kwargs (``_build_api_kwargs``) and calls
     ``chat.completions.create`` itself — the same multi-MB payload, so the same bypass."""
-    from agent import chat_completion_helpers
+    from hermes_agent.agent import chat_completion_helpers
 
     seen = _capture_sdk_create(monkeypatch)
     client = _Recorder().client
@@ -156,7 +156,7 @@ def test_iteration_summary_path_hands_the_sdk_only_the_placeholder(monkeypatch):
 def test_relay_stream_path_shows_relay_the_full_conversation(monkeypatch):
     """On the Relay-managed stream path the bypass must run INSIDE the provider callback: Relay's
     tracing/intercepts see the real ``messages`` while the SDK still gets only the placeholder."""
-    from agent import auxiliary_client, relay_llm
+    from hermes_agent.agent import auxiliary_client, relay_llm
 
     seen = _capture_sdk_create(monkeypatch)
     client = _Recorder().client

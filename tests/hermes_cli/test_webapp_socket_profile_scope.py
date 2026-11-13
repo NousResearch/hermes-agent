@@ -49,7 +49,7 @@ def _home(home, label):
 @pytest.fixture
 def gateway(tmp_path, monkeypatch):
     """A multiplexed runner serving the launch home and profile ``b``, each with its own authority."""
-    from agent import secret_scope
+    from hermes_agent.agent import secret_scope
     from hermes_agent.gateway.config import GatewayConfig
     from hermes_agent.gateway.session import SessionStore
     from hermes_agent.gateway.session_authority import SessionAuthority

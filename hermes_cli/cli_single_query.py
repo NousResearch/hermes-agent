@@ -12,8 +12,8 @@ import logging
 import os
 import sys
 import time
-from agent.i18n import t
-from agent.interrupt_compat import request_hard_interrupt
+from hermes_agent.agent.i18n import t
+from hermes_agent.agent.interrupt_compat import request_hard_interrupt
 from contextlib import suppress
 from pathlib import Path
 from typing import Any
@@ -163,13 +163,13 @@ def _single_query_exit_code(result, *, credentials_rate_limited: bool = False,
     unknown startup failures retain exit 1.
 
     The worker predicate is the STRIPPED ``kanban_task_id()`` (from
-    ``agent.kanban_turn_recovery``) so a whitespace-only value is not a worker here
+    ``hermes_agent.agent.kanban_turn_recovery``) so a whitespace-only value is not a worker here
     either — the exit mapping and the recovery gate must agree on what a worker is.
     """
     # Late-bound through the ``cli`` facade so a patched ``cli._*_PROVIDER_REASONS`` holds.
     from cli import _TERMINAL_PROVIDER_REASONS as terminal_reasons
     from cli import _TRANSIENT_PROVIDER_REASONS as transient_reasons
-    from agent.kanban_turn_recovery import kanban_task_id
+    from hermes_agent.agent.kanban_turn_recovery import kanban_task_id
     from hermes_cli.turn_exit import turn_exit_code
     return turn_exit_code(
         result, kanban_worker=kanban_task_id() is not None,
@@ -188,8 +188,8 @@ def _run_quiet_single_query(cli, effective_query, emitter=None):
     before stdout is printed, so a teammate reply is the quiet run's final answer rather than a
     stranded receipt."""
     from cli import _emit_interrupted_session_end, _run_kanban_goal_loop_q, _single_query_exit_code, _sync_cli_session_id_from_agent
-    from agent.interrupt_compat import _accepts_keyword
-    from agent.turn_author import take_turn_author_from_env
+    from hermes_agent.agent.interrupt_compat import _accepts_keyword
+    from hermes_agent.agent.turn_author import take_turn_author_from_env
     from hermes_cli.quiet_single_query import (
         bind_quiet_session_key, continue_quiet_notify_completions, exit_single_query, quiet_notify_linger_seconds, take_turn_report_path, write_turn_report,
     )
@@ -216,10 +216,10 @@ def _run_quiet_single_query(cli, effective_query, emitter=None):
         # Kanban worker: a turn that died on a retryable provider failure is retried
         # IN PLACE (same session, context preserved) instead of ending the run silently.
         # Authority (typed retryable failure, no interrupt / terminal settlement) and the
-        # live run/claim proof live in agent/kanban_turn_recovery.py. Runs BEFORE the turn
+        # live run/claim proof live in hermes_agent/agent/kanban_turn_recovery.py. Runs BEFORE the turn
         # report so everything downstream — report, follow-ups, response, goal gate, exit —
         # sees the post-recovery disposition.
-        from agent.kanban_turn_recovery import recover_failed_kanban_turns as _recover_turns
+        from hermes_agent.agent.kanban_turn_recovery import recover_failed_kanban_turns as _recover_turns
 
         def _quiet_recover_turn(nudge):
             nonlocal result
@@ -337,8 +337,8 @@ def _route_single_query_images(cli, query, effective_query, single_query_images,
     _img_mode = "text"
     _build_parts = None
     try:
-        from agent.image_routing import build_native_content_parts as _build_parts
-        from agent.image_routing import decide_image_input_mode
+        from hermes_agent.agent.image_routing import build_native_content_parts as _build_parts
+        from hermes_agent.agent.image_routing import decide_image_input_mode
         from hermes_cli.config import load_config
 
         _img_mode = decide_image_input_mode(
@@ -379,7 +379,7 @@ def _collect_kanban_task_images(single_query_images):
     try:
         from hermes_cli import kanban_db as _kb
         from hermes_cli import kanban_db_connect as _kbc
-        from agent.image_routing import extract_image_refs as _extract_refs
+        from hermes_agent.agent.image_routing import extract_image_refs as _extract_refs
 
         with _kbc.connect_closing() as _conn:
             _task = _kb.get_task(_conn, _kanban_task_id)
@@ -549,16 +549,16 @@ def _run_single_query_mode(cli, query, image, quiet, oneshot, stream_json: bool 
         # Same author contract as `-Q`: a spawner that sets HERMES_TURN_AUTHOR names who wrote this run's
         # prompts. Consumed before the first turn so tool subprocesses never inherit it; every turn of
         # the run (recovery and goal follow-ups included) carries it to memory providers.
-        from agent.turn_author import take_turn_author_from_env
+        from hermes_agent.agent.turn_author import take_turn_author_from_env
         cli._single_query_turn_author = take_turn_author_from_env()
         response = cli.chat(query, images=single_query_images or None)
         # Kanban worker: a failed-silently turn used to end the run as rc=0 with no
         # terminal kanban call, so the dispatcher booked a protocol violation and
         # cold-restarted the task from scratch. Retry the authorised turn IN PLACE
-        # (see agent/kanban_turn_recovery.py) and CARRY THE RECOVERED RESPONSE: the
+        # (see hermes_agent/agent/kanban_turn_recovery.py) and CARRY THE RECOVERED RESPONSE: the
         # goal judge below must evaluate the deliverable of the latest settled turn,
         # never the stale provider error of the turn recovery replaced (re-review P2).
-        from agent.kanban_turn_recovery import recover_failed_kanban_turns
+        from hermes_agent.agent.kanban_turn_recovery import recover_failed_kanban_turns
 
         def _nonquiet_recover_turn(nudge):
             nonlocal response

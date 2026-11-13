@@ -1,10 +1,10 @@
 """``auth_type`` dispatch table for the auxiliary registry branch.
 
-``_resolve_registry_branch`` in ``agent/auxiliary_client`` routes every
+``_resolve_registry_branch`` in ``hermes_agent/agent/auxiliary_client`` routes every
 ``PROVIDER_REGISTRY`` provider here on its registered ``auth_type``; this table is the
 registry twin of the facade's ``_EXPLICIT_PROVIDER_BRANCHES``. Arms late-import the
 facade (siblings never form a module-level cycle) so the seam every test patches —
-``agent.auxiliary_client.*`` — is the module production reads.
+``hermes_agent.agent.auxiliary_client.*`` — is the module production reads.
 """
 from __future__ import annotations
 
@@ -12,9 +12,9 @@ import logging
 from typing import TYPE_CHECKING, Callable, Dict
 
 if TYPE_CHECKING:
-    from agent.auxiliary_client import _ResolveRequest, _ResolveResult
+    from hermes_agent.agent.auxiliary_client import _ResolveRequest, _ResolveResult
 
-logger = logging.getLogger("agent.auxiliary_client")
+logger = logging.getLogger("hermes_agent.agent.auxiliary_client")
 
 # First occurrence surfaces for diagnostics; per-call retries stay silent (the
 # contract test_auxiliary_client_resolve_dedup.py pins for every fall-through).
@@ -23,13 +23,13 @@ _LOGGED_MINIMAX_UNEXPECTED_KEYS: set = set()
 
 
 def _resolve_vertex_arm(req: _ResolveRequest) -> _ResolveResult:
-    from agent.auxiliary_client import _build_vertex_client, _route_client
+    from hermes_agent.agent.auxiliary_client import _build_vertex_client, _route_client
     client, final_model = _build_vertex_client(req.provider, req.model)
     return _route_client(req, client, final_model) if client is not None else (None, None)
 
 
 def _resolve_bedrock_arm(req: _ResolveRequest) -> _ResolveResult:
-    from agent.auxiliary_client import _build_bedrock_client, _route_client
+    from hermes_agent.agent.auxiliary_client import _build_bedrock_client, _route_client
     client, final_model = _build_bedrock_client(req.provider, req.model, raw_codex=req.raw_codex)
     return _route_client(req, client, final_model) if client is not None else (None, None)
 
@@ -53,11 +53,11 @@ def _resolve_minimax_oauth_arm(req: _ResolveRequest) -> _ResolveResult:
     """
     from hermes_cli.auth_constants import AuthError
 
-    from agent.auxiliary_client import (
+    from hermes_agent.agent.auxiliary_client import (
         AnthropicAuxiliaryClient, _AuxProbeClientStub, _aux_probe_active,
         _get_aux_model_for_provider, _normalize_resolved_model, _route_client,
     )
-    from agent.anthropic_credentials import anthropic_route_is_oauth
+    from hermes_agent.agent.anthropic_credentials import anthropic_route_is_oauth
     from hermes_cli.auth import get_provider_auth_state, resolve_minimax_oauth_runtime_credentials
 
     # Probe mode answers "resolvable?" for availability gates and must not touch the
@@ -105,7 +105,7 @@ def _resolve_minimax_oauth_arm(req: _ResolveRequest) -> _ResolveResult:
     final_model = _normalize_resolved_model(
         req.model or _get_aux_model_for_provider(req.provider) or "MiniMax-M3", req.provider,
     )
-    from agent.anthropic_adapter import build_anthropic_client  # SDK-absent boundary, like _try_anthropic
+    from hermes_agent.agent.anthropic_adapter import build_anthropic_client  # SDK-absent boundary, like _try_anthropic
     try:
         real_client = build_anthropic_client(token_provider, base_url)
     except ImportError:
@@ -117,7 +117,7 @@ def _resolve_minimax_oauth_arm(req: _ResolveRequest) -> _ResolveResult:
 
 
 def _resolve_plugin_oauth_arm(req: _ResolveRequest) -> _ResolveResult:
-    from agent.auxiliary_plugin_oauth import resolve_plugin_oauth_client
+    from hermes_agent.agent.auxiliary_plugin_oauth import resolve_plugin_oauth_client
     return resolve_plugin_oauth_client(req)
 
 

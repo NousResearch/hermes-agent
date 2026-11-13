@@ -2,7 +2,7 @@
 
 Every terminal result dict the turn loop returns must carry ``failure_reason`` (a
 ``FailoverReason`` value or one of :data:`SITE_FAILURE_CODES`) and ``failure_retryable`` so
-``agent/error_surface.py`` yields a specific descriptor instead of ``unknown``. The copy
+``hermes_agent/agent/error_surface.py`` yields a specific descriptor instead of ``unknown``. The copy
 tables here say WHAT happened and WHAT TO DO in plain words; raw provider detail rides a
 trailing "Provider said:" / "Details:" line.
 """
@@ -12,8 +12,8 @@ from __future__ import annotations
 import time
 from typing import Any, Dict, NamedTuple, Optional, Tuple
 
-from agent.error_classifier import FailoverReason
-from agent.stream_max_lifetime import StreamLifetimeExceeded
+from hermes_agent.agent.error_classifier import FailoverReason
+from hermes_agent.agent.stream_max_lifetime import StreamLifetimeExceeded
 from hermes_constants import display_hermes_home
 
 # Failure codes minted by loop sites that are not provider verdicts (see module docstring).
@@ -27,7 +27,7 @@ def launch_credentials_copy(error: Any) -> str:
     """The refusal for a session whose own launch/route API key changed or is gone (``RuntimeStoreError``
     or an RPC refusal carrying ``field``/``detail``). A session never sends a different key than it
     started with, so /retry repeats the refusal: the copy names /new on every surface."""
-    from agent.i18n import t
+    from hermes_agent.agent.i18n import t
 
     data = getattr(error, "data", None)
     data = data if isinstance(data, dict) else {}
@@ -50,7 +50,7 @@ def stamp_failure(result: dict[str, Any], reason: str, retryable: bool) -> dict[
 # The Hermes-authored assistant row that closes a durable turn which ended without one. A
 # transcript boundary, NOT the model's answer: no provider/model error or refusal detail is
 # ever interpolated (that rides ``final_response``). Owned here so the core closer
-# (``agent/conversation_loop.py::run_conversation``) and the gateway's own writer
+# (``hermes_agent/agent/conversation_loop.py::run_conversation``) and the gateway's own writer
 # (``hermes_agent/gateway/run_turn.py::_hmwa_close_failed_turn``) say the same thing.
 
 FAILED_TURN_NOTICE = (
@@ -321,7 +321,7 @@ def failure_cause_gloss(reason: Any, *, subject: str = "it", possessive: str = "
 # ---- site-code copy -------------------------------------------------------------------------
 
 # Chat copy for the codes in SITE_FAILURE_CODES that a loop site renders itself
-# (``empty_response`` is worded by agent/turn_explainers.py, ``session_busy`` by the lease).
+# (``empty_response`` is worded by hermes_agent/agent/turn_explainers.py, ``session_busy`` by the lease).
 _FAILURE_CODE_COPY: dict[str, str] = {
     "context_overflow": (
         "This conversation has grown too long for {model} to read, and Hermes couldn't shrink "
@@ -428,7 +428,7 @@ def exhausted_copy(reason: str, *, label: str, attempts: int, summary: str, rese
         reason, _EXHAUSTED_DEFAULT_LEAD).format(label=label, attempts=attempts)
     # The free-tier cutoff (one attempt) fires on any cooldown over a minute, so it always names the reset.
     if reset_seconds is not None and (reset_seconds >= 120 or first_attempt and reset_seconds > 0):
-        from agent.retry_utils import format_reset_window
+        from hermes_agent.agent.retry_utils import format_reset_window
         situation = (f"its usage limit resets in {format_reset_window(reset_seconds)}. "
                      "Send /retry after that, or switch models with /model.")
     else:
@@ -484,7 +484,7 @@ def relogin_command_hint(provider: Any) -> str:
     slug = str(provider or "").strip().lower()
     if not slug:
         return f"hermes {profile_cli_selector()}auth add <provider>"
-    from agent.error_surface import auth_kind
+    from hermes_agent.agent.error_surface import auth_kind
 
     if _login_owned_by_external_cli(slug) or auth_kind(slug) == "oauth":
         return oauth_relogin_command(slug)
@@ -497,7 +497,7 @@ def nonretryable_copy(
     """Chat copy for a terminal non-retryable rejection (auth, model missing, TLS, generic 4xx)."""
     label = provider_label_for(provider)
     if getattr(classified, "is_auth", False):
-        from agent.error_surface import auth_kind
+        from hermes_agent.agent.error_surface import auth_kind
 
         template = _AUTH_COPY[auth_kind(str(provider or ""))]
     else:

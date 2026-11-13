@@ -18,7 +18,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from agent import memory_caller_scope, secret_scope
+from hermes_agent.agent import memory_caller_scope, secret_scope
 from hermes_agent.gateway.config import GatewayConfig, Platform
 from hermes_agent.gateway.run import GatewayRunner, _profile_runtime_scope
 from hermes_agent.gateway.session import SessionSource

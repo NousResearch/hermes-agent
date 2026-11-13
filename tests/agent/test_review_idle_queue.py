@@ -1,7 +1,7 @@
 """Deferred background review on the managed local runtime.
 
-Behavior contracts for agent/review_idle_queue.py and the decision
-wrapper in run_agent.AIAgent._spawn_background_review:
+Behavior contracts for hermes_agent/agent/review_idle_queue.py and the decision
+wrapper in hermes_agent.run_agent.AIAgent._spawn_background_review:
 
 - defer: auto + review runtime == managed local  -> queued, not spawned
 - defer: never, or non-managed runtime, or /refine -> immediate spawn
@@ -16,7 +16,7 @@ import types
 
 import pytest
 
-from agent.review_idle_queue import (
+from hermes_agent.agent.review_idle_queue import (
     ReviewIdleQueue,
     _IDLE_SETTLE_S,
     defer_max_age_s,
@@ -173,15 +173,15 @@ def test_nested_turns_require_all_to_finish():
 
 def _wrapper_agent(monkeypatch, defer="auto", managed=True):
     """A minimal object wearing the real _spawn_background_review."""
-    import run_agent
-    from agent import review_idle_queue as riq
+    from hermes_agent import run_agent
+    from hermes_agent.agent import review_idle_queue as riq
 
     agent = _FakeAgent()
     agent._delegate_depth = 0
     calls = {"enqueued": [], "spawned": []}
 
     monkeypatch.setattr(
-        "agent.background_review.load_background_review_settings",
+        "hermes_agent.agent.background_review.load_background_review_settings",
         lambda: (True, {"defer": defer}),
     )
     monkeypatch.setattr(
@@ -244,7 +244,7 @@ def test_wrapper_cloud_fast_path_skips_runtime_resolution(monkeypatch):
     """No managed server on the machine -> the classifier answers from the
     TTL-cached netloc probe alone, without resolving the review runtime.
     Guards the cloud-only turn tail from growing new work."""
-    from agent import review_idle_queue as riq
+    from hermes_agent.agent import review_idle_queue as riq
 
     resolved = {"count": 0}
 
@@ -253,9 +253,9 @@ def test_wrapper_cloud_fast_path_skips_runtime_resolution(monkeypatch):
         raise AssertionError("runtime resolution must not run")
 
     monkeypatch.setattr(
-        "agent.auxiliary_managed_local._managed_local_netloc", lambda: "")
+        "hermes_agent.agent.auxiliary_managed_local._managed_local_netloc", lambda: "")
     monkeypatch.setattr(
-        "agent.background_review._resolve_review_runtime", _explode)
+        "hermes_agent.agent.background_review._resolve_review_runtime", _explode)
     assert riq.review_targets_managed_local(object(), {}) is False
     assert resolved["count"] == 0
 
@@ -267,7 +267,7 @@ def test_dispatcher_rechecks_enabled_gate(monkeypatch):
     agent = _FakeAgent()
     q.enqueue(agent, "s1", {"task_cfg": {}})
     monkeypatch.setattr(
-        "agent.background_review.load_background_review_settings",
+        "hermes_agent.agent.background_review.load_background_review_settings",
         lambda: (False, {}),
     )
     item = None
@@ -291,8 +291,8 @@ class _Run:
 
 
 def _requeue_agent(monkeypatch, managed=True):
-    import run_agent
-    from agent import review_idle_queue as riq
+    from hermes_agent import run_agent
+    from hermes_agent.agent import review_idle_queue as riq
 
     agent = _FakeAgent()
     calls = {"enqueued": []}
@@ -349,7 +349,7 @@ def test_requeue_skips_non_managed(monkeypatch):
 def test_dispatch_runs_under_the_enqueuing_profile_context(tmp_path, monkeypatch):
     """#108537: the enabled re-check and the spawn must run under the contextvars captured at
     enqueue (that profile's home + secret scope), not the shared dispatcher thread's ambient ones."""
-    from agent import secret_scope as ss
+    from hermes_agent.agent import secret_scope as ss
     from hermes_constants import get_hermes_home, reset_hermes_home_override, set_hermes_home_override
 
     ambient, on_home, off_home = (tmp_path / n for n in ("ambient", "on", "off"))

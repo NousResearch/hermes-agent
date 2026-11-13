@@ -2,7 +2,7 @@
 
 Hermes Agent 以 ShareGPT 兼容的 JSONL 格式保存对话轨迹，用于训练数据、调试产物和强化学习数据集。
 
-源文件：`agent/trajectory.py`、`run_agent.py`（搜索 `_save_trajectory`）、`hermes_agent/batch_runner.py`
+源文件：`hermes_agent/agent/trajectory.py`、`hermes_agent/run_agent.py`（搜索 `_save_trajectory`）、`hermes_agent/batch_runner.py`
 
 
 ## 文件命名规范

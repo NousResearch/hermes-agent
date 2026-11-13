@@ -1,7 +1,7 @@
 """Per-file manifest of the context/instruction files behind the ``/context`` "Rules" figure.
 
 Read-only: enumerates the same candidates ``build_context_files_prompt`` loads (through
-``agent.prompt_builder.discover_context_files`` — one discovery walk, so the listing cannot drift from the
+``hermes_agent.agent.prompt_builder.discover_context_files`` — one discovery walk, so the listing cannot drift from the
 prompt) and reports, per file, its size and whether it was loaded, truncated over the context-file cap,
 shadowed by a higher-priority context type, blocked by the injection scan (or, for the user's own SOUL.md,
 flagged but loaded), empty/unreadable, or suppressed by the install-tree guard. Nothing here builds a prompt or touches the truncation-warning ContextVar, so it
@@ -18,8 +18,8 @@ import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from agent import prompt_builder as _pb
-from agent.model_metadata import estimate_tokens_rough
+from hermes_agent.agent import prompt_builder as _pb
+from hermes_agent.agent.model_metadata import estimate_tokens_rough
 
 # status -> (glyph, note shown after the token count; "" = none)
 _STATUS_DISPLAY = {
@@ -101,8 +101,8 @@ def context_file_sources_for_agent(agent: Any) -> list[dict[str, Any]]:
     (session cwd, install-tree policy per platform, the agent's own profile home)."""
     if getattr(agent, "skip_context_files", False):
         return []
-    from agent.runtime_cwd import resolve_context_cwd
-    from agent.system_prompt import _agent_home
+    from hermes_agent.agent.runtime_cwd import resolve_context_cwd
+    from hermes_agent.agent.system_prompt import _agent_home
     launch_artifact = getattr(agent, "_context_cwd_is_launch_artifact", False)
     cwd = resolve_context_cwd(include_session_override=not launch_artifact)
     ctx_len = getattr(getattr(agent, "context_compressor", None), "context_length", None)

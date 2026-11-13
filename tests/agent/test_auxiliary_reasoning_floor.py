@@ -12,8 +12,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from agent import auxiliary_reasoning_floor
-from agent.auxiliary_client import call_llm
+from hermes_agent.agent import auxiliary_reasoning_floor
+from hermes_agent.agent.auxiliary_client import call_llm
 
 _PORTAL_400 = (
     "Error code: 400 - {'status': 400, 'message': 'This request is not valid. Check the model name and "
@@ -30,11 +30,11 @@ def _fresh_memo():
 
 def _call(client):
     with (
-        patch("agent.auxiliary_client._resolve_task_provider_model",
+        patch("hermes_agent.agent.auxiliary_client._resolve_task_provider_model",
               return_value=("custom", "openai/gpt-6-astra", "http://127.0.0.1:8765/v1", "sk-x", None)),
-        patch("agent.auxiliary_client._get_cached_client", return_value=(client, "openai/gpt-6-astra")),
-        patch("agent.auxiliary_client._validate_llm_response", side_effect=lambda resp, _task, **_kw: resp),
-        patch("agent.auxiliary_client._try_payment_fallback", return_value=None),
+        patch("hermes_agent.agent.auxiliary_client._get_cached_client", return_value=(client, "openai/gpt-6-astra")),
+        patch("hermes_agent.agent.auxiliary_client._validate_llm_response", side_effect=lambda resp, _task, **_kw: resp),
+        patch("hermes_agent.agent.auxiliary_client._try_payment_fallback", return_value=None),
     ):
         return call_llm(
             task="title_generation", messages=[{"role": "user", "content": "hi"}],
@@ -90,7 +90,7 @@ def test_tokenplan_level_rejection_is_a_reasoning_rejection_not_a_field_rejectio
     """The closed-set wording names the field but blames its value: it must classify as a *required*
     rejection (floor step-up), not as a field rejection (strip) — the endpoint needs the field on the
     wire with an accepted level."""
-    from agent.error_classifier import is_reasoning_field_rejection, is_reasoning_required_rejection
+    from hermes_agent.agent.error_classifier import is_reasoning_field_rejection, is_reasoning_required_rejection
 
     assert is_reasoning_required_rejection(_TOKENPLAN_400)
     assert not is_reasoning_field_rejection(_TOKENPLAN_400)

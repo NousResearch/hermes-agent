@@ -103,7 +103,7 @@ def test_the_record_keeps_no_endpoint_credential_and_still_refuses_a_changed_end
     model = _FailingModel(resets_at=time.time() + 3600)
     parent = _parent()
     parent.provider, parent.base_url = "custom", secret_url
-    with patch("run_agent.AIAgent", side_effect=model):
+    with patch("hermes_agent.run_agent.AIAgent", side_effect=model):
         out = json.loads(delegate_task(tasks=[{"goal": "write the parser"}], background=True, parent_agent=parent))
         _completion(out["delegation_id"])
         sid = out["subagent_ids"][0]
@@ -140,7 +140,7 @@ def test_a_failed_first_record_write_is_retried_whole_and_never_leaves_a_partial
 
     model = _FailingModel(resets_at=time.time() + 3600)
     parent = _parent()
-    with patch("run_agent.AIAgent", side_effect=model), patch.object(r, "_upsert", side_effect=flaky_upsert):
+    with patch("hermes_agent.run_agent.AIAgent", side_effect=model), patch.object(r, "_upsert", side_effect=flaky_upsert):
         out = json.loads(delegate_task(tasks=[{"goal": "write the parser"}], background=True, parent_agent=parent))
         done = _completion(out["delegation_id"])
     sid = out["subagent_ids"][0]
@@ -155,7 +155,7 @@ def test_a_failed_first_record_write_is_retried_whole_and_never_leaves_a_partial
     assert record["endpoint"] and isinstance(record["route_request"], dict)
 
     _forget_process_state()
-    with patch("run_agent.AIAgent", side_effect=model):
+    with patch("hermes_agent.run_agent.AIAgent", side_effect=model):
         cont = json.loads(delegate_task(action="continue", subagent_id=sid, message="go on", background=True,
                                         parent_agent=parent))
         assert cont.get("status") == "dispatched", cont

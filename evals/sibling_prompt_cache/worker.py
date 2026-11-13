@@ -39,9 +39,9 @@ os.environ["TERMINAL_CWD"] = ws
 os.chdir(ws)
 sys.path.insert(0, TREE)
 
-import agent.turn_response_check as trc
+import hermes_agent.agent.turn_response_check as trc
 from hermes_agent.hermes_state import SessionDB
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 from hermes_agent.tools.delegate_tool import delegate_task
 
 calls = []

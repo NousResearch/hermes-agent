@@ -26,8 +26,8 @@ from typing import Any
 
 import pytest
 
-from agent import relay_runtime
-from agent.relay_runtime import (
+from hermes_agent.agent import relay_runtime
+from hermes_agent.agent.relay_runtime import (
     RelayRuntime,
     RelaySessionCoordinator,
 )
@@ -568,7 +568,7 @@ class TestGatewayRunStaysUnimported:
 import os
 import sys
 
-import agent.relay_runtime as rr
+import hermes_agent.agent.relay_runtime as rr
 
 rr._segments_config()
 rr._segments_config()  # cached path too

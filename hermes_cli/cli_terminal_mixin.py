@@ -11,7 +11,7 @@ import sys
 import threading
 import time
 
-from agent.i18n import t
+from hermes_agent.agent.i18n import t
 from hermes_cli.cli_render import (
     _chrome_floor,
     _hold_paints,

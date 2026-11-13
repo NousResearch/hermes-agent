@@ -18,7 +18,7 @@ import signal
 import sys
 from typing import Optional, Tuple
 
-from agent.i18n import t
+from hermes_agent.agent.i18n import t
 from hermes_agent.gateway.platforms.event import MessageEvent
 from hermes_agent.gateway.session import SessionSource, build_session_context
 
@@ -36,7 +36,7 @@ async def _stop_exec_tree(proc) -> None:
     descendants (``taskkill /T`` on Windows); on POSIX the group the shell led also catches members
     that already outlived it."""
     if proc.returncode is None:
-        from agent.deadline import kill_process_tree
+        from hermes_agent.agent.deadline import kill_process_tree
         await asyncio.to_thread(kill_process_tree, proc.pid)
     if sys.platform != "win32":
         with contextlib.suppress(ProcessLookupError, PermissionError):
@@ -210,7 +210,7 @@ class GatewayInboundHooksMixin:
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=_EXEC_QUICK_COMMAND_TIMEOUT)
             output = (stdout or stderr).decode().strip()
             if output:
-                from agent.redact import redact_sensitive_text
+                from hermes_agent.agent.redact import redact_sensitive_text
                 output = redact_sensitive_text(output)
             return output or t("gateway.quick_command.no_output")
         except (TimeoutError, asyncio.CancelledError) as stopped:

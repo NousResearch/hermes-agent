@@ -18,8 +18,8 @@ from unittest.mock import patch
 
 import pytest
 
-from agent.vault_backends import unlock as unlock_mod
-from agent.vault_backends.bitwarden import BitwardenLoginBackend
+from hermes_agent.agent.vault_backends import unlock as unlock_mod
+from hermes_agent.agent.vault_backends.bitwarden import BitwardenLoginBackend
 
 # A stand-in `bw` that mimics the three commands the backend uses and the real CLI's password contract
 # (bw 2026.x rejects a piped password: "Master password is required"; it reads --passwordenv <VAR>).
@@ -70,7 +70,7 @@ def _enabled(exe):
     """The tool late-imports ``enabled_backends`` from the package facade; ``backend_for_handle`` reads
     the sibling's own binding — patch both so the fake is the only backend anywhere."""
     backend = BitwardenLoginBackend({"enabled": True, "binary_path": str(exe)})
-    return patch("agent.vault_backends.base.enabled_backends", return_value=[backend]), backend
+    return patch("hermes_agent.agent.vault_backends.base.enabled_backends", return_value=[backend]), backend
 
 
 def test_locked_manager_is_reported_not_prompted_when_headless(fake_bw, monkeypatch):
@@ -81,7 +81,7 @@ def test_locked_manager_is_reported_not_prompted_when_headless(fake_bw, monkeypa
     monkeypatch.setenv("HERMES_CRON_SESSION", "1")  # headless: nobody can answer a prompt
     unlock_mod.set_unlock_prompt_callback(lambda *_: "correct horse")  # even a wired prompt must not fire
     try:
-        with patcher, patch("agent.vault_backends.enabled_backends", return_value=[backend]):
+        with patcher, patch("hermes_agent.agent.vault_backends.enabled_backends", return_value=[backend]):
             listed = json.loads(browser_vault_list())
             assert listed["items"] == []
             assert listed["locked"] == [{"backend": "bitwarden", "display_name": "Bitwarden",
@@ -107,7 +107,7 @@ def test_unlock_uses_vendor_passwordenv_contract_then_fill_routes_by_prefix(fake
 
     unlock_mod.set_unlock_prompt_callback(prompt)
     try:
-        with patcher, patch("agent.vault_backends.enabled_backends", return_value=[backend]), \
+        with patcher, patch("hermes_agent.agent.vault_backends.enabled_backends", return_value=[backend]), \
              patch("hermes_agent.tools.browser_vault_tool._current_page_origin", return_value="https://example.com"), \
              patch("hermes_agent.tools.browser_vault_tool._eval_js", return_value={"success": True, "result": json.dumps([
                  {"tag": "input", "type": "password", "name": "password", "id": "pw", "autocomplete": "current-password",
@@ -197,7 +197,7 @@ def test_bitwarden_multi_uri_item_binds_every_saved_web_origin():
 def test_onepassword_multi_url_item_binds_every_saved_web_origin():
     """A 1Password login with several websites binds all of them; the app URI is kept
     out of the fill set and a single-URL item is unchanged."""
-    from agent.vault_backends.onepassword import OnePasswordLoginBackend, _all_origins, _web_origins
+    from hermes_agent.agent.vault_backends.onepassword import OnePasswordLoginBackend, _all_origins, _web_origins
 
     backend = OnePasswordLoginBackend({"enabled": True})
     items_json = json.dumps([{
@@ -225,7 +225,7 @@ def test_onepassword_multi_url_item_binds_every_saved_web_origin():
 
 def test_onepassword_backend_env_forwards_config_directory(monkeypatch):
     """Vault reads use the same explicit 1Password CLI config location."""
-    from agent.vault_backends.onepassword import OnePasswordLoginBackend
+    from hermes_agent.agent.vault_backends.onepassword import OnePasswordLoginBackend
 
     monkeypatch.setenv("OP_CONFIG_DIR", "/tmp/op-config")
     backend = OnePasswordLoginBackend({"enabled": True})
@@ -255,13 +255,13 @@ sys.exit(2)
 
 @pytest.fixture
 def fake_op_service_account(tmp_path):
-    from agent.vault_backends.onepassword import OnePasswordLoginBackend
+    from hermes_agent.agent.vault_backends.onepassword import OnePasswordLoginBackend
 
     exe = tmp_path / "op"
     exe.write_text(_FAKE_OP, encoding="utf-8")
     exe.chmod(exe.stat().st_mode | stat.S_IXUSR)
     token = lambda name, default="": "dummy-sa-token" if name == "OP_SERVICE_ACCOUNT_TOKEN" else default
-    with patch("agent.secret_scope.get_secret", side_effect=token):
+    with patch("hermes_agent.agent.secret_scope.get_secret", side_effect=token):
         # a fresh backend per tool call, exactly as backend_for_handle builds one: nothing listed yet
         yield (lambda: OnePasswordLoginBackend({"binary_path": str(exe)})), tmp_path / "op.log"
 

@@ -12,7 +12,7 @@ import json
 
 import pytest
 
-from agent import secret_scope
+from hermes_agent.agent import secret_scope
 
 
 def _named_profile(tmp_path, monkeypatch, *, key_env: bool, dotenv: str = "", model_extra=None):

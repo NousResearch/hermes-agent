@@ -12,7 +12,7 @@ or "not installed — install with …" hint.
 These tests pin the fixed behavior:
 
 * Slug is derived from the frontmatter ``name:`` (exactly matching
-  :func:`agent.skill_commands.scan_skill_commands`), so the slug differs
+  :func:`hermes_agent.agent.skill_commands.scan_skill_commands`), so the slug differs
   from the directory name when the declared name is multi-word.
 * ``disabled`` membership is checked by the declared name, because that
   is what :func:`hermes_cli.skills_config.save_disabled_skills` stores.
@@ -71,7 +71,7 @@ def test_frontmatter_slug_matched_even_when_dir_name_differs(
         "hermes_agent.tools.skills_tool._get_disabled_skill_names",
         return_value={"Stable Diffusion Image Generation"},
     ), patch(
-        "agent.skill_utils.get_all_skills_dirs",
+        "hermes_agent.agent.skill_utils.get_all_skills_dirs",
         return_value=[tmp_skills],
     ):
         msg = gateway_run._check_unavailable_skill("stable-diffusion-image-generation")
@@ -95,7 +95,7 @@ def test_unknown_command_still_returns_none(
     with patch(
         "hermes_agent.tools.skills_tool._get_disabled_skill_names", return_value=set()
     ), patch(
-        "agent.skill_utils.get_all_skills_dirs", return_value=[tmp_skills]
+        "hermes_agent.agent.skill_utils.get_all_skills_dirs", return_value=[tmp_skills]
     ):
         assert gateway_run._check_unavailable_skill("no-such-skill") is None
 

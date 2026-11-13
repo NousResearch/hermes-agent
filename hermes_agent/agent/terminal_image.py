@@ -291,7 +291,7 @@ _INLINE_IMAGE_MODES = ("auto", "kitty", "iterm", "unicode", "off")
 # The image files Pillow decodes: what the CLI and the TUI both draw (attachments and tool images).
 _RENDERABLE_EXTENSIONS = frozenset({".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tiff", ".tif", ".ico"})
 
-# Pet ids live in [1, 0x7FFF] (``agent.pet.render.kitty_image_id``); images take the rest of
+# Pet ids live in [1, 0x7FFF] (``hermes_agent.agent.pet.render.kitty_image_id``); images take the rest of
 # the 24-bit space the placeholder foreground color can carry, so neither replaces the other.
 _IMAGE_ID_BASE, _IMAGE_ID_SPAN = 0x8000, 0xFFFFFF - 0x8000
 # Multiplexers that swallow image transmits (and inherit the outer terminal's KITTY_WINDOW_ID).

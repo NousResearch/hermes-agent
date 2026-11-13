@@ -1,6 +1,6 @@
 """Tests for percentage clamping at 100% across display paths.
 
-PR #3480 capped context pressure percentage at 100% in agent/display.py
+PR #3480 capped context pressure percentage at 100% in hermes_agent/agent/display.py
 but missed the same unclamped pattern in 4 other files. When token counts
 overshoot the context length (possible during streaming or before
 compression fires), users see >100% in /stats, gateway status, and

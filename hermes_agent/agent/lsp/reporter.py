@@ -9,7 +9,7 @@ from __future__ import annotations
 import html
 from typing import Any, Dict, List
 
-from agent.compression_marker import elide
+from hermes_agent.agent.compression_marker import elide
 
 # ERROR only by default — warnings/info/hints would flood the agent.
 SEVERITY_NAMES = {1: "ERROR", 2: "WARN", 3: "INFO", 4: "HINT"}

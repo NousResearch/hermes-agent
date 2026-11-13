@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
-from agent.transports.hermes_tools_mcp_server import HERMES_TOOLS_MCP_SERVER_NAME
+from hermes_agent.agent.transports.hermes_tools_mcp_server import HERMES_TOOLS_MCP_SERVER_NAME
 
 logger = logging.getLogger(__name__)
 
@@ -324,7 +324,7 @@ def _query_codex_plugins(
     error on the first turn. ``enabled`` is carried forward as reported.
     """
     try:
-        from agent.transports.codex_app_server import CodexAppServerClient
+        from hermes_agent.agent.transports.codex_app_server import CodexAppServerClient
     except Exception as exc:
         return [], f"transport unavailable: {exc}"
     try:
@@ -431,7 +431,7 @@ def migrate(
     and never blocks the migration. ``default_permission_profile`` (default ":workspace"; built-ins
     carry a leading ":", user profiles do not; None leaves codex's read-only default) avoids an
     approval prompt on every write. ``expose_hermes_tools`` registers Hermes' own tool surface
-    (agent/transports/hermes_tools_mcp_server.py, launched on demand by codex over stdio) as an MCP
+    (hermes_agent/agent/transports/hermes_tools_mcp_server.py, launched on demand by codex over stdio) as an MCP
     server so the codex subprocess can call back for tools it lacks.
     """
     report = MigrationReport(dry_run=dry_run)

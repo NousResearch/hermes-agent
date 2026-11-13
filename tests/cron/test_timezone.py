@@ -112,7 +112,7 @@ class TestGetTimezone:
     def test_multiplex_prefers_routed_profile_config_over_env(self, tmp_path, monkeypatch):
         """Under the multiplexed gateway HERMES_TIMEZONE holds only the DEFAULT profile's value
         (bridged at startup), so a routed profile must resolve from its own config.yaml."""
-        from agent.secret_scope import set_multiplex_active
+        from hermes_agent.agent.secret_scope import set_multiplex_active
         from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
         default_home, routed_home = tmp_path / "default", tmp_path / "routed"

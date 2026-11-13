@@ -33,7 +33,7 @@ _FINISHED = ("resumable", "completed", "stopped", "superseded")
 _DEFAULT_TTL_HOURS, _DEFAULT_MAX_RESUMABLE = 48.0, 32
 _EXPIRED_RETENTION_S = 7 * 24 * 3600.0
 
-# DESIGN.md per-reason table (agent/error_classifier.py::FailoverReason): mode, and the default delay before an
+# DESIGN.md per-reason table (hermes_agent/agent/error_classifier.py::FailoverReason): mode, and the default delay before an
 # AUTO_AT attempt when the failure carried no reset time.
 _MODE_BY_REASON: dict[str, tuple[str, Optional[float]]] = {
     "rate_limit": (AUTO_AT, 15 * 60.0), "upstream_rate_limit": (AUTO_AT, 15 * 60.0),
@@ -79,7 +79,7 @@ def classify(entry: dict[str, Any], stop_cause: Optional[str]) -> tuple[str, Opt
 def _db_path_for(parent_agent: Any = None) -> Optional[Path]:
     """The profile store the parent's children write their transcripts to (else this scope's ``state.db``);
     None in a managed worker, which owns no ledger."""
-    from agent.runtime_session_store import is_worker_process
+    from hermes_agent.agent.runtime_session_store import is_worker_process
     if is_worker_process():
         return None
     path = getattr(getattr(parent_agent, "_session_db", None), "db_path", None)
@@ -702,7 +702,7 @@ def _profile_dbs() -> list[Path]:
 
 def _settings_of(home: Path) -> tuple[float, int]:
     """*home*'s own ``delegation`` limits, read under its scope (the sweep runs under whichever profile started it)."""
-    from agent.runtime_scope import bind_profile_scope
+    from hermes_agent.agent.runtime_scope import bind_profile_scope
     try:
         with bind_profile_scope(home, hydrate_secrets=False):
             return _settings()

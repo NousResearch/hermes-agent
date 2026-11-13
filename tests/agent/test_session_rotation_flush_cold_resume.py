@@ -17,7 +17,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from hermes_agent.hermes_state import SessionDB
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 
 def _make_flush_agent(db: SessionDB, session_id: str):

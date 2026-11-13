@@ -8,8 +8,8 @@ providers, all deterministically (no LLM, no network).
 """
 from typing import Optional
 
-from agent.memory_manager import MemoryManager
-from agent.memory_provider import MemoryProvider, RecallStatus
+from hermes_agent.agent.memory_manager import MemoryManager
+from hermes_agent.agent.memory_provider import MemoryProvider, RecallStatus
 
 
 class _FakeProvider(MemoryProvider):

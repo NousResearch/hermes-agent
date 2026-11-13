@@ -1120,11 +1120,11 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
                     loop.call_soon_threadsafe(run.put_event, _run_event(run_id, event_type, **prompt))
 
             def _tool_start(call_id, name, args):
-                from agent.display import build_tool_preview
+                from hermes_agent.agent.display import build_tool_preview
                 tool_cb("tool.started", name, build_tool_preview(name, args or {}) or "", args, tool_call_id=call_id)
 
             def _tool_complete(call_id, name, args, result):
-                from agent.display import _detect_tool_failure
+                from hermes_agent.agent.display import _detect_tool_failure
                 is_error, _ = _detect_tool_failure(name, result)
                 tool_cb("tool.completed", name, None, args, tool_call_id=call_id, is_error=bool(is_error))
 

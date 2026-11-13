@@ -119,7 +119,7 @@ def compress_payload(arg):
     flag and ``here [N]`` a boundary instead of becoming a focus topic; ``--aggressive`` has no
     canonical implementation and is refused before anything reaches the authority.
     """
-    from agent.conversation_compression_manual import AGGRESSIVE_UNSUPPORTED, parse_compress_args
+    from hermes_agent.agent.conversation_compression_manual import AGGRESSIVE_UNSUPPORTED, parse_compress_args
     request = parse_compress_args(arg)
     if request.aggressive:
         raise GatewayClientError(AGGRESSIVE_UNSUPPORTED)

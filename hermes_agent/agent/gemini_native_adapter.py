@@ -19,10 +19,10 @@ from typing import Any, Dict, Iterator, List, Optional
 
 import httpx
 
-from agent.bounded_response import read_streaming_error_body
-from agent.gemini_long_decode import continuation_token, long_decode_hops, merge_hop_responses, merge_hop_usage, split_stream_continuation
-from agent.retry_utils import parse_retry_after_seconds
-from agent.gemini_schema import prepare_gemini_tool_parameters, sanitize_gemini_tool_parameters
+from hermes_agent.agent.bounded_response import read_streaming_error_body
+from hermes_agent.agent.gemini_long_decode import continuation_token, long_decode_hops, merge_hop_responses, merge_hop_usage, split_stream_continuation
+from hermes_agent.agent.retry_utils import parse_retry_after_seconds
+from hermes_agent.agent.gemini_schema import prepare_gemini_tool_parameters, sanitize_gemini_tool_parameters
 
 logger = logging.getLogger(__name__)
 
@@ -678,7 +678,7 @@ _BLOCK_REASON_GUIDANCE = {
 def raise_on_prompt_block(payload: dict[str, Any]) -> None:
     """Raise a terminal error when ``promptFeedback.blockReason`` is set (unary response or stream event).
 
-    No HTTP status: the wire said 200. ``agent.error_classifier`` keys on the ``gemini_prompt_blocked`` code
+    No HTTP status: the wire said 200. ``hermes_agent.agent.error_classifier`` keys on the ``gemini_prompt_blocked`` code
     and routes it to content_policy_blocked — deterministic for the unchanged prompt, so no retry."""
     feedback = payload.get("promptFeedback")
     reason = feedback.get("blockReason") if isinstance(feedback, dict) else None
@@ -897,7 +897,7 @@ def gemini_http_error(
 class GeminiNativeClient:
     """Minimal OpenAI-SDK-compatible facade (``client.chat.completions.create(**kwargs)``) over Gemini's native REST API."""
 
-    # For agent/auxiliary_client.py: a complete client, never re-dispatched through a wire adapter.
+    # For hermes_agent/agent/auxiliary_client.py: a complete client, never re-dispatched through a wire adapter.
     # (No HERMES_SKIP_ASYNC_WRAP — the async path has a real conversion, AsyncGeminiNativeClient.)
     HERMES_SKIP_TRANSPORT_WRAP = True
     # Seams for a subclass that speaks the same wire under another credential (an OAuth bearer on the

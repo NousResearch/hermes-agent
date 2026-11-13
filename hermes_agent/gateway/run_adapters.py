@@ -16,7 +16,7 @@ import functools
 import os
 import time
 import weakref as _weakref
-from agent.async_utils import consume_detached_task_result
+from hermes_agent.agent.async_utils import consume_detached_task_result
 from contextvars import Context
 from datetime import datetime, timedelta, timezone, UTC
 from hermes_agent.gateway.config import (
@@ -1136,7 +1136,7 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
         in_dotenv = False
         if profile_home:
             try:
-                from agent.secret_scope import load_env_file
+                from hermes_agent.agent.secret_scope import load_env_file
                 in_dotenv = (load_env_file(Path(profile_home) / ".env").get(env_name) or "").strip() == token
             except Exception:
                 in_dotenv = False

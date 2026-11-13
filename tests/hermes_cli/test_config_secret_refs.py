@@ -103,7 +103,7 @@ def test_dashboard_main_custom_endpoint_stores_a_reference(home, monkeypatch):
 
 
 def test_dashboard_aux_slot_stores_a_reference(home):
-    from agent.auxiliary_client import _resolve_task_provider_model
+    from hermes_agent.agent.auxiliary_client import _resolve_task_provider_model
     from hermes_cli.config import load_config
     from hermes_cli.web_server_config import _apply_model_assignment_sync
 
@@ -117,7 +117,7 @@ def test_dashboard_aux_slot_stores_a_reference(home):
 
 
 def test_hermes_model_aux_flow_stores_a_reference(home):
-    from agent.auxiliary_client import _resolve_task_provider_model
+    from hermes_agent.agent.auxiliary_client import _resolve_task_provider_model
     from hermes_cli.main_provider_setup import _save_aux_choice
 
     _save_aux_choice("vision", provider="custom", model="m", base_url="https://llm.example.com/v1", api_key=SECRET)

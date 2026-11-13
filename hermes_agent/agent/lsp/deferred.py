@@ -1,10 +1,10 @@
 """LSP diagnostics for a write, delivered after the write's tool result instead of inside it.
 
 ``write_file`` / ``patch`` return as soon as the bytes are on disk and verified; the language server
-check runs on the LSP loop (``agent.lsp.edit_check``).  Its verdict is queued here under the session
+check runs on the LSP loop (``hermes_agent.agent.lsp.edit_check``).  Its verdict is queued here under the session
 that made the edit (bound by ``hermes_agent.tools.file_tools`` around the write) and handed to that session's agent
 at its next tool result, or its next user turn when no tool runs again
-(``agent.plugin_live_notes``: a new row not yet flushed, so no cached byte moves).
+(``hermes_agent.agent.plugin_live_notes``: a new row not yet flushed, so no cached byte moves).
 
 A later edit of the same file takes over an undelivered verdict: the newer check diffs against the
 older baseline, so an error the first edit introduced is still reported unless the second fixed it.
@@ -12,7 +12,7 @@ older baseline, so an error the first edit introduced is still reported unless t
 A verdict must not be lost when the edit was the turn's last tool call (a one-shot ``-q`` run has no
 next turn): checks still running are tracked per session (:func:`track_pending`), and before the turn's
 final answer is accepted :func:`settle_for_agent` waits for them (bounded) and returns every verdict
-still undelivered, which ``agent.turn_stop_gates`` hands to the model as a new message.
+still undelivered, which ``hermes_agent.agent.turn_stop_gates`` hands to the model as a new message.
 """
 from __future__ import annotations
 
@@ -144,7 +144,7 @@ def forward_to_agent(agent: Any) -> None:
     notes = pop_notes(*_owners(agent))
     if not notes:
         return
-    from agent.plugin_live_notes import queue_plugin_notice
+    from hermes_agent.agent.plugin_live_notes import queue_plugin_notice
     for path, text in notes:
         queue_plugin_notice(agent, f"lsp:{path}", text)
 

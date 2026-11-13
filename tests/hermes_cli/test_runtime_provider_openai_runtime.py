@@ -70,7 +70,7 @@ def test_openai_runtime_codex_app_server_survives_the_openai_to_custom_alias_exp
 def test_openai_alias_resolves_identically_on_runtime_and_aux_client_paths(monkeypatch):
     """background_review/curator/MoA (resolve_runtime_provider) and compression/vision/title
     (_resolve_task_provider_model) must land on the same endpoint for the same aux block."""
-    from agent import auxiliary_client as aux
+    from hermes_agent.agent import auxiliary_client as aux
     block = {"provider": "openai", "model": "review-model", "base_url": "https://gateway.example/v1", "api_key": "gw-key"}
     monkeypatch.setattr(aux, "_get_auxiliary_task_config", lambda task: block if task == "background_review" else {})
     monkeypatch.setattr(rp, "_get_model_config", lambda: {"provider": "custom:mylocal", "default": "local-main"})

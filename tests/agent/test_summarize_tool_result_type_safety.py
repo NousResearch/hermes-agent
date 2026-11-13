@@ -5,7 +5,7 @@ call arguments, _summarize_tool_result() must not crash with TypeError or
 AttributeError. This caused an infinite TUI crash loop in production.
 """
 import json
-from agent.context_compressor import _summarize_tool_result
+from hermes_agent.agent.context_compressor import _summarize_tool_result
 
 
 
@@ -98,7 +98,7 @@ class TestBackstopWrapper:
         """When a branch does fail, the fallback names the tool and size."""
         from unittest.mock import patch as _patch
         with _patch(
-            "agent.context_compressor._summarize_tool_result_unguarded",
+            "hermes_agent.agent.context_compressor._summarize_tool_result_unguarded",
             side_effect=TypeError("boom"),
         ):
             result = _summarize_tool_result("terminal", "{}", "y" * 300)
@@ -107,7 +107,7 @@ class TestBackstopWrapper:
     def test_backstop_handles_non_string_content(self):
         from unittest.mock import patch as _patch
         with _patch(
-            "agent.context_compressor._summarize_tool_result_unguarded",
+            "hermes_agent.agent.context_compressor._summarize_tool_result_unguarded",
             side_effect=TypeError("boom"),
         ):
             result = _summarize_tool_result("terminal", "{}", None)
@@ -115,19 +115,19 @@ class TestBackstopWrapper:
 
 
 class TestDisplayPreviewTypeSafety:
-    """Sibling site: agent/display.py previews run on the live
+    """Sibling site: hermes_agent/agent/display.py previews run on the live
     tool-progress callback and crashed on non-string process args."""
 
 
     def test_process_preview_non_string_data(self):
-        from agent.display import build_tool_preview
+        from hermes_agent.agent.display import build_tool_preview
         result = build_tool_preview(
             "process_manage", {"action": "submit", "session_id": "abc", "data": 42}
         )
         assert result == 'submit abc "42"'
 
     def test_process_preview_none_action(self):
-        from agent.display import build_tool_preview
+        from hermes_agent.agent.display import build_tool_preview
         result = build_tool_preview("process_manage", {"action": None, "session_id": "abc"})
         assert isinstance(result, str)
 

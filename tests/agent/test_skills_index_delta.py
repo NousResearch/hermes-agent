@@ -7,9 +7,9 @@ import subprocess
 import sys
 from types import SimpleNamespace
 
-from agent import prompt_builder as pb
-from agent.skills_index_delta import stage_skills_index_note
-from agent.turn_context import consume_skills_index_note
+from hermes_agent.agent import prompt_builder as pb
+from hermes_agent.agent.skills_index_delta import stage_skills_index_note
+from hermes_agent.agent.turn_context import consume_skills_index_note
 
 
 def _write_skill(skills, name, description):

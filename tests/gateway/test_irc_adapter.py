@@ -412,7 +412,7 @@ def multiplex_scope():
     tokens = []
 
     def install(scope=None):
-        from agent.secret_scope import set_multiplex_active, set_secret_scope
+        from hermes_agent.agent.secret_scope import set_multiplex_active, set_secret_scope
 
         set_multiplex_active(True)
         tokens.append(set_secret_scope(scope or {}))
@@ -420,7 +420,7 @@ def multiplex_scope():
 
     yield install
 
-    from agent.secret_scope import reset_secret_scope, set_multiplex_active
+    from hermes_agent.agent.secret_scope import reset_secret_scope, set_multiplex_active
 
     for token in reversed(tokens):
         reset_secret_scope(token)

@@ -13,14 +13,14 @@ import time
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
-from agent.image_eviction_policy import images_all_within_many_image_limit, latched_retire_count, outbound_image_retire_count, outbound_retired_image_ids
-from agent.compression_marker import (
+from hermes_agent.agent.image_eviction_policy import images_all_within_many_image_limit, latched_retire_count, outbound_image_retire_count, outbound_retired_image_ids
+from hermes_agent.agent.compression_marker import (
     ELISION_MARKER_MAX_LEN,
     _elision_marker,
     elide,
     elide_middle,
 )
-from agent.auxiliary_client import (
+from hermes_agent.agent.auxiliary_client import (
     CODEX_STREAM_STALL_MARKER,
     AuxiliaryExplicitCancellation,
     _coerce_llm_message,
@@ -29,28 +29,28 @@ from agent.auxiliary_client import (
     call_llm,
     extract_content_or_reasoning,
 )
-from agent.context_engine import ContextEngine, sanitize_memory_context
-from agent.context_compressor_prellm import PreLlmSkipMixin
-from agent.context_compressor_window import CompactionWindowMixin
-from agent.context_compressor_prune import ProactivePruneMixin
-from agent.context_compressor_summary import SummaryDispatchMixin
-from agent.context_compressor_prompt_rules import EPISTEMIC_STANCE_RULE, UNVERIFIED_HYPOTHESES_SECTION, _today_for_prompt
-from agent.context_compressor_retry import retryable_user_text, typed_prompt_content
-from agent.context_compressor_tail import (
+from hermes_agent.agent.context_engine import ContextEngine, sanitize_memory_context
+from hermes_agent.agent.context_compressor_prellm import PreLlmSkipMixin
+from hermes_agent.agent.context_compressor_window import CompactionWindowMixin
+from hermes_agent.agent.context_compressor_prune import ProactivePruneMixin
+from hermes_agent.agent.context_compressor_summary import SummaryDispatchMixin
+from hermes_agent.agent.context_compressor_prompt_rules import EPISTEMIC_STANCE_RULE, UNVERIFIED_HYPOTHESES_SECTION, _today_for_prompt
+from hermes_agent.agent.context_compressor_retry import retryable_user_text, typed_prompt_content
+from hermes_agent.agent.context_compressor_tail import (
     demote_stale_tail_tools, lean_tail_budget, is_demoted_stub, skill_view_names_by_call_id, tail_cut_pricer,
     elide_keeping_skill_safety_rule, with_skill_safety_rule, without_skill_safety_rule, tail_cut_progress_floor,
 )
-from agent.context_compressor_telemetry import CompressionTelemetryMixin
-from agent.error_classifier import ClassifiedError, FailoverReason, classify_api_error
-from agent.micro_compaction import MicroCompactionMixin
-from agent.prompt_builder import STEER_DISPLAY_KIND
-from agent.model_metadata import (
+from hermes_agent.agent.context_compressor_telemetry import CompressionTelemetryMixin
+from hermes_agent.agent.error_classifier import ClassifiedError, FailoverReason, classify_api_error
+from hermes_agent.agent.micro_compaction import MicroCompactionMixin
+from hermes_agent.agent.prompt_builder import STEER_DISPLAY_KIND
+from hermes_agent.agent.model_metadata import (
     CHARS_PER_TOKEN, MINIMUM_CONTEXT_LENGTH, get_model_context_length, estimate_messages_tokens_rough, estimate_tokens_rough,
 )
-from agent.replayed_reasoning import codex_reasoning_replay_tokens, strip_opaque_replay_items
-from agent.context_default_record import last_defaulted_context_length
-from agent.redact import redact_sensitive_text
-from agent.turn_context import drop_stale_api_content
+from hermes_agent.agent.replayed_reasoning import codex_reasoning_replay_tokens, strip_opaque_replay_items
+from hermes_agent.agent.context_default_record import last_defaulted_context_length
+from hermes_agent.agent.redact import redact_sensitive_text
+from hermes_agent.agent.turn_context import drop_stale_api_content
 from hermes_agent.tools.todo_tool import TODO_INJECTION_HEADER
 
 logger = logging.getLogger(__name__)
@@ -63,7 +63,7 @@ logger = logging.getLogger(__name__)
 # ── Pinned summary route ───────────────────────────────────────────────── The summary call normally
 # resolves its provider/model from ``auxiliary.compression``. One caller needs to override that for a single
 # attempt: after the host's progress-aware timeout aborts a stalled summary (#78981),
-# ``agent.conversation_compression`` re-runs compression with the route pinned to a configured
+# ``hermes_agent.agent.conversation_compression`` re-runs compression with the route pinned to a configured
 # ``fallback_chain`` entry. Nothing raised out of the stalled call, so the auxiliary client's own fallback
 # handling — which only runs from its exception path — never saw that failure. A ContextVar, not an
 # attribute on the compressor: the aborted worker is detached and still alive on the pool, and the
@@ -230,7 +230,7 @@ def _is_summary_access_or_quota_error(exc: Exception, verdict: Optional[Classifi
         # own making: the summary model cannot be reached until the spawn site is fixed, and a placeholder
         # summary would only destroy the middle window for nothing. Classify it with the credential class so
         # compress() preserves the session unchanged (#100849 bundle: every hygiene pass truncated).
-        from agent.secret_scope import UnscopedSecretError
+        from hermes_agent.agent.secret_scope import UnscopedSecretError
     except Exception:  # pragma: no cover - import guard
         UnscopedSecretError = ()  # type: ignore[assignment]
     if UnscopedSecretError and isinstance(exc, UnscopedSecretError):
@@ -315,14 +315,14 @@ MODEL_ONLY_DISPLAY_METADATA_KEY = "model_only"
 # by scaffolding rewind or in-place compaction) and garbage- collected, CPython is free to hand its address
 # to a brand-new assistant/tool message, whose ``id()`` then collides with the stale entry and the real turn
 # is silently never persisted. A marker bound to the dict itself cannot be aliased that way. The ``_``
-# prefix is mandatory: the wire sanitizers (agent/transports/chat_completions.py,
-# agent/chat_completion_helpers.py) strip every top-level ``_``-prefixed key before the request leaves the
+# prefix is mandatory: the wire sanitizers (hermes_agent/agent/transports/chat_completions.py,
+# hermes_agent/agent/chat_completion_helpers.py) strip every top-level ``_``-prefixed key before the request leaves the
 # process, so this never reaches a strict OpenAI-compatible gateway. CONTRACT (#92231): the marker asserts
 # "this dict's CONTENT is durable as written". Loaded rows are stamped at materialization time
 # (hermes_agent.hermes_state._rows_to_conversation), so any code that mutates a loaded or flushed dict's content in place
 # and needs the change persisted MUST pop the marker (and invalidate _db_flush_scan_prefix if the dict may
-# sit inside the bounded-scan prefix) — see agent/turn_finalizer.py (fill-empty-tail) and
-# agent/context_compressor.py (micro-compaction defrag) for the two canonical pop sites. Mutating without
+# sit inside the bounded-scan prefix) — see hermes_agent/agent/turn_finalizer.py (fill-empty-tail) and
+# hermes_agent/agent/context_compressor.py (micro-compaction defrag) for the two canonical pop sites. Mutating without
 # popping leaves the DB silently stale.
 _DB_PERSISTED_MARKER = "_db_persisted"
 # Carried-forward tail rows archive as rewind-style (active=0, compacted=0) so
@@ -422,7 +422,7 @@ def _archive_watermark_for(session_db: Any, session_id: str, held: list[dict[str
         return None
     if start_watermark is None:
         start_watermark = watermark_of(session_id)
-    from agent.conversation_compression import held_archive_watermark
+    from hermes_agent.agent.conversation_compression import held_archive_watermark
     return held_archive_watermark(session_db, session_id, start_watermark, held, stale_raises=True)
 
 
@@ -549,7 +549,7 @@ def _looks_like_compaction_summary(msg: dict[str, Any], content: str) -> bool:
 
 def _salvage_reduce_todo_snapshot(out: list[dict[str, Any]]) -> None:
     """Last-resort shrink: drop the synthetic todo snapshot, keeping only a pruned-skill reload notice if present."""
-    from agent.conversation_compression import _PRUNED_SKILL_RELOAD_NOTICE_HEADER
+    from hermes_agent.agent.conversation_compression import _PRUNED_SKILL_RELOAD_NOTICE_HEADER
     for i in range(len(out) - 1, -1, -1):
         msg = out[i]
         if not isinstance(msg, dict) or not (msg.get("_todo_snapshot_synthetic") and msg.get("role") == "user"):
@@ -889,7 +889,7 @@ def _skill_view_failed(content: Any) -> bool:
 def _collect_ghosted_skill_names(turns: list[dict[str, Any]]) -> list[str]:
     """Skills about to be lost in compaction, whatever their size: marked or plain ``skill_view`` stubs, raw
     ``skill_view`` bodies, and skills a ``/skill``, bundle or auto-load turn carried inline."""
-    from agent.skill_commands import skills_loaded_by_scaffold
+    from hermes_agent.agent.skill_commands import skills_loaded_by_scaffold
     call_id_to_skill = skill_view_names_by_call_id(turns)
     names: list[str] = []
     for msg in turns:
@@ -948,7 +948,7 @@ def _synthetic_user_row(content: str) -> bool:
 def _typed_user_text(content: str) -> str:
     """A ``/skill``, bundle or auto-load turn as the user typed it (``/skill do X``); other text unchanged.
     Its inline skill body is not the user's words — it is carried by a ``[SKILL_PRUNED: ...]`` marker instead."""
-    from agent.skill_commands import describe_skill_invocation, skills_loaded_by_scaffold
+    from hermes_agent.agent.skill_commands import describe_skill_invocation, skills_loaded_by_scaffold
     return (describe_skill_invocation(content, separator=" ") or "") if skills_loaded_by_scaffold(content) else content
 
 
@@ -1142,7 +1142,7 @@ _PRESSURE_KEEP_RECENT_MESSAGES = 3
 # Native vision_analyze / computer_use screenshots that sit inside the protected tail cannot be demoted by
 # pass 2, so they ride every later request until anti-thrash disables compression (#92699).
 _MAX_KEEP_TOOL_IMAGES = 3
-# Compaction window only. The send path's same-valued OUTBOUND_IMAGE_FLOOR (agent/image_eviction_policy.py)
+# Compaction window only. The send path's same-valued OUTBOUND_IMAGE_FLOOR (hermes_agent/agent/image_eviction_policy.py)
 # is a satisfiability floor with different semantics; do not merge the two.
 
 # Below this window the threshold is floored (raise-only): at 50% the incompressible
@@ -1237,12 +1237,12 @@ def _bullets(items: list[str], limit: int = 8) -> str:
 
 def _content_length_for_budget(raw_content: Any) -> int:
     """Effective char-length of message content for budgeting: text by length plus the learned
-    per-image price (``agent.image_token_cost``, same figure the trigger estimator uses) per image."""
+    per-image price (``hermes_agent.agent.image_token_cost``, same figure the trigger estimator uses) per image."""
     if isinstance(raw_content, str):
         return len(raw_content)
     if not isinstance(raw_content, list):
         return len(str(raw_content or ""))
-    from agent.image_token_cost import current_image_token_cost
+    from hermes_agent.agent.image_token_cost import current_image_token_cost
 
     image_chars = current_image_token_cost() * _CHARS_PER_TOKEN
     # Any text-bearing part counts its text; image_url payload size is irrelevant.
@@ -1519,7 +1519,7 @@ def evict_stale_outbound_tool_images(api_messages: list[dict[str, Any]], retired
 
     Eviction is driven by the provider limit, counted in image BLOCKS, with user uploads
     reserved against the ceiling but never rewritten; the block ceiling depends on the
-    request's image dimensions — policy and rationale in :mod:`agent.image_eviction_policy`.
+    request's image dimensions — policy and rationale in :mod:`hermes_agent.agent.image_eviction_policy`.
     Returns the number of messages rewritten.
     ``retired_ids`` latches the frontier per session: see :func:`latched_retire_count`.
     """
@@ -2179,7 +2179,7 @@ class ContextCompressor(
             self._resolved_context_length = get_model_context_length(
                 self.model, base_url=self.base_url, api_key=self.api_key, config_context_length=self._config_context_length,
                 provider=self.provider, custom_providers=self.custom_providers)
-            self._context_default = (self.model, self.base_url, last_defaulted_context_length())  # agent.context_pin label
+            self._context_default = (self.model, self.base_url, last_defaulted_context_length())  # hermes_agent.agent.context_pin label
             # Raise-only small-context floor; must run after context_length resolves and before threshold_tokens derives.
             self.threshold_percent = self._effective_threshold_percent(self._resolved_context_length, self._base_threshold_percent)
             self._emit_init_summary_once()
@@ -2613,7 +2613,7 @@ class ContextCompressor(
         # re-entered the same silent route ~1 min after burning the full window (#112420). A stall cooldown
         # can never be shorter than the window that just failed to show progress.
         with contextlib.suppress(Exception):
-            from agent.conversation_compression import resolve_context_compression_timeouts
+            from hermes_agent.agent.conversation_compression import resolve_context_compression_timeouts
             idle, _ceiling = resolve_context_compression_timeouts()
             seconds = max(seconds, float(idle))
         self._record_compression_failure_cooldown(seconds, stamped)
@@ -3412,7 +3412,7 @@ class ContextCompressor(
     def _serialize_records_for_summary(self, turns: list[dict[str, Any]]) -> list[str]:
         """Serialize turns into a list of labeled, redacted records for the summarizer."""
         # Lazy import: agent_runtime_helpers pulls heavy transitive imports.
-        from agent.agent_runtime_helpers import strip_think_blocks
+        from hermes_agent.agent.agent_runtime_helpers import strip_think_blocks
         parts = []
         for msg in turns:
             role = msg.get("role", "unknown")
@@ -3911,7 +3911,7 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         try:
             content = self._call_summary_llm(prompt, prompt_started_at)
             # Strip <think> blocks: they would be stored, injected, and compounded on every iterative update.
-            from agent.agent_runtime_helpers import strip_think_blocks
+            from hermes_agent.agent.agent_runtime_helpers import strip_think_blocks
             content = strip_think_blocks(None, content).strip() or content
             # The summarizer may echo secrets verbatim; redact the output too.
             summary = _redact_compaction_text(content.strip())
@@ -3926,7 +3926,7 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
             # candidate itself is discarded downstream by the working-attempt check; bail here so the
             # attribute writes never land. Entry-generation claims (lock sit-outs) do not count; the
             # working marker is the ownership boundary for summary state.
-            from agent.conversation_compression import _raise_if_stale_attempt
+            from hermes_agent.agent.conversation_compression import _raise_if_stale_attempt
 
             _raise_if_stale_attempt(self)
             self._record_summary_success(summary)
@@ -4083,7 +4083,7 @@ Write only the summary body. Do not include any preamble or prefix."""
         """Classify a summary-call failure; retry once on the main model (returning its result) or arm a cooldown (None)."""
         # A detached stale attempt must not arm a failure cooldown or stamp error state the fallback
         # attempt owns; unwind as a cancellation so none of the shared-state writes below can land.
-        from agent.conversation_compression import _raise_if_stale_attempt
+        from hermes_agent.agent.conversation_compression import _raise_if_stale_attempt
 
         _raise_if_stale_attempt(self)
         # Only a genuine no-provider RuntimeError gets the long cooldown; empty/invalid-response
@@ -4241,7 +4241,7 @@ Write only the summary body. Do not include any preamble or prefix."""
             return True
         text = _content_text_for_contains(message.get("content")).strip()
         # Recovery nudges are scaffolding, not human turns; lazy import avoids an import cycle.
-        from agent.conversation_loop import (
+        from hermes_agent.agent.conversation_loop import (
             _CODEX_ACK_CONTINUATION_NUDGE, _CODEX_INCOMPLETE_NUDGE, _DEGENERATE_FINAL_NUDGE,
             _DROPPED_TOOLCALL_NUDGE_CONTENT, _EMPTY_TOOL_RESPONSE_NUDGE, _LENGTH_CONTINUATION_DROPPED_TOOLS_PREFIX,
             _LEGACY_LENGTH_CONTINUATION_NETWORK_STUB, _LENGTH_CONTINUATION_NETWORK_STUB,
@@ -4356,7 +4356,7 @@ Write only the summary body. Do not include any preamble or prefix."""
         The summarizer must not invent the active-task anchor from a prompt example or a stale prior
         summary; this grounds it in the exact compacted turns."""
         # Reuse the runtime's real-user predicate so scaffolding rows can never anchor.
-        from agent.conversation_compression import _is_real_user_message
+        from hermes_agent.agent.conversation_compression import _is_real_user_message
         for msg in reversed(messages):
             if msg.get("role") != "user" or not _is_real_user_message(msg):
                 continue
@@ -4497,17 +4497,17 @@ Write only the summary body. Do not include any preamble or prefix."""
     def _tool_call_id_variants(tc) -> set:
         """Return every id variant a result might reference *tc* by (forwards to message_sanitization).
 
-        Thin forwarder — the policy owner is ``agent.message_sanitization.tool_call_id_variants``, which
+        Thin forwarder — the policy owner is ``hermes_agent.agent.message_sanitization.tool_call_id_variants``, which
         also expands ``response_item_id`` and composite ``call|item`` bridge spellings (#63000), so the
         compressor's pairing tolerance matches the pre-call sanitizer's exactly and the two can never drift.
         """
-        from agent.message_sanitization import tool_call_id_variants
+        from hermes_agent.agent.message_sanitization import tool_call_id_variants
         return set(tool_call_id_variants(tc))
 
     def _sanitize_tool_pairs(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Remove orphaned tool results and strip orphaned tool_calls after compression.
         Stubs would be dropped by repair_message_sequence when call_id != id."""
-        from agent.agent_runtime_helpers import _classify_tool_call_orphans
+        from hermes_agent.agent.agent_runtime_helpers import _classify_tool_call_orphans
         _, result_call_ids, orphaned_result_msgs, missing_tool_calls = _classify_tool_call_orphans(messages)
         orphaned_results = {id(m) for m in orphaned_result_msgs}
         if orphaned_results:
@@ -4564,7 +4564,7 @@ Write only the summary body. Do not include any preamble or prefix."""
     def _is_real_user_turn(cls, message: dict[str, Any]) -> bool:
         """Actionable user turn that is not synthetic scaffolding — the row test both index scans share.
 
-        Weaker than ``agent.conversation_compression._is_real_user_message``, which also rejects
+        Weaker than ``hermes_agent.agent.conversation_compression._is_real_user_message``, which also rejects
         metadata-flagged scaffolding this pair cannot see; use that one when the question is
         "is this a genuine inbound user message".
         """
@@ -4693,7 +4693,7 @@ Write only the summary body. Do not include any preamble or prefix."""
         whose only user-role row is an inherited summary yields ``None`` and is
         never re-animated (#80622).
         """
-        from agent.conversation_compression import _is_real_user_message
+        from hermes_agent.agent.conversation_compression import _is_real_user_message
 
         last_user_idx = -1
         # Find the newest user message that carries at least one image part. We anchor on image-bearing user
@@ -4793,7 +4793,7 @@ Write only the summary body. Do not include any preamble or prefix."""
             )
 
         last_visible_role = _last_template_visible_role(compressed)
-        from agent.message_metadata import MESSAGE_UID, mark_inflight_restatement, message_uid_or_none, record_absorbed_message, typed_ask_fields
+        from hermes_agent.agent.message_metadata import MESSAGE_UID, mark_inflight_restatement, message_uid_or_none, record_absorbed_message, typed_ask_fields
         if self._has_merged_inflight_replay(inflight):
             # Never copy a summary carrier (its metadata marks it synthetic): a plain user row, keeping only the ask stamp.
             replay = {"role": "user", "content": task_text, "display_metadata": typed_ask_fields(inflight)}
@@ -4912,7 +4912,7 @@ Write only the summary body. Do not include any preamble or prefix."""
     def _stale_thinking_on_wire(self) -> bool:
         """Whether the route replays stale thinking every turn; tail walks and preflight MUST agree or compaction loops."""
         try:
-            from agent.message_sanitization import stale_thinking_reaches_wire
+            from hermes_agent.agent.message_sanitization import stale_thinking_reaches_wire
             return stale_thinking_reaches_wire(
                 *(getattr(self, attr, "") or "" for attr in ("api_mode", "provider", "model", "base_url"))
             )
@@ -4921,7 +4921,7 @@ Write only the summary body. Do not include any preamble or prefix."""
 
     def _native_anthropic_budget(self):
         """Tail prices on a preserved-thinking native Anthropic route, else None (``context_compressor_tail``)."""
-        from agent.context_compressor_tail import native_anthropic_tail_prices
+        from hermes_agent.agent.context_compressor_tail import native_anthropic_tail_prices
         return native_anthropic_tail_prices(self)
 
     def _find_tail_cut_by_tokens(
@@ -5189,7 +5189,7 @@ Write only the summary body. Do not include any preamble or prefix."""
         # Roll back the self-heal rehydration so the aborted attempt is a true no-op (#57835). Only the
         # attempt still owning summary work may roll back: a detached stale attempt (reachable here via
         # the deterministic summary pin) must not revert the fallback's _previous_summary.
-        from agent.conversation_compression import _caller_attempt_is_current
+        from hermes_agent.agent.conversation_compression import _caller_attempt_is_current
 
         if _caller_attempt_is_current(self):
             self._previous_summary = previous_summary_before_scan
@@ -5394,7 +5394,7 @@ Write only the summary body. Do not include any preamble or prefix."""
         """
         # A detached stale attempt must not even reset per-call state the fallback owns. Staleness that
         # arises mid-compress is caught by the write-point gates below; this covers stale-at-entry.
-        from agent.conversation_compression import _raise_if_stale_attempt
+        from hermes_agent.agent.conversation_compression import _raise_if_stale_attempt
 
         _raise_if_stale_attempt(self)
         telemetry = self._begin_compress_attempt(current_tokens, force)
@@ -5463,7 +5463,7 @@ Write only the summary body. Do not include any preamble or prefix."""
         # Choke point for staleness that arose during phases 1-2: everything below writes shared state
         # (feasibility counters, fallback diagnostics, finalize's cursor/rearm resets), and the inner
         # _summarize_window/_generate_summary gates cover staleness arising during the LLM call itself.
-        from agent.conversation_compression import _raise_if_stale_attempt
+        from hermes_agent.agent.conversation_compression import _raise_if_stale_attempt
 
         _raise_if_stale_attempt(self)
         feasibility_skip = not (force or prepared) and (

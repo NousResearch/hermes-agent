@@ -36,7 +36,7 @@ SECTION_OTHER = "Other models"
 
 _BP_FULL = 10_000
 
-# The server's allowance ids Hermes has its own words for (agent/usage_gauges.py); any other id
+# The server's allowance ids Hermes has its own words for (hermes_agent/agent/usage_gauges.py); any other id
 # renders with the server's label.
 GAUGE_TODAY = "day"
 GAUGE_WEEK = "week"
@@ -107,7 +107,7 @@ class PickerUsage:
         """A copy that reads the gateway's ``top_tier`` marks from *pricing* (picker pricing shape)."""
         if not pricing:
             return self
-        levels = usage_levels(list(pricing), pricing)  # same rule as the tags and agent.plan_limits.is_top_tier
+        levels = usage_levels(list(pricing), pricing)  # same rule as the tags and hermes_agent.agent.plan_limits.is_top_tier
         free = frozenset(m for m, level in levels.items() if level == "free")
         marked = frozenset(m for m, level in levels.items() if level == "top_tier")
         subscribed = frozenset(m for m in pricing if is_subscription_billed_row(pricing.get(m)))
@@ -117,7 +117,7 @@ class PickerUsage:
     def exhausted_gauge(self, model_id: str) -> Optional[UsageGauge]:
         """Window only: the spent allowance that stops this model (an all-scope one, or the top-tier one for a
         top-tier model; of several, the one that frees up last), or None while it still has included room. A
-        free model is never stopped. Same rule as agent/plan_limits.py ``blocking_gauge``."""
+        free model is never stopped. Same rule as hermes_agent/agent/plan_limits.py ``blocking_gauge``."""
         if model_id in self.free_ids or model_id.endswith(":free"):
             return None
         spent = [g for g in self.gauges_for_model(model_id) if g.left_fraction <= 0.0]
@@ -254,7 +254,7 @@ def usage_levels(model_ids: list[str], pricing: Optional[dict[str, dict[str, Any
     """``{model: "free" | "low" | "medium" | "top_tier"}`` from what the gateway stamped on this
     caller's catalog. An older gateway sends no ``usage_level``: then only what it does send is used
     (its ``top_tier`` mark, and a $0/$0 row is ``free``); every other row gets no label."""
-    from agent.plan_limits import is_free
+    from hermes_agent.agent.plan_limits import is_free
     out: dict[str, str] = {}
     for mid in model_ids:
         row = (pricing or {}).get(mid) or {}
@@ -330,7 +330,7 @@ def format_resets_in(resets_at_ms: Optional[int], now_ms: Optional[int] = None) 
 
 
 def _t(key: str, lang: Optional[str] = None, **kwargs: Any) -> str:
-    from agent.i18n import t
+    from hermes_agent.agent.i18n import t
     return t(f"plan_usage.{key}", lang, **kwargs)
 
 
@@ -381,7 +381,7 @@ def picker_usage_from_account(info: Any) -> Optional[PickerUsage]:
         window = _get(info, "usage_window")
         if window is None:
             return None
-        from agent.usage_gauges import all_scope, parse_gauges
+        from hermes_agent.agent.usage_gauges import all_scope, parse_gauges
         parsed = parse_gauges(_get(window, "gauges"))
         if not parsed or not all_scope(parsed):
             return None  # same requirement as the tracker seed: an allowance that stops every model
@@ -419,7 +419,7 @@ def nous_picker_usage(*, warm: bool = False, any_age: bool = False) -> Optional[
         from hermes_cli.nous_account import cached_nous_portal_account_info, get_nous_portal_account_info
         if warm and cached_nous_portal_account_info() is None:
             # A known window plan needs a real fetch: the JWT snapshot carries no gauges and never fills the cache.
-            from agent.credits_tracker import _window_seed_fields
+            from hermes_agent.agent.credits_tracker import _window_seed_fields
             on_window = _window_seed_fields(_get(cached_nous_portal_account_info(any_age=True), "usage_window")) is not None
             get_nous_portal_account_info(force_fresh=on_window)
         return picker_usage_from_account(cached_nous_portal_account_info(any_age=any_age))
@@ -491,14 +491,14 @@ def picker_row_suffix(provider_row: Any, model_id: str) -> str:
 
 
 def _gauge_name(g: UsageGauge) -> str:
-    from agent.usage_gauges import WindowGauge, gauge_short
+    from hermes_agent.agent.usage_gauges import WindowGauge, gauge_short
     return gauge_short(WindowGauge(g.label, g.scope, g.title or g.label, 0))
 
 
 def plan_gauge_lines(usage: PickerUsage) -> list[str]:
     """Stacked plan summary: one line per server allowance, in the server's order, so the picker header
     stays readable at a normal terminal width."""
-    from agent.usage_gauges import paused_for_payment
+    from hermes_agent.agent.usage_gauges import paused_for_payment
     paused = (" (paused: renewal unpaid)" if paused_for_payment(usage.paused_reason) else " (paused)") if usage.paused_reason else ""
     head = (usage.plan or "Hermes plan") + paused
     label_w = max((len(_gauge_name(g)) for g in usage.gauges), default=4)

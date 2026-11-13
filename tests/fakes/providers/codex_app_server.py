@@ -1,7 +1,7 @@
 """Fake ``codex app-server``: newline-delimited JSON-RPC over stdio, validated against the protocol.
 
 Run as a script (``python codex_app_server.py --state-dir DIR app-server``) it plays the codex side of
-the wire that ``agent/transports/codex_app_server.py`` speaks. Imported, it offers the test-side
+the wire that ``hermes_agent/agent/transports/codex_app_server.py`` speaks. Imported, it offers the test-side
 harness (:class:`FakeCodex`) that installs an executable wrapper and reads the recorded transcript.
 
 Protocol truth is the schema bundle emitted by ``codex app-server generate-json-schema`` (codex-cli

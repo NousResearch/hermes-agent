@@ -6,7 +6,7 @@ turn's edits (a durable row, see ``_late_lsp_verdicts``), verify-on-stop (#65919
 the ``pre_verify`` plugin hook after code edits, and the kanban worker terminal-tool guard.
 Each keeps the candidate answer as a budget-exhaustion fallback
 (``pending_verification_response``) and clears ``final_response`` so the finalizer can tell
-this gate from error exits (#61631). Nothing here imports ``agent.conversation_loop`` at
+this gate from error exits (#61631). Nothing here imports ``hermes_agent.agent.conversation_loop`` at
 module level (cycle).
 """
 
@@ -17,9 +17,9 @@ import os
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
-from agent.message_metadata import append_message
+from hermes_agent.agent.message_metadata import append_message
 
-logger = logging.getLogger("agent.conversation_loop")
+logger = logging.getLogger("hermes_agent.agent.conversation_loop")
 
 
 @dataclass
@@ -35,7 +35,7 @@ class StopGateVerdict:
 
 def _verify_on_stop_nudge(agent) -> Optional[str]:
     try:
-        from agent.verification_stop import (
+        from hermes_agent.agent.verification_stop import (
             build_verify_on_stop_nudge, verify_on_stop_enabled
         )
 
@@ -55,7 +55,7 @@ def _pre_verify_nudge(agent, final_response, attempt: int) -> Optional[str]:
     more turn; no default continuation cost."""
     _edited = sorted(getattr(agent, "_turn_file_mutation_paths", set()) or [])
     try:
-        from agent.verify_hooks import max_verify_nudges
+        from hermes_agent.agent.verify_hooks import max_verify_nudges
         from hermes_cli.lifecycle import has_hook
         from hermes_cli.plugins import get_pre_verify_continue_message
 
@@ -63,7 +63,7 @@ def _pre_verify_nudge(agent, final_response, attempt: int) -> Optional[str]:
             # Posture is fixed for the session — resolve once + cache.
             coding = getattr(agent, "_resolved_is_coding", None)
             if coding is None:
-                from agent.coding_context import is_coding_context
+                from hermes_agent.agent.coding_context import is_coding_context
                 coding = bool(is_coding_context(platform=getattr(agent, "platform", "") or ""))
                 agent._resolved_is_coding = coding
             return get_pre_verify_continue_message(
@@ -82,7 +82,7 @@ def _kanban_stop_nudge(agent, messages) -> Optional[str]:
     kanban_request_review / kanban_request_changes); a narrated stop is recorded
     as protocol_violation, so nudge once or twice first."""
     try:
-        from agent.kanban_stop import build_kanban_stop_nudge
+        from hermes_agent.agent.kanban_stop import build_kanban_stop_nudge
 
         return build_kanban_stop_nudge(
             messages=messages, attempts=getattr(agent, "_kanban_stop_nudges", 0)
@@ -98,12 +98,12 @@ _MAX_LSP_TURN_END_NOTES = 3
 def _late_lsp_verdicts(agent) -> Optional[str]:
     """Language-server verdicts on this turn's edits that no tool result carried yet (the edit was the
     last tool call; a one-shot run has no next turn to carry them): waits briefly for checks still
-    running (``agent.lsp.deferred.settle_for_agent``) and returns them as a message for the model."""
+    running (``hermes_agent.agent.lsp.deferred.settle_for_agent``) and returns them as a message for the model."""
     issued = getattr(agent, "_lsp_turn_end_notes", 0)
     if not isinstance(issued, int) or issued >= _MAX_LSP_TURN_END_NOTES:
         return None
     try:
-        from agent.lsp.deferred import settle_for_agent
+        from hermes_agent.agent.lsp.deferred import settle_for_agent
 
         notes = settle_for_agent(agent)
     except Exception:

@@ -13,7 +13,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from agent import turn_empty_response as ter
+from hermes_agent.agent import turn_empty_response as ter
 
 
 def _agent():
@@ -58,12 +58,12 @@ def _text_response(text):
 
 @pytest.fixture
 def loop_agent(monkeypatch):
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     with (
         patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]),
         patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
-        patch("agent.process_bootstrap.OpenAI"),
+        patch("hermes_agent.agent.process_bootstrap.OpenAI"),
     ):
         agent = AIAgent(
             api_key="test-key-1234567890",
@@ -81,8 +81,8 @@ def loop_agent(monkeypatch):
     agent.compression_enabled = False
     agent.save_trajectories = False
     monkeypatch.setattr("hermes_agent.model_tools.handle_function_call", MagicMock(return_value="unused"))
-    monkeypatch.setattr("agent.retry_utils.jittered_backoff", lambda *_args, **_kwargs: 0)
-    monkeypatch.setattr("agent.turn_empty_response.interruptible_backoff_sleep", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("hermes_agent.agent.retry_utils.jittered_backoff", lambda *_args, **_kwargs: 0)
+    monkeypatch.setattr("hermes_agent.agent.turn_empty_response.interruptible_backoff_sleep", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(agent, "_persist_session", MagicMock())
     monkeypatch.setattr(agent, "_save_trajectory", MagicMock())
     monkeypatch.setattr(agent, "_cleanup_task_resources", MagicMock())
@@ -326,7 +326,7 @@ class TestNotificationQuietExit:
         assert verdict.turn_exit_reason != ter.NOTIFICATION_NO_REPLY_EXIT
         # Post-tool nudge fired: verdict is "continue" and the nudge rides the next request only.
         assert verdict.action == "continue"
-        from agent.conversation_loop import _EMPTY_TOOL_RESPONSE_NUDGE
+        from hermes_agent.agent.conversation_loop import _EMPTY_TOOL_RESPONSE_NUDGE
 
         assert agent._empty_response_retry_hint == _EMPTY_TOOL_RESPONSE_NUDGE
         assert len(messages) == 3

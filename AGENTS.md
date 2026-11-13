@@ -145,7 +145,7 @@ Every former god file is a **facade** (public entry points + the names other pac
 
 | Area | Read | Covers |
 |---|---|---|
-| `run_agent.py`, `agent/` | `agent/AGENTS.md` | turn phases, message-flow invariants, compression, model/aux resolution, i18n |
+| `hermes_agent/run_agent.py`, `agent/` | `hermes_agent/agent/AGENTS.md` | turn phases, message-flow invariants, compression, model/aux resolution, i18n |
 | `cli.py`, `hermes_cli/` | `hermes_cli/AGENTS.md` | CLI mixins, slash registry, config system, skins, `hermes update`, profiles / multiplex |
 | `hermes_agent/gateway/` | `hermes_agent/gateway/AGENTS.md` | adapters, message guards, streaming, notifications, token locks, § Profile scope |
 | `plugins/platforms/` new adapter | `hermes_agent/gateway/platforms/ADDING_A_PLATFORM.md` | step-by-step adapter guide |
@@ -155,7 +155,7 @@ Every former god file is a **facade** (public entry points + the names other pac
 | `hermes_agent/tui_gateway/`, `ui-tui/` | `hermes_agent/tui_gateway/AGENTS.md` | process model, JSON-RPC transport, slash flow |
 | `web/`, `hermes_cli/web_routers/` | `web/AGENTS.md` | dashboard embeds the real TUI |
 | `apps/desktop/` | `apps/desktop/AGENTS.md`, `apps/desktop/src/AGENTS.md` | state authority, gateway backend contract, slash palette, Bot Mode |
-| `skills/`, `optional-skills/`, `agent/curator*.py` | `skills/AGENTS.md` | frontmatter, authoring standards, curator |
+| `skills/`, `optional-skills/`, `hermes_agent/agent/curator*.py` | `skills/AGENTS.md` | frontmatter, authoring standards, curator |
 | `hermes_agent/cron/`, kanban | `hermes_agent/cron/AGENTS.md` | scheduler invariants, job fields, kanban dispatcher |
 | `tests/` | `tests/AGENTS.md` | runner, placement, OS markers, `wine2e`, banned test shapes |
 | `pm/`, `pyproject.toml` | `pm/AGENTS.md` | pinning policy, PM-owned environments, release-age rule |

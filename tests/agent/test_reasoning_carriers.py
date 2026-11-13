@@ -1,9 +1,9 @@
 """Gemini text-turn signatures survive capture and reach only their route."""
 
-from agent.chat_completion_helpers import build_assistant_message
-from agent.gemini_native_adapter import _build_gemini_contents, translate_gemini_response, translate_stream_event
-from agent.reasoning_carriers import shape_wire_carriers
-from agent.transports.chat_completions import ChatCompletionsTransport
+from hermes_agent.agent.chat_completion_helpers import build_assistant_message
+from hermes_agent.agent.gemini_native_adapter import _build_gemini_contents, translate_gemini_response, translate_stream_event
+from hermes_agent.agent.reasoning_carriers import shape_wire_carriers
+from hermes_agent.agent.transports.chat_completions import ChatCompletionsTransport
 
 
 class _Agent:
@@ -11,7 +11,7 @@ class _Agent:
     verbose_logging = False
 
     def _extract_reasoning(self, msg):
-        from agent.agent_runtime_helpers import extract_reasoning
+        from hermes_agent.agent.agent_runtime_helpers import extract_reasoning
         return extract_reasoning(self, msg)
 
     def _strip_think_blocks(self, text):

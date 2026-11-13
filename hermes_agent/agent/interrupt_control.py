@@ -1,19 +1,19 @@
 """Interrupt / steer / redirect control surface for ``AIAgent``.
 
 Soft/hard interrupt requests, tool-thread interrupt propagation, pending steer/redirect queues.
-Extracted from ``run_agent.py``; every method resolves through ``AIAgent``'s MRO unchanged.
+Extracted from ``hermes_agent/run_agent.py``; every method resolves through ``AIAgent``'s MRO unchanged.
 """
 import contextlib
 import logging
 import threading
 from typing import Optional
 
-from agent.interrupt_compat import request_hard_interrupt
+from hermes_agent.agent.interrupt_compat import request_hard_interrupt
 from hermes_agent.tools.interrupt import request_yield as _request_yield
 from hermes_agent.tools.interrupt import set_interrupt as _set_interrupt
 
 # Same logger name as the origin module so log records / caplog filters are unchanged.
-logger = logging.getLogger("run_agent")
+logger = logging.getLogger("hermes_agent.run_agent")
 
 # ``interrupt()`` categories that mean a human stopped the turn. Any other ``_tool_interrupt_reason`` was
 # supplied by a system producer via ``tool_reason`` (watchdogs, lease loss, lifecycle cancellation) and is

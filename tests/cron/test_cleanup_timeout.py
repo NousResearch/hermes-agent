@@ -76,7 +76,7 @@ def test_run_job_bounds_sessiondb_finalization(tmp_path):
              patch("hermes_cli.env_loader.reset_secret_source_cache"), \
              patch("hermes_agent.hermes_state_registry.acquire", return_value=fake_db), \
              patch("hermes_cli.runtime_provider.resolve_runtime_provider", return_value=_RUNTIME), \
-             patch("run_agent.AIAgent") as mock_agent_cls, \
+             patch("hermes_agent.run_agent.AIAgent") as mock_agent_cls, \
              patch("hermes_agent.cron.scheduler._cron_cleanup_timeout_seconds", return_value=0.02):
             mock_agent = MagicMock()
             mock_agent.run_conversation.return_value = {"final_response": "ok"}
@@ -168,7 +168,7 @@ def test_dispatch_guard_releases_after_sessiondb_finalization_hang(tmp_path):
              patch("hermes_cli.env_loader.reset_secret_source_cache"), \
              patch("hermes_agent.hermes_state_registry.acquire", return_value=fake_db), \
              patch("hermes_cli.runtime_provider.resolve_runtime_provider", return_value=_RUNTIME), \
-             patch("run_agent.AIAgent") as mock_agent_cls, \
+             patch("hermes_agent.run_agent.AIAgent") as mock_agent_cls, \
              patch("hermes_agent.cron.scheduler._cron_cleanup_timeout_seconds", return_value=0.02), \
              patch.object(sched, "get_due_jobs", return_value=[job]), \
              patch.object(sched, "claim_job_for_fire", return_value=True), \

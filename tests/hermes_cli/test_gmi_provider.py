@@ -21,8 +21,8 @@ from hermes_cli.config import load_config
 from hermes_cli.models import (
     provider_model_ids,
 )
-from agent.auxiliary_client import resolve_provider_client
-from agent.model_metadata import get_model_context_length
+from hermes_agent.agent.auxiliary_client import resolve_provider_client
+from hermes_agent.agent.model_metadata import get_model_context_length
 
 
 @pytest.fixture(autouse=True)
@@ -175,16 +175,16 @@ class TestGmiModelMetadata:
 
     def test_known_gmi_endpoint_still_uses_endpoint_metadata(self):
         with patch(
-            "agent.model_metadata.get_cached_context_length",
+            "hermes_agent.agent.model_metadata.get_cached_context_length",
             return_value=None,
         ), patch(
-            "agent.model_metadata.fetch_endpoint_model_metadata",
+            "hermes_agent.agent.model_metadata.fetch_endpoint_model_metadata",
             return_value={"anthropic/claude-opus-4.6": {"context_length": 409600}},
         ), patch(
-            "agent.models_dev.lookup_models_dev_context",
+            "hermes_agent.agent.models_dev.lookup_models_dev_context",
             return_value=None,
         ), patch(
-            "agent.model_metadata.fetch_model_metadata",
+            "hermes_agent.agent.model_metadata.fetch_model_metadata",
             return_value={},
         ):
             result = get_model_context_length(
@@ -201,7 +201,7 @@ class TestGmiAuxiliary:
     def test_resolve_provider_client_uses_gmi_aux_default(self, monkeypatch):
         monkeypatch.setenv("GMI_API_KEY", "gmi-test-key")
 
-        with patch("agent.auxiliary_client.OpenAI") as mock_openai:
+        with patch("hermes_agent.agent.auxiliary_client.OpenAI") as mock_openai:
             mock_openai.return_value = object()
             client, model = resolve_provider_client("gmi")
 

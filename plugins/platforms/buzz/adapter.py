@@ -29,7 +29,7 @@ from urllib.parse import urlsplit, urlunsplit
 # Profile-scoped read (adapter startup, Slack pattern #59739): a scoped read honors the profile's own
 # secret; only an UNSCOPED read under multiplex (default-profile startup loop) falls back to the process
 # env, which is that profile's own value.
-from agent.secret_scope import is_multiplex_active as _is_multiplex_active
+from hermes_agent.agent.secret_scope import is_multiplex_active as _is_multiplex_active
 from hermes_agent.gateway.platforms._shared import (
     apply_yaml_bridge as _apply_yaml_bridge, get_scoped_secret as _shared_scoped_secret, profile_scoped as _profile_scoped,
     seed_extra_from_env as _seed_extra_from_env,

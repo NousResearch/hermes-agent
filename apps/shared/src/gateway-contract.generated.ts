@@ -411,7 +411,7 @@ export interface PetGenerateStatusResult {
   available: boolean
   providers: PetGenProvider[]
 }
-/** ``agent/pet/generate/imagegen.py::list_sprite_providers`` row. */
+/** ``hermes_agent/agent/pet/generate/imagegen.py::list_sprite_providers`` row. */
 export interface PetGenProvider {
   name: string
   label: string
@@ -477,7 +477,7 @@ export interface ProjectFactsParams {
 export interface ProjectFactsResult {
   facts?: ProjectFacts | null
 }
-/** ``agent/coding_context.py::project_facts_for`` — the system prompt's coding-context detection. */
+/** ``hermes_agent/agent/coding_context.py::project_facts_for`` — the system prompt's coding-context detection. */
 export interface ProjectFacts {
   root: string
   manifests: string[]
@@ -581,7 +581,7 @@ export interface ProjectRef {
   name: string
   primary_path?: string | null
 }
-/** ``hermes_agent/tui_gateway/server.py::_get_usage`` + ``agent/context_breakdown.py::context_usage_fields``. */
+/** ``hermes_agent/tui_gateway/server.py::_get_usage`` + ``hermes_agent/agent/context_breakdown.py::context_usage_fields``. */
 export interface Usage {
   model?: string
   input?: number
@@ -882,7 +882,7 @@ export interface ProviderUsage {
   windows?: ProviderUsageWindow[]
   accounts?: ProviderUsageAccount[] | null
 }
-/** One subscription usage window (``agent/account_usage.py::AccountUsageWindow``): e.g. the 5-hour session or the weekly cap, with how much of it is spent and when it rolls over (ISO). ``scope``: ``account`` — exhausting the window exhausts the whole login (Codex session/weekly, so a limited account's resets_at must wait for it); ``model`` — the window caps only one model family (Anthropic Opus/Sonnet weekly) and can never imply the account itself is out of quota. */
+/** One subscription usage window (``hermes_agent/agent/account_usage.py::AccountUsageWindow``): e.g. the 5-hour session or the weekly cap, with how much of it is spent and when it rolls over (ISO). ``scope``: ``account`` — exhausting the window exhausts the whole login (Codex session/weekly, so a limited account's resets_at must wait for it); ``model`` — the window caps only one model family (Anthropic Opus/Sonnet weekly) and can never imply the account itself is out of quota. */
 export interface ProviderUsageWindow {
   label: string
   used_percent: number
@@ -1052,7 +1052,7 @@ export interface VerificationStatusInfo {
   session_id?: string | null
   changed_paths?: string[] | null
 }
-/** One ``verification_events`` row (``agent/verification_evidence.py``). */
+/** One ``verification_events`` row (``hermes_agent/agent/verification_evidence.py``). */
 export interface VerificationEvidenceRow {
   id?: number | null
   created_at?: string | null
@@ -1973,7 +1973,7 @@ export interface BotRelayReplyParams {
 export interface I18nLanguagesResult {
   languages: LanguageOption[]
 }
-/** ``agent.i18n_languages.language_options`` row. ``source`` is ``bundled``, ``overlay`` or ``plugin:<name>`` — the highest layer that supplies the language. ``surfaces`` are the surfaces some layer has strings for; a renderer leaves out a language it does not bundle and that lacks its surface, since picking it would only show English. */
+/** ``hermes_agent.agent.i18n_languages.language_options`` row. ``source`` is ``bundled``, ``overlay`` or ``plugin:<name>`` — the highest layer that supplies the language. ``surfaces`` are the surfaces some layer has strings for; a renderer leaves out a language it does not bundle and that lacks its surface, since picking it would only show English. */
 export interface LanguageOption {
   id: string
   endonym: string
@@ -3635,7 +3635,7 @@ export interface SessionContextBreakdownParams {
   session_id: string
   profile?: string | null
 }
-/** ``agent.context_breakdown.compute_session_context_breakdown`` (empty categories before the agent builds) plus the per-file context manifest (empty until the agent exists). */
+/** ``hermes_agent.agent.context_breakdown.compute_session_context_breakdown`` (empty categories before the agent builds) plus the per-file context manifest (empty until the agent exists). */
 export interface SessionContextBreakdownResult {
   categories: ContextCategory[]
   context_max: number
@@ -3653,7 +3653,7 @@ export interface ContextCategory {
   label: string
   tokens: number
 }
-/** One row of ``agent.context_file_sources.list_context_file_sources``. */
+/** One row of ``hermes_agent.agent.context_file_sources.list_context_file_sources``. */
 export interface ContextFileSource {
   label: string
   path: string
@@ -3686,7 +3686,7 @@ export interface SessionCompressResult {
   host_ack?: Record<string, unknown> | null
   [key: string]: unknown
 }
-/** ``agent.manual_compression_feedback.summarize_manual_compression``. */
+/** ``hermes_agent.agent.manual_compression_feedback.summarize_manual_compression``. */
 export interface CompressionSummary {
   noop?: boolean
   aborted?: boolean
@@ -3820,7 +3820,7 @@ export interface SystemBatteryResult {
   plugged?: boolean | null
   category?: BatteryCategory
 }
-/** ``agent/battery.py::battery_category`` colour bucket. */
+/** ``hermes_agent/agent/battery.py::battery_category`` colour bucket. */
 export type BatteryCategory = 'good' | 'warn' | 'bad' | 'critical' | 'dim'
 export interface ProcessStopParams {
   session_id?: string | null
@@ -4268,7 +4268,7 @@ export interface SkillsReloadResult {
   output: string
   result: SkillsReloadDiff
 }
-/** ``agent.skill_commands.reload_skills``. */
+/** ``hermes_agent.agent.skill_commands.reload_skills``. */
 export interface SkillsReloadDiff {
   added?: SkillCommandRef[]
   removed?: SkillCommandRef[]
@@ -4297,7 +4297,7 @@ export interface LearningFramesResult {
   cols: number
   rows: number
 }
-/** ``agent.learning_graph_render.render_graph`` projection; ``grid`` rows are lists of ``[text, styleKey, alpha?, hexOverride?]`` runs. */
+/** ``hermes_agent.agent.learning_graph_render.render_graph`` projection; ``grid`` rows are lists of ``[text, styleKey, alpha?, hexOverride?]`` runs. */
 export interface LearningFrame {
   reveal: number
   date: string
@@ -4346,7 +4346,7 @@ export interface LearningDetailResult {
   label?: string | null
   content?: string | null
 }
-/** ``agent.learning_mutations`` — ``ok: false`` carries the reason in ``message``. */
+/** ``hermes_agent.agent.learning_mutations`` — ``ok: false`` carries the reason in ``message``. */
 export interface LearningMutationResult {
   ok: boolean
   message?: string | null
@@ -5607,7 +5607,7 @@ export interface ClarifyResult {
   answers?: Record<string, string | null> | null
   outcome?: 'submitted' | 'timed_out' | 'cancelled' | null
 }
-/** ``card`` is the beat's data (``agent/onboarding_flow.py::BEATS``): name, theme, connectors and plugins have their own shape; layout, tour and build carry ``options``. ``tool_call_id`` is the setup_beat call the card belongs to: only that transcript row draws it. */
+/** ``card`` is the beat's data (``hermes_agent/agent/onboarding_flow.py::BEATS``): name, theme, connectors and plugins have their own shape; layout, tour and build carry ``options``. ``tool_call_id`` is the setup_beat call the card belongs to: only that transcript row draws it. */
 export interface SetupBeatRequestParams {
   session_id: string
   beat: SetupBeat
@@ -5860,7 +5860,7 @@ export interface GatewayReadyPayload {
   heartbeat?: boolean | null
   session_authority?: boolean | null
 }
-/** ``agent/onboarding_record.py::_transition``: the run ``run_id`` stopped being in progress. ``stored_session_id`` is its chat at the compression tip. ``done``: the first-task card was answered; ``skipped``: Skip setup; ``replaced``: a rerun opened a new run; ``deleted``: its chat was deleted. */
+/** ``hermes_agent/agent/onboarding_record.py::_transition``: the run ``run_id`` stopped being in progress. ``stored_session_id`` is its chat at the compression tip. ``done``: the first-task card was answered; ``skipped``: Skip setup; ``replaced``: a rerun opened a new run; ``deleted``: its chat was deleted. */
 export interface OnboardingEndedPayload {
   run_id: string
   stored_session_id: string
@@ -5941,7 +5941,7 @@ export interface MessageCompletePayload {
 }
 /** ``prompt_turn._result_status``. */
 export type TurnStatus = 'complete' | 'error' | 'interrupted'
-/** ``agent/billing_links.py::BillingBlock.to_dict`` (+ ``unverified`` from conversation_loop). */
+/** ``hermes_agent/agent/billing_links.py::BillingBlock.to_dict`` (+ ``unverified`` from conversation_loop). */
 export interface BillingBlock {
   provider: string
   provider_label: string
@@ -5951,7 +5951,7 @@ export interface BillingBlock {
   message: string
   unverified?: boolean | null
 }
-/** ``agent/error_surface.py::_surface`` — advisory {layer, code, retryable} (+ identity, + auth hint, + ``resets_at`` epoch seconds when the provider named when its limit lifts, + ``usage_limit`` on a usage-window plan's limit). */
+/** ``hermes_agent/agent/error_surface.py::_surface`` — advisory {layer, code, retryable} (+ identity, + auth hint, + ``resets_at`` epoch seconds when the provider named when its limit lifts, + ``usage_limit`` on a usage-window plan's limit). */
 export interface ErrorSurface {
   layer: string
   code: string
@@ -5962,7 +5962,7 @@ export interface ErrorSurface {
   usage_limit?: UsageLimit | null
   [key: string]: unknown
 }
-/** ``agent/plan_limits.py::LimitHit`` — a usage-window plan's limit: what ran out, when it resets, and the one-click ways on (switch to a recommended model, use / add credits). */
+/** ``hermes_agent/agent/plan_limits.py::LimitHit`` — a usage-window plan's limit: what ran out, when it resets, and the one-click ways on (switch to a recommended model, use / add credits). */
 export interface UsageLimit {
   gauge_id: string
   scope: string
@@ -5973,14 +5973,14 @@ export interface UsageLimit {
   credits?: UsageLimitCredits | null
   current_model?: string
 }
-/** ``agent/plan_limits.py::ModelSuggestion`` — a recommended model that still works past the limit. */
+/** ``hermes_agent/agent/plan_limits.py::ModelSuggestion`` — a recommended model that still works past the limit. */
 export interface UsageLimitSuggestion {
   model: string
   label: string
   note: string
   provider?: string
 }
-/** ``agent/plan_limits.py::CreditsOption`` — ``use_credits`` (turn on Keep going), ``add_credits``, or ``add_credits_and_keep_going`` (both: Keep going is off and there is no balance). */
+/** ``hermes_agent/agent/plan_limits.py::CreditsOption`` — ``use_credits`` (turn on Keep going), ``add_credits``, or ``add_credits_and_keep_going`` (both: Keep going is off and there is no balance). */
 export interface UsageLimitCredits {
   action: string
 }
@@ -6080,7 +6080,7 @@ export interface ToolOutputRiskPayload {
   findings: string[]
   redacted: boolean
 }
-/** ``agent.tool_progress_relay.tool_progress_payload`` — an MCP server's ``notifications/progress`` for a running call, throttled to one per 500 ms per call. */
+/** ``hermes_agent.agent.tool_progress_relay.tool_progress_payload`` — an MCP server's ``notifications/progress`` for a running call, throttled to one per 500 ms per call. */
 export interface ToolProgressPayload {
   tool_id: string
   name: string
@@ -6094,7 +6094,7 @@ export interface TodoUpdatedPayload {
   todos: unknown[]
   revision: number
 }
-/** ``agent/credits_tracker.py::AgentNotice`` via notice_callback, and ``server._await_agent_ready``'s slow-build notice. ``level``: info | warn | error | success; ``kind``: sticky | ttl | agent. ``detail``: the full text behind a short ``text`` (the low-disk auto-prune question): Desktop shows it in the toast's expandable body, the Ink TUI prints it into the transcript. */
+/** ``hermes_agent/agent/credits_tracker.py::AgentNotice`` via notice_callback, and ``server._await_agent_ready``'s slow-build notice. ``level``: info | warn | error | success; ``kind``: sticky | ttl | agent. ``detail``: the full text behind a short ``text`` (the low-disk auto-prune question): Desktop shows it in the toast's expandable body, the Ink TUI prints it into the transcript. */
 export interface NotificationShowPayload {
   text: string
   level: string

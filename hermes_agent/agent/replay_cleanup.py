@@ -13,10 +13,10 @@ import re
 import time
 from typing import Any, Dict, List, Optional
 
-from agent.tool_dispatch_helpers import make_tool_result_message
-from agent.tool_result_classification import tool_may_have_side_effect
-from agent.message_metadata import drop_typed_ask
-from agent.turn_context import drop_stale_api_content
+from hermes_agent.agent.tool_dispatch_helpers import make_tool_result_message
+from hermes_agent.agent.tool_result_classification import tool_may_have_side_effect
+from hermes_agent.agent.message_metadata import drop_typed_ask
+from hermes_agent.agent.turn_context import drop_stale_api_content
 from hermes_cli.timefmt import coerce_epoch
 
 logger = logging.getLogger(__name__)

@@ -128,7 +128,7 @@ def resolve_active_pet(configured_slug: str | None = None) -> InstalledPet | Non
 
 def install_pet(slug: str, *, force: bool = False, timeout: float = _DOWNLOAD_TIMEOUT) -> InstalledPet:
     """Download *slug* from the manifest; idempotent unless *force*. Raises :class:`PetStoreError` / ``ManifestError``."""
-    from agent.pet.manifest import find_entry
+    from hermes_agent.agent.pet.manifest import find_entry
 
     slug = _safe_slug(slug)
     if not slug:
@@ -187,7 +187,7 @@ def register_local_pet(spritesheet, *, slug: str, display_name: str = "", descri
         if isinstance(spritesheet, (bytes, bytearray)):
             sprite_path.write_bytes(bytes(spritesheet))
         else:
-            from agent.pet.generate.atlas import _load_rgba
+            from hermes_agent.agent.pet.generate.atlas import _load_rgba
 
             _load_rgba(spritesheet).save(sprite_path, format="WEBP", lossless=True, quality=100, method=6, exact=True)
     except Exception as exc:

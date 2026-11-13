@@ -19,8 +19,8 @@ import threading
 from dataclasses import asdict, dataclass
 from typing import Any
 
-from agent.delegation_registry import DEFAULT_BACKEND, _registry, backend_status, configured_backend
-from agent.provider_registry import lower_key
+from hermes_agent.agent.delegation_registry import DEFAULT_BACKEND, _registry, backend_status, configured_backend
+from hermes_agent.agent.provider_registry import lower_key
 
 _rebuild_requests: set[str] = set()
 _lock = threading.Lock()

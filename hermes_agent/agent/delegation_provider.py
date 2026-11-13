@@ -37,7 +37,7 @@ from __future__ import annotations
 import abc
 from typing import Any, Mapping
 
-from agent.provider_base import ProviderBase
+from hermes_agent.agent.provider_base import ProviderBase
 
 #: Per-task property names core owns. A provider-declared parameter with one of these names is
 #: refused at schema-build time: plugins add parameters, they never redefine core ones, and the

@@ -73,7 +73,7 @@ class _TerminalSlot:
         self.check_cancelled()
 
     def run(self):
-        from agent import tool_executor as te
+        from hermes_agent.agent import tool_executor as te
         token = _slot.set(self)
         pc, batch = self.parsed, self.batch
         ref = pc.ref(batch.task_id)
@@ -94,7 +94,7 @@ class _TerminalSlot:
 
 class _TerminalBatch:
     def __init__(self, agent, messages, task_id, parsed):
-        from agent.tool_executor import _ConcurrentToolAuthorizationGate
+        from hermes_agent.agent.tool_executor import _ConcurrentToolAuthorizationGate
         from hermes_agent.tools.daemon_pool import DaemonThreadPoolExecutor
         self.agent, self.messages, self.task_id = agent, messages, task_id
         self.cancelled = threading.Event()
@@ -110,7 +110,7 @@ class _TerminalBatch:
         self.failure_seen = False
 
     def start(self):
-        from agent.tool_executor import _resolve_sequential_tool_timeout
+        from hermes_agent.agent.tool_executor import _resolve_sequential_tool_timeout
         for slot in self.slots:
             slot.check_cancelled()
             slot.future = self.executor.submit(propagate_context_to_thread(slot.run))
@@ -126,7 +126,7 @@ class _TerminalBatch:
                     raise TimeoutError("Terminal approval preparation timed out; commands were not started")
 
     def close(self):
-        from agent.tool_executor import _interrupt_worker_tids
+        from hermes_agent.agent.tool_executor import _interrupt_worker_tids
         from hermes_agent.tools import approval
         # Withdraw only this batch's requests, including a worker wedged in
         # notify_cb. Thread interrupts alone leave those requests actionable.
@@ -160,7 +160,7 @@ def bind_prepared_dispatch(dispatch):
     slot = _slot.get()
     if slot is None:
         return dispatch
-    from agent.tool_executor import _registered_tool_worker
+    from hermes_agent.agent.tool_executor import _registered_tool_worker
 
     owner_tid = threading.get_ident()
 
@@ -279,7 +279,7 @@ def validate_prepared_terminal(args):
 def terminal_approval_runs(agent, calls):
     """Keep nonterminal barriers, but batch adjacent terminals in mixed segments."""
     from itertools import groupby
-    from agent.tool_executor import _parse_tool_call
+    from hermes_agent.agent.tool_executor import _parse_tool_call
 
     def is_terminal(call):
         pc = _parse_tool_call(agent, call, flatten_probe=True)
@@ -293,7 +293,7 @@ def terminal_approval_runs(agent, calls):
 def terminal_approval_batch(agent, calls, messages, task_id):
     from hermes_agent.gateway.session_context import get_session_env
     from hermes_agent.tools import approval
-    from agent.tool_executor import _parse_tool_call
+    from hermes_agent.agent.tool_executor import _parse_tool_call
     if (len(calls) < 2 or get_session_env("HERMES_SESSION_SOURCE") != "desktop"
             or approval._gateway_notify_cb(approval.get_current_session_key()) is None):
         yield

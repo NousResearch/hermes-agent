@@ -11,7 +11,7 @@ credential-dependent command on the second turn.
 
 from unittest.mock import MagicMock
 
-from agent.chat_completion_helpers import build_assistant_message
+from hermes_agent.agent.chat_completion_helpers import build_assistant_message
 
 
 class _FakeToolCall:
@@ -74,7 +74,7 @@ def _build(arguments):
 def test_pgpassword_preserved_verbatim(monkeypatch):
     # Force redaction ON to prove build_assistant_message bypasses it for
     # tool-call args regardless of the global toggle.
-    monkeypatch.setattr("agent.redact._REDACT_ENABLED", True, raising=False)
+    monkeypatch.setattr("hermes_agent.agent.redact._REDACT_ENABLED", True, raising=False)
     args = '{"command": "PGPASSWORD=\'honchorulez\' psql -h 127.0.0.1"}'
     got = _build(args)
     assert got == args

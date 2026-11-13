@@ -18,7 +18,7 @@ the agent repeatedly re-surfacing already-cancelled work across turns.
 These tests pin the post-fix invariants so the conflict cannot regress.
 """
 
-from agent.context_compressor import (
+from hermes_agent.agent.context_compressor import (
     SUMMARY_PREFIX,
 )
 
@@ -42,7 +42,7 @@ def test_replaced_prefixes_are_frozen_for_renormalization():
     _HISTORICAL_SUMMARY_PREFIXES, otherwise summaries persisted by older
     builds lose detection/renormalization after an upgrade. The carveout-era
     prefix is the latest retiree."""
-    from agent.context_compressor import (
+    from hermes_agent.agent.context_compressor import (
         _HISTORICAL_SUMMARY_PREFIXES,
         ContextCompressor,
     )
@@ -207,7 +207,7 @@ def test_pre_69619_prefix_generation_is_frozen_and_stripped():
     _HISTORICAL_SUMMARY_PREFIXES, so a summary persisted immediately before
     upgrading survived resume/re-compaction undetected and unstripped.
     That exact generation must stay frozen, detectable, and strippable."""
-    from agent.context_compressor import (
+    from hermes_agent.agent.context_compressor import (
         _HISTORICAL_SUMMARY_PREFIXES,
         ContextCompressor,
     )
@@ -225,7 +225,7 @@ def test_pre_69619_prefix_generation_is_frozen_and_stripped():
 def test_frozen_prefix_generations_match_historical_tuple():
     """Every retired generation must stay byte-identical in
     _HISTORICAL_SUMMARY_PREFIXES (newest-first)."""
-    from agent.context_compressor import _HISTORICAL_SUMMARY_PREFIXES
+    from hermes_agent.agent.context_compressor import _HISTORICAL_SUMMARY_PREFIXES
 
     assert tuple(_HISTORICAL_SUMMARY_PREFIXES[: len(_FROZEN_PREFIX_GENERATIONS)]) == (
         _FROZEN_PREFIX_GENERATIONS

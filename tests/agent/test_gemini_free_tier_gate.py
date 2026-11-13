@@ -4,7 +4,7 @@ from __future__ import annotations
 from unittest.mock import MagicMock, patch
 
 
-from agent.gemini_native_adapter import (
+from hermes_agent.agent.gemini_native_adapter import (
     gemini_http_error,
     is_free_tier_quota_error,
     probe_gemini_tier,
@@ -20,7 +20,7 @@ def _mock_response(status: int, headers: dict | None = None, text: str = "") -> 
 
 
 def _run_probe(resp: MagicMock) -> str:
-    with patch("agent.gemini_native_adapter.httpx.Client") as MC:
+    with patch("hermes_agent.agent.gemini_native_adapter.httpx.Client") as MC:
         inst = MagicMock()
         inst.post.return_value = resp
         MC.return_value.__enter__.return_value = inst

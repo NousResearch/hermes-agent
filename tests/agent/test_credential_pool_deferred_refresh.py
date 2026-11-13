@@ -13,7 +13,7 @@ lock. These tests pin the two invariants that make that safe:
 
 from dataclasses import replace
 
-from agent.credential_pool import (
+from hermes_agent.agent.credential_pool import (
     AUTH_TYPE_OAUTH,
     CredentialPool,
     PooledCredential,

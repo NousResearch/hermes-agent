@@ -83,7 +83,7 @@ async def test_debug_without_upload_word_shows_notice_and_uploads_nothing(platfo
 @pytest.mark.asyncio
 async def test_debug_consent_replies_follow_the_display_language(monkeypatch):
     """The notice-only hint and the Nous refusal are catalog strings, not hard-coded English."""
-    from agent import i18n
+    from hermes_agent.agent import i18n
     monkeypatch.setenv('HERMES_LANGUAGE', 'de')
     hint = await _runner()._handle_debug_command(_event(Platform.TELEGRAM, '/debug'))
     refused = await _runner()._handle_debug_command(_event(Platform.TELEGRAM, '/debug nous upload'))

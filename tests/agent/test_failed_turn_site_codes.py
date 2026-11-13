@@ -8,12 +8,12 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent.error_surface import build_error_surface_from_result
-from agent.turn_explainers import EMPTY_RESPONSE_EXPLANATION, TurnExplainersMixin
-from agent.turn_failure_copy import (
+from hermes_agent.agent.error_surface import build_error_surface_from_result
+from hermes_agent.agent.turn_explainers import EMPTY_RESPONSE_EXPLANATION, TurnExplainersMixin
+from hermes_agent.agent.turn_failure_copy import (
     SITE_FAILURE_CODES, exit_reason_failure, failure_cause_gloss,
 )
-from agent.turn_overflow import _Recovery
+from hermes_agent.agent.turn_overflow import _Recovery
 
 
 def _recovery():
@@ -44,8 +44,8 @@ def _context_rejection(request_tokens: int, window: int = 65_536, error="HTTP 50
     estimator prices at ``request_tokens`` against a ``window``-token model (no output cap)."""
     from unittest.mock import patch
 
-    from agent.turn_overflow import _recover_context_length
-    from agent.turn_retry_state import TurnRetryState
+    from hermes_agent.agent.turn_overflow import _recover_context_length
+    from hermes_agent.agent.turn_retry_state import TurnRetryState
 
     st = _recovery()
     st.compression_attempts = 0
@@ -55,9 +55,9 @@ def _context_rejection(request_tokens: int, window: int = 65_536, error="HTTP 50
     st.agent._buffer_vprint = st.agent._buffer_diagnostic_status = lambda *a, **k: None
     compressed = []
     st.agent._compress_context = lambda msgs, *a, **k: (compressed.append(1) or [{"role": "user", "content": "x"}], None)
-    with patch("agent.model_metadata.estimate_request_tokens_rough", return_value=request_tokens), \
-         patch("agent.model_metadata.estimate_messages_tokens_rough", side_effect=[request_tokens, 10]), \
-         patch("agent.turn_overflow.time.sleep", lambda _: None):
+    with patch("hermes_agent.agent.model_metadata.estimate_request_tokens_rough", return_value=request_tokens), \
+         patch("hermes_agent.agent.model_metadata.estimate_messages_tokens_rough", side_effect=[request_tokens, 10]), \
+         patch("hermes_agent.agent.turn_overflow.time.sleep", lambda _: None):
         verdict = _recover_context_length(st, TurnRetryState(), error)
     return verdict, compressed
 
@@ -143,7 +143,7 @@ def test_previously_bare_exit_reasons_now_carry_a_code(exit_reason, code):
 def test_every_failure_code_copy_key_is_a_failure_code():
     """The copy table split: keys of the failure-code table are exactly codes the descriptor
     contract lists (one-off strings live in their own table)."""
-    from agent.turn_failure_copy import _FAILURE_CODE_COPY, _ONE_OFF_COPY
+    from hermes_agent.agent.turn_failure_copy import _FAILURE_CODE_COPY, _ONE_OFF_COPY
 
     assert set(_FAILURE_CODE_COPY) <= SITE_FAILURE_CODES
     assert not (set(_ONE_OFF_COPY) & SITE_FAILURE_CODES)

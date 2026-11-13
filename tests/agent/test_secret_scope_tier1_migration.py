@@ -15,7 +15,7 @@ against the three canonical scope semantics:
 
 import pytest
 
-from agent import secret_scope as ss
+from hermes_agent.agent import secret_scope as ss
 
 @pytest.fixture(autouse=True)
 def _reset_multiplex():
@@ -230,7 +230,7 @@ class TestOpenRouterCheckApiKey:
 
 class TestAuxiliaryScopedKeyEnv:
     def test_scoped_value_wins(self, monkeypatch):
-        from agent.auxiliary_client import _scoped_key_env
+        from hermes_agent.agent.auxiliary_client import _scoped_key_env
 
         monkeypatch.setenv("OPENROUTER_API_KEY", "sk-env")
         ss.set_multiplex_active(True)
@@ -238,7 +238,7 @@ class TestAuxiliaryScopedKeyEnv:
             assert _scoped_key_env("OPENROUTER_API_KEY") == "sk-scoped"
 
     def test_scoped_miss_no_borrow(self, monkeypatch):
-        from agent.auxiliary_client import _scoped_key_env
+        from hermes_agent.agent.auxiliary_client import _scoped_key_env
 
         monkeypatch.setenv("OPENAI_API_KEY", "sk-other-profile")
         ss.set_multiplex_active(True)
@@ -246,19 +246,19 @@ class TestAuxiliaryScopedKeyEnv:
             assert _scoped_key_env("OPENAI_API_KEY") == ""
 
     def test_unscoped_multiplex_falls_back(self, monkeypatch):
-        from agent.auxiliary_client import _scoped_key_env
+        from hermes_agent.agent.auxiliary_client import _scoped_key_env
 
         monkeypatch.setenv("OPENAI_API_KEY", "sk-own-env")
         ss.set_multiplex_active(True)
         assert _scoped_key_env("OPENAI_API_KEY") == "sk-own-env"
 
     def test_empty_name_returns_empty(self):
-        from agent.auxiliary_client import _scoped_key_env
+        from hermes_agent.agent.auxiliary_client import _scoped_key_env
 
         assert _scoped_key_env("") == ""
 
     def test_scope_failure_never_borrows_env(self, monkeypatch):
-        from agent.auxiliary_client import _scoped_key_env
+        from hermes_agent.agent.auxiliary_client import _scoped_key_env
 
         monkeypatch.setenv("OPENAI_API_KEY", "sk-other-profile")
         ss.set_multiplex_active(True)

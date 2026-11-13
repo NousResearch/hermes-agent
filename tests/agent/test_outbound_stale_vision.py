@@ -10,12 +10,12 @@ from __future__ import annotations
 
 import json
 
-from agent.agent_runtime_helpers import sanitize_api_messages
-from agent.context_compressor import (
+from hermes_agent.agent.agent_runtime_helpers import sanitize_api_messages
+from hermes_agent.agent.context_compressor import (
     _tool_content_has_images,
     evict_stale_outbound_tool_images,
 )
-from agent.image_eviction_policy import (
+from hermes_agent.agent.image_eviction_policy import (
     IMAGE_EVICTION_BATCH,
     OUTBOUND_IMAGE_FLOOR,
     OUTBOUND_IMAGE_LIMIT,
@@ -127,7 +127,7 @@ class TestOutboundStaleVisionEviction:
         it — orders of magnitude more expensive than the image tokens reclaimed. Asserted
         over a span wide enough that a per-image frontier cannot pass by coincidence.
         """
-        from agent.conversation_loop import _clone_message_for_send
+        from hermes_agent.agent.conversation_loop import _clone_message_for_send
 
         def surviving(n: int) -> list:
             msgs = [_clone_message_for_send(m) for m in _history_with_screenshots(n)]
@@ -154,7 +154,7 @@ class TestOutboundStaleVisionEviction:
         and rewrites a cached row on every turn. The quantum must shrink to the window
         instead: the frontier may move at most once per (window - floor) turns.
         """
-        from agent.conversation_loop import _clone_message_for_send
+        from hermes_agent.agent.conversation_loop import _clone_message_for_send
 
         def surviving(n: int) -> list:
             history: list[dict] = [{"role": "user", "content": "start"}]
@@ -462,7 +462,7 @@ class TestOutboundStaleVisionEviction:
         )
 
     def test_does_not_rewrite_persisted_history(self):
-        from agent.conversation_loop import _clone_message_for_send
+        from hermes_agent.agent.conversation_loop import _clone_message_for_send
 
         n = OUTBOUND_IMAGE_LIMIT + 1
         history = _history_with_screenshots(n)

@@ -217,7 +217,7 @@ def npm_probe(node_store, monkeypatch):
 
 @pytest.fixture
 def npm_consumers(npm_probe, tmp_path, monkeypatch):
-    from agent.lsp.install import _install_npm
+    from hermes_agent.agent.lsp.install import _install_npm
     from hermes_agent.gateway.config import PlatformConfig
     from hermes_cli.main_platform_setup import _whatsapp_install_bridge
     from hermes_cli.web_routers.messaging import _ensure_whatsapp_bridge_dependencies
@@ -358,7 +358,7 @@ def test_dashboard_pairing_prepares_npm_before_node_lookup(npm_probe, tmp_path, 
 
 @pytest.mark.platforms("posix")
 def test_lsp_node_server_inherits_pm_runtime_and_preserves_overrides(node_store, tmp_path, monkeypatch):
-    from agent.lsp.servers import ServerContext, find_server_for_file
+    from hermes_agent.agent.lsp.servers import ServerContext, find_server_for_file
 
     _home, node, _external = node_store
     script = tmp_path / "language-server"

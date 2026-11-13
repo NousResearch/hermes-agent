@@ -8,7 +8,7 @@ from headers).
 from __future__ import annotations
 
 
-from agent.credits_tracker import (
+from hermes_agent.agent.credits_tracker import (
     CREDITS_NOTICE_KIND,
     CREDITS_RESTORED_TTL_MS,
     CreditsState,
@@ -292,7 +292,7 @@ class TestIsFreeTierModel:
 
 
     def test_pricing_cache_peek_zero_priced_model(self, monkeypatch):
-        from agent.credits_tracker import is_free_tier_model
+        from hermes_agent.agent.credits_tracker import is_free_tier_model
         from hermes_cli import models_pricing
 
         # The picker keys the cache on the pre-/v1 root (get_pricing_for_provider
@@ -320,7 +320,7 @@ class TestIsFreeTierModel:
         """Anything the welcome host serves is the free tier, with no pricing lookup: the portal seeds
         paid_access=False for a free-tier identity ($0 by design), and that must never raise
         credits.depleted ("run /topup") on a surface that cannot top up."""
-        from agent.credits_tracker import is_free_tier_model
+        from hermes_agent.agent.credits_tracker import is_free_tier_model
         from hermes_cli import models_pricing
 
         monkeypatch.setattr(models_pricing, "_pricing_cache", {})
@@ -330,7 +330,7 @@ class TestIsFreeTierModel:
     def test_paid_nous_host_still_needs_pricing_evidence(self, monkeypatch):
         """The free-tier rule is the host, not the model name: the paid inference host can serve
         nous/welcome to a named account, and a depleted named account still sees the notice."""
-        from agent.credits_tracker import is_free_tier_model
+        from hermes_agent.agent.credits_tracker import is_free_tier_model
         from hermes_cli import models_pricing
 
         monkeypatch.setattr(models_pricing, "_pricing_cache", {})
@@ -339,7 +339,7 @@ class TestIsFreeTierModel:
         assert is_free_tier_model("nous/welcome", "") is False
 
     def test_exception_fails_open_to_false(self, monkeypatch):
-        from agent.credits_tracker import is_free_tier_model
+        from hermes_agent.agent.credits_tracker import is_free_tier_model
         from hermes_cli import models_pricing
 
         class _Exploding:
@@ -353,7 +353,7 @@ class TestIsFreeTierModel:
         """Stealth-preview SKUs (stealth/...) are free-tier but carry no
         :free suffix.  Suppression must engage so the depleted banner doesn't
         fire on a false paid_access:false from the server's stealth pool."""
-        from agent.credits_tracker import is_free_tier_model
+        from hermes_agent.agent.credits_tracker import is_free_tier_model
 
         # No base_url needed — stealth/ is a zero-network signal, same as :free.
         assert is_free_tier_model("stealth/ox-alpha", "") is True

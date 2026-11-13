@@ -16,14 +16,14 @@ fell through to "switch providers manually" advice and never called
 
 from unittest.mock import MagicMock, patch
 
-from run_agent import AIAgent
-from agent.error_classifier import classify_api_error, FailoverReason
+from hermes_agent.run_agent import AIAgent
+from hermes_agent.agent.error_classifier import classify_api_error, FailoverReason
 
 def _make_agent(fallback_model=None):
     with (
         patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]),
         patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
-        patch("agent.process_bootstrap.OpenAI"),
+        patch("hermes_agent.agent.process_bootstrap.OpenAI"),
     ):
         agent = AIAgent(
             api_key="test-key",
@@ -68,7 +68,7 @@ class TestAuthFailoverActivation:
         classified = classify_api_error(_auth_error(401))
         # The activation primitive advances the chain on an auth reason.
         with patch(
-            "agent.auxiliary_client.resolve_provider_client",
+            "hermes_agent.agent.auxiliary_client.resolve_provider_client",
             return_value=(_mock_client(), "gpt-4o"),
         ):
             advanced = agent._try_activate_fallback(reason=classified.reason)

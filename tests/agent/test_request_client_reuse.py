@@ -19,7 +19,7 @@ ONE reusable wire client on the agent, keyed by the effective client kwargs:
 
 from unittest.mock import MagicMock, patch
 
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 
 class _StubClient:
@@ -33,7 +33,7 @@ class _StubClient:
 
 
 def _make_agent(provider="openai", base_url="https://api.openai.com/v1", model="gpt-5.4"):
-    with patch("agent.process_bootstrap.OpenAI") as mock_openai:
+    with patch("hermes_agent.agent.process_bootstrap.OpenAI") as mock_openai:
         mock_openai.return_value = MagicMock()
         agent = AIAgent(
             api_key="sk-test",

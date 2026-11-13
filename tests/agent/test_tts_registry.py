@@ -1,4 +1,4 @@
-"""Tests for agent/tts_registry.py and agent/tts_provider.py.
+"""Tests for hermes_agent/agent/tts_registry.py and hermes_agent/agent/tts_provider.py.
 
 Covers:
 - Registration happy path
@@ -20,8 +20,8 @@ from typing import Any, Optional
 
 import pytest
 
-from agent import tts_registry
-from agent.tts_provider import (
+from hermes_agent.agent import tts_registry
+from hermes_agent.agent.tts_provider import (
     DEFAULT_OUTPUT_FORMAT,
     VALID_OUTPUT_FORMATS,
     TTSProvider,
@@ -88,7 +88,7 @@ class TestRegistration:
         but a warning is logged so the operator can see what happened.
         """
         p = _FakeProvider(name=builtin)
-        with caplog.at_level(logging.WARNING, logger="agent.tts_registry"):
+        with caplog.at_level(logging.WARNING, logger="hermes_agent.agent.tts_registry"):
             tts_registry.register_provider(p)
         assert builtin in caplog.text
         assert tts_registry.get_provider(builtin) is None
@@ -188,7 +188,7 @@ class TestResolveOutputFormat:
 
 
 class TestBuiltinSync:
-    """``_BUILTIN_NAMES`` in agent/tts_registry.py is duplicated from
+    """``_BUILTIN_NAMES`` in hermes_agent/agent/tts_registry.py is duplicated from
     ``BUILTIN_TTS_PROVIDERS`` in hermes_agent/tools/tts_tool.py (importing directly
     would create a circular dependency). This test fails loudly if the
     two lists drift — a new built-in added to tts_tool.py MUST also be

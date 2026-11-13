@@ -236,8 +236,8 @@ def _persist_branch(db, new_key: str, parent_key: str, title: str, history: list
     deletes a committed row whose transcript/title failed (a durable-but-empty row would defeat the INSERT OR
     IGNORE first-prompt seed) — except on disk-full, where the delete cannot land. ``user_id`` is the creating
     login: the child is a Desktop session too, and the row only records identity at insert."""
-    from agent.message_metadata import message_identity
-    from agent.transcript_repair import sync_flushed_message_markers
+    from hermes_agent.agent.message_metadata import message_identity
+    from hermes_agent.agent.transcript_repair import sync_flushed_message_markers
 
     # The child sends the parent's exact system prompt: a row without one makes the branch's first
     # turn rebuild (re-probing the workspace) and forfeits the warm cache the copied transcript buys.
@@ -582,7 +582,7 @@ def _(rid, params: dict) -> dict:
 def _(rid, params: dict) -> dict:
     """The system prompt's coding-context detection for a cwd (UIs don't re-sniff); null = not code."""
     try:
-        from agent.coding_context import project_facts_for
+        from hermes_agent.agent.coding_context import project_facts_for
         return _ok(rid, {"facts": project_facts_for(params.get("cwd"))})
     except Exception:
         logger.exception("project.facts failed")
@@ -595,7 +595,7 @@ def _(rid, params: dict) -> dict:
     """Best known verification evidence for a cwd/session. Read-only: never runs checks,
     never upgrades targeted evidence into a repository-wide guarantee."""
     try:
-        from agent.verification_evidence import verification_status
+        from hermes_agent.agent.verification_evidence import verification_status
         return _ok(rid, {"verification": verification_status(
             session_id=params.get("session_id") or params.get("session_key"), cwd=params.get("cwd"))})
     except Exception:
@@ -1167,7 +1167,7 @@ def _(rid, params: dict, session: dict) -> dict:
 @method("session.delete")
 def _(rid, params: dict) -> dict:
     """Delete a stored session + transcripts; refused while live here (FK trips on the agent's next flush)."""
-    from agent.onboarding_record import delete_chat
+    from hermes_agent.agent.onboarding_record import delete_chat
     from hermes_agent.hermes_state_errors import SessionActiveWriteGuardError  # body runs on server.py globals
 
     if not (target := params.get("session_id", "")):
@@ -1355,7 +1355,7 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 4030, "llm.oneshot requires a template or instructions/input")
     session = _sessions.get(params.get("session_id") or "")
     try:
-        from agent.oneshot import run_oneshot
+        from hermes_agent.agent.oneshot import run_oneshot
         with (_session_profile_runtime_scope(session) if session else contextlib.nullcontext()):
             return _ok(rid, {"text": run_oneshot(
                 instructions=instructions, user_input=user_input, template=template, variables=variables,
@@ -1446,7 +1446,7 @@ def _(rid, params: dict, session: dict) -> dict:
     if session.get("agent") is None and not usage:
         usage = {"calls": 0, "input": 0, "output": 0, "total": 0}
     # Nous credits are agent-independent (portal fetch); fail-open when absent.
-    from agent.account_usage import nous_credits_usage_fields  # never raises (fail-open inside)
+    from hermes_agent.agent.account_usage import nous_credits_usage_fields  # never raises (fail-open inside)
     usage.update(nous_credits_usage_fields(session.get("agent")))
     return _ok(rid, usage)
 
@@ -1471,8 +1471,8 @@ def _(rid, params: dict, session: dict) -> dict:
     # whose get_secret read fails closed once this process multiplexes (#112927).
     tokens = _set_session_context(session["session_key"])
     try:
-        from agent.context_breakdown import compute_session_context_breakdown
-        from agent.context_file_sources import context_file_sources_for_agent
+        from hermes_agent.agent.context_breakdown import compute_session_context_breakdown
+        from hermes_agent.agent.context_file_sources import context_file_sources_for_agent
         with _session_profile_runtime_scope(session):
             payload = compute_session_context_breakdown(agent, history)
             # Structured per-file rows so the Desktop popover can explain "why is my CLAUDE.md ignored?".
@@ -1517,8 +1517,8 @@ def _(rid, params: dict) -> dict:
 
 def _pet_kitty_cells(pet, pet_cfg: dict, state: str, scale: float, terminal: str) -> dict | None:
     """kitty payload for a TTY that speaks it; only kitty is grid-safe in Ink. ``auto`` trusts the client's *terminal*."""
-    from agent.pet import constants, render
-    from agent.terminal_image import kitty_color_hex
+    from hermes_agent.agent.pet import constants, render
+    from hermes_agent.agent.terminal_image import kitty_color_hex
     configured = str(pet_cfg.get("render_mode", "auto") or "auto").lower()
     if (terminal if configured in ("", "auto") else configured) != "kitty":
         return None
@@ -1536,8 +1536,8 @@ def _pet_kitty_cells(pet, pet_cfg: dict, state: str, scale: float, terminal: str
 @_pet_method("pet.cells", fail_open=_PET_OFF)
 def _(rid, params: dict) -> dict:
     """Half-block cell frames (``[tr,tg,tb,ta, br,bg,bb,ba]``) for one pet ``state``; ``cols``, ``graphics``."""
-    from agent.pet import constants, store
-    from agent.pet.render import PetRenderer
+    from hermes_agent.agent.pet import constants, store
+    from hermes_agent.agent.pet.render import PetRenderer
     pet_cfg = _pet_display_cfg()
     pet = None
     if is_truthy_value(pet_cfg.get("enabled"), default=False):
@@ -1562,12 +1562,12 @@ def _(rid, params: dict) -> dict:
 def _(rid, params: dict) -> dict:
     """Petdex gallery + local install state (installed-only offline); ``localOnly`` skips the remote manifest."""
     local_only = bool(params.get("localOnly"))
-    from agent.pet import store
+    from hermes_agent.agent.pet import store
     pet_cfg = _pet_display_cfg()
     installed = {p.slug: p for p in store.installed_pets()}
     gallery: list[dict] = []
     try:
-        from agent.pet.manifest import fetch_manifest, prefetch
+        from hermes_agent.agent.pet.manifest import fetch_manifest, prefetch
         # Local-only still warms the manifest cache in the background.
         if local_only:
             prefetch()
@@ -1592,8 +1592,8 @@ def _(rid, params: dict) -> dict:
 @_pet_method("pet.select", slug=True)
 def _(rid, params: dict, slug: str) -> dict:
     """Adopt a pet: install (if needed) + activate; writes ``display.pet.*`` to config."""
-    from agent.pet import store
-    from agent.pet.manifest import ManifestError
+    from hermes_agent.agent.pet import store
+    from hermes_agent.agent.pet.manifest import ManifestError
     from hermes_cli.pets import _set_active
     try:
         pet = store.install_pet(slug)
@@ -1606,7 +1606,7 @@ def _(rid, params: dict, slug: str) -> dict:
 @_pet_method("pet.remove", slug=True)
 def _(rid, params: dict, slug: str) -> dict:
     """Uninstall a pet (delete its directory); if it was active, turn the display off."""
-    from agent.pet import store
+    from hermes_agent.agent.pet import store
     from hermes_cli.pets import _clear_active_if
     removed = store.remove_pet(slug)
     _pet_config_followup("pet.remove", _clear_active_if, slug)
@@ -1629,7 +1629,7 @@ def _b64(data: bytes) -> str:
 @_pet_method("pet.export", slug=True)
 def _(rid, params: dict, slug: str) -> dict:
     """Export an installed pet as a re-importable ``.zip`` → ``{ok, filename, zipBase64}``."""
-    from agent.pet import store
+    from hermes_agent.agent.pet import store
     filename, data = store.export_pet(slug)
     return _ok(rid, {"ok": True, "filename": filename, "zipBase64": _b64(data)})
 
@@ -1639,7 +1639,7 @@ def _(rid, params: dict, slug: str) -> dict:
     """Rename a pet's display name + realign its slug/dir; follows the active slug in config."""
     if not (name := _str_param(params, "name")):
         return _err(rid, 4004, "missing name")
-    from agent.pet import store
+    from hermes_agent.agent.pet import store
     if not (new_slug := store.rename_pet(slug, name)):
         return _err(rid, 5031, "pet.rename failed")
     if new_slug != slug:
@@ -1651,7 +1651,7 @@ def _(rid, params: dict, slug: str) -> dict:
 @_pet_method("pet.thumb", slug=True, fail_open=lambda params: {"ok": False, "slug": _str_param(params, "slug")})
 def _(rid, params: dict, slug: str) -> dict:
     """Idle-frame PNG data URI for the picker (desktop CSP breaks CDN ``<img>``); ``url``: not-yet-installed."""
-    from agent.pet import store
+    from hermes_agent.agent.pet import store
     if not (data := store.thumbnail_png(slug, source_url=str(params.get("url") or ""))):
         return _ok(rid, {"ok": False, "slug": slug})
     return _ok(rid, {"ok": True, "slug": slug, "dataUri": "data:image/png;base64," + _b64(data)})
@@ -1684,7 +1684,7 @@ def _(rid, params: dict) -> dict:
 @_pet_method("pet.generate.status", scoped=False, fail_open={"available": False, "providers": []})
 def _(rid, params: dict) -> dict:
     """Whether pet generation is possible: a reference-capable image backend is configured."""
-    from agent.pet.generate.imagegen import GenerationError, list_sprite_providers, resolve_provider
+    from hermes_agent.agent.pet.generate.imagegen import GenerationError, list_sprite_providers, resolve_provider
     available, providers = True, []
     try:
         resolve_provider(require_references=True)
@@ -1699,7 +1699,7 @@ def _(rid, params: dict) -> dict:
 
 def _pet_pick_provider(params: dict, *, require_references: bool):
     """Picker-chosen ``params.provider`` resolved up front (a bad pick fails fast, not mid-fan-out)."""
-    from agent.pet.generate.imagegen import resolve_provider
+    from hermes_agent.agent.pet.generate.imagegen import resolve_provider
     name = _str_param(params, "provider")
     return resolve_provider(require_references=require_references, prefer=name) if name else None
 
@@ -1714,8 +1714,8 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 4004, "missing prompt")
     count = max(1, min(4, _int_param(params, "count", 4) or 4))
     import shutil
-    from agent.pet.generate import generate_base_drafts
-    from agent.pet.generate.imagegen import GenerationError
+    from hermes_agent.agent.pet.generate import generate_base_drafts
+    from hermes_agent.agent.pet.generate.imagegen import GenerationError
     root = _pet_gen_root()
     _pet_gen_sweep(root)
     # Token up front so each draft is staged + streamed the moment it lands.
@@ -1770,9 +1770,9 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 4004, "missing token" if not token else "missing name")
     # Own cancel key: pet.generate may still be releasing `token`. Falls back for old clients.
     cancel_token = _str_param(params, "cancelToken") or token
-    from agent.pet import store
-    from agent.pet.generate import hatch_pet
-    from agent.pet.generate.imagegen import GenerationError
+    from hermes_agent.agent.pet import store
+    from hermes_agent.agent.pet.generate import hatch_pet
+    from hermes_agent.agent.pet.generate.imagegen import GenerationError
     base = _pet_gen_root() / token / f"draft-{_int_param(params, 'index', 0)}.png"
     if not base.is_file():
         return _err(rid, 4004, "draft expired — generate again")
@@ -1829,7 +1829,7 @@ def _(rid, params: dict) -> dict:
     bill, so its state is answered locally (``free_tier_account`` set, ``logged_in`` false) without a portal
     round-trip that could only fail."""
     try:
-        from agent.billing_view import BillingState, build_billing_state
+        from hermes_agent.agent.billing_view import BillingState, build_billing_state
         from hermes_cli.anon_auth import has_free_tier_account
         if has_free_tier_account():
             return _ok(rid, _serialize_billing_state(BillingState(logged_in=False), free_tier_account=True))
@@ -1838,9 +1838,9 @@ def _(rid, params: dict) -> dict:
         return _ok(rid, {"ok": True, "logged_in": False, "free_tier_account": False, "error": "could not load billing state"})
 
 
-_billing_view("usage.bars", "agent.billing_usage", "build_usage_model", "_serialize_usage_model",  # two-bar $ view
+_billing_view("usage.bars", "hermes_agent.agent.billing_usage", "build_usage_model", "_serialize_usage_model",  # two-bar $ view
               {"ok": True, "available": False})
-_billing_view("subscription.state", "agent.subscription_view", "build_subscription_state",
+_billing_view("subscription.state", "hermes_agent.agent.subscription_view", "build_subscription_state",
               "_serialize_subscription_state",
               {"ok": True, "logged_in": False, "error": "could not load subscription state"})
 
@@ -1849,7 +1849,7 @@ _billing_view("subscription.state", "agent.subscription_view", "build_subscripti
 @_profile_scoped
 def _(rid, params: dict) -> dict:
     """POST /api/billing/subscription/preview → chargeless effect quote. billing:manage."""
-    from agent.subscription_view import subscription_change_preview_from_payload
+    from hermes_agent.agent.subscription_view import subscription_change_preview_from_payload
     from hermes_cli.nous_billing import post_subscription_preview
     if not (tier_id := params.get("subscription_type_id")):
         return _billing_invalid(rid, "subscription_type_id is required")
@@ -1870,7 +1870,7 @@ def _billing_route(name: str, call, *, invalid=None, message: str = "", error: s
             return _billing_invalid(rid, message, error=error)
         key = extra = None
         if idempotent:
-            from agent.billing_view import new_idempotency_key
+            from hermes_agent.agent.billing_view import new_idempotency_key
             key = params.get("idempotency_key") or new_idempotency_key()
             extra = {"idempotency_key": key}
         return _billing_call(rid, lambda: call(nb, params, key) | (extra or {}), extra=extra)
@@ -2009,7 +2009,7 @@ def _(rid, params: dict, session: dict) -> dict:
             return busy
         history = _history_without_ephemeral_scaffolding(session.get("history", []))
         # Truncate from the last *real* user turn (not a timeline marker / compaction handoff).
-        from agent.context_compressor import user_originated_turn_view
+        from hermes_agent.agent.context_compressor import user_originated_turn_view
         if user_turns := sum(1 for message in history if user_originated_turn_view(message) is not None):
             try:
                 removed = (rewound := _rewind_active_session_history(session, user_turns - 1))[2]
@@ -2070,9 +2070,9 @@ def _compress_via_compute_host(rid, params: dict, session: dict) -> dict:
 
 def _compress_live(rid, sid: str, session: dict, focus_topic: str) -> dict:
     """In-process ``session.compress``: status pinned "compressing", then the before/after summary + messages."""
-    from agent.conversation_compression import finalize_context_engine_compression_notification
-    from agent.manual_compression_feedback import summarize_manual_compression
-    from agent.model_metadata import estimate_request_tokens_rough
+    from hermes_agent.agent.conversation_compression import finalize_context_engine_compression_notification
+    from hermes_agent.agent.manual_compression_feedback import summarize_manual_compression
+    from hermes_agent.agent.model_metadata import estimate_request_tokens_rough
     with session["history_lock"]:
         before_messages = list(session.get("history", []))
         history_version = int(session.get("history_version", 0))
@@ -2134,10 +2134,10 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 4009, str(e))
     except CompressionLockHeld as e:
         _status_update(sid, "ready")
-        from agent.manual_compression_feedback import describe_compression_lock_skip
+        from hermes_agent.agent.manual_compression_feedback import describe_compression_lock_skip
         return _ok(rid, {"compressed": False, "lock_held": True, "message": describe_compression_lock_skip(e.holder)})
     except Exception as e:
-        from agent.conversation_compression import finalize_context_engine_compression_notification
+        from hermes_agent.agent.conversation_compression import finalize_context_engine_compression_notification
         finalize_context_engine_compression_notification(session["agent"], committed=False)
         return _err(rid, 5005, str(e))
 

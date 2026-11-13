@@ -28,7 +28,7 @@ def lean_tail_budget(context_length: int, threshold_tokens: int) -> int:
     :data:`TAIL_MAX_THRESHOLD_FRACTION` of the trigger. At or below ``_MIN_SUMMARY_TOKENS`` the summary alone fills
     the trigger, so no tail leaves room under it and only the floor is held: trimming the recency window there
     would lose context without ending the loop."""
-    from agent.context_compressor import _MIN_SUMMARY_TOKENS, LEAN_TAIL_CAP_TOKENS, LEAN_TAIL_FLOOR_TOKENS
+    from hermes_agent.agent.context_compressor import _MIN_SUMMARY_TOKENS, LEAN_TAIL_CAP_TOKENS, LEAN_TAIL_FLOOR_TOKENS
     floor, window_term = LEAN_TAIL_FLOOR_TOKENS, min(LEAN_TAIL_CAP_TOKENS, int(context_length * 0.025))
     if threshold_tokens > 0:
         share = int(threshold_tokens * TAIL_MAX_THRESHOLD_FRACTION)
@@ -54,7 +54,7 @@ def _lean_recovery_stub(tool_name: str, content_len: int, session_id: str) -> st
 
 def skill_view_names_by_call_id(messages: list[dict[str, Any]]) -> dict[str, str]:
     """Map each ``skill_view`` tool-call id to the skill name it loaded."""
-    from agent.context_compressor import _json_dict, _tc_get
+    from hermes_agent.agent.context_compressor import _json_dict, _tc_get
 
     names: dict[str, str] = {}
     for msg in messages:
@@ -75,7 +75,7 @@ def demote_stale_tail_tools(
     skill-marker rows untouched. A demoted ``skill_view`` body carries the canonical reload marker, as its
     Phase-1 stub does, so the model does not act on instructions it no longer has (#32106). Returns a new list
     (untouched rows shared, demoted copied) and the number of rows demoted."""
-    from agent.context_compressor import (
+    from hermes_agent.agent.context_compressor import (
         SKILL_PRUNED_MARKER_PREFIX, _is_summary_stub, _result_failure_suffix, _rewritten, _skill_pruned_marker,
     )
 
@@ -123,15 +123,15 @@ def native_anthropic_tail_prices(compressor: Any):
     None. That route replays exactly the projected carriers minus this session's rejected signatures —
     what the preflight estimate prices — never the canonical ``reasoning`` keys. Priced over the whole
     list: whether a row's signed thinking survives conversion depends on its neighbours."""
-    from agent.anthropic_thinking_policy import native_anthropic_preserves_prior_thinking
+    from hermes_agent.agent.anthropic_thinking_policy import native_anthropic_preserves_prior_thinking
 
     if (getattr(compressor, "api_mode", "") or "") != "anthropic_messages" or not native_anthropic_preserves_prior_thinking(
         getattr(compressor, "base_url", ""), getattr(compressor, "model", "")
     ):
         return None
-    from agent.anthropic_thinking_replay import session_rejected_thinking, strip_rejected_thinking
-    from agent.context_compressor import _estimate_msg_budget_tokens
-    from agent.message_sanitization import native_anthropic_row_costs
+    from hermes_agent.agent.anthropic_thinking_replay import session_rejected_thinking, strip_rejected_thinking
+    from hermes_agent.agent.context_compressor import _estimate_msg_budget_tokens
+    from hermes_agent.agent.message_sanitization import native_anthropic_row_costs
 
     rejected = session_rejected_thinking(
         compressor, getattr(compressor, "_session_db", None), getattr(compressor, "_session_id", "")
@@ -192,7 +192,7 @@ def with_skill_safety_rule(
     prune marker (summary-side ``## Pruned Skills`` markers, Phase-1 and lean-demoted ``skill_view`` stubs). A kept
     prune-only stub's copy (:func:`with_pruned_row_skill_safety_rule`) moves onto the handoff: compaction is the
     sanctioned rewrite, and the token-budget tail often keeps a stub the count-protected prune-only tail ruled."""
-    from agent.context_compressor import SKILL_PRUNED_MARKER_PREFIX, _content_text_for_contains
+    from hermes_agent.agent.context_compressor import SKILL_PRUNED_MARKER_PREFIX, _content_text_for_contains
 
     def unruled(rows):
         return [{**m, "content": without_skill_safety_rule(m["content"])}
@@ -217,7 +217,7 @@ def without_skill_safety_rule(content: str) -> str:
 def elide_keeping_skill_safety_rule(content: str, limit: int) -> str:
     """``elide(content, limit)`` that keeps an attached rule: the head-only cut would drop it from a long handoff
     while marker rows beside it survive (anti-growth salvage)."""
-    from agent.compression_marker import elide
+    from hermes_agent.agent.compression_marker import elide
     if SKILL_SAFETY_RULE not in content:
         return elide(content, limit)
     return elide(without_skill_safety_rule(content), limit - len(_SKILL_SAFETY_SUFFIX)) + _SKILL_SAFETY_SUFFIX
@@ -226,7 +226,7 @@ def elide_keeping_skill_safety_rule(content: str, limit: int) -> str:
 def with_pruned_row_skill_safety_rule(original: list[dict[str, Any]], pruned: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """*pruned* (a prune-only rewrite of *original*) with the rule on the first row it turned into a prune marker,
     when no row carries the rule yet: prune-only has no handoff for :func:`with_skill_safety_rule` to ride."""
-    from agent.context_compressor import SKILL_PRUNED_MARKER_PREFIX, _content_text_for_contains
+    from hermes_agent.agent.context_compressor import SKILL_PRUNED_MARKER_PREFIX, _content_text_for_contains
     if any(SKILL_SAFETY_RULE in _content_text_for_contains(m.get("content")) for m in pruned if isinstance(m, dict)):
         return pruned
     for i, (before, after) in enumerate(zip(original, pruned)):

@@ -2,8 +2,8 @@
 recovery, interpreter-shutdown abandon, classified-error routing, overflow recovery, the
 non-retryable client-error exit, max-retries exhaustion (primary transport recovery →
 fallback → terminal result) and the interruptible backoff. Nothing here imports
-``agent.conversation_loop`` at module level (cycle) — loop-internal helpers resolve lazily so
-``patch("agent.conversation_loop.X")`` sites keep intercepting.
+``hermes_agent.agent.conversation_loop`` at module level (cycle) — loop-internal helpers resolve lazily so
+``patch("hermes_agent.agent.conversation_loop.X")`` sites keep intercepting.
 """
 
 from __future__ import annotations
@@ -15,18 +15,18 @@ import ssl
 import time
 from typing import Any, Dict, Optional
 
-from agent.api_error_summary import is_provider_stream_parse_error
-from agent.error_classifier import RETRYABLE_CLIENT_REASONS, FailoverReason, classify_api_error
-from agent.route_verdicts import route_visit
-from agent.turn_overflow import recover_from_overflow
-from agent.turn_recovery import (
+from hermes_agent.agent.api_error_summary import is_provider_stream_parse_error
+from hermes_agent.agent.error_classifier import RETRYABLE_CLIENT_REASONS, FailoverReason, classify_api_error
+from hermes_agent.agent.route_verdicts import route_visit
+from hermes_agent.agent.turn_overflow import recover_from_overflow
+from hermes_agent.agent.turn_recovery import (
     _NONRETRYABLE_LABELS, abort_turn_on_interrupt, compute_error_backoff, free_tier_cooldown_ends_turn,
     interruptible_backoff_sleep, log_api_error_attempt,
     max_retries_exhausted_result, nonretryable_client_error_result, recover_after_classification,
     recover_before_classification, route_classified_error, settle_delivered_partial,
 )
 
-logger = logging.getLogger("agent.conversation_loop")
+logger = logging.getLogger("hermes_agent.agent.conversation_loop")
 
 
 @dataclass
@@ -96,7 +96,7 @@ def handle_api_error(
     # Usage-window responses only: every other account keeps main's behaviour (no capture here).
     if status_code in (402, 403) and getattr(agent, "provider", "") == "nous":
         try:
-            from agent.credits_tracker import response_is_usage_window
+            from hermes_agent.agent.credits_tracker import response_is_usage_window
             response = getattr(api_error, "response", None)
             if response_is_usage_window(response):
                 agent._capture_credits(response, refused=True)
@@ -277,8 +277,8 @@ def settle_unrecovered_error(
     terminal result), max-retries exhaustion (primary transport recovery -> fallback -> terminal
     result), else the interruptible error backoff. ``FailoverReason.billing`` (402) is deliberately
     treated as non-retryable (#31273)."""
-    from agent.conversation_loop import _arm_fallback_restart, _credential_refresh_profile
-    from agent.provider_route_hooks import ask_on_error_path
+    from hermes_agent.agent.conversation_loop import _arm_fallback_restart, _credential_refresh_profile
+    from hermes_agent.agent.provider_route_hooks import ask_on_error_path
 
     def _verdict(action: str, result: Optional[dict[str, Any]] = None) -> UnrecoveredErrorVerdict:
         return UnrecoveredErrorVerdict(
@@ -320,7 +320,7 @@ def settle_unrecovered_error(
     if is_client_error:
         # A Codex ChatGPT-account entitlement 400 names the model: with nothing to rotate the
         # slug is dead for this account, so record it before the fallback walk runs (#106475).
-        from agent.fallback_cooldown import _mark_entitlement_rejected_model
+        from hermes_agent.agent.fallback_cooldown import _mark_entitlement_rejected_model
         _mark_entitlement_rejected_model(agent, api_error)
         # Provider self-heal BEFORE fallback: some providers surface a stale credential as a
         # non-auth error (the profile's ``is_stale_credential_error``), not a 401. Fresh
@@ -399,7 +399,7 @@ def settle_unrecovered_error(
             return _verdict("break")
         # Fallback first (above); only with nothing left to move to does the bounded auto-recovery
         # ladder park the turn on a transient outage instead of ending it (#85426, #107307).
-        from agent.turn_recovery_autorecover import auto_recover_after_exhaustion
+        from hermes_agent.agent.turn_recovery_autorecover import auto_recover_after_exhaustion
         _ladder = auto_recover_after_exhaustion(
             agent, api_error, classified, _retry, messages=messages,
             conversation_history=conversation_history, api_call_count=api_call_count,

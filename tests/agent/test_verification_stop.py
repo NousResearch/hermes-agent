@@ -6,11 +6,11 @@ from pathlib import Path
 
 import pytest
 
-from agent.verification_evidence import (
+from hermes_agent.agent.verification_evidence import (
     mark_workspace_edited,
     record_terminal_result,
 )
-from agent.verification_stop import (
+from hermes_agent.agent.verification_stop import (
     build_verify_on_stop_nudge,
     verify_on_stop_enabled,
 )
@@ -199,7 +199,7 @@ def test_nudge_drops_the_unscored_run_warning_once_hermes_verify_records(tmp_pat
     record_terminal_result(command="pnpm test || true", cwd=tmp_path, session_id="s1", exit_code=0)
 
     subprocess.run(
-        [sys.executable, "-c", "import sys; from agent.verification_evidence import record_verify_run; "
+        [sys.executable, "-c", "import sys; from hermes_agent.agent.verification_evidence import record_verify_run; "
          "record_verify_run(root=sys.argv[1], session_id='s1', ok=False)", str(tmp_path)],
         cwd=Path(__file__).resolve().parents[2], check=True,
     )

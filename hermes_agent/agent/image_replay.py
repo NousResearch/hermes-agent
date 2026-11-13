@@ -76,7 +76,7 @@ def _retained_data_url(ref: str) -> Optional[str]:
     """Data URL for a retained local image this profile still holds unchanged, else ``None``."""
     if not ref:
         return None
-    from agent.image_routing import _file_to_data_url
+    from hermes_agent.agent.image_routing import _file_to_data_url
     from hermes_agent.gateway.session_ingress_media import native_inputs_root
 
     path = Path(ref)
@@ -150,7 +150,7 @@ def _turn_replay_window(agent: Any) -> int:
     cached = getattr(agent, "_image_replay_window", None)
     if cached is not None and cached[0] == key:
         return cached[1]
-    from agent.image_routing import decide_image_input_mode
+    from hermes_agent.agent.image_routing import decide_image_input_mode
     from hermes_cli.config import load_config_readonly
 
     cfg = load_config_readonly()

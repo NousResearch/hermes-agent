@@ -10,8 +10,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent.codex_responses_adapter import ResponsesEndpointQuirks
-from agent.native_compaction import (
+from hermes_agent.agent.codex_responses_adapter import ResponsesEndpointQuirks
+from hermes_agent.agent.native_compaction import (
     DEFAULT_COMPACT_THRESHOLD,
     is_direct_openai_route,
     is_native_compaction_model,
@@ -262,7 +262,7 @@ class TestWirePlumbing:
     """context_management flows through build_kwargs and both preflights."""
 
     def test_transport_build_kwargs_includes_field(self):
-        from agent.transports.codex import ResponsesApiTransport
+        from hermes_agent.agent.transports.codex import ResponsesApiTransport
 
         transport = ResponsesApiTransport()
         kwargs = transport.build_kwargs(
@@ -275,7 +275,7 @@ class TestWirePlumbing:
         ]
 
     def test_transport_build_kwargs_omits_field_when_none(self):
-        from agent.transports.codex import ResponsesApiTransport
+        from hermes_agent.agent.transports.codex import ResponsesApiTransport
 
         transport = ResponsesApiTransport()
         kwargs = transport.build_kwargs(
@@ -286,7 +286,7 @@ class TestWirePlumbing:
         assert "context_management" not in kwargs
 
     def test_preflight_preserves_field(self):
-        from agent.codex_responses_adapter import _preflight_codex_api_kwargs
+        from hermes_agent.agent.codex_responses_adapter import _preflight_codex_api_kwargs
 
         normalized = _preflight_codex_api_kwargs(
             {
@@ -304,7 +304,7 @@ class TestWirePlumbing:
         ]
 
     def test_preflight_accepts_replayed_compaction_input_item(self):
-        from agent.codex_responses_adapter import _preflight_codex_input_items
+        from hermes_agent.agent.codex_responses_adapter import _preflight_codex_input_items
 
         items = _preflight_codex_input_items(
             [
@@ -315,7 +315,7 @@ class TestWirePlumbing:
         assert items[0] == {"type": "compaction", "encrypted_content": "opaque-blob"}
 
     def test_preflight_drops_empty_compaction_item(self):
-        from agent.codex_responses_adapter import _preflight_codex_input_items
+        from hermes_agent.agent.codex_responses_adapter import _preflight_codex_input_items
 
         items = _preflight_codex_input_items(
             [
@@ -328,7 +328,7 @@ class TestWirePlumbing:
 
 class TestResponseCapture:
     def test_compaction_output_item_lands_in_reasoning_sidecar(self):
-        from agent.codex_responses_adapter import _normalize_codex_response
+        from hermes_agent.agent.codex_responses_adapter import _normalize_codex_response
 
         response = SimpleNamespace(
             status="completed",
@@ -361,7 +361,7 @@ class TestResponseCapture:
         assert compaction_items[0]["_issuer_kind"] == "other:https://api.openai.com/v1"
 
     def test_compaction_item_replayed_on_next_turn(self):
-        from agent.codex_responses_adapter import _chat_messages_to_responses_input
+        from hermes_agent.agent.codex_responses_adapter import _chat_messages_to_responses_input
 
         items = _chat_messages_to_responses_input(
             [
@@ -388,7 +388,7 @@ class TestResponseCapture:
         assert "_issuer_kind" not in replayed[0]
 
     def test_foreign_issuer_compaction_item_dropped(self):
-        from agent.codex_responses_adapter import _chat_messages_to_responses_input
+        from hermes_agent.agent.codex_responses_adapter import _chat_messages_to_responses_input
 
         items = _chat_messages_to_responses_input(
             [
@@ -425,7 +425,7 @@ class TestAgentInitConfig:
     def test_loaded_config_reaches_request_threshold(
         self, tmp_path, monkeypatch, threshold_yaml, configured, resolved
     ):
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         home = tmp_path / ".hermes"
         home.mkdir()
@@ -457,7 +457,7 @@ class TestAgentInitConfig:
 
 
     def test_kwargs_omit_field_for_ineligible_model_even_when_enabled(self):
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         agent = AIAgent(
             api_key="test-key",
@@ -492,13 +492,13 @@ class TestPrunePreCheckpointItems:
         ]
 
     def test_no_checkpoint_is_identity(self):
-        from agent.native_compaction import prune_pre_checkpoint_items
+        from hermes_agent.agent.native_compaction import prune_pre_checkpoint_items
 
         items = [i for i in self._items() if i.get("type") != "compaction"]
         assert prune_pre_checkpoint_items(list(items)) == items
 
     def test_checkpoint_leads_and_pre_history_dropped(self):
-        from agent.native_compaction import prune_pre_checkpoint_items
+        from hermes_agent.agent.native_compaction import prune_pre_checkpoint_items
 
         out = prune_pre_checkpoint_items(self._items())
         assert out[0] == {"type": "compaction", "encrypted_content": "blobA"}
@@ -509,7 +509,7 @@ class TestPrunePreCheckpointItems:
         assert out[-2:] == self._items()[-2:]
 
     def test_pre_checkpoint_user_messages_retained_in_order(self):
-        from agent.native_compaction import prune_pre_checkpoint_items
+        from hermes_agent.agent.native_compaction import prune_pre_checkpoint_items
 
         out = prune_pre_checkpoint_items(self._items())
         users = [i["content"] for i in out if i.get("role") == "user"]
@@ -522,7 +522,7 @@ class TestPrunePreCheckpointItems:
         assert out.index({"role": "user", "content": "goal: build the runner"}) == 1
 
     def test_newest_checkpoint_run_wins(self):
-        from agent.native_compaction import prune_pre_checkpoint_items
+        from hermes_agent.agent.native_compaction import prune_pre_checkpoint_items
 
         items = [
             {"type": "compaction", "encrypted_content": "old"},
@@ -545,7 +545,7 @@ class TestPrunePreCheckpointItems:
         [("x", 400), ("ж", 200), ("中", 100)],
     )
     def test_retention_budget_newest_first_with_truncation(self, char, kept_chars):
-        from agent.native_compaction import prune_pre_checkpoint_items
+        from hermes_agent.agent.native_compaction import prune_pre_checkpoint_items
 
         old = {"role": "user", "content": char * 4000}
         newer = {"role": "user", "content": "y" * 2000}  # ~500 tokens
@@ -559,14 +559,14 @@ class TestPrunePreCheckpointItems:
         assert out[0]["type"] == "compaction"
 
     def test_zero_budget_keeps_only_post_tail(self):
-        from agent.native_compaction import prune_pre_checkpoint_items
+        from hermes_agent.agent.native_compaction import prune_pre_checkpoint_items
 
         out = prune_pre_checkpoint_items(self._items(), retained_user_token_budget=0)
         users = [i["content"] for i in out if i.get("role") == "user"]
         assert users == ["next ask"]
 
     def test_adapter_applies_prune_end_to_end(self):
-        from agent.codex_responses_adapter import _chat_messages_to_responses_input
+        from hermes_agent.agent.codex_responses_adapter import _chat_messages_to_responses_input
 
         msgs = [
             {"role": "user", "content": "the goal"},
@@ -590,7 +590,7 @@ class TestPrunePreCheckpointItems:
         assert items.index({"type": "message", "role": "assistant", "content": "ok"}) > 0
 
     def test_adapter_without_checkpoint_unchanged_shape(self):
-        from agent.codex_responses_adapter import _chat_messages_to_responses_input
+        from hermes_agent.agent.codex_responses_adapter import _chat_messages_to_responses_input
 
         msgs = [
             {"role": "user", "content": "hi"},
@@ -636,7 +636,7 @@ class TestCheckpointGatedOnCurrentEligibility:
         ]
 
     def test_ineligible_request_keeps_pre_feature_wire(self):
-        from agent.codex_responses_adapter import _chat_messages_to_responses_input
+        from hermes_agent.agent.codex_responses_adapter import _chat_messages_to_responses_input
 
         history = self._history()
         items = _chat_messages_to_responses_input(
@@ -657,7 +657,7 @@ class TestCheckpointGatedOnCurrentEligibility:
         assert {"type": "message", "role": "assistant", "content": _CODEX_ON_IT} in items
 
     def test_eligible_request_still_restructures(self):
-        from agent.codex_responses_adapter import _chat_messages_to_responses_input
+        from hermes_agent.agent.codex_responses_adapter import _chat_messages_to_responses_input
 
         items = _chat_messages_to_responses_input(
             self._history(),
@@ -668,7 +668,7 @@ class TestCheckpointGatedOnCurrentEligibility:
         assert {"role": "assistant", "content": "on it"} not in items
 
     def test_converter_defaults_to_ineligible(self):
-        from agent.codex_responses_adapter import _chat_messages_to_responses_input
+        from hermes_agent.agent.codex_responses_adapter import _chat_messages_to_responses_input
 
         items = _chat_messages_to_responses_input(self._history())
         assert all(i.get("type") != "compaction" for i in items)
@@ -677,7 +677,7 @@ class TestCheckpointGatedOnCurrentEligibility:
     def test_build_kwargs_without_field_does_not_prune(self):
         """Model swapped out of the gpt-5.6 family / kill switch fired:
         the gate returns None, so the wire must be the pre-feature one."""
-        from agent.transports.codex import ResponsesApiTransport
+        from hermes_agent.agent.transports.codex import ResponsesApiTransport
 
         kwargs = ResponsesApiTransport().build_kwargs(
             model="gpt-5.2",
@@ -689,7 +689,7 @@ class TestCheckpointGatedOnCurrentEligibility:
         assert {"type": "message", "role": "assistant", "content": "on it"} in kwargs["input"]
 
     def test_build_kwargs_with_field_prunes(self):
-        from agent.transports.codex import ResponsesApiTransport
+        from hermes_agent.agent.transports.codex import ResponsesApiTransport
 
         kwargs = ResponsesApiTransport().build_kwargs(
             model="gpt-5.6",
@@ -701,7 +701,7 @@ class TestCheckpointGatedOnCurrentEligibility:
         assert {"role": "assistant", "content": "on it"} not in kwargs["input"]
 
     def test_convert_messages_defaults_to_ineligible(self):
-        from agent.transports.codex import ResponsesApiTransport
+        from hermes_agent.agent.transports.codex import ResponsesApiTransport
 
         items = ResponsesApiTransport().convert_messages(
             self._history(), is_codex_backend=True
@@ -713,8 +713,8 @@ class TestCheckpointGatedOnCurrentEligibility:
         """Auxiliary calls (compression, flush_memories, MoA) replay real
         session history but never send ``context_management`` — so a
         checkpoint in that history must not restructure their request."""
-        import agent.codex_responses_adapter as adapter
-        from agent.auxiliary_client import _CodexCompletionsAdapter
+        import hermes_agent.agent.codex_responses_adapter as adapter
+        from hermes_agent.agent.auxiliary_client import _CodexCompletionsAdapter
 
         seen = {}
         real = adapter._chat_messages_to_responses_input

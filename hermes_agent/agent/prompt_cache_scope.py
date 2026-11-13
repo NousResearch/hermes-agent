@@ -53,7 +53,7 @@ def conversation_id(agent: Any) -> str:
         return memo[1]
     # A plugin hook can ask first from a tool callback Relay drives on its loop, where WorkerRPC
     # refuses a synchronous read for the rest of the turn (#139029): both walks run off the loop.
-    from agent.runtime_session_store import call_off_event_loop
+    from hermes_agent.agent.runtime_session_store import call_off_event_loop
     db = getattr(agent, "_session_db", None)
     root = call_off_event_loop(_lineage_root, sid, db) if sid else None
     if root == sid:
@@ -88,7 +88,7 @@ def _agent_source(
     if row_source:
         return row_source
     platform = getattr(agent, "platform", None)
-    from agent.session_source import session_source_for
+    from hermes_agent.agent.session_source import session_source_for
     return str(session_source_for(platform)).strip()
 
 

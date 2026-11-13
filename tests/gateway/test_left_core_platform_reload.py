@@ -80,9 +80,9 @@ async def test_a_named_launch_stays_standalone_across_the_reload(tmp_path, monke
             seen["default_slack"] = Platform.SLACK in config.platforms  # default's platform, not foo's
             raise SystemExit(0)
 
-    from agent.secret_scope import is_multiplex_active, set_multiplex_active
-    monkeypatch.setattr("agent.secret_scope._MULTIPLEX_ACTIVE", False)
-    monkeypatch.setattr("agent.secret_scope._AUTO_PINNED_HOME", None)
+    from hermes_agent.agent.secret_scope import is_multiplex_active, set_multiplex_active
+    monkeypatch.setattr("hermes_agent.agent.secret_scope._MULTIPLEX_ACTIVE", False)
+    monkeypatch.setattr("hermes_agent.agent.secret_scope._AUTO_PINNED_HOME", None)
 
     def recover_at_startup(*, say=None, gateway_start=False):
         # The install reads this profile's env unscoped (manifest requires_env): it must not fail closed.
@@ -132,9 +132,9 @@ async def test_a_default_launch_keeps_its_reserved_homes_across_the_reload(tmp_p
             seen["reserved"] = [name for name, _home in getattr(config, "_runtime_profile_homes", None) or ()]
             raise SystemExit(0)
 
-    from agent.secret_scope import set_multiplex_active
-    monkeypatch.setattr("agent.secret_scope._MULTIPLEX_ACTIVE", False)
-    monkeypatch.setattr("agent.secret_scope._AUTO_PINNED_HOME", None)
+    from hermes_agent.agent.secret_scope import set_multiplex_active
+    monkeypatch.setattr("hermes_agent.agent.secret_scope._MULTIPLEX_ACTIVE", False)
+    monkeypatch.setattr("hermes_agent.agent.secret_scope._AUTO_PINNED_HOME", None)
     monkeypatch.setattr("hermes_cli.left_core_migration.recover_at_startup",
                         lambda *, say=None, gateway_start=False: ["yuanbao"])
     monkeypatch.setattr("hermes_agent.gateway.run._host_attach_or_none", lambda replace, force: _none())
@@ -172,7 +172,7 @@ def test_the_launch_homes_migration_reads_its_own_secrets_on_a_multiplexing_star
     monkeypatch.delenv("YUANBAO_APP_ID", raising=False)
     import hermes_constants
     monkeypatch.setattr(hermes_constants, "_default_hermes_root_memo", None)
-    from agent.secret_scope import get_secret, is_multiplex_active, set_multiplex_active
+    from hermes_agent.agent.secret_scope import get_secret, is_multiplex_active, set_multiplex_active
     read = []
 
     def recover_at_startup(*, say=None, gateway_start=False):

@@ -41,7 +41,7 @@ def _trim_recorder(monkeypatch, agent):
 
 
 def test_execute_tool_calls_trims_once_after_every_executor_frame_unwound(monkeypatch):
-    import run_agent as _ra
+    import hermes_agent.run_agent as _ra
 
     agent = _agent_returning(monkeypatch, "x" * 1_000_000)
     agent._execute_tool_calls = _ra.AIAgent._execute_tool_calls.__get__(agent)

@@ -39,7 +39,7 @@ class TestCustomProviderModelSwitch:
         """Switching custom endpoints must not leave the old model.api_key
         credential selectable from the previous endpoint's pool."""
         import hermes_yaml as yaml
-        from agent.credential_pool import load_pool
+        from hermes_agent.agent.credential_pool import load_pool
         from hermes_cli.auth import read_credential_pool, write_credential_pool
         from hermes_cli.model_setup_flows import _model_flow_custom
 

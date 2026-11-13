@@ -27,7 +27,7 @@ import pytest
 
 def _make_agent(session_db, session_id):
     with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         agent = AIAgent(
             api_key="test-key",
@@ -81,8 +81,8 @@ class TestInPlaceCommitPersistMarker:
     def test_post_commit_persist_does_not_reinsert_compacted_rows(self):
         """In-place commit → persist walk: row counts stay stable (#98450)."""
         from hermes_agent.hermes_state import SessionDB
-        from agent.conversation_compression import compress_context
-        from agent.context_compressor import _DB_PERSISTED_MARKER
+        from hermes_agent.agent.conversation_compression import compress_context
+        from hermes_agent.agent.context_compressor import _DB_PERSISTED_MARKER
 
         with tempfile.TemporaryDirectory() as tmp, closing(SessionDB(db_path=Path(tmp) / "t.db")) as db:
             sid = "20260830_120000_marker"
@@ -145,7 +145,7 @@ class TestInPlaceCommitPersistMarker:
         asserts the behavioral outcome — dicts stamped after a successful
         archive_and_compact — for the sibling call path)."""
         from hermes_agent.hermes_state import SessionDB
-        from agent.context_compressor import (
+        from hermes_agent.agent.context_compressor import (
             ContextCompressor,
             _DB_PERSISTED_MARKER,
         )

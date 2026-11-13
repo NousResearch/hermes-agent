@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Optional
 
 # Same profile-aware / fleet-root resolvers the file-safety guards use (fail-open to ~/.hermes).
-from agent.file_safety import _hermes_home_path as _hermes_home, _hermes_root_path as _canonical_root
+from hermes_agent.agent.file_safety import _hermes_home_path as _hermes_home, _hermes_root_path as _canonical_root
 
 SENTINEL_NAME = "ESTOP"
 

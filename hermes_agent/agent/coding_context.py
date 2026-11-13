@@ -199,7 +199,7 @@ def _resolve_cwd(cwd: Optional[str | Path]) -> Path:
     if cwd:
         return Path(cwd).expanduser()
     try:
-        from agent.runtime_cwd import resolve_agent_cwd
+        from hermes_agent.agent.runtime_cwd import resolve_agent_cwd
         return resolve_agent_cwd()
     except Exception:
         return Path(os.getcwd())

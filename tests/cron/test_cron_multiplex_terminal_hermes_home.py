@@ -27,7 +27,7 @@ def two_profiles(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path / "user"))
     monkeypatch.setenv("HERMES_HOME", str(root))
     monkeypatch.setenv("HERMES_CRON_TIMEOUT", "0")
-    from agent.secret_scope import set_multiplex_active
+    from hermes_agent.agent.secret_scope import set_multiplex_active
     set_multiplex_active(True)
     from hermes_agent.tools.terminal_tool import cleanup_all_environments
     try:
@@ -57,7 +57,7 @@ def _install_agent(monkeypatch, seen):
 
     fake = type(sys)("run_agent")
     fake.AIAgent = TerminalAgent
-    monkeypatch.setitem(sys.modules, "run_agent", fake)
+    monkeypatch.setitem(sys.modules, "hermes_agent.run_agent", fake)
     monkeypatch.setattr(rtp, "resolve_runtime_provider", lambda **_kw: {
         "provider": "test", "api_key": "k", "base_url": "http://test.local", "api_mode": "chat_completions"})
     monkeypatch.setattr(sched, "_build_job_prompt", lambda job, prerun_script=None, **kw: "hi")

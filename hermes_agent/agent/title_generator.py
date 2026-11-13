@@ -16,10 +16,10 @@ import weakref
 from contextlib import suppress
 from typing import Any, Callable, Optional
 
-from agent.auxiliary_client import call_llm
-from agent.context_compressor import LEGACY_SUMMARY_PREFIX
-from agent.delegation_context import is_dispatcher_owned_worker_context
-from agent.message_content import flatten_message_text
+from hermes_agent.agent.auxiliary_client import call_llm
+from hermes_agent.agent.context_compressor import LEGACY_SUMMARY_PREFIX
+from hermes_agent.agent.delegation_context import is_dispatcher_owned_worker_context
+from hermes_agent.agent.message_content import flatten_message_text
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +49,7 @@ RuntimeValidator = Callable[[], bool]
 MAX_TITLE_INPUT_CHARS = 1000
 _PASTE_PREVIEW_LABEL = "\n\nPasted content:\n"
 _ATTACHMENT_REF_RE = re.compile(r"@(?:file|folder):\S+")
-# Footers the @-reference expander appends below the typed text (agent/context_references.py).
+# Footers the @-reference expander appends below the typed text (hermes_agent/agent/context_references.py).
 _CONTEXT_FOOTER_RE = re.compile(r"\n+--- (?:Context Warnings|Attached Context) ---\n.*", re.DOTALL)
 # Cap on the instant derived title; a raw fragment reads worse the longer it runs.
 MAX_DERIVED_TITLE_CHARS = 48
@@ -293,13 +293,13 @@ def _strip_one_wrapper(text: str) -> str:
 
 
 # Matches an ``@file:``/``@folder:`` context reference the way the canonical
-# ``agent.context_references`` reference pattern does: an unquoted ``\S+``
+# ``hermes_agent.agent.context_references`` reference pattern does: an unquoted ``\S+``
 # value, or a backtick/double/single-quoted value (a space-bearing path is
 # written backtick-quoted). Kept local so the titler doesn't import the
 # context-reference machinery (circularity / startup cost) just to detect the
 # attachment-only shape (#92068).
 _QUOTED = r"(?:`[^`\n]+`|\"[^\"\n]+\"|'[^'\n]+')"
-# Mirrors the canonical agent.context_references value shape: a quoted
+# Mirrors the canonical hermes_agent.agent.context_references value shape: a quoted
 # (space-bearing) path may carry a ``:start[-end]`` line-range suffix, and a
 # bare path swallows its own range via ``\S+``.
 _CONTEXT_REFERENCE_TOKEN_RE = re.compile(
@@ -321,7 +321,7 @@ def _summarize_user_message(user_message: str) -> str:
         return ""
     described = None
     try:
-        from agent.skill_commands import describe_skill_invocation
+        from hermes_agent.agent.skill_commands import describe_skill_invocation
         described = describe_skill_invocation(user_message)
     except Exception:
         logger.debug("Skill-scaffolding summary failed; titling raw", exc_info=True)
@@ -429,7 +429,7 @@ def _extract_title_text(content: str) -> str:
         return ""
     # Prose fallback: scrub <think> blocks so reasoning can't leak into a title.
     try:
-        from agent.agent_runtime_helpers import strip_think_blocks
+        from hermes_agent.agent.agent_runtime_helpers import strip_think_blocks
         raw = strip_think_blocks(None, raw).strip()
     except Exception:
         logger.debug("strip_think_blocks unavailable for title output", exc_info=True)
@@ -708,8 +708,8 @@ def auto_title_session(
             return
         # This thread starts AFTER the turn's ambient context was reset; republish it so the call carries
         # the same Portal ``conversation=`` tag (root-of-lineage) and bills usage to this session.
-        from agent.aux_accounting import set_accounting_context
-        from agent.portal_tags import set_conversation_context
+        from hermes_agent.agent.aux_accounting import set_accounting_context
+        from hermes_agent.agent.portal_tags import set_conversation_context
         conversation_id = session_id
         with suppress(Exception):
             conversation_id = session_db.get_conversation_root(session_id) or session_id
@@ -833,7 +833,7 @@ def maybe_auto_title(
     # The thread must resolve auxiliary.title_generation (config, provider key, language) for the
     # profile whose turn this is: a bare Thread starts with an empty context and lands on the launch
     # profile under multiplex, titling X's session with the default profile's model and billing its key.
-    from agent.memory_provider import spawn_context_thread
+    from hermes_agent.agent.memory_provider import spawn_context_thread
     upgrade_kwargs = dict(failure_callback=failure_callback, main_runtime=main_runtime, title_callback=title_callback,
                           runtime_validator=runtime_validator)
     if isinstance(title_preview, str) and title_preview.strip():

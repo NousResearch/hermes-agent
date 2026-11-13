@@ -41,7 +41,7 @@ def _cap_tui_verbose_text(text: str) -> str:
 
 def _redact_tui_verbose_text(text: str) -> str:
     try:
-        from agent.redact import redact_sensitive_text
+        from hermes_agent.agent.redact import redact_sensitive_text
         redacted = redact_sensitive_text(str(text), force=True)
     except Exception:
         return ""
@@ -63,7 +63,7 @@ def _tool_args_text(args: dict) -> str:
 
 def _tool_result_text(result: object) -> str:
     def render():
-        from agent.tool_dispatch_helpers import _multimodal_text_summary
+        from hermes_agent.agent.tool_dispatch_helpers import _multimodal_text_summary
         return _multimodal_text_summary(result)
 
     return _verbose_text(render, lambda: str(result))
@@ -233,7 +233,7 @@ def _tool_result_needs_user(result: object) -> bool:
 
 
 def _tool_labels(name: str, args: dict) -> list[dict] | None:
-    from agent.display import tool_labels_for_call
+    from hermes_agent.agent.display import tool_labels_for_call
 
     return [label.as_payload() for label in tool_labels_for_call(name, args)] or None
 
@@ -285,7 +285,7 @@ def _on_tool_start(sid: str, tool_call_id: str, name: str, args: dict):
     session = _sessions.get(sid)
     if session is not None:
         with contextlib.suppress(Exception):
-            from agent.display import capture_local_edit_snapshot
+            from hermes_agent.agent.display import capture_local_edit_snapshot
             task_id = session.get("session_key") or getattr(session.get("agent"), "session_id", None) or sid
             snapshot = capture_local_edit_snapshot(name, args, task_id=task_id)
             if snapshot is not None:
@@ -318,7 +318,7 @@ def _prepare_tool_result_metadata(sid: str, tool_call_id: str, name: str, args: 
     snapshot = session.setdefault("edit_snapshots", {}).pop(tool_call_id, None) if session is not None else None
     metadata = {}
     with contextlib.suppress(Exception):
-        from agent.display import render_edit_diff_with_delta
+        from hermes_agent.agent.display import render_edit_diff_with_delta
         rendered: list[str] = []
         if render_edit_diff_with_delta(name, result, function_args=args, snapshot=snapshot, print_fn=rendered.append):
             metadata["inline_diff"] = "\n".join(rendered)
@@ -353,8 +353,8 @@ def _on_tool_complete(sid: str, tool_call_id: str, name: str, args: dict, result
     summary = _tool_summary(name, result, duration_s)
     if summary:
         payload["summary"] = summary
-    from agent.display import _detect_tool_failure
-    from agent.terminal_image import tool_image_path
+    from hermes_agent.agent.display import _detect_tool_failure
+    from hermes_agent.agent.terminal_image import tool_image_path
     if image_path := tool_image_path(name, args, payload["result"], is_error=_detect_tool_failure(name, result)[0]):
         payload["image_path"] = image_path
     if _session_verbose(sid) and (result_text := _tool_result_text(result)):
@@ -366,7 +366,7 @@ def _on_tool_complete(sid: str, tool_call_id: str, name: str, args: dict, result
         payload.update(todo_state)
         if session is not None:
             _cache_todo_state(session, todo_state)
-    from agent.display import is_neutral_failure
+    from hermes_agent.agent.display import is_neutral_failure
     if (_tool_progress_enabled(sid) or payload.get("inline_diff") or _tool_lifecycle_required_for_ui(name)
             or is_todo_tool_name(name) or _connector_tool_lifecycle(name, args)
             or (_tool_result_needs_user(result) and not is_neutral_failure(name, result))):
@@ -388,7 +388,7 @@ def _on_tool_complete(sid: str, tool_call_id: str, name: str, args: dict, result
 def _progress_tool_progress(sid, name, preview, kw):
     # Live MCP progress on a running tool row: tool chrome, so it follows display.tool_progress.
     if _tool_progress_enabled(sid):
-        from agent.tool_progress_relay import tool_progress_payload
+        from hermes_agent.agent.tool_progress_relay import tool_progress_payload
         _emit("tool.progress", sid, tool_progress_payload(name, preview, kw))
 
 

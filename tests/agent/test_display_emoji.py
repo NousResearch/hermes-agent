@@ -1,8 +1,8 @@
-"""Tests for get_tool_emoji in agent/display.py — skin + registry integration."""
+"""Tests for get_tool_emoji in hermes_agent/agent/display.py — skin + registry integration."""
 
 from unittest.mock import patch as mock_patch, MagicMock
 
-from agent.display import get_tool_emoji
+from hermes_agent.agent.display import get_tool_emoji
 
 
 class TestGetToolEmoji:
@@ -14,7 +14,7 @@ class TestGetToolEmoji:
 
     def test_custom_default(self):
         """Custom default is returned when nothing matches."""
-        with mock_patch("agent.display._get_skin", return_value=None):
+        with mock_patch("hermes_agent.agent.display._get_skin", return_value=None):
             mock_reg = MagicMock()
             mock_reg.get_emoji.return_value = ""
             import sys
@@ -33,7 +33,7 @@ class TestGetToolEmoji:
         import sys
         mock_module = MagicMock()
         mock_module.registry = mock_reg
-        with mock_patch("agent.display._get_skin", return_value=skin), \
+        with mock_patch("hermes_agent.agent.display._get_skin", return_value=skin), \
              mock_patch.dict(sys.modules, {"hermes_agent.tools.registry": mock_module}):
             assert get_tool_emoji("terminal") == "⚔"  # skin override
             assert get_tool_emoji("web_search") == "🔍"  # registry fallback

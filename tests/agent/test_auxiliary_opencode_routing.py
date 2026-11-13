@@ -10,7 +10,7 @@ from __future__ import annotations
 import pytest
 from openai import OpenAI
 
-from agent import auxiliary_client as aux
+from hermes_agent.agent import auxiliary_client as aux
 
 
 @pytest.fixture(autouse=True)

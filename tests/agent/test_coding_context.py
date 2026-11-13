@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from agent import coding_context as cc
+from hermes_agent.agent import coding_context as cc
 
 
 

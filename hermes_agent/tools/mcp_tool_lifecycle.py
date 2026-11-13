@@ -135,7 +135,7 @@ def _reregister_orphaned_adopters() -> None:
     if not pending:
         return
     from pathlib import Path
-    from agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_secret_scope
+    from hermes_agent.agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_secret_scope
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
     from hermes_agent.tools import mcp_tool_discovery as _discovery
     from hermes_agent.tools.mcp_tool_config import _load_mcp_config
@@ -222,7 +222,7 @@ def shutdown_mcp_servers(*, scope: Optional[str] = None, names: Optional[set] = 
         with _core._lock:
             loop = _core._mcp_loop
         if loop is not None and loop.is_running():
-            from agent.async_utils import safe_schedule_threadsafe
+            from hermes_agent.agent.async_utils import safe_schedule_threadsafe
             future = safe_schedule_threadsafe(_shutdown(), loop, logger=logger, log_message="MCP shutdown: failed to schedule")
             if future is not None:
                 try:

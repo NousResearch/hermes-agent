@@ -10,7 +10,7 @@ receipt. Without that flag (cron, CLI, machinery or unaddressed turns) the marke
 
 from unittest.mock import patch
 
-from agent.persisted_turn_receipt import persisted_turn_receipt
+from hermes_agent.agent.persisted_turn_receipt import persisted_turn_receipt
 from tests.agent import test_empty_response_recovery_persistence as _recovery
 from tests.agent import test_hold_stream_exits as _held_exits
 
@@ -75,7 +75,7 @@ def test_a_crash_left_turn_recovers_the_reply_not_the_warning(real_loop):
 
 def test_only_a_complete_uninterrupted_marker_turn_takes_the_reply(real_loop):
     # The exact gate finish_text_response applies before transform and persistence.
-    from agent.turn_final_response import _bare_marker_after_reply
+    from hermes_agent.agent.turn_final_response import _bare_marker_after_reply
 
     agent = real_loop.agent
     agent._last_content_with_tools, agent._last_content_tools_all_housekeeping = ANSWER, True
@@ -162,7 +162,7 @@ def test_held_turn_rewrites_the_recovered_reply_as_a_new_final(held, monkeypatch
     # A hold_stream transform withheld the reply line, so it was never shown: the recovered reply
     # goes out as the rewrite and must not be flagged as previewed/reused (same rule as the
     # empty-follow-up path on main).
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
     from tests.fakes.fake_llm_provider import Text, ToolCall
     from tests.fakes.redactor_plugin import RAW, REWRITE
 

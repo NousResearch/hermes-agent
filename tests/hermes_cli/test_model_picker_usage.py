@@ -247,7 +247,7 @@ def test_credits_pay_reads_keep_going_and_the_top_up_balance():
 
 
 def test_a_free_model_is_never_used_up():
-    """Same rule as agent/plan_limits.py: a $0 row or a ``:free`` id draws on no allowance, so a spent day
+    """Same rule as hermes_agent/agent/plan_limits.py: a $0 row or a ``:free`` id draws on no allowance, so a spent day
     (or large-model allowance) never marks it."""
     pricing = {
         "gift/m:free": {"prompt": "0", "completion": "0"},
@@ -456,7 +456,7 @@ _LEVELS = {"example/model-b": {"usage_level": "top_tier", "top_tier": True},
 def test_messaging_pickers_get_large_free_labels_and_the_limit_line(monkeypatch):
     from hermes_cli import model_picker_usage as mpu
     from hermes_cli import model_switch_providers as msp
-    from agent import plan_limits as pl
+    from hermes_agent.agent import plan_limits as pl
 
     monkeypatch.setattr(mpu, "nous_picker_usage", lambda **kw: _window_usage(top_tier_used_bp=10_000))
     monkeypatch.setattr(pl, "cached_pricing", lambda base_url="": dict(_LEVELS))
@@ -512,7 +512,7 @@ def test_catalog_reads_never_answer_from_another_profiles_cache(monkeypatch):
     """One process, several profiles: tags and the Large notice read only this profile's catalog, never the
     newest catalog cached for any credential (another plan can mark different models Large)."""
     import hermes_cli.models_pricing as mp
-    from agent import plan_limits as pl
+    from hermes_agent.agent import plan_limits as pl
     from hermes_cli import model_picker_usage as mpu
     monkeypatch.setattr(mp, "peek_cached_pricing", lambda base_url: dict(_LEVELS))  # another profile's catalog
     monkeypatch.setattr(mp, "get_pricing_for_provider", lambda provider, **kw: {})  # this profile: cold
@@ -625,7 +625,7 @@ def test_the_in_chat_cli_picker_leaves_subscription_billed_rows_untagged(monkeyp
 def test_messaging_pickers_leave_subscription_billed_rows_untagged(monkeypatch):
     from hermes_cli import model_picker_usage as mpu
     from hermes_cli import model_switch_providers as msp
-    from agent import plan_limits as pl
+    from hermes_agent.agent import plan_limits as pl
 
     monkeypatch.setattr(mpu, "nous_picker_usage", lambda **kw: _window_usage())
     monkeypatch.setattr(pl, "cached_pricing", lambda base_url="": dict(_SUBSCRIPTION_BILLED))

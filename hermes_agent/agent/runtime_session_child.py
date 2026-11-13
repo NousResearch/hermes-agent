@@ -8,7 +8,7 @@ child persists through the ordinary ``worker.persist`` path under its own claim.
 import secrets
 from functools import partial
 
-from agent.runtime_session_store import RuntimeSessionStore, call_off_event_loop
+from hermes_agent.agent.runtime_session_store import RuntimeSessionStore, call_off_event_loop
 
 _REFUSALS = {
     'delegation_capacity': 'the gateway owner refused another subagent: this execution already runs '

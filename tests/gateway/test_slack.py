@@ -21,7 +21,7 @@ from unittest.mock import AsyncMock, MagicMock, patch, call
 
 import pytest
 
-from agent import secret_scope
+from hermes_agent.agent import secret_scope
 from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
 from hermes_agent.gateway.run import GatewayRunner
 from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
@@ -2480,7 +2480,7 @@ class TestFormatMessage:
         assert args == {"target": target, "pattern": pattern}
 
     def test_tool_preview_backticks_do_not_break_code_span(self, adapter):
-        from agent.display import ToolPreview
+        from hermes_agent.agent.display import ToolPreview
 
         preview = ToolPreview(text="`*test*`.py")
         rendered = adapter.format_message(adapter.format_tool_preview(preview))

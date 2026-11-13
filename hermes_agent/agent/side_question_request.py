@@ -72,7 +72,7 @@ def _agent_provider_refusal(agent: Any) -> Optional[str]:
     MoA fans out to advisor models; an agent-as-provider (ACP CLI shim, external-process
     provider, codex app-server, a client declaring ``SUPPORTS_HERMES_TOOL_CALLS = False``)
     runs its own tools on the remote side, which no client-side drop can stop."""
-    from agent.background_review import _parent_can_emit_tool_calls
+    from hermes_agent.agent.background_review import _parent_can_emit_tool_calls
     from hermes_cli.runtime_provider_backends import _is_external_process_provider
 
     if agent.provider == "moa":
@@ -106,7 +106,7 @@ def has_server_side_tools(api_kwargs: dict[str, Any]) -> bool:
 
 def _build_fork(parent: Any, capture: SideQuestionCapture) -> Any:
     """A never-routed cache-parity fork pinned to the captured request inputs."""
-    from agent.background_review import build_cache_parity_fork
+    from hermes_agent.agent.background_review import build_cache_parity_fork
 
     # task_cfg={} = never route: the side question must hit the parent's warm cache.
     fork, _rt, _routed = build_cache_parity_fork(
@@ -125,16 +125,16 @@ def _build_fork(parent: Any, capture: SideQuestionCapture) -> Any:
 def _send(fork: Any, capture: SideQuestionCapture, prompt: str, audit: _Audit) -> Any:
     """Assemble, build and perform ONE request on the fork; the normalized reply, or None on
     refusal / a cancelled call."""
-    from agent import relay_llm
-    from agent.auxiliary_hooks import finish_aux_call_hooks, start_aux_call_hooks
-    from agent.side_question import trim_snapshot_for_fork
-    from agent.turn_api_call import perform_api_call
-    from agent.turn_api_request import build_request_payload
-    from agent.turn_context import _PER_TURN_RESET_STATE
-    from agent.turn_request_assembly import assemble_api_request
-    from agent.turn_retry_state import TurnRetryState
-    from agent.turn_truncation import normalize_response_for_agent
-    from agent.turn_usage import record_response_usage
+    from hermes_agent.agent import relay_llm
+    from hermes_agent.agent.auxiliary_hooks import finish_aux_call_hooks, start_aux_call_hooks
+    from hermes_agent.agent.side_question import trim_snapshot_for_fork
+    from hermes_agent.agent.turn_api_call import perform_api_call
+    from hermes_agent.agent.turn_api_request import build_request_payload
+    from hermes_agent.agent.turn_context import _PER_TURN_RESET_STATE
+    from hermes_agent.agent.turn_request_assembly import assemble_api_request
+    from hermes_agent.agent.turn_retry_state import TurnRetryState
+    from hermes_agent.agent.turn_truncation import normalize_response_for_agent
+    from hermes_agent.agent.turn_usage import record_response_usage
 
     turn_id = f"{capture.turn_id}:{SIDE_QUESTION_ORIGIN}"
     task_id = str(uuid.uuid4())
@@ -204,7 +204,7 @@ def _send(fork: Any, capture: SideQuestionCapture, prompt: str, audit: _Audit) -
 
 def _answer_text(fork: Any, assistant_message: Any) -> Optional[str]:
     """Visible text of the reply; its ``tool_calls`` are dropped, never dispatched."""
-    from agent.message_content import flatten_message_text
+    from hermes_agent.agent.message_content import flatten_message_text
 
     content = assistant_message.content
     text = content if isinstance(content, str) else flatten_message_text(content)
@@ -231,7 +231,7 @@ def ask_text_only(
     provider error or an empty / tool-call-only reply. The request parameters (tools, reasoning,
     max_tokens, tool_choice) are the parent's verbatim: changing any of them changes the cache
     key, and an inherited thinking budget 400s against a smaller max_tokens."""
-    from agent.background_review import release_cache_parity_fork
+    from hermes_agent.agent.background_review import release_cache_parity_fork
 
     audit = _Audit(plugin_id)
     parent = capture.parent_ref()

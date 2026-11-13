@@ -1,4 +1,4 @@
-"""Per-file context manifest (``agent/context_file_sources.py``) behind the ``/context`` Rules figure.
+"""Per-file context manifest (``hermes_agent/agent/context_file_sources.py``) behind the ``/context`` Rules figure.
 
 The manifest and ``build_context_files_prompt`` share one discovery walk, so the invariant under test is
 parity: a file is reported ``loaded`` iff its content appears in the built prompt.
@@ -8,8 +8,8 @@ from pathlib import Path
 
 import pytest
 
-from agent.context_file_sources import list_context_file_sources, render_context_file_lines
-from agent.prompt_builder import build_context_files_prompt
+from hermes_agent.agent.context_file_sources import list_context_file_sources, render_context_file_lines
+from hermes_agent.agent.prompt_builder import build_context_files_prompt
 
 
 @pytest.fixture()
@@ -60,7 +60,7 @@ def test_manifest_matches_what_the_prompt_actually_loads(project, tmp_path_facto
 
 
 def test_truncated_and_suppressed_statuses_follow_the_builder(project, monkeypatch, tmp_path_factory):
-    import agent.prompt_builder as pb
+    import hermes_agent.agent.prompt_builder as pb
 
     monkeypatch.setattr(pb, "_get_context_file_max_chars", lambda *_a: 40)
     (project / "AGENTS.md").write_text("x" * 100)
@@ -70,7 +70,7 @@ def test_truncated_and_suppressed_statuses_follow_the_builder(project, monkeypat
     assert "[...truncated AGENTS.md" in build_context_files_prompt(cwd=str(project), home_override=home)
 
     # Install-tree guard: a fallback cwd (cwd=None) inside the Hermes tree lists the file but never loads it.
-    monkeypatch.setattr("agent.runtime_cwd._is_install_tree", lambda _p: True)
+    monkeypatch.setattr("hermes_agent.agent.runtime_cwd._is_install_tree", lambda _p: True)
     monkeypatch.chdir(project)
     entry = _by_label(list_context_file_sources(cwd=None, home_override=home))["AGENTS.md"]
     assert entry["status"] == "suppressed" and entry["loaded"] is False
@@ -102,7 +102,7 @@ def test_truncated_and_suppressed_statuses_follow_the_builder(project, monkeypat
 
 
 def test_truncation_marker_names_the_omitted_sections_only():
-    from agent.prompt_builder import _truncate_content
+    from hermes_agent.agent.prompt_builder import _truncate_content
 
     pad = "word " * 400
     content = (

@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-import agent.auxiliary_client as ac
+import hermes_agent.agent.auxiliary_client as ac
 
 
 NOUS_BASE_URL = "https://inference-api.nousresearch.com/v1"

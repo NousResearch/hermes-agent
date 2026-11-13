@@ -181,7 +181,7 @@ def test_estimate_weights_by_stored_bytes_not_message_count(tmp_path, monkeypatc
 def test_cli_startup_never_reads_the_store_and_asks_from_the_stored_estimate(home, monkeypatch):
     """The classic CLI asks only from a stored estimate: the first low-disk launch measures in the
     background and asks nothing; the next launch asks at once from that measurement."""
-    import agent.memory_provider as mp
+    import hermes_agent.agent.memory_provider as mp
     _disk(monkeypatch, free_gb=1)
     started = []
     monkeypatch.setattr(mp, "spawn_context_thread", lambda target, **kw: type(
@@ -223,7 +223,7 @@ def test_cli_launches_further_apart_than_the_estimate_ttl_still_ask(home, monkey
     """A stored estimate older than CLI_ADVICE_TTL still asks (and is refreshed in the background):
     otherwise a user who launches every other day would never see the question."""
     import json
-    import agent.memory_provider as mp
+    import hermes_agent.agent.memory_provider as mp
     _disk(monkeypatch, free_gb=1)
     prune_advisor.advise(home)
     path = home / prune_advisor._ESTIMATE_FILE

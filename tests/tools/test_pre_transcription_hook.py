@@ -454,14 +454,14 @@ class TestUnsupportedBackends:
 class TestPluginProviderThreading:
     @pytest.fixture(autouse=True)
     def _reset_registry(self):
-        from agent import transcription_registry
+        from hermes_agent.agent import transcription_registry
         transcription_registry._reset_for_tests()
         yield
         transcription_registry._reset_for_tests()
 
     def _register_fake_provider(self):
-        from agent import transcription_registry
-        from agent.transcription_provider import TranscriptionProvider
+        from hermes_agent.agent import transcription_registry
+        from hermes_agent.agent.transcription_provider import TranscriptionProvider
 
         class _FakeProvider(TranscriptionProvider):
             def __init__(self):

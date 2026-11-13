@@ -2,7 +2,7 @@
 
 from types import SimpleNamespace
 
-from agent import fast_mode
+from hermes_agent.agent import fast_mode
 
 
 def _agent(**kw):
@@ -181,7 +181,7 @@ def test_unavailable_model_drops_speed_for_the_session_and_only_that_model():
 
 
 def test_recovery_retries_at_standard_speed_before_classification():
-    from agent.turn_recovery import recover_before_classification
+    from hermes_agent.agent.turn_recovery import recover_before_classification
 
     printed = []
     agent = SimpleNamespace(

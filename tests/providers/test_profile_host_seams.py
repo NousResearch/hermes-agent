@@ -51,8 +51,8 @@ def test_profile_for_host_matches_claimed_hosts_exact_or_subdomain(fake_profile)
 
 
 def test_claimed_hosts_drive_url_inference_and_aux_routing(fake_profile):
-    from agent.auxiliary_client import _AUTH_REFRESH_PROVIDER_BY_HOST, _POOL_PROVIDER_BY_HOST, _provider_for_host
-    from agent.model_metadata import _infer_provider_from_url
+    from hermes_agent.agent.auxiliary_client import _AUTH_REFRESH_PROVIDER_BY_HOST, _POOL_PROVIDER_BY_HOST, _provider_for_host
+    from hermes_agent.agent.model_metadata import _infer_provider_from_url
 
     assert _infer_provider_from_url("https://api.business.fake-llm.test/v1") == NAME
     assert _infer_provider_from_url("https://catalog.fake-meta.test/inference") == NAME
@@ -63,7 +63,7 @@ def test_claimed_hosts_drive_url_inference_and_aux_routing(fake_profile):
 
 
 def test_live_context_length_answers_after_cache_with_credentials(fake_profile):
-    from agent.model_metadata import _resolve_provider_aware_context_length
+    from hermes_agent.agent.model_metadata import _resolve_provider_aware_context_length
 
     ctx = _resolve_provider_aware_context_length("m-1", "https://api.fake-llm.test/v1", "sk-x", NAME, NAME)
     assert ctx == 777_000
@@ -96,7 +96,7 @@ class _CountingWire(ProviderProfile):
 
 def test_pure_per_request_hook_is_asked_once_per_argument_set(request):
     """``request_headers`` is pure: a hosted plugin answers once per distinct request shape, not per call."""
-    from agent.provider_route_hooks import route_answer
+    from hermes_agent.agent.provider_route_hooks import route_answer
 
     profile = _CountingWire(name="l4-counting-wire", hostnames=("counting-wire.test",))
     profile.calls = []
@@ -132,7 +132,7 @@ class _ClearedByAnotherThread(dict):
 
 
 def test_pure_hook_answer_survives_a_concurrent_memo_clear(request, monkeypatch):
-    from agent import provider_route_hooks
+    from hermes_agent.agent import provider_route_hooks
 
     profile = _CountingWire(name="l4-cleared-memo", hostnames=("cleared-memo.test",))
     profile.calls = []

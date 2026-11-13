@@ -2,14 +2,14 @@
 
 Two layers:
 
-1. **Classifier override (Part 1, ``agent/error_classifier.py:720-738``)**:
+1. **Classifier override (Part 1, ``hermes_agent/agent/error_classifier.py:720-738``)**:
    A transport disconnect on a reasoning model is reclassified as
    ``FailoverReason.timeout`` even when the session is large — instead
    of routing to the compression branch via
    ``FailoverReason.context_overflow`` which would silently delete
    conversation history on a phantom context-length error.
 
-2. **Detection + guidance (Part 2, ``agent/thinking_timeout_guidance.py``)**:
+2. **Detection + guidance (Part 2, ``hermes_agent/agent/thinking_timeout_guidance.py``)**:
    When the classifier says timeout AND the model is in the reasoning
    allowlist AND the error message has a transport-kill signature,
    the user gets actionable guidance (raise stale_timeout, lower
@@ -82,7 +82,7 @@ class TestClassifierOverride:
         "deepseek/deepseek-r1",
     ])
     def test_all_known_reasoning_models_override(self, model):
-        from agent.error_classifier import classify_api_error, FailoverReason
+        from hermes_agent.agent.error_classifier import classify_api_error, FailoverReason
         e, kwargs = _make_session(
             "server disconnected without sending complete message",
             model=model,
@@ -100,7 +100,7 @@ class TestClassifierOverride:
         chat models that hit true context-length errors via proxy
         disconnect).  With the override, it stays that way.
         """
-        from agent.error_classifier import classify_api_error, FailoverReason
+        from hermes_agent.agent.error_classifier import classify_api_error, FailoverReason
         e, kwargs = _make_session(
             "server disconnected without sending complete message",
             model="gpt-4o",
@@ -121,19 +121,19 @@ class TestIsThinkingTimeout:
         ("x-ai/grok-4-fast-reasoning", "server disconnected"),
     ])
     def test_known_reasoning_models_match(self, model, msg):
-        from agent.thinking_timeout_guidance import is_thinking_timeout
+        from hermes_agent.agent.thinking_timeout_guidance import is_thinking_timeout
         classified = _classified(reason="timeout")
         assert is_thinking_timeout(classified, model, msg) is True
 
     def test_empty_error_msg_returns_false(self):
-        from agent.thinking_timeout_guidance import is_thinking_timeout
+        from hermes_agent.agent.thinking_timeout_guidance import is_thinking_timeout
         classified = _classified(reason="timeout")
         assert is_thinking_timeout(
             classified, "nvidia/nemotron-3-ultra-550b-a55b", "",
         ) is False
 
     def test_none_error_msg_returns_false(self):
-        from agent.thinking_timeout_guidance import is_thinking_timeout
+        from hermes_agent.agent.thinking_timeout_guidance import is_thinking_timeout
         classified = _classified(reason="timeout")
         assert is_thinking_timeout(
             classified, "nvidia/nemotron-3-ultra-550b-a55b", None,
@@ -143,7 +143,7 @@ class TestIsThinkingTimeout:
 
 class TestBuildThinkingTimeoutGuidance:
     def test_guidance_mentions_config_path(self):
-        from agent.thinking_timeout_guidance import build_thinking_timeout_guidance
+        from hermes_agent.agent.thinking_timeout_guidance import build_thinking_timeout_guidance
         text = build_thinking_timeout_guidance(
             provider="nvidia", model="nvidia/nemotron-3-ultra-550b-a55b",
         )

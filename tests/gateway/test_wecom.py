@@ -70,7 +70,7 @@ class TestWeComAdapterAuthzScope:
 
     @pytest.fixture()
     def multiplex_on(self):
-        from agent import secret_scope
+        from hermes_agent.agent import secret_scope
 
         previous = secret_scope.is_multiplex_active()
         secret_scope.set_multiplex_active(True)
@@ -80,7 +80,7 @@ class TestWeComAdapterAuthzScope:
             secret_scope.set_multiplex_active(previous)
 
     def test_scoped_construction_reads_authz_from_scope_not_environ(self, multiplex_on, monkeypatch):
-        from agent import secret_scope
+        from hermes_agent.agent import secret_scope
         from plugins.platforms.wecom.adapter import WeComAdapter
 
         monkeypatch.setenv("WECOM_DM_POLICY", "pairing")
@@ -96,7 +96,7 @@ class TestWeComAdapterAuthzScope:
         assert adapter._allow_from == ["scoped-user"]
 
     def test_scoped_miss_does_not_admit_default_profiles_allowlist(self, multiplex_on, monkeypatch):
-        from agent import secret_scope
+        from hermes_agent.agent import secret_scope
         from plugins.platforms.wecom.adapter import WeComAdapter
 
         monkeypatch.setenv("WECOM_DM_POLICY", "allowlist")
@@ -114,7 +114,7 @@ class TestWeComAdapterAuthzScope:
         (both are read on adjacent lines in __init__) -- a secondary profile's
         own bot_id must never fall back to the default profile's os.environ
         value."""
-        from agent import secret_scope
+        from hermes_agent.agent import secret_scope
         from plugins.platforms.wecom.adapter import WeComAdapter
 
         monkeypatch.setenv("WECOM_BOT_ID", "default-profile-bot-id")
@@ -130,7 +130,7 @@ class TestWeComAdapterAuthzScope:
         assert adapter._secret == "scoped-secret"
 
     def test_scoped_miss_does_not_leak_default_profiles_bot_id(self, multiplex_on, monkeypatch):
-        from agent import secret_scope
+        from hermes_agent.agent import secret_scope
         from plugins.platforms.wecom.adapter import DEFAULT_WS_URL, WeComAdapter
 
         monkeypatch.setenv("WECOM_BOT_ID", "default-profile-bot-id")

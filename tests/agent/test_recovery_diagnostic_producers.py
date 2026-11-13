@@ -3,9 +3,9 @@ import json
 from unittest.mock import patch
 
 import pytest
-from agent.status_output import StatusOutputMixin
-from agent.turn_overflow import _Recovery, _recover_payload_too_large
-from agent.turn_retry_state import TurnRetryState
+from hermes_agent.agent.status_output import StatusOutputMixin
+from hermes_agent.agent.turn_overflow import _Recovery, _recover_payload_too_large
+from hermes_agent.agent.turn_retry_state import TurnRetryState
 
 
 class Agent(StatusOutputMixin):
@@ -44,8 +44,8 @@ def policy(request, tmp_path, monkeypatch):
 
 @pytest.mark.parametrize("local", [False, True])
 def test_outer_loop_diagnostic_preserves_verdict_and_trace(policy, local, capsys, caplog):
-    from agent.turn_loop_errors import handle_outer_loop_error
-    import agent.conversation_loop as loop
+    from hermes_agent.agent.turn_loop_errors import handle_outer_loop_error
+    import hermes_agent.agent.conversation_loop as loop
     agent = Agent()
     # Traceback classification executes normally using a real frame filename.
     with patch.object(loop, "_LOCAL_PROCESSING_MODULES", {"test_recovery_diagnostic_producers"} if local else set()):
@@ -65,7 +65,7 @@ def test_outer_loop_diagnostic_preserves_verdict_and_trace(policy, local, capsys
 
 
 def test_missing_requirements_keeps_tool_inventory(policy, monkeypatch, capsys):
-    from agent.agent_init import _load_tools
+    from hermes_agent.agent.agent_init import _load_tools
     from hermes_agent import model_tools
     agent = Agent()
     agent.quiet_mode = agent.save_trajectories = agent._use_prompt_caching = False
@@ -92,8 +92,8 @@ def test_retry_buffer_classification_survives_terminal_flush(policy, shape, monk
         approx_tokens=2000, compression_attempts=0, effective_task_id="offline",
         api_call_count=1, max_compression_attempts=3)
     retry = TurnRetryState()
-    monkeypatch.setattr("agent.conversation_compression.conversation_history_after_compression", lambda a, m, h: h)
-    monkeypatch.setattr("agent.turn_overflow.time.sleep", lambda _: None)
+    monkeypatch.setattr("hermes_agent.agent.conversation_compression.conversation_history_after_compression", lambda a, m, h: h)
+    monkeypatch.setattr("hermes_agent.agent.turn_overflow.time.sleep", lambda _: None)
     if shape == "payload_bytes":
         _recover_payload_too_large(st, retry)
         assert retry.restart_with_compressed_messages

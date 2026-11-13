@@ -17,9 +17,9 @@ import pytest
 pytest.importorskip("boto3")
 botocore_exceptions = pytest.importorskip("botocore.exceptions")
 
-from agent import bedrock_adapter
-from agent.bedrock_adapter import _get_bedrock_runtime_client
-from agent.error_classifier import FailoverReason, classify_api_error
+from hermes_agent.agent import bedrock_adapter
+from hermes_agent.agent.bedrock_adapter import _get_bedrock_runtime_client
+from hermes_agent.agent.error_classifier import FailoverReason, classify_api_error
 
 REGION = "us-east-1"
 MODEL = "us.amazon.nova-pro-v1:0"
@@ -118,8 +118,8 @@ def test_throttle_reaches_hermes_retry_loop_on_first_refusal_with_default_timeou
 def test_auxiliary_call_recovers_from_one_transient_bedrock_refusal(fake_bedrock, monkeypatch, mode):
     """With botocore no longer retrying, the aux recovery ladder must read the botocore error
     (status in ResponseMetadata, ThrottlingException code) or a single 503/throttle fails the task."""
-    from agent import auxiliary_client
-    from agent.auxiliary_client import BedrockAuxiliaryClient, call_llm
+    from hermes_agent.agent import auxiliary_client
+    from hermes_agent.agent.auxiliary_client import BedrockAuxiliaryClient, call_llm
 
     _use_config(monkeypatch, {})
     monkeypatch.setattr(auxiliary_client, "_TRANSIENT_RETRY_BACKOFF_BASE", 0.0)
@@ -140,8 +140,8 @@ def test_auxiliary_call_recovers_from_one_transient_bedrock_refusal(fake_bedrock
 def test_auxiliary_call_waits_out_a_bedrock_throttle_window(fake_bedrock, monkeypatch, caller):
     """A throttle lasting ~300ms is backed off, not re-sent at once: botocore no longer waits
     between attempts, so an immediate re-send lands in the same window and the task fails."""
-    from agent import auxiliary_client
-    from agent.auxiliary_client import (
+    from hermes_agent.agent import auxiliary_client
+    from hermes_agent.agent.auxiliary_client import (
         AsyncBedrockAuxiliaryClient, BedrockAuxiliaryClient, async_call_llm, call_llm,
     )
 

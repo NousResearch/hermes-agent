@@ -354,7 +354,7 @@ class TestBackendSelection:
              patch("hermes_agent.tools.web_tools._is_tool_gateway_ready", return_value=False), \
              patch("hermes_agent.tools.web_tools._ddgs_package_importable", return_value=False), \
              patch("hermes_agent.tools.web_tools._list_registered_web_providers", return_value=[]), \
-             patch("agent.web_search_registry._keyless_tier_enabled", return_value=False):
+             patch("hermes_agent.agent.web_search_registry._keyless_tier_enabled", return_value=False):
             assert _get_backend() == "firecrawl"
 
     def test_invalid_config_is_returned_verbatim(self):
@@ -520,7 +520,7 @@ class TestExaClientConfig:
     def test_multiplexed_profiles_search_with_their_own_key(self, tmp_path, monkeypatch):
         """One process serving two profiles: each turn's search goes out with its own profile's key, and a
         profile WITHOUT a key is refused — never served on the launch profile's ``os.environ`` key."""
-        from agent import secret_scope
+        from hermes_agent.agent import secret_scope
         from plugins.web.exa.provider import ExaWebSearchProvider
         homes = {}
         for name, line in (("a", "EXA_API_KEY=key-a\n"), ("b", "EXA_API_KEY=key-b\n"), ("nokey", "")):
@@ -577,7 +577,7 @@ class TestWebSearchSchema:
         fake_provider.name = "parallel"
 
         with patch("hermes_agent.tools.web_tools._get_search_backend", return_value="parallel"), \
-             patch("agent.web_search_registry.get_provider", return_value=fake_provider), \
+             patch("hermes_agent.agent.web_search_registry.get_provider", return_value=fake_provider), \
              patch("hermes_agent.tools.interrupt.is_interrupted", return_value=False), \
              patch.object(hermes_agent.tools.web_tools._debug, "log_call"), \
              patch.object(hermes_agent.tools.web_tools._debug, "save"):
@@ -605,7 +605,7 @@ class TestWebSearchErrorHandling:
         fake_provider.name = "firecrawl"
 
         with patch("hermes_agent.tools.web_tools._get_search_backend", return_value="firecrawl"), \
-             patch("agent.web_search_registry.get_provider", return_value=fake_provider), \
+             patch("hermes_agent.agent.web_search_registry.get_provider", return_value=fake_provider), \
              patch("hermes_agent.tools.interrupt.is_interrupted", return_value=False), \
              patch.object(hermes_agent.tools.web_tools._debug, "log_call") as mock_log_call, \
              patch.object(hermes_agent.tools.web_tools._debug, "save"):
@@ -651,8 +651,8 @@ class TestCheckWebApiKey:
             # resolution — otherwise these tests flip on machines where the
             # optional ``ddgs`` package is installed (dev venvs) vs CI.
             patch("hermes_agent.tools.web_tools._ddgs_package_importable", return_value=False),
-            patch("agent.web_search_registry.get_active_search_provider", return_value=None),
-            patch("agent.web_search_registry.get_active_extract_provider", return_value=None),
+            patch("hermes_agent.agent.web_search_registry.get_active_search_provider", return_value=None),
+            patch("hermes_agent.agent.web_search_registry.get_active_extract_provider", return_value=None),
         ]
         for p in self._managed_patchers:
             p.start()
@@ -736,11 +736,11 @@ class TestCheckWebApiKey:
         with patch("hermes_agent.tools.web_tools._load_web_config", return_value={"backend": "firecrawl"}), \
              patch("hermes_agent.tools.web_tools._is_backend_available", return_value=False), \
              patch(
-                 "agent.web_search_registry.get_active_search_provider",
+                 "hermes_agent.agent.web_search_registry.get_active_search_provider",
                  return_value=unavailable,
              ), \
              patch(
-                 "agent.web_search_registry.get_active_extract_provider",
+                 "hermes_agent.agent.web_search_registry.get_active_extract_provider",
                  return_value=unavailable,
              ):
             from hermes_agent.tools.web_tools import check_web_api_key, _provider_is_ready
@@ -759,11 +759,11 @@ class TestCheckWebApiKey:
         with patch("hermes_agent.tools.web_tools._load_web_config", return_value={"backend": "custom-ok"}), \
              patch("hermes_agent.tools.web_tools._is_backend_available", return_value=False), \
              patch(
-                 "agent.web_search_registry.get_active_search_provider",
+                 "hermes_agent.agent.web_search_registry.get_active_search_provider",
                  return_value=available,
              ), \
              patch(
-                 "agent.web_search_registry.get_active_extract_provider",
+                 "hermes_agent.agent.web_search_registry.get_active_extract_provider",
                  return_value=None,
              ):
             from hermes_agent.tools.web_tools import check_web_api_key
@@ -811,7 +811,7 @@ class TestNonBuiltinProviderAvailability:
         Python 3.13 __bases__ deallocator issue with nested class
         reassignment.
         """
-        from agent.web_search_provider import WebSearchProvider
+        from hermes_agent.agent.web_search_provider import WebSearchProvider
 
         class FakePluginProvider(WebSearchProvider):
             @property
@@ -833,13 +833,13 @@ class TestNonBuiltinProviderAvailability:
         """Strip all built-in web provider env vars and reset the registry."""
         for key in self._WEB_ENV_KEYS:
             os.environ.pop(key, None)
-        from agent.web_search_registry import _reset_for_tests, register_provider
+        from hermes_agent.agent.web_search_registry import _reset_for_tests, register_provider
         _reset_for_tests()
         register_provider(self._create_fake_provider())
 
     def teardown_method(self):
         """Reset the registry and restore env after each test."""
-        from agent.web_search_registry import _reset_for_tests
+        from hermes_agent.agent.web_search_registry import _reset_for_tests
         _reset_for_tests()
         for key in self._WEB_ENV_KEYS:
             os.environ.pop(key, None)
@@ -998,7 +998,7 @@ class TestSiblingProvidersEnvResolution:
     def test_get_provider_env_unset_returns_empty(self, monkeypatch):
         monkeypatch.delenv("WSP_TEST_UNSET_KEY", raising=False)
         with patch("hermes_cli.config.get_env_value", return_value=None):
-            from agent.web_search_provider import get_provider_env
+            from hermes_agent.agent.web_search_provider import get_provider_env
 
             assert get_provider_env("WSP_TEST_UNSET_KEY") == ""
 
@@ -1009,7 +1009,7 @@ def test_xai_only_gate_agrees_with_dispatcher_when_web_xai_plugin_loaded(monkeyp
     gate must follow the dispatcher: keyless off -> no servable backend -> tools stay off
     (#116175 review follow-up). Module-level on purpose: TestCheckWebApiKey neutralizes the
     registry path with get_active_*_provider -> None."""
-    from agent import web_search_registry as registry
+    from hermes_agent.agent import web_search_registry as registry
     from plugins.web.xai.provider import XAIWebSearchProvider
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -1024,7 +1024,7 @@ def test_xai_only_gate_agrees_with_dispatcher_when_web_xai_plugin_loaded(monkeyp
         with patch("hermes_agent.tools.web_tools._load_web_config", return_value={}), \
              patch("hermes_agent.tools.web_tools._ensure_web_plugins_loaded", lambda: None), \
              patch("hermes_agent.tools.web_tools.check_firecrawl_api_key", return_value=False), \
-             patch("agent.web_search_registry._keyless_tier_enabled", return_value=False):
+             patch("hermes_agent.agent.web_search_registry._keyless_tier_enabled", return_value=False):
             from hermes_agent.tools.web_tools import _get_backend, check_web_api_key
             assert registry.get_active_search_provider().name == "xai"
             assert _get_backend() == "firecrawl"  # legacy sentinel: nothing servable

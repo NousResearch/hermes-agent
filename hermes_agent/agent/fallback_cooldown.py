@@ -4,7 +4,7 @@ import logging
 import math
 import time
 
-from agent.error_classifier import FailoverReason
+from hermes_agent.agent.error_classifier import FailoverReason
 
 logger = logging.getLogger(__name__)
 
@@ -13,7 +13,7 @@ _RATE_LIMIT_FAILOVER_REASONS = frozenset({FailoverReason.rate_limit, FailoverRea
 
 def _provider_reset_delay(reset_at) -> float | None:
     """Seconds until the provider-declared reset, or None when missing/invalid/expired."""
-    from agent.credential_pool import _parse_absolute_timestamp
+    from hermes_agent.agent.credential_pool import _parse_absolute_timestamp
     parsed = _parse_absolute_timestamp(reset_at)
     delay = parsed - time.time() if parsed is not None else None
     if delay is not None and math.isfinite(delay) and delay > 0:
@@ -102,7 +102,7 @@ def _mark_entitlement_rejected_model(agent, api_error) -> bool:
     """
     if getattr(api_error, "status_code", None) != 400:
         return False
-    from agent.error_classifier import CODEX_ACCOUNT_MODEL_ENTITLEMENT_MARKER
+    from hermes_agent.agent.error_classifier import CODEX_ACCOUNT_MODEL_ENTITLEMENT_MARKER
     haystack = str(getattr(api_error, "message", "") or api_error).lower()
     if CODEX_ACCOUNT_MODEL_ENTITLEMENT_MARKER not in haystack:
         return False

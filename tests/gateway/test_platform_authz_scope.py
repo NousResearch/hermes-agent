@@ -18,7 +18,7 @@ import os
 
 import pytest
 
-from agent.secret_scope import reset_secret_scope, set_secret_scope
+from hermes_agent.agent.secret_scope import reset_secret_scope, set_secret_scope
 
 
 @contextlib.contextmanager
@@ -78,7 +78,7 @@ def multiplex_on(monkeypatch):
     exists while the multiplexer is active, which is exactly the #93522
     scenario.
     """
-    monkeypatch.setattr("agent.secret_scope._MULTIPLEX_ACTIVE", True)
+    monkeypatch.setattr("hermes_agent.agent.secret_scope._MULTIPLEX_ACTIVE", True)
 
 
 @pytest.mark.parametrize(

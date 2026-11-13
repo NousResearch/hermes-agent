@@ -95,7 +95,7 @@ def test_every_outward_lane_masks_secret_in_payload_and_job_name(lane):
 def test_delivery_redaction_is_forced_and_fails_closed(mode, monkeypatch):
     """Egress redaction is independent of ``security.redact_secrets`` (force=True) and a raising
     redactor replaces the payload instead of passing the unscanned text through."""
-    import agent.redact
+    import hermes_agent.agent.redact
     from hermes_agent.cron.scheduler_delivery import _deliver_result
 
     send = AsyncMock(return_value={"success": True})
@@ -106,14 +106,14 @@ def test_delivery_redaction_is_forced_and_fails_closed(mode, monkeypatch):
             stack.enter_context(patch("sys.is_finalizing", return_value=False))
             if mode == "redact_secrets_off":
                 monkeypatch.setenv("HERMES_REDACT_SECRETS", "false")
-                importlib.reload(agent.redact)
+                importlib.reload(hermes_agent.agent.redact)
             else:
                 stack.enter_context(
-                    patch("agent.redact.redact_sensitive_text", side_effect=RuntimeError("boom")))
+                    patch("hermes_agent.agent.redact.redact_sensitive_text", side_effect=RuntimeError("boom")))
             _deliver_result(_job(), f"Token was {FAKE_SECRET}")
     finally:
         monkeypatch.delenv("HERMES_REDACT_SECRETS", raising=False)
-        importlib.reload(agent.redact)
+        importlib.reload(hermes_agent.agent.redact)
 
     delivered = _flat(send.call_args)
     assert FAKE_SECRET not in delivered, f"{mode}: secret reached the platform send"

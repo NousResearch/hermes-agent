@@ -190,7 +190,7 @@ class TestCheckFnTransientFailureSuppression:
     ):
         """Both availability caches must use the active profile as a key."""
         import hermes_agent.tools.registry as reg
-        from agent.secret_scope import (
+        from hermes_agent.agent.secret_scope import (
             get_secret,
             reset_secret_scope,
             set_multiplex_active,
@@ -260,7 +260,7 @@ class TestCheckFnTransientFailureSuppression:
         """An unknown profile must never share another request's cache entry."""
         from hermes_agent import model_tools
         import hermes_agent.tools.registry as reg
-        from agent.secret_scope import set_multiplex_active
+        from hermes_agent.agent.secret_scope import set_multiplex_active
 
         values = iter([True, False])
         definition_calls = {"n": 0}
@@ -429,7 +429,7 @@ class TestUnscopedSecretReadLogging:
         import threading
 
         import hermes_agent.tools.registry as reg
-        from agent.secret_scope import (
+        from hermes_agent.agent.secret_scope import (
             get_secret, reset_secret_scope, set_multiplex_active, set_secret_scope,
         )
 
@@ -471,7 +471,7 @@ class TestUnscopedSecretReadLogging:
         import logging
 
         import hermes_agent.tools.registry as reg
-        from agent.secret_scope import get_secret, set_multiplex_active
+        from hermes_agent.agent.secret_scope import get_secret, set_multiplex_active
 
         def probe():
             return bool(get_secret("REGISTRY_LOG_PROBE_TOKEN", ""))

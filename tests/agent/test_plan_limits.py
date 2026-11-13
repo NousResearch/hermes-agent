@@ -1,4 +1,4 @@
-"""agent/plan_limits.py: the one rule (what a full allowance blocks), the suggestions after a usage-window
+"""hermes_agent/agent/plan_limits.py: the one rule (what a full allowance blocks), the suggestions after a usage-window
 refusal (the plan's recommended models that still work), and the copy for surfaces without buttons.
 
 Hermes never switches model on its own; these only describe the limit and what to offer.
@@ -10,8 +10,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent import plan_limits as pl
-from agent.usage_gauges import SCOPE_ALL, SCOPE_TOP_TIER, WindowGauge
+from hermes_agent.agent import plan_limits as pl
+from hermes_agent.agent.usage_gauges import SCOPE_ALL, SCOPE_TOP_TIER, WindowGauge
 
 RESET = 4_000_000_000_000
 _REAL_FITS_CONTEXT = pl._fits_context
@@ -121,7 +121,7 @@ class TestSuggestions:
         assert [s.model for s in out] == ["example/model-b", "example/model-free:free"]
 
     def test_fits_context_leaves_headroom_for_the_reply(self, monkeypatch):
-        import agent.model_metadata as mm
+        import hermes_agent.agent.model_metadata as mm
         monkeypatch.setattr(mm, "get_model_context_length", lambda *a, **k: 100_000)
         assert _REAL_FITS_CONTEXT("m", 90_000, "")
         assert not _REAL_FITS_CONTEXT("m", 95_000, "")
@@ -227,7 +227,7 @@ class TestNextSteps:
         """A gateway's clock is not the reader's time zone: the reset reads "resets in 3h" in a chat."""
         import time
 
-        from agent.credits_tracker import format_window_reset
+        from hermes_agent.agent.credits_tracker import format_window_reset
         resets_at = time.time() + 3 * 3600 + 30
         text = f"You've hit your daily limit · resets {format_window_reset(int(resets_at * 1000))} · /topup to add credits"
         assert pl.chat_refusal_wording(text, resets_at) == "You've hit your daily limit · resets in 3h · add credits in the Portal"

@@ -14,18 +14,18 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent.conversation_compression import (
+from hermes_agent.agent.conversation_compression import (
     _direct_messages_for_pre_compress_memory,
     _pre_compress_memory_context,
 )
-from agent.conversation_compression_checkpoint import (
+from hermes_agent.agent.conversation_compression_checkpoint import (
     CompressionCheckpointUnavailable,
     _checkpoint_blocked,
     _warn_checkpoint_required_without_capable_provider,
 )
-from agent.context_compressor import COMPRESSED_SUMMARY_METADATA_KEY
-from agent.memory_manager import MemoryManager
-from agent.memory_provider import (
+from hermes_agent.agent.context_compressor import COMPRESSED_SUMMARY_METADATA_KEY
+from hermes_agent.agent.memory_manager import MemoryManager
+from hermes_agent.agent.memory_provider import (
     PRE_COMPRESS_CHECKPOINT_API_VERSION,
     MemoryProvider,
 )
@@ -403,7 +403,7 @@ def test_native_responses_compaction_is_suppressed_when_checkpoint_required():
     """
     from types import SimpleNamespace
 
-    from agent.native_compaction import native_compaction_context_management
+    from hermes_agent.agent.native_compaction import native_compaction_context_management
 
     def agent(checkpoint_required):
         return SimpleNamespace(
@@ -434,7 +434,7 @@ def test_codex_app_server_turn_fails_closed_before_codex_can_compact():
     """
     from types import SimpleNamespace
 
-    from agent.codex_runtime import run_codex_app_server_turn
+    from hermes_agent.agent.codex_runtime import run_codex_app_server_turn
 
     class _ExplodingSession:
         def run_turn(self, *args, **kwargs):  # pragma: no cover - must not run
@@ -463,7 +463,7 @@ def test_agent_init_refuses_checkpoint_required_on_codex_app_server():
     compaction, so the compress_context() guard alone cannot cover native
     turns — init_agent has to refuse before a turn exists.
     """
-    from agent.conversation_compression_checkpoint import (
+    from hermes_agent.agent.conversation_compression_checkpoint import (
         _refuse_checkpoint_required_on_codex_app_server,
     )
 
@@ -492,7 +492,7 @@ def test_turn_finalizer_never_micro_compacts_while_checkpoint_gate_armed(
     from tests.agent.test_turn_finalizer_final_response_persistence import (
         FakeAgent,
     )
-    from agent.turn_finalizer import finalize_turn
+    from hermes_agent.agent.turn_finalizer import finalize_turn
 
     monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
 
@@ -565,7 +565,7 @@ def test_startup_warns_when_checkpoint_required_cannot_pass(caplog, manager, exp
     """Regression for #106870: the fail-closed gate is right, but with the flag armed and
     no checkpoint-capable provider every compression will block, and that is knowable at
     init. The warning must name the config key, the active provider and the way out."""
-    with caplog.at_level(logging.WARNING, logger="agent.conversation_compression"):
+    with caplog.at_level(logging.WARNING, logger="hermes_agent.agent.conversation_compression"):
         _warn_checkpoint_required_without_capable_provider(_armed_agent(manager))
 
     text = _warn_text(caplog)
@@ -579,7 +579,7 @@ def test_startup_is_silent_when_gate_off_or_provider_capable(caplog):
     capable.add_provider(_CheckpointProvider("archiver"))
     off = SimpleNamespace(compression_checkpoint_required=False, _memory_manager=_legacy_manager())
 
-    with caplog.at_level(logging.WARNING, logger="agent.conversation_compression"):
+    with caplog.at_level(logging.WARNING, logger="hermes_agent.agent.conversation_compression"):
         _warn_checkpoint_required_without_capable_provider(_armed_agent(capable))
         _warn_checkpoint_required_without_capable_provider(off)
 

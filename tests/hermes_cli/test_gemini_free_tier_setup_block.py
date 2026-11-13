@@ -39,7 +39,7 @@ class TestGeminiSetupFreeTierBlock:
 
         # Mock the probe to claim this is a free-tier key
         with patch(
-            "agent.gemini_native_adapter.probe_gemini_tier",
+            "hermes_agent.agent.gemini_native_adapter.probe_gemini_tier",
             return_value="free",
         ), patch(
             "hermes_cli.auth._prompt_model_selection",
@@ -72,7 +72,7 @@ class TestGeminiSetupFreeTierBlock:
         from hermes_cli.config import load_config
 
         with patch(
-            "agent.gemini_native_adapter.probe_gemini_tier",
+            "hermes_agent.agent.gemini_native_adapter.probe_gemini_tier",
             return_value="paid",
         ), patch(
             "hermes_cli.auth._prompt_model_selection",
@@ -102,7 +102,7 @@ class TestGeminiSetupFreeTierBlock:
         from hermes_cli.config import load_config
 
         with patch(
-            "agent.gemini_native_adapter.probe_gemini_tier",
+            "hermes_agent.agent.gemini_native_adapter.probe_gemini_tier",
         ) as mock_probe, patch(
             "hermes_cli.auth._prompt_model_selection",
             return_value="deepseek-chat",

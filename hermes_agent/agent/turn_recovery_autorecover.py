@@ -16,9 +16,9 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, Optional
 
-from agent.error_classifier import TRANSIENT_REASONS
+from hermes_agent.agent.error_classifier import TRANSIENT_REASONS
 
-logger = logging.getLogger("agent.conversation_loop")
+logger = logging.getLogger("hermes_agent.agent.conversation_loop")
 
 _LADDER_BASE_DELAY_S = 15.0
 _LADDER_CAP_S = 60.0
@@ -44,7 +44,7 @@ def auto_recovery_cycles(agent: Any) -> int:
 def ladder_wait_seconds(cycle: int, api_error: Any) -> float:
     """Wait before recovery ``cycle`` (1-based): jittered 15/30/60/60/60 s, or the provider's
     ``Retry-After`` when present (honoured past the 60 s cap, up to 120 s)."""
-    from agent.retry_utils import jittered_backoff, provider_retry_after_seconds
+    from hermes_agent.agent.retry_utils import jittered_backoff, provider_retry_after_seconds
     retry_after = provider_retry_after_seconds(api_error)
     if retry_after is not None:
         return min(retry_after, _RETRY_AFTER_CAP_S)
@@ -75,7 +75,7 @@ def auto_recover_after_exhaustion(
     when the wait completed (caller zeroes ``retry_count`` and re-enters the retry loop),
     ``{"action": "break"}`` when a steering correction arrived mid-wait, ``{"action": "return",
     "result": …}`` when the user interrupted, and ``None`` when the ladder does not apply or is spent."""
-    from agent.turn_recovery import interruptible_backoff_sleep
+    from hermes_agent.agent.turn_recovery import interruptible_backoff_sleep
 
     if not ladder_eligible(agent, classified):
         return None

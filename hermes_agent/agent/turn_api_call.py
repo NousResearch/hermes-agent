@@ -3,7 +3,7 @@ the attempt while another session's Nous Portal rate limit is active), ``perform
 (streaming decision, MoA prepared-request handshake, LLM execution middleware wrapper, the
 redirect ``_model_request_active`` bracket and the response-vs-redirect crossing check) and
 ``handle_api_interrupt`` (``InterruptedError`` mid-call). Nothing here imports
-``agent.conversation_loop`` at module level (cycle).
+``hermes_agent.agent.conversation_loop`` at module level (cycle).
 """
 
 from __future__ import annotations
@@ -14,13 +14,13 @@ import logging
 import time
 from typing import Any, Dict, Optional
 
-from agent.error_classifier import FailoverReason
-from agent.agent_runtime_helpers_placeholders import hidden_interrupt_placeholder_row
-from agent.message_metadata import append_message
-from agent.repetition_guard import REPETITION_LOOP_INTERRUPTED, is_runaway_repetition
-from agent.turn_failure_copy import site_copy, stamp_failure
+from hermes_agent.agent.error_classifier import FailoverReason
+from hermes_agent.agent.agent_runtime_helpers_placeholders import hidden_interrupt_placeholder_row
+from hermes_agent.agent.message_metadata import append_message
+from hermes_agent.agent.repetition_guard import REPETITION_LOOP_INTERRUPTED, is_runaway_repetition
+from hermes_agent.agent.turn_failure_copy import site_copy, stamp_failure
 
-logger = logging.getLogger("agent.conversation_loop")
+logger = logging.getLogger("hermes_agent.agent.conversation_loop")
 
 
 def stop_thinking_spinner(agent: Any, thinking_spinner: Any) -> None:
@@ -92,7 +92,7 @@ def perform_api_call(
 
     def _perform_api_call(next_api_kwargs):
         if agent.api_mode == "codex_responses":
-            from agent.codex_responses_adapter import drops_replay_item_ids
+            from hermes_agent.agent.codex_responses_adapter import drops_replay_item_ids
 
             next_api_kwargs = agent._get_transport().preflight_kwargs(
                 next_api_kwargs, allow_stream=False, drop_replay_item_ids=drops_replay_item_ids(agent.base_url),
@@ -102,7 +102,7 @@ def perform_api_call(
             return agent._interruptible_streaming_api_call(
                 next_api_kwargs, on_first_delta=_stop_spinner
             )
-        from agent import relay_llm
+        from hermes_agent.agent import relay_llm
 
         return relay_llm.execute(
             next_api_kwargs,
@@ -181,7 +181,7 @@ def handle_api_interrupt(
     """``InterruptedError`` during the provider call: a pending redirect keeps its correction
     queued for the outer-loop rebuild; otherwise keep any streamed partial text so the next
     turn has a record of the half-finished reply."""
-    from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
+    from hermes_agent.agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
 
     thinking_spinner = stop_thinking_spinner(agent, thinking_spinner)
     # redirect() cancelled only this request: keep the correction queued, clear the
@@ -235,7 +235,7 @@ def nous_rate_limit_guard(
 ) -> NousRateGuardVerdict:
     """Skip the call if another session recorded a Nous Portal rate limit: every attempt (incl.
     SDK retries) counts against RPH. Never lets the guard itself break the agent loop."""
-    from agent.conversation_loop import _arm_fallback_restart
+    from hermes_agent.agent.conversation_loop import _arm_fallback_restart
 
     def _verdict(action: str, result: Optional[dict[str, Any]] = None) -> NousRateGuardVerdict:
         return NousRateGuardVerdict(
@@ -252,7 +252,7 @@ def nous_rate_limit_guard(
         except Exception:
             pass
         try:
-            from agent.nous_rate_guard import (
+            from hermes_agent.agent.nous_rate_guard import (
                 nous_rate_limit_remaining, format_remaining as _fmt_nous_remaining
             )
             from hermes_cli import anon_auth
@@ -287,7 +287,7 @@ def nous_rate_limit_guard(
                     "completed": False,
                     "failed": True,
                     "error": _nous_msg,
-                    # The free tier's card body and its sign-in door (agent/error_surface.py).
+                    # The free tier's card body and its sign-in door (hermes_agent/agent/error_surface.py).
                     **({"free_tier": {"kind": "rate_limited", "message": anon_auth.FREE_TIER_RATE_LIMIT_CARD.format(
                         reset=anon_auth.friendly_wait(_nous_remaining))}} if _anonymous else {}),
                 }, FailoverReason.rate_limit.value, True))

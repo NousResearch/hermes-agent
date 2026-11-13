@@ -69,7 +69,7 @@ class TestInactivityJanitorMultiplex:
     """#86402 / #100738: the process-global janitor thread has no profile scope."""
 
     def setup_method(self):
-        from agent import secret_scope
+        from hermes_agent.agent import secret_scope
 
         self.saved = {
             name: getattr(bs, name).copy()
@@ -85,7 +85,7 @@ class TestInactivityJanitorMultiplex:
         secret_scope.set_multiplex_active(True)
 
     def teardown_method(self):
-        from agent import secret_scope
+        from hermes_agent.agent import secret_scope
 
         secret_scope.set_multiplex_active(False)
         bs.BROWSER_SESSION_INACTIVITY_TIMEOUT = self.orig_timeout
@@ -95,7 +95,7 @@ class TestInactivityJanitorMultiplex:
             live.update(saved)
 
     def test_janitor_tears_down_under_owner_profile_scope(self, tmp_path, monkeypatch):
-        from agent import secret_scope
+        from hermes_agent.agent import secret_scope
         from hermes_constants import (
             get_hermes_home, reset_hermes_home_override, set_hermes_home_override,
         )

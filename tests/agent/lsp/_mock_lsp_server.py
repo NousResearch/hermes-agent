@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """A minimal in-process LSP server used by tests.
 
-Speaks just enough LSP to drive :class:`agent.lsp.client.LSPClient`
+Speaks just enough LSP to drive :class:`hermes_agent.agent.lsp.client.LSPClient`
 through a full lifecycle: ``initialize``, ``initialized``,
 ``textDocument/didOpen``, ``textDocument/didChange``, then a
 ``textDocument/publishDiagnostics`` notification followed by

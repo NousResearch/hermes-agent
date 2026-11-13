@@ -388,7 +388,7 @@ async def test_unserve_releases_gateway_held_log_and_mcp_handles(tmp_path, monke
     try:
         hermes_logging.setup_logging(hermes_home=home)
         assert hermes_logging.enable_profile_log_routing([home, alpha_dir, gamma_dir]) is True
-        logger = _logging.getLogger("agent.unserve-handle-release")
+        logger = _logging.getLogger("hermes_agent.agent.unserve-handle-release")
         for profile_home in (alpha_dir, gamma_dir):
             token = set_hermes_home_override(profile_home)
             try:

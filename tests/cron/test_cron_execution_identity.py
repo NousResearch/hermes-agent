@@ -86,7 +86,7 @@ def test_tool_hook_in_a_ticked_job_sees_its_execution_and_none_outside(tmp_path)
 
 
 def test_identity_is_scoped_and_not_inherited_by_delegated_children():
-    from agent.delegation_context import delegated_child_context
+    from hermes_agent.agent.delegation_context import delegated_child_context
     from hermes_agent.cron.execution_identity import (
         current_cron_execution, enter_cron_execution, exit_cron_execution)
 

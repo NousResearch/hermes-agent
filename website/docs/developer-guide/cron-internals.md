@@ -367,7 +367,7 @@ The script timeout defaults to 3600 seconds (1 hour). `_get_script_timeout()` re
 This timeout bounds the **pre-run script only**, not the agent. Skill-based / LLM-driven jobs run on a separate *inactivity*-based budget (`HERMES_CRON_TIMEOUT`, default 600s of idle time, `0` = unlimited) — they can run for hours as long as they keep calling tools or streaming tokens, and are only killed after the configured idle period with no activity. On platforms where Python's monotonic clock excludes suspend (macOS and Linux), time the host spends asleep does not count toward that idle period; Windows behavior is unchanged. Scripts are dispatched to a persistent thread pool (not held under the tick lock), so a long-running script does not block other due jobs from firing.
 
 On timeout or ownership cancellation, `hermes_agent.cron.scheduler_script` uses the shared
-`agent.deadline.kill_process_tree` hard-kill path. On POSIX it briefly stops and
+`hermes_agent.agent.deadline.kill_process_tree` hard-kill path. On POSIX it briefly stops and
 rescans the live tree before signalling descendants and their parent, including
 children in separate sessions with no inherited output pipes. This closes the
 fork-after-snapshot race. The stop wait is bounded; discovery or permission
@@ -381,7 +381,7 @@ Windows continues to use `taskkill /F /T`.
 `run_job()` passes the user's configured fallback providers and credential pool into the `AIAgent` instance:
 
 - **Fallback providers** — reads `fallback_providers` (list) or `fallback_model` (legacy dict) from `config.yaml`, matching the gateway's `_load_fallback_model()` pattern. Passed as `fallback_model=` to `AIAgent.__init__`, which normalizes both formats into a fallback chain. **Unpinned jobs only:** `_job_fallback_chain()` returns no chain for a job carrying its own `provider`, `model` or `base_url`, and the same answer feeds the credential-resolution walk in `_resolve_job_runtime()`, the pre-dispatch key check, and the mid-run ladder, so a pinned job never lands on a global chain entry (#100437). It shares `hermes_cli.fallback_config.scoped_fallback_chain()` with pinned delegation children.
-- **Credential pool** — loads via `load_pool(provider)` from `agent.credential_pool` using the resolved runtime provider name. Only passed when the pool has credentials (`pool.has_credentials()`). Enables same-provider key rotation on 429/rate-limit errors.
+- **Credential pool** — loads via `load_pool(provider)` from `hermes_agent.agent.credential_pool` using the resolved runtime provider name. Only passed when the pool has credentials (`pool.has_credentials()`). Enables same-provider key rotation on 429/rate-limit errors.
 
 This mirrors the gateway's behavior — without it, cron agents would fail on rate limits without attempting recovery.
 

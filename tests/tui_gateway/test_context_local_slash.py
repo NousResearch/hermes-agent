@@ -105,7 +105,7 @@ def test_context_breakdown_engine_used_with_live_agent(monkeypatch):
         "estimated_total": 90000,
         "model": "test-model",
     }
-    with patch("agent.context_breakdown.compute_session_context_breakdown", return_value=payload):
+    with patch("hermes_agent.agent.context_breakdown.compute_session_context_breakdown", return_value=payload):
         out = server._live_slash_command_output("sid-1", _live_session(object()), "context", "")
 
     assert out is not None
@@ -130,8 +130,8 @@ def test_context_all_arg_reaches_details(monkeypatch):
     }
     details = {"skills": [], "toolsets": []}
     with (
-        patch("agent.context_breakdown.compute_session_context_breakdown", return_value=payload) as m_breakdown,
-        patch("agent.context_breakdown.compute_context_details", return_value=details) as m_details,
+        patch("hermes_agent.agent.context_breakdown.compute_session_context_breakdown", return_value=payload) as m_breakdown,
+        patch("hermes_agent.agent.context_breakdown.compute_context_details", return_value=details) as m_details,
     ):
         out = server._live_slash_command_output("sid-1", _live_session(object()), "context", "all")
 

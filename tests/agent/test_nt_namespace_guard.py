@@ -12,7 +12,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from agent.file_safety import (
+from hermes_agent.agent.file_safety import (
     get_read_block_error,
     get_write_denied_error,
     is_nt_namespace_path,
@@ -61,11 +61,11 @@ class TestNtNamespaceGuard(unittest.TestCase):
         join would hide the prefix."""
         from pathlib import Path
 
-        from agent import acp_client, context_references, tool_executor
+        from hermes_agent.agent import acp_client, context_references, tool_executor
         from hermes_agent.tools.file_tools import patch_tool, read_file_tool, search_tool, write_file_tool
 
         bad = "\\??\\UNC\\attacker.example\\share\\x"
-        with patch("agent.file_safety.Path") as fs_path, \
+        with patch("hermes_agent.agent.file_safety.Path") as fs_path, \
                 patch("hermes_agent.tools.file_tools._resolve_path_for_task") as ft_resolve, \
                 patch("hermes_agent.tools.file_tools_write_guards._resolve_path_for_task") as wg_resolve, \
                 patch("hermes_agent.tools.file_tools_paths._resolve_path_for_task") as ckpt_resolve, \

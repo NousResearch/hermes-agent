@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
-from agent.context_compressor import _DB_PERSISTED_MARKER
+from hermes_agent.agent.context_compressor import _DB_PERSISTED_MARKER
 
 
 def committed_row_id(message: Any) -> int | None:

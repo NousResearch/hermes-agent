@@ -6,7 +6,7 @@ Fresh executor/helper threads retain the registered interpreter's owner boundary
 import os
 import threading
 
-from agent.runtime_session_store import WorkerPersistenceError, call_off_event_loop, is_worker_process
+from hermes_agent.agent.runtime_session_store import WorkerPersistenceError, call_off_event_loop, is_worker_process
 
 _store = None
 _lock = threading.Lock()

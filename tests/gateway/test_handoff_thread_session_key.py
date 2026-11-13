@@ -27,7 +27,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from agent.conversation_compression import CONTEXT_OVERFLOW_BLOCKED_WARNING_TEMPLATE
+from hermes_agent.agent.conversation_compression import CONTEXT_OVERFLOW_BLOCKED_WARNING_TEMPLATE
 from hermes_agent.gateway.config import GatewayConfig, HomeChannel, Platform, PlatformConfig
 from hermes_agent.gateway.run import GatewayRunner, _prepare_gateway_status_message
 from hermes_agent.gateway.session import SessionSource, build_session_key

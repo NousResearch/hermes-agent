@@ -8,7 +8,7 @@ closed — third-party managers ship as plugins that subclass ``SecretSource`` a
 register through ``PluginContext.register_secret_source()``.
 """
 
-from agent.secret_sources.base import (
+from hermes_agent.agent.secret_sources.base import (
     SECRET_SOURCE_API_VERSION,
     ErrorKind,
     FetchResult,

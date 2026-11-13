@@ -18,7 +18,7 @@ def _policy(tmp_path, **extra):
 def test_bypass_policy_routes_to_managed_worker_and_bootstrap_carries_flags(tmp_path, monkeypatch):
     from hermes_agent.gateway import session_managed_worker as smw
     from hermes_agent.gateway.session_policy import build_policy
-    from agent.managed_worker import validate_bootstrap
+    from hermes_agent.agent.managed_worker import validate_bootstrap
     from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
     safe = _policy(tmp_path, safe_mode=True)
@@ -105,7 +105,7 @@ print(json.dumps({{'max_turns': cfg['agent']['max_turns'], 'raw_model': raw['mod
 def test_worker_outbox_directory_is_portable_and_distinct_per_execution(tmp_path):
     """execution_id ('admission-worker:<hex>') is a durable ledger key, not a path: ':' is
     illegal in a Windows directory name (WinError 267), so the outbox dir must be derived."""
-    from agent.managed_worker import outbox_dir
+    from hermes_agent.agent.managed_worker import outbox_dir
     first = outbox_dir(tmp_path, 'admission-worker:ef7caea811d14c7092fd261cd167b311')
     second = outbox_dir(tmp_path, 'admission-worker:ef7caea811d14c7092fd261cd167b312')
     assert first.parent == tmp_path / 'worker-outboxes' and first != second

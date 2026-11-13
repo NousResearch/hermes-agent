@@ -17,8 +17,8 @@ import time
 from pathlib import Path
 from typing import Any, Dict, Optional, cast
 
-from agent.i18n import t
-from agent.retry_utils import jittered_backoff
+from hermes_agent.agent.i18n import t
+from hermes_agent.agent.retry_utils import jittered_backoff
 from hermes_agent.gateway.config import Platform, _BUILTIN_PLATFORM_VALUES
 from hermes_agent.gateway.platforms.base import BasePlatformAdapter, _mark_notify_metadata
 from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
@@ -141,7 +141,7 @@ def _watch_notification_metadata(evt: dict, source) -> dict[str, Any]:
     automation identities, and the local async-result card."""
     metadata: dict[str, Any] = {"notification_origin": "process_registry_synthetic"}
     session_key = str(evt.get("session_key") or "").strip()
-    from agent.notification_presentation import diagnostic_process_event
+    from hermes_agent.agent.notification_presentation import diagnostic_process_event
     if diagnostic_process_event(evt):
         metadata["notification_category"] = "diagnostic"
     if session_key.startswith("agent:"):
@@ -829,7 +829,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         else:
             info = "Watch pattern notification — waking api_server session %s via self-post"
             fail = "Watch notification self-post wake failed for session %s: %s"
-            from agent.notification_presentation import diagnostic_process_event
+            from hermes_agent.agent.notification_presentation import diagnostic_process_event
             try:
                 served = await asyncio.to_thread(self._served_api_server_wake_profile, evt, raw_sid)
             except LookupError as e:
@@ -1740,7 +1740,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         from hermes_agent.tools.process_registry import transform_process_output
         new_output = strip_ansi(session.output_buffer[-limit:]) if session.output_buffer else ""
         if new_output:
-            from agent.redact import redact_terminal_output
+            from hermes_agent.agent.redact import redact_terminal_output
             _command = getattr(session, "command", "") or ""
             new_output = transform_process_output(new_output, command=_command, returncode=session.exit_code,
                                                   task_id=getattr(session, "task_id", "") or "")
@@ -1775,7 +1775,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
     def _build_process_completion_event(watcher: dict, session, session_id: str) -> dict:
         """Build the synthetic ``completion`` event for an agent-notify watcher."""
         from hermes_agent.gateway.run import _redact_gateway_user_facing_secrets
-        from agent.redact import redact_terminal_output
+        from hermes_agent.agent.redact import redact_terminal_output
         from hermes_agent.tools.ansi_strip import strip_ansi
         from hermes_agent.tools.process_registry import transform_process_output
         _command = getattr(session, "command", "") or ""
@@ -1851,7 +1851,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         loop = getattr(self, "_gateway_loop", None)
         if not getattr(self, "_running", False) or loop is None or not loop.is_running():
             return False
-        from agent.async_utils import safe_schedule_threadsafe
+        from hermes_agent.agent.async_utils import safe_schedule_threadsafe
         future = contextvars.Context().run(
             safe_schedule_threadsafe, self._run_process_watcher(watcher), loop, logger=logger,
             log_message="Live process watcher arming failed",

@@ -1,5 +1,5 @@
 """Bot Mode bot-to-bot chains (#137027): the runtime hop cap, repeated asks, the reply rule
-(``agent/bot_chain.py``), keyed by the conversation through forks and compression."""
+(``hermes_agent/agent/bot_chain.py``), keyed by the conversation through forks and compression."""
 
 from types import SimpleNamespace
 
@@ -11,7 +11,7 @@ from hermes_agent.tools.bot_mode_probe import NO_REPLY_MARKER
 
 @pytest.fixture
 def bot_chain(monkeypatch):
-    from agent import bot_chain
+    from hermes_agent.agent import bot_chain
 
     monkeypatch.setattr(bot_chain, "_CHAINS", {})
     monkeypatch.setattr(bot_chain, "_settings", lambda: BotLoopGuardSettings(max_hops=4))
@@ -27,7 +27,7 @@ def _agent(session_id):
 
 
 def _turn(chain, agent, author=None, kind=None, message=""):
-    from agent.turn_author import parse_turn_author
+    from hermes_agent.agent.turn_author import parse_turn_author
     agent._turn_author = parse_turn_author(author) if author else None
     chain.on_turn_start(agent, agent._turn_author, kind, message)
 

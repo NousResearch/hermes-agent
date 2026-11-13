@@ -6,7 +6,7 @@ from hermes_platform import declaration
 
 
 def test_application_gate_rechecks_snapshot_without_losing_description(tmp_path, monkeypatch):
-    from agent import prompt_builder as pb
+    from hermes_agent.agent import prompt_builder as pb
 
     monkeypatch.setattr(declaration, "_REGISTRY", {})
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))

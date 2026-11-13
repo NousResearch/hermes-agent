@@ -50,7 +50,7 @@ class _AsyncBridge:
             raise RuntimeError("cua-driver asyncio bridge failed to start")
 
     def run(self, coro, timeout: Optional[float] = 30.0) -> Any:
-        from agent.async_utils import safe_schedule_threadsafe
+        from hermes_agent.agent.async_utils import safe_schedule_threadsafe
         alive = self._loop is not None and self._thread is not None and self._thread.is_alive()
         fut = safe_schedule_threadsafe(coro, self._loop) if alive else None  # closes the coroutine on failure
         if fut is None:

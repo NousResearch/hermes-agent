@@ -9,7 +9,7 @@ import time
 
 import pytest
 
-from agent.interrupt_control import InterruptControlMixin
+from hermes_agent.agent.interrupt_control import InterruptControlMixin
 from hermes_agent.gateway import session_finite, session_queued_controls
 from hermes_agent.gateway.session_contract import SessionRef
 from hermes_agent.hermes_state_runtime import (
@@ -84,7 +84,7 @@ async def test_a_steer_into_a_turn_that_then_fails_settles_interrupted_not_steer
 
 
 class BufferedAgent(InterruptControlMixin):
-    """The real steer seam (``agent/interrupt_control.py``): ``steer`` only buffers the text, and the turn
+    """The real steer seam (``hermes_agent/agent/interrupt_control.py``): ``steer`` only buffers the text, and the turn
     takes it at its drains. A text no drain took is still buffered when the turn ends."""
 
     def __init__(self):
@@ -212,7 +212,7 @@ async def test_a_late_transfer_is_never_a_follow_up_that_a_restart_can_discard(t
         claimed.set()
         await asyncio.wait_for(release.wait(), 30)
         result = {'final_response': 'done', 'messages': []}
-        # The leftover drain agent/turn_finalizer.py runs (an agent without one drains everything).
+        # The leftover drain hermes_agent/agent/turn_finalizer.py runs (an agent without one drains everything).
         leftover = (getattr(agent, '_drain_leftover_steer', None) or agent._drain_pending_steer)()
         if leftover:
             result['pending_steer'] = leftover

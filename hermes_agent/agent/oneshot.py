@@ -4,7 +4,7 @@ A "one-shot" is a single stateless model call outside any conversation (commit
 messages, rename suggestions, summaries): it never touches session history or
 prompt caching. Call with explicit ``instructions``/``user_input`` or a registered
 ``template`` + ``variables`` so prompt engineering stays consistent across
-CLI/TUI/desktop. Model selection rides :func:`agent.auxiliary_client.call_llm`:
+CLI/TUI/desktop. Model selection rides :func:`hermes_agent.agent.auxiliary_client.call_llm`:
 ``main_runtime`` inherits the live session's provider/model, else ``task``
 resolves a cheap backend.
 """
@@ -12,7 +12,7 @@ resolves a cheap backend.
 import logging
 from typing import Any, Callable, Dict, Optional, Tuple
 
-from agent.auxiliary_client import call_llm, extract_content_or_reasoning
+from hermes_agent.agent.auxiliary_client import call_llm, extract_content_or_reasoning
 
 logger = logging.getLogger(__name__)
 

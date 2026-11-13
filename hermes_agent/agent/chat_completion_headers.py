@@ -28,7 +28,7 @@ def _chat_completion_capturing_headers(agent, client, api_kwargs: dict):
     if raw_api is None:
         return client.chat.completions.create(**api_kwargs)
     raw = raw_api.create(**api_kwargs)
-    from agent.credits_tracker import response_is_usage_window
+    from hermes_agent.agent.credits_tracker import response_is_usage_window
     if not response_is_usage_window(raw):
         return raw.parse()
     for capture in (agent._capture_rate_limits, agent._capture_credits,

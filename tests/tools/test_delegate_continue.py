@@ -99,7 +99,7 @@ def test_continue_runs_the_finished_child_on_its_transcript_route_and_toolsets()
 
     model = _ScriptedModel()
     parent = _parent()
-    with patch("run_agent.AIAgent", side_effect=model):
+    with patch("hermes_agent.run_agent.AIAgent", side_effect=model):
         sid, first_id = _spawn(parent, "write the parser")
         parent.model = "switched-model"  # the parent moved on; the child keeps its own route
         out = json.loads(delegate_task(action="continue", subagent_id=sid, message="now add tests for it",
@@ -130,7 +130,7 @@ def test_an_inherited_route_refuses_once_the_parent_switched_provider():
 
     model = _ScriptedModel()
     parent = _parent()
-    with patch("run_agent.AIAgent", side_effect=model):
+    with patch("hermes_agent.run_agent.AIAgent", side_effect=model):
         sid, _ = _spawn(parent, "write the parser")
         parent.provider, parent.base_url = "custom", "https://second.invalid/v1"
         out = json.loads(delegate_task(action="continue", subagent_id=sid, message="more", background=True,
@@ -234,10 +234,10 @@ def test_profile_routed_child_continues_inside_its_profile_scope(tmp_path, monke
     model = _ScriptedModel()
     parent = _parent(db=SessionDB(db_path=tmp_path / "parent-db" / "state.db"))
     route = _route_to_task_route({"profile": "coder", "label": "coder"}, parent, {})
-    with patch("run_agent.AIAgent", side_effect=model), \
+    with patch("hermes_agent.run_agent.AIAgent", side_effect=model), \
             patch("hermes_agent.tools.delegate_tool_routes.resolve_task_routes", return_value=([route], None)):
         sid, _ = _spawn(parent, "work as coder")
-    with patch("run_agent.AIAgent", side_effect=model):  # continue never asks the backend again
+    with patch("hermes_agent.run_agent.AIAgent", side_effect=model):  # continue never asks the backend again
         out = json.loads(delegate_task(action="continue", subagent_id=sid, message="and the follow-up",
                                        background=True, parent_agent=parent))
         assert out.get("status") == "dispatched", out
@@ -256,7 +256,7 @@ def test_joined_result_handle_can_continue_the_same_child(background):
 
     registry = delegate_tool.registry
     model, parent = _ScriptedModel(), _parent()
-    with patch("run_agent.AIAgent", side_effect=model), \
+    with patch("hermes_agent.run_agent.AIAgent", side_effect=model), \
             patch("hermes_agent.tools.delegate_tool_dispatch._resolve_async_wake_sid", return_value=None):
         out = json.loads(registry.dispatch("delegate_task", {"goal": "write parser", "background": background},
                                            parent_agent=parent))
@@ -278,7 +278,7 @@ def test_finished_grandchild_keeps_ancestor_continuation_ownership(caller):
     model, root = _ScriptedModel(), _parent("root-sess")
     middle = _parent("middle-sess", db=root._session_db)
     middle._delegate_parent_ref = weakref.ref(root)
-    with patch("run_agent.AIAgent", side_effect=model):
+    with patch("hermes_agent.run_agent.AIAgent", side_effect=model):
         sid, _ = _spawn(middle, "grandchild work")
         foreign = _parent("unrelated-sess", db=root._session_db)
         refused = json.loads(delegate_task(action="continue", subagent_id=sid, message="foreign work",
@@ -309,7 +309,7 @@ def test_spawner_keeps_ownership_after_root_continues_grandchild():
     middle = _parent("middle-sess", db=root._session_db)
     middle._delegate_parent_ref = weakref.ref(root)
     foreign = _parent("unrelated-sess", db=root._session_db)
-    with patch("run_agent.AIAgent", side_effect=model):
+    with patch("hermes_agent.run_agent.AIAgent", side_effect=model):
         sid, _ = _spawn(middle, "grandchild work")
         out = json.loads(delegate_task(action="continue", subagent_id=sid, message="root follow-up",
                                        background=True, parent_agent=root))
@@ -429,7 +429,7 @@ def test_timeout_continue_waits_for_worker_close_and_resource_cleanup(monkeypatc
                                                       background=True, parent_agent=parent))
 
     attempted = None
-    with patch("run_agent.AIAgent", side_effect=build):
+    with patch("hermes_agent.run_agent.AIAgent", side_effect=build):
         try:
             sid, _ = _spawn(parent, "timed out work")
             attempted = follow_up(sid)

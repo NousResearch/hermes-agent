@@ -143,7 +143,7 @@ def gpu_class() -> str:
 def _is_local_endpoint(base_url: Any) -> bool:
     if not isinstance(base_url, str) or not base_url.strip():
         return False
-    from agent.model_metadata import is_local_endpoint
+    from hermes_agent.agent.model_metadata import is_local_endpoint
 
     return is_local_endpoint(base_url)
 
@@ -172,7 +172,7 @@ def _slot_is_local(slot: Any) -> bool:
 
 def _aux_slot_routes_itself(slot: dict[str, Any]) -> bool:
     """An auxiliary task off the main model: a named provider, or (mirroring
-    ``agent.auxiliary_client._resolve_task_provider_model``) a bare ``base_url`` + ``api_key``,
+    ``hermes_agent.agent.auxiliary_client._resolve_task_provider_model``) a bare ``base_url`` + ``api_key``,
     which the runtime sends to that endpoint as ``custom`` even under ``provider: auto``."""
     if _norm(slot.get("provider")) not in _INHERITS_MAIN:
         return True

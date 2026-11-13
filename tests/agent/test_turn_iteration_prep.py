@@ -11,8 +11,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent.turn_iteration_prep import apply_retry_restarts, begin_iteration
-from agent.turn_retry_state import TurnRetryState
+from hermes_agent.agent.turn_iteration_prep import apply_retry_restarts, begin_iteration
+from hermes_agent.agent.turn_retry_state import TurnRetryState
 
 RESTART_FLAGS = ["restart_with_redirected_messages", "restart_with_rebuilt_messages"]
 MAX_RETRIES = 3

@@ -132,7 +132,7 @@ Toolset 是工具的命名集合。Hermes 通过以下方式解析它们：
 ```
 模型响应包含 tool_call
     ↓
-run_agent.py agent 循环
+hermes_agent/run_agent.py agent 循环
     ↓
 hermes_agent.model_tools.handle_function_call(name, args, task_id, user_task)
     ↓

@@ -88,7 +88,7 @@ def test_live_props_beats_catalog(hermes_home, monkeypatch):
 def test_lookup_chain_consults_managed_runtime(hermes_home, monkeypatch):
     """_lookup_supports_vision: user override wins, then the managed
     answer, and the cloud catalog is never reached for a managed model."""
-    import agent.image_routing as ir
+    import hermes_agent.agent.image_routing as ir
 
     monkeypatch.setattr(
         "hermes_cli.local_runtime.capabilities.managed_model_supports_vision",
@@ -97,7 +97,7 @@ def test_lookup_chain_consults_managed_runtime(hermes_home, monkeypatch):
     def catalog_must_not_run(*a, **k):
         raise AssertionError("cloud catalog consulted for a managed model")
 
-    monkeypatch.setattr("agent.models_dev.get_model_capabilities",
+    monkeypatch.setattr("hermes_agent.agent.models_dev.get_model_capabilities",
                         catalog_must_not_run)
 
     got = ir._lookup_supports_vision("llamacpp", "Some-Local-Model", {})
@@ -121,13 +121,13 @@ def test_webp_transcodes_to_png_for_managed_provider(hermes_home, monkeypatch, t
 
     from PIL import Image
 
-    import agent.image_routing as ir
+    import hermes_agent.agent.image_routing as ir
 
     webp_path = tmp_path / "shot.webp"
     img = Image.new("RGB", (32, 32), (255, 0, 0))
     img.save(webp_path, format="WEBP")
 
-    monkeypatch.setattr("agent.auxiliary_client._runtime_main_value",
+    monkeypatch.setattr("hermes_agent.agent.auxiliary_client._runtime_main_value",
                         lambda k: {"provider": "llamacpp",
                                    "base_url": ""}.get(k, ""))
 
@@ -142,12 +142,12 @@ def test_webp_passes_through_for_cloud_providers(hermes_home, monkeypatch, tmp_p
     pytest.importorskip("PIL")
     from PIL import Image
 
-    import agent.image_routing as ir
+    import hermes_agent.agent.image_routing as ir
 
     webp_path = tmp_path / "shot.webp"
     Image.new("RGB", (32, 32), (255, 0, 0)).save(webp_path, format="WEBP")
 
-    monkeypatch.setattr("agent.auxiliary_client._runtime_main_value",
+    monkeypatch.setattr("hermes_agent.agent.auxiliary_client._runtime_main_value",
                         lambda k: {"provider": "anthropic",
                                    "base_url": ""}.get(k, ""))
 
@@ -169,7 +169,7 @@ def test_vision_analyze_normalization_narrows_for_managed(hermes_home, monkeypat
     webp_path = tmp_path / "img.webp"
     Image.new("RGB", (32, 32), (255, 0, 0)).save(webp_path, format="WEBP")
 
-    monkeypatch.setattr("agent.auxiliary_client._runtime_main_value",
+    monkeypatch.setattr("hermes_agent.agent.auxiliary_client._runtime_main_value",
                         lambda k: {"provider": "llamacpp",
                                    "base_url": ""}.get(k, ""))
     _out_path, mime, err = vt._normalize_to_supported_image(webp_path, "image/webp")
@@ -177,7 +177,7 @@ def test_vision_analyze_normalization_narrows_for_managed(hermes_home, monkeypat
     assert mime == "image/png", "managed server: webp must normalize to png"
 
     # Cloud providers keep webp untouched.
-    monkeypatch.setattr("agent.auxiliary_client._runtime_main_value",
+    monkeypatch.setattr("hermes_agent.agent.auxiliary_client._runtime_main_value",
                         lambda k: {"provider": "anthropic",
                                    "base_url": ""}.get(k, ""))
     _out_path, mime, err = vt._normalize_to_supported_image(webp_path, "image/webp")

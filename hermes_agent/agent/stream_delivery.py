@@ -1,19 +1,19 @@
 """Streaming / interim-message delivery for ``AIAgent``.
 
 Single-writer stream ownership, delta/reasoning hook fan-out, and interim assistant text dedup.
-Extracted from ``run_agent.py``; every method resolves through ``AIAgent``'s MRO unchanged.
+Extracted from ``hermes_agent/run_agent.py``; every method resolves through ``AIAgent``'s MRO unchanged.
 """
 import logging
 import re
 import threading
 from typing import Any, Dict, List
 
-from agent.memory_context import fence_recalled_context, sanitize_context
-from agent.message_content import flatten_message_text
-from agent.history_commentary import COMMENTARY_WITHHELD, commentary_items, visible_commentary
+from hermes_agent.agent.memory_context import fence_recalled_context, sanitize_context
+from hermes_agent.agent.message_content import flatten_message_text
+from hermes_agent.agent.history_commentary import COMMENTARY_WITHHELD, commentary_items, visible_commentary
 
 # Same logger name as the origin module so log records / caplog filters are unchanged.
-logger = logging.getLogger("run_agent")
+logger = logging.getLogger("hermes_agent.run_agent")
 
 
 def withhold_held_row(agent: Any, assistant_msg: dict[str, Any]) -> dict[str, Any]:
@@ -96,7 +96,7 @@ class StreamDeliveryMixin:
     def _enqueue_stream_hook(self, event: str, *, label: str | None = None, **fields: Any) -> None:
         """Best-effort plugin stream hook enqueue; never raises into the stream path."""
         try:
-            from agent.plugin_stream_hooks import enqueue_plugin_stream_hook
+            from hermes_agent.agent.plugin_stream_hooks import enqueue_plugin_stream_hook
 
             enqueue_plugin_stream_hook(event, **self._stream_hook_base_payload(), **fields)
         except Exception:
@@ -414,7 +414,7 @@ class StreamDeliveryMixin:
         enabled = getattr(self, "_stream_reasoning_hooks_enabled", None)
         if enabled is None:
             try:
-                from agent.plugin_stream_hooks import stream_reasoning_deltas_enabled
+                from hermes_agent.agent.plugin_stream_hooks import stream_reasoning_deltas_enabled
 
                 enabled = stream_reasoning_deltas_enabled()
             except Exception:
@@ -431,7 +431,7 @@ class StreamDeliveryMixin:
     def _has_stream_consumers(self) -> bool:
         """Return True if any streaming consumer is registered."""
         try:
-            from agent.plugin_stream_hooks import has_stream_observer_hooks
+            from hermes_agent.agent.plugin_stream_hooks import has_stream_observer_hooks
 
             if has_stream_observer_hooks():
                 return True

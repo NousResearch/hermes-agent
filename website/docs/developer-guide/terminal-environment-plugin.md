@@ -38,7 +38,7 @@ site instead of a hardcoded list of names.
 ## Minimal provider
 
 ```python title="~/.hermes/plugins/acmebox/__init__.py"
-from agent.terminal_env_provider import TerminalEnvironmentProvider
+from hermes_agent.agent.terminal_env_provider import TerminalEnvironmentProvider
 
 
 class AcmeBoxEnvironment:

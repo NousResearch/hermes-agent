@@ -114,7 +114,7 @@ def _doctor_web_capability_rows() -> list[tuple[str, str, str]]:
     """
     rows: list[tuple[str, str, str]] = []
     try:
-        from agent.web_search_registry import get_active_extract_provider, get_active_search_provider
+        from hermes_agent.agent.web_search_registry import get_active_extract_provider, get_active_search_provider
         from hermes_agent.tools.web_tools import _ensure_web_plugins_loaded, _provider_is_ready
         # Fresh process: bundled web providers only register during plugin discovery (idempotent, cheap).
         _ensure_web_plugins_loaded()
@@ -276,7 +276,7 @@ def _check_plugin_backend(terminal_env: str, issues: list[str]) -> None:
     try:
         from hermes_cli.plugins import discover_plugins
         discover_plugins()
-        from agent.terminal_env_registry import get_provider
+        from hermes_agent.agent.terminal_env_registry import get_provider
         provider = get_provider(terminal_env)
     except Exception:
         provider = None

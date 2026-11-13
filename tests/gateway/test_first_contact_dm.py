@@ -22,7 +22,7 @@ def _runner(tmp_path, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_first_dm_gets_the_profile_build_offer_once(tmp_path, monkeypatch):
-    from agent.onboarding import PROFILE_BUILD_FLAG, profile_build_directive
+    from hermes_agent.agent.onboarding import PROFILE_BUILD_FLAG, profile_build_directive
 
     (tmp_path / "config.yaml").write_text("model: test\n", encoding="utf-8")
     runner = _runner(tmp_path, monkeypatch)

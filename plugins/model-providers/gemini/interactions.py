@@ -22,7 +22,7 @@ import uuid
 from types import SimpleNamespace
 from typing import Any, Iterator, Optional
 
-from agent.gemini_native_adapter import (
+from hermes_agent.agent.gemini_native_adapter import (
     _FREE_TIER_GUIDANCE,
     _SKIP_SIGNATURE,
     GeminiAPIError,
@@ -41,7 +41,7 @@ from agent.gemini_native_adapter import (
     _tool_call_id,
     _tool_call_ns,
 )
-from agent.gemini_schema import prepare_gemini_tool_parameters
+from hermes_agent.agent.gemini_schema import prepare_gemini_tool_parameters
 
 logger = logging.getLogger(__name__)
 
@@ -56,7 +56,7 @@ _STATUS_FINISH = {
     "requires_continuation": "length", "cancelled": "stop",
 }
 # google.rpc status names an ErrorEvent / failed interaction may carry -> the HTTP status they stand for,
-# so agent.error_classifier treats an in-band 429 like a wire 429.
+# so hermes_agent.agent.error_classifier treats an in-band 429 like a wire 429.
 # Interactions spells them snake_case (live: ``too_many_requests``, ``service_unavailable``, ``invalid_request``).
 _RPC_HTTP_STATUS = {
     "INVALID_ARGUMENT": 400, "INVALID_REQUEST": 400, "FAILED_PRECONDITION": 400, "OUT_OF_RANGE": 400,

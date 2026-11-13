@@ -6,9 +6,9 @@ and announce an unverified "Primary model restored" that would oscillate forever
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from agent.fallback_cooldown import _mark_entitlement_rejected_model
+from hermes_agent.agent.fallback_cooldown import _mark_entitlement_rejected_model
 
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 # Assembled at runtime so no credential-shaped literal sits in source (scanner guard).
 _TEST_KEY = "test-" + "key-12345678"
@@ -18,9 +18,9 @@ def _make_agent(fallback_model=None):
     with (
         patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]),
         patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
-        patch("agent.process_bootstrap.OpenAI"),
-        patch("agent.context_compressor.get_model_context_length", return_value=200_000),
-        patch("agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()),
+        patch("hermes_agent.agent.process_bootstrap.OpenAI"),
+        patch("hermes_agent.agent.context_compressor.get_model_context_length", return_value=200_000),
+        patch("hermes_agent.agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()),
     ):
         agent = AIAgent(
             api_key=_TEST_KEY, base_url="https://my-llm.example.com/v1", provider="custom",
@@ -62,7 +62,7 @@ def test_marker_fires_only_on_single_credential_entitlement_400_and_fallback_wal
     assert _mark_entitlement_rejected_model(agent, _entitlement_error("gpt-5.6-sol")) is True
     assert agent._entitlement_rejected_models == {("openai-codex", "gpt-5.6-sol")}
     # The fallback entry names the same slug in vendor-prefixed form: skipped, chain exhausts.
-    with patch("agent.auxiliary_client.resolve_provider_client") as resolve:
+    with patch("hermes_agent.agent.auxiliary_client.resolve_provider_client") as resolve:
         assert agent._try_activate_fallback() is False
         resolve.assert_not_called()
 
@@ -75,11 +75,11 @@ def test_restore_primary_runtime_is_gated_on_rejected_primary_slug():
         agent = _make_agent(fallback_model={"provider": "zai", "model": "glm-5.2"})
         agent._primary_runtime["model"], agent._primary_runtime["provider"] = "gpt-5.6-sol", "openai-codex"
         agent._entitlement_rejected_models = {("openai-codex", rejected_slug)}
-        with patch("agent.auxiliary_client.resolve_provider_client", return_value=(fb_client, None)):
+        with patch("hermes_agent.agent.auxiliary_client.resolve_provider_client", return_value=(fb_client, None)):
             assert agent._try_activate_fallback() is True
         emitted = []
         agent._emit_status = emitted.append
-        with patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()):
+        with patch("hermes_agent.agent.process_bootstrap.OpenAI", return_value=MagicMock()):
             restored = agent._restore_primary_runtime()
         return agent, restored, emitted
 

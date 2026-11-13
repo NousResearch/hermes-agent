@@ -28,7 +28,7 @@ class TestSlotRuntimeApiMode:
             "api_key": "test-key",
             "api_mode": "codex_responses",
         }
-        from agent.moa_loop import _slot_runtime
+        from hermes_agent.agent.moa_loop import _slot_runtime
 
         result = _slot_runtime({"provider": "copilot", "model": "gpt-5.5"})
         assert result["api_mode"] == "codex_responses"
@@ -37,7 +37,7 @@ class TestSlotRuntimeApiMode:
 
 def test_run_reference_passes_slot_extra_body(monkeypatch):
     """Reference advisors should receive custom provider extra_body."""
-    from agent import moa_loop
+    from hermes_agent.agent import moa_loop
 
     captured = {}
 
@@ -88,7 +88,7 @@ moa:
     )
     monkeypatch.setenv("HERMES_HOME", str(home))
 
-    from agent import moa_loop
+    from hermes_agent.agent import moa_loop
 
     captured = {}
 
@@ -133,7 +133,7 @@ def test_one_shot_aggregate_moa_context_passes_slot_extra_body(monkeypatch):
     the third independent MoA call path — its aggregator call receives the
     slot runtime via **agg_runtime, so custom-provider extra_body must flow
     through it too."""
-    from agent import moa_loop
+    from hermes_agent.agent import moa_loop
 
     captured_calls = []
 

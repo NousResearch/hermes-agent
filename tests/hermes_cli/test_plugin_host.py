@@ -64,8 +64,8 @@ def _home_with_plugins(tmp_path, monkeypatch, plugins: dict, isolation="host"):
 
 @pytest.mark.platforms("posix")  # os._exit / SIGKILL process semantics
 def test_plugin_runs_out_of_process_with_ctx_round_trips_and_survives_host_crash(tmp_path, monkeypatch):
-    from agent import image_gen_registry
-    from agent.image_gen_provider import ImageGenProvider
+    from hermes_agent.agent import image_gen_registry
+    from hermes_agent.agent.image_gen_provider import ImageGenProvider
     from hermes_agent.tools.registry import registry
 
     _home_with_plugins(tmp_path, monkeypatch, {"hostprobe": PROBE_PLUGIN, "platformprobe": PLATFORM_PLUGIN})
@@ -285,7 +285,7 @@ def test_hosted_memory_provider_stays_live_across_a_host_crash(tmp_path, monkeyp
 def test_host_plugin_can_launch_status_and_steer_subagent(tmp_path, monkeypatch):
     import threading
     from types import SimpleNamespace
-    from agent.subagent_lifecycle import bind_subagent_parent, SubagentLifecycleService
+    from hermes_agent.agent.subagent_lifecycle import bind_subagent_parent, SubagentLifecycleService
     from hermes_agent.tools.delegate_tool_registry import _register_subagent, _unregister_subagent
     from hermes_agent.tools.registry import registry
 
@@ -333,7 +333,7 @@ def register(ctx):
         assert steering == ["check correctness"]
     finally:
         finish.set()
-        from agent.subagent_lifecycle import _REGISTRY
+        from hermes_agent.agent.subagent_lifecycle import _REGISTRY
         record = _REGISTRY.records.get(child._subagent_id)
         if record is not None:
             record.future.result(timeout=5)

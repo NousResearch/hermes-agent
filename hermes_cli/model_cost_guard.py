@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from typing import Optional
 
-from agent.models_dev import ModelInfo, models_dev_id_for
+from hermes_agent.agent.models_dev import ModelInfo, models_dev_id_for
 
 
 INPUT_COST_WARNING_THRESHOLD = Decimal(20)
@@ -62,7 +62,7 @@ def _can_trust_model_info_pricing(
 def _can_trust_pricing_lookup(
     model_name: str, *, provider: Optional[str], base_url: Optional[str]) -> bool:
     try:
-        from agent.usage_pricing import resolve_billing_route
+        from hermes_agent.agent.usage_pricing import resolve_billing_route
 
         route = resolve_billing_route(model_name, provider=provider, base_url=base_url)
     except Exception:
@@ -91,7 +91,7 @@ def expensive_model_warning(
 
     if _unpriced() and _known_models_dev_provider(provider):
         try:
-            from agent.models_dev import get_model_info
+            from hermes_agent.agent.models_dev import get_model_info
 
             input_cost, output_cost, source = _pricing_from_model_info(get_model_info(provider, model))
         except Exception:
@@ -99,7 +99,7 @@ def expensive_model_warning(
 
     if _unpriced() and _can_trust_pricing_lookup(model, provider=provider, base_url=base_url):
         try:
-            from agent.usage_pricing import get_pricing_entry
+            from hermes_agent.agent.usage_pricing import get_pricing_entry
 
             entry = get_pricing_entry(model, provider=provider, base_url=base_url, api_key=api_key)
         except Exception:

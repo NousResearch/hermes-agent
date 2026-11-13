@@ -15,7 +15,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from agent.proxy_sources import iron_proxy as ip
+from hermes_agent.agent.proxy_sources import iron_proxy as ip
 from hermes_cli import proxy_cli
 
 
@@ -95,9 +95,9 @@ def test_cmd_setup_from_bitwarden_refuses_on_empty_vault(hermes_home, monkeypatc
     # Mock fetch_bitwarden_secrets to return an empty dict (empty vault).
     fake_bw = MagicMock()
     fake_bw.fetch_bitwarden_secrets = lambda **kw: ({}, [])
-    monkeypatch.setattr("agent.secret_sources.bitwarden", fake_bw, raising=False)
+    monkeypatch.setattr("hermes_agent.agent.secret_sources.bitwarden", fake_bw, raising=False)
     import sys
-    sys.modules["agent.secret_sources.bitwarden"] = fake_bw
+    sys.modules["hermes_agent.agent.secret_sources.bitwarden"] = fake_bw
 
     rc = proxy_cli.cmd_setup(_args(from_bitwarden=True))
     assert rc == 1

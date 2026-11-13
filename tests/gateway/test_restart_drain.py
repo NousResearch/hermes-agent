@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 import hermes_agent.gateway.run as gateway_run
-from agent.i18n import t
+from hermes_agent.agent.i18n import t
 from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
 from hermes_agent.gateway.restart import (
     DEFAULT_GATEWAY_SIGNAL_INTERRUPT_GRACE_TIMEOUT,
@@ -269,7 +269,7 @@ async def test_restart_from_served_profile_chat_restarts_the_host_gateway(monkey
     detached watcher relaunches `hermes gateway restart` under the launch home (under a named
     profile's home it exits 78 and nothing comes back), and stop() - which flushes pending
     messages under get_hermes_home() - runs outside the requester's profile scope."""
-    from agent.secret_scope import current_secret_scope
+    from hermes_agent.agent.secret_scope import current_secret_scope
     from hermes_constants import get_hermes_home
 
     launch_home = get_hermes_home()

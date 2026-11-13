@@ -17,7 +17,7 @@ from unittest.mock import patch
 
 import pytest
 
-from agent import shell_hooks
+from hermes_agent.agent import shell_hooks
 
 
 @pytest.fixture(autouse=True)
@@ -171,7 +171,7 @@ class TestNeverPromptOutsideForegroundCLI:
         plugins._plugin_manager = plugins.PluginManager()
         asked = _tty_stdin_that_nobody_answers(monkeypatch)
 
-        with caplog.at_level(logging.WARNING, logger="agent.shell_hooks"):
+        with caplog.at_level(logging.WARNING, logger="hermes_agent.agent.shell_hooks"):
             registered = shell_hooks.register_from_config(
                 {"hooks": {"on_session_start": [{"command": str(script)}]}})
 
@@ -225,7 +225,7 @@ class TestNeverPromptOutsideForegroundCLI:
         plugins._plugin_manager = plugins.PluginManager()
         asked = _tty_stdin_that_nobody_answers(monkeypatch)
 
-        with caplog.at_level(logging.WARNING, logger="agent.shell_hooks"):
+        with caplog.at_level(logging.WARNING, logger="hermes_agent.agent.shell_hooks"):
             shell_hooks.re_register_config_hooks()
 
         assert asked == []

@@ -12,8 +12,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
-import agent.auxiliary_client as aux
-from agent.context_compressor import ContextCompressor
+import hermes_agent.agent.auxiliary_client as aux
+from hermes_agent.agent.context_compressor import ContextCompressor
 
 SUMMARY = "## Goal\nAnswer the numbered questions.\n## Progress\nQuestions answered.\n## Next Steps\nContinue.\n"
 

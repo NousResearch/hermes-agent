@@ -78,7 +78,7 @@ def _nous_token(home: Path) -> str:
             f"no Nous access token for {home} (auth.json): {exc}", retryable=not fatal) from exc
     finally:
         if scope_token is not None:
-            from agent.secret_scope import reset_secret_scope
+            from hermes_agent.agent.secret_scope import reset_secret_scope
             reset_secret_scope(scope_token)
         reset_hermes_home_override(token)
 
@@ -94,7 +94,7 @@ def _bind_owner_secret_scope(home: Path):
     secret sources are not hydrated here: both read the profile's config, which this token is used
     to fetch.
     """
-    from agent.secret_scope import is_multiplex_active, set_secret_scope
+    from hermes_agent.agent.secret_scope import is_multiplex_active, set_secret_scope
     if not is_multiplex_active():
         return None  # single-profile: get_secret reads the process env, which is this profile's
     from hermes_agent.tui_gateway.launch_profile_policy import owner_secret_scope

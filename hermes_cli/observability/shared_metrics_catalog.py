@@ -219,7 +219,7 @@ def slash_command_metric_name(raw: object) -> str:
     if command is not None and command.name in _safe(slash_command_names):
         return command.name
     try:
-        from agent.skill_commands import resolve_skill_command_key
+        from hermes_agent.agent.skill_commands import resolve_skill_command_key
 
         if resolve_skill_command_key(name):
             return "skill"
@@ -275,7 +275,7 @@ def provider_metric_name(raw: object) -> str:
 def _models_dev_provider(name: str) -> bool:
     """A public models.dev provider id, from the local cache only (never a network call)."""
     try:
-        from agent.models_dev import get_provider_info
+        from hermes_agent.agent.models_dev import get_provider_info
 
         return get_provider_info(name, allow_network=False) is not None
     except Exception:
@@ -305,7 +305,7 @@ def model_metric_name(raw: object, provider: str, *, max_length: int) -> str:
 def public_model_ids() -> frozenset[str]:
     """Model ids Hermes ships in its static catalogs plus every id in the local models.dev cache
     (never a network call), with and without a ``vendor/`` prefix."""
-    from agent.models_dev import fetch_models_dev
+    from hermes_agent.agent.models_dev import fetch_models_dev
     from hermes_cli.models_catalog_static import _PROVIDER_MODELS
 
     ids = {model for models in _PROVIDER_MODELS.values() for model in models}

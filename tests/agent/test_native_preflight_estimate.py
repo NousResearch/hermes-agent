@@ -2,9 +2,9 @@
 
 from types import SimpleNamespace
 
-from agent.codex_responses_adapter import estimate_native_responses_preflight_tokens
-from agent.model_metadata import estimate_request_tokens_rough
-from agent.turn_context import _preflight_request_tokens
+from hermes_agent.agent.codex_responses_adapter import estimate_native_responses_preflight_tokens
+from hermes_agent.agent.model_metadata import estimate_request_tokens_rough
+from hermes_agent.agent.turn_context import _preflight_request_tokens
 
 
 def _codex_agent(**over):
@@ -105,8 +105,8 @@ def test_preflight_wrapper_falls_back_to_generic_when_ineligible():
 
 
 def test_midturn_pressure_uses_pruned_estimate_when_eligible():
-    from agent.conversation_loop import _midturn_request_pressure_tokens
-    from agent.model_metadata import estimate_messages_tokens_rough
+    from hermes_agent.agent.conversation_loop import _midturn_request_pressure_tokens
+    from hermes_agent.agent.model_metadata import estimate_messages_tokens_rough
 
     agent = _codex_agent()
     messages = [{"role": "system", "content": "be brief"}] + _history_with_checkpoint()
@@ -125,11 +125,11 @@ def test_midturn_pressure_uses_pruned_estimate_when_eligible():
 
 
 def test_midturn_pressure_falls_back_to_generic_plus_tools_when_ineligible():
-    from agent.conversation_loop import (
+    from hermes_agent.agent.conversation_loop import (
         _estimate_tools_tokens_rough,
         _midturn_request_pressure_tokens,
     )
-    from agent.model_metadata import estimate_messages_tokens_rough
+    from hermes_agent.agent.model_metadata import estimate_messages_tokens_rough
 
     agent = _codex_agent(
         api_mode="chat_completions",

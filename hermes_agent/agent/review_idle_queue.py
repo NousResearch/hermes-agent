@@ -47,11 +47,11 @@ def review_targets_managed_local(agent: Any, task_cfg: Optional[dict[str, Any]])
     supervisor state file; any failure reads False (immediate spawn is the safe default). The cheap
     TTL-cached netloc probe runs FIRST so cloud-only installs skip runtime resolution on the turn's tail."""
     try:
-        from agent.auxiliary_managed_local import _is_managed_local_endpoint, _managed_local_netloc
+        from hermes_agent.agent.auxiliary_managed_local import _is_managed_local_endpoint, _managed_local_netloc
 
         if not _managed_local_netloc():
             return False
-        from agent.background_review import _resolve_review_runtime
+        from hermes_agent.agent.background_review import _resolve_review_runtime
 
         runtime = _resolve_review_runtime(agent, task_cfg)
         return _is_managed_local_endpoint(runtime.get("base_url"))
@@ -180,7 +180,7 @@ class ReviewIdleQueue:
     def _still_enabled(item: _PendingReview) -> bool:
         """Re-check the enabled gate at DISPATCH time (disabling reviews while queued must stick). Fail-open."""
         try:
-            from agent.background_review import load_background_review_settings
+            from hermes_agent.agent.background_review import load_background_review_settings
 
             return load_background_review_settings()[0]
         except Exception:

@@ -379,7 +379,7 @@ def _devtools_endpoint_live(port: int, path: str) -> bool:
     outlives a crashed Chromium and its port can be recycled by another CDP server)."""
     try:
         import requests
-        from agent.proxy_bypass import loopback_request_kwargs
+        from hermes_agent.agent.proxy_bypass import loopback_request_kwargs
         url = f"http://127.0.0.1:{port}/json/version"
         ws = str(requests.get(url, timeout=2, **loopback_request_kwargs(url)).json().get("webSocketDebuggerUrl") or "")
     except Exception:  # health: allow BLE001 -- any probe failure means "not a live browser on this port"

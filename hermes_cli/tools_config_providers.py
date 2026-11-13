@@ -109,7 +109,7 @@ def web_provider_capabilities(backend: str) -> list:
     Lets the Capabilities GUI offer ``web.search_backend`` / ``web.extract_backend`` only where it makes
     sense (ddgs and brave-free are search-only). Unknown backend or registry failure -> both."""
     try:
-        from agent.web_search_registry import get_provider
+        from hermes_agent.agent.web_search_registry import get_provider
 
         provider = get_provider(backend)
         if provider is not None:
@@ -223,7 +223,7 @@ def _web_registry_readiness(provider: dict) -> str:
     backend = provider.get("web_backend")
     if not backend or provider.get("web_tier"):
         return "ready"
-    from agent.web_search_registry import get_provider
+    from hermes_agent.agent.web_search_registry import get_provider
 
     registered = get_provider(backend)
     return "ready" if registered is None or registered.is_available() else "needs_auth"
@@ -252,9 +252,9 @@ def _toolset_needs_configuration_prompt(ts_key: str, config: dict, *, force_fres
             return True
         return selection_key not in section
     if ts_key == "image_gen":  # in-tree FAL backend OR any available plugin image gen provider satisfies
-        return not fal_key_is_configured() and not _any_plugin_provider_available("agent.image_gen_registry")
+        return not fal_key_is_configured() and not _any_plugin_provider_available("hermes_agent.agent.image_gen_registry")
     if ts_key == "video_gen":  # no in-tree fallback — every video backend is a plugin
-        return not _any_plugin_provider_available("agent.video_gen_registry")
+        return not _any_plugin_provider_available("hermes_agent.agent.video_gen_registry")
 
     return not _toolset_has_keys(ts_key, config, force_fresh=force_fresh)
 
@@ -349,7 +349,7 @@ def _web_tier_matches(provider: dict, config: dict) -> bool:
         return configured == row_tier
     # Auto: mirror plugins.web.keyless_mcp.use_keyless — key present → paid.
     try:
-        from agent.web_search_provider import get_provider_env
+        from hermes_agent.agent.web_search_provider import get_provider_env
 
         key_var = {"exa": "EXA_API_KEY", "parallel": "PARALLEL_API_KEY"}.get(provider["web_backend"])
         has_key = bool(get_provider_env(key_var)) if key_var else False
@@ -546,8 +546,8 @@ def _plugin_model_catalog(registry_module: str, plugin_name: str):
     return {m["id"]: m for m in models if isinstance(m, dict) and "id" in m}, default
 
 
-_plugin_image_gen_catalog = partial(_plugin_model_catalog, "agent.image_gen_registry")
-_plugin_video_gen_catalog = partial(_plugin_model_catalog, "agent.video_gen_registry")
+_plugin_image_gen_catalog = partial(_plugin_model_catalog, "hermes_agent.agent.image_gen_registry")
+_plugin_video_gen_catalog = partial(_plugin_model_catalog, "hermes_agent.agent.video_gen_registry")
 
 
 def _pick_model_from_catalog(

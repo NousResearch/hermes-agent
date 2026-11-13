@@ -32,8 +32,8 @@ from typing import Optional
 
 import pytest
 
-from agent import tts_registry
-from agent.tts_provider import TTSProvider
+from hermes_agent.agent import tts_registry
+from hermes_agent.agent.tts_provider import TTSProvider
 from hermes_agent.tools import tts_tool
 
 

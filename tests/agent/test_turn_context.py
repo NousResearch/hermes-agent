@@ -1,4 +1,4 @@
-"""Unit tests for the extracted turn prologue (``agent/turn_context.py``).
+"""Unit tests for the extracted turn prologue (``hermes_agent/agent/turn_context.py``).
 
 These exercise ``build_turn_context`` against a lightweight fake agent to
 confirm the prologue produces the right ``TurnContext`` and applies the
@@ -14,9 +14,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from agent.message_metadata import TYPED_ASK
-from agent.prompt_builder import steer_user_row
-from agent.turn_context import (
+from hermes_agent.agent.message_metadata import TYPED_ASK
+from hermes_agent.agent.prompt_builder import steer_user_row
+from hermes_agent.agent.turn_context import (
     PreflightCompressionTimedOut,
     TurnContext,
     build_turn_context,
@@ -148,7 +148,7 @@ def _stub_runtime_main():
     resolution) when the per-test process isolation plugin is disabled. Stub
     it out so the prologue tests stay hermetic.
     """
-    with patch("agent.auxiliary_client.set_runtime_main", lambda *a, **k: None):
+    with patch("hermes_agent.agent.auxiliary_client.set_runtime_main", lambda *a, **k: None):
         yield
 
 
@@ -286,14 +286,14 @@ _PRIOR_TURN = [{"role": "user", "content": _PREVIOUS}, {"role": "assistant", "co
 
 def _carrier(ask: str = "Round-trip the ShapeIndex.") -> str:
     """A compaction summary flipped into the user role, with the live ask merged after its end marker."""
-    from agent.context_compressor import HISTORICAL_TASK_HEADING, SUMMARY_PREFIX, _SUMMARY_END_MARKER
+    from hermes_agent.agent.context_compressor import HISTORICAL_TASK_HEADING, SUMMARY_PREFIX, _SUMMARY_END_MARKER
 
     return f"{SUMMARY_PREFIX}\n{HISTORICAL_TASK_HEADING}\nold task\n\n{_SUMMARY_END_MARKER}" + (f"\n\n{ask}" if ask else "")
 
 
 def _compaction_returning_history(history_for):
     """A turn-start compaction that hands back what ``conversation_history_after_compression`` does."""
-    from agent.turn_context_compaction import CompactionOutcome
+    from hermes_agent.agent.turn_context_compaction import CompactionOutcome
 
     def run(agent, *, messages, active_system_prompt, current_turn_user_idx, **_):
         return CompactionOutcome(
@@ -354,7 +354,7 @@ def test_providers_get_what_the_person_last_asked(history, compaction, expected,
     end-of-turn recall on it, and a provider may save no transcript of its own. Turn-start compaction
     rebinds the history after this turn's message is appended, so the value has to be read before it."""
     if compaction is not None:
-        monkeypatch.setattr("agent.turn_context_compaction.run_turn_start_compaction", compaction)
+        monkeypatch.setattr("hermes_agent.agent.turn_context_compaction.run_turn_start_compaction", compaction)
     agent, mm = _agent_with_memory_manager()
 
     _build(agent, user_message="Now decode it back.", conversation_history=history)
@@ -366,8 +366,8 @@ def test_providers_get_what_the_person_last_asked(history, compaction, expected,
 def test_compaction_around_a_multimodal_turn_keeps_the_typed_ask(force_user_leading):
     """Compaction can wrap the turn before its context is appended (turn-start) or after (a later
     pass); either way the stamp names the person's ask, never the summary or the injected notes."""
-    from agent.context_compressor import ContextCompressor
-    from agent.turn_context import (
+    from hermes_agent.agent.context_compressor import ContextCompressor
+    from hermes_agent.agent.turn_context import (
         _previous_user_message_text, _stamp_typed_ask_once, append_notes_to_multimodal_content,
     )
 
@@ -396,7 +396,7 @@ def test_gateway_notes_on_a_multimodal_turn_stamp_the_persisted_ask():
     """Gateway notes land on the list before any memory context, and a list persist override (TUI
     image turns) drops API-only parts the stamp must not keep either."""
     from types import SimpleNamespace
-    from agent.turn_context import _merge_gateway_notes, _previous_user_message_text
+    from hermes_agent.agent.turn_context import _merge_gateway_notes, _previous_user_message_text
 
     image = {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}
     for override, expected in ((None, "what is this"), ([{"type": "text", "text": "what is this"}, image], "what is this")):
@@ -414,7 +414,7 @@ def test_a_todo_snapshot_folded_onto_the_turn_stays_out_of_the_typed_ask():
     """Turn-start compaction folds the active task list onto the tail turn before context is appended;
     a later compaction strips that block from the row, so a stamp holding it would outlive it."""
     from hermes_agent.tools.todo_tool import TODO_INJECTION_HEADER
-    from agent.turn_context import _stamp_typed_ask_once
+    from hermes_agent.agent.turn_context import _stamp_typed_ask_once
 
     image = {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}
     row = {"role": "user", "content": [{"type": "text", "text": f"what is this\n\n{TODO_INJECTION_HEADER}\n- [ ] a"}, image]}
@@ -429,7 +429,7 @@ def test_a_row_rewrite_keeps_a_reaction_another_writer_added(tmp_path, vetoed):
     the in-place rewrite (stamp backfill or veto) must merge its metadata, not replace the row's."""
     import threading
     from hermes_agent.hermes_state import SessionDB
-    from agent.turn_context import _append_multimodal_context, _withhold_blocked_prompt
+    from hermes_agent.agent.turn_context import _append_multimodal_context, _withhold_blocked_prompt
 
     db = SessionDB(tmp_path / "state.db")
     db.create_session("s", "cli")
@@ -453,7 +453,7 @@ def test_gateway_notes_alone_on_a_stored_image_turn_backfill_the_row(tmp_path):
     still gets the notes and the stamp, or a restart would read the notes back as the ask."""
     import threading
     from hermes_agent.hermes_state import SessionDB
-    from agent.turn_context import _append_multimodal_context, _merge_gateway_notes, _previous_user_message_text
+    from hermes_agent.agent.turn_context import _append_multimodal_context, _merge_gateway_notes, _previous_user_message_text
 
     db = SessionDB(tmp_path / "state.db")
     db.create_session("s", "cli")
@@ -475,7 +475,7 @@ def test_a_vetoed_turn_drops_its_typed_ask_stamp():
     """A gateway note can stamp a multimodal turn before a ``pre_llm_call`` hook vetoes it; the vetoed
     text must not survive in the stamp, where ``previous_message`` would hand it to memory providers."""
     from types import SimpleNamespace
-    from agent.turn_context import _previous_user_message_text, _withhold_blocked_prompt
+    from hermes_agent.agent.turn_context import _previous_user_message_text, _withhold_blocked_prompt
 
     row = {"role": "user", "content": [{"type": "text", "text": "secret plan"}],
            "display_metadata": {TYPED_ASK: "secret plan"}}
@@ -502,7 +502,7 @@ def test_turn_author_reaches_the_agent_through_the_real_facade(monkeypatch):
     """``AIAgent.run_conversation(turn_author=...)`` crosses the facade and the loop entry point, not only
     ``build_turn_context``; a kwarg dropped at either hop raised TypeError on every real turn."""
     from types import SimpleNamespace
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     class _Completions:
         def create(self, **_kw):
@@ -510,7 +510,7 @@ def test_turn_author_reaches_the_agent_through_the_real_facade(monkeypatch):
                 message=SimpleNamespace(content="ok", tool_calls=None, reasoning=None, reasoning_content=None),
                 finish_reason="stop")], usage=None, model="test-model")
 
-    monkeypatch.setattr("agent.process_bootstrap.OpenAI",
+    monkeypatch.setattr("hermes_agent.agent.process_bootstrap.OpenAI",
                         lambda **_kw: SimpleNamespace(chat=SimpleNamespace(completions=_Completions())))
     monkeypatch.setattr("hermes_agent.model_tools.get_tool_definitions", lambda *a, **k: [])
     agent = AIAgent(model="test-model", api_key="k", base_url="http://localhost:1/v1", platform="cli",
@@ -561,7 +561,7 @@ def test_turn_start_replaces_stale_parent_history_with_compression_child():
 
     log_context = MagicMock()
     with patch(
-        "agent.turn_context.recover_rotated_compression_session",
+        "hermes_agent.agent.turn_context.recover_rotated_compression_session",
         side_effect=_recover,
     ):
         ctx = _build(
@@ -712,9 +712,9 @@ class _TitlingAgent:
 
 def _title_turn(platform, message="Fix the login button"):
     """Run the prologue's titling step and return the maybe_auto_title mock."""
-    from agent import turn_context
+    from hermes_agent.agent import turn_context
 
-    with patch("agent.title_generator.maybe_auto_title") as titler:
+    with patch("hermes_agent.agent.title_generator.maybe_auto_title") as titler:
         turn_context._maybe_title_session_at_turn_start(
             _TitlingAgent(platform),
             [{"role": "user", "content": message}],
@@ -740,11 +740,11 @@ def test_prologue_does_not_title_machine_driven_runs(platform):
 def test_prologue_names_a_subagent_run_after_its_goal_without_a_model_call():
     """A delegate run gets ``Subagent: <goal>`` at derived authority so it reads as machinery
     wherever ``sessions.show_subagents`` lists it, instead of staying untitled (#97202)."""
-    from agent import turn_context
+    from hermes_agent.agent import turn_context
 
     agent = _TitlingAgent("subagent")
     agent._session_db.set_auto_title.return_value = True
-    with patch("agent.title_generator.maybe_auto_title") as titler:
+    with patch("hermes_agent.agent.title_generator.maybe_auto_title") as titler:
         turn_context._maybe_title_session_at_turn_start(
             agent, [{"role": "user", "content": "Audit the billing module\n\nContext: ..."}])
     assert not titler.called
@@ -754,7 +754,7 @@ def test_prologue_names_a_subagent_run_after_its_goal_without_a_model_call():
 
 def test_prologue_leaves_cron_runs_untitled():
     agent = _TitlingAgent("cron")
-    from agent import turn_context
+    from hermes_agent.agent import turn_context
 
     turn_context._maybe_title_session_at_turn_start(agent, [{"role": "user", "content": "Run the job"}])
     assert not agent._session_db.set_auto_title.called
@@ -763,9 +763,9 @@ def test_prologue_leaves_cron_runs_untitled():
 def test_prologue_forwards_the_submit_title_preview_to_the_titler():
     """A paste-shrunk ``display_metadata.title_preview`` from prompt.submit is the text the
     titler should read, not the full pasted body."""
-    from agent import turn_context
+    from hermes_agent.agent import turn_context
 
-    with patch("agent.title_generator.maybe_auto_title") as titler:
+    with patch("hermes_agent.agent.title_generator.maybe_auto_title") as titler:
         turn_context._maybe_title_session_at_turn_start(
             _TitlingAgent("desktop"),
             [{"role": "user", "content": "x" * 5000,

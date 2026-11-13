@@ -1,4 +1,4 @@
-"""Tests for the Vertex AI adapter (agent/vertex_adapter.py).
+"""Tests for the Vertex AI adapter (hermes_agent/agent/vertex_adapter.py).
 
 Vertex uses OAuth2 (short-lived access tokens from a service-account JSON or
 ADC), NOT a static API key. These tests mock google-auth entirely — no network
@@ -79,7 +79,7 @@ def vertex_adapter(monkeypatch):
                 "VERTEX_PROJECT_ID", "VERTEX_REGION", "GOOGLE_CLOUD_PROJECT"):
         monkeypatch.delenv(var, raising=False)
     _install_fake_google_auth(monkeypatch)
-    import agent.vertex_adapter as va
+    import hermes_agent.agent.vertex_adapter as va
     va = importlib.reload(va)
     va._creds_cache.clear()
     # Neutralize config.yaml by default; individual tests re-patch _vertex_config.
@@ -113,7 +113,7 @@ def test_multiplex_scope_takes_precedence_over_raw_environ(vertex_adapter, monke
     stale value in process os.environ left behind by another profile's
     dotenv load at boot — otherwise Profile B's turn could resolve Profile
     A's Vertex project (or worse, its credentials file path)."""
-    from agent import secret_scope
+    from hermes_agent.agent import secret_scope
 
     monkeypatch.setenv("VERTEX_PROJECT_ID", "other-profile-project")
 
@@ -130,7 +130,7 @@ def test_multiplex_unscoped_read_fails_closed(vertex_adapter, monkeypatch):
     """A credential read with no profile scope installed while multiplexing
     is active must raise rather than silently fall back to (possibly another
     profile's) raw os.environ value."""
-    from agent import secret_scope
+    from hermes_agent.agent import secret_scope
 
     monkeypatch.setenv("VERTEX_PROJECT_ID", "leaked-project")
     secret_scope.set_multiplex_active(True)
@@ -148,7 +148,7 @@ def test_adc_refuses_foreign_profile_google_application_credentials(
     still carries a *different* profile's GOOGLE_APPLICATION_CREDENTIALS (left
     there by python-dotenv at gateway boot), ADC must not silently mint a
     token under that foreign service account."""
-    from agent import secret_scope
+    from hermes_agent.agent import secret_scope
 
     sa_file = tmp_path / "other_profile_sa.json"
     sa_file.write_text('{"project_id": "other-profile"}')

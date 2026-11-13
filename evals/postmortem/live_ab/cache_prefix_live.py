@@ -7,7 +7,7 @@ import os, sys, re, tempfile, time, subprocess, json
 os.environ.setdefault("HERMES_HOME", os.path.expanduser("~/.hermes"))
 sys.path.insert(0, sys.argv[1])
 arm = sys.argv[2] if len(sys.argv) > 2 else "A"
-import agent.anthropic_message_convert as amc
+import hermes_agent.agent.anthropic_message_convert as amc
 if arm == "B":
     _orig = amc._manage_thinking_signatures
     def _keep_all(result, base_url, model):
@@ -20,10 +20,10 @@ if arm == "B":
             m.pop("_thinking_signature_invalidated", None)
     amc._manage_thinking_signatures = _keep_all
     # the adapter imports the name at call time via module attribute? verify binding
-    import agent.anthropic_adapter as ad
+    import hermes_agent.agent.anthropic_adapter as ad
     if hasattr(ad, "_manage_thinking_signatures"):
         ad._manage_thinking_signatures = _keep_all
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 from hermes_cli.runtime_provider import resolve_runtime_provider
 rt = resolve_runtime_provider(requested="nous", target_model="anthropic/claude-fable-5.1")
 sid = f"f0ab_{arm}_{int(time.time())}"

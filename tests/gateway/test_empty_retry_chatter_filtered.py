@@ -9,7 +9,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from agent import turn_empty_response as ter
+from hermes_agent.agent import turn_empty_response as ter
 from hermes_agent.gateway.run import _prepare_gateway_status_message
 
 
@@ -51,7 +51,7 @@ def test_failed_fallback_ends_on_the_plain_explanation(deterministic):
     status, since nothing after them says the switch failed. The CLI keeps the whole trace."""
     from unittest.mock import patch
 
-    from agent.status_output import StatusOutputMixin
+    from hermes_agent.agent.status_output import StatusOutputMixin
 
     agent = MagicMock()
     for name in ("_buffer_retry_message", "_buffer_status", "_buffer_diagnostic_status",

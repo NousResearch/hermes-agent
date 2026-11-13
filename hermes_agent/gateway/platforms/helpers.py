@@ -517,8 +517,8 @@ def is_table_row(line: str) -> bool:
 
 
 def split_markdown_table_row(line: str) -> list[str]:
-    """Split a GFM table row into stripped cells (delegates to agent.markdown_tables)."""
-    from agent.markdown_tables import split_table_row
+    """Split a GFM table row into stripped cells (delegates to hermes_agent.agent.markdown_tables)."""
+    from hermes_agent.agent.markdown_tables import split_table_row
     return split_table_row(line)
 
 
@@ -1232,7 +1232,7 @@ async def send_reply_as_file(adapter: Any, chat_id: str, text: str, *, reply_to:
     the text as messages and deletes nothing, so no text is lost."""
     import shutil
     import tempfile
-    from agent.i18n import t
+    from hermes_agent.agent.i18n import t
 
     send = reply_document_sender(adapter)
     if send is None:

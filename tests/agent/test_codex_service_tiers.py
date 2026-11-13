@@ -3,10 +3,10 @@ import base64
 import json
 from types import SimpleNamespace
 
-from agent import model_metadata as mm
-from agent.client_lifecycle import ClientLifecycleMixin
-from agent.fast_mode import effective_request_overrides
-from agent.transports.codex import ResponsesApiTransport
+from hermes_agent.agent import model_metadata as mm
+from hermes_agent.agent.client_lifecycle import ClientLifecycleMixin
+from hermes_agent.agent.fast_mode import effective_request_overrides
+from hermes_agent.agent.transports.codex import ResponsesApiTransport
 
 BASE = "https://chatgpt.com/backend-api/codex"
 
@@ -55,8 +55,8 @@ def test_rotation_restores_requested_tier(monkeypatch):
 
 
 def test_catalog_ceiling_unknown_expiry_and_route_isolation(monkeypatch):
-    from agent import codex_service_tiers as tiers
-    from agent.fast_mode import effective_request_overrides
+    from hermes_agent.agent import codex_service_tiers as tiers
+    from hermes_agent.agent.fast_mode import effective_request_overrides
 
     monkeypatch.setattr(mm, "_codex_oauth_context_cache", {})
     monkeypatch.setattr(tiers, "_catalogs", {})
@@ -115,8 +115,8 @@ def test_catalog_ceiling_unknown_expiry_and_route_isolation(monkeypatch):
 def test_ultrafast_is_offered_on_the_codex_plan_only_when_its_catalog_lists_it(monkeypatch):
     """The Codex backend accepts ``service_tier: ultrafast`` from a plan without the entitlement and
     silently serves the default tier, so /fast must follow the account's own catalog (per model)."""
-    from agent import codex_service_tiers
-    from agent.codex_service_tiers import ultrafast_offered
+    from hermes_agent.agent import codex_service_tiers
+    from hermes_agent.agent.codex_service_tiers import ultrafast_offered
 
     monkeypatch.setattr(mm, "_codex_oauth_context_cache", {})
     monkeypatch.setattr(codex_service_tiers, "_catalogs", {})

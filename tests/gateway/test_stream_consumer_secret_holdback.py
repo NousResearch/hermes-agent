@@ -179,7 +179,7 @@ def _draft_adapter(frames: list):
 async def test_draft_frames_stay_prefix_stable_while_a_url_streams_char_by_char(reply):
     # A half-typed URL can look like the start of a key or of user:pass@host; the settled
     # boundary must never move back over text already sent, or the connector re-appends it.
-    from agent.redact import redact_for_egress
+    from hermes_agent.agent.redact import redact_for_egress
 
     frames = []
     adapter = _draft_adapter(frames)
@@ -234,7 +234,7 @@ def _random_deltas(text: str, seed: int) -> list[str]:
     (_KW_TOKENS[1], "random", False), (_KW_TOKENS[2], "random", True),
 ], ids=["pw-char-edit", "pw-char-stream-is-message", "sig-random-edit", "key-random-stream-is-message"])
 async def test_bearer_token_holding_a_keyword_is_never_shown_raw(token, split, draft):
-    from agent.redact import redact_for_egress
+    from hermes_agent.agent.redact import redact_for_egress
 
     reply = "Use " + _AUTH + token + " now."
     assert token[:8] not in redact_for_egress(reply)  # the non-streamed send masks it

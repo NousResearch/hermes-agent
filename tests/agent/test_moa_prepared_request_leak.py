@@ -8,7 +8,7 @@ does not reject it.
 import types
 from unittest.mock import MagicMock
 
-from agent.chat_completion_helpers import _dispatch_nonstreaming_api_request
+from hermes_agent.agent.chat_completion_helpers import _dispatch_nonstreaming_api_request
 
 class _FakeNativeClient:
     """Mimics a native OpenAI client whose create() rejects unknown kwargs."""

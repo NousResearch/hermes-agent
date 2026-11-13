@@ -1,6 +1,6 @@
 """The held-row watermark cap and its lease-less staleness gate (#124102).
 
-Split out of :mod:`agent.conversation_compression` (FILE_LINES ratchet): the watermark math the
+Split out of :mod:`hermes_agent.agent.conversation_compression` (FILE_LINES ratchet): the watermark math the
 in-place compaction commit, the proactive prune and micro-compaction share. The origin module
 imports :func:`held_archive_watermark` from here; ``_held_watermark`` (the agent-bound wrapper)
 stays with its only caller in the origin module's commit path.
@@ -49,7 +49,7 @@ def held_archive_watermark(
     """
     if watermark is None:
         return None
-    from agent.context_compressor import _DB_PERSISTED_MARKER, StaleHeldHistory
+    from hermes_agent.agent.context_compressor import _DB_PERSISTED_MARKER, StaleHeldHistory
 
     def _exact_id(m: dict, copied: bool) -> Optional[int]:
         rid = m.get("_row_id")

@@ -4,14 +4,14 @@ Every ``delegate_task`` task takes the route the ``delegation`` config section d
 ``delegation.base_url`` endpoint, a ``delegation.provider`` pin, ``delegation.model`` and
 ``delegation.reasoning_effort``, or, when those are empty, the parent's own route. It adds no
 schema parameters. Bundled ``kind: backend``, so it is always loaded; other strategies are plugins
-of the same kind (``agent/delegation_provider.py``).
+of the same kind (``hermes_agent/agent/delegation_provider.py``).
 """
 
 from __future__ import annotations
 
 from typing import Any, Mapping
 
-from agent.delegation_provider import DelegationProvider
+from hermes_agent.agent.delegation_provider import DelegationProvider
 
 
 class DefaultDelegationProvider(DelegationProvider):

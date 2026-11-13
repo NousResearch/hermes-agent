@@ -19,7 +19,7 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Any, NamedTuple, Optional
-from agent.secret_scope import get_secret_str
+from hermes_agent.agent.secret_scope import get_secret_str
 from hermes_cli.urllib_security import url_origin
 
 # Log-record parity with the origin module.
@@ -157,7 +157,7 @@ def _get_ollama_native_headers(base_url: Optional[str], *, api_key: Optional[str
     *base_url* shares the configured Ollama root; an explicit *api_key* replaces any configured
     Authorization variant rather than inheriting it."""
     configured_base = _configured_ollama_base_url()
-    from agent.command_token_source import materialize_probe_api_key
+    from hermes_agent.agent.command_token_source import materialize_probe_api_key
     explicit_key = materialize_probe_api_key(api_key)
     configured_matches = bool(configured_base and base_url and _same_ollama_native_root(base_url, configured_base))
     if not configured_matches and not explicit_key:
@@ -374,7 +374,7 @@ def _lmstudio_server_root(base_url: Optional[str]) -> Optional[str]:
 def _lmstudio_request_headers(api_key: Optional[str] = None) -> dict:
     """HTTP headers for LM Studio native API requests."""
     from hermes_cli.version_info import hermes_user_agent
-    from agent.command_token_source import materialize_probe_api_key
+    from hermes_agent.agent.command_token_source import materialize_probe_api_key
     token = materialize_probe_api_key(api_key)
     return {"User-Agent": hermes_user_agent(), **({"Authorization": f"Bearer {token}"} if token else {})}
 
@@ -599,7 +599,7 @@ def ollama_model_supports_thinking(
     if not server_url or not bare_model:
         return None
 
-    from agent.command_token_source import materialize_probe_api_key
+    from hermes_agent.agent.command_token_source import materialize_probe_api_key
     token = materialize_probe_api_key(api_key)
     try:
         with httpx.Client(timeout=timeout, headers={"Authorization": f"Bearer {token}"} if token else {}) as client:
@@ -681,7 +681,7 @@ def fetch_ollama_cloud_models(
     live_models = [] if cache_only else ((fetch_api_models(api_key, base_url, timeout=8.0) or []) if api_key else [])
     mdev_models: list[str] = []
     try:
-        from agent.models_dev import list_agentic_models
+        from hermes_agent.agent.models_dev import list_agentic_models
         mdev_models = list_agentic_models("ollama-cloud")
     except Exception:
         pass

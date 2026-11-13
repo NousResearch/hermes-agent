@@ -547,7 +547,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
 
         async def confirm(refusal):
             from acp.schema import AllowedOutcome, PermissionOption
-            from agent.i18n import t
+            from hermes_agent.agent.i18n import t
             from hermes_cli.gateway_mutations import confirmation_title
             title = confirmation_title(refusal)
             tool_call = acp.update_tool_call(
@@ -745,7 +745,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
             # the owner and admitted nothing, so no turn will settle: the prompt ends here.
             self._pending_cancels.discard(session_id)
             if self._conn:
-                from agent.i18n import t
+                from hermes_agent.agent.i18n import t
                 await self._conn.session_update(session_id=held_id, update=acp.update_agent_message_text(
                     t('cli.voice.stop_phrase_typed') + '\n'))
             return None

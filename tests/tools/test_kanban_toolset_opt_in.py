@@ -80,7 +80,7 @@ def test_saved_opt_in_roundtrip_reaches_schema_and_board(surface, tmp_path, monk
         finally:
             reset_hermes_home_override(token)
         assert _names(selected()) == enabled_names
-        from agent.skill_utils import _detect_kanban
+        from hermes_agent.agent.skill_utils import _detect_kanban
         assert _detect_kanban(), "Saved opt-in still hides the Kanban playbook"
         result = json.loads(registry.dispatch("kanban_create", {"title": "opt-in roundtrip", "assignee": "default"}))
         assert result.get("ok"), result
@@ -105,7 +105,7 @@ def test_selection_is_scoped_and_preserves_worker_and_deny_boundaries(legacy, tm
     monkeypatch.delenv("HERMES_KANBAN_BOARD", raising=False)
     from hermes_cli.config import load_config, save_config
     from hermes_cli.tools_config import _get_platform_tools
-    from agent.delegation_context import delegated_child_context
+    from hermes_agent.agent.delegation_context import delegated_child_context
 
     save_config({"toolsets": ["kanban"] if legacy else [], "platform_toolsets": {"telegram": ["kanban"]}})
     # The same profile concurrently builds an explicitly opted-in schema and

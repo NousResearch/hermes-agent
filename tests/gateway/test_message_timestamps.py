@@ -232,7 +232,7 @@ def test_compactor_restatement_replays_unstamped_through_session_db(tmp_path):
     from types import SimpleNamespace
     from unittest.mock import patch
 
-    from agent.context_compressor import ContextCompressor, _INFLIGHT_TASK_REPLAY_HEADER
+    from hermes_agent.agent.context_compressor import ContextCompressor, _INFLIGHT_TASK_REPLAY_HEADER
     from hermes_agent.gateway.config import GatewayConfig
     from hermes_agent.gateway.run import _build_gateway_agent_history
     from hermes_agent.gateway.session import SessionStore
@@ -253,7 +253,7 @@ def test_compactor_restatement_replays_unstamped_through_session_db(tmp_path):
     compressor.tail_token_budget = 500
     summary = SimpleNamespace(choices=[SimpleNamespace(
         message=SimpleNamespace(content="## Historical Task Snapshot\nx\n## Summary\ny"), finish_reason="stop")])
-    with patch("agent.context_compressor.call_llm", return_value=summary):
+    with patch("hermes_agent.agent.context_compressor.call_llm", return_value=summary):
         sent = [m for m in compressor.compress(messages, current_tokens=200_000, force=True) if m["role"] != "system"]
     sent.append({"role": "assistant", "content": "Done"})
     # A human pasting the header text is still a message someone sent: it keeps its stamp.
@@ -287,7 +287,7 @@ def test_compactor_restatement_replays_unstamped_through_session_db(tmp_path):
 
 def test_compaction_summary_stays_unstamped_across_real_prune(tmp_path):
     """A proactive prune re-persists the replayed view; the summary carrier must keep its flag through it."""
-    from agent.context_compressor import ContextCompressor
+    from hermes_agent.agent.context_compressor import ContextCompressor
     from hermes_agent.gateway.config import GatewayConfig
     from hermes_agent.gateway.run import _build_gateway_agent_history
     from hermes_agent.gateway.session import SessionStore

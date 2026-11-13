@@ -362,7 +362,7 @@ async def test_conversation_closed_during_a_refine_review_retires_once_the_revie
     import threading
     from contextlib import nullcontext
 
-    from agent import background_review
+    from hermes_agent.agent import background_review
     from hermes_agent.gateway import session_refine, session_tui_side
     _runner, authority, db = await _owner(tmp_path, monkeypatch)
     finish = threading.Event()

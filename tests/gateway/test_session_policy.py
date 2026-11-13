@@ -7,7 +7,7 @@ import pytest
 
 def test_policy_selects_surface_and_isolates_cwd(tmp_path):
     from hermes_agent.gateway.session_policy import build_policy, policy_scope
-    from agent.runtime_cwd import resolve_agent_cwd
+    from hermes_agent.agent.runtime_cwd import resolve_agent_cwd
     from hermes_agent.tools.terminal_scope import terminal_env
     from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
@@ -54,7 +54,7 @@ async def test_launch_options_reach_the_owner_frozen_and_hooks_consented(tmp_pat
     from hermes_agent.gateway.session_controls import AuthorityConnection
     from hermes_agent.gateway.session_policy import restore_policy
     from hermes_agent.hermes_state_local import local_receipt
-    from agent import shell_hooks
+    from hermes_agent.agent import shell_hooks
     from hermes_cli.plugins import get_plugin_manager
 
     home = tmp_path / 'home'

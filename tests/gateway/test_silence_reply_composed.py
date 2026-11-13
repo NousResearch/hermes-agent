@@ -9,7 +9,7 @@ import pytest
 
 import hermes_agent.gateway.run as gateway_run
 import hermes_yaml as yaml
-import run_agent
+from hermes_agent import run_agent
 from hermes_agent.gateway.config import Platform
 from hermes_agent.gateway.platforms.event import MessageEvent
 from hermes_agent.gateway.session import SessionSource

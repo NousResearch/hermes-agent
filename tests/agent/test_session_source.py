@@ -1,7 +1,7 @@
 import pytest
 
 from hermes_agent.gateway.session_context import _UNSET, _VAR_MAP, clear_session_vars, set_session_vars
-from agent.session_source import session_source_for
+from hermes_agent.agent.session_source import session_source_for
 
 
 @pytest.fixture(autouse=True)

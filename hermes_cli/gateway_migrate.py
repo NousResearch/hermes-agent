@@ -32,7 +32,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Callable, Iterator, Optional
 
-from agent.deadline import poll_until
+from hermes_agent.agent.deadline import poll_until
 
 logger = logging.getLogger(__name__)
 
@@ -450,7 +450,7 @@ def _profile_gateway_config(home: Path):
 
 @contextlib.contextmanager
 def _multiplex_read_mode() -> Iterator[None]:
-    from agent.secret_scope import is_multiplex_active, set_multiplex_active
+    from hermes_agent.agent.secret_scope import is_multiplex_active, set_multiplex_active
     previous = is_multiplex_active()
     set_multiplex_active(True)
     try:

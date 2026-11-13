@@ -36,7 +36,7 @@ TURNS = {"commentary_then_tool": redactor_turn, "text_after_tool_call": _text_af
 @pytest.mark.parametrize("hold", [True, False], ids=["hold_stream", "plain_transform"])
 def test_held_turns_show_only_the_rewritten_final(hold, turn):
     from hermes_cli import plugins
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     home = Path(os.environ["HERMES_HOME"])
     with FakeLLMServer(TURNS[turn]()) as srv:
@@ -65,7 +65,7 @@ def test_a_held_guardrail_halt_reply_is_not_streamed_ahead_of_the_rewrite():
     the display callback so SSE/TUI clients see why the agent stopped. Held, it arrives only as the
     final (after ``transform_llm_output``), never as a stream delta first."""
     from hermes_cli import plugins
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     home = Path(os.environ["HERMES_HOME"])
     failing = ToolCall("read_file", {"path": str(home / "missing" / "SECRET-9.txt")})

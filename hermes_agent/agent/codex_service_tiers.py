@@ -62,7 +62,7 @@ def remember_catalog(cache_key: str, entries: list[Any]) -> None:
 
 def _fresh_catalog(access_token: str, base_url: str) -> tuple | None:
     """This credential's catalog record once it is fresh, else None."""
-    from agent import model_metadata as metadata
+    from hermes_agent.agent import model_metadata as metadata
     key = metadata._codex_oauth_token_fingerprint(access_token, base_url)
     cached = _catalogs.get(key)
     if cached is None or time.time() - cached[1] >= _TTL:
@@ -76,13 +76,13 @@ def _fresh_catalog(access_token: str, base_url: str) -> tuple | None:
 
 
 def _tiers_for_model(access_token: str, base_url: str, model: str) -> frozenset[str] | None:
-    from agent import model_metadata as metadata
+    from hermes_agent.agent import model_metadata as metadata
     cached = _fresh_catalog(access_token, base_url)
     return None if cached is None else cached[0].get(metadata.strip_codex_context_variant_suffix(model))
 
 
 def _cyber_programs_for_model(access_token: str, base_url: str, model: str) -> frozenset[str] | None:
-    from agent import model_metadata as metadata
+    from hermes_agent.agent import model_metadata as metadata
     cached = _fresh_catalog(access_token, base_url)
     return None if cached is None else cached[2].get(metadata.strip_codex_context_variant_suffix(model))
 
@@ -109,14 +109,14 @@ def codex_account_offers_tier(
 
     ``None`` when unknown (no usable token, catalog unreachable, model absent) so callers never refuse
     on a failed lookup. ``access_token`` defaults to the profile's stored Codex OAuth token."""
-    from agent.codex_headers import CODEX_AUX_BASE_URL, is_official_codex_base_url
+    from hermes_agent.agent.codex_headers import CODEX_AUX_BASE_URL, is_official_codex_base_url
     base = str(base_url or "").strip() or CODEX_AUX_BASE_URL
     if not is_official_codex_base_url(base):
         return None
     token = _account_catalog_token(access_token)
     if token is None:
         return None
-    from agent.model_metadata import _bare_codex_slug
+    from hermes_agent.agent.model_metadata import _bare_codex_slug
     supported = _tiers_for_model(token, base, _bare_codex_slug(str(model or "")))
     return None if supported is None else tier in supported
 
@@ -125,7 +125,7 @@ def daybreak_offered(model: Any, *, provider: Any = None, base_url: Any = None, 
     """Whether the Daybreak switch is offered for ``model``: the ChatGPT/Codex subscription route, and
     this account's own Codex catalog lists ``daybreak_blue`` for the model. Unknown is False, so the
     switch stays hidden rather than offering something the account may not have."""
-    from agent.codex_headers import CODEX_AUX_BASE_URL, is_official_codex_base_url
+    from hermes_agent.agent.codex_headers import CODEX_AUX_BASE_URL, is_official_codex_base_url
     from hermes_cli.models import normalize_provider
     if not provider or normalize_provider(provider) != "openai-codex":
         return False
@@ -135,7 +135,7 @@ def daybreak_offered(model: Any, *, provider: Any = None, base_url: Any = None, 
     token = _account_catalog_token(access_token)
     if token is None:
         return False
-    from agent.model_metadata import _bare_codex_slug
+    from hermes_agent.agent.model_metadata import _bare_codex_slug
     programs = _cyber_programs_for_model(token, base, _bare_codex_slug(str(model or "")))
     return bool(programs) and DAYBREAK_PROGRAM in programs
 
@@ -144,7 +144,7 @@ def apply_daybreak(agent: Any, overrides: dict[str, Any]) -> None:
     """Add ``access_programs.cyber: daybreak_blue`` when the user turned Daybreak on and this request's
     credential and model are listed for it. Checked per request, so a model switch, credential rotation
     or expired catalog never carries the program to a model or account without it."""
-    from agent.codex_headers import is_official_codex_base_url
+    from hermes_agent.agent.codex_headers import is_official_codex_base_url
     base_url = str(getattr(agent, "base_url", "") or "")
     if (getattr(agent, "daybreak", False) is not True
             or getattr(agent, "api_mode", None) != "codex_responses"
@@ -187,7 +187,7 @@ def ultrafast_offered_for(cli: Any, model: Any) -> bool:
 
 def negotiate_request_tier(agent: Any, overrides: dict[str, Any]) -> None:
     """Resolve the current credential on each build without mutating user preference."""
-    from agent.codex_headers import is_official_codex_base_url
+    from hermes_agent.agent.codex_headers import is_official_codex_base_url
     requested = overrides.get("service_tier")
     base_url = str(getattr(agent, "base_url", "") or "")
     if (requested not in {"ultrafast", "priority"}

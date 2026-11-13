@@ -174,7 +174,7 @@ def _redact_spill_file(path, total_chars, command) -> list[tuple[str, Any]]:
     if not path:
         return []
     try:
-        from agent.redact import redact_terminal_output
+        from hermes_agent.agent.redact import redact_terminal_output
         from hermes_agent.tools.ansi_strip import strip_ansi
         from hermes_agent.tools.spill_safety import write_text_exclusive
         raw_spill = Path(path).read_text(encoding="utf-8-sig", errors="replace")
@@ -195,7 +195,7 @@ def _redact_spill_file(path, total_chars, command) -> list[tuple[str, Any]]:
 
 def _verification_evidence(command, cwd, session_id, returncode, output, pipeline_status=None) -> Optional[dict]:
     with _quiet("verification evidence recording"):
-        from agent.verification_evidence import record_terminal_result
+        from hermes_agent.agent.verification_evidence import record_terminal_result
         evidence = record_terminal_result(command=command, cwd=cwd, session_id=session_id,
                                           exit_code=returncode, output=output,
                                           pipeline_status=pipeline_status)
@@ -232,7 +232,7 @@ def finalize_foreground_result(
     # Strip ANSI so the model never copies escapes into file writes, then
     # redact secrets; redact_terminal_output is command-aware (env-dump
     # commands get the KEY=value pass, source/config dumps skip it).
-    from agent.redact import redact_terminal_output
+    from hermes_agent.agent.redact import redact_terminal_output
     from hermes_agent.tools.ansi_strip import strip_ansi
     output = strip_ansi(output)
     # For source/config dumps (MAX_TOKENS=100, "apiKey": "x" fixtures, postgresql:// f-string templates) the

@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 _ARGS = {"action": "poll", "session_id": "proc_x"}
 
@@ -16,7 +16,7 @@ def _validate(arguments, *, name="process_manage",
               valid_tool_names=("terminal", "tool_search", "tool_describe", "tool_call"),
               enabled_toolsets=None, provider_data=None):
     """Real validation on an agent whose tool search deferred process_manage behind the bridge."""
-    from agent.turn_tool_validation import validate_tool_calls
+    from hermes_agent.agent.turn_tool_validation import validate_tool_calls
 
     agent = AIAgent.__new__(AIAgent)
     agent.provider, agent.model, agent.session_id, agent.tools = "nous", "m", "s1", []
@@ -43,9 +43,9 @@ def _validate(arguments, *, name="process_manage",
 def test_real_name_is_rewritten_into_the_bridge_call(name, arguments, expected, executor_name):
     """The call runs as a model-written ``tool_call`` would, and signed-thinking turns, which
     replay from the ordered native sidecars, replay it under the bridge name too."""
-    from agent.anthropic_message_convert import _convert_assistant_message
-    from agent.bedrock_adapter import _assistant_blocks
-    from agent.tool_executor import _parse_tool_call
+    from hermes_agent.agent.anthropic_message_convert import _convert_assistant_message
+    from hermes_agent.agent.bedrock_adapter import _assistant_blocks
+    from hermes_agent.agent.tool_executor import _parse_tool_call
 
     provider_data = {
         "anthropic_content_blocks": [{"type": "thinking", "thinking": "poll it", "signature": "sig"},

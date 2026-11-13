@@ -3,8 +3,8 @@
 import pytest
 from types import SimpleNamespace
 
-from agent.transports.types import NormalizedResponse
-from agent.transports import get_transport
+from hermes_agent.agent.transports.types import NormalizedResponse
+from hermes_agent.agent.transports import get_transport
 
 
 # ── ABC contract tests ──────────────────────────────────────────────────
@@ -24,7 +24,7 @@ class TestAnthropicTransport:
 
     @pytest.fixture
     def transport(self):
-        import agent.transports.anthropic
+        import hermes_agent.agent.transports.anthropic
         return get_transport("anthropic_messages")
 
 
@@ -87,8 +87,8 @@ class TestAnthropicTransport:
         the aux ``_stream_final_message`` reader and the main wire's accumulator restore."""
         from unittest.mock import MagicMock
 
-        from agent import relay_llm
-        from agent.anthropic_adapter import _stream_final_message
+        from hermes_agent.agent import relay_llm
+        from hermes_agent.agent.anthropic_adapter import _stream_final_message
 
         details = {"type": "refusal", "category": "general_harms", "explanation": "classifier halt"}
         delta_event = SimpleNamespace(type="message_delta", delta=SimpleNamespace(stop_reason="refusal", stop_details=details))
@@ -108,7 +108,7 @@ class TestAnthropicTransport:
         aux = _stream_final_message(lambda **_: _stream_cm(_snapshot()), {"model": "claude"}, "", None, None)
         assert transport.normalize_response(aux).provider_data["stop_details"] == details
 
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         # Unmanaged (no Relay runtime) streams never tick on_chunk; feed the accumulator the
         # way the managed path's observe_chunk does so the restore hunk is exercised.

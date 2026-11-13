@@ -49,7 +49,7 @@ def test_key_rotation_clears_exhausted_status(tmp_path, monkeypatch):
     # Simulate the user rotating their key (new value in env)
     monkeypatch.setenv("OPENROUTER_API_KEY", "new-rotated-key")
 
-    from agent.credential_pool import load_pool
+    from hermes_agent.agent.credential_pool import load_pool
 
     pool = load_pool("openrouter")
     entry = pool.select()
@@ -68,7 +68,7 @@ def test_same_key_preserves_exhausted_status(tmp_path, monkeypatch):
     """If the key has NOT changed, _upsert_entry does not clear exhaustion state."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
 
-    from agent.credential_pool import PooledCredential, _upsert_entry
+    from hermes_agent.agent.credential_pool import PooledCredential, _upsert_entry
 
     existing = PooledCredential.from_dict(
         "openrouter",

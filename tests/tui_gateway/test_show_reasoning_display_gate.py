@@ -280,7 +280,7 @@ def test_tool_progress_off_keeps_file_edit_lifecycle_pair(monkeypatch):
             print_fn("— edited src/a.py —")
         return True
 
-    monkeypatch.setattr("agent.display.render_edit_diff_with_delta", fake_edit_diff)
+    monkeypatch.setattr("hermes_agent.agent.display.render_edit_diff_with_delta", fake_edit_diff)
 
     cases = {
         "tool-edit": ("edit_file", {"path": "src/a.py", "old_string": "a", "new_string": "b"}),

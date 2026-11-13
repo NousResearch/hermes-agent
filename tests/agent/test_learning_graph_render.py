@@ -7,7 +7,7 @@ change-detector against layout tuning.
 
 from __future__ import annotations
 
-from agent import learning_graph_render as render
+from hermes_agent.agent import learning_graph_render as render
 
 LEAD_IN = render.LEAD_IN
 
@@ -134,8 +134,8 @@ def test_memory_rows_carry_their_card_body_for_fingerprinted_ids():
     memories.mkdir(parents=True, exist_ok=True)
     (memories / "MEMORY.md").write_text("alpha note\n§\nbeta note", encoding="utf-8")
 
-    from agent.learning_graph import build_learning_graph
-    from agent.learning_graph_render import render_frames
+    from hermes_agent.agent.learning_graph import build_learning_graph
+    from hermes_agent.agent.learning_graph_render import render_frames
 
     payload = build_learning_graph()
     rows = [n for bucket in render_frames(payload, cols=80, rows=24, frames=1)["buckets"] for n in bucket["nodes"]]

@@ -29,7 +29,7 @@ LAYER_DISK = "disk"
 
 # failure_reason → UI layer. Unlisted reasons fall back to LAYER_PROVIDER:
 # every FailoverReason comes from classifying a provider call. Loop-site codes
-# (agent/turn_failure_copy.py::SITE_FAILURE_CODES) are listed explicitly: the
+# (hermes_agent/agent/turn_failure_copy.py::SITE_FAILURE_CODES) are listed explicitly: the
 # ones that are not provider verdicts map to the gateway layer so the client
 # does not offer "Switch provider"; the ones the model/provider caused
 # (cut-off output, empty or broken reply) stay on the provider layer, where the
@@ -182,11 +182,11 @@ def build_error_surface_from_result(result: Any, provider: str = "", model: str 
                     surface["resets_at"] = float(resets_at)
                 if isinstance(limit := result.get("usage_limit"), dict):
                     # What ran out, the plan's recommended models that still work, and the credits
-                    # option: the card's one-click buttons (agent/plan_limits.py).
+                    # option: the card's one-click buttons (hermes_agent/agent/plan_limits.py).
                     surface["usage_limit"] = limit
                 return surface
             return _surface(LAYER_BILLING, reason or "billing", False, provider, model)
-        # The Nous free tier refused or could not serve the turn (``agent/turn_recovery.py``
+        # The Nous free tier refused or could not serve the turn (``hermes_agent/agent/turn_recovery.py``
         # stamps ``free_tier``): its own code, so a client offers the free sign-in rather than an
         # OAuth re-login, and the chat sentence rides along as the card body.
         if isinstance(free_tier := result.get("free_tier"), dict) and free_tier.get("kind"):
@@ -205,7 +205,7 @@ def build_error_surface_from_result(result: Any, provider: str = "", model: str 
             retryable = reason not in _NON_RETRYABLE_REASONS
         surface = _surface(_result_layer(reason, error_text, provider), reason, retryable, provider, model)
         # When the provider named the moment its limit lifts (Retry-After / ``resets_at``,
-        # ``agent/turn_recovery.py::_stamp_limit_reset``) the card can say "Limit resets at HH:mm"
+        # ``hermes_agent/agent/turn_recovery.py::_stamp_limit_reset``) the card can say "Limit resets at HH:mm"
         # next to Retry instead of leaving the user to guess (#98852). Epoch seconds.
         if isinstance(resets_at := result.get("failure_resets_at"), (int, float)) and not isinstance(resets_at, bool):
             surface["resets_at"] = float(resets_at)
@@ -231,12 +231,12 @@ def build_error_surface_from_exception(
         if not api_like or not isinstance(exc, Exception):
             return _surface(LAYER_GATEWAY, type(exc).__name__, True, provider, model)
 
-        from agent.error_classifier import classify_api_error
+        from hermes_agent.agent.error_classifier import classify_api_error
 
         classified = classify_api_error(exc, provider=provider, model=model, api_key=api_key)
         synthetic = {"error": classified.message or message, "failure_reason": classified.reason.value}
-        from agent.agent_runtime_helpers import extract_api_error_context
-        from agent.credential_pool import _parse_absolute_timestamp
+        from hermes_agent.agent.agent_runtime_helpers import extract_api_error_context
+        from hermes_agent.agent.credential_pool import _parse_absolute_timestamp
 
         if (resets_at := _parse_absolute_timestamp(extract_api_error_context(exc).get("reset_at"))) is not None:
             synthetic["failure_resets_at"] = resets_at

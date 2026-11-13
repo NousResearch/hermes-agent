@@ -3,8 +3,8 @@ from the transcript, append MoA context, inject prefills, run the context-engine
 hook and the send-time sanitizers, canonicalize for bit-perfect cache prefixes, build the
 request-local prompt-cache plan LAST (after every transcript mutation), prepare the
 persistent-MoA request, then measure request pressure. Nothing here imports
-``agent.conversation_loop`` at module level (cycle) — loop-internal helpers resolve lazily
-so ``patch("agent.conversation_loop.X")`` sites keep intercepting.
+``hermes_agent.agent.conversation_loop`` at module level (cycle) — loop-internal helpers resolve lazily
+so ``patch("hermes_agent.agent.conversation_loop.X")`` sites keep intercepting.
 """
 
 from __future__ import annotations
@@ -13,13 +13,13 @@ from dataclasses import dataclass
 import logging
 from typing import Any
 
-from agent.message_sanitization import _sanitize_messages_surrogates
-from agent.usage_anchor import anchored_context_tokens
-from agent.prompt_caching import build_prompt_cache_plan, effective_cache_ttl
-from agent.turn_context import build_api_messages
-from agent.turn_empty_response import add_empty_response_retry_hint
+from hermes_agent.agent.message_sanitization import _sanitize_messages_surrogates
+from hermes_agent.agent.usage_anchor import anchored_context_tokens
+from hermes_agent.agent.prompt_caching import build_prompt_cache_plan, effective_cache_ttl
+from hermes_agent.agent.turn_context import build_api_messages
+from hermes_agent.agent.turn_empty_response import add_empty_response_retry_hint
 
-logger = logging.getLogger("agent.conversation_loop")
+logger = logging.getLogger("hermes_agent.agent.conversation_loop")
 
 
 @dataclass
@@ -42,8 +42,8 @@ def _append_moa_context(agent: Any, api_messages: Any, moa_config: Any, original
     """Run the MoA reference models and append their aggregated context to the last user
     message (as a trailing text part on multimodal turns). Fail-open."""
     try:
-        from agent.message_content import flatten_message_text as _flatten_mt
-        from agent.moa_loop import _preset_temperature, aggregate_moa_context
+        from hermes_agent.agent.message_content import flatten_message_text as _flatten_mt
+        from hermes_agent.agent.moa_loop import _preset_temperature, aggregate_moa_context
 
         _moa_context = aggregate_moa_context(
             user_prompt=(
@@ -112,11 +112,11 @@ def assemble_api_request(
     """Assemble the request in the original order. ORDER IS LOAD-BEARING: cache breakpoints
     are injected only after whitespace normalization, the orphan sweep, thinking-only drop /
     user merge and surrogate stripping, so the same row's bytes never vary across turns."""
-    from agent.conversation_loop import (
+    from hermes_agent.agent.conversation_loop import (
         _CODEX_INCOMPLETE_NUDGE, _apply_context_engine_selection, _canonicalize_api_tool_calls,
         _clone_message_for_send, _midturn_request_pressure_tokens, _pressure_with_real_floor,
     )
-    from agent.model_metadata import (
+    from hermes_agent.agent.model_metadata import (
         estimate_messages_tokens_rough,
         estimate_native_anthropic_messages_tokens_rough,
         estimate_tokens_rough,
@@ -150,7 +150,7 @@ def assemble_api_request(
 
     # Context selection may replace the request with a fresh clone of canonical history.
     # Re-apply durable rejection suppression after that final replacement hook.
-    from agent.anthropic_thinking_replay import apply_rejected_thinking_suppression
+    from hermes_agent.agent.anthropic_thinking_replay import apply_rejected_thinking_suppression
 
     apply_rejected_thinking_suppression(agent, api_messages)
 
@@ -161,15 +161,15 @@ def assemble_api_request(
     # when prune fires, and the Anthropic adapter's keep-window never sees
     # OpenAI-style tool-result image_url parts. The per-call clone is rewritten in
     # place; persisted history is untouched.
-    from agent.context_compressor import evict_stale_outbound_tool_images
-    from agent.image_eviction_policy import outbound_retired_image_ids
+    from hermes_agent.agent.context_compressor import evict_stale_outbound_tool_images
+    from hermes_agent.agent.image_eviction_policy import outbound_retired_image_ids
 
     evict_stale_outbound_tool_images(api_messages, outbound_retired_image_ids(agent))
 
     # One-time repeated-heal notice goes out via the status/warning callback, NEVER
     # appended to messages: the cached prompt prefix stays byte-identical.
     try:
-        from agent.agent_runtime_helpers import consume_pending_sanitizer_heal_notice
+        from hermes_agent.agent.agent_runtime_helpers import consume_pending_sanitizer_heal_notice
 
         _heal_notice = consume_pending_sanitizer_heal_notice()
         if _heal_notice:
@@ -209,7 +209,7 @@ def assemble_api_request(
     # blocks the whitespace pass skips, so the same row's bytes vary across turns.
     tools_for_api = agent.tools
     if agent._use_prompt_caching and agent.provider != "moa":
-        from agent.prompt_caching import envelope_tool_part_cache_markers_supported
+        from hermes_agent.agent.prompt_caching import envelope_tool_part_cache_markers_supported
 
         _static_system_prefix = getattr(agent, "_cached_system_prompt_static", None)
         _initial_cache_plan = build_prompt_cache_plan(
@@ -241,7 +241,7 @@ def assemble_api_request(
     _moa_prepared_request = None
     if agent.provider == "moa":
         # Advisors fan out inside prepare: the request-only replay price leaves the copies first.
-        from agent.message_metadata import drop_request_reasoning_tokens
+        from hermes_agent.agent.message_metadata import drop_request_reasoning_tokens
 
         drop_request_reasoning_tokens(api_messages)
         _moa_prepared_request, api_messages, pending_moa_prepared_request = _prepare_moa_request(
@@ -251,11 +251,11 @@ def assemble_api_request(
     # One image-stripped estimate feeds both figures; tools counted separately (50+
     # tools ≈ 20-30K tokens); total_chars is a rough proxy for logs/hooks only.
     # Charge stale thinking only when the active route replays it.
-    from agent.turn_context import _agent_stale_thinking_on_wire
+    from hermes_agent.agent.turn_context import _agent_stale_thinking_on_wire
 
     if _agent_stale_thinking_on_wire(agent):
         if getattr(agent, "api_mode", "") == "anthropic_messages":
-            from agent.anthropic_thinking_policy import native_anthropic_preserves_prior_thinking
+            from hermes_agent.agent.anthropic_thinking_policy import native_anthropic_preserves_prior_thinking
 
             if native_anthropic_preserves_prior_thinking(
                 getattr(agent, "base_url", ""), getattr(agent, "model", "")
@@ -290,7 +290,7 @@ def assemble_api_request(
             agent.context_compressor, request_pressure_tokens
         )
     # Measured: the request-only replay price must not reach a provider.
-    from agent.message_metadata import drop_request_reasoning_tokens
+    from hermes_agent.agent.message_metadata import drop_request_reasoning_tokens
 
     drop_request_reasoning_tokens(api_messages)
     return AssembledRequest(

@@ -16,7 +16,7 @@ import threading
 import time
 from typing import Callable, Optional
 
-from agent.session_activity import AwakeIdleMeter
+from hermes_agent.agent.session_activity import AwakeIdleMeter
 from hermes_agent.cron.executions import touch_execution_progress
 
 logger = logging.getLogger(__name__)

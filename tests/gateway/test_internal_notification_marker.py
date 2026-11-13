@@ -76,7 +76,7 @@ def _bootstrap(monkeypatch, tmp_path):
         gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "fake"}
     )
     monkeypatch.setattr(
-        "agent.model_metadata.get_model_context_length",
+        "hermes_agent.agent.model_metadata.get_model_context_length",
         lambda *_args, **_kwargs: 100_000,
     )
     return runner
@@ -271,7 +271,7 @@ def test_marked_row_replays_cleanly_and_never_reaches_provider(tmp_path):
         # calls in run_chat_completions_conversation). Reproduce that
         # sequence on the replayed row and verify nothing display-only
         # survives while the original persisted dict is untouched.
-        from agent.conversation_loop import _clone_message_for_send
+        from hermes_agent.agent.conversation_loop import _clone_message_for_send
 
         api_msg = _clone_message_for_send(user_row)
         api_msg.pop("api_content", None)

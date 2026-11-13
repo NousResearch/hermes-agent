@@ -12,7 +12,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent.anthropic_credentials import anthropic_route_is_oauth
+from hermes_agent.agent.anthropic_credentials import anthropic_route_is_oauth
 
 OAUTH = "sk-ant-oat01-keycmd-token"
 CONSOLE = "sk-ant-api03-console-key"
@@ -44,9 +44,9 @@ def test_route_identity_requires_native_host_and_oauth_shape():
 
 def test_key_cmd_oauth_route_builds_claude_code_identity_on_main_and_aux_clients(monkeypatch):
     pytest.importorskip("anthropic")
-    from agent.agent_init import _init_anthropic_client
-    from agent.anthropic_adapter import _OAUTH_ONLY_BETAS, build_anthropic_client
-    from agent.auxiliary_client import AnthropicAuxiliaryClient
+    from hermes_agent.agent.agent_init import _init_anthropic_client
+    from hermes_agent.agent.anthropic_adapter import _OAUTH_ONLY_BETAS, build_anthropic_client
+    from hermes_agent.agent.auxiliary_client import AnthropicAuxiliaryClient
 
     def key_cmd():
         return OAUTH
@@ -65,7 +65,7 @@ def test_key_cmd_oauth_route_builds_claude_code_identity_on_main_and_aux_clients
     assert "user-agent" not in tp_headers and not any(beta in tp_headers.get("anthropic-beta", "") for beta in _OAUTH_ONLY_BETAS)
 
     # Aux: the custom anthropic_messages route (production entry) carries the flag from the same rule.
-    import agent.auxiliary_client as aux
+    import hermes_agent.agent.auxiliary_client as aux
     monkeypatch.setattr(aux, "_resolve_custom_runtime", lambda: ("https://api.anthropic.com", key_cmd, "anthropic_messages"))
     monkeypatch.setattr(aux, "_read_main_model_for_aux", lambda: "claude-opus-5")
     native_aux, _model = aux._try_custom_endpoint()

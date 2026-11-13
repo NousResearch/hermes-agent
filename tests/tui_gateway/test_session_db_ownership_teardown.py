@@ -56,8 +56,8 @@ def _bare_agent(**attrs):
     """An AIAgent with __init__ bypassed, carrying only what close() reads."""
     from unittest.mock import patch
 
-    with patch("run_agent.AIAgent.__init__", return_value=None):
-        from run_agent import AIAgent
+    with patch("hermes_agent.run_agent.AIAgent.__init__", return_value=None):
+        from hermes_agent.run_agent import AIAgent
 
         agent = AIAgent.__new__(AIAgent)
     agent.session_id = "sid"

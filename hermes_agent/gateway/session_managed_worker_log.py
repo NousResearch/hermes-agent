@@ -55,7 +55,7 @@ def _append(path, text):
 
 
 def _redact(line, scrub):
-    from agent.redact import redact_sensitive_text
+    from hermes_agent.agent.redact import redact_sensitive_text
     for value in sorted((v for v in scrub() if isinstance(v, str) and v), key=len, reverse=True):
         line = line.replace(value, '***')
     return redact_sensitive_text(line, force=True)

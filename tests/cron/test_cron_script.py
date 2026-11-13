@@ -675,7 +675,7 @@ class TestScriptTimeoutTreeKill:
     @staticmethod
     def _stub_kills(monkeypatch, tree_kill_result):
         """Record both OS-signalling paths instead of sending real signals."""
-        from agent import deadline
+        from hermes_agent.agent import deadline
         from hermes_agent.cron import scheduler_script as sched_script
 
         tree_kill_calls, fallback_calls = [], []
@@ -763,7 +763,7 @@ class TestScriptTimeoutTreeKill:
     @pytest.mark.live_system_guard_bypass
     def test_timeout_leaves_no_setsid_grandchild(self, cron_env, monkeypatch):
         """The script spawns a grandchild in its OWN session (start_new_session).
-        killpg alone cannot reach it; agent.deadline.kill_process_tree must —
+        killpg alone cannot reach it; hermes_agent.agent.deadline.kill_process_tree must —
         after the timeout the grandchild must no longer be running."""
         import time
 

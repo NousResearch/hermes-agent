@@ -1195,11 +1195,11 @@ class TestSecondaryProfileHookRegistration:
 
         seen = []
         monkeypatch.setattr(
-            "agent.shell_hooks.register_from_config",
+            "hermes_agent.agent.shell_hooks.register_from_config",
             lambda cfg, **kwargs: seen.append(("shell", cfg)) or [],
         )
         monkeypatch.setattr(
-            "agent.outbound_webhooks.register_from_config",
+            "hermes_agent.agent.outbound_webhooks.register_from_config",
             lambda cfg: seen.append(("webhook", cfg)) or [],
         )
 

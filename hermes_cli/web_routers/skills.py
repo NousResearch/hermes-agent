@@ -88,7 +88,7 @@ def _clear_skills_prompt_cache() -> None:
     up by the next session without a manual cache reset.
     """
     try:
-        from agent.prompt_builder import clear_skills_system_prompt_cache
+        from hermes_agent.agent.prompt_builder import clear_skills_system_prompt_cache
         clear_skills_system_prompt_cache(clear_snapshot=True)
     except Exception:
         pass

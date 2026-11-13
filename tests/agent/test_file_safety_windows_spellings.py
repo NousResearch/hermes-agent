@@ -12,7 +12,7 @@ from unittest.mock import patch
 
 import pytest
 
-from agent import file_safety as fs
+from hermes_agent.agent import file_safety as fs
 
 pytestmark = pytest.mark.platforms("windows")
 

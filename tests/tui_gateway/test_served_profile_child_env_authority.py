@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pytest
 
-from agent.secret_scope import UnscopedSecretError, set_multiplex_active
+from hermes_agent.agent.secret_scope import UnscopedSecretError, set_multiplex_active
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 from hermes_agent.tools.environments.local import served_profile_child_env
 

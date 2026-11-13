@@ -130,7 +130,7 @@ class TestStartupPlatformIsolation:
         with patch("hermes_agent.gateway.status.publish_runtime_status"):
             with patch("hermes_cli.plugins.discover_plugins"):
                 with patch("hermes_cli.config.load_config", return_value={}):
-                    with patch("agent.shell_hooks.register_from_config"):
+                    with patch("hermes_agent.agent.shell_hooks.register_from_config"):
                         with patch(
                             "hermes_agent.tools.process_registry.process_registry.recover_from_checkpoint",
                             return_value=0,
@@ -632,7 +632,7 @@ class TestSpawnSupervised:
     @pytest.mark.asyncio
     async def test_watcher_does_not_inherit_delegated_child_context(self):
         """Long-lived gateway services must not inherit one turn's child scope."""
-        from agent.delegation_context import (
+        from hermes_agent.agent.delegation_context import (
             delegated_child_context,
             is_delegated_child_context,
         )
@@ -661,7 +661,7 @@ class TestSpawnSupervised:
         helper must scrub it at the tick boundary. The in-task child guard
         stays closed.
         """
-        from agent.delegation_context import (
+        from hermes_agent.agent.delegation_context import (
             delegated_child_context,
             is_delegated_child_context,
         )
@@ -872,7 +872,7 @@ class TestVoiceInputCallbackWiring:
             with patch("hermes_agent.gateway.status.publish_runtime_status"):
                 with patch("hermes_cli.plugins.discover_plugins"):
                     with patch("hermes_cli.config.load_config", return_value={}):
-                        with patch("agent.shell_hooks.register_from_config"):
+                        with patch("hermes_agent.agent.shell_hooks.register_from_config"):
                             with patch(
                                 "hermes_agent.tools.process_registry.process_registry.recover_from_checkpoint",
                                 return_value=0,

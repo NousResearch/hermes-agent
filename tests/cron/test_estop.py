@@ -1,4 +1,4 @@
-"""Global emergency stop (`hermes pause` / `hermes resume`) — agent/estop.py.
+"""Global emergency stop (`hermes pause` / `hermes resume`) — hermes_agent/agent/estop.py.
 
 The ESTOP sentinel is a resumable pause for NEW work only: cron dispatch,
 kanban dispatch, and new gateway turns are halted while it is engaged; work
@@ -17,7 +17,7 @@ import json
 
 import pytest
 
-from agent import estop
+from hermes_agent.agent import estop
 
 
 @pytest.fixture

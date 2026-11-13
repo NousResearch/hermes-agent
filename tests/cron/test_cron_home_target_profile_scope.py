@@ -4,13 +4,13 @@
 job through the EXECUTING process's home channel — `_env_home_target_chat_id`
 read `os.getenv` directly, so the default profile's TELEGRAM_HOME_CHANNEL (or
 Feishu/Discord equivalent) won over the owning profile's `.env`. The fix reads
-through `agent.secret_scope.get_secret`, which resolves the job-owning
+through `hermes_agent.agent.secret_scope.get_secret`, which resolves the job-owning
 profile's scope installed by run_one_job for the whole execute→deliver span.
 """
 
 import pytest
 
-from agent import secret_scope
+from hermes_agent.agent import secret_scope
 
 
 @pytest.fixture()

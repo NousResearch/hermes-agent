@@ -34,7 +34,7 @@ _RESET_ABOVE = 1400
 
 def _default_hello_size() -> int:
     """Bytes in this OpenSSL build's default TLS ClientHello (large only with the PQ hybrid share)."""
-    from agent.ssl_verify import platform_ssl_context
+    from hermes_agent.agent.ssl_verify import platform_ssl_context
 
     incoming, outgoing = ssl.MemoryBIO(), ssl.MemoryBIO()
     tls = platform_ssl_context().wrap_bio(incoming, outgoing, server_hostname="127.0.0.1")

@@ -49,7 +49,7 @@ _COUNTER_FROM_USAGE = {
 
 
 class _CompressorView:
-    """``agent.context_compressor`` as the status bar / banner read it (plain attributes)."""
+    """``hermes_agent.agent.context_compressor`` as the status bar / banner read it (plain attributes)."""
 
     def __init__(self):
         self.last_prompt_tokens = 0
@@ -85,7 +85,7 @@ class _Turn:
 
 
 class GatewayAgent:
-    """Gateway-backed stand-in for ``run_agent.AIAgent`` (constructed at the same call site)."""
+    """Gateway-backed stand-in for ``hermes_agent.run_agent.AIAgent`` (constructed at the same call site)."""
 
     platform = "cli"
     _supports_active_turn_redirect = True
@@ -615,7 +615,7 @@ class GatewayAgent:
         except GatewayClientError:
             return False
         if (result or {}).get("voice_stopped") is True:
-            from agent.i18n import t
+            from hermes_agent.agent.i18n import t
             self._emit_print(t("cli.voice.stop_phrase_typed"))
             return VOICE_STOPPED
         return (result or {}).get("status") in {"queued", "redirected"}
@@ -628,8 +628,8 @@ class GatewayAgent:
         The gateway's own report (``summary``: flags and note (with the reason)) is kept for ``compress_now``;
         a ``noop`` answer (a failed summary or nothing removable) committed nothing, so the history,
         the tail and the compression count stay as they were."""
-        from agent.context_compressor import _DB_PERSISTED_MARKER
-        from agent.conversation_compression import COMPACTION_STATUS
+        from hermes_agent.agent.context_compressor import _DB_PERSISTED_MARKER
+        from hermes_agent.agent.conversation_compression import COMPACTION_STATUS
         from hermes_cli.gateway_client import COMPRESS_RPC_TIMEOUT
         payload = {}
         if focus_topic:
@@ -1006,7 +1006,7 @@ class GatewayAgent:
             self._usage_stale = False
             self._refresh_stats()
         if self.tool_progress_callback is not None:
-            from agent.display import build_tool_preview
+            from hermes_agent.agent.display import build_tool_preview
             self.tool_progress_callback("tool.started", name, build_tool_preview(name, args), args)
         # No tool_start_callback: main's snapshots the local FS for inline diffs; the gateway
         # snapshots before its tool writes and ships ``tool.complete.inline_diff`` instead.
@@ -1078,7 +1078,7 @@ class GatewayAgent:
     def _on_notice(self, payload, stream_callback, starts):
         if self.notice_callback is None:
             return
-        from agent.credits_tracker import AgentNotice
+        from hermes_agent.agent.credits_tracker import AgentNotice
         self.notice_callback(AgentNotice(text=str(payload.get("text") or ""), level=payload.get("level") or "info",
                                          kind=payload.get("kind") or "sticky", ttl_ms=payload.get("ttl_ms"),
                                          key=payload.get("key"), id=payload.get("id")))
@@ -1228,7 +1228,7 @@ class GatewayAgent:
 
     def _ask_vault_unlock(self, params):
         """Main's masked password-manager unlock panel, through the callback HermesCLI registered."""
-        from agent.vault_backends.unlock import get_unlock_prompt_callback
+        from hermes_agent.agent.vault_backends.unlock import get_unlock_prompt_callback
         callback = get_unlock_prompt_callback()
         if callback is None:
             return ""
@@ -1237,7 +1237,7 @@ class GatewayAgent:
     def _ask_vault_save_login(self, params):
         """Main's two-step "save this login" panel. The gateway stores the login in the vault, so the
         identifier and password go back as one JSON string in the response frame, as the cards send it."""
-        from agent.vault_backends.unlock import get_save_login_prompt_callback
+        from hermes_agent.agent.vault_backends.unlock import get_save_login_prompt_callback
         callback = get_save_login_prompt_callback()
         if callback is None:
             return ""
@@ -1251,7 +1251,7 @@ class GatewayAgent:
 
     def _ask_vault_code(self, params):
         """Main's one-time-code panel, through the callback HermesCLI registered."""
-        from agent.vault_backends.unlock import get_code_prompt_callback
+        from hermes_agent.agent.vault_backends.unlock import get_code_prompt_callback
         callback = get_code_prompt_callback()
         if callback is None:
             return ""
@@ -1268,7 +1268,7 @@ class GatewayAgent:
         """TUI-26: the owner took a bare stop phrase typed into this LOCAL session's voice chat (turned
         on by another viewer) as the end of that chat and admitted nothing, so no ``message.complete``
         will come. The turn ends at once with main's typed-stop notice; the history is unchanged."""
-        from agent.i18n import t
+        from hermes_agent.agent.i18n import t
         self._give_back_turn_route()  # nothing was admitted: a ``/model --once`` pick is still owed
         self._emit_print(t("cli.voice.stop_phrase_typed"))
         return {**_RESULT_DEFAULTS, "messages": list(history), "voice_stopped": True, "session_id": self.session_id}
@@ -1351,8 +1351,8 @@ class GatewayAgent:
         it ``~`` when the turn appended rows after its first response. Rebuild an anchor over this
         viewer's transcript that yields the gateway's figure: rows after the first API call of a
         multi-call turn are the estimated delta (main's ``~``); a single reply is covered by the anchor."""
-        from agent.model_metadata import estimate_messages_tokens_rough
-        from agent.usage_anchor import capture_usage_anchor
+        from hermes_agent.agent.model_metadata import estimate_messages_tokens_rough
+        from hermes_agent.agent.usage_anchor import capture_usage_anchor
         messages = self._session_messages if isinstance(self._session_messages, list) else []
         tokens = getattr(self, "_context_tokens", 0) or 0
         if tokens <= 0 or not messages or self._generation is not None:
@@ -1436,7 +1436,7 @@ def _rate_limit_state(data):
     """``get_rate_limit_state()`` rebuilt from its serialized dict (None stays None)."""
     if not isinstance(data, dict):
         return None
-    from agent.rate_limit_tracker import RateLimitBucket, RateLimitState
+    from hermes_agent.agent.rate_limit_tracker import RateLimitBucket, RateLimitState
     buckets = {name: RateLimitBucket(**{k: v for k, v in (data.get(name) or {}).items()
                                         if k in {"limit", "remaining", "reset_seconds", "captured_at"}})
                for name in ("requests_min", "requests_hour", "tokens_min", "tokens_hour")}

@@ -65,7 +65,7 @@ def remote_path_is_denied(path: str, remote_home: Optional[str]) -> bool:
 def _active_remote_env():
     """The live remote BaseEnvironment for the current session, or None (local backend / no env yet).
     Keyed by the session id the turn registered its sandbox under (falls back to the session key)."""
-    from agent.prompt_builder import _REMOTE_TERMINAL_BACKENDS, _plugin_backend_is_remote
+    from hermes_agent.agent.prompt_builder import _REMOTE_TERMINAL_BACKENDS, _plugin_backend_is_remote
     from hermes_agent.gateway.platforms.base import _tenv
     from hermes_agent.gateway.session_context import get_session_env
     from hermes_agent.tools.terminal_tool_lifecycle import get_active_env

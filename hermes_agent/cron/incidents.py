@@ -120,7 +120,7 @@ def _redact_error(error: str) -> str:
     """Redact secrets (best-effort; the scheduler path never fails on it) then bound the length."""
     text = str(error or "")
     try:
-        from agent.redact import redact_sensitive_text
+        from hermes_agent.agent.redact import redact_sensitive_text
 
         text = redact_sensitive_text(text, force=True)  # persisted to disk: always scrub
     except Exception:

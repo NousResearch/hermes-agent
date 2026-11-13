@@ -1,7 +1,7 @@
 """OpenAI-style -> Anthropic Messages API request conversion: model-id normalization, tool
 schemas, and the message list (content blocks, thinking blocks and their signatures,
 tool_use/tool_result pairing, cache_control placement, screenshot eviction, blank-block
-scrubbing). Endpoint predicates come from ``agent/anthropic_endpoints.py`` so this module never
+scrubbing). Endpoint predicates come from ``hermes_agent/agent/anthropic_endpoints.py`` so this module never
 imports the adapter (no cycle)."""
 
 import copy
@@ -10,8 +10,8 @@ import logging
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
-from agent.image_eviction_policy import images_all_within_many_image_limit, outbound_image_retire_count
-from agent.anthropic_thinking_policy import anthropic_thinking_route, route_replays_prior_thinking
+from hermes_agent.agent.image_eviction_policy import images_all_within_many_image_limit, outbound_image_retire_count
+from hermes_agent.agent.anthropic_thinking_policy import anthropic_thinking_route, route_replays_prior_thinking
 
 logger = logging.getLogger(__name__)
 
@@ -246,7 +246,7 @@ def _extract_preserved_thinking_blocks(message: dict[str, Any]) -> list[dict[str
     raw_details = message.get("reasoning_details")
     if not isinstance(raw_details, list):
         return []
-    from agent.bedrock_adapter import reasoning_minted_outside_claude
+    from hermes_agent.agent.bedrock_adapter import reasoning_minted_outside_claude
 
     if reasoning_minted_outside_claude(message):
         return []
@@ -642,10 +642,10 @@ def _evict_old_screenshots(result: list[dict[str, Any]]) -> None:
     dimensions (the strict 20 only when some image exceeds the many-image per-side cap), so this
     pass reads the headers of the ``source.data`` payloads it already holds. It sizes the block
     budget AND the byte budget, the latter because the auxiliary Anthropic client
-    (``agent.auxiliary_client`` via ``anthropic_adapter.build_anthropic_kwargs``) reaches this pass
+    (``hermes_agent.agent.auxiliary_client`` via ``anthropic_adapter.build_anthropic_kwargs``) reaches this pass
     without the compressor's send-path pass, so it must hold the invariant alone -- previously with
     no request-size guard at all (post-#113953 review). Policy and rationale:
-    :mod:`agent.image_eviction_policy`.
+    :mod:`hermes_agent.agent.image_eviction_policy`.
     """
     reserved = [
         (block, _image_source_data(block))

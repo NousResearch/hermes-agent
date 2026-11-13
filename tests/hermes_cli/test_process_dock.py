@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 from prompt_toolkit.utils import get_cwidth
 
-from agent.i18n import t
+from hermes_agent.agent.i18n import t
 
 
 def _wait(predicate, timeout=5.0):

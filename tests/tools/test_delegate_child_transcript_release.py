@@ -20,12 +20,12 @@ import json
 import weakref
 from unittest.mock import MagicMock
 
-from agent.subagent_lifecycle import (
+from hermes_agent.agent.subagent_lifecycle import (
     _ACTIVE_PARENT_AGENT,
     bind_subagent_parent,
     get_active_subagent_parent,
 )
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 
 def _bare_agent() -> AIAgent:

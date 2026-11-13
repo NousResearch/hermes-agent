@@ -18,8 +18,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterator
 
-from agent.pet.generate import atlas, imagegen, prompts
-from agent.pet.generate.imagegen import GenerationError, SpriteProvider
+from hermes_agent.agent.pet.generate import atlas, imagegen, prompts
+from hermes_agent.agent.pet.generate.imagegen import GenerationError, SpriteProvider
 
 logger = logging.getLogger(__name__)
 
@@ -278,7 +278,7 @@ def hatch_pet(
     if len(filled_states) < _MIN_FILLED_STATES:
         raise GenerationError(f"only {len(filled_states)}/{total_rows} animation rows were usable; regenerate")
 
-    from agent.pet import store
+    from hermes_agent.agent.pet import store
 
     progress("save", slug)
     logger.info("pet hatch %r: saving pet", slug)

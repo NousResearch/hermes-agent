@@ -14,7 +14,7 @@ import subprocess
 import sys
 import time
 
-from agent.managed_worker import accept_result, encode_frame, read_frame
+from hermes_agent.agent.managed_worker import accept_result, encode_frame, read_frame
 from hermes_agent.gateway.session_worker_reservation import owner_worker_subject, reserve_admission_worker
 from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
@@ -222,7 +222,7 @@ class ManagedWorker:
     def drain_stderr(self, path):
         """Route the child's stderr (its tracebacks and redirected prints) into the profile's
         bounded, redacted, private log instead of discarding it."""
-        from agent.memory_provider import spawn_context_thread
+        from hermes_agent.agent.memory_provider import spawn_context_thread
         from hermes_agent.gateway.session_managed_worker_log import drain_worker_stderr
         self.stderr_drain = spawn_context_thread(drain_worker_stderr, name='managed-stderr-drain',
                                                  args=(self.process.stderr, path, self.process.pid, lambda: self.secrets))
@@ -252,7 +252,7 @@ class ManagedWorker:
         silent one, instead of leaving the turn started behind it."""
         if self.reader is None:
             self._arrived = asyncio.Event()
-            from agent.memory_provider import spawn_context_thread
+            from hermes_agent.agent.memory_provider import spawn_context_thread
             self.reader = spawn_context_thread(self._read_frames, name='managed-frame-reader',
                                                args=(asyncio.get_running_loop(),))
             self.reader.start()
@@ -403,7 +403,7 @@ def _worker_env(authority):
     worker, whose scope legitimately includes its frozen launch env. Single-profile gateways
     inherit the process env byte-for-byte, exactly as before."""
     from pathlib import Path
-    from agent.secret_scope import is_multiplex_active
+    from hermes_agent.agent.secret_scope import is_multiplex_active
     from hermes_agent.tools.environments.local import _is_routed_home
     home = Path(str(authority.profile_id))
     if not home.is_absolute():
@@ -413,7 +413,7 @@ def _worker_env(authority):
     routed = _is_routed_home(home)
     if not routed and not is_multiplex_active():
         return None
-    from agent.secret_scope import build_profile_secret_scope
+    from hermes_agent.agent.secret_scope import build_profile_secret_scope
     from hermes_agent.tools.environments.local import _scrub_credentials, build_subprocess_env, strip_launch_profile_env
     # The scrub removes credentials, not settings: the launch profile's TERMINAL_* policy and
     # its ``.env`` settings would otherwise reach the secondary's worker (cron/kanban rule).
@@ -594,7 +594,7 @@ async def _spawn_registered_worker(authority, ref, row):
         from hermes_agent.gateway.session_worker_spawn import acquire_process
         from hermes_agent.gateway.session_managed_worker_log import worker_log_path
         log_path = worker_log_path(authority.profile_id)
-        process = await acquire_process(subprocess.Popen, [sys.executable, '-m', 'agent.managed_worker'],
+        process = await acquire_process(subprocess.Popen, [sys.executable, '-m', 'hermes_agent.agent.managed_worker'],
             cwd=cwd, stdin=subprocess.PIPE, env=env, stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL if log_path is None else subprocess.PIPE, **WORKER_POPEN)
     except asyncio.CancelledError:

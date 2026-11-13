@@ -19,7 +19,7 @@ def _no_web_env(monkeypatch):
     """Keep tier auto-detection out of the picture: no web credentials present."""
     for var in ("EXA_API_KEY", "PARALLEL_API_KEY", "TAVILY_API_KEY", "FIRECRAWL_API_KEY", "FIRECRAWL_API_URL"):
         monkeypatch.delenv(var, raising=False)
-    monkeypatch.setattr("agent.web_search_provider.get_provider_env", lambda name: "", raising=True)
+    monkeypatch.setattr("hermes_agent.agent.web_search_provider.get_provider_env", lambda name: "", raising=True)
 
 
 def _row(backend: str, **extra) -> dict:

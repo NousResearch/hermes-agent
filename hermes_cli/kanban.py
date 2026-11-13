@@ -227,7 +227,7 @@ def _is_delegated_child_cli_mutation(args: argparse.Namespace) -> bool:
             return False
     elif action not in _DELEGATED_CHILD_DENIED_ACTIONS:
         return False
-    from agent.delegation_context import kanban_path_is_fenced
+    from hermes_agent.agent.delegation_context import kanban_path_is_fenced
 
     return kanban_path_is_fenced(kb.kanban_home()) or kanban_path_is_fenced(kb.kanban_db_path())
 
@@ -333,7 +333,7 @@ def _cmd_assignees(args: argparse.Namespace) -> int:
 
 
 def _cmd_create(args: argparse.Namespace) -> int:
-    from agent.delegation_context import is_dispatcher_owned_worker_context
+    from hermes_agent.agent.delegation_context import is_dispatcher_owned_worker_context
 
     body = args.body
     body_file = getattr(args, "body_file", None)
@@ -840,7 +840,7 @@ def _goal_mode_handoff_rejection(task: Optional[kb.Task], evidence: str):
     if task is None or not task.goal_mode:
         return ("done", None)
     try:
-        from agent.auxiliary_client import get_text_auxiliary_client
+        from hermes_agent.agent.auxiliary_client import get_text_auxiliary_client
 
         client, model = get_text_auxiliary_client("goal_judge")
     except Exception:
@@ -854,7 +854,7 @@ def _goal_mode_handoff_rejection(task: Optional[kb.Task], evidence: str):
     try:
         # Headless handoff checks run outside any agent turn: bind the per-task relay-affinity
         # scope (mirrors kanban_specify) so the relay does not reject the judge call (#113669).
-        from agent.portal_tags import get_affinity_scope, reset_affinity_scope, set_affinity_scope
+        from hermes_agent.agent.portal_tags import get_affinity_scope, reset_affinity_scope, set_affinity_scope
         affinity_token = None if get_affinity_scope() else set_affinity_scope(f"kanban:{task.id}")
         try:
             verdict, reason, _, _, transport_failed = judge_goal(

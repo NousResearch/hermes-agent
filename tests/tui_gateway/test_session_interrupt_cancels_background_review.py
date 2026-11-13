@@ -8,7 +8,7 @@ WS-orphan reaper's interrupt-at-grace) gates its
 ``should_interrupt = bool(session.get("running"))``. The background-review
 fork is a SEPARATE ``AIAgent`` (tracked only on the parent's
 ``_background_review_agent`` / ``_active_children`` —
-``agent/background_review.py``) that is never reflected in
+``hermes_agent/agent/background_review.py``) that is never reflected in
 ``session["running"]``. The common real-world shape is: the foreground turn
 already finished (``running`` is ``False``), the post-turn review is still
 running, and the user hits Stop expecting everything to stop — but the

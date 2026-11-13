@@ -21,7 +21,7 @@ from contextvars import Context
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
-from agent.i18n import t
+from hermes_agent.agent.i18n import t
 from hermes_agent.gateway.config import Platform
 from hermes_agent.gateway.restart import (
     DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT, GATEWAY_SERVICE_RESTART_EXIT_CODE,
@@ -1271,7 +1271,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
         # Auxiliary async clients live in a process-global cache created from worker threads; drop
         # entries whose event loop is dead so httpx transports don't accumulate across turns.
         with suppress(Exception):
-            from agent.auxiliary_client import cleanup_stale_async_clients
+            from hermes_agent.agent.auxiliary_client import cleanup_stale_async_clients
             cleanup_stale_async_clients()
 
     # Stuck-loop (restart failure) counters
@@ -1351,7 +1351,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
         # ``resolve_multiplex_mode`` settles the default-on/unset decision before
         # restart. Carry that runtime identity instead of re-reading raw config:
         # ``None`` is the normal pre-resolution value for a named launcher.
-        from agent.secret_scope import is_multiplex_active
+        from hermes_agent.agent.secret_scope import is_multiplex_active
         settled_multiplex = is_multiplex_active()
         multiplex = False
         if not on_default and not settled_multiplex:
@@ -2001,7 +2001,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
             # worker-thread loops that died with their ThreadPoolExecutor (notably cron ticks) only get
             # swept here. Without this, long-running gateways accumulate async httpx transports until they
             # hit EMFILE on macOS's default RLIMIT_NOFILE=256. See #14210.
-            from agent.auxiliary_client import shutdown_cached_clients
+            from hermes_agent.agent.auxiliary_client import shutdown_cached_clients
             shutdown_cached_clients()
 
         GatewayShutdownMixin._quiet_step("shutdown_cached_clients error", _reap_aux_clients)

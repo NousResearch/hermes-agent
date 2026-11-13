@@ -7,7 +7,7 @@
 - **运维人员**：选择将哪些通道接入看板（创建哪些 profile，使用哪些 assignee）。
 - **插件/集成作者**：希望添加新的通道形态（封装 Codex / Claude Code / OpenCode 的 CLI worker、容器化审查 worker、通过 API 拉取任务的非 Hermes 服务）。
 
-如果你编写的是 worker 代码本身——即运行在通道*内部*的 agent——kanban 生命周期与参考细节会自动注入到 worker 的系统提示中（[`agent/prompt_builder.py`](https://github.com/NousResearch/hermes-agent/blob/main/agent/prompt_builder.py) 中的 `KANBAN_GUIDANCE` 块）。
+如果你编写的是 worker 代码本身——即运行在通道*内部*的 agent——kanban 生命周期与参考细节会自动注入到 worker 的系统提示中（[`hermes_agent/agent/prompt_builder.py`](https://github.com/NousResearch/hermes-agent/blob/main/hermes_agent/agent/prompt_builder.py) 中的 `KANBAN_GUIDANCE` 块）。
 
 ## 层级结构
 
@@ -114,4 +114,4 @@ profile 通道的特化形态：orchestrator 是一个 Hermes profile，其工�
 
 - [Kanban 概览](./kanban) — 面向用户的介绍。
 - [Kanban 教程](./kanban-tutorial) — 开启仪表板的完整演练。
-- [`KANBAN_GUIDANCE`](https://github.com/NousResearch/hermes-agent/blob/main/agent/prompt_builder.py) — 注入到每个 kanban worker 系统提示中的 worker + orchestrator 生命周期。
+- [`KANBAN_GUIDANCE`](https://github.com/NousResearch/hermes-agent/blob/main/hermes_agent/agent/prompt_builder.py) — 注入到每个 kanban worker 系统提示中的 worker + orchestrator 生命周期。

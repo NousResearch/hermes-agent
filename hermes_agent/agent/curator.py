@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, NamedTuple, Optional, Set
 
 from hermes_constants import get_hermes_home
-from agent.skill_utils import get_disabled_skill_names
+from hermes_agent.agent.skill_utils import get_disabled_skill_names
 from hermes_agent.tools import skill_usage
 from utils import atomic_json_write
 
@@ -944,7 +944,7 @@ def run_curator_review(
     if dry_run:  # count candidates without mutating state
         counts = {"checked": len(_safe_curated_report()), "marked_stale": 0, "archived": 0, "reactivated": 0}
     else:
-        from agent import curator_backup
+        from hermes_agent.agent import curator_backup
         # The prune-only pass just renames directories into .archive/ (its own undo) and every edit is
         # ledgered; only the LLM consolidation pass rewrites content in place, so only it earns a
         # whole-tree snapshot. Retention still runs so old snapshots age out either way.
@@ -1105,7 +1105,7 @@ def _run_llm_review(prompt: str) -> dict[str, Any]:
     ``model``/``provider`` (what ran), ``tool_calls`` ([{name, arguments}], truncated) and ``error``. Never raises."""
     result_meta: dict[str, Any] = _llm_meta("")
     try:
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
     except Exception as e:
         result_meta["error"] = result_meta["summary"] = f"AIAgent import failed: {e}"
         return result_meta
@@ -1117,7 +1117,7 @@ def _run_llm_review(prompt: str) -> dict[str, Any]:
         acp_command = rp.get("command")
         if isinstance(acp_command, str) and acp_command:
             agent_kwargs.update(acp_command=acp_command, acp_args=list(rp.get("args") or []))
-        from agent.conversation_compression_checkpoint import checkpoint_required_from_config
+        from hermes_agent.agent.conversation_compression_checkpoint import checkpoint_required_from_config
         from hermes_cli.config import load_config_readonly
         from hermes_constants import resolve_reasoning_config
 
@@ -1151,7 +1151,7 @@ def _run_llm_review(prompt: str) -> dict[str, Any]:
         # tool worker spawns: workers run on copied contexts, so a store
         # auto-created later stays private to one worker and every patch is
         # refused ("content has not been loaded in this review turn") even after
-        # a fresh skill_view. Same seeding as agent/background_review.py.
+        # a fresh skill_view. Same seeding as hermes_agent/agent/background_review.py.
         with contextlib.suppress(Exception):
             from hermes_agent.tools.skill_manager_guards import _reset_background_review_read_marks
 

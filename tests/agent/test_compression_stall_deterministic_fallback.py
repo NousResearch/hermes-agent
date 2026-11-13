@@ -20,10 +20,10 @@ from unittest.mock import patch
 
 import pytest
 
-import agent.conversation_compression as cc
-from agent.auxiliary_client import AuxiliaryExplicitCancellation
-from agent.context_compressor import SUMMARY_PREFIX, pin_summary_route
-from agent.conversation_compression import CompressionCommitFence, run_compress_context_with_progress_timeout
+import hermes_agent.agent.conversation_compression as cc
+from hermes_agent.agent.auxiliary_client import AuxiliaryExplicitCancellation
+from hermes_agent.agent.context_compressor import SUMMARY_PREFIX, pin_summary_route
+from hermes_agent.agent.conversation_compression import CompressionCommitFence, run_compress_context_with_progress_timeout
 from hermes_agent.hermes_state import SessionDB
 
 CHAIN_ENTRY = {
@@ -37,7 +37,7 @@ def _make_agent(tmp_path, tag):
     session_id = f"STALL_DETERMINISTIC_{tag}"
     db.create_session(session_id, source="cli")
     with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         agent = AIAgent(
             api_key="test-key", base_url="https://openrouter.ai/api/v1", model="test/model", quiet_mode=True,
@@ -104,8 +104,8 @@ def test_second_consecutive_stall_commits_the_deterministic_fallback_summary(tmp
     compressor = agent.context_compressor
     calls = []
     live = _transcript()
-    with patch("agent.context_compressor.call_llm", side_effect=_stalling_call_llm(compressor, calls)), \
-            patch("agent.auxiliary_client._get_auxiliary_task_config", return_value={"fallback_chain": []}):
+    with patch("hermes_agent.agent.context_compressor.call_llm", side_effect=_stalling_call_llm(compressor, calls)), \
+            patch("hermes_agent.agent.auxiliary_client._get_auxiliary_task_config", return_value={"fallback_chain": []}):
         first, _ = agent._compress_context(live, "sys", approx_tokens=50_000)
         assert first is live, "a first stall keeps the transcript and only arms the backoff"
         assert compressor._consecutive_timeout_failures >= 1
@@ -141,7 +141,7 @@ def test_second_consecutive_stall_commits_the_deterministic_fallback_summary(tmp
 
 
 def test_deterministic_pin_is_consumed_and_a_real_route_is_left_alone():
-    from agent.context_compressor import (
+    from hermes_agent.agent.context_compressor import (
         DETERMINISTIC_SUMMARY_ROUTE, take_deterministic_summary_pin, take_pinned_summary_route,
     )
 
@@ -169,7 +169,7 @@ def test_fence_level_retry_ladder_is_unchanged_without_a_prior_timeout():
 
     original = [{"role": "user", "content": "keep-me"}]
     try:
-        with patch("agent.auxiliary_client._get_auxiliary_task_config", return_value={"fallback_chain": []}):
+        with patch("hermes_agent.agent.auxiliary_client._get_auxiliary_task_config", return_value={"fallback_chain": []}):
             msgs, prompt = run_compress_context_with_progress_timeout(
                 worker=worker, messages=original, system_prompt_fallback="degraded-prompt",
                 idle_timeout_seconds=0.05, total_ceiling_seconds=2.0, on_timeout=lambda *a: None,
@@ -199,7 +199,7 @@ def test_deadline_observed_by_worker_still_runs_first_stall_fallback():
         attempts.append("fallback")
         return recovered, "compressed-prompt"
 
-    with patch("agent.auxiliary_client._get_auxiliary_task_config", return_value={"fallback_chain": []}):
+    with patch("hermes_agent.agent.auxiliary_client._get_auxiliary_task_config", return_value={"fallback_chain": []}):
         msgs, prompt = run_compress_context_with_progress_timeout(
             worker=primary_worker, fallback_worker=fallback_worker, messages=original,
             system_prompt_fallback="degraded-prompt", idle_timeout_seconds=0.05,
@@ -264,7 +264,7 @@ def test_admitted_unchanged_commit_at_deadline_retries_without_overlap():
         return fence
 
     with patch.object(cc, "_await_worker_within_budget", side_effect=await_at_deadline), patch(
-        "agent.auxiliary_client._get_auxiliary_task_config", return_value={"fallback_chain": []}
+        "hermes_agent.agent.auxiliary_client._get_auxiliary_task_config", return_value={"fallback_chain": []}
     ):
         msgs, prompt = run_compress_context_with_progress_timeout(
             worker=primary_worker, fallback_worker=fallback_worker, messages=original,
@@ -291,8 +291,8 @@ def test_over_window_request_commits_the_deterministic_fallback_on_the_first_sta
     compressor.context_length = 64_000
     calls = []
     live = _transcript()
-    with patch("agent.context_compressor.call_llm", side_effect=_stalling_call_llm(compressor, calls)), \
-            patch("agent.auxiliary_client._get_auxiliary_task_config", return_value={"fallback_chain": []}):
+    with patch("hermes_agent.agent.context_compressor.call_llm", side_effect=_stalling_call_llm(compressor, calls)), \
+            patch("hermes_agent.agent.auxiliary_client._get_auxiliary_task_config", return_value={"fallback_chain": []}):
         out, _ = agent._compress_context(live, "sys", approx_tokens=70_000)
 
     assert calls == ["primary"], "the deterministic rung makes no second summary LLM call"

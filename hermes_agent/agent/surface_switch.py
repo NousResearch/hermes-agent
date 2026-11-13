@@ -14,10 +14,10 @@ from __future__ import annotations
 import logging
 from typing import Any, List
 
-from agent.message_content import flatten_message_text
-from agent.prompt_builder import RUNTIME_ENVIRONMENT_END, RUNTIME_ENVIRONMENT_HEADING
+from hermes_agent.agent.message_content import flatten_message_text
+from hermes_agent.agent.prompt_builder import RUNTIME_ENVIRONMENT_END, RUNTIME_ENVIRONMENT_HEADING
 
-logger = logging.getLogger("run_agent")
+logger = logging.getLogger("hermes_agent.run_agent")
 
 _SURFACE_SWITCH_NOTE_PREFIX = "[System: This conversation is now being answered on a different interface: "
 # Closes the surface name in the note; platform names are free-form for plugin platforms, so the
@@ -123,7 +123,7 @@ def stage_surface_switch_note(agent: Any, prompt: str, conversation_history: Any
     told = _last_announced_surface(conversation_history) or described
     if not told or told == current:
         return False
-    from agent.system_prompt import platform_hint
+    from hermes_agent.agent.system_prompt import platform_hint
     hint = platform_hint(agent) if described != current else ""
     where = "the guidance below" if hint else "the interface section in the system prompt above"
     note = (

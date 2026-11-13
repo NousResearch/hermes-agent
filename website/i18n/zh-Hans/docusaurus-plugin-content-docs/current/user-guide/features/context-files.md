@@ -104,7 +104,7 @@ Hermes 兼容 Cursor IDE 的 `.cursorrules` 文件和 `.cursor/rules/*.mdc` 规�
 
 ### 启动时（系统 prompt）
 
-上下文文件由 `agent/prompt_builder.py` 中的 `build_context_files_prompt()` 加载：
+上下文文件由 `hermes_agent/agent/prompt_builder.py` 中的 `build_context_files_prompt()` 加载：
 
 1. **扫描工作目录** — 依次检查 `.hermes.md` → `AGENTS.md` → `CLAUDE.md` → `.cursorrules`（先匹配先生效）
 2. **读取内容** — 以 UTF-8 文本读取每个文件
@@ -115,7 +115,7 @@ Hermes 兼容 Cursor IDE 的 `.cursorrules` 文件和 `.cursor/rules/*.mdc` 规�
 
 ### 会话期间（渐进式发现）
 
-`agent/subdirectory_hints.py` 中的 `SubdirectoryHintTracker` 监视工具调用参数中的文件路径：
+`hermes_agent/agent/subdirectory_hints.py` 中的 `SubdirectoryHintTracker` 监视工具调用参数中的文件路径：
 
 1. **路径提取** — 每次工具调用后，从参数（`path`、`workdir`、shell 命令）中提取文件路径
 2. **祖先目录遍历** — 检查该目录及最多 5 个父目录（跳过已访问的目录）

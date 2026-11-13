@@ -14,7 +14,7 @@ import abc
 import logging
 from typing import Any, Dict, Iterator, List, Optional
 
-from agent.provider_base import CatalogProviderBase
+from hermes_agent.agent.provider_base import CatalogProviderBase
 
 logger = logging.getLogger(__name__)
 

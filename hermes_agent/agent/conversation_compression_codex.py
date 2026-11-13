@@ -1,6 +1,6 @@
 """Codex app-server compaction: the route ``compress_context`` takes for Codex-owned threads.
 
-Split from ``agent/conversation_compression.py`` (facade size cap), which imports it at module level;
+Split from ``hermes_agent/agent/conversation_compression.py`` (facade size cap), which imports it at module level;
 this module must never import the facade at module level (import cycle), so it late-imports the
 facade's shared helpers inside functions. It logs under the facade's logger name so log consumers keep
 one source.
@@ -12,9 +12,9 @@ import contextlib
 import logging
 from typing import Any, Optional
 
-from agent.conversation_compression_telemetry import _emit_bypassed_attempt_telemetry
+from hermes_agent.agent.conversation_compression_telemetry import _emit_bypassed_attempt_telemetry
 
-logger = logging.getLogger("agent.conversation_compression")
+logger = logging.getLogger("hermes_agent.agent.conversation_compression")
 
 
 def _codex_compaction_cooldown_remaining(agent: Any) -> float:
@@ -38,8 +38,8 @@ def _record_codex_compaction_failure(agent: Any, error: str) -> None:
     """Arm the shared compression-failure cooldown after a failed codex compaction.
     The codex path returns the transcript unchanged, so without a cooldown the still-over-threshold session
     would retry every turn."""
-    from agent.context_compressor import _SUMMARY_FAILURE_COOLDOWN_SECONDS
-    from agent.conversation_compression import _swallow
+    from hermes_agent.agent.context_compressor import _SUMMARY_FAILURE_COOLDOWN_SECONDS
+    from hermes_agent.agent.conversation_compression import _swallow
     compressor = getattr(agent, "context_compressor", None)
     recorder = getattr(compressor, "_record_compression_failure_cooldown", None)
     if not callable(recorder):
@@ -55,7 +55,7 @@ def _compress_context_via_codex_app_server(
     """Route compaction to Codex app-server for Codex-owned threads.
     Rewriting the local transcript would not shrink the Codex thread, so Codex compacts its own thread and
     Hermes' transcript is left unchanged. Every exit, raising ones included, logs one attempt record."""
-    from agent.conversation_compression import (
+    from hermes_agent.agent.conversation_compression import (
         COMPACTION_STATUS, _CompressionActivityHeartbeat, _emit_compaction_done, _existing_system_prompt,
         _reset_read_dedup_caches, _swallow,
     )
@@ -117,7 +117,7 @@ def _compress_context_via_codex_app_server(
         _record("failed", "codex_compaction_failed")
         return messages, _existing_system_prompt(agent, system_message)
     with _swallow('codex compaction bookkeeping failed', exc_info=True):
-        from agent.codex_runtime import _record_codex_app_server_compaction, _record_codex_app_server_usage
+        from hermes_agent.agent.codex_runtime import _record_codex_app_server_compaction, _record_codex_app_server_usage
         _record_codex_app_server_compaction(agent, result, approx_tokens=approx_tokens, force=True)
         # An empty usage report must consume the pending verdict, not leave deferral
         # armed until a later turn; minimal test engines may lack update_from_response.

@@ -18,7 +18,7 @@ import hermes_yaml as yaml
 
 from hermes_constants import get_hermes_home
 from utils import atomic_write_text
-from agent.skill_commands import command_snapshot, diff_command_snapshots, resolve_slash_key, slugify_skill_name as _slugify
+from hermes_agent.agent.skill_commands import command_snapshot, diff_command_snapshots, resolve_slash_key, slugify_skill_name as _slugify
 
 logger = logging.getLogger(__name__)
 
@@ -148,7 +148,7 @@ def build_bundle_invocation_message(
     if not info:
         return None
     # Late import keeps skill_bundles cheap to import (no tools/* at import time).
-    from agent.skill_commands import _disabled_skill_names, _load_skill_blocks, _load_skill_payload, _scaffold_header
+    from hermes_agent.agent.skill_commands import _disabled_skill_names, _load_skill_blocks, _load_skill_payload, _scaffold_header
     bundle_name = info["name"]
     loaded_names, missing, disabled, skill_blocks = _load_skill_blocks(
         [(skill_id or "").strip() for skill_id in info["skills"]],

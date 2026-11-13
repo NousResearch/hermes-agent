@@ -6,7 +6,7 @@ import shutil
 
 import pytest
 
-from agent import i18n
+from hermes_agent.agent import i18n
 from hermes_cli import cli_model_switch_mixin as ms
 
 

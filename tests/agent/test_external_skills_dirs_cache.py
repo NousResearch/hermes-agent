@@ -16,8 +16,8 @@ from unittest.mock import patch
 
 import pytest
 
-from agent import skill_utils
-from agent.skill_utils import (
+from hermes_agent.agent import skill_utils
+from hermes_agent.agent.skill_utils import (
     _external_dirs_cache_clear,
     get_external_skills_dirs,
 )

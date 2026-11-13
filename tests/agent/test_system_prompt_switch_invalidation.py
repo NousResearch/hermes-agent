@@ -68,7 +68,7 @@ def test_compression_tip_adoption_applies_the_identity_check(db):
     (``turn_context``: restore/rebuild only while the slot is None) would then send the parent
     session's prompt for the child turn unvalidated.
     """
-    from agent.conversation_compression import _adopt_live_compression_child
+    from hermes_agent.agent.conversation_compression import _adopt_live_compression_child
 
     stale = _stored_prompt("model-a", "prov-a")
     parent_prompt = _stored_prompt("parent-model", "parent-provider")
@@ -98,7 +98,7 @@ def test_compression_tip_adoption_applies_the_identity_check(db):
 
 def _turn_agent(db, model: str, provider: str, prose: str = "") -> MagicMock:
     """A fresh per-turn agent (the gateway shape) whose rebuild renders the real trailer."""
-    from agent.system_prompt import _timestamp_line
+    from hermes_agent.agent.system_prompt import _timestamp_line
 
     agent = MagicMock()
     agent._cached_system_prompt = None
@@ -120,7 +120,7 @@ def _turn_agent(db, model: str, provider: str, prose: str = "") -> MagicMock:
 
 
 def _run_turn(db, model: str, provider: str, prose: str = "") -> MagicMock:
-    from agent.conversation_loop import _restore_or_build_system_prompt
+    from hermes_agent.agent.conversation_loop import _restore_or_build_system_prompt
 
     agent = _turn_agent(db, model, provider, prose)
     _restore_or_build_system_prompt(agent, None, [{"role": "user", "content": "hi"}])

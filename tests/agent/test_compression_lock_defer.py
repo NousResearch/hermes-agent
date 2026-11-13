@@ -26,8 +26,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from agent.conversation_compression import compression_skipped_due_to_lock
-from run_agent import AIAgent
+from hermes_agent.agent.conversation_compression import compression_skipped_due_to_lock
+from hermes_agent.run_agent import AIAgent
 
 
 LOCK_HOLDER = "pid=4242:tid=1:agent=deadbeef:nonce=abcd1234"
@@ -43,7 +43,7 @@ def _no_compression_sleep(monkeypatch):
     import time as _time
 
     monkeypatch.setattr(_time, "sleep", lambda *_a, **_k: None)
-    from agent import retry_utils as _retry_utils
+    from hermes_agent.agent import retry_utils as _retry_utils
     monkeypatch.setattr(_retry_utils, "jittered_backoff", lambda *a, **k: 0.0)
 
 
@@ -93,7 +93,7 @@ def agent():
     with (
         patch("hermes_agent.model_tools.get_tool_definitions", return_value=_make_tool_defs("web_search")),
         patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
-        patch("agent.process_bootstrap.OpenAI"),
+        patch("hermes_agent.agent.process_bootstrap.OpenAI"),
     ):
         a = AIAgent(
             api_key="test-key-1234567890",
@@ -277,15 +277,15 @@ class TestPreApiLockDeferDoesNotBurnBudget:
 
         with (
             patch(
-                "agent.turn_context.estimate_request_tokens_rough",
+                "hermes_agent.agent.turn_context.estimate_request_tokens_rough",
                 return_value=10,
             ),
             patch(
-                "agent.model_metadata.estimate_request_tokens_rough",
+                "hermes_agent.agent.model_metadata.estimate_request_tokens_rough",
                 return_value=500_000,
             ),
             patch(
-                "agent.model_metadata.estimate_messages_tokens_rough",
+                "hermes_agent.agent.model_metadata.estimate_messages_tokens_rough",
                 return_value=500_000,
             ),
             patch.object(agent, "_compress_context", side_effect=_lock_then_success),

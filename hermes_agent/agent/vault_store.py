@@ -10,7 +10,7 @@ Design notes:
 - Follows the repo's "default frictionless, 0600 files OK" policy: the key
   file and vault file are created 0600 under ``<HERMES_HOME>/vault/``.
   ``vault.key_storage: keychain`` (opt-in) keeps the key in the OS keychain
-  instead (agent/vault_keychain.py); ``hermes vault key migrate`` moves it.
+  instead (hermes_agent/agent/vault_keychain.py); ``hermes vault key migrate`` moves it.
 - Ported design (opaque-handle vault fill) from Merit-Systems/OpenInstinct
   (MIT): lib/manager/server/secret-store.ts + vault services.
 - Three item kinds: ``login`` (password-only secret), ``payment`` (card fields) and
@@ -43,7 +43,7 @@ VAULT_KINDS = ("login", "payment", "address")
 LOGIN_IDENTIFIER_TYPES = ("email", "phone", "username")
 
 # Canonical secret-payload fields per non-login kind. Each maps to the WHATWG autocomplete token the
-# browser fill targets (agent/vault_login_classifier.py); the Desktop Add dialog and `hermes vault add`
+# browser fill targets (hermes_agent/agent/vault_login_classifier.py); the Desktop Add dialog and `hermes vault add`
 # both write these names, so the fill never has to guess a user's ad-hoc field naming.
 PAYMENT_FIELDS = {
     "card_number": "cc-number", "cardholder_name": "cc-name", "exp_month": "cc-exp-month",
@@ -215,7 +215,7 @@ class VaultStore:
         self._vault_path = self._base / "vault.json.enc"
         self._key_path = self._base / "vault.key"
         # Keychain mode (vault.key_storage: keychain) keeps only this non-secret pointer beside the
-        # ciphertext; agent/vault_keychain.py owns the entry it names.
+        # ciphertext; hermes_agent/agent/vault_keychain.py owns the entry it names.
         self._keyref_path = self._base / "vault.keyref"
 
     # -- key / crypto ------------------------------------------------------
@@ -274,7 +274,7 @@ class VaultStore:
         """``vault.key`` when present (the legacy layout wins), else the keychain entry ``vault.keyref``
         names, else a new key for a vault that has no items yet. Never mints a key over ciphertext:
         that would make the saved items unrecoverable for good."""
-        from agent import vault_keychain as kc
+        from hermes_agent.agent import vault_keychain as kc
 
         self._ensure_dir()
         if self._key_path.exists():
@@ -314,7 +314,7 @@ class VaultStore:
     def _create_key(self) -> bytes:
         from cryptography.fernet import Fernet
 
-        from agent import vault_keychain as kc
+        from hermes_agent.agent import vault_keychain as kc
 
         key = Fernet.generate_key()
         if configured_key_storage() == "keychain":
@@ -344,7 +344,7 @@ class VaultStore:
         Returns the new entry's ref (the caller deletes exactly that entry if publication fails), or
         None when nothing was shared. Raises VaultError when the keychain cannot be read or written:
         the clone must not be published sharing the source's entry."""
-        from agent import vault_keychain as kc
+        from hermes_agent.agent import vault_keychain as kc
 
         ref = kc.read_ref(self._keyref_path)
         if ref is None or self._key_path.exists():
@@ -371,7 +371,7 @@ class VaultStore:
         creation) its own keychain entry. Never deletes the entry it came from: another copy may still
         depend on it. Raises KeychainUnavailable only when the shared entry cannot be read; if the new
         entry cannot be written, the shared one keeps serving."""
-        from agent import vault_keychain as kc
+        from hermes_agent.agent import vault_keychain as kc
 
         if kc.owns(ref, self._base):
             return ref
@@ -410,7 +410,7 @@ class VaultStore:
 
     def key_location(self) -> dict[str, Any]:
         """Where this vault's key lives (never the key itself), for ``hermes vault key``."""
-        from agent import vault_keychain as kc
+        from hermes_agent.agent import vault_keychain as kc
 
         ref = kc.read_ref(self._keyref_path)
         if self._key_path.exists():
@@ -431,7 +431,7 @@ class VaultStore:
             return self._migrate_to_keychain() if target == "keychain" else self._migrate_to_file()
 
     def _migrate_to_keychain(self) -> str:
-        from agent import vault_keychain as kc
+        from hermes_agent.agent import vault_keychain as kc
 
         existing = kc.read_ref(self._keyref_path)
         if not self._key_path.exists():
@@ -473,7 +473,7 @@ class VaultStore:
         return "keychain"
 
     def _migrate_to_file(self) -> str:
-        from agent import vault_keychain as kc
+        from hermes_agent.agent import vault_keychain as kc
 
         ref = kc.read_ref(self._keyref_path)
         if self._key_path.exists():
@@ -502,7 +502,7 @@ class VaultStore:
     def _release_ref(self, ref: dict) -> None:
         """The file holds the key now: drop the keychain copy. An entry this vault does not own (copied
         pointer) is left alone; if deleting ours fails, the pointer stays so a rerun can finish."""
-        from agent import vault_keychain as kc
+        from hermes_agent.agent import vault_keychain as kc
 
         if kc.owns(ref, self._base) and not kc.delete_key(ref):
             return

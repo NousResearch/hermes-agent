@@ -20,7 +20,7 @@ import pytest
 
 
 def _make_anthropic_agent(**kwargs):
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     defaults = dict(
         api_key="test-key",
@@ -71,7 +71,7 @@ def _tool_use_start_event(name="write_file"):
 class TestAnthropicMidToolCallStreamDrop:
     def test_tool_use_without_stop_reason_raises_empty_stream(self):
         """The #80498-sibling shape: tool_use block present, stop_reason None."""
-        from agent.chat_completion_helpers import EmptyStreamError
+        from hermes_agent.agent.chat_completion_helpers import EmptyStreamError
 
         dropped = MagicMock()
         dropped.content = [_tool_use_block()]
@@ -106,7 +106,7 @@ class TestAnthropicMidToolCallStreamDrop:
     def test_text_only_message_without_message_stop_raises_empty_stream(self):
         """No tool_use block and no message_stop -> the stream was cut short, so
         the message_stop gate (#121320) raises instead of returning the partial."""
-        from agent.chat_completion_helpers import EmptyStreamError
+        from hermes_agent.agent.chat_completion_helpers import EmptyStreamError
 
         text_only = MagicMock()
         text_only.content = [SimpleNamespace(type="text", text="partial answer")]

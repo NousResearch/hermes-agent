@@ -4,9 +4,9 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from agent.error_classifier import classify_api_error
-from agent.route_verdicts import route_visit
-from agent.turn_retry_state import TurnRetryState
+from hermes_agent.agent.error_classifier import classify_api_error
+from hermes_agent.agent.route_verdicts import route_visit
+from hermes_agent.agent.turn_retry_state import TurnRetryState
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +51,7 @@ def _recover_stale_codex_reasoning(
         )
     ):
         return False
-    from agent.turn_recovery import _vlines  # facade owns the verbose printer; late import breaks the cycle
+    from hermes_agent.agent.turn_recovery import _vlines  # facade owns the verbose printer; late import breaks the cycle
 
     transport = agent._get_transport()
     if transport is not None and (removed := transport.drop_unverified_replay(messages, api_messages)):

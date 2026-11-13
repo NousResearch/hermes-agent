@@ -7,7 +7,7 @@ platform config).
 """
 from __future__ import annotations
 
-from agent.i18n import t
+from hermes_agent.agent.i18n import t
 
 
 def _box(title: str, width: int) -> list[str]:

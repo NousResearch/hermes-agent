@@ -159,9 +159,9 @@ async def _run_once(monkeypatch, tmp_path, agent_cls, session_id):
     fake_dotenv.load_dotenv = lambda *args, **kwargs: None
     monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
 
-    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent = types.ModuleType("hermes_agent.run_agent")
     fake_run_agent.AIAgent = agent_cls
-    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+    monkeypatch.setitem(sys.modules, "hermes_agent.run_agent", fake_run_agent)
 
     adapter = ProgressCaptureAdapter()
     runner = _make_runner(adapter)
@@ -253,7 +253,7 @@ async def test_progress_suppressed_when_agent_is_interrupted(monkeypatch, tmp_pa
 def test_partial_site_code_result_is_delivered_verbatim_not_double_wrapped():
     """A truncated-tool-call exit already carries the curated site copy; the gateway must not
     prefix it with 'I had to stop before finishing:' and cut it at 200 chars."""
-    from agent.turn_failure_copy import site_copy
+    from hermes_agent.agent.turn_failure_copy import site_copy
     from hermes_agent.gateway.run import _normalize_empty_agent_response
     curated = site_copy("truncated")
     result = {"final_response": None, "messages": [], "api_calls": 2, "completed": False, "partial": True,

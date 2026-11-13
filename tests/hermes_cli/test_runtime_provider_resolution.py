@@ -665,7 +665,7 @@ def test_real_openai_key_is_never_routed_or_sent_to_openrouter(monkeypatch):
     from hermes_cli.runtime_provider_backends import _resolve_openrouter_runtime
     monkeypatch.setattr(rp, "_get_model_config", dict)
     monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"model": {}})
-    monkeypatch.setattr("agent.bedrock_adapter.has_aws_credentials", lambda *_a, **_kw: False)
+    monkeypatch.setattr("hermes_agent.agent.bedrock_adapter.has_aws_credentials", lambda *_a, **_kw: False)
     for var in ("OPENAI_BASE_URL", "OPENROUTER_BASE_URL", "OPENROUTER_API_KEY", "CUSTOM_BASE_URL"):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setenv("OPENAI_API_KEY", "sk-proj-real-openai-key")
@@ -1681,7 +1681,7 @@ class TestAzureAnthropicEnvVarHint:
             called["resolve_anthropic_token"] = True
             return "token-from-resolver"
         monkeypatch.setattr(
-            "agent.anthropic_credentials.resolve_anthropic_token",
+            "hermes_agent.agent.anthropic_credentials.resolve_anthropic_token",
             _fake_resolve,
         )
 
@@ -1947,7 +1947,7 @@ def _patch_bedrock(monkeypatch, config_default=""):
     ``model.default`` — kept non-Claude here to prove ``target_model`` (not the
     stale config default) drives the api_mode decision.
     """
-    import agent.bedrock_adapter as ba
+    import hermes_agent.agent.bedrock_adapter as ba
 
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "bedrock")
     monkeypatch.setattr(rp, "_get_model_config", lambda: {"default": config_default})

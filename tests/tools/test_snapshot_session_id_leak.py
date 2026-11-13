@@ -38,7 +38,7 @@ from hermes_agent.tools.environments.base_session_env import (
 def test_regex_matches_bridged_session_vars():
     rx = re.compile(_SNAPSHOT_EXCLUDED_ENV_REGEX)
     # Every var the gateway bridges, and the delegate_task marker, must be excluded.
-    from agent.delegation_context import DELEGATED_CHILD_ENV_MARKER
+    from hermes_agent.agent.delegation_context import DELEGATED_CHILD_ENV_MARKER
     from hermes_agent.gateway.session_context import _VAR_MAP
 
     for name in (*_VAR_MAP, DELEGATED_CHILD_ENV_MARKER):
@@ -102,7 +102,7 @@ def test_shared_snapshot_no_cross_session_leak(tmp_path):
 def test_export_dump_drops_every_bridged_var_and_the_delegation_marker():
     """Run the real dump: nothing the gateway bridges per command, nor the
     delegate_task marker, may survive ``export -p``; ordinary exports must."""
-    from agent.delegation_context import DELEGATED_CHILD_ENV_MARKER
+    from hermes_agent.agent.delegation_context import DELEGATED_CHILD_ENV_MARKER
     from hermes_agent.gateway.session_context import _VAR_MAP
 
     scoped = [*_VAR_MAP, DELEGATED_CHILD_ENV_MARKER]
@@ -120,7 +120,7 @@ def test_export_dump_drops_every_bridged_var_and_the_delegation_marker():
 def test_snapshot_does_not_turn_later_commands_into_delegated_children(tmp_path):
     """A snapshot re-dumped during a delegated child's command must not re-export
     the marker into the parent's next ``source`` (#90782)."""
-    from agent.delegation_context import DELEGATED_CHILD_ENV_MARKER, delegated_child_context
+    from hermes_agent.agent.delegation_context import DELEGATED_CHILD_ENV_MARKER, delegated_child_context
     from hermes_agent.tools.environments.local import LocalEnvironment
 
     probe = f'printf "[${{{DELEGATED_CHILD_ENV_MARKER}+set}}]"'

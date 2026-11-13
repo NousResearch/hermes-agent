@@ -2,14 +2,14 @@
 
 The delta-filter contract spans three pieces:
 
-  1. ``agent.lsp.manager._diag_key`` — strict equality key including
+  1. ``hermes_agent.agent.lsp.manager._diag_key`` — strict equality key including
      the diagnostic's position range.  Two diagnostics with the same
      content but different lines are NOT equal under this key (they
      are genuinely different diagnostics).
-  2. ``agent.lsp.range_shift.build_line_shift`` — derives a function
+  2. ``hermes_agent.agent.lsp.range_shift.build_line_shift`` — derives a function
      mapping pre-edit line numbers to post-edit line numbers from a
      pre/post text pair.
-  3. ``agent.lsp.manager.LSPService.get_diagnostics_sync(line_shift=…)``
+  3. ``hermes_agent.agent.lsp.manager.LSPService.get_diagnostics_sync(line_shift=…)``
      — applies the shift to baseline diagnostics before computing the
      set-difference, so pre-existing errors at shifted lines hash
      equal to their post-edit counterparts and get filtered out.
@@ -19,9 +19,9 @@ These tests exercise the contract at the unit level; the E2E case
 """
 from __future__ import annotations
 
-from agent.lsp.client import _diagnostic_key
-from agent.lsp.manager import _diag_key
-from agent.lsp.range_shift import (
+from hermes_agent.agent.lsp.client import _diagnostic_key
+from hermes_agent.agent.lsp.manager import _diag_key
+from hermes_agent.agent.lsp.range_shift import (
     build_line_shift,
     shift_baseline,
     shift_diagnostic_range,

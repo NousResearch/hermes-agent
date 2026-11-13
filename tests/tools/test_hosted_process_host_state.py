@@ -78,7 +78,7 @@ def test_a_local_background_start_still_writes_the_checkpoint(tmp_path):
 def test_a_remote_kernel_command_on_a_later_turn_runs_under_that_turns_scope():
     """The kernel record keeps the scope of the turn that spawned it; a later turn of the same
     sandbox runs its kernel commands under its own scope (and fence), not the spawning turn's."""
-    from agent.runtime_scope import bind_state
+    from hermes_agent.agent.runtime_scope import bind_state
     from hermes_scope import Fence
     from hermes_agent.tools.code_kernel_remote import RemoteKernel
     from hermes_agent.tools.environments.sandbox_scope import ScopedEnvironment, sandbox_identity

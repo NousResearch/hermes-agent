@@ -3,7 +3,7 @@
 import json
 from types import SimpleNamespace
 
-from agent import redact
+from hermes_agent.agent import redact
 from hermes_agent.tools import terminal_tool
 
 

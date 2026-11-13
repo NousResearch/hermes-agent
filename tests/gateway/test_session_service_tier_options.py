@@ -18,7 +18,7 @@ async def test_service_tier_choices_use_the_sessions_model_route_and_account(
     tmp_path, monkeypatch, model, provider, base_url, entitled, expected,
 ):
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr('agent.codex_service_tiers.codex_account_offers_tier', lambda *a, **k: entitled)
+    monkeypatch.setattr('hermes_agent.agent.codex_service_tiers.codex_account_offers_tier', lambda *a, **k: entitled)
     store, _, _, owner = _owner(tmp_path / 'owner', monkeypatch, {'model': {'default': 'fixture'}})
     try:
         created = await owner.dispatch({'id': 'create', 'method': 'session.create', 'params': {

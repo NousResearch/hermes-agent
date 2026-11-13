@@ -34,7 +34,7 @@ def two_profiles(tmp_path, monkeypatch):
     homes = {k: tmp_path / "profiles" / k for k in ("a", "b")}
     for home in homes.values():
         home.mkdir(parents=True)
-    monkeypatch.setattr("agent.secret_scope.is_multiplex_active", lambda: True)
+    monkeypatch.setattr("hermes_agent.agent.secret_scope.is_multiplex_active", lambda: True)
     monkeypatch.setattr(core, "_ensure_mcp_sdk", lambda: True)
     monkeypatch.setattr(_config, "_filter_suspicious_mcp_servers", lambda servers: servers)
     ledgers = ("_servers", "_server_scope_keys", "_server_tool_scopes", "_server_connecting",
@@ -122,7 +122,7 @@ def test_same_named_server_with_other_credentials_is_a_separate_connection(two_p
     # HERMES_HOME, so even an equal secret value never shares another profile's child: the
     # adopter gets its own connection running in its own home.
     import sys
-    from agent import secret_scope
+    from hermes_agent.agent import secret_scope
     from hermes_cli import env_loader
     monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", True)
     monkeypatch.setattr(env_loader, "_SECRET_SOURCES", {"FIXTURE_TOKEN": "op"})
@@ -305,7 +305,7 @@ def test_served_profile_without_multiplex_flag_gets_its_own_connection(two_profi
     from hermes_agent.tools.mcp_tool_scope import _resolve_server_key, _server_key
     from hermes_agent.tools.registry import registry
 
-    monkeypatch.setattr("agent.secret_scope.is_multiplex_active", lambda: False)
+    monkeypatch.setattr("hermes_agent.agent.secret_scope.is_multiplex_active", lambda: False)
     cfg_a = {"url": "https://mcp.example/x", "headers": {"Authorization": "Bearer A"}}
     cfg_b = {"url": "https://mcp.example/x", "headers": {"Authorization": "Bearer B"}}
 
@@ -334,7 +334,7 @@ def test_served_profile_check_fn_verdict_does_not_shadow_launch_profile(two_prof
     from hermes_agent.tools import mcp_tool_registration as reg
     from hermes_agent.tools.registry import registry
 
-    monkeypatch.setattr("agent.secret_scope.is_multiplex_active", lambda: False)
+    monkeypatch.setattr("hermes_agent.agent.secret_scope.is_multiplex_active", lambda: False)
     cfg_a = {"url": "https://mcp.example/x", "headers": {"Authorization": "Bearer A"}}
     srv_a = _server("x", cfg_a)
     with patch("hermes_constants.get_hermes_home_override", return_value=None):
@@ -361,7 +361,7 @@ def test_launch_profile_pruning_a_server_keeps_served_profiles_same_named_connec
     import hermes_agent.tools.mcp_tool as core
     from hermes_agent.tools import mcp_tool_discovery as disc, mcp_tool_lifecycle as lifecycle, mcp_tool_loop as loop
 
-    monkeypatch.setattr("agent.secret_scope.is_multiplex_active", lambda: False)
+    monkeypatch.setattr("hermes_agent.agent.secret_scope.is_multiplex_active", lambda: False)
     cfg = {"url": "https://mcp.example/x", "headers": {"Authorization": "Bearer shared"}}
 
     scope_b = two_profiles("b")
@@ -403,7 +403,7 @@ def test_adopter_scope_setup_failure_leaks_no_override_and_continues(two_profile
     """A corrupt/removed adopter home raising inside ``build_profile_secret_scope`` must
     not leak that adopter's HERMES_HOME override into the caller's context, and the
     remaining adopters still get their re-registration pass."""
-    import agent.secret_scope as ss
+    import hermes_agent.agent.secret_scope as ss
     import hermes_agent.tools.mcp_tool as core
     from hermes_agent.tools import mcp_tool_discovery as disc, mcp_tool_lifecycle as lifecycle
 

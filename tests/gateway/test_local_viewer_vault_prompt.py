@@ -51,7 +51,7 @@ def _answer(peer, method, value):
 
 @pytest.mark.parametrize(('platform', 'installed'), [(Platform.LOCAL, True), (Platform.TELEGRAM, False)])
 def test_scope_installs_the_callbacks_only_for_local_viewer_turns_and_restores_them(platform, installed):
-    from agent.vault_backends import unlock
+    from hermes_agent.agent.vault_backends import unlock
     from hermes_agent.gateway.session_vault_prompt import vault_prompt_scope
     events, _ = _events()
     before = (unlock.get_unlock_prompt_callback(), unlock.get_save_login_prompt_callback(),
@@ -68,7 +68,7 @@ def test_scope_installs_the_callbacks_only_for_local_viewer_turns_and_restores_t
 
 
 def test_code_request_reaches_the_viewer_and_the_code_never_rides_the_event_stream():
-    from agent.vault_backends import unlock
+    from hermes_agent.agent.vault_backends import unlock
     from hermes_agent.gateway.session_vault_prompt import vault_prompt_scope
     events, peer = _events()
     out = {}
@@ -87,7 +87,7 @@ def test_code_request_reaches_the_viewer_and_the_code_never_rides_the_event_stre
 
 def test_tool_worker_threads_inherit_the_code_prompt():
     """browser_vault runs on a tool worker when calls run in parallel; the callbacks must reach it."""
-    from agent.vault_backends import unlock
+    from hermes_agent.agent.vault_backends import unlock
     from hermes_agent.gateway.session_vault_prompt import vault_prompt_scope
     from hermes_agent.tools.thread_context import propagate_context_to_thread
     events, _ = _events()
@@ -107,7 +107,7 @@ def test_tool_worker_threads_inherit_the_code_prompt():
     ('', None),
 ])
 def test_save_login_parses_the_cards_json_answer(value, expected):
-    from agent.vault_backends import unlock
+    from hermes_agent.agent.vault_backends import unlock
     from hermes_agent.gateway.session_vault_prompt import vault_prompt_scope
     events, peer = _events()
     out = {}
@@ -123,7 +123,7 @@ def test_save_login_parses_the_cards_json_answer(value, expected):
 
 
 def test_unlock_prompt_returns_the_master_password():
-    from agent.vault_backends import unlock
+    from hermes_agent.agent.vault_backends import unlock
     from hermes_agent.gateway.session_vault_prompt import vault_prompt_scope
     events, peer = _events()
     out = {}
@@ -140,7 +140,7 @@ def test_unlock_prompt_returns_the_master_password():
 
 
 def test_interrupt_withdraws_the_code_card():
-    from agent.vault_backends import unlock
+    from hermes_agent.agent.vault_backends import unlock
     from hermes_agent.gateway.session_vault_prompt import vault_prompt_scope
     events, peer = _events()
     agent = SimpleNamespace(_interrupt_requested=False)
@@ -160,7 +160,7 @@ def test_interrupt_withdraws_the_code_card():
 
 
 def test_no_attached_viewer_returns_at_once():
-    from agent.vault_backends import unlock
+    from hermes_agent.agent.vault_backends import unlock
     from hermes_agent.gateway.session_events import SessionEvents
     from hermes_agent.gateway.session_vault_prompt import vault_prompt_scope
     started = time.monotonic()
@@ -216,7 +216,7 @@ def test_enter_code_in_a_desktop_chat_asks_the_viewer_and_fills_the_page():
 
 
 def test_closing_the_session_locks_only_the_managers_it_unlocked():
-    from agent.vault_backends import unlock
+    from hermes_agent.agent.vault_backends import unlock
     from hermes_agent.gateway.session_vault_prompt import release_unlocks, vault_prompt_scope
     events, _ = _events()
     try:
@@ -235,7 +235,7 @@ def test_closing_the_session_locks_only_the_managers_it_unlocked():
 def test_a_manager_unlocked_on_a_tool_worker_is_released_with_its_session():
     """browser_vault often runs on a tool worker (parallel calls): the unlock owner must cross that boundary
     with the callbacks, or closing the chat leaves the manager unlocked until its idle timeout."""
-    from agent.vault_backends import unlock
+    from hermes_agent.agent.vault_backends import unlock
     from hermes_agent.gateway.session_vault_prompt import release_unlocks, vault_prompt_scope
     from hermes_agent.tools.thread_context import propagate_context_to_thread
     events, _ = _events()
@@ -255,7 +255,7 @@ def test_a_manager_unlocked_on_a_tool_worker_is_released_with_its_session():
 def test_deleting_a_chat_locks_the_managers_it_unlocked(monkeypatch):
     """Delete, the owner-run prune and onboarding cleanup retire the live session without the
     viewer-close settle, so retiring it locks what the chat unlocked. Other chats keep theirs."""
-    from agent.vault_backends import unlock
+    from hermes_agent.agent.vault_backends import unlock
     from hermes_agent.gateway import session_local_mcp, session_policy, session_worker_construct
     from hermes_agent.gateway.session_mutations import retire_live_sessions
     from hermes_agent.gateway.session_vault_prompt import vault_prompt_scope

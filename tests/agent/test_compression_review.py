@@ -25,8 +25,8 @@ import time
 
 import pytest
 
-import agent.conversation_compression as cc
-from agent.conversation_compression import (
+import hermes_agent.agent.conversation_compression as cc
+from hermes_agent.agent.conversation_compression import (
     CompressionCommitFence,
     run_compress_context_with_progress_timeout,
 )
@@ -222,7 +222,7 @@ class TestF2HostUnwindRevokesAdmission:
 class TestF4CooldownClearOrdering:
     def test_cancelled_attempt_cannot_clear_failure_cooldown(self):
         """Fence check ordered BEFORE cooldown-clear (review F4 ordering)."""
-        from agent.context_compressor import ContextCompressor
+        from hermes_agent.agent.context_compressor import ContextCompressor
 
         class _FakeCompressor:
             _summary_failure_cooldown_until = 12345.0
@@ -395,7 +395,7 @@ class TestF6ExecutorSaturation:
             session_id = "F6_PRESTART_FENCE"
             db.create_session(session_id, source="cli")
             with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
-                from run_agent import AIAgent
+                from hermes_agent.run_agent import AIAgent
 
                 agent = AIAgent(
                     api_key="test-key",

@@ -16,7 +16,7 @@ NOT in ``available`` until the refresh has run.
 
 import threading
 
-from agent.credential_pool import CredentialPool, PooledCredential
+from hermes_agent.agent.credential_pool import CredentialPool, PooledCredential
 
 
 def _entry(entry_id: str) -> PooledCredential:

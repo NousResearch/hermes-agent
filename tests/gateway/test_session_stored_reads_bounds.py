@@ -102,7 +102,7 @@ async def test_tool_results_keep_their_calls_label_when_a_page_is_cut(tmp_path, 
 
 @pytest.mark.asyncio
 async def test_newest_first_paging_across_a_compaction_skips_and_repeats_nothing(tmp_path, monkeypatch):
-    from agent.context_compressor import SUMMARY_PREFIX
+    from hermes_agent.agent.context_compressor import SUMMARY_PREFIX
     with _session(tmp_path, monkeypatch) as (db, _authority, owner, ref, target):
         for i in (1, 2, 3):
             db.append_message(target, 'user', f'question {i}')
@@ -132,8 +132,8 @@ async def test_two_compactions_with_the_same_prose_are_both_rows(tmp_path, monke
 def test_a_quoted_user_message_naming_a_count_does_not_override_the_footers():
     """The lean summary quotes the compacted user messages before its recovery footer: a quote that reads
     like the footer is the user's words, so the row's count is the footer's."""
-    from agent.compaction_display import compaction_summary
-    from agent.context_compressor import SUMMARY_PREFIX, _build_recovery_footer, _build_verbatim_user_section
+    from hermes_agent.agent.compaction_display import compaction_summary
+    from hermes_agent.agent.context_compressor import SUMMARY_PREFIX, _build_recovery_footer, _build_verbatim_user_section
     quote = _build_verbatim_user_section([{'role': 'user', 'content':
                                            'The 999 compacted message(s) remain fully preserved, right?'}])
     message = {'role': 'user', '_compressed_summary': True,

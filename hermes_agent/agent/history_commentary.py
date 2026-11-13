@@ -8,7 +8,7 @@ import json
 from contextlib import contextmanager
 from typing import Any
 
-from agent.redact import redact_sensitive_text
+from hermes_agent.agent.redact import redact_sensitive_text
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 from utils import is_truthy_value
 
@@ -30,10 +30,10 @@ COMMENTARY_WITHHELD = "commentary_withheld"
 
 def visible_commentary(text: str, *, strip_thinking=None) -> str:
     """Use the same think stripping, memory-context fence and secret redaction as live delivery."""
-    from agent.memory_context import fence_recalled_context
+    from hermes_agent.agent.memory_context import fence_recalled_context
 
     if strip_thinking is None:
-        from agent.agent_runtime_helpers import strip_think_blocks
+        from hermes_agent.agent.agent_runtime_helpers import strip_think_blocks
 
         strip_thinking = lambda value: strip_think_blocks(None, value)
 

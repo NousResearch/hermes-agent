@@ -13,7 +13,7 @@ import hashlib
 import shutil
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
-from agent.skill_utils import is_excluded_skill_path
+from hermes_agent.agent.skill_utils import is_excluded_skill_path
 from hermes_agent.tools.skills_guard import ScanResult, content_hash
 from hermes_agent.tools.skills_hub_github import GitHubAuth
 from hermes_agent.tools.skills_hub_models import (

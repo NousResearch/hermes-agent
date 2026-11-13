@@ -52,7 +52,7 @@ def test_solstice_is_off_every_discovery_surface_until_signed_in_but_always_reso
 def test_brokered_opaque_bearer_rotates_on_stored_expiry_and_keeps_the_refresh_token(monkeypatch, tmp_path, request):
     """Google access tokens are opaque (no JWT ``exp``): the pool must rotate on ``expires_at_ms``, through the
     plugin's broker instead of a token URL, and keep the refresh token when the response omits it."""
-    from agent.credential_pool import load_pool
+    from hermes_agent.agent.credential_pool import load_pool
 
     home = tmp_path / "hermes"
     home.mkdir()
@@ -83,7 +83,7 @@ def test_brokered_opaque_bearer_rotates_on_stored_expiry_and_keeps_the_refresh_t
 
     # A grant the broker rejects is DEAD and stays DEAD through the inference 401 that follows (never re-benched
     # as EXHAUSTED, which would replay the dead token every cooldown).
-    from agent.credential_pool import STATUS_DEAD
+    from hermes_agent.agent.credential_pool import STATUS_DEAD
     from hermes_cli.auth_constants import AuthError
 
     def dead_broker(grant: dict) -> dict:

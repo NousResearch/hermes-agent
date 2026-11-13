@@ -45,14 +45,14 @@ class TestShellHooksWindowsPaths:
 
     @pytest.mark.platforms("windows")
     def test_command_script_path_keeps_backslashes(self):
-        from agent.shell_hooks import _command_script_path
+        from hermes_agent.agent.shell_hooks import _command_script_path
 
         path = _command_script_path(r"C:\hooks\guard.py --strict")
         assert path == r"C:\hooks\guard.py"
 
     @pytest.mark.platforms("windows")
     def test_script_is_executable_finds_real_file(self, tmp_path):
-        from agent.shell_hooks import script_is_executable
+        from hermes_agent.agent.shell_hooks import script_is_executable
 
         script = tmp_path / "hook.py"
         script.write_text("print('ok')\n", encoding="utf-8")
@@ -67,7 +67,7 @@ class TestWindowsMarketingVersion:
 
     @pytest.mark.platforms("windows")
     def test_matches_build_number(self):
-        from agent.prompt_builder import _windows_marketing_version
+        from hermes_agent.agent.prompt_builder import _windows_marketing_version
 
         build = sys.getwindowsversion().build
         expected = "11" if build >= 22000 else "10"
@@ -189,7 +189,7 @@ class TestSkillHashSymmetry:
 class TestLineEndingPreservation:
     """Pin LF preservation on Windows write/patch paths.
 
-    A live Windows session saw a repo-LF file (agent/prompt_builder.py)
+    A live Windows session saw a repo-LF file (hermes_agent/agent/prompt_builder.py)
     come back full-CRLF after an edit, exploding the git diff to every
     line (4699-line churn). The flip is not reproducible through the
     current tool APIs — these tests pin the correct behavior so any

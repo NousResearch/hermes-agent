@@ -1,4 +1,4 @@
-"""Tests for agent/curator.py — orchestrator, idle gating, state transitions.
+"""Tests for hermes_agent/agent/curator.py — orchestrator, idle gating, state transitions.
 
 LLM spawning is never exercised here — `_run_llm_review` is monkeypatched so
 tests run fully offline and the curator module doesn't need real credentials.
@@ -25,7 +25,7 @@ def curator_env(tmp_path, monkeypatch):
 
     import hermes_agent.tools.skill_usage as usage
     importlib.reload(usage)
-    from agent import curator
+    from hermes_agent.agent import curator
     importlib.reload(curator)
 
     # Neutralize the real LLM pass by default — tests opt in per-case.
@@ -875,7 +875,7 @@ def test_review_fork_forwards_runtime_pool_and_overrides(curator_env, monkeypatc
         "hermes_cli.runtime_provider.resolve_runtime_provider",
         _fake_resolve_runtime_provider,
     )
-    monkeypatch.setattr("run_agent.AIAgent", _StubAgent)
+    monkeypatch.setattr("hermes_agent.run_agent.AIAgent", _StubAgent)
 
     meta = curator._run_llm_review("review prompt")
 
@@ -914,7 +914,7 @@ def test_review_fork_receives_configured_reasoning(curator_env, monkeypatch):
         lambda **kwargs: {"provider": "openai-api", "api_key": "k", "base_url": "https://api.openai.com/v1",
                           "api_mode": "codex_responses"},
     )
-    monkeypatch.setattr("run_agent.AIAgent", _StubAgent)
+    monkeypatch.setattr("hermes_agent.run_agent.AIAgent", _StubAgent)
 
     meta = curator._run_llm_review("review prompt")
 
@@ -959,7 +959,7 @@ def test_review_fork_uses_runtime_model_and_output_cap(curator_env, monkeypatch)
         def close(self):
             pass
 
-    monkeypatch.setattr("run_agent.AIAgent", _StubAgent)
+    monkeypatch.setattr("hermes_agent.run_agent.AIAgent", _StubAgent)
     result = curator._run_llm_review("review")
 
     assert result["error"] is None
@@ -1006,7 +1006,7 @@ def test_review_fork_restricts_toolsets_to_skills_only(curator_env, monkeypatch)
         def close(self):
             pass
 
-    monkeypatch.setattr("run_agent.AIAgent", _StubAgent)
+    monkeypatch.setattr("hermes_agent.run_agent.AIAgent", _StubAgent)
 
     meta = curator._run_llm_review("review prompt")
 
@@ -1071,7 +1071,7 @@ def test_review_fork_seeds_shared_read_marks(curator_env, monkeypatch):
     satisfied the write guard in another, and every ``skill_manage`` patch was
     refused with "current SKILL.md content has not been loaded in this review
     turn". The background-review fork seeds a shared store up front
-    (``agent/background_review.py``); the curator fork must do the same so
+    (``hermes_agent/agent/background_review.py``); the curator fork must do the same so
     every copied worker context shares ONE store.
     """
     curator = curator_env["curator"]
@@ -1113,7 +1113,7 @@ def test_review_fork_seeds_shared_read_marks(curator_env, monkeypatch):
         def close(self):
             pass
 
-    monkeypatch.setattr("run_agent.AIAgent", _StubAgent)
+    monkeypatch.setattr("hermes_agent.run_agent.AIAgent", _StubAgent)
     result = curator._run_llm_review("review")
 
     assert result["error"] is None
@@ -1127,7 +1127,7 @@ def test_review_fork_seeds_shared_read_marks(curator_env, monkeypatch):
 def test_threaded_llm_pass_keeps_callers_profile_scope(curator_env, tmp_path, monkeypatch):
     """#125032: the daemon ``curator-review`` thread must inherit the caller's contextvars (home
     override + secret scope), else on a multiplexed gateway it runs unscoped against the ROOT home."""
-    from agent import secret_scope as ss
+    from hermes_agent.agent import secret_scope as ss
     from hermes_constants import get_hermes_home, reset_hermes_home_override, set_hermes_home_override
 
     c, root = curator_env["curator"], curator_env["home"]

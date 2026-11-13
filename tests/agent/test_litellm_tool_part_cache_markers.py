@@ -10,7 +10,7 @@ so the part-level form stays on for it.
 
 import copy
 
-from agent.prompt_caching import (
+from hermes_agent.agent.prompt_caching import (
     apply_anthropic_cache_control,
     build_prompt_cache_plan,
     envelope_tool_part_cache_markers_supported,

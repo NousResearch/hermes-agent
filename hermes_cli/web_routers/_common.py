@@ -28,7 +28,7 @@ _spawn_hermes_action = late("_spawn_hermes_action", "hermes_cli.web_server_gatew
 
 def client_error(text: Any) -> str:
     """Error text bound for a dashboard client, with credentials force-redacted."""
-    from agent.redact import redact_sensitive_text
+    from hermes_agent.agent.redact import redact_sensitive_text
     return redact_sensitive_text(str(text), force=True)
 
 
@@ -79,7 +79,7 @@ def destructive_profile(profile: Optional[str], route: str) -> Optional[str]:
     """
     if (profile or "").strip():
         return profile
-    from agent.secret_scope import is_multiplex_active
+    from hermes_agent.agent.secret_scope import is_multiplex_active
     if is_multiplex_active():
         raise HTTPException(
             status_code=400,
@@ -164,7 +164,7 @@ def redacted_credential_preview(value: Any) -> Optional[str]:
 
 
 # Legacy bare masks (pre-sentinel pages, older Desktop builds) are recognised by the
-# producer shape of ``agent.redact.mask_secret`` — never by equality to the current
+# producer shape of ``hermes_agent.agent.redact.mask_secret`` — never by equality to the current
 # secret, which would authorise a stale preview after a rotation (#121002).
 _LEGACY_MASK_RE = re.compile(r".{4}\.\.\..{4}")
 
@@ -172,7 +172,7 @@ _LEGACY_MASK_RE = re.compile(r".{4}\.\.\..{4}")
 def is_redacted_credential_preview(submitted: Any) -> bool:
     """Recognize current, stale and legacy dashboard previews by shape alone."""
     value = str(submitted or "")
-    # Any ``«redacted…`` value is already-masked output (the same test agent.redact uses
+    # Any ``«redacted…`` value is already-masked output (the same test hermes_agent.agent.redact uses
     # to skip re-masking): our ``«redacted:…»`` sentinel, ``«redacted-secret»`` and the
     # vault marker ``«redacted-vault-secret»``. Then the legacy bare mask shapes.
     if value.startswith("«redacted"):

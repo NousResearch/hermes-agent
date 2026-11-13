@@ -335,7 +335,7 @@ description: "My custom Python TTS backend"
 
 `__init__.py`：
 ```python
-from agent.tts_provider import TTSProvider
+from hermes_agent.agent.tts_provider import TTSProvider
 
 
 class MyTTSProvider(TTSProvider):
@@ -382,7 +382,7 @@ def register(ctx):
 - `stream(text, *, voice, model, format, **extra)` → 迭代器，产出音频字节用于流式投递（默认抛出 `NotImplementedError`）。
 - `voice_compatible` 属性 → 若你的输出与 Opus 兼容且 gateway 应将其作为语音气泡投递，则设为 `True`（默认 `False` = 普通音频附件）。
 
-完整的抽象基类（含文档字符串）请参阅 `agent/tts_provider.py`。
+完整的抽象基类（含文档字符串）请参阅 `hermes_agent/agent/tts_provider.py`。
 
 ## 语音消息转录（STT）
 

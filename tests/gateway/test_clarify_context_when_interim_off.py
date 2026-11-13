@@ -15,8 +15,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent.agent_runtime_helpers import strip_think_blocks
-from agent.stream_delivery import StreamDeliveryMixin
+from hermes_agent.agent.agent_runtime_helpers import strip_think_blocks
+from hermes_agent.agent.stream_delivery import StreamDeliveryMixin
 from tests.gateway.test_run_progress_topics import _run_with_agent
 
 QUIET = {"display": {"tool_progress": "off", "interim_assistant_messages": False}, "streaming": {"enabled": False}}

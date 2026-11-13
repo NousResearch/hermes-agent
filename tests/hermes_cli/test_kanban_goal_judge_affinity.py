@@ -18,7 +18,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from agent.portal_tags import get_affinity_scope, reset_affinity_scope, set_affinity_scope
+from hermes_agent.agent.portal_tags import get_affinity_scope, reset_affinity_scope, set_affinity_scope
 from hermes_cli import kanban as kanban_cli
 from hermes_agent.tools import kanban_tools
 
@@ -32,7 +32,7 @@ def _task(tid="task-1"):
 
 def _aux_client():
     return patch(
-        "agent.auxiliary_client.get_text_auxiliary_client",
+        "hermes_agent.agent.auxiliary_client.get_text_auxiliary_client",
         return_value=(object(), "test-model"),
     )
 

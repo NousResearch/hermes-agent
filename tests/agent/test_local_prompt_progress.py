@@ -12,7 +12,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from agent.local_prompt_progress import prompt_progress, prompt_progress_percent, with_prompt_progress
+from hermes_agent.agent.local_prompt_progress import prompt_progress, prompt_progress_percent, with_prompt_progress
 
 
 def _delta(**fields):
@@ -68,7 +68,7 @@ class TestPromptProgressHelpers:
 
 
 def _local_agent(provider="llamacpp", base_url="http://127.0.0.1:18434/v1"):
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     agent = AIAgent(api_key="k", base_url=base_url, provider=provider, model="qwen",
                     quiet_mode=True, skip_context_files=True, skip_memory=True)
@@ -78,8 +78,8 @@ def _local_agent(provider="llamacpp", base_url="http://127.0.0.1:18434/v1"):
 
 
 class TestMainStreamProgress:
-    @patch("run_agent.AIAgent._create_request_openai_client")
-    @patch("run_agent.AIAgent._close_request_openai_client")
+    @patch("hermes_agent.run_agent.AIAgent._create_request_openai_client")
+    @patch("hermes_agent.run_agent.AIAgent._close_request_openai_client")
     def test_llamacpp_stream_asks_for_progress_and_skips_progress_chunks(self, _close, mock_create):
         chunks = [_progress_chunk(0), _progress_chunk(500), _progress_chunk(1000),
                   _text_chunk("Hello"), _text_chunk(" there", finish_reason="stop")]
@@ -97,8 +97,8 @@ class TestMainStreamProgress:
         assert response.choices[0].message.content == "Hello there"
         assert "".join(deltas) == "Hello there"
 
-    @patch("run_agent.AIAgent._create_request_openai_client")
-    @patch("run_agent.AIAgent._close_request_openai_client")
+    @patch("hermes_agent.run_agent.AIAgent._create_request_openai_client")
+    @patch("hermes_agent.run_agent.AIAgent._close_request_openai_client")
     def test_cloud_stream_does_not_ask_for_progress(self, _close, mock_create):
         client = MagicMock()
         client.chat.completions.create.return_value = iter([_text_chunk("ok", finish_reason="stop")])
@@ -113,35 +113,35 @@ class TestMainStreamProgress:
 
 class TestNoNonStreamingFallbackForLlamacpp:
     def _call(self, agent):
-        from agent.chat_completion_helpers import _StreamingCall
+        from hermes_agent.agent.chat_completion_helpers import _StreamingCall
 
         return SimpleNamespace(agent=agent, deltas_were_sent={"yes": False}, api_kwargs={"model": "qwen"},
                                _stream_stale_timeout=900.0, result={"error": None, "response": None})
 
     def test_server_error_probe_skipped(self):
-        from agent.chat_completion_helpers import _StreamingCall
+        from hermes_agent.agent.chat_completion_helpers import _StreamingCall
 
         agent = SimpleNamespace(_interrupt_requested=False, provider="llamacpp", base_url="http://127.0.0.1:18434/v1",
                                 api_mode="chat_completions", _stream_5xx_probe_ts=None)
         err = RuntimeError("boom")
         err.status_code = 500
-        with patch("agent.chat_completion_helpers.interruptible_api_call") as probe:
+        with patch("hermes_agent.agent.chat_completion_helpers.interruptible_api_call") as probe:
             assert _StreamingCall._unmask_server_error_with_nonstreaming(self._call(agent), err) is False
         probe.assert_not_called()
 
     def test_streaming_never_disabled(self):
-        from agent.chat_completion_helpers import _StreamingCall
+        from hermes_agent.agent.chat_completion_helpers import _StreamingCall
 
         agent = SimpleNamespace(provider="llamacpp", base_url="http://127.0.0.1:18434/v1",
                                 api_mode="chat_completions", _disable_streaming=False)
-        with patch("agent.chat_completion_helpers._is_provider_stream_empty_frame_error", return_value=True):
+        with patch("hermes_agent.agent.chat_completion_helpers._is_provider_stream_empty_frame_error", return_value=True):
             _StreamingCall._maybe_disable_streaming(self._call(agent), RuntimeError("empty frame"))
         assert agent._disable_streaming is False
 
 
 class TestAuxProgress:
     def test_managed_local_stream_asks_for_progress(self):
-        from agent import auxiliary_client as ac
+        from hermes_agent.agent import auxiliary_client as ac
 
         client = SimpleNamespace(base_url="http://127.0.0.1:18434/v1")
         with patch.object(ac, "_is_managed_local_endpoint", return_value=True):
@@ -152,7 +152,7 @@ class TestAuxProgress:
         assert "extra_body" not in stream_kwargs
 
     def test_progress_chunk_counts_as_forward_progress(self):
-        from agent import auxiliary_client as ac
+        from hermes_agent.agent import auxiliary_client as ac
 
         acc = ac._ChatStreamAccumulator(model="qwen")
         with patch.object(ac, "_notify_aux_progress") as tick:
@@ -165,7 +165,7 @@ class TestAuxProgress:
 
 class TestSleepClock:
     def test_sleep_watch_reports_only_real_sleeps(self):
-        from agent import sleep_clock
+        from hermes_agent.agent import sleep_clock
 
         wall = [1000.0]
         with patch.object(sleep_clock.time, "time", lambda: wall[0]):
@@ -180,13 +180,13 @@ class TestSleepClock:
             assert watch.slept() == 0.0
 
     def test_awake_seconds_moves_forward(self):
-        from agent.sleep_clock import awake_seconds
+        from hermes_agent.agent.sleep_clock import awake_seconds
 
         first = awake_seconds()
         assert awake_seconds() >= first
 
     def test_monitor_moves_stall_clock_past_sleep(self):
-        from agent.chat_completion_stream_monitor import StreamingWaitMonitor
+        from hermes_agent.agent.chat_completion_stream_monitor import StreamingWaitMonitor
 
         mon = StreamingWaitMonitor()
         mon.agent = MagicMock()
@@ -206,8 +206,8 @@ class TestSleepClock:
 
 class TestPromptProgressNotice:
     def _monitor(self, first_chunk_at=None):
-        from agent import chat_completion_wait_notice as wn
-        from agent.chat_completion_stream_monitor import StreamingWaitMonitor
+        from hermes_agent.agent import chat_completion_wait_notice as wn
+        from hermes_agent.agent.chat_completion_stream_monitor import StreamingWaitMonitor
 
         mon = StreamingWaitMonitor()
         mon.agent = MagicMock()
@@ -233,8 +233,8 @@ class TestPromptProgressNotice:
 
 class TestLocalStaleBreakerReset:
     def test_healthy_local_server_gets_one_attempt(self):
-        from agent import chat_completion_helpers as helpers
-        from agent import chat_completion_local as h
+        from hermes_agent.agent import chat_completion_helpers as helpers
+        from hermes_agent.agent import chat_completion_local as h
 
         agent = SimpleNamespace(_consecutive_stale_streams=5)
         with patch.object(h, "_streams_llamacpp", return_value=True), \
@@ -246,7 +246,7 @@ class TestLocalStaleBreakerReset:
             helpers._check_stale_giveup(agent)
 
     def test_closed_breaker_skips_the_health_check(self):
-        from agent import chat_completion_local as h
+        from hermes_agent.agent import chat_completion_local as h
 
         agent = SimpleNamespace(_consecutive_stale_streams=2)
         with patch.object(h, "_streams_llamacpp", return_value=True), \
@@ -256,7 +256,7 @@ class TestLocalStaleBreakerReset:
         assert agent._consecutive_stale_streams == 2
 
     def test_unhealthy_or_cloud_keeps_streak(self):
-        from agent import chat_completion_local as h
+        from hermes_agent.agent import chat_completion_local as h
 
         agent = SimpleNamespace(_consecutive_stale_streams=5)
         with patch.object(h, "_streams_llamacpp", return_value=True), \

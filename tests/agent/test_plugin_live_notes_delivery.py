@@ -18,8 +18,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from agent.plugin_live_notes import queue_plugin_notice
-from run_agent import AIAgent
+from hermes_agent.agent.plugin_live_notes import queue_plugin_notice
+from hermes_agent.run_agent import AIAgent
 from hermes_agent.tools.budget_config import BudgetConfig
 
 NOTE = "[System note: plugin blender was installed and is live in this chat now.]"
@@ -29,7 +29,7 @@ TOOL_OUTPUT = json.dumps({"results": ["a web page about Blender scripting"]})
 
 @pytest.fixture(autouse=True)
 def _no_background_titles(monkeypatch):
-    monkeypatch.setattr("agent.title_generator.maybe_auto_title", lambda *args, **kwargs: None)
+    monkeypatch.setattr("hermes_agent.agent.title_generator.maybe_auto_title", lambda *args, **kwargs: None)
 
 
 def _agent():
@@ -40,9 +40,9 @@ def _agent():
     with (
         patch("hermes_agent.model_tools.get_tool_definitions", return_value=[tool]),
         patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
-        patch("agent.process_bootstrap.OpenAI"),
-        patch("run_agent._hermes_home", home),
-        patch("agent.model_metadata.fetch_model_metadata", return_value={}),
+        patch("hermes_agent.agent.process_bootstrap.OpenAI"),
+        patch("hermes_agent.run_agent._hermes_home", home),
+        patch("hermes_agent.agent.model_metadata.fetch_model_metadata", return_value={}),
     ):
         agent = AIAgent(api_key="test-key", base_url="https://openrouter.ai/api/v1", quiet_mode=True,
                         skip_context_files=True, skip_memory=True)
@@ -133,7 +133,7 @@ def test_the_notice_survives_the_turn_budget_spilling_its_tool_result():
     big = "x" * 20_000
     install = _install_during_tool()
 
-    with patch("agent.tool_executor._budget_for_agent", return_value=BudgetConfig(turn_budget=16_000)):
+    with patch("hermes_agent.agent.tool_executor._budget_for_agent", return_value=BudgetConfig(turn_budget=16_000)):
         _run(agent, "set me up", tool_result=lambda: (install(agent), big)[-1])
 
     tool_row = next(m for m in requests[1] if m.get("role") == "tool")

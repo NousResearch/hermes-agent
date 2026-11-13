@@ -74,7 +74,7 @@ def parse_turn_author(raw: Any) -> Optional[dict[str, Any]]:
         }
         if author["id"] is None and author["name"] is None:
             return None
-        # Runtime-written chain fields of a bot-to-bot delivery (agent/bot_chain.py); never model input.
+        # Runtime-written chain fields of a bot-to-bot delivery (hermes_agent/agent/bot_chain.py); never model input.
         hops = raw.get("hops")
         if isinstance(hops, int) and not isinstance(hops, bool) and 0 < hops <= _MAX_CHAIN_HOPS:
             author["hops"] = hops

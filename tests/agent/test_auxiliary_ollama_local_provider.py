@@ -22,7 +22,7 @@ def _keyless_environment(monkeypatch):
         monkeypatch.delenv(key, raising=False)
     # The key ladder inherits the main config's key on a same-origin match; the placeholder
     # assertions below need that rung empty.
-    with patch("agent.auxiliary_client._read_main_api_key_if_same_origin", return_value=None):
+    with patch("hermes_agent.agent.auxiliary_client._read_main_api_key_if_same_origin", return_value=None):
         yield
 
 
@@ -53,7 +53,7 @@ def test_ollama_lane_with_bare_local_host_resolves_custom_client_under_v1(
 ):
     """The reporter's lane, through the real task-config path: keyless gets the placeholder,
     an explicit key is sent verbatim, and both post to /v1."""
-    from agent import auxiliary_client as ac
+    from hermes_agent.agent import auxiliary_client as ac
 
     if env_openai_key:
         monkeypatch.setenv("OPENAI_API_KEY", env_openai_key)
@@ -69,7 +69,7 @@ def test_ollama_lane_with_bare_local_host_resolves_custom_client_under_v1(
 
 
 def test_v1_tail_applies_only_to_bare_alias_hosts_and_never_doubles():
-    from agent.auxiliary_client import resolve_provider_client
+    from hermes_agent.agent.auxiliary_client import resolve_provider_client
 
     custom, _ = resolve_provider_client(
         "custom", model="m", explicit_base_url="http://127.0.0.1:11434", explicit_api_key="test-key-123",

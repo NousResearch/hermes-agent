@@ -459,9 +459,9 @@ async def test_primary_adapter_busy_origin_uses_routed_privacy(
 ):
     """The primary busy callback bypasses the scoped normal-message handler."""
     from dataclasses import asdict
-    from agent.agent_runtime_helpers import apply_pending_steer_to_tool_results
+    from hermes_agent.agent.agent_runtime_helpers import apply_pending_steer_to_tool_results
     from hermes_constants import get_hermes_home_override
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     home = tmp_path / ".hermes"
     secondary = home / "profiles" / "research"

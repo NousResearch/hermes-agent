@@ -1,4 +1,4 @@
-"""Tests for provider-agnostic billing recovery links (agent/billing_links.py).
+"""Tests for provider-agnostic billing recovery links (hermes_agent/agent/billing_links.py).
 
 Behavior/invariant tests — no snapshotting of the exact URL strings beyond the
 few that are the whole point of the mapping (the host they must land on).
@@ -6,7 +6,7 @@ few that are the whole point of the mapping (the host they must land on).
 
 from __future__ import annotations
 
-from agent.billing_links import (
+from hermes_agent.agent.billing_links import (
     build_billing_block,
     is_nous_inference_route,
 )

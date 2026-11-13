@@ -5,7 +5,7 @@ reaches it, as the lost-turn pause notice already tells Slack users.
 """
 import pytest
 
-from agent.i18n import t
+from hermes_agent.agent.i18n import t
 from hermes_agent.gateway.config import Platform
 from hermes_agent.gateway.session import SessionSource
 from hermes_agent.gateway.slash_commands_session import discard_command_for

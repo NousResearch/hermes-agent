@@ -11,7 +11,7 @@ honest headline.
 
 from types import SimpleNamespace
 
-from agent.manual_compression_feedback import summarize_manual_compression
+from hermes_agent.agent.manual_compression_feedback import summarize_manual_compression
 
 
 def _msgs(n):

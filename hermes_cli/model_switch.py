@@ -17,7 +17,7 @@ from hermes_cli.providers import (
     LLAMACPP_ALIASES, ProviderDef, custom_provider_aliases, determine_api_mode, get_label,
     host_mandated_api_mode, is_aggregator, normalize_provider, resolve_provider_full)
 from hermes_cli.model_normalize import normalize_model_for_provider
-from agent.models_dev import (
+from hermes_agent.agent.models_dev import (
     ModelCapabilities, ModelInfo, get_model_capabilities, get_model_info, list_provider_models)
 from utils import base_url_host_matches, base_url_hostname, base_url_origin
 # Re-exported: callers/tests patch hermes_cli.model_switch.<name>.
@@ -918,7 +918,7 @@ def resolve_display_context_length(
     """Context length to show in /model output.
 
     models.dev reports per-vendor context but provider-enforced limits can be lower (Codex OAuth
-    caps gpt-5.5 at 272k), so ``agent.model_metadata.get_model_context_length`` is authoritative
+    caps gpt-5.5 at 272k), so ``hermes_agent.agent.model_metadata.get_model_context_length`` is authoritative
     (it also honors ``custom_providers[].models.<id>.context_length``); ``model_info.context_window``
     is the fallback. A ``config_context_length`` pin is dropped when the route changed.
 
@@ -929,7 +929,7 @@ def resolve_display_context_length(
     config_context_length = effective_context_pin(
         config_context_length, model, provider, base_url, configured_model, configured_provider, configured_base_url)
     try:
-        from agent.model_metadata import get_model_context_length
+        from hermes_agent.agent.model_metadata import get_model_context_length
         ctx = get_model_context_length(
             model, base_url=base_url or "", api_key=api_key or "", provider=provider or None,
             custom_providers=custom_providers, config_context_length=config_context_length)
@@ -1588,7 +1588,7 @@ def _custom_endpoint_source() -> str:
     ``CUSTOM_BASE_URL``, else the config's ``model.base_url`` when that config backs bare custom.
     Non-empty means a resolved URL matching the mirror came from a configured custom endpoint (two
     env vars pointed at one proxy), so the mirror guard must not call it a fallback."""
-    from agent.secret_scope import get_secret_str
+    from hermes_agent.agent.secret_scope import get_secret_str
     try:
         env_url = (get_secret_str("CUSTOM_BASE_URL", "") or "").strip()
         if env_url:
@@ -1609,7 +1609,7 @@ def _openrouter_mirror_base_url() -> str:
     scope). A guard read, not a credential fetch: a read that fails — unscoped under multiplexing —
     must leave the mirror undetected so its caller keeps the session endpoint, rather than raising
     out of ``switch_model`` where the resolver's own read of the same name is suppressed."""
-    from agent.secret_scope import get_secret_str
+    from hermes_agent.agent.secret_scope import get_secret_str
     try:
         return (get_secret_str("OPENROUTER_BASE_URL", "") or "").strip().rstrip("/")
     except Exception:
@@ -1743,7 +1743,7 @@ def model_derived_api_mode(provider: str, model: str, api_key: str = "") -> Opti
         from providers import get_provider_profile
         profile = get_provider_profile(key)
         if profile is not None:
-            from agent.provider_route_hooks import model_api_mode
+            from hermes_agent.agent.provider_route_hooks import model_api_mode
             return model_api_mode(profile, model, api_key=api_key or "")
     return override(key, model, api_key) if override is not None else None
 
@@ -1766,7 +1766,7 @@ def _build_switch_result(st: _Switch) -> ModelSwitchResult:
         st.base_url = normalize_opencode_base_url(st.target_provider, st.api_mode, st.base_url)
 
     capabilities = get_model_capabilities(st.target_provider, st.new_model, allow_network=True)
-    from agent.native_compaction import resolve_native_compaction_capabilities
+    from hermes_agent.agent.native_compaction import resolve_native_compaction_capabilities
     runtime_capabilities = resolve_native_compaction_capabilities(
         model=st.new_model, base_url=st.base_url, provider=st.target_provider,
         is_codex_backend=st.target_provider.strip().lower() == "openai-codex")
@@ -1988,10 +1988,10 @@ def _scoped_key_env(name: str) -> str:
     if not name:
         return ""
     try:
-        from agent.secret_scope import current_secret_scope, get_secret, is_multiplex_active
+        from hermes_agent.agent.secret_scope import current_secret_scope, get_secret, is_multiplex_active
         if current_secret_scope() is not None or is_multiplex_active():
             return (get_secret(name, "") or "").strip()
-        from agent.credential_pool import get_env_prefer_dotenv
+        from hermes_agent.agent.credential_pool import get_env_prefer_dotenv
         return (get_env_prefer_dotenv(name) or "").strip()
     except Exception:
         return ""

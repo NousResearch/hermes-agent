@@ -10,7 +10,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
-from agent.provider_base import ProviderBase
+from hermes_agent.agent.provider_base import ProviderBase
 
 
 @dataclass

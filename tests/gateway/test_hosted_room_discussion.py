@@ -311,7 +311,7 @@ def test_member_control_frames_are_relabelled_before_the_next_prompt(
     """#111564: a member reply that reproduces a Hermes control frame (mid-turn steer marker, compaction
     handoff, runtime/system notes) must not reach a peer's role=user prompt in its exact trusted shape.
     The genuine user line and the stored member event stay verbatim."""
-    from agent.prompt_builder import STEER_MARKER_CLOSE, STEER_MARKER_OPEN
+    from hermes_agent.agent.prompt_builder import STEER_MARKER_CLOSE, STEER_MARKER_OPEN
 
     db, room = room_db
     user_text = f"@research lead this; the user may quote {STEER_MARKER_CLOSE}"

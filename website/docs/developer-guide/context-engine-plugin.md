@@ -10,7 +10,7 @@ Context engine plugins replace the built-in `ContextCompressor` with an alternat
 
 ## How it works
 
-The agent's context management is built on the `ContextEngine` ABC (`agent/context_engine.py`). The built-in `ContextCompressor` is the default implementation. Plugin engines must implement the same interface.
+The agent's context management is built on the `ContextEngine` ABC (`hermes_agent/agent/context_engine.py`). The built-in `ContextCompressor` is the default implementation. Plugin engines must implement the same interface.
 
 Only **one** context engine can be active at a time. Selection is config-driven:
 
@@ -39,7 +39,7 @@ plugins/context_engine/lcm/
 Your engine must implement these **required** methods:
 
 ```python
-from agent.context_engine import ContextEngine
+from hermes_agent.agent.context_engine import ContextEngine
 
 class LCMEngine(ContextEngine):
 
@@ -331,12 +331,12 @@ context:
   engine: "lcm"   # must match your engine's name property
 ```
 
-The `compression` config block (`compression.threshold`, `compression.protect_last_n`, etc.) is specific to the built-in `ContextCompressor`, with one explicit exception: `compression.model_thresholds` (per-model threshold overrides) is part of the context-engine contract. The host assigns the resolved map to `engine.model_thresholds` *before* the initial `update_model()` call, and the base-class `update_model()` applies it (longest substring match, falling back to the engine's configured threshold). Engines that override `update_model()` own their own compaction policy and may honor or ignore the map — `from agent.context_compressor import resolve_model_threshold` to reuse the same resolution logic. For everything else, your engine should define its own config format if needed, reading from `config.yaml` during initialization.
+The `compression` config block (`compression.threshold`, `compression.protect_last_n`, etc.) is specific to the built-in `ContextCompressor`, with one explicit exception: `compression.model_thresholds` (per-model threshold overrides) is part of the context-engine contract. The host assigns the resolved map to `engine.model_thresholds` *before* the initial `update_model()` call, and the base-class `update_model()` applies it (longest substring match, falling back to the engine's configured threshold). Engines that override `update_model()` own their own compaction policy and may honor or ignore the map — `from hermes_agent.agent.context_compressor import resolve_model_threshold` to reuse the same resolution logic. For everything else, your engine should define its own config format if needed, reading from `config.yaml` during initialization.
 
 ## Testing
 
 ```python
-from agent.context_engine import ContextEngine
+from hermes_agent.agent.context_engine import ContextEngine
 
 def test_engine_satisfies_abc():
     engine = YourEngine(context_length=200000)

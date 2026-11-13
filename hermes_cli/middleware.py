@@ -112,7 +112,7 @@ def apply_tool_request_middleware(
     session_id = str(context.get("session_id") or "")
     skip_relay = bool(context.pop("skip_relay", False))
     if session_id and not skip_relay:
-        from agent import relay_runtime
+        from hermes_agent.agent import relay_runtime
 
         relay_args = relay_runtime.apply_tool_request_intercepts(
             session_id=session_id, tool_name=tool_name, args=current_args)

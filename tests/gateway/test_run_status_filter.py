@@ -5,7 +5,7 @@ Ported from #101011 (Wenfengcheng); the destination set is "anything but a DM" p
 
 import pytest
 
-from agent.conversation_compression import CONTEXT_OVERFLOW_BLOCKED_WARNING_TEMPLATE
+from hermes_agent.agent.conversation_compression import CONTEXT_OVERFLOW_BLOCKED_WARNING_TEMPLATE
 from hermes_agent.gateway.config import Platform
 from hermes_agent.gateway.run import _prepare_gateway_status_message
 

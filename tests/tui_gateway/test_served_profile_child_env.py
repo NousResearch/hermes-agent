@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from agent.secret_scope import set_multiplex_active
+from hermes_agent.agent.secret_scope import set_multiplex_active
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
 _PROBE = ("import json,os;print(json.dumps({k:os.environ.get(k) for k in "
@@ -118,7 +118,7 @@ def test_launch_profile_worker_spawns_with_own_home_after_multiplex_flip(mux_hom
 
 def test_helper_children_resolve_secrets_through_the_served_profile(mux_homes):
     """``key_cmd`` helpers and the browser driver spawned during B's turn see B's key, never A's."""
-    from agent.command_token_source import _mint
+    from hermes_agent.agent.command_token_source import _mint
     from hermes_agent.gateway.run import _profile_runtime_scope
     from hermes_agent.tools.browser_session import build_browser_env
     from hermes_agent.tools.browser_use_cli import _base_subprocess_env

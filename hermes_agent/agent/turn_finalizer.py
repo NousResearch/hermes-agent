@@ -2,7 +2,7 @@
 
 Budget summary, trajectory save, persist, diagnostics, response transforms, result
 assembly, steer drain, memory/skill review. Synchronous, single return. ``logger`` is
-imported lazily from ``agent.conversation_loop`` (no cycle, same logger name)."""
+imported lazily from ``hermes_agent.agent.conversation_loop`` (no cycle, same logger name)."""
 
 from __future__ import annotations
 
@@ -12,15 +12,15 @@ import time
 from contextlib import suppress
 from typing import Any, Callable, List, Optional, Tuple
 
-from agent.codex_responses_adapter import _summarize_user_message_for_log
-from agent.delegation_context import is_dispatcher_owned_worker_context
-from agent.interrupt_control import interrupted_during_api_call_reason
-from agent.turn_failure_copy import exit_reason_failure, stamp_failure
-from agent.context_compressor import _DB_PERSISTED_MARKER
-from agent.message_content import flatten_message_text
-from agent.message_metadata import append_message, stamp_message_timestamp
-from agent.message_sanitization import _sanitize_surrogates
-from agent.served_model import result_model_fields
+from hermes_agent.agent.codex_responses_adapter import _summarize_user_message_for_log
+from hermes_agent.agent.delegation_context import is_dispatcher_owned_worker_context
+from hermes_agent.agent.interrupt_control import interrupted_during_api_call_reason
+from hermes_agent.agent.turn_failure_copy import exit_reason_failure, stamp_failure
+from hermes_agent.agent.context_compressor import _DB_PERSISTED_MARKER
+from hermes_agent.agent.message_content import flatten_message_text
+from hermes_agent.agent.message_metadata import append_message, stamp_message_timestamp
+from hermes_agent.agent.message_sanitization import _sanitize_surrogates
+from hermes_agent.agent.served_model import result_model_fields
 
 # Verification-continuation nudges (verify-on-stop / pre_verify) must be stripped from
 # returned/live history to avoid role-alternation breaks; the assistant response is
@@ -96,7 +96,7 @@ def _drop_verification_continuation_scaffolding(messages) -> None:
 def _clone_background_review_messages(messages):
     """Copy the review input without aliasing the live transcript."""
     # Lazy: conversation_loop imports this module (cycle).
-    from agent.conversation_loop import _clone_message_for_send
+    from hermes_agent.agent.conversation_loop import _clone_message_for_send
 
     return [_clone_message_for_send(message) for message in messages]
 
@@ -165,7 +165,7 @@ def _resolve_budget_fallback(
                 # The turn ends interrupted, so the pending interrupt message is returned
                 # for requeue instead of being cleared behind a fallback summary. A redirect
                 # also ends it: the budget is spent, so there is no loop to restart into.
-                from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
+                from hermes_agent.agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
                 interrupted = True
                 _turn_exit_reason = interrupted_during_api_call_reason(agent)
                 final_response = f"{INTERRUPT_WAITING_FOR_MODEL_PREFIX}{time.time() - _summary_start:.1f}s elapsed)."
@@ -243,7 +243,7 @@ def _close_transcript_tail(agent, messages, final_response, interrupted, _recove
     # An interrupt can leave a tool result as the tail; close the sequence so strict
     # providers don't see ``tool → user`` (placeholder: final_response is usually empty).
     if interrupted:
-        from agent.message_sanitization import close_interrupted_tool_sequence
+        from hermes_agent.agent.message_sanitization import close_interrupted_tool_sequence
         close_interrupted_tool_sequence(messages, final_response, stopped=True)
 
     # Recovery ``break`` sites can return a final_response with no closing assistant
@@ -335,7 +335,7 @@ def _micro_compact_after_turn(agent, messages, final_response, logger, task_id) 
                 if _spliced:
                     # The splice summarized tool results away: a repeat read must serve them
                     # again, not an "unchanged" stub pointing at a body that is gone (#32106).
-                    from agent.conversation_compression import _reset_read_dedup_caches
+                    from hermes_agent.agent.conversation_compression import _reset_read_dedup_caches
 
                     _reset_read_dedup_caches(task_id, session_id=agent.session_id or "")
             if _before != len(messages):
@@ -486,7 +486,7 @@ def _apply_output_hooks(
         # Leased on the turn thread so the capture holds this turn's context; None unless a
         # loaded plugin holds llm.side_question. The response must survive a failed capture.
         try:
-            from agent.side_question_lease import issue_side_question_token
+            from hermes_agent.agent.side_question_lease import issue_side_question_token
             side_question_token = issue_side_question_token(agent, messages, turn_id)
         except Exception:
             side_question_token = None
@@ -522,7 +522,7 @@ def apply_llm_output_transform(
     turn's not-yet-written text is touched — earlier turns and the system prompt are never
     rewritten (prompt-cache invariant)."""
     if logger is None:
-        from agent.conversation_loop import logger
+        from hermes_agent.agent.conversation_loop import logger
     recorded = getattr(agent, "_llm_output_transform", None)
     if isinstance(recorded, tuple) and len(recorded) == 3 and recorded[0] == turn_id:
         _, transformed, pre_transform = recorded
@@ -588,7 +588,7 @@ def fence_result_reply(result: Any) -> None:
     ``result["messages"]`` and the stored row keep the raw text (API Runs transcripts, ``get_messages``)."""
     if not isinstance(result, dict):
         return
-    from agent.memory_context import fence_recalled_context
+    from hermes_agent.agent.memory_context import fence_recalled_context
     # ``pre_transform_response`` is display text too: replay-gap recovery and post-stream suffix
     # painting deliver it.
     for key in ("final_response", "pre_transform_response"):
@@ -641,8 +641,8 @@ def finalize_turn(
     _pending_verification_response_previewed=False,
 ):
     """Run the post-loop finalization and return the turn ``result`` dict."""
-    from agent.conversation_loop import logger
-    from agent.turn_context import PRE_LLM_BLOCK_EXIT_REASON
+    from hermes_agent.agent.conversation_loop import logger
+    from hermes_agent.agent.turn_context import PRE_LLM_BLOCK_EXIT_REASON
 
     vetoed = _turn_exit_reason == PRE_LLM_BLOCK_EXIT_REASON  # a pre_llm_call block: no model call at all
 
@@ -716,7 +716,7 @@ def finalize_turn(
     _cleanup_errors: list[str] = []
     # The model has answered (or the loop gave up): a title upgrade held back because it shares a
     # self-hosted endpoint with the main request (#117296) may go out now.
-    from agent.turn_context import start_deferred_title_upgrade
+    from hermes_agent.agent.turn_context import start_deferred_title_upgrade
     _guarded_cleanup("start_deferred_title_upgrade", lambda: start_deferred_title_upgrade(agent), _cleanup_errors, logger)
     # ``user_message`` may be a multimodal list of parts; the trajectory format wants a string.
     _guarded_cleanup(
@@ -782,7 +782,7 @@ def finalize_turn(
     # Fail-open. ``_last_turn_usage`` is the last response's canonical usage dict, or
     # ``None`` on turns that never reached a provider response — by contract.
     try:
-        from agent.conversation_loop import _notify_context_engine_turn_complete
+        from hermes_agent.agent.conversation_loop import _notify_context_engine_turn_complete
         _notify_context_engine_turn_complete(
             agent, messages, usage=getattr(agent, "_last_turn_usage", None), logger=logger,
             turn_id=turn_id, task_id=effective_task_id, api_call_count=api_call_count,
@@ -875,7 +875,7 @@ def finalize_turn(
 
     # A voice turn's model route ends with the turn: memory sync and the background review
     # below (and the next turn) run on the session's main model.
-    from agent.voice_turn_route import end_voice_turn_route
+    from hermes_agent.agent.voice_turn_route import end_voice_turn_route
     end_voice_turn_route(agent)
 
     # Skill trigger is checked NOW — based on how many tool iterations THIS turn used.
@@ -895,7 +895,7 @@ def finalize_turn(
 
     # Opt-in (compression.prepare_ahead): near the trigger, write the next compaction summary
     # between turns. No-op otherwise; never raises. Not after a vetoed turn (no model calls).
-    from agent.prepared_compaction import maybe_prepare
+    from hermes_agent.agent.prepared_compaction import maybe_prepare
     if not vetoed:
         maybe_prepare(agent, messages, origin="turn-end")
 

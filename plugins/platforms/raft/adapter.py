@@ -82,7 +82,7 @@ def _resolve_raft_profile() -> str:
     (secret scope) — ``os.environ`` would return the DEFAULT profile's value. Unscoped ``get_secret()`` raises."""
     if _profile_scoped():
         try:
-            from agent.secret_scope import get_secret
+            from hermes_agent.agent.secret_scope import get_secret
             return (get_secret("RAFT_PROFILE") or "").strip()
         except Exception:
             return ""

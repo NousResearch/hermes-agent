@@ -2,7 +2,7 @@
 
 Catalogs are flat dotted-key mappings resolved through layers, top first:
 
-1. plugin language packs (``PluginContext.register_locale``; last registered wins) — ``agent.i18n_layers``
+1. plugin language packs (``PluginContext.register_locale``; last registered wins) — ``hermes_agent.agent.i18n_layers``
 2. the user overlay ``$HERMES_HOME/locales/<lang>.yaml`` of the current profile home
 3. the bundled ``locales/<lang>.yaml``
 4. the same chain for ``en``
@@ -23,8 +23,8 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-from agent import i18n_layers
-from agent.i18n_languages import language_options
+from hermes_agent.agent import i18n_layers
+from hermes_agent.agent.i18n_languages import language_options
 
 logger = logging.getLogger(__name__)
 
@@ -230,7 +230,7 @@ def reset_language_cache() -> None:
 
 
 def _resolve_language(home: str) -> str:
-    from agent.secret_scope import UnscopedSecretError, get_secret
+    from hermes_agent.agent.secret_scope import UnscopedSecretError, get_secret
     try:
         env_lang = get_secret("HERMES_LANGUAGE")
     except UnscopedSecretError:

@@ -163,8 +163,8 @@ async def test_child_reserve_verifies_the_parent_claim_and_refuses_while_drainin
 def test_a_child_store_closed_before_any_turn_finishes_its_execution_and_ends_its_row(ledger, tmp_path):
     """The constructor-failure / refused-sibling path: the child's store closes having written
     nothing, and that close alone settles the reservation (the parent is still live)."""
-    from agent.runtime_session_child import reserve_child_store
-    from agent.runtime_session_store import RuntimeSessionStore
+    from hermes_agent.agent.runtime_session_child import reserve_child_store
+    from hermes_agent.agent.runtime_session_store import RuntimeSessionStore
     db, epoch = ledger
     reserve = partial(reserve_child_execution, epoch=epoch, execution_id='worker',
                       identity={'profile_id': 'home', 'pid': os.getpid(), 'birth': worker_birth(psutil.Process())},

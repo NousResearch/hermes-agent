@@ -15,11 +15,11 @@ from unittest.mock import patch
 
 import pytest
 
-from agent import compaction_events
-from agent.context_compressor import ContextCompressor
-from agent.conversation_compression import CompressionCommitFence, compress_context
-from agent.conversation_compression_checkpoint import CompressionCheckpointUnavailable
-from agent.transports.codex_app_server_session import TurnResult
+from hermes_agent.agent import compaction_events
+from hermes_agent.agent.context_compressor import ContextCompressor
+from hermes_agent.agent.conversation_compression import CompressionCommitFence, compress_context
+from hermes_agent.agent.conversation_compression_checkpoint import CompressionCheckpointUnavailable
+from hermes_agent.agent.transports.codex_app_server_session import TurnResult
 
 SECRET = "TOPSECRET_TRANSCRIPT_TEXT"
 V1_FIELDS = {
@@ -37,9 +37,9 @@ V1_FIELDS = {
 def published(monkeypatch):
     """Every (session_id, mark name, payload) handed to the Relay emitter."""
     marks = []
-    monkeypatch.setattr("agent.relay_compaction.compaction_target_available", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr("hermes_agent.agent.relay_compaction.compaction_target_available", lambda *_args, **_kwargs: True)
     monkeypatch.setattr(
-        "agent.relay_compaction.emit_compaction_mark",
+        "hermes_agent.agent.relay_compaction.emit_compaction_mark",
         lambda session_id, name, data, **_kwargs: marks.append((session_id, name, data)) or True,
     )
     return marks
@@ -82,7 +82,7 @@ class _Agent:
 
 
 def _compressor(**kwargs):
-    with patch("agent.context_compressor.get_model_context_length", return_value=100_000):
+    with patch("hermes_agent.agent.context_compressor.get_model_context_length", return_value=100_000):
         compressor = ContextCompressor(
             model="test/main-model", provider="test-provider", threshold_percent=0.50, quiet_mode=True,
             config_context_length=100_000, **kwargs,
@@ -166,13 +166,13 @@ def test_a_raising_emitter_never_changes_the_compaction_result(monkeypatch, capl
     def explode(*_args, **_kwargs):
         raise RuntimeError("relay down")
 
-    monkeypatch.setattr("agent.relay_compaction.emit_compaction_mark", explode)
+    monkeypatch.setattr("hermes_agent.agent.relay_compaction.emit_compaction_mark", explode)
     monkeypatch.setattr(compaction_events, "_warned", False)
     results = []
     for _ in range(2):
         agent = _Agent(_compressor())
         with patch.object(agent.context_compressor, "_generate_summary", return_value="SANITIZED SUMMARY"):
-            with caplog.at_level(logging.DEBUG, logger="agent.compaction_events"):
+            with caplog.at_level(logging.DEBUG, logger="hermes_agent.agent.compaction_events"):
                 results.append(compress_context(agent, _messages(), "system prompt", approx_tokens=80_000))
 
     assert all(len(compressed) < len(_messages()) for compressed, _ in results)
@@ -184,8 +184,8 @@ def test_a_raising_emitter_never_changes_the_compaction_result(monkeypatch, capl
 def test_prune_without_relay_target_skips_transcript_estimates(monkeypatch):
     agent = _Agent(_compressor())
     messages = _messages()
-    monkeypatch.setattr("agent.relay_compaction.compaction_target_available", lambda *_args, **_kwargs: False)
-    with patch("agent.compaction_events.estimate_messages_tokens_rough") as estimate:
+    monkeypatch.setattr("hermes_agent.agent.relay_compaction.compaction_target_available", lambda *_args, **_kwargs: False)
+    with patch("hermes_agent.agent.compaction_events.estimate_messages_tokens_rough") as estimate:
         compaction_events.publish_prune(agent, messages, messages[:-1], 1)
     estimate.assert_not_called()
 
@@ -285,7 +285,7 @@ def test_codex_route_that_raises_publishes_one_failed_attempt_mark(published, ma
 
 
 def test_codex_native_compaction_observed_by_hermes_is_an_unofficial_provider_compaction(published):
-    from agent.codex_runtime import _record_codex_app_server_compaction
+    from hermes_agent.agent.codex_runtime import _record_codex_app_server_compaction
 
     agent = _codex_agent(None, "native")
     agent.event_callback = None
@@ -322,7 +322,7 @@ def test_micro_compaction_pass_publishes_one_record(published, outcome, name, ex
 
 def _prune_after_tool_results(persist_disabled):
     """Drive the post-tool caller with the attempt budget spent, so it takes the proactive prune branch."""
-    from agent.turn_preflight import compress_after_tool_results
+    from hermes_agent.agent.turn_preflight import compress_after_tool_results
 
     compressor = _compressor(
         proactive_prune_tokens=48_000, proactive_prune_min_result_chars=8_000, protect_first_n=2, protect_last_n=4,
@@ -396,7 +396,7 @@ def test_rotation_publishes_after_the_split_with_the_attempts_own_session(publis
     """A rotating commit re-points the agent at a child session and its memory flush resets the compressor's
     telemetry; the record is still built from this attempt's telemetry and names the session it started in."""
     from hermes_agent.hermes_state import SessionDB
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     with tempfile.TemporaryDirectory() as tmpdir, patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
         agent = AIAgent(
@@ -423,7 +423,7 @@ def test_a_split_that_fails_after_rewriting_history_is_still_a_compaction(publis
     """The in-place commit stored the compacted transcript, then a later bookkeeping write failed: the model
     sees the compacted history next, so Relay must reset freshness, and the record says what failed."""
     from hermes_agent.hermes_state import SessionDB
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     with tempfile.TemporaryDirectory() as tmpdir, patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
         db = SessionDB(db_path=Path(tmpdir) / "state.db")
@@ -452,7 +452,7 @@ def test_an_in_place_engine_whose_split_fails_after_the_archive_is_still_a_compa
     """An engine may compact its input list in place, so the returned list IS the input. After the atomic
     archive stored it, a later bookkeeping failure must still mark a compaction (freshness reset)."""
     from hermes_agent.hermes_state import SessionDB
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     def _in_place(msgs, **_kwargs):
         compressor = agent.context_compressor

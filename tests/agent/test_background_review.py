@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import threading
 
-import run_agent as run_agent_module
-from run_agent import AIAgent
+import hermes_agent.run_agent as run_agent_module
+from hermes_agent.run_agent import AIAgent
 
 
 _REAL_THREAD = threading.Thread
@@ -100,7 +100,7 @@ class ImmediateThread:
 
 
 def _install_live_turn_boundary(monkeypatch, on_boundary=None):
-    import agent.conversation_loop as conversation_loop_module
+    import hermes_agent.agent.conversation_loop as conversation_loop_module
 
     def stop_at_boundary(*args, **kwargs):
         if on_boundary is not None:
@@ -128,7 +128,7 @@ def _run_wrapped_live_turn_to_boundary(agent, result):
 
 
 def _install_relay_recorder(monkeypatch, review_run=None):
-    from agent import relay_runtime
+    from hermes_agent.agent import relay_runtime
     from hermes_cli.observability import relay_shared_metrics
 
     calls = []
@@ -441,7 +441,7 @@ def test_background_review_snapshot_isolated_from_live_nested_messages():
         }],
     }]
 
-    from agent.turn_finalizer import _clone_background_review_messages
+    from hermes_agent.agent.turn_finalizer import _clone_background_review_messages
 
     snapshot = _clone_background_review_messages(original)
     snapshot[0]["content"][0]["text"] = "review mutation"
@@ -583,7 +583,7 @@ def test_live_turn_proceeds_when_review_acknowledgement_times_out(monkeypatch):
     """
     import time
 
-    import agent.background_review as background_review_module
+    import hermes_agent.agent.background_review as background_review_module
 
     review_entered = threading.Event()
     interrupt_entered = threading.Event()
@@ -765,7 +765,7 @@ def test_stale_review_cleanup_cannot_clear_or_signal_newer_review(monkeypatch):
 
 import json as _json
 
-from agent.background_review import summarize_background_review_actions
+from hermes_agent.agent.background_review import summarize_background_review_actions
 
 
 def _memory_add_review():
@@ -878,7 +878,7 @@ def test_supersede_hard_interrupt_targets_review_fork_only():
     mid-flight is exactly what gets killed."""
     import time
 
-    from agent.background_review import (
+    from hermes_agent.agent.background_review import (
         cancel_background_review_for_live_turn,
         finish_background_review_run,
         prepare_background_review_run,
@@ -958,7 +958,7 @@ def test_turn_exit_log_carries_fork_origin_tag():
     foreground stream (the fork shares session_id and often the model)."""
     import logging
 
-    from agent.turn_finalizer import _log_turn_exit
+    from hermes_agent.agent.turn_finalizer import _log_turn_exit
 
     records = []
 

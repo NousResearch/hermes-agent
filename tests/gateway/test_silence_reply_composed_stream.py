@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 import hermes_yaml as yaml
-import run_agent
+from hermes_agent import run_agent
 from hermes_agent.gateway.config import Platform, StreamingConfig
 from hermes_agent.gateway.platforms.base import SendResult
 from hermes_agent.gateway.platforms.event import MessageEvent

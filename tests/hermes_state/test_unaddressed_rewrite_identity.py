@@ -10,8 +10,8 @@ from __future__ import annotations
 
 import pytest
 
-from agent.context_compressor import _DB_PERSISTED_MARKER
-from agent.message_metadata import DB_ROW_SNAPSHOT, MESSAGE_UID
+from hermes_agent.agent.context_compressor import _DB_PERSISTED_MARKER
+from hermes_agent.agent.message_metadata import DB_ROW_SNAPSHOT, MESSAGE_UID
 from hermes_agent.hermes_state import SessionDB
 
 

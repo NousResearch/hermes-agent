@@ -8,9 +8,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent import onboarding_record
-from agent.inline_tool_executors import INLINE_TOOL_EXECUTORS, InlineToolContext
-from agent.onboarding_flow import End, Facts
+from hermes_agent.agent import onboarding_record
+from hermes_agent.agent.inline_tool_executors import INLINE_TOOL_EXECUTORS, InlineToolContext
+from hermes_agent.agent.onboarding_flow import End, Facts
 from hermes_agent.hermes_state import SessionDB
 from hermes_agent.tools.registry import registry
 
@@ -72,7 +72,7 @@ def test_a_card_answer_settles_the_beat_and_names_the_next(db, desktop):
 
 
 def test_next_shows_the_first_open_beat_and_the_name_card_offers_the_account_name(db, desktop, monkeypatch):
-    monkeypatch.setattr("agent.onboarding_facts.suggested_name", lambda: "Ada Lovelace")
+    monkeypatch.setattr("hermes_agent.agent.onboarding_facts.suggested_name", lambda: "Ada Lovelace")
     onboarding_record.start(db, SID, FACTS)
     desktop.replies.append({"said": "Ada"})
 

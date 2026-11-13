@@ -445,7 +445,7 @@ def _coerce_schema_field(field: dict[str, Any], raw: Any) -> Any:
 def _save_memory_provider_native_config(name: str, provider: Any, values: dict[str, Any]) -> None:
     if provider is not None and hasattr(provider, "save_config"):
         try:
-            from agent.memory_provider import MemoryProvider as _BaseMemoryProvider
+            from hermes_agent.agent.memory_provider import MemoryProvider as _BaseMemoryProvider
         except Exception:
             _BaseMemoryProvider = None
         if _BaseMemoryProvider is None or type(provider).save_config is not _BaseMemoryProvider.save_config:

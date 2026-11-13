@@ -349,7 +349,7 @@ class MCPServerRunMixin:
                         config = _config._require_rendered_remote(self.name, self._refresh_remote_config(config))
                     finally:
                         if scope_token is not None:
-                            from agent.secret_scope import reset_secret_scope
+                            from hermes_agent.agent.secret_scope import reset_secret_scope
                             reset_secret_scope(scope_token)
                 rebuild = True
                 self._auth_park = None

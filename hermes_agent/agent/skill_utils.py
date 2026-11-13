@@ -124,7 +124,7 @@ def _detect_kanban() -> bool:
     # cron see the worker's vars) or a profile opted into the kanban toolset.
     if os.getenv("HERMES_KANBAN_TASK") or os.getenv("HERMES_KANBAN_BOARD"):
         try:
-            from agent.delegation_context import is_dispatcher_owned_worker_context
+            from hermes_agent.agent.delegation_context import is_dispatcher_owned_worker_context
             owned = is_dispatcher_owned_worker_context()
         except Exception:
             owned = True
@@ -221,7 +221,7 @@ def _config_cache_key(config_path: Path) -> Optional[tuple[Any, ...]]:
 
 def _load_raw_config() -> dict[str, Any]:
     """Read config.yaml with a version-keyed cache (no hermes_cli.config import)."""
-    from agent.safe_worker_policy import worker_config_snapshot
+    from hermes_agent.agent.safe_worker_policy import worker_config_snapshot
     from hermes_cli.config_backend import config_exists, read_config_doc
 
     snapshot = worker_config_snapshot()
@@ -533,7 +533,7 @@ def find_project_root(start: Optional[Path] = None) -> Optional[Path]:
     """
     try:
         if start is None:
-            from agent.runtime_cwd import resolve_agent_cwd
+            from hermes_agent.agent.runtime_cwd import resolve_agent_cwd
             start = resolve_agent_cwd()
         cur = Path(start).resolve()
     except OSError:

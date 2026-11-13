@@ -41,7 +41,7 @@ def test_background_task_delegation_runs_inline(monkeypatch):
             pass
 
     cli = _make_background_cli_stub()
-    with patch("run_agent.AIAgent", FakeAgent), patch.object(cli_module, "_cprint"), \
+    with patch("hermes_agent.run_agent.AIAgent", FakeAgent), patch.object(cli_module, "_cprint"), \
             patch.object(cli_module, "ChatConsole"):
         cli._handle_background_command("/bg inspect workspace")
         for thread in list(cli._background_tasks.values()):

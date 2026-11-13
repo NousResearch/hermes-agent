@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from unittest import mock
 
-import agent.monitoring.redaction as R
+import hermes_agent.agent.monitoring.redaction as R
 
 
 def test_secret_key_always_stripped():
@@ -42,6 +42,6 @@ def test_structure_preserved():
 
 
 def test_fails_closed_when_redactor_unavailable():
-    with mock.patch("agent.redact.redact_sensitive_text", side_effect=RuntimeError):
+    with mock.patch("hermes_agent.agent.redact.redact_sensitive_text", side_effect=RuntimeError):
         out = R.redact_for_export("secret sauce sk-live-key")
     assert out == "[redaction-unavailable]"

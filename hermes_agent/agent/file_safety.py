@@ -335,7 +335,7 @@ def _classify_write_denial(path: str, *, entry: bool = False) -> Optional[str]:
     # The runtime's own interpreter/venv is never agent-writable (an overwrite
     # bricks the next start exactly like a delete, #58748) — and this must fire
     # BEFORE the approval-gated allow so ~/.ssh-style gating cannot re-open it.
-    from agent.runtime_self_protection import is_protected_path, split_entry
+    from hermes_agent.agent.runtime_self_protection import is_protected_path, split_entry
 
     if is_protected_path(path) or (entry and is_protected_path(path, follow=False)):
         return "credential"

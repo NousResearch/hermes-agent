@@ -1,4 +1,4 @@
-"""Tests for agent.replay_cleanup — shared replay-tail sanitizers.
+"""Tests for hermes_agent.agent.replay_cleanup — shared replay-tail sanitizers.
 
 These functions were extracted from hermes_agent/gateway/run.py so every resume surface
 (messaging gateway AND TUI/WebUI gateway) strips poisoned tool-call tails the
@@ -6,7 +6,7 @@ same way. Regression coverage for #29086 (WebUI session permanently stuck
 because the dangling tool-call tail was replayed on every resume).
 """
 
-from agent.replay_cleanup import (
+from hermes_agent.agent.replay_cleanup import (
     strip_dangling_tool_call_tail,
     sanitize_replay_history,
 )
@@ -96,9 +96,9 @@ def test_sanitize_replay_history_noop_on_clean_history():
 import copy
 import json
 
-from agent.replay_cleanup import canonicalize_replay_history
-from agent.transports.chat_completions import ChatCompletionsTransport
-from agent.turn_context import build_api_messages
+from hermes_agent.agent.replay_cleanup import canonicalize_replay_history
+from hermes_agent.agent.transports.chat_completions import ChatCompletionsTransport
+from hermes_agent.agent.turn_context import build_api_messages
 from hermes_agent.hermes_state import SessionDB
 
 
@@ -181,7 +181,7 @@ def test_send_wire_matches_replay_wire_after_db_round_trip(tmp_path):
 def test_confirmation_expiry_uses_frozen_admission_clock(monkeypatch):
     """Expiry is judged once per turn at admission (not the input's event stamp, not
     per-request wall time)."""
-    from agent.turn_context import _reset_per_turn_agent_state
+    from hermes_agent.agent.turn_context import _reset_per_turn_agent_state
 
     agent = _SendAgent()
     agent._tool_guardrails = type("G", (), {"reset_for_turn": staticmethod(lambda: None)})()
@@ -193,7 +193,7 @@ def test_confirmation_expiry_uses_frozen_admission_clock(monkeypatch):
         {"role": "user", "content": "go", "timestamp": 10_000.0},  # platform event stamp: 59s old
     ]
 
-    monkeypatch.setattr("agent.turn_context.time.time", lambda: 10_070.0)  # admitted 129s later
+    monkeypatch.setattr("hermes_agent.agent.turn_context.time.time", lambda: 10_070.0)  # admitted 129s later
     _reset_per_turn_agent_state(agent)
     request = _send(agent, history)
     assert "EXPIRED" in request[0]["content"]
@@ -203,7 +203,7 @@ def test_confirmation_expiry_uses_frozen_admission_clock(monkeypatch):
     history += [{"role": "assistant", "content": "", "tool_calls": [
         {"id": "c1", "type": "function", "function": {"name": "read_file", "arguments": "{}"}}]},
         {"role": "tool", "tool_call_id": "c1", "content": "ready"}]
-    monkeypatch.setattr("agent.turn_context.time.time", lambda: 10_500.0)  # ...however long the tools take
+    monkeypatch.setattr("hermes_agent.agent.turn_context.time.time", lambda: 10_500.0)  # ...however long the tools take
     assert _send(agent, history, idx=2)[0]["content"] == "confirm reboot"
 
 

@@ -178,8 +178,8 @@ def test_published_usage_view_matches_the_embedded_ticker(agent):
 def test_a_window_plans_gauge_rides_the_canonical_usage_feed():
     """The Desktop status bar's plan allowance reads ``usage.plan_gauge``; a normal local session's
     ticks and turn-end usage come from the gateway (``usage_frame`` / ``tui_usage``), not ``_get_usage``."""
-    from agent.credits_tracker import CreditsState
-    from agent.usage_gauges import WindowGauge
+    from hermes_agent.agent.credits_tracker import CreditsState
+    from hermes_agent.agent.usage_gauges import WindowGauge
     from hermes_agent.gateway.session_usage import publish_usage, tui_usage, usage_stats
     from hermes_agent.tui_gateway.contracts.registry import CANONICAL_METHODS, EVENTS
     from hermes_agent.tui_gateway.server import _get_usage

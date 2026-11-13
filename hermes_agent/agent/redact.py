@@ -13,16 +13,16 @@ import threading
 import unicodedata
 from urllib.parse import unquote_plus
 
-# Shared with agent/file_safety's read-block list so the two defenses can't
+# Shared with hermes_agent/agent/file_safety's read-block list so the two defenses can't
 # drift: a blocked file_tools read that falls back to ``cat`` is still caught.
-from agent.file_safety import _BLOCKED_PROJECT_ENV_BASENAMES as _ENV_FILE_BASENAMES
-from agent.redact_connstr import _KV_CONNSTR_GATE_RE, _redact_kv_connection_strings
-from agent.redact_headers import (
+from hermes_agent.agent.file_safety import _BLOCKED_PROJECT_ENV_BASENAMES as _ENV_FILE_BASENAMES
+from hermes_agent.agent.redact_connstr import _KV_CONNSTR_GATE_RE, _redact_kv_connection_strings
+from hermes_agent.agent.redact_headers import (
     _COOKIE_HEADER_JSON_RE, _COOKIE_HEADER_JSON_UNTERMINATED_RE, _SECRET_HEADER_JSON_RE,
     _SECRET_HEADER_JSON_UNTERMINATED_RE, json_header_value_is_credential, redact_cookie_assignments,
     redact_header_credentials,
 )
-from agent.redact_pattern_shape import _pattern_structure
+from hermes_agent.agent.redact_pattern_shape import _pattern_structure
 
 logger = logging.getLogger(__name__)
 
@@ -131,7 +131,7 @@ def note_config_policy(home_key: str, raw) -> None:
 
 def resolve_profile_policy(home) -> None:
     """Record ``home``'s redaction policy now (log-routing setup), so its records never wait for it."""
-    from agent.runtime_scope import bind_profile_scope
+    from hermes_agent.agent.runtime_scope import bind_profile_scope
     from hermes_constants import hermes_home_key
     try:
         with bind_profile_scope(home, hydrate_secrets=False):
@@ -150,7 +150,7 @@ def _redact_enabled() -> bool:
     if get_hermes_home_override() is None:
         return _REDACT_ENABLED
     home_key = hermes_home_key()
-    from agent.secret_scope import current_secret_scope
+    from hermes_agent.agent.secret_scope import current_secret_scope
     scope = current_secret_scope()
     raw = scope.get("HERMES_REDACT_SECRETS") if scope else None
     if raw is None and scope is None:
@@ -1707,7 +1707,7 @@ def _is_under_hermes_home(path: str) -> bool:
     Compare against the resolved homes instead. Only reached for a ``config.yaml`` basename,
     so the resolve cost stays off the per-token command scan.
     """
-    from agent.file_safety import _hermes_dirs
+    from hermes_agent.agent.file_safety import _hermes_dirs
     from hermes_agent.tools.environments.sandbox_scope import sandbox_lexical_path
     # A hosted path names a file in the sandbox: judged as written (never empty), not resolved on this host.
     try:

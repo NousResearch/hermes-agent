@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pytest
 from openai import AsyncOpenAI, OpenAI
 
-from agent.auxiliary_client import _relay_async_completion, _relay_sync_completion
+from hermes_agent.agent.auxiliary_client import _relay_async_completion, _relay_sync_completion
 
 
 @pytest.mark.parametrize("async_mode", [False, True])

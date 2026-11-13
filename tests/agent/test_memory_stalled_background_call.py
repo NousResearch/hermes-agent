@@ -7,9 +7,9 @@ import threading
 
 import pytest
 
-import agent.memory_manager as mm
-from agent.memory_manager import MemoryManager
-from agent.memory_provider import MemoryProvider
+import hermes_agent.agent.memory_manager as mm
+from hermes_agent.agent.memory_manager import MemoryManager
+from hermes_agent.agent.memory_provider import MemoryProvider
 from tests.waiting import wait_until
 
 
@@ -155,7 +155,7 @@ def test_new_outage_warns_on_its_first_skip_even_with_an_orphan_alive(caplog):
         assert hung[-1][0].flush_pending(timeout=5)
         hung += [_hang_one_call() for _ in range(mm._MAX_STUCK_CALLS)]  # a new outage
         caplog.clear()
-        with caplog.at_level("WARNING", logger="agent.memory_manager"):
+        with caplog.at_level("WARNING", logger="hermes_agent.agent.memory_manager"):
             _skip(_manager(_HangingProvider()), "skipped again")
         assert _GATE.skips[key] == 1
         assert "background calls stuck" in caplog.text

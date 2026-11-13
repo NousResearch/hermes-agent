@@ -90,7 +90,7 @@ def test_user_plugin_cannot_mark_a_core_platform_trusted_inbound():
 def test_core_hint_and_display_tables_hold_no_bundled_plugin_platform():
     """A bundled platform's prompt hint and display defaults live on its PlatformEntry only, so the
     plugin is the single source of truth (no core row silently shadowing what the plugin declares)."""
-    from agent.prompt_builder import PLATFORM_HINTS
+    from hermes_agent.agent.prompt_builder import PLATFORM_HINTS
     from hermes_agent.gateway.display_config import _PLATFORM_DEFAULTS
 
     bundled = set(Platform._scan_bundled_plugin_platforms()[0])

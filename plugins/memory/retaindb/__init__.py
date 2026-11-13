@@ -22,9 +22,9 @@ from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import quote
 
-from agent.memory_provider import MemoryProvider, spawn_context_thread
-from agent.secret_scope import get_secret
-from agent.file_safety import raise_if_read_blocked
+from hermes_agent.agent.memory_provider import MemoryProvider, spawn_context_thread
+from hermes_agent.agent.secret_scope import get_secret
+from hermes_agent.agent.file_safety import raise_if_read_blocked
 from hermes_agent.tools.registry import tool_error
 
 logger = logging.getLogger(__name__)

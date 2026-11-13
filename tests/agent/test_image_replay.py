@@ -1,13 +1,13 @@
-"""Turns rebuilt from the session DB re-attach the newest retained user images (agent/image_replay.py)."""
+"""Turns rebuilt from the session DB re-attach the newest retained user images (hermes_agent/agent/image_replay.py)."""
 
 import json
 from pathlib import Path
 
 import pytest
 
-from agent.image_routing import build_native_content_parts
-from agent.session_persistence import _durable_content
-from agent.turn_context import build_api_messages
+from hermes_agent.agent.image_routing import build_native_content_parts
+from hermes_agent.agent.session_persistence import _durable_content
+from hermes_agent.agent.turn_context import build_api_messages
 from hermes_agent.gateway.session_ingress_media import capture_native_media
 from hermes_agent.hermes_state import SessionDB
 
@@ -126,7 +126,7 @@ def test_replay_window_skips_untrusted_bytes_and_typed_markers(tmp_path):
 def test_replay_keeps_part_order_and_appended_turn_context(tmp_path):
     """Turn-time memory/hook context lands after the image (``_append_multimodal_context``); the
     rebuilt row still carries the image in place (the reload scrubs the memory fence itself)."""
-    from agent.turn_context import _append_multimodal_context
+    from hermes_agent.agent.turn_context import _append_multimodal_context
 
     _config()
     live, _ = _live_turn(tmp_path, "label.png", "What is on this label?")

@@ -18,9 +18,9 @@ import threading
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
-from agent.chat_completion_helpers import (
+from hermes_agent.agent.chat_completion_helpers import (
     direct_api_call,
     interruptible_api_call,
     interruptible_streaming_api_call,

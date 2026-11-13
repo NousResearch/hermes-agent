@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from agent.runtime_scope import bind_state
+from hermes_agent.agent.runtime_scope import bind_state
 from tests.tools.test_sandbox_scope_conformance import A, B
 from tests.tools.test_sandbox_scope_conformance import provider as _conformance_provider
 from hermes_agent.tools.environments import sandbox_conformance as c

@@ -8,8 +8,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Callable, Optional
 
-from agent.monitoring.events import CronExecutionEvent
-from agent.monitoring.gateway_health import GatewayMetric, _contains_any, _safe_instance_id
+from hermes_agent.agent.monitoring.events import CronExecutionEvent
+from hermes_agent.agent.monitoring.gateway_health import GatewayMetric, _contains_any, _safe_instance_id
 from hermes_agent.cron.jobs import (
     _compute_grace_seconds,
     get_ticker_heartbeat_age,
@@ -101,7 +101,7 @@ def emit_execution_state(record: Optional[dict[str, Any]], *, delivery_outcome: 
     if not record:
         return
     try:
-        from agent.monitoring import emitter
+        from hermes_agent.agent.monitoring import emitter
         event = project_execution_event(record, delivery_outcome=delivery_outcome)
         target = emitter.get_emitter()
         target.emit(event)

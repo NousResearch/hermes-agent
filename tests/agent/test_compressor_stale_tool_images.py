@@ -8,7 +8,7 @@ compaction. Pass 2 of ``_prune_old_tool_results`` only strips images
 
 from __future__ import annotations
 
-from agent.context_compressor import (
+from hermes_agent.agent.context_compressor import (
     ContextCompressor,
     _MAX_KEEP_TOOL_IMAGES,
     _content_has_images,
@@ -149,7 +149,7 @@ class TestSharedImageStripHelper:
         dropped the sidecar; the demote branches left it behind, letting
         replay restore pre-strip bytes.
         """
-        from agent.context_compressor import _strip_images_from_tool_msg
+        from hermes_agent.agent.context_compressor import _strip_images_from_tool_msg
 
         msg = {
             "role": "tool",
@@ -172,7 +172,7 @@ class TestSharedImageStripHelper:
         assert not _content_has_images(new_msg["content"])
 
     def test_envelope_collapses_to_summary_string(self):
-        from agent.context_compressor import _strip_images_from_tool_msg
+        from hermes_agent.agent.context_compressor import _strip_images_from_tool_msg
 
         msg = {
             "role": "tool",
@@ -197,7 +197,7 @@ class TestSharedImageStripHelper:
         assert "api_content" not in new_msg
 
     def test_imageless_content_returns_none(self):
-        from agent.context_compressor import _strip_images_from_tool_msg
+        from hermes_agent.agent.context_compressor import _strip_images_from_tool_msg
 
         msg = {"role": "tool", "tool_call_id": "c3", "content": "plain text"}
         assert _strip_images_from_tool_msg(msg) is None

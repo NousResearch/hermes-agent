@@ -7,7 +7,7 @@ import logging
 import re
 from typing import Any, Dict, Optional
 
-from agent.message_sanitization import _sanitize_surrogates
+from hermes_agent.agent.message_sanitization import _sanitize_surrogates
 from hermes_agent.hermes_state_common import (
     _COMPRESSION_CHILD_SQL, _RECOVERABLE_END_REASONS, _RECOVERABLE_END_REASONS_SQL,
     _non_continuation_child_sql, escape_like as _escape_like,

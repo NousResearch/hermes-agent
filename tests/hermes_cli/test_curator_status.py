@@ -31,7 +31,7 @@ def curator_status_env(tmp_path, monkeypatch):
     importlib.reload(hermes_constants)
     from hermes_agent.tools import skill_usage
     importlib.reload(skill_usage)
-    from agent import curator
+    from hermes_agent.agent import curator
     importlib.reload(curator)
     from hermes_cli import curator as curator_cli
     importlib.reload(curator_cli)

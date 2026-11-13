@@ -40,7 +40,7 @@ def _polluted_launch_env(monkeypatch, tmp_path):
     monkeypatch.setenv("TERMINAL_DOCKER_VOLUMES", _LAUNCH_VOLUMES)
     monkeypatch.setenv("TERMINAL_DOCKER_SHARED_CONTAINER_KEY", "alpha-shared")
     monkeypatch.setenv("TERMINAL_SSH_HOST", "10.10.0.103")
-    monkeypatch.setattr("agent.secret_scope.build_profile_secret_scope", lambda _h: {})
+    monkeypatch.setattr("hermes_agent.agent.secret_scope.build_profile_secret_scope", lambda _h: {})
     monkeypatch.setattr("hermes_cli.env_loader.hydrate_profile_secret_sources", lambda _h: None)
     import hermes_agent.tools.terminal_tool as tt
 
@@ -93,7 +93,7 @@ def test_routed_turn_reads_every_terminal_consumer_from_profile(
     checks — with none of launch profile A's docker policy showing through."""
     import hermes_agent.gateway.run as gw
     import hermes_agent.tools.terminal_tool as tt
-    from agent import runtime_cwd
+    from hermes_agent.agent import runtime_cwd
     from hermes_agent.gateway.platforms import base as gbase
     from hermes_agent.gateway.platforms.docker_media_paths import _docker_sandbox_dir_candidates
     from hermes_agent.tools import env_probe, file_tools_paths

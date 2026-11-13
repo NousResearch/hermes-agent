@@ -3,13 +3,13 @@
 
 import pytest
 
-from agent.transports import get_transport
-from agent.transports.codex import _default_prompt_cache_retention_for_request
+from hermes_agent.agent.transports import get_transport
+from hermes_agent.agent.transports.codex import _default_prompt_cache_retention_for_request
 
 
 @pytest.fixture
 def transport():
-    import agent.transports.codex
+    import hermes_agent.agent.transports.codex
     return get_transport("codex_responses")
 
 

@@ -62,10 +62,10 @@ class NousPaidServiceAccessInfo:
 @dataclass(frozen=True)
 class NousUsageWindowInfo:
     """Portal ``usage_window`` block: a usage-window plan's allowances (``gauges``, the server's list in
-    display order; see agent/usage_gauges.py), auto top-up, a paused reason while the plan's renewal is
+    display order; see hermes_agent/agent/usage_gauges.py), auto top-up, a paused reason while the plan's renewal is
     unpaid, and the plan's picks. Absent from the account body for every other account."""
 
-    # The server's allowance list (agent.usage_gauges.WindowGauge). None when the portal sends none.
+    # The server's allowance list (hermes_agent.agent.usage_gauges.WindowGauge). None when the portal sends none.
     gauges: Optional[tuple[Any, ...]] = None
     # The plan's recommended picks, in order: pickers list them first, and they are the
     # models a limit line suggests. Every model is usable on the plan.
@@ -200,21 +200,21 @@ def nous_portal_topup_url(account_info: Optional[NousPortalAccountInfo] = None) 
 
 
 def format_usage_window_block_guidance(account_info: Optional[NousPortalAccountInfo]) -> Optional[str]:
-    """Next step after a usage-window 402: the credits step from :func:`agent.plan_limits.credits_action`
+    """Next step after a usage-window 402: the credits step from :func:`hermes_agent.agent.plan_limits.credits_action`
     (turn on Keep going, add credits, or both), plus the auto top-up nudge when it is off. None for every
     account not on a usage-window plan, so the credit-grant guidance is unchanged. A paused plan points
     at the card, not at a top-up."""
     window = getattr(account_info, "usage_window", None) if account_info is not None else None
     # A partial/empty block is not a window plan (same completeness rule as the credits seed).
-    from agent.credits_tracker import _window_seed_fields
+    from hermes_agent.agent.credits_tracker import _window_seed_fields
     if _window_seed_fields(window) is None:
         return None
     if paused := getattr(window, "paused_reason", None):
         # A paused plan bills credits whatever the setting says: no credits is why this 402 came.
-        from agent.usage_gauges import paused_for_payment
+        from hermes_agent.agent.usage_gauges import paused_for_payment
         fix = "Update your card to restore included usage" if paused_for_payment(paused) else "Included usage is paused"
         return f"{fix}, or add credits to keep going now: {nous_portal_billing_url(account_info)}"
-    from agent.plan_limits import ADD_CREDITS_AND_KEEP_GOING, USE_CREDITS, credits_action
+    from hermes_agent.agent.plan_limits import ADD_CREDITS_AND_KEEP_GOING, USE_CREDITS, credits_action
     purchased = getattr(account_info.paid_service_access_info, "purchased_credits_remaining", None)
     action = credits_action(getattr(window, "keep_going_on_credits", None),
                             int(purchased * 1_000_000) if isinstance(purchased, (int, float)) else None)
@@ -565,7 +565,7 @@ def _pool_entry_inference_url(entry: Any) -> Optional[str]:
 
 def _select_nous_pool_entry() -> Optional[Any]:
     """Pool entry with the latest agent-key expiry, then access expiry, then lowest priority."""
-    from agent.credential_pool import load_pool
+    from hermes_agent.agent.credential_pool import load_pool
 
     pool = load_pool("nous")
     if not pool or not pool.has_credentials():
@@ -772,5 +772,5 @@ _COERCERS = {
 
 
 def _parse_gauges(value: Any):
-    from agent.usage_gauges import parse_gauges
+    from hermes_agent.agent.usage_gauges import parse_gauges
     return parse_gauges(value)

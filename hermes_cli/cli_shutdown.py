@@ -142,7 +142,7 @@ def _shutdown_mcp_servers() -> None:
 
 def _shutdown_cached_aux_clients() -> None:
     # Otherwise AsyncHttpxClientWrapper.__del__ fires on a closed loop ("Press ENTER to continue...").
-    from agent.auxiliary_client import shutdown_cached_clients
+    from hermes_agent.agent.auxiliary_client import shutdown_cached_clients
     shutdown_cached_clients()
 
 

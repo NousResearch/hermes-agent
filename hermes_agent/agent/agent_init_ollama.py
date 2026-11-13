@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from agent.agent_runtime_helpers import _ra
-from agent.model_metadata import is_local_endpoint, query_ollama_num_ctx
+from hermes_agent.agent.agent_runtime_helpers import _ra
+from hermes_agent.agent.model_metadata import is_local_endpoint, query_ollama_num_ctx
 
 
 def _configure_ollama_num_ctx(agent, _model_cfg, _config_context_length):

@@ -32,7 +32,7 @@ def reset_route_verdicts(agent: Any) -> None:
         setattr(agent, name, False)
     if hasattr(agent, "_disable_streaming"):  # back to the configured ``model.streaming`` seed (agent_init)
         agent._disable_streaming = bool(getattr(agent, "_disable_streaming_seed", False))
-    from agent.turn_recovery_codex import reset_codex_reasoning_replay
+    from hermes_agent.agent.turn_recovery_codex import reset_codex_reasoning_replay
     reset_codex_reasoning_replay(agent)
 
 

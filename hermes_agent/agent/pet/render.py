@@ -2,7 +2,7 @@
 
 Shared by the base CLI (escape bytes to stdout) and the TUI (bytes shipped to
 Ink). Capability detection and the protocol encoders live in
-:mod:`agent.terminal_image`, which inline images use too. Missing Pillow or
+:mod:`hermes_agent.agent.terminal_image`, which inline images use too. Missing Pillow or
 spritesheet degrades to an empty string rather than raising (PIL is imported
 lazily on purpose).
 """
@@ -17,8 +17,8 @@ from functools import lru_cache
 from itertools import takewhile
 from pathlib import Path
 
-from agent.pet.constants import DEFAULT_SCALE, FRAME_H, FRAME_W, FRAMES_PER_STATE, PetState, state_row_index
-from agent.terminal_image import (
+from hermes_agent.agent.pet.constants import DEFAULT_SCALE, FRAME_H, FRAME_W, FRAMES_PER_STATE, PetState, state_row_index
+from hermes_agent.agent.terminal_image import (
     CELL_H,
     CELL_W,
     Cell,

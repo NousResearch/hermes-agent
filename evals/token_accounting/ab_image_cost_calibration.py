@@ -112,7 +112,7 @@ def _screenshot_turn(i: int) -> list:
 
 
 def run(out_path: str) -> dict:
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     wire = _FakeVisionChat()
     agent = AIAgent(
@@ -134,7 +134,7 @@ def run(out_path: str) -> dict:
         return kept, kw.get("active_system_prompt") or sys_prompt
 
     agent._compress_context = counting  # type: ignore[method-assign]
-    from agent.image_token_cost import current_image_token_cost, learned_image_token_cost
+    from hermes_agent.agent.image_token_cost import current_image_token_cost, learned_image_token_cost
     history: list = []
     per_turn = []
     try:
@@ -148,7 +148,7 @@ def run(out_path: str) -> dict:
     # Compaction sizing: how many screenshots does the protected tail keep under the tail budget?
     # With images priced under their real cost the walk protects too many rows and the
     # "compacted" request is still over the window (the #70328 "cannot compress further" loop).
-    from agent.image_token_cost import image_cost_context
+    from hermes_agent.agent.image_token_cost import image_cost_context
     walk_history = [m for i in range(40) for m in ({"role": "user", "content": _screenshot_turn(i)}, {"role": "assistant", "content": "ok"})]
     tail_budget = int(THRESHOLD * cc.summary_target_ratio)
     with image_cost_context(learned_image_token_cost("vision-local-ab", wire.base_url)):

@@ -16,7 +16,7 @@ import traceback
 from contextlib import asynccontextmanager
 from typing import Any, Optional
 
-from agent.i18n import t
+from hermes_agent.agent.i18n import t
 
 logger = logging.getLogger("hermes_agent.gateway.run")
 

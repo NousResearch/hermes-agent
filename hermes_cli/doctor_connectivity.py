@@ -157,8 +157,8 @@ def _probe_anthropic() -> ProbeResult:
         return _skip(name)
     try:
         import httpx
-        from agent.anthropic_adapter import _COMMON_BETAS, _OAUTH_ONLY_BETAS, _CONTEXT_1M_BETA
-        from agent.anthropic_credentials import _is_oauth_token
+        from hermes_agent.agent.anthropic_adapter import _COMMON_BETAS, _OAUTH_ONLY_BETAS, _CONTEXT_1M_BETA
+        from hermes_agent.agent.anthropic_credentials import _is_oauth_token
         is_oauth = _is_oauth_token(key)
         headers = {"anthropic-version": "2023-06-01", **({"Authorization": f"Bearer {key}", "anthropic-beta": ",".join(_COMMON_BETAS + _OAUTH_ONLY_BETAS)}
                                                          if is_oauth else {"x-api-key": key})}
@@ -207,8 +207,8 @@ def _anthropic_messages_probe(base: str, key: str):
     auth family (Bearer for Azure Foundry, else x-api-key) and the same ``api-version`` query. Azure
     Foundry's ``/anthropic`` route 404s on ``GET /models`` even when chat works (#66756)."""
     import httpx
-    from agent.anthropic_adapter import _base_client_kwargs
-    from agent.anthropic_endpoints import _requires_bearer_auth
+    from hermes_agent.agent.anthropic_adapter import _base_client_kwargs
+    from hermes_agent.agent.anthropic_endpoints import _requires_bearer_auth
     normalized, kwargs = _base_client_kwargs(base, None)
     auth = {"Authorization": f"Bearer {key}"} if _requires_bearer_auth(normalized) else {"x-api-key": key}
     headers = {"anthropic-version": "2023-06-01", "User-Agent": hermes_user_agent(), **auth}
@@ -237,7 +237,7 @@ def _apikey_request(key: str, base_env, default_url) -> tuple:
         base = "https://api.kimi.com/coding/v1"
     # Anthropic-compat endpoints (/anthropic, api.kimi.com/coding sans /v1) lack /models — use the OpenAI-compat /v1 surface.
     if base and base.rstrip("/").endswith("/anthropic"):
-        from agent.auxiliary_client import _to_openai_base_url
+        from hermes_agent.agent.auxiliary_client import _to_openai_base_url
         base = _to_openai_base_url(base)
     if base_url_host_matches(base, "api.kimi.com") and base.rstrip("/").endswith("/coding"):
         base = base.rstrip("/") + "/v1"
@@ -249,7 +249,7 @@ def _apikey_request(key: str, base_env, default_url) -> tuple:
     # ACCESS_TOKEN_TYPE_UNSUPPORTED (reserved for OAuth 2 tokens); plain keys use ``x-goog-api-key``.
     if url and (base_url_host_matches(url, "generativelanguage.googleapis.com")
                 or base_url_host_matches(url, "aiplatform.googleapis.com")):
-        from agent.gemini_native_adapter import is_vertex_express_base_url, normalize_gemini_base_url
+        from hermes_agent.agent.gemini_native_adapter import is_vertex_express_base_url, normalize_gemini_base_url
         root = url.rsplit("/models", 1)[0]
         if base_url_host_matches(url, "generativelanguage.googleapis.com") or is_vertex_express_base_url(root):
             # Normalize guarantees the version segment and completes an explicitly configured express
@@ -265,7 +265,7 @@ def _apikey_request(key: str, base_env, default_url) -> tuple:
 def _probe_bedrock() -> ProbeResult:
     name = "AWS Bedrock"
     try:
-        from agent.bedrock_adapter import has_aws_credentials, resolve_aws_auth_env_var, resolve_bedrock_region
+        from hermes_agent.agent.bedrock_adapter import has_aws_credentials, resolve_aws_auth_env_var, resolve_bedrock_region
     except ImportError:
         return _skip(name)
     if not has_aws_credentials():
@@ -307,7 +307,7 @@ def _probe_azure_entra() -> ProbeResult:
     except Exception:
         return _skip(name)
     try:
-        from agent.azure_identity_adapter import (
+        from hermes_agent.agent.azure_identity_adapter import (
             EntraIdentityConfig, SCOPE_AI_AZURE_DEFAULT, describe_active_credential, has_azure_identity_installed,
         )
     except Exception as exc:

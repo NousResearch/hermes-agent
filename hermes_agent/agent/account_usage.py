@@ -9,13 +9,13 @@ from typing import TYPE_CHECKING, Any, Callable, Optional
 
 import httpx
 
-from agent.anthropic_credentials import _is_oauth_token, resolve_anthropic_token
+from hermes_agent.agent.anthropic_credentials import _is_oauth_token, resolve_anthropic_token
 from hermes_cli.auth import AuthError, _read_codex_tokens, resolve_codex_runtime_credentials
 from hermes_cli.auth_codex import _codex_pool_route_base_url
 from hermes_cli.runtime_provider import resolve_runtime_provider
 from hermes_time import safe_strftime
 
-from agent.usage_gauges import BP_FULL
+from hermes_agent.agent.usage_gauges import BP_FULL
 
 if TYPE_CHECKING:
     from typing import TypeGuard
@@ -233,7 +233,7 @@ def _usage_window_rows(gauges: Any, *, paused_reason: Any,
     """One row per server allowance, in the server's order, plus the top-tier, payment-paused and top-up-off
     lines. Empty unless the list has an allowance that stops every model. ``keep_going_on_credits``: the
     account setting (None: an older server)."""
-    from agent.usage_gauges import SCOPE_TOP_TIER, all_scope, gauge_title, parse_gauges
+    from hermes_agent.agent.usage_gauges import SCOPE_TOP_TIER, all_scope, gauge_title, parse_gauges
     parsed = parse_gauges(gauges)
     if not parsed or not all_scope(parsed):
         return [], []
@@ -251,7 +251,7 @@ def _usage_window_rows(gauges: Any, *, paused_reason: Any,
     if top_full:
         lines.append(_window_top_tier_line(top_row.reset_at if top_row else None, keep_going_on_credits))
     if isinstance(paused_reason, str) and paused_reason:
-        from agent.usage_gauges import paused_for_payment
+        from hermes_agent.agent.usage_gauges import paused_for_payment
         lines.append(_WINDOW_PAUSED_LINE if paused_for_payment(paused_reason) else _WINDOW_PAUSED_OTHER_LINE)
     elif keep_going_on_credits is False:
         lines.append(_WINDOW_KEEP_GOING_OFF_LINE)
@@ -286,7 +286,7 @@ def build_nous_credits_snapshot(account_info) -> Optional[AccountUsageSnapshot]:
             if getattr(account_info, "paid_service_access", None) is False and not window_lines:
                 details.append(_DEPLETED_LINE)
             if sub is not None and (period_end := getattr(sub, "current_period_end", None)):
-                from agent.billing_usage import format_renews
+                from hermes_agent.agent.billing_usage import format_renews
                 details.append(f"Renews: {format_renews(period_end) or period_end}")
             return _nous_snapshot(windows, details, ["Top up via /topup"], source="portal-account",
                                   plan=getattr(sub, "plan", None) if sub is not None else None, usage_window=True)
@@ -374,7 +374,7 @@ def apply_header_gauge(snapshot: Optional[AccountUsageSnapshot], credits_state: 
         return snapshot
     # Row title → (header used bp, that gauge's reset). A header from before its gauge reset describes the
     # old window: the portal's fresh number stands.
-    from agent.usage_gauges import gauge_title
+    from hermes_agent.agent.usage_gauges import gauge_title
     mapping = {gauge_title(g): (g.used_bp, g.resets_at_ms) for g in getattr(credits_state, "gauges", ()) or ()}
     now_ms = int(time.time() * 1000)
     windows: list[AccountUsageWindow] = []
@@ -412,7 +412,7 @@ def nous_credits_view(*, markdown: bool = False, timeout: float = 10.0, credits_
     """``nous_credits_lines`` plus whether they are the usage-window layout (callers keep today's
     presentation for everyone else). Fail-open → ``([], False)``."""
     try:
-        from agent.credits_tracker import dev_fixture_credits_state
+        from hermes_agent.agent.credits_tracker import dev_fixture_credits_state
         fixture = dev_fixture_credits_state()
     except Exception:
         logger.debug("Dev credits fixture unavailable", exc_info=True)
@@ -551,7 +551,7 @@ def _resolve_codex_usage_credentials(
         except AuthError:
             singleton_key = ""
         if singleton_key != explicit_key:
-            from agent.credential_pool import load_pool
+            from hermes_agent.agent.credential_pool import load_pool
             entry = load_pool("openai-codex").try_refresh_matching(api_key_hint=explicit_key)
             if entry is None:
                 raise RuntimeError("Could not refresh the Codex credential this session runs on")
@@ -580,7 +580,7 @@ def _resolve_codex_usage_credentials(
     except AuthError:
         logger.debug("codex ▸ /usage runtime resolver returned no creds; trying pool", exc_info=True)
     # Tier 3: pool credentials have no account_id concept → header omitted.
-    from agent.credential_pool import load_pool
+    from hermes_agent.agent.credential_pool import load_pool
     entry = load_pool("openai-codex").select()
     if entry is None:
         raise RuntimeError("No available openai-codex credential in credential pool")
@@ -595,7 +595,7 @@ def _codex_banked_resets(payload: dict) -> int:
 
 def _codex_headers(token: str, account_id: Optional[str]) -> dict[str, str]:
     """auth.json's ``account_id`` wins over the JWT claim; the JWT still supplies the residency header."""
-    from agent.codex_headers import codex_account_headers
+    from hermes_agent.agent.codex_headers import codex_account_headers
     return {"Authorization": f"Bearer {token}", "Accept": "application/json", "User-Agent": "codex-cli",
             **codex_account_headers(token), **({"ChatGPT-Account-ID": account_id} if account_id else {})}
 
@@ -710,7 +710,7 @@ def _codex_snapshot_identity(token: str) -> Optional[str]:
     """Trusted per-account identity of a Codex credential: the decoded JWT principal
     (``chatgpt_account_id`` + ``sub``), never the token itself. Two credentials for one
     workspace member share it, so pool accounts are counted once, honestly."""
-    from agent.credential_pool import _codex_principal_identity
+    from hermes_agent.agent.credential_pool import _codex_principal_identity
 
     principal = _codex_principal_identity(token)
     return f"codex:{principal[0]}:{principal[1]}" if principal else None
@@ -930,7 +930,7 @@ PLUGIN_USAGE_HOOK_DEADLINE_S = 10.0
 def _call_plugin_usage_hook(profile, base_url: Optional[str], api_key: Optional[str]) -> Optional[AccountUsageSnapshot]:
     """Run the profile hook under the shared deadline; past it → None. Exceptions re-raise in the
     caller so ``fetch_account_usage`` fails open without a worker-thread traceback on ``/usage``."""
-    from agent.deadline import run_bounded_sync
+    from hermes_agent.agent.deadline import run_bounded_sync
     from providers.base import ProviderProfile
 
     if type(profile).fetch_account_usage is ProviderProfile.fetch_account_usage:
@@ -945,7 +945,7 @@ def fetch_account_usage(
     provider: Optional[str], *, base_url: Optional[str] = None, api_key: Optional[str] = None,
     read_only: bool = False, identity_id: Optional[str] = None,
 ) -> Optional[AccountUsageSnapshot]:
-    from agent.account_usage_cache import remember_account_usage
+    from hermes_agent.agent.account_usage_cache import remember_account_usage
 
     slug = str(provider or "").strip().lower()
     # The picker's per-credential path resolves variants that never rotate/refresh a credential

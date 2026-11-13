@@ -7,8 +7,8 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
-from agent.browser_page_backend import BrowserPageBackend
-from agent.provider_registry import ProviderRegistry
+from hermes_agent.agent.browser_page_backend import BrowserPageBackend
+from hermes_agent.agent.provider_registry import ProviderRegistry
 
 logger = logging.getLogger(__name__)
 

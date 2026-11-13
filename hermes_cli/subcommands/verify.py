@@ -10,7 +10,7 @@ from typing import Callable
 
 from hermes_cli.subcommands._shared import add_json_flag
 
-# Keep in sync with agent/verify/runner.py defaults; not imported here to
+# Keep in sync with hermes_agent/agent/verify/runner.py defaults; not imported here to
 # avoid paying an extra module import on every `hermes` invocation.
 DEFAULT_PHASE_TIMEOUT = 600.0
 DEFAULT_READY_TIMEOUT = 60.0

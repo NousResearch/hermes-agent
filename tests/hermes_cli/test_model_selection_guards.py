@@ -79,7 +79,7 @@ def test_misbehaving_guard_never_breaks_selection():
 def test_cost_guard_still_fires_through_registry():
     # The registry must preserve the existing cost-guard behavior; feed it
     # explicit model_info so no network lookup is needed.
-    from agent.models_dev import ModelInfo
+    from hermes_agent.agent.models_dev import ModelInfo
 
     info = ModelInfo(
         id="pricey/model",

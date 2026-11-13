@@ -10,11 +10,11 @@ def _rows_with_env(monkeypatch, env_name: str, provider: str) -> list[dict]:
     monkeypatch.setenv(env_name, "test-key")
     with (
         patch(
-            "agent.models_dev.fetch_models_dev",
+            "hermes_agent.agent.models_dev.fetch_models_dev",
             return_value={provider: {"env": [env_name], "name": provider.title()}},
         ),
         patch(
-            "agent.models_dev.PROVIDER_TO_MODELS_DEV",
+            "hermes_agent.agent.models_dev.PROVIDER_TO_MODELS_DEV",
             {provider: provider},
         ),
         patch("hermes_cli.models.cached_provider_model_ids", return_value=["model-a"]),

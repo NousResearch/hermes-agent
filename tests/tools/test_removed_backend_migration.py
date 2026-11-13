@@ -44,7 +44,7 @@ class TestRemovedBackendNote:
         # Restored/live backends must never sit in REMOVED_BACKENDS — the
         # startup warning would fire on a working provider. Guards the
         # #99731 restore against a stale tavily entry reappearing.
-        from agent.web_search_registry import get_provider
+        from hermes_agent.agent.web_search_registry import get_provider
 
         for name in tbh.REMOVED_BACKENDS.get("web", {}):
             assert get_provider(name) is None, (

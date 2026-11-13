@@ -22,12 +22,12 @@ from urllib.parse import quote, unquote
 from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.process_identity import own_process_groups, register_child, release_process_group_once_empty
 
-from agent.lsp.protocol import (
+from hermes_agent.agent.lsp.protocol import (
     ERROR_CONTENT_MODIFIED, ERROR_METHOD_NOT_FOUND, LSPProtocolError, LSPRequestError, classify_message,
     encode_message, make_error_response, make_notification, make_request, make_response, read_message,
 )
 
-logger = logging.getLogger("agent.lsp.client")
+logger = logging.getLogger("hermes_agent.agent.lsp.client")
 
 # asyncio's 64 KiB StreamReader default makes readline() raise on one long LSP
 # stderr line (#31417); 16 MiB covers realistic output while staying bounded.
@@ -259,7 +259,7 @@ class LSPClient:
             raise
 
     async def _spawn(self) -> None:
-        from agent.delegation_context import delegated_child_subprocess_env
+        from hermes_agent.agent.delegation_context import delegated_child_subprocess_env
         from hermes_agent.tools.environments.local import hermes_subprocess_env
         cmd = self._command
         if sys.platform == "win32" and cmd[0].lower().endswith((".cmd", ".bat")):
@@ -458,7 +458,7 @@ class LSPClient:
                 # after SIGTERM can let an ignoring descendant become reparented and escape.
                 # Windows maps this to a synchronous taskkill /T /F (up to 15s), so the
                 # kill runs off the event loop.
-                from agent.deadline import kill_process_tree
+                from hermes_agent.agent.deadline import kill_process_tree
 
                 if not await asyncio.to_thread(kill_process_tree, proc.pid):
                     proc.kill()

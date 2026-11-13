@@ -1,7 +1,7 @@
 """PLG-11 (#140058): the in-repo memory providers meet the multiplexing contract.
 
 On a multiplexed gateway every profile's agents share one process. Each agent's manager owns its own
-provider instance, and the contract (``agent/memory_provider.py``) is that the instance binds its
+provider instance, and the contract (``hermes_agent/agent/memory_provider.py``) is that the instance binds its
 store from the ``hermes_home`` ``initialize`` receives, keeps that binding on the instance, and
 never rebinds a module/class-level one per call. These tests drive the real providers through real
 managers with two profiles interleaving on threads, with only the network/CLI backend faked.
@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from agent.memory_manager import MemoryManager
+from hermes_agent.agent.memory_manager import MemoryManager
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 from tests.waiting import wait_until
 

@@ -3,7 +3,7 @@
 from types import MethodType, SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 
 def test_credential_rotation_replaces_route_scoped_tls_settings():
@@ -114,7 +114,7 @@ def test_credential_rotation_does_not_carry_global_headers_across_routes():
 def test_codex_rotation_keeps_proxy_override(monkeypatch):
     """#40913: a 401/429 rotation adopts the pool row, whose stored URL is the canonical ChatGPT
     endpoint; with HERMES_CODEX_BASE_URL set the rotated client must keep targeting the proxy."""
-    from agent.credential_pool import PooledCredential
+    from hermes_agent.agent.credential_pool import PooledCredential
 
     monkeypatch.setenv("HERMES_CODEX_BASE_URL", "http://127.0.0.1:8787/backend-api/codex/")
     entry = PooledCredential(provider="openai-codex", id="second", label="second", auth_type="oauth",
@@ -136,7 +136,7 @@ def test_codex_rotation_keeps_proxy_override(monkeypatch):
 def test_credential_rotation_to_another_endpoint_drops_the_old_endpoints_rejections():
     """A pool entry on a different base URL is a different route: what the old endpoint rejected
     (stream_options, reasoning fields) must not shape requests to the new one. Same URL keeps them."""
-    from agent.route_verdicts import ROUTE_REJECTION_FIELDS
+    from hermes_agent.agent.route_verdicts import ROUTE_REJECTION_FIELDS
 
     def rotate(new_base_url):
         agent = SimpleNamespace(
@@ -158,7 +158,7 @@ def test_credential_rotation_to_another_endpoint_drops_the_old_endpoints_rejecti
 def test_anthropic_credential_rotation_to_another_endpoint_drops_the_old_endpoints_rejections():
     """Native Messages rotation rebuilds its own client and skips ``_reapply_route_client_config``,
     so it resets the verdicts itself; the same URL keeps them."""
-    from agent.route_verdicts import ROUTE_REJECTION_FIELDS
+    from hermes_agent.agent.route_verdicts import ROUTE_REJECTION_FIELDS
 
     def rotate(new_base_url):
         agent = SimpleNamespace(

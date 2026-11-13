@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent import relay_runtime
+from hermes_agent.agent import relay_runtime
 
 
 def test_pop_relay_scope_omits_unsupported_metadata_kwarg():
@@ -106,7 +106,7 @@ def test_end_turn_finalization_survives_pop_without_metadata(monkeypatch, caplog
     )
     turn.logical_llm_calls["api-1"] = logical
 
-    with caplog.at_level(logging.WARNING, logger="agent.relay_runtime"):
+    with caplog.at_level(logging.WARNING, logger="hermes_agent.agent.relay_runtime"):
         relay_runtime.SESSION_COORDINATOR.end_turn(turn, outcome="success")
 
     joined = "\n".join(record.getMessage() for record in caplog.records)

@@ -22,8 +22,8 @@ here loudly).
 import copy
 import json
 
-import agent.conversation_loop as cl
-from agent.message_sanitization import (
+import hermes_agent.agent.conversation_loop as cl
+from hermes_agent.agent.message_sanitization import (
     _sanitize_messages_non_ascii,
     _sanitize_messages_surrogates,
 )

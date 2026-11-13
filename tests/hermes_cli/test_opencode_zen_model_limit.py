@@ -13,14 +13,14 @@ def test_opencode_zen_lists_all_models_while_other_providers_remain_capped(monke
     deepseek_models = [f"deepseek-model-{i}" for i in range(57)]
 
     monkeypatch.setattr(
-        "agent.models_dev.PROVIDER_TO_MODELS_DEV",
+        "hermes_agent.agent.models_dev.PROVIDER_TO_MODELS_DEV",
         {
             "opencode-zen": "opencode",
             "deepseek": "deepseek",
         },
     )
     monkeypatch.setattr(
-        "agent.models_dev.fetch_models_dev",
+        "hermes_agent.agent.models_dev.fetch_models_dev",
         lambda: {"opencode": {}, "deepseek": {}},
     )
     monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})

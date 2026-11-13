@@ -280,7 +280,7 @@ def _auth_error(key: str, message: str, code: str):
 
 
 def _env(name: str, code: str, key: str) -> str:
-    from agent.secret_scope import get_secret
+    from hermes_agent.agent.secret_scope import get_secret
 
     value = str(get_secret(name) or "").strip()
     if not value:

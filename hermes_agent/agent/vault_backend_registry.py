@@ -6,15 +6,15 @@ a name another plugin already holds in this profile, a backend that wants Hermes
 prompt (``needs_unlock``), and ``name``/``prefix`` computed by a descriptor or an attribute-access hook
 (they could change after validation, and reading them would run plugin code; :func:`static_name` judges
 them before anything reads them). ``enabled_plugin_backends`` re-checks every stored key and wraps each backend in
-:class:`agent.vault_backends.plugin.PluginLoginBackend`, the only form the vault tool ever sees.
+:class:`hermes_agent.agent.vault_backends.plugin.PluginLoginBackend`, the only form the vault tool ever sees.
 """
 
 import inspect
 import logging
 import re
 
-from agent.provider_registry import ProviderRegistry
-from agent.vault_backends.base import LoginBackend
+from hermes_agent.agent.provider_registry import ProviderRegistry
+from hermes_agent.agent.vault_backends.base import LoginBackend
 
 _registry = ProviderRegistry(label="Login backend", provider_cls=LoginBackend,
                              logger=logging.getLogger(__name__))
@@ -24,8 +24,8 @@ _NAME = re.compile(r"[a-z][a-z0-9_]*")
 
 
 def _builtin_namespaces() -> tuple[set[str], tuple[str, ...]]:
-    from agent.vault_backends.base import external_backend_classes
-    from agent.vault_backends.local import LocalLoginBackend
+    from hermes_agent.agent.vault_backends.base import external_backend_classes
+    from hermes_agent.agent.vault_backends.local import LocalLoginBackend
 
     classes = (LocalLoginBackend, *external_backend_classes())
     names = {cls.name for cls in classes} | {cls.prefix.rstrip(":_") for cls in classes}
@@ -73,7 +73,7 @@ def register_provider(provider, *, scope=None):
 
 def enabled_plugin_backends(cfg: dict) -> list[LoginBackend]:
     """Registered backends the profile turned on with ``vault.<name>.enabled: true``, wrapped."""
-    from agent.vault_backends.plugin import PluginLoginBackend
+    from hermes_agent.agent.vault_backends.plugin import PluginLoginBackend
 
     out: list[LoginBackend] = []
     for name, provider in sorted(_registry.merged().items()):

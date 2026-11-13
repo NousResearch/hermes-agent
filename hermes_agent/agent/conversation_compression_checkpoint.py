@@ -1,4 +1,4 @@
-"""Fail-closed pre-compress checkpoint gate for ``agent.conversation_compression``.
+"""Fail-closed pre-compress checkpoint gate for ``hermes_agent.agent.conversation_compression``.
 
 The refusal type, its remediation text and the startup warning for
 ``compression.checkpoint_required`` (``conversation_compression`` re-exports the refusal
@@ -10,10 +10,10 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from agent.memory_provider import PRE_COMPRESS_CHECKPOINT_API_VERSION
+from hermes_agent.agent.memory_provider import PRE_COMPRESS_CHECKPOINT_API_VERSION
 
 # Log-record parity with the origin module.
-logger = logging.getLogger("agent.conversation_compression")
+logger = logging.getLogger("hermes_agent.agent.conversation_compression")
 
 
 class CompressionCheckpointUnavailable(RuntimeError):
@@ -158,7 +158,7 @@ def _prune_would_have_run(compressor: Any, current_tokens: int) -> bool:
     "would have run": the call was withheld either way. A hosted engine (``plugins.isolation:
     host``) is not counted: its methods are all proxies, so an override can't be told from the no-op.
     """
-    from agent.context_engine import ContextEngine
+    from hermes_agent.agent.context_engine import ContextEngine
     from hermes_cli.plugin_host import is_hosted_object
 
     prune = getattr(compressor, "prune_tool_results_only", None)

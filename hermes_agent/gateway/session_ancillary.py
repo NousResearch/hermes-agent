@@ -50,7 +50,7 @@ async def subagent_control(connection, ref, params, *, steer):
         _require_current_route(connection.authority, ref)
         child = next((r['agent'] for r in _owner_objects(connection.authority, ref)[1] if r.get('subagent_id') == sub), None)
     if not steer:
-        from agent.interrupt_compat import request_hard_interrupt
+        from hermes_agent.agent.interrupt_compat import request_hard_interrupt
         return {'found': child is not None and bool(request_hard_interrupt(child, f'Interrupted via Desktop ({sub})')),
                 'subagent_id': sub}
     from hermes_agent.tools import delegate_tool_registry as registry
@@ -78,7 +78,7 @@ async def show_tools(connection, ref, params):
 
     def build():
         from hermes_agent import model_tools
-        from agent.skill_utils import parse_config_string_list
+        from hermes_agent.agent.skill_utils import parse_config_string_list
         from hermes_agent.toolsets import session_disabled_toolsets
         with owner_scope(authority):
             if agent is not None:
@@ -120,7 +120,7 @@ async def reload_skills(connection, ref, params):
     policy = policy_for_source(authority.runner, authority.sessions[ref.session_id].source)
 
     def rescan():
-        from agent.skill_commands import reload_skills as rescan_skills
+        from hermes_agent.agent.skill_commands import reload_skills as rescan_skills
         with owner_scope(authority), policy_scope(policy, authority=authority):
             return rescan_skills()
     result = await asyncio.to_thread(rescan)

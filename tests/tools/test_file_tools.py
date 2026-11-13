@@ -421,8 +421,8 @@ class TestPatchSchemaShape:
 
         import hermes_agent.tools.file_tools as ft
 
-        with _p("agent.auxiliary_client._read_main_provider", return_value="openai"), \
-             _p("agent.auxiliary_client._read_main_model", return_value="gpt-5.2"):
+        with _p("hermes_agent.agent.auxiliary_client._read_main_provider", return_value="openai"), \
+             _p("hermes_agent.agent.auxiliary_client._read_main_model", return_value="gpt-5.2"):
             o = ft._patch_schema_overrides()
         params = o["parameters"]
         assert params["required"] == ["mode"]
@@ -961,7 +961,7 @@ class TestSecretFileReadRedaction:
     @pytest.fixture
     def hermes_home(self, tmp_path, monkeypatch):
         """A Hermes home with no ``.hermes`` segment, like ``%LOCALAPPDATA%\\hermes``."""
-        from agent import file_safety
+        from hermes_agent.agent import file_safety
 
         home = tmp_path / "hermes"
         home.mkdir()

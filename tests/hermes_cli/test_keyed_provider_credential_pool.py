@@ -207,7 +207,7 @@ def test_seed_custom_pool_matches_legacy_named_pool(tmp_path, monkeypatch):
         encoding="utf-8",
     )
 
-    from agent.credential_pool import load_pool
+    from hermes_agent.agent.credential_pool import load_pool
 
     pool = load_pool("custom:b.ai")
     entries = pool.entries() if hasattr(pool, "entries") else []
@@ -236,7 +236,7 @@ def test_named_provider_pool_requires_matching_endpoint(tmp_path, monkeypatch):
     base_url must never receive it (trailing slash is the same endpoint)."""
     _write_keyed_provider_home(tmp_path, monkeypatch)
 
-    from agent.credential_pool import custom_provider_pool_key_candidates
+    from hermes_agent.agent.credential_pool import custom_provider_pool_key_candidates
     from hermes_cli import runtime_provider as rp
 
     assert custom_provider_pool_key_candidates("https://elsewhere.example/v1", "b-ai") == []

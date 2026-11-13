@@ -2,7 +2,7 @@
 
 from typing import Optional
 
-from agent.reasoning_carriers import field
+from hermes_agent.agent.reasoning_carriers import field
 
 
 class _ToolCallAccumulator:
@@ -105,7 +105,7 @@ class _ToolCallAccumulator:
         if extra is None and hasattr(tc_delta, "model_extra"):
             extra = (tc_delta.model_extra if isinstance(tc_delta.model_extra, dict) else {}).get("extra_content")
         if extra is not None:
-            from agent.chat_completion_helpers import _dump_if_model
+            from hermes_agent.agent.chat_completion_helpers import _dump_if_model
             entry["extra_content"] = _dump_if_model(extra)
         name = entry["function"]["name"]
         if name and idx not in self._notified:

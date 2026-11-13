@@ -50,7 +50,7 @@ def _run_openai_switch(
     """Run switch_model with OpenAI-direct mocks and return the result."""
     registry = _MODELS_DEV_WITH_META if models_dev_registry is None else models_dev_registry
     with (
-        patch("agent.models_dev.fetch_models_dev", lambda *a, **k: registry),
+        patch("hermes_agent.agent.models_dev.fetch_models_dev", lambda *a, **k: registry),
         patch("hermes_cli.model_switch.resolve_alias", return_value=None),
         patch("hermes_cli.model_switch.list_provider_models", return_value=[]),
         patch(

@@ -42,8 +42,8 @@ def homes(tmp_path, monkeypatch):
     )
     (profile / ".env").write_text("CRON_HOOK_SECRET=profile-secret\n", encoding="utf-8")
     yield launch, profile
-    from agent import outbound_webhooks
-    from agent import shell_hooks
+    from hermes_agent.agent import outbound_webhooks
+    from hermes_agent.agent import shell_hooks
     from hermes_cli.plugins import _reset_plugin_managers_for_tests
 
     shell_hooks.reset_for_tests()
@@ -53,8 +53,8 @@ def homes(tmp_path, monkeypatch):
 
 def test_worker_registers_owning_profile_config_hooks(homes, tmp_path, monkeypatch):
     _launch, profile = homes
-    from agent import outbound_webhooks
-    from agent import shell_hooks
+    from hermes_agent.agent import outbound_webhooks
+    from hermes_agent.agent import shell_hooks
     from hermes_agent.cron import scheduler
     from hermes_constants import hermes_home_key
 

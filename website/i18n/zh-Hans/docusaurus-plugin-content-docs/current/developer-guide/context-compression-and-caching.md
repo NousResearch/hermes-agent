@@ -7,13 +7,13 @@ description: Hermes Agent 如何通过双重压缩系统和 Anthropic prompt 缓
 
 Hermes Agent 使用双重压缩系统和 Anthropic prompt（提示词）缓存，在长对话中高效管理上下文窗口用量。
 
-源文件：`agent/context_engine.py`（ABC）、`agent/context_compressor.py`（默认引擎）、
-`agent/prompt_caching.py`、`hermes_agent/gateway/run.py`（会话清理）、`run_agent.py`（搜索 `_compress_context`）
+源文件：`hermes_agent/agent/context_engine.py`（ABC）、`hermes_agent/agent/context_compressor.py`（默认引擎）、
+`hermes_agent/agent/prompt_caching.py`、`hermes_agent/gateway/run.py`（会话清理）、`hermes_agent/run_agent.py`（搜索 `_compress_context`）
 
 
 ## 可插拔上下文引擎
 
-上下文管理基于 `ContextEngine` ABC（`agent/context_engine.py`）构建。内置的 `ContextCompressor` 是默认实现，但插件可以用其他引擎替换它（例如无损上下文管理）。
+上下文管理基于 `ContextEngine` ABC（`hermes_agent/agent/context_engine.py`）构建。内置的 `ContextCompressor` 是默认实现，但插件可以用其他引擎替换它（例如无损上下文管理）。
 
 ```yaml
 context:
@@ -68,7 +68,7 @@ Gateway 清理阈值有意高于 agent 压缩器的阈值。将其设置为 50%�
 
 ### 2. Agent ContextCompressor（50% 阈值，可配置）
 
-位于 `agent/context_compressor.py`。这是**主要压缩系统**，在 agent 的工具循环内运行，可访问准确的 API 报告 token 数。
+位于 `hermes_agent/agent/context_compressor.py`。这是**主要压缩系统**，在 agent 的工具循环内运行，可访问准确的 API 报告 token 数。
 
 
 ## 配置
@@ -260,7 +260,7 @@ max_summary_tokens   = min(200,000 × 0.05, 12,000) = 10,000
 
 ## Prompt 缓存（Anthropic）
 
-来源：`agent/prompt_caching.py`
+来源：`hermes_agent/agent/prompt_caching.py`
 
 通过缓存对话前缀，在多轮对话中将输入 token 成本降低约 75%。使用 Anthropic 的 `cache_control` 断点。
 
@@ -325,4 +325,4 @@ CLI 在启动时显示缓存状态：
 
 ## 上下文压力警告
 
-中间上下文压力警告已被移除（参见 `run_agent.py` 中的迭代预算块，其中注明："No intermediate pressure warnings — they caused models to 'give up' prematurely on complex tasks"）。压缩在 prompt token 达到配置的 `compression.threshold`（默认 50%）时触发，无需事先警告步骤；gateway 会话清理作为二级安全网在模型上下文窗口的 85% 处触发。
+中间上下文压力警告已被移除（参见 `hermes_agent/run_agent.py` 中的迭代预算块，其中注明："No intermediate pressure warnings — they caused models to 'give up' prematurely on complex tasks"）。压缩在 prompt token 达到配置的 `compression.threshold`（默认 50%）时触发，无需事先警告步骤；gateway 会话清理作为二级安全网在模型上下文窗口的 85% 处触发。

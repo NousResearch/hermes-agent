@@ -18,7 +18,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 
 @pytest.fixture(autouse=True)
@@ -26,14 +26,14 @@ def _no_compression_sleep(monkeypatch):
     import time as _time
 
     monkeypatch.setattr(_time, "sleep", lambda *_a, **_k: None)
-    monkeypatch.setattr("agent.retry_utils.jittered_backoff", lambda *a, **k: 0.0)
+    monkeypatch.setattr("hermes_agent.agent.retry_utils.jittered_backoff", lambda *a, **k: 0.0)
 
 
 def _make_agent():
     with (
         patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]),
         patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
-        patch("agent.process_bootstrap.OpenAI"),
+        patch("hermes_agent.agent.process_bootstrap.OpenAI"),
     ):
         agent = AIAgent(
             api_key="test-key-1234567890",
@@ -83,7 +83,7 @@ def test_overflow_recovery_timeout_ends_turn_without_provider_reentry():
 
     def _timed_out(messages, _system_message, **_kwargs):
         compression_calls.append(1)
-        from agent.conversation_compression import (
+        from hermes_agent.agent.conversation_compression import (
             mark_context_compression_timed_out,
             reset_context_compression_timeout_outcome,
         )
@@ -137,7 +137,7 @@ def test_pre_api_compression_timeout_is_typed_terminal():
 
     def _timed_out(messages, _system_message, **_kwargs):
         compression_calls.append(1)
-        from agent.conversation_compression import (
+        from hermes_agent.agent.conversation_compression import (
             mark_context_compression_timed_out,
             reset_context_compression_timeout_outcome,
         )
@@ -148,7 +148,7 @@ def test_pre_api_compression_timeout_is_typed_terminal():
 
     agent._compress_context = _timed_out
 
-    from agent.turn_context import PreflightCompressionTimedOut
+    from hermes_agent.agent.turn_context import PreflightCompressionTimedOut
 
     history = [
         {"role": "user", "content": "old request"},

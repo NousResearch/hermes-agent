@@ -227,7 +227,7 @@ class TestUsernameResolutionEnvWrite:
 
     @pytest.mark.asyncio
     async def test_no_env_write_when_multiplex_active(self, monkeypatch):
-        from agent import secret_scope
+        from hermes_agent.agent import secret_scope
 
         monkeypatch.setenv("DISCORD_ALLOWED_USERS", "999")
         monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", True)
@@ -262,7 +262,7 @@ class TestUsernameResolutionEnvWrite:
 
     @pytest.mark.asyncio
     async def test_env_write_preserved_single_profile(self, monkeypatch):
-        from agent import secret_scope
+        from hermes_agent.agent import secret_scope
 
         monkeypatch.setenv("DISCORD_ALLOWED_USERS", "teknium")
         monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", False)
@@ -297,7 +297,7 @@ class TestYamlBridgeSeeding:
     loading a profile-scoped config under multiplex."""
 
     def test_seeds_extra_and_bridges_env_single_profile(self, monkeypatch):
-        from agent import secret_scope
+        from hermes_agent.agent import secret_scope
         from plugins.platforms.discord.adapter import _apply_yaml_config
 
         monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", False)
@@ -320,7 +320,7 @@ class TestYamlBridgeSeeding:
         assert os.environ["DISCORD_ALLOWED_CHANNELS"] == "111,112"
 
     def test_profile_scoped_load_skips_env_bridge(self, monkeypatch):
-        from agent import secret_scope
+        from hermes_agent.agent import secret_scope
         from plugins.platforms.discord.adapter import _apply_yaml_config
 
         monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", True)
@@ -342,7 +342,7 @@ class TestYamlBridgeSeeding:
     def test_first_writer_env_does_not_mask_second_profile_extras(self, monkeypatch):
         """End-to-end shape of the original repro: profile A bridges env first;
         profile B (scoped load) still gets ITS channels via extras."""
-        from agent import secret_scope
+        from hermes_agent.agent import secret_scope
         from plugins.platforms.discord.adapter import _apply_yaml_config
 
         # Profile A: single first load (multiplex flag not yet set).
@@ -378,7 +378,7 @@ class TestTelegramGateIsolation:
     """Telegram mirror (reported by @yournetworkplug-ctrl in #72348)."""
 
     def test_scoped_gate_env_prefers_profile_scope(self, monkeypatch):
-        from agent import secret_scope
+        from hermes_agent.agent import secret_scope
         from plugins.platforms.telegram.adapter import _scoped_gate_env
 
         monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "111111111")
@@ -394,7 +394,7 @@ class TestTelegramGateIsolation:
     def test_scoped_gate_env_authoritative_scope_miss(self, monkeypatch):
         """Under multiplex, a scope WITHOUT the key must not fall through to
         another profile's process-env value."""
-        from agent import secret_scope
+        from hermes_agent.agent import secret_scope
         from plugins.platforms.telegram.adapter import _scoped_gate_env
 
         monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "111111111")
@@ -406,7 +406,7 @@ class TestTelegramGateIsolation:
             secret_scope.reset_secret_scope(token)
 
     def test_scoped_gate_env_single_profile_fallback(self, monkeypatch):
-        from agent import secret_scope
+        from hermes_agent.agent import secret_scope
         from plugins.platforms.telegram.adapter import _scoped_gate_env
 
         monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "111111111")
@@ -414,7 +414,7 @@ class TestTelegramGateIsolation:
         assert _scoped_gate_env("TELEGRAM_ALLOWED_USERS") == "111111111"
 
     def test_telegram_yaml_bridge_skipped_for_scoped_profile(self, monkeypatch):
-        from agent import secret_scope
+        from hermes_agent.agent import secret_scope
         from plugins.platforms.telegram.adapter import _apply_yaml_config
 
         monkeypatch.delenv("TELEGRAM_ALLOWED_CHATS", raising=False)

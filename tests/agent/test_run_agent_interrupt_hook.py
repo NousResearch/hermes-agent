@@ -37,8 +37,8 @@ class TestExecuteToolCallsInterruptHook:
 
         with (
             patch("hermes_agent.model_tools.handle_function_call", side_effect=KeyboardInterrupt),
-            patch("run_agent._set_interrupt"),
-            patch("agent.interrupt_control._set_interrupt"),
+            patch("hermes_agent.run_agent._set_interrupt"),
+            patch("hermes_agent.agent.interrupt_control._set_interrupt"),
             # The concurrent worker absorbs Ctrl-C into a cancelled result; sequential re-raises.
             contextlib.nullcontext() if concurrent else pytest.raises(KeyboardInterrupt),
         ):

@@ -133,7 +133,7 @@ def test_boot_recovery_names_the_continuable_children_on_the_row_that_reports_th
     from hermes_agent.tools.delegate_tool import delegate_task
     (get_hermes_home() / "config.yaml").write_text(json.dumps({"delegation": {"independent_completions": independent}}))
     parent, model = _parent(), _ScriptedModel()
-    with patch("run_agent.AIAgent", side_effect=model):
+    with patch("hermes_agent.run_agent.AIAgent", side_effect=model):
         out = json.loads(delegate_task(tasks=[{"goal": "write the first parser"}, {"goal": "write the second parser"}],
                                        background=True, parent_agent=parent))
         units = [u["delegation_id"] for u in out["units"]] if independent else [out["delegation_id"]]

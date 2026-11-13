@@ -41,7 +41,7 @@ def _silent_stop(tmp_path, parent):
     from hermes_agent.tools.terminal_tool import record_session_cwd
     parent._current_task_id = "parent-task"
     record_session_cwd("parent-task", str(_repo(tmp_path, "repo")))
-    with patch("run_agent.AIAgent", side_effect=_AlwaysLimited()):
+    with patch("hermes_agent.run_agent.AIAgent", side_effect=_AlwaysLimited()):
         out = json.loads(delegate_task(tasks=[{"goal": "write the parser"}], background=True, parent_agent=parent))
         wait_until(lambda: (_ledger(parent, out["delegation_id"]) or ("running",))[0] != "running",
                    what="the unit to finish")
@@ -134,7 +134,7 @@ def test_a_spawn_with_a_waiting_childs_exact_goal_is_refused_until_it_is_stopped
     assert sid in refused["error"] and f"delegate_task(action='stop', subagent_id='{sid}')" in refused["error"]
     assert "waiting to resume" in refused["error"], refused
     assert json.loads(delegate_task(action="stop", subagent_id=sid, parent_agent=parent))["status"] == "dismissed"
-    with patch("run_agent.AIAgent", side_effect=_ScriptedModel()):
+    with patch("hermes_agent.run_agent.AIAgent", side_effect=_ScriptedModel()):
         again = json.loads(delegate_task(goal="write the parser", background=True, parent_agent=parent))
     assert again.get("status") == "dispatched" and sid not in again["subagent_ids"], again
 
@@ -147,7 +147,7 @@ def test_the_duplicate_guard_is_off_without_auto_resume(tmp_path):
     parent = _parent()
     _sid, _unit = _silent_stop(tmp_path, parent)
     (get_hermes_home() / "config.yaml").write_text(json.dumps({"delegation": {"auto_resume": False}}))
-    with patch("run_agent.AIAgent", side_effect=_ScriptedModel()):
+    with patch("hermes_agent.run_agent.AIAgent", side_effect=_ScriptedModel()):
         out = json.loads(delegate_task(goal="write the parser", background=True, parent_agent=parent))
     assert out.get("status") == "dispatched", out
 
@@ -196,7 +196,7 @@ def test_a_mixed_batch_reports_each_child_once_and_no_early_failure_for_the_wait
     from hermes_agent.tools.delegate_tool_auto_resume import tick
     _enable(independent_completions=False, worktree_isolation=False, max_concurrent_children=3)
     parent = _parent()
-    with patch("run_agent.AIAgent", side_effect=_LimitedWhenSlow()):
+    with patch("hermes_agent.run_agent.AIAgent", side_effect=_LimitedWhenSlow()):
         out = json.loads(delegate_task(tasks=[{"goal": "write the parser"}, {"goal": "slow: write the tests"}],
                                        background=True, parent_agent=parent))
         wait_until(lambda: (_ledger(parent, out["delegation_id"]) or ("running",))[0] != "running", what="the unit")
@@ -260,7 +260,7 @@ def test_turning_auto_resume_off_still_reports_a_promised_child_once_and_the_gua
     sid, unit = _silent_stop(tmp_path, parent)
     _sql(parent, "UPDATE resumable_subagents SET record_json=json_set(record_json, '$.auto_first_stopped_at', ?) "
                  "WHERE subagent_id=?", (time.time() - 7 * 3600, sid))
-    with patch("run_agent.AIAgent", side_effect=_ScriptedModel()):  # past its deadline, before any tick settled it
+    with patch("hermes_agent.run_agent.AIAgent", side_effect=_ScriptedModel()):  # past its deadline, before any tick settled it
         again = json.loads(delegate_task(goal="write the parser", background=True, parent_agent=parent))
     assert again.get("status") == "dispatched", again
     (get_hermes_home() / "config.yaml").write_text(json.dumps({"delegation": {"auto_resume": False}}))
@@ -284,7 +284,7 @@ def test_a_stop_while_auto_resume_is_off_still_cancels_a_promised_child(tmp_path
     assert supersede_for_session(parent_session_id=parent.session_id, reason="/stop") == 1
     cfg.write_text(on)
     dispatched = []
-    with patch("run_agent.AIAgent", side_effect=_AlwaysLimited()):
+    with patch("hermes_agent.run_agent.AIAgent", side_effect=_AlwaysLimited()):
         assert tick(_scheduler(parent, dispatched), capacity=3) == []
     assert dispatched == [] and _db_rows(parent)[sid][0] == "superseded" and _events(unit) == []
 
@@ -421,7 +421,7 @@ def _manual_claim_then(tmp_path, cancel):
     release(parent, sid, record)
     _write(_db_path_for(parent), lambda c: c.execute("UPDATE resumable_subagents SET record_json=json_set("
                                                      "record_json, '$.next_attempt_at', 0) WHERE subagent_id=?", (sid,)))
-    with patch("run_agent.AIAgent", side_effect=_AlwaysLimited()):
+    with patch("hermes_agent.run_agent.AIAgent", side_effect=_AlwaysLimited()):
         tick(_scheduler(parent, dispatched), capacity=3)
     _turn_off()
     for _ in range(3):
@@ -466,7 +466,7 @@ def test_a_stop_racing_the_refused_continues_hand_back_is_never_lost(tmp_path):
                                                              "record_json, '$.next_attempt_at', 0) WHERE subagent_id=?",
                                                              (sid,)))
     dispatched = []
-    with patch("run_agent.AIAgent", side_effect=_AlwaysLimited()):
+    with patch("hermes_agent.run_agent.AIAgent", side_effect=_AlwaysLimited()):
         tick(_scheduler(parent, dispatched), capacity=3)
     assert dispatched == [] and _events(unit) == []
 
@@ -496,11 +496,11 @@ def test_an_automatic_attempt_that_never_started_reports_nothing(tmp_path, unsta
     _enable()
     parent, dispatched = _parent(), []
     sid, _unit = _silent_stop(tmp_path, parent)
-    with unstarted(parent, sid), patch("run_agent.AIAgent", side_effect=_ScriptedModel()):
+    with unstarted(parent, sid), patch("hermes_agent.run_agent.AIAgent", side_effect=_ScriptedModel()):
         tick(_scheduler(parent, dispatched), capacity=3)
         _settled(dispatched[0])
     assert _events(dispatched[0]) == [] and _ledger(parent, dispatched[0])[1] == "delivered"
-    with patch("run_agent.AIAgent", side_effect=_ScriptedModel()):
+    with patch("hermes_agent.run_agent.AIAgent", side_effect=_ScriptedModel()):
         tick(_scheduler(parent, dispatched), capacity=3)
         later = [_settled(d) for d in dispatched[1:]]
     if unstarted is _cancel_after_confirm:  # cancelled: nothing, ever
@@ -549,11 +549,11 @@ def test_a_failed_start_whose_hand_back_also_failed_still_reports_once_after_the
                 ("release_unstarted.", "_hand_back_pending.")):
             return None
         return real(path, fn)
-    with patch.object(dr, "_write", busy), patch("run_agent.AIAgent", side_effect=_ScriptedModel()):
+    with patch.object(dr, "_write", busy), patch("hermes_agent.run_agent.AIAgent", side_effect=_ScriptedModel()):
         tick(_scheduler(parent, dispatched), capacity=3)
         _settled(dispatched[0])
     assert _events(dispatched[0]) == []  # never ran: silent, still owed
-    with patch("run_agent.AIAgent", side_effect=_ScriptedModel()):  # the store is healthy again, deadline passed
+    with patch("hermes_agent.run_agent.AIAgent", side_effect=_ScriptedModel()):  # the store is healthy again, deadline passed
         for _ in range(3):
             tick(_scheduler(parent, dispatched), capacity=3, now=time.time() + 30 * 86400)
     events = _events(unit) + [e for d in dispatched for e in _events(d)]

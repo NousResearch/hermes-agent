@@ -60,11 +60,11 @@ class TestStreamingAccumulator:
     """Verify that _interruptible_streaming_api_call accumulates content
     and tool calls into a response matching the non-streaming shape."""
 
-    @patch("run_agent.AIAgent._create_request_openai_client")
-    @patch("run_agent.AIAgent._close_request_openai_client")
+    @patch("hermes_agent.run_agent.AIAgent._create_request_openai_client")
+    @patch("hermes_agent.run_agent.AIAgent._close_request_openai_client")
     def test_text_only_response(self, mock_close, mock_create):
         """Text-only stream produces correct response shape."""
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         chunks = [
             _make_stream_chunk(content="Hello"),
@@ -96,11 +96,11 @@ class TestStreamingAccumulator:
         assert response.usage is not None
         assert response.usage.completion_tokens == 3
 
-    @patch("run_agent.AIAgent._create_request_openai_client")
-    @patch("run_agent.AIAgent._close_request_openai_client")
+    @patch("hermes_agent.run_agent.AIAgent._create_request_openai_client")
+    @patch("hermes_agent.run_agent.AIAgent._close_request_openai_client")
     def test_sparse_delta_allows_missing_optional_fields(self, mock_close, mock_create):
         """Managed stream deltas may omit both content and tool_calls."""
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         sparse_delta = SimpleNamespace(reasoning_content=None, reasoning=None)
         chunks = [
@@ -138,13 +138,13 @@ class TestStreamingAccumulator:
         assert response.choices[0].message.content == "done"
         assert response.choices[0].message.tool_calls is None
 
-    @patch("run_agent.AIAgent._create_request_openai_client")
-    @patch("run_agent.AIAgent._close_request_openai_client")
+    @patch("hermes_agent.run_agent.AIAgent._create_request_openai_client")
+    @patch("hermes_agent.run_agent.AIAgent._close_request_openai_client")
     def test_sparse_tool_delta_allows_missing_nested_fields(
         self, mock_close, mock_create
     ):
         """A partial tool delta may contain arguments before its other fields."""
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         sparse_tool_delta = SimpleNamespace(
             index=0,
@@ -184,14 +184,14 @@ class TestStreamingAccumulator:
         assert tool_call.function.arguments == '{"city":"Paris"}'
         assert response.choices[0].finish_reason == "tool_calls"
 
-    @patch("run_agent.AIAgent._create_request_openai_client")
-    @patch("run_agent.AIAgent._close_request_openai_client")
+    @patch("hermes_agent.run_agent.AIAgent._create_request_openai_client")
+    @patch("hermes_agent.run_agent.AIAgent._close_request_openai_client")
     def test_chat_stream_closes_original_provider_resource(
         self,
         mock_close,
         mock_create,
     ):
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         class ProviderStream:
             def __init__(self):
@@ -229,11 +229,11 @@ class TestStreamingAccumulator:
         assert response.choices[0].message.content == "Hello"
         assert provider_stream.closed is True
 
-    @patch("run_agent.AIAgent._create_request_openai_client")
-    @patch("run_agent.AIAgent._close_request_openai_client")
+    @patch("hermes_agent.run_agent.AIAgent._create_request_openai_client")
+    @patch("hermes_agent.run_agent.AIAgent._close_request_openai_client")
     def test_native_gemini_endpoint_omits_stream_options(self, mock_close, mock_create):
         """Google's native Gemini REST endpoint rejects OpenAI-only stream_options."""
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         mock_client = MagicMock()
         mock_client.chat.completions.create.return_value = iter([
@@ -260,15 +260,15 @@ class TestStreamingAccumulator:
         assert call_kwargs["stream"] is True
         assert "stream_options" not in call_kwargs
 
-    @patch("run_agent.AIAgent._create_request_openai_client")
-    @patch("run_agent.AIAgent._close_request_openai_client")
+    @patch("hermes_agent.run_agent.AIAgent._create_request_openai_client")
+    @patch("hermes_agent.run_agent.AIAgent._close_request_openai_client")
     def test_endpoint_rejecting_stream_options_is_retried_without_it(self, mock_close, mock_create, monkeypatch):
         """Strict OpenAI-compatible endpoints (Azure AI Foundry MaaS) 422 on
         ``stream_options.include_usage``; the call is retried once without the field and
         the session remembers the rejection (#9705). The compatibility retry must not spend
         the transient-retry budget: with HERMES_STREAM_RETRIES=0 it still happens."""
         from openai import APIStatusError
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
         monkeypatch.setenv("HERMES_STREAM_RETRIES", "0")
 
         body = {"detail": [{"type": "extra_forbidden", "loc": ["body", "stream_options", "include_usage"],
@@ -302,11 +302,11 @@ class TestStreamingAccumulator:
 
 
 
-    @patch("run_agent.AIAgent._create_request_openai_client")
-    @patch("run_agent.AIAgent._close_request_openai_client")
+    @patch("hermes_agent.run_agent.AIAgent._create_request_openai_client")
+    @patch("hermes_agent.run_agent.AIAgent._close_request_openai_client")
     def test_tool_call_response(self, mock_close, mock_create):
         """Tool call stream accumulates ID, name, and arguments."""
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         chunks = [
             _make_stream_chunk(tool_calls=[
@@ -346,14 +346,14 @@ class TestStreamingAccumulator:
         assert tc[0].function.arguments == '{"command": "ls"}'
 
 
-    @patch("run_agent.AIAgent._create_request_openai_client")
-    @patch("run_agent.AIAgent._close_request_openai_client")
-    @patch("agent.relay_llm.stream")
+    @patch("hermes_agent.run_agent.AIAgent._create_request_openai_client")
+    @patch("hermes_agent.run_agent.AIAgent._close_request_openai_client")
+    @patch("hermes_agent.agent.relay_llm.stream")
     def test_relay_finalizer_emits_joined_tool_arguments(
         self, mock_relay_stream, mock_close, mock_create
     ):
         """Relay receives the public string shape, not buffered fragments."""
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         captured = {}
         fake_stream = MagicMock()
@@ -397,7 +397,7 @@ class TestStreamingAccumulator:
         agent._interruptible_streaming_api_call({})
 
         # Relay's contract: the collector sees every chunk as JSON, then the finalizer runs.
-        from agent.relay_llm import _jsonable
+        from hermes_agent.agent.relay_llm import _jsonable
         for chunk in chunks:
             captured["on_chunk"](_jsonable(chunk))
         payload = captured["finalizer"]()
@@ -408,15 +408,15 @@ class TestStreamingAccumulator:
             "arguments": '{"q":"hello"}',
         }
 
-    @patch("run_agent.AIAgent._create_request_openai_client")
-    @patch("run_agent.AIAgent._close_request_openai_client")
+    @patch("hermes_agent.run_agent.AIAgent._create_request_openai_client")
+    @patch("hermes_agent.run_agent.AIAgent._close_request_openai_client")
     def test_tool_argument_assembly_is_chunk_boundary_invariant(
         self, mock_close, mock_create
     ):
         """Argument bytes are identical across ASCII and Unicode fragment sizes."""
         import json
 
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         payload = json.dumps(
             {"path": "/tmp/x", "content": "héllo wörld 日本語 " * 50},
@@ -486,8 +486,8 @@ class TestStreamingAccumulator:
             ),
         ],
     )
-    @patch("run_agent.AIAgent._create_request_openai_client")
-    @patch("run_agent.AIAgent._close_request_openai_client")
+    @patch("hermes_agent.run_agent.AIAgent._create_request_openai_client")
+    @patch("hermes_agent.run_agent.AIAgent._close_request_openai_client")
     def test_streamed_refusal_accumulated(
         self, mock_close, mock_create, chunks, expect_content, expect_finish, expect_refusal
     ):
@@ -498,8 +498,8 @@ class TestStreamingAccumulator:
         content_filter, while a refusal next to real content stays a normal
         usable turn with the note in provider_data.
         """
-        from run_agent import AIAgent
-        from agent.transports.chat_completions import ChatCompletionsTransport
+        from hermes_agent.run_agent import AIAgent
+        from hermes_agent.agent.transports.chat_completions import ChatCompletionsTransport
 
         def _chunk(content, refusal, finish_reason=None):
             delta = SimpleNamespace(
@@ -543,11 +543,11 @@ class TestStreamingAccumulator:
 class TestStreamingCallbacks:
     """Verify that delta callbacks fire correctly."""
 
-    @patch("run_agent.AIAgent._create_request_openai_client")
-    @patch("run_agent.AIAgent._close_request_openai_client")
+    @patch("hermes_agent.run_agent.AIAgent._create_request_openai_client")
+    @patch("hermes_agent.run_agent.AIAgent._close_request_openai_client")
     def test_deltas_fire_in_order(self, mock_close, mock_create):
         """Callbacks receive text deltas in order."""
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         chunks = [
             _make_stream_chunk(content="a"),
@@ -582,8 +582,8 @@ class TestStreamingCallbacks:
 
 
 
-    @patch("run_agent.AIAgent._create_request_openai_client")
-    @patch("run_agent.AIAgent._close_request_openai_client")
+    @patch("hermes_agent.run_agent.AIAgent._create_request_openai_client")
+    @patch("hermes_agent.run_agent.AIAgent._close_request_openai_client")
     def test_list_content_after_tool_call_is_normalized(self, mock_close, mock_create):
         """OpenAI-compatible content blocks must never reach stream callbacks raw.
 
@@ -592,7 +592,7 @@ class TestStreamingCallbacks:
         again after a tool-call has switched the stream to the suppression
         callback path.
         """
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         chunks = [
             _make_stream_chunk(content=[{"type": "text", "text": "before tool; "}]),
@@ -639,11 +639,11 @@ class TestStreamingFallback:
     so the *next* main-loop retry uses non-streaming automatically.
     """
 
-    @patch("run_agent.AIAgent._create_request_openai_client")
-    @patch("run_agent.AIAgent._close_request_openai_client")
+    @patch("hermes_agent.run_agent.AIAgent._create_request_openai_client")
+    @patch("hermes_agent.run_agent.AIAgent._close_request_openai_client")
     def test_stream_not_supported_sets_flag_and_raises(self, mock_close, mock_create):
         """'not supported' error sets _disable_streaming and propagates."""
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         mock_client = MagicMock()
         mock_client.chat.completions.create.side_effect = Exception(
@@ -669,13 +669,13 @@ class TestStreamingFallback:
         assert agent._disable_streaming is True
 
 
-    @patch("run_agent.AIAgent._create_request_openai_client")
-    @patch("run_agent.AIAgent._close_request_openai_client")
+    @patch("hermes_agent.run_agent.AIAgent._create_request_openai_client")
+    @patch("hermes_agent.run_agent.AIAgent._close_request_openai_client")
     def test_response_object_disables_streaming_and_returns_final_response(
         self, mock_close, mock_create
     ):
         """Adapters that ignore stream=True should fall back cleanly."""
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         final_response = SimpleNamespace(
             model="copilot-acp",
@@ -733,7 +733,7 @@ class TestStreamingFallback:
         import httpx
         from openai import OpenAI, Stream
         from openai.types.chat import ChatCompletionChunk
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         request = httpx.Request("POST", "https://gw.example/v1/chat/completions")
         response = httpx.Response(
@@ -764,11 +764,11 @@ class TestStreamingFallback:
         agent.stream_delta_callback = MagicMock()
         return agent
 
-    @patch("run_agent.AIAgent._create_request_openai_client")
-    @patch("run_agent.AIAgent._close_request_openai_client")
+    @patch("hermes_agent.run_agent.AIAgent._create_request_openai_client")
+    @patch("hermes_agent.run_agent.AIAgent._close_request_openai_client")
     def test_non_json_sse_frame_stays_a_fatal_provider_error(self, mock_close, mock_create):
         """A real malformed payload is NOT a keepalive: unchanged behaviour (#65147)."""
-        from agent.error_classifier import PROVIDER_STREAM_NON_JSON_ERROR_CODE
+        from hermes_agent.agent.error_classifier import PROVIDER_STREAM_NON_JSON_ERROR_CODE
 
         agent = self._wire_agent(
             mock_create, b"event: error\ndata: upstream sent opaque plain-text stream data\n\n"
@@ -783,14 +783,14 @@ class TestStreamingFallback:
         assert agent._disable_streaming is False
         assert agent.status_callback.call_args_list == []
 
-    @patch("run_agent.AIAgent._abort_request_openai_client")
-    @patch("run_agent.AIAgent._close_request_openai_client")
-    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("hermes_agent.run_agent.AIAgent._abort_request_openai_client")
+    @patch("hermes_agent.run_agent.AIAgent._close_request_openai_client")
+    @patch("hermes_agent.run_agent.AIAgent._create_request_openai_client")
     def test_moa_interrupt_closes_stream_handle(
         self, mock_create, mock_close_openai, mock_abort_openai
     ):
         """MoA interrupts must close the per-request stream, not the facade client."""
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         class _BlockingClosableStream:
             def __init__(self):
@@ -848,8 +848,8 @@ class TestStreamingFallback:
 
 
 
-    @patch("run_agent.AIAgent._create_request_openai_client")
-    @patch("run_agent.AIAgent._close_request_openai_client")
+    @patch("hermes_agent.run_agent.AIAgent._create_request_openai_client")
+    @patch("hermes_agent.run_agent.AIAgent._close_request_openai_client")
     def test_sse_connection_lost_retried_as_transient(self, mock_close, mock_create):
         """SSE 'Network connection lost' (APIError w/ no status_code) retries like httpx errors.
 
@@ -858,7 +858,7 @@ class TestStreamingFallback:
         this.  It should be retried at the streaming level, same as httpx connection
         errors, then propagate to the main retry loop after exhaustion.
         """
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
         import httpx
 
         # Create an APIError that mimics what the OpenAI SDK raises from SSE error events.
@@ -901,11 +901,11 @@ class TestStreamingFallback:
 class TestReasoningStreaming:
     """Verify reasoning content is accumulated and callback fires."""
 
-    @patch("run_agent.AIAgent._create_request_openai_client")
-    @patch("run_agent.AIAgent._close_request_openai_client")
+    @patch("hermes_agent.run_agent.AIAgent._create_request_openai_client")
+    @patch("hermes_agent.run_agent.AIAgent._close_request_openai_client")
     def test_reasoning_callback_fires(self, mock_close, mock_create):
         """Reasoning deltas fire the reasoning_callback."""
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         chunks = [
             _make_stream_chunk(reasoning_content="Let me think"),
@@ -956,7 +956,7 @@ class TestCodexStreamCallbacks:
     """Verify _run_codex_stream fires delta callbacks."""
 
     def test_codex_text_delta_fires_callback(self):
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         deltas = []
 
@@ -1006,7 +1006,7 @@ class TestCodexStreamCallbacks:
         raises ``httpx.RemoteProtocolError``, we retry once (matching the
         old behavior on the helper) and re-raise on the second failure.
         """
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
         import httpx
 
         agent = AIAgent(
@@ -1038,7 +1038,7 @@ class TestCodexStreamCallbacks:
         assert call_count["n"] == 2
 
     def test_codex_create_stream_fallback_refreshes_activity_on_every_event(self):
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         agent = AIAgent(
             api_key="test-key",
@@ -1091,7 +1091,7 @@ class TestAnthropicStreamCallbacks:
     """Verify Anthropic streaming refreshes activity on every event."""
 
     def test_anthropic_stream_refreshes_activity_on_every_event(self):
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         agent = AIAgent(
             api_key="test-key",
@@ -1145,8 +1145,8 @@ class TestAnthropicStreamCallbacks:
         assert touch_calls.count("receiving stream response") == len(events)
         mock_stream.close.assert_called_once()
 
-    @patch("run_agent.AIAgent._rebuild_anthropic_client")
-    @patch("run_agent.AIAgent._replace_primary_openai_client")
+    @patch("hermes_agent.run_agent.AIAgent._rebuild_anthropic_client")
+    @patch("hermes_agent.run_agent.AIAgent._replace_primary_openai_client")
     def test_anthropic_stream_parser_valueerror_retries_before_delivery(
         self, mock_replace, mock_rebuild, monkeypatch,
     ):
@@ -1156,7 +1156,7 @@ class TestAnthropicStreamCallbacks:
         Anthropic client, NOT the OpenAI primary client (which would fail with
         Missing-credentials and leave the wedged stream open). See #28161.
         """
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         agent = AIAgent(
             api_key="test-key",
@@ -1202,7 +1202,7 @@ class TestAnthropicStreamCallbacks:
         """#107830: a parser ValueError mid tool-args (after visible text) is retried on the SAME
         stream wire with ``eager_input_streaming: false`` on every tool (server-validated args),
         never a second ``create()`` request; the happy path keeps fine-grained streaming."""
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         agent = AIAgent(
             api_key="test-key",
@@ -1258,7 +1258,7 @@ class TestAnthropicStreamCallbacks:
         """A tool name from an attempt that died before any text is attempt-local: when the
         retry streams plain text and then drops, the partial stub must not blame ``old_tool``
         (that would also make the third attempt look mid-tool-call and thus retryable)."""
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         agent = AIAgent(
             api_key="test-key",
@@ -1295,12 +1295,12 @@ class TestAnthropicStreamCallbacks:
         assert "old_tool" not in "".join(getattr(b, "text", "") for b in response.content)
         assert not any("old_tool" in t for t in emitted)
 
-    @patch("run_agent.AIAgent._replace_primary_openai_client")
+    @patch("hermes_agent.run_agent.AIAgent._replace_primary_openai_client")
     def test_generic_anthropic_valueerror_still_propagates_without_stream_retry(
         self, mock_replace, monkeypatch,
     ):
         """Only known provider stream parser ValueErrors are treated as transient."""
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         agent = AIAgent(
             api_key="test-key",
@@ -1328,9 +1328,9 @@ class TestAnthropicStreamCallbacks:
         assert mock_replace.call_count == 0
 
 
-    @patch("run_agent.AIAgent._try_refresh_anthropic_client_credentials")
-    @patch("run_agent.AIAgent._rebuild_anthropic_client")
-    @patch("run_agent.AIAgent._replace_primary_openai_client")
+    @patch("hermes_agent.run_agent.AIAgent._try_refresh_anthropic_client_credentials")
+    @patch("hermes_agent.run_agent.AIAgent._rebuild_anthropic_client")
+    @patch("hermes_agent.run_agent.AIAgent._replace_primary_openai_client")
     def test_anthropic_eventless_sdk_assertion_normalized_to_empty_stream(
         self, mock_replace, mock_rebuild, mock_refresh,
     ):
@@ -1338,8 +1338,8 @@ class TestAnthropicStreamCallbacks:
         get_final_message() raises AssertionError (final snapshot is None).
         That must be normalized to EmptyStreamError and retried as
         transient — not surface as a raw AssertionError."""
-        from agent.errors import EmptyStreamError
-        from run_agent import AIAgent
+        from hermes_agent.agent.errors import EmptyStreamError
+        from hermes_agent.run_agent import AIAgent
 
         agent = AIAgent(
             api_key="test-key",
@@ -1373,7 +1373,7 @@ class TestAnthropicStreamCallbacks:
 
 class TestPartialToolCallWarning:
     """Regression: when a stream dies mid tool-call argument generation after
-    text was already delivered, the partial-stream stub at run_agent.py
+    text was already delivered, the partial-stream stub at hermes_agent/run_agent.py
     line ~6107 used to silently set ``tool_calls=None`` and return
     ``finish_reason=stop``, losing the attempted action with zero user-facing
     signal.  Live-observed Apr 2026 with MiniMax M2.7 on a 6-minute audit
@@ -1387,13 +1387,13 @@ class TestPartialToolCallWarning:
     it as a stream delta so the user sees it immediately.
     """
 
-    @patch("run_agent.AIAgent._create_request_openai_client")
-    @patch("run_agent.AIAgent._close_request_openai_client")
+    @patch("hermes_agent.run_agent.AIAgent._create_request_openai_client")
+    @patch("hermes_agent.run_agent.AIAgent._close_request_openai_client")
     def test_partial_tool_call_surfaces_warning(self, mock_close, mock_create):
         """Stream with text + partial tool-call name + mid-stream error
         produces a stub whose content contains the user-visible warning
         and whose tool_calls is None."""
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         class _StallError(RuntimeError):
             pass
@@ -1460,7 +1460,7 @@ class TestPartialToolCallWarning:
     def _zero_char_agent(mock_create, attempts_that_die: int):
         """Real streaming helper; the stream dies after a whitespace-only delta (nothing
         visible reaches the consumer) on the first ``attempts_that_die`` attempts."""
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
         import httpx
 
         calls = {"n": 0}
@@ -1494,8 +1494,8 @@ class TestPartialToolCallWarning:
         agent.stream_delta_callback = lambda text: None  # a real consumer; the delta is whitespace-only
         return agent, calls
 
-    @patch("run_agent.AIAgent._create_request_openai_client")
-    @patch("run_agent.AIAgent._close_request_openai_client")
+    @patch("hermes_agent.run_agent.AIAgent._create_request_openai_client")
+    @patch("hermes_agent.run_agent.AIAgent._close_request_openai_client")
     def test_zero_char_partial_stream_retries_instead_of_empty_stub(self, mock_close, mock_create):
         """A stream that dies before any VISIBLE text reached the user is undelivered, not
         "partial delivery": the same request is retried (nothing to duplicate) instead of
@@ -1512,8 +1512,8 @@ class TestPartialToolCallWarning:
         assert response.choices[0].finish_reason == "stop"
         assert response.choices[0].message.content == "Recovered answer."
 
-    @patch("run_agent.AIAgent._create_request_openai_client")
-    @patch("run_agent.AIAgent._close_request_openai_client")
+    @patch("hermes_agent.run_agent.AIAgent._create_request_openai_client")
+    @patch("hermes_agent.run_agent.AIAgent._close_request_openai_client")
     def test_zero_char_partial_stream_exhausted_raises_to_main_loop(self, mock_close, mock_create):
         """Retries exhausted with still 0 visible chars: the stream error propagates so the
         conversation loop's fallback/backoff owns it — never an empty stub, never
@@ -1536,16 +1536,16 @@ class TestSilentRetryMidToolCall:
     transient, the existing stub-with-warning behaviour is preserved.
     """
 
-    @patch("run_agent.AIAgent._replace_primary_openai_client")
-    @patch("run_agent.AIAgent._create_request_openai_client")
-    @patch("run_agent.AIAgent._close_request_openai_client")
+    @patch("hermes_agent.run_agent.AIAgent._replace_primary_openai_client")
+    @patch("hermes_agent.run_agent.AIAgent._create_request_openai_client")
+    @patch("hermes_agent.run_agent.AIAgent._close_request_openai_client")
     def test_silent_retry_recovers_tool_call(
         self, mock_close, mock_create, mock_replace,
     ):
         """First attempt: text + partial tool-call + connection drop.
         Second attempt: text + complete tool-call.  Response should contain
         the recovered tool call; no warning stub should be returned."""
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
         import httpx as _httpx
 
         attempts = {"n": 0}
@@ -1631,16 +1631,16 @@ class TestSilentRetryMidToolCall:
             f"Stub-path warning leaked into silent-retry path: {joined!r}"
         )
 
-    @patch("run_agent.AIAgent._replace_primary_openai_client")
-    @patch("run_agent.AIAgent._create_request_openai_client")
-    @patch("run_agent.AIAgent._close_request_openai_client")
+    @patch("hermes_agent.run_agent.AIAgent._replace_primary_openai_client")
+    @patch("hermes_agent.run_agent.AIAgent._create_request_openai_client")
+    @patch("hermes_agent.run_agent.AIAgent._close_request_openai_client")
     def test_silent_retry_exhausted_falls_back_to_stub(
         self, mock_close, mock_create, mock_replace,
     ):
         """When all retry attempts fail with connection errors, fall back
         to the original stub-with-warning behaviour so the user isn't left
         with zero signal."""
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
         import httpx as _httpx
 
         def _always_fails():
@@ -1686,16 +1686,16 @@ class TestSilentRetryMidToolCall:
         )
         assert response.choices[0].message.tool_calls is None
 
-    @patch("run_agent.AIAgent._replace_primary_openai_client")
-    @patch("run_agent.AIAgent._create_request_openai_client")
-    @patch("run_agent.AIAgent._close_request_openai_client")
+    @patch("hermes_agent.run_agent.AIAgent._replace_primary_openai_client")
+    @patch("hermes_agent.run_agent.AIAgent._create_request_openai_client")
+    @patch("hermes_agent.run_agent.AIAgent._close_request_openai_client")
     def test_no_silent_retry_for_text_only_stall(
         self, mock_close, mock_create, mock_replace,
     ):
         """Text-only stall (no tool call in flight) must NOT trigger silent
         retry — that's the case where the user saw the model's text reply
         and retrying would duplicate it with no benefit."""
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
         import httpx as _httpx
 
         attempts = {"n": 0}
@@ -1757,7 +1757,7 @@ class TestBedrockIamStreamingFallback:
     _disable_streaming for the rest of the session."""
 
     def _make_bedrock_agent(self):
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         agent = AIAgent(
             api_key="test-key",
@@ -1797,7 +1797,7 @@ class TestBedrockIamStreamingFallback:
         }
 
         with patch(
-            "agent.bedrock_adapter._get_bedrock_runtime_client",
+            "hermes_agent.agent.bedrock_adapter._get_bedrock_runtime_client",
             return_value=client,
         ):
             response = agent._interruptible_streaming_api_call(
@@ -1858,7 +1858,7 @@ def test_on_event_fires_per_bedrock_event():
     """FIX 1: on_event fires once for EVERY yielded Bedrock event — text,
     tool-input delta, messageStop, and metadata alike — providing wire-level
     liveness (not just text deltas)."""
-    from agent.bedrock_adapter import stream_converse_with_callbacks
+    from hermes_agent.agent.bedrock_adapter import stream_converse_with_callbacks
 
     events = [
         {"contentBlockDelta": {"delta": {"text": "a"}}},
@@ -1880,7 +1880,7 @@ def test_on_event_fires_per_bedrock_event():
 
 def test_on_event_exception_is_swallowed():
     """FIX 1: a raising on_event callback must never abort the stream."""
-    from agent.bedrock_adapter import stream_converse_with_callbacks
+    from hermes_agent.agent.bedrock_adapter import stream_converse_with_callbacks
 
     events = [{"messageStop": {"stopReason": "end_turn"}}]
 
@@ -1897,7 +1897,7 @@ class TestBedrockStreamLivenessWatchdog:
     breaker and no longer hangs when the stream stops yielding events."""
 
     def _make_bedrock_agent(self):
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         agent = AIAgent(
             api_key="test-key",
@@ -1932,7 +1932,7 @@ class TestBedrockStreamLivenessWatchdog:
 
         try:
             with patch(
-                "agent.bedrock_adapter._get_bedrock_runtime_client",
+                "hermes_agent.agent.bedrock_adapter._get_bedrock_runtime_client",
                 return_value=client,
             ):
                 with pytest.raises(TimeoutError):
@@ -1957,7 +1957,7 @@ class TestBedrockStreamLivenessWatchdog:
 
         client = MagicMock()
         with patch(
-            "agent.bedrock_adapter._get_bedrock_runtime_client",
+            "hermes_agent.agent.bedrock_adapter._get_bedrock_runtime_client",
             return_value=client,
         ):
             with pytest.raises(RuntimeError, match="unresponsive"):
@@ -1986,7 +1986,7 @@ class TestBedrockStreamLivenessWatchdog:
         client.converse_stream.return_value = {"stream": iter(events)}
 
         with patch(
-            "agent.bedrock_adapter._get_bedrock_runtime_client",
+            "hermes_agent.agent.bedrock_adapter._get_bedrock_runtime_client",
             return_value=client,
         ):
             response = agent._interruptible_streaming_api_call(
@@ -2018,8 +2018,8 @@ class TestBedrockReasoningStaleFloor:
         ],
     )
     def test_bedrock_reasoning_models_resolve_floor(self, model_id, table_key):
-        from agent.chat_completion_helpers import _bedrock_reasoning_stale_floor
-        from agent.reasoning_timeouts import get_reasoning_stale_timeout_floor
+        from hermes_agent.agent.chat_completion_helpers import _bedrock_reasoning_stale_floor
+        from hermes_agent.agent.reasoning_timeouts import get_reasoning_stale_timeout_floor
 
         expected = get_reasoning_stale_timeout_floor(table_key)
         assert expected is not None

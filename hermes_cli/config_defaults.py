@@ -145,7 +145,7 @@ DEFAULT_CONFIG = {
         "fast_auto_seconds": 60,
         # Responses-only `text.verbosity` (never chat_completions): "" = not sent, or low | medium | high.
         "text_verbosity": "",
-        "daybreak": False,  # opt-in; only catalog-listed Codex models (agent/codex_service_tiers.py)
+        "daybreak": False,  # opt-in; only catalog-listed Codex models (hermes_agent/agent/codex_service_tiers.py)
         # System-prompt guidance telling the model to call tools instead of describing actions.
         # "auto" = gpt/codex models; true/false = force for all models; or a list of model-name
         # substrings (e.g. ["gpt", "codex", "gemini", "qwen"]).
@@ -186,7 +186,7 @@ DEFAULT_CONFIG = {
         "environment_hint": "",
         # Coding posture: on interactive coding surfaces (CLI, TUI, desktop, ACP) in a code
         # workspace, add a coding brief + live git/workspace snapshot to the system prompt
-        # (agent/coding_context.py). "auto" = prompt-only when interactive AND cwd is a code
+        # (hermes_agent/agent/coding_context.py). "auto" = prompt-only when interactive AND cwd is a code
         # workspace (toolsets untouched, messaging platforms unaffected); "focus" = auto + collapse
         # toolset to the lean coding set (+ enabled MCP servers) + demote non-coding skill
         # categories to names-only (explicit opt-in); "on" = force everywhere; "off" = disable.
@@ -256,7 +256,7 @@ DEFAULT_CONFIG = {
         # timeout is at its 180s default, so a wedged local server eventually trips the detector
         # instead of hanging forever. Env HERMES_LOCAL_STREAM_STALE_TIMEOUT overrides.
         "local_stream_stale_timeout": 900,
-        "stream_max_lifetime": 0,  # opt-in whole-stream cap in s, 0 = off (agent/stream_max_lifetime.py)
+        "stream_max_lifetime": 0,  # opt-in whole-stream cap in s, 0 = off (hermes_agent/agent/stream_max_lifetime.py)
         # How user-attached images reach the main model (gateway, TUI, CLI /attach). "auto" = native
         # when the model reports supports_vision=True AND auxiliary.vision.provider is not
         # explicitly set, else text; "native" = always attach (non-vision models error at the
@@ -277,7 +277,7 @@ DEFAULT_CONFIG = {
         # logged, force-interrupted so the UI can retry, and its lease stops renewing so stale-turn
         # cleanup can reclaim the session even if the interrupt can't unwind a wedged frame.
         # timeout_s <= 0 disables; poll_s = sampling interval. Invalid values (NaN, Inf,
-        # non-positive poll) warn and fall back to defaults. See agent/turn_liveness.py.
+        # non-positive poll) warn and fall back to defaults. See hermes_agent/agent/turn_liveness.py.
         "turn_liveness": {"timeout_s": 600.0, "poll_s": 15.0},
     },
 
@@ -515,7 +515,7 @@ DEFAULT_CONFIG = {
     # Seconds the first agent build waits for background MCP discovery before snapshotting its tool
     # list. Returns the instant discovery completes (no MCP servers → ~0s); the bound only bites
     # when a server is still connecting. Turn-1 latency knob only: a server that misses it is picked
-    # up by the between-turns refresh (agent/turn_context.py), so keep it small — a dead server adds
+    # up by the between-turns refresh (hermes_agent/agent/turn_context.py), so keep it small — a dead server adds
     # this much to first-response latency.
     "mcp_discovery_timeout": 1.5,
     # Same bound for single-query mode (``hermes -q/-z``). With only ONE turn there is no
@@ -771,7 +771,7 @@ DEFAULT_CONFIG = {
         },
         "memory_query_rewrite": _aux(8, reasoning_effort=False),
         "tts_audio_tags": _aux(30),
-        "voice_chat": {**_aux(120), "reasoning_effort": "none"},  # agent/voice_turn_route.py; off = lowest valid
+        "voice_chat": {**_aux(120), "reasoning_effort": "none"},  # hermes_agent/agent/voice_turn_route.py; off = lowest valid
         # Kanban: triage_specifier expands a Triage one-liner into a spec; kanban_decomposer a JSON graph.
         "triage_specifier": _aux(120),
         "kanban_decomposer": _aux(180),
@@ -1364,7 +1364,7 @@ DEFAULT_CONFIG = {
         "orchestrator_enabled": True,  # kill switch for role="orchestrator"
         # Total subagents a finite one-shot run (hermes chat -q / --oneshot) may spawn; 0 = unlimited.
         # Each child re-pays a cold system prompt and re-explores the repo, and one-shot spawns are mostly
-        # "review my own work" rather than parallel work (agent/oneshot_footprint.py).
+        # "review my own work" rather than parallel work (hermes_agent/agent/oneshot_footprint.py).
         "oneshot_max_children": 2,
         # Subagent threads ALWAYS resolve approvals non-interactively (the parent TUI owns stdin;
         # input() from a worker would deadlock). false = auto-deny, true = auto-approve "once"; both
@@ -2029,7 +2029,7 @@ DEFAULT_CONFIG = {
     # Per-model metadata overrides. Fields: context_window, supports_tools,
     # supports_vision, supports_reasoning, model_family. <provider>.<model_id> wins over
     # models.dev/OpenRouter/hardcoded defaults for the fields it sets (chain order in
-    # agent/model_metadata.py). <provider>._default and top-level _default fill gaps ONLY for models
+    # hermes_agent/agent/model_metadata.py). <provider>._default and top-level _default fill gaps ONLY for models
     # the catalog does not know, so they never clamp known models. Unknown ids start from safe
     # defaults (200K context, tools on) and get patched; supports_vision / supports_reasoning stay
     # UNKNOWN (fail-open) unless the override sets them — a context_window-only entry must not turn
@@ -2038,7 +2038,7 @@ DEFAULT_CONFIG = {
     # {"my-llava-model": {"context_window": 8192}}}
     # Semantics: 1. NOTE: an explicit model.context_length (global) and a custom_providers per-model
     # context_length are user settings at other layers and are consulted in the resolution chain order
-    # documented in agent/model_metadata.py. 2. See #84482, #8731.
+    # documented in hermes_agent/agent/model_metadata.py. 2. See #84482, #8731.
     "model_overrides": {},
     # models.dev registry (context windows, capabilities, pricing, modalities): fetched on startup,
     # served from cache, refreshed by a background daemon with ETag conditional GET. Override `url`
@@ -2297,7 +2297,7 @@ DEFAULT_CONFIG = {
         # restart also >= 6h idle. Unset: dashboard.ws_orphan_reap_grace_s: 0 / startup_orphan_sweep: false opt out.
         "orphan_end_grace_s": 300.0,
     },
-    # First-touch onboarding hints (agent/onboarding.py), each latched under `seen` once shown.
+    # First-touch onboarding hints (hermes_agent/agent/onboarding.py), each latched under `seen` once shown.
     "onboarding": {
         "seen": {},
         "profile_build": "ask",  # first-ever message: ask = offer; off = plain intro only

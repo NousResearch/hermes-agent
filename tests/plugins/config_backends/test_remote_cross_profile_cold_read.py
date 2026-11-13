@@ -20,7 +20,7 @@ CROSS_PROFILE_READ = """
 import json, os
 from pathlib import Path
 home = Path(os.environ["HERMES_HOME"])
-from agent.runtime_scope import bind_profile_scope
+from hermes_agent.agent.runtime_scope import bind_profile_scope
 from hermes_cli.config_backend import get_config_backend
 with bind_profile_scope(home / "profiles" / "a", hydrate_secrets=False):
     get_config_backend()._state(home / "profiles" / "b")  # B's first read, while A is bound

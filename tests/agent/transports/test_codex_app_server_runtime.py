@@ -89,7 +89,7 @@ class TestCodexAppServerModule:
 
 
     def test_check_binary_handles_missing_executable(self) -> None:
-        from agent.transports.codex_app_server import check_codex_binary
+        from hermes_agent.agent.transports.codex_app_server import check_codex_binary
 
         ok, msg = check_codex_binary(codex_bin="/nonexistent/codex/binary/path")
         assert ok is False
@@ -117,7 +117,7 @@ class TestCodexAppServerClose:
 
         import psutil
 
-        from agent.transports.codex_app_server import CodexAppServerClient
+        from hermes_agent.agent.transports.codex_app_server import CodexAppServerClient
 
         child_pid_file = tmp_path / "child.pid"
         fake_codex = tmp_path / "fake_codex.py"
@@ -182,7 +182,7 @@ while True:
         import subprocess
         from unittest import mock
 
-        from agent.transports import codex_app_server as mod
+        from hermes_agent.agent.transports import codex_app_server as mod
 
         proc = mock.MagicMock()
         proc.pid = 4242
@@ -220,7 +220,7 @@ class TestSpawnEnvIsolation:
         """CODEX_HOME isolation must still work — that's the whole point
         of the codex_home arg."""
         import subprocess
-        from agent.transports import codex_app_server as cas
+        from hermes_agent.agent.transports import codex_app_server as cas
 
         captured = {}
 
@@ -264,7 +264,7 @@ class TestSpawnEnvIsolation:
         for the Kanban root only.
         """
         import subprocess
-        from agent.transports import codex_app_server as cas
+        from hermes_agent.agent.transports import codex_app_server as cas
 
         captured = {}
 
@@ -330,7 +330,7 @@ class TestSpawnEnvSecretStripping:
     @staticmethod
     def _capture_spawn_env(monkeypatch):
         import subprocess
-        from agent.transports import codex_app_server as cas
+        from hermes_agent.agent.transports import codex_app_server as cas
 
         captured = {}
 

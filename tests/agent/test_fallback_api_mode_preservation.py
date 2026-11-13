@@ -16,14 +16,14 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 
 def _make_agent(fallback_model=None):
     with (
         patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]),
         patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
-        patch("agent.process_bootstrap.OpenAI"),
+        patch("hermes_agent.agent.process_bootstrap.OpenAI"),
     ):
         agent = AIAgent(
             api_key="test-key",
@@ -52,11 +52,11 @@ def _activate(agent, resolved_base_url, resolved_model, build_anthropic=None):
     """
     patches = [
         patch(
-            "agent.chat_completion_helpers._fallback_entry_unavailable_without_network",
+            "hermes_agent.agent.chat_completion_helpers._fallback_entry_unavailable_without_network",
             return_value=None,
         ),
         patch(
-            "agent.auxiliary_client.resolve_provider_client",
+            "hermes_agent.agent.auxiliary_client.resolve_provider_client",
             return_value=(
                 _mock_client(base_url=resolved_base_url),
                 resolved_model,
@@ -67,7 +67,7 @@ def _activate(agent, resolved_base_url, resolved_model, build_anthropic=None):
             side_effect=lambda m, p: m,
         ),
         patch(
-            "agent.anthropic_adapter.build_anthropic_client",
+            "hermes_agent.agent.anthropic_adapter.build_anthropic_client",
             side_effect=build_anthropic
             or (lambda api_key, base_url, timeout=None, **kw: MagicMock()),
         ),

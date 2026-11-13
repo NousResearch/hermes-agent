@@ -11,8 +11,8 @@ Handing the key to the rebuilt native client raises a non-retryable
 
 import types
 
-from agent.conversation_loop import _moa_client_consumes_prepared_request
-from agent.moa_loop import MoAChatCompletions
+from hermes_agent.agent.conversation_loop import _moa_client_consumes_prepared_request
+from hermes_agent.agent.moa_loop import MoAChatCompletions
 
 def _client_with(completions):
     return types.SimpleNamespace(

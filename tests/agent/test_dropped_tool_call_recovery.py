@@ -28,11 +28,11 @@ def loop_agent():
     """AIAgent with a mocked OpenAI client (mirrors test_run_agent's fixture)
     so we can stage a dropped-tool-call response + continuation pair on
     ``.chat.completions.create``."""
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
     with (
         patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]),
         patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
-        patch("agent.process_bootstrap.OpenAI"),
+        patch("hermes_agent.agent.process_bootstrap.OpenAI"),
     ):
         agent = AIAgent(
             api_key="test-key-1234567890",
@@ -157,7 +157,7 @@ class TestDroppedToolCallRecovery:
         it to the durable transcript — a resumed session must not replay the
         internal "issue the actual tool call now" instruction as user-authored
         context (#69630 review follow-up)."""
-        from agent.session_persistence import _is_ephemeral_scaffolding
+        from hermes_agent.agent.session_persistence import _is_ephemeral_scaffolding
         from tests.agent.test_run_agent import _mock_response
 
         loop_agent.client.chat.completions.create.side_effect = [

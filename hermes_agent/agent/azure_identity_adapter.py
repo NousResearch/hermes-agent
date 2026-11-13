@@ -2,7 +2,7 @@
 
 Keyless auth via the `azure-identity` ``DefaultAzureCredential`` chain (env service principal →
 workload identity → managed identity → VS Code → Azure CLI → azd → PowerShell → broker). Mirrors
-``agent/bedrock_adapter.py``: `azure-identity` is imported lazily (only for ``auth_mode = entra_id``);
+``hermes_agent/agent/bedrock_adapter.py``: `azure-identity` is imported lazily (only for ``auth_mode = entra_id``);
 ``build_token_provider`` returns the zero-arg callable the OpenAI SDK calls before every request
 (transparent refresh); consumer helpers are split by purpose so logging paths never mint tokens and
 tokens never leak into cache keys; no JWT is persisted (azure-identity caches in-process / OS keychain).
@@ -127,7 +127,7 @@ _AMBIENT_CHAIN_REFUSAL = (
 
 
 def _scoped_credential(ai: Any, config: EntraIdentityConfig) -> Any:
-    from agent.secret_scope import current_secret_scope, is_multiplex_active
+    from hermes_agent.agent.secret_scope import current_secret_scope, is_multiplex_active
     scope = current_secret_scope() or {}
     read = lambda name: (scope.get(name) or "").strip()
     tenant, client = read("AZURE_TENANT_ID"), read("AZURE_CLIENT_ID")
@@ -184,7 +184,7 @@ def build_token_provider(scope: Optional[str] = None, *, config: Optional[EntraI
     in the worker."""
     ai = _require_azure_identity()
     config = _resolve_config(config, scope, exclude_interactive_browser=exclude_interactive_browser)
-    from agent.credential_source import ENTRA_ID, tag_credential_source
+    from hermes_agent.agent.credential_source import ENTRA_ID, tag_credential_source
     return tag_credential_source(ai.get_bearer_token_provider(build_credential(config), config.scope), ENTRA_ID)
 
 
@@ -236,7 +236,7 @@ def _scoped_env(name: str) -> str:
     """Credential-bearing env read via the profile secret scope so a multiplexed profile never reports
     another profile's env-bridged credentials. Unscoped CLI probes (multiplex off) read the process
     env through ``get_secret`` itself; a scope-less multiplex caller raises — spawn-site bug."""
-    from agent.secret_scope import get_secret
+    from hermes_agent.agent.secret_scope import get_secret
 
     return (get_secret(name) or "").strip()
 

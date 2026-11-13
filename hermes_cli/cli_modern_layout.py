@@ -14,7 +14,7 @@ import re
 import time
 from datetime import datetime
 
-from agent.i18n import t
+from hermes_agent.agent.i18n import t
 
 logger = logging.getLogger(__name__)
 
@@ -142,7 +142,7 @@ def completed_tool_line(cli, function_name: str, args: dict | None, duration: fl
     """The scrollback line for a finished tool call in the active layout."""
     if is_modern(cli):
         return _take_gap() + tool_row(function_name, args, duration, result, is_error)
-    from agent.display import get_cute_tool_message
+    from hermes_agent.agent.display import get_cute_tool_message
     return f"  {get_cute_tool_message(function_name, args, duration, result=result)}"
 
 
@@ -150,7 +150,7 @@ def tool_row(function_name: str, args: dict | None, duration: float, result=None
     """``📖 Read calc.py  0.2s`` / ``✗ $ pytest -q  0.4s [exit 1]`` — one row per completed call, led by
     the tool's emoji (the classic ``┊`` row's), or a red ``✗`` when that entry failed. A tool in
     ``NEUTRAL_FAILURE_TOOLS`` keeps its emoji and shows the reason dim."""
-    from agent.display import get_tool_row_parts, is_neutral_failure
+    from hermes_agent.agent.display import get_tool_row_parts, is_neutral_failure
     rows = get_tool_row_parts(function_name, args or {}, result, is_error=bool(is_error))
     neutral = is_neutral_failure(function_name, result)
     out = []

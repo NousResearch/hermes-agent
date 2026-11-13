@@ -385,7 +385,7 @@ def test_get_nous_auth_status_checks_credential_pool(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
 
     # Seed the credential pool with a Nous entry
-    from agent.credential_pool import PooledCredential, load_pool
+    from hermes_agent.agent.credential_pool import PooledCredential, load_pool
     pool = load_pool("nous")
     token = _invoke_jwt(seconds=3600)
     expires_at = _future_iso(3600)

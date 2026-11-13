@@ -180,7 +180,7 @@ def test_session_redirect_queues_while_compressing(monkeypatch):
 def test_submit_during_manual_compress_is_queued_and_reply_persists(monkeypatch):
     """A prompt sent while session.compress runs its LLM summary used to be admitted on the idle
     session, snapshot history_version N, and lose its reply when the compaction committed N+1."""
-    import agent.conversation_compression_manual as ccm
+    import hermes_agent.agent.conversation_compression_manual as ccm
 
     gate, entered = threading.Event(), threading.Event()
 

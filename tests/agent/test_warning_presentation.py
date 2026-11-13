@@ -1,5 +1,5 @@
 """Notification policy changes presentation, not diagnostic state or task content."""
-from agent.status_output import StatusOutputMixin
+from hermes_agent.agent.status_output import StatusOutputMixin
 import pytest
 
 
@@ -64,7 +64,7 @@ def test_destination_snapshot_owns_policy_and_reader_failure_never_breaks_emissi
 
 @pytest.mark.parametrize("suppress", [False, True])
 def test_direct_print_diagnostics_preserve_content_and_muted_turn_has_no_prints(tmp_path, monkeypatch, suppress):
-    from agent.notification_presentation import notification_turn
+    from hermes_agent.agent.notification_presentation import notification_turn
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     (tmp_path / "config.yaml").write_text(f"display: {{suppress_warning_notifications: {str(suppress).lower()}}}")
     agent = Emitter()
@@ -106,7 +106,7 @@ def test_operator_callbacks_keep_diagnostics_and_logs(tmp_path, monkeypatch, cap
                     (notice,), ("retry detail",)]
     assert len([r for r in caplog.records if r.name == "operator"]) == 4
     # Diagnostic-only wakes also leave operator observers installed.
-    from agent.notification_presentation import notification_turn
+    from hermes_agent.agent.notification_presentation import notification_turn
     with notification_turn(agent, muted=True):
         agent._emit_warning("wake diagnostic")
         agent._emit_notice(notice)
@@ -117,7 +117,7 @@ def test_operator_callbacks_keep_diagnostics_and_logs(tmp_path, monkeypatch, cap
 @pytest.mark.parametrize("suppress", [None, False, True])
 def test_entitlement_guidance_is_classified_at_direct_print(tmp_path, monkeypatch, suppress):
     import hermes_yaml as yaml
-    from agent import conversation_loop
+    from hermes_agent.agent import conversation_loop
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     (tmp_path / "config.yaml").write_text(yaml.safe_dump(
         {} if suppress is None else {"display": {"suppress_warning_notifications": suppress}}))
@@ -131,7 +131,7 @@ def test_entitlement_guidance_is_classified_at_direct_print(tmp_path, monkeypatc
 
 @pytest.mark.parametrize("suppress", [None, False, True])
 def test_missing_key_banner_is_classified_without_hiding_initialization(tmp_path, monkeypatch, capsys, suppress):
-    from agent import agent_init
+    from hermes_agent.agent import agent_init
     import hermes_yaml as yaml
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     (tmp_path / "config.yaml").write_text(yaml.safe_dump(

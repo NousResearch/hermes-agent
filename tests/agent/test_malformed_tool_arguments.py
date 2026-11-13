@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 
 def _make_agent() -> AIAgent:
@@ -24,7 +24,7 @@ def _make_agent() -> AIAgent:
         patch("hermes_agent.model_tools.get_tool_definitions", return_value=tool_defs),
         patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
         patch("hermes_cli.config.load_config", return_value={}),
-        patch("agent.process_bootstrap.OpenAI"),
+        patch("hermes_agent.agent.process_bootstrap.OpenAI"),
     ):
         agent = AIAgent(
             api_key="test-key-1234567890",
@@ -81,7 +81,7 @@ def test_malformed_arguments_are_rejected_without_blocking_valid_sibling(
         patch("hermes_agent.model_tools.handle_function_call", side_effect=fake_dispatch),
         patch.object(agent, "_invoke_tool", side_effect=fake_dispatch),
         patch(
-            "agent.tool_executor.maybe_persist_tool_result",
+            "hermes_agent.agent.tool_executor.maybe_persist_tool_result",
             side_effect=lambda **kwargs: kwargs["content"],
         ),
     ):

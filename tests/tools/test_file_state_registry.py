@@ -192,15 +192,15 @@ class FileStateRegistryUnitTests(unittest.TestCase):
         p = self._mk()
         file_state.record_read("cron:JOB:run1", p)
         file_state.note_write("cron:JOB:run1", p)
-        with patch("run_agent.AIAgent.__init__", return_value=None):
-            from run_agent import AIAgent
+        with patch("hermes_agent.run_agent.AIAgent.__init__", return_value=None):
+            from hermes_agent.run_agent import AIAgent
             agent = AIAgent.__new__(AIAgent)
             agent.session_id = "cron_JOB_20260918_060000"
             agent._process_owner_task_ids = {"cron:JOB:run1"}
             agent._active_children = []
             agent._active_children_lock = threading.Lock()
             agent.client = None
-            with patch("run_agent.cleanup_vm"), patch("run_agent.cleanup_browser"), \
+            with patch("hermes_agent.run_agent.cleanup_vm"), patch("hermes_agent.run_agent.cleanup_browser"), \
                  patch("hermes_agent.tools.computer_use.tool.release_computer_use_session"):
                 agent.close()
 

@@ -379,7 +379,7 @@ async def test_dm_mention_thread_creates_thread(monkeypatch):
 @pytest.mark.parametrize("secondary", [False, True])
 def test_yaml_bridge_respects_scope_and_existing_env(monkeypatch, existing, secondary):
     import os
-    from agent.secret_scope import set_multiplex_active, set_secret_scope, reset_secret_scope
+    from hermes_agent.agent.secret_scope import set_multiplex_active, set_secret_scope, reset_secret_scope
     from plugins.platforms.matrix.adapter import _apply_yaml_config
 
     expected = {"MATRIX_REQUIRE_MENTION": "false", "MATRIX_AUTO_THREAD": "false",

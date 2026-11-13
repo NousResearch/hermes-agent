@@ -11,7 +11,7 @@ from pathlib import Path
 
 def test_siblings_send_one_system_prompt_and_get_their_context_in_the_user_turn():
     from hermes_agent.hermes_state import SessionDB
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
     from tests.e2e.core.history._helpers import NO_BACKGROUND_REVIEW, OFFLINE_CONFIG
     from tests.fakes.fake_llm_provider import FakeLLMServer, Text, write_hermes_home
     from hermes_agent.tools.delegate_tool import delegate_task
@@ -42,7 +42,7 @@ def test_schema_correction_turn_carries_the_contract_even_after_a_compaction():
     import json
 
     from hermes_agent.hermes_state import SessionDB
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
     from tests.e2e.core.history._helpers import NO_BACKGROUND_REVIEW, OFFLINE_CONFIG
     from tests.fakes.fake_llm_provider import FakeLLMServer, Text, ToolCall, write_hermes_home
     from hermes_agent.tools.delegate_tool import delegate_task
@@ -73,7 +73,7 @@ def test_schema_correction_turn_carries_the_contract_even_after_a_compaction():
 
 def test_a_shared_brief_is_one_cacheable_prefix_for_every_sibling():
     """Siblings given one context send it as the same leading bytes, as their own marked part on a marker route."""
-    from agent.prompt_caching import apply_anthropic_cache_control
+    from hermes_agent.agent.prompt_caching import apply_anthropic_cache_control
     from hermes_agent.tools.delegate_tool_progress import child_task_message
 
     brief = "Repo layout and rules: " + "x" * 2000
@@ -93,8 +93,8 @@ def test_a_steered_child_keeps_its_brief_through_a_second_compaction():
     """After a steer, compaction restates the steer as the in-flight turn; the brief must not go into the summary."""
     from unittest.mock import patch
 
-    from agent.context_compressor import ContextCompressor
-    from agent.prompt_builder import steer_user_row
+    from hermes_agent.agent.context_compressor import ContextCompressor
+    from hermes_agent.agent.prompt_builder import steer_user_row
 
     brief = "CONTEXT:\nRULE-IN-THE-MIDDLE " + "detail " * 300 + "\n\nTASK:\ncount the files"
     rounds = []
@@ -106,19 +106,19 @@ def test_a_steered_child_keeps_its_brief_through_a_second_compaction():
     messages = [{"role": "system", "content": "sys"}, {"role": "user", "content": brief}] + rounds[:26]
     messages += [steer_user_row("also check the tests")] + rounds[26:]
 
-    with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+    with patch("hermes_agent.agent.context_compressor.get_model_context_length", return_value=100000):
         child = ContextCompressor(model="test", quiet_mode=True, protect_first_n=3, protect_last_n=4)
     child.pin_task_turn = True
     child.compression_count = 1  # the steer lands after an earlier compaction
-    with patch("agent.context_compressor.call_llm", side_effect=RuntimeError("no provider")):
+    with patch("hermes_agent.agent.context_compressor.call_llm", side_effect=RuntimeError("no provider")):
         out = child.compress(messages)
 
     assert any(m.get("role") == "user" and m.get("content") == brief for m in out)
 
 
 def test_codex_siblings_share_the_session_header_the_backend_caches_under():
-    from agent.chat_completion_helpers import _build_api_kwargs_for_mode
-    from run_agent import AIAgent
+    from hermes_agent.agent.chat_completion_helpers import _build_api_kwargs_for_mode
+    from hermes_agent.run_agent import AIAgent
     from hermes_agent.tools.delegate_tool import _build_child_agent
 
     route = {"provider": "openai-codex", "base_url": "https://chatgpt.com/backend-api/codex", "api_key": "fake",
@@ -136,7 +136,7 @@ def test_codex_siblings_share_the_session_header_the_backend_caches_under():
     one, two = (request(child) for child in children)
     own = request(parent)
     # A child that lands on a slot-keyed route (xAI) after it was built goes back to its own scope.
-    from agent.prompt_cache_scope import resolve_prompt_cache_scope
+    from hermes_agent.agent.prompt_cache_scope import resolve_prompt_cache_scope
     children[0].provider, children[0].base_url = "xai", "https://api.x.ai/v1"
     isolated = resolve_prompt_cache_scope(children[0])
     for agent in (*children, parent):

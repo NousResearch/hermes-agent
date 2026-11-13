@@ -121,7 +121,7 @@ def test_fresh_install_serves_head_and_runs_a_turn(installed, provider):
     assert I.git("status", "--porcelain", "--untracked-files=no", cwd=sb.checkout) == "", "installer dirtied the checkout"
     ver = sb.cli("--version")
     assert ver.returncode == 0 and I.TRACEBACK not in ver.stdout + ver.stderr, I.describe(ver)
-    probe = sb.run([sb.python, "-c", "import hermes_cli, run_agent; print(hermes_cli.__file__); print(run_agent.__file__)"])
+    probe = sb.run([sb.python, "-c", "import hermes_cli; from hermes_agent import run_agent; print(hermes_cli.__file__); print(run_agent.__file__)"])
     assert probe.returncode == 0, I.describe(probe)
     workspace = Path(sb.python).parent.parent.parent / "workspace"
     for line in probe.stdout.split():

@@ -17,13 +17,13 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
-from agent.codex_responses_adapter import _format_responses_error
-from agent.redact import redact_sensitive_text
-from agent.transports.codex_app_server import (
+from hermes_agent.agent.codex_responses_adapter import _format_responses_error
+from hermes_agent.agent.redact import redact_sensitive_text
+from hermes_agent.agent.transports.codex_app_server import (
     CodexAppServerClient, CodexAppServerError, CodexAppServerTransportError,
 )
-from agent.transports.codex_event_projector import CodexEventProjector, ProjectionResult
-from agent.transports.hermes_tools_mcp_server import HERMES_TOOLS_MCP_SERVER_NAME
+from hermes_agent.agent.transports.codex_event_projector import CodexEventProjector, ProjectionResult
+from hermes_agent.agent.transports.hermes_tools_mcp_server import HERMES_TOOLS_MCP_SERVER_NAME
 
 logger = logging.getLogger(__name__)
 
@@ -238,7 +238,7 @@ class CodexAppServerSession:
         # REPLACE codex's base and ``instructions`` is accepted but ignored (verified against codex 0.147).
         self._developer_instructions = developer_instructions
         # Hermes' prior transcript, appended to developerInstructions ONLY when a thread is started from
-        # scratch: a resumed thread already holds the conversation (agent/codex_runtime_history_seed.py).
+        # scratch: a resumed thread already holds the conversation (hermes_agent/agent/codex_runtime_history_seed.py).
         self._history_seed = history_seed
         self._permission_profile = permission_profile or _HERMES_TO_CODEX_PERMISSION_PROFILE.get(
             os.environ.get("HERMES_TERMINAL_SECURITY_MODE", "auto"), "workspace-write"

@@ -9,7 +9,7 @@ Covers three crash patterns:
 import json
 from types import SimpleNamespace
 
-from agent.inline_tool_executors import INLINE_TOOL_EXECUTORS, InlineToolContext
+from hermes_agent.agent.inline_tool_executors import INLINE_TOOL_EXECUTORS, InlineToolContext
 from hermes_agent.tools.todo_tool import TodoStore, todo_tool
 
 

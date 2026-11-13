@@ -1,4 +1,4 @@
-"""Storage and release for the per-message token-estimate memo (``agent.model_metadata``).
+"""Storage and release for the per-message token-estimate memo (``hermes_agent.agent.model_metadata``).
 
 Each entry pins every string its fingerprint holds (the pin keeps the ``id()`` key sound), so the memo is
 bounded two ways, both least-recently-used first so a conversation that is still running never pays:

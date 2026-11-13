@@ -7,7 +7,7 @@ conversation with correct formatting, truncation, and config behavior.
 
 from io import StringIO
 from unittest.mock import MagicMock, patch
-from agent.i18n import t
+from hermes_agent.agent.i18n import t
 
 
 

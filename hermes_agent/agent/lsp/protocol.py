@@ -2,7 +2,7 @@
 
 Wire format: ``Content-Length: <bytes>\\r\\n\\r\\n<utf-8 JSON body>`` where the
 body is a JSON-RPC 2.0 request, response, or notification.  Just the framer
-plus envelope helpers, so :class:`agent.lsp.client.LSPClient` can focus on
+plus envelope helpers, so :class:`hermes_agent.agent.lsp.client.LSPClient` can focus on
 protocol semantics.
 """
 from __future__ import annotations
@@ -12,7 +12,7 @@ import json
 import logging
 from typing import Any, Optional, Tuple
 
-logger = logging.getLogger("agent.lsp.protocol")
+logger = logging.getLogger("hermes_agent.agent.lsp.protocol")
 
 # LSP error codes we care about (spec 3.17 #errorCodes).
 ERROR_CONTENT_MODIFIED = -32801

@@ -55,8 +55,8 @@ def test_terminal_descendants_cannot_mutate_even_after_task_is_removed(tmp_path,
         result = terminal.execute(f"{shlex.quote(sys.executable)} {shlex.quote(str(script))}")
     finally:
         terminal.cleanup()
-    from agent.skill_preprocessing import run_inline_shell
-    from agent.shell_hooks import ShellHookSpec, _spawn
+    from hermes_agent.agent.skill_preprocessing import run_inline_shell
+    from hermes_agent.agent.shell_hooks import ShellHookSpec, _spawn
     from hermes_agent.tools.code_execution_env import _build_child_env
     from hermes_agent.tools.mcp_tool_config import _build_safe_env
 
@@ -88,7 +88,7 @@ def test_terminal_descendants_cannot_mutate_even_after_task_is_removed(tmp_path,
 
 def test_task_shell_does_not_inherit_the_workers_kanban_source(tmp_path, monkeypatch):
     """``hermes chat -q`` in a task shell would send ``kanban``, a label only the gateway mints."""
-    from agent.session_source import session_source_for
+    from hermes_agent.agent.session_source import session_source_for
     from hermes_agent.gateway import session_context as sc
 
     _worker_board(tmp_path, monkeypatch)
@@ -133,7 +133,7 @@ def test_child_shell_can_write_a_kanban_board_outside_its_lineage_root(tmp_path,
     DB its shell touches: a repro run against a scratch HERMES_HOME got a silently read-only board
     (``connect`` opened ``?mode=ro``; ``write_txn`` raised PermissionError). Real ``terminal``
     ingress, real subprocess, real SQLite — the lineage board stays fenced in the same shell."""
-    from agent.delegation_context import delegated_child_context
+    from hermes_agent.agent.delegation_context import delegated_child_context
 
     lineage_home = tmp_path / "lineage"
     scratch_home = tmp_path / "scratch"

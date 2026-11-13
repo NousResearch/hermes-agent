@@ -7,7 +7,7 @@ import asyncio
 import logging
 from typing import Optional
 
-from agent.i18n import t
+from hermes_agent.agent.i18n import t
 from plugins.platforms.discord.adapter_config_readers import _read_discord_prompt_timeout
 
 logger = logging.getLogger(__name__)

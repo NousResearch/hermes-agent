@@ -892,7 +892,7 @@ def test_local_delivery_runner_surfaces_refusal_and_retains_payload(tmp_path, mo
 def test_delivery_main_child_env_carries_only_the_argv_author(tmp_path, monkeypatch, mode, author):
     """The ``--author`` payload becomes HERMES_TURN_AUTHOR on the child. Without it the runner drops the
     variable it inherited from the sending bot's own turn instead of passing it on as the recipient's author."""
-    from agent.turn_author import TURN_AUTHOR_ENV
+    from hermes_agent.agent.turn_author import TURN_AUTHOR_ENV
 
     dm_file = tmp_path / "message.txt"
     dm_file.write_text("secret", encoding="utf-8")
@@ -920,7 +920,7 @@ def test_delivery_main_child_env_carries_only_the_argv_author(tmp_path, monkeypa
 
 @pytest.mark.parametrize("author", [{"id": "bot:coder", "name": "coder", "is_bot": True}, None])
 def test_local_runner_sends_only_argv_author_to_authority(tmp_path, monkeypatch, author):
-    from agent.turn_author import TURN_AUTHOR_ENV
+    from hermes_agent.agent.turn_author import TURN_AUTHOR_ENV
 
     target = tmp_path / "profiles" / "researcher"
     target.mkdir(parents=True)

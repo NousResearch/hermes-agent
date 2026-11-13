@@ -20,13 +20,13 @@ PAID = "https://inference-api.nousresearch.com/v1"
 class TestAuxiliaryOnWelcomeHost:
     @pytest.fixture(autouse=True)
     def _isolate(self):
-        import agent.auxiliary_client as ac
+        import hermes_agent.agent.auxiliary_client as ac
         with patch.object(ac, "_read_nous_auth", return_value={"auth_method": "anonymous"}), \
              patch.object(ac, "nous_rate_limit_remaining", return_value=None, create=True):
             yield
 
     def test_text_aux_on_welcome_host_pins_the_welcome_model(self):
-        import agent.auxiliary_client as ac
+        import hermes_agent.agent.auxiliary_client as ac
         with patch.object(ac, "_resolve_nous_runtime_api", return_value=("jwt", WELCOME)), \
              patch.object(ac, "_create_openai_client", return_value="client") as create, \
              patch("hermes_cli.models.get_nous_recommended_aux_model") as recommended:
@@ -36,7 +36,7 @@ class TestAuxiliaryOnWelcomeHost:
         recommended.assert_not_called()   # the Portal's pick would be a guaranteed 429 model_not_free
 
     def test_vision_aux_on_welcome_host_uses_the_same_model(self):
-        import agent.auxiliary_client as ac
+        import hermes_agent.agent.auxiliary_client as ac
         with patch.object(ac, "_resolve_nous_runtime_api", return_value=("jwt", WELCOME)), \
              patch.object(ac, "_create_openai_client", return_value="client"), \
              patch("hermes_cli.models.get_nous_recommended_aux_model") as recommended:
@@ -44,7 +44,7 @@ class TestAuxiliaryOnWelcomeHost:
         recommended.assert_not_called()
 
     def test_paid_host_keeps_the_portal_recommendation(self):
-        import agent.auxiliary_client as ac
+        import hermes_agent.agent.auxiliary_client as ac
         with patch.object(ac, "_resolve_nous_runtime_api", return_value=("jwt", PAID)), \
              patch.object(ac, "_create_openai_client", return_value="client"), \
              patch("hermes_cli.models.get_nous_recommended_aux_model", return_value="some/free-model"):
@@ -104,7 +104,7 @@ class TestModelSwitchHeader:
         assert agent.model == "openai/gpt-5"
 
     def test_mixin_capture_records_the_header(self):
-        from agent.rate_limit_credits import RateLimitCreditsMixin
+        from hermes_agent.agent.rate_limit_credits import RateLimitCreditsMixin
 
         class _Agent(RateLimitCreditsMixin):
             model = "nous/welcome"
@@ -153,7 +153,7 @@ class TestRefusalCopy:
 
 class TestTurnRecoveryGuidance:
     def test_guidance_from_classified_context(self):
-        from agent.turn_recovery import _welcome_tier_guidance
+        from hermes_agent.agent.turn_recovery import _welcome_tier_guidance
         classified = SimpleNamespace(error_context={"welcome_refusal": {"reason": "model_not_free", "retry_after": 0, "alternates": []}})
         assert "nous/welcome" in _welcome_tier_guidance(classified, model="gpt-5", in_chat=True)
         classified = SimpleNamespace(error_context={"welcome_route": "tier_disabled"})

@@ -18,8 +18,8 @@ from tests.agent.test_iteration_budget_warning import _agent
 def test_checkpoint_requires_opt_in_or_dispatcher_completion_scope(
     tmp_path, monkeypatch, ratio, scope, expected, kanban_notice
 ):
-    from agent.delegation_context import delegated_child_context, non_dispatcher_owned_context
-    from agent.turn_iteration_prep import prepare_iteration
+    from hermes_agent.agent.delegation_context import delegated_child_context, non_dispatcher_owned_context
+    from hermes_agent.agent.turn_iteration_prep import prepare_iteration
 
     if scope != "ordinary":
         monkeypatch.setenv("HERMES_KANBAN_TASK", "t_checkpoint")

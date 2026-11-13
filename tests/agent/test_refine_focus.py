@@ -2,7 +2,7 @@
 
 from unittest.mock import MagicMock
 
-from agent.background_review import (
+from hermes_agent.agent.background_review import (
     _COMBINED_REVIEW_PROMPT,
     _MEMORY_REVIEW_PROMPT,
     spawn_background_review_thread,

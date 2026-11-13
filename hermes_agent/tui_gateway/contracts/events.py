@@ -91,7 +91,7 @@ class OnboardingOutcome(WireEnum):
 
 
 class OnboardingEndedPayload(Payload):
-    """``agent/onboarding_record.py::_transition``: the run ``run_id`` stopped being in progress.
+    """``hermes_agent/agent/onboarding_record.py::_transition``: the run ``run_id`` stopped being in progress.
     ``stored_session_id`` is its chat at the compression tip. ``done``: the first-task card was answered;
     ``skipped``: Skip setup; ``replaced``: a rerun opened a new run; ``deleted``: its chat was deleted."""
 
@@ -204,7 +204,7 @@ class TurnStatus(WireEnum):
 
 
 class UsageLimitSuggestion(Payload):
-    """``agent/plan_limits.py::ModelSuggestion`` — a recommended model that still works past the limit."""
+    """``hermes_agent/agent/plan_limits.py::ModelSuggestion`` — a recommended model that still works past the limit."""
 
     model: str
     label: str
@@ -213,14 +213,14 @@ class UsageLimitSuggestion(Payload):
 
 
 class UsageLimitCredits(Payload):
-    """``agent/plan_limits.py::CreditsOption`` — ``use_credits`` (turn on Keep going), ``add_credits``, or
+    """``hermes_agent/agent/plan_limits.py::CreditsOption`` — ``use_credits`` (turn on Keep going), ``add_credits``, or
     ``add_credits_and_keep_going`` (both: Keep going is off and there is no balance)."""
 
     action: str
 
 
 class UsageLimit(Payload):
-    """``agent/plan_limits.py::LimitHit`` — a usage-window plan's limit: what ran out, when it resets, and
+    """``hermes_agent/agent/plan_limits.py::LimitHit`` — a usage-window plan's limit: what ran out, when it resets, and
     the one-click ways on (switch to a recommended model, use / add credits)."""
 
     gauge_id: str
@@ -234,7 +234,7 @@ class UsageLimit(Payload):
 
 
 class ErrorSurface(Payload):
-    """``agent/error_surface.py::_surface`` — advisory {layer, code, retryable} (+ identity, + auth hint,
+    """``hermes_agent/agent/error_surface.py::_surface`` — advisory {layer, code, retryable} (+ identity, + auth hint,
     + ``resets_at`` epoch seconds when the provider named when its limit lifts, + ``usage_limit`` on a
     usage-window plan's limit)."""
 
@@ -249,7 +249,7 @@ class ErrorSurface(Payload):
 
 
 class BillingBlock(Payload):
-    """``agent/billing_links.py::BillingBlock.to_dict`` (+ ``unverified`` from conversation_loop)."""
+    """``hermes_agent/agent/billing_links.py::BillingBlock.to_dict`` (+ ``unverified`` from conversation_loop)."""
 
     provider: str
     provider_label: str
@@ -427,7 +427,7 @@ class ToolCompletePayload(Payload):
     todos: list[JsonValue] | None = None
     revision: int | None = None
     labels: list[ToolLabel] | None = None
-    image_path: str | None = None  # local image the call produced or looked at (agent.terminal_image.tool_image_path)
+    image_path: str | None = None  # local image the call produced or looked at (hermes_agent.agent.terminal_image.tool_image_path)
 
 
 event("tool.complete", ToolCompletePayload, doc="A tool call finished: parsed result, summary, optional diff / todo snapshot.")
@@ -456,7 +456,7 @@ event("tool.output_risk", ToolOutputRiskPayload, doc="Tool output was classified
 
 
 class ToolProgressPayload(Payload):
-    """``agent.tool_progress_relay.tool_progress_payload`` — an MCP server's
+    """``hermes_agent.agent.tool_progress_relay.tool_progress_payload`` — an MCP server's
     ``notifications/progress`` for a running call, throttled to one per 500 ms per call."""
 
     tool_id: str
@@ -484,7 +484,7 @@ event("todo.updated", TodoUpdatedPayload, doc="Full todo snapshot after a todo t
 
 
 class NotificationShowPayload(Payload):
-    """``agent/credits_tracker.py::AgentNotice`` via notice_callback, and ``server._await_agent_ready``'s
+    """``hermes_agent/agent/credits_tracker.py::AgentNotice`` via notice_callback, and ``server._await_agent_ready``'s
     slow-build notice. ``level``: info | warn | error | success; ``kind``: sticky | ttl | agent.
     ``detail``: the full text behind a short ``text`` (the low-disk auto-prune question): Desktop shows
     it in the toast's expandable body, the Ink TUI prints it into the transcript."""

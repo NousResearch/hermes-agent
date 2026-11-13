@@ -127,7 +127,7 @@ def _db_path() -> Path:
 def _ledger_enabled() -> bool:
     """The ledger exists only to feed verify-on-stop; when that guard is off nothing may
     record, read, or even create the database (an unconsumed ledger is pure disk churn)."""
-    from agent.verification_stop import verify_on_stop_enabled
+    from hermes_agent.agent.verification_stop import verify_on_stop_enabled
     from hermes_agent.tools.hosted_tool_policy import host_feature_enabled
 
     # A hosted agent's commands, paths and output are its own: none recorded in this host's ledger.
@@ -532,7 +532,7 @@ def _prune_old_events(conn: sqlite3.Connection, *, session_id: str, root: str) -
 def _project_facts(cwd: str | Path | None) -> Optional[dict[str, Any]]:
     """Workspace facts for ``cwd``; ``None`` when detection fails or finds nothing."""
     try:
-        from agent.coding_context import project_facts_for
+        from hermes_agent.agent.coding_context import project_facts_for
 
         return project_facts_for(cwd)
     except Exception:

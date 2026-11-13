@@ -2,8 +2,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent.message_sanitization import coerce_tool_name
-from agent.codex_responses_adapter import (
+from hermes_agent.agent.message_sanitization import coerce_tool_name
+from hermes_agent.agent.codex_responses_adapter import (
     _chat_content_to_responses_parts,
     _chat_messages_to_responses_input,
     _classify_responses_issuer,
@@ -38,7 +38,7 @@ _EXPECTED_STRICTNESS = [("default", False), ("strict", True), ("non_strict", Fal
 
 
 def _main_transport_wire_tools():
-    from agent.transports.codex import ResponsesApiTransport
+    from hermes_agent.agent.transports.codex import ResponsesApiTransport
 
     return ResponsesApiTransport().build_kwargs(
         "gpt-5.5", [{"role": "user", "content": "hi"}], _STRICTNESS_TOOLS
@@ -46,7 +46,7 @@ def _main_transport_wire_tools():
 
 
 def _auxiliary_adapter_wire_tools():
-    from agent.auxiliary_client import _CodexCompletionsAdapter
+    from hermes_agent.agent.auxiliary_client import _CodexCompletionsAdapter
 
     adapter = _CodexCompletionsAdapter(SimpleNamespace(base_url="https://example.com/v1"), "gpt-5.5")
     resp_kwargs, _, _ = adapter._build_responses_kwargs(

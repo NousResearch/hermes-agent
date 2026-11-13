@@ -15,7 +15,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from agent import relay_runtime
+from hermes_agent.agent import relay_runtime
 
 logger = logging.getLogger(__name__)
 

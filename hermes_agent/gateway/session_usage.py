@@ -31,11 +31,11 @@ def _context(agent, compressor) -> dict:
     if compressor is None:
         return {"last_prompt_tokens": 0, "context_tokens": 0, "context_length": None,
                 "config_context_length": None, "context_source": None, "compression_count": 0}
-    from agent.context_breakdown import context_display_source
+    from hermes_agent.agent.context_breakdown import context_display_source
     last = max(0, getattr(compressor, "last_prompt_tokens", 0) or 0)
     tokens = last
     with contextlib.suppress(Exception):
-        from agent.usage_anchor import anchored_context_tokens
+        from hermes_agent.agent.usage_anchor import anchored_context_tokens
         messages = getattr(agent, "_session_messages", None)
         anchored = anchored_context_tokens(messages if isinstance(messages, list) else [],
                                            getattr(agent, "_turn_base_usage_anchor", None),
@@ -138,7 +138,7 @@ def tui_usage(stats: dict) -> dict:
              "calls": stats.get("api_calls") or 0}
     used, maximum = stats.get("last_prompt_tokens") or 0, stats.get("context_length") or 0
     if used and maximum:
-        # ``agent/context_breakdown.py::context_usage_fields``: current occupancy, clamped.
+        # ``hermes_agent/agent/context_breakdown.py::context_usage_fields``: current occupancy, clamped.
         used = min(used, maximum)
         source = stats.get("context_source") or "provider_usage"
         usage.update(context_used=used, context_max=maximum,

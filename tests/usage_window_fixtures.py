@@ -1,6 +1,6 @@
 """Test helper: the server's usage-window gauge list from the old per-window keyword names.
 
-The Portal account and the API send one ``gauges`` list (agent/usage_gauges.py). Tests still read best as "day 76%,
+The Portal account and the API send one ``gauges`` list (hermes_agent/agent/usage_gauges.py). Tests still read best as "day 76%,
 week 40%, top tier full", so this maps those names onto the list, in the server's order.
 """
 

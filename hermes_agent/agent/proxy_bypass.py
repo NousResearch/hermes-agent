@@ -1,4 +1,4 @@
-"""NO_PROXY matching shared by the LLM transport (``agent/process_bootstrap.py``) and the
+"""NO_PROXY matching shared by the LLM transport (``hermes_agent/agent/process_bootstrap.py``) and the
 gateway platform adapters (``hermes_agent/gateway/platforms/base.py``).
 
 One matcher so "is this host in NO_PROXY" has one answer everywhere: exact hosts, domain

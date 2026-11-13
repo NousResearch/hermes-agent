@@ -40,10 +40,10 @@ def agent_and_db(tmp_path):
     with (
         patch("hermes_agent.model_tools.get_tool_definitions", return_value=_tool_defs("web_search", "terminal")),
         patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
-        patch("agent.process_bootstrap.OpenAI"),
+        patch("hermes_agent.agent.process_bootstrap.OpenAI"),
         patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}),
     ):
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         agent = AIAgent(
             api_key="test-key-1234567890", base_url="https://openrouter.ai/api/v1", model="test/model",
@@ -67,7 +67,7 @@ def _run_batch(agent, calls):
 
     with (
         patch("hermes_agent.model_tools.handle_function_call", side_effect=fake_handle),
-        patch("agent.tool_executor._budget_for_agent", return_value=budget),
+        patch("hermes_agent.agent.tool_executor._budget_for_agent", return_value=budget),
     ):
         agent._execute_tool_calls(SimpleNamespace(content="", tool_calls=calls), messages, "task-1")
     return messages

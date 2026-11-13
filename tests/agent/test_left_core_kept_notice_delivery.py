@@ -6,9 +6,9 @@ from types import SimpleNamespace
 import pytest
 
 import hermes_cli.left_core_migration as lcm
-from agent.agent_init import _load_tools
-from agent.status_output import StatusOutputMixin
-from agent.turn_context import _reset_per_turn_agent_state
+from hermes_agent.agent.agent_init import _load_tools
+from hermes_agent.agent.status_output import StatusOutputMixin
+from hermes_agent.agent.turn_context import _reset_per_turn_agent_state
 
 KEPT = "✓ GitHub Copilot moved out of core — installed the 'github-copilot' plugin from the catalog."
 

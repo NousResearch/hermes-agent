@@ -34,7 +34,7 @@ import time
 
 import pytest
 
-from agent.context_compressor import ContextCompressor
+from hermes_agent.agent.context_compressor import ContextCompressor
 
 def _compressor(threshold_tokens: int) -> ContextCompressor:
     cc = ContextCompressor(
@@ -143,7 +143,7 @@ class TestFutilityGuard:
         as incompressible overhead and disables compaction on a healthy session.
         The check must compare the caller's own measure on both sides.
         """
-        from agent.context_compressor import estimate_messages_tokens_rough
+        from hermes_agent.agent.context_compressor import estimate_messages_tokens_rough
 
         skew, floor = 1.6, 30_000
         cc = _compressor(threshold_tokens=150_000)

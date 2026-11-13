@@ -23,9 +23,9 @@ def claiming_profile(request):
 
 
 def _agent(provider, base_url, model):
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
-    with patch("agent.process_bootstrap.OpenAI") as mock_openai:
+    with patch("hermes_agent.agent.process_bootstrap.OpenAI") as mock_openai:
         mock_openai.return_value = MagicMock()
         return AIAgent(api_key="k", base_url=base_url, provider=provider, api_mode="chat_completions", model=model,
                        quiet_mode=True, skip_context_files=True, skip_memory=True, enabled_toolsets=[],

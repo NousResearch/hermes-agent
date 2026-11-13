@@ -19,7 +19,7 @@ from contextlib import contextmanager
 from concurrent.futures import Future, TimeoutError
 from typing import Any, Callable, Mapping, Optional
 
-from agent.interrupt_compat import request_hard_interrupt
+from hermes_agent.agent.interrupt_compat import request_hard_interrupt
 
 PUBLIC_CONTRACT_VERSION = 1
 _MAX_GOAL_CHARS = 16_000

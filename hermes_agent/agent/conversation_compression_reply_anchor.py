@@ -1,6 +1,6 @@
 """Keep the just-delivered assistant reply live across a compaction commit (#118900).
 
-Sibling of ``agent/conversation_compression.py`` (the facade). The facade
+Sibling of ``hermes_agent/agent/conversation_compression.py`` (the facade). The facade
 late-imports this module at its single call site in ``compress_context``; this
 module must never import the facade at module level (import cycle).
 """
@@ -10,8 +10,8 @@ from __future__ import annotations
 import logging
 from typing import Any, Optional
 
-from agent.message_sanitization import coalesce_tool_call_id
-from agent.model_metadata import estimate_messages_tokens_rough
+from hermes_agent.agent.message_sanitization import coalesce_tool_call_id
+from hermes_agent.agent.model_metadata import estimate_messages_tokens_rough
 
 logger = logging.getLogger(__name__)
 
@@ -44,10 +44,10 @@ def _ensure_compressed_keeps_last_assistant_reply(
     carried row at commit), or ``None`` when nothing was reinserted — every skip
     that is not "the reply is already there" is logged here with its reason.
     """
-    from agent.context_compressor import (
+    from hermes_agent.agent.context_compressor import (
         _DB_PERSISTED_MARKER, _fresh_compaction_message_copy, is_compaction_summary_message,
     )
-    from agent.conversation_compression import _message_text
+    from hermes_agent.agent.conversation_compression import _message_text
 
     reply, reply_text = None, ""
     for message in reversed(original_messages):
@@ -146,7 +146,7 @@ def _same_visible_content(left: dict, right: dict, right_text: str) -> bool:
     ``left`` is the per-candidate row and is flattened here; ``right_text`` is the
     caller's row flattened once per scan rather than once per candidate.
     """
-    from agent.conversation_compression import _message_text
+    from hermes_agent.agent.conversation_compression import _message_text
 
     left_text = _message_text(left).strip()
     if left_text or right_text:
@@ -205,7 +205,7 @@ def _reply_insertion_index(followers: list, compressed: list, *, reused_ids: fro
     real followers; when none locates the slot and a reused-id round survives in
     ``compressed``, the placement is unknown and ``None`` is returned (skip).
     """
-    from agent.conversation_compression import _is_real_user_message, _message_text
+    from hermes_agent.agent.conversation_compression import _is_real_user_message, _message_text
 
     def _row_ids(message: dict) -> frozenset:
         return _tool_call_ids(message) | frozenset(filter(None, (_tool_result_id(message),)))

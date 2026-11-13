@@ -4,14 +4,14 @@ from __future__ import annotations
 
 from typing import Dict, List, Optional
 
-from agent.vault_backends.base import LoginBackend
-from agent.vault_store import VaultItemMeta
+from hermes_agent.agent.vault_backends.base import LoginBackend
+from hermes_agent.agent.vault_store import VaultItemMeta
 
 
 def _store():
-    # Late import: tests and callers patch ``agent.vault_store.get_vault_store``; binding it here
+    # Late import: tests and callers patch ``hermes_agent.agent.vault_store.get_vault_store``; binding it here
     # at call time keeps that facade name the single seam.
-    from agent.vault_store import get_vault_store
+    from hermes_agent.agent.vault_store import get_vault_store
     return get_vault_store()
 
 
@@ -30,7 +30,7 @@ class LocalLoginBackend(LoginBackend):
         return str(_store().resolve_secret(handle).get("password") or "")
 
     def resolve_otp(self, handle: str) -> Optional[str]:
-        from agent.vault_store import totp_now
+        from hermes_agent.agent.vault_store import totp_now
         seed = str(_store().resolve_secret(handle).get("otp_secret") or "")
         return totp_now(seed) if seed else None
 

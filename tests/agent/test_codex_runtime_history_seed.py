@@ -7,8 +7,8 @@ the seed never makes the next turn retire the thread.
 
 from types import SimpleNamespace
 
-from agent import codex_runtime
-from agent.transports import codex_app_server_session as sess_mod
+from hermes_agent.agent import codex_runtime
+from hermes_agent.agent.transports import codex_app_server_session as sess_mod
 
 
 class _FakeClient:

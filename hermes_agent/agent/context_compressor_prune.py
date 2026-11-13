@@ -1,10 +1,10 @@
 """The proactive tool-result prune: deterministic passes plus the in-place row commit (#124102).
 
-Split out of :mod:`agent.context_compressor` (FILE_LINES ratchet): the prune is a self-contained
+Split out of :mod:`hermes_agent.agent.context_compressor` (FILE_LINES ratchet): the prune is a self-contained
 reclamation feature. The origin module keeps the ``ContextCompressor`` class; this sibling owns
 ``prune_tool_results_only`` and its in-place commit helper. Log name parity with the origin
 module, and every origin-module symbol is read through ``_cc()`` at call time so tests that patch
-``agent.context_compressor.X`` stay effective.
+``hermes_agent.agent.context_compressor.X`` stay effective.
 """
 
 from __future__ import annotations
@@ -12,13 +12,13 @@ from __future__ import annotations
 import logging
 from typing import Any, Optional
 
-logger = logging.getLogger("agent.context_compressor")
+logger = logging.getLogger("hermes_agent.agent.context_compressor")
 
 
 def _cc():
     """The origin module, resolved lazily: avoids the import cycle and keeps tests that patch
-    ``agent.context_compressor.X`` effective (attributes are read at call time)."""
-    from agent import context_compressor
+    ``hermes_agent.agent.context_compressor.X`` effective (attributes are read at call time)."""
+    from hermes_agent.agent import context_compressor
     return context_compressor
 
 
@@ -75,7 +75,7 @@ class ProactivePruneMixin:
         pruned_msgs, pruned_count = self._prune_old_tool_results(
             messages, protect_tail_count=self.protect_last_n, protect_tail_tokens=None, min_prune_chars=self.proactive_prune_min_result_chars,
         )
-        from agent.context_compressor_tail import with_pruned_row_skill_safety_rule
+        from hermes_agent.agent.context_compressor_tail import with_pruned_row_skill_safety_rule
         pruned_msgs = with_pruned_row_skill_safety_rule(messages, pruned_msgs)
         if not pruned_count:
             # No-op contract: return the INPUT object so callers can gate on `result is not input`.
@@ -103,7 +103,7 @@ class ProactivePruneMixin:
                 rewritten = self._rewrite_pruned_rows_in_place(
                     session_db, session_id, messages, pruned_msgs, model_config_patch)
                 if rewritten is None:
-                    from agent.conversation_compression_archive import coverage_for_commit
+                    from hermes_agent.agent.conversation_compression_archive import coverage_for_commit
                     covered_ids, unresolved_held = coverage_for_commit(session_db, session_id, messages)
                     session_db.archive_and_compact(
                         session_id, pruned_msgs,

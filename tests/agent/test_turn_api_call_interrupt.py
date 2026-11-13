@@ -1,4 +1,4 @@
-"""Tests for ``agent/turn_api_call.py::handle_api_interrupt`` — the plain (non-redirect)
+"""Tests for ``hermes_agent/agent/turn_api_call.py::handle_api_interrupt`` — the plain (non-redirect)
 interrupt that lands mid provider call and records the streamed partial as the interrupted
 assistant row."""
 from __future__ import annotations
@@ -6,11 +6,11 @@ from __future__ import annotations
 import threading
 import time
 
-from agent.agent_runtime_helpers_placeholders import _INTERRUPTED_PLACEHOLDER
-from agent.repetition_guard import REPETITION_LOOP_INTERRUPTED
-from agent.turn_api_call import handle_api_interrupt
-from agent.turn_retry_state import TurnRetryState
-from run_agent import AIAgent
+from hermes_agent.agent.agent_runtime_helpers_placeholders import _INTERRUPTED_PLACEHOLDER
+from hermes_agent.agent.repetition_guard import REPETITION_LOOP_INTERRUPTED
+from hermes_agent.agent.turn_api_call import handle_api_interrupt
+from hermes_agent.agent.turn_retry_state import TurnRetryState
+from hermes_agent.run_agent import AIAgent
 
 
 def _bare_agent(streamed: str) -> AIAgent:

@@ -8,8 +8,8 @@ from unittest.mock import patch
 
 import pytest
 
-import agent.context_compressor as cc
-from agent.context_compressor import ContextCompressor, _estimate_msg_budget_tokens
+import hermes_agent.agent.context_compressor as cc
+from hermes_agent.agent.context_compressor import ContextCompressor, _estimate_msg_budget_tokens
 
 
 def _make(ctx: int, threshold_tokens: int | None) -> ContextCompressor:

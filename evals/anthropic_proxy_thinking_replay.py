@@ -32,7 +32,7 @@ def _sse(events):
 
 
 def scenario(model, path="/anthropic"):
-    import run_agent
+    from hermes_agent import run_agent
     requests = []
 
     class Handler(BaseHTTPRequestHandler):

@@ -318,12 +318,12 @@ class TestDetailHelperDirectly:
         Failing open here would be worse than logging nothing: the whole reason
         the cause is safe to log is that it went through the redactor.
         """
-        import agent.redact
+        import hermes_agent.agent.redact
 
         def _explode(*a, **k):
             raise RuntimeError("redactor unavailable")
 
-        monkeypatch.setattr(agent.redact, "redact_sensitive_text", _explode)
+        monkeypatch.setattr(hermes_agent.agent.redact, "redact_sensitive_text", _explode)
 
         out = server._turn_failure_detail("Bearer sk-proj-supersecretvalue")
         assert "supersecretvalue" not in out

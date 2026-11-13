@@ -23,7 +23,7 @@ def _session_turn_admission(session: dict):
 
 def _start_session_work(target, *, name: str, session: dict | None = None):
     """Reserve before spawning; release only after the worker (including cleanup) has unwound."""
-    from agent.memory_provider import spawn_context_thread
+    from hermes_agent.agent.memory_provider import spawn_context_thread
     from hermes_cli.backend_retirement import retirement
 
     if not retirement.acquire():
@@ -419,7 +419,7 @@ def _lifecycle_own_sid(session: dict, sid_hint: str = "") -> str:
 def _lock_vault_managers(session: dict) -> None:
     """A per-session unlock ends with the session that made it; siblings in the same profile keep theirs."""
     try:
-        from agent.vault_backends import unlock
+        from hermes_agent.agent.vault_backends import unlock
 
         if sid := session.get("_sid"):
             unlock.release_session(sid)
@@ -523,7 +523,7 @@ def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> No
             clear_session(str(session_key))
     # A session's in-flight background memory/skill review ends WITH the session too (#102895): the
     # review fork is a SEPARATE AIAgent instance tracked only on the parent's
-    # _background_review_agent/_active_children (agent/background_review.py) — never on
+    # _background_review_agent/_active_children (hermes_agent/agent/background_review.py) — never on
     # session["running"] or session["_run_thread"] — so it is invisible both to the run_thread join
     # in _teardown_popped_session and to session.interrupt's running-gated request_hard_interrupt in
     # _interrupt_session_turn. Every finalize path (explicit close, idle-timeout reap, ws-orphan
@@ -532,7 +532,7 @@ def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> No
     # the model forever after the session is gone: nothing ever sets its _interrupt_requested.
     if agent is not None:
         with contextlib.suppress(Exception):
-            from agent.background_review import cancel_background_review_for_live_turn
+            from hermes_agent.agent.background_review import cancel_background_review_for_live_turn
             cancel_background_review_for_live_turn(
                 agent, message=f"session ended ({end_reason})", tool_reason="session ended")
     # Close the slash-worker in this single ``_finalized``-guarded chokepoint (a direct caller can't leak it); idempotent.
@@ -813,7 +813,7 @@ def _interrupt_session_turn(
             logger.debug("agent_loop_stopped hook dispatch failed", exc_info=True)
     if not use_compute_host:
         if should_interrupt:
-            from agent.interrupt_compat import request_hard_interrupt
+            from hermes_agent.agent.interrupt_compat import request_hard_interrupt
             request_hard_interrupt(session.get("agent"))
         if not run_thread_alive and not compressing:
             with session["history_lock"]:
@@ -829,7 +829,7 @@ def _interrupt_session_turn(
     # and in-process turns) since the review is always local to this process.
     if (agent_for_review := session.get("agent")) is not None:
         with contextlib.suppress(Exception):
-            from agent.background_review import cancel_background_review_for_live_turn
+            from hermes_agent.agent.background_review import cancel_background_review_for_live_turn
             cancel_background_review_for_live_turn(
                 agent_for_review, message="session interrupted", tool_reason="session interrupted")
     _clear_pending(sid)
@@ -931,7 +931,7 @@ def _ws_orphan_turn_activity_is_fresh(session: dict) -> bool:
 
     Reuses the agent's existing activity summary (``_touch_activity`` is stamped by API waits, stream
     tokens, and tool heartbeats — the same clock the turn-liveness watchdog samples; see
-    agent/turn_liveness.py). See #100325, #98028.
+    hermes_agent/agent/turn_liveness.py). See #100325, #98028.
     Isolated turns mirror that clock from the child under a unique dispatch token;
     their monotonic samples keep aging even if the child or its pipe stalls.
     """

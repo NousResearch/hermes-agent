@@ -3,9 +3,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent.codex_runtime import _record_codex_app_server_compaction
-from agent.conversation_compression import COMPACTION_DONE_STATUS, COMPACTION_STATUS, compress_context
-from agent.transports.codex_app_server_session import TurnResult
+from hermes_agent.agent.codex_runtime import _record_codex_app_server_compaction
+from hermes_agent.agent.conversation_compression import COMPACTION_DONE_STATUS, COMPACTION_STATUS, compress_context
+from hermes_agent.agent.transports.codex_app_server_session import TurnResult
 
 
 class FakeCodexSession:
@@ -138,7 +138,7 @@ def test_codex_app_server_compaction_heartbeat_refreshes_activity_while_waiting(
     assert "context compression started" in agent.touch_calls
     assert "context compression in progress" in agent.touch_calls
     assert agent.touch_calls[-1] == "context compression completed"
-    from agent.session_activity import ActivityProvenance
+    from hermes_agent.agent.session_activity import ActivityProvenance
 
     assert agent.touch_provenances
     assert all(
@@ -182,10 +182,10 @@ def test_codex_app_server_compression_failure_preserves_bookkeeping():
 def test_codex_native_boundary_clears_stale_hermes_fallback_streak():
     from unittest.mock import patch
 
-    from agent.context_compressor import ContextCompressor
+    from hermes_agent.agent.context_compressor import ContextCompressor
 
     with patch(
-        "agent.context_compressor.get_model_context_length",
+        "hermes_agent.agent.context_compressor.get_model_context_length",
         return_value=100_000,
     ):
         compressor = ContextCompressor(model="test-model", quiet_mode=True)
@@ -234,7 +234,7 @@ class RecordingCooldownCompressor(SimpleNamespace):
 def test_interrupted_codex_compaction_arms_the_failure_cooldown():
     """Regression: the codex path returned unchanged with no brake, so the
     session stayed above threshold and the next turn retried immediately."""
-    from agent.context_compressor import _SUMMARY_FAILURE_COOLDOWN_SECONDS
+    from hermes_agent.agent.context_compressor import _SUMMARY_FAILURE_COOLDOWN_SECONDS
 
     agent = DummyAgent(
         TurnResult(

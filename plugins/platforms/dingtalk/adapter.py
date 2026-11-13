@@ -48,7 +48,7 @@ except Exception:
 
 from hermes_agent.gateway.config import Platform, PlatformConfig
 from hermes_agent.gateway.platforms.helpers import MessageDeduplicator, compile_mention_patterns
-from agent.i18n import t
+from hermes_agent.agent.i18n import t
 from hermes_agent.gateway.platforms.base import BasePlatformAdapter, SendResult, describe_proxy_error, env_proxy_for_redaction
 from hermes_agent.gateway.platforms.event import MessageEvent
 from hermes_agent.gateway.platforms._shared import (

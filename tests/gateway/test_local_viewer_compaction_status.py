@@ -23,7 +23,7 @@ def _local_turn(published):
 
 
 def test_only_a_real_compaction_reaches_local_viewers_as_compacting():
-    from agent.conversation_compression import COMPACTION_STATUS
+    from hermes_agent.agent.conversation_compression import COMPACTION_STATUS
     from hermes_agent.gateway.warning_notifications import DiagnosticText
 
     published = []

@@ -25,8 +25,8 @@ from pathlib import Path
 
 import pytest
 
-from agent.image_gen_provider import save_b64_image
-from agent.video_gen_provider import save_b64_video
+from hermes_agent.agent.image_gen_provider import save_b64_image
+from hermes_agent.agent.video_gen_provider import save_b64_video
 from hermes_agent.gateway.platforms import base
 
 PNG_1PX = bytes.fromhex(

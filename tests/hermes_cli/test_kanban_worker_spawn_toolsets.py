@@ -149,7 +149,7 @@ def test_default_spawn_hands_the_assignee_owner_only_its_own_values(monkeypatch,
     for name, value in host.items():
         monkeypatch.setenv(name, value)
 
-    from agent.secret_scope import set_multiplex_active
+    from hermes_agent.agent.secret_scope import set_multiplex_active
     from hermes_cli import kanban_db as kb
     from hermes_cli import kanban_db_dispatch as kbd
 

@@ -31,7 +31,7 @@ from typing import Any, Callable, Dict, FrozenSet, Iterable, List, Optional, Tup
 from urllib.parse import urlparse
 
 from hermes_constants import OPENROUTER_BASE_URL, hermes_home_key, secure_parent_dir
-from agent.credential_persistence import sanitize_borrowed_credential_payload
+from hermes_agent.agent.credential_persistence import sanitize_borrowed_credential_payload
 from utils import atomic_json_write, env_float, file_cache_version, is_truthy_value
 from hermes_cli.auth_zai_kimi import (
     KIMI_CODE_BASE_URL, ZAI_ENDPOINTS, _normalize_lmstudio_runtime_base_url, _resolve_kimi_base_url,
@@ -203,7 +203,7 @@ _REGISTRY_ROWS: tuple[Any, ...] = (
     # CLAUDE_CODE_OAUTH_TOKEN is NOT an API key despite auth_type="api_key": `claude setup-token`
     # yields an `sk-ant-oat01…` OAuth token (401s as x-api-key, 429s as bare Bearer). It stays in
     # this tuple because the tuple doubles as the credential-DISCOVERY list
-    # (agent/credential_pool.py builds its env scan from it); the adapter routes it down the OAuth
+    # (hermes_agent/agent/credential_pool.py builds its env scan from it); the adapter routes it down the OAuth
     # path by prefix. Only ANTHROPIC_API_KEY and ANTHROPIC_TOKEN are usable as literal API keys.
     ("anthropic", "Anthropic", "https://api.anthropic.com",
      ("ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"), "ANTHROPIC_BASE_URL"),
@@ -235,7 +235,7 @@ _REGISTRY_ROWS: tuple[Any, ...] = (
     ("bedrock", "AWS Bedrock", "https://bedrock-runtime.us-east-1.amazonaws.com", (), "BEDROCK_BASE_URL",
      "aws_sdk"),
     # No static inference_base_url: Vertex's endpoint is computed per request from project_id +
-    # region (agent/vertex_adapter.py build_vertex_base_url), not a fixed host.
+    # region (hermes_agent/agent/vertex_adapter.py build_vertex_base_url), not a fixed host.
     ("vertex", "Google Vertex AI", "", (), "", "vertex"),
     ("azure-foundry", "Azure Foundry", "", ("AZURE_FOUNDRY_API_KEY",), "AZURE_FOUNDRY_BASE_URL"))
 from hermes_cli.auth_plugin_providers import HomeScopedRegistry  # mirrored rows are read per home
@@ -401,7 +401,7 @@ def _resolve_api_key_provider_secret(provider_id: str, pconfig: ProviderConfig) 
     # selection (peek) but try the rest too so one malformed entry doesn't block a valid one.
     pool_source = f"credential_pool:{provider_id}"
     try:
-        from agent.credential_pool import load_pool
+        from hermes_agent.agent.credential_pool import load_pool
         pool = load_pool(provider_id)
         if pool and pool.has_credentials():
             entry = pool.peek()
@@ -1000,7 +1000,7 @@ def _merge_pool_row_generation(
     it was observed on; account-wide cooldowns (402 billing, 429 throttle) from the
     stale writer still apply to the rotated pair and go through the ordinary recency
     merge in ``_merge_disk_cooldown_state``."""
-    from agent.credential_pool import STATUS_DEAD
+    from hermes_agent.agent.credential_pool import STATUS_DEAD
 
     merge_disk = None if status_cleared else disk_entry
     disk_pair = _credential_token_pair(disk_entry)
@@ -1038,13 +1038,13 @@ def _merge_disk_cooldown_state(
     if not isinstance(disk_entry, dict):
         return entry
     try:
-        from agent.credential_pool import (
+        from hermes_agent.agent.credential_pool import (
             PooledCredential, STATUS_DEAD, STATUS_EXHAUSTED, _exhausted_until, _parse_absolute_timestamp,
         )
 
         # Model cooldowns are independent observations: keep the latest reset per model so a
         # writer that just cooled one model cannot erase another process's cooldown for another.
-        from agent.credential_pool_model_cooldowns import merge_model_cooldowns
+        from hermes_agent.agent.credential_pool_model_cooldowns import merge_model_cooldowns
         merged_cooldowns = merge_model_cooldowns(disk_entry.get("model_cooldowns"), entry.get("model_cooldowns"))
         merged = {**entry, "model_cooldowns": merged_cooldowns} if merged_cooldowns else entry
         disk_status_fields = {f: disk_entry.get(f) for f in _POOL_STATUS_FIELDS}
@@ -1321,7 +1321,7 @@ def _keyless_provider_has_explicit_config(normalized: str) -> bool:
     Hermes-scoped signals (VERTEX_PROJECT_ID / vertex.project_id / VERTEX_CREDENTIALS_PATH) count
     here."""
     if normalized in _VERTEX_PROVIDER_IDS:
-        from agent.vertex_adapter import has_explicit_vertex_config
+        from hermes_agent.agent.vertex_adapter import has_explicit_vertex_config
         return bool(has_explicit_vertex_config())
     if normalized == "bedrock":
         from hermes_cli.config import load_config
@@ -1475,7 +1475,7 @@ def _scoped_key_env_reader() -> Callable[[str], str]:
         # Scope-aware key reads: under multiplex a secondary profile's API keys live only in its secret
         # scope, not os.environ — a bare getenv here would find nothing and auto-resolution would report "No
         # LLM provider configured" for every secondary profile (same class as #86905).
-        from agent.auxiliary_client import _scoped_key_env
+        from hermes_agent.agent.auxiliary_client import _scoped_key_env
         return _scoped_key_env
     except ImportError:
         logger.warning(
@@ -1503,7 +1503,7 @@ def _openrouter_auto_detected(scoped_key_env: Callable[[str], str]) -> bool:
         # auto-detection — the user sees `hermes auth list` showing the credential while requests go out
         # with no Authorization header ("HTTP 401: Missing Authentication header"). The env-var check above
         # only covers OPENROUTER_API_KEY and an sk-or- key in OPENAI_API_KEY. See issue #42130.
-        from agent.credential_pool import load_pool as _load_pool
+        from hermes_agent.agent.credential_pool import load_pool as _load_pool
         return bool(_load_pool("openrouter").has_credentials())
     except Exception as e:
         logger.debug("Could not check OpenRouter credential pool: %s", e)
@@ -1687,7 +1687,7 @@ def resolve_provider(
     # AWS Bedrock via the boto3 credential chain (IAM roles, SSO, env vars): implicit host state,
     # below explicit keys and below the free tier.
     try:
-        from agent.bedrock_adapter import has_aws_credentials
+        from hermes_agent.agent.bedrock_adapter import has_aws_credentials
         from hermes_cli.anon_auth import on_local_desktop_backend  # a laptop: no EC2 metadata lookup
         if has_aws_credentials(instance_metadata=not on_local_desktop_backend()):
             return "bedrock"
@@ -2114,7 +2114,7 @@ def get_external_process_provider_status(provider_id: str) -> dict[str, Any]:
 def _get_aws_sdk_auth_status(target: str) -> dict[str, Any]:
     """AWS SDK providers (Bedrock) — check via boto3 credential chain."""
     try:
-        from agent.bedrock_adapter import has_aws_credentials
+        from hermes_agent.agent.bedrock_adapter import has_aws_credentials
         return {"logged_in": has_aws_credentials(), "provider": target}
     except ImportError:
         return {"logged_in": False, "provider": target, "error": "boto3 not installed"}
@@ -2172,7 +2172,7 @@ def _get_azure_foundry_auth_status() -> dict[str, Any]:
 
     if auth_mode == "entra_id":
         try:
-            from agent.azure_identity_adapter import (
+            from hermes_agent.agent.azure_identity_adapter import (
                 EntraIdentityConfig, SCOPE_AI_AZURE_DEFAULT, has_azure_identity_installed)
             installed = has_azure_identity_installed()
             entra_cfg = model_cfg["entra"] if isinstance(model_cfg.get("entra"), dict) else {}

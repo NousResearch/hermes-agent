@@ -86,7 +86,7 @@ class TestIsAvailable:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         _ensure_plugins_loaded()
-        from agent.browser_registry import get_provider
+        from hermes_agent.agent.browser_registry import get_provider
 
         p = get_provider("browserbase")
         assert p is not None
@@ -105,7 +105,7 @@ class TestIsAvailable:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         _ensure_plugins_loaded()
-        from agent.browser_registry import get_provider
+        from hermes_agent.agent.browser_registry import get_provider
 
         p = get_provider("browser-use")
         assert p is not None
@@ -115,7 +115,7 @@ class TestIsAvailable:
 
     def test_firecrawl_requires_api_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
         _ensure_plugins_loaded()
-        from agent.browser_registry import get_provider
+        from hermes_agent.agent.browser_registry import get_provider
 
         p = get_provider("firecrawl")
         assert p is not None
@@ -135,14 +135,14 @@ class TestRegistryResolution:
     def test_resolve_none_with_no_creds_returns_none(self) -> None:
         """No config, no env → local mode (None)."""
         _ensure_plugins_loaded()
-        from agent.browser_registry import _resolve
+        from hermes_agent.agent.browser_registry import _resolve
 
         assert _resolve(None) is None
 
     def test_explicit_local_returns_none(self) -> None:
         """``cloud_provider: local`` is a positive choice; short-circuits to None."""
         _ensure_plugins_loaded()
-        from agent.browser_registry import _resolve
+        from hermes_agent.agent.browser_registry import _resolve
 
         assert _resolve("local") is None
 
@@ -152,7 +152,7 @@ class TestRegistryResolution:
     ) -> None:
         """Rule 3: walk order is browser-use → browserbase."""
         _ensure_plugins_loaded()
-        from agent.browser_registry import _resolve
+        from hermes_agent.agent.browser_registry import _resolve
 
         # Both available — browser-use should win.
         monkeypatch.setenv("BROWSER_USE_API_KEY", "k1")
@@ -176,7 +176,7 @@ class TestPickerIntegration:
         _ensure_plugins_loaded()
         from hermes_cli.tools_config import _plugin_browser_providers
 
-        from agent.browser_registry import list_providers
+        from hermes_agent.agent.browser_registry import list_providers
 
         rows = _plugin_browser_providers()
         names = sorted(r.get("browser_provider") for r in rows)

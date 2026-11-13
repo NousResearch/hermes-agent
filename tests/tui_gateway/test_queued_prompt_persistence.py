@@ -11,9 +11,9 @@ instead of writing a duplicate.
 
 import types
 
-from agent.turn_context import _stage_turn_user_message
+from hermes_agent.agent.turn_context import _stage_turn_user_message
 from hermes_agent.hermes_state import SessionDB
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 from hermes_agent.tui_gateway import server
 
 

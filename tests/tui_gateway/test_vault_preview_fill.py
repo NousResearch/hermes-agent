@@ -72,7 +72,7 @@ def test_key_button_fills_identifier_and_password_into_the_pinned_tab(login, win
 
 
 def test_key_button_refuses_another_origin_before_resolving_the_password(login, window, monkeypatch):
-    from agent.vault_backends.local import LocalLoginBackend
+    from hermes_agent.agent.vault_backends.local import LocalLoginBackend
 
     def never(*_a, **_k):
         raise AssertionError("password resolved for a page on another origin")
@@ -144,7 +144,7 @@ def test_isolated_preview_read_is_redacted_in_the_owning_profile_before_the_chil
     """#150283 P1-5: a UI key-button fill registers the password in the PARENT's redaction registry; a
     compute-host child's separate registry has no record, so the parent must scrub a forwarded preview
     reply that echoes the filled value. The echo can land in text, a nested label, or a diagnostic field."""
-    from agent.redact import clear_vault_redaction_values, register_vault_redaction_value
+    from hermes_agent.agent.redact import clear_vault_redaction_values, register_vault_redaction_value
 
     secret = "synthetic-isolated-fill-pw-150283"
     register_vault_redaction_value(secret)
@@ -161,7 +161,7 @@ def test_isolated_preview_read_is_redacted_in_the_owning_profile_before_the_chil
 def test_non_preview_relayed_reply_is_forwarded_untouched(monkeypatch):
     """The scrub is scoped to preview replies: an unrelated relayed response passes through verbatim
     (mutant guard — the fix must not blanket-redact every forwarded frame)."""
-    from agent.redact import clear_vault_redaction_values, register_vault_redaction_value
+    from hermes_agent.agent.redact import clear_vault_redaction_values, register_vault_redaction_value
 
     secret = "synthetic-isolated-fill-pw-150283"
     register_vault_redaction_value(secret)

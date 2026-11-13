@@ -125,9 +125,9 @@ import hermes_yaml as yaml
 
 Path(os.environ["HERMES_HOME"], "config.yaml").write_text(yaml.safe_dump(config), encoding="utf-8")
 from hermes_agent.hermes_state import SessionDB
-from agent.moa_loop import MoAClient
-from agent.turn_request_assembly import _prepare_moa_request
-from agent.transports.chat_completions import ChatCompletionsTransport
+from hermes_agent.agent.moa_loop import MoAClient
+from hermes_agent.agent.turn_request_assembly import _prepare_moa_request
+from hermes_agent.agent.transports.chat_completions import ChatCompletionsTransport
 from types import SimpleNamespace
 from openai import OpenAI
 

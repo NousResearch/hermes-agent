@@ -20,7 +20,7 @@ _MISSING_ACTIVE_PROVIDER = object()
 
 def _identity(entry: dict[str, Any]):
     """BackendIdentity for a ``{provider, model, base_url?}`` entry."""
-    from agent.backend_identity import BackendIdentity
+    from hermes_agent.agent.backend_identity import BackendIdentity
     return BackendIdentity.build(provider=entry.get("provider"), model=entry.get("model"), base_url=entry.get("base_url"))
 
 
@@ -174,7 +174,7 @@ def cmd_fallback_add(args) -> None:
         print("\n  No fallback added.")
         return
 
-    from agent.backend_identity import same_deployment
+    from hermes_agent.agent.backend_identity import same_deployment
     new_ident = _identity(new_entry)
     primary_entry = _extract_fallback_from_model_cfg(model_before)
     if primary_entry and same_deployment(_identity(primary_entry), new_ident):

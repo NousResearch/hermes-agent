@@ -322,7 +322,7 @@ class DuplicateNativeToolsAgent:
         self.tools = []
 
     def run_conversation(self, message, conversation_history=None, task_id=None, **kwargs):
-        # Production (agent/tool_executor.py) fires these through _safe_callback, which skips a
+        # Production (hermes_agent/agent/tool_executor.py) fires these through _safe_callback, which skips a
         # None callback; the card lane leaves them unset when cards are disabled for the turn.
         start = self.tool_start_callback or (lambda *a, **k: None)
         complete = self.tool_complete_callback or (lambda *a, **k: None)
@@ -477,7 +477,7 @@ def test_tool_progress_mode_reads_profile_scope_not_process_environ(monkeypatch,
     process-wide ``os.environ``. Under gateway multiplexing ``os.environ`` carries whichever
     profile's ``.env`` loaded last, so a raw ``os.getenv`` here would leak that profile's setting
     into every other profile's turns (#116898)."""
-    from agent import secret_scope
+    from hermes_agent.agent import secret_scope
 
     gateway_run = importlib.import_module("hermes_agent.gateway.run")
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
@@ -503,7 +503,7 @@ def test_tool_progress_mode_follows_profile_through_the_real_scoping_seam(monkey
     secret scope: binds the fix to profile ownership, so a future scoping regression that hands
     profile B's turn profile A's scope cannot stay hidden behind an isolated ``get_secret`` test
     (#116898)."""
-    from agent import secret_scope
+    from hermes_agent.agent import secret_scope
 
     root = tmp_path / "hermes"
     beta = root / "profiles" / "beta"
@@ -553,9 +553,9 @@ async def test_run_agent_progress_uses_event_message_id_for_slack_dm(monkeypatch
     fake_dotenv.load_dotenv = lambda *args, **kwargs: None
     monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
 
-    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent = types.ModuleType("hermes_agent.run_agent")
     fake_run_agent.AIAgent = FakeAgent
-    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+    monkeypatch.setitem(sys.modules, "hermes_agent.run_agent", fake_run_agent)
 
     adapter = ProgressCaptureAdapter(platform=Platform.SLACK)
     runner = _make_runner(adapter)
@@ -594,9 +594,9 @@ async def test_run_agent_progress_uses_event_message_id_for_slack_dm(monkeypatch
 async def test_scheduled_heartbeat_suppresses_routine_progress_and_typing(monkeypatch, tmp_path):
     """A silent scheduled heartbeat must not create a visible progress surface."""
     monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "all")
-    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent = types.ModuleType("hermes_agent.run_agent")
     fake_run_agent.AIAgent = SilentHeartbeatAgent
-    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+    monkeypatch.setitem(sys.modules, "hermes_agent.run_agent", fake_run_agent)
 
     adapter = ProgressCaptureAdapter()
     runner = _make_runner(adapter)
@@ -645,9 +645,9 @@ async def test_progress_carries_anchor_for_relay_discord_auto_thread(monkeypatch
     fake_dotenv.load_dotenv = lambda *args, **kwargs: None
     monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
 
-    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent = types.ModuleType("hermes_agent.run_agent")
     fake_run_agent.AIAgent = FakeAgent
-    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+    monkeypatch.setitem(sys.modules, "hermes_agent.run_agent", fake_run_agent)
 
     adapter = ProgressCaptureAdapter(platform=Platform.RELAY)
     runner = _make_runner(adapter)
@@ -704,9 +704,9 @@ async def test_progress_no_anchor_for_native_discord_thread_event(monkeypatch, t
     fake_dotenv.load_dotenv = lambda *args, **kwargs: None
     monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
 
-    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent = types.ModuleType("hermes_agent.run_agent")
     fake_run_agent.AIAgent = FakeAgent
-    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+    monkeypatch.setitem(sys.modules, "hermes_agent.run_agent", fake_run_agent)
 
     adapter = ProgressCaptureAdapter(platform=Platform.RELAY)
     runner = _make_runner(adapter)
@@ -785,9 +785,9 @@ def _run_long_preview_helper(monkeypatch, tmp_path, preview_length=0):
     fake_dotenv.load_dotenv = lambda *args, **kwargs: None
     monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
 
-    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent = types.ModuleType("hermes_agent.run_agent")
     fake_run_agent.AIAgent = LongPreviewAgent
-    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+    monkeypatch.setitem(sys.modules, "hermes_agent.run_agent", fake_run_agent)
 
     # Write config.yaml so _run_agent picks up tool_preview_length
     config = {"display": {"tool_preview_length": preview_length}}
@@ -844,9 +844,9 @@ def test_discord_truncated_tool_url_links_to_full_destination(monkeypatch, tmp_p
     fake_dotenv.load_dotenv = lambda *args, **kwargs: None
     monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
 
-    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent = types.ModuleType("hermes_agent.run_agent")
     fake_run_agent.AIAgent = UrlPreviewAgent
-    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+    monkeypatch.setitem(sys.modules, "hermes_agent.run_agent", fake_run_agent)
 
     (tmp_path / "config.yaml").write_text(
         yaml.safe_dump({"display": {"tool_preview_length": 0}}),
@@ -1094,9 +1094,9 @@ async def _run_with_agent(
     fake_dotenv.load_dotenv = lambda *args, **kwargs: None
     monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
 
-    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent = types.ModuleType("hermes_agent.run_agent")
     fake_run_agent.AIAgent = agent_cls
-    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+    monkeypatch.setitem(sys.modules, "hermes_agent.run_agent", fake_run_agent)
 
     adapter = adapter_cls(platform=platform)
     _ACTIVE_ADAPTER["adapter"] = adapter
@@ -1823,9 +1823,9 @@ async def test_run_agent_drops_tool_progress_after_generation_invalidation(monke
     fake_dotenv.load_dotenv = lambda *args, **kwargs: None
     monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
 
-    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent = types.ModuleType("hermes_agent.run_agent")
     fake_run_agent.AIAgent = DelayedProgressAgent
-    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+    monkeypatch.setitem(sys.modules, "hermes_agent.run_agent", fake_run_agent)
     import hermes_agent.tools.terminal_tool
 
     adapter = ProgressCaptureAdapter(platform=Platform.DISCORD)
@@ -1885,9 +1885,9 @@ async def test_run_agent_drops_interim_commentary_after_generation_invalidation(
     fake_dotenv.load_dotenv = lambda *args, **kwargs: None
     monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
 
-    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent = types.ModuleType("hermes_agent.run_agent")
     fake_run_agent.AIAgent = DelayedInterimAgent
-    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+    monkeypatch.setitem(sys.modules, "hermes_agent.run_agent", fake_run_agent)
 
     adapter = ProgressCaptureAdapter(platform=Platform.DISCORD)
     runner = _make_runner(adapter)
@@ -2021,9 +2021,9 @@ async def test_terminal_progress_renders_fenced_code_block(monkeypatch, tmp_path
     fake_dotenv.load_dotenv = lambda *args, **kwargs: None
     monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
 
-    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent = types.ModuleType("hermes_agent.run_agent")
     fake_run_agent.AIAgent = TerminalCommandAgent
-    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+    monkeypatch.setitem(sys.modules, "hermes_agent.run_agent", fake_run_agent)
     import hermes_agent.tools.terminal_tool
 
     adapter = CodeBlockProgressAdapter(platform=Platform.TELEGRAM)
@@ -2074,9 +2074,9 @@ async def test_terminal_progress_verbose_shows_full_command(monkeypatch, tmp_pat
     fake_dotenv.load_dotenv = lambda *args, **kwargs: None
     monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
 
-    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent = types.ModuleType("hermes_agent.run_agent")
     fake_run_agent.AIAgent = TerminalCommandAgent
-    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+    monkeypatch.setitem(sys.modules, "hermes_agent.run_agent", fake_run_agent)
     import hermes_agent.tools.terminal_tool
 
     adapter = CodeBlockProgressAdapter(platform=Platform.TELEGRAM)

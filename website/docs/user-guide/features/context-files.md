@@ -123,7 +123,7 @@ This means your existing Cursor conventions automatically apply when using Herme
 
 ### At startup (system prompt)
 
-Context files are loaded by `build_context_files_prompt()` in `agent/prompt_builder.py`:
+Context files are loaded by `build_context_files_prompt()` in `hermes_agent/agent/prompt_builder.py`:
 
 1. **Scan working directory** — checks for `.hermes.md` → `AGENTS.md` → `CLAUDE.md` → `.cursorrules` (first match wins)
 2. **Content is read** — each file is read as UTF-8 text
@@ -134,7 +134,7 @@ Context files are loaded by `build_context_files_prompt()` in `agent/prompt_buil
 
 ### During the session (progressive discovery)
 
-`SubdirectoryHintTracker` in `agent/subdirectory_hints.py` watches tool call arguments for file paths:
+`SubdirectoryHintTracker` in `hermes_agent/agent/subdirectory_hints.py` watches tool call arguments for file paths:
 
 1. **Path extraction** — after each tool call, file paths are extracted from arguments (`path`, `workdir`, shell commands)
 2. **Ancestor walk** — the directory and up to 5 parent directories are checked (stopping at already-visited directories)

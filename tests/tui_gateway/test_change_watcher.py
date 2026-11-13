@@ -509,9 +509,9 @@ def test_a_skill_installed_in_another_sessions_repo_broadcasts_skills_changed(wa
     session cwd). Installing a skill in B's ``.hermes/skills`` must still notify viewers: the watcher
     signs every scope a session resolved commands in, not only the launch repo."""
     import json
-    import agent.skill_commands as sc
+    import hermes_agent.agent.skill_commands as sc
     import hermes_agent.tools.skills_tool as st
-    from agent.runtime_cwd import reset_session_cwd, set_session_cwd
+    from hermes_agent.agent.runtime_cwd import reset_session_cwd, set_session_cwd
     home, events = watcher_home
     monkeypatch.setenv("HERMES_HOME", str(home))
     (home / "skills").mkdir()

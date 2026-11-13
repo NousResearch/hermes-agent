@@ -1,7 +1,7 @@
 """Plugin events for auxiliary LLM calls (#79733).
 
 ``pre_auxiliary_call`` / ``post_auxiliary_call`` fire once per physical provider attempt at the
-relay boundary of ``agent.auxiliary_client`` — the funnel every auxiliary task (titling,
+relay boundary of ``hermes_agent.agent.auxiliary_client`` — the funnel every auxiliary task (titling,
 compression, MoA advisors/aggregator, vision, approval, ...) shares, retries and fallbacks
 included — carrying the ``pre_api_request`` / ``post_api_request`` payload shape plus
 ``aux_task``. They are deliberately DISTINCT events: the main-loop ``*_api_request`` events stay
@@ -27,7 +27,7 @@ def _parent_turn_identity() -> dict[str, str]:
     call runs under, or empty strings for turn-less callers (cron, gateway idle work)."""
     ident = {"session_id": "", "task_id": "", "turn_id": "", "platform": ""}
     try:
-        from agent.relay_runtime import current_turn
+        from hermes_agent.agent.relay_runtime import current_turn
 
         turn = current_turn()
     except Exception:
@@ -60,7 +60,7 @@ def _usage_summary(response: Any) -> Optional[dict[str, Any]]:
         return None
     from dataclasses import asdict
 
-    from agent.usage_pricing import normalize_usage
+    from hermes_agent.agent.usage_pricing import normalize_usage
 
     # Every auxiliary attempt returns from ``chat.completions.create``: native adapters
     # (Codex Responses, Anthropic Messages) translate their usage to prompt/completion
@@ -119,7 +119,7 @@ class _AuxCallHooks:
     def pre(self) -> None:
         if not _has_hook(PRE_AUXILIARY_CALL):
             return
-        from agent.api_request_hooks import ApiRequestHooksMixin as _Sanitize
+        from hermes_agent.agent.api_request_hooks import ApiRequestHooksMixin as _Sanitize
 
         kwargs = self.kwargs
         messages = kwargs.get("messages")
@@ -148,7 +148,7 @@ class _AuxCallHooks:
         that is not chat.completions-shaped (an agent transport's native reply)."""
         if not _has_hook(POST_AUXILIARY_CALL):
             return
-        from agent.api_request_hooks import ApiRequestHooksMixin as _Sanitize
+        from hermes_agent.agent.api_request_hooks import ApiRequestHooksMixin as _Sanitize
 
         ended_at = time.time()
         payload: dict[str, Any] = dict(

@@ -181,7 +181,7 @@ def _rewrite_with_auxiliary_model(
 ) -> str:
     """Ask the auxiliary model (task ``tts_audio_tags``) to rewrite a script; *fallback* on any failure/empty reply."""
     try:
-        from agent.auxiliary_client import call_llm
+        from hermes_agent.agent.auxiliary_client import call_llm
         response = call_llm(
             task=GEMINI_AUDIO_TAG_REWRITE_TASK, temperature=0.7,
             messages=[{"role": "system", "content": system_prompt},
@@ -568,7 +568,7 @@ def _generate_gemini_tts(text: str, output_path: str, tts_config: dict[str, Any]
     model = str(gemini_config.get("model", DEFAULT_GEMINI_TTS_MODEL)).strip() or DEFAULT_GEMINI_TTS_MODEL
     voice = str(gemini_config.get("voice", DEFAULT_GEMINI_TTS_VOICE)).strip() or DEFAULT_GEMINI_TTS_VOICE
     from hermes_cli.config import get_env_value
-    from agent.gemini_native_adapter import normalize_gemini_base_url
+    from hermes_agent.agent.gemini_native_adapter import normalize_gemini_base_url
     base_url = normalize_gemini_base_url(
         gemini_config.get("base_url") or get_env_value("GEMINI_BASE_URL") or DEFAULT_GEMINI_TTS_BASE_URL,
     )

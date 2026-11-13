@@ -1,6 +1,6 @@
 """What ``model.options`` knows about subscription usage without waiting on the network.
 
-Usage windows come from a provider API (:func:`agent.account_usage.fetch_account_usage`), so a
+Usage windows come from a provider API (:func:`hermes_agent.agent.account_usage.fetch_account_usage`), so a
 picker reads this cache and asks for a background refresh instead of fetching inline. Every fetch
 lands here, including the one ``session.usage`` runs after each turn, so a picker is at most one
 turn or one refresh interval behind.
@@ -21,7 +21,7 @@ from contextvars import copy_context
 from typing import TYPE_CHECKING, Any, Iterable, Optional
 
 if TYPE_CHECKING:
-    from agent.account_usage import AccountUsageSnapshot
+    from hermes_agent.agent.account_usage import AccountUsageSnapshot
 
 # A picker opened again within this long reuses what it has; usage windows move in minutes, not seconds.
 REFRESH_AFTER_S = 120.0
@@ -53,7 +53,7 @@ def _key(provider: str, identity_id: Optional[str] = None, base_url: Optional[st
 
 def has_account_usage(provider: str) -> bool:
     """Whether *provider* can report usage windows at all (a built-in fetcher or a plugin hook)."""
-    from agent.account_usage import _USAGE_FETCHERS
+    from hermes_agent.agent.account_usage import _USAGE_FETCHERS
     from providers import get_provider_profile
     from providers.base import ProviderProfile
 
@@ -76,7 +76,7 @@ def _identity_id_for(provider: str, entry: Any) -> str:
     if not token:
         return f"entry:{getattr(entry, 'id', '')}"
     if provider == "openai-codex":
-        from agent.credential_pool import _codex_principal_identity
+        from hermes_agent.agent.credential_pool import _codex_principal_identity
 
         principal = _codex_principal_identity(token)
         if principal:
@@ -135,7 +135,7 @@ def cached_account_usage(
 def snapshot_is_stale(snapshot: Optional[AccountUsageSnapshot]) -> bool:
     """True when the snapshot is too old to render as a live gauge (the picker shows state
     ``unknown`` instead of trusting its percentages)."""
-    from agent.account_usage import AccountUsageSnapshot as _Snapshot
+    from hermes_agent.agent.account_usage import AccountUsageSnapshot as _Snapshot
 
     if not isinstance(snapshot, _Snapshot):
         return True
@@ -182,7 +182,7 @@ def refresh_account_usage_async(providers: Iterable[str]) -> list[threading.Thre
 
 
 def _refresh_legacy(provider: str, key: tuple[str, str, str, str]) -> None:
-    from agent.account_usage import fetch_account_usage
+    from hermes_agent.agent.account_usage import fetch_account_usage
 
     try:
         fetch_account_usage(provider)  # remembers its own result
@@ -217,7 +217,7 @@ def refresh_account_usage_entries_async(requests: Iterable[dict]) -> list[thread
 
 
 def _refresh_entries(requests: list[dict]) -> None:
-    from agent.account_usage import fetch_account_usage
+    from hermes_agent.agent.account_usage import fetch_account_usage
 
     for request in requests:
         provider = request["provider"]

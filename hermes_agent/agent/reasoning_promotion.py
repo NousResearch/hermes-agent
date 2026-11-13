@@ -65,6 +65,6 @@ def answer_in_reasoning_capability(agent: Any) -> bool:
 
     if _NEMOTRON_PARSER_MODEL_MARKER not in model.lower():
         return False
-    from agent.model_metadata import is_local_endpoint
+    from hermes_agent.agent.model_metadata import is_local_endpoint
 
     return is_local_endpoint(base_url)

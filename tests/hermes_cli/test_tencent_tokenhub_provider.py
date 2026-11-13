@@ -130,7 +130,7 @@ class TestTencentTokenhubContextLength:
     """
 
     def test_hy3_preview_has_registered_context_length(self):
-        from agent.model_metadata import get_model_context_length
+        from hermes_agent.agent.model_metadata import get_model_context_length
         ctx = get_model_context_length("hy3-preview")
         assert isinstance(ctx, int)
         assert ctx >= 4096, f"hy3-preview context length looks unset/wrong: {ctx}"

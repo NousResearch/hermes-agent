@@ -13,8 +13,8 @@ import pytest
 
 from hermes_agent import model_tools
 import hermes_agent.tools.delegate_tool  # registers delegate_task in the global registry
-from agent import runtime_session_store
-from agent.conversation_loop import _invalid_tool_name_error_content
+from hermes_agent.agent import runtime_session_store
+from hermes_agent.agent.conversation_loop import _invalid_tool_name_error_content
 from hermes_agent.tools import tool_search
 from hermes_agent.tools.tool_search import ToolSearchConfig, dispatch_tool_describe
 

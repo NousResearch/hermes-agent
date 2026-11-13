@@ -142,7 +142,7 @@ class TestReasoningChoicePicker:
         self, tmp_path, monkeypatch, command
     ):
         """A delayed picker tap must retain its originating profile scope."""
-        from agent.secret_scope import set_multiplex_active
+        from hermes_agent.agent.secret_scope import set_multiplex_active
 
         default_home = tmp_path / "default"
         named_home = tmp_path / "profiles" / "named"

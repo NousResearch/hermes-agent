@@ -4,7 +4,7 @@ import logging
 from pathlib import Path, PurePosixPath
 from typing import Dict, List, Optional, Tuple, Union
 
-from agent.skill_utils import is_excluded_skill_path
+from hermes_agent.agent.skill_utils import is_excluded_skill_path
 from hermes_agent.tools.skills_hub_github import GitHubAuth, GitHubSource, _skip_bundle_file, _tree_members
 from hermes_agent.tools.skills_hub_models import (
     SkillBundle, SkillMeta, SkillSource, _hermes_tags, _matches_query, _memo_json, _parse_frontmatter, hub,

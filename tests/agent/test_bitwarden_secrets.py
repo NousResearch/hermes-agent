@@ -23,8 +23,8 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from agent.secret_sources import bitwarden as bw
-from agent.secret_sources import base as bw_base
+from hermes_agent.agent.secret_sources import bitwarden as bw
+from hermes_agent.agent.secret_sources import base as bw_base
 
 
 # BSM project ids are UUIDs and the fetch path rejects anything else, so the
@@ -154,14 +154,14 @@ def test_env_loader_calls_bsm_when_enabled(tmp_path, monkeypatch):
         return {"MY_BSM_KEY": "from-bsm"}, []
 
     monkeypatch.setattr(
-        "agent.secret_sources.bitwarden.find_bws",
+        "hermes_agent.agent.secret_sources.bitwarden.find_bws",
         lambda **_kw: Path("/fake/bws"),
     )
     monkeypatch.setattr(
-        "agent.secret_sources.bitwarden.fetch_bitwarden_secrets",
+        "hermes_agent.agent.secret_sources.bitwarden.fetch_bitwarden_secrets",
         fake_fetch,
     )
-    from agent.secret_sources import registry as reg_module
+    from hermes_agent.agent.secret_sources import registry as reg_module
 
     reg_module._reset_registry_for_tests()
 

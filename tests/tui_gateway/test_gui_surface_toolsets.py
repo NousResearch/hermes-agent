@@ -81,7 +81,7 @@ class TestSurfaceResolution:
 class TestResolverPlumbing:
     def test_posture_path_folds_in_the_session_surface(self, no_desktop_env):
         """Focus-mode returns early — the surface toolsets must survive it."""
-        import agent.coding_context as cc
+        import hermes_agent.agent.coding_context as cc
 
         no_desktop_env.setattr(cc, "coding_selection", lambda **_: ["coding"])
 
@@ -94,7 +94,7 @@ class TestResolverPlumbing:
         assert server._load_enabled_toolsets("tui") == ["coding", "project"]
 
     def test_config_path_folds_in_the_session_surface(self, no_desktop_env):
-        import agent.coding_context as cc
+        import hermes_agent.agent.coding_context as cc
         import hermes_cli.config as config_mod
 
         no_desktop_env.setattr(cc, "coding_selection", lambda **_: None)
@@ -126,7 +126,7 @@ class TestExplicitEmptySelection:
 
     @staticmethod
     def _config(no_desktop_env, platform_toolsets):
-        import agent.coding_context as cc
+        import hermes_agent.agent.coding_context as cc
         import hermes_cli.config as config_mod
 
         no_desktop_env.setattr(cc, "coding_selection", lambda **_: None)

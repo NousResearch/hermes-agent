@@ -52,7 +52,7 @@ async def run(repo: str, out: str):
 
     sys.path.insert(0, repo)
     for m in list(sys.modules):
-        if m.startswith(("hermes_agent.gateway", "plugins", "hermes_agent.tools", "hermes", "agent")):
+        if m.startswith(("hermes_agent.gateway", "plugins", "hermes_agent.tools", "hermes", "hermes_agent.agent")):
             del sys.modules[m]
     from slack_sdk.web.async_client import AsyncWebClient
     from hermes_agent.gateway.config import PlatformConfig

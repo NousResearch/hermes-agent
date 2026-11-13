@@ -76,7 +76,7 @@ class TestUsageCachedAgent:
         runner = _make_runner(SK, cached_agent=agent)
         event = MagicMock()
 
-        with patch("agent.rate_limit_tracker.format_rate_limit_compact", return_value="RPM: 50/60"):
+        with patch("hermes_agent.agent.rate_limit_tracker.format_rate_limit_compact", return_value="RPM: 50/60"):
             result = await runner._handle_usage_command(event)
 
         assert "claude-sonnet-4.6" in result
@@ -94,8 +94,8 @@ class TestUsageCachedAgent:
         runner = _make_runner(SK, agent=running, cached_agent=cached)
         event = MagicMock()
 
-        with patch("agent.rate_limit_tracker.format_rate_limit_compact", return_value="RPM: 50/60"), \
-             patch("agent.usage_pricing.estimate_usage_cost") as mock_cost:
+        with patch("hermes_agent.agent.rate_limit_tracker.format_rate_limit_compact", return_value="RPM: 50/60"), \
+             patch("hermes_agent.agent.usage_pricing.estimate_usage_cost") as mock_cost:
             mock_cost.return_value = MagicMock(amount_usd=None, status="unknown")
             result = await runner._handle_usage_command(event)
 
@@ -146,7 +146,7 @@ class TestUsageAccountSection:
         )
         # The credits block routes through the shared nous_credits_lines() helper;
         # stub it so this account-section test stays hermetic (no portal/auth lookup).
-        monkeypatch.setattr("agent.account_usage.nous_credits_lines", lambda **_kw: [])
+        monkeypatch.setattr("hermes_agent.agent.account_usage.nous_credits_lines", lambda **_kw: [])
 
         event = MagicMock()
         result = await runner._handle_usage_command(event)
@@ -185,7 +185,7 @@ class TestUsageAccountSection:
             lambda snapshot, markdown=False: ["📈 **Account limits**", "Provider: openai-codex (Plus)",
                                               "Weekly: 91% remaining (9% used)"],
         )
-        monkeypatch.setattr("agent.account_usage.nous_credits_lines", lambda **_kw: [])
+        monkeypatch.setattr("hermes_agent.agent.account_usage.nous_credits_lines", lambda **_kw: [])
 
         result = await runner._handle_usage_command(MagicMock())
 
@@ -223,7 +223,7 @@ class TestUsageAccountSection:
             "hermes_agent.gateway.slash_commands_status.render_account_usage_lines",
             lambda snapshot, markdown=False: ["account limits"],
         )
-        monkeypatch.setattr("agent.account_usage.nous_credits_lines", lambda **_kw: [])
+        monkeypatch.setattr("hermes_agent.agent.account_usage.nous_credits_lines", lambda **_kw: [])
 
         await runner._handle_usage_command(MagicMock())
 
@@ -250,10 +250,10 @@ class TestUsageReset:
 
         def fake_redeem(*, base_url=None, api_key=None, force=False):
             seen.update(base_url=base_url, api_key=api_key, force=force)
-            from agent.account_usage import CodexResetRedeemResult
+            from hermes_agent.agent.account_usage import CodexResetRedeemResult
             return CodexResetRedeemResult(status="reset", message="✅ redeemed", available_count=1)
 
-        monkeypatch.setattr("agent.account_usage.redeem_codex_reset_credit", fake_redeem)
+        monkeypatch.setattr("hermes_agent.agent.account_usage.redeem_codex_reset_credit", fake_redeem)
 
         result = await runner._handle_usage_command(self._event("reset"))
 
@@ -290,8 +290,8 @@ class TestUsageContextBreakdown:
             "model": "anthropic/claude-sonnet-4.6",
         }
 
-        with patch("agent.rate_limit_tracker.format_rate_limit_compact", return_value="RPM: 50/60"), \
-             patch("agent.context_breakdown.compute_session_context_breakdown", return_value=fake_payload):
+        with patch("hermes_agent.agent.rate_limit_tracker.format_rate_limit_compact", return_value="RPM: 50/60"), \
+             patch("hermes_agent.agent.context_breakdown.compute_session_context_breakdown", return_value=fake_payload):
             result = await runner._handle_usage_command(event)
 
         # Localized header + at least the two non-zero category labels appear,

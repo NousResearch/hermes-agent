@@ -17,7 +17,7 @@ for every model, not just the one vendor prefix that happened to be fixed
 first.
 """
 
-from agent.transports.chat_completions import _reasoning_config_for_model
+from hermes_agent.agent.transports.chat_completions import _reasoning_config_for_model
 
 
 class TestUltraEffortWireTranslation:

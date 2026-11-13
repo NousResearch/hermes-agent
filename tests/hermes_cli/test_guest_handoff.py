@@ -338,7 +338,7 @@ def test_a_busy_store_lock_leaves_the_move_for_a_later_run(portal, monkeypatch):
 
 def test_the_retry_worker_binds_the_launch_profile(portal, monkeypatch):
     import threading
-    from agent.secret_scope import current_secret_scope, is_multiplex_active, set_multiplex_active
+    from hermes_agent.agent.secret_scope import current_secret_scope, is_multiplex_active, set_multiplex_active
     from hermes_cli import guest_handoff
     ticked, scopes = threading.Event(), []
     monkeypatch.setattr(guest_handoff, "_WORKER_FIRST_TICK_SECONDS", 0.0)

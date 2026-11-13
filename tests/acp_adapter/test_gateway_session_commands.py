@@ -57,7 +57,7 @@ async def test_steer_reaches_this_editors_running_turn():
 async def test_a_steer_that_ended_the_voice_chat_is_reported_and_never_resent_as_a_prompt():
     """TUI-26: ``/steer stop`` in a LOCAL voice chat ends the chat on the owner (``voice_stopped``);
     sent on as a prompt it would admit ``stop`` as a turn."""
-    from agent.i18n import t
+    from hermes_agent.agent.i18n import t
     calls = []
 
     async def rpc(method, **params):
@@ -251,7 +251,7 @@ async def test_reset_empties_the_editors_context_indicator():
 
 @pytest.mark.asyncio
 async def test_compress_shows_the_compressed_transcripts_occupancy():
-    from agent.model_metadata import estimate_request_tokens_rough
+    from hermes_agent.agent.model_metadata import estimate_request_tokens_rough
     kept = [{'role': 'user', 'content': 'summary of the earlier turns ' * 40}]
     agent = _boundary_agent(kept)
     await agent.prompt([acp.text_block('/compress')], 's')

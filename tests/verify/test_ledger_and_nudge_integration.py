@@ -15,12 +15,12 @@ import json
 
 import pytest
 
-from agent.verification_evidence import (
+from hermes_agent.agent.verification_evidence import (
     mark_workspace_edited,
     record_verify_run,
     verification_status,
 )
-from agent.verification_stop import build_verify_on_stop_nudge
+from hermes_agent.agent.verification_stop import build_verify_on_stop_nudge
 from hermes_cli.verify_cmd import run_verify_command
 
 @pytest.fixture(autouse=True)
@@ -201,7 +201,7 @@ def test_nudge_keeps_plain_wording_without_recipe_start(hermes_home):
 
 def test_nudge_recipe_detection_failure_is_silent(hermes_home, monkeypatch):
     # A broken recipe detector must never break the nudge path.
-    from agent.verify import recipes
+    from hermes_agent.agent.verify import recipes
 
     def boom(_root):
         raise RuntimeError("detector exploded")

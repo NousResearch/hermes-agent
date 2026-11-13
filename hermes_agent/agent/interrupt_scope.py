@@ -16,7 +16,7 @@ from contextlib import contextmanager, nullcontext
 from contextvars import ContextVar
 from typing import Any, Iterator, Optional
 
-from agent.interrupt_compat import request_hard_interrupt
+from hermes_agent.agent.interrupt_compat import request_hard_interrupt
 
 _ACTIVE_SCOPE: ContextVar[Optional[InterruptScope]] = ContextVar("hermes_interrupt_scope", default=None)
 

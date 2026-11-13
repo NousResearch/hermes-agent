@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-import agent.skill_utils as su
+import hermes_agent.agent.skill_utils as su
 
 
 @pytest.fixture

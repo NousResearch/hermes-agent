@@ -167,7 +167,7 @@ class TestSupportsReasoningExtraBodyMetadataGate:
     """AIAgent._supports_reasoning_extra_body: metadata-first with fallback."""
 
     def _make_agent(self, model):
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
         agent = AIAgent(
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",

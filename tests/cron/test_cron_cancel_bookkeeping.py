@@ -149,7 +149,7 @@ def test_overlapping_cancel_requests_keep_the_first_reason(store, monkeypatch):
 
 
 def test_monitoring_reports_stops_and_misses_as_themselves(monkeypatch):
-    from agent.monitoring.cron_health import project_execution_event
+    from hermes_agent.agent.monitoring.cron_health import project_execution_event
     from hermes_cli.observability import shared_metrics_gateway as metrics
 
     assert project_execution_event({"status": "cancelled", "job_id": "j"}).status == "cancelled"

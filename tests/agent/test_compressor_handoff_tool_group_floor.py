@@ -8,11 +8,11 @@ stayed over the trigger with no warning (C4 e2e ``test_good_summarizer_compacts_
 
 from unittest.mock import patch
 
-from agent.context_compressor import COMPRESSED_SUMMARY_METADATA_KEY, SUMMARY_PREFIX, ContextCompressor
+from hermes_agent.agent.context_compressor import COMPRESSED_SUMMARY_METADATA_KEY, SUMMARY_PREFIX, ContextCompressor
 
 
 def _compressor() -> ContextCompressor:
-    with patch("agent.context_compressor.get_model_context_length", return_value=64_000):
+    with patch("hermes_agent.agent.context_compressor.get_model_context_length", return_value=64_000):
         cc = ContextCompressor(
             model="test-model", quiet_mode=True, config_context_length=64_000, protect_first_n=3,
             protect_last_n=4, summary_target_ratio=0.20, threshold_percent=0.50, tail_mode="lean",

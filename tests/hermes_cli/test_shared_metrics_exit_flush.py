@@ -19,7 +19,7 @@ from pathlib import Path
 
 import pytest
 
-from agent import relay_runtime
+from hermes_agent.agent import relay_runtime
 from hermes_cli import lifecycle, plugins
 from hermes_cli.observability import relay_shared_metrics
 from hermes_cli.observability import shared_metrics_process as process_metrics
@@ -241,7 +241,7 @@ def test_a_wedged_exit_flush_is_bounded_and_runs_after_the_clean_exit_stamp(metr
     leaves within the flush bound, and the clean-exit sentinel is already written, so a supervisor
     killing the process during the flush never records a graceful stop as an unclean death."""
     import hermes_agent.gateway.run as gateway_run
-    from agent import relay_tools
+    from hermes_agent.agent import relay_tools
     from hermes_agent.gateway.lifecycle_ledger import get_lifecycle_sentinel_path
 
     home, _ = metrics_home

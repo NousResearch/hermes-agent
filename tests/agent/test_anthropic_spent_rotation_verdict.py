@@ -33,9 +33,9 @@ import time
 
 import pytest
 
-from agent import anthropic_credentials as AA
-from agent.auxiliary_client import _refresh_provider_credentials
-from agent.credential_pool import AUTH_TYPE_OAUTH
+from hermes_agent.agent import anthropic_credentials as AA
+from hermes_agent.agent.auxiliary_client import _refresh_provider_credentials
+from hermes_agent.agent.credential_pool import AUTH_TYPE_OAUTH
 
 _EXPIRED_MS = 1_000
 
@@ -244,7 +244,7 @@ def test_failed_commit_persists_the_verdict_to_the_sidecar(
     assert sidecar.exists(), "the terminal verdict must be durably persisted"
     payload = json.loads(sidecar.read_text(encoding="utf-8"))
     fingerprints = set(payload["fingerprints"])
-    from agent.credential_persistence import fingerprint_secret_value
+    from hermes_agent.agent.credential_persistence import fingerprint_secret_value
 
     assert fingerprint_secret_value(_STALE_REFRESH) in fingerprints
     assert fingerprint_secret_value(_STALE_ACCESS) in fingerprints
@@ -262,7 +262,7 @@ cred_path_str, sidecar_dir = sys.argv[1], sys.argv[2]
 
 from pathlib import Path
 
-import agent.anthropic_credentials as AA
+import hermes_agent.agent.anthropic_credentials as AA
 
 cred_path = Path(cred_path_str)
 AA.claude_code_credentials_path = lambda: cred_path
@@ -314,7 +314,7 @@ def test_second_process_adopts_the_terminal_verdict(
     assert AA._spent_rotation_sidecar_path(claude_credentials).exists()
 
     # Process B: fresh interpreter, same shared credential source.
-    import agent as _agent_pkg
+    import hermes_agent.agent as _agent_pkg
 
     repo_root = str(
         __import__("pathlib").Path(_agent_pkg.__file__).resolve().parents[1]

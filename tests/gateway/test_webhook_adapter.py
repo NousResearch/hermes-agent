@@ -1300,7 +1300,7 @@ class TestMultiplexProfileWebhookAuthentication:
         skills/ dir (#67277). Before the fix the lookup ran with no profile
         scope, so it scanned the launch profile and logged "Skill not found".
         """
-        import agent.skill_commands as sc_mod
+        import hermes_agent.agent.skill_commands as sc_mod
 
         worker = tmp_path / "profiles" / "worker"
         skill_dir = worker / "skills" / "worker-only"

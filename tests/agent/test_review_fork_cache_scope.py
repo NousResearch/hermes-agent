@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from agent.prompt_cache_scope import resolve_prompt_cache_scope
+from hermes_agent.agent.prompt_cache_scope import resolve_prompt_cache_scope
 
 SYS = [
     {"role": "system", "content": "sys"},
@@ -40,7 +40,7 @@ def test_inherited_parent_scope_is_derived_on_xai_only_after_fork_compaction():
 
 
 def test_xai_fork_sends_distinct_conv_id_and_cache_key():
-    from agent.transports.codex import ResponsesApiTransport
+    from hermes_agent.agent.transports.codex import ResponsesApiTransport
 
     def build(agent):
         return ResponsesApiTransport().build_kwargs(

@@ -20,7 +20,7 @@ Hermes scans for web-search backends in three places:
 2. **User** — `~/.hermes/plugins/web/<name>/` (opt-in via `plugins.enabled` or `hermes plugins enable <name>`)
 3. **Pip** — packages declaring a `hermes_agent.plugins` entry point
 
-Each plugin's `register(ctx)` function calls `ctx.register_web_search_provider(...)` — that puts the instance into the registry in `agent/web_search_registry.py`. The active provider for each capability is picked by config:
+Each plugin's `register(ctx)` function calls `ctx.register_web_search_provider(...)` — that puts the instance into the registry in `hermes_agent/agent/web_search_registry.py`. The active provider for each capability is picked by config:
 
 | Capability | Config key | Falls back to |
 |---|---|---|
@@ -43,7 +43,7 @@ plugins/web/my-backend/
 
 ## The WebSearchProvider ABC
 
-Subclass `agent.web_search_provider.WebSearchProvider`. The only required members are `name`, `is_available()`, and whichever of `search()` / `extract()` you implement. (Deep crawling is not a separate method — it's a mode of `extract()`.)
+Subclass `hermes_agent.agent.web_search_provider.WebSearchProvider`. The only required members are `name`, `is_available()`, and whichever of `search()` / `extract()` you implement. (Deep crawling is not a separate method — it's a mode of `extract()`.)
 
 ```python
 # plugins/web/my-backend/provider.py
@@ -52,7 +52,7 @@ from __future__ import annotations
 import os
 from typing import Any, Dict, List
 
-from agent.web_search_provider import WebSearchProvider
+from hermes_agent.agent.web_search_provider import WebSearchProvider
 
 
 class MyBackendWebSearchProvider(WebSearchProvider):
@@ -145,7 +145,7 @@ requires_env:
 
 ## ABC reference
 
-Full contract in `agent/web_search_provider.py`. Methods you may override:
+Full contract in `hermes_agent/agent/web_search_provider.py`. Methods you may override:
 
 | Member | Required | Default | Purpose |
 |---|---|---|---|

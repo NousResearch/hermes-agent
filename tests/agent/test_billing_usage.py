@@ -1,4 +1,4 @@
-"""Tests for the shared dollar usage model (agent/billing_usage.py).
+"""Tests for the shared dollar usage model (hermes_agent/agent/billing_usage.py).
 
 Behavior contracts: status classification, bar math, fail-open, and the
 dollars-only / topup-split invariants the billing UX requires.
@@ -11,7 +11,7 @@ from typing import Optional
 
 import pytest
 
-from agent.billing_usage import LOW_BALANCE_THRESHOLD_USD, UsageBar, usage_model_from_account
+from hermes_agent.agent.billing_usage import LOW_BALANCE_THRESHOLD_USD, UsageBar, usage_model_from_account
 
 
 # ── Lightweight stand-ins for the NousPortalAccountInfo shape ────────────────

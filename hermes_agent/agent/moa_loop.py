@@ -20,23 +20,23 @@ from dataclasses import KW_ONLY, dataclass, replace
 from types import SimpleNamespace
 from typing import Any
 
-from agent.auxiliary_client import call_llm
-from agent.message_content import flatten_message_text
-from agent.message_metadata import DATA_USE
-from agent.moa_alternation import destination_key, is_role_alternation_rejection, merge_same_role_messages
-from agent.transports import get_transport
-from agent.usage_pricing import CanonicalUsage
+from hermes_agent.agent.auxiliary_client import call_llm
+from hermes_agent.agent.message_content import flatten_message_text
+from hermes_agent.agent.message_metadata import DATA_USE
+from hermes_agent.agent.moa_alternation import destination_key, is_role_alternation_rejection, merge_same_role_messages
+from hermes_agent.agent.transports import get_transport
+from hermes_agent.agent.usage_pricing import CanonicalUsage
 
 logger = logging.getLogger(__name__)
 
-# Privacy filter (moa.privacy_filter: '' | display | full): PII classes agent.redact
+# Privacy filter (moa.privacy_filter: '' | display | full): PII classes hermes_agent.agent.redact
 # leaves alone. The phone pattern requires explicit delimiters so line numbers,
 # dates, times, SHAs, IPs and versions never match.
 # Advisor (reference) outputs can echo PII from the conversation — emails, phone numbers, credentials pasted
 # by the user — into surfaces the user may not expect: the labelled reference blocks rendered in the UI,
 # saved MoA trace files, and (in `full` mode) the guidance block injected into the aggregator prompt (issue
 # #59959). Secret/credential shapes (API-key prefixes, JWTs, private keys, DB connection strings, E.164
-# phone numbers) are handled by the repo's central redactor, ``agent.redact .redact_sensitive_text`` — the
+# phone numbers) are handled by the repo's central redactor, ``hermes_agent.agent.redact .redact_sensitive_text`` — the
 # MoA filter never re-implements those. The two patterns below cover the PII classes the central redactor
 # deliberately leaves alone for log/tool output (emails and formatted phone numbers). Pattern safety:
 # advisory text is frequently code-review-shaped — line numbers, timestamps, git SHAs, IDs, IP addresses. A
@@ -64,7 +64,7 @@ def _redact_reference_text(text: Any) -> Any:
     """
     if not isinstance(text, str) or not text:
         return text
-    from agent.redact import redact_sensitive_text
+    from hermes_agent.agent.redact import redact_sensitive_text
     text = redact_sensitive_text(text, force=True, code_file=True)
     text = _MOA_EMAIL_RE.sub("[redacted email]", text)
     return _MOA_PHONE_RE.sub("[redacted phone]", text)
@@ -127,7 +127,7 @@ def _resolve_preset_cached(preset_name: str) -> tuple[dict[str, Any], Any]:
     from hermes_cli.config import get_config_path, load_config
     from hermes_cli.moa_config import resolve_moa_preset
     from hermes_cli.config_backend import config_cache_version_or_none
-    from agent.safe_worker_policy import worker_config_snapshot
+    from hermes_agent.agent.safe_worker_policy import worker_config_snapshot
     # A safe worker's config is its frozen snapshot: never open the profile file (uncached there).
     cfg_stamp = None if worker_config_snapshot() is not None else config_cache_version_or_none(get_config_path())
     moa_raw = load_config().get("moa") or {}
@@ -346,8 +346,8 @@ def _maybe_apply_moa_cache_control(
     ``prompt_caching.cache_ttl: off`` is not bypassed by the blank-agent pattern (#76085).
     """
     try:
-        from agent.agent_runtime_helpers import anthropic_prompt_cache_policy, blank_cache_policy_stub
-        from agent.prompt_caching import (
+        from hermes_agent.agent.agent_runtime_helpers import anthropic_prompt_cache_policy, blank_cache_policy_stub
+        from hermes_agent.agent.prompt_caching import (
             apply_anthropic_cache_control, effective_cache_ttl, envelope_tool_part_cache_markers_supported,
         )
 
@@ -379,7 +379,7 @@ def _price_reference_response(
 ) -> tuple[Any, Any, str | None, str | None]:
     """Normalize a reference's usage with the slot's OWN provider/api_mode and price it
     at its own rate (hence fan-out cost is summed in dollars). Never raises."""
-    from agent.usage_pricing import estimate_usage_cost, normalize_usage
+    from hermes_agent.agent.usage_pricing import estimate_usage_cost, normalize_usage
     usage = CanonicalUsage()
     raw_usage = getattr(response, "usage", None)
     if raw_usage:
@@ -399,8 +399,8 @@ def _slot_request_headers(runtime: dict[str, Any], agent: Any = None) -> dict[st
     """User-initiated request headers of the slot's provider, attributed at that provider's own endpoint
     (MoA attributes by slot provider, whatever account host the slot resolved to). Asked like every
     per-request hook (``route_answer``: memoized, one failure policy for the agent's session)."""
-    from agent.auxiliary_client import _normalize_aux_provider
-    from agent.provider_route_hooks import route_answer
+    from hermes_agent.agent.auxiliary_client import _normalize_aux_provider
+    from hermes_agent.agent.provider_route_hooks import route_answer
     from providers import get_provider_profile
 
     provider = _normalize_aux_provider(str(runtime.get("provider") or ""))
@@ -440,7 +440,7 @@ def _run_reference(
         # user's current turn, so mirror the main agent's user-initiated request headers.
         initiator_headers = _slot_request_headers(runtime, agent)
         if agent is not None:
-            from agent.auxiliary_client import aux_progress_hook
+            from hermes_agent.agent.auxiliary_client import aux_progress_hook
 
             with aux_progress_hook(_reference_liveness_hook(agent, label)):
                 response = call_llm(
@@ -477,7 +477,7 @@ def _reference_context_length(slot: dict[str, Any], runtime: dict[str, Any], cac
 
     Failures are cached too so a flaky metadata source is not re-probed per reference.
     """
-    from agent.model_metadata import get_model_context_length
+    from hermes_agent.agent.model_metadata import get_model_context_length
 
     model = str(slot.get("model") or "")
     provider = str(runtime.get("provider") or slot.get("provider") or "")
@@ -516,7 +516,7 @@ def _trim_messages_for_reference(
     """
     if not messages or not slot.get("model"):
         return messages
-    from agent.model_metadata import estimate_messages_tokens_rough
+    from hermes_agent.agent.model_metadata import estimate_messages_tokens_rough
 
     context_length = _reference_context_length(slot, runtime, context_length_cache)
     if not isinstance(context_length, int) or context_length <= 0:
@@ -1089,7 +1089,7 @@ class MoAChatCompletions:
         self._privacy_mode: str = ""  # normalized moa.privacy_filter, refreshed per create()
         # Destinations (route, model) that 400'd on adjacent same-role messages this session:
         # their aggregator requests are pre-merged; every other destination keeps the split,
-        # cache-stable shape (agent/moa_alternation.py).
+        # cache-stable shape (hermes_agent/agent/moa_alternation.py).
         self._merge_same_role_destinations: set[tuple[str, str]] = set()
 
     def consume_reference_usage(self) -> tuple[Any, Any]:
@@ -1131,7 +1131,7 @@ class MoAChatCompletions:
         if not pending or "aggregator_input_messages" not in pending:
             return
         try:
-            from agent.moa_trace import save_moa_turn
+            from hermes_agent.agent.moa_trace import save_moa_turn
             agg_slot = pending.get("aggregator_slot") or {}
             # Inline capture (non-streaming) beats the caller's streamed text.
             agg_output = pending.get("aggregator_output")
@@ -1179,7 +1179,7 @@ class MoAChatCompletions:
         debug: this is the aggregator's ONLY decoration path).
         """
         try:
-            from agent.agent_runtime_helpers import plan_cache_sections_for_destination
+            from hermes_agent.agent.agent_runtime_helpers import plan_cache_sections_for_destination
             planning_messages = peel_reference_guidance(agg_messages, str(guidance)) if guidance else agg_messages
             # Tri-state cache_disabled: facades built via __new__ have no _agent; forcing
             # False would suppress the planner's config fallback.
@@ -1372,7 +1372,7 @@ class MoAChatCompletions:
         }
         # Derived from the privacy-redacted trace_refs.
         try:
-            from agent.moa_trace import slot_metrics
+            from hermes_agent.agent.moa_trace import slot_metrics
             self._last_reference_metrics = [slot_metrics(acct, label, output=text) for label, text, acct in trace_refs]
         except Exception as exc:  # pragma: no cover - never break a turn
             logger.debug("MoA reference metrics render failed: %s", exc)

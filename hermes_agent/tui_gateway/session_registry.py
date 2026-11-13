@@ -84,7 +84,7 @@ def _bind_build_profile_scopes(profile_home: str | None):
         return _profile_runtime_scope_tokens(profile_home)
     if not profile_home:
         return None
-    from agent.runtime_scope import bind_state, scope_for_profile
+    from hermes_agent.agent.runtime_scope import bind_state, scope_for_profile
     with contextlib.suppress(Exception):
         return bind_state(scope_for_profile(profile_home), secrets={})
     return None
@@ -183,7 +183,7 @@ def _announce_built_agent(sid: str, key: str, current: dict, agent) -> None:
     """Post-wiring tail of a build: credits seed, session services, session.info, late MCP catch-up."""
     # Credits notices at session OPEN (notice_callback already wired) so depletion warnings show at "ready".
     with contextlib.suppress(Exception):
-        from agent.credits_tracker import seed_credits_at_session_start
+        from hermes_agent.agent.credits_tracker import seed_credits_at_session_start
         seed_credits_at_session_start(agent)
     _start_session_services(sid, key, current)
     info = _session_info(agent, current)
@@ -282,7 +282,7 @@ def _start_agent_build(sid: str, session: dict) -> None:
             notify_registered = _wire_session_agent(sid, key, agent)
             _announce_built_agent(sid, key, current, agent)
         except (Exception, ConfigBackendUnavailable) as e:  # health: allow BLE001 -- reported as agent_error + error event
-            from agent.auxiliary_unavailable import ProviderNotConfiguredError
+            from hermes_agent.agent.auxiliary_unavailable import ProviderNotConfiguredError
             current["agent_error"] = str(e)
             # A client can route "no provider is set up" to its setup flow instead of a dead-end
             # error toast — but only if it can tell. The sentence is for the reader, the code is
@@ -385,7 +385,7 @@ def _maybe_notify_auto_prune(sid: str, profile_home: str | None) -> None:
         else:
             _AUTO_PRUNE_NOTIFIED.pop(str(home), None)
 
-    from agent.memory_provider import spawn_context_thread
+    from hermes_agent.agent.memory_provider import spawn_context_thread
     spawn_context_thread(_work, name="auto-prune-advice").start()
 
 
@@ -716,7 +716,7 @@ def _durable_ids(msg) -> set:
     """A row's durable identities: its ``message_uid`` (and the uids a merged turn absorbed), else ``_row_id``."""
     if not isinstance(msg, dict):
         return set()
-    from agent.message_metadata import ABSORBED_MESSAGE_UIDS, MESSAGE_UID
+    from hermes_agent.agent.message_metadata import ABSORBED_MESSAGE_UIDS, MESSAGE_UID
     ids = {("uid", uid) for uid in [msg.get(MESSAGE_UID), *(msg.get(ABSORBED_MESSAGE_UIDS) or ())] if isinstance(uid, str) and uid}
     row_id = msg.get("_row_id")
     return ids | ({("row", row_id)} if isinstance(row_id, int) and not isinstance(row_id, bool) else set())

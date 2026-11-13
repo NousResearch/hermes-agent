@@ -8,7 +8,7 @@ import re
 
 import pytest
 
-from agent.skill_utils import parse_frontmatter, skill_matches_platform
+from hermes_agent.agent.skill_utils import parse_frontmatter, skill_matches_platform
 
 REPO = Path(__file__).resolve().parents[2]
 GITHUB = "skills/software-development/github"

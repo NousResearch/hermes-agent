@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent.i18n import t
+from hermes_agent.agent.i18n import t
 
 
 @pytest.mark.parametrize('columns,rows,skin', [(100, 30, 'default'), (80, 20, 'daylight')])

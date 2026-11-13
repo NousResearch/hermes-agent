@@ -44,7 +44,7 @@ def test_readiness_probe_reports_config_backend_unavailable(tmp_path, monkeypatc
 def test_cron_tick_fails_only_that_fire_and_never_runs_on_defaults(tmp_path, monkeypatch):
     """``_load_cron_job_config`` keeps refusing defaults (the SystemExit passes its ``except
     Exception``); ``run_job`` — the fire's owner — turns it into this fire's failure result."""
-    import run_agent  # run_job imports it; its import-time dotenv load reads config
+    from hermes_agent import run_agent  # run_job imports it; its import-time dotenv load reads config
     from hermes_agent.cron import scheduler
     monkeypatch.setattr("hermes_cli.config_backend.config_exists", _outage)
     with pytest.raises(ConfigBackendUnavailable):

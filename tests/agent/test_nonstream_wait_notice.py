@@ -5,9 +5,9 @@ import threading
 
 import pytest
 
-from agent import chat_completion_helpers as h
-from agent.chat_completion_nonstream import _NonStreamRequest
-from agent.chat_completion_wait_notice import WaitNoticeState
+from hermes_agent.agent import chat_completion_helpers as h
+from hermes_agent.agent.chat_completion_nonstream import _NonStreamRequest
+from hermes_agent.agent.chat_completion_wait_notice import WaitNoticeState
 
 
 def _request():

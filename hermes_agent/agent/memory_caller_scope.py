@@ -2,7 +2,7 @@
 
 On a multiplexed gateway every served profile's turns run in one process. Each agent's manager owns
 its own provider instance, bound by ``initialize_all`` to one profile home; the provider-side half of
-the rule is the multiplexing contract in ``agent/memory_provider.py``. The manager's half lives here:
+the rule is the multiplexing contract in ``hermes_agent/agent/memory_provider.py``. The manager's half lives here:
 
 - a tool call or lifecycle hook runs only when the caller explicitly names the profile the manager was
   initialized for (the context's HERMES_HOME override, or the home its secret scope was built for).
@@ -55,7 +55,7 @@ def _explicit_caller_home() -> Optional[str]:
     """The profile the caller's context names: its HERMES_HOME override, else the home its secret
     scope was built for. None when the context names no profile (``get_hermes_home()`` would only fall
     back to the process home, which proves nothing on a multiplexed process)."""
-    from agent.secret_scope import current_secret_scope_home
+    from hermes_agent.agent.secret_scope import current_secret_scope_home
     from hermes_constants import get_hermes_home_override
     return get_hermes_home_override() or current_secret_scope_home()
 
@@ -76,7 +76,7 @@ def caller_scope(bound: Optional[dict[str, Any]], label: str) -> Optional[dict[s
 
     ``bound`` is what ``initialize_all`` recorded (``bound_scope``); ``label`` names the call in the
     log (``tool <name>`` / ``hook <name>``)."""
-    from agent.secret_scope import is_multiplex_active
+    from hermes_agent.agent.secret_scope import is_multiplex_active
     bound = bound or {}
     bound_home = bound.get("hermes_home")
     multiplexed = is_multiplex_active()
@@ -132,7 +132,7 @@ def claim_instance(provider: Any, home: Any, *, manager: Any = None) -> bool:
     multiplexing off (WebUI, desktop, an embedding app) silently re-pointed an instance another
     live agent was still using: cross-profile memory reads/writes with nothing logged. A
     single-profile process names the same home on every claim, so it is unaffected."""
-    from agent.secret_scope import is_multiplex_active
+    from hermes_agent.agent.secret_scope import is_multiplex_active
     key = _home_key(home) or str(home)
     multiplexed = is_multiplex_active()
     pid = id(provider)
@@ -182,7 +182,7 @@ def serves_caller(provider: Any, label: str) -> bool:
         owner = entry[1] if entry is not None and entry[0]() is provider else None
     if owner is None:
         return True
-    from agent.secret_scope import is_multiplex_active
+    from hermes_agent.agent.secret_scope import is_multiplex_active
     from hermes_constants import get_hermes_home
     multiplexed = is_multiplex_active()
     caller_home = _explicit_caller_home()

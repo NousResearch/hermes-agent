@@ -8,7 +8,7 @@ import threading
 
 import pytest
 
-from agent import secret_scope
+from hermes_agent.agent import secret_scope
 from hermes_agent.gateway.run import _profile_runtime_scope
 from hermes_constants import get_hermes_home, hermes_home_key
 from hermes_agent.tools import browser_session_cdp as bs_cdp

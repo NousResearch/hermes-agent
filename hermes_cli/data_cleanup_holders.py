@@ -4,7 +4,7 @@ from __future__ import annotations
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
 
-from agent.deadline import poll_until
+from hermes_agent.agent.deadline import poll_until
 
 
 _OWNER_STOP_HINTS = {

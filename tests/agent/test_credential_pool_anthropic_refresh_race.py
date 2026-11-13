@@ -2,14 +2,14 @@
 
 ``CredentialPool._refresh_entry`` explicitly documents (see the comment
 above the ``if self.provider in ("openai-codex", "xai-oauth", "anthropic"):`` branch in
-``agent/credential_pool.py``) that single-use OAuth refresh tokens require
+``hermes_agent/agent/credential_pool.py``) that single-use OAuth refresh tokens require
 the whole sync -> POST -> write-back sequence to be serialized across
 Hermes *processes* via the cross-process ``_auth_store_lock`` flock,
 otherwise "two processes can both adopt the same on-disk token, both POST
 it, and the loser gets ``refresh_token_reused``".
 
 Anthropic's OAuth refresh tokens have the identical single-use property --
-``agent.anthropic_credentials._refresh_oauth_token`` says so explicitly:
+``hermes_agent.agent.anthropic_credentials._refresh_oauth_token`` says so explicitly:
 "Claude Code's OAuth refresh tokens are single-use: a successful refresh
 rotates the pair and invalidates the old refresh token." Before the PR, ``"anthropic"`` was absent from the
 ``("openai-codex", "xai-oauth")`` tuple that gets the cross-process flock,
@@ -38,7 +38,7 @@ from dataclasses import replace as dc_replace
 
 import pytest
 
-from agent.credential_pool import (
+from hermes_agent.agent.credential_pool import (
     AUTH_TYPE_OAUTH,
     STATUS_EXHAUSTED,
     CredentialPool,
@@ -79,8 +79,8 @@ def _fake_pool_store(monkeypatch):
             return dict(store)
         return list(store.get(provider, []))
 
-    monkeypatch.setattr("agent.credential_pool.write_credential_pool", _write)
-    monkeypatch.setattr("agent.credential_pool.read_credential_pool", _read)
+    monkeypatch.setattr("hermes_agent.agent.credential_pool.write_credential_pool", _write)
+    monkeypatch.setattr("hermes_agent.agent.credential_pool.read_credential_pool", _read)
     return store
 
 
@@ -128,12 +128,12 @@ def test_concurrent_hermes_pkce_refresh_loses_credential_despite_valid_token_on_
     """
     server = _SingleUseTokenServer()
     monkeypatch.setattr(
-        "agent.anthropic_credentials.refresh_anthropic_oauth_pure",
+        "hermes_agent.agent.anthropic_credentials.refresh_anthropic_oauth_pure",
         lambda refresh_token, use_json=False: server.refresh(refresh_token, use_json=use_json),
     )
     # No Claude Code credential file in play for this scenario.
     monkeypatch.setattr(
-        "agent.anthropic_credentials.read_claude_code_credentials", lambda: None
+        "hermes_agent.agent.anthropic_credentials.read_claude_code_credentials", lambda: None
     )
 
     shared_stale_entry = _entry(
@@ -210,7 +210,7 @@ def test_concurrent_claude_code_refresh_recovers_via_credentials_file(monkeypatc
     """
     server = _SingleUseTokenServer()
     monkeypatch.setattr(
-        "agent.anthropic_credentials.refresh_anthropic_oauth_pure",
+        "hermes_agent.agent.anthropic_credentials.refresh_anthropic_oauth_pure",
         lambda refresh_token, use_json=False: server.refresh(refresh_token, use_json=use_json),
     )
 
@@ -230,11 +230,11 @@ def test_concurrent_claude_code_refresh_recovers_via_credentials_file(monkeypatc
             )
 
     monkeypatch.setattr(
-        "agent.anthropic_credentials.read_claude_code_credentials",
+        "hermes_agent.agent.anthropic_credentials.read_claude_code_credentials",
         _fake_read_claude_code_credentials,
     )
     monkeypatch.setattr(
-        "agent.anthropic_credentials._write_claude_code_credentials",
+        "hermes_agent.agent.anthropic_credentials._write_claude_code_credentials",
         _fake_write_claude_code_credentials,
     )
 

@@ -2,9 +2,9 @@
 
 from unittest.mock import patch
 
-from agent.prompt_builder import steer_user_row
+from hermes_agent.agent.prompt_builder import steer_user_row
 from hermes_agent.hermes_state import SessionDB
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 
 def test_flushed_steer_keeps_one_display_identity_across_compactions(tmp_path):
@@ -12,7 +12,7 @@ def test_flushed_steer_keeps_one_display_identity_across_compactions(tmp_path):
     session_id = "steer-compaction"
     with (
         patch.dict("os.environ", {"OPENROUTER_API_KEY": "test-key"}),
-        patch("agent.model_metadata.fetch_model_metadata", return_value={}),
+        patch("hermes_agent.agent.model_metadata.fetch_model_metadata", return_value={}),
     ):
         agent = AIAgent(
             api_key="test-key",

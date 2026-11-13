@@ -4,7 +4,7 @@ Two prompt shapes: a *base* prompt (prompt-only, produces the canonical look the
 user picks between) and per-*state* *row* prompts (grounded on the chosen base,
 produce one horizontal strip of N poses). The identity lock and "one transparent
 row" framing matter more than flowery description. We generate the full
-petdex/Codex nine-state set (:data:`agent.pet.generate.atlas.ROW_SPECS`) so a
+petdex/Codex nine-state set (:data:`hermes_agent.agent.pet.generate.atlas.ROW_SPECS`) so a
 hatched pet is a valid ``petdex submit`` spritesheet.
 """
 

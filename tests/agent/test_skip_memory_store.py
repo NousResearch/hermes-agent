@@ -11,7 +11,7 @@ gated on ``skip_memory``.
 """
 
 
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 
 class _FakeOpenAI:
@@ -28,7 +28,7 @@ def _make_agent(
 ):
     monkeypatch.setattr("hermes_agent.model_tools.get_tool_definitions", lambda **kw: [])
     monkeypatch.setattr("hermes_agent.model_tools.check_toolset_requirements", dict)
-    monkeypatch.setattr("agent.process_bootstrap.OpenAI", _FakeOpenAI)
+    monkeypatch.setattr("hermes_agent.agent.process_bootstrap.OpenAI", _FakeOpenAI)
     return AIAgent(
         api_key="test-key",
         base_url="http://test",
@@ -71,7 +71,7 @@ def test_skip_memory_memory_tool_handler_works_and_provider_skipped(
     )
 
     # Dispatch through the same entry point the tool executor uses
-    # (agent/tool_executor.py wires store=agent._memory_store).
+    # (hermes_agent/agent/tool_executor.py wires store=agent._memory_store).
     from hermes_agent.tools.memory_tool import memory_tool
 
     raw = memory_tool(
@@ -118,7 +118,7 @@ def test_skip_memory_disabled_toolset_does_not_load_store(monkeypatch, tmp_path)
     assert agent._memory_enabled is False
     assert agent._user_profile_enabled is False
 
-    from agent.system_prompt import build_system_prompt_parts
+    from hermes_agent.agent.system_prompt import build_system_prompt_parts
 
     parts = build_system_prompt_parts(agent)
     blob = " ".join(str(v) for v in parts.values())

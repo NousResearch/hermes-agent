@@ -224,7 +224,7 @@ def build_proposals(
     itself (the same key an interactive ``[a]lways`` answer persists) for compound commands where no
     safe glob can be derived.
     """
-    from agent.redact import redact_sensitive_text
+    from hermes_agent.agent.redact import redact_sensitive_text
 
     existing = existing or set()
     by_pattern: dict[tuple[str, str], Proposal] = {}

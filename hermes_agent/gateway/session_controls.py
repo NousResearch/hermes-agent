@@ -114,7 +114,7 @@ def display_projection(history, profile_home, image_urls=True):
 
 def model_only(row):
     """A live row the model reads but nobody typed as one message (a micro-compaction merge): never rendered."""
-    from agent.context_compressor import MODEL_ONLY_DISPLAY_METADATA_KEY
+    from hermes_agent.agent.context_compressor import MODEL_ONLY_DISPLAY_METADATA_KEY
     metadata = row.get('display_metadata')
     return isinstance(metadata, dict) and bool(metadata.get(MODEL_ONLY_DISPLAY_METADATA_KEY))
 

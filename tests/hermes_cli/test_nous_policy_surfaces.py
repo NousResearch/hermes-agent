@@ -168,7 +168,7 @@ class TestAuxiliaryFastModel:
     """``_fast_model_from_catalog`` uses the catalog's keys as a source of ids."""
 
     def _pick(self, monkeypatch, *, catalog):
-        import agent.auxiliary_client as aux
+        import hermes_agent.agent.auxiliary_client as aux
 
         seen: dict = {}
 
@@ -185,7 +185,7 @@ class TestAuxiliaryFastModel:
         return picked, seen
 
     def test_hidden_model_is_not_selected(self, monkeypatch, policy):
-        import agent.auxiliary_client as aux
+        import hermes_agent.agent.auxiliary_client as aux
 
         monkeypatch.setattr(
             models_pricing, "nous_policy_allowed_ids", lambda **_k: {"vendor/allowed"}
@@ -215,7 +215,7 @@ class TestAuxFallbackRespectsPolicy:
     a public recommendation and the rest are hardcoded."""
 
     def _patch(self, monkeypatch, *, allowed, recommended):
-        import agent.auxiliary_client as aux
+        import hermes_agent.agent.auxiliary_client as aux
         import providers
 
         monkeypatch.setattr(models_pricing, "nous_policy_allowed_ids", lambda **_k: allowed)

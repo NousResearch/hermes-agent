@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 import providers
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 # Assembled at runtime so no credential-shaped literal sits in source (scanner guard).
 _TEST_KEY = "test-" + "key-12345678"
@@ -23,8 +23,8 @@ def _make_agent():
     with (
         patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]),
         patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
-        patch("agent.process_bootstrap.OpenAI"),
-        patch("agent.context_compressor.get_model_context_length", return_value=200_000),
+        patch("hermes_agent.agent.process_bootstrap.OpenAI"),
+        patch("hermes_agent.agent.context_compressor.get_model_context_length", return_value=200_000),
     ):
         agent = AIAgent(
             api_key=_TEST_KEY, base_url="https://my-llm.example.com/v1", provider="custom",

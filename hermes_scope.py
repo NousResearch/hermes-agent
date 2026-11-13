@@ -1,8 +1,8 @@
 """The runtime scope: which tenant, agent and actor the current activity serves.
 
 Import-safe, stdlib-only, like ``hermes_constants``. Binding and deriving profile state from a
-scope lives in ``agent/runtime_scope.py``; this module holds only the values and the context-local
-slot, so ``hermes_constants``, ``agent.secret_scope`` and ``hermes_agent.tools.terminal_scope`` can ask "is a
+scope lives in ``hermes_agent/agent/runtime_scope.py``; this module holds only the values and the context-local
+slot, so ``hermes_constants``, ``hermes_agent.agent.secret_scope`` and ``hermes_agent.tools.terminal_scope`` can ask "is a
 scope bound, and for which agent?" without importing anything heavier.
 
 Every activity a gateway runs for a profile binds a :class:`Scope`: a turn, cache eviction, a
@@ -21,7 +21,7 @@ change to that value; a reset removes its change and replays the later ones, dro
 inside a scope the result no longer has (:func:`pop_state`). An out-of-order, repeated or stale
 reset therefore lands on a state whole binds produce, never one profile's home next to another's
 secrets. Whether a change is allowed while a scope is bound (another profile moves the whole
-scope; a hosted scope refuses) is decided in ``agent/runtime_scope.py``.
+scope; a hosted scope refuses) is decided in ``hermes_agent/agent/runtime_scope.py``.
 """
 
 from __future__ import annotations
@@ -178,7 +178,7 @@ class ScopeSwitchRefused(RuntimeError):
     mid-activity would serve one agent's work with another's state. Inside any bound scope,
     clearing one piece (secrets, terminal policy) would leave the others describing a profile it
     no longer matches. Bind a new scope at the activity's entry point instead
-    (``agent.runtime_scope.bind_profile_scope``)."""
+    (``hermes_agent.agent.runtime_scope.bind_profile_scope``)."""
 
 
 class BoundSecrets(NamedTuple):

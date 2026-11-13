@@ -4,7 +4,7 @@ import os
 import pytest
 import hermes_yaml as yaml
 
-from agent import secret_scope as ss
+from hermes_agent.agent import secret_scope as ss
 import hermes_agent.tools.env_passthrough as _ep_mod
 from hermes_agent.tools.env_passthrough import (
     clear_env_passthrough,

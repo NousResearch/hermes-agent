@@ -49,7 +49,7 @@ def _platform_name() -> str:
 
     Off a turn (a desktop page action, an account operation thread) only the session vars exist.
     The classic CLI and one-shot runs bind neither, so they read as ``cli``."""
-    from agent.relay_runtime import current_turn
+    from hermes_agent.agent.relay_runtime import current_turn
     from hermes_agent.gateway.session_context import get_session_env
     from hermes_agent.tools.connectors.gateway.config import session_platform
     from utils import is_truthy_value
@@ -85,7 +85,7 @@ def _send_consented() -> bool:
 
 
 def _conversation_id() -> Optional[str]:
-    from agent.portal_tags import get_conversation_context
+    from hermes_agent.agent.portal_tags import get_conversation_context
     from hermes_agent.gateway.session_context import get_session_env
 
     return get_conversation_context() or get_session_env("HERMES_SESSION_ID", "") or None

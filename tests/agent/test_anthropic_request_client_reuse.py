@@ -20,7 +20,7 @@ unlike the OpenAI-wire path.
 
 from unittest.mock import MagicMock, patch
 
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 
 class _StubClient:
@@ -61,7 +61,7 @@ class _Harness:
             return _StubClient()
 
         self._patchers = [
-            patch("agent.anthropic_adapter.build_anthropic_client", side_effect=_fake_build),
+            patch("hermes_agent.agent.anthropic_adapter.build_anthropic_client", side_effect=_fake_build),
             patch.object(self.agent, "_force_close_tcp_sockets", return_value=0),
         ]
         for p in self._patchers:

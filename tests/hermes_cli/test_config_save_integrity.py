@@ -196,7 +196,7 @@ def test_save_refusal_for_bad_yaml_asks_for_an_edit_not_a_retry(home):
 @pytest.mark.parametrize("operation", ["save", "partial_save", "migrate"])
 def test_authored_nulls_survive_config_writes(tmp_path, monkeypatch, operation):
     from hermes_cli.resource_limits import configured_nofile_soft_limit
-    from agent.agent_runtime_helpers import prompt_caching_disabled_from_config
+    from hermes_agent.agent.agent_runtime_helpers import prompt_caching_disabled_from_config
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     config_path = tmp_path / "config.yaml"

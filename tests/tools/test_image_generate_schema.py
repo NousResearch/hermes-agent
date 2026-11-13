@@ -27,7 +27,7 @@ class TestCatalogCapabilityCoverage(unittest.TestCase):
 
 
     def test_provider_abc_default_fails_closed(self):
-        from agent.image_gen_provider import ImageGenProvider
+        from hermes_agent.agent.image_gen_provider import ImageGenProvider
 
         # Instantiate via a minimal concrete subclass.
         class _P(ImageGenProvider):
@@ -93,7 +93,7 @@ class TestDynamicParamGating(unittest.TestCase):
                 return "img-1"
         with patch.object(ig, "_read_configured_image_provider",
                           return_value="codex"), \
-             patch("agent.image_gen_registry.get_provider",
+             patch("hermes_agent.agent.image_gen_registry.get_provider",
                    return_value=_Prov()), \
              patch("hermes_cli.plugins._ensure_plugins_discovered"):
             schema = _build_dynamic_image_schema()

@@ -15,7 +15,7 @@ import io
 from pathlib import Path
 
 from hermes_agent.hermes_state import SessionDB
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 
 def _config(**prune_keys) -> dict:

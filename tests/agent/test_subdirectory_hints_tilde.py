@@ -1,6 +1,6 @@
 """Regression tests for the home-directory RuntimeError bug.
 
-Without the fix to ``agent/subdirectory_hints.py`` (add ``RuntimeError`` to
+Without the fix to ``hermes_agent/agent/subdirectory_hints.py`` (add ``RuntimeError`` to
 the three ``except`` clauses around ``Path.expanduser()`` /
 ``Path.home()``), the first two tests raise ``RuntimeError`` from inside
 the hint walker on POSIX systems.
@@ -10,7 +10,7 @@ do not depend on the richer ``project`` fixture from
 ``test_subdirectory_hints.py`` so the file is runnable standalone.
 """
 
-from agent.subdirectory_hints import SubdirectoryHintTracker
+from hermes_agent.agent.subdirectory_hints import SubdirectoryHintTracker
 
 
 class TestSubdirectoryHintTrackerTildeRobustness:

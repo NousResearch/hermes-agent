@@ -71,8 +71,8 @@ async def test_compress_focus_topic_passed_to_agent():
     with (
         patch("hermes_agent.gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "***"}),
         patch("hermes_agent.gateway.run._resolve_gateway_model", return_value="test-model"),
-        patch("run_agent.AIAgent", return_value=agent_instance),
-        patch("agent.model_metadata.estimate_messages_tokens_rough", side_effect=_estimate),
+        patch("hermes_agent.run_agent.AIAgent", return_value=agent_instance),
+        patch("hermes_agent.agent.model_metadata.estimate_messages_tokens_rough", side_effect=_estimate),
     ):
         await runner._handle_compress_command(_make_event("/compress database schema"))
 

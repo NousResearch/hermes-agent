@@ -18,7 +18,7 @@ from __future__ import annotations
 import re
 from typing import Any, Optional
 
-from agent.i18n import t
+from hermes_agent.agent.i18n import t
 
 # Bare strings; adapters add their own bold/HTML around them.
 EA_HEADER_TEXT = "Hermes wants to run a command that needs your OK"

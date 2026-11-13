@@ -125,7 +125,7 @@ async def test_update_prompt_answers_only_its_opener(surface, sender, tmp_path, 
 
     if surface == "typed":
         typed = MessageEvent(text="yes", source=_source(sender))
-        with patch("agent.estop.paused_reply", return_value="PAUSED"):  # `hermes pause` is on
+        with patch("hermes_agent.agent.estop.paused_reply", return_value="PAUSED"):  # `hermes pause` is on
             # Only the opener's reply is the prompt's answer; anyone else's is a new turn, still paused.
             assert (runner._hm_estop_gate(typed, typed.source, False) is None) is (sender == "alice")
         reply = runner._hm_update_prompt_reply(typed, key)

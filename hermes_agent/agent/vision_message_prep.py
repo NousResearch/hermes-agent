@@ -14,12 +14,12 @@ import tempfile
 from pathlib import Path
 from typing import Any, List, Optional
 
-from agent.lazy_forward import forward_static as _forward_static
-from agent.tool_dispatch_helpers import _is_multimodal_tool_result, _multimodal_text_summary
+from hermes_agent.agent.lazy_forward import forward_static as _forward_static
+from hermes_agent.agent.tool_dispatch_helpers import _is_multimodal_tool_result, _multimodal_text_summary
 from utils import base_url_host_matches, base_url_hostname
 
 # Same logger name as the origin module so log records / caplog filters are unchanged.
-logger = logging.getLogger("run_agent")
+logger = logging.getLogger("hermes_agent.run_agent")
 
 _IMAGE_PART_TYPES = {"image_url", "input_image"}
 _TEXT_PART_TYPES = {"text", "input_text"}
@@ -135,7 +135,7 @@ class VisionMessagePrepMixin:
         > models.dev; see ``image_routing._supports_vision_override``)."""
         try:
             from hermes_cli.config import load_config
-            from agent.image_routing import _lookup_supports_vision
+            from hermes_agent.agent.image_routing import _lookup_supports_vision
             provider = (getattr(self, "provider", "") or "").strip()
             model = (getattr(self, "model", "") or "").strip()
             return _lookup_supports_vision(provider, model, load_config()) is True
@@ -181,7 +181,7 @@ class VisionMessagePrepMixin:
         if cache is None:
             cache = self._transport_cache = {}
         if cache.get(mode) is None:
-            from agent.transports import get_transport
+            from hermes_agent.agent.transports import get_transport
             cache[mode] = get_transport(mode)
         return cache[mode]
 
@@ -253,7 +253,7 @@ class VisionMessagePrepMixin:
         )
         return summary
 
-    _try_shrink_image_parts_in_messages = _forward_static("agent.conversation_compression", "try_shrink_image_parts_in_messages")
+    _try_shrink_image_parts_in_messages = _forward_static("hermes_agent.agent.conversation_compression", "try_shrink_image_parts_in_messages")
 
     def _try_strip_image_parts_from_tool_messages(
         self, api_messages: list, *, remember_model: bool = True

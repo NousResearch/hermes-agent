@@ -15,7 +15,7 @@ supported vocabulary. The policy under test:
 
 import pytest
 
-from agent.reasoning_effort import (
+from hermes_agent.agent.reasoning_effort import (
     CODEX_GPT56_EFFORTS,
     EFFORT_LADDER,
     GLM52_EFFORTS,
@@ -42,7 +42,7 @@ class TestLadderContract:
     def test_no_declared_wire_set_contains_ultra(self):
         """ultra is internal vocabulary; every wire set must exclude it so it
         always clamps down."""
-        import agent.reasoning_effort as mod
+        import hermes_agent.agent.reasoning_effort as mod
 
         for name in dir(mod):
             if name.endswith("_EFFORTS"):
@@ -95,7 +95,7 @@ class TestClampEffort:
     def test_monotonic_over_full_ladder(self):
         """A stronger ask never resolves weaker than a weaker ask — for every
         declared wire set."""
-        import agent.reasoning_effort as mod
+        import hermes_agent.agent.reasoning_effort as mod
 
         sets = [
             getattr(mod, name) for name in dir(mod) if name.endswith("_EFFORTS")
@@ -144,7 +144,7 @@ class TestCodexVocabulary:
         """Live-verified (Aug 2026, #68365): 'max' is gpt-5.6-only — gpt-5.5
         rejects it ("Supported values are: 'none','low','medium','high',
         'xhigh'"); 'minimal' is rejected by both generations."""
-        from agent.reasoning_effort import (
+        from hermes_agent.agent.reasoning_effort import (
             CODEX_GPT56_EFFORTS,
             CODEX_LEGACY_EFFORTS,
             codex_supported_efforts,
@@ -167,7 +167,7 @@ class TestCodexVocabulary:
     def test_daybreak_alias_uses_gpt56_max_support(self, model):
         """Daybreak Blue is a GPT-5.6 Sol alias, so its base and 900k picker
         slugs must preserve Sol's max reasoning level."""
-        from agent.reasoning_effort import codex_supported_efforts
+        from hermes_agent.agent.reasoning_effort import codex_supported_efforts
 
         supported = codex_supported_efforts(model)
         assert clamp_effort("max", supported) == "max"

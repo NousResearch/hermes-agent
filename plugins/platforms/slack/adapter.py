@@ -37,10 +37,10 @@ _checkout_root = _Path(__file__).resolve().parents[3]
 if str(_checkout_root) not in sys.path:
     sys.path.append(str(_checkout_root))
 
-from agent.compression_marker import ELISION_MARKER_MAX_LEN, elide
-from agent.i18n import t
-from agent.retry_utils import parse_retry_after_seconds
-from agent.secret_scope import get_secret
+from hermes_agent.agent.compression_marker import ELISION_MARKER_MAX_LEN, elide
+from hermes_agent.agent.i18n import t
+from hermes_agent.agent.retry_utils import parse_retry_after_seconds
+from hermes_agent.agent.secret_scope import get_secret
 from hermes_agent.gateway.config import Platform, PlatformConfig
 from hermes_agent.gateway.approval_actor import approval_refusal, clarify_refusal, refusal_text, slash_confirm_refusal
 from hermes_agent.gateway.platforms._shared import (

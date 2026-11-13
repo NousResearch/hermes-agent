@@ -9,7 +9,7 @@ from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
 # model_config sidecars a worker may patch: every key the agent persists via
 # ``patch_session_model_config`` (``_anthropic_rejected_thinking``: main's rejected-signature
-# fingerprints, agent/anthropic_thinking_replay.py) or a compaction ``model_config_patch``.
+# fingerprints, hermes_agent/agent/anthropic_thinking_replay.py) or a compaction ``model_config_patch``.
 SIDECAR_KEYS = frozenset({'_usage_anchor', '_proactive_prune_rearm_tokens', '_anthropic_rejected_thinking'})
 
 
@@ -56,7 +56,7 @@ def worker_tool_names(db, conn, session_id, payload):
             raise RuntimeStoreError('invalid_params')
         if isinstance(pin, list) and not all(isinstance(n, str) and 0 < len(n) <= 256 for n in pin):
             raise RuntimeStoreError('invalid_params')
-        # ``delegation_backend``: the backend the pinned delegate_task was built from (agent/delegation_backends.py).
+        # ``delegation_backend``: the backend the pinned delegate_task was built from (hermes_agent/agent/delegation_backends.py).
         backend = pin.get('delegation_backend', '') if isinstance(pin, dict) else ''
         if isinstance(pin, dict) and (not {'version', 'tools'} <= set(pin) <= {'version', 'tools', 'delegation_backend'}
                                       or not isinstance(pin['version'], str) or not isinstance(pin['tools'], list)

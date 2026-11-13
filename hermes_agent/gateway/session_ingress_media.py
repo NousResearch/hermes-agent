@@ -465,7 +465,7 @@ def sweep_settled_media(db, *, now=None):
     cleanup did for the staging copy the note used to name. A live admission or an in-flight capture
     still holds its bytes; API images and hosted documents keep their own owners."""
     import time
-    from agent.provider_media import MEDIA_CACHE_MAX_AGE_HOURS
+    from hermes_agent.agent.provider_media import MEDIA_CACHE_MAX_AGE_HOURS
     now = time.time() if now is None else now
     if now - _last_sweep.get(db.db_path, 0) < _SWEEP_INTERVAL_S:
         return 0

@@ -491,7 +491,7 @@ class TestMatrixBangCommandAlias:
         """The get_skill_commands() branch normalizes installed skill
         commands, not just built-in gateway commands. Skill keys are stored
         slash-prefixed (e.g. "/arxiv"), which the resolver must account for."""
-        import agent.skill_commands as skill_commands_mod
+        import hermes_agent.agent.skill_commands as skill_commands_mod
 
         fake_skills = {"/arxiv": {}, "/obsidian": {}}
         with patch.object(

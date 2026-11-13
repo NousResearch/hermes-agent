@@ -77,7 +77,7 @@ class TestIsAvailable:
 
     def test_brave_free_requires_api_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
         _ensure_plugins_loaded()
-        from agent.web_search_registry import get_provider
+        from hermes_agent.agent.web_search_registry import get_provider
 
         p = get_provider("brave-free")
         assert p is not None
@@ -87,7 +87,7 @@ class TestIsAvailable:
 
     def test_searxng_requires_url(self, monkeypatch: pytest.MonkeyPatch) -> None:
         _ensure_plugins_loaded()
-        from agent.web_search_registry import get_provider
+        from hermes_agent.agent.web_search_registry import get_provider
 
         p = get_provider("searxng")
         assert p is not None
@@ -97,7 +97,7 @@ class TestIsAvailable:
 
     def test_keenable_requires_api_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
         _ensure_plugins_loaded()
-        from agent.web_search_registry import get_provider
+        from hermes_agent.agent.web_search_registry import get_provider
 
         p = get_provider("keenable")
         assert p is not None
@@ -107,7 +107,7 @@ class TestIsAvailable:
 
     def test_tavily_requires_api_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
         _ensure_plugins_loaded()
-        from agent.web_search_registry import get_provider
+        from hermes_agent.agent.web_search_registry import get_provider
 
         p = get_provider("tavily")
         assert p is not None
@@ -117,7 +117,7 @@ class TestIsAvailable:
 
     def test_exa_requires_api_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
         _ensure_plugins_loaded()
-        from agent.web_search_registry import get_provider
+        from hermes_agent.agent.web_search_registry import get_provider
 
         p = get_provider("exa")
         assert p is not None
@@ -127,7 +127,7 @@ class TestIsAvailable:
 
     def test_parallel_requires_api_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
         _ensure_plugins_loaded()
-        from agent.web_search_registry import get_provider
+        from hermes_agent.agent.web_search_registry import get_provider
 
         p = get_provider("parallel")
         assert p is not None
@@ -139,7 +139,7 @@ class TestIsAvailable:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         _ensure_plugins_loaded()
-        from agent.web_search_registry import get_provider
+        from hermes_agent.agent.web_search_registry import get_provider
 
         p = get_provider("firecrawl")
         assert p is not None
@@ -156,7 +156,7 @@ class TestIsAvailable:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         _ensure_plugins_loaded()
-        from agent.web_search_registry import get_provider
+        from hermes_agent.agent.web_search_registry import get_provider
 
         p = get_provider("firecrawl")
         assert p is not None
@@ -173,7 +173,7 @@ class TestIsAvailable:
     def test_xai_requires_api_key_or_oauth(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """xAI needs XAI_API_KEY or OAuth tokens in auth.json."""
         _ensure_plugins_loaded()
-        from agent.web_search_registry import get_provider
+        from hermes_agent.agent.web_search_registry import get_provider
 
         p = get_provider("xai")
         assert p is not None
@@ -200,7 +200,7 @@ class TestRegistryResolution:
         surfaces a precise "FOO_API_KEY is not set" error instead.
         """
         _ensure_plugins_loaded()
-        from agent.web_search_registry import _resolve
+        from hermes_agent.agent.web_search_registry import _resolve
 
         # No BRAVE_SEARCH_API_KEY (fixture cleared it).
         result = _resolve("brave-free", capability="search")
@@ -215,7 +215,7 @@ class TestRegistryResolution:
     ) -> None:
         """Typo / uninstalled plugin → walk legacy preference, pick available."""
         _ensure_plugins_loaded()
-        from agent.web_search_registry import _resolve
+        from hermes_agent.agent.web_search_registry import _resolve
 
         monkeypatch.setenv("EXA_API_KEY", "real")
         result = _resolve("not-a-real-provider", capability="search")
@@ -239,7 +239,7 @@ class TestRegistryResolution:
         neither keyed nor keyless-capable means an env var leaked in.
         """
         _ensure_plugins_loaded()
-        from agent.web_search_registry import _resolve
+        from hermes_agent.agent.web_search_registry import _resolve
 
         result = _resolve(None, capability="search")
         if result is not None:

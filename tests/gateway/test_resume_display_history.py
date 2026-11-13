@@ -11,7 +11,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent.context_compressor import SUMMARY_PREFIX
+from hermes_agent.agent.context_compressor import SUMMARY_PREFIX
 
 pytestmark = pytest.mark.usefixtures("authority_cwd_in_tmp")  # symbolic profile ids are relative homes
 
@@ -88,7 +88,7 @@ async def test_resume_shows_the_turns_a_compression_archived(tmp_path, monkeypat
 async def test_cli_undo_prefix_keeps_the_summary_after_a_rotated_compression(tmp_path, monkeypatch):
     """``GatewaySessionStore.rewind_user_turn`` and ``/compress`` take the live rows as the CLI's history:
     the prefix before the newest user turn holds the summary the store keeps active (review of #140971)."""
-    from agent.context_compressor import history_before_user_originated_turn
+    from hermes_agent.agent.context_compressor import history_before_user_originated_turn
     from hermes_agent.hermes_state_rewind import _user_indices
     authority, actor, ref, physical = await _local_session(tmp_path, monkeypatch)
     db = authority.db

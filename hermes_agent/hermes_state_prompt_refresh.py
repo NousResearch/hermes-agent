@@ -3,7 +3,7 @@
 A continuing session replays its stored system prompt every turn so the provider prefix cache
 stays warm. After an operator updates the profile's prompt sources (SOUL.md, skills, project
 context files) the verb records a refresh epoch here; a session whose stored prompt predates it
-rebuilds once on its next turn (``agent/prompt_refresh.py``). Epochs live in ``state_meta`` of
+rebuilds once on its next turn (``hermes_agent/agent/prompt_refresh.py``). Epochs live in ``state_meta`` of
 the profile's own ``state.db``: durable across restarts, writable while the gateway runs, and
 never seen by another profile. No row means no request, and the restore path behaves as before.
 """

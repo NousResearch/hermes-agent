@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 import pytest
 
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 from hermes_agent.gateway.session_context import clear_session_vars
 from hermes_agent.tools import approval
 from hermes_agent.tools.thread_context import propagate_context_to_thread
@@ -30,8 +30,8 @@ def _agent():
             for schema in (TERMINAL_SCHEMA, READ_FILE_SCHEMA)
         ]),
         patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
-        patch("agent.process_bootstrap.OpenAI"),
-        patch("agent.model_metadata.fetch_model_metadata", return_value={}),
+        patch("hermes_agent.agent.process_bootstrap.OpenAI"),
+        patch("hermes_agent.agent.model_metadata.fetch_model_metadata", return_value={}),
     ):
         return AIAgent(api_key="test-key", base_url="https://openrouter.ai/api/v1",
                        quiet_mode=True, skip_context_files=True, skip_memory=True, platform="desktop")
@@ -47,7 +47,7 @@ def test_desktop_publishes_final_commands_before_wait_and_runs_in_order(tmp_path
     monkeypatch.setenv("TERMINAL_ENV", "local")
     monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
     monkeypatch.setattr("hermes_agent.tools.approval_context._get_approval_mode", lambda: "manual")
-    monkeypatch.setattr("agent.title_generator.maybe_auto_title", lambda *a, **kw: None)
+    monkeypatch.setattr("hermes_agent.agent.title_generator.maybe_auto_title", lambda *a, **kw: None)
     nested = tmp_path / "nested"
     nested.mkdir()
     key = "desktop-terminal-batch"
@@ -152,7 +152,7 @@ def test_cancelled_preparation_drains_requests_without_reusing_once(tmp_path, mo
 
     monkeypatch.setenv("HERMES_EXEC_ASK", "1")
     monkeypatch.setattr("hermes_agent.tools.approval_context._get_approval_mode", lambda: "manual")
-    monkeypatch.setattr("agent.title_generator.maybe_auto_title", lambda *a, **kw: None)
+    monkeypatch.setattr("hermes_agent.agent.title_generator.maybe_auto_title", lambda *a, **kw: None)
     key = "cancelled-terminal-batch"
     command = "rm -rf absent; printf executed > effect.txt"
     published = queue.Queue()
@@ -245,7 +245,7 @@ def test_failed_command_re_gates_later_prepared_approvals(tmp_path, monkeypatch)
     monkeypatch.setenv("TERMINAL_ENV", "local")
     monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
     monkeypatch.setattr("hermes_agent.tools.approval_context._get_approval_mode", lambda: "manual")
-    monkeypatch.setattr("agent.title_generator.maybe_auto_title", lambda *a, **kw: None)
+    monkeypatch.setattr("hermes_agent.agent.title_generator.maybe_auto_title", lambda *a, **kw: None)
     key = "regate-terminal-batch"
     # First command fails (exit 1); second would succeed if allowed to run.
     effect = tmp_path / "effect-later.txt"
@@ -329,7 +329,7 @@ def test_switching_yolo_off_mid_batch_re_gates_later_commands(tmp_path, monkeypa
 
     monkeypatch.setenv("HERMES_EXEC_ASK", "1")
     monkeypatch.setattr("hermes_agent.tools.approval_context._get_approval_mode", lambda: "manual")
-    monkeypatch.setattr("agent.title_generator.maybe_auto_title", lambda *a, **kw: None)
+    monkeypatch.setattr("hermes_agent.agent.title_generator.maybe_auto_title", lambda *a, **kw: None)
     key = "yolo-off-terminal-batch"
     agent = _agent()
     agent._flush_messages_to_session_db = lambda *a, **kw: True

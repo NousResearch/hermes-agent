@@ -7,8 +7,8 @@ them (~50 MB after 20 sessions x 10 turns of 256 KB replies on macOS).
 
 import threading
 
-from agent.model_metadata import _MSG_TOKENS_CACHE, estimate_messages_tokens_rough
-from run_agent import AIAgent
+from hermes_agent.agent.model_metadata import _MSG_TOKENS_CACHE, estimate_messages_tokens_rough
+from hermes_agent.run_agent import AIAgent
 
 
 def _pinned_ids() -> set[int]:
@@ -49,8 +49,8 @@ def test_compression_evicts_the_bodies_the_summary_replaced(tmp_path, monkeypatc
     import os
     from unittest.mock import MagicMock, patch
 
-    from agent import conversation_compression
-    from agent.conversation_compression import CompressionCommitFence
+    from hermes_agent.agent import conversation_compression
+    from hermes_agent.agent.conversation_compression import CompressionCommitFence
     from hermes_agent.hermes_state import SessionDB
 
     db = SessionDB(db_path=tmp_path / "state.db")
@@ -89,7 +89,7 @@ def test_close_evicts_the_system_prompt_the_history_never_holds():
 
 
 def test_compression_telemetry_does_not_pin_the_one_shot_summary_prompt():
-    from agent.context_compressor_telemetry import CompressionTelemetryMixin
+    from hermes_agent.agent.context_compressor_telemetry import CompressionTelemetryMixin
 
     recorder = CompressionTelemetryMixin()
     recorder._active_compression_telemetry = {"effective_aux_context": None}
@@ -103,7 +103,7 @@ def test_compression_telemetry_does_not_pin_the_one_shot_summary_prompt():
 
 
 def test_close_evicts_a_prompt_caching_split_system_prompt():
-    from agent.prompt_caching import apply_anthropic_cache_control
+    from hermes_agent.agent.prompt_caching import apply_anthropic_cache_control
 
     static = "the static, cacheable system prefix " * 2000
     full = static + "\nper-session suffix: today's date and the active model"

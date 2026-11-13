@@ -42,7 +42,7 @@ def _agent(provider, model):
 
 
 def _validate(agent, tool_calls) -> None:
-    from agent.turn_tool_validation import validate_tool_calls
+    from hermes_agent.agent.turn_tool_validation import validate_tool_calls
 
     validate_tool_calls(
         agent, SimpleNamespace(content="", tool_calls=tool_calls), "tool_calls",

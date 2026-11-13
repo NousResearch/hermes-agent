@@ -9,9 +9,9 @@ from unittest.mock import patch
 
 import pytest
 
-from agent.client_lifecycle import ClientLifecycleMixin
-from agent.error_classifier import classify_api_error
-from agent.turn_api_error import settle_unrecovered_error
+from hermes_agent.agent.client_lifecycle import ClientLifecycleMixin
+from hermes_agent.agent.error_classifier import classify_api_error
+from hermes_agent.agent.turn_api_error import settle_unrecovered_error
 from providers.base import ProviderProfile
 
 
@@ -78,7 +78,7 @@ def test_a_raising_refresh_hook_keeps_the_api_error_and_walks_the_fallback_chain
     profile.broken = broken
     agent, err = _Agent(), _Err("Unsupported parameter: 'max_tokens'")
     retry = SimpleNamespace(provider_stale_refresh_attempted=False, primary_recovery_attempted=False)
-    with patch("agent.conversation_loop._credential_refresh_profile", lambda a: profile):
+    with patch("hermes_agent.agent.conversation_loop._credential_refresh_profile", lambda a: profile):
         verdict = settle_unrecovered_error(
             agent, api_error=err, classified=classify_api_error(err, provider=agent.provider), _retry=retry,
             status_code=400, error_msg=str(err), is_context_length_error=False, is_rate_limited=False,

@@ -29,11 +29,11 @@ CASES = {
 
 def run_matrix(surfaces):
     from openai import AsyncOpenAI, OpenAI
-    from run_agent import AIAgent
-    from agent.agent_runtime_helpers import extract_reasoning
-    from agent.auxiliary_client import _aggregate_chat_stream, _aggregate_chat_stream_async
-    from agent.chat_completion_helpers import interruptible_streaming_api_call
-    from agent.chat_completion_helpers_relay import RelayChatAccumulator
+    from hermes_agent.run_agent import AIAgent
+    from hermes_agent.agent.agent_runtime_helpers import extract_reasoning
+    from hermes_agent.agent.auxiliary_client import _aggregate_chat_stream, _aggregate_chat_stream_async
+    from hermes_agent.agent.chat_completion_helpers import interruptible_streaming_api_call
+    from hermes_agent.agent.chat_completion_helpers_relay import RelayChatAccumulator
 
     active = {"message": {}, "deltas": [], "answer": "LOCAL_CAPTURE_OK"}
     requests = []

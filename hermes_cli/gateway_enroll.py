@@ -199,7 +199,7 @@ def cmd_gateway_enroll(args) -> None:
         print(f"    {key}={shown}")
     print()
     # GATEWAY_RELAY_URL / GATEWAY_RELAY_WAKE_URL are process-global deployment stamps
-    # (agent/secret_scope.py): a multiplexed gateway reads them from the PROCESS environment only,
+    # (hermes_agent/agent/secret_scope.py): a multiplexed gateway reads them from the PROCESS environment only,
     # never a secondary profile's .env. Warn (don't refuse) so a secondary-profile enroll can't claim
     # a config that silently never activates — BEFORE the generic restart line so they don't clash.
     if not (any(explicit_urls.values()) and _warn_if_secondary_multiplex_profile()):

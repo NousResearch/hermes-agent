@@ -44,7 +44,7 @@ def _make_session(session_id="sess_1"):
 
 def _make_real_session(tmp_path, monkeypatch, *, source, session_id):
     from hermes_agent.hermes_state import SessionDB
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     hermes_home = tmp_path / "hermes_home"
     hermes_home.mkdir()

@@ -16,7 +16,7 @@ import os
 import sys
 from typing import Optional
 
-from agent.i18n import t
+from hermes_agent.agent.i18n import t
 
 logger = logging.getLogger(__name__)
 

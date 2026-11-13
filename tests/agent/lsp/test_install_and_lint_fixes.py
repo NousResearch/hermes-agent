@@ -21,7 +21,7 @@ import pytest
 
 def test_install_python_server_uses_pm_tool_environment(tmp_path, monkeypatch):
     import pm
-    from agent.lsp import install as install_mod
+    from hermes_agent.agent.lsp import install as install_mod
 
     binary = tmp_path / "environment" / "fake-language-server"
     calls = []
@@ -90,7 +90,7 @@ def test_lsp_package_manager_config_selects_installer_argv_and_never_falls_back_
     that is missing or unknown skips the install instead of quietly using npm (a typo must not bypass policy)."""
     from unittest.mock import MagicMock
 
-    from agent.lsp import install as install_mod
+    from hermes_agent.agent.lsp import install as install_mod
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     staging = str(install_mod.hermes_lsp_bin_dir().parent)

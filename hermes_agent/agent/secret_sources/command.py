@@ -25,7 +25,7 @@ import sys
 from pathlib import Path
 from typing import Dict, Optional
 
-from agent.secret_sources.base import ErrorKind, FetchResult, SecretSource, coerce_float, source_child_env
+from hermes_agent.agent.secret_sources.base import ErrorKind, FetchResult, SecretSource, coerce_float, source_child_env
 
 __all__ = ["FetchResult", "unquote_dotenv_value"]
 

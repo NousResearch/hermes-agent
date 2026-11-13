@@ -962,9 +962,9 @@ With `gateway.multiplex_profiles: true` one process serves the default profile p
 | Post-turn media delivery | `hermes_agent/gateway/platforms/base.py::_media_delivery_scope` |
 | Cron tick | `hermes_agent/cron/scheduler_provider.py::_profile_cron_scope(home)` (one ticker, profiles in sequence) |
 | Child processes (`hermes -p X` workers, relay turns, browser drivers) | `hermes_agent/tools/environments/local.py::served_profile_child_env` |
-| Background threads | `agent/memory_provider.py::spawn_context_thread` |
+| Background threads | `hermes_agent/agent/memory_provider.py::spawn_context_thread` |
 
-Secret reads fail closed (`agent.secret_scope.get_secret` raises `UnscopedSecretError`) only after `set_multiplex_active(True)`, which the gateway, cron, `gateway migrate` and the Desktop/dashboard `serve` backend set. Adapter YAML never reaches `os.environ` under multiplex: `hermes_agent/gateway/platforms/_shared.py::apply_yaml_bridge` seeds `PlatformConfig.extra` and skips the environ write under a secondary's scope; gates read through `platform_gate_env`. Shared-ingress platforms (WhatsApp bridge, Relay) run on the default profile only; a secondary that enables one is logged once and stamped into runtime status (`run_adapters.py::_note_unserved_secondary_platform`). Per-profile isolation as the user sees it: [Multi-profile gateways § What is isolated per profile](../user-guide/multi-profile-gateways.md#what-is-isolated-per-profile).
+Secret reads fail closed (`hermes_agent.agent.secret_scope.get_secret` raises `UnscopedSecretError`) only after `set_multiplex_active(True)`, which the gateway, cron, `gateway migrate` and the Desktop/dashboard `serve` backend set. Adapter YAML never reaches `os.environ` under multiplex: `hermes_agent/gateway/platforms/_shared.py::apply_yaml_bridge` seeds `PlatformConfig.extra` and skips the environ write under a secondary's scope; gates read through `platform_gate_env`. Shared-ingress platforms (WhatsApp bridge, Relay) run on the default profile only; a secondary that enables one is logged once and stamped into runtime status (`run_adapters.py::_note_unserved_secondary_platform`). Per-profile isolation as the user sees it: [Multi-profile gateways § What is isolated per profile](../user-guide/multi-profile-gateways.md#what-is-isolated-per-profile).
 
 ## Mid-run plugin loading
 

@@ -11,11 +11,11 @@ Grafted from PR #65412 (@HaiderSultanArc) onto the merged bridge.
 
 from types import SimpleNamespace
 
-from agent.codex_runtime import (
+from hermes_agent.agent.codex_runtime import (
     _codex_item_completion_payload,
     make_codex_app_server_event_bridge,
 )
-from agent.transports.codex_event_projector import _deterministic_call_id
+from hermes_agent.agent.transports.codex_event_projector import _deterministic_call_id
 
 
 def _recording_agent():

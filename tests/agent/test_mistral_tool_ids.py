@@ -12,7 +12,7 @@ import re
 
 import pytest
 
-from agent.transports.chat_completions import (
+from hermes_agent.agent.transports.chat_completions import (
     ChatCompletionsTransport,
     _mistral_tool_id,
     _route_requires_mistral_tool_ids,

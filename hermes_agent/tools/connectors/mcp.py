@@ -157,7 +157,7 @@ class _CatalogBackend:
             return self._install(name, env)
 
     def _install(self, name: str, env: dict[str, str]) -> list[str]:
-        from agent.secret_scope import (
+        from hermes_agent.agent.secret_scope import (
             current_secret_scope, current_secret_scope_home, reset_secret_scope, set_secret_scope)
         from hermes_cli.mcp_catalog import _inline_non_secret_value, card_install_config
         from hermes_cli.mcp_config import _probe_single_server, _save_mcp_server
@@ -420,7 +420,7 @@ def _detail(exc: Any, runner: _Runner, target: Target) -> str:
     """The user-facing text of a failure. Every value the card submitted for this target is
     replaced by exact match before the pattern redactor runs: an opaque credential has no
     recognizable shape, so only the runner knows what to remove."""
-    from agent.redact import redact_sensitive_text
+    from hermes_agent.agent.redact import redact_sensitive_text
 
     text = str(exc) or (_BARE_ERRORS.get(exc.__class__.__name__, exc.__class__.__name__)
                         if isinstance(exc, BaseException) else "error")

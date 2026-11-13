@@ -113,7 +113,7 @@ def _mark_background_review_read(path: Path) -> None:
 def _preprocess_skill(content: str, skill_dir, session_id, debug_msg: str, *args) -> str:
     """Apply the configured SKILL.md preprocessing; on failure log and serve raw."""
     try:
-        from agent.skill_preprocessing import preprocess_skill_content
+        from hermes_agent.agent.skill_preprocessing import preprocess_skill_content
         return preprocess_skill_content(content, skill_dir, session_id=session_id)
     except Exception:
         logger.debug(debug_msg, *args, exc_info=True)

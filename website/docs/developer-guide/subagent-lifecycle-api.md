@@ -17,7 +17,7 @@ Requests accept `goal`, `context`, `role`, `model`, `provider`, `allowed_toolset
 `metadata`, and `timeout_seconds`, subject to the restrictions below.
 
 ```python
-from agent.subagent_lifecycle import SubagentLaunchRequest
+from hermes_agent.agent.subagent_lifecycle import SubagentLaunchRequest
 
 def launch_review(ctx):
     # Call from a plugin tool or hook while an agent turn is active.

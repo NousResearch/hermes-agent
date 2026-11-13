@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-import agent.secret_scope as ss
+import hermes_agent.agent.secret_scope as ss
 from hermes_constants import (
     reset_hermes_home_override,
     set_hermes_home_override,

@@ -55,14 +55,14 @@ class TestSmartApprovePolicyInjection(unittest.TestCase):
     """Verify how the operator policy is (and is not) wired into the prompts.
 
     Follows the mocking pattern of test_smart_approval_injection.py:
-    ``call_llm`` is patched at its source module (``agent.auxiliary_client``)
+    ``call_llm`` is patched at its source module (``hermes_agent.agent.auxiliary_client``)
     because _smart_approve imports it lazily inside the function.  The
     config read is isolated by patching ``hermes_agent.tools.approval_context._get_approval_config``
     so tests never touch a real config.yaml.
     """
 
     @patch("hermes_agent.tools.approval_context._get_approval_config")
-    @patch("agent.auxiliary_client.call_llm")
+    @patch("hermes_agent.agent.auxiliary_client.call_llm")
     def test_empty_policy_leaves_prompts_unchanged(self, mock_call_llm, mock_cfg):
         """With no policy configured, prompts must be byte-identical to the
         prompts produced when the key is present but empty."""
@@ -82,7 +82,7 @@ class TestSmartApprovePolicyInjection(unittest.TestCase):
 
 
     @patch("hermes_agent.tools.approval_context._get_approval_config")
-    @patch("agent.auxiliary_client.call_llm")
+    @patch("hermes_agent.agent.auxiliary_client.call_llm")
     def test_policy_never_in_user_message(self, mock_call_llm, mock_cfg):
         """The policy is trusted; the user message carries untrusted command
         text.  They must never share a channel."""
@@ -101,7 +101,7 @@ class TestSmartApprovePolicyInjection(unittest.TestCase):
         assert "<command>" in user_content
 
     @patch("hermes_agent.tools.approval_context._get_approval_config")
-    @patch("agent.auxiliary_client.call_llm")
+    @patch("hermes_agent.agent.auxiliary_client.call_llm")
     def test_config_read_failure_does_not_break_approval(self, mock_call_llm, mock_cfg):
         """If the config reader itself blows up, _smart_approve fails safe."""
         mock_call_llm.return_value = _make_response("APPROVE")
@@ -113,7 +113,7 @@ class TestSmartApprovePolicyInjection(unittest.TestCase):
 
 
     @patch("hermes_agent.tools.approval_context._get_approval_config")
-    @patch("agent.auxiliary_client.call_llm")
+    @patch("hermes_agent.agent.auxiliary_client.call_llm")
     def test_smart_approve_failure_logs_warning_and_escalates(
         self, mock_call_llm, mock_cfg
     ):

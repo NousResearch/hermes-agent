@@ -11,7 +11,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from agent import lsp as lsp_module
+from hermes_agent.agent import lsp as lsp_module
 
 
 @pytest.fixture(autouse=True)

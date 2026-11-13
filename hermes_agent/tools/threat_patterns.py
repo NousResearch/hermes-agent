@@ -1,5 +1,5 @@
 """Shared threat-pattern library (prompt injection / promptware / exfiltration) for
-``agent/prompt_builder.py``, ``hermes_agent/tools/memory_tool.py`` and ``agent/tool_dispatch_helpers.py``.
+``hermes_agent/agent/prompt_builder.py``, ``hermes_agent/tools/memory_tool.py`` and ``hermes_agent/agent/tool_dispatch_helpers.py``.
 Each pattern is ``(regex, pattern_id, scope)``; scope is cumulative: ``"all"`` everywhere,
 ``"context"`` adds promptware / C2 / role hijack for context files, memory and tool results
 (warn-level: that content is not user-authored), ``"strict"`` adds aggressive checks only for

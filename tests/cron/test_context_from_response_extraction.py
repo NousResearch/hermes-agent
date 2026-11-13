@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 import hermes_agent.cron.scheduler
-import run_agent
+from hermes_agent import run_agent
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 

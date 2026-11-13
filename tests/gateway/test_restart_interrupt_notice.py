@@ -238,9 +238,9 @@ def test_in_process_turn_keeps_the_user_stop_when_shutdown_interrupts_it_again(u
     """An in-process turn the user stopped is still unwinding (e.g. inside a tool) when the restart
     interrupts its agent: the shutdown reason must not overwrite the pending Stop, so the turn
     records no restart cause and gets no notice. A turn only the restart stopped still gets it."""
-    from agent.interrupt_compat import request_hard_interrupt
+    from hermes_agent.agent.interrupt_compat import request_hard_interrupt
     from hermes_agent.gateway.session_settlement_recovery import owner_stop_notice
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
     from tests.gateway.restart_test_helpers import make_restart_runner
     from hermes_agent.tools.interrupt import set_interrupt
 
@@ -271,7 +271,7 @@ def test_in_process_turn_keeps_the_user_stop_when_shutdown_interrupts_it_again(u
 
 
 def _redirect_agent():
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
     agent = AIAgent.__new__(AIAgent)
     agent._interrupt_requested = False
     agent._interrupt_message = agent._tool_interrupt_reason = None
@@ -318,7 +318,7 @@ def test_restart_after_a_pending_redirect_still_gets_the_restart_notice():
 def test_automation_turn_the_owner_stop_interrupted_is_never_asked_to_resend(cause, row):
     """#134889 GW-20: nobody sent an unattended turn, so the owner-stop notice is the neutral
     automation copy (GW-10's rule), never "Send your message again"."""
-    from agent.turn_failure_copy import AUTOMATION_INTERRUPTED_NOTICE
+    from hermes_agent.agent.turn_failure_copy import AUTOMATION_INTERRUPTED_NOTICE
     stream = _Stream()
     live = SimpleNamespace(controls=SimpleNamespace(snapshot=lambda *a: None), event_stream=stream)
     _publish_completion(SimpleNamespace(runner=None), live, SimpleNamespace(session_id='s'),
@@ -362,7 +362,7 @@ def _settle_on_real_store(tmp_path, cause, principal='person', payload=None):
 
 
 def _notices(db):
-    from agent.turn_failure_copy import FAILED_TURN_DISPLAY_KIND
+    from hermes_agent.agent.turn_failure_copy import FAILED_TURN_DISPLAY_KIND
     return [m['content'] for m in db.get_messages('s') if m.get('display_kind') == FAILED_TURN_DISPLAY_KIND]
 
 
@@ -394,7 +394,7 @@ def test_a_user_stop_writes_no_transcript_notice(tmp_path, cause):
 
 
 def test_automation_turn_transcript_notice_is_the_neutral_copy(tmp_path):
-    from agent.turn_failure_copy import AUTOMATION_INTERRUPTED_NOTICE
+    from hermes_agent.agent.turn_failure_copy import AUTOMATION_INTERRUPTED_NOTICE
     db, *_ = _settle_on_real_store(tmp_path, 'Gateway restarting', principal='cron-owner')
     with db:
         assert _notices(db) == [AUTOMATION_INTERRUPTED_NOTICE]
@@ -404,16 +404,16 @@ def test_automation_turn_transcript_notice_is_the_neutral_copy(tmp_path):
 def _core_closed_turn(tmp_path, monkeypatch, *, principal='person', earlier_failed=False):
     """A claimed admission whose agent was interrupted by the restart before any assistant text:
     the real AIAgent persists the user row and the real core closer
-    (``agent/conversation_loop.py::_close_durable_failed_turn``) writes its failed-turn boundary.
+    (``hermes_agent/agent/conversation_loop.py::_close_durable_failed_turn``) writes its failed-turn boundary.
     ``earlier_failed``: a previous turn already ended on a failed-turn boundary before this claim."""
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
-    from agent.conversation_loop import _close_durable_failed_turn
-    from agent.turn_failure_copy import FAILED_TURN_DISPLAY_KIND, FAILED_TURN_NOTICE
+    from hermes_agent.agent.conversation_loop import _close_durable_failed_turn
+    from hermes_agent.agent.turn_failure_copy import FAILED_TURN_DISPLAY_KIND, FAILED_TURN_NOTICE
     from hermes_agent.gateway.session_authority import LiveSession, SessionAuthority
     from hermes_agent.gateway.session_contract import SessionRef
     from hermes_agent.hermes_state import SessionDB
     from hermes_agent.hermes_state_runtime import admit_session_input, begin_runtime_epoch, claim_session_input
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     runner = SimpleNamespace(_draining=False, _running=True, _restart_requested=True)
     db = SessionDB(db_path=tmp_path / 'state.db')
@@ -445,7 +445,7 @@ def test_restart_notice_replaces_the_core_failed_turn_boundary_of_the_same_turn(
     """#134889 GW-21 review (GW-A): the agent's own closer already ended this turn with
     "Send it again"; settlement replaces that boundary with the restart notice in its own write,
     so the transcript holds one Hermes boundary, and an automation row never keeps resend advice."""
-    from agent.turn_failure_copy import AUTOMATION_INTERRUPTED_NOTICE, FAILED_TURN_NOTICE
+    from hermes_agent.agent.turn_failure_copy import AUTOMATION_INTERRUPTED_NOTICE, FAILED_TURN_NOTICE
     from hermes_agent.gateway.session_settlement_recovery import commit_and_publish
     db, authority, live, ref, row, result = _core_closed_turn(tmp_path, monkeypatch, principal=principal)
     with db:
@@ -458,7 +458,7 @@ def test_restart_notice_replaces_the_core_failed_turn_boundary_of_the_same_turn(
 
 def test_an_earlier_turns_failed_boundary_is_kept_and_the_restart_notice_appended(tmp_path, monkeypatch):
     """A failed-turn boundary written before this claim belongs to an earlier turn: it stays."""
-    from agent.turn_failure_copy import FAILED_TURN_NOTICE
+    from hermes_agent.agent.turn_failure_copy import FAILED_TURN_NOTICE
     from hermes_agent.gateway.session_settlement_recovery import commit_and_publish
     db, authority, live, ref, row, result = _core_closed_turn(tmp_path, monkeypatch, earlier_failed=True)
     with db:

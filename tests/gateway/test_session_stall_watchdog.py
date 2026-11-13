@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent.session_activity import ActivityProvenance, build_activity_snapshot
+from hermes_agent.agent.session_activity import ActivityProvenance, build_activity_snapshot
 from hermes_agent.gateway.run import GatewayRunner, _AGENT_PENDING_SENTINEL
 from hermes_agent.gateway.session_stall import (
     resolve_session_idle_seconds_from_activity,

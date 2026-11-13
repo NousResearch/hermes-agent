@@ -47,7 +47,7 @@ def _check_vault_available() -> bool:
     """Schema-gate: the vault rides with the browser. An empty vault still needs save_login so the
     agent can offer to remember a login the first time it meets a form; hiding the tool until an item
     exists meant nobody ever discovered the feature. Deferral keeps that presence nearly free."""
-    from agent.browser_page_registry import list_providers
+    from hermes_agent.agent.browser_page_registry import list_providers
     from hermes_agent.tools.browser_session_cdp import get_cdp_override_raw
     from hermes_agent.tools.browser_use_cli import browser_exec_available
     return bool(browser_exec_available() or get_cdp_override_raw() or list_providers())
@@ -66,7 +66,7 @@ def _page_backend(task_id: str):
     """The page this operation runs on when it is not the task's CDP session: the Desktop in-app browser
     page pinned for a ``target='preview'`` operation, else the plugin browser holding this task's live page
     (e.g. Camofox), else None."""
-    from agent.browser_page_registry import backend_for_task
+    from hermes_agent.agent.browser_page_registry import backend_for_task
     from hermes_agent.tools.browser_vault_preview import active_page
     return active_page() or backend_for_task(task_id)
 
@@ -136,7 +136,7 @@ def _eval_js_secret(task_id: str, expression: str) -> dict[str, Any]:
     visible to any process listing. When no supervisor session is available
     the caller gets a typed refusal (``error_type='supervisor_required'``) and
     nothing is written. A plugin browser holding the task's page (no CDP endpoint) carries the
-    expression over its own transport instead; see ``agent.browser_page_backend``.
+    expression over its own transport instead; see ``hermes_agent.agent.browser_page_backend``.
     """
     page = _page_backend(task_id)
     supervisor = None
@@ -200,7 +200,7 @@ def _current_page_origin(task_id: str) -> Optional[str]:
     if not href or href == "about:blank":
         return None
     try:
-        from agent.vault_store import normalize_origin
+        from hermes_agent.agent.vault_store import normalize_origin
 
         return normalize_origin(href)
     except Exception:
@@ -273,8 +273,8 @@ def browser_vault_list() -> str:
     A locked external manager contributes no items; instead it is reported under ``locked`` so the
     agent knows to call fill (which prompts the user to unlock) or tell the user.
     """
-    from agent.vault_backends import enabled_backends
-    from agent.vault_backends.unlock import can_prompt_here
+    from hermes_agent.agent.vault_backends import enabled_backends
+    from hermes_agent.agent.vault_backends.unlock import can_prompt_here
 
     items, locked, errors = [], [], []
     for backend in enabled_backends():
@@ -311,8 +311,8 @@ def browser_vault_list() -> str:
 
 def browser_vault_unlock(backend_name: str) -> str:
     """Ask the user (via the surface's masked prompt) to unlock an external manager for this session."""
-    from agent.vault_backends import enabled_backends
-    from agent.vault_backends.unlock import can_prompt_here, get_unlock_prompt_callback
+    from hermes_agent.agent.vault_backends import enabled_backends
+    from hermes_agent.agent.vault_backends.unlock import can_prompt_here, get_unlock_prompt_callback
 
     backend = next((b for b in enabled_backends() if b.name == backend_name and b.needs_unlock), None)
     if backend is None:
@@ -341,8 +341,8 @@ def browser_vault_unlock(backend_name: str) -> str:
 def browser_vault_save_login(label: str = "", task_id: Optional[str] = None) -> str:
     """Ask the user (masked prompt on their surface) for the login of the CURRENT page, store it in the local
     vault bound to that origin, and fill the password at once. The values never enter the conversation."""
-    from agent.vault_backends.unlock import can_prompt_here, get_save_login_prompt_callback
-    from agent.vault_store import get_vault_store
+    from hermes_agent.agent.vault_backends.unlock import can_prompt_here, get_save_login_prompt_callback
+    from hermes_agent.agent.vault_store import get_vault_store
 
     effective_task_id = task_id or "default"
     # The supervisor's default page session is whatever tab it attached to first (on Browser Use that is
@@ -385,7 +385,7 @@ _TAB_PROBES["otp"] = _deep_probe("input[autocomplete=one-time-code], input[name*
 def _saved_login(handle: str) -> tuple[Any, Any]:
     """(backend, meta) for a vault handle, or (None, None) when nothing is saved under it (or its manager is
     locked): enter_code then asks the user instead of minting a code."""
-    from agent.vault_backends import UnlockRequired, backend_for_handle
+    from hermes_agent.agent.vault_backends import UnlockRequired, backend_for_handle
 
     backend = backend_for_handle(handle) if handle else None
     if backend is None:
@@ -402,9 +402,9 @@ def browser_vault_enter_code(handle: str = "", task_id: Optional[str] = None) ->
     authenticator seed, the code is minted server-side and nobody is asked; otherwise the user is prompted on
     their surface for the code their phone/email/app shows. The code goes into the page over the supervisor
     socket and never enters the conversation. A saved login's code is only minted on its saved origin(s)."""
-    from agent.redact import register_vault_redaction_value
-    from agent.vault_backends.unlock import can_prompt_here, get_code_prompt_callback
-    from agent.vault_login_classifier import LoginControl, build_fill_js, build_inspection_js, build_otp_fills, classify_otp_controls
+    from hermes_agent.agent.redact import register_vault_redaction_value
+    from hermes_agent.agent.vault_backends.unlock import can_prompt_here, get_code_prompt_callback
+    from hermes_agent.agent.vault_login_classifier import LoginControl, build_fill_js, build_inspection_js, build_otp_fills, classify_otp_controls
 
     effective_task_id = task_id or "default"
     backend, meta = _saved_login(handle)
@@ -475,7 +475,7 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None, *, with_ident
     The password is resolved server-side and injected via in-page JS over
     the supervisor CDP WebSocket; the result reports only counts/metadata.
     """
-    from agent.vault_backends import UnlockRequired, backend_for_handle
+    from hermes_agent.agent.vault_backends import UnlockRequired, backend_for_handle
 
     effective_task_id = task_id or "default"
     backend = backend_for_handle(handle)
@@ -533,8 +533,8 @@ def _fill_bound_page(backend: Any, handle: str, meta: Any, page_origin: str, eff
                      with_identifier: bool = False) -> str:
     """Inspect the page, resolve the item's secret and write it; runs inside the backend's fill_context
     after the origin guard passed. ``with_identifier`` also writes the login's (non-secret) identifier."""
-    from agent.redact import register_vault_redaction_value
-    from agent.vault_login_classifier import (
+    from hermes_agent.agent.redact import register_vault_redaction_value
+    from hermes_agent.agent.vault_login_classifier import (
         ClassifiedLoginControl,
         LoginControl,
         build_fill_js,
@@ -544,8 +544,8 @@ def _fill_bound_page(backend: Any, handle: str, meta: Any, page_origin: str, eff
         select_checkout_fills,
         select_password_fill,
     )
-    from agent.vault_backends import UnlockRequired
-    from agent.vault_store import ADDRESS_FIELDS, PAYMENT_FIELDS, scrub_secret_from_text
+    from hermes_agent.agent.vault_backends import UnlockRequired
+    from hermes_agent.agent.vault_store import ADDRESS_FIELDS, PAYMENT_FIELDS, scrub_secret_from_text
 
     # ── Inspect + classify page controls ────────────────────────────────────
     nonce = secrets.token_hex(8)  # binds this fill to THIS inspection's stamps

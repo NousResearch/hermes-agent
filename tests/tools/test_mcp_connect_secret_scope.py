@@ -9,7 +9,7 @@ from contextlib import contextmanager
 
 import pytest
 
-from agent.secret_scope import current_secret_scope, set_multiplex_active
+from hermes_agent.agent.secret_scope import current_secret_scope, set_multiplex_active
 from hermes_cli import env_loader
 from hermes_constants import (
     get_hermes_home,
@@ -136,7 +136,7 @@ REMOTE = {"url": "https://example.invalid/mcp", "headers": {"Authorization": f"B
 def _boot_scope(home):
     """The gateway's boot-time ``_profile_runtime_scope`` shape: home override plus a secret scope
     SNAPSHOT built now — before the profile's secret source may have answered."""
-    from agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_secret_scope
+    from hermes_agent.agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_secret_scope
     home_token = set_hermes_home_override(str(home))
     token = set_secret_scope(build_profile_secret_scope(home), profile_home=str(home))
     try:

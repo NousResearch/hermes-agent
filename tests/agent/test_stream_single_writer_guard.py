@@ -1,7 +1,7 @@
 """Regression tests for the best-effort single-writer fence accessors.
 
 The streaming paths in ``chat_completion_helpers`` and ``codex_runtime`` reach
-the #65991 single-writer fence through :mod:`agent.stream_single_writer` instead
+the #65991 single-writer fence through :mod:`hermes_agent.agent.stream_single_writer` instead
 of calling ``agent._claim_stream_writer()`` directly. That indirection exists so
 an agent object that doesn't expose the fence (a version-skewed checkout, a
 duck-typed agent, a test double) degrades to "no fence" rather than aborting the
@@ -12,8 +12,8 @@ These tests assert the fence's *contract*: it may drop a provably superseded
 stream, but it must never fence (or crash) the sole legitimate writer.
 """
 
-import run_agent
-from agent.stream_single_writer import claim_stream_writer, stream_writer_is_current
+from hermes_agent import run_agent
+from hermes_agent.agent.stream_single_writer import claim_stream_writer, stream_writer_is_current
 
 
 

@@ -15,8 +15,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
-import agent.conversation_compression as cc
-from agent.conversation_compression import (
+import hermes_agent.agent.conversation_compression as cc
+from hermes_agent.agent.conversation_compression import (
     CompressionCommitFence,
     context_compression_timed_out,
     mark_context_compression_timed_out,
@@ -119,14 +119,14 @@ class TestResolveContextCompressionTimeouts:
     def _no_aux_floor(self, monkeypatch):
         # The aux compression request budget floors the idle window (#114594); pin it off so the legacy
         # clamps below are judged on their own, and on in the dedicated test.
-        import agent.auxiliary_client as aux
+        import hermes_agent.agent.auxiliary_client as aux
         monkeypatch.setattr(aux, "_effective_aux_timeout", lambda task, timeout: 0.0)
 
 
     def test_idle_is_floored_at_the_aux_compression_request_budget(self, monkeypatch):
         """The host must never judge silence before the summary request itself would time out; a budget
         above the ceiling raises the ceiling too, and a larger explicit idle is kept."""
-        import agent.auxiliary_client as aux
+        import hermes_agent.agent.auxiliary_client as aux
         monkeypatch.setattr(aux, "_effective_aux_timeout", lambda task, timeout: 300.0)
         assert resolve_context_compression_timeouts({}) == (300.0, 600.0)
         assert resolve_context_compression_timeouts({"context_timeout_seconds": 900}) == (900.0, 900.0)
@@ -354,7 +354,7 @@ class TestRunCompressContextWithProgressTimeout:
             def emit(self, record):
                 records.append(record)
 
-        comp_logger = logging.getLogger("agent.conversation_compression")
+        comp_logger = logging.getLogger("hermes_agent.agent.conversation_compression")
         handler = _Capture(level=logging.WARNING)
         comp_logger.addHandler(handler)
         try:
@@ -443,7 +443,7 @@ class TestRunCompressContextWithProgressTimeout:
 
 
     def test_propagates_conversation_context_into_worker(self):
-        from agent.portal_tags import (
+        from hermes_agent.agent.portal_tags import (
             get_conversation_context,
             reset_conversation_context,
             set_conversation_context,
@@ -507,7 +507,7 @@ class TestCompressContextForwarderOwnsTimeout:
     """AIAgent._compress_context wraps when no caller fence is supplied."""
 
     def test_owned_timeout_skips_hung_compress(self, monkeypatch):
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         agent = object.__new__(AIAgent)
         agent.session_id = "s1"
@@ -520,7 +520,7 @@ class TestCompressContextForwarderOwnsTimeout:
         agent.context_compressor._consecutive_timeout_failures = 0
         # Use the real record_timeout_failure method so the cooldown ladder
         # is exercised end-to-end (not auto-mocked by MagicMock).
-        from agent.context_compressor import ContextCompressor
+        from hermes_agent.agent.context_compressor import ContextCompressor
         agent.context_compressor.record_timeout_failure = (
             ContextCompressor.record_timeout_failure.__get__(
                 agent.context_compressor, MagicMock
@@ -544,15 +544,15 @@ class TestCompressContextForwarderOwnsTimeout:
                 fence.finish_commit()
 
         monkeypatch.setattr(
-            "agent.conversation_compression.compress_context",
+            "hermes_agent.agent.conversation_compression.compress_context",
             fake_compress,
         )
         monkeypatch.setattr(
-            "agent.conversation_compression.resolve_context_compression_timeouts",
+            "hermes_agent.agent.conversation_compression.resolve_context_compression_timeouts",
             lambda compression_cfg=None: (0.05, 0.2),
         )
         monkeypatch.setattr(
-            "agent.portal_tags.get_conversation_context",
+            "hermes_agent.agent.portal_tags.get_conversation_context",
             lambda: object(),
         )
 
@@ -573,7 +573,7 @@ class TestCompressContextForwarderOwnsTimeout:
             agent.context_compressor._record_compression_failure_cooldown.call_args[0]
         )
         assert cooldown_args[0] > 0
-        from agent.session_activity import ActivityProvenance
+        from hermes_agent.agent.session_activity import ActivityProvenance
 
         agent._touch_activity.assert_called_with(
             "context compression timed out",
@@ -581,8 +581,8 @@ class TestCompressContextForwarderOwnsTimeout:
         )
 
     def test_owned_total_ceiling_reports_progress_accurately(self, monkeypatch):
-        from run_agent import AIAgent
-        from agent.context_compressor import ContextCompressor
+        from hermes_agent.run_agent import AIAgent
+        from hermes_agent.agent.context_compressor import ContextCompressor
 
         agent = object.__new__(AIAgent)
         agent.session_id = "s1"
@@ -611,19 +611,19 @@ class TestCompressContextForwarderOwnsTimeout:
             return messages, "sys"
 
         monkeypatch.setattr(
-            "agent.conversation_compression.compress_context",
+            "hermes_agent.agent.conversation_compression.compress_context",
             streaming_compress,
         )
         monkeypatch.setattr(
-            "agent.conversation_compression.resolve_context_compression_timeouts",
+            "hermes_agent.agent.conversation_compression.resolve_context_compression_timeouts",
             lambda compression_cfg=None: (0.05, 0.15),
         )
         monkeypatch.setattr(
-            "agent.conversation_compression.resolve_compression_fallback_route",
+            "hermes_agent.agent.conversation_compression.resolve_compression_fallback_route",
             lambda: None,
         )
         monkeypatch.setattr(
-            "agent.portal_tags.get_conversation_context",
+            "hermes_agent.agent.portal_tags.get_conversation_context",
             lambda: object(),
         )
 
@@ -649,7 +649,7 @@ class TestCompressContextForwarderOwnsTimeout:
 
     def test_fallback_prompt_resolved_lazily_on_timeout(self, monkeypatch):
         """Eager prompt rebuild must not run before compression starts."""
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         agent = object.__new__(AIAgent)
         agent.session_id = "s1"
@@ -678,15 +678,15 @@ class TestCompressContextForwarderOwnsTimeout:
             return messages, "sys"
 
         monkeypatch.setattr(
-            "agent.conversation_compression.compress_context",
+            "hermes_agent.agent.conversation_compression.compress_context",
             fake_compress,
         )
         monkeypatch.setattr(
-            "agent.conversation_compression.resolve_context_compression_timeouts",
+            "hermes_agent.agent.conversation_compression.resolve_context_compression_timeouts",
             lambda compression_cfg=None: (0.05, 0.2),
         )
         monkeypatch.setattr(
-            "agent.portal_tags.get_conversation_context",
+            "hermes_agent.agent.portal_tags.get_conversation_context",
             lambda: object(),
         )
 
@@ -703,7 +703,7 @@ class TestCompressContextForwarderOwnsTimeout:
         agent._emit_warning.assert_called_once()
 
     def test_caller_fence_bypasses_owned_wrapper(self, monkeypatch):
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         agent = object.__new__(AIAgent)
         agent.session_id = "s1"
@@ -717,18 +717,18 @@ class TestCompressContextForwarderOwnsTimeout:
             return ([{"role": "assistant", "content": "ok"}], "sys")
 
         monkeypatch.setattr(
-            "agent.conversation_compression.compress_context",
+            "hermes_agent.agent.conversation_compression.compress_context",
             fake_compress,
         )
         # If the owned wrapper ran, this would raise — prove we never call it.
         monkeypatch.setattr(
-            "agent.conversation_compression.run_compress_context_with_progress_timeout",
+            "hermes_agent.agent.conversation_compression.run_compress_context_with_progress_timeout",
             lambda **kwargs: (_ for _ in ()).throw(
                 AssertionError("owned wrapper must not run")
             ),
         )
         monkeypatch.setattr(
-            "agent.portal_tags.get_conversation_context",
+            "hermes_agent.agent.portal_tags.get_conversation_context",
             lambda: object(),
         )
 

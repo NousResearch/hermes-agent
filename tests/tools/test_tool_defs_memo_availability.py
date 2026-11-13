@@ -176,7 +176,7 @@ def _tool_results(server):
 def test_long_running_agent_bridge_recovers_after_mcp_reconnect(mail_state, clock):
     """Composed: one AIAgent across turns, real bridge dispatch, the mail server recovering
     between turns without re-registering (the reconnect path keeps its registered names)."""
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
     from tests.fakes.fake_llm_provider import MODEL_ID, FakeLLMServer, Text, ToolCall
 
     script = [
@@ -224,7 +224,7 @@ def direct_tools():
 
 
 def _direct_agent():
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     return AIAgent(model="test-model", provider="openai", api_key="unused-test-key",
                    base_url="http://127.0.0.1:9/v1", enabled_toolsets=BOTH, quiet_mode=True,
@@ -308,7 +308,7 @@ def tool_search_on():
 
 
 def _agent(enabled_toolsets):
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     return AIAgent(model="test-model", provider="openai", api_key="unused-test-key",
                    base_url="http://127.0.0.1:9/v1", enabled_toolsets=enabled_toolsets, quiet_mode=True,

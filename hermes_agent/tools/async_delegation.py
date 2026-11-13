@@ -119,7 +119,7 @@ def _db_path():
 
 
 def _connect() -> sqlite3.Connection:
-    from agent.runtime_session_store import WorkerPersistenceError, is_worker_process
+    from hermes_agent.agent.runtime_session_store import WorkerPersistenceError, is_worker_process
     if is_worker_process():
         raise WorkerPersistenceError('worker_delegation_ledger_unavailable')
     return open_state_db(_db_path(), "state.db (async_delegation)")
@@ -381,7 +381,7 @@ def restore_undelivered_completions(target_queue) -> int:
     ownership, otherwise a brand-new session adopts a dead session's delegation results seconds after boot
     (#64484).
     """
-    from agent.runtime_session_store import is_worker_process
+    from hermes_agent.agent.runtime_session_store import is_worker_process
     if is_worker_process():
         # The ordinary owner restores delivery-only results; a compute import
         # must neither reap that owner's ledger nor steal its delivery queue.

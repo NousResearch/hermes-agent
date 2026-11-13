@@ -4,9 +4,9 @@ An install from any surface (the onboarding plugins card, Settings, ``hermes plu
 serve backend) makes the plugin's MCP tools and skills usable in this profile's open chats at once
 (``hermes_cli.plugins_activation.load_and_go_live``) and queues the notice here, one per plugin key: a
 second install or update of the same plugin replaces its notice. The notice rides the next tool result
-of the running turn (``agent/tool_executor.py``), after its content: a new row not yet flushed, so no
+of the running turn (``hermes_agent/agent/tool_executor.py``), after its content: a new row not yet flushed, so no
 cached byte moves. When no tool runs again this turn, the next user message carries it instead
-(``agent/turn_context.py::_merge_gateway_notes``). Either way it is popped, so it is delivered once.
+(``hermes_agent/agent/turn_context.py::_merge_gateway_notes``). Either way it is popped, so it is delivered once.
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ from __future__ import annotations
 import threading
 from typing import Any
 
-from agent.message_content import flatten_message_text
+from hermes_agent.agent.message_content import flatten_message_text
 
 _QUEUED = "_plugin_live_notes"
 _IN_BATCH = "_plugin_notes_in_tool_batch"

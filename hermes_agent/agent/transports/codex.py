@@ -1,6 +1,6 @@
 """OpenAI Responses API (Codex) transport.
 
-Owns format conversion/normalization on top of agent/codex_responses_adapter.py —
+Owns format conversion/normalization on top of hermes_agent/agent/codex_responses_adapter.py —
 NOT client lifecycle, streaming, or the _run_codex_stream() call path.
 """
 
@@ -10,15 +10,15 @@ import logging
 import re
 from typing import Any, Callable, Optional
 
-from agent.reasoning_effort import (
+from hermes_agent.agent.reasoning_effort import (
     CODEX_ASTRA_EFFORTS, CODEX_LEGACY_EFFORTS,
     XAI_GROK46_EFFORTS, XAI_LEGACY_EFFORTS, clamp_effort, is_astra_model,
     # Same declared vocabulary + shared clamp as the main Codex transport (agent.reasoning_effort):
     # per-model — "max" availability varies; "minimal"/"ultra" clamp to a listed level.
     codex_supported_efforts,
 )
-from agent.transports.base import ProviderTransport
-from agent.transports.types import NormalizedResponse, ToolCall
+from hermes_agent.agent.transports.base import ProviderTransport
+from hermes_agent.agent.transports.types import NormalizedResponse, ToolCall
 
 logger = logging.getLogger(__name__)
 
@@ -174,7 +174,7 @@ def _xai_prefers_native_web_search() -> bool:
     reintroducing it).
     """
     try:
-        from agent.web_search_registry import get_active_search_provider
+        from hermes_agent.agent.web_search_registry import get_active_search_provider
 
         provider = get_active_search_provider()
         if provider is not None:
@@ -210,7 +210,7 @@ def _openai_prefers_native_web_search() -> bool:
     OpenAI-compatible endpoint does not implement the server-side tool.
     """
     try:
-        from agent.web_search_registry import get_active_search_provider
+        from hermes_agent.agent.web_search_registry import get_active_search_provider
 
         provider = get_active_search_provider()
         if provider is not None:
@@ -312,7 +312,7 @@ def _resolve_reasoning(model: str, params: dict[str, Any]) -> tuple[Any, bool]:
     # repeatedly leaked internal levels like "ultra" to the wire (#89503 class) or clamped one rung below a
     # model's real ceiling (#87279).
     if params.get("is_xai_responses", False):
-        from agent.model_metadata import is_grok_46_family
+        from hermes_agent.agent.model_metadata import is_grok_46_family
 
         # Grok 4.6 accepts xhigh; older Grok tops out at high.
         supported = XAI_GROK46_EFFORTS if is_grok_46_family(model) else XAI_LEGACY_EFFORTS
@@ -395,7 +395,7 @@ def _codex_efforts_for_route(model: Any, base_url: Any, *, is_codex_backend: boo
     key (#76255). Only the exact OpenAI origin is judged: a relay serving those ids may translate.
     """
     if not is_codex_backend and _is_openai_api_origin(base_url):
-        from agent.model_metadata import openai_model_rejects_reasoning
+        from hermes_agent.agent.model_metadata import openai_model_rejects_reasoning
 
         if openai_model_rejects_reasoning(str(model or "")):
             return ()
@@ -463,7 +463,7 @@ def _profile_declared_efforts(provider: Any, model: Optional[str], base_url: Any
         name = str(provider or "").strip().lower()
         declared = None
         if base_url:
-            from agent.model_metadata import _infer_provider_from_url
+            from hermes_agent.agent.model_metadata import _infer_provider_from_url
 
             inferred = _infer_provider_from_url(str(base_url))
             if inferred and inferred != name:
@@ -495,7 +495,7 @@ def _is_post_tool_replay(messages: Optional[list[dict[str, Any]]]) -> bool:
     replayed, so only the *trailing* messages are checked (a whole-history scan
     would make suppression sticky). Call ids resolve like ``_chat_messages_to_responses_input``.
     """
-    from agent.codex_responses_adapter import _canonical_call_id_from_fc, _split_responses_tool_id
+    from hermes_agent.agent.codex_responses_adapter import _canonical_call_id_from_fc, _split_responses_tool_id
 
     def _pair_ids(raw: Any, explicit: Any = None) -> set:
         embedded_call_id, item_id = _split_responses_tool_id(raw)
@@ -585,7 +585,7 @@ def _sends_all_turns(model: Any, params: dict[str, Any]) -> bool:
     """``reasoning.context: "all_turns"`` goes only to api.openai.com models in the live-verified family
     table (gpt-5.4/5.5 default to ``current_turn`` and discard replayed earlier-turn blobs without it;
     o-series and gpt-5.1-5.3 400 on it). Never the ChatGPT Codex backend: acceptance there is unverified."""
-    from agent.codex_responses_adapter import openai_reasoning_family
+    from hermes_agent.agent.codex_responses_adapter import openai_reasoning_family
 
     return (
         params.get("is_codex_backend") is not True and _is_openai_api_origin(params.get("base_url"))
@@ -609,7 +609,7 @@ def _reasoning_fields(
     include = ["reasoning.encrypted_content"] if replay_encrypted_reasoning else []
     fields: dict[str, Any] = {}
     if enabled and is_xai_responses:
-        from agent.model_metadata import grok_supports_reasoning_effort
+        from hermes_agent.agent.model_metadata import grok_supports_reasoning_effort
 
         fields["include"] = include
         if grok_supports_reasoning_effort(model):
@@ -664,7 +664,7 @@ class ResponsesApiTransport(ProviderTransport):
         """First ``invalid_encrypted_content`` rung: drop the replayed blobs the failing request could not vouch
         for (not stamped by exactly its endpoint + model), keeping the session's own continuity. Returns the
         count removed from the first list; 0 means only the route's own blobs were sent."""
-        from agent.codex_responses_adapter import strip_unverified_reasoning_items
+        from hermes_agent.agent.codex_responses_adapter import strip_unverified_reasoning_items
 
         if self._last_issuer_kind is None or self._last_issuer_model is None:
             return 0
@@ -680,7 +680,7 @@ class ResponsesApiTransport(ProviderTransport):
 
     def _resolve_issuer_kind(self, params: dict[str, Any], endpoint: Any = None) -> str:
         """Classify the current Responses endpoint from transport params (stashed for normalize_response)."""
-        from agent.codex_responses_adapter import _classify_responses_issuer, responses_endpoint_quirks
+        from hermes_agent.agent.codex_responses_adapter import _classify_responses_issuer, responses_endpoint_quirks
 
         base_url = params.get("base_url")
         self._last_issuer_kind = _classify_responses_issuer(
@@ -693,7 +693,7 @@ class ResponsesApiTransport(ProviderTransport):
 
     def convert_messages(self, messages: list[dict[str, Any]], **kwargs) -> Any:
         """Convert OpenAI chat messages to Responses API input items."""
-        from agent.codex_responses_adapter import (
+        from hermes_agent.agent.codex_responses_adapter import (
             _chat_messages_to_responses_input, _wire_model_identity, responses_endpoint_quirks,
         )
 
@@ -710,7 +710,7 @@ class ResponsesApiTransport(ProviderTransport):
 
     def convert_tools(self, tools: Optional[list[dict[str, Any]]]) -> Any:
         """Convert OpenAI tool schemas to Responses API function definitions."""
-        from agent.codex_responses_adapter import _responses_tools
+        from hermes_agent.agent.codex_responses_adapter import _responses_tools
 
         return _responses_tools(tools)
 
@@ -731,7 +731,7 @@ class ResponsesApiTransport(ProviderTransport):
         drives the Codex ``session_id`` header (a delegated child sends its siblings' shared scope there
         instead, see ``prompt_cache_scope.sibling_cache_scope``), and is the cache-scope fallback when no ``cache_scope_id``
         is given cache_scope_id: str | None — rotation-stable logical scope id (compression-lineage root;
-        see agent/prompt_cache_scope.py). Preferred over session_id when deriving the prompt_cache_key
+        see hermes_agent/agent/prompt_cache_scope.py). Preferred over session_id when deriving the prompt_cache_key
         content hash and the xAI x-grok-conv-id header; the Codex x-client-request-id header mirrors the
         resulting body key. Keeps the cache warm across context-compression session rotation (#79017)
         max_tokens: int | None — max_output_tokens timeout: float | None — per-request timeout forwarded to
@@ -741,7 +741,7 @@ class ResponsesApiTransport(ProviderTransport):
         is_xai_responses: bool — xAI/Grok backend profile_reasoning: dict | None — the claiming profile's
         ``reasoning_payload`` (sent verbatim on ``responses_profile_reasoning`` endpoints)
         """
-        from agent.prompt_builder import DEFAULT_AGENT_IDENTITY
+        from hermes_agent.agent.prompt_builder import DEFAULT_AGENT_IDENTITY
 
         instructions = params.get("instructions", "")
         payload_messages = messages
@@ -750,7 +750,7 @@ class ResponsesApiTransport(ProviderTransport):
             payload_messages = messages[1:]
         instructions = instructions or DEFAULT_AGENT_IDENTITY
 
-        from agent.codex_responses_adapter import responses_endpoint_quirks
+        from hermes_agent.agent.codex_responses_adapter import responses_endpoint_quirks
 
         endpoint = responses_endpoint_quirks(params.get("base_url"))
         is_codex_backend = params.get("is_codex_backend") is True
@@ -773,7 +773,7 @@ class ResponsesApiTransport(ProviderTransport):
         )
 
         # Lazy: provider plugins import this transport during model_metadata init.
-        from agent.model_metadata import strip_codex_context_variant_suffix as _strip_ctx_variant
+        from hermes_agent.agent.model_metadata import strip_codex_context_variant_suffix as _strip_ctx_variant
         request_overrides = params.get("request_overrides") or {}
         # An override may rewrite the wire model; provenance must be stamped with what actually goes out.
         wire_model = _strip_ctx_variant(request_overrides.get("model", model))
@@ -850,7 +850,7 @@ class ResponsesApiTransport(ProviderTransport):
         # Grok 4.6 accepts Priority Processing, but continue stripping stale or unsupported tier values on
         # every other xAI path. See #28490 and #84799.
         if is_xai_responses:
-            from agent.model_metadata import is_grok_46_family
+            from hermes_agent.agent.model_metadata import is_grok_46_family
 
             if not (is_grok_46_family(model) and kwargs.get("service_tier") == "priority"):
                 kwargs.pop("service_tier", None)
@@ -867,7 +867,7 @@ class ResponsesApiTransport(ProviderTransport):
             # identity); ``x-client-request-id`` mirrors the body cache key so both agree.
             # The backend only matches its prompt cache inside one ``session_id``, so sibling
             # subagents send the scope they share instead of their own id.
-            from agent.prompt_cache_scope import is_sibling_cache_scope
+            from hermes_agent.agent.prompt_cache_scope import is_sibling_cache_scope
             header_session_id = _cache_scope if is_sibling_cache_scope(_cache_scope) else session_id
             headers = {
                 "session_id": str(header_session_id) if header_session_id else None,
@@ -900,7 +900,7 @@ class ResponsesApiTransport(ProviderTransport):
 
     def normalize_response(self, response: Any, **kwargs) -> NormalizedResponse:
         """Normalize Codex Responses API response to NormalizedResponse."""
-        from agent.codex_responses_adapter import _normalize_codex_response
+        from hermes_agent.agent.codex_responses_adapter import _normalize_codex_response
 
         msg, finish_reason = _normalize_codex_response(
             response, issuer_kind=kwargs.get("issuer_kind") or self._last_issuer_kind,
@@ -965,7 +965,7 @@ class ResponsesApiTransport(ProviderTransport):
         ``drop_replay_item_ids`` mirrors the endpoint quirk (``not responses_endpoint_quirks(url).replay_item_ids``).
         ``sanitize_harmony_tokens`` is for the ChatGPT Codex backend only (rejects literal Harmony tokens).
         """
-        from agent.codex_responses_adapter import _preflight_codex_api_kwargs
+        from hermes_agent.agent.codex_responses_adapter import _preflight_codex_api_kwargs
 
         normalized = _preflight_codex_api_kwargs(
             api_kwargs, allow_stream=allow_stream, drop_replay_item_ids=drop_replay_item_ids,
@@ -977,6 +977,6 @@ class ResponsesApiTransport(ProviderTransport):
 
 
 # Auto-register on import
-from agent.transports import register_transport
+from hermes_agent.agent.transports import register_transport
 
 register_transport("codex_responses", ResponsesApiTransport)

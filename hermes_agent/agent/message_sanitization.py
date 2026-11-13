@@ -14,9 +14,9 @@ import re
 from functools import partial
 from typing import Any, Callable, Iterable, NamedTuple
 
-from agent.agent_runtime_helpers_placeholders import _INTERRUPTED_PLACEHOLDER, hidden_interrupt_placeholder_row
-from agent.message_metadata import DB_ROW_SNAPSHOT
-from agent.vision_message_prep import _provider_model_key
+from hermes_agent.agent.agent_runtime_helpers_placeholders import _INTERRUPTED_PLACEHOLDER, hidden_interrupt_placeholder_row
+from hermes_agent.agent.message_metadata import DB_ROW_SNAPSHOT
+from hermes_agent.agent.vision_message_prep import _provider_model_key
 
 logger = logging.getLogger(__name__)
 
@@ -93,7 +93,7 @@ def _sanitize_messages(messages: list, fix: Callable[[str], str], *, deep: bool)
     """Apply ``fix`` to the string fields of every message dict in-place (content / part text,
     name, tool_call arguments, non-core top-level str fields). ``deep=True`` adds tool_call ids,
     function names, and NESTED non-core fields (``reasoning_details`` from byte-level models)."""
-    from agent.context_compressor import _DB_PERSISTED_MARKER
+    from hermes_agent.agent.context_compressor import _DB_PERSISTED_MARKER
 
     found = False
     for msg in messages:
@@ -149,7 +149,7 @@ def sanitize_outbound_kwargs(agent: Any, api_kwargs: dict) -> None:
         # inside dict/list containers.
         if api_kwargs.get("tools") is not None and api_kwargs["tools"] is getattr(agent, "tools", None):
             # Lazy: conversation_loop imports this module (cycle).
-            from agent.conversation_loop import _clone_message_for_send
+            from hermes_agent.agent.conversation_loop import _clone_message_for_send
 
             api_kwargs["tools"] = _clone_message_for_send(api_kwargs["tools"])
         _sanitize_structure_non_ascii(api_kwargs)
@@ -307,7 +307,7 @@ def close_interrupted_tool_sequence(messages: list, final_response: Any = None, 
     if not isinstance(last, dict) or last.get("role") != "tool":
         return False
     text = final_response if isinstance(final_response, str) else ""
-    from agent.message_metadata import append_message
+    from hermes_agent.agent.message_metadata import append_message
 
     stripped = text.strip()
     if not stripped or stripped == _INTERRUPTED_PLACEHOLDER:
@@ -370,8 +370,8 @@ def _strip_images_from_messages(messages: list) -> bool:
     a caller rewriting a persisted row must not leave bytes that replay them next turn. The
     current callers pass per-call clones, where this is a no-op.
     """
-    from agent.context_compressor import _DB_PERSISTED_MARKER
-    from agent.turn_context import drop_stale_api_content
+    from hermes_agent.agent.context_compressor import _DB_PERSISTED_MARKER
+    from hermes_agent.agent.turn_context import drop_stale_api_content
 
     found = False
     to_delete = []
@@ -511,12 +511,12 @@ def _tc_set(tc: Any, key: str, value: Any) -> None:
 
 # --------------------------------------------------------------------------- call_id policy — single owner
 # (audit F4, incident chain I4) ---------------------------------------------------------------------------
-# Three forked policy sites converged here: * agent/codex_responses_adapter.py `_deterministic_call_id` —
+# Three forked policy sites converged here: * hermes_agent/agent/codex_responses_adapter.py `_deterministic_call_id` —
 # hash synthesis when a provider omits call_id (fa3ab2ffd0 → e45f2b39e2). *
-# run_agent.AIAgent._get_tool_call_id_static — `call_id or id` coalescing for dicts and SDK objects. *
-# run_agent.AIAgent._uniquify_tool_call_ids — duplicate-id repair with deterministic `_d<n>` suffixes
+# hermes_agent.run_agent.AIAgent._get_tool_call_id_static — `call_id or id` coalescing for dicts and SDK objects. *
+# hermes_agent.run_agent.AIAgent._uniquify_tool_call_ids — duplicate-id repair with deterministic `_d<n>` suffixes
 # (#58327 loss class). NOT consolidated (different scheme on purpose):
-# agent/transports/codex_event_projector._deterministic_call_id maps codex app-server ITEM ids
+# hermes_agent/agent/transports/codex_event_projector._deterministic_call_id maps codex app-server ITEM ids
 # (`codex_<type>_<item_id>`), not chat tool-call content; merging the two would change ids and invalidate
 # prompt caches. HARD INVARIANT: everything here must stay deterministic (never uuid4) and byte-identical
 # for existing inputs — these ids feed prompt-cache prefixes.
@@ -742,7 +742,7 @@ def route_reasoning_carriers(provider: Any, base_url: Any) -> frozenset:
         None,
     )
     if carriers is None:
-        from agent.model_metadata import is_local_endpoint
+        from hermes_agent.agent.model_metadata import is_local_endpoint
 
         carriers = _LOCAL_CARRIERS if base_url and is_local_endpoint(str(base_url)) else _DEFAULT_CARRIERS
     if RD not in carriers and carriers and _profile_declares_native_details(provider_lower):
@@ -783,7 +783,7 @@ def stale_thinking_reaches_wire(api_mode: Any, provider: Any, model: Any, base_u
     A runtime rejection is not visible here; both sides then over-charge identically.
     """
     if (api_mode or "") == "anthropic_messages":
-        from agent.anthropic_thinking_policy import native_anthropic_preserves_prior_thinking
+        from hermes_agent.agent.anthropic_thinking_policy import native_anthropic_preserves_prior_thinking
         if native_anthropic_preserves_prior_thinking(base_url, model):
             return True
     if not api_mode:
@@ -798,7 +798,7 @@ def stale_thinking_reaches_wire(api_mode: Any, provider: Any, model: Any, base_u
 def _orphaned_tool_calls(messages: list[Any], i: int) -> bool:
     """True when assistant row *i* has a tool call whose result is not in the tool rows right after it:
     the converter strips that ``tool_use`` and so invalidates the turn's signed thinking."""
-    from agent.anthropic_message_convert import _sanitize_tool_id
+    from hermes_agent.agent.anthropic_message_convert import _sanitize_tool_id
 
     ids = {_sanitize_tool_id(tc.get("id") or "") for tc in messages[i].get("tool_calls") or [] if isinstance(tc, dict)}
     if not ids:
@@ -847,9 +847,9 @@ def native_anthropic_row_costs(messages: list[Any]) -> list[tuple[Any, int]]:
     (``replayed_reasoning.signed_thinking_replay_tokens``), not its readable summary. Judged over
     the whole list: whether a signature survives depends on the rows around it.
     """
-    from agent.anthropic_message_convert import assistant_replay_carrier
-    from agent.model_metadata import estimate_tokens_rough
-    from agent.replayed_reasoning import signed_thinking_replay_tokens
+    from hermes_agent.agent.anthropic_message_convert import assistant_replay_carrier
+    from hermes_agent.agent.model_metadata import estimate_tokens_rough
+    from hermes_agent.agent.replayed_reasoning import signed_thinking_replay_tokens
 
     fate = _anthropic_thinking_fate(messages)
     rows: list[tuple[Any, int]] = []

@@ -179,7 +179,7 @@ registry.register(
 
 ## Agent 循环拦截工具
 
-某些工具（`todo`、`memory`、`session_search`、`delegate_task`）需要访问每个会话的 agent 状态。这些工具在到达 registry 之前会被 `run_agent.py` 拦截。registry 仍然保存它们的 schema，但如果绕过拦截，`dispatch()` 会返回一个回退错误。
+某些工具（`todo`、`memory`、`session_search`、`delegate_task`）需要访问每个会话的 agent 状态。这些工具在到达 registry 之前会被 `hermes_agent/run_agent.py` 拦截。registry 仍然保存它们的 schema，但如果绕过拦截，`dispatch()` 会返回一个回退错误。
 
 ## 可选：Setup Wizard 集成
 

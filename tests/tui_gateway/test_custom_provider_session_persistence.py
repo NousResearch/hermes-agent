@@ -119,7 +119,7 @@ def _make_agent_with_override(override, monkeypatch, config, model_cfg=None):
         patch("hermes_agent.tui_gateway.server._load_reasoning_config", return_value=None),
         patch("hermes_agent.tui_gateway.server._load_service_tier", return_value=None),
         patch("hermes_agent.tui_gateway.server._load_enabled_toolsets", return_value=None),
-        patch("run_agent.AIAgent") as mock_agent,
+        patch("hermes_agent.run_agent.AIAgent") as mock_agent,
     ):
         from hermes_agent.tui_gateway.server import _make_agent
 

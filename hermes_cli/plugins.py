@@ -115,7 +115,7 @@ VALID_HOOKS: set[str] = {
     "pre_tool_call", "post_tool_call", "transform_terminal_output", "transform_tool_result",
     # transform_llm_output: return a replacement string (first non-None wins) or None.
     "transform_llm_output", "pre_llm_call", "post_llm_call",
-    # Streaming observers (agent.plugin_stream_hooks), off the token path; payloads are immutable
+    # Streaming observers (hermes_agent.agent.plugin_stream_hooks), off the token path; payloads are immutable
     # normalized text/lifecycle and cannot transform the stream.
     "on_stream_start", "on_stream_delta", "on_stream_end", "on_interim_message",
     # pre_verify: once per turn when the agent edited code and is about to verify/finish. Return
@@ -123,12 +123,12 @@ VALID_HOOKS: set[str] = {
     # going; anything else finishes. Bounded by agent.max_verify_nudges.
     "pre_verify", "pre_api_request", "post_api_request", "api_request_error",
     # pre/post_auxiliary_call: once per physical provider attempt of an auxiliary LLM call
-    # (agent/auxiliary_hooks.py — titling, compression, MoA, vision, approval, ...). Same payload
+    # (hermes_agent/agent/auxiliary_hooks.py — titling, compression, MoA, vision, approval, ...). Same payload
     # shape as pre/post_api_request plus ``aux_task``; distinct events so turn-scoped
     # ``*_api_request`` subscribers never receive auxiliary traffic (#79733). Observers; fail-open.
     "pre_auxiliary_call", "post_auxiliary_call",
     # transform_api_error_classification: once per failed API call BEFORE
-    # agent/error_classifier.classify_api_error(). Kwargs: provider, model, status_code, error_type,
+    # hermes_agent/agent/error_classifier.classify_api_error(). Kwargs: provider, model, status_code, error_type,
     # error_code, error_message, error_body, error, approx_tokens, context_length, num_messages.
     # Return None or {"reason": <FailoverReason name> (required), "retryable"/"should_compress"/
     # "should_rotate_credential"/"should_fallback": bool, "message": str, "error_context": dict}.
@@ -155,7 +155,7 @@ VALID_HOOKS: set[str] = {
     # on_room_member_activity: a hosted Group Chat member's live runtime events (tool.started/completed,
     # request.opened, message.delta, reasoning.delta, turn.error, ...) stamped with room_id, thread_id,
     # member_id, turn_id, task_id, execution_generation. Observer, queued per consumer off the token
-    # path (agent.plugin_stream_hooks); never written to the durable room log. Kwargs: those
+    # path (hermes_agent.agent.plugin_stream_hooks); never written to the durable room log. Kwargs: those
     # coordinates + kind, seq, payload (the client-safe session event payload, approvals redacted).
     "on_room_member_activity",
     # pre_transcription: after provider resolution, BEFORE any backend runs. Kwargs: file_path,
@@ -394,7 +394,7 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
     def discover_and_load(self, force: bool = False) -> None:
         """Scan all plugin sources and load each plugin found; ``force`` unloads first so config
         changes / new bundled backends become visible in long-lived sessions."""
-        from agent.safe_worker_policy import safe_worker_enabled
+        from hermes_agent.agent.safe_worker_policy import safe_worker_enabled
 
         if safe_worker_enabled() or plugin_discovery_suppressed():
             # Safe workers never discover; a config-only read of a profile this process must not
@@ -446,8 +446,8 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
     def _re_register_config_hooks_after_force(self) -> None:
         """Restore config-owned shell hooks/outbound webhooks after a force clear; each guarded
         independently so one failing does not skip the other."""
-        for label, module_name in (("shell-hook", "agent.shell_hooks"),
-                                   ("outbound-webhook", "agent.outbound_webhooks")):
+        for label, module_name in (("shell-hook", "hermes_agent.agent.shell_hooks"),
+                                   ("outbound-webhook", "hermes_agent.agent.outbound_webhooks")):
             try:
                 importlib.import_module(module_name).re_register_config_hooks()
             except Exception as exc:
@@ -457,7 +457,7 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         """If any plugin secret source is enabled (per its own ``is_enabled(cfg)``, honoring custom
         activation), reset the cache and re-apply. Fail-open: never raises into discover_and_load."""
         try:
-            from agent.secret_sources.registry import list_plugin_sources
+            from hermes_agent.agent.secret_sources.registry import list_plugin_sources
             from hermes_cli.env_loader import load_hermes_dotenv, reset_secret_source_cache
             plugin_sources = list_plugin_sources()
         except Exception:
@@ -502,7 +502,7 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
             # fire builds its scope in run_one_job and only then, on its first agent build, discovers
             # plugins; under multiplex semantics the load above is hydrate-only, so fold the values
             # into the installed scope or THIS fire never sees the plugin credential.
-            from agent.secret_scope import refresh_installed_secret_scope
+            from hermes_agent.agent.secret_scope import refresh_installed_secret_scope
             refresh_installed_secret_scope(Path(home))
             if not enabled_names:
                 self._plugin_secret_sources_reconciled = False  # cleanup succeeded; nothing left to drop
@@ -879,7 +879,7 @@ def has_enabled_agent_plugin_mcp(raw_config: Mapping[str, Any]) -> bool:
 def discover_plugins(force: bool = False) -> None:
     """Discover and load all plugins (idempotent; ``force=True`` rescans). Joins an in-flight
     background discovery instead of racing a second scan."""
-    from agent.safe_worker_policy import safe_worker_enabled
+    from hermes_agent.agent.safe_worker_policy import safe_worker_enabled
 
     if safe_worker_enabled():
         return
@@ -895,7 +895,7 @@ def start_background_plugin_discovery() -> None:
     """Run discovery in a daemon thread to overlap the rest of CLI startup (~150ms). Every
     synchronous consumer joins it via :func:`discover_plugins`, so no one sees a half-loaded
     registry. No-op when already done or in flight."""
-    from agent.safe_worker_policy import safe_worker_enabled
+    from hermes_agent.agent.safe_worker_policy import safe_worker_enabled
 
     if safe_worker_enabled():
         return
@@ -1281,7 +1281,7 @@ def get_plugin_error_classification(
     hint flags -> bool, ``message`` capped at 500) or ``None``. Privacy: inputs may be unredacted.
 
     A callback returns ``None`` to decline, or a dict with a required ``"reason"`` (a
-    :class:`agent.error_classifier.FailoverReason` member or its string name) plus optional recovery-hint
+    :class:`hermes_agent.agent.error_classifier.FailoverReason` member or its string name) plus optional recovery-hint
     overrides. Dispatch is run-all-then-pick-first: ``invoke_hook`` runs every registered callback with
     failures isolated, then the first result carrying a valid reason wins in registration order — mirroring
     :func:`get_pre_tool_call_block_message`, invalid or irrelevant returns are silently ignored so a
@@ -1289,7 +1289,7 @@ def get_plugin_error_classification(
     losing results are skipped with a runtime warning (the #64714 skipped-transform rule) so conflicting
     provider plugins are visible in logs instead of silently shadowed.
     """
-    from agent.error_classifier import FailoverReason
+    from hermes_agent.agent.error_classifier import FailoverReason
     hook_results = invoke_hook(
         "transform_api_error_classification", provider=provider, model=model,
         status_code=status_code, error_type=error_type, error_code=error_code,

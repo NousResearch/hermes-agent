@@ -10,11 +10,11 @@ turn that had already finished its loop.
 Two guarantees keep the next occurrence diagnosable:
 
 1. ``finalize_turn`` stamps the activity clock at ``Turn ended``
-   (``agent/turn_finalizer.py::_log_turn_exit``): a stall in the post-loop tail is
+   (``hermes_agent/agent/turn_finalizer.py::_log_turn_exit``): a stall in the post-loop tail is
    measured — and surfaced — from when the loop actually ended, and the watchdog's
    ``last activity`` names ``turn end logged`` instead of a stale API call.
 2. The watchdog dumps all thread stacks (turn thread marked) the moment it fires
-   (``agent/turn_liveness.py``), so the wedged frame lands in errors.log without
+   (``hermes_agent/agent/turn_liveness.py``), so the wedged frame lands in errors.log without
    the reporter needing py-spy or faulthandler setup.
 """
 
@@ -23,7 +23,7 @@ from __future__ import annotations
 import logging
 import threading
 
-from agent.turn_finalizer import finalize_turn
+from hermes_agent.agent.turn_finalizer import finalize_turn
 
 
 class _StubBudget:
@@ -36,7 +36,7 @@ class _StubCompressor:
     last_prompt_tokens = 0
 
 
-from agent.status_output import StatusOutputMixin
+from hermes_agent.agent.status_output import StatusOutputMixin
 
 
 class _StubAgent(StatusOutputMixin):
@@ -171,7 +171,7 @@ def test_turn_end_stamp_failure_never_breaks_the_finalizer():
 def test_watchdog_dump_the_turn_thread_stack_when_it_fires(caplog):
     """The stall surface must include every thread's stack (turn thread marked),
     so the wedged frame is in errors.log on the next occurrence (#131740)."""
-    from agent import turn_liveness
+    from hermes_agent.agent import turn_liveness
 
     class _Agent:
         session_id = "stalled-session"
@@ -207,7 +207,7 @@ def test_watchdog_dump_the_turn_thread_stack_when_it_fires(caplog):
         deactivate_turn=lambda: None,
     )
     try:
-        with caplog.at_level(logging.ERROR, logger="agent.turn_liveness"):
+        with caplog.at_level(logging.ERROR, logger="hermes_agent.agent.turn_liveness"):
             watchdog._surface_stall(
                 turn_liveness.ActivitySnapshot(generation=1, activity_ts=None, idle_seconds=610.0)
             )

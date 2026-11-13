@@ -425,7 +425,7 @@ def _transcribe_local(
 def _read_block_error(file_path: str) -> Optional[dict[str, Any]]:
     """Refuse to ship a credential store (auth.json, .env, OAuth tokens) to an STT provider.
     Mirrors the image-gen / video-gen read guards."""
-    from agent.file_safety import get_read_block_error
+    from hermes_agent.agent.file_safety import get_read_block_error
     blocked = get_read_block_error(file_path)
     return _error_result(blocked) if blocked else None
 

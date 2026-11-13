@@ -21,7 +21,7 @@ from urllib.parse import urlparse
 
 import httpx
 
-from agent.errors import EmptyStreamError
+from hermes_agent.agent.errors import EmptyStreamError
 
 logger = logging.getLogger(__name__)
 
@@ -56,7 +56,7 @@ def scoped_aws_session_kwargs() -> dict[str, str]:
     from hermes_constants import get_hermes_home_override
     if get_hermes_home_override() is None:
         return {}
-    from agent.secret_scope import current_secret_scope, is_multiplex_active
+    from hermes_agent.agent.secret_scope import current_secret_scope, is_multiplex_active
     scope = current_secret_scope() or {}
     kwargs = {kw: scope[var].strip() for kw, var in _AWS_SCOPED_CREDENTIAL_VARS
               if (scope.get(var) or "").strip()}
@@ -268,7 +268,7 @@ def resolve_bedrock_bearer_token(env: Optional[dict[str, str]] = None) -> str:
         return (env.get("AWS_BEARER_TOKEN_BEDROCK", "") or "").strip()
     from hermes_constants import get_hermes_home_override
     if get_hermes_home_override() is not None:
-        from agent.secret_scope import get_secret
+        from hermes_agent.agent.secret_scope import get_secret
         return (get_secret("AWS_BEARER_TOKEN_BEDROCK", "") or "").strip()
     return (os.environ.get("AWS_BEARER_TOKEN_BEDROCK", "") or "").strip()
 
@@ -502,7 +502,7 @@ def bind_bedrock_runtime(agent, base_url: str, api_mode: str) -> None:
     agent._anthropic_base_url = base_url
     agent._is_anthropic_oauth = False
     if api_mode == "anthropic_messages":
-        from agent.anthropic_adapter import build_anthropic_bedrock_client
+        from hermes_agent.agent.anthropic_adapter import build_anthropic_bedrock_client
         from hermes_cli.timeouts import get_provider_request_timeout
         agent._anthropic_client = build_anthropic_bedrock_client(
             agent._bedrock_region, timeout=get_provider_request_timeout("bedrock", getattr(agent, "model", None)))
@@ -1262,7 +1262,7 @@ def _claude_converse_reasoning(model: str, reasoning_config: dict, max_tokens: O
     """Claude thinking over Converse: the same ``thinking``/``output_config`` the AnthropicBedrock path sends,
     carried in ``additionalModelRequestFields`` (AWS: "pass the thinking and effort parameters inside
     additionalModelRequestFields"); manual budgets also need temperature 1 and room above the budget."""
-    from agent.anthropic_adapter import _thinking_kwargs
+    from hermes_agent.agent.anthropic_adapter import _thinking_kwargs
 
     thinking = _thinking_kwargs(reasoning_config, model, max_tokens or 0)
     fields = {k: thinking[k] for k in ("thinking", "output_config") if k in thinking}
@@ -1326,7 +1326,7 @@ def build_converse_kwargs(
     kwargs: dict[str, Any] = {"modelId": model, "messages": converse_messages, "inferenceConfig": inference_config}
     if system_prompt:
         kwargs["system"] = system_prompt + [dict(_CACHE_POINT)] if "system" in cache_at else system_prompt
-    from agent.anthropic_adapter import _forbids_sampling_params
+    from hermes_agent.agent.anthropic_adapter import _forbids_sampling_params
     if not _forbids_sampling_params(model) and not _BEDROCK_XAI_GROK_NO_SAMPLING_RE.match(model or ""):
         inference_config.update({k: v for k, v in (("temperature", temperature), ("topP", top_p)) if v is not None})
     if stop_sequences:
@@ -1360,7 +1360,7 @@ def call_converse(
 ) -> SimpleNamespace:
     """Non-streaming Converse call → OpenAI-compatible response. Retries once without a rejected cachePoint
     placement; evicts the cached client on stale-connection errors."""
-    from agent.prompt_caching import is_one_shot_request
+    from hermes_agent.agent.prompt_caching import is_one_shot_request
     client = _get_bedrock_runtime_client(region, model)
     # Auxiliary-only entry point: a one-shot's cachePoint is a write no later call reads.
     kwargs = build_converse_kwargs(model, messages, tools, max_tokens, temperature, top_p, stop_sequences, guardrail_config,
@@ -1479,13 +1479,13 @@ def _extract_provider_from_arn(arn: str) -> str:
 
 
 # --- Bedrock model context lengths ---
-# Static fallback when the live probe is unavailable (agent/model_metadata.py). Keys match by longest
+# Static fallback when the live probe is unavailable (hermes_agent/agent/model_metadata.py). Keys match by longest
 # substring, so versioned entries win over the generic "anthropic.claude-opus-4".
 
 BEDROCK_CONTEXT_LENGTHS: dict[str, int] = {
     # https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-xai-grok-4-6.html
     "xai.grok-4.6": 500_000,
-    # Anthropic Claude: 1M GA vs 200K. The 1M entries must match agent/model_metadata.py
+    # Anthropic Claude: 1M GA vs 200K. The 1M entries must match hermes_agent/agent/model_metadata.py
     # DEFAULT_CONTEXT_LENGTHS or context compresses early — Opus 5 reached that table and not this
     # one, so the offline path resolved 128K for a 1M model (#74263); the pairing is now tested.
     **dict.fromkeys((
@@ -1546,7 +1546,7 @@ def probe_bedrock_context_length(model_id: str, region: str) -> Optional[int]:
     """Discover a model's real context window by provoking a length error — the only authoritative source
     ("prompt is too long: 1300032 tokens > 1000000 maximum"); length validation runs before inference so the
     probe costs nothing. An accepted tier is a safe lower bound; None (no creds/network/unparseable) → static table."""
-    from agent.model_metadata import parse_context_limit_from_error
+    from hermes_agent.agent.model_metadata import parse_context_limit_from_error
     try:
         client = _get_bedrock_runtime_client(region, model_id)
     except Exception as exc:  # boto3 missing / credential resolution failure
@@ -1585,7 +1585,7 @@ def bedrock_static_context_length(model_id: str) -> Optional[int]:
     family = _CATALOG_FAMILY_ID_RE.search(lowered)
     if family is None:
         return None
-    from agent.model_metadata import DEFAULT_CONTEXT_LENGTHS, _longest_key_match
+    from hermes_agent.agent.model_metadata import DEFAULT_CONTEXT_LENGTHS, _longest_key_match
     hit = _longest_key_match(DEFAULT_CONTEXT_LENGTHS, family.group(1))
     return hit[1] if hit else None
 
@@ -1616,7 +1616,7 @@ def get_bedrock_context_length(model_id: str, region: str = "", probe: bool = Tr
             "Bedrock model %s has no known context window; using the static %s-token fallback "
             "(not a detected limit). %s", model_id, f"{BEDROCK_DEFAULT_CONTEXT_LENGTH:,}", override,
         )
-    from agent.context_default_record import mark_context_defaulted
+    from hermes_agent.agent.context_default_record import mark_context_defaulted
     mark_context_defaulted()
     return BEDROCK_DEFAULT_CONTEXT_LENGTH
 
@@ -1626,7 +1626,7 @@ def get_bedrock_context_length(model_id: str, region: str = "", probe: bool = Tr
 # (#114476). System-defined `inference-profile/us.anthropic...` ARNs embed the model id and need no
 # lookup. The ARN's own region (field 4) is authoritative for the control-plane call: the runtime
 # region / base_url may differ, and an empty region must not skip the lookup because the
-# production caller (agent/model_metadata.py::_resolve_bedrock_context_length) passes none.
+# production caller (hermes_agent/agent/model_metadata.py::_resolve_bedrock_context_length) passes none.
 _APPLICATION_PROFILE_ARN_RE = re.compile(r":application-inference-profile/")
 _ARN_REGION_RE = re.compile(r"^arn:[^:]+:bedrock:([a-z0-9-]+):", re.IGNORECASE)
 _inference_profile_model_cache: dict[str, str] = {}

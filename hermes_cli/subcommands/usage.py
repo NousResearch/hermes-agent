@@ -1,7 +1,7 @@
 """``hermes usage`` — the account-limits block of the REPL ``/usage`` without starting a session.
 
 Script-friendly Codex / Anthropic / OpenRouter quota view (issue #33094): same fetch and renderer as
-``/usage`` (``agent.account_usage``), same credential resolution as a session with no live agent, plus
+``/usage`` (``hermes_agent.agent.account_usage``), same credential resolution as a session with no live agent, plus
 ``--json`` for cron jobs and shell loops. Slim redo of #81819 (@himanusia).
 """
 
@@ -37,7 +37,7 @@ def usage_snapshot_document(snapshot) -> dict:
 
 def cmd_usage(args: argparse.Namespace) -> int:
     """Print the configured (or ``--provider``) account's usage windows; exit 1 when nothing could be fetched."""
-    from agent.account_usage import fetch_account_usage, render_account_usage_lines
+    from hermes_agent.agent.account_usage import fetch_account_usage, render_account_usage_lines
     from hermes_cli.runtime_provider import resolve_requested_provider
 
     provider = resolve_requested_provider(getattr(args, "provider", None))

@@ -15,7 +15,7 @@ from pathlib import Path
 import weakref
 from typing import Any, Callable, Optional
 
-from agent.i18n import t
+from hermes_agent.agent.i18n import t
 
 from hermes_agent.gateway.kanban_watchers_common import _list_boards, _to_thread_process_service, logger
 from hermes_agent.gateway.wake import session_owned_by_profile
@@ -79,7 +79,7 @@ _LOCAL_PATH_RE = re.compile(r"(?<![\w:/])(?:/(?:Users|home|private|tmp|var|etc|w
 
 def _safe_review_reason(value: Any, limit: int = 160) -> str:
     """Return a mobile-friendly review reason safe for external delivery."""
-    from agent.redact import redact_sensitive_text
+    from hermes_agent.agent.redact import redact_sensitive_text
 
     reason = redact_sensitive_text("" if value is None else str(value), force=True, redact_url_credentials=True)
     reason = " ".join(_LOCAL_PATH_RE.sub("[local path]", reason).split())

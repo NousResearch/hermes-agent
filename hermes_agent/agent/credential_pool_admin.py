@@ -6,11 +6,11 @@ from dataclasses import replace
 from typing import Any, Optional, Tuple, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from agent.credential_pool import PooledCredential
+    from hermes_agent.agent.credential_pool import PooledCredential
 
 
 def _cleared_status_copy(entry: PooledCredential) -> PooledCredential:
-    from agent.credential_pool import _CLEAR_STATUS
+    from hermes_agent.agent.credential_pool import _CLEAR_STATUS
 
     # The reset marker lets a live pool in another process tell "reset after my cooldown" from
     # "never had a status" — both read as bare None on disk (#89415).
@@ -41,7 +41,7 @@ class CredentialPoolAdminMixin:
         disk-recency merge reads a cleared ``last_status_at`` (None -> epoch 0)
         as a stale snapshot and would copy a still-binding cooldown back.
         """
-        from agent.credential_pool import _CLEAR_STATUS
+        from hermes_agent.agent.credential_pool import _CLEAR_STATUS
 
         with self._lock:
             stale = [
@@ -70,7 +70,7 @@ class CredentialPoolAdminMixin:
 
     def move_entry(self, credential_id: str, priority: int) -> Optional[PooledCredential]:
         """Place an entry at a clamped zero-based position and persist contiguous priorities."""
-        from agent.credential_pool import _normalize_pool_priorities
+        from hermes_agent.agent.credential_pool import _normalize_pool_priorities
 
         with self._lock:
             entry = self._find(lambda e: e.id == credential_id)
@@ -112,7 +112,7 @@ class CredentialPoolAdminMixin:
             return None, None, f'No credential matching "{raw}".'
 
     def add_entry(self, entry: PooledCredential) -> PooledCredential:
-        from agent.credential_pool import (
+        from hermes_agent.agent.credential_pool import (
             _borrowed_single_use_pool_root, _next_priority, _profile_owns_pool_provider,
             write_credential_pool,
         )

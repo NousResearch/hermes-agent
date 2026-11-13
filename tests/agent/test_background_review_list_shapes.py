@@ -1,5 +1,5 @@
 """Regression tests for the list-shape AttributeError guards in
-``agent.background_review.summarize_background_review_actions`` (#59437).
+``hermes_agent.agent.background_review.summarize_background_review_actions`` (#59437).
 
 The outer ``_run_review_in_thread`` used to crash with
 ``'list' object has no attribute 'get'`` every time a tool response
@@ -30,7 +30,7 @@ from __future__ import annotations
 
 import json
 
-from agent import background_review as bg
+from hermes_agent.agent import background_review as bg
 
 
 def _make_skill_tool_message(change, operations=None):

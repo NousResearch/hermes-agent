@@ -27,9 +27,9 @@ Hermes 已经可以通过自定义 provider 路径与任何 OpenAI 兼容的端�
    - `base_url`
    - `api_key`
    - `source`
-3. `run_agent.py` 使用 `api_mode` 决定如何构建和发送请求。
+3. `hermes_agent/run_agent.py` 使用 `api_mode` 决定如何构建和发送请求。
 4. `hermes_cli/models.py` 和 `hermes_cli/main.py` 使 provider 在 CLI 中可见。（`hermes_cli/setup.py` 自动委托给 `main.py`——无需在此处做任何修改。）
-5. `agent/auxiliary_client.py` 和 `agent/model_metadata.py` 保持辅助任务和 token 预算正常运作。
+5. `hermes_agent/agent/auxiliary_client.py` 和 `hermes_agent/agent/model_metadata.py` 保持辅助任务和 token 预算正常运作。
 
 核心抽象是 `api_mode`。
 
@@ -67,7 +67,7 @@ Hermes 已经可以通过自定义 provider 路径与任何 OpenAI 兼容的端�
 此路径包含路径 A 的所有内容，另加：
 
 - `agent/` 中的 provider 适配器
-- `run_agent.py` 中用于请求构建、分发、用量提取、中断处理和响应规范化的分支
+- `hermes_agent/run_agent.py` 中用于请求构建、分发、用量提取、中断处理和响应规范化的分支
 - 适配器测试
 
 ## 文件清单
@@ -78,8 +78,8 @@ Hermes 已经可以通过自定义 provider 路径与任何 OpenAI 兼容的端�
 2. `hermes_cli/models.py`
 3. `hermes_cli/runtime_provider.py`
 4. `hermes_cli/main.py`
-5. `agent/auxiliary_client.py`
-6. `agent/model_metadata.py`
+5. `hermes_agent/agent/auxiliary_client.py`
+6. `hermes_agent/agent/model_metadata.py`
 7. 测试
 8. `website/docs/` 下的用户文档
 
@@ -90,7 +90,7 @@ Hermes 已经可以通过自定义 provider 路径与任何 OpenAI 兼容的端�
 ### 原生 / 非 OpenAI provider 额外需要
 
 10. `agent/<provider>_adapter.py`
-11. `run_agent.py`
+11. `hermes_agent/run_agent.py`
 12. 如果需要 provider SDK，则修改 `pyproject.toml`
 
 ## 快速路径：简单 API key provider
@@ -249,7 +249,7 @@ kimi:model-name
 
 这里有两个文件需要关注：
 
-### `agent/auxiliary_client.py`
+### `hermes_agent/agent/auxiliary_client.py`
 
 如果这是一个直接 API key provider，在 `_API_KEY_PROVIDER_AUX_MODELS` 中添加一个廉价/快速的默认辅助模型。
 
@@ -261,15 +261,15 @@ kimi:model-name
 
 如果 provider 没有合理的辅助默认值，辅助任务可能会严重回退，或意外使用昂贵的主模型。
 
-### `agent/model_metadata.py`
+### `hermes_agent/agent/model_metadata.py`
 
 为 provider 的模型添加上下文长度，以保持 token 预算、压缩阈值和限制的合理性。
 
-## 第 7 步：如果 provider 是原生的，添加适配器和 `run_agent.py` 支持
+## 第 7 步：如果 provider 是原生的，添加适配器和 `hermes_agent/run_agent.py` 支持
 
 如果 provider 不是普通的 chat completions，将 provider 专属逻辑隔离在 `agent/<provider>_adapter.py` 中。
 
-保持 `run_agent.py` 专注于编排。它应该调用适配器辅助函数，而不是在整个文件中内联构建 provider 请求载荷。
+保持 `hermes_agent/run_agent.py` 专注于编排。它应该调用适配器辅助函数，而不是在整个文件中内联构建 provider 请求载荷。
 
 原生 provider 通常需要在以下地方进行工作：
 
@@ -281,10 +281,10 @@ kimi:model-name
 - 解析 token
 - 将 OpenAI 风格的对话消息转换为 provider 的请求格式
 - 如有需要，转换工具 schema
-- 将 provider 响应规范化为 `run_agent.py` 期望的格式
+- 将 provider 响应规范化为 `hermes_agent/run_agent.py` 期望的格式
 - 提取用量和 finish-reason 数据
 
-### `run_agent.py`
+### `hermes_agent/run_agent.py`
 
 搜索 `api_mode` 并审计每个切换点。至少验证：
 
@@ -299,7 +299,7 @@ kimi:model-name
 - 回退模型激活可以干净地切换到新 provider
 - 摘要生成和记忆刷新路径仍然正常工作
 
-同时在 `run_agent.py` 中搜索 `self.client.`。任何假设标准 OpenAI 客户端存在的代码路径，在原生 provider 使用不同客户端对象或 `self.client = None` 时都可能中断。
+同时在 `hermes_agent/run_agent.py` 中搜索 `self.client.`。任何假设标准 OpenAI 客户端存在的代码路径，在原生 provider 使用不同客户端对象或 `self.client = None` 时都可能中断。
 
 ### Prompt 缓存和 provider 专属请求字段
 
@@ -388,8 +388,8 @@ python hermes setup
 - [ ] 在 `hermes_cli/models.py` 中添加模型目录
 - [ ] 在 `hermes_cli/runtime_provider.py` 中添加运行时分支
 - [ ] 在 `hermes_cli/main.py` 中添加 CLI 接线（setup.py 自动继承）
-- [ ] 在 `agent/auxiliary_client.py` 中添加辅助模型
-- [ ] 在 `agent/model_metadata.py` 中添加上下文长度
+- [ ] 在 `hermes_agent/agent/auxiliary_client.py` 中添加辅助模型
+- [ ] 在 `hermes_agent/agent/model_metadata.py` 中添加上下文长度
 - [ ] 更新运行时 / CLI 测试
 - [ ] 更新用户文档
 
@@ -399,7 +399,7 @@ python hermes setup
 
 - [ ] OpenAI 兼容清单中的所有内容
 - [ ] 在 `agent/<provider>_adapter.py` 中添加适配器
-- [ ] 在 `run_agent.py` 中支持新的 `api_mode`
+- [ ] 在 `hermes_agent/run_agent.py` 中支持新的 `api_mode`
 - [ ] 中断 / 重建路径正常工作
 - [ ] 用量和 finish-reason 提取正常工作
 - [ ] 回退路径正常工作
@@ -424,7 +424,7 @@ python hermes setup
 
 主聊天路径可能正常工作，而摘要、记忆刷新或视觉辅助失败，因为辅助路由从未更新。
 
-### 5. 原生 provider 分支隐藏在 `run_agent.py` 中
+### 5. 原生 provider 分支隐藏在 `hermes_agent/run_agent.py` 中
 
 搜索 `api_mode` 和 `self.client.`。不要假设显而易见的请求路径是唯一的。
 

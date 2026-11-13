@@ -14,7 +14,7 @@ import pytest
 pytest.importorskip("fastapi")
 from fastapi.testclient import TestClient
 
-from agent import secret_scope
+from hermes_agent.agent import secret_scope
 
 ACME_YAML = (
     "custom_providers:\n"

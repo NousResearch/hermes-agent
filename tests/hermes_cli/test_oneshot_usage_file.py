@@ -94,7 +94,7 @@ class TestAuxiliaryLedger:
         import threading
         import time
 
-        from agent import title_generator
+        from hermes_agent.agent import title_generator
         from hermes_cli.oneshot import _attach_auxiliary_usage
         from hermes_agent.hermes_state import SessionDB
 

@@ -11,7 +11,7 @@ def test_llm_oneshot_passes_any_task_key_through(monkeypatch):
         seen.append(kwargs["task"])
         return "t"
 
-    monkeypatch.setattr("agent.oneshot.run_oneshot", fake_oneshot)
+    monkeypatch.setattr("hermes_agent.agent.oneshot.run_oneshot", fake_oneshot)
     replies = [server._methods["llm.oneshot"]("r", {"input": "x", **({"task": task} if task else {})})
                for task in ("my_digest", "  ", None)]
     assert [reply.get("result") for reply in replies] == [{"text": "t"}] * 3, replies

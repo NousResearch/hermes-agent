@@ -5,7 +5,7 @@ Providers register via ``PluginContext.register_image_gen_provider()`` (from
 the one selected by ``image_gen.provider`` services every ``image_generate`` call.
 One tool covers text-to-image and editing: ``image_url`` / ``reference_image_urls``
 route to the provider's edit endpoint, otherwise text-to-image. Mirrors
-``agent/video_gen_provider.py``. Response dicts come from :func:`success_response`
+``hermes_agent/agent/video_gen_provider.py``. Response dicts come from :func:`success_response`
 / :func:`error_response` (``success, image, model, prompt, aspect_ratio, modality,
 provider`` + ``error, error_type`` on failure).
 """
@@ -17,8 +17,8 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from agent import provider_media
-from agent.provider_base import CatalogProviderBase
+from hermes_agent.agent import provider_media
+from hermes_agent.agent.provider_base import CatalogProviderBase
 
 logger = logging.getLogger(__name__)
 

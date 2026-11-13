@@ -153,7 +153,7 @@ def _bind_whole_profile(
     its launch semantics (environment over ``.env``, the frozen launch ``TERMINAL_*`` overlay,
     unstamped), so systemd / ``op run`` injection still resolves; any other home gets its own
     ``.env`` and sources only, stamped as routed. A caller's *env_overlay* replaces the default."""
-    from agent.secret_scope import _is_process_home
+    from hermes_agent.agent.secret_scope import _is_process_home
     if _is_process_home(Path(scope.agent)):  # the pinned launch identity, not a mirrored HERMES_HOME
         from hermes_agent.tui_gateway.launch_profile_policy import launch_secret_scope, launch_terminal_env
         return bind_state(scope, secrets=launch_secret_scope(Path(scope.agent)) if secrets is None else secrets,

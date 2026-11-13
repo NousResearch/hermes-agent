@@ -175,7 +175,7 @@ async def test_reply_to_a_cron_delivery_is_framed_as_a_past_report():
 def test_compaction_keeps_the_request_not_a_long_quoted_cron_report():
     """The cron pointer is stripped like every reply pointer, so a long quoted report never
     stands in for (and truncates away) the user's actual request in the compaction snapshot."""
-    from agent.context_compressor import ContextCompressor, _authored_request_text
+    from hermes_agent.agent.context_compressor import ContextCompressor, _authored_request_text
 
     source = _source()
     request = "Ignore that report and help me debug the login page."

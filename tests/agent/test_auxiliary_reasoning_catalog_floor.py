@@ -13,8 +13,8 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 import hermes_cli.models as models_mod
-from agent import auxiliary_reasoning_floor
-from agent.auxiliary_client import call_llm
+from hermes_agent.agent import auxiliary_reasoning_floor
+from hermes_agent.agent.auxiliary_client import call_llm
 from hermes_cli import models_reasoning_caps
 
 _CATALOG = [
@@ -44,11 +44,11 @@ def _title_request(model):
     client.base_url = "https://openrouter.ai/api/v1"
     client.chat.completions.create.return_value = {"ok": True}
     with (
-        patch("agent.auxiliary_client._resolve_task_provider_model",
+        patch("hermes_agent.agent.auxiliary_client._resolve_task_provider_model",
               return_value=("openrouter", model, None, "sk-or-x", None)),
-        patch("agent.auxiliary_client._get_cached_client", return_value=(client, model)),
-        patch("agent.auxiliary_client._validate_llm_response", side_effect=lambda resp, _task, **_kw: resp),
-        patch("agent.auxiliary_client._try_payment_fallback", return_value=None),
+        patch("hermes_agent.agent.auxiliary_client._get_cached_client", return_value=(client, model)),
+        patch("hermes_agent.agent.auxiliary_client._validate_llm_response", side_effect=lambda resp, _task, **_kw: resp),
+        patch("hermes_agent.agent.auxiliary_client._try_payment_fallback", return_value=None),
     ):
         call_llm(task="title_generation", messages=[{"role": "user", "content": "hi"}],
                  reasoning_config={"enabled": False})

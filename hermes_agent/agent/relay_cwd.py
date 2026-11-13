@@ -41,7 +41,7 @@ def resolve_relay_scope_cwds(
 
     session_cwd = ""
     try:
-        from agent.runtime_cwd import scoped_session_cwd
+        from hermes_agent.agent.runtime_cwd import scoped_session_cwd
 
         session_cwd = _clean_cwd(scoped_session_cwd())
     except Exception:
@@ -76,7 +76,7 @@ def resolve_relay_scope_cwds(
 
     if not session_cwd and platform in {"", "cli"} and backend in {"", "local"}:
         try:
-            from agent.runtime_cwd import resolve_agent_cwd
+            from hermes_agent.agent.runtime_cwd import resolve_agent_cwd
 
             resolved = resolve_agent_cwd()
             session_cwd = _clean_cwd(

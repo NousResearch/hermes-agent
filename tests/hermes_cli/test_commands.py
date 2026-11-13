@@ -588,9 +588,9 @@ class TestGatewaySkillCollector:
             },
         }
         with (
-            patch("agent.skill_commands.get_skill_commands", return_value=fake_cmds),
+            patch("hermes_agent.agent.skill_commands.get_skill_commands", return_value=fake_cmds),
             patch("hermes_agent.tools.skills_tool.SKILLS_DIR", skills_dir),
-            patch("agent.skill_utils.get_external_skills_dirs", return_value=[]),
+            patch("hermes_agent.agent.skill_utils.get_external_skills_dirs", return_value=[]),
         ):
             entries, hidden = _collect_gateway_skill_entries(
                 platform="discord", max_slots=100, reserved_names=set(), desc_limit=100,
@@ -616,7 +616,7 @@ class TestGatewaySkillCollector:
             for i in range(20)
         }
         with (
-            patch("agent.skill_commands.get_skill_commands", return_value=fake_cmds),
+            patch("hermes_agent.agent.skill_commands.get_skill_commands", return_value=fake_cmds),
             patch("hermes_agent.tools.skills_tool.SKILLS_DIR", skills_dir),
             patch("hermes_cli.plugins.get_plugin_commands", return_value={"plug": {"description": "p"}}),
         ):
@@ -680,10 +680,10 @@ class TestTelegramMenuCommands:
         }
 
         with (
-            patch("agent.skill_commands.get_skill_commands", return_value=fake_cmds),
+            patch("hermes_agent.agent.skill_commands.get_skill_commands", return_value=fake_cmds),
             patch("hermes_agent.tools.skills_tool.SKILLS_DIR", local_dir),
             patch(
-                "agent.skill_utils.get_external_skills_dirs",
+                "hermes_agent.agent.skill_utils.get_external_skills_dirs",
                 return_value=[external_dir],
             ),
         ):
@@ -721,7 +721,7 @@ class TestTelegramMenuCommands:
             },
         }
         with (
-            patch("agent.skill_commands.get_skill_commands", return_value=fake_cmds),
+            patch("hermes_agent.agent.skill_commands.get_skill_commands", return_value=fake_cmds),
             patch("hermes_agent.tools.skills_tool.SKILLS_DIR", tmp_path / "skills"),
         ):
             (tmp_path / "skills").mkdir(exist_ok=True)
@@ -754,7 +754,7 @@ class TestTelegramMenuCommands:
             },
         }
         with (
-            patch("agent.skill_commands.get_skill_commands", return_value=fake_cmds),
+            patch("hermes_agent.agent.skill_commands.get_skill_commands", return_value=fake_cmds),
             patch("hermes_agent.tools.skills_tool.SKILLS_DIR", tmp_path / "skills"),
         ):
             (tmp_path / "skills").mkdir(exist_ok=True)
@@ -801,7 +801,7 @@ class TestTelegramMenuCommands:
 
         with (
             patch("hermes_cli.commands_platforms.telegram_bot_commands", return_value=fake_core),
-            patch("agent.skill_commands.get_skill_commands", return_value=fake_cmds),
+            patch("hermes_agent.agent.skill_commands.get_skill_commands", return_value=fake_cmds),
             patch("hermes_cli.plugins.get_plugin_commands", return_value=fake_plugins),
             patch("hermes_agent.tools.skills_tool.SKILLS_DIR", local_dir),
             patch("hermes_cli.commands_platforms._telegram_command_menu_config", return_value=menu_cfg),
@@ -842,7 +842,7 @@ class TestTelegramMenuCommands:
 
         with (
             patch("hermes_cli.commands_platforms.telegram_bot_commands", return_value=fake_core),
-            patch("agent.skill_commands.get_skill_commands", return_value=fake_cmds),
+            patch("hermes_agent.agent.skill_commands.get_skill_commands", return_value=fake_cmds),
             patch("hermes_agent.tools.skills_tool.SKILLS_DIR", local_dir),
             patch("hermes_cli.commands_platforms._telegram_command_menu_config", return_value=menu_cfg),
         ):
@@ -878,7 +878,7 @@ class TestTelegramMenuCommands:
 
         with (
             patch("hermes_cli.commands_platforms.telegram_bot_commands", return_value=fake_core),
-            patch("agent.skill_commands.get_skill_commands", return_value=fake_cmds),
+            patch("hermes_agent.agent.skill_commands.get_skill_commands", return_value=fake_cmds),
             patch("hermes_agent.tools.skills_tool.SKILLS_DIR", local_dir),
             patch("hermes_cli.commands_platforms._telegram_command_menu_config", return_value=menu_cfg),
         ):
@@ -906,7 +906,7 @@ class TestTelegramMenuCommands:
 
         with (
             patch("hermes_cli.plugins.get_plugin_commands", return_value=fake_plugins),
-            patch("agent.skill_commands.get_skill_commands", return_value={}),
+            patch("hermes_agent.agent.skill_commands.get_skill_commands", return_value={}),
             patch("hermes_agent.tools.skills_tool.SKILLS_DIR", local_dir),
             patch("hermes_cli.commands_platforms._telegram_command_menu_config", return_value=menu_cfg),
         ):
@@ -931,7 +931,7 @@ class TestTelegramMenuCommands:
 
         with (
             patch("hermes_cli.plugins.get_plugin_commands", return_value=fake_plugins),
-            patch("agent.skill_commands.get_skill_commands", return_value={}),
+            patch("hermes_agent.agent.skill_commands.get_skill_commands", return_value={}),
             patch("hermes_agent.tools.skills_tool.SKILLS_DIR", local_dir),
         ):
             menu, _hidden = telegram_menu_commands(max_commands=100)
@@ -1004,7 +1004,7 @@ class TestDiscordSkillCommandsByCategory:
 
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         with (
-            patch("agent.skill_commands.get_skill_commands", return_value=fake_cmds),
+            patch("hermes_agent.agent.skill_commands.get_skill_commands", return_value=fake_cmds),
             patch("hermes_agent.tools.skills_tool.SKILLS_DIR", tmp_path / "skills"),
         ):
             categories, _uncategorized, hidden = discord_skill_commands_by_category(
@@ -1061,10 +1061,10 @@ class TestDiscordSkillCommandsByCategory:
         }
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         with (
-            patch("agent.skill_commands.get_skill_commands", return_value=fake_cmds),
+            patch("hermes_agent.agent.skill_commands.get_skill_commands", return_value=fake_cmds),
             patch("hermes_agent.tools.skills_tool.SKILLS_DIR", local_skills_dir),
             patch(
-                "agent.skill_utils.get_external_skills_dirs",
+                "hermes_agent.agent.skill_utils.get_external_skills_dirs",
                 return_value=[external_dir],
             ),
         ):

@@ -3,9 +3,9 @@ writing a second one (#111868: a Desktop freeze during a slow first agent build 
 
 from types import SimpleNamespace
 
-from agent.turn_context import _stage_turn_user_message
+from hermes_agent.agent.turn_context import _stage_turn_user_message
 from hermes_agent.hermes_state import SessionDB
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 from hermes_agent.tui_gateway import server
 
 

@@ -1,4 +1,4 @@
-"""``message_agent``'s chain gate (``agent/bot_chain.py``): resolve each target to the identity the
+"""``message_agent``'s chain gate (``hermes_agent/agent/bot_chain.py``): resolve each target to the identity the
 receiving turn's author carries, ask the gate once per call, and dispatch what it admits.
 
 Runs before any transport starts. A reply to the bot whose message started this turn goes through
@@ -18,7 +18,7 @@ def recipient_key(raw_target: str, sender: Any) -> str:
     """The author id a turn started by ``raw_target`` would carry here, resolved in ``_dispatch``'s
     order: a registered peer, then a connection-qualified relay row, then a local bot (folder id,
     ``hermes``, friendly name), then any relay row."""
-    from agent.turn_author import bot_author_id
+    from hermes_agent.agent.turn_author import bot_author_id
     from hermes_agent.tools.bot_mode_dm import _PEER_TARGET_RE, _resolve_local_name
 
     name = raw_target.strip().lstrip("@")
@@ -76,7 +76,7 @@ def _definitely_not_sent(ack: dict) -> bool:
 
 def send_gated(targets: list[str], reply: bool, body: str, content_for, sender: Any) -> str:
     """Gate one ``message_agent`` call, then dispatch: the shared transports keep their own rules."""
-    from agent.bot_chain import admit_send
+    from hermes_agent.agent.bot_chain import admit_send
     from hermes_agent.tools.bot_mode_dm import _dispatch, _err
     from hermes_agent.tools.bot_mode_dm_coordination import fan_out
 

@@ -27,7 +27,7 @@ from typing import Any, Dict, Optional
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 
-from agent.file_safety import get_nt_namespace_error, get_write_denied_error, is_write_approval_required
+from hermes_agent.agent.file_safety import get_nt_namespace_error, get_write_denied_error, is_write_approval_required
 from hermes_cli import web_server_file_tickets as file_tickets
 from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.home_data_layout import SECRET_CACHE_STORES
@@ -79,7 +79,7 @@ _FS_READDIR_HIDDEN = {
 # Basenames the managed-files API must never list, read or download: credential
 # stores that become live secrets in the browsable tree the moment an operator
 # points the managed root at HERMES_HOME. Mirrors the two canonical guards
-# (agent.file_safety.get_read_block_error, gateway.platforms.base
+# (hermes_agent.agent.file_safety.get_read_block_error, gateway.platforms.base
 # ._ROOT_CREDENTIAL_FILES) so the Files tab never lags behind them.
 # These typically contain credentials (API keys, tokens) and exposing them through the dashboard file
 # browser is a security leak — see issue #57505.

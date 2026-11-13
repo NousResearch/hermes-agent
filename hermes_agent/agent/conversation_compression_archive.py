@@ -81,7 +81,7 @@ def newest_exact_held_id(
     A head row counts only while it still carries the persist marker. A ``here N``
     tail is marker-swept copies; its id counts when the copy kept one.
     """
-    from agent.context_compressor import _DB_PERSISTED_MARKER
+    from hermes_agent.agent.context_compressor import _DB_PERSISTED_MARKER
 
     exact: list[int] = []
     for message in messages or ():
@@ -113,7 +113,7 @@ def coverage_for_commit(
     dropped row does not throw away the coverage of everything else: the watermark
     would also archive rows another surface appended that the compressor never saw.
     """
-    from agent.context_compressor import _DB_PERSISTED_MARKER
+    from hermes_agent.agent.context_compressor import _DB_PERSISTED_MARKER
 
     newest = newest_exact_held_id(messages, verbatim_tail)
     role_of = getattr(session_db, "get_message_role", None)

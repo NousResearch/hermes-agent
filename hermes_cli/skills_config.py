@@ -10,7 +10,7 @@ PLATFORMS = {k: info.label for k, info in _PLATFORMS.items() if k != "api_server
 
 
 def _normalize_skill_names(values) -> set[str]:
-    """Config value -> set of skill names (mirrors ``agent.skill_utils._normalize_string_set``):
+    """Config value -> set of skill names (mirrors ``hermes_agent.agent.skill_utils._normalize_string_set``):
     ``None`` (YAML null) is empty and a bare scalar is a single-item list, NOT its characters.
 
     See #13026.
@@ -27,11 +27,11 @@ def _normalize_skill_names(values) -> set[str]:
 
 def get_disabled_skills(config: dict, platform: Optional[str] = None) -> set[str]:
     """Disabled skill names: the global list unioned with the platform list when given (globally
-    disabled stays disabled everywhere; mirrors ``agent.skill_utils.get_disabled_skill_names``)."""
+    disabled stays disabled everywhere; mirrors ``hermes_agent.agent.skill_utils.get_disabled_skill_names``)."""
     skills_cfg = config.get("skills") or {}
     if not isinstance(skills_cfg, dict):
         return set()
-    from agent.skill_utils import ESSENTIAL_SKILLS
+    from hermes_agent.agent.skill_utils import ESSENTIAL_SKILLS
     disabled = _normalize_skill_names(skills_cfg.get("disabled"))
     if platform is not None:
         platform_disabled = cfg_get(skills_cfg, "platform_disabled", platform)
@@ -43,7 +43,7 @@ def get_disabled_skills(config: dict, platform: Optional[str] = None) -> set[str
 def save_disabled_skills(config: dict, disabled: set[str], platform: Optional[str] = None):
     """Persist disabled skill names to config; essential skills (e.g. ``hermes-agent``) are
     silently dropped — they cannot be disabled from any surface."""
-    from agent.skill_utils import ESSENTIAL_SKILLS
+    from hermes_agent.agent.skill_utils import ESSENTIAL_SKILLS
     disabled = set(disabled) - ESSENTIAL_SKILLS
     config.setdefault("skills", {})
     if platform is None:

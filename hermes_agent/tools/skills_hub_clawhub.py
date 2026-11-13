@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
 
-from agent.retry_utils import parse_retry_after_seconds
+from hermes_agent.agent.retry_utils import parse_retry_after_seconds
 from hermes_agent.tools.skills_hub import _guarded_http_stream
 from hermes_agent.tools.skills_hub_models import (
     GuardedFetchMixin, SkillBundle, SkillMeta, SkillSource, _cache_metas, _cached_metas, _get_json,

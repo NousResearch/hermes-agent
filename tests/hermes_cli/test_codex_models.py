@@ -78,7 +78,7 @@ def test_picker_never_synthesizes_900k_for_pro_or_unknown_slugs():
 
 def test_catalog_identity_stays_stable_for_rotation_but_changes_with_route(monkeypatch):
     from hermes_cli import auth, codex_models
-    import agent.credential_pool as pool
+    import hermes_agent.agent.credential_pool as pool
 
     credentials = {"api_key": "first-token", "base_url": "https://first.example/codex/"}
     monkeypatch.setattr(auth, "resolve_codex_runtime_credentials", lambda **_: dict(credentials))
@@ -323,7 +323,7 @@ def test_catalog_requests_ask_as_the_newest_client(monkeypatch):
     import sys
     from urllib.parse import parse_qs, urlparse
 
-    from agent import model_metadata
+    from hermes_agent.agent import model_metadata
     from hermes_cli import codex_models
 
     seen_urls = []
@@ -383,7 +383,7 @@ def test_picker_catalog_honours_the_custom_codex_base(monkeypatch):
 def test_catalog_falls_back_to_the_ungated_sentinel_when_newest_client_is_rejected():
     """If the backend goes back to rejecting out-of-sequence versions (empty list or non-200), the
     ``0.0.0`` sentinel is tried next; a sentinel that is itself empty yields no entries."""
-    from agent.model_metadata import CODEX_UNGATED_CLIENT_VERSION, fetch_codex_catalog_entries
+    from hermes_agent.agent.model_metadata import CODEX_UNGATED_CLIENT_VERSION, fetch_codex_catalog_entries
 
     class _Resp:
         def __init__(self, status, models):

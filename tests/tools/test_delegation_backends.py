@@ -110,7 +110,7 @@ def _parent(session_id="root"):
 def test_selected_plugin_backend_extends_schema_and_routes_each_task(tmp_path, monkeypatch, recorded):
     _, manager = _home(tmp_path, monkeypatch, {"backend": "probe-options", "backends": {"probe-options": {"options": OPTIONS}}})
     try:
-        from agent.delegation_registry import get_active_provider
+        from hermes_agent.agent.delegation_registry import get_active_provider
         from hermes_agent.tools.delegate_tool import delegate_task
         from hermes_agent.tools.delegate_tool_config import _load_config
 
@@ -212,8 +212,8 @@ def test_a_saved_switch_refuses_the_previous_backends_parameter_and_names_the_fi
     """``/delegation <backend>`` saves config.yaml, and a parent with no tools of its own routes on it. A task
     sending a parameter that backend does not declare is refused alone, naming the backend, the parameter and the
     fix; it never runs on the backend's default route."""
-    from agent.delegation_provider import DelegationProvider
-    from agent.delegation_registry import _registry
+    from hermes_agent.agent.delegation_provider import DelegationProvider
+    from hermes_agent.agent.delegation_registry import _registry
 
     class Profiles(DelegationProvider):
         @property
@@ -231,7 +231,7 @@ def test_a_saved_switch_refuses_the_previous_backends_parameter_and_names_the_fi
     profiles = Profiles()
     _registry.register(profiles)
     try:
-        from agent.delegation_backends import list_backends, set_global_backend
+        from hermes_agent.agent.delegation_backends import list_backends, set_global_backend
         from hermes_agent.tools.delegate_tool import delegate_task
 
         assert [b.name for b in list_backends()] == ["default", "probe-options", "probe-profiles"]
@@ -271,7 +271,7 @@ def test_a_global_backend_switch_is_refused_on_a_managed_install(tmp_path, monke
     """Like every other config writer: a package-manager-managed install's config.yaml is never written."""
     home, manager = _home(tmp_path, monkeypatch, {"backend": "probe-options"})
     try:
-        from agent.delegation_backends import set_global_backend
+        from hermes_agent.agent.delegation_backends import set_global_backend
 
         before = (home / "config.yaml").read_bytes()
         monkeypatch.setenv("HERMES_MANAGED", "nixos")
@@ -283,7 +283,7 @@ def test_a_global_backend_switch_is_refused_on_a_managed_install(tmp_path, monke
 
 
 def test_plugin_parameters_never_redefine_core_or_route_fields(tmp_path, monkeypatch):
-    from agent.delegation_provider import DelegationProvider
+    from hermes_agent.agent.delegation_provider import DelegationProvider
     from hermes_agent.tools.delegate_tool_routes import schema_extension
 
     class Greedy(DelegationProvider):
@@ -298,7 +298,7 @@ def test_plugin_parameters_never_redefine_core_or_route_fields(tmp_path, monkeyp
         def route_task(self, task, config):
             return {}
 
-    from agent.delegation_registry import _registry
+    from hermes_agent.agent.delegation_registry import _registry
 
     greedy = Greedy()
     _registry.register(greedy)
@@ -311,8 +311,8 @@ def test_plugin_parameters_never_redefine_core_or_route_fields(tmp_path, monkeyp
 
 def test_route_task_always_sees_the_core_task_position(tmp_path, monkeypatch):
     """``index`` is core's: a provider declaring it never lets the model's value replace the real position."""
-    from agent.delegation_provider import DelegationProvider
-    from agent.delegation_registry import _registry
+    from hermes_agent.agent.delegation_provider import DelegationProvider
+    from hermes_agent.agent.delegation_registry import _registry
     from hermes_agent.tools.delegate_tool_routes import resolve_task_routes, schema_extension
 
     seen = []
@@ -342,7 +342,7 @@ def test_route_task_always_sees_the_core_task_position(tmp_path, monkeypatch):
 
 def test_backend_key_reads_through_the_real_loader(tmp_path, monkeypatch):
     """``delegation.backend`` defaults to ``default`` and a configured value reaches the registry."""
-    from agent.delegation_registry import configured_backend
+    from hermes_agent.agent.delegation_registry import configured_backend
     from hermes_cli.config import load_config
     from hermes_agent.tools.delegate_tool_config import _load_config
 
@@ -371,7 +371,7 @@ def test_backend_settings_come_from_its_own_backends_block(tmp_path, monkeypatch
 
 
 def test_default_strategy_is_the_bundled_plugin_through_the_same_seam(tmp_path, monkeypatch, recorded):
-    from agent.delegation_registry import get_active_provider
+    from hermes_agent.agent.delegation_registry import get_active_provider
     from hermes_agent.tools.delegate_tool import delegate_task
 
     _, manager = _home(tmp_path / "on", monkeypatch, {"model": "pinned-model"}, plugins=())
@@ -397,8 +397,8 @@ def test_default_strategy_is_the_bundled_plugin_through_the_same_seam(tmp_path, 
 def test_runtime_with_zero_plugins_loaded_still_delegates_on_the_bundled_default(tmp_path, monkeypatch, recorded):
     """Delegation is a core tool: a runtime whose plugin sweep never ran (or was pinned empty) loads the
     bundled default strategy on first use instead of losing delegate_task."""
-    from agent import delegation_registry
-    from agent.delegation_registry import _load_bundled, _registry, get_active_provider
+    from hermes_agent.agent import delegation_registry
+    from hermes_agent.agent.delegation_registry import _load_bundled, _registry, get_active_provider
     from hermes_agent.tools.delegate_tool import delegate_task
 
     monkeypatch.setattr(delegation_registry, "_first_use", {})
@@ -427,8 +427,8 @@ def test_runtime_with_zero_plugins_loaded_still_delegates_on_the_bundled_default
 def test_first_use_default_never_outlives_a_later_disable(tmp_path, monkeypatch, recorded):
     """The first-use load of the bundled default is not a second, permanent registration: once
     ``delegation/default`` is disabled, the next delegation refuses even in the runtime that loaded it."""
-    from agent import delegation_registry
-    from agent.delegation_registry import _registry
+    from hermes_agent.agent import delegation_registry
+    from hermes_agent.agent.delegation_registry import _registry
     from hermes_agent.tools.delegate_tool import delegate_task
 
     monkeypatch.setattr(delegation_registry, "_first_use", {})
@@ -460,7 +460,7 @@ def test_first_use_default_never_outlives_a_later_disable(tmp_path, monkeypatch,
 def test_a_replacement_default_strategy_gets_the_full_route_contract(monkeypatch):
     """Rules follow the route, not the name: a provider registered as ``default`` that returns a speed tier and
     a label has the tier checked and applied, exactly like any other backend."""
-    from agent.delegation_provider import DelegationProvider
+    from hermes_agent.agent.delegation_provider import DelegationProvider
     from hermes_agent.tools.delegate_tool_routes import resolve_task_routes
 
     class Replacement(DelegationProvider):
@@ -481,9 +481,9 @@ def test_a_replacement_default_strategy_gets_the_full_route_contract(monkeypatch
 def test_an_unavailable_replacement_default_falls_back_to_the_bundled_strategy(monkeypatch):
     """A provider registered as ``default`` that reports unavailable never takes delegation down: the enabled
     bundled default strategy serves the task instead."""
-    from agent import delegation_registry
-    from agent.delegation_provider import DelegationProvider
-    from agent.delegation_registry import _registry, get_active_provider
+    from hermes_agent.agent import delegation_registry
+    from hermes_agent.agent.delegation_provider import DelegationProvider
+    from hermes_agent.agent.delegation_registry import _registry, get_active_provider
 
     class Unavailable(DelegationProvider):
         @property

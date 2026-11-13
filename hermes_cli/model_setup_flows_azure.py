@@ -45,7 +45,7 @@ def _azure_entra_preflight(current_entra: dict):
     """Entra ID credential preflight. Returns ``(token_provider, entra_overrides)``; ``None``
     when the user cancelled; ``False`` when the adapter is missing (fall back to API key)."""
     try:
-        from agent.azure_identity_adapter import (
+        from hermes_agent.agent.azure_identity_adapter import (
             EntraIdentityConfig, SCOPE_AI_AZURE_DEFAULT, build_token_provider, describe_active_credential,
             has_azure_identity_installed)
     except ImportError as exc:

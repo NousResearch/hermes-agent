@@ -22,12 +22,12 @@ class _Agent:
 
 @pytest.mark.parametrize("oneshot", [True, False])
 def test_only_an_interactive_first_turn_starts_the_title_call(oneshot, monkeypatch):
-    from agent import turn_context
+    from hermes_agent.agent import turn_context
 
     if oneshot:
         monkeypatch.setenv("HERMES_SINGLE_QUERY_SESSION", "1")
     else:
         monkeypatch.delenv("HERMES_SINGLE_QUERY_SESSION", raising=False)
-    with patch("agent.title_generator.maybe_auto_title") as titler:
+    with patch("hermes_agent.agent.title_generator.maybe_auto_title") as titler:
         turn_context._maybe_title_session_at_turn_start(_Agent(), [{"role": "user", "content": "Fix the login"}])
     assert titler.called is not oneshot

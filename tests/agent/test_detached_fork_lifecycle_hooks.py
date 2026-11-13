@@ -4,9 +4,9 @@ import logging
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from agent.conversation_loop import _restore_or_build_system_prompt
-from agent.turn_context import _collect_pre_llm_call_context
-from agent.turn_finalizer import _apply_output_hooks
+from hermes_agent.agent.conversation_loop import _restore_or_build_system_prompt
+from hermes_agent.agent.turn_context import _collect_pre_llm_call_context
+from hermes_agent.agent.turn_finalizer import _apply_output_hooks
 
 
 def _agent(*, persist_disabled: bool):
@@ -40,7 +40,7 @@ def test_persist_disabled_fork_skips_session_and_turn_lifecycle_hooks():
 
     with (
         patch("hermes_cli.lifecycle.invoke_hook") as lifecycle_hook,
-        patch("agent.credits_tracker.seed_credits_at_session_start"),
+        patch("hermes_agent.agent.credits_tracker.seed_credits_at_session_start"),
     ):
         _restore_or_build_system_prompt(agent, None, [])
         context = _collect_pre_llm_call_context(
@@ -58,7 +58,7 @@ def test_persist_disabled_fork_skips_session_and_turn_lifecycle_hooks():
         output_calls.append(name)
         return ["transformed"] if name == "transform_llm_output" else []
 
-    with patch("agent.turn_finalizer._invoke_hook_safely", side_effect=invoke_output_hook):
+    with patch("hermes_agent.agent.turn_finalizer._invoke_hook_safely", side_effect=invoke_output_hook):
         response, transformed, _original = _apply_hooks(agent)
 
     lifecycle_hook.assert_not_called()
@@ -73,7 +73,7 @@ def test_persisted_agent_still_fires_session_and_turn_lifecycle_hooks():
 
     with (
         patch("hermes_cli.lifecycle.invoke_hook") as lifecycle_hook,
-        patch("agent.credits_tracker.seed_credits_at_session_start"),
+        patch("hermes_agent.agent.credits_tracker.seed_credits_at_session_start"),
     ):
         lifecycle_hook.side_effect = lambda name, **_kwargs: (
             [{"context": "plugin context"}] if name == "pre_llm_call" else []
@@ -94,7 +94,7 @@ def test_persisted_agent_still_fires_session_and_turn_lifecycle_hooks():
         output_calls.append(name)
         return []
 
-    with patch("agent.turn_finalizer._invoke_hook_safely", side_effect=invoke_output_hook):
+    with patch("hermes_agent.agent.turn_finalizer._invoke_hook_safely", side_effect=invoke_output_hook):
         _apply_hooks(agent)
 
     assert [call.args[0] for call in lifecycle_hook.call_args_list] == [

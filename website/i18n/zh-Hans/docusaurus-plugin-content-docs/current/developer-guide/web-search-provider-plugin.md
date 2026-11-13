@@ -20,7 +20,7 @@ Hermes 在三个位置扫描网页搜索后端：
 2. **用户** — `~/.hermes/plugins/web/<name>/`（通过 `plugins.enabled` 或 `hermes plugins enable <name>` 按需启用）
 3. **Pip** — 声明了 `hermes_agent.plugins` 入口点的包
 
-每个插件的 `register(ctx)` 函数调用 `ctx.register_web_search_provider(...)` ——将实例注册到 `agent/web_search_registry.py` 中的注册表。各能力的活跃提供商由配置决定：
+每个插件的 `register(ctx)` 函数调用 `ctx.register_web_search_provider(...)` ——将实例注册到 `hermes_agent/agent/web_search_registry.py` 中的注册表。各能力的活跃提供商由配置决定：
 
 | 能力 | 配置键 | 回退至 |
 |---|---|---|
@@ -43,7 +43,7 @@ plugins/web/my-backend/
 
 ## WebSearchProvider ABC
 
-继承 `agent.web_search_provider.WebSearchProvider`。唯一必须实现的成员是 `name`、`is_available()`，以及你所实现的 `search()` / `extract()` / `crawl()` 中的相应方法。
+继承 `hermes_agent.agent.web_search_provider.WebSearchProvider`。唯一必须实现的成员是 `name`、`is_available()`，以及你所实现的 `search()` / `extract()` / `crawl()` 中的相应方法。
 
 ```python
 # plugins/web/my-backend/provider.py
@@ -52,7 +52,7 @@ from __future__ import annotations
 import os
 from typing import Any, Dict, List
 
-from agent.web_search_provider import WebSearchProvider
+from hermes_agent.agent.web_search_provider import WebSearchProvider
 
 
 class MyBackendWebSearchProvider(WebSearchProvider):
@@ -145,7 +145,7 @@ requires_env:
 
 ## ABC 参考
 
-完整契约位于 `agent/web_search_provider.py`。可覆盖的方法如下：
+完整契约位于 `hermes_agent/agent/web_search_provider.py`。可覆盖的方法如下：
 
 | 成员 | 必须 | 默认值 | 用途 |
 |---|---|---|---|

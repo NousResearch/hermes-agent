@@ -38,7 +38,7 @@ def resolve_passthrough_env(explicit_forward: Iterable[str] = (),
     is_global_env = lambda _name: False
     try:
         from hermes_agent.tools.env_passthrough import get_all_passthrough, resolve_passthrough_value
-        from agent.secret_scope import _is_global_env as is_global_env, is_multiplex_active
+        from hermes_agent.agent.secret_scope import _is_global_env as is_global_env, is_multiplex_active
         multiplex_active = is_multiplex_active()
         passthrough_keys = set(get_all_passthrough())
     except Exception:

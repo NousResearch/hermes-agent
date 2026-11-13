@@ -108,7 +108,7 @@ class TestFeishuCommentClosesAgent:
         from plugins.platforms.feishu import feishu_comment
 
         RecordingAgent.reset()
-        monkeypatch.setattr("run_agent.AIAgent", RecordingAgent)
+        monkeypatch.setattr("hermes_agent.run_agent.AIAgent", RecordingAgent)
         monkeypatch.setattr(feishu_comment, "_resolve_model_and_runtime", lambda: ("m", {}))
         # session_key="" keeps the cross-card history cache out of the test.
         response = feishu_comment._run_comment_agent("hi", client=None, session_key="")
@@ -129,7 +129,7 @@ class TestFeishuCommentClosesAgent:
                 super().__init__(*args, **kwargs)
 
         FailingAgent.instances = []
-        monkeypatch.setattr("run_agent.AIAgent", FailingAgent)
+        monkeypatch.setattr("hermes_agent.run_agent.AIAgent", FailingAgent)
         monkeypatch.setattr(feishu_comment, "_resolve_model_and_runtime", lambda: ("m", {}))
         response = feishu_comment._run_comment_agent("hi", client=None, session_key="")
         assert response == ""
@@ -179,7 +179,7 @@ class TestPromptBackgroundClosesAgent:
 
         monkeypatch.setattr(server, "_spawn_side_agent", fake_spawn)
         agent_cls.reset()
-        monkeypatch.setattr("run_agent.AIAgent", agent_cls)
+        monkeypatch.setattr("hermes_agent.run_agent.AIAgent", agent_cls)
 
         response = server._methods["prompt.background"](
             1, {"session_id": sid, "text": "do work"})
@@ -252,12 +252,12 @@ class TestCliBackgroundCommandClosesAgent:
     def _run_bg(self, monkeypatch, agent_cls):
         cli = _make_cli()
         agent_cls.reset()
-        monkeypatch.setattr("run_agent.AIAgent", agent_cls)
+        monkeypatch.setattr("hermes_agent.run_agent.AIAgent", agent_cls)
         for target in ("cli.set_sudo_password_callback", "cli.set_approval_callback",
                        "cli.set_secret_capture_callback",
-                       "agent.vault_backends.unlock.set_code_prompt_callback",
-                       "agent.vault_backends.unlock.set_save_login_prompt_callback",
-                       "agent.vault_backends.unlock.set_unlock_prompt_callback"):
+                       "hermes_agent.agent.vault_backends.unlock.set_code_prompt_callback",
+                       "hermes_agent.agent.vault_backends.unlock.set_save_login_prompt_callback",
+                       "hermes_agent.agent.vault_backends.unlock.set_unlock_prompt_callback"):
             monkeypatch.setattr(target, lambda *a, **k: None)
         produced = {}
 

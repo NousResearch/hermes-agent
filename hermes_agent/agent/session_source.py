@@ -53,7 +53,7 @@ def turn_daybreak_surface() -> Optional[bool]:
     it runs, a ``/bg`` task), ``None`` when nothing did (classic CLI, the TUI backend, cron). A gateway-hosted chat's
     platform is the ``local`` transport, and a ``/bg`` task binds no session (it reads as ``cli``), so ``False``
     must refuse whatever the session source says."""
-    from agent.subagent_lifecycle import get_active_subagent_parent
+    from hermes_agent.agent.subagent_lifecycle import get_active_subagent_parent
     verdict = getattr(get_active_subagent_parent(), "daybreak_surface", None)
     return verdict if isinstance(verdict, bool) else None
 

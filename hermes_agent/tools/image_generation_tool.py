@@ -572,7 +572,7 @@ def _build_no_backend_setup_message() -> str:
 
 def _get_plugin_provider(name: str, *, force: bool = False):
     """Discover plugins (local import: importing this module must not trigger discovery) and return the named provider."""
-    from agent.image_gen_registry import get_provider
+    from hermes_agent.agent.image_gen_registry import get_provider
     from hermes_cli.plugins import _ensure_plugins_discovered
     if force:
         _ensure_plugins_discovered(force=True)
@@ -658,7 +658,7 @@ def _add_provider_kwargs(kwargs, image_url, reference_image_urls, upscale, model
     if isinstance(image_url, str) and image_url.strip():
         kwargs["image_url"] = image_url.strip()
     if reference_image_urls is not None:
-        from agent.image_gen_provider import normalize_reference_images
+        from hermes_agent.agent.image_gen_provider import normalize_reference_images
         norm_refs = normalize_reference_images(reference_image_urls)
         if norm_refs:
             kwargs["reference_image_urls"] = norm_refs

@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import pytest
 
-from agent import bedrock_adapter
+from hermes_agent.agent import bedrock_adapter
 from tests.hermes_cli.anon_portal import as_local_desktop_backend
 
 _AWS_VARS = ("AWS_BEARER_TOKEN_BEDROCK", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_PROFILE",

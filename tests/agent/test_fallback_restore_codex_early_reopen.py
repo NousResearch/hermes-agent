@@ -9,7 +9,7 @@ import json
 import time
 from unittest.mock import MagicMock, patch
 
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 CODEX_URL = "https://chatgpt.com/backend-api/codex"
 FALLBACK = {"provider": "openrouter", "model": "anthropic/claude-sonnet-4"}
@@ -42,7 +42,7 @@ def _fallback_agent():
     with (
         patch("hermes_agent.model_tools.get_tool_definitions", return_value=tool_defs),
         patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
-        patch("agent.process_bootstrap.OpenAI"),
+        patch("hermes_agent.agent.process_bootstrap.OpenAI"),
     ):
         agent = AIAgent(
             api_key="test-key-12345678", base_url="https://my-llm.example.com/v1", provider="custom",
@@ -58,7 +58,7 @@ def _fallback_agent():
 def _pin_to_fallback(agent):
     agent._fallback_index = 0
     client = MagicMock(api_key="fallback-key-1234", base_url="https://openrouter.ai/api/v1")
-    with patch("agent.auxiliary_client.resolve_provider_client", return_value=(client, None)):
+    with patch("hermes_agent.agent.auxiliary_client.resolve_provider_client", return_value=(client, None)):
         assert agent._try_activate_fallback() is True
     # The weekly reset the provider declared, armed by _arm_rate_limit_cooldown.
     agent._rate_limited_until = time.monotonic() + 3 * 86400
@@ -67,7 +67,7 @@ def _pin_to_fallback(agent):
 def _restore(agent, quota_restored):
     with (
         patch("hermes_cli.auth._probe_codex_quota_restored", return_value=quota_restored),
-        patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()),
+        patch("hermes_agent.agent.process_bootstrap.OpenAI", return_value=MagicMock()),
     ):
         return agent._restore_primary_runtime()
 

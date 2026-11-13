@@ -120,7 +120,7 @@ def load_managed_env() -> dict[str, str]:
 
 
 def _parse_managed_env(path: Path) -> dict[str, str]:
-    from agent.secret_scope import load_env_file
+    from hermes_agent.agent.secret_scope import load_env_file
 
     path.read_text(encoding="utf-8-sig")  # load_env_file swallows decode errors; an admin file must fail LOUD
     return load_env_file(path)

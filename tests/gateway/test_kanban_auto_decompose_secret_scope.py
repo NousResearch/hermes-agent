@@ -10,7 +10,7 @@ import asyncio
 import sys
 from types import SimpleNamespace
 
-from agent import secret_scope as ss
+from hermes_agent.agent import secret_scope as ss
 from hermes_agent.gateway import kanban_watchers_dispatcher as kwd
 from hermes_agent.gateway.kanban_watchers_common import _to_thread_process_service
 

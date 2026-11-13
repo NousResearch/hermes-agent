@@ -93,7 +93,7 @@ class TestPoolRotationCycle:
     """Verify the retry-same → rotate → exhaust flow in _recover_with_credential_pool."""
 
     def _make_agent_with_pool(self, pool_entries=3):
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         with patch.object(AIAgent, "__init__", lambda self, **kw: None):
             agent = AIAgent()
@@ -180,7 +180,7 @@ class TestPoolRotationCycle:
     def test_api_key_hint_from_pool_current_when_agent_key_missing(self):
         """api_key_hint should fall back to pool.current().runtime_api_key
         when agent.api_key is not set (#43747)."""
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         with patch.object(AIAgent, "__init__", lambda self, **kw: None):
             agent = AIAgent()
@@ -259,7 +259,7 @@ class TestApiKeyHintRealPool:
             )
         )
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-        from agent.credential_pool import load_pool
+        from hermes_agent.agent.credential_pool import load_pool
 
         return load_pool("openrouter")
 
@@ -331,7 +331,7 @@ class TestFailureAttribution:
             json.dumps({"version": 1, "credential_pool": {"anthropic": entries}}),
             encoding="utf-8",
         )
-        from agent.credential_pool import load_pool
+        from hermes_agent.agent.credential_pool import load_pool
 
         pool = load_pool("anthropic")
         assert [entry.id for entry in pool.entries()] == [
@@ -383,7 +383,7 @@ class TestFailureAttribution:
         )
         agent = self._agent(pool, failing_key="key-b")
 
-        from agent.agent_runtime_helpers import recover_with_credential_pool
+        from hermes_agent.agent.agent_runtime_helpers import recover_with_credential_pool
 
         recovered, has_retried = recover_with_credential_pool(
             agent, status_code=429, has_retried_429=False
@@ -415,7 +415,7 @@ class TestFailureAttribution:
         agent = self._agent(pool, failing_key="key-b")
         agent._is_entitlement_failure = MagicMock(return_value=False)
 
-        from agent.agent_runtime_helpers import recover_with_credential_pool
+        from hermes_agent.agent.agent_runtime_helpers import recover_with_credential_pool
 
         recovered, _ = recover_with_credential_pool(
             agent, status_code=401, has_retried_429=False
@@ -441,7 +441,7 @@ class TestFailureAttribution:
         agent = self._agent(pool, failing_key="wrapper-runtime-key")
         agent._is_entitlement_failure = MagicMock(return_value=False)
 
-        from agent.agent_runtime_helpers import recover_with_credential_pool
+        from hermes_agent.agent.agent_runtime_helpers import recover_with_credential_pool
 
         recovered, _ = recover_with_credential_pool(
             agent, status_code=401, has_retried_429=False
@@ -461,7 +461,7 @@ class TestFailureAttribution:
         recovery path now forwards the classified reason so the pool can size
         the bench correctly.
         """
-        from agent.error_classifier import FailoverReason
+        from hermes_agent.agent.error_classifier import FailoverReason
 
         pool = self._make_pool(
             tmp_path, monkeypatch,
@@ -470,7 +470,7 @@ class TestFailureAttribution:
         agent = self._agent(pool, failing_key="key-b")
         agent._is_entitlement_failure = MagicMock(return_value=False)
 
-        from agent.agent_runtime_helpers import recover_with_credential_pool
+        from hermes_agent.agent.agent_runtime_helpers import recover_with_credential_pool
 
         recover_with_credential_pool(
             agent,
@@ -492,7 +492,7 @@ class TestFailureAttribution:
         agent = self._agent(pool, failing_key="key-b")
         agent._is_entitlement_failure = MagicMock(return_value=False)
 
-        from agent.agent_runtime_helpers import recover_with_credential_pool
+        from hermes_agent.agent.agent_runtime_helpers import recover_with_credential_pool
 
         recover_with_credential_pool(
             agent, status_code=403, has_retried_429=False

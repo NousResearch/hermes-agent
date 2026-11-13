@@ -64,8 +64,8 @@ def register(ctx):
 
 @pytest.mark.platforms("any")  # the host is a child process: its env/home resolution is per-OS
 def test_hosted_secret_source_secrets_are_applied(tmp_path, monkeypatch):
-    from agent.secret_sources.base import ErrorKind
-    from agent.secret_sources.registry import apply_all
+    from hermes_agent.agent.secret_sources.base import ErrorKind
+    from hermes_agent.agent.secret_sources.registry import apply_all
 
     home = _home_with_plugin(tmp_path, monkeypatch, "hostvault", SECRET_SOURCE_PLUGIN)
     manager = _load("hostvault")
@@ -147,8 +147,8 @@ def register(ctx):
 @pytest.mark.platforms("any")
 def test_hosted_context_engine_clone_is_an_independent_engine(tmp_path, monkeypatch):
     from types import SimpleNamespace
-    from agent.context_engine import ContextEngine
-    from agent.conversation_compression import _resolve_compress_call
+    from hermes_agent.agent.context_engine import ContextEngine
+    from hermes_agent.agent.conversation_compression import _resolve_compress_call
 
     _home_with_plugin(tmp_path, monkeypatch, "hostledger", CONTEXT_ENGINE_PLUGIN)
     manager = _load("hostledger")

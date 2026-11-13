@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent import auxiliary_client as aux
+from hermes_agent.agent import auxiliary_client as aux
 from hermes_cli.runtime_provider_custom import expand_direct_api_alias
 
 SESSION = {"provider": "openai-api", "model": "gpt-5.4",

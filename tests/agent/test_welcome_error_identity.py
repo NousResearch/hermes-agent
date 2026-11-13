@@ -4,10 +4,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent.error_classifier import classify_api_error
+from hermes_agent.agent.error_classifier import classify_api_error
 from tests.hermes_cli.anon_portal import make_jwt
-from agent.error_surface import build_error_surface_from_result
-from agent.turn_recovery import max_retries_exhausted_result, nonretryable_client_error_result
+from hermes_agent.agent.error_surface import build_error_surface_from_result
+from hermes_agent.agent.turn_recovery import max_retries_exhausted_result, nonretryable_client_error_result
 
 WELCOME = "https://welcome-api.nousresearch.com/v1"
 NAMED = "https://inference-api.nousresearch.com/v1"
@@ -56,7 +56,7 @@ def test_named_errors_do_not_offer_anonymous_recovery(api_key, base_url, case):
 
 
 def guard_for(agent):
-    from agent.turn_api_call import nous_rate_limit_guard
+    from hermes_agent.agent.turn_api_call import nous_rate_limit_guard
     return nous_rate_limit_guard(
         agent, _retry=None, api_messages=[], messages=[], conversation_history=[],
         active_system_prompt="system", retry_count=0, compression_attempts=0, api_call_count=0,
@@ -64,9 +64,9 @@ def guard_for(agent):
 
 
 def test_signing_in_does_not_inherit_anonymous_cooldown(tmp_path, monkeypatch):
-    from agent.agent_runtime_helpers import extract_api_error_context
-    from agent.nous_rate_guard import clear_nous_rate_limit, nous_rate_limit_remaining, record_nous_rate_limit
-    from agent.turn_recovery import _is_genuine_nous_rate_limit
+    from hermes_agent.agent.agent_runtime_helpers import extract_api_error_context
+    from hermes_agent.agent.nous_rate_guard import clear_nous_rate_limit, nous_rate_limit_remaining, record_nous_rate_limit
+    from hermes_agent.agent.turn_recovery import _is_genuine_nous_rate_limit
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     guest = agent_for(make_jwt(), WELCOME)
@@ -94,8 +94,8 @@ def test_signing_in_does_not_inherit_anonymous_cooldown(tmp_path, monkeypatch):
 def test_auxiliary_anonymous_cooldown_does_not_outlive_signing_in(tmp_path, monkeypatch):
     """An anonymous cooldown marks the provider unhealthy only briefly: a named sign-in
     mid-cooldown must not inherit the anonymous allowance's wait."""
-    import agent.auxiliary_client as aux
-    from agent.nous_rate_guard import record_nous_rate_limit
+    import hermes_agent.agent.auxiliary_client as aux
+    from hermes_agent.agent.nous_rate_guard import record_nous_rate_limit
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     record_nous_rate_limit(headers={"retry-after": "600"}, anonymous=True)
@@ -115,8 +115,8 @@ def test_auxiliary_anonymous_cooldown_does_not_outlive_signing_in(tmp_path, monk
 
 @pytest.mark.parametrize("tier", ["anonymous", "free"])
 def test_401_diagnostics_follow_request_identity_on_welcome_host(tier, capsys, monkeypatch):
-    import agent.conversation_loop as loop
-    from agent.turn_recovery import _print_nous_401_diagnostics
+    import hermes_agent.agent.conversation_loop as loop
+    from hermes_agent.agent.turn_recovery import _print_nous_401_diagnostics
 
     monkeypatch.setattr(loop, "_print_nous_entitlement_guidance", lambda *a: False)
     _print_nous_401_diagnostics(agent_for(make_jwt(account_tier=tier), WELCOME), Exception("unauthorized"))
@@ -151,7 +151,7 @@ def test_named_account_on_welcome_host_gets_reconnect_copy_without_signin_card()
 
 def test_escaped_exception_surface_keeps_the_anonymous_verdict():
     """The desktop's escaped-exception card classifies with the request credential too."""
-    from agent.error_surface import build_error_surface_from_exception
+    from hermes_agent.agent.error_surface import build_error_surface_from_exception
     error = Exception("refused")
     error.status_code = 429
     error.body = {"status": 429, "message": "refused", "reason": "model_not_free", "alternates": ["nous/welcome"]}

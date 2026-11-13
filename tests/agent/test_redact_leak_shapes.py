@@ -1,4 +1,4 @@
-"""Credential shapes that leaked past agent.redact (#53741, #125680, #134475, #141283, #147240).
+"""Credential shapes that leaked past hermes_agent.agent.redact (#53741, #125680, #134475, #141283, #147240).
 
 Each class pins one family: the leak is masked in both the default (head/tail) mask and the
 non-reusable ``file_read`` + ``secret_file`` sentinel, and the look-alike identifiers or docs
@@ -7,7 +7,7 @@ samples next to it stay byte-identical.
 
 import pytest
 
-from agent.redact import redact_sensitive_text, redact_terminal_output
+from hermes_agent.agent.redact import redact_sensitive_text, redact_terminal_output
 
 V = "q7Zr4Lm9Xc2Vb5Nw8Kd3Hf6J"
 SK = "sk-" + "q7Zr4Lm9Xc2Vb5Nw8Kd3Hf6Jt1Pa0Sg7Ye4Uo2"
@@ -17,7 +17,7 @@ GH = "ghp_" + "Ab3dE5gH7jK9mN1pQ3sT5vX7zB9dF1hJ3kL5"
 @pytest.fixture(autouse=True)
 def _ensure_redaction_enabled(monkeypatch):
     monkeypatch.delenv("HERMES_REDACT_SECRETS", raising=False)
-    monkeypatch.setattr("agent.redact._REDACT_ENABLED", True)
+    monkeypatch.setattr("hermes_agent.agent.redact._REDACT_ENABLED", True)
 
 
 def _both_modes(text: str) -> list[str]:

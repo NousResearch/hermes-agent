@@ -523,7 +523,7 @@ def _clean_output(stdout_text: str, env: Any = None) -> tuple[str, dict[str, Any
     """Shared output pipeline: byte-cap (with spill), ANSI strip, secret redaction. code_file=True:
     output often echoes source/config — skip ENV/JSON/f-string false positives, still mask credentials."""
     from hermes_agent.tools.ansi_strip import strip_ansi
-    from agent.redact import redact_sensitive_text
+    from hermes_agent.agent.redact import redact_sensitive_text
     stdout_text, metadata = _truncate_stdout_text(stdout_text, env)
     return redact_sensitive_text(strip_ansi(stdout_text), code_file=True), metadata
 
@@ -746,7 +746,7 @@ def execute_code(
     # SIGTERM'd the gateway mid-task.
     # The identity probe ends in a kernel process query that has wedged on macOS
     # (#111922); share the cell's own deadline and fail CLOSED when it renders no verdict.
-    from agent.deadline import run_bounded_sync
+    from hermes_agent.agent.deadline import run_bounded_sync
     from hermes_agent.tools.process_registry import _is_supervised_gateway_process
     from hermes_agent.tools.terminal_tool import _PRE_EXEC_GUARD_MIN_TIMEOUT_S
     _probe_timeout = max(_load_config().get("timeout", DEFAULT_TIMEOUT), _PRE_EXEC_GUARD_MIN_TIMEOUT_S)
@@ -812,13 +812,13 @@ def execute_code(
 
 
 def _kill_process_group(proc, escalate: bool = False):
-    """Kill the child and its whole process tree via agent.deadline.kill_process_tree: SIGTERM
+    """Kill the child and its whole process tree via hermes_agent.agent.deadline.kill_process_tree: SIGTERM
     (killpg + psutil descendant sweep; ``taskkill /T /F`` on Windows, where sig is ignored); with
     ``escalate=True`` wait 5s then SIGKILL survivors. Never raises — falls back to ``proc.kill()``."""
     import signal as _signal
     def _tree_signal(sig) -> None:
         try:
-            from agent.deadline import kill_process_tree
+            from hermes_agent.agent.deadline import kill_process_tree
             kill_process_tree(proc.pid, sig=sig)
         except Exception as e:
             logger.debug("Could not terminate process tree: %s", e, exc_info=True)

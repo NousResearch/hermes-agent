@@ -1,11 +1,11 @@
-"""Tests for agent/video_gen_registry.py — provider registration & active lookup."""
+"""Tests for hermes_agent/agent/video_gen_registry.py — provider registration & active lookup."""
 
 from __future__ import annotations
 
 import pytest
 
-from agent import video_gen_registry
-from agent.video_gen_provider import VideoGenProvider
+from hermes_agent.agent import video_gen_registry
+from hermes_agent.agent.video_gen_provider import VideoGenProvider
 
 
 class _FakeProvider(VideoGenProvider):
@@ -62,7 +62,7 @@ class TestGetActiveProvider:
         """When several providers are registered but only one has credentials
         (is_available()), that one is auto-selected without config. This is the
         DeepInfra-only-box case: fal/xai register unconditionally but lack keys.
-        Mirrors agent/image_gen_registry's availability-filtered fallback.
+        Mirrors hermes_agent/agent/image_gen_registry's availability-filtered fallback.
         """
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         video_gen_registry.register_provider(_FakeProvider("fal", available=False))

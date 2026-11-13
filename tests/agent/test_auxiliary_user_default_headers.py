@@ -39,7 +39,7 @@ class TestApplyUserDefaultHeadersHelper:
         _write_config(tmp_path, {
             "model": {"default": "m", "default_headers": {"User-Agent": "curl/8.7.1", "X-Drop": None}},
         })
-        from agent.auxiliary_client import _apply_user_default_headers
+        from hermes_agent.agent.auxiliary_client import _apply_user_default_headers
         merged = _apply_user_default_headers({})
         assert merged == {"User-Agent": "curl/8.7.1"}
         assert "X-Drop" not in merged
@@ -58,9 +58,9 @@ class TestAuxClientHonorsUserDefaultHeaders:
                 "default_headers": {"User-Agent": "curl/8.7.1", "X-Extra": "1"},
             },
         })
-        with patch("agent.auxiliary_client.OpenAI") as mock_openai:
+        with patch("hermes_agent.agent.auxiliary_client.OpenAI") as mock_openai:
             mock_openai.return_value = MagicMock()
-            from agent.auxiliary_client import resolve_provider_client
+            from hermes_agent.agent.auxiliary_client import resolve_provider_client
             client, _model = resolve_provider_client("main", "my-custom-model")
 
         assert client is not None
@@ -78,9 +78,9 @@ class TestAuxClientHonorsUserDefaultHeaders:
                 "base_url": "http://localhost:8080/v1",
             },
         })
-        with patch("agent.auxiliary_client.OpenAI") as mock_openai:
+        with patch("hermes_agent.agent.auxiliary_client.OpenAI") as mock_openai:
             mock_openai.return_value = MagicMock()
-            from agent.auxiliary_client import resolve_provider_client
+            from hermes_agent.agent.auxiliary_client import resolve_provider_client
             client, _model = resolve_provider_client("main", "my-custom-model")
 
         assert client is not None
@@ -102,9 +102,9 @@ class TestAuxClientHonorsUserDefaultHeaders:
                 {"name": "my-gw", "base_url": "http://my-gw.local/v1", "api_key": "k"},
             ],
         })
-        with patch("agent.auxiliary_client.OpenAI") as mock_openai:
+        with patch("hermes_agent.agent.auxiliary_client.OpenAI") as mock_openai:
             mock_openai.return_value = MagicMock()
-            from agent.auxiliary_client import resolve_provider_client
+            from hermes_agent.agent.auxiliary_client import resolve_provider_client
             client, _model = resolve_provider_client("my-gw", "test-model")
 
         assert client is not None

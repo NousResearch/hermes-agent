@@ -4,7 +4,7 @@ An endpoint may answer ``/models`` differently, or not at all (401/403), dependi
 catalog fetched with one credential must never answer a lookup made with another.
 """
 
-from agent.credential_persistence import fingerprint_secret_value
+from hermes_agent.agent.credential_persistence import fingerprint_secret_value
 
 _MINTED = "minted:"
 

@@ -153,7 +153,7 @@ class TestRequiredEnvironmentVariablesNormalization:
 
     def test_active_profile_secret_scope_satisfies_requirement(self):
         """Cron workers must accept a value hydrated from this profile's vault."""
-        from agent import secret_scope
+        from hermes_agent.agent import secret_scope
         from hermes_agent.tools.skills_tool import _is_env_var_persisted
 
         secret_scope.set_multiplex_active(True)
@@ -166,7 +166,7 @@ class TestRequiredEnvironmentVariablesNormalization:
 
     def test_unscoped_multiplex_requirement_does_not_read_process_environment(self, monkeypatch):
         """A worker without a profile scope must keep the fail-closed boundary."""
-        from agent import secret_scope
+        from hermes_agent.agent import secret_scope
         from hermes_agent.tools.skills_tool import _is_env_var_persisted
 
         monkeypatch.setenv("OTHER_PROFILE_SKILL_API_KEY", "other-profile-value")
@@ -874,7 +874,7 @@ class TestSkillViewCollisionDetection:
         return (
             patch("hermes_agent.tools.skills_tool.SKILLS_DIR", local_dir),
             patch(
-                "agent.skill_utils.get_external_skills_dirs",
+                "hermes_agent.agent.skill_utils.get_external_skills_dirs",
                 return_value=list(external_dirs),
             ),
         )
@@ -894,7 +894,7 @@ class TestSkillViewCollisionDetection:
             self, tmp_path, caplog, winner_tier, loser_tier, winner_rel, loser_rel, lookup):
         """project > local > create_dir > external: the higher tier loads, the shadowed copy is
         reported by skills_list neither as a row nor as a guess, and a warning names it."""
-        from agent import skill_utils
+        from hermes_agent.agent import skill_utils
         tiers = {t: tmp_path / t for t in ("project", "local", "create_dir", "external")}
         for root in tiers.values():
             root.mkdir()
@@ -1025,7 +1025,7 @@ class TestSameRootDuplicationResolves:
     def _patch_dirs(self, local_dir, external_dirs=()):
         return (
             patch("hermes_agent.tools.skills_tool.SKILLS_DIR", local_dir),
-            patch("agent.skill_utils.get_external_skills_dirs", return_value=list(external_dirs)),
+            patch("hermes_agent.agent.skill_utils.get_external_skills_dirs", return_value=list(external_dirs)),
         )
 
     def test_nested_copy_inside_same_root_does_not_block_bare_name(self, tmp_path):

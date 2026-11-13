@@ -17,7 +17,7 @@ from fastapi import HTTPException
 def _restore_process_scope_state():
     """``_config_profile_scope``/``launch_secret_scope`` can freeze the launch-env
     snapshot (one-way process state); restore it so sibling suites are unaffected."""
-    from agent import secret_scope
+    from hermes_agent.agent import secret_scope
     from hermes_agent.tui_gateway import launch_profile_policy
 
     was_active = secret_scope.is_multiplex_active()
@@ -37,7 +37,7 @@ class _ExplodingScope(dict):
 
 @pytest.mark.asyncio
 async def test_voices_route_scope_failure_never_borrows_env(tmp_path, monkeypatch):
-    from agent import secret_scope as ss
+    from hermes_agent.agent import secret_scope as ss
     from hermes_cli.web_routers.audio import get_elevenlabs_voices
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))

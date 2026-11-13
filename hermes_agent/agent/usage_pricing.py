@@ -7,7 +7,7 @@ from datetime import datetime, timezone, UTC
 from decimal import Decimal
 from typing import Any, Dict, Literal, Optional
 
-from agent.model_metadata import fetch_endpoint_model_metadata, fetch_model_metadata, strip_codex_context_variant_suffix
+from hermes_agent.agent.model_metadata import fetch_endpoint_model_metadata, fetch_model_metadata, strip_codex_context_variant_suffix
 from utils import base_url_host_matches, base_url_hostname, base_url_origin
 
 logger = logging.getLogger(__name__)
@@ -586,7 +586,7 @@ def _models_dev_pricing_entry(route: BillingRoute) -> Optional[PricingEntry]:
         scheme, host, port = base_url_origin(route.base_url)
         if (scheme, port) != ("https", 443) or not (host == domain or host.endswith("." + domain)):
             return None
-    from agent.models_dev import get_model_info
+    from hermes_agent.agent.models_dev import get_model_info
 
     model_info = get_model_info(route.provider, route.model)
     if model_info is None or not model_info.has_cost_data():

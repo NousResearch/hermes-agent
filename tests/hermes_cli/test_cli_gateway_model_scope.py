@@ -228,7 +228,7 @@ def test_once_on_a_resumed_session_asks_before_it_switches(monkeypatch):
     stub._confirm_expensive_model_switch = cli_mod.HermesCLI._confirm_expensive_model_switch.__get__(stub)
     stub._prompt_text_input_modal = lambda **kw: asked.append(kw) or "cancel"
     stub._normalize_slash_confirm_choice = cli_mod.HermesCLI._normalize_slash_confirm_choice.__get__(stub)
-    monkeypatch.setattr("agent.usage_anchor.persisted_anchor_tokens", lambda *_a, **_k: 200_000)
+    monkeypatch.setattr("hermes_agent.agent.usage_anchor.persisted_anchor_tokens", lambda *_a, **_k: 200_000)
     cli_mod.HermesCLI._handle_model_switch(stub, "/model claude-sonnet-4.6 --provider anthropic --once")
     assert asked, "the large-context confirm did not appear"
     assert any("LARGE CONTEXT" in (kw.get("detail") or "") or "context" in (kw.get("title") or "").lower()
@@ -303,7 +303,7 @@ def test_once_sends_the_alias_it_resolved_through(monkeypatch, session_model):
             model="shared-model", provider="custom", base_url=f"http://127.0.0.1:{port}/v1", api_key=f"sk-{name}"))
     monkeypatch.setattr("hermes_cli.models_validate.validate_requested_model", lambda *_a, **_k: {
         "accepted": True, "persist": True, "recognized": True, "message": ""})
-    monkeypatch.setattr("agent.models_dev.fetch_models_dev", dict)
+    monkeypatch.setattr("hermes_agent.agent.models_dev.fetch_models_dev", dict)
     session = {"provider": "custom", "api_key": "sk-session", "base_url": "http://127.0.0.1:7001/v1"}
     stub.model, stub.provider, stub.requested_provider = session_model, "custom", "custom"
     stub.base_url = stub._explicit_base_url = session["base_url"]
@@ -338,7 +338,7 @@ def test_once_through_an_alias_named_like_the_session_model_still_sends_it(monke
         model="shared-model", provider="custom", base_url="http://127.0.0.1:7003/v1", api_key="sk-alias"))
     monkeypatch.setattr("hermes_cli.models_validate.validate_requested_model", lambda *_a, **_k: {
         "accepted": True, "persist": True, "recognized": True, "message": ""})
-    monkeypatch.setattr("agent.models_dev.fetch_models_dev", dict)
+    monkeypatch.setattr("hermes_agent.agent.models_dev.fetch_models_dev", dict)
     session = {"provider": "custom", "api_key": "sk-session", "base_url": "http://127.0.0.1:7001/v1"}
     stub.model, stub.provider, stub.requested_provider = "shared-model", "custom", "custom"
     stub.base_url = stub._explicit_base_url = session["base_url"]

@@ -34,7 +34,7 @@ _LEARNED_BY_HOME: dict[str, dict[str, int]] = {}
 
 
 def _cache_path():
-    from agent.model_metadata import _cache_file
+    from hermes_agent.agent.model_metadata import _cache_file
 
     return _cache_file("image_token_costs.json")
 
@@ -46,7 +46,7 @@ def _key(model: Any, base_url: Any) -> str:
 
 
 def _read_cache() -> dict[str, int]:
-    from agent.model_metadata import _load_json_dict
+    from hermes_agent.agent.model_metadata import _load_json_dict
 
     return {k: v for k, v in _load_json_dict(_cache_path()).items()
             if isinstance(v, int) and _MIN_PLAUSIBLE <= v <= _MAX_PLAUSIBLE}
@@ -95,7 +95,7 @@ def bind_image_token_cost(agent: Any) -> None:
 
 
 def count_images(messages: list[dict[str, Any]]) -> int:
-    from agent.model_metadata import _count_image_tokens
+    from hermes_agent.agent.model_metadata import _count_image_tokens
 
     return sum(_count_image_tokens(m, 1) for m in messages if isinstance(m, dict))
 
@@ -107,7 +107,7 @@ def calibrate_from_usage(agent: Any, messages: list[dict[str, Any]], prompt_toke
     ``prompt_tokens - (anchor + text-only delta)`` is then the provider's price for the images the
     delta introduced. Returns the new learned cost, or None when this response teaches nothing
     (no anchor, no new images, implausible residual)."""
-    from agent.usage_anchor import anchored_context_tokens
+    from hermes_agent.agent.usage_anchor import anchored_context_tokens
 
     anchor = getattr(agent, "_usage_anchor", None)
     try:

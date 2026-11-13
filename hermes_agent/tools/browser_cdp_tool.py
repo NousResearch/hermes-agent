@@ -65,7 +65,7 @@ def _redact_cdp_output(
 
     See #94138, #94142.
     """
-    from agent.redact import (
+    from hermes_agent.agent.redact import (
         REDACT_WALK_DEPTH_MARKER,
         REDACT_WALK_MAX_DEPTH,
         redact_sensitive_text,
@@ -276,7 +276,7 @@ async def _cdp_call(ws_url: str, method: str, params: dict[str, Any], target_id:
     """Make a single CDP call. With ``target_id``, ``Target.attachToTarget(flatten=True)`` multiplexes a
     page-level session over the browser-level WebSocket; without it ``method`` runs at browser level."""
     assert websockets is not None  # guarded by _WS_AVAILABLE at call-site
-    from agent.proxy_bypass import loopback_connect_kwargs
+    from hermes_agent.agent.proxy_bypass import loopback_connect_kwargs
     # max_size=None: CDP responses (e.g. DOM.getDocument) can be large; ping_interval=None: CDP
     # servers don't expect pings.
     async with websockets.connect(ws_url, max_size=None, open_timeout=timeout, close_timeout=5,
@@ -350,7 +350,7 @@ def _browser_cdp_via_supervisor(task_id: str, frame_id: str, method: str, params
         return tool_error("CDP supervisor loop is not running. Try reconnecting with /browser connect.")
 
     try:
-        from agent.async_utils import safe_schedule_threadsafe
+        from hermes_agent.agent.async_utils import safe_schedule_threadsafe
         fut = safe_schedule_threadsafe(
             supervisor._cdp(method, params or {}, session_id=child_sid, timeout=timeout), loop)  # type: ignore[attr-defined]
         if fut is None:

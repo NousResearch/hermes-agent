@@ -10,7 +10,7 @@ from rich.table import Table
 
 from hermes_cli.cli_output import line_input
 
-from agent.skill_bundles import (
+from hermes_agent.agent.skill_bundles import (
     _bundles_dir, delete_bundle, get_bundle, list_bundles, reload_bundles, save_bundle, scan_bundles
 )
 

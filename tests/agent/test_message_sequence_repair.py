@@ -11,7 +11,7 @@ recovery every turn.
 
 import pytest
 
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 
 def _bare_agent():
@@ -221,7 +221,7 @@ def test_repair_keeps_tool_matching_only_call_id():
 
 def test_repair_keeps_tool_result_keyed_by_response_item_id():
     """The normalized call id must still pair the raw Responses item id."""
-    from agent.agent_runtime_helpers import repair_message_sequence
+    from hermes_agent.agent.agent_runtime_helpers import repair_message_sequence
 
     messages = [
         {"role": "user", "content": "do it"},
@@ -247,7 +247,7 @@ def test_repair_keeps_tool_result_keyed_by_response_item_id():
 
 def test_coalesce_tool_call_id_uses_call_half_of_composite_id():
     """Raw bridge ids must use their canonical call half for tool results."""
-    from agent.message_sanitization import coalesce_tool_call_id
+    from hermes_agent.agent.message_sanitization import coalesce_tool_call_id
 
     assert coalesce_tool_call_id({"id": "call_ABC|fc_123"}) == "call_ABC"
 
@@ -261,7 +261,7 @@ def test_sanitize_keeps_parallel_results_keyed_by_responses_id_variant():
     both as the same assistant call. This is the minimal reproduction of the
     reported all-results loss for a larger parallel batch.
     """
-    from agent.agent_runtime_helpers import sanitize_api_messages
+    from hermes_agent.agent.agent_runtime_helpers import sanitize_api_messages
 
     batch_size = 8
     messages = [
@@ -302,7 +302,7 @@ def test_sanitize_keeps_parallel_results_keyed_by_responses_id_variant():
 
 def test_repair_keeps_two_parallel_calls_answered_by_mixed_variants():
     """Consuming one alias group must not orphan a different parallel call."""
-    from agent.agent_runtime_helpers import repair_message_sequence
+    from hermes_agent.agent.agent_runtime_helpers import repair_message_sequence
 
     messages = [
         {"role": "user", "content": "do both"},
@@ -439,7 +439,7 @@ def test_repair_merge_preserves_api_content_sidecar_with_multimodal_content():
 
 def test_sanitize_consumes_all_responses_id_variants_for_duplicate_result():
     """A sibling-id replay must not replace the first real result."""
-    from agent.agent_runtime_helpers import sanitize_api_messages
+    from hermes_agent.agent.agent_runtime_helpers import sanitize_api_messages
 
     messages = [
         {
@@ -468,7 +468,7 @@ def test_tool_executor_uses_canonical_responses_pairing_id():
     """The executor must emit the id used by the normalized assistant turn."""
     from types import SimpleNamespace
 
-    from agent.tool_executor import _pairing_tool_call_id
+    from hermes_agent.agent.tool_executor import _pairing_tool_call_id
 
     assert _pairing_tool_call_id(
         SimpleNamespace(id="fc_123", call_id="call_ABC")
@@ -480,7 +480,7 @@ def test_tool_executor_uses_canonical_responses_pairing_id():
 
 # ── repair_message_sequence_with_cursor (#44837) ───────────────────────────
 
-from agent.agent_runtime_helpers import repair_message_sequence_with_cursor
+from hermes_agent.agent.agent_runtime_helpers import repair_message_sequence_with_cursor
 
 
 def test_cursor_clamped_when_compaction_shrinks_below_cursor():
@@ -565,7 +565,7 @@ def test_flush_guard_clamps_overshooting_cursor():
 def test_sanitize_deduplicates_duplicate_tool_results():
     """sanitize_api_messages (final pre-API chokepoint) drops duplicate tool
     results sharing a tool_call_id."""
-    from agent.agent_runtime_helpers import sanitize_api_messages
+    from hermes_agent.agent.agent_runtime_helpers import sanitize_api_messages
 
     messages = [
         {"role": "user", "content": "hi"},
@@ -584,7 +584,7 @@ def test_sanitize_deduplicates_duplicate_tool_results():
 def test_sanitize_deduplicates_duplicate_assistant_tool_call_ids():
     """sanitize_api_messages collapses duplicate tool_calls sharing an id
     WITHIN a single assistant message (the message[6] shape from #58327)."""
-    from agent.agent_runtime_helpers import sanitize_api_messages
+    from hermes_agent.agent.agent_runtime_helpers import sanitize_api_messages
 
     messages = [
         {"role": "assistant", "content": None, "tool_calls": [
@@ -604,7 +604,7 @@ def test_sanitize_deduplicates_duplicate_assistant_tool_call_ids():
 def test_sanitize_preserves_distinct_tool_call_ids():
     """Negative control: legitimate DISTINCT tool_call_ids must NOT be dropped
     (guards against over-dedup)."""
-    from agent.agent_runtime_helpers import sanitize_api_messages
+    from hermes_agent.agent.agent_runtime_helpers import sanitize_api_messages
 
     messages = [
         {"role": "assistant", "content": None, "tool_calls": [
@@ -633,7 +633,7 @@ def test_sanitize_drops_tool_result_with_missing_tool_call_id():
     reach the provider with no ``tool_call_id`` at all, a schema violation
     on strict OpenAI-compatible providers (#78071).
     """
-    from agent.agent_runtime_helpers import sanitize_api_messages
+    from hermes_agent.agent.agent_runtime_helpers import sanitize_api_messages
 
     messages = [
         {"role": "user", "content": "hi"},
@@ -677,7 +677,7 @@ def test_sanitize_keeps_results_when_server_reuses_one_tool_call_id():
     Contract: a tool result is dropped for being unanswerable, never for
     reusing an id that an earlier call already retired.
     """
-    from agent.agent_runtime_helpers import sanitize_api_messages
+    from hermes_agent.agent.agent_runtime_helpers import sanitize_api_messages
 
     messages = [{"role": "user", "content": "do three steps"}]
     for i in range(3):
@@ -696,7 +696,7 @@ def test_sanitize_keeps_results_when_server_reuses_one_tool_call_id():
 def test_sanitize_still_drops_replayed_result_for_retired_call():
     """The #58327 protection holds: a second result for an already-answered
     call answers nothing outstanding and is still dropped."""
-    from agent.agent_runtime_helpers import sanitize_api_messages
+    from hermes_agent.agent.agent_runtime_helpers import sanitize_api_messages
 
     messages = [
         {"role": "user", "content": "hi"},
@@ -715,7 +715,7 @@ def test_sanitize_preserves_deterministic_local_ids_across_turns():
     Scenario surfaced in #76632: two image_generate rounds emit the same
     local ids (``image_generate:0``/``:1``) in successive assistant turns.
     """
-    from agent.agent_runtime_helpers import sanitize_api_messages
+    from hermes_agent.agent.agent_runtime_helpers import sanitize_api_messages
 
     def _tc(cid):
         return {"id": cid, "type": "function",
@@ -744,7 +744,7 @@ def test_sanitize_preserves_deterministic_local_ids_across_turns():
 def test_sanitize_keeps_all_results_over_fifty_turn_constant_id_session():
     """Kimi K3 / llama.cpp field repro (#70724, #70734): 50 sequential calls
     all sharing one id must all survive — stock behavior kept 1/50."""
-    from agent.agent_runtime_helpers import sanitize_api_messages
+    from hermes_agent.agent.agent_runtime_helpers import sanitize_api_messages
 
     messages = [{"role": "user", "content": "Run 50 steps."}]
     for step in range(50):
@@ -761,7 +761,7 @@ def test_sanitize_keeps_all_results_over_fifty_turn_constant_id_session():
 
 def test_sanitize_drops_result_with_no_preceding_call():
     """A tool result that never had a call is an orphan regardless of id."""
-    from agent.agent_runtime_helpers import sanitize_api_messages
+    from hermes_agent.agent.agent_runtime_helpers import sanitize_api_messages
 
     out = sanitize_api_messages([
         {"role": "user", "content": "hi"},
@@ -778,7 +778,7 @@ def test_sanitize_drops_empty_tool_calls_array():
     semantically "no tool calls", so the key is dropped while content is
     preserved.
     """
-    from agent.agent_runtime_helpers import sanitize_api_messages
+    from hermes_agent.agent.agent_runtime_helpers import sanitize_api_messages
 
     messages = [
         {"role": "user", "content": "hi"},
@@ -799,7 +799,7 @@ def test_repair_drops_stale_empty_tool_calls_on_merged_assistant():
     replayed on the next turn and 400s strict providers (DeepSeek v4). The
     merge's union branches only ever set non-empty lists or leave the key
     untouched, so the empty array survives into the persisted state."""
-    from agent.agent_runtime_helpers import repair_message_sequence
+    from hermes_agent.agent.agent_runtime_helpers import repair_message_sequence
 
     messages = [
         {"role": "user", "content": "hi"},
@@ -829,7 +829,7 @@ def test_repair_keeps_tool_result_when_tool_calls_are_sdk_objects():
     the legitimate tool result as an orphan and silently deleted it —
     corrupting the persisted history and leaving the assistant's
     tool_calls unanswered (itself a strict-provider HTTP 400 trigger)."""
-    from agent.agent_runtime_helpers import repair_message_sequence
+    from hermes_agent.agent.agent_runtime_helpers import repair_message_sequence
 
     class SDKToolCall:
         def __init__(self, call_id):
@@ -875,7 +875,7 @@ def test_sanitize_interrupted_call_stubbed_and_replay_kept():
     (the #64335 empty-key guard is still exercised by
     ``test_sanitize_drops_empty_tool_calls_array``).
     """
-    from agent.agent_runtime_helpers import sanitize_api_messages
+    from hermes_agent.agent.agent_runtime_helpers import sanitize_api_messages
 
     # Simulate a crash/resume glitch that replays the SAME assistant call
     # while the first is still outstanding (no tool result has answered it
@@ -972,7 +972,7 @@ def test_sanitize_dedup_pass_keeps_batch_results_keyed_on_divergent_id():
     answered no outstanding call and was deleted wholesale. Whole parallel
     batches vanished with no stub at all (#93251, #55626 class).
     """
-    from agent.agent_runtime_helpers import sanitize_api_messages
+    from hermes_agent.agent.agent_runtime_helpers import sanitize_api_messages
 
     messages = [
         {"role": "user", "content": "task"},
@@ -999,7 +999,7 @@ def test_sanitize_dedup_pass_still_drops_result_replayed_on_sibling_id():
     """Variant-aware dedup must still drop a SECOND result for an
     already-answered call even when the replay uses the OTHER id variant
     (strict providers 400 on duplicate tool_call_id)."""
-    from agent.agent_runtime_helpers import sanitize_api_messages
+    from hermes_agent.agent.agent_runtime_helpers import sanitize_api_messages
 
     messages = [
         {"role": "user", "content": "task"},
@@ -1021,7 +1021,7 @@ def test_sanitize_dedup_pass_rearms_constant_llamacpp_id():
     """llama.cpp emits one constant id for every call; a fresh assistant call
     re-arms the id so the second round's result still survives (#58327
     outstanding-call semantics must be preserved by the variant-set change)."""
-    from agent.agent_runtime_helpers import sanitize_api_messages
+    from hermes_agent.agent.agent_runtime_helpers import sanitize_api_messages
 
     messages = [
         {"role": "user", "content": "task"},
@@ -1045,7 +1045,7 @@ def test_sanitize_keeps_result_keyed_on_composite_bridge_id():
     """A tool result keyed on the composite ``call|item`` bridge spelling
     (#63000) must pair with a tool_call carrying the split id/call_id
     fields — and vice versa."""
-    from agent.agent_runtime_helpers import sanitize_api_messages
+    from hermes_agent.agent.agent_runtime_helpers import sanitize_api_messages
 
     # Result keyed on composite; call carries split fields.
     messages = [
@@ -1076,7 +1076,7 @@ def test_compressor_sanitize_keeps_composite_keyed_pair():
     """The compression sanitizer must apply the same alias expansion on the
     RESULT side: a composite-keyed result pairs with its split-field call
     instead of being dropped and its call stripped (#63000)."""
-    from agent.context_compressor import ContextCompressor
+    from hermes_agent.agent.context_compressor import ContextCompressor
 
     cc = ContextCompressor.__new__(ContextCompressor)
     cc.quiet_mode = True
@@ -1106,7 +1106,7 @@ def test_compressor_sanitize_keeps_composite_keyed_pair():
 
 
 def test_classify_orphans_clean_pair():
-    from agent.agent_runtime_helpers import _classify_tool_call_orphans
+    from hermes_agent.agent.agent_runtime_helpers import _classify_tool_call_orphans
     messages = [
         {"role": "assistant", "tool_calls": [{"id": "call_1", "type": "function", "function": {"name": "f", "arguments": "{}"}}]},
         {"role": "tool", "tool_call_id": "call_1", "content": "ok"},
@@ -1119,7 +1119,7 @@ def test_classify_orphans_clean_pair():
 
 
 def test_classify_orphans_mixed():
-    from agent.agent_runtime_helpers import _classify_tool_call_orphans
+    from hermes_agent.agent.agent_runtime_helpers import _classify_tool_call_orphans
     messages = [
         {"role": "assistant", "tool_calls": [
             {"id": "call_A", "type": "function", "function": {"name": "f", "arguments": "{}"}},
@@ -1239,7 +1239,7 @@ def test_sanitize_stubs_call_unanswered_positionally_even_if_result_exists_elsew
     assistant message when no result follows it, EVEN IF a (displaced)
     result exists later in the transcript — the global-set check missed
     this exact shape (production 400, session 4d8727cbcf04)."""
-    from agent.agent_runtime_helpers import sanitize_api_messages
+    from hermes_agent.agent.agent_runtime_helpers import sanitize_api_messages
 
     messages = [
         {"role": "user", "content": "do it"},
@@ -1263,7 +1263,7 @@ def test_sanitize_drops_result_appearing_before_its_call():
     """A tool result that precedes its declaring assistant message is a
     positional orphan — strict providers reject 'role=tool' messages that
     don't follow a tool_calls message."""
-    from agent.agent_runtime_helpers import sanitize_api_messages
+    from hermes_agent.agent.agent_runtime_helpers import sanitize_api_messages
 
     messages = [
         {"role": "user", "content": "do it"},
@@ -1283,7 +1283,7 @@ def test_sanitize_positional_pairing_untouched_valid_transcript():
     """Negative control: a fully paired transcript (each tool-calling
     assistant immediately followed by its results) gets no stubs and loses
     no results."""
-    from agent.agent_runtime_helpers import sanitize_api_messages
+    from hermes_agent.agent.agent_runtime_helpers import sanitize_api_messages
 
     messages = [
         {"role": "user", "content": "do it"},
@@ -1321,7 +1321,7 @@ def test_sanitize_stubs_replayed_call_masked_by_historical_result():
     positional pass must stub ``call_old`` at the end of the second run
     while keeping the historical result and the fresh result intact.
     """
-    from agent.agent_runtime_helpers import sanitize_api_messages
+    from hermes_agent.agent.agent_runtime_helpers import sanitize_api_messages
 
     messages = [
         {"role": "user", "content": "step 1"},
@@ -1369,7 +1369,7 @@ def test_sanitize_stubs_interrupted_first_occurrence_keeps_replay_pair():
     therefore exists twice — the first occurrence must be stubbed so the
     positional invariant holds, while the replayed pair stays untouched.
     """
-    from agent.agent_runtime_helpers import sanitize_api_messages
+    from hermes_agent.agent.agent_runtime_helpers import sanitize_api_messages
 
     messages = [
         {"role": "user", "content": "do it"},
@@ -1406,7 +1406,7 @@ def test_sanitize_realigns_bridged_tool_result_name_with_call_name():
     dispatch/hooks/logging; Gemini sees that as a functionResponse whose name
     does not match its functionCall and 400s.
     """
-    from agent.agent_runtime_helpers import sanitize_api_messages
+    from hermes_agent.agent.agent_runtime_helpers import sanitize_api_messages
 
     messages = [
         {"role": "user", "content": "file an issue"},
@@ -1432,7 +1432,7 @@ def test_sanitize_realigns_bridged_tool_result_name_with_call_name():
 
 def test_sanitize_leaves_already_matching_tool_result_name_alone():
     """A directly-called tool already agrees — nothing to rewrite."""
-    from agent.agent_runtime_helpers import sanitize_api_messages
+    from hermes_agent.agent.agent_runtime_helpers import sanitize_api_messages
 
     messages = [
         {"role": "user", "content": "weather?"},
@@ -1452,7 +1452,7 @@ def test_sanitize_does_not_invent_a_name_on_unnamed_tool_results():
     Adding the field would make clean transcripts non-identical on the wire
     and needlessly perturb prompt caching.
     """
-    from agent.agent_runtime_helpers import sanitize_api_messages
+    from hermes_agent.agent.agent_runtime_helpers import sanitize_api_messages
 
     messages = [
         {"role": "user", "content": "run it"},
@@ -1467,7 +1467,7 @@ def test_sanitize_does_not_invent_a_name_on_unnamed_tool_results():
 
 def test_sanitize_realigns_bridged_name_when_call_id_is_padded():
     """Ids are stripped on both sides, so a padded id still pairs."""
-    from agent.agent_runtime_helpers import sanitize_api_messages
+    from hermes_agent.agent.agent_runtime_helpers import sanitize_api_messages
 
     messages = [
         {"role": "user", "content": "file an issue"},
@@ -1485,7 +1485,7 @@ def test_sanitize_drops_bridged_result_whose_call_frame_was_pruned():
     """A result cannot keep a stale name if it has no call frame to disagree
     with: the orphan pass removes it before the realignment pass runs, so the
     mismatch never reaches the provider."""
-    from agent.agent_runtime_helpers import sanitize_api_messages
+    from hermes_agent.agent.agent_runtime_helpers import sanitize_api_messages
 
     messages = [
         {"role": "user", "content": "file an issue"},
@@ -1505,7 +1505,7 @@ def test_sanitize_drops_bridged_result_whose_call_frame_was_pruned():
 # dict forever and the DB keeps the pre-repair row (silent live/DB divergence
 # on resume) — the same contract the micro-compaction defrag/merge sites honor.
 
-from agent.context_compressor import _DB_PERSISTED_MARKER
+from hermes_agent.agent.context_compressor import _DB_PERSISTED_MARKER
 
 
 def test_repair_user_merge_pops_persist_marker_on_stamped_survivor():
@@ -1590,7 +1590,7 @@ def test_repair_decodes_sentinel_multimodal_and_skips_text_merge():
     re-inserts history) must be decoded back to structured content, not glued onto an adjacent
     text turn as a giant base64 blob; an undecodable one is left unmerged (#125299)."""
     from hermes_agent.hermes_state import SessionDB
-    from agent.agent_runtime_helpers import repair_message_sequence
+    from hermes_agent.agent.agent_runtime_helpers import repair_message_sequence
 
     parts = [
         {"type": "text", "text": "look at this"},
@@ -1630,8 +1630,8 @@ def test_repair_decode_of_durable_sentinel_row_does_not_reappend(tmp_path):
     import os
     from unittest.mock import patch
     from hermes_agent.hermes_state import SessionDB
-    from agent.agent_runtime_helpers import repair_message_sequence_with_cursor
-    from agent.context_compressor import _DB_PERSISTED_MARKER
+    from hermes_agent.agent.agent_runtime_helpers import repair_message_sequence_with_cursor
+    from hermes_agent.agent.context_compressor import _DB_PERSISTED_MARKER
 
     parts = [
         {"type": "text", "text": "look"},

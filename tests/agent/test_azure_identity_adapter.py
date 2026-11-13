@@ -1,4 +1,4 @@
-"""Tests for the Microsoft Entra ID adapter (agent/azure_identity_adapter.py).
+"""Tests for the Microsoft Entra ID adapter (hermes_agent/agent/azure_identity_adapter.py).
 
 Covers:
   - Scope resolution per Azure host shape
@@ -29,7 +29,7 @@ import pytest
 # about cache invalidation.
 @pytest.fixture(autouse=True)
 def _reset_adapter_cache():
-    from agent.azure_identity_adapter import reset_credential_cache
+    from hermes_agent.agent.azure_identity_adapter import reset_credential_cache
     reset_credential_cache()
     yield
     reset_credential_cache()
@@ -63,7 +63,7 @@ class TestBuildBearerHttpClient:
 
     def test_hook_overrides_authorization_header(self):
         import httpx
-        from agent.azure_identity_adapter import build_bearer_http_client
+        from hermes_agent.agent.azure_identity_adapter import build_bearer_http_client
 
         minted_tokens = []
 
@@ -115,7 +115,7 @@ class TestBuildBearerHttpClient:
         """
         import logging
         import httpx
-        from agent.azure_identity_adapter import build_bearer_http_client
+        from hermes_agent.agent.azure_identity_adapter import build_bearer_http_client
 
         def bad_provider():
             return ""  # empty token → materialize_bearer_for_http raises
@@ -130,7 +130,7 @@ class TestBuildBearerHttpClient:
                     "api-key": "leaked-placeholder",
                 },
             )
-            with caplog.at_level(logging.WARNING, logger="agent.azure_identity_adapter"):
+            with caplog.at_level(logging.WARNING, logger="hermes_agent.agent.azure_identity_adapter"):
                 hook(req)  # Must not raise.
             # Pre-set auth headers stripped — no sentinel makes it to Azure.
             assert "Authorization" not in req.headers
@@ -158,7 +158,7 @@ class TestEntraIdentityConfig:
     must round-trip through dict cleanly and never lose fields."""
 
     def test_to_dict_round_trip(self):
-        from agent.azure_identity_adapter import EntraIdentityConfig
+        from hermes_agent.agent.azure_identity_adapter import EntraIdentityConfig
         cfg = EntraIdentityConfig(
             scope="https://ai.azure.com/.default",
             exclude_interactive_browser=False,
@@ -235,7 +235,7 @@ def fake_azure_identity(monkeypatch):
     # The adapter's `_require_azure_identity` does its own import, so
     # patch that too to make sure tests never hit the real package's
     # singleton state.
-    from agent import azure_identity_adapter as _adapter
+    from hermes_agent.agent import azure_identity_adapter as _adapter
     monkeypatch.setattr(_adapter, "_require_azure_identity", lambda: fake_module)
 
     return fake
@@ -245,7 +245,7 @@ class TestBuildCredential:
 
 
     def test_credential_is_cached_per_config(self, fake_azure_identity):
-        from agent.azure_identity_adapter import EntraIdentityConfig, build_credential
+        from hermes_agent.agent.azure_identity_adapter import EntraIdentityConfig, build_credential
         cfg = EntraIdentityConfig(scope="s1")
         c1 = build_credential(cfg)
         c2 = build_credential(cfg)
@@ -253,7 +253,7 @@ class TestBuildCredential:
         assert fake_azure_identity.credential_count == 1
 
     def test_distinct_configs_get_distinct_credentials(self, fake_azure_identity):
-        from agent.azure_identity_adapter import EntraIdentityConfig, build_credential
+        from hermes_agent.agent.azure_identity_adapter import EntraIdentityConfig, build_credential
         c1 = build_credential(EntraIdentityConfig(scope="s1"))
         c2 = build_credential(EntraIdentityConfig(scope="s2"))
         assert c1 is not c2
@@ -270,8 +270,8 @@ class TestScopedCredential:
         cred-less B is refused instead of getting DefaultAzureCredential (which reads A's AZURE_* from
         the process env), A again is unaffected; the probe thread runs under the caller's scope so the
         doctor path surfaces the same refusal. Control: a standalone run keeps the ambient chain."""
-        from agent import secret_scope
-        from agent.azure_identity_adapter import EntraIdentityConfig, _probe_token, build_credential
+        from hermes_agent.agent import secret_scope
+        from hermes_agent.agent.azure_identity_adapter import EntraIdentityConfig, _probe_token, build_credential
         from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
         home_a, home_b = tmp_path / "home-A", tmp_path / "home-B"
@@ -311,7 +311,7 @@ class TestScopedCredential:
 
 class TestBuildTokenProvider:
     def test_returns_callable_for_scope(self, fake_azure_identity):
-        from agent.azure_identity_adapter import build_token_provider
+        from hermes_agent.agent.azure_identity_adapter import build_token_provider
         provider = build_token_provider(scope="https://ai.azure.com/.default")
         assert callable(provider)
         assert provider() == "jwt-for-https://ai.azure.com/.default"
@@ -320,7 +320,7 @@ class TestBuildTokenProvider:
 
 
     def test_config_object_wins_over_kwargs(self, fake_azure_identity):
-        from agent.azure_identity_adapter import (
+        from hermes_agent.agent.azure_identity_adapter import (
             EntraIdentityConfig,
             build_token_provider,
         )
@@ -340,7 +340,7 @@ class TestRequireAzureIdentityMissing:
         """When azure-identity isn't importable AND lazy installs are
         off, the adapter must raise ImportError with an actionable
         message, not propagate FeatureUnavailable."""
-        from agent import azure_identity_adapter as _adapter
+        from hermes_agent.agent import azure_identity_adapter as _adapter
 
         # Force the import path to fail.
         original_import = __builtins__["__import__"] if isinstance(__builtins__, dict) else __import__
@@ -381,7 +381,7 @@ class TestHasAzureIdentityCredentials:
         lazy-install path before bailing — otherwise the wizard's
         ``preflight`` would silently fail for fresh installs that haven't
         enabled the Azure identity extra yet."""
-        from agent import azure_identity_adapter as _adapter
+        from hermes_agent.agent import azure_identity_adapter as _adapter
 
         installed = {"called": False}
 
@@ -422,7 +422,7 @@ class TestHasAzureIdentityCredentials:
     def test_returns_false_on_timeout(self, monkeypatch):
         """Slow IMDS / network must time out, not hang the caller."""
         import threading
-        from agent import azure_identity_adapter as _adapter
+        from hermes_agent.agent import azure_identity_adapter as _adapter
 
         slow_release = threading.Event()
 
@@ -455,7 +455,7 @@ class TestDescribeActiveCredential:
     def test_reports_install_failure(self, monkeypatch):
         """When lazy install is allowed but fails (e.g. lazy installs
         disabled), the diagnostic surfaces the failure as the error."""
-        from agent import azure_identity_adapter as _adapter
+        from hermes_agent.agent import azure_identity_adapter as _adapter
         monkeypatch.setattr(_adapter, "has_azure_identity_installed", lambda: False)
 
         def _fail_install():
@@ -470,7 +470,7 @@ class TestDescribeActiveCredential:
         assert "hermes pm install --extra azure-identity" in info["hint"]
 
     def test_reports_env_sources_for_managed_identity(self, fake_azure_identity, monkeypatch):
-        from agent.azure_identity_adapter import describe_active_credential
+        from hermes_agent.agent.azure_identity_adapter import describe_active_credential
         monkeypatch.setenv("IDENTITY_ENDPOINT", "http://169.254.169.254")
         info = describe_active_credential(scope="https://x/.default", timeout_seconds=0.5)
         assert info["ok"] is True

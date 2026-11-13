@@ -1174,7 +1174,7 @@ class TestDiscoveryTemporalNarrowing:
         explicitly and used to drop the new parameters on the floor."""
         from types import SimpleNamespace
 
-        from agent.inline_tool_executors import INLINE_TOOL_EXECUTORS, InlineToolContext
+        from hermes_agent.agent.inline_tool_executors import INLINE_TOOL_EXECUTORS, InlineToolContext
 
         _seed_modpack_sessions(db)
         now = int(time.time())
@@ -1216,7 +1216,7 @@ class TestBrowseDefaultLimit:
         handler, or the inline executor (the live path), each of which used to bake in 3."""
         from types import SimpleNamespace
 
-        from agent.inline_tool_executors import INLINE_TOOL_EXECUTORS, InlineToolContext
+        from hermes_agent.agent.inline_tool_executors import INLINE_TOOL_EXECUTORS, InlineToolContext
         from hermes_agent.tools.registry import registry
 
         for i in range(12):

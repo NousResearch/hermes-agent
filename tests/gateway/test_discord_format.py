@@ -46,7 +46,7 @@ class TestDiscordFormatMessage:
 
 class TestDiscordToolPreviewFormatting:
     def test_truncated_url_keeps_full_click_target(self):
-        from agent.display import ToolPreview
+        from hermes_agent.agent.display import ToolPreview
 
         adapter = _make_discord_adapter()
         url = "https://hermes-agent.nousresearch.com/docs/gateway/discord/tool-progress"
@@ -57,7 +57,7 @@ class TestDiscordToolPreviewFormatting:
         assert out == f"[hermes-agent.nousresearch...](<{url}>)"
 
     def test_truncated_url_label_is_not_a_second_url_target(self):
-        from agent.display import ToolPreview
+        from hermes_agent.agent.display import ToolPreview
 
         adapter = _make_discord_adapter()
         url = "https://centaur.run/secrets/advanced-permissioning"
@@ -71,7 +71,7 @@ class TestDiscordToolPreviewFormatting:
         )
 
     def test_link_escapes_discord_markdown_delimiters(self):
-        from agent.display import ToolPreview
+        from hermes_agent.agent.display import ToolPreview
 
         adapter = _make_discord_adapter()
         preview = ToolPreview(
@@ -102,7 +102,7 @@ class TestDiscordToolPreviewFormatting:
         assert f"[{visible.removeprefix('https://')}](<{url}>)" in out
 
     def test_untruncated_url_remains_plain(self):
-        from agent.display import ToolPreview
+        from hermes_agent.agent.display import ToolPreview
 
         adapter = _make_discord_adapter()
         url = "https://example.com/page"
@@ -112,7 +112,7 @@ class TestDiscordToolPreviewFormatting:
         assert out == url
 
     def test_truncated_non_url_remains_plain(self):
-        from agent.display import ToolPreview
+        from hermes_agent.agent.display import ToolPreview
 
         adapter = _make_discord_adapter()
         visible = "a long search query that was trunc..."

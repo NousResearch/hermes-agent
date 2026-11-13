@@ -2,7 +2,7 @@
 
 import pytest
 
-from agent.skill_bundles import resolve_bundle_command_key
+from hermes_agent.agent.skill_bundles import resolve_bundle_command_key
 from hermes_cli.commands_platforms import discord_skill_commands_by_category, telegram_menu_commands
 
 

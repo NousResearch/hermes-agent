@@ -3,7 +3,7 @@
 ``_handle_branch_command`` (hermes_agent/gateway/slash_commands.py) creates the branched
 child session via ``create_session()`` WITHOUT chat_id/chat_type/thread_id —
 identical in shape to the compression-rotation bug fixed in
-agent/conversation_compression.py. The routing columns are only written
+hermes_agent/agent/conversation_compression.py. The routing columns are only written
 later, when ``switch_session()`` calls ``_record_gateway_session_peer()``
 after the branch's session_id is live and its transcript has been copied
 message-by-message.

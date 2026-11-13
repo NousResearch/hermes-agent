@@ -94,7 +94,7 @@ def start(url: str, *, out_dir: Optional[Path] = None, headed: bool = False,
     # Resolve the realtime key at SPAWN time in the parent, where the profile secret scope
     # (a contextvar) is installed; the detached child inherits env, not scope.
     if not realtime_api_key:
-        from agent.secret_scope import get_secret
+        from hermes_agent.agent.secret_scope import get_secret
         realtime_api_key = get_secret("HERMES_MEET_REALTIME_KEY") or get_secret("OPENAI_API_KEY")
     if realtime_api_key:
         env["HERMES_MEET_REALTIME_KEY"] = realtime_api_key

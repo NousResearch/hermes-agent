@@ -10,14 +10,14 @@ its window with the same walk, so the same marker stalled it: no exchange after 
 
 from unittest.mock import patch
 
-from agent.context_compressor import (
+from hermes_agent.agent.context_compressor import (
     COMPRESSED_SUMMARY_METADATA_KEY, MICRO_COMPACT_MARKER_KEY, SUMMARY_PREFIX, ContextCompressor,
     _estimate_msg_budget_tokens,
 )
 
 
 def _compressor() -> ContextCompressor:
-    with patch("agent.context_compressor.get_model_context_length", return_value=64_000):
+    with patch("hermes_agent.agent.context_compressor.get_model_context_length", return_value=64_000):
         return ContextCompressor(
             model="test-model", quiet_mode=True, config_context_length=64_000, protect_first_n=3,
             protect_last_n=20, summary_target_ratio=0.20, threshold_percent=0.50, tail_mode="lean",

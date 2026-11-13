@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from hermes_agent.hermes_state import SessionDB
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 
 class _CapturingSessionDB:
@@ -196,12 +196,12 @@ def real_loop(tmp_path, monkeypatch):
         monkeypatch.setenv(var, _DEAD_LOCAL)
     monkeypatch.setenv("NO_PROXY", "")
     monkeypatch.setenv("no_proxy", "")
-    monkeypatch.setattr("agent.title_generator.maybe_auto_title", lambda *a, **k: None)
-    monkeypatch.setattr("agent.title_generator.start_title_upgrade", lambda *a, **k: None)
+    monkeypatch.setattr("hermes_agent.agent.title_generator.maybe_auto_title", lambda *a, **k: None)
+    monkeypatch.setattr("hermes_agent.agent.title_generator.start_title_upgrade", lambda *a, **k: None)
     monkeypatch.chdir(tmp_path)
     db = SessionDB(db_path=tmp_path / "state.db")
     sid = "sess-empty-exit"
-    with patch("agent.process_bootstrap.OpenAI"), patch("agent.model_metadata.fetch_model_metadata", return_value={}):
+    with patch("hermes_agent.agent.process_bootstrap.OpenAI"), patch("hermes_agent.agent.model_metadata.fetch_model_metadata", return_value={}):
         agent = AIAgent(
             api_key="test-key", base_url=f"{_DEAD_LOCAL}/v1", model="test/model", quiet_mode=True,
             skip_context_files=True, skip_memory=True, enabled_toolsets=["file"], session_db=db, session_id=sid,
@@ -259,7 +259,7 @@ def test_stop_during_empty_response_recovery_keeps_the_executed_tool_call_live(r
         agent.interrupt("user pressed stop")
         return 5.0
 
-    monkeypatch.setattr("agent.retry_utils.jittered_backoff", stop_during_backoff)
+    monkeypatch.setattr("hermes_agent.agent.retry_utils.jittered_backoff", stop_during_backoff)
     script = [_response(finish_reason="tool_calls", tool_calls=[_write_file_call(real_loop.ledger)]), _response(), _response()]
     result = real_loop.run(script, "record the payment in ledger.txt")
 

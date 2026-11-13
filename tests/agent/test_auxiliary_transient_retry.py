@@ -10,7 +10,7 @@ def test_model_participates_in_client_cache_key():
 
     This is what stops two concurrent advisors from sharing (and racing on)
     one cached client entry."""
-    from agent.auxiliary_client import _client_cache_key
+    from hermes_agent.agent.auxiliary_client import _client_cache_key
 
     k_opus = _client_cache_key(
         "openrouter", async_mode=False, base_url="https://openrouter.ai/api/v1",

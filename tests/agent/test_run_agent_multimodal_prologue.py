@@ -1,7 +1,7 @@
 """Regression tests for run_conversation's prologue handling of multimodal content.
 
 PR #5621 and earlier multimodal PRs hit an ``AttributeError`` in
-``run_agent.run_conversation`` because the prologue unconditionally called
+``hermes_agent.run_agent.run_conversation`` because the prologue unconditionally called
 ``user_message[:80] + "..."`` / ``.replace()`` / ``_safe_print(f"...{user_message[:60]}")``
 on what was now a list.  These tests cover the two fixes:
 
@@ -13,8 +13,8 @@ They do NOT boot the full AIAgent — the prologue-fix guarantees are pure
 function contracts at module scope.
 """
 
-from run_agent import _summarize_user_message_for_log
-from agent.codex_responses_adapter import _chat_content_to_responses_parts
+from hermes_agent.run_agent import _summarize_user_message_for_log
+from hermes_agent.agent.codex_responses_adapter import _chat_content_to_responses_parts
 
 
 class TestSummarizeUserMessageForLog:

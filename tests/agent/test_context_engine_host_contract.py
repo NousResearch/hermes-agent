@@ -27,9 +27,9 @@ engine plugins (e.g. hermes-lcm) rely on:
 from __future__ import annotations
 
 
-from agent.context_compressor import ContextCompressor
+from hermes_agent.agent.context_compressor import ContextCompressor
 from hermes_agent.hermes_state import SessionDB
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 
 def _bare_agent() -> AIAgent:
@@ -91,7 +91,7 @@ def test_reset_session_state_rebinds_builtin_compressor_after_session_switch(tmp
     db.set_compression_fallback_streak("old-sid", 2)
 
     monkeypatch.setattr(
-        "agent.context_compressor.get_model_context_length",
+        "hermes_agent.agent.context_compressor.get_model_context_length",
         lambda *_a, **_k: 100_000,
     )
     compressor = ContextCompressor(

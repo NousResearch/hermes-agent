@@ -1,6 +1,6 @@
 """Tool-dispatch helpers — parallelism gating, multimodal envelopes, mutation tracking.
 
-Stateless utilities extracted from ``run_agent.py`` (which re-exports each name): the
+Stateless utilities extracted from ``hermes_agent/run_agent.py`` (which re-exports each name): the
 batch-parallelism planner (path-overlap admission; V4A patch scope comes from patch-body
 headers, not a decoy ``path=``), multimodal ``{"_multimodal": True, "content": [...],
 "text_summary": ...}`` envelope helpers, file-mutation verifier inputs, trajectory
@@ -16,9 +16,9 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from agent.compression_marker import _COMPRESSION_MARKER_ARTIFACT_RE
-from agent.message_metadata import stamp_message_timestamp
-from agent.tool_result_classification import (
+from hermes_agent.agent.compression_marker import _COMPRESSION_MARKER_ARTIFACT_RE
+from hermes_agent.agent.message_metadata import stamp_message_timestamp
+from hermes_agent.agent.tool_result_classification import (
     FILE_MUTATING_TOOL_NAMES as _FILE_MUTATING_TOOLS,
     tool_may_have_side_effect,
 )
@@ -115,7 +115,7 @@ def _extend_tool_timeout(tool_name: str, default: float | None) -> float | None:
 
 
 def _requires_extended_tool_deadline(tool_name: str) -> bool:
-    from agent.tool_executor import _resolve_concurrent_tool_timeout
+    from hermes_agent.agent.tool_executor import _resolve_concurrent_tool_timeout
 
     default = _resolve_concurrent_tool_timeout()
     return _extend_tool_timeout(tool_name, default) != default

@@ -1,4 +1,4 @@
-"""Tests for agent.auxiliary_client resolution chain, provider overrides, and model overrides."""
+"""Tests for hermes_agent.agent.auxiliary_client resolution chain, provider overrides, and model overrides."""
 
 import base64
 import json
@@ -9,7 +9,7 @@ from unittest.mock import patch, MagicMock, AsyncMock
 
 import pytest
 
-from agent.auxiliary_client import (
+from hermes_agent.agent.auxiliary_client import (
     _NOUS_MODEL,
     CodexAuxiliaryClient,
     get_text_auxiliary_client,
@@ -73,7 +73,7 @@ def _clean_env(monkeypatch):
     # earlier tests that call _mark_provider_unhealthy() poison the
     # cache for later ones, causing _resolve_auto_route to skip providers
     # that the test patched to return valid clients.
-    import agent.auxiliary_client as _aux_mod
+    import hermes_agent.agent.auxiliary_client as _aux_mod
     _aux_mod._aux_unhealthy_until.clear()
     _aux_mod._aux_unhealthy_logged_at.clear()
     yield
@@ -119,7 +119,7 @@ class TestResolveTaskProviderModel:
             "base_url": "https://integrate.api.nvidia.com/v1",
             "api_key": "nvapi-secret",
         }
-        with patch("agent.auxiliary_client._get_auxiliary_task_config", return_value=task_config):
+        with patch("hermes_agent.agent.auxiliary_client._get_auxiliary_task_config", return_value=task_config):
             resolved_provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(
                 task="vision",
                 provider="custom",
@@ -146,7 +146,7 @@ class TestResolveTaskProviderModel:
         preset = {
             "aggregator": {"provider": "openrouter", "model": "anthropic/claude-opus-4.8"},
         }
-        monkeypatch.setattr("agent.auxiliary_client._get_auxiliary_task_config", lambda task: {})
+        monkeypatch.setattr("hermes_agent.agent.auxiliary_client._get_auxiliary_task_config", lambda task: {})
         monkeypatch.setattr(
             "hermes_cli.moa_config.resolve_moa_preset",
             lambda cfg, name: preset,
@@ -180,7 +180,7 @@ class TestResolveTaskProviderModel:
             "aggregator": {"provider": "anthropic", "model": "claude-opus-4.8"},
         }
         monkeypatch.setattr(
-            "agent.auxiliary_client._get_auxiliary_task_config",
+            "hermes_agent.agent.auxiliary_client._get_auxiliary_task_config",
             lambda task: {"provider": "moa", "model": "opus-gpt"} if task == "title_generation" else {},
         )
         monkeypatch.setattr(
@@ -204,7 +204,7 @@ class TestResolveTaskProviderModel:
         """If the MoA preset can't be resolved (e.g. renamed/deleted), the
         function must not raise — it degrades to the pre-fix behavior
         (literal "moa") rather than crash resolve_provider_client() harder."""
-        monkeypatch.setattr("agent.auxiliary_client._get_auxiliary_task_config", lambda task: {})
+        monkeypatch.setattr("hermes_agent.agent.auxiliary_client._get_auxiliary_task_config", lambda task: {})
         monkeypatch.setattr(
             "hermes_cli.moa_config.resolve_moa_preset",
             lambda cfg, name: (_ for _ in ()).throw(KeyError("gone-preset")),
@@ -223,7 +223,7 @@ class TestResolveTaskProviderModel:
 
 
     def test_explicit_model_auto_sentinel_is_normalized(self):
-        """MoA slots (agent/moa_loop.py's _slot_runtime) forward a preset's
+        """MoA slots (hermes_agent/agent/moa_loop.py's _slot_runtime) forward a preset's
         `model:` field as the explicit `model` kwarg here, not through
         auxiliary.<task> config. Only cfg_model was normalized before, so a
         MoA reference/aggregator slot configured with `model: auto` sent the
@@ -312,13 +312,13 @@ class TestMoaAggregatorSharedResolution:
     def test_main_agent_fallback_uses_aggregator_for_moa_main(self, tmp_path, monkeypatch):
         """_try_main_agent_model_fallback with a moa main resolves the
         aggregator instead of asking for a literal "moa" client."""
-        from agent.auxiliary_client import _try_main_agent_model_fallback
+        from hermes_agent.agent.auxiliary_client import _try_main_agent_model_fallback
 
         self._write_moa_config(tmp_path, monkeypatch)
-        with patch("agent.auxiliary_client._read_main_provider", return_value="moa"), \
-             patch("agent.auxiliary_client._read_main_model", return_value="opus-gpt"), \
-             patch("agent.auxiliary_client._is_provider_unhealthy", return_value=False), \
-             patch("agent.auxiliary_client.resolve_provider_client") as mock_resolve:
+        with patch("hermes_agent.agent.auxiliary_client._read_main_provider", return_value="moa"), \
+             patch("hermes_agent.agent.auxiliary_client._read_main_model", return_value="opus-gpt"), \
+             patch("hermes_agent.agent.auxiliary_client._is_provider_unhealthy", return_value=False), \
+             patch("hermes_agent.agent.auxiliary_client.resolve_provider_client") as mock_resolve:
             mock_client = MagicMock()
             mock_resolve.return_value = (mock_client, "anthropic/claude-opus-4.8")
 
@@ -350,7 +350,7 @@ class TestBuildCallKwargsMaxTokens:
         ],
     )
     def test_keeps_max_tokens_on_anthropic_wire(self, provider, model, base_url):
-        from agent.auxiliary_client import _build_call_kwargs
+        from hermes_agent.agent.auxiliary_client import _build_call_kwargs
 
         kwargs = _build_call_kwargs(
             provider=provider,
@@ -386,7 +386,7 @@ class TestBuildCallKwargsMaxTokens:
         Models that require ``max_completion_tokens`` (GPT-5 family, Copilot)
         get the correct parameter name via ``auxiliary_max_tokens_param()``.
         """
-        from agent.auxiliary_client import _build_call_kwargs
+        from hermes_agent.agent.auxiliary_client import _build_call_kwargs
 
         kwargs = _build_call_kwargs(
             provider=provider,
@@ -404,7 +404,7 @@ class TestBuildCallKwargsMaxTokens:
     def test_moa_task_exact_match(self):
         """Only task == "moa_reference" triggers the cap — not the aggregator,
         not arbitrary 'moa_' prefixed tasks."""
-        from agent.auxiliary_client import _build_call_kwargs
+        from hermes_agent.agent.auxiliary_client import _build_call_kwargs
 
         # 'moa_reference' → honored
         kw = _build_call_kwargs(
@@ -439,7 +439,7 @@ class TestBuildCallKwargsMaxTokens:
 
 class TestNousTagsScoping:
     def test_tags_injected_when_provider_is_nous(self):
-        import agent.auxiliary_client as aux
+        import hermes_agent.agent.auxiliary_client as aux
 
         kwargs = aux._build_call_kwargs(
             provider="nous",
@@ -450,7 +450,7 @@ class TestNousTagsScoping:
         assert kwargs["extra_body"]["tags"] == aux._nous_portal_tags()
 
     def test_tags_not_injected_for_non_nous_provider_when_main_is_nous(self):
-        import agent.auxiliary_client as aux
+        import hermes_agent.agent.auxiliary_client as aux
 
         with aux.scoped_runtime_main({
             "provider": "nous", "model": "Hermes-4",
@@ -499,7 +499,7 @@ class TestResolveCodexCredentialToken:
             },
         }))
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-        with patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)):
+        with patch("hermes_agent.agent.auxiliary_client._select_pool_entry", return_value=(False, None)):
             result = _resolve_codex_credential_and_base()[0]
         assert result == "tok-123"
 
@@ -525,7 +525,7 @@ class TestResolveCodexCredentialToken:
             },
         }))
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-        with patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)):
+        with patch("hermes_agent.agent.auxiliary_client._select_pool_entry", return_value=(False, None)):
             result = _resolve_codex_credential_and_base()[0]
         assert result is None, "Expired JWT should return None"
 
@@ -550,7 +550,7 @@ class TestResolveCodexCredentialToken:
             },
         }))
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-        with patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)):
+        with patch("hermes_agent.agent.auxiliary_client._select_pool_entry", return_value=(False, None)):
             result = _resolve_codex_credential_and_base()[0]
         assert result == valid_jwt
 
@@ -563,7 +563,7 @@ class TestResolveXaiOAuthForAux:
         should not fall through to "no auxiliary provider configured" just
         because the singleton auth-store entry is absent.
         """
-        from agent.credential_pool import AUTH_TYPE_OAUTH, PooledCredential, load_pool
+        from hermes_agent.agent.credential_pool import AUTH_TYPE_OAUTH, PooledCredential, load_pool
         from hermes_cli.auth import DEFAULT_XAI_OAUTH_BASE_URL
 
         hermes_home = tmp_path / "hermes"
@@ -595,7 +595,7 @@ class TestResolveXaiOAuthForAux:
         )
 
     def test_pool_backed_credentials_honor_base_url_env_override(self, tmp_path, monkeypatch):
-        from agent.credential_pool import AUTH_TYPE_OAUTH, PooledCredential, load_pool
+        from hermes_agent.agent.credential_pool import AUTH_TYPE_OAUTH, PooledCredential, load_pool
         from hermes_cli.auth import DEFAULT_XAI_OAUTH_BASE_URL
 
         hermes_home = tmp_path / "hermes"
@@ -632,9 +632,9 @@ class TestAnthropicOAuthFlag:
     def test_oauth_token_sets_flag(self, monkeypatch):
         """OAuth tokens (sk-ant-oat01-*) should create client with is_oauth=True."""
         monkeypatch.setenv("ANTHROPIC_TOKEN", "sk-ant-oat01-test-token")
-        with patch("agent.anthropic_adapter.build_anthropic_client") as mock_build:
+        with patch("hermes_agent.agent.anthropic_adapter.build_anthropic_client") as mock_build:
             mock_build.return_value = MagicMock()
-            from agent.auxiliary_client import _try_anthropic, AnthropicAuxiliaryClient
+            from hermes_agent.agent.auxiliary_client import _try_anthropic, AnthropicAuxiliaryClient
             client, _model = _try_anthropic()
             assert client is not None
             assert isinstance(client, AnthropicAuxiliaryClient)
@@ -644,11 +644,11 @@ class TestAnthropicOAuthFlag:
 
     def test_api_key_no_oauth_flag(self, monkeypatch):
         """Regular API keys (sk-ant-api-*) should create client with is_oauth=False."""
-        with patch("agent.anthropic_credentials.resolve_anthropic_token", return_value="sk-ant-api03-testkey1234"), \
-             patch("agent.anthropic_adapter.build_anthropic_client") as mock_build, \
-             patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)):
+        with patch("hermes_agent.agent.anthropic_credentials.resolve_anthropic_token", return_value="sk-ant-api03-testkey1234"), \
+             patch("hermes_agent.agent.anthropic_adapter.build_anthropic_client") as mock_build, \
+             patch("hermes_agent.agent.auxiliary_client._select_pool_entry", return_value=(False, None)):
             mock_build.return_value = MagicMock()
-            from agent.auxiliary_client import _try_anthropic, AnthropicAuxiliaryClient
+            from hermes_agent.agent.auxiliary_client import _try_anthropic, AnthropicAuxiliaryClient
             client, _model = _try_anthropic()
             assert client is not None
             assert isinstance(client, AnthropicAuxiliaryClient)
@@ -668,11 +668,11 @@ class TestAnthropicOAuthFlag:
                 return _Entry()
 
         with (
-            patch("agent.auxiliary_client.load_pool", return_value=_Pool()),
-            patch("agent.anthropic_credentials.resolve_anthropic_token", side_effect=AssertionError("legacy path should not run")),
-            patch("agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()) as mock_build,
+            patch("hermes_agent.agent.auxiliary_client.load_pool", return_value=_Pool()),
+            patch("hermes_agent.agent.anthropic_credentials.resolve_anthropic_token", side_effect=AssertionError("legacy path should not run")),
+            patch("hermes_agent.agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()) as mock_build,
         ):
-            from agent.auxiliary_client import _try_anthropic
+            from hermes_agent.agent.auxiliary_client import _try_anthropic
 
             client, _model = _try_anthropic()
 
@@ -683,14 +683,14 @@ class TestAnthropicOAuthFlag:
 class TestBuildCodexClient:
     def test_pool_without_selected_entry_falls_back_to_auth_store(self):
         with (
-            patch("agent.auxiliary_client._select_pool_entry", return_value=(True, None)),
+            patch("hermes_agent.agent.auxiliary_client._select_pool_entry", return_value=(True, None)),
             # A present pool with no usable row reads auth.json directly (no re-selection that
             # could pair another row's key with the default host, #121486).
-            patch("agent.auxiliary_client._read_codex_singleton_token", return_value="codex-auth-token"),
-            patch("agent.auxiliary_client.OpenAI") as mock_openai,
+            patch("hermes_agent.agent.auxiliary_client._read_codex_singleton_token", return_value="codex-auth-token"),
+            patch("hermes_agent.agent.auxiliary_client.OpenAI") as mock_openai,
         ):
             mock_openai.return_value = MagicMock()
-            from agent.auxiliary_client import _build_codex_client
+            from hermes_agent.agent.auxiliary_client import _build_codex_client
 
             client, model = _build_codex_client("gpt-5.4")
 
@@ -706,12 +706,12 @@ class TestBuildCodexClient:
             runtime_base_url="https://chatgpt.com/backend-api/codex",
         )
         with (
-            patch("agent.auxiliary_client._select_pool_entry", return_value=(True, entry)),
-            patch("agent.auxiliary_client.OpenAI") as mock_openai,
+            patch("hermes_agent.agent.auxiliary_client._select_pool_entry", return_value=(True, entry)),
+            patch("hermes_agent.agent.auxiliary_client.OpenAI") as mock_openai,
         ):
             monkeypatch.setenv("HERMES_CODEX_BASE_URL", "http://127.0.0.1:8787/v1")
             mock_openai.return_value = MagicMock()
-            from agent.auxiliary_client import _build_codex_client
+            from hermes_agent.agent.auxiliary_client import _build_codex_client
 
             client, model = _build_codex_client("gpt-5.4")
 
@@ -722,13 +722,13 @@ class TestBuildCodexClient:
     def test_profile_codex_base_url_applies_to_raw_codex_client(self, monkeypatch):
         """The main agent's raw Codex client honours the same endpoint override."""
         with (
-            patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)),
-            patch("agent.auxiliary_client._read_codex_singleton_token", return_value="codex-auth-token"),
-            patch("agent.auxiliary_client.OpenAI") as mock_openai,
+            patch("hermes_agent.agent.auxiliary_client._select_pool_entry", return_value=(False, None)),
+            patch("hermes_agent.agent.auxiliary_client._read_codex_singleton_token", return_value="codex-auth-token"),
+            patch("hermes_agent.agent.auxiliary_client.OpenAI") as mock_openai,
         ):
             monkeypatch.setenv("HERMES_CODEX_BASE_URL", "http://127.0.0.1:8787/v1")
             mock_openai.return_value = MagicMock()
-            from agent.auxiliary_client import resolve_provider_client
+            from hermes_agent.agent.auxiliary_client import resolve_provider_client
 
             client, model = resolve_provider_client("openai-codex", "gpt-5.4", raw_codex=True)
 
@@ -738,14 +738,14 @@ class TestBuildCodexClient:
 
     def test_rejects_missing_model(self):
         """Callers must pass an explicit model; no hardcoded default."""
-        from agent.auxiliary_client import _build_codex_client
+        from hermes_agent.agent.auxiliary_client import _build_codex_client
 
         client, model = _build_codex_client("")
         assert client is None
         assert model is None
 
     def test_cached_codex_client_rebuilds_when_pool_entry_changes(self):
-        import agent.auxiliary_client as aux
+        import hermes_agent.agent.auxiliary_client as aux
 
         class _Entry:
             def __init__(self, entry_id, token):
@@ -774,8 +774,8 @@ class TestBuildCodexClient:
         client_b = MagicMock(name="codex-client-b")
 
         with (
-            patch("agent.auxiliary_client.load_pool", return_value=pool),
-            patch("agent.auxiliary_client.OpenAI", side_effect=[client_a, client_b]) as mock_openai,
+            patch("hermes_agent.agent.auxiliary_client.load_pool", return_value=pool),
+            patch("hermes_agent.agent.auxiliary_client.OpenAI", side_effect=[client_a, client_b]) as mock_openai,
         ):
             aux.shutdown_cached_clients()
             try:
@@ -816,23 +816,23 @@ class TestResolveProviderClientUniversalModelFallback:
 
     def test_empty_model_for_codex_also_uses_main_model(self):
         """openai-codex: symmetric with xai-oauth — same universal fallback."""
-        from agent.auxiliary_client import resolve_provider_client
+        from hermes_agent.agent.auxiliary_client import resolve_provider_client
 
         with (
             patch(
-                "agent.auxiliary_client._read_main_model",
+                "hermes_agent.agent.auxiliary_client._read_main_model",
                 return_value="gpt-5.4",
             ),
             patch(
-                "agent.auxiliary_client._get_aux_model_for_provider",
+                "hermes_agent.agent.auxiliary_client._get_aux_model_for_provider",
                 return_value="",  # openai-codex has no catalog default either
             ),
             patch(
-                "agent.auxiliary_client._build_codex_client",
+                "hermes_agent.agent.auxiliary_client._build_codex_client",
                 return_value=(MagicMock(), "gpt-5.4"),
             ) as mock_build,
             patch(
-                "agent.auxiliary_client._select_pool_entry",
+                "hermes_agent.agent.auxiliary_client._select_pool_entry",
                 return_value=(True, None),
             ),
         ):
@@ -849,16 +849,16 @@ class TestResolveProviderClientUniversalModelFallback:
         explicitly picks gemini-3-flash for title generation, that's
         what runs, not their main model.
         """
-        from agent.auxiliary_client import resolve_provider_client
+        from hermes_agent.agent.auxiliary_client import resolve_provider_client
 
         with (
-            patch("agent.auxiliary_client._read_main_model") as mock_read_main,
+            patch("hermes_agent.agent.auxiliary_client._read_main_model") as mock_read_main,
             patch(
-                "agent.auxiliary_client._get_aux_model_for_provider",
+                "hermes_agent.agent.auxiliary_client._get_aux_model_for_provider",
                 return_value="catalog-default-should-not-be-used",
             ),
             patch(
-                "agent.auxiliary_client._build_xai_oauth_aux_client",
+                "hermes_agent.agent.auxiliary_client._build_xai_oauth_aux_client",
                 return_value=(MagicMock(), "grok-4.20-multi-agent"),
             ) as mock_build,
         ):
@@ -889,7 +889,7 @@ class TestExpiredCodexFallback:
         # _hermetic_environment autouse can leave a narrow window where
         # the mark reappears.  Explicitly clear here so this test is
         # independent of run order.
-        import agent.auxiliary_client as _aux_mod
+        import hermes_agent.agent.auxiliary_client as _aux_mod
         _aux_mod._aux_unhealthy_until.clear()
         _aux_mod._aux_unhealthy_logged_at.clear()
 
@@ -911,9 +911,9 @@ class TestExpiredCodexFallback:
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
         monkeypatch.setenv("OPENROUTER_API_KEY", "or-test-key")
 
-        with patch("agent.auxiliary_client.OpenAI") as mock_openai:
+        with patch("hermes_agent.agent.auxiliary_client.OpenAI") as mock_openai:
             mock_openai.return_value = MagicMock()
-            from agent.auxiliary_client import _resolve_auto_route
+            from hermes_agent.agent.auxiliary_client import _resolve_auto_route
             client, _model, _provider = _resolve_auto_route()
             assert client is not None
             # OpenRouter is 1st in chain, should win
@@ -928,9 +928,9 @@ class TestExpiredCodexFallback:
         """CLAUDE_CODE_OAUTH_TOKEN env var should get is_oauth=True."""
         monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat-cc-test-token")
         monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
-        with patch("agent.anthropic_adapter.build_anthropic_client") as mock_build:
+        with patch("hermes_agent.agent.anthropic_adapter.build_anthropic_client") as mock_build:
             mock_build.return_value = MagicMock()
-            from agent.auxiliary_client import _try_anthropic
+            from hermes_agent.agent.auxiliary_client import _try_anthropic
             client, _model = _try_anthropic()
             assert client is not None
             adapter = client.chat.completions
@@ -942,9 +942,9 @@ class TestExplicitProviderRouting:
 
     def test_explicit_anthropic_api_key(self, monkeypatch):
         """provider='anthropic' + regular API key should work with is_oauth=False."""
-        with patch("agent.anthropic_credentials.resolve_anthropic_token", return_value="sk-ant-api-regular-key"), \
-             patch("agent.anthropic_adapter.build_anthropic_client") as mock_build, \
-             patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)):
+        with patch("hermes_agent.agent.anthropic_credentials.resolve_anthropic_token", return_value="sk-ant-api-regular-key"), \
+             patch("hermes_agent.agent.anthropic_adapter.build_anthropic_client") as mock_build, \
+             patch("hermes_agent.agent.auxiliary_client._select_pool_entry", return_value=(False, None)):
             mock_build.return_value = MagicMock()
             client, _model = resolve_provider_client("anthropic")
             assert client is not None
@@ -956,8 +956,8 @@ class TestExplicitProviderRouting:
     def test_try_openrouter_pool_exhausted_falls_back_to_env(self, monkeypatch):
         """Pool present but exhausted → fall through to OPENROUTER_API_KEY env var."""
         monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-env-fallback")
-        with patch("agent.auxiliary_client._select_pool_entry", return_value=(True, None)), \
-             patch("agent.auxiliary_client.OpenAI") as mock_openai:
+        with patch("hermes_agent.agent.auxiliary_client._select_pool_entry", return_value=(True, None)), \
+             patch("hermes_agent.agent.auxiliary_client.OpenAI") as mock_openai:
             mock_client = MagicMock(name="openrouter_client")
             mock_openai.return_value = mock_client
 
@@ -983,9 +983,9 @@ class TestOpenRouterPaidLaneGuard:
         covered by test_free_only_skips_paid_configured_model below.
         """
         monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
-        with patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)), \
+        with patch("hermes_agent.agent.auxiliary_client._select_pool_entry", return_value=(False, None)), \
              patch("hermes_cli.config.load_config_readonly", return_value={"auxiliary": {"free_only": True}}), \
-             patch("agent.auxiliary_client.OpenAI") as mock_openai:
+             patch("hermes_agent.agent.auxiliary_client.OpenAI") as mock_openai:
             mock_client = MagicMock(name="openrouter_client")
             mock_openai.return_value = mock_client
             client, model = _try_openrouter()
@@ -995,11 +995,11 @@ class TestOpenRouterPaidLaneGuard:
     def test_free_only_skips_paid_configured_model(self, monkeypatch):
         """free_only=true + user-configured PAID model → OpenRouter skipped."""
         monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
-        with patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)), \
+        with patch("hermes_agent.agent.auxiliary_client._select_pool_entry", return_value=(False, None)), \
              patch("hermes_cli.config.load_config_readonly",
                    return_value={"auxiliary": {"free_only": True,
                                                "openrouter_model": "google/gemini-3.6-flash"}}), \
-             patch("agent.auxiliary_client.OpenAI") as mock_openai:
+             patch("hermes_agent.agent.auxiliary_client.OpenAI") as mock_openai:
             client, model = _try_openrouter()
         assert client is None
         assert model is None
@@ -1008,11 +1008,11 @@ class TestOpenRouterPaidLaneGuard:
     def test_free_only_allows_free_model(self, monkeypatch):
         """free_only=true + :free model → OpenRouter used with that model."""
         monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
-        with patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)), \
+        with patch("hermes_agent.agent.auxiliary_client._select_pool_entry", return_value=(False, None)), \
              patch("hermes_cli.config.load_config_readonly",
                    return_value={"auxiliary": {"free_only": True,
                                               "openrouter_model": "nvidia/nemotron-3-ultra-550b-a55b:free"}}), \
-             patch("agent.auxiliary_client.OpenAI") as mock_openai:
+             patch("hermes_agent.agent.auxiliary_client.OpenAI") as mock_openai:
             mock_client = MagicMock(name="openrouter_client")
             mock_openai.return_value = mock_client
             client, model = _try_openrouter()
@@ -1022,10 +1022,10 @@ class TestOpenRouterPaidLaneGuard:
     def test_configured_model_overrides_hardcoded_default(self, monkeypatch):
         """auxiliary.openrouter_model replaces _OPENROUTER_MODEL."""
         monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
-        with patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)), \
+        with patch("hermes_agent.agent.auxiliary_client._select_pool_entry", return_value=(False, None)), \
              patch("hermes_cli.config.load_config_readonly",
                    return_value={"auxiliary": {"openrouter_model": "some/vendor-model"}}), \
-             patch("agent.auxiliary_client.OpenAI") as mock_openai:
+             patch("hermes_agent.agent.auxiliary_client.OpenAI") as mock_openai:
             mock_client = MagicMock(name="openrouter_client")
             mock_openai.return_value = mock_client
             client, model = _try_openrouter()
@@ -1035,9 +1035,9 @@ class TestOpenRouterPaidLaneGuard:
     def test_explicit_caller_model_respects_free_only(self, monkeypatch):
         """Auxiliary.<task>.model (explicit) is also gated by free_only."""
         monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
-        with patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)), \
+        with patch("hermes_agent.agent.auxiliary_client._select_pool_entry", return_value=(False, None)), \
              patch("hermes_cli.config.load_config_readonly", return_value={"auxiliary": {"free_only": True}}), \
-             patch("agent.auxiliary_client.OpenAI") as mock_openai:
+             patch("hermes_agent.agent.auxiliary_client.OpenAI") as mock_openai:
             client, model = _try_openrouter(model="google/gemini-3.6-flash")
         assert client is None
         assert model is None
@@ -1046,10 +1046,10 @@ class TestOpenRouterPaidLaneGuard:
     def test_resolver_forwards_explicit_free_model_to_gate(self, monkeypatch):
         """The concrete OpenRouter route gates the caller's model, not its default."""
         monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
-        with patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)), \
+        with patch("hermes_agent.agent.auxiliary_client._select_pool_entry", return_value=(False, None)), \
              patch("hermes_cli.config.load_config_readonly",
                    return_value={"auxiliary": {"free_only": True}}), \
-             patch("agent.auxiliary_client.OpenAI") as mock_openai:
+             patch("hermes_agent.agent.auxiliary_client.OpenAI") as mock_openai:
             mock_client = MagicMock(name="openrouter_client")
             mock_openai.return_value = mock_client
             client, model = resolve_provider_client(
@@ -1061,10 +1061,10 @@ class TestOpenRouterPaidLaneGuard:
 
     def test_free_only_gate_does_not_mark_openrouter_unhealthy(self, monkeypatch):
         monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
-        with patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)), \
+        with patch("hermes_agent.agent.auxiliary_client._select_pool_entry", return_value=(False, None)), \
              patch("hermes_cli.config.load_config_readonly",
                    return_value={"auxiliary": {"free_only": True}}), \
-             patch("agent.auxiliary_client._mark_provider_unhealthy") as mark_unhealthy:
+             patch("hermes_agent.agent.auxiliary_client._mark_provider_unhealthy") as mark_unhealthy:
             client, model = resolve_provider_client(
                 "openrouter", model="google/gemini-3.6-flash"
             )
@@ -1081,33 +1081,33 @@ class TestOpenRouterPaidLaneGuard:
         only engage via an explicit auxiliary.openrouter_model choice.)
         """
         import logging
-        from agent.auxiliary_client import _paid_lane_warned
+        from hermes_agent.agent.auxiliary_client import _paid_lane_warned
         _paid_model = "google/gemini-3.6-flash"
         _paid_cfg = {"auxiliary": {"openrouter_model": _paid_model}}
         _paid_lane_warned.discard(_paid_model)
         monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
-        with patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)), \
+        with patch("hermes_agent.agent.auxiliary_client._select_pool_entry", return_value=(False, None)), \
              patch("hermes_cli.config.load_config_readonly", return_value=_paid_cfg), \
-             patch("agent.auxiliary_client.OpenAI") as mock_openai:
+             patch("hermes_agent.agent.auxiliary_client.OpenAI") as mock_openai:
             mock_client = MagicMock(name="openrouter_client")
             mock_openai.return_value = mock_client
-            with caplog.at_level(logging.WARNING, logger="agent.auxiliary_client"):
+            with caplog.at_level(logging.WARNING, logger="hermes_agent.agent.auxiliary_client"):
                 client, model = _try_openrouter()
         assert client is mock_client
         assert model == _paid_model
         assert any("PAID lane engaged" in r.getMessage() for r in caplog.records)
         # Second call logs nothing new.
-        with patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)), \
+        with patch("hermes_agent.agent.auxiliary_client._select_pool_entry", return_value=(False, None)), \
              patch("hermes_cli.config.load_config_readonly", return_value=_paid_cfg), \
-             patch("agent.auxiliary_client.OpenAI") as mock_openai:
+             patch("hermes_agent.agent.auxiliary_client.OpenAI") as mock_openai:
             caplog.clear()
-            with caplog.at_level(logging.WARNING, logger="agent.auxiliary_client"):
+            with caplog.at_level(logging.WARNING, logger="hermes_agent.agent.auxiliary_client"):
                 _try_openrouter()
         assert not any("PAID lane engaged" in r.getMessage() for r in caplog.records)
         _paid_lane_warned.discard(_paid_model)
 
     def test_is_free_model(self):
-        from agent.auxiliary_client import _is_free_model
+        from hermes_agent.agent.auxiliary_client import _is_free_model
         assert _is_free_model("nvidia/nemotron-3-ultra-550b-a55b:free")
         # Stealth-preview SKUs are free-tier without a :free suffix (issue #91843).
         assert _is_free_model("stealth/ox-alpha")
@@ -1133,15 +1133,15 @@ class TestGetTextAuxiliaryClient:
                 return _Entry()
 
         with (
-            patch("agent.auxiliary_client.load_pool", return_value=_Pool()),
-            patch("agent.auxiliary_client.OpenAI"),
+            patch("hermes_agent.agent.auxiliary_client.load_pool", return_value=_Pool()),
+            patch("hermes_agent.agent.auxiliary_client.OpenAI"),
             patch("hermes_cli.auth._read_codex_tokens", side_effect=AssertionError("legacy codex store should not run")),
         ):
-            from agent.auxiliary_client import _build_codex_client
+            from hermes_agent.agent.auxiliary_client import _build_codex_client
 
             client, model = _build_codex_client("gpt-5.4")
 
-        from agent.auxiliary_client import CodexAuxiliaryClient
+        from hermes_agent.agent.auxiliary_client import CodexAuxiliaryClient
 
         assert isinstance(client, CodexAuxiliaryClient)
         assert model == "gpt-5.4"
@@ -1150,24 +1150,24 @@ class TestGetTextAuxiliaryClient:
         monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
-        with patch("agent.auxiliary_client._read_nous_auth", return_value=None), \
-             patch("agent.auxiliary_client._resolve_codex_credential_and_base",
+        with patch("hermes_agent.agent.auxiliary_client._read_nous_auth", return_value=None), \
+             patch("hermes_agent.agent.auxiliary_client._resolve_codex_credential_and_base",
                    return_value=(None, "https://chatgpt.com/backend-api/codex")), \
-             patch("agent.auxiliary_client._resolve_api_key_provider", return_value=(None, None)):
+             patch("hermes_agent.agent.auxiliary_client._resolve_api_key_provider", return_value=(None, None)):
             client, model = get_text_auxiliary_client()
         assert client is None
         assert model is None
 
     def test_custom_endpoint_uses_codex_wrapper_when_runtime_requests_responses_api(self):
-        with patch("agent.auxiliary_client._resolve_custom_runtime",
+        with patch("hermes_agent.agent.auxiliary_client._resolve_custom_runtime",
                    return_value=("https://api.openai.com/v1", "sk-test", "codex_responses")), \
-             patch("agent.auxiliary_client._read_nous_auth", return_value=None), \
-             patch("agent.auxiliary_client._resolve_nous_runtime_api", return_value=None), \
-             patch("agent.auxiliary_client._read_main_model", return_value="gpt-5.3-codex"), \
-             patch("agent.auxiliary_client.OpenAI") as mock_openai:
+             patch("hermes_agent.agent.auxiliary_client._read_nous_auth", return_value=None), \
+             patch("hermes_agent.agent.auxiliary_client._resolve_nous_runtime_api", return_value=None), \
+             patch("hermes_agent.agent.auxiliary_client._read_main_model", return_value="gpt-5.3-codex"), \
+             patch("hermes_agent.agent.auxiliary_client.OpenAI") as mock_openai:
             client, model = get_text_auxiliary_client()
 
-        from agent.auxiliary_client import CodexAuxiliaryClient
+        from hermes_agent.agent.auxiliary_client import CodexAuxiliaryClient
         assert isinstance(client, CodexAuxiliaryClient)
         assert model == "gpt-5.3-codex"
         assert mock_openai.call_args.kwargs["base_url"] == "https://api.openai.com/v1"
@@ -1181,11 +1181,11 @@ class TestVisionClientFallback:
         """Active provider appears in available backends when credentials exist."""
         monkeypatch.setenv("ANTHROPIC_API_KEY", "***")
         with (
-            patch("agent.auxiliary_client._read_nous_auth", return_value=None),
-            patch("agent.auxiliary_client._read_main_provider", return_value="anthropic"),
-            patch("agent.auxiliary_client._read_main_model", return_value="claude-sonnet-4"),
-            patch("agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()),
-            patch("agent.anthropic_credentials.resolve_anthropic_token", return_value="***"),
+            patch("hermes_agent.agent.auxiliary_client._read_nous_auth", return_value=None),
+            patch("hermes_agent.agent.auxiliary_client._read_main_provider", return_value="anthropic"),
+            patch("hermes_agent.agent.auxiliary_client._read_main_model", return_value="claude-sonnet-4"),
+            patch("hermes_agent.agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()),
+            patch("hermes_agent.agent.anthropic_credentials.resolve_anthropic_token", return_value="***"),
         ):
             backends = get_available_vision_backends()
 
@@ -1193,7 +1193,7 @@ class TestVisionClientFallback:
 
 
     def test_anthropic_auxiliary_client_aggregates_stream_response(self):
-        from agent.auxiliary_client import AnthropicAuxiliaryClient
+        from hermes_agent.agent.auxiliary_client import AnthropicAuxiliaryClient
 
         final_message = SimpleNamespace(
             content=[SimpleNamespace(type="text", text="streamed aux response")],
@@ -1259,11 +1259,11 @@ class TestAuxiliaryPoolAwareness:
 
         pool = _Pool()
         with (
-            patch("agent.auxiliary_client.load_pool", return_value=pool),
-            patch("agent.auxiliary_client.OpenAI") as mock_openai,
+            patch("hermes_agent.agent.auxiliary_client.load_pool", return_value=pool),
+            patch("hermes_agent.agent.auxiliary_client.OpenAI") as mock_openai,
             patch("hermes_cli.models.get_nous_recommended_aux_model", return_value=None),
         ):
-            from agent.auxiliary_client import _try_nous
+            from hermes_agent.agent.auxiliary_client import _try_nous
 
             client, model = _try_nous()
 
@@ -1290,11 +1290,11 @@ class TestAuxiliaryPoolAwareness:
         fresh_client.chat.completions.create.return_value = {"ok": True}
 
         with (
-            patch("agent.auxiliary_client._resolve_task_provider_model", return_value=("nous", "nous-model", None, None, None)),
-            patch("agent.auxiliary_client._get_cached_client", return_value=(stale_client, "nous-model")),
-            patch("agent.auxiliary_client.OpenAI", return_value=fresh_client),
-            patch("agent.auxiliary_client._validate_llm_response", side_effect=lambda resp, _task, **_kw: resp),
-            patch("agent.auxiliary_client._resolve_nous_runtime_api", return_value=("fresh-agent-key", "https://inference-api.nousresearch.com/v1")),
+            patch("hermes_agent.agent.auxiliary_client._resolve_task_provider_model", return_value=("nous", "nous-model", None, None, None)),
+            patch("hermes_agent.agent.auxiliary_client._get_cached_client", return_value=(stale_client, "nous-model")),
+            patch("hermes_agent.agent.auxiliary_client.OpenAI", return_value=fresh_client),
+            patch("hermes_agent.agent.auxiliary_client._validate_llm_response", side_effect=lambda resp, _task, **_kw: resp),
+            patch("hermes_agent.agent.auxiliary_client._resolve_nous_runtime_api", return_value=("fresh-agent-key", "https://inference-api.nousresearch.com/v1")),
         ):
             result = call_llm(
                 task="compression",
@@ -1309,12 +1309,12 @@ class TestAuxiliaryPoolAwareness:
 
 
     def test_cached_gmi_client_keeps_explicit_slash_model_override(self):
-        import agent.auxiliary_client as aux
+        import hermes_agent.agent.auxiliary_client as aux
 
         fake_client = MagicMock()
 
         with patch(
-            "agent.auxiliary_client.resolve_provider_client",
+            "hermes_agent.agent.auxiliary_client.resolve_provider_client",
             return_value=(fake_client, "google/gemini-3.1-flash-lite-preview"),
         ) as mock_resolve:
             aux.shutdown_cached_clients()
@@ -1387,7 +1387,7 @@ class TestTryPaymentFallback:
         Without this cleanup the fallback chain skips providers we've patched
         to return valid clients — the patched function is never called.
         """
-        from agent.auxiliary_client import _aux_unhealthy_until, _aux_unhealthy_logged_at
+        from hermes_agent.agent.auxiliary_client import _aux_unhealthy_until, _aux_unhealthy_logged_at
         _aux_unhealthy_until.clear()
         _aux_unhealthy_logged_at.clear()
         yield
@@ -1398,9 +1398,9 @@ class TestTryPaymentFallback:
         """Discovery only walks with no selected main provider (``auto``); a selected provider that
         fails never hops to another logged-in account (test_auxiliary_auto_never_guesses_provider)."""
         mock_client = MagicMock()
-        with patch("agent.auxiliary_client._try_openrouter", return_value=(None, None)), \
-             patch("agent.auxiliary_client._try_nous", return_value=(mock_client, "nous-model")), \
-             patch("agent.auxiliary_client._read_main_provider", return_value="auto"):
+        with patch("hermes_agent.agent.auxiliary_client._try_openrouter", return_value=(None, None)), \
+             patch("hermes_agent.agent.auxiliary_client._try_nous", return_value=(mock_client, "nous-model")), \
+             patch("hermes_agent.agent.auxiliary_client._read_main_provider", return_value="auto"):
             client, model, label = _try_payment_fallback("openrouter", task="compression")
         assert client is mock_client
         assert model == "nous-model"
@@ -1414,11 +1414,11 @@ class TestTryPaymentFallback:
         When OR/Nous/custom/api-key all fail, payment-fallback returns None —
         Codex is never tried with a guessed model.
         """
-        with patch("agent.auxiliary_client._try_openrouter", return_value=(None, None)), \
-             patch("agent.auxiliary_client._try_nous", return_value=(None, None)), \
-             patch("agent.auxiliary_client._try_custom_endpoint", return_value=(None, None)), \
-             patch("agent.auxiliary_client._resolve_api_key_provider", return_value=(None, None)), \
-             patch("agent.auxiliary_client._read_main_provider", return_value="auto"):
+        with patch("hermes_agent.agent.auxiliary_client._try_openrouter", return_value=(None, None)), \
+             patch("hermes_agent.agent.auxiliary_client._try_nous", return_value=(None, None)), \
+             patch("hermes_agent.agent.auxiliary_client._try_custom_endpoint", return_value=(None, None)), \
+             patch("hermes_agent.agent.auxiliary_client._resolve_api_key_provider", return_value=(None, None)), \
+             patch("hermes_agent.agent.auxiliary_client._read_main_provider", return_value="auto"):
             client, model, label = _try_payment_fallback("openrouter")
         assert client is None
         assert model is None
@@ -1466,13 +1466,13 @@ class TestCallLlmPaymentFallback:
             MagicMock(message=MagicMock(content="fallback response"))
         ])
 
-        with patch("agent.auxiliary_client._get_cached_client",
+        with patch("hermes_agent.agent.auxiliary_client._get_cached_client",
                    return_value=(primary_client, "virtual-model")), \
-             patch("agent.auxiliary_client._resolve_task_provider_model",
+             patch("hermes_agent.agent.auxiliary_client._resolve_task_provider_model",
                    return_value=("custom", "virtual-model", "https://relay.example/v1", "test-key", None)), \
-             patch("agent.auxiliary_client._try_configured_fallback_chain",
+             patch("hermes_agent.agent.auxiliary_client._try_configured_fallback_chain",
                    return_value=(fallback_client, "fallback-model", "fallback_chain[0](openrouter)")) as mock_chain, \
-             patch("agent.auxiliary_client._try_main_agent_model_fallback",
+             patch("hermes_agent.agent.auxiliary_client._try_main_agent_model_fallback",
                    return_value=(None, None, "")):
             call_llm(task="compression", messages=[{"role": "user", "content": "summarize"}],
                      temperature=0.3)
@@ -1495,11 +1495,11 @@ class TestCallLlmPaymentFallback:
             MagicMock(message=MagicMock(content="fallback response"))
         ])
 
-        with patch("agent.auxiliary_client._get_cached_client",
+        with patch("hermes_agent.agent.auxiliary_client._get_cached_client",
                     return_value=(primary_client, "xiaomi/mimo-v2-pro")), \
-             patch("agent.auxiliary_client._resolve_task_provider_model",
+             patch("hermes_agent.agent.auxiliary_client._resolve_task_provider_model",
                     return_value=("auto", "xiaomi/mimo-v2-pro", None, None, None)), \
-             patch("agent.auxiliary_client._try_payment_fallback",
+             patch("hermes_agent.agent.auxiliary_client._try_payment_fallback",
                     return_value=(fallback_client, "fallback-model", "openrouter")):
             call_llm(
                 task="session_search",
@@ -1524,11 +1524,11 @@ class TestCallLlmPaymentFallback:
         fallback_client = MagicMock()
         fallback_client.chat.completions.create.return_value = _DummyResponse("fallback auth response")
 
-        with patch("agent.auxiliary_client._get_cached_client",
+        with patch("hermes_agent.agent.auxiliary_client._get_cached_client",
                    return_value=(primary_client, "minimax/minimax-m2.7")), \
-             patch("agent.auxiliary_client._resolve_task_provider_model",
+             patch("hermes_agent.agent.auxiliary_client._resolve_task_provider_model",
                    return_value=("auto", "minimax/minimax-m2.7", None, None, None)), \
-             patch("agent.auxiliary_client._try_payment_fallback",
+             patch("hermes_agent.agent.auxiliary_client._try_payment_fallback",
                    return_value=(fallback_client, "fallback-model", "openrouter")) as mock_fb:
             result = call_llm(
                 task="compression",
@@ -1579,16 +1579,16 @@ class TestStaleFallbackCandidateSkip:
                 return (fresh_fb, "claude-haiku-4-5-20251001")
             return (primary_client, "gpt-5.5")
 
-        with patch("agent.auxiliary_client._resolve_task_provider_model",
+        with patch("hermes_agent.agent.auxiliary_client._resolve_task_provider_model",
                    return_value=("auto", None, None, None, None)), \
-             patch("agent.auxiliary_client._get_cached_client", side_effect=_cached_client), \
-             patch("agent.auxiliary_client._try_configured_fallback_chain",
+             patch("hermes_agent.agent.auxiliary_client._get_cached_client", side_effect=_cached_client), \
+             patch("hermes_agent.agent.auxiliary_client._try_configured_fallback_chain",
                    return_value=(None, None, "")), \
-             patch("agent.auxiliary_client._try_main_fallback_chain",
+             patch("hermes_agent.agent.auxiliary_client._try_main_fallback_chain",
                    return_value=(None, None, "")), \
-             patch("agent.auxiliary_client._try_payment_fallback",
+             patch("hermes_agent.agent.auxiliary_client._try_payment_fallback",
                    return_value=(stale_fb, "claude-haiku-4-5-20251001", "anthropic")), \
-             patch("agent.auxiliary_client._refresh_provider_credentials",
+             patch("hermes_agent.agent.auxiliary_client._refresh_provider_credentials",
                    return_value=True) as mock_refresh:
             result = call_llm(
                 task="compression",
@@ -1620,19 +1620,19 @@ class TestStaleFallbackCandidateSkip:
             (healthy_fb, "fallback-model", "openrouter"),
         ]
 
-        with patch("agent.auxiliary_client._resolve_task_provider_model",
+        with patch("hermes_agent.agent.auxiliary_client._resolve_task_provider_model",
                    return_value=("auto", None, None, None, None)), \
-             patch("agent.auxiliary_client._get_cached_client",
+             patch("hermes_agent.agent.auxiliary_client._get_cached_client",
                    return_value=(primary_client, "gpt-5.5")), \
-             patch("agent.auxiliary_client._try_configured_fallback_chain",
+             patch("hermes_agent.agent.auxiliary_client._try_configured_fallback_chain",
                    return_value=(None, None, "")), \
-             patch("agent.auxiliary_client._try_main_fallback_chain",
+             patch("hermes_agent.agent.auxiliary_client._try_main_fallback_chain",
                    return_value=(None, None, "")), \
-             patch("agent.auxiliary_client._try_payment_fallback",
+             patch("hermes_agent.agent.auxiliary_client._try_payment_fallback",
                    side_effect=fb_walks) as mock_fb, \
-             patch("agent.auxiliary_client._refresh_provider_credentials",
+             patch("hermes_agent.agent.auxiliary_client._refresh_provider_credentials",
                    return_value=False), \
-             patch("agent.auxiliary_client._mark_provider_unhealthy") as mock_mark:
+             patch("hermes_agent.agent.auxiliary_client._mark_provider_unhealthy") as mock_mark:
             result = call_llm(
                 task="compression",
                 messages=[{"role": "user", "content": "summarize"}],
@@ -1658,15 +1658,15 @@ class TestStaleFallbackCandidateSkip:
         broken_fb.base_url = "https://api.anthropic.com"
         broken_fb.chat.completions.create.side_effect = ValueError("malformed response")
 
-        with patch("agent.auxiliary_client._resolve_task_provider_model",
+        with patch("hermes_agent.agent.auxiliary_client._resolve_task_provider_model",
                    return_value=("auto", None, None, None, None)), \
-             patch("agent.auxiliary_client._get_cached_client",
+             patch("hermes_agent.agent.auxiliary_client._get_cached_client",
                    return_value=(primary_client, "gpt-5.5")), \
-             patch("agent.auxiliary_client._try_configured_fallback_chain",
+             patch("hermes_agent.agent.auxiliary_client._try_configured_fallback_chain",
                    return_value=(None, None, "")), \
-             patch("agent.auxiliary_client._try_main_fallback_chain",
+             patch("hermes_agent.agent.auxiliary_client._try_main_fallback_chain",
                    return_value=(None, None, "")), \
-             patch("agent.auxiliary_client._try_payment_fallback",
+             patch("hermes_agent.agent.auxiliary_client._try_payment_fallback",
                    return_value=(broken_fb, "claude-haiku-4-5-20251001", "anthropic")):
             with pytest.raises(ValueError, match="malformed response"):
                 call_llm(
@@ -1714,11 +1714,11 @@ class TestDataEnvelopeUnwrap:
             choices=None, success=True, data=self._envelope_data()
         )
 
-        with patch("agent.auxiliary_client._get_cached_client",
+        with patch("hermes_agent.agent.auxiliary_client._get_cached_client",
                    return_value=(primary_client, "cline-pass/kimi-k2.7-code")), \
-             patch("agent.auxiliary_client._resolve_task_provider_model",
+             patch("hermes_agent.agent.auxiliary_client._resolve_task_provider_model",
                    return_value=("custom", "cline-pass/kimi-k2.7-code", None, None, None)), \
-             patch("agent.auxiliary_client._try_configured_fallback_chain") as mock_chain:
+             patch("hermes_agent.agent.auxiliary_client._try_configured_fallback_chain") as mock_chain:
             result = call_llm(
                 task="title_generation",
                 messages=[{"role": "user", "content": "hello"}],
@@ -1736,11 +1736,11 @@ class TestDataEnvelopeUnwrap:
             )
         )
 
-        with patch("agent.auxiliary_client._get_cached_client",
+        with patch("hermes_agent.agent.auxiliary_client._get_cached_client",
                    return_value=(primary_client, "cline-pass/kimi-k2.7-code")), \
-             patch("agent.auxiliary_client._resolve_task_provider_model",
+             patch("hermes_agent.agent.auxiliary_client._resolve_task_provider_model",
                    return_value=("custom", "cline-pass/kimi-k2.7-code", None, None, None)), \
-             patch("agent.auxiliary_client._try_configured_fallback_chain") as mock_chain:
+             patch("hermes_agent.agent.auxiliary_client._try_configured_fallback_chain") as mock_chain:
             result = await async_call_llm(
                 task="vision",
                 messages=[{"role": "user", "content": "hello"}],
@@ -1809,13 +1809,13 @@ class TestAuxiliaryFallbackLayering:
             MagicMock(message=MagicMock(content="from fallback chain"))
         ])
 
-        with patch("agent.auxiliary_client._get_cached_client",
+        with patch("hermes_agent.agent.auxiliary_client._get_cached_client",
                    return_value=(primary_client, "gpt-5.5")), \
-             patch("agent.auxiliary_client._resolve_task_provider_model",
+             patch("hermes_agent.agent.auxiliary_client._resolve_task_provider_model",
                    return_value=("openai-codex", "gpt-5.5", None, None, None)), \
-             patch("agent.auxiliary_client._try_configured_fallback_chain",
+             patch("hermes_agent.agent.auxiliary_client._try_configured_fallback_chain",
                    return_value=(fallback_client, "deepseek-v4-pro", "fallback_chain[0](opencode-go)")) as mock_chain, \
-             patch("agent.auxiliary_client._try_main_agent_model_fallback") as mock_main:
+             patch("hermes_agent.agent.auxiliary_client._try_main_agent_model_fallback") as mock_main:
             call_llm(
                 task="kanban_decomposer",
                 messages=[{"role": "user", "content": "decompose this"}],
@@ -1835,15 +1835,15 @@ class TestAuxiliaryFallbackLayering:
         primary_client = MagicMock()
         primary_client.chat.completions.create.side_effect = self._make_payment_err()
 
-        with patch("agent.auxiliary_client._get_cached_client",
+        with patch("hermes_agent.agent.auxiliary_client._get_cached_client",
                    return_value=(primary_client, "glm-4v-flash")), \
-             patch("agent.auxiliary_client._resolve_task_provider_model",
+             patch("hermes_agent.agent.auxiliary_client._resolve_task_provider_model",
                    return_value=("glm", "glm-4v-flash", None, None, None)), \
-             patch("agent.auxiliary_client._try_configured_fallback_chain",
+             patch("hermes_agent.agent.auxiliary_client._try_configured_fallback_chain",
                    return_value=(None, None, "")), \
-             patch("agent.auxiliary_client._try_main_agent_model_fallback",
+             patch("hermes_agent.agent.auxiliary_client._try_main_agent_model_fallback",
                    return_value=(None, None, "")), \
-             caplog.at_level("WARNING", logger="agent.auxiliary_client"):
+             caplog.at_level("WARNING", logger="hermes_agent.agent.auxiliary_client"):
             with pytest.raises(Exception, match="Payment Required"):
                 call_llm(
                     task="vision",
@@ -1860,11 +1860,11 @@ class TestAuxiliaryFallbackLayering:
             MagicMock(message=MagicMock(content="from configured chain"))
         ])
 
-        with patch("agent.auxiliary_client._get_cached_client",
+        with patch("hermes_agent.agent.auxiliary_client._get_cached_client",
                    return_value=(None, None)), \
-             patch("agent.auxiliary_client._resolve_task_provider_model",
+             patch("hermes_agent.agent.auxiliary_client._resolve_task_provider_model",
                    return_value=("ollama-cloud", "deepseek-v4-flash:cloud", None, None, None)), \
-             patch("agent.auxiliary_client._try_configured_fallback_chain",
+             patch("hermes_agent.agent.auxiliary_client._try_configured_fallback_chain",
                    return_value=(chain_client, "gpt-5.4-mini", "fallback_chain[0](openai-codex)")) as mock_chain:
             result = call_llm(
                 task="compression",
@@ -1882,7 +1882,7 @@ class TestAuxiliaryFallbackLayering:
 
     def test_fallback_entry_openai_codex_uses_oauth_pool_without_inline_key(self):
         """Configured Codex fallback resolves through Hermes auth / credential pool."""
-        from agent.auxiliary_client import _resolve_fallback_entry
+        from hermes_agent.agent.auxiliary_client import _resolve_fallback_entry
 
         pool_entry = MagicMock()
         pool_entry.id = "codex-pool-1"
@@ -1894,11 +1894,11 @@ class TestAuxiliaryFallbackLayering:
         real_client.api_key = "codex-oauth-token"
         real_client.base_url = "https://chatgpt.com/backend-api/codex"
 
-        with patch("agent.auxiliary_client._select_pool_entry",
+        with patch("hermes_agent.agent.auxiliary_client._select_pool_entry",
                    return_value=(True, pool_entry)), \
-             patch("agent.auxiliary_client._read_codex_singleton_token",
+             patch("hermes_agent.agent.auxiliary_client._read_codex_singleton_token",
                    side_effect=AssertionError("should use pool token")), \
-             patch("agent.auxiliary_client.OpenAI", return_value=real_client) as mock_openai:
+             patch("hermes_agent.agent.auxiliary_client.OpenAI", return_value=real_client) as mock_openai:
             client, model = _resolve_fallback_entry({
                 "provider": "openai-codex",
                 "model": "gpt-5.4-mini",
@@ -1914,20 +1914,20 @@ class TestTryMainAgentModelFallback:
     """_try_main_agent_model_fallback resolves the user's main provider+model as a safety net."""
 
     def test_returns_none_when_main_provider_is_auto(self):
-        from agent.auxiliary_client import _try_main_agent_model_fallback
-        with patch("agent.auxiliary_client._read_main_provider", return_value="auto"), \
-             patch("agent.auxiliary_client._read_main_model", return_value="some-model"):
+        from hermes_agent.agent.auxiliary_client import _try_main_agent_model_fallback
+        with patch("hermes_agent.agent.auxiliary_client._read_main_provider", return_value="auto"), \
+             patch("hermes_agent.agent.auxiliary_client._read_main_model", return_value="some-model"):
             client, model, label = _try_main_agent_model_fallback("glm", task="vision")
         assert client is None and model is None and label == ""
 
 
     def test_resolves_main_provider_client(self):
-        from agent.auxiliary_client import _try_main_agent_model_fallback
+        from hermes_agent.agent.auxiliary_client import _try_main_agent_model_fallback
         fake_client = MagicMock()
-        with patch("agent.auxiliary_client._read_main_provider", return_value="openrouter"), \
-             patch("agent.auxiliary_client._read_main_model", return_value="anthropic/claude-sonnet-4"), \
-             patch("agent.auxiliary_client._is_provider_unhealthy", return_value=False), \
-             patch("agent.auxiliary_client.resolve_provider_client",
+        with patch("hermes_agent.agent.auxiliary_client._read_main_provider", return_value="openrouter"), \
+             patch("hermes_agent.agent.auxiliary_client._read_main_model", return_value="anthropic/claude-sonnet-4"), \
+             patch("hermes_agent.agent.auxiliary_client._is_provider_unhealthy", return_value=False), \
+             patch("hermes_agent.agent.auxiliary_client.resolve_provider_client",
                    return_value=(fake_client, "anthropic/claude-sonnet-4")):
             client, model, label = _try_main_agent_model_fallback("glm", task="vision")
         assert client is fake_client
@@ -1963,14 +1963,14 @@ def test_resolve_api_key_provider_skips_unconfigured_anthropic(monkeypatch):
         called.append("anthropic")
         return None, None
 
-    monkeypatch.setattr("agent.auxiliary_client._try_anthropic", mock_try_anthropic)
+    monkeypatch.setattr("hermes_agent.agent.auxiliary_client._try_anthropic", mock_try_anthropic)
     monkeypatch.setattr("hermes_cli.auth.PROVIDER_REGISTRY", fake_registry)
     monkeypatch.setattr(
         "hermes_cli.auth.is_provider_explicitly_configured",
         lambda pid: False,
     )
 
-    from agent.auxiliary_client import _resolve_api_key_provider
+    from hermes_agent.agent.auxiliary_client import _resolve_api_key_provider
     _resolve_api_key_provider()
 
     assert "anthropic" not in called, \
@@ -1998,14 +1998,14 @@ def test_resolve_api_key_provider_skips_unconfigured_copilot(monkeypatch):
         pool_selected.append(provider_id)
         return False, None
 
-    monkeypatch.setattr("agent.auxiliary_client._select_pool_entry", mock_select_pool_entry)
+    monkeypatch.setattr("hermes_agent.agent.auxiliary_client._select_pool_entry", mock_select_pool_entry)
     monkeypatch.setattr("hermes_cli.auth.PROVIDER_REGISTRY", fake_registry)
     monkeypatch.setattr(
         "hermes_cli.auth.is_provider_explicitly_configured",
         lambda pid: False,
     )
 
-    from agent.auxiliary_client import _resolve_api_key_provider
+    from hermes_agent.agent.auxiliary_client import _resolve_api_key_provider
     client, model = _resolve_api_key_provider()
 
     assert client is None
@@ -2043,15 +2043,15 @@ class TestTransientTransportRetry:
     def _patches(self, client):
         return (
             patch(
-                "agent.auxiliary_client._resolve_task_provider_model",
+                "hermes_agent.agent.auxiliary_client._resolve_task_provider_model",
                 return_value=("openrouter", "some-model", None, None, None),
             ),
             patch(
-                "agent.auxiliary_client._get_cached_client",
+                "hermes_agent.agent.auxiliary_client._get_cached_client",
                 return_value=(client, "some-model"),
             ),
             patch(
-                "agent.auxiliary_client._validate_llm_response",
+                "hermes_agent.agent.auxiliary_client._validate_llm_response",
                 side_effect=lambda resp, _task, **_kw: resp,
             ),
         )
@@ -2093,11 +2093,11 @@ class TestTransientTransportRetry:
         with (
             p1, p2, p3,
             patch(
-                "agent.auxiliary_client._try_configured_fallback_chain",
+                "hermes_agent.agent.auxiliary_client._try_configured_fallback_chain",
                 return_value=(None, None, ""),
             ),
             patch(
-                "agent.auxiliary_client._try_main_agent_model_fallback",
+                "hermes_agent.agent.auxiliary_client._try_main_agent_model_fallback",
                 return_value=(fb_client, "fb-model", "openai"),
             ),
         ):
@@ -2132,15 +2132,15 @@ class TestTransientTransportRetry:
             # Vision resolves its client through resolve_vision_provider_client(),
             # not _get_cached_client(); the retry block under test is shared.
             patch(
-                "agent.auxiliary_client.resolve_vision_provider_client",
+                "hermes_agent.agent.auxiliary_client.resolve_vision_provider_client",
                 return_value=("openrouter", primary, "some-model"),
             ),
             patch(
-                "agent.auxiliary_client._try_configured_fallback_chain",
+                "hermes_agent.agent.auxiliary_client._try_configured_fallback_chain",
                 return_value=(None, None, ""),
             ),
             patch(
-                "agent.auxiliary_client._try_main_agent_model_fallback",
+                "hermes_agent.agent.auxiliary_client._try_main_agent_model_fallback",
                 return_value=(fb_client, "fb-model", "openai"),
             ),
         ):
@@ -2168,19 +2168,19 @@ class TestTransientTransportRetry:
         with (
             p1, p2, p3,
             patch(
-                "agent.auxiliary_client.resolve_vision_provider_client",
+                "hermes_agent.agent.auxiliary_client.resolve_vision_provider_client",
                 return_value=("openrouter", primary, "some-model"),
             ),
             patch(
-                "agent.auxiliary_client._try_configured_fallback_chain",
+                "hermes_agent.agent.auxiliary_client._try_configured_fallback_chain",
                 return_value=(MagicMock(), "fb-model", "configured-fallback"),
             ),
             patch(
-                "agent.auxiliary_client._to_async_client",
+                "hermes_agent.agent.auxiliary_client._to_async_client",
                 return_value=(MagicMock(), "fb-model"),
             ),
             patch(
-                "agent.auxiliary_client._call_fallback_candidate_async",
+                "hermes_agent.agent.auxiliary_client._call_fallback_candidate_async",
                 new=AsyncMock(return_value=expected),
             ),
         ):
@@ -2208,7 +2208,7 @@ class TestTransientTransportRetry:
         with (
             p1, p2, p3,
             patch(
-                "agent.auxiliary_client.resolve_vision_provider_client",
+                "hermes_agent.agent.auxiliary_client.resolve_vision_provider_client",
                 return_value=("openrouter", primary, "some-model"),
             ),
         ):
@@ -2234,7 +2234,7 @@ class TestTransientTransportRetry:
         ]
 
         p1, p2, p3 = self._patches(primary)
-        with p1, p2, p3, patch("agent.auxiliary_client._TRANSIENT_RETRY_BACKOFF_BASE", 0.0):
+        with p1, p2, p3, patch("hermes_agent.agent.auxiliary_client._TRANSIENT_RETRY_BACKOFF_BASE", 0.0):
             result = call_llm(task="title", messages=[{"role": "user", "content": "hi"}])
         assert result == {"retried": True}
         # Same provider was retried once — unchanged behaviour off the critical path.
@@ -2262,11 +2262,11 @@ class TestTransientTransportRetry:
         with (
             p1, p2, p3,
             patch(
-                "agent.auxiliary_client._try_configured_fallback_chain",
+                "hermes_agent.agent.auxiliary_client._try_configured_fallback_chain",
                 return_value=(fb_client, "sibling-model", "fallback_chain[0](openrouter)"),
             ) as mock_chain,
             patch(
-                "agent.auxiliary_client._try_main_agent_model_fallback",
+                "hermes_agent.agent.auxiliary_client._try_main_agent_model_fallback",
                 return_value=(None, None, ""),
             ),
         ):
@@ -2287,7 +2287,7 @@ class TestAuxClientNoSdkRetries:
     """
 
     def test_sync_client_disables_sdk_retries(self):
-        from agent import auxiliary_client as ac
+        from hermes_agent.agent import auxiliary_client as ac
         captured = {}
 
         class _FakeOpenAI:
@@ -2319,10 +2319,10 @@ class TestKimiTemperatureOmitted:
         client.chat.completions.create = AsyncMock(return_value=response)
 
         with patch(
-            "agent.auxiliary_client._get_cached_client",
+            "hermes_agent.agent.auxiliary_client._get_cached_client",
             return_value=(client, "kimi-for-coding"),
         ), patch(
-            "agent.auxiliary_client._resolve_task_provider_model",
+            "hermes_agent.agent.auxiliary_client._resolve_task_provider_model",
             return_value=("auto", "kimi-for-coding", None, None, None),
         ):
             result = await async_call_llm(
@@ -2345,7 +2345,7 @@ class TestKimiTemperatureOmitted:
         ],
     )
     def test_non_kimi_models_preserve_temperature(self, model):
-        from agent.auxiliary_client import _build_call_kwargs
+        from hermes_agent.agent.auxiliary_client import _build_call_kwargs
 
         kwargs = _build_call_kwargs(
             provider="openrouter",
@@ -2365,7 +2365,7 @@ class TestKimiTemperatureOmitted:
 class TestAuxiliaryTaskExtraBody:
     def test_task_reasoning_disable_uses_deepseek_thinking_wire(self, monkeypatch):
         """Task-level ``none`` must reach an always-toggle profile as its native disable shape."""
-        import agent.auxiliary_client as aux
+        import hermes_agent.agent.auxiliary_client as aux
 
         monkeypatch.setattr(aux, "_get_auxiliary_task_config", lambda _task: {"reasoning_effort": "none"})
 
@@ -2382,7 +2382,7 @@ class TestAuxiliaryTaskExtraBody:
 
     def test_explicit_deepseek_thinking_disable_beats_profile_default(self):
         """An explicit vendor control is authoritative when no normalized config is present."""
-        import agent.auxiliary_client as aux
+        import hermes_agent.agent.auxiliary_client as aux
 
         kwargs = aux._build_call_kwargs(
             provider="deepseek",
@@ -2396,7 +2396,7 @@ class TestAuxiliaryTaskExtraBody:
 
     def test_disabled_caller_reasoning_suppresses_task_reasoning_for_profile_wire(self, monkeypatch):
         """A profile-owned ``reasoning_effort=none`` must not ship with task reasoning."""
-        import agent.auxiliary_client as aux
+        import hermes_agent.agent.auxiliary_client as aux
 
         projection = aux._ProfileProjection({}, {}, {"reasoning_effort": "none"}, True)
         monkeypatch.setattr(aux, "_project_provider_profile", lambda *_args: projection)
@@ -2422,7 +2422,7 @@ class TestAuxiliaryTaskExtraBody:
     def test_disabled_caller_reasoning_keeps_profile_owned_disable_shape(self, monkeypatch):
         """Control: a profile whose disabled shape IS ``extra_body.reasoning`` (OpenRouter) keeps it —
         the caller's thinking-off replaces the task effort, it never deletes the profile's own field."""
-        import agent.auxiliary_client as aux
+        import hermes_agent.agent.auxiliary_client as aux
 
         projection = aux._ProfileProjection({}, {"reasoning": {"enabled": False}}, {}, True)
         monkeypatch.setattr(aux, "_project_provider_profile", lambda *_args: projection)
@@ -2443,10 +2443,10 @@ class TestAuxiliaryTaskExtraBody:
     @pytest.mark.parametrize("task", ["session_search", "moa_reference", "moa_aggregator"])
     def test_generic_reasoning_fallback_clamps_ultra_for_auxiliary_and_moa_calls(self, task, monkeypatch):
         """The OpenAI-compatible fallback must never put Hermes-only ``ultra`` on the wire."""
-        from agent.auxiliary_client import _ProfileProjection, _build_call_kwargs
+        from hermes_agent.agent.auxiliary_client import _ProfileProjection, _build_call_kwargs
 
         monkeypatch.setattr(
-            "agent.auxiliary_client._project_provider_profile",
+            "hermes_agent.agent.auxiliary_client._project_provider_profile",
             lambda *_args: _ProfileProjection({}, {}, {}, False),
         )
 
@@ -2463,8 +2463,8 @@ class TestAuxiliaryTaskExtraBody:
     def test_task_extra_body_reasoning_effort_ultra_is_clamped(self, monkeypatch):
         """``auxiliary.<task>.reasoning_effort: ultra`` folds into ``extra_body.reasoning`` (the path
         compression/title/vision/... use, with no reasoning_config) and must take the same clamp."""
-        import agent.auxiliary_client as aux
-        from agent.auxiliary_client import _build_call_kwargs, _get_task_extra_body
+        import hermes_agent.agent.auxiliary_client as aux
+        from hermes_agent.agent.auxiliary_client import _build_call_kwargs, _get_task_extra_body
 
         monkeypatch.setattr(aux, "_get_auxiliary_task_config", lambda task: {"reasoning_effort": "ultra"})
         monkeypatch.setattr(aux, "_project_provider_profile", lambda *_args: aux._ProfileProjection({}, {}, {}, False))
@@ -2484,7 +2484,7 @@ class TestAuxiliaryTaskExtraBody:
         """Profiles clamp only against their own narrower sets (or a catalog that may be cold), so
         ``ultra`` must already be a wire level when the projection sees it — the MoA aggregator on
         an OpenRouter/Nous slot 400'd otherwise (#112010)."""
-        import agent.auxiliary_client as aux
+        import hermes_agent.agent.auxiliary_client as aux
 
         seen = {}
         real = aux._project_provider_profile
@@ -2523,7 +2523,7 @@ class TestAuxiliaryTaskExtraBody:
         }
 
         with patch("hermes_cli.config.load_config", return_value=config), patch("hermes_cli.config.load_config_readonly", return_value=config), patch(
-            "agent.auxiliary_client._get_cached_client",
+            "hermes_agent.agent.auxiliary_client._get_cached_client",
             return_value=(client, "glm-4.5-air"),
         ):
             result = call_llm(
@@ -2554,7 +2554,7 @@ class TestAuxiliaryTaskExtraBody:
         }
 
         with patch("hermes_cli.config.load_config", return_value=config), patch("hermes_cli.config.load_config_readonly", return_value=config), patch(
-            "agent.auxiliary_client._get_cached_client",
+            "hermes_agent.agent.auxiliary_client._get_cached_client",
             return_value=(client, "glm-4.5-air"),
         ):
             result = await async_call_llm(
@@ -2576,11 +2576,11 @@ class TestAuxiliaryTaskExtraBody:
     def test_moa_tasks_reject_task_level_reasoning_effort(self, moa_task, caplog):
         """MoA reasoning is per-slot in the preset — the auxiliary-task
         shorthand is ignored with a warning pointing at the preset config."""
-        from agent.auxiliary_client import _get_task_extra_body
+        from hermes_agent.agent.auxiliary_client import _get_task_extra_body
 
         config = {"auxiliary": {moa_task: {"reasoning_effort": "xhigh"}}}
         with patch("hermes_cli.config.load_config", return_value=config), patch("hermes_cli.config.load_config_readonly", return_value=config), \
-             caplog.at_level(logging.WARNING, logger="agent.auxiliary_client"):
+             caplog.at_level(logging.WARNING, logger="hermes_agent.agent.auxiliary_client"):
             result = _get_task_extra_body(moa_task)
 
         assert "reasoning" not in result
@@ -2590,14 +2590,14 @@ class TestAuxiliaryTaskExtraBody:
     def test_anthropic_aux_client_forwards_extra_body_reasoning(self):
         """_AnthropicCompletionsAdapter passes extra_body.reasoning into
         build_anthropic_kwargs as reasoning_config."""
-        from agent.auxiliary_client import _AnthropicCompletionsAdapter
+        from hermes_agent.agent.auxiliary_client import _AnthropicCompletionsAdapter
 
         adapter = _AnthropicCompletionsAdapter(MagicMock(), "claude-sonnet-4-6", is_oauth=False)
 
-        with patch("agent.anthropic_adapter.build_anthropic_kwargs",
+        with patch("hermes_agent.agent.anthropic_adapter.build_anthropic_kwargs",
                    return_value={"model": "claude-sonnet-4-6", "messages": [], "max_tokens": 64}) as mock_bak, \
-             patch("agent.anthropic_adapter.create_anthropic_message") as mock_create, \
-             patch("agent.transports.get_transport") as mock_gt:
+             patch("hermes_agent.agent.anthropic_adapter.create_anthropic_message") as mock_create, \
+             patch("hermes_agent.agent.transports.get_transport") as mock_gt:
             mock_gt.return_value.normalize_response.return_value = MagicMock(
                 content="ok", tool_calls=None, reasoning=None, finish_reason="stop",
                 usage=None, provider_data=None,
@@ -2617,16 +2617,16 @@ class TestAuxiliaryTaskExtraBody:
     def _run_anthropic_adapter(self, *, call_extra_body=None, bak_result=None):
         """Drive _AnthropicCompletionsAdapter.create() with mocked SDK layers;
         return the api_kwargs handed to create_anthropic_message."""
-        from agent.auxiliary_client import _AnthropicCompletionsAdapter
+        from hermes_agent.agent.auxiliary_client import _AnthropicCompletionsAdapter
 
         adapter = _AnthropicCompletionsAdapter(MagicMock(), "claude-sonnet-4-6", is_oauth=False)
         bak_result = bak_result or {
             "model": "claude-sonnet-4-6", "messages": [], "max_tokens": 64,
         }
-        with patch("agent.anthropic_adapter.build_anthropic_kwargs",
+        with patch("hermes_agent.agent.anthropic_adapter.build_anthropic_kwargs",
                    return_value=dict(bak_result)), \
-             patch("agent.anthropic_adapter.create_anthropic_message") as mock_create, \
-             patch("agent.transports.get_transport") as mock_gt:
+             patch("hermes_agent.agent.anthropic_adapter.create_anthropic_message") as mock_create, \
+             patch("hermes_agent.agent.transports.get_transport") as mock_gt:
             mock_gt.return_value.normalize_response.return_value = MagicMock(
                 content="ok", tool_calls=None, reasoning=None, finish_reason="stop",
                 usage=None, provider_data=None,
@@ -2659,7 +2659,7 @@ class TestAuxiliaryTaskExtraBody:
         """Bare 'custom' with nothing configured: the main resolver raises AuthError; aux must
         return no endpoint rather than route to a stale env OPENAI_BASE_URL with a placeholder key."""
         from hermes_cli.auth import AuthError
-        from agent.auxiliary_client import _resolve_custom_runtime
+        from hermes_agent.agent.auxiliary_client import _resolve_custom_runtime
         monkeypatch.setenv("OPENAI_BASE_URL", "https://old-proxy.example/v1")
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         with patch("hermes_cli.runtime_provider.resolve_runtime_provider",
@@ -2677,14 +2677,14 @@ class TestAnthropicCompatImageConversion:
 
 
     def test_url_based_detection(self):
-        from agent.auxiliary_client import _is_anthropic_compat_endpoint
+        from hermes_agent.agent.auxiliary_client import _is_anthropic_compat_endpoint
         assert _is_anthropic_compat_endpoint("custom", "https://api.minimax.io/anthropic")
         assert _is_anthropic_compat_endpoint("custom", "https://example.com/anthropic/v1")
         assert not _is_anthropic_compat_endpoint("custom", "https://api.openai.com/v1")
 
 
     def test_url_image_converted(self):
-        from agent.auxiliary_client import _convert_openai_images_to_anthropic
+        from hermes_agent.agent.auxiliary_client import _convert_openai_images_to_anthropic
         messages = [{
             "role": "user",
             "content": [
@@ -2702,7 +2702,7 @@ class TestAnthropicCompatImageConversion:
 
 
     def test_url_video_converted_to_video_block(self):
-        from agent.auxiliary_client import _convert_openai_images_to_anthropic
+        from hermes_agent.agent.auxiliary_client import _convert_openai_images_to_anthropic
         messages = [{
             "role": "user",
             "content": [
@@ -2750,10 +2750,10 @@ class TestAuxiliaryAuthRefreshRetry:
 
         with (
             patch(
-                "agent.auxiliary_client.resolve_vision_provider_client",
+                "hermes_agent.agent.auxiliary_client.resolve_vision_provider_client",
                 side_effect=[("openai-codex", failing_client, "gpt-5.4"), ("openai-codex", fresh_client, "gpt-5.4")],
             ),
-            patch("agent.auxiliary_client._refresh_provider_credentials", return_value=True) as mock_refresh,
+            patch("hermes_agent.agent.auxiliary_client._refresh_provider_credentials", return_value=True) as mock_refresh,
         ):
             resp = call_llm(
                 task="vision",
@@ -2772,7 +2772,7 @@ class TestAuxiliaryAuthRefreshRetry:
 
     def test_refresh_provider_credentials_force_refreshes_anthropic_oauth_and_evicts_cache(self, monkeypatch):
         stale_client = MagicMock()
-        from agent.auxiliary_client import _client_cache_key
+        from hermes_agent.agent.auxiliary_client import _client_cache_key
         cache_key = _client_cache_key("anthropic", async_mode=False)
 
         monkeypatch.setenv("ANTHROPIC_TOKEN", "")
@@ -2780,26 +2780,26 @@ class TestAuxiliaryAuthRefreshRetry:
         monkeypatch.setenv("ANTHROPIC_API_KEY", "")
 
         with (
-            patch("agent.auxiliary_client._client_cache", {cache_key: (stale_client, "claude-haiku-4-5-20251001", None)}),
-            # Anthropic credential sourcing lives in agent/anthropic_credentials.py;
+            patch("hermes_agent.agent.auxiliary_client._client_cache", {cache_key: (stale_client, "claude-haiku-4-5-20251001", None)}),
+            # Anthropic credential sourcing lives in hermes_agent/agent/anthropic_credentials.py;
             # patch it at that definition site so both the direct call here and
             # the re-read inside ``_refresh_oauth_token`` see the same stub.
-            patch("agent.anthropic_credentials.read_claude_code_credentials", return_value={
+            patch("hermes_agent.agent.anthropic_credentials.read_claude_code_credentials", return_value={
                 "accessToken": "expired-token",
                 "refreshToken": "refresh-token",
                 "expiresAt": 0,
             }),
-            patch("agent.anthropic_credentials.refresh_anthropic_oauth_pure", return_value={
+            patch("hermes_agent.agent.anthropic_credentials.refresh_anthropic_oauth_pure", return_value={
                 "access_token": "fresh-token",
                 "refresh_token": "refresh-token-2",
                 "expires_at_ms": 9999999999999,
             }) as mock_refresh_oauth,
-            patch("agent.anthropic_credentials._write_claude_code_credentials") as mock_write,
+            patch("hermes_agent.agent.anthropic_credentials._write_claude_code_credentials") as mock_write,
         ):
-            from agent.auxiliary_client import _refresh_provider_credentials
+            from hermes_agent.agent.auxiliary_client import _refresh_provider_credentials
 
             assert _refresh_provider_credentials("anthropic", failed_api_key="expired-token") is True
-            import agent.auxiliary_client as aux
+            import hermes_agent.agent.auxiliary_client as aux
             assert cache_key not in aux._client_cache  # evicted, not closed (in-flight users)
 
         mock_refresh_oauth.assert_called_once_with("refresh-token", use_json=False)
@@ -2817,20 +2817,20 @@ class TestAuxiliaryAuthRefreshRetry:
         through to the final `return False` and the stale client (and its
         dead token) stayed cached until process restart."""
         stale_client = MagicMock()
-        from agent.auxiliary_client import _client_cache_key
+        from hermes_agent.agent.auxiliary_client import _client_cache_key
         cache_key = _client_cache_key("vertex", async_mode=False)
 
         with (
-            patch("agent.auxiliary_client._client_cache", {cache_key: (stale_client, "google/gemini-3-flash-preview", None)}),
+            patch("hermes_agent.agent.auxiliary_client._client_cache", {cache_key: (stale_client, "google/gemini-3-flash-preview", None)}),
             patch(
-                "agent.vertex_adapter.get_vertex_config",
+                "hermes_agent.agent.vertex_adapter.get_vertex_config",
                 return_value=("ya29.FRESH", "https://aiplatform.googleapis.com/v1beta1/projects/p/locations/global/endpoints/openapi"),
             ) as mock_get_config,
         ):
-            from agent.auxiliary_client import _refresh_provider_credentials
+            from hermes_agent.agent.auxiliary_client import _refresh_provider_credentials
 
             assert _refresh_provider_credentials("vertex") is True
-            import agent.auxiliary_client as aux
+            import hermes_agent.agent.auxiliary_client as aux
             assert cache_key not in aux._client_cache  # evicted, not closed (in-flight users)
 
         mock_get_config.assert_called_once()
@@ -2840,14 +2840,14 @@ class TestAuxiliaryAuthRefreshRetry:
         """No usable token/base_url (e.g. ADC and the service-account file
         both failed) — refresh must report failure, not silently evict and
         pretend the client is fixed."""
-        with patch("agent.vertex_adapter.get_vertex_config", return_value=(None, None)):
-            from agent.auxiliary_client import _refresh_provider_credentials
+        with patch("hermes_agent.agent.vertex_adapter.get_vertex_config", return_value=(None, None)):
+            from hermes_agent.agent.auxiliary_client import _refresh_provider_credentials
 
             assert _refresh_provider_credentials("vertex") is False
 
 
     def test_resolve_provider_client_vertex_none_when_no_credentials(self):
-        with patch("agent.vertex_adapter.has_vertex_credentials", return_value=False):
+        with patch("hermes_agent.agent.vertex_adapter.has_vertex_credentials", return_value=False):
             client, model = resolve_provider_client("vertex", "google/gemini-3-flash-preview")
 
         assert client is None
@@ -2884,11 +2884,11 @@ class TestAuxiliaryPoolRotationRetry:
         pool = _Pool()
 
         with (
-            patch("agent.auxiliary_client._resolve_task_provider_model", return_value=("openai-codex", "gpt-5.4", None, None, None)),
-            patch("agent.auxiliary_client._get_cached_client", side_effect=[(stale_client, "gpt-5.4"), (fresh_client, "gpt-5.4")]),
-            patch("agent.auxiliary_client._refresh_provider_credentials", return_value=False),
-            patch("agent.auxiliary_client.load_pool", return_value=pool),
-            patch("agent.auxiliary_client._try_payment_fallback") as mock_fallback,
+            patch("hermes_agent.agent.auxiliary_client._resolve_task_provider_model", return_value=("openai-codex", "gpt-5.4", None, None, None)),
+            patch("hermes_agent.agent.auxiliary_client._get_cached_client", side_effect=[(stale_client, "gpt-5.4"), (fresh_client, "gpt-5.4")]),
+            patch("hermes_agent.agent.auxiliary_client._refresh_provider_credentials", return_value=False),
+            patch("hermes_agent.agent.auxiliary_client.load_pool", return_value=pool),
+            patch("hermes_agent.agent.auxiliary_client._try_payment_fallback") as mock_fallback,
         ):
             resp = call_llm(
                 task="compression",
@@ -2917,7 +2917,7 @@ class TestAnthropicAuxiliaryReasoningTranslation:
 
     @staticmethod
     def _build_adapter(model="claude-fable-5"):
-        from agent.auxiliary_client import _AnthropicCompletionsAdapter
+        from hermes_agent.agent.auxiliary_client import _AnthropicCompletionsAdapter
 
         captured = {}
 
@@ -2999,7 +2999,7 @@ class TestAnthropicAuxiliaryReasoningTranslation:
         # profile's declared wire, or the ``_reasoning_config`` kwarg above would reach a plain
         # OpenAI client and TypeError.
         from hermes_agent import model_tools
-        from agent.auxiliary_client import AnthropicAuxiliaryClient, resolve_provider_client
+        from hermes_agent.agent.auxiliary_client import AnthropicAuxiliaryClient, resolve_provider_client
 
         monkeypatch.setenv("COMMANDCODE_API_KEY", "sk-test-" + "x" * 20)
         client, _ = resolve_provider_client("commandcode-anthropic", model="claude-haiku-4-5-20251001")
@@ -3039,7 +3039,7 @@ class TestAuxiliaryProviderProfileReasoning:
         )
 
         with patch(
-            "agent.auxiliary_client._resolve_task_provider_model",
+            "hermes_agent.agent.auxiliary_client._resolve_task_provider_model",
             return_value=(
                 "kimi-coding",
                 "kimi-k2-turbo-preview",
@@ -3048,7 +3048,7 @@ class TestAuxiliaryProviderProfileReasoning:
                 None,
             ),
         ), patch(
-            "agent.auxiliary_client._get_cached_client",
+            "hermes_agent.agent.auxiliary_client._get_cached_client",
             return_value=(client, "kimi-k2-turbo-preview"),
         ):
             result = await async_call_llm(
@@ -3067,7 +3067,7 @@ class TestAuxiliaryProviderProfileReasoning:
 class TestCodexAdapterReasoningTranslation:
     """Verify _CodexCompletionsAdapter translates extra_body.reasoning
     into the Responses API's top-level reasoning + include fields, matching
-    agent/transports/codex.py::build_kwargs() behavior.
+    hermes_agent/agent/transports/codex.py::build_kwargs() behavior.
 
     Regression for user feedback (Apr 26): auxiliary callers that configure
     reasoning via auxiliary.<task>.extra_body.reasoning had that config
@@ -3077,7 +3077,7 @@ class TestCodexAdapterReasoningTranslation:
     @staticmethod
     def _build_adapter():
         """Build a _CodexCompletionsAdapter with a mocked responses.create()."""
-        from agent.auxiliary_client import _CodexCompletionsAdapter
+        from hermes_agent.agent.auxiliary_client import _CodexCompletionsAdapter
         from types import SimpleNamespace
 
         # The event-driven path consumes ``responses.create(stream=True)`` as a
@@ -3162,7 +3162,7 @@ class TestCodexAdapterReasoningTranslation:
 
 
     def test_reasoning_effort_null_falls_back_to_medium(self):
-        """Parity with agent/transports/codex.py::build_kwargs() — falsy
+        """Parity with hermes_agent/agent/transports/codex.py::build_kwargs() — falsy
         ``effort`` (None / empty / 0) keeps the default ``medium`` instead
         of being forwarded to Codex.  Codex rejects ``{"effort": null}``
         with HTTP 400 (Invalid value for parameter `reasoning.effort`)."""
@@ -3178,14 +3178,14 @@ class TestCodexAdapterReasoningTranslation:
 class TestCodexAdapterPromptCacheKey:
     """_CodexCompletionsAdapter emits a stable content-addressed prompt_cache_key
     on the Codex/Responses aux path, matching the main transport
-    (agent/transports/codex.py). Regression for issue #53735: MoA acting-
+    (hermes_agent/agent/transports/codex.py). Regression for issue #53735: MoA acting-
     aggregator and other auxiliary Responses calls stayed cache-cold because
     the adapter never set prompt_cache_key.
     """
 
     @staticmethod
     def _build_adapter(base_url="https://chatgpt.com/backend-api/codex", model="gpt-5.5"):
-        from agent.auxiliary_client import _CodexCompletionsAdapter
+        from hermes_agent.agent.auxiliary_client import _CodexCompletionsAdapter
         from types import SimpleNamespace
 
         message_item = SimpleNamespace(
@@ -3339,7 +3339,7 @@ class TestCodexAdapterGithubResponsesMessageIdDrop:
     talking to Copilot (githubcopilot.com), independent of the main
     transport's build_kwargs path. Auxiliary calls (context compression,
     flush_memories, MoA aggregation) route through this adapter instead of
-    agent/transports/codex.py, so they need the same #32716 guard applied
+    hermes_agent/agent/transports/codex.py, so they need the same #32716 guard applied
     separately — Copilot binds replayed ids to a backend "connection" that
     doesn't survive credential rotation/gateway restarts, and rejects a
     stale id with HTTP 401 regardless of its length.
@@ -3347,7 +3347,7 @@ class TestCodexAdapterGithubResponsesMessageIdDrop:
 
     @staticmethod
     def _build_adapter(base_url):
-        from agent.auxiliary_client import _CodexCompletionsAdapter
+        from hermes_agent.agent.auxiliary_client import _CodexCompletionsAdapter
         from types import SimpleNamespace
 
         message_item = SimpleNamespace(
@@ -3437,10 +3437,10 @@ class TestVisionAutoSkipsKimiCoding:
         fake_or_client = MagicMock(name="openrouter_client")
 
         monkeypatch.setattr(
-            "agent.auxiliary_client._read_main_provider", lambda: "kimi-coding",
+            "hermes_agent.agent.auxiliary_client._read_main_provider", lambda: "kimi-coding",
         )
         monkeypatch.setattr(
-            "agent.auxiliary_client._read_main_model", lambda: "kimi-code",
+            "hermes_agent.agent.auxiliary_client._read_main_model", lambda: "kimi-code",
         )
         # Guard: if the skip doesn't fire, _resolve_strict_vision_backend
         # and resolve_provider_client both would try kimi-coding — detect
@@ -3449,7 +3449,7 @@ class TestVisionAutoSkipsKimiCoding:
             "resolve_provider_client should NOT be called for kimi-coding "
             "on the vision auto path"))
         monkeypatch.setattr(
-            "agent.auxiliary_client.resolve_provider_client", rpc_mock,
+            "hermes_agent.agent.auxiliary_client.resolve_provider_client", rpc_mock,
         )
 
         def fake_strict(provider, model=None):
@@ -3462,7 +3462,7 @@ class TestVisionAutoSkipsKimiCoding:
                 "when main provider is kimi-coding"
             )
         monkeypatch.setattr(
-            "agent.auxiliary_client._resolve_strict_vision_backend",
+            "hermes_agent.agent.auxiliary_client._resolve_strict_vision_backend",
             fake_strict,
         )
 
@@ -3580,7 +3580,7 @@ class TestCodexAuxiliaryAdapterCacheScope:
     """
 
     def _create_and_capture(self, *, session_id):
-        import agent.auxiliary_client as aux
+        import hermes_agent.agent.auxiliary_client as aux
 
         class _FakeCreateStream:
             def __iter__(self):
@@ -3653,7 +3653,7 @@ class TestCodexAuxiliaryToolMessageConversion:
     """
 
     def _capture_input(self, messages):
-        from agent.auxiliary_client import _CodexCompletionsAdapter
+        from hermes_agent.agent.auxiliary_client import _CodexCompletionsAdapter
 
         class _FakeCreateStream:
             def __iter__(self):
@@ -3886,11 +3886,11 @@ class TestCodexAuxiliaryAdapterReservedToolAliases:
         ("https://example.com/v1", set()),
     ])
     def test_wire_tools_match_main_transport_aliases_and_strict(self, base_url, aliased, monkeypatch):
-        from agent.codex_responses_adapter import classify_responses_route
-        from agent.transports.codex import ResponsesApiTransport
+        from hermes_agent.agent.codex_responses_adapter import classify_responses_route
+        from hermes_agent.agent.transports.codex import ResponsesApiTransport
 
         # Deterministic xAI branch: a non-xAI web backend keeps client dispatch under ``hermes_web_search``.
-        monkeypatch.setattr("agent.transports.codex._xai_prefers_native_web_search", lambda: False)
+        monkeypatch.setattr("hermes_agent.agent.transports.codex._xai_prefers_native_web_search", lambda: False)
         adapter = _CodexCompletionsAdapter(SimpleNamespace(base_url=base_url), "m")
         resp_kwargs, _, _ = adapter._build_responses_kwargs(
             {"model": "m", "messages": self._HISTORY, "tools": self._TOOLS}
@@ -3962,7 +3962,7 @@ class TestAuxiliaryClientPoisonedCacheEviction:
         Regression for the async-side gap left by #23482, which fixed the
         sync wrapper's _real_client walk but missed the async wrappers.
         """
-        from agent.auxiliary_client import (
+        from hermes_agent.agent.auxiliary_client import (
             _client_cache, _client_cache_lock, _evict_cached_client_instance,
             CodexAuxiliaryClient, AsyncCodexAuxiliaryClient,
         )
@@ -3998,7 +3998,7 @@ class TestAuxiliaryClientPoisonedCacheEviction:
         a real network call.  The contract under test is cache eviction,
         not the fallback gate.
         """
-        from agent.auxiliary_client import _client_cache, _client_cache_lock
+        from hermes_agent.agent.auxiliary_client import _client_cache, _client_cache_lock
 
         poisoned = MagicMock(name="poisoned_client")
         poisoned.base_url = "https://chatgpt.com/backend-api/codex"
@@ -4011,16 +4011,16 @@ class TestAuxiliaryClientPoisonedCacheEviction:
 
         try:
             with patch(
-                "agent.auxiliary_client._resolve_task_provider_model",
+                "hermes_agent.agent.auxiliary_client._resolve_task_provider_model",
                 return_value=("openai-codex", "gpt-5.5", None, None, None),
             ), patch(
-                "agent.auxiliary_client._get_cached_client",
+                "hermes_agent.agent.auxiliary_client._get_cached_client",
                 return_value=(poisoned, "gpt-5.5"),
             ), patch(
-                "agent.auxiliary_client._try_payment_fallback",
+                "hermes_agent.agent.auxiliary_client._try_payment_fallback",
                 return_value=(None, None, ""),
             ), patch(
-                "agent.auxiliary_client._TRANSIENT_RETRY_BACKOFF_BASE", 0.0
+                "hermes_agent.agent.auxiliary_client._TRANSIENT_RETRY_BACKOFF_BASE", 0.0
             ):
                 with pytest.raises(ConnectionError):
                     call_llm(
@@ -4089,7 +4089,7 @@ class TestNvidiaBillingHeaders:
         mock_openai = MagicMock()
         mock_openai.return_value = MagicMock(name="nvidia-client")
 
-        with patch("agent.auxiliary_client.OpenAI", mock_openai):
+        with patch("hermes_agent.agent.auxiliary_client.OpenAI", mock_openai):
             client, model = resolve_provider_client(
                 provider="nvidia",
                 model="nvidia/test-model",
@@ -4107,7 +4107,7 @@ class TestNvidiaBillingHeaders:
         mock_openai = MagicMock()
         mock_openai.return_value = MagicMock(name="nvidia-local-client")
 
-        with patch("agent.auxiliary_client.OpenAI", mock_openai):
+        with patch("hermes_agent.agent.auxiliary_client.OpenAI", mock_openai):
             client, model = resolve_provider_client(
                 provider="nvidia",
                 model="nvidia/test-model",
@@ -4138,7 +4138,7 @@ class TestOpenRouterExplicitApiKey:
         mock_openai = MagicMock()
         mock_openai.return_value = MagicMock(name="openrouter-client")
 
-        with patch("agent.auxiliary_client.OpenAI", mock_openai):
+        with patch("hermes_agent.agent.auxiliary_client.OpenAI", mock_openai):
             client, _model = resolve_provider_client(
                 provider="openrouter",
                 explicit_api_key="explicit-pool-key",
@@ -4182,9 +4182,9 @@ class TestAnthropicExplicitApiKey:
 
     def test_resolve_provider_client_passes_explicit_api_key_to_anthropic(self):
         """resolve_provider_client(provider='anthropic', explicit_api_key=...) must propagate the key."""
-        with patch("agent.anthropic_credentials.resolve_anthropic_token", return_value="env-key"), \
-             patch("agent.anthropic_adapter.build_anthropic_client") as mock_build, \
-             patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)):
+        with patch("hermes_agent.agent.anthropic_credentials.resolve_anthropic_token", return_value="env-key"), \
+             patch("hermes_agent.agent.anthropic_adapter.build_anthropic_client") as mock_build, \
+             patch("hermes_agent.agent.auxiliary_client._select_pool_entry", return_value=(False, None)):
             mock_build.return_value = MagicMock()
             client, _model = resolve_provider_client(
                 provider="anthropic",
@@ -4209,16 +4209,16 @@ class TestAuxUnhealthyCache:
     """
 
     def setup_method(self):
-        from agent.auxiliary_client import _reset_aux_unhealthy_cache
+        from hermes_agent.agent.auxiliary_client import _reset_aux_unhealthy_cache
         _reset_aux_unhealthy_cache()
 
     def teardown_method(self):
-        from agent.auxiliary_client import _reset_aux_unhealthy_cache
+        from hermes_agent.agent.auxiliary_client import _reset_aux_unhealthy_cache
         _reset_aux_unhealthy_cache()
 
 
     def test_ttl_expiry_evicts(self):
-        from agent.auxiliary_client import (
+        from hermes_agent.agent.auxiliary_client import (
             _mark_provider_unhealthy,
             _is_provider_unhealthy,
             _aux_unhealthy_until,
@@ -4238,7 +4238,7 @@ class TestAuxUnhealthyCache:
         """_try_payment_fallback also consults the unhealthy cache so a 402
         on OpenRouter doesn't cause a second OR call within the same chain
         iteration if it gets re-entered."""
-        from agent.auxiliary_client import (
+        from hermes_agent.agent.auxiliary_client import (
             _try_payment_fallback,
             _mark_provider_unhealthy,
         )
@@ -4246,11 +4246,11 @@ class TestAuxUnhealthyCache:
         # Mark BOTH the failed provider (openrouter) and a sibling (custom)
         # unhealthy. The chain should still find nous.
         _mark_provider_unhealthy("local/custom")
-        with patch("agent.auxiliary_client._read_main_provider", return_value="auto"), \
-             patch("agent.auxiliary_client._try_openrouter") as or_try, \
-             patch("agent.auxiliary_client._try_nous", return_value=(nous_client, "n-model")), \
-             patch("agent.auxiliary_client._try_custom_endpoint") as custom_try, \
-             patch("agent.auxiliary_client._resolve_api_key_provider", return_value=(None, None)):
+        with patch("hermes_agent.agent.auxiliary_client._read_main_provider", return_value="auto"), \
+             patch("hermes_agent.agent.auxiliary_client._try_openrouter") as or_try, \
+             patch("hermes_agent.agent.auxiliary_client._try_nous", return_value=(nous_client, "n-model")), \
+             patch("hermes_agent.agent.auxiliary_client._try_custom_endpoint") as custom_try, \
+             patch("hermes_agent.agent.auxiliary_client._resolve_api_key_provider", return_value=(None, None)):
             client, _model, label = _try_payment_fallback("openrouter", task="compression")
         assert client is nous_client
         assert label == "nous"
@@ -4259,7 +4259,7 @@ class TestAuxUnhealthyCache:
         custom_try.assert_not_called()
 
     def test_custom_health_url_identity_preserves_path_and_query_case(self):
-        from agent.auxiliary_client import _is_provider_unhealthy, _mark_provider_unhealthy
+        from hermes_agent.agent.auxiliary_client import _is_provider_unhealthy, _mark_provider_unhealthy
 
         _mark_provider_unhealthy("custom", base_url="https://Example.test/API/v1/")
 
@@ -4275,7 +4275,7 @@ class TestAuxUnhealthyCache:
         """A 402 from call_llm causes the provider to be marked unhealthy
         so the next call skips it instead of re-trying the same depleted
         endpoint."""
-        from agent.auxiliary_client import (
+        from hermes_agent.agent.auxiliary_client import (
             call_llm,
             _is_provider_unhealthy,
         )
@@ -4294,13 +4294,13 @@ class TestAuxUnhealthyCache:
         nous_resp.choices = [MagicMock(message=MagicMock(content="ok"))]
         nous_client.chat.completions.create.return_value = nous_resp
 
-        with patch("agent.auxiliary_client._get_cached_client",
+        with patch("hermes_agent.agent.auxiliary_client._get_cached_client",
                     return_value=(primary_client, "google/gemini-3-flash-preview")), \
-             patch("agent.auxiliary_client._resolve_task_provider_model",
+             patch("hermes_agent.agent.auxiliary_client._resolve_task_provider_model",
                     return_value=("auto", "google/gemini-3-flash-preview", None, None, None)), \
-             patch("agent.auxiliary_client._try_payment_fallback",
+             patch("hermes_agent.agent.auxiliary_client._try_payment_fallback",
                     return_value=(nous_client, "n-model", "nous")), \
-             patch("agent.auxiliary_client._build_call_kwargs",
+             patch("hermes_agent.agent.auxiliary_client._build_call_kwargs",
                     return_value={"model": "n-model", "messages": [{"role": "user", "content": "hi"}]}):
             assert _is_provider_unhealthy("openrouter") is False
             call_llm(
@@ -4312,7 +4312,7 @@ class TestAuxUnhealthyCache:
 
     def test_custom_billing_failure_keeps_distinct_endpoint_eligible(self):
         """A hosted custom endpoint's billing state must not quarantine a local custom endpoint."""
-        from agent.auxiliary_client import call_llm, _is_provider_unhealthy
+        from hermes_agent.agent.auxiliary_client import call_llm, _is_provider_unhealthy
 
         hosted_url = "https://hosted.example/v1"
         local_url = "http://127.0.0.1:8080/v1"
@@ -4329,16 +4329,16 @@ class TestAuxUnhealthyCache:
         }
 
         with patch(
-            "agent.auxiliary_client._resolve_task_provider_model",
+            "hermes_agent.agent.auxiliary_client._resolve_task_provider_model",
             return_value=("custom", "hosted-model", hosted_url, "hosted", None),
         ), patch(
-            "agent.auxiliary_client._get_cached_client",
+            "hermes_agent.agent.auxiliary_client._get_cached_client",
             return_value=(hosted_client, "hosted-model"),
         ), patch(
-            "agent.auxiliary_client._get_auxiliary_task_config",
+            "hermes_agent.agent.auxiliary_client._get_auxiliary_task_config",
             return_value={"fallback_chain": [fallback_entry]},
         ), patch(
-            "agent.auxiliary_client._resolve_fallback_entry",
+            "hermes_agent.agent.auxiliary_client._resolve_fallback_entry",
             return_value=(local_client, "local-model"),
         ):
             response = call_llm(
@@ -4354,7 +4354,7 @@ class TestAuxUnhealthyCache:
 
     def test_custom_fallback_auth_failure_quarantines_failed_endpoint(self):
         """Terminal auth failure quarantines the fallback URL, not the active custom URL."""
-        from agent.auxiliary_client import (
+        from hermes_agent.agent.auxiliary_client import (
             _call_fallback_candidate_sync,
             _is_provider_unhealthy,
         )
@@ -4365,9 +4365,9 @@ class TestAuxUnhealthyCache:
         hosted_client.chat.completions.create.side_effect = _AuxAuth401("expired hosted key")
 
         with patch(
-            "agent.auxiliary_client._current_custom_base_url", return_value=local_url,
+            "hermes_agent.agent.auxiliary_client._current_custom_base_url", return_value=local_url,
         ), patch(
-            "agent.auxiliary_client._refresh_provider_credentials", return_value=False,
+            "hermes_agent.agent.auxiliary_client._refresh_provider_credentials", return_value=False,
         ):
             result = _call_fallback_candidate_sync(
                 hosted_client,
@@ -4402,9 +4402,9 @@ class TestAuxiliaryMaxTokensParam:
     def test_openrouter_api_key_present_keeps_max_tokens_without_model_hint(self, monkeypatch):
         monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-v1-test")
         with (
-            patch("agent.auxiliary_client._current_custom_base_url",
+            patch("hermes_agent.agent.auxiliary_client._current_custom_base_url",
                   return_value="https://openrouter.ai/api/v1"),
-            patch("agent.auxiliary_client._read_nous_auth", return_value=None),
+            patch("hermes_agent.agent.auxiliary_client._read_nous_auth", return_value=None),
         ):
             assert auxiliary_max_tokens_param(4096) == {"max_tokens": 4096}
 
@@ -4416,9 +4416,9 @@ class TestAuxiliaryMaxTokensParam:
     def test_empty_model_falls_back_to_url_only(self):
         """No model hint → only the URL-based rule applies."""
         with (
-            patch("agent.auxiliary_client._current_custom_base_url",
+            patch("hermes_agent.agent.auxiliary_client._current_custom_base_url",
                   return_value="https://my-gateway.example.com/v1"),
-            patch("agent.auxiliary_client._read_nous_auth", return_value=None),
+            patch("hermes_agent.agent.auxiliary_client._read_nous_auth", return_value=None),
         ):
             assert auxiliary_max_tokens_param(4096, model="") == {"max_tokens": 4096}
             assert auxiliary_max_tokens_param(4096, model=None) == {"max_tokens": 4096}
@@ -4457,7 +4457,7 @@ class TestCompressionFallbackContextFilter:
     def test_configured_chain_skips_too_small_candidate_for_compression(self, monkeypatch):
         """When entry[0] is reachable but too small and entry[1] is large enough,
         _try_configured_fallback_chain must return entry[1], not entry[0]."""
-        from agent.auxiliary_client import (
+        from hermes_agent.agent.auxiliary_client import (
             _try_configured_fallback_chain,
         )
 
@@ -4478,13 +4478,13 @@ class TestCompressionFallbackContextFilter:
             return {"tiny-8k": 8192, "huge-1m": 1_048_576}.get(model, 256_000)
 
         monkeypatch.setattr(
-            "agent.auxiliary_client._get_auxiliary_task_config",
+            "hermes_agent.agent.auxiliary_client._get_auxiliary_task_config",
             lambda task: {"fallback_chain": entries} if task == "compression" else {},
         )
 
-        with patch("agent.auxiliary_client._resolve_fallback_entry",
+        with patch("hermes_agent.agent.auxiliary_client._resolve_fallback_entry",
                    side_effect=fake_resolve), \
-             patch("agent.auxiliary_client.get_model_context_length",
+             patch("hermes_agent.agent.auxiliary_client.get_model_context_length",
                    side_effect=fake_ctx):
             client, model, label = _try_configured_fallback_chain(
                 task="compression", failed_provider="auto")
@@ -4508,18 +4508,18 @@ class TestCompressionFallbackContextFilter:
     def test_same_provider_same_model_still_skipped(self, monkeypatch):
         """The exact (provider, model) pair that just failed is still
         skipped — failed_model narrows the skip, it doesn't disable it."""
-        from agent.auxiliary_client import _try_configured_fallback_chain
+        from hermes_agent.agent.auxiliary_client import _try_configured_fallback_chain
 
         entries = [
             self._make_chain_entry("nvidia", "deepseek-ai/deepseek-v4-pro"),
         ]
 
         monkeypatch.setattr(
-            "agent.auxiliary_client._get_auxiliary_task_config",
+            "hermes_agent.agent.auxiliary_client._get_auxiliary_task_config",
             lambda task: {"fallback_chain": entries} if task == "compression" else {},
         )
 
-        with patch("agent.auxiliary_client._resolve_fallback_entry",
+        with patch("hermes_agent.agent.auxiliary_client._resolve_fallback_entry",
                    side_effect=AssertionError("must not be resolved")):
             client, model, label = _try_configured_fallback_chain(
                 task="compression",
@@ -4548,9 +4548,9 @@ class TestCompressionFallbackContextFilter:
     def test_compression_task_uses_minimum_context_constant(self):
         """The task minimum for compression must equal MINIMUM_CONTEXT_LENGTH
         so the runtime fallback stays consistent with the startup feasibility
-        check in agent/conversation_compression.py."""
-        from agent.auxiliary_client import _task_minimum_context_length
-        from agent.model_metadata import MINIMUM_CONTEXT_LENGTH
+        check in hermes_agent/agent/conversation_compression.py."""
+        from hermes_agent.agent.auxiliary_client import _task_minimum_context_length
+        from hermes_agent.agent.model_metadata import MINIMUM_CONTEXT_LENGTH
 
         assert _task_minimum_context_length("compression") == MINIMUM_CONTEXT_LENGTH
         # Non-compression tasks have no minimum (None)
@@ -4583,7 +4583,7 @@ class TestCustomEndpointApiKeyInheritance:
     def test_inherits_main_api_key_when_aux_key_empty(self, monkeypatch):
         """RED→GREEN: explicit_api_key is None, OPENAI_API_KEY unset →
         model.api_key from config.yaml must be used (same-host gateway)."""
-        import agent.auxiliary_client as ac
+        import hermes_agent.agent.auxiliary_client as ac
 
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
@@ -4618,7 +4618,7 @@ class TestCustomEndpointApiKeyInheritance:
 
     def test_explicit_api_key_takes_precedence(self, monkeypatch):
         """explicit_api_key wins over config model.api_key."""
-        import agent.auxiliary_client as ac
+        import hermes_agent.agent.auxiliary_client as ac
 
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
 
@@ -4644,7 +4644,7 @@ class TestCustomEndpointApiKeyInheritance:
     def test_runtime_override_key_is_used(self, monkeypatch):
         """A key bound by set_runtime_main takes precedence over config.yaml
         for the custom endpoint key."""
-        import agent.auxiliary_client as ac
+        import hermes_agent.agent.auxiliary_client as ac
 
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
 
@@ -4671,7 +4671,7 @@ class TestCustomEndpointApiKeyInheritance:
         inherit model.api_key — that would leak the main credential to
         whatever host a misconfigured aux endpoint names. Falls back to the
         fail-safe no-key-required placeholder instead."""
-        import agent.auxiliary_client as ac
+        import hermes_agent.agent.auxiliary_client as ac
 
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
 
@@ -4712,7 +4712,7 @@ class TestCustomEndpointApiKeyInheritance:
         config.yaml's key belongs to config.yaml's base_url, never to the live endpoint.
         Real config.yaml under a temp HERMES_HOME, resolved through the task route."""
         import hermes_yaml as yaml
-        from agent.auxiliary_client import reset_runtime_main, set_runtime_main
+        from hermes_agent.agent.auxiliary_client import reset_runtime_main, set_runtime_main
 
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
@@ -4746,7 +4746,7 @@ class TestCustomEndpointApiKeyInheritance:
         the client build agree on when the main credential is borrowed: a blank explicit key is
         keyless, and the runtime-endpoint shape never uses the explicit key: with a keyless runtime
         it has no credential at all, so no client is built."""
-        import agent.auxiliary_client as aux
+        import hermes_agent.agent.auxiliary_client as aux
 
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
@@ -4780,12 +4780,12 @@ class TestNoProgressTimeoutTaskConfigGating:
             choices=[SimpleNamespace(message=SimpleNamespace(content="ok"))]
         )
         with (
-            patch("agent.auxiliary_client._resolve_task_provider_model",
+            patch("hermes_agent.agent.auxiliary_client._resolve_task_provider_model",
                   return_value=("openai", "gpt-4.1", None, None, None)),
-            patch("agent.auxiliary_client._get_cached_client", return_value=(client, "gpt-4.1")),
-            patch("agent.auxiliary_client._validate_llm_response",
+            patch("hermes_agent.agent.auxiliary_client._get_cached_client", return_value=(client, "gpt-4.1")),
+            patch("hermes_agent.agent.auxiliary_client._validate_llm_response",
                   side_effect=lambda resp, _task, **_kw: resp),
-            patch("agent.auxiliary_client._get_task_no_progress_timeout", return_value=300.0),
+            patch("hermes_agent.agent.auxiliary_client._get_task_no_progress_timeout", return_value=300.0),
         ):
             call_llm(
                 task="compression",
@@ -4801,7 +4801,7 @@ class TestNoProgressTimeoutTaskConfigGating:
         ``guard.no_progress_timeout``); other tasks keep the 60s default; a non-positive value
         is rejected with a warning and falls back to the default."""
         import hermes_yaml as yaml
-        from agent import auxiliary_client as aux
+        from hermes_agent.agent import auxiliary_client as aux
 
         home = tmp_path / ".hermes"
         home.mkdir()
@@ -4845,7 +4845,7 @@ class TestNoProgressTimeoutTaskConfigGating:
 
         (home / "config.yaml").write_text(yaml.safe_dump(
             {"auxiliary": {"compression": {"timeout": 600, "no_progress_timeout": -3}}}))
-        with caplog.at_level(logging.WARNING, logger="agent.auxiliary_client"):
+        with caplog.at_level(logging.WARNING, logger="hermes_agent.agent.auxiliary_client"):
             assert _run("compression") == 60.0
         assert any(r.levelno == logging.WARNING for r in caplog.records)
 
@@ -4872,11 +4872,11 @@ class TestMoaAggregatorStreamingBypass:
         monkeypatch.setattr(client.chat.completions, "create", direct_create)
 
         monkeypatch.setattr(
-            "agent.auxiliary_client._get_cached_client",
+            "hermes_agent.agent.auxiliary_client._get_cached_client",
             lambda *args, **kwargs: (client, "gpt-5.6-sol"),
         )
         relay_stream = MagicMock(side_effect=AssertionError("_relay_sync_stream must not be used"))
-        monkeypatch.setattr("agent.auxiliary_client._relay_sync_stream", relay_stream)
+        monkeypatch.setattr("hermes_agent.agent.auxiliary_client._relay_sync_stream", relay_stream)
 
         result = call_llm(
             task="moa_aggregator",
@@ -4894,7 +4894,7 @@ class TestMoaAggregatorStreamingBypass:
 class TestSynchronousFallbackCachePlans:
     @staticmethod
     def _run_configured_fallback(monkeypatch, entry):
-        from agent.auxiliary_client import (
+        from hermes_agent.agent.auxiliary_client import (
             _call_fallback_candidate_sync,
             _try_configured_fallback_chain,
         )
@@ -4908,9 +4908,9 @@ class TestSynchronousFallbackCachePlans:
             resolved_calls.append((provider, model, kwargs))
             return client, model
 
-        monkeypatch.setattr("agent.auxiliary_client.resolve_provider_client", resolve)
+        monkeypatch.setattr("hermes_agent.agent.auxiliary_client.resolve_provider_client", resolve)
         monkeypatch.setattr(
-            "agent.auxiliary_client._get_auxiliary_task_config",
+            "hermes_agent.agent.auxiliary_client._get_auxiliary_task_config",
             lambda task: {"fallback_chain": [entry]},
         )
         fallback_client, fallback_model, label = _try_configured_fallback_chain(
@@ -4987,7 +4987,7 @@ class TestAsynchronousFallbackCachePlans:
     @pytest.mark.asyncio
     async def test_async_fallback_replans_cache_sections_like_sync(self, monkeypatch):
         """Async mirror parity: per-destination cache replan, not verbatim pass-through."""
-        from agent.auxiliary_client import (
+        from hermes_agent.agent.auxiliary_client import (
             _call_fallback_candidate_async,
             _try_configured_fallback_chain,
         )
@@ -5006,11 +5006,11 @@ class TestAsynchronousFallbackCachePlans:
 
         client.chat.completions.create = MagicMock(side_effect=_create)
         monkeypatch.setattr(
-            "agent.auxiliary_client.resolve_provider_client",
+            "hermes_agent.agent.auxiliary_client.resolve_provider_client",
             lambda provider, model=None, **kwargs: (client, model),
         )
         monkeypatch.setattr(
-            "agent.auxiliary_client._get_auxiliary_task_config",
+            "hermes_agent.agent.auxiliary_client._get_auxiliary_task_config",
             lambda task: {"fallback_chain": [entry]},
         )
         fallback_client, fallback_model, label = _try_configured_fallback_chain(
@@ -5050,7 +5050,7 @@ class TestAsynchronousFallbackCachePlans:
 class TestAutoRoutedProviderProfileHooks:
     def test_cached_auto_route_projects_selected_provider_on_every_request(self):
         """Auto routing must retain the concrete provider for request hooks."""
-        import agent.auxiliary_client as aux
+        import hermes_agent.agent.auxiliary_client as aux
         from providers.base import ProviderProfile
 
         hook_calls = []
@@ -5077,16 +5077,16 @@ class TestAutoRoutedProviderProfileHooks:
         try:
             with (
                 patch(
-                    "agent.auxiliary_client._resolve_task_provider_model",
+                    "hermes_agent.agent.auxiliary_client._resolve_task_provider_model",
                     return_value=("auto", "gateway/model", None, None, None),
                 ),
                 patch(
-                    "agent.auxiliary_client._resolve_auto_route",
+                    "hermes_agent.agent.auxiliary_client._resolve_auto_route",
                     return_value=(client, "gateway/model", "agentgateway"),
                 ) as resolve_auto,
                 patch("providers.get_provider_profile", side_effect=lookup_profile),
                 patch(
-                    "agent.auxiliary_client._relay_sync_completion",
+                    "hermes_agent.agent.auxiliary_client._relay_sync_completion",
                     return_value=response,
                 ) as relay,
             ):
@@ -5114,7 +5114,7 @@ class TestFastModelTier:
 
     def test_auto_client_cache_key_tracks_fast_model_preference(self):
         """Changing the routing preference must not reuse the old auto client."""
-        from agent import auxiliary_client as ac
+        from hermes_agent.agent import auxiliary_client as ac
 
         with patch.object(ac, "_task_prefers_fast_model", return_value=False):
             main_key = ac._client_cache_key(
@@ -5129,7 +5129,7 @@ class TestFastModelTier:
 
     def test_catalog_match_prefers_rolling_alias_over_pinned_id(self):
         """A "-latest" alias wins: it is the only id that cannot go stale."""
-        from agent import auxiliary_client as ac
+        from hermes_agent.agent import auxiliary_client as ac
 
         catalog = {
             "z-ai/glm-5.2": {},
@@ -5142,7 +5142,7 @@ class TestFastModelTier:
 
     def test_catalog_match_skips_reasoning_batch_and_embedding_lookalikes(self):
         """Substring matching must not pick a thinker, a queue, or an encoder."""
-        from agent import auxiliary_client as ac
+        from hermes_agent.agent import auxiliary_client as ac
 
         catalog = {
             "openai/o3-mini": {},
@@ -5156,7 +5156,7 @@ class TestFastModelTier:
     def test_catalog_match_skips_the_non_chat_siblings_of_a_chat_model(self):
         """A provider names its speech and image endpoints after the chat model
         they're paired with, so they satisfy the family rungs and can't answer."""
-        from agent import auxiliary_client as ac
+        from hermes_agent.agent import auxiliary_client as ac
 
         catalog = {
             "openai/gpt-4o-mini-tts": {},
@@ -5174,7 +5174,7 @@ class TestFastModelTier:
         and compared as strings the oldest sorts first — so the rung meant to
         keep the titler current was pinning it to the most obsolete member.
         """
-        from agent import auxiliary_client as ac
+        from hermes_agent.agent import auxiliary_client as ac
 
         catalog = {
             "openai/gpt-3.5-mini": {},
@@ -5190,7 +5190,7 @@ class TestFastModelTier:
         A 401 reads as "this provider serves no small model", so the titler
         would fall back to the curated default and never notice.
         """
-        from agent import auxiliary_client as ac
+        from hermes_agent.agent import auxiliary_client as ac
 
         with patch(
             "hermes_cli.auth.resolve_api_key_provider_credentials",
@@ -5205,7 +5205,7 @@ class TestFastModelTier:
 
     def test_falls_back_to_curated_default_when_catalog_unavailable(self):
         """An offline catalog degrades to the provider's pinned default."""
-        from agent import auxiliary_client as ac
+        from hermes_agent.agent import auxiliary_client as ac
 
         with patch.object(ac, "_fast_model_from_catalog", return_value=""):
             assert (
@@ -5215,7 +5215,7 @@ class TestFastModelTier:
 
     def test_fast_tier_is_opt_in(self):
         """Without prefer_fast the resolver must not touch the live catalog."""
-        from agent import auxiliary_client as ac
+        from hermes_agent.agent import auxiliary_client as ac
 
         with patch.object(ac, "_fast_model_from_catalog") as spy:
             ac._get_aux_model_for_provider("nous")
@@ -5223,7 +5223,7 @@ class TestFastModelTier:
 
     def test_only_titling_is_in_the_fast_tier(self):
         """Compression/vision/search keep 'auto means my chat model'."""
-        from agent.auxiliary_client import _FAST_MODEL_TASKS
+        from hermes_agent.agent.auxiliary_client import _FAST_MODEL_TASKS
 
         assert "title_generation" in _FAST_MODEL_TASKS
         overlap = {"compression", "vision", "web_extract"}.intersection(
@@ -5244,7 +5244,7 @@ class TestFastModelTier:
         (Hermes desktop on Windows with a partial / early-startup
         catalog state) hits this branch.
         """
-        import agent.auxiliary_client as ac
+        import hermes_agent.agent.auxiliary_client as ac
 
         def _catalog_raises(_name):
             raise RuntimeError("built-in catalog unavailable")
@@ -5308,7 +5308,7 @@ class TestFastModelTier:
         old_home = os.environ.get("HERMES_HOME")
         os.environ["HERMES_HOME"] = str(hermes_home)
         try:
-            from agent.auxiliary_client import resolve_vision_provider_client
+            from hermes_agent.agent.auxiliary_client import resolve_vision_provider_client
 
             resolved_provider, client, _model = resolve_vision_provider_client(
                 provider="agnes-ai.cn",
@@ -5364,7 +5364,7 @@ class TestPreserveNamedCustomProviderWithBaseUrl:
         named-custom-provider branch picks up
         ``providers.<name>.api_key`` (or the configured ``key_env``).
         """
-        import agent.auxiliary_client as ac
+        import hermes_agent.agent.auxiliary_client as ac
 
         fake_entry = {
             "name": "AgnesAI",
@@ -5399,7 +5399,7 @@ class TestPreserveNamedCustomProviderWithBaseUrl:
         fires when the built-in registry missed. This guards against
         regressing the pre-existing built-in provider behavior.
         """
-        import agent.auxiliary_client as ac
+        import hermes_agent.agent.auxiliary_client as ac
 
         with patch(
             "hermes_cli.providers.get_provider",
@@ -5424,7 +5424,7 @@ class TestPreserveNamedCustomProviderWithBaseUrl:
         anonymous custom endpoints (no name → no key → bare-custom branch
         handles ``no-key-required`` itself).
         """
-        import agent.auxiliary_client as ac
+        import hermes_agent.agent.auxiliary_client as ac
 
         with patch(
             "hermes_cli.runtime_provider._get_named_custom_provider",
@@ -5454,7 +5454,7 @@ class TestPreserveNamedCustomProviderWithBaseUrl:
         existing hardcoded allowlist still returns True for known names —
         so xai-oauth / qwen-oauth / etc. aren't regressed by the fix.
         """
-        import agent.auxiliary_client as ac
+        import hermes_agent.agent.auxiliary_client as ac
 
         def _boom(_name):
             raise RuntimeError("catalog unavailable")

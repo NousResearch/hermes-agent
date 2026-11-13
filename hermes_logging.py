@@ -172,7 +172,7 @@ class _RedactingStdio:
         self._stream = stream
 
     def write(self, text):
-        from agent.redact import redact_sensitive_text
+        from hermes_agent.agent.redact import redact_sensitive_text
         return self._stream.write(redact_sensitive_text(text) if isinstance(text, str) else text)
 
     def __getattr__(self, name):
@@ -330,7 +330,7 @@ class _ComponentFilter(logging.Filter):
 COMPONENT_PREFIXES = {
     # ``plugins.platforms``: messaging adapters that migrated out of
     # ``hermes_agent/gateway/platforms/`` into bundled plugins (#41112) are still gateway
-    # components and belong in gateway.log. ``agent.memory_caller_scope``: a multiplexed gateway's
+    # components and belong in gateway.log. ``hermes_agent.agent.memory_caller_scope``: a multiplexed gateway's
     # memory-provider profile refusals (#140058), which the operator reads in gateway.log.
     "gateway": ("gateway", "hermes_plugins", "plugins.platforms", "agent.memory_caller_scope"),
     "agent": ("agent", "run_agent", "model_tools", "batch_runner"),
@@ -411,7 +411,7 @@ def setup_logging(
     max_bytes = (max_size_mb or cfg_max_size or 5) * 1024 * 1024
     backups = backup_count or cfg_backup or 3
 
-    from agent.redact import RedactingFormatter  # lazy: circular at module load
+    from hermes_agent.agent.redact import RedactingFormatter  # lazy: circular at module load
 
     root = logging.getLogger()
 
@@ -455,7 +455,7 @@ def setup_logging(
 
 def setup_verbose_logging() -> None:
     """Enable DEBUG-level console logging for ``--verbose`` / ``-v`` mode."""
-    from agent.redact import RedactingFormatter
+    from hermes_agent.agent.redact import RedactingFormatter
 
     root = logging.getLogger()
 
@@ -960,7 +960,7 @@ def enable_profile_log_routing(profile_homes: Sequence[str | Path]) -> bool:
     if len(homes) < 2:
         return False
     # Each routed profile's redaction policy, read now: the formatter never reads config per record.
-    from agent.redact import resolve_profile_policy
+    from hermes_agent.agent.redact import resolve_profile_policy
     for home in homes:
         resolve_profile_policy(home)
 

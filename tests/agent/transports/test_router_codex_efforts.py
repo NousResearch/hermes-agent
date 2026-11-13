@@ -15,7 +15,7 @@ import sys
 
 import pytest
 
-from agent.transports import get_transport
+from hermes_agent.agent.transports import get_transport
 
 
 def _router_plugin_module():
@@ -28,7 +28,7 @@ def _router_plugin_module():
 
 @pytest.fixture
 def transport():
-    import agent.transports.codex
+    import hermes_agent.agent.transports.codex
     return get_transport("codex_responses")
 
 

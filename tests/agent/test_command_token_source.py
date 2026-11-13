@@ -19,7 +19,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent.command_token_source import (
+from hermes_agent.agent.command_token_source import (
     CommandTokenError,
     CommandTokenSource,
     _mint,
@@ -130,7 +130,7 @@ class TestCaching:
         restart. The window keeps the helper from running per-request while
         guaranteeing an eventual re-mint.
         """
-        from agent.command_token_source import _NO_TTL_REFRESH_SECONDS
+        from hermes_agent.agent.command_token_source import _NO_TTL_REFRESH_SECONDS
 
         source = CommandTokenSource("date +%s%N", "dbx")
         first = source()
@@ -215,7 +215,7 @@ class TestCallableKeyGetsBearerAuth:
     """
 
     def test_callable_takes_the_bearer_hook_path(self, monkeypatch):
-        import agent.anthropic_adapter as aa
+        import hermes_agent.agent.anthropic_adapter as aa
 
         seen = {}
 
@@ -300,7 +300,7 @@ class TestAbsoluteExpiry:
 class TestAuxiliaryResolverHonoursKeyCmd:
     """Auxiliary tasks resolve credentials on their own path.
 
-    ``agent.auxiliary_client.resolve_provider_client`` does not go through
+    ``hermes_agent.agent.auxiliary_client.resolve_provider_client`` does not go through
     ``_resolve_named_custom_runtime``, so a key_cmd honoured only there leaves
     title generation, compression, vision and embedding falling back to the
     ``no-key-required`` placeholder — the main agent turn succeeds while every
@@ -310,7 +310,7 @@ class TestAuxiliaryResolverHonoursKeyCmd:
     @staticmethod
     def _resolve(monkeypatch, entry):
         """Resolve *entry* as a named custom provider; return the api_key seen."""
-        import agent.auxiliary_client as ac
+        import hermes_agent.agent.auxiliary_client as ac
         from hermes_cli import runtime_provider as rp
 
         monkeypatch.setattr(
@@ -365,7 +365,7 @@ class TestExplicitCallableSurvivesCustomResolution:
 
     @staticmethod
     def _spy_client(monkeypatch):
-        import agent.auxiliary_client as ac
+        import hermes_agent.agent.auxiliary_client as ac
 
         seen = {}
 
@@ -377,7 +377,7 @@ class TestExplicitCallableSurvivesCustomResolution:
         return seen
 
     def _resolve(self, monkeypatch, shape, key):
-        import agent.auxiliary_client as ac
+        import hermes_agent.agent.auxiliary_client as ac
         from hermes_cli import auth as hauth
         from hermes_cli import runtime_provider as rp
 

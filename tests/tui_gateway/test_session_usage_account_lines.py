@@ -7,7 +7,7 @@ second profile's key is unreadable outside it (#132422).
 from datetime import UTC, datetime
 from unittest.mock import patch
 
-from agent.account_usage import AccountUsageSnapshot, AccountUsageWindow
+from hermes_agent.agent.account_usage import AccountUsageSnapshot, AccountUsageWindow
 
 
 def _snapshot() -> AccountUsageSnapshot:
@@ -48,8 +48,8 @@ def test_usage_slash_shows_account_limits_before_first_turn_inside_session_scope
         patch.object(server, "_session_usage_snapshot", return_value={}),
         patch.object(server, "_session_profile_runtime_scope", lambda sess, **kw: _Scope()),
         patch.object(server, "_config_model_target", lambda: ("openai/gpt-5-mini", "openrouter")),
-        patch("agent.account_usage.fetch_account_usage", _fetch),
-        patch("agent.account_usage.nous_credits_lines", _credits),
+        patch("hermes_agent.agent.account_usage.fetch_account_usage", _fetch),
+        patch("hermes_agent.agent.account_usage.nous_credits_lines", _credits),
     ):
         out = server._live_slash_command_output("sid-usage", session, "usage", "")
 

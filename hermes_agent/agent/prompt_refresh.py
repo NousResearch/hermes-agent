@@ -79,8 +79,8 @@ def _persist_epoch(agent: Any, epoch: int) -> bool:
 
 def rebuild_for_refresh(agent: Any, system_message: Any, conversation_history: Any, epoch: int) -> None:
     """Rebuild the session's prompt from current sources and persist it with ``epoch``."""
-    from agent.prompt_builder import clear_skills_system_prompt_cache
-    from agent.surface_switch import stage_surface_switch_note
+    from hermes_agent.agent.prompt_builder import clear_skills_system_prompt_cache
+    from hermes_agent.agent.surface_switch import stage_surface_switch_note
     from hermes_cli.observability.shared_metrics_efficiency import record_cache_break
 
     logger.info("Operator requested a system prompt refresh (epoch %d) for session %s; rebuilding it "

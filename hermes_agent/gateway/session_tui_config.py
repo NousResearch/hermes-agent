@@ -246,7 +246,7 @@ def current_tier(connection, ref, policy):
 
 def service_tier_options(connection, ref, policy, *, include_ultrafast=True):
     """The session route's speed choices, resolved under its credential scope."""
-    from agent.codex_service_tiers import ultrafast_offered
+    from hermes_agent.agent.codex_service_tiers import ultrafast_offered
     from hermes_agent.gateway.run import _profile_runtime_scope
     from hermes_cli.models import resolve_fast_mode_overrides
     with _profile_runtime_scope(Path(connection.authority.profile_id)):
@@ -276,7 +276,7 @@ async def _set_fast(connection, ref, policy, value):
     The words parse through the shared tier table (``parse_exact_service_tier``, as the classic CLI's
     ``config.set service_tier`` does); the pin is the same per-session override the next turn reads
     (``current_service_tier``). TUI-only on top: ``toggle`` / ``status`` and the route check."""
-    from agent.fast_mode import STATIC_TIERS, parse_exact_service_tier, service_tier_word
+    from hermes_agent.agent.fast_mode import STATIC_TIERS, parse_exact_service_tier, service_tier_word
     if not ref.session_id:
         raise RuntimeStoreError('invalid_params')
     raw, current = _word(value), current_tier(connection, ref, policy)

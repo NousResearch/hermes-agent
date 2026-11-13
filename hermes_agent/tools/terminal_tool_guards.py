@@ -473,7 +473,7 @@ def _approval_identity(command: str) -> tuple:
     """Everything the approval path keys a decision on for *command*: hardline verdict, the
     dangerous pattern key/description (what session/permanent approvals are stored under), the
     sudo-stdin floor, runtime self-delete, the user's deny rules and the permanent allowlist."""
-    from agent.runtime_self_protection import command_deletes_runtime
+    from hermes_agent.agent.runtime_self_protection import command_deletes_runtime
     from hermes_agent.tools.approval import _command_matches_permanent_allowlist, _match_user_deny_rule
     from hermes_agent.tools.approval_detection import _check_sudo_stdin_guard, detect_dangerous_command, detect_hardline_command
     return (

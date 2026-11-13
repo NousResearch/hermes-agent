@@ -625,7 +625,7 @@ from hermes_cli.env_loader import load_hermes_dotenv
 load_hermes_dotenv(project_env=PROJECT_ROOT / ".env")
 
 # Bridge security.redact_secrets → HERMES_REDACT_SECRETS BEFORE hermes_logging
-# imports agent.redact, which snapshots the flag exactly once at import. A
+# imports hermes_agent.agent.redact, which snapshots the flag exactly once at import. A
 # .env value still wins — this is config.yaml fallback only. network.force_ipv4
 # is read from the same parse to avoid a second full load_config() (~17ms).
 _FORCE_IPV4_EARLY = False
@@ -1047,7 +1047,7 @@ def _has_any_provider_configured(*, strict_profile_scope: bool = False) -> bool:
         if pconfig.auth_type == "api_key":
             provider_env_vars.update(pconfig.api_key_env_vars)
     if strict_profile_scope:
-        from agent.secret_scope import current_secret_scope
+        from hermes_agent.agent.secret_scope import current_secret_scope
 
         read_provider_env = (current_secret_scope() or {}).get
     else:
@@ -1087,7 +1087,7 @@ def _has_any_provider_configured(*, strict_profile_scope: bool = False) -> bool:
     # configured — having Claude Code installed isn't consent to use its tokens.
     if _has_hermes_config and not strict_profile_scope:
         try:
-            from agent.anthropic_credentials import read_claude_code_credentials, is_claude_code_token_valid
+            from hermes_agent.agent.anthropic_credentials import read_claude_code_credentials, is_claude_code_token_valid
 
             creds = read_claude_code_credentials()
             if creds and (
@@ -1255,7 +1255,7 @@ def _resolve_last_session(source: str = "cli") -> Optional[str]:
     """
     # A finite `hermes -z`/`chat -q` run is CLI history too: `hermes -z … --resume latest` chains on it.
     if source == "cli":
-        from agent.session_source import CLI_FAMILY_SOURCES
+        from hermes_agent.agent.session_source import CLI_FAMILY_SOURCES
         source = sorted(CLI_FAMILY_SOURCES)
     with _session_db() as db:
         ws_key = _resolve_workspace_key()
@@ -1636,7 +1636,7 @@ def cmd_chat(args):
     if getattr(args, "source", None):
         os.environ["HERMES_SESSION_SOURCE"] = args.source
         # Explicit flag, not a label inherited from a parent TUI/Desktop session — one-shot
-        # runs must keep it (see agent.session_source.session_source_for).
+        # runs must keep it (see hermes_agent.agent.session_source.session_source_for).
         os.environ["HERMES_SESSION_SOURCE_EXPLICIT"] = "1"
 
     _pin_kanban_board_env()
@@ -2823,13 +2823,13 @@ def _prepare_agent_startup(args) -> None:
             )
     try:
         from hermes_cli.config import load_config
-        from agent.shell_hooks import register_from_config
-        from agent.outbound_webhooks import register_from_config as register_outbound_webhooks
+        from hermes_agent.agent.shell_hooks import register_from_config
+        from hermes_agent.agent.outbound_webhooks import register_from_config as register_outbound_webhooks
 
         _hooks_cfg = load_config()
         register_from_config(_hooks_cfg, accept_hooks=_accept_hooks, interactive=args.command in {None, "chat", "rl"})
         if _accept_hooks and args.command == "gateway":  # every session-open re-sync keeps honouring it
-            from agent.shell_hooks import accept_for_process
+            from hermes_agent.agent.shell_hooks import accept_for_process
             accept_for_process()
         register_outbound_webhooks(_hooks_cfg)
     except Exception:
@@ -3202,7 +3202,7 @@ def _build_cli_parser():
 
     # LSP is optional — a registration failure must not break the CLI.
     try:
-        from agent.lsp.cli import register_subparser as _lsp_register
+        from hermes_agent.agent.lsp.cli import register_subparser as _lsp_register
         _lsp_register(subparsers)
     except Exception as _lsp_err:
         logger.debug("LSP CLI registration failed: %s", _lsp_err)
@@ -3352,8 +3352,8 @@ def main():
         os.environ.setdefault("PYTHONIOENCODING", "utf-8")
 
     # One TLS authority: trust the OS store before any outbound call resolves a
-    # CA bundle (agent/ssl_verify.py). Never raises; False just means OpenSSL's paths.
-    from agent.ssl_verify import install_truststore
+    # CA bundle (hermes_agent/agent/ssl_verify.py). Never raises; False just means OpenSSL's paths.
+    from hermes_agent.agent.ssl_verify import install_truststore
 
     install_truststore()
 

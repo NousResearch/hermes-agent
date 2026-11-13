@@ -1,4 +1,4 @@
-"""Tests for agent.i18n -- catalog parity, fallback, language resolution."""
+"""Tests for hermes_agent.agent.i18n -- catalog parity, fallback, language resolution."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 import hermes_yaml as yaml
 
-from agent import i18n
+from hermes_agent.agent import i18n
 
 
 LOCALES_DIR = Path(__file__).resolve().parents[2] / "locales"
@@ -104,7 +104,7 @@ def test_default_when_nothing_set(monkeypatch):
 def test_language_is_per_profile_under_multiplex(monkeypatch, tmp_path):
     """HERMES_LANGUAGE in the DEFAULT profile's environ must not leak into a secondary profile's
     turn, and the config-language cache must not freeze one profile's ``display.language`` for all."""
-    from agent import secret_scope
+    from hermes_agent.agent import secret_scope
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
     default_home = tmp_path / "default"; default_home.mkdir()

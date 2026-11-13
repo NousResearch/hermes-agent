@@ -7,7 +7,7 @@ was killed at the idle deadline ("timed out after 120.0s with no output from the
 import asyncio
 from types import SimpleNamespace
 
-from agent import auxiliary_client as aux
+from hermes_agent.agent import auxiliary_client as aux
 
 
 def _chunk(text):

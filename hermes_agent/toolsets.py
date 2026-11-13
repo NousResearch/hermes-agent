@@ -169,7 +169,7 @@ TOOLSETS = {
     "debugging": _ts("Debugging and troubleshooting toolkit", ["terminal", "process_manage"], includes=["web", "file"]),
     "safe": _ts("Safe toolkit without terminal access", [], includes=["web", "vision", "image_gen"]),
 
-    # Coding posture, auto-selected in a code workspace (agent/coding_context.py).
+    # Coding posture, auto-selected in a code workspace (hermes_agent/agent/coding_context.py).
     # `desktop_ui` is folded in separately by the GUI gateway for desktop sessions.
     # posture=True: per-session posture, never auto-recovered into platform tool
     # config (see the non-configurable-toolset recovery loop in hermes_cli/tools_config.py).
@@ -448,10 +448,10 @@ def session_disabled_toolsets(
     disabled: Optional[list[str]], platform: Optional[str], *, oneshot: bool = False,
 ) -> Optional[list[str]]:
     """*disabled* plus every platform-gated toolset a session on *platform* does not get, and for a *oneshot*
-    session the toolsets nobody is there to use (``agent.oneshot_footprint.ONESHOT_DISABLED_TOOLSETS``). An agent
+    session the toolsets nobody is there to use (``hermes_agent.agent.oneshot_footprint.ONESHOT_DISABLED_TOOLSETS``). An agent
     stores this as its ``disabled_toolsets``, so the tool list, the tool_search listing and bridge, MCP refreshes
     and delegate children (which inherit it) all subtract the gated tools in ``_select_tool_names``."""
-    from agent.oneshot_footprint import ONESHOT_DISABLED_TOOLSETS
+    from hermes_agent.agent.oneshot_footprint import ONESHOT_DISABLED_TOOLSETS
     gated = [name for name, platforms in TOOLSET_SESSION_PLATFORMS.items() if platform not in platforms]
     gated += ONESHOT_DISABLED_TOOLSETS if oneshot else ()
     gated = [name for name in gated if name not in (disabled or ())]
@@ -474,9 +474,9 @@ def agent_tool_drops(agent: Any) -> frozenset:
 def agent_tool_surface(agent: Any, tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """*tools* as *agent* carries them: :func:`agent_tool_drops` removed and, in a one-shot session or a gateway
     session that joins its delegations in the turn (``delegation.gateway_mode``), the joined ``delegate_task``
-    variant (``agent.oneshot_footprint.oneshot_tool_schemas``). Applied to FRESH definitions (load, MCP refresh)
+    variant (``hermes_agent.agent.oneshot_footprint.oneshot_tool_schemas``). Applied to FRESH definitions (load, MCP refresh)
     before any merge: a pinned or carried entry keeps the bytes already sent."""
-    from agent.oneshot_footprint import agent_is_oneshot, oneshot_tool_schemas
+    from hermes_agent.agent.oneshot_footprint import agent_is_oneshot, oneshot_tool_schemas
     from hermes_agent.tools.delegate_tool_config import agent_joins_delegation
     drops = agent_tool_drops(agent)
     tools = [tool for tool in tools if (tool.get("function") or {}).get("name") not in drops] if drops else list(tools)

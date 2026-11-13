@@ -11,9 +11,9 @@ from unittest.mock import patch
 
 import pytest
 
-from agent import conversation_compression_checkpoint as gate
-from agent.conversation_compression_checkpoint import _prune_would_have_run
-from agent.turn_preflight import _proactive_tool_result_prune
+from hermes_agent.agent import conversation_compression_checkpoint as gate
+from hermes_agent.agent.conversation_compression_checkpoint import _prune_would_have_run
+from hermes_agent.agent.turn_preflight import _proactive_tool_result_prune
 
 
 class _CountingPruneCompressor:
@@ -36,7 +36,7 @@ class _CountingPruneCompressor:
 
 def _engine_stub():
     """Built against the currently imported ABC (sibling suites purge ``agent.*``)."""
-    from agent.context_engine import ContextEngine
+    from hermes_agent.agent.context_engine import ContextEngine
 
     class _CompressOnlyEngine(ContextEngine):
         @property
@@ -84,7 +84,7 @@ def test_proactive_prune_still_runs_when_gate_is_off():
     compressor = _CountingPruneCompressor()
     messages = [{"role": "user", "content": "scan"}]
 
-    with patch("agent.compaction_events.publish_prune"):
+    with patch("hermes_agent.agent.compaction_events.publish_prune"):
         result = _proactive_tool_result_prune(_agent(False), compressor, messages, 400_000)
 
     assert compressor.calls == 1
@@ -111,7 +111,7 @@ def test_engine_override_of_prune_is_suppressed_too():
     # An overriding engine owns its trigger policy: the host would have dispatched it.
     assert agent._checkpoint_gate_suppression_count == 1
 
-    with patch("agent.compaction_events.publish_prune"):
+    with patch("hermes_agent.agent.compaction_events.publish_prune"):
         _proactive_tool_result_prune(_agent(False), engine, messages, 400_000)
     assert _PruningEngine.calls == 1
 
@@ -120,7 +120,7 @@ def test_prune_suppression_logs_once_and_names_the_availability_consequence(capl
     compressor = _CountingPruneCompressor()
     agent = _agent(True)
 
-    with caplog.at_level(logging.WARNING, logger="agent.conversation_compression"):
+    with caplog.at_level(logging.WARNING, logger="hermes_agent.agent.conversation_compression"):
         for _ in range(2):
             _proactive_tool_result_prune(agent, compressor, [], 400_000)
 
@@ -138,7 +138,7 @@ def test_disabled_prune_is_not_reported_as_a_suppressed_authority(caplog):
     messages = [{"role": "user", "content": "scan"}]
     agent = _agent(True)
 
-    with caplog.at_level(logging.WARNING, logger="agent.conversation_compression"):
+    with caplog.at_level(logging.WARNING, logger="hermes_agent.agent.conversation_compression"):
         assert _proactive_tool_result_prune(agent, compressor, messages, 400_000) is messages
 
     assert compressor.calls == 0
@@ -150,13 +150,13 @@ def test_prune_below_its_trigger_is_not_reported_as_a_suppressed_authority(caplo
     compressor = _CountingPruneCompressor(proactive_prune_tokens=400_000)
     agent = _agent(True)
 
-    with caplog.at_level(logging.WARNING, logger="agent.conversation_compression"):
+    with caplog.at_level(logging.WARNING, logger="hermes_agent.agent.conversation_compression"):
         _proactive_tool_result_prune(agent, compressor, [], 399_999)
     assert getattr(agent, "_checkpoint_gate_suppression_count", 0) == 0
     assert _prune_warnings(caplog) == []
 
     # One token more and the same compressor IS a withheld authority.
-    with caplog.at_level(logging.WARNING, logger="agent.conversation_compression"):
+    with caplog.at_level(logging.WARNING, logger="hermes_agent.agent.conversation_compression"):
         _proactive_tool_result_prune(agent, compressor, [], 400_000)
     assert agent._checkpoint_gate_suppression_count == 1
     assert len(_prune_warnings(caplog)) == 1
@@ -164,9 +164,9 @@ def test_prune_below_its_trigger_is_not_reported_as_a_suppressed_authority(caplo
 
 def test_would_proactively_prune_is_the_compressors_own_precondition():
     """Answered by the real ``ContextCompressor``, so the report cannot drift from its trigger."""
-    from agent.context_compressor import ContextCompressor
+    from hermes_agent.agent.context_compressor import ContextCompressor
 
-    with patch("agent.context_compressor.get_model_context_length", return_value=1_000_000):
+    with patch("hermes_agent.agent.context_compressor.get_model_context_length", return_value=1_000_000):
         default = ContextCompressor(model="test", quiet_mode=True)
         configured = ContextCompressor(model="test", quiet_mode=True, proactive_prune_tokens=48_000)
 
@@ -217,7 +217,7 @@ def _hosted(engine, home):
     import threading
     from typing import Any, cast
 
-    from agent.context_engine import ContextEngine
+    from hermes_agent.agent.context_engine import ContextEngine
     from hermes_cli.plugin_host import PluginHost
     from hermes_cli.plugin_host_child import HostRuntime
 

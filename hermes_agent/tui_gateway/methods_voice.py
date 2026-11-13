@@ -355,7 +355,7 @@ def _speak_text_with_barge(text: str) -> None:
             done.set()
             with _fd_listener_lock:
                 _fd_speak_pipelines.discard((stop, done))
-    from agent.memory_provider import spawn_context_thread
+    from hermes_agent.agent.memory_provider import spawn_context_thread
     spawn_context_thread(_speak, name="voice-tts-speak").start()
     _arm_barge_listener_if_enabled()
 
@@ -895,7 +895,7 @@ def _(rid, params: dict) -> dict:
         import hermes_cli.voice
     except Exception as e:
         return _err(rid, 5026, "voice module not available" if isinstance(e, ImportError) else str(e))
-    from agent.memory_provider import spawn_context_thread
+    from hermes_agent.agent.memory_provider import spawn_context_thread
     spawn_context_thread(_speak_text_with_barge, name="voice-tts-rpc", args=(text,)).start()
     return _ok(rid, {"status": "speaking"})
 

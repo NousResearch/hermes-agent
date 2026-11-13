@@ -120,7 +120,7 @@ def _refresh_selected_pool_entry(*, min_key_ttl_seconds: int, min_access_ttl_sec
     no usable entry; None = no Nous pool.
     """
     try:
-        from agent.credential_pool import load_pool
+        from hermes_agent.agent.credential_pool import load_pool
 
         pool = load_pool("nous")
     except Exception as exc:

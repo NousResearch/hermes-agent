@@ -38,8 +38,8 @@ def _restore_tool_and_agent_modules():
             if (
                 name == "hermes_agent.tools"
                 or name.startswith("hermes_agent.tools.")
-                or name == "agent"
-                or name.startswith("agent.")
+                or name == "hermes_agent.agent"
+                or name.startswith("hermes_agent.agent.")
                 or name in {"fal_client", "openai"}
             ):
                 sys.modules.pop(name, None)
@@ -314,15 +314,15 @@ def _load_video_gen_plugin(monkeypatch):
     """Load the FAL video gen plugin in isolation."""
     _install_fake_tools_package()
 
-    # Also need the agent.video_gen_provider ABC
+    # Also need the hermes_agent.agent.video_gen_provider ABC
     agent_dir = Path(__file__).resolve().parents[2] / "agent"
     spec = spec_from_file_location(
-        "agent.video_gen_provider",
+        "hermes_agent.agent.video_gen_provider",
         agent_dir / "video_gen_provider.py",
     )
     assert spec and spec.loader
     mod = module_from_spec(spec)
-    sys.modules["agent.video_gen_provider"] = mod
+    sys.modules["hermes_agent.agent.video_gen_provider"] = mod
     spec.loader.exec_module(mod)
 
     # Load the plugin
@@ -344,11 +344,11 @@ def test_video_gen_happy_horse_uses_alibaba_namespace():
 
     agent_dir = Path(__file__).resolve().parents[2] / "agent"
     spec = spec_from_file_location(
-        "agent.video_gen_provider",
+        "hermes_agent.agent.video_gen_provider",
         agent_dir / "video_gen_provider.py",
     )
     mod = module_from_spec(spec)
-    sys.modules["agent.video_gen_provider"] = mod
+    sys.modules["hermes_agent.agent.video_gen_provider"] = mod
     spec.loader.exec_module(mod)
 
     spec = spec_from_file_location("plugins.video_gen.fal", plugin_init)

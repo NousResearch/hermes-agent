@@ -143,7 +143,7 @@ def test_catalog_accepts_declared_credential(
     monkeypatch: pytest.MonkeyPatch,
 ):
     from hermes_cli import mcp_config
-    from agent.secret_scope import get_secret
+    from hermes_agent.agent.secret_scope import get_secret
     from hermes_agent.tools.connectors.mcp import _CatalogBackend
 
     probes: list[str] = []
@@ -270,7 +270,7 @@ def _acp_launch_resolvers(monkeypatch: pytest.MonkeyPatch):
 
     The profile is registered like a plugin's, so its launch env names are executable authority."""
     import providers
-    from agent.acp_client import ACPClient
+    from hermes_agent.agent.acp_client import ACPClient
     from providers.base import ProviderProfile
 
     acme = ProviderProfile(name="acme-acp", auth_type="external_process", base_url="acp://acme",

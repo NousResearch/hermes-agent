@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fake ACP agent executable for an ``external_process`` model provider (``agent.acp_client.ACPClient``).
+"""Fake ACP agent executable for an ``external_process`` model provider (``hermes_agent.agent.acp_client.ACPClient``).
 
 An ``external_process`` provider makes Hermes spawn an external agent process per model call and
 speak the Agent Client Protocol to it: JSON-RPC 2.0, one JSON object per line over stdio

@@ -16,7 +16,7 @@ import uuid
 from contextlib import suppress
 from typing import Any, Dict, List, Optional
 
-from agent.i18n import t
+from hermes_agent.agent.i18n import t
 
 try:
     from aiohttp import web
@@ -972,7 +972,7 @@ class OpenAICompatRoutesMixin:
                 if not tool_call_id or function_name.startswith("_"):
                     return
                 _started_tool_call_ids.add(tool_call_id)
-                from agent.display import build_tool_preview, get_tool_emoji
+                from hermes_agent.agent.display import build_tool_preview, get_tool_emoji
                 label = build_tool_preview(function_name, function_args) or function_name
                 _stream_q.put_threadsafe(("__tool_progress__", {
                     "tool": function_name, "emoji": get_tool_emoji(function_name), "label": label,

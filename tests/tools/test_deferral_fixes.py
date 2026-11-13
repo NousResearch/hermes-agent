@@ -26,7 +26,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent.tool_dispatch_helpers import _plan_tool_batch_segments
+from hermes_agent.agent.tool_dispatch_helpers import _plan_tool_batch_segments
 from hermes_agent.tools.tool_search import build_catalog, search_catalog
 from hermes_agent.tools.tool_search_catalog import CATALOG_SUMMARY_MAX_CHARS, _short_desc
 

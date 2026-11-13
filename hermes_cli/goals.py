@@ -378,7 +378,7 @@ def _gate_workspace() -> tuple[Optional[str], Optional[str]]:
     relative gate run anywhere else would check a different project and could pass a failing goal,
     and no agent turn can fix it, so the caller pauses instead of retrying.
     No declared workspace keeps the classic resolution (TERMINAL_CWD, else the launch directory)."""
-    from agent.runtime_cwd import resolve_agent_cwd, scoped_session_cwd
+    from hermes_agent.agent.runtime_cwd import resolve_agent_cwd, scoped_session_cwd
 
     declared = scoped_session_cwd()
     if declared:
@@ -915,8 +915,8 @@ def judge_goal(
         timeout = _goal_judge_timeout()   # the declared default is the config key, not the constant
 
     try:
-        from agent.auxiliary_client import call_llm
-        from agent.auxiliary_unavailable import AuxiliaryClientUnavailable
+        from hermes_agent.agent.auxiliary_client import call_llm
+        from hermes_agent.agent.auxiliary_unavailable import AuxiliaryClientUnavailable
     except Exception as exc:
         logger.debug("goal judge: auxiliary client import failed: %s", exc)
         return "continue", "auxiliary client unavailable", False, None, False
@@ -1054,7 +1054,7 @@ def draft_contract(objective: str, *, timeout: Optional[float] = None) -> Option
         timeout = _goal_judge_timeout()
 
     try:
-        from agent.auxiliary_client import call_llm
+        from hermes_agent.agent.auxiliary_client import call_llm
     except Exception as exc:
         logger.debug("goal draft: auxiliary client import failed: %s", exc)
         return None
@@ -1687,7 +1687,7 @@ def run_kanban_goal_loop(
             _log(f"kanban goal loop: task {task_id} status={status!r}; stopping")
             return _result("stopped", f"status={status}")
 
-        from agent.portal_tags import get_affinity_scope, reset_affinity_scope, set_affinity_scope
+        from hermes_agent.agent.portal_tags import get_affinity_scope, reset_affinity_scope, set_affinity_scope
         affinity_token = None if get_affinity_scope() else set_affinity_scope(f"kanban:{task_id}")
         try:
             verdict, reason, _parse_failed, _wait, _transport_failed = judge_goal(goal_text, last_response)

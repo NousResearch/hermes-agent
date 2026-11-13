@@ -54,7 +54,7 @@ def _is_successful_goal_turn(result: Any, status: str, raw: Any) -> bool:
     A non-failed ``max_iterations_reached(...)`` handoff is a resumable turn boundary, not a
     failure: its summary must reach the judge so an active goal continues (#102213). Failed,
     interrupted and other ``completed is False`` turns still stay out (cf. #63180)."""
-    from agent.turn_failure_copy import is_max_iteration_handoff
+    from hermes_agent.agent.turn_failure_copy import is_max_iteration_handoff
     if status != "complete" or not isinstance(raw, str) or not raw.strip():
         return False
     if not isinstance(result, dict):
@@ -215,9 +215,9 @@ class _TurnScopes:
 def _route_turn_images(agent, prompt: Any, images: list[str]) -> Any:
     """Run message for a turn with attached images: "native" content parts, or "text" path
     references the agent analyzes in-loop (never blocking submit on vision calls).
-    Decision table: agent/image_routing.py."""
+    Decision table: hermes_agent/agent/image_routing.py."""
     try:
-        from agent.image_routing import build_native_content_parts, decide_image_input_mode
+        from hermes_agent.agent.image_routing import build_native_content_parts, decide_image_input_mode
         from hermes_cli.config import load_config as _tui_load_config
         _provider, _model = _active_image_routing_identity(agent)
         mode = decide_image_input_mode(
@@ -414,7 +414,7 @@ def _after_complete_turn(sid: str, session: dict, st: _TurnRun, raw: Any) -> Non
     # everything otherwise); barge-aware.
     if st.tts_queue is None and isinstance(raw, str) and raw.strip() and _voice_tts_enabled():
         try:
-            from agent.memory_provider import spawn_context_thread
+            from hermes_agent.agent.memory_provider import spawn_context_thread
             spawn_context_thread(_speak_text_with_barge, name="voice-tts-fallback", args=(raw,)).start()
         except ImportError:
             logger.warning("voice TTS skipped: hermes_cli.voice unavailable")
@@ -635,13 +635,13 @@ def _stage_first_contact_onboarding_note(session: dict, agent, history_empty: bo
     TUI/Desktop surface never did, so a fresh install's first Desktop chat
     skipped the opt-in profile flow entirely. Stage the same note through
     ``agent._gateway_turn_context_notes`` — consumed by
-    ``agent.turn_context`` on the user message — never the ephemeral system
+    ``hermes_agent.agent.turn_context`` on the user message — never the ephemeral system
     prompt, which must stay byte-stable for the conversation (prompt-cache
     invariant). Fires at most once per install: the directive path persists
     ``onboarding.seen.profile_build_offered`` before the turn runs.
     """
     try:
-        from agent.onboarding import first_contact_turn_note
+        from hermes_agent.agent.onboarding import first_contact_turn_note
         from hermes_cli.config import load_config as _load_onboarding_config
         from hermes_constants import get_hermes_home
 
@@ -663,8 +663,8 @@ def _stage_first_contact_onboarding_note(session: dict, agent, history_empty: bo
 def _sync_agent_daybreak(agent) -> None:
     """``agent.daybreak`` for this turn, read inside the turn's profile scope once the final agent is selected,
     so a build that raced a flip, a model switch and a compute-host child all take the saved value. Only the
-    owner's own surfaces carry it (agent.session_source.DAYBREAK_SOURCES): OpenAI allows no third-party use."""
-    from agent.session_source import DAYBREAK_SOURCES
+    owner's own surfaces carry it (hermes_agent.agent.session_source.DAYBREAK_SOURCES): OpenAI allows no third-party use."""
+    from hermes_agent.agent.session_source import DAYBREAK_SOURCES
     if agent is not None:
         agent.daybreak = (getattr(agent, "platform", None) in DAYBREAK_SOURCES
                           and (_load_cfg().get("agent") or {}).get("daybreak") is True)
@@ -719,8 +719,8 @@ def _prepare_turn_input(sid: str, session: dict, st: _TurnRun, text: Any, images
     streamer = make_stream_renderer(cols)
     prompt = text
     if isinstance(prompt, str) and "@" in prompt:
-        from agent.context_references import preprocess_context_references
-        from agent.model_metadata import get_model_context_length
+        from hermes_agent.agent.context_references import preprocess_context_references
+        from hermes_agent.agent.model_metadata import get_model_context_length
         ctx_len = get_model_context_length(
             getattr(agent, "model", "") or _resolve_model(),
             base_url=getattr(agent, "base_url", "") or "",
@@ -736,7 +736,7 @@ def _prepare_turn_input(sid: str, session: dict, st: _TurnRun, text: Any, images
         prompt = ctx.message
     st.prompt_text = prompt if isinstance(prompt, str) else ""
     run_message: Any = _route_turn_images(agent, prompt, images) if images else prompt
-    from agent.notification_presentation import event_presentation_muted
+    from hermes_agent.agent.notification_presentation import event_presentation_muted
     if not event_presentation_muted("message.delta", sid):
         st.tts_queue, st.thinking_started = _start_turn_voice()
     # Per-turn API-message notes: barge mid-speech, reactions, HUD surface (per-turn state
@@ -811,7 +811,7 @@ def _invoke_agent(
     if turn_author and "turn_author" in run_params:
         run_kwargs["turn_author"] = turn_author
     if "prelude" in run_params:
-        from agent.onboarding_session import onboarding_prelude
+        from hermes_agent.agent.onboarding_session import onboarding_prelude
         prelude = onboarding_prelude(agent, st.history)
         if prelude is not None:
             run_kwargs["prelude"] = prelude
@@ -822,7 +822,7 @@ def _invoke_agent(
         "session.title", sid, {"session_id": _k, "title": t})
     _usage_stop, _usage_thread = _start_usage_ticker(sid, agent)
     try:
-        from agent.notification_presentation import notification_turn, event_presentation_muted
+        from hermes_agent.agent.notification_presentation import notification_turn, event_presentation_muted
         with notification_turn(agent, muted=event_presentation_muted("message.delta", sid), session_id=sid):
             st.result = agent.run_conversation(run_message, **st.run_kwargs)
             # A held last line that never became a marker is part of the reply: deliver it.
@@ -899,9 +899,9 @@ def _absorb_turn_result(
 
 
 def _persisted_turn_receipt(st: _TurnRun, raw: Any, status: str) -> dict | None:
-    """Committed row addresses of this turn (``agent.persisted_turn_receipt``); the pre-turn
+    """Committed row addresses of this turn (``hermes_agent.agent.persisted_turn_receipt``); the pre-turn
     prefix is unchanged when every history row kept its committed row id."""
-    from agent.persisted_turn_receipt import committed_row_id, persisted_turn_receipt
+    from hermes_agent.agent.persisted_turn_receipt import committed_row_id, persisted_turn_receipt
 
     messages = st.result.get("messages")
     if not isinstance(messages, list):
@@ -924,7 +924,7 @@ def _complete_turn_payload(session: dict, st: _TurnRun, status_note: str | None,
     _error_surface = None
     if _result_status(result) == "error":
         try:
-            from agent.error_surface import build_error_surface_from_result
+            from hermes_agent.agent.error_surface import build_error_surface_from_result
             _error_surface = build_error_surface_from_result(
                 result, provider=str(getattr(agent, "provider", "") or ""),
                 model=str(getattr(agent, "model", "") or ""))
@@ -938,7 +938,7 @@ def _complete_turn_payload(session: dict, st: _TurnRun, status_note: str | None,
     # deterministic filter re-locks the chat (#149708 review). Best-effort; the live refusal notice was
     # already delivered.
     if result.get("failure_reason") == "content_policy_blocked":
-        from agent.turn_failure_copy import CONTENT_REFUSED_NOTICE
+        from hermes_agent.agent.turn_failure_copy import CONTENT_REFUSED_NOTICE
         from hermes_agent.hermes_state_rewind import retain_refused_turn_for_display
         retain_refused_turn_for_display(
             getattr(agent, "_session_db", None), getattr(agent, "session_id", None),
@@ -1139,7 +1139,7 @@ def _run_prompt_submit(
         return False
     images, agent = admitted
     from hermes_agent.gateway.warning_notifications import diagnostic_turn_muted
-    from agent.notification_presentation import notification_config_snapshot
+    from hermes_agent.agent.notification_presentation import notification_config_snapshot
     with _session_profile_runtime_scope(session):
         notification_config = notification_config_snapshot()
         muted = diagnostic_turn_muted(display_metadata, "tui", notification_config)
@@ -1248,10 +1248,10 @@ def _run_prompt_submit(
                 _post_turn_housekeeping(sid, session, st)
         return st.result, goal_followup
     def run():
-        from agent.notification_presentation import notification_turn
+        from hermes_agent.agent.notification_presentation import notification_turn
         # _prepare_turn_input owns profile binding for the worker. The context
         # here only gates presentation; do not introduce a second runtime scope.
-        from agent.notification_presentation import notification_policy_snapshot
+        from hermes_agent.agent.notification_presentation import notification_policy_snapshot
         with notification_policy_snapshot(agent, "tui", notification_config), notification_turn(agent, muted=muted, session_id=sid):
             followup = run_body()
         if followup is not None:

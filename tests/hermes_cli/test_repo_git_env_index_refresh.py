@@ -57,6 +57,6 @@ def test_slash_diff(repo):
 
 
 def test_at_diff(repo):
-    from agent.context_references import preprocess_context_references
+    from hermes_agent.agent.context_references import preprocess_context_references
     preprocess_context_references("look @diff", cwd=repo, context_length=100_000)
     assert "README" in _git(repo, "status", "--porcelain")

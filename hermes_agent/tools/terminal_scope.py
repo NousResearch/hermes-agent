@@ -53,11 +53,11 @@ def set_terminal_scope(mapping: Optional[dict[str, str]], *, profile_home: Any =
     must belong to the bound agent (a local scope whose agent is *profile_home*); anything else,
     including clearing the policy, raises ``ScopeSwitchRefused``, since the scope's home and secrets
     would stay with a policy that is not theirs. To run under another profile's policy, bind that
-    profile (``agent.runtime_scope.bind_profile_scope``)."""
+    profile (``hermes_agent.agent.runtime_scope.bind_profile_scope``)."""
     from hermes_scope import ScopeSwitchRefused, current_scope, push_state
     scope = current_scope()
     if scope is not None:
-        from agent.runtime_scope import owns_bound_scope
+        from hermes_agent.agent.runtime_scope import owns_bound_scope
         if mapping is None or not owns_bound_scope(profile_home):
             raise ScopeSwitchRefused(
                 f"set_terminal_scope inside scope (tenant={scope.tenant!r}, agent={scope.agent!r}) needs "
@@ -74,7 +74,7 @@ class DeferredTerminalPolicy:
     """A profile's terminal policy built on its first read, not when the scope is bound.
 
     A legacy setter that names another profile moves the whole scope there
-    (``agent.runtime_scope.legacy_switch``). Most such callers only redirect file paths: a credential
+    (``hermes_agent.agent.runtime_scope.legacy_switch``). Most such callers only redirect file paths: a credential
     reader selecting the profile's ``auth.json``, a migration step, a log-routing probe. Building the
     policy at the switch reads that profile's config, and when the caller is itself part of that
     config's first load (Remote Config resolves the plane credential inside the fetch), the read
@@ -187,7 +187,7 @@ def build_profile_terminal_scope(
         except Exception as exc:
             if not isinstance(exc, PermissionError) or managed_scope.pinned_terminal_backend() is None:
                 raise TerminalPolicyUnavailable(f"cannot read {env_path}: {exc}") from exc
-        from agent.secret_scope import load_env_file
+        from hermes_agent.agent.secret_scope import load_env_file
 
         profile_env = load_env_file(env_path)
         scope.update((k, str(v)) for k, v in profile_env.items() if k.startswith("TERMINAL_"))
@@ -274,12 +274,12 @@ def prepare_profile_terminal_scope(
 def install_profile_terminal_scope(hermes_home: Any, *, env_overlay: Optional[dict[str, str]] = None):
     """Build AND install a profile's policy (the refusal scope on failure); returns a token.
 
-    Legacy setter: new code binds a scope (``agent.runtime_scope.bind_profile_scope``). With a
+    Legacy setter: new code binds a scope (``hermes_agent.agent.runtime_scope.bind_profile_scope``). With a
     scope bound, a call for another profile moves the whole scope to it (local) or raises
     ``ScopeSwitchRefused`` (hosted)."""
     from hermes_scope import current_scope, push_state
     if current_scope() is not None:
-        from agent.runtime_scope import legacy_switch
+        from hermes_agent.agent.runtime_scope import legacy_switch
         switched = legacy_switch(hermes_home, env_overlay=env_overlay)
         if switched is not None:
             return switched

@@ -6,7 +6,7 @@ import logging
 import time
 from typing import Any, Dict, List
 
-from agent.model_metadata import estimate_messages_tokens_rough
+from hermes_agent.agent.model_metadata import estimate_messages_tokens_rough
 
 logger = logging.getLogger(__name__)
 

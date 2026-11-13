@@ -1,9 +1,9 @@
 """Ambient session-accounting context for auxiliary LLM calls.
 
 Aux calls (vision, compression, title generation, web_extract, session_search, ...) go
-through ``agent.auxiliary_client`` which has no session handle, so their usage was
+through ``hermes_agent.agent.auxiliary_client`` which has no session handle, so their usage was
 historically discarded. The agent loop publishes ``(session_db, session_id)`` here
-(mirroring ``agent.portal_tags``) and the aux client records usage at its single
+(mirroring ``hermes_agent.agent.portal_tags``) and the aux client records usage at its single
 response-validation chokepoint. ContextVar semantics isolate concurrent agents, propagate
 to worker threads via ``hermes_agent.tools.thread_context`` and to asyncio tasks automatically.
 """
@@ -64,7 +64,7 @@ def record_aux_usage(
         if raw_usage is None:
             return
 
-        from agent.usage_pricing import estimate_usage_cost, normalize_usage, with_served_service_tier
+        from hermes_agent.agent.usage_pricing import estimate_usage_cost, normalize_usage, with_served_service_tier
 
         usage = with_served_service_tier(normalize_usage(raw_usage, provider=provider), response)
         if not (
@@ -83,7 +83,7 @@ def record_aux_usage(
             logger.debug("Aux usage cost estimation failed", exc_info=True)
         # Inside a Relay-driven tool callback the thread runs Relay's loop; a worker store refuses
         # synchronous RPC there (#139029).
-        from agent.runtime_session_store import call_off_event_loop
+        from hermes_agent.agent.runtime_session_store import call_off_event_loop
         call_off_event_loop(
             session_db.record_auxiliary_usage,
             session_id, task, model=model, billing_provider=provider, billing_base_url=base_url,

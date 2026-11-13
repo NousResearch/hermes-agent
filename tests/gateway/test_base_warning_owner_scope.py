@@ -115,9 +115,9 @@ async def test_recursive_three_turn_chain_then_human(profiles, monkeypatch, diag
                 assert ready.wait(5), "event loop did not admit queued turn"
             return {"final_response": f"result-{index}", "messages": [], "api_calls": 1}
 
-    fake = types.ModuleType("run_agent")
+    fake = types.ModuleType("hermes_agent.run_agent")
     fake.AIAgent = ScriptedAgent
-    monkeypatch.setitem(sys.modules, "run_agent", fake)
+    monkeypatch.setitem(sys.modules, "hermes_agent.run_agent", fake)
     monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "test-key"})
     # No platform credentials: authorize the fixture identity at the auth backend,
     # retaining admission, generation/lease lifecycle and queued-result handoff.
@@ -160,7 +160,7 @@ async def test_turn_error_preserves_diagnostic_bridge_and_failed_outcome(
         profiles, monkeypatch, setting, diagnostic, caplog):
     import logging
     from types import SimpleNamespace
-    from agent.monitoring import gateway_health
+    from hermes_agent.agent.monitoring import gateway_health
     root, _ = profiles
     (root / "config.yaml").write_text(
         "{}" if setting is None else

@@ -1,6 +1,6 @@
 """The words of first-run onboarding: the scripted greeting, the opening prompt, and the reminder
 that rides on every ``setup_beat`` result. Pure; ``reminder(key, record, facts)`` renders the key
-``agent/onboarding_flow.py::apply`` returns.
+``hermes_agent/agent/onboarding_flow.py::apply`` returns.
 
 The rules for the whole run live in the opening prompt (a hidden user turn, so the system prompt
 stays byte-stable); reminders say only what was picked and what comes next.
@@ -11,10 +11,10 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from typing import Any
 
-from agent.onboarding_first_tasks import (
+from hermes_agent.agent.onboarding_first_tasks import (
     FIXED_ID, MAX_LABEL, MAX_PICKS, OWN_TASK, TASK_BY_ID, eligible_tasks, task_skills,
 )
-from agent.onboarding_flow import Facts, next_beat
+from hermes_agent.agent.onboarding_flow import Facts, next_beat
 from hermes_agent.tools.set_theme_tool import ACCENT_SWATCHES
 
 CHAT_TITLE = "Getting started"

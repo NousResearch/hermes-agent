@@ -69,7 +69,7 @@ def test_new_session_is_created_on_the_gateway_and_its_id_adopted(store, monkeyp
 
 
 def test_a_finite_run_creates_mains_oneshot_session_so_bare_c_finds_it(store, monkeypatch):
-    """Main labels a `chat -q` / `-Q` session ``oneshot`` (agent.session_source.session_source_for), which
+    """Main labels a `chat -q` / `-Q` session ``oneshot`` (hermes_agent.agent.session_source.session_source_for), which
     `hermes -c` / `--resume latest` count as CLI history; created as ``cli`` the owner stores the
     transport's ``local`` and the next bare `-c` finds nothing."""
     monkeypatch.delenv("HERMES_SESSION_SOURCE", raising=False)
@@ -655,7 +655,7 @@ def test_skills_flag_reaches_session_create_without_auto_load_names(store, monke
     """CLI-1: `-s/--skills` rides ``session.create`` (the gateway renders it into the session once); the
     CLI's own system prompt never reaches the gateway. ``skills.auto_load`` names the gateway loads itself."""
     from hermes_cli.cli_init_mixin import CLIInitMixin
-    monkeypatch.setattr("agent.skill_commands.resolve_auto_load_skills", lambda config=None: ["pinned"])
+    monkeypatch.setattr("hermes_agent.agent.skill_commands.resolve_auto_load_skills", lambda config=None: ["pinned"])
     db, client = store
     host = types.SimpleNamespace(model="m1", requested_provider="auto", enabled_toolsets=["file"],
                                  session_id="20261012_000000_abcdef", _resumed=False, _session_db=db,
@@ -737,7 +737,7 @@ def test_new_session_keeps_the_runs_launch_policy(store, monkeypatch):
     """CLI-3: `/new` keeps `--max-turns`, `--checkpoints`, `--run-budget`, `-v` and `-s` (main kept one
     AIAgent across /new); only the explicit model route is left to the profile default."""
     from hermes_cli.cli_init_mixin import CLIInitMixin
-    monkeypatch.setattr("agent.skill_commands.resolve_auto_load_skills", lambda config=None: [])
+    monkeypatch.setattr("hermes_agent.agent.skill_commands.resolve_auto_load_skills", lambda config=None: [])
     db, client = store
     db.open_session(cli("local-old", resumed=True))
     host = types.SimpleNamespace(session_id="local-old", _session_db=db, _gateway_session_open=True,

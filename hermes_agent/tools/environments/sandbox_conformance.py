@@ -3,7 +3,7 @@
 A hosted backend plugin runs these against its own provider; core runs them against
 :class:`RecordingSandboxProvider`, a stub that records the identity it was asked for and every call
 each sandbox receives (operation, command, stdin, the scope it came with), and runs nothing. Each
-check binds hosted scopes through ``agent.runtime_scope.bind_state``, drives the real tools through
+check binds hosted scopes through ``hermes_agent.agent.runtime_scope.bind_state``, drives the real tools through
 the tool registry, then asserts one isolation invariant:
 
 * :func:`check_tools_address_own_sandbox` — terminal, file and code tools of agent A only ever
@@ -38,7 +38,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterator, Optional
 
-from agent.terminal_env_provider import TerminalEnvironmentProvider
+from hermes_agent.agent.terminal_env_provider import TerminalEnvironmentProvider
 from hermes_scope import Principal, Scope
 from hermes_agent.tools.environments.sandbox_scope import CrossAgentHandleRefused, ProcessRef, ProcessStream, SandboxIdentity
 
@@ -151,7 +151,7 @@ class RecordingSandboxProvider(TerminalEnvironmentProvider):
 # Driving the real tools
 
 def _bind(scope: Scope):
-    from agent.runtime_scope import bind_state
+    from hermes_agent.agent.runtime_scope import bind_state
     return bind_state(scope)
 
 

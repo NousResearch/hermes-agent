@@ -151,9 +151,9 @@ def _message_identity(msg: Any) -> _Identity:
     bodies are left out: the no-LLM prune rewrites them in place."""
     if not isinstance(msg, dict):
         return "?", None, ""
-    from agent.memory_manager import sanitize_context
-    from agent.message_content import flatten_message_text
-    from agent.message_metadata import message_uid_or_none
+    from hermes_agent.agent.memory_manager import sanitize_context
+    from hermes_agent.agent.message_content import flatten_message_text
+    from hermes_agent.agent.message_metadata import message_uid_or_none
 
     role = str(msg.get("role") or "")
     uid = message_uid_or_none(msg)
@@ -217,7 +217,7 @@ def _blocked_for_platform(agent: Any, origin: str) -> bool:
         return False
     if getattr(agent, "platform", None) in ("cron", "subagent") or getattr(agent, "_delegate_depth", 0) > 0:
         return True
-    from agent.oneshot_footprint import agent_is_oneshot
+    from hermes_agent.agent.oneshot_footprint import agent_is_oneshot
 
     return agent_is_oneshot(agent)  # ``chat -q``: the agent is released right after the reply
 
@@ -336,11 +336,11 @@ class PreparedCompaction:
         Meanwhile the pass's streamed progress and local prompt reading feed this thread's hooks, so the
         host's idle watchdog and deadline extension see a live summary exactly as they would inline; the
         deadline is re-read on every poll because prompt reading pushes it back."""
-        from agent.auxiliary_client import (
+        from hermes_agent.agent.auxiliary_client import (
             _aux_progress, _capture_aux_cancel_check, _captured_aux_cancel_requested, _current_aux_stream_deadline,
             _effective_aux_timeout,
         )
-        from agent.local_prompt_progress import current_prompt_reading_hook
+        from hermes_agent.agent.local_prompt_progress import current_prompt_reading_hook
 
         # Hooks first: the pass may stream while the rest of the setup runs (the timeout loads config).
         pending.on_progress = getattr(_aux_progress, "hook", None)
@@ -429,7 +429,7 @@ class PreparedCompaction:
                     _slots.release()
                     return None
                 token = self._pending = _PendingPass(window)
-            from agent.memory_provider import spawn_context_thread
+            from hermes_agent.agent.memory_provider import spawn_context_thread
 
             # Profile and secret scope ride the contextvars into the pass.
             thread = spawn_context_thread(
@@ -452,9 +452,9 @@ class PreparedCompaction:
     def _run_pass(
         self, worker: Any, turns: list[dict[str, Any]], focus: Optional[str], token: _PendingPass, origin: str,
     ) -> None:
-        from agent.auxiliary_client import AuxiliaryExplicitCancellation, aux_interrupt_protection, aux_progress_hook
-        from agent.local_prompt_progress import prompt_reading_hook
-        from agent.thread_scoped_output import thread_scoped_silence
+        from hermes_agent.agent.auxiliary_client import AuxiliaryExplicitCancellation, aux_interrupt_protection, aux_progress_hook
+        from hermes_agent.agent.local_prompt_progress import prompt_reading_hook
+        from hermes_agent.agent.thread_scoped_output import thread_scoped_silence
 
         window = token.window
         entry: Optional[PreparedSummary] = None
@@ -517,7 +517,7 @@ class PreparedCompaction:
 
 def _pass_failure_class(worker: Any) -> str:
     """The class an inline attempt logs for this failed summary call: a terminal failure first."""
-    from agent.context_compressor import _TERMINAL_SUMMARY_FAILURES
+    from hermes_agent.agent.context_compressor import _TERMINAL_SUMMARY_FAILURES
 
     terminal = next((cls for flag, cls, _ in _TERMINAL_SUMMARY_FAILURES if getattr(worker, flag, False)), None)
     return terminal or (worker._active_compression_telemetry or {}).get("failure_class") or "summary_generation_failed"

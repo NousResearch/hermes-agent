@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 import pytest
 
-from agent.secret_scope import (
+from hermes_agent.agent.secret_scope import (
     reset_secret_scope,
     set_multiplex_active,
     set_secret_scope,
@@ -770,7 +770,7 @@ class TestLoadGatewayConfig:
         never consulted for globals. (A single-profile gateway, or the profile
         the process is launched under, still activates via its .env because
         load_hermes_dotenv exports that file into os.environ at startup.)"""
-        from agent import secret_scope as ss
+        from hermes_agent.agent import secret_scope as ss
 
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()
@@ -984,7 +984,7 @@ class TestLoadGatewayConfig:
     def test_allow_all_users_yaml_reaches_the_default_profile_under_multiplex(self, tmp_path, monkeypatch):
         """Default-profile events are authorized inside its secret scope, where gate readers never fall to
         os.environ: the bridged grant must be part of that profile's scope (and only that profile's)."""
-        from agent.secret_scope import build_profile_secret_scope, set_multiplex_active
+        from hermes_agent.agent.secret_scope import build_profile_secret_scope, set_multiplex_active
         from hermes_agent.gateway.authz_mixin import GatewayAuthorizationMixin
         from hermes_agent.gateway.run import _profile_runtime_scope
         from hermes_agent.gateway.session import SessionSource

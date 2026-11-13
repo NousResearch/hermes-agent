@@ -23,7 +23,7 @@ from hermes_cli import env_loader
 
 @pytest.fixture(autouse=True)
 def _fresh_state():
-    from agent.secret_sources import registry as reg_module
+    from hermes_agent.agent.secret_sources import registry as reg_module
 
     reg_module._reset_registry_for_tests()
     env_loader.reset_secret_source_cache()
@@ -35,8 +35,8 @@ def _fresh_state():
 def _register_fake_source(values: dict[str, str], *, override_existing: bool):
     """One bulk source supplying ``values``; ``override_existing`` mirrors the config knob the real
     sources expose (Bitwarden defaults True, the command source False)."""
-    from agent.secret_sources import registry as reg_module
-    from agent.secret_sources.base import FetchResult, SecretSource
+    from hermes_agent.agent.secret_sources import registry as reg_module
+    from hermes_agent.agent.secret_sources.base import FetchResult, SecretSource
 
     class _Fake(SecretSource):
         name = "fakebulk"

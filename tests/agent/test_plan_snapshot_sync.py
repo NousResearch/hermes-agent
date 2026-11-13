@@ -4,8 +4,8 @@ from types import SimpleNamespace as NS
 
 import pytest
 
-from agent import plan_snapshot_sync as sync
-from agent.usage_gauges import BP_FULL, SCOPE_ALL, WindowGauge
+from hermes_agent.agent import plan_snapshot_sync as sync
+from hermes_agent.agent.usage_gauges import BP_FULL, SCOPE_ALL, WindowGauge
 
 
 def _state(window, full=()):
@@ -13,7 +13,7 @@ def _state(window, full=()):
 
 
 def _snap(gauges=None, source="network"):
-    # The portal snapshot carries parsed gauges (agent.usage_gauges.WindowGauge), as nous_account stores them.
+    # The portal snapshot carries parsed gauges (hermes_agent.agent.usage_gauges.WindowGauge), as nous_account stores them.
     window = None if gauges is None else NS(gauges=tuple(WindowGauge(g, SCOPE_ALL, g, BP_FULL if f else 0)
                                                          for g, f in gauges))
     return NS(usage_window=window, source=source)

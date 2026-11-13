@@ -14,14 +14,14 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 import httpx
 
-from agent.web_search_provider import WebSearchProvider
+from hermes_agent.agent.web_search_provider import WebSearchProvider
 
 SEARCH_LIMIT_CAP = 20  # every vendor here caps max_results at 20 server-side
 
 
 def provider_env(name: str) -> str:
     """Config-aware env lookup (os.environ, then ~/.hermes/.env)."""
-    from agent.web_search_provider import get_provider_env
+    from hermes_agent.agent.web_search_provider import get_provider_env
     return get_provider_env(name)
 
 

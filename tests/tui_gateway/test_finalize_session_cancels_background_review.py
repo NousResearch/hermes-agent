@@ -9,7 +9,7 @@ restart stopped it.
 
 Root cause: the review fork is a SEPARATE ``AIAgent`` instance tracked only
 on the parent's ``_background_review_agent`` / ``_active_children``
-(``agent/background_review.py``). It is never registered on
+(``hermes_agent/agent/background_review.py``). It is never registered on
 ``session["running"]`` or ``session["_run_thread"]``, so it was invisible
 to both:
   - ``_teardown_popped_session``'s run-thread join, and
@@ -20,7 +20,7 @@ Every session-teardown path (explicit close, idle-timeout reap, ws-orphan
 reap, shutdown) funnels through ``_finalize_session`` — the single
 ``_finalized``-guarded chokepoint (see its own docstring) — so that is
 where the missing cancellation belongs. The fix calls the existing
-``agent.background_review.cancel_background_review_for_live_turn`` helper
+``hermes_agent.agent.background_review.cancel_background_review_for_live_turn`` helper
 (previously only invoked when a NEW live turn preempts a running review)
 from ``_finalize_session`` as well, so "this session is ending" cancels an
 in-flight review exactly like "a new turn arrived" already did.
@@ -47,8 +47,8 @@ def _make_session(agent, session_key="test_key_bg_review"):
 def _agent_with_live_review_fork():
     """A parent agent with a background-review fork that is still running.
 
-    Mirrors the real shape installed by ``agent/agent_init.py`` and
-    populated by ``agent/background_review.py``'s
+    Mirrors the real shape installed by ``hermes_agent/agent/agent_init.py`` and
+    populated by ``hermes_agent/agent/background_review.py``'s
     ``_run_review_in_thread`` while a review is in flight.
     """
     agent = MagicMock()
@@ -61,7 +61,7 @@ def _agent_with_live_review_fork():
 
     review_fork = MagicMock()
     # hard_interrupt is looked up via inspect.getattr_static in
-    # agent.interrupt_compat.request_hard_interrupt — a real callable
+    # hermes_agent.agent.interrupt_compat.request_hard_interrupt — a real callable
     # attribute (not an auto-speccing MagicMock surprise) is required.
     review_fork.hard_interrupt = MagicMock()
 

@@ -154,7 +154,7 @@ class LocalSessionPolicy:
     # workspace). A following session replays this decision rather than re-probing its folder each turn: it
     # drops the posture when its profile leaves ``focus``, and one created outside it never gains it later.
     coding_posture: bool = False
-    # The shell-launched client's allowlisted environment (``agent.session_client_env``), bound for this
+    # The shell-launched client's allowlisted environment (``hermes_agent.agent.session_client_env``), bound for this
     # session's turns only; None when the client sent none (Desktop, a session from before the field).
     client_env_json: str | None = None
     # The client sent one over an attach the gateway could not prove is on its host (no gateway-minted
@@ -172,7 +172,7 @@ class LocalSessionPolicy:
         return None if self.client_env_json is None else json.loads(self.client_env_json)
 
     def client_env_scope(self):
-        from agent.session_client_env import client_env_scope
+        from hermes_agent.agent.session_client_env import client_env_scope
         rules = None if self.client_env_rules_json is None else json.loads(self.client_env_rules_json)
         return client_env_scope(self.client_env(), local=not self.client_env_remote, rules=rules)
 
@@ -292,7 +292,7 @@ class LocalSessionPolicy:
 
     def current_service_tier(self, runner, session_key):
         """The next turn's tier: a typed session /fast, else the policy's (frozen, or the profile's when following)."""
-        from agent.fast_mode import parse_service_tier
+        from hermes_agent.agent.fast_mode import parse_service_tier
         from hermes_agent.gateway.session_authorities import active_authority
         from hermes_agent.gateway.session_state import SERVICE_TIER_UNSET
         state = runner._peek_session_state(session_key) if session_key else None
@@ -349,7 +349,7 @@ class LocalSessionPolicy:
     @property
     def run_budget_seconds(self):
         """Frozen `agent.run_budget_seconds` (`--run-budget` folds into it); None = no budget."""
-        from agent.agent_init import _normalize_run_budget_seconds
+        from hermes_agent.agent.agent_init import _normalize_run_budget_seconds
         return _normalize_run_budget_seconds(self.config().get('agent', {}).get('run_budget_seconds'))
 
     @property
@@ -431,7 +431,7 @@ def present_sections(config):
 
 def build_policy(params, config, *, private_secrets=None, profile_terminal=True, workspace_posture=False,
                  client_local=False):
-    from agent.runtime_cwd import resolve_agent_cwd
+    from hermes_agent.agent.runtime_cwd import resolve_agent_cwd
     from hermes_agent.tools.terminal_scope import build_profile_terminal_scope, default_terminal_scope
     from hermes_constants import get_hermes_home
 
@@ -489,7 +489,7 @@ def build_policy(params, config, *, private_secrets=None, profile_terminal=True,
         terminal['TERMINAL_CWD'] = cwd
     client_env = rules = None
     if 'client_env' in params:
-        from agent.session_client_env import client_env_rules, normalise_client_env
+        from hermes_agent.agent.session_client_env import client_env_rules, normalise_client_env
         rules = client_env_rules(config, local=client_local)
         try:
             client_env = json.dumps(normalise_client_env(params['client_env'], rules), sort_keys=True)
@@ -633,7 +633,7 @@ def _apply_launch_overrides(params, config):
     if 'service_tier' in params:
         # An explicit speed pick (Desktop Fast / Ultrafast / Normal): normal pins normal over a
         # profile tier; an unknown word is refused, never read as normal.
-        from agent.fast_mode import parse_exact_service_tier
+        from hermes_agent.agent.fast_mode import parse_exact_service_tier
         try:
             tier = parse_exact_service_tier(params['service_tier']) if isinstance(params['service_tier'], str) else None
         except ValueError:
@@ -696,7 +696,7 @@ def _resolve_toolsets(params, config, source, safe_mode, coding_posture=False, b
         config.setdefault('platform_toolsets', {})['acp' if source == 'acp' else 'cli'] = explicit
     posture = None
     if explicit is None and coding_posture:
-        from agent.coding_context import focus_toolsets
+        from hermes_agent.agent.coding_context import focus_toolsets
         posture = focus_toolsets(config)
     enabled = set(posture) if posture is not None else _get_platform_tools(config, 'acp' if source == 'acp' else 'cli')
     if explicit is not None:
@@ -710,7 +710,7 @@ def _resolve_toolsets(params, config, source, safe_mode, coding_posture=False, b
         # The fold-in lands after _get_platform_tools subtracted agent.disabled_toolsets, so
         # subtract again or `disabled_toolsets: [project]` is a no-op here (#54433).
         # desktop_ui is the client's own control surface, not a model toolset.
-        from agent.skill_utils import parse_config_string_list
+        from hermes_agent.agent.skill_utils import parse_config_string_list
         from hermes_agent.toolsets import CLIENT_SURFACE_TOOLSETS
         disabled = set(parse_config_string_list((config.get('agent') or {}).get('disabled_toolsets')))
         surface = set(CLIENT_SURFACE_TOOLSETS) if source == 'gui' else {'project'}
@@ -725,7 +725,7 @@ def _resolve_toolsets(params, config, source, safe_mode, coding_posture=False, b
 def _in_coding_workspace(config, source, cwd):
     """Whether *cwd* selects the coding posture (``agent.coding_context: focus`` in a code workspace).
     A detection failure keeps the profile default rather than refusing the session."""
-    from agent.coding_context import in_focus_workspace
+    from hermes_agent.agent.coding_context import in_focus_workspace
     try:
         return in_focus_workspace(platform=SURFACES[source], cwd=cwd, config=config)
     except Exception:
@@ -737,7 +737,7 @@ def _extract_config_secrets(value, private, path=()):
     # Reuse the configuration owner's structural classification; opaque keys need
     # not match a vendor prefix. Only the authority keeps their original values.
     from hermes_cli.config import _SECRET_CONFIG_KEYS
-    from agent.credential_persistence import _is_secret_payload_key
+    from hermes_agent.agent.credential_persistence import _is_secret_payload_key
     containers = {'env', 'headers', 'extra_headers', 'docker_env', 'docker_extra_args',
                   'terminal_docker_env', 'terminal_docker_extra_args'}
     items = value.items() if isinstance(value, dict) else enumerate(value) if isinstance(value, list) else ()
@@ -773,7 +773,7 @@ def render_launch_skills(params, session_id):
     skills = launch_skills(params)
     if not skills:
         return None
-    from agent.skill_commands import build_preloaded_skills_prompt, format_missing_skills
+    from hermes_agent.agent.skill_commands import build_preloaded_skills_prompt, format_missing_skills
     prompt, loaded, missing = build_preloaded_skills_prompt(skills, task_id=session_id)
     if not loaded:
         raise RuntimeStoreError('unknown_skill')
@@ -790,7 +790,7 @@ def accept_launch_hooks(policy):
     the open's ``refresh_profile_hooks`` then registers. A bypass launch has no profile hooks to
     consent to, so the flag is a no-op there rather than a refusal. Allowlist I/O: off the loop."""
     if json.loads(policy.request_json).get('accept_hooks') and not policy.ignore_user_config:
-        from agent.shell_hooks import accept_for_launch
+        from hermes_agent.agent.shell_hooks import accept_for_launch
         from hermes_agent.gateway.run import _load_gateway_config
         accept_for_launch(_load_gateway_config())
 
@@ -806,7 +806,7 @@ def refresh_profile_hooks(policy):
     registered none). Config read + allowlist I/O: run off the loop."""
     if policy is None or policy.ignore_user_config:
         return
-    from agent.shell_hooks import sync_from_config
+    from hermes_agent.agent.shell_hooks import sync_from_config
     from hermes_agent.gateway.run import _load_gateway_config
     try:
         sync_from_config(_load_gateway_config)  # it never removes on an empty (failed-open) config
@@ -824,8 +824,8 @@ def register_worker_hooks(policy):
         return
     kanban = json.loads(policy.kanban_json or 'null') or {}
     accept = json.loads(policy.request_json).get('accept_hooks') is True or kanban.get('accept_hooks') is True
-    from agent.outbound_webhooks import register_from_config as register_outbound_webhooks
-    from agent.shell_hooks import register_from_config
+    from hermes_agent.agent.outbound_webhooks import register_from_config as register_outbound_webhooks
+    from hermes_agent.agent.shell_hooks import register_from_config
     config = policy.config()
     register_from_config(config, accept_hooks=accept)
     register_outbound_webhooks(config)
@@ -884,7 +884,7 @@ def bind_launch_key(authority, session_id, policy, api_key, *, config_secrets=No
     # The durable ref carries the key's fingerprint (the digest config_secret_ref already
     # persists for config keys) so a restarted owner can verify a re-supplied key
     # (rebind_launch_key); the key itself is never durable.
-    from agent.credential_persistence import fingerprint_secret_value
+    from hermes_agent.agent.credential_persistence import fingerprint_secret_value
     return replace(policy, credential_ref=f'{ref}#{fingerprint_secret_value(api_key)}' if api_key is not None else None,
                    config_secret_ref=config_ref if config_secrets else None)
 
@@ -902,7 +902,7 @@ def rebind_launch_key(authority, session, api_key):
     fingerprint); anything else is an override of the frozen route and is refused. Like the
     original, the key lives in this authority's memory only."""
     import hmac
-    from agent.credential_persistence import fingerprint_secret_value
+    from hermes_agent.agent.credential_persistence import fingerprint_secret_value
     from hermes_agent.gateway.config import Platform
     if not isinstance(api_key, str) or not api_key.strip():
         _refuse('api_key', 'must be a non-empty string')
@@ -1045,8 +1045,8 @@ def _valid_client_env(value, kind: type = str):
 
 def policy_turn_toolsets(authority, policy, config, session_id):
     """A local turn's toolsets: the policy's current set, plus ``onboarding`` for an onboarding chat
-    (``agent.onboarding_session.onboarding_chat_toolsets``)."""
-    from agent.onboarding_session import onboarding_chat_toolsets
+    (``hermes_agent.agent.onboarding_session.onboarding_chat_toolsets``)."""
+    from hermes_agent.agent.onboarding_session import onboarding_chat_toolsets
     return onboarding_chat_toolsets(list(policy.current_toolsets(config)), getattr(authority, 'db', None), session_id)
 
 
@@ -1099,8 +1099,8 @@ def workspace_unavailable_result(policy) -> dict:
     """A failed, never-run turn for a session whose frozen working directory is gone. Nothing ran
     and an unchanged resend fails the same way, so the reply names the folder and the way out
     instead of the generic "something went wrong" apology."""
-    from agent.i18n import t
-    from agent.turn_failure_copy import stamp_failure
+    from hermes_agent.agent.i18n import t
+    from hermes_agent.agent.turn_failure_copy import stamp_failure
     text = t("gateway.errors.workspace_unavailable", path=policy.cwd)
     return stamp_failure({"final_response": text, "messages": [], "api_calls": 0, "tools": [],
                           "failed": True, "completed": False, "error": text},
@@ -1110,8 +1110,8 @@ def workspace_unavailable_result(policy) -> dict:
 def refused_turn_result(policy, exc) -> dict | None:
     """A failed, never-run turn for an owner refusal at scope entry that an unchanged resend repeats
     (gone working folder, changed launch key); None for any other refusal."""
-    from agent.error_surface import build_error_surface_from_result
-    from agent.turn_failure_copy import launch_credentials_copy, stamp_failure
+    from hermes_agent.agent.error_surface import build_error_surface_from_result
+    from hermes_agent.agent.turn_failure_copy import launch_credentials_copy, stamp_failure
     if exc.reason == 'workspace_unavailable':
         result = workspace_unavailable_result(policy)
     elif exc.reason == 'launch_credentials_unavailable':
@@ -1136,8 +1136,8 @@ def policy_scope(policy, *, authority=None, home=None):
         return
     if not workspace_ready(policy):
         raise RuntimeStoreError('workspace_unavailable', field='cwd', detail=policy.cwd)
-    from agent.runtime_cwd import set_session_cwd
-    from agent.runtime_scope import bind_terminal_policy
+    from hermes_agent.agent.runtime_cwd import set_session_cwd
+    from hermes_agent.agent.runtime_scope import bind_terminal_policy
     from hermes_agent.tools.terminal_scope import reset_terminal_scope
     terminal = json.loads(policy.terminal_json)
     live = policy.read_profile(authority, for_turn=True)
@@ -1158,7 +1158,7 @@ def policy_scope(policy, *, authority=None, home=None):
     policy_token = _ACTIVE_POLICY.set(active)
     from hermes_agent.gateway.session_local_editor import editor_scope
     try:
-        from agent.auxiliary_task_config import session_auxiliary_scope
+        from hermes_agent.agent.auxiliary_task_config import session_auxiliary_scope
         from hermes_agent.gateway.session_local_mcp import editor_mcp_scope
         # Side tasks follow the profile's config.yaml, as every other side-task reader does; a bypass
         # session never reads the profile: its side tasks use its own saved section (code defaults only).

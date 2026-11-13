@@ -9,7 +9,7 @@ by contrast, must keep receiving it so idle-turn watchdogs see progress.
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from agent.conversation_compression import (
+from hermes_agent.agent.conversation_compression import (
     COMPACTION_HEARTBEAT_STATUS,
     COMPACTION_STATUS,
     is_compaction_progress_status,

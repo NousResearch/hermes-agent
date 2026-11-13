@@ -3,12 +3,12 @@ accounting fields of ``run_conversation`` and the owner commits them with ``usag
 ``-z --usage-file`` on a managed session reports tokens, cost, model and exit reason."""
 import io
 
-from agent.managed_worker import accept_result, encode_frame, read_frame, result_frame
+from hermes_agent.agent.managed_worker import accept_result, encode_frame, read_frame, result_frame
 from hermes_cli.oneshot import _USAGE_KEYS
 
 
 def _run_conversation_result():
-    """The keys agent/turn_finalizer.py returns (values from one two-call turn)."""
+    """The keys hermes_agent/agent/turn_finalizer.py returns (values from one two-call turn)."""
     return {'final_response': 'done', 'last_reasoning': None, 'messages': [{'role': 'user', 'content': 'go'}],
             'api_calls': 2, 'completed': True, 'turn_exit_reason': 'text_response(finish_reason=stop)',
             'failed': False, 'partial': False, 'interrupted': False, 'response_transformed': False,
@@ -149,7 +149,7 @@ def test_settled_usage_ignores_the_worker_reported_session_id(tmp_path):
 def test_worker_result_frame_carries_the_usage_window_refusal():
     """A managed turn stopped by a usage-window limit keeps its refusal marker, so the owner's error card is the
     window card (which allowance, when it resets) rather than the generic out-of-credits card."""
-    from agent.error_surface import build_error_surface_from_result
+    from hermes_agent.agent.error_surface import build_error_surface_from_result
     message = "You've hit your daily limit · resets 15:56 · /topup to add credits"
     raw = {**_run_conversation_result(), 'failed': True, 'completed': False, 'failure_reason': 'billing',
            'failure_resets_at': 1_900_000_000.0, 'usage_window_message': message, 'error': message}

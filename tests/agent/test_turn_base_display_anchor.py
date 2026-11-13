@@ -20,8 +20,8 @@ Covers:
 
 from types import SimpleNamespace
 
-from agent.model_metadata import estimate_messages_tokens_rough
-from agent.usage_anchor import anchored_context_tokens, capture_usage_anchor
+from hermes_agent.agent.model_metadata import estimate_messages_tokens_rough
+from hermes_agent.agent.usage_anchor import anchored_context_tokens, capture_usage_anchor
 
 def _msg(role, content, **extra):
     m = {"role": role, "content": content}
@@ -68,7 +68,7 @@ class TestChargeStaleThinkingKwarg:
 
 class TestContextBreakdownPrefersTurnBaseAnchor:
     def test_breakdown_uses_turn_base_over_last_response(self, monkeypatch):
-        from agent import context_breakdown as cb
+        from hermes_agent.agent import context_breakdown as cb
 
         messages = [_msg("user", "start"), _msg("assistant", "reply")]
         turn_base = capture_usage_anchor(400_000, 200, messages)
@@ -86,14 +86,14 @@ class TestContextBreakdownPrefersTurnBaseAnchor:
             ),
         )
         monkeypatch.setattr(
-            "agent.system_prompt.build_system_prompt_parts",
+            "hermes_agent.agent.system_prompt.build_system_prompt_parts",
             lambda a: {"stable": "sys", "context": "", "volatile": ""},
         )
         payload = cb.compute_session_context_breakdown(agent, messages)
         assert 400_000 <= payload["context_used"] < 450_000
 
     def test_breakdown_falls_back_to_last_response_anchor(self, monkeypatch):
-        from agent import context_breakdown as cb
+        from hermes_agent.agent import context_breakdown as cb
 
         messages = [_msg("user", "start"), _msg("assistant", "reply")]
         last_anchor = capture_usage_anchor(300_000, 50, messages)
@@ -109,7 +109,7 @@ class TestContextBreakdownPrefersTurnBaseAnchor:
             ),
         )
         monkeypatch.setattr(
-            "agent.system_prompt.build_system_prompt_parts",
+            "hermes_agent.agent.system_prompt.build_system_prompt_parts",
             lambda a: {"stable": "sys", "context": "", "volatile": ""},
         )
         payload = cb.compute_session_context_breakdown(agent, messages)
@@ -120,7 +120,7 @@ class TestInvalidationSitesClearTurnBaseAnchor:
         """Compaction and the codex-native rewrite clear via set_usage_anchor(None): both the
         last-response anchor and the display turn-base anchor go; a later same-turn capture
         (turn_base=False) leaves the turn-base untouched."""
-        from agent.usage_anchor import set_usage_anchor
+        from hermes_agent.agent.usage_anchor import set_usage_anchor
 
         messages = [_msg("user", "a"), _msg("assistant", "b")]
         agent = SimpleNamespace(_usage_anchor=None, _turn_base_usage_anchor=None, _session_db=None, session_id=None)

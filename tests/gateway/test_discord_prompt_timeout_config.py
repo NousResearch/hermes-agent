@@ -79,7 +79,7 @@ def test_value_clamped_to_minimum(monkeypatch):
 
 
 def test_hour_long_timeout_and_safe_upper_bound(monkeypatch):
-    from agent.deadline import MAX_SAFE_TIMEOUT_S
+    from hermes_agent.agent.deadline import MAX_SAFE_TIMEOUT_S
 
     _patch_config(monkeypatch, {"approvals": {"discord_prompt_timeout": 3600}})
     assert _read_discord_prompt_timeout() == 3600

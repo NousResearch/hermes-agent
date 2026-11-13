@@ -8,13 +8,13 @@ from __future__ import annotations
 
 
 
-from agent.secret_sources import bitwarden as bw
-from agent.secret_sources.base import ErrorKind, FetchResult, SecretSource
-from agent.secret_sources.bitwarden import (
+from hermes_agent.agent.secret_sources import bitwarden as bw
+from hermes_agent.agent.secret_sources.base import ErrorKind, FetchResult, SecretSource
+from hermes_agent.agent.secret_sources.bitwarden import (
     BitwardenSource,
     _summarize_bws_stderr,
 )
-from agent.secret_sources.onepassword import OnePasswordSource
+from hermes_agent.agent.secret_sources.onepassword import OnePasswordSource
 
 
 _BWS_INVALID_CLIENT_DUMP = """\
@@ -105,7 +105,7 @@ def test_remediation_never_raises_on_junk_cfg():
 
 def test_env_loader_prints_remediation_hint(tmp_path, monkeypatch, capsys):
     from hermes_cli import env_loader
-    from agent.secret_sources import registry
+    from hermes_agent.agent.secret_sources import registry
 
     registry._reset_registry_for_tests()
     env_loader.reset_secret_source_cache()
@@ -142,7 +142,7 @@ def test_env_loader_prints_remediation_hint(tmp_path, monkeypatch, capsys):
 
 
 def test_remediation_hint_uses_explicit_profile_scope(tmp_path, monkeypatch):
-    from agent.secret_sources import registry
+    from hermes_agent.agent.secret_sources import registry
     from hermes_cli import env_loader
 
     class ScopedSource(SecretSource):

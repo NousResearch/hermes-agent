@@ -6,8 +6,8 @@ import certifi
 import httpx
 import pytest
 
-from agent.ssl_verify import resolve_httpx_verify
-from run_agent import AIAgent
+from hermes_agent.agent.ssl_verify import resolve_httpx_verify
+from hermes_agent.run_agent import AIAgent
 
 _CA_ENV_VARS = ("HERMES_CA_BUNDLE", "SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "HTTPS_PROXY")
 

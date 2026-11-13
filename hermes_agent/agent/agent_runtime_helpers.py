@@ -1,7 +1,7 @@
 """Assorted AIAgent runtime helpers (message repair/sanitization, credential recovery, primary
 runtime restore, prompt-cache policy, client construction, model switching, tool invocation).
 Each function takes the parent ``AIAgent`` as ``agent`` except the stateless message helpers.
-``_ra()`` resolves ``run_agent`` lazily so tests patching ``run_agent.X`` keep intercepting.
+``_ra()`` resolves ``run_agent`` lazily so tests patching ``hermes_agent.run_agent.X`` keep intercepting.
 """
 
 from __future__ import annotations
@@ -16,27 +16,27 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from hermes_cli.timeouts import get_provider_request_timeout
-from agent.message_sanitization import (
+from hermes_agent.agent.message_sanitization import (
     _FULL_ARGS_LOG_BOUND, coalesce_tool_call_id, coerce_tool_name, tool_call_id_variants, tool_result_id_variants
 )
-from agent.message_metadata import (
+from hermes_agent.agent.message_metadata import (
     TOOL_CALL_UIDS, merge_tool_call_uids, per_occurrence_tool_call_uids, record_absorbed_message)
-from agent.cache_bounds import publish_lru
-from agent.prompt_builder import STEER_DISPLAY_KIND, steer_user_row
-from agent.tool_dispatch_helpers import _trajectory_normalize_msg, make_tool_result_message
-from agent.route_verdicts import ROUTE_VERDICT_FIELDS, reset_route_verdicts, reset_route_verdicts_if_moved
-from agent.think_scrubber import THINK_TAG_NAMES
-from agent.trajectory import convert_scratchpad_to_think
-from agent.credential_pool import (
+from hermes_agent.agent.cache_bounds import publish_lru
+from hermes_agent.agent.prompt_builder import STEER_DISPLAY_KIND, steer_user_row
+from hermes_agent.agent.tool_dispatch_helpers import _trajectory_normalize_msg, make_tool_result_message
+from hermes_agent.agent.route_verdicts import ROUTE_VERDICT_FIELDS, reset_route_verdicts, reset_route_verdicts_if_moved
+from hermes_agent.agent.think_scrubber import THINK_TAG_NAMES
+from hermes_agent.agent.trajectory import convert_scratchpad_to_think
+from hermes_agent.agent.credential_pool import (
     STATUS_EXHAUSTED, _parse_absolute_timestamp, credential_pool_entry_serves_endpoint,
     credential_pool_matches_provider,
 )
-from agent.error_classifier import FailoverReason
-from agent.retry_utils import parse_retry_after_seconds, reset_delay_from_message
-from agent.message_metadata import MERGED_TURN_PREFIX
-from agent.turn_context import drop_stale_api_content
-from agent.agent_runtime_helpers_placeholders import _INTERRUPTED_PLACEHOLDER
-from agent.primary_runtime_snapshot import _build_primary_runtime_snapshot
+from hermes_agent.agent.error_classifier import FailoverReason
+from hermes_agent.agent.retry_utils import parse_retry_after_seconds, reset_delay_from_message
+from hermes_agent.agent.message_metadata import MERGED_TURN_PREFIX
+from hermes_agent.agent.turn_context import drop_stale_api_content
+from hermes_agent.agent.agent_runtime_helpers_placeholders import _INTERRUPTED_PLACEHOLDER
+from hermes_agent.agent.primary_runtime_snapshot import _build_primary_runtime_snapshot
 from utils import base_url_host_matches, base_url_hostname, env_var_enabled, atomic_json_write
 logger = logging.getLogger(__name__)
 
@@ -82,7 +82,7 @@ _UNTERMINATED_TOOL_CALL_PATTERN = re.compile(
 
 def _ra():
     """Lazy ``run_agent`` reference for test-patch routing."""
-    import run_agent
+    from hermes_agent import run_agent
     return run_agent
 
 
@@ -207,7 +207,7 @@ def _prepend_corruption_marker(tool_msg: dict, marker: str) -> None:
             existing = str(existing)
     tool_msg["content"] = f"{marker}\n{existing}" if existing else marker
     # The tool result was rewritten in place; a stamped dict's persisted row is now stale.
-    from agent.context_compressor import _DB_PERSISTED_MARKER
+    from hermes_agent.agent.context_compressor import _DB_PERSISTED_MARKER
     tool_msg.pop(_DB_PERSISTED_MARKER, None)
 
 
@@ -250,7 +250,7 @@ def sanitize_tool_call_arguments(
     log = logger or logging.getLogger(__name__)
     if not isinstance(messages, list):
         return 0
-    from agent.context_compressor import _DB_PERSISTED_MARKER
+    from hermes_agent.agent.context_compressor import _DB_PERSISTED_MARKER
     repaired = 0
     marker = _ra().AIAgent._TOOL_CALL_ARGUMENTS_CORRUPTION_MARKER
     message_index = _cursor_skip_prefix(messages, cursor)
@@ -387,7 +387,7 @@ def _is_codex_interim(m: dict) -> bool:
 def _merge_assistant_into(prev: dict, msg: dict) -> bool:
     """Fold consecutive assistant *msg* into *prev* (union tool_calls, concat text). Returns whether *msg*'s
     text survives: multimodal (list) content is never joined."""
-    from agent.context_compressor import _DB_PERSISTED_MARKER
+    from hermes_agent.agent.context_compressor import _DB_PERSISTED_MARKER
 
     prev_calls = list(prev.get("tool_calls") or [])
     new_calls = list(msg.get("tool_calls") or [])
@@ -469,7 +469,7 @@ def _remember_absorbed_row(survivor: dict[str, Any], dropped: dict[str, Any], *,
     text survives). An empty incoming turn still merges; stamping an empty list would change a message that
     absorbed nothing. A dropped id that equals the survivor's own live id (the display-marker merge adopts
     the plain row's id, #94486) is not an absorbed row: the survivor IS that row."""
-    from agent.conversation_compression_archive import OWN_ROW, RETIRED_DURABLE_ROWS, UNNAMED_DURABLE_ROWS
+    from hermes_agent.agent.conversation_compression_archive import OWN_ROW, RETIRED_DURABLE_ROWS, UNNAMED_DURABLE_ROWS
 
     own_id = survivor.get("_row_id")
     ids = []
@@ -502,8 +502,8 @@ def _count_unnamed_row(survivor: dict[str, Any], retired: dict[str, Any]) -> Non
     out of the list, so *survivor* counts it. A dict that counts rows was loaded too: a merge may have
     popped its marker since. Call before the merge rewrites the survivor: *retired*'s own fields are
     recorded so the commit can name its row."""
-    from agent.context_compressor import _DB_PERSISTED_MARKER
-    from agent.conversation_compression_archive import (
+    from hermes_agent.agent.context_compressor import _DB_PERSISTED_MARKER
+    from hermes_agent.agent.conversation_compression_archive import (
         OWN_ROW, RETIRED_DURABLE_ROWS, UNNAMED_DURABLE_ROWS, retired_row_payload)
 
     def loaded(message: dict[str, Any]) -> bool:
@@ -520,8 +520,8 @@ def _count_unnamed_row(survivor: dict[str, Any], retired: dict[str, Any]) -> Non
 def _remember_own_row(survivor: dict[str, Any]) -> None:
     """An assistant fold rewrites *survivor*'s text, so on a reload without row ids its own row no longer
     matches it by content. Record its loaded fields first, once."""
-    from agent.context_compressor import _DB_PERSISTED_MARKER
-    from agent.conversation_compression_archive import OWN_ROW, RETIRED_DURABLE_ROWS, retired_row_payload
+    from hermes_agent.agent.context_compressor import _DB_PERSISTED_MARKER
+    from hermes_agent.agent.conversation_compression_archive import OWN_ROW, RETIRED_DURABLE_ROWS, retired_row_payload
 
     recorded = survivor.get(RETIRED_DURABLE_ROWS) or ()
     if (survivor.get(_DB_PERSISTED_MARKER) and not isinstance(survivor.get("_row_id"), int)
@@ -582,7 +582,7 @@ def _drop_stray_tool_results(messages: list[dict]) -> tuple[list[dict], int]:
     # Pass 1: drop stray tool messages that don't follow a known assistant tool call. A Responses call can
     # have several equivalent spellings (call_id, id, response_item_id, or a composite ``call|item`` id), so
     # consume the whole alias group when one spelling is matched. Alias expansion lives in
-    # ``agent.message_sanitization.tool_call_id_variants`` / ``tool_result_id_variants`` (single policy
+    # ``hermes_agent.agent.message_sanitization.tool_call_id_variants`` / ``tool_result_id_variants`` (single policy
     # owner) — which also handles SDK tool_call objects, preserving the #91768 dict-or-object tolerance.
     matched_tool_groups: set = set()
     next_tool_group = 0
@@ -622,7 +622,7 @@ def _prune_unanswered_tool_calls(messages: list[dict]) -> tuple[list[dict], int]
     """Pass 2: prune tool_calls not answered in the IMMEDIATELY following tool run (a displaced
     result masks the per-call stub pass and strict providers 400). Payload-empty turns are
     dropped; codex interims exempt."""
-    from agent.context_compressor import _DB_PERSISTED_MARKER
+    from hermes_agent.agent.context_compressor import _DB_PERSISTED_MARKER
 
     repairs = 0
     pruned: list[dict] = []
@@ -662,8 +662,8 @@ def _prune_unanswered_tool_calls(messages: list[dict]) -> tuple[list[dict], int]
 
 def _merge_consecutive_users(messages: list[dict]) -> tuple[list[dict], int]:
     """Pass 3: merge consecutive plain-text user messages (no user input lost)."""
-    from agent.context_compressor import _DB_PERSISTED_MARKER, split_user_originated_turn
-    from agent.conversation_compression_archive import MERGED_DURABLE_ROWS
+    from hermes_agent.agent.context_compressor import _DB_PERSISTED_MARKER, split_user_originated_turn
+    from hermes_agent.agent.conversation_compression_archive import MERGED_DURABLE_ROWS
     from hermes_agent.hermes_state import SessionDB
 
     def _plain_text(content: Any) -> bool:
@@ -790,7 +790,7 @@ def repair_message_sequence_with_cursor(agent, messages: list[dict]) -> int:
     """Run :func:`repair_message_sequence` and keep ``_last_flushed_db_idx`` consistent. Repair
     shrinks the list in place; counting identity-preserved survivors of the flushed prefix gives
     the exact new cursor, whereas a ``min()`` clamp would skip unflushed rows (used only without a snapshot)."""
-    from agent.context_compressor import _DB_PERSISTED_MARKER
+    from hermes_agent.agent.context_compressor import _DB_PERSISTED_MARKER
 
     flush_cursor = getattr(agent, "_last_flushed_db_idx", None)
     flushed_ids = {id(m) for m in messages[:flush_cursor]} if isinstance(flush_cursor, int) and flush_cursor > 0 else None
@@ -934,7 +934,7 @@ def _is_entitlement_403(agent, status_code, error_context) -> bool:
 
 
 def _recover_auth_failure(agent, pool, **kwargs):
-    from agent.credential_auth_recovery import recover_auth_failure
+    from hermes_agent.agent.credential_auth_recovery import recover_auth_failure
     return recover_auth_failure(agent, pool, **kwargs)
 
 
@@ -1019,7 +1019,7 @@ def recover_with_credential_pool(
         # Pass classified semantics, not just the status: a billing 403 and an edge-throttle 403
         # need opposite cooldowns.
         if effective_reason is not None:
-            from agent.credential_pool_model_cooldowns import pool_failure_reason
+            from hermes_agent.agent.credential_pool_model_cooldowns import pool_failure_reason
             kwargs["failure_reason"] = pool_failure_reason(effective_reason, error_context, billing_unverified)
         model = getattr(agent, "model", None)
         if isinstance(model, str) and model.strip():
@@ -1114,7 +1114,7 @@ def _apply_primary_runtime_fields(agent, rt: dict[str, Any]) -> None:
 
 def _build_anthropic_client_from_runtime(agent, rt: dict[str, Any]) -> None:
     """Rebuild the native Anthropic client from a ``_primary_runtime`` snapshot."""
-    from agent.anthropic_adapter import build_anthropic_client
+    from hermes_agent.agent.anthropic_adapter import build_anthropic_client
     agent._anthropic_api_key = rt["anthropic_api_key"]
     agent._anthropic_base_url = rt["anthropic_base_url"]
     agent._anthropic_client = build_anthropic_client(
@@ -1130,7 +1130,7 @@ def _rebuild_primary_client(agent, rt: dict[str, Any], *, reason: str) -> None:
     if (agent.provider or "").strip().lower() == "moa":
         # MoA has empty client_kwargs; rebuild via the shared facade factory so the
         # reference_callback relay survives recovery.
-        from agent.moa_loop import build_moa_facade
+        from hermes_agent.agent.moa_loop import build_moa_facade
         agent.client = build_moa_facade(agent, agent.model)
         # MoA is a virtual chat-completions provider. It never has real OpenAI client kwargs; restoring it
         # after a fallback must recreate the facade, not call OpenAI() with an empty api_key. Use the shared
@@ -1138,7 +1138,7 @@ def _rebuild_primary_client(agent, rt: dict[str, Any], *, reason: str) -> None:
         # MoAClient() would silently stop emitting moa.reference/moa.aggregating display events (#53802).
         agent._anthropic_client = None
     elif agent.provider == "bedrock" and agent.api_mode in ("anthropic_messages", "bedrock_converse"):
-        from agent.bedrock_adapter import bind_bedrock_runtime
+        from hermes_agent.agent.bedrock_adapter import bind_bedrock_runtime
         bind_bedrock_runtime(agent, agent.base_url, agent.api_mode)
     elif agent.api_mode == "anthropic_messages":
         _build_anthropic_client_from_runtime(agent, rt)
@@ -1399,7 +1399,7 @@ def restore_primary_runtime(agent) -> bool:
     rt = agent._primary_runtime
     primary_provider = str((rt or {}).get("provider") or "").strip().lower()
     primary_model = str((rt or {}).get("model") or "").strip()
-    from agent.fallback_cooldown import _is_entitlement_rejected
+    from hermes_agent.agent.fallback_cooldown import _is_entitlement_rejected
     from hermes_cli.chat_catalog import is_known_non_chat_model
     if primary_model and (
         _is_entitlement_rejected(agent, primary_provider, primary_model)
@@ -1415,7 +1415,7 @@ def restore_primary_runtime(agent) -> bool:
 
     def _load_primary_pool():
         """The primary's pool (entry-scoped for a custom entry); None when absent or provider-mismatched."""
-        from agent.custom_entry_pool import load_runtime_pool
+        from hermes_agent.agent.custom_entry_pool import load_runtime_pool
         loaded = load_runtime_pool(primary_provider, primary_runtime_base_url, (rt or {}).get("requested_provider"), rt or {})
         return loaded if loaded is not None and _matches_primary(loaded) else None
     if _primary_quota_reopened_early(agent, primary_provider, primary_model, _matches_primary, _load_primary_pool):
@@ -1434,7 +1434,7 @@ def restore_primary_runtime(agent) -> bool:
     previous_model, previous_provider = (str(v or "unknown") for v in fallback_route)
     provider_fallback_active = bool(getattr(agent, "_provider_fallback_active", False))
     try:
-        from agent.route_binding import reinstall_primary_runtime
+        from hermes_agent.agent.route_binding import reinstall_primary_runtime
         reinstall_primary_runtime(
             agent, rt, primary_provider, primary_model, _matches_primary, _load_primary_pool, prefetched_pool, prefetched,
         )
@@ -1468,7 +1468,7 @@ _INLINE_REASONING_PATTERNS = tuple(
 def extract_reasoning(agent, assistant_message) -> Optional[str]:
     """Reasoning text from ``reasoning`` / ``reasoning_content`` / ``reasoning_details``
     (OpenRouter unified), else inline thinking blocks in the content; None when absent."""
-    from agent.message_content import flatten_message_text
+    from hermes_agent.agent.message_content import flatten_message_text
 
     parts: list[str] = []
 
@@ -1550,12 +1550,12 @@ def dump_api_request_debug(
             dump_payload["error"] = _api_error_debug_info(error)
         # Sanitize the session ID (may come from an untrusted X-Hermes-Session-Id header) so a
         # "../"-shaped ID cannot write outside logs_dir.
-        from agent.session_persistence import _safe_session_filename_component
+        from hermes_agent.agent.session_persistence import _safe_session_filename_component
         safe_sid = _safe_session_filename_component(agent.session_id)
         dump_file = agent.logs_dir / f"request_dump_{safe_sid}_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.json"
         # Redact secrets first: this fires unconditionally on API errors and captures the full
         # request body, so context-embedded secrets would otherwise land in cleartext on disk.
-        from agent.redact import redact_sensitive_text
+        from hermes_agent.agent.redact import redact_sensitive_text
         _serialized = json.dumps(dump_payload, ensure_ascii=False, indent=2, default=str)
         _redacted_payload = json.loads(redact_sensitive_text(_serialized, force=True))
         atomic_json_write(dump_file, _redacted_payload, default=str)
@@ -1641,7 +1641,7 @@ def plan_cache_sections_for_destination(
     stub. When omitted, the live config is consulted so MoA/auxiliary paths cannot re-enable markers after
     the user turned caching off (#76085).
     """
-    from agent.prompt_caching import (
+    from hermes_agent.agent.prompt_caching import (
         build_prompt_cache_plan, effective_cache_ttl, envelope_tool_part_cache_markers_supported,
         strip_anthropic_cache_control, strip_anthropic_tool_cache_control,
     )
@@ -1773,7 +1773,7 @@ def anthropic_prompt_cache_policy(
     # 64K-token prompts and re-billing the full prompt on every turn. Observed within-turn progression with
     # cache enabled: 1% → 67% → 84% → 97% (#25970). Reuses the canonical family matcher (covers bare
     # k1./k2./k25 release slugs the substring check missed).
-    from agent.anthropic_endpoints import _model_name_is_kimi_family
+    from hermes_agent.agent.anthropic_endpoints import _model_name_is_kimi_family
     is_kimi = _model_name_is_kimi_family(eff_model) or "moonshot" in model_lower
     is_openrouter = base_url_host_matches(eff_base_url, "openrouter.ai")
     # Nous Portal proxies to OpenRouter; treat as OpenRouter-equivalent for cache layout.
@@ -1813,7 +1813,7 @@ def anthropic_prompt_cache_policy(
         or base_url_host_matches(eff_base_url, "api.minimaxi.com")
     )
     if is_anthropic_wire and is_minimax_route:
-        from agent.model_metadata import _model_name_suggests_minimax_m3
+        from hermes_agent.agent.model_metadata import _model_name_suggests_minimax_m3
         if _model_name_suggests_minimax_m3(eff_model):
             return False, False
     if is_native_anthropic:
@@ -1846,7 +1846,7 @@ def anthropic_prompt_cache_policy(
     # qwen3.6-plus on opencode-go reports 0% cached tokens and burns through the subscription on every turn.
     # OpenCode Zen's relay rejects the Anthropic-style content block format that cache markers produce
     # (content becomes a block array instead of a plain string), causing HTTP 400 (#77217).
-    from agent.prompt_caching import ALIBABA_FAMILY_PROVIDERS, is_qwen_model
+    from hermes_agent.agent.prompt_caching import ALIBABA_FAMILY_PROVIDERS, is_qwen_model
     if provider_lower in ALIBABA_FAMILY_PROVIDERS and is_qwen_model(model_lower):
         return True, False
     return False, False
@@ -1905,7 +1905,7 @@ def _ensure_route_client_headers(client_kwargs: dict, provider: str) -> None:
     """Defense-in-depth: recovery/restore rebuild from a snapshot without re-running header
     wiring, and a route whose provider requires its client headers (integration ids) 400s
     without them. Only ADD missing keys, never override."""
-    from agent.provider_route_hooks import route_answer
+    from hermes_agent.agent.provider_route_hooks import route_answer
     required = route_answer("client_headers", provider=provider, base_url=str(client_kwargs.get("base_url", "")),
                             api_key=str(client_kwargs.get("api_key", "") or ""))
     if not required:
@@ -1920,7 +1920,7 @@ def _ensure_route_client_headers(client_kwargs: dict, provider: str) -> None:
 
 def _gemini_native_client(agent, client_kwargs: dict, httpx_verify, *, reason: str, shared: bool):
     """Native Gemini client when the base_url is the Gemini API, else None."""
-    from agent.gemini_native_adapter import GeminiNativeClient, is_native_gemini_base_url
+    from hermes_agent.agent.gemini_native_adapter import GeminiNativeClient, is_native_gemini_base_url
     base_url = str(client_kwargs.get("base_url", "") or "")
     if not is_native_gemini_base_url(base_url):
         return None
@@ -1940,12 +1940,12 @@ def _gemini_native_client(agent, client_kwargs: dict, httpx_verify, *, reason: s
 
 
 def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: bool) -> Any:
-    from agent.auxiliary_client import (
+    from hermes_agent.agent.auxiliary_client import (
         _to_openai_base_url,
         _validate_base_url,
         _validate_proxy_env_urls,
     )
-    from agent.ssl_verify import resolve_httpx_verify
+    from hermes_agent.agent.ssl_verify import resolve_httpx_verify
     # Treat client_kwargs as read-only: callers pass agent._client_kwargs, and in-place mutation
     # leaks into later requests (a torn-down httpx transport got reused).
     # Callers pass agent._client_kwargs (or shallow copies of it) in; any in-place mutation leaks back into
@@ -1976,7 +1976,7 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
     # base_url, leaks the request to a foreign gateway. Rebuild the facade instead (build_moa_facade also
     # re-wires the reference relay, see #53802).
     if (getattr(agent, "provider", "") or "").strip().lower() == "moa":
-        from agent.moa_loop import build_moa_facade
+        from hermes_agent.agent.moa_loop import build_moa_facade
         return build_moa_facade(agent, getattr(agent, "model", None) or "default")
     ssl_ca_cert = client_kwargs.pop("ssl_ca_cert", None)
     ssl_verify_cfg = client_kwargs.pop("ssl_verify", None)
@@ -1998,7 +1998,7 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
             agent.provider, reason, shared, agent._client_log_context(),
         )
         return provider_client
-    from agent.auxiliary_client import _GEMINI_NATIVE_PROVIDER_NAMES
+    from hermes_agent.agent.auxiliary_client import _GEMINI_NATIVE_PROVIDER_NAMES
     if agent.provider in _GEMINI_NATIVE_PROVIDER_NAMES:
         client = _gemini_native_client(agent, client_kwargs, httpx_verify, reason=reason, shared=shared)
         if client is not None:
@@ -2022,7 +2022,7 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
     # Every rebuild from bare ``{api_key, base_url}`` kwargs (switch_model, fallback restore, credential
     # rotation, request-scoped clients) must reinstall the SigV4 http_client or Mantle answers 401.
     if "bedrock-mantle." in str(client_kwargs.get("base_url") or ""):
-        from agent.bedrock_adapter import configure_bedrock_openai_client_kwargs
+        from hermes_agent.agent.bedrock_adapter import configure_bedrock_openai_client_kwargs
         timeout = client_kwargs.get("timeout")
         configure_bedrock_openai_client_kwargs(
             client_kwargs, timeout=timeout if isinstance(timeout, (int, float)) else None,
@@ -2043,16 +2043,16 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
     _ensure_route_client_headers(client_kwargs, str(getattr(agent, "provider", "") or ""))
     # All primary construction and recovery paths must identify Hermes to the official Codex
     # endpoint, including snapshots with custom header overrides.
-    from agent.codex_headers import apply_required_codex_headers
+    from hermes_agent.agent.codex_headers import apply_required_codex_headers
     apply_required_codex_headers(
         client_kwargs, access_token=client_kwargs.get("api_key", ""),
         base_url=str(client_kwargs.get("base_url", "")),
     )
     # ``process_bootstrap.OpenAI`` is a lazy SDK proxy; resolved at call time so tests can patch it.
-    from agent import process_bootstrap
+    from hermes_agent.agent import process_bootstrap
     client = process_bootstrap.OpenAI(**client_kwargs)
     # Routing proxies name the deployment they served in a response header (#54864).
-    from agent.served_model import install_served_model_capture
+    from hermes_agent.agent.served_model import install_served_model_capture
     install_served_model_capture(agent, client)
     _ra().logger.info("OpenAI client created (%s, shared=%s) %s", reason, shared, agent._client_log_context())
     return client
@@ -2063,7 +2063,7 @@ def _apply_switched_provider_request_overrides(agent, new_provider):
     Matches by provider key, base_url AND model (same rule as
     ``agent_init._merge_custom_provider_extra_body``) so a different model at the same endpoint
     never inherits another's ``extra_body``. Stale ``extra_body`` cleared; ``service_tier``/``speed`` kept."""
-    from agent.agent_init import _custom_provider_extra_body_for_agent
+    from hermes_agent.agent.agent_init import _custom_provider_extra_body_for_agent
     # Prefer the init-time cache (agent._custom_providers); reload only if absent.
     custom_providers = getattr(agent, "_custom_providers", None)
     if custom_providers is None:
@@ -2114,7 +2114,7 @@ def _restore_switch_snapshot(agent, snapshot: dict[str, Any]) -> None:
 def _resolve_switch_destination(agent, new_model, new_provider, base_url, api_mode, capabilities, old_norm, new_norm):
     """Resolve ``(api_mode, base_url, destination_capabilities)`` for the switch target."""
     from hermes_cli.providers import determine_api_mode, is_actual_route
-    from agent.native_compaction import resolve_native_compaction_capabilities
+    from hermes_agent.agent.native_compaction import resolve_native_compaction_capabilities
     from hermes_cli.models import opencode_provider_family
     # Pass model so dual-wire providers (Nous Portal anthropic/* -> Messages) resolve correctly.
     if not api_mode:
@@ -2155,7 +2155,7 @@ def _resolve_switch_destination(agent, new_model, new_provider, base_url, api_mo
 def _build_switched_client(agent, new_provider, api_key, base_url, api_mode, new_norm) -> None:
     """Build the client for the switched-to destination (MoA facade / native Anthropic / OpenAI wire)."""
     if new_norm == "moa":
-        from agent.moa_loop import bind_moa_runtime
+        from hermes_agent.agent.moa_loop import bind_moa_runtime
         # MoA speaks only chat.completions via the MoAClient facade; the aggregator's real transport
         # is applied inside the fan-out. The binder pins api_mode so the loop never dispatches
         # client.responses.create against the facade (same pins as agent_init / fallback).
@@ -2164,12 +2164,12 @@ def _build_switched_client(agent, new_provider, api_key, base_url, api_mode, new
     if new_provider == "bedrock" and api_mode in ("anthropic_messages", "bedrock_converse"):
         # Non-Mantle Bedrock wires authenticate through boto3, never through the generic
         # Anthropic/OpenAI builders (which would ship the ``aws-sdk`` sentinel as a credential).
-        from agent.bedrock_adapter import bind_bedrock_runtime
+        from hermes_agent.agent.bedrock_adapter import bind_bedrock_runtime
         bind_bedrock_runtime(agent, base_url or agent.base_url, api_mode)
         return
     if api_mode == "anthropic_messages":
-        from agent.anthropic_adapter import build_anthropic_client
-        from agent.anthropic_credentials import resolve_anthropic_token, anthropic_route_is_oauth
+        from hermes_agent.agent.anthropic_adapter import build_anthropic_client
+        from hermes_agent.agent.anthropic_credentials import resolve_anthropic_token, anthropic_route_is_oauth
         # Only fall back to ANTHROPIC_TOKEN for native Anthropic; other anthropic_messages providers
         # must never receive Anthropic credentials.
         is_native_anthropic = new_provider == "anthropic"
@@ -2257,7 +2257,7 @@ def _swap_switch_runtime(agent, new_model, new_provider, api_key, base_url, api_
         agent._credential_pool = None
         agent._credential_pool_entry_id = None
         try:
-            from agent.credential_pool import load_pool
+            from hermes_agent.agent.credential_pool import load_pool
             agent._credential_pool = load_pool(new_provider)
         except Exception as _pool_exc:
             logger.warning(
@@ -2275,7 +2275,7 @@ def _resolve_switch_context_length(agent, snapshot):
         from hermes_cli.config import (
             get_compatible_custom_providers, get_custom_provider_context_length, load_config
         )
-        from agent.agent_init import config_context_length_for_runtime
+        from hermes_agent.agent.agent_init import config_context_length_for_runtime
         switch_cfg = load_config()
         custom_providers = get_compatible_custom_providers(switch_cfg)
         # The durable ``model.context_length`` pin is re-read from live config (never carried over
@@ -2289,7 +2289,7 @@ def _resolve_switch_context_length(agent, snapshot):
             )
     except Exception:
         intent = None
-    from agent.agent_init import set_config_context_length
+    from hermes_agent.agent.agent_init import set_config_context_length
     set_config_context_length(agent, intent)
     runtime_len = None
     if hasattr(agent, "_ensure_lmstudio_runtime_loaded"):
@@ -2312,7 +2312,7 @@ def _resolve_switch_context_length(agent, snapshot):
 
 def _update_switch_compressor(agent, custom_providers, effective_context_length, snapshot) -> None:
     """Point the context compressor at the new model (rolls back the switch on failure)."""
-    from agent.model_metadata import get_model_context_length
+    from hermes_agent.agent.model_metadata import get_model_context_length
     if custom_providers is None:
         try:
             from hermes_cli.config import get_compatible_custom_providers, load_config
@@ -2340,7 +2340,7 @@ def _update_switch_compressor(agent, custom_providers, effective_context_length,
         raise
     # Outside the rollback guard: a probe hiccup must not undo a good switch. Eager, so the aux
     # clamp lands before the first compaction on the new window, not after it (#114707).
-    from agent.conversation_compression_feasibility import revalidate_compression_feasibility
+    from hermes_agent.agent.conversation_compression_feasibility import revalidate_compression_feasibility
     revalidate_compression_feasibility(agent)
 
 
@@ -2440,7 +2440,7 @@ def switch_model(
     agent.runtime_capabilities = destination_capabilities
     # Reset the cross-turn stale-call circuit breaker; otherwise the latched streak keeps
     # short-circuiting the freshly selected healthy provider.
-    from agent.chat_completion_helpers import _reset_stale_streak
+    from hermes_agent.agent.chat_completion_helpers import _reset_stale_streak
     _reset_stale_streak(agent)
     agent._primary_runtime = _build_primary_runtime_snapshot(agent, api_mode)
     _finish_switch(agent, new_provider, old_norm, new_norm)
@@ -2476,7 +2476,7 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
     """Invoke a single tool (agent-level or registry-dispatched) and return the result string;
     no display logic. Used by the concurrent path; the sequential path keeps its own inline
     invocation for display."""
-    from agent.inline_tool_executors import (
+    from hermes_agent.agent.inline_tool_executors import (
         InlineToolContext, apply_transform_tool_result, emit_terminal_post_tool_call,
         resolve_invoke_tool_executor, tool_hook_ids
     )
@@ -3137,7 +3137,7 @@ def looks_like_codex_intermediate_ack(
     requirement; short-content + no-tool-results-this-turn guardrails always apply (every row after this
     turn's own user row: ``messages`` is the whole session, #69778, and a nudge row starts no new turn).
     A response then needs a future ack + action marker, or a bounded pronounless clause + transition cue."""
-    from agent.turn_context import reanchor_current_turn_user_idx as turn_user_idx
+    from hermes_agent.agent.turn_context import reanchor_current_turn_user_idx as turn_user_idx
     if any(isinstance(m, dict) and m.get("role") == "tool" for m in messages[turn_user_idx(messages, user_message) + 1:]):
         return False
     assistant_text = agent._strip_think_blocks(assistant_content or "").strip().lower()
@@ -3275,7 +3275,7 @@ def looks_like_codex_intermediate_ack(
         return True
     # ``user_message`` may be a multi-part content list (vision via the OpenAI-compat server); a
     # list survives ``or ""`` and ``.strip()`` raises, so flatten first.
-    from agent.codex_responses_adapter import _summarize_user_message_for_log
+    from hermes_agent.agent.codex_responses_adapter import _summarize_user_message_for_log
     user_text = _summarize_user_message_for_log(user_message).strip().lower()
     return (
         any(marker in user_text for marker in _ACK_WORKSPACE_MARKERS)
@@ -3314,7 +3314,7 @@ def looks_like_degenerate_final(text: str, user_message: Any = None) -> bool:
         return True
     if not any(ch.isalpha() for ch in t) or any(ch.isascii() and ch.isalnum() for ch in t):
         return False
-    from agent.codex_responses_adapter import _summarize_user_message_for_log
+    from hermes_agent.agent.codex_responses_adapter import _summarize_user_message_for_log
     user_text = _summarize_user_message_for_log(user_message) if user_message else ""
     return not any(ch.isalpha() and not ch.isascii() for ch in user_text)
 
@@ -3416,8 +3416,8 @@ def intent_ack_continuation_mode(agent) -> str:
 
 
 def copy_reasoning_content_for_api(agent, source_msg: dict, api_msg: dict) -> None:
-    """Forward reasoning fields onto an API replay message; policy lives in ``agent.message_sanitization.apply_reasoning_content_policy``."""
-    from agent.message_sanitization import apply_reasoning_content_policy
+    """Forward reasoning fields onto an API replay message; policy lives in ``hermes_agent.agent.message_sanitization.apply_reasoning_content_policy``."""
+    from hermes_agent.agent.message_sanitization import apply_reasoning_content_policy
     apply_reasoning_content_policy(source_msg, api_msg, *agent._reasoning_replay_route())
 
 
@@ -3433,7 +3433,7 @@ def reapply_reasoning_echo_for_provider(agent, api_messages: list) -> int:
     is the exact cross-provider fallback bug from #45655 — a DeepSeek primary pads history with ``" "``, the
     request falls back to Mistral, and Mistral 422s on the stale pad.
     """
-    from agent.message_sanitization import reapply_reasoning_echo
+    from hermes_agent.agent.message_sanitization import reapply_reasoning_echo
     return reapply_reasoning_echo(api_messages, *agent._reasoning_replay_route())
 
 
@@ -3545,7 +3545,7 @@ def _iter_pool_sockets(client: Any):
         return
     if not pools:
         return
-    from agent.process_bootstrap import HERMES_TRANSPORT_OWNER_EXT
+    from hermes_agent.agent.process_bootstrap import HERMES_TRANSPORT_OWNER_EXT
     seen: set[int] = set()
     for pool, owner in pools:
         # ``is None``, not falsiness: an empty ``_connections`` must still let us walk in-flight ``_requests``.
@@ -3661,7 +3661,7 @@ def extract_api_error_context(error: Exception) -> dict[str, Any]:
 
 def _requeue_pending_steer(agent, steer_text: str) -> None:
     """Put drained steer text back so the caller's fallback delivers it as a next-turn user message."""
-    from agent.interrupt_control import requeue_drained_steer
+    from hermes_agent.agent.interrupt_control import requeue_drained_steer
     requeue_drained_steer(agent, steer_text)
 
 

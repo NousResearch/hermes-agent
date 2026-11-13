@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 
 def test_explicit_client_kwargs_injects_command_for_any_external_process_profile(monkeypatch):
-    from agent.agent_init import _explicit_client_kwargs
+    from hermes_agent.agent.agent_init import _explicit_client_kwargs
     from providers.base import ProviderProfile
 
     profile = ProviderProfile(name="test-process-provider", auth_type="external_process")
@@ -30,7 +30,7 @@ def test_responses_upgrade_is_skipped_by_acp_scheme_not_vendor_slug(monkeypatch)
     """The Responses auto-upgrade guard keys on the ``acp://`` scheme alone: every external-process
     provider on an ACP marker keeps chat_completions (bundled and out-of-tree alike), while a direct
     OpenAI URL is upgraded whatever the slug — the vendor literal carried no behaviour of its own."""
-    from agent.agent_init import _finalize_routing
+    from hermes_agent.agent.agent_init import _finalize_routing
 
     monkeypatch.setattr("hermes_cli.anon_auth.pin_model_for_route", lambda provider, base_url, model: model)
     for provider, base_url in (("copilot-acp", "acp://copilot"), ("acme-acp", "acp://acme"),
@@ -47,7 +47,7 @@ def test_responses_upgrade_is_skipped_by_acp_scheme_not_vendor_slug(monkeypatch)
 def test_responses_upgrade_is_skipped_for_external_process_profile_on_any_base_url(monkeypatch):
     """An ``<X>_ACP_BASE_URL`` override may carry an https marker, so the ACP guard must also key on
     the profile's ``external_process`` auth_type — an ACP client never speaks the Responses API."""
-    from agent.agent_init import _finalize_routing
+    from hermes_agent.agent.agent_init import _finalize_routing
     from providers.base import ProviderProfile
 
     profile = ProviderProfile(name="copilot-acp", auth_type="external_process")
@@ -69,9 +69,9 @@ def test_fallback_activation_keeps_external_process_provider_on_chat_completions
     """GPT-5 fallback activation re-derives api_mode through ``_provider_model_requires_responses_api``;
     an external-process (ACP) facade has no ``responses`` surface, so the predicate must decline for
     any such profile — the bundled copilot-acp and an out-of-tree one alike (#65842, #107754)."""
-    from agent.chat_completion_helpers import _fallback_api_mode_resolved
+    from hermes_agent.agent.chat_completion_helpers import _fallback_api_mode_resolved
     from providers.base import ProviderProfile
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     profiles = {name: ProviderProfile(name=name, auth_type="external_process") for name in ("copilot-acp", "acme-acp")}
     monkeypatch.setattr("providers.get_provider_profile", profiles.get)
@@ -87,7 +87,7 @@ def test_fallback_activation_keeps_external_process_provider_on_chat_completions
 def test_should_stream_is_off_for_any_external_process_profile(monkeypatch):
     """Streaming is disabled for every ACP provider, keyed on the profile — not on the ``acp://``
     marker alone and not on one vendor's slug."""
-    from agent.turn_api_call import _should_stream
+    from hermes_agent.agent.turn_api_call import _should_stream
     from providers.base import ProviderProfile
 
     profile = ProviderProfile(name="acme-acp", auth_type="external_process")

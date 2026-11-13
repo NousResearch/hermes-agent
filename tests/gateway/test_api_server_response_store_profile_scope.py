@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pytest
 
-from agent import secret_scope as ss
+from hermes_agent.agent import secret_scope as ss
 
 ALICE, BOB, DEFAULT = "a" * 40, "b" * 40, "d" * 40
 

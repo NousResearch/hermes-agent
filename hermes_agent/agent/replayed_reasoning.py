@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from agent.message_metadata import stamped_reasoning_tokens
+from hermes_agent.agent.message_metadata import stamped_reasoning_tokens
 
 # Turns persisted before the stamp existed: ciphertext characters per billed reasoning token, measured
 # live per issuer (OpenAI/Codex ~13.5, xAI grok-4.7 ~1.6). An estimate, used only when no stamp exists.

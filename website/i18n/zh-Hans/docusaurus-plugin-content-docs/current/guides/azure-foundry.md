@@ -56,7 +56,7 @@ Microsoft 推荐在生产 Foundry 工作负载中使用 [Microsoft Entra ID 无�
 Foundry 的 RBAC 是按资源级别的（`Azure AI User` 授予两种接口的访问权限；某些租户可能显示为 `Foundry User`），Microsoft 文档对两者使用相同的推理 scope（`https://ai.azure.com/.default`）。底层实现：
 
 - OpenAI 风格使用 OpenAI Python SDK 原生的可调用 `api_key=` 契约——SDK 每次请求自动生成新的 JWT。
-- Anthropic 风格使用带有请求事件 hook 的 `httpx.Client`，该 hook 由 `agent.azure_identity_adapter.build_bearer_http_client` 安装，因为 Anthropic SDK 原生不接受可调用的 `auth_token`。该 hook 在每次出站请求时重写 `Authorization: Bearer <fresh-jwt>`。RBAC 和 Foundry scope 相同——唯一的区别在于 SDK 契约。
+- Anthropic 风格使用带有请求事件 hook 的 `httpx.Client`，该 hook 由 `hermes_agent.agent.azure_identity_adapter.build_bearer_http_client` 安装，因为 Anthropic SDK 原生不接受可调用的 `auth_token`。该 hook 在每次出站请求时重写 `Authorization: Bearer <fresh-jwt>`。RBAC 和 Foundry scope 相同——唯一的区别在于 SDK 契约。
 
 ### 为什么使用 Entra ID？
 

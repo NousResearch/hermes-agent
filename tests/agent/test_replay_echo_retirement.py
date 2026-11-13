@@ -15,7 +15,7 @@ NEW_PLACEHOLDER = "[interrupt: no assistant output for this turn]"
 
 def _agent(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
     from hermes_agent.hermes_state import SessionDB
     return AIAgent(session_db=SessionDB(db_path=tmp_path / "proof.db"),
                    model="test-model", provider="openai-compat", api_key="test",
@@ -25,8 +25,8 @@ def _agent(tmp_path, monkeypatch):
 
 def _prepare(tmp_path, monkeypatch, messages):
     """Run prepare_iteration and return the messages it produced."""
-    from agent.turn_context import _reset_per_turn_agent_state
-    from agent.turn_iteration_prep import prepare_iteration
+    from hermes_agent.agent.turn_context import _reset_per_turn_agent_state
+    from hermes_agent.agent.turn_iteration_prep import prepare_iteration
 
     agent = _agent(tmp_path, monkeypatch)
     try:

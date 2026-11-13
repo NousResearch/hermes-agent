@@ -20,7 +20,7 @@ from unittest.mock import patch
 
 import pytest
 
-from agent.vault_backends import backend_for_handle, enabled_backends
+from hermes_agent.agent.vault_backends import backend_for_handle, enabled_backends
 
 _PASSWORD = "correct horse battery staple 42"
 
@@ -63,7 +63,7 @@ def real_profile(tmp_path, monkeypatch):
 
 
 def _set_consent(on: bool):
-    return patch("agent.vault_backends.base._browser_profile_enabled", return_value=on)
+    return patch("hermes_agent.agent.vault_backends.base._browser_profile_enabled", return_value=on)
 
 
 def test_source_present_and_routes_only_with_consent(real_profile):
@@ -111,7 +111,7 @@ def test_fill_is_password_blind_and_redaction_registered(real_profile):
     with _set_consent(True), \
          patch("hermes_agent.tools.browser_real_profile_logins.resolve_login_password", return_value=_PASSWORD), \
          patch("hermes_agent.tools.browser_session_real_profile.real_profile_cdp", return_value=("ws://x", None)), \
-         patch("agent.redact.register_vault_redaction_value", side_effect=registered.append), \
+         patch("hermes_agent.agent.redact.register_vault_redaction_value", side_effect=registered.append), \
          patch("hermes_agent.tools.browser_vault_tool._bound_page_origin", return_value="https://example.com"), \
          patch("hermes_agent.tools.browser_vault_tool._eval_js", return_value={"success": True, "result": json.dumps(
              [{"index": 0, "tag": "input", "type": "password", "name": "password", "autocomplete": "current-password"}])}), \
@@ -507,7 +507,7 @@ def test_list_refreshes_when_pin_changed_to_another_profile(tmp_path, monkeypatc
 
     Real sqlite + real config reads; only the live-profile root resolution and the lifecycle's snapshot
     *rebuild* step are stubbed (no real Chrome needed for this bug, which is in the trust check)."""
-    from agent.vault_backends import enabled_backends
+    from hermes_agent.agent.vault_backends import enabled_backends
 
     live_root = tmp_path / "chrome-data"           # the real browser's user-data dir
     (live_root / "Default").mkdir(parents=True)
@@ -532,7 +532,7 @@ def test_list_refreshes_when_pin_changed_to_another_profile(tmp_path, monkeypatc
         refreshed["n"] += 1
         return refresh()
 
-    with patch("agent.vault_backends.base._browser_profile_enabled", return_value=True), \
+    with patch("hermes_agent.agent.vault_backends.base._browser_profile_enabled", return_value=True), \
          patch("hermes_cli.browser_connect.detect_default_chromium", return_value="chrome"), \
          patch("hermes_cli.browser_connect.real_profile_copy_dir", return_value=str(copy_dir)), \
          patch("hermes_cli.browser_connect.real_profile_data_dir", return_value=str(live_root)), \
@@ -548,7 +548,7 @@ def test_list_refreshes_when_pin_changed_to_another_profile(tmp_path, monkeypatc
 def test_list_does_not_refresh_when_snapshot_source_still_matches(tmp_path, monkeypatch):
     """Control for finding 4: when the snapshot's source profile still matches the current pin, the
     backend serves it WITHOUT re-running the lifecycle (no needless refresh on every list)."""
-    from agent.vault_backends import enabled_backends
+    from hermes_agent.agent.vault_backends import enabled_backends
 
     live_root = tmp_path / "chrome-data"
     (live_root / "Default").mkdir(parents=True)
@@ -558,7 +558,7 @@ def test_list_does_not_refresh_when_snapshot_source_still_matches(tmp_path, monk
     monkeypatch.setattr("hermes_cli.browser_connect._real_profile_pin", lambda: "Default")
     refreshed = {"n": 0}
 
-    with patch("agent.vault_backends.base._browser_profile_enabled", return_value=True), \
+    with patch("hermes_agent.agent.vault_backends.base._browser_profile_enabled", return_value=True), \
          patch("hermes_cli.browser_connect.detect_default_chromium", return_value="chrome"), \
          patch("hermes_cli.browser_connect.real_profile_copy_dir", return_value=str(copy_dir)), \
          patch("hermes_cli.browser_connect.real_profile_data_dir", return_value=str(live_root)), \
@@ -589,7 +589,7 @@ def test_list_refreshes_when_pin_changed_and_browser_is_running(tmp_path, monkey
     decision is the production code's.
     """
     import hermes_agent.tools.browser_session_real_profile as rpf
-    from agent.vault_backends import enabled_backends
+    from hermes_agent.agent.vault_backends import enabled_backends
 
     live_root = tmp_path / "chrome-data"
     (live_root / "Default").mkdir(parents=True)
@@ -622,7 +622,7 @@ def test_list_refreshes_when_pin_changed_and_browser_is_running(tmp_path, monkey
     monkeypatch.setattr("hermes_agent.tools.browser_launcher.stop_browser", fake_stop_browser)
     monkeypatch.setattr(rpf, "_launch", fake_launch)
 
-    with patch("agent.vault_backends.base._browser_profile_enabled", return_value=True), \
+    with patch("hermes_agent.agent.vault_backends.base._browser_profile_enabled", return_value=True), \
          patch("hermes_cli.browser_connect.detect_default_chromium", return_value="chrome"), \
          patch("hermes_cli.browser_connect.real_profile_copy_dir", return_value=str(copy_dir)), \
          patch("hermes_cli.browser_connect.real_profile_data_dir", return_value=str(live_root)):

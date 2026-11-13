@@ -1,4 +1,4 @@
-"""Invariants for the shared retry-delay parsers in ``agent/retry_utils.py``.
+"""Invariants for the shared retry-delay parsers in ``hermes_agent/agent/retry_utils.py``.
 
 Cluster: every consumer of ``Retry-After`` / free-text reset grammars goes through one parser,
 so an HTTP-date header or a "resets in 2 hours 5 minutes" body yields the same wait everywhere.
@@ -10,7 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent.retry_utils import parse_retry_after_seconds, reset_delay_from_message
+from hermes_agent.agent.retry_utils import parse_retry_after_seconds, reset_delay_from_message
 
 
 def _http_date(seconds_ahead: int) -> str:
@@ -21,8 +21,8 @@ class TestRetryAfterHeaderOneParser:
     def test_http_date_header_parsed_identically_at_formerly_divergent_sites(self):
         """The error-context extractor and nous_rate_guard used to float() the header and silently
         drop the RFC 7231 date form; both must now agree with the canonical."""
-        from agent.agent_runtime_helpers import extract_api_error_context
-        from agent.nous_rate_guard import _parse_reset_seconds
+        from hermes_agent.agent.agent_runtime_helpers import extract_api_error_context
+        from hermes_agent.agent.nous_rate_guard import _parse_reset_seconds
         import time
 
         header = _http_date(90)
@@ -61,14 +61,14 @@ class TestResetDelayOneTable:
         """The pooled-credential cooldown and the UI's error context read the same table, so the
         long-form "hours/minutes" grammar (which the pool used to miss) resolves at both sites."""
         import time
-        from agent.credential_pool import _normalize_error_context
+        from hermes_agent.agent.credential_pool import _normalize_error_context
 
         assert reset_delay_from_message(message) == pytest.approx(seconds)
         normalized = _normalize_error_context({"message": message})
         assert normalized["reset_at"] - time.time() == pytest.approx(seconds, abs=2)
 
     def test_no_grammar_means_no_reset(self):
-        from agent.credential_pool import _normalize_error_context
+        from hermes_agent.agent.credential_pool import _normalize_error_context
 
         assert reset_delay_from_message("resets in the future, maybe") is None
         assert "reset_at" not in _normalize_error_context({"message": "resets in the future, maybe"})

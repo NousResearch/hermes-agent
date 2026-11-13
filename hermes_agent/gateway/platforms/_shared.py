@@ -1,6 +1,6 @@
 """Cross-adapter helpers shared by hermes_agent/gateway/platforms/* and plugins/platforms/*.
 
-Kept dependency-light (stdlib + ``agent.secret_scope``) so every adapter can
+Kept dependency-light (stdlib + ``hermes_agent.agent.secret_scope``) so every adapter can
 import it at module top level without cycles.
 """
 
@@ -13,8 +13,8 @@ import os
 from typing import Any, Callable, Iterable, Optional
 
 # Profile-scoped secret reader for multiplexing support (PR #50094)
-from agent.secret_scope import UnscopedSecretError as _UnscopedSecretError
-from agent.secret_scope import get_secret as _scoped_get_secret
+from hermes_agent.agent.secret_scope import UnscopedSecretError as _UnscopedSecretError
+from hermes_agent.agent.secret_scope import get_secret as _scoped_get_secret
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +43,7 @@ def get_scoped_secret(name: str, default: Any = None, *, external_fallback: bool
 
 
 def _current_scope():
-    from agent.secret_scope import current_secret_scope
+    from hermes_agent.agent.secret_scope import current_secret_scope
     return current_secret_scope()
 
 
@@ -55,7 +55,7 @@ def _unscoped_profile_secrets() -> dict:
     global _UNSCOPED_PROFILE_SECRETS
     if _UNSCOPED_PROFILE_SECRETS is None:
         try:
-            from agent.secret_scope import build_profile_secret_scope
+            from hermes_agent.agent.secret_scope import build_profile_secret_scope
             from hermes_constants import get_hermes_home
             _UNSCOPED_PROFILE_SECRETS = dict(build_profile_secret_scope(get_hermes_home()))
         except Exception:
@@ -77,7 +77,7 @@ def platform_gate_env(name: str, default: str = "") -> str:
     if not name:
         return default
     with contextlib.suppress(Exception):
-        from agent.secret_scope import current_secret_scope, is_multiplex_active
+        from hermes_agent.agent.secret_scope import current_secret_scope, is_multiplex_active
 
         scope = current_secret_scope()
         if scope is not None and is_multiplex_active():
@@ -138,7 +138,7 @@ def profile_scoped() -> bool:
     ``os.environ`` precedence, so YAML->env bridges must skip only when True.
     """
     try:
-        from agent.secret_scope import current_secret_scope, is_multiplex_active
+        from hermes_agent.agent.secret_scope import current_secret_scope, is_multiplex_active
         return bool(is_multiplex_active() and current_secret_scope() is not None)
     except Exception:
         return False

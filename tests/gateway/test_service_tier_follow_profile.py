@@ -63,7 +63,7 @@ async def test_followed_account_eligibility_does_not_use_the_retained_agents_key
         observed.append(route)
         return route['access_token'] == 'next-route-key'
 
-    monkeypatch.setattr('agent.codex_service_tiers.ultrafast_offered', ultrafast_offered)
+    monkeypatch.setattr('hermes_agent.agent.codex_service_tiers.ultrafast_offered', ultrafast_offered)
     store, runner, _, owner = _owner(home, monkeypatch, {'model': before})
     try:
         created = await owner.dispatch({'id': 'create', 'method': 'session.create', 'params': {

@@ -9,8 +9,8 @@ import time
 
 import pytest
 
-import agent.anthropic_credentials as anth_cred
-import agent.auxiliary_client as aux
+import hermes_agent.agent.anthropic_credentials as anth_cred
+import hermes_agent.agent.auxiliary_client as aux
 from hermes_cli.auth import write_credential_pool
 
 MODEL = "claude-sonnet-4-5"

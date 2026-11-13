@@ -1,4 +1,4 @@
-"""Reasoning-field rejection retry in ``agent.auxiliary_client`` (#112781).
+"""Reasoning-field rejection retry in ``hermes_agent.agent.auxiliary_client`` (#112781).
 
 The title lane disables reasoning (``reasoning_config={"enabled": False}``); on
 ``provider=custom`` the profile encodes that as top-level ``reasoning_effort: "none"``
@@ -15,7 +15,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from agent.auxiliary_client import async_call_llm, call_llm
+from hermes_agent.agent.auxiliary_client import async_call_llm, call_llm
 
 _RELAY_400 = (
     "Error code: 400 - {'error': {'message': 'Unrecognized request argument supplied: "
@@ -25,11 +25,11 @@ _RELAY_400 = (
 
 def _custom_route_patches(client):
     return (
-        patch("agent.auxiliary_client._resolve_task_provider_model",
+        patch("hermes_agent.agent.auxiliary_client._resolve_task_provider_model",
               return_value=("custom", "gpt-4.1-mini", "https://relay.example/v1", "sk-x", None)),
-        patch("agent.auxiliary_client._get_cached_client", return_value=(client, "gpt-4.1-mini")),
-        patch("agent.auxiliary_client._validate_llm_response", side_effect=lambda resp, _task, **_kw: resp),
-        patch("agent.auxiliary_client._try_payment_fallback", return_value=None),
+        patch("hermes_agent.agent.auxiliary_client._get_cached_client", return_value=(client, "gpt-4.1-mini")),
+        patch("hermes_agent.agent.auxiliary_client._validate_llm_response", side_effect=lambda resp, _task, **_kw: resp),
+        patch("hermes_agent.agent.auxiliary_client._try_payment_fallback", return_value=None),
     )
 
 
@@ -87,7 +87,7 @@ def test_model_gating_400_naming_a_thinking_model_still_reaches_the_fallback_cha
     fb_client = MagicMock()
     fb_client.chat.completions.create.return_value = {"fb": True}
     p1, p2, p3, _p4 = _custom_route_patches(client)
-    with p1, p2, p3, patch("agent.auxiliary_client._try_configured_fallback_chain",
+    with p1, p2, p3, patch("hermes_agent.agent.auxiliary_client._try_configured_fallback_chain",
                            return_value=(fb_client, "fallback-model", "fallback")) as fallback:
         result = call_llm(task="title_generation", messages=[{"role": "user", "content": "hi"}],
                           reasoning_config={"enabled": False})

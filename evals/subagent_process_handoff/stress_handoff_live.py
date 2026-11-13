@@ -18,7 +18,7 @@ import hermes_agent.tools.process_registry as pr
 pr._SYSTEMD_SCOPE_AVAILABLE = False
 from hermes_agent.tools.process_registry import process_registry
 import hermes_agent.tools.async_delegation as ad
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 MODEL = os.environ.get("LIVE_MODEL", "openai/gpt-5.6-terra")
 OUT = os.environ.get("STRESS_OUT", os.path.join(tempfile.gettempdir(), "stress_handoff_results.jsonl"))

@@ -68,7 +68,7 @@ class _Pool:
         call.add_done_callback(self.release)
         if spawn:
             # Daemon: a call stuck on its model must not hold up interpreter exit (it writes no state).
-            from agent.memory_provider import spawn_context_thread
+            from hermes_agent.agent.memory_provider import spawn_context_thread
             try:
                 spawn_context_thread(self.drain, name='hermes-oneshot').start()
             except RuntimeError:
@@ -190,7 +190,7 @@ async def _answer(pool, transport, rid, call, check):
 
 
 def _validate(params):
-    from agent.oneshot import PROMPT_TEMPLATES
+    from hermes_agent.agent.oneshot import PROMPT_TEMPLATES
     if (set(params) - _FIELDS or any(key in params and params[key] is not None and not isinstance(params[key], str)
                                      for key in (*_TEXT, 'session_id'))
             or not isinstance(params.get('variables') or {}, dict)
@@ -249,7 +249,7 @@ async def oneshot(connection, ref, params):
         runtime = lambda: None  # the task backend
 
     def work():
-        from agent.oneshot import run_oneshot
+        from hermes_agent.agent.oneshot import run_oneshot
         from hermes_agent.gateway.session_authorities import owner_scope
         with owner_scope(authority):
             return {'text': run_oneshot(

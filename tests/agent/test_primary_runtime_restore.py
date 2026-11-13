@@ -13,7 +13,7 @@ import time
 from unittest.mock import MagicMock, patch
 
 
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 
 def _make_tool_defs(*names: str) -> list:
@@ -40,17 +40,17 @@ def _make_agent(
     with (
         patch("hermes_agent.model_tools.get_tool_definitions", return_value=_make_tool_defs("web_search")),
         patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
-        patch("agent.process_bootstrap.OpenAI"),
+        patch("hermes_agent.agent.process_bootstrap.OpenAI"),
         # Unit tests must not probe live endpoints. The compressor resolves
         # context length lazily via a real network call against base_url; for
         # reachable hosts (the nous portal case) the endpoint's answer for the
         # empty test model (32K) trips agent_init's 64K floor and fails the
         # test on network behavior, not code under test.
         patch(
-            "agent.context_compressor.get_model_context_length",
+            "hermes_agent.agent.context_compressor.get_model_context_length",
             return_value=200_000,
         ),
-        patch("agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()),
+        patch("hermes_agent.agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()),
     ):
         agent = AIAgent(
             api_key="test-key-12345678",
@@ -99,32 +99,32 @@ class TestRestorePrimaryRuntime:
             return agent._codex_reasoning_replay_enabled, agent._codex_reasoning_replay_rejected
 
         agent._codex_reasoning_replay_enabled, agent._codex_reasoning_replay_rejected = tripped
-        with patch("agent.auxiliary_client.resolve_provider_client", return_value=(_mock_resolve(), None)):
+        with patch("hermes_agent.agent.auxiliary_client.resolve_provider_client", return_value=(_mock_resolve(), None)):
             assert agent._try_activate_fallback() is True
         assert verdict() == (True, False)
 
         # The fallback never tripped; restoring the primary brings back the verdict it earned.
-        with patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()):
+        with patch("hermes_agent.agent.process_bootstrap.OpenAI", return_value=MagicMock()):
             assert agent._restore_primary_runtime() is True
         assert verdict() == tripped
 
     def test_rejection_verdicts_stay_with_the_route_that_earned_them(self):
         """A reasoning or stream_options rejection learned on one route must not shape the fallback
         route's requests, and the primary gets its own verdicts back (not the fallback's) on restore."""
-        from agent.route_verdicts import ROUTE_REJECTION_FIELDS
+        from hermes_agent.agent.route_verdicts import ROUTE_REJECTION_FIELDS
 
         agent = _make_agent(fallback_model={"provider": "openrouter", "model": "anthropic/claude-sonnet-4"})
         primary = dict(zip(ROUTE_REJECTION_FIELDS, (True, False, True, False)))
         for name, value in primary.items():
             setattr(agent, name, value)
 
-        with patch("agent.auxiliary_client.resolve_provider_client", return_value=(_mock_resolve(), None)):
+        with patch("hermes_agent.agent.auxiliary_client.resolve_provider_client", return_value=(_mock_resolve(), None)):
             assert agent._try_activate_fallback() is True
         assert {name: getattr(agent, name) for name in ROUTE_REJECTION_FIELDS} == dict.fromkeys(ROUTE_REJECTION_FIELDS, False)
 
         for name in ROUTE_REJECTION_FIELDS:
             setattr(agent, name, not primary[name])
-        with patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()):
+        with patch("hermes_agent.agent.process_bootstrap.OpenAI", return_value=MagicMock()):
             assert agent._restore_primary_runtime() is True
         assert {name: getattr(agent, name) for name in ROUTE_REJECTION_FIELDS} == primary
 
@@ -139,7 +139,7 @@ class TestRestorePrimaryRuntime:
         emitted = []
         agent._emit_status = emitted.append
 
-        with patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()):
+        with patch("hermes_agent.agent.process_bootstrap.OpenAI", return_value=MagicMock()):
             assert agent._restore_primary_runtime() is True
 
         # The runtime change re-probes compression feasibility (a diagnostic, not a restore label).
@@ -153,7 +153,7 @@ class TestRestorePrimaryRuntime:
         agent._primary_runtime["model"] = "primary-model"
         mock_client = _mock_resolve()
         with patch(
-            "agent.auxiliary_client.resolve_provider_client",
+            "hermes_agent.agent.auxiliary_client.resolve_provider_client",
             return_value=(mock_client, None),
         ):
             assert agent._try_activate_fallback() is True
@@ -161,7 +161,7 @@ class TestRestorePrimaryRuntime:
         emitted = []
         agent._emit_status = emitted.append
         with (
-            patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()),
+            patch("hermes_agent.agent.process_bootstrap.OpenAI", return_value=MagicMock()),
             patch.object(
                 agent.context_compressor,
                 "update_model",
@@ -186,12 +186,12 @@ class TestRestorePrimaryRuntime:
         )
         # Advance through the chain
         mock_client = _mock_resolve()
-        with patch("agent.auxiliary_client.resolve_provider_client", return_value=(mock_client, None)):
+        with patch("hermes_agent.agent.auxiliary_client.resolve_provider_client", return_value=(mock_client, None)):
             agent._try_activate_fallback()
 
         assert agent._fallback_index == 1  # consumed one entry
 
-        with patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()):
+        with patch("hermes_agent.agent.process_bootstrap.OpenAI", return_value=MagicMock()):
             agent._restore_primary_runtime()
 
         assert agent._fallback_index == 0  # reset for next turn
@@ -205,14 +205,14 @@ class TestRestorePrimaryRuntime:
 
         # Simulate fallback modifying compressor
         mock_client = _mock_resolve()
-        with patch("agent.auxiliary_client.resolve_provider_client", return_value=(mock_client, None)):
+        with patch("hermes_agent.agent.auxiliary_client.resolve_provider_client", return_value=(mock_client, None)):
             agent._try_activate_fallback()
 
         # Manually simulate compressor being changed (as _try_activate_fallback does)
         agent.context_compressor.context_length = 32000
         agent.context_compressor.threshold_tokens = 25600
 
-        with patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()):
+        with patch("hermes_agent.agent.process_bootstrap.OpenAI", return_value=MagicMock()):
             agent._restore_primary_runtime()
 
         assert agent.context_compressor.context_length == original_ctx_len
@@ -226,7 +226,7 @@ class TestRestorePrimaryRuntime:
         agent._fallback_activated = True
         agent._use_prompt_caching = not original_caching
 
-        with patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()):
+        with patch("hermes_agent.agent.process_bootstrap.OpenAI", return_value=MagicMock()):
             agent._restore_primary_runtime()
 
         assert agent._use_prompt_caching == original_caching
@@ -237,7 +237,7 @@ class TestRestorePrimaryRuntime:
         agent._fallback_activated = True
         agent.request_overrides = {"extra_body": {"fallback_only": True}}
 
-        with patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()):
+        with patch("hermes_agent.agent.process_bootstrap.OpenAI", return_value=MagicMock()):
             result = agent._restore_primary_runtime()
 
         assert result is True
@@ -271,12 +271,12 @@ class TestRestorePrimaryRuntime:
         )
         original_base_url = agent.base_url
         mock_client = _mock_resolve()
-        with patch("agent.auxiliary_client.resolve_provider_client", return_value=(mock_client, None)):
+        with patch("hermes_agent.agent.auxiliary_client.resolve_provider_client", return_value=(mock_client, None)):
             agent._try_activate_fallback()
         agent._credential_pool = _Pool()
         agent._swap_credential = MagicMock()
 
-        with patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()):
+        with patch("hermes_agent.agent.process_bootstrap.OpenAI", return_value=MagicMock()):
             result = agent._restore_primary_runtime()
 
         assert result is True
@@ -321,7 +321,7 @@ class TestRestorePrimaryRuntime:
         primary_provider = agent.provider
         mock_client = _mock_resolve(base_url="https://api.deepseek.com/v1")
         with patch(
-            "agent.auxiliary_client.resolve_provider_client",
+            "hermes_agent.agent.auxiliary_client.resolve_provider_client",
             return_value=(mock_client, None),
         ):
             agent._try_activate_fallback()
@@ -333,8 +333,8 @@ class TestRestorePrimaryRuntime:
         primary_pool.provider = primary_provider
         primary_pool.has_available.return_value = False
         with (
-            patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()),
-            patch("agent.credential_pool.load_pool", return_value=primary_pool) as load_pool,
+            patch("hermes_agent.agent.process_bootstrap.OpenAI", return_value=MagicMock()),
+            patch("hermes_agent.agent.credential_pool.load_pool", return_value=primary_pool) as load_pool,
         ):
             result = agent._restore_primary_runtime()
 
@@ -358,9 +358,9 @@ class TestRestorePrimaryRuntime:
         agent._credential_pool = fallback_pool
 
         with (
-            patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()),
+            patch("hermes_agent.agent.process_bootstrap.OpenAI", return_value=MagicMock()),
             patch(
-                "agent.credential_pool.load_pool",
+                "hermes_agent.agent.credential_pool.load_pool",
                 side_effect=RuntimeError("auth store unavailable"),
             ),
         ):
@@ -398,10 +398,10 @@ class TestRestorePrimaryRuntime:
 
         with (
             patch(
-                "agent.credential_pool.get_custom_provider_pool_key",
+                "hermes_agent.agent.credential_pool.get_custom_provider_pool_key",
                 return_value="custom:myllm",
             ),
-            patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()),
+            patch("hermes_agent.agent.process_bootstrap.OpenAI", return_value=MagicMock()),
         ):
             result = agent._restore_primary_runtime()
 
@@ -438,7 +438,7 @@ class TestRestorePrimaryRuntime:
             },
         }
         # The session was built on this config: its snapshot records the entry as the owner.
-        with patch("agent.credential_pool._load_config_safe", return_value=config):
+        with patch("hermes_agent.agent.credential_pool._load_config_safe", return_value=config):
             agent = _make_agent(
                 provider="custom:gemini-no-filter",
                 base_url="https://generativelanguage.googleapis.com/v1beta",
@@ -448,9 +448,9 @@ class TestRestorePrimaryRuntime:
         agent._swap_credential = MagicMock()
 
         with (
-            patch("agent.credential_pool._load_config_safe", return_value=config),
-            patch("agent.credential_pool.load_pool", return_value=primary_pool) as load_pool,
-            patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()),
+            patch("hermes_agent.agent.credential_pool._load_config_safe", return_value=config),
+            patch("hermes_agent.agent.credential_pool.load_pool", return_value=primary_pool) as load_pool,
+            patch("hermes_agent.agent.process_bootstrap.OpenAI", return_value=MagicMock()),
         ):
             result = agent._restore_primary_runtime()
 
@@ -479,9 +479,9 @@ class TestRestorePrimaryRuntime:
         )]
 
         with (
-            patch("agent.credential_pool._iter_custom_providers", return_value=configured),
-            patch("agent.credential_pool.load_pool", return_value=None) as load_pool,
-            patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()),
+            patch("hermes_agent.agent.credential_pool._iter_custom_providers", return_value=configured),
+            patch("hermes_agent.agent.credential_pool.load_pool", return_value=None) as load_pool,
+            patch("hermes_agent.agent.process_bootstrap.OpenAI", return_value=MagicMock()),
         ):
             result = agent._restore_primary_runtime()
 
@@ -512,7 +512,7 @@ class TestTryRecoverPrimaryTransport:
         error = _make_transport_error("ReadTimeout")
         agent.request_overrides = {"extra_body": {"fallback_only": True}}
 
-        with patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()), \
+        with patch("hermes_agent.agent.process_bootstrap.OpenAI", return_value=MagicMock()), \
              patch("time.sleep"):
             result = agent._try_recover_primary_transport(
                 error, retry_count=3, max_retries=3,
@@ -559,7 +559,7 @@ class TestTryRecoverPrimaryTransport:
 
         with (
             patch(
-                "agent.anthropic_adapter.build_anthropic_client",
+                "hermes_agent.agent.anthropic_adapter.build_anthropic_client",
                 return_value=rebuilt,
             ),
             patch("time.sleep"),
@@ -581,7 +581,7 @@ class TestTryRecoverPrimaryTransport:
         agent = _make_agent(provider="custom")
         error = _make_transport_error("ReadTimeout")
 
-        with patch("agent.process_bootstrap.OpenAI", side_effect=Exception("socket error")), \
+        with patch("hermes_agent.agent.process_bootstrap.OpenAI", side_effect=Exception("socket error")), \
              patch("time.sleep"):
             result = agent._try_recover_primary_transport(
                 error, retry_count=3, max_retries=3,
@@ -607,7 +607,7 @@ class TestRestoreInRunConversation:
 
         # Turn 1: activate fallback
         mock_client = _mock_resolve()
-        with patch("agent.auxiliary_client.resolve_provider_client", return_value=(mock_client, None)):
+        with patch("hermes_agent.agent.auxiliary_client.resolve_provider_client", return_value=(mock_client, None)):
             assert agent._try_activate_fallback() is True
 
         assert agent._fallback_activated is True
@@ -616,7 +616,7 @@ class TestRestoreInRunConversation:
         assert agent._fallback_index == 1
 
         # Turn 2: restore primary
-        with patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()):
+        with patch("hermes_agent.agent.process_bootstrap.OpenAI", return_value=MagicMock()):
             assert agent._restore_primary_runtime() is True
 
         assert agent._fallback_activated is False
@@ -638,7 +638,7 @@ class TestRateLimitCooldown:
             fallback_model={"provider": "openrouter", "model": "anthropic/claude-sonnet-4"},
         )
         mock_client = _mock_resolve()
-        with patch("agent.auxiliary_client.resolve_provider_client", return_value=(mock_client, None)):
+        with patch("hermes_agent.agent.auxiliary_client.resolve_provider_client", return_value=(mock_client, None)):
             agent._try_activate_fallback()
 
         assert agent._fallback_activated is True
@@ -653,13 +653,13 @@ class TestRateLimitCooldown:
 
     def test_cooldown_set_on_rate_limit_reason(self):
         """_try_activate_fallback with rate_limit reason sets _rate_limited_until."""
-        from agent.error_classifier import FailoverReason
+        from hermes_agent.agent.error_classifier import FailoverReason
         agent = _make_agent(
             fallback_model={"provider": "openrouter", "model": "anthropic/claude-sonnet-4"},
         )
         before = time.monotonic()
         mock_client = _mock_resolve()
-        with patch("agent.auxiliary_client.resolve_provider_client", return_value=(mock_client, None)):
+        with patch("hermes_agent.agent.auxiliary_client.resolve_provider_client", return_value=(mock_client, None)):
             agent._try_activate_fallback(reason=FailoverReason.rate_limit)
 
         assert hasattr(agent, "_rate_limited_until")
@@ -667,7 +667,7 @@ class TestRateLimitCooldown:
 
     def test_cooldown_not_set_when_already_on_fallback(self):
         """Chain-switching while already on fallback must not reset cooldown."""
-        from agent.error_classifier import FailoverReason
+        from hermes_agent.agent.error_classifier import FailoverReason
         agent = _make_agent(
             fallback_model=[
                 {"provider": "openrouter", "model": "model-a"},
@@ -675,7 +675,7 @@ class TestRateLimitCooldown:
             ],
         )
         mock_client = _mock_resolve()
-        with patch("agent.auxiliary_client.resolve_provider_client", return_value=(mock_client, None)):
+        with patch("hermes_agent.agent.auxiliary_client.resolve_provider_client", return_value=(mock_client, None)):
             # First call: leaving primary → cooldown should be set
             agent._try_activate_fallback(reason=FailoverReason.rate_limit)
             first_cooldown = getattr(agent, "_rate_limited_until", 0)
@@ -699,12 +699,12 @@ class TestSwitchModelRequestOverridesSnapshot:
     switched-to identity's overrides, not a stale or empty set."""
 
     def _switch(self, agent, **kwargs):
-        from agent.agent_runtime_helpers import switch_model
+        from hermes_agent.agent.agent_runtime_helpers import switch_model
 
         with (
-            patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()),
+            patch("hermes_agent.agent.process_bootstrap.OpenAI", return_value=MagicMock()),
             patch(
-                "agent.model_metadata.get_model_context_length",
+                "hermes_agent.agent.model_metadata.get_model_context_length",
                 return_value=128_000,
             ),
         ):
@@ -731,7 +731,7 @@ class TestSwitchModelRequestOverridesSnapshot:
         # A fallback activation mid-turn clobbers the live overrides…
         agent.request_overrides = {"extra_body": {"fallback_only": True}}
         error = _make_transport_error("ReadTimeout")
-        with patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()), \
+        with patch("hermes_agent.agent.process_bootstrap.OpenAI", return_value=MagicMock()), \
              patch("time.sleep"):
             result = agent._try_recover_primary_transport(
                 error, retry_count=3, max_retries=3,
@@ -751,7 +751,7 @@ class TestSwitchModelRequestOverridesSnapshot:
         )
         agent._fallback_activated = True
         agent.request_overrides = {"extra_body": {"fallback_only": True}}
-        with patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()):
+        with patch("hermes_agent.agent.process_bootstrap.OpenAI", return_value=MagicMock()):
             result = agent._restore_primary_runtime()
         assert result is True
         assert agent.request_overrides == overrides

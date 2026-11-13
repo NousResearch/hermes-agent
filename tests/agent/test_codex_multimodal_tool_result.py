@@ -12,7 +12,7 @@ This file verifies the Codex Responses adapter:
 
 from __future__ import annotations
 
-from agent.codex_responses_adapter import (
+from hermes_agent.agent.codex_responses_adapter import (
     _chat_messages_to_responses_input,
     _preflight_codex_input_items,
 )

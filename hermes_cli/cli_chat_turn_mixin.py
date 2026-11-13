@@ -18,7 +18,7 @@ from rich import box as rich_box
 from rich.panel import Panel
 from typing import Optional
 
-from agent.i18n import t
+from hermes_agent.agent.i18n import t
 
 from hermes_cli.cli_agent_setup_mixin import _retire_agent
 
@@ -93,7 +93,7 @@ class CLIChatTurnMixin:
         if isinstance(message, str) and not isinstance(message, TimelineNotification):
             # ``@`` references are expanded once, by the gateway, against this session's cwd.
             # Lone surrogates (rich-text clipboard paste) crash the OpenAI SDK's JSON serialization.
-            from agent.message_sanitization import _sanitize_surrogates
+            from hermes_agent.agent.message_sanitization import _sanitize_surrogates
             message = _sanitize_surrogates(message)
 
         self._chat_stage_user_message(agent, message)
@@ -104,7 +104,7 @@ class CLIChatTurnMixin:
             ChatConsole().print(f"[{_accent_hex()}]{'─' * 40}[/]")
             _cprint("")
 
-        from agent.notification_presentation import notification_config_snapshot, notification_policy_snapshot
+        from hermes_agent.agent.notification_presentation import notification_config_snapshot, notification_policy_snapshot
         with notification_policy_snapshot(agent, "cli", notification_config_snapshot()):
             turn = _ChatTurn()
             from hermes_agent.gateway.warning_notifications import diagnostic_turn_muted
@@ -160,14 +160,14 @@ class CLIChatTurnMixin:
         """Attach images natively (vision model) or pre-describe them as text; returns the message to send.
 
         "native" → OpenAI-style content parts (adapters translate per provider); "text" →
-        vision_analyze each image and prepend the description. Decision: agent/image_routing.py.
+        vision_analyze each image and prepend the description. Decision: hermes_agent/agent/image_routing.py.
         """
         from cli import _DIM, _RST, _cprint, _split_model_config_default
         if not images:
             return message
         text = message if isinstance(message, str) else ""
         try:
-            from agent.image_routing import build_native_content_parts, decide_image_input_mode
+            from hermes_agent.agent.image_routing import build_native_content_parts, decide_image_input_mode
             from hermes_cli.config import load_config
 
             _img_model = (_split_model_config_default(self.model)[0]
@@ -206,7 +206,7 @@ class CLIChatTurnMixin:
         # Clear the prior turn's override before exposing the new staged input: a shutdown
         # before the worker prologue would otherwise persist old API-local text as this message.
         import contextlib
-        from agent.message_metadata import stamp_message_timestamp
+        from hermes_agent.agent.message_metadata import stamp_message_timestamp
 
         persist_lock = getattr(agent, "_session_persist_lock", None)
         with persist_lock if persist_lock is not None else contextlib.nullcontext():
@@ -296,7 +296,7 @@ class CLIChatTurnMixin:
             _prepend_note_to_message, set_approval_callback, set_secret_capture_callback,
             set_sudo_password_callback,
         )
-        from agent.vault_backends.unlock import set_code_prompt_callback, set_save_login_prompt_callback, set_unlock_prompt_callback
+        from hermes_agent.agent.vault_backends.unlock import set_code_prompt_callback, set_save_login_prompt_callback, set_unlock_prompt_callback
         # terminal_tool callbacks are thread-local: run()'s registration is invisible here.
         set_sudo_password_callback(self._sudo_password_callback)
         set_approval_callback(self._approval_callback)
@@ -335,12 +335,12 @@ class CLIChatTurnMixin:
         _one_turn_model_restore = getattr(self, "_pending_one_turn_model_restore", None)
         self._pending_one_turn_model_restore = None
         # Set only by a dispatcher-spawned `-q` run; a human turn keeps today's call shape.
-        from agent.interrupt_compat import _accepts_keyword
+        from hermes_agent.agent.interrupt_compat import _accepts_keyword
         _author = getattr(self, "_single_query_turn_author", None)
         _author_kwargs = ({"turn_author": _author}
                           if _author is not None and _accepts_keyword(self.agent.run_conversation, "turn_author") else {})
         try:
-            from agent.notification_presentation import notification_turn
+            from hermes_agent.agent.notification_presentation import notification_turn
             muted = getattr(turn, "mute_notification_reply", False)
             with notification_turn(self.agent, muted=muted, session_id=self.session_id):
                 turn.result = self.agent.run_conversation(
@@ -387,7 +387,7 @@ class CLIChatTurnMixin:
             # refused notice. The in-memory history (result["messages"]) is already the clean
             # pre-refusal history; this makes the durable model read match it.
             if (turn.result or {}).get("failure_reason") == "content_policy_blocked":
-                from agent.turn_failure_copy import CONTENT_REFUSED_NOTICE
+                from hermes_agent.agent.turn_failure_copy import CONTENT_REFUSED_NOTICE
                 from hermes_agent.hermes_state_rewind import retain_refused_turn_for_display
                 retain_refused_turn_for_display(
                     getattr(self.agent, "_session_db", None), getattr(self.agent, "session_id", None),
@@ -493,7 +493,7 @@ class CLIChatTurnMixin:
         # AsyncOpenAI clients bound to the worker's now-closed loop would crash
         # prompt_toolkit's loop from __del__ on GC.
         try:
-            from agent.auxiliary_client import cleanup_stale_async_clients
+            from hermes_agent.agent.auxiliary_client import cleanup_stale_async_clients
             cleanup_stale_async_clients()
         except Exception:
             pass
@@ -778,7 +778,7 @@ class CLIChatTurnMixin:
                 # Usage-window plan: what to do next, in commands that always work here. Hermes never
                 # switches on its own; the user picks.
                 try:
-                    from agent.plan_limits import limit_next_steps_from_payload
+                    from hermes_agent.agent.plan_limits import limit_next_steps_from_payload
                     ChatConsole().print(Panel(
                         limit_next_steps_from_payload(_limit, markup=True),
                         title="[#CD7F32 bold]⚡ Limit reached[/]", title_align="left", border_style="#CD7F32",

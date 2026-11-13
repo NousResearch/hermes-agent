@@ -48,7 +48,7 @@ _RELATIVE_BOUND_RE = re.compile(r"^(\d+)\s*(h|d|w)$", re.IGNORECASE)
 _RELATIVE_UNIT_SECONDS = {"h": 3600, "d": 86400, "w": 604800}
 # Raw FTS rows are only a plan input; the response hydrates its own window/bookends.
 _DISCOVER_SEARCH_FIELDS = ("id", "session_id", "role", "snippet", "source", "model", "session_started")
-# Compaction handoff summaries (agent/context_compressor.py); excluded from bookends.
+# Compaction handoff summaries (hermes_agent/agent/context_compressor.py); excluded from bookends.
 _COMPACTION_PREFIXES = ("[CONTEXT COMPACTION", "[CONTEXT SUMMARY]:")
 # /new, /reset, idle/daily expiry and CLI /new ("new_session") end the predecessor WITHOUT
 # carrying its transcript forward — unlike compression continuations and live delegation
@@ -632,7 +632,7 @@ def session_search(query: str = "", role_filter: str | None = None, limit: int |
     # surface, not the FTS read API, and every read is an owner RPC. Handing it here made recall in a
     # worker fail with `'RuntimeSessionStore' object has no attribute 'search_messages'` (#141705), so
     # recall opens its own read-only handle — the same one the no-db path below uses.
-    from agent.runtime_session_store import RuntimeSessionStore
+    from hermes_agent.agent.runtime_session_store import RuntimeSessionStore
     if isinstance(db, RuntimeSessionStore):
         db = None
     if db is None:

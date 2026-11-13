@@ -2,7 +2,7 @@
 
 from unittest.mock import patch
 
-from agent.context_compressor import ContextCompressor
+from hermes_agent.agent.context_compressor import ContextCompressor
 
 
 def test_compressor_threads_custom_providers_into_context_length_resolution():
@@ -13,7 +13,7 @@ def test_compressor_threads_custom_providers_into_context_length_resolution():
         captured.update(kwargs)
         return 99999
 
-    with patch("agent.context_compressor.get_model_context_length", side_effect=fake_resolve):
+    with patch("hermes_agent.agent.context_compressor.get_model_context_length", side_effect=fake_resolve):
         comp = ContextCompressor(model="m", base_url="https://x.example.com/v1", api_key="k", provider="custom",
                                  custom_providers=providers)
         assert comp.context_length == 99999

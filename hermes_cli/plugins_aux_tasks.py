@@ -15,7 +15,7 @@ def build_auxiliary_task_entry(
     """Registry entry for a plugin auxiliary task, or ``ValueError`` for a bad key.
 
     ``me`` is the manifest name (for messages); ``owner_id`` is the canonical id ``ctx.llm`` is
-    bound to, so agent/plugin_llm.py can match it. ``registered`` is the manager's current
+    bound to, so hermes_agent/agent/plugin_llm.py can match it. ``registered`` is the manager's current
     ``_aux_tasks`` (re-registration by the same owner is allowed).
     """
     if not key or not isinstance(key, str):

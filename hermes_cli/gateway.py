@@ -34,7 +34,7 @@ PROJECT_ROOT = Path(_startup_fast.project_root_str())
 
 from hermes_agent.gateway.config import coerce_systemd_watchdog_seconds, load_gateway_config
 from hermes_agent.gateway.status import terminate_pid
-from agent.deadline import poll_until
+from hermes_agent.agent.deadline import poll_until
 from hermes_agent.gateway.restart import (
     DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT,
     EXTERNAL_GATEWAY_SUPERVISOR_ENV,
@@ -1032,7 +1032,7 @@ def _restart_argv_is_host_gateway(argv: list[str]) -> bool:
     if any(part.startswith("--profile=") and not part.endswith("=default") for part in argv):
         return False
     try:
-        from agent.secret_scope import is_multiplex_active
+        from hermes_agent.agent.secret_scope import is_multiplex_active
         if is_multiplex_active():
             return True
     except Exception:

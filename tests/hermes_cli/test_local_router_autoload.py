@@ -53,7 +53,7 @@ class _Client:
 
 
 def test_context_probe_reads_launch_args_for_an_unloaded_model():
-    from agent.model_metadata_llamacpp import llamacpp_context
+    from hermes_agent.agent.model_metadata_llamacpp import llamacpp_context
 
     client = _Client()
     assert llamacpp_context(client, "http://127.0.0.1:1", "qwen") == 65536
@@ -63,7 +63,7 @@ def test_context_probe_reads_launch_args_for_an_unloaded_model():
 
 @pytest.mark.parametrize("body", [["not", "an", "object"], {"data": "oops"}, {"data": [{"id": "qwen", "status": "loading"}]}])
 def test_context_probe_survives_an_odd_models_body(body):
-    from agent.model_metadata_llamacpp import router_launch_ctx
+    from hermes_agent.agent.model_metadata_llamacpp import router_launch_ctx
 
     client = SimpleNamespace(get=lambda url: SimpleNamespace(status_code=200, json=lambda: body))
     assert router_launch_ctx(client, "http://127.0.0.1:1", "qwen") is None

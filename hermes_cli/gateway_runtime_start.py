@@ -32,7 +32,7 @@ SUPERVISOR_MARKER_ENV = (
 # auto-approval for messaging/cron, and a Kanban worker's or terminal's pins would retarget every later
 # session's board, cwd and source. The behaviour values main's CLI read per process (ephemeral prompt,
 # prefill file, provider request, project plugins) ride each session's ``client_env`` instead
-# (agent.session_client_env); an operator-started gateway keeps its own environment.
+# (hermes_agent.agent.session_client_env); an operator-started gateway keeps its own environment.
 DAEMON_STRIPPED_ENV = (
     "HERMES_PROFILE", "HERMES_YOLO_MODE", "HERMES_IGNORE_RULES", "HERMES_SAFE_MODE",
     "HERMES_IGNORE_USER_CONFIG", "HERMES_ACCEPT_HOOKS", "HERMES_SESSION_SOURCE", "TERMINAL_CWD",
@@ -201,7 +201,7 @@ def startup_failure_report(profile_home: Path, offset: int, status: int, pid: in
         if status_file.get("exit_reason") and pid is not None and status_file.get("pid") == pid:
             lines = [str(status_file["exit_reason"])[:2000]]
             path = profile_home / "logs" / "gateway.log"
-    from agent.redact import redact_sensitive_text
+    from hermes_agent.agent.redact import redact_sensitive_text
     tail = redact_sensitive_text("\n".join(lines), force=True, redact_url_credentials=True)
     see = f'type "{path}"' if sys.platform == "win32" else f"tail -n 200 '{path}'"
     body = "\n".join("  " + line for line in tail.splitlines()) if tail else "  (it wrote no output)"

@@ -14,14 +14,14 @@ ARE wire-replayed on every retained turn and stay charged unconditionally
 
 import pytest
 
-from agent.context_compressor import (
+from hermes_agent.agent.context_compressor import (
     _ALWAYS_REPLAYED_BUDGET_KEYS,
     _NEWEST_TURN_ONLY_BUDGET_KEYS,
     _REPLAY_BUDGET_KEYS,
     _estimate_msg_budget_tokens,
 )
-from agent.model_metadata import estimate_tokens_rough
-from agent.turn_context import substitute_api_content
+from hermes_agent.agent.model_metadata import estimate_tokens_rough
+from hermes_agent.agent.turn_context import substitute_api_content
 
 
 BIG_THINKING = "deliberation " * 400  # ~1.3K tokens of stale thinking text
@@ -131,7 +131,7 @@ class TestTailCutBehavior:
     heavy thinking — the #73624 symptom was the cut landing early."""
 
     def _compressor(self):
-        from agent.context_compressor import ContextCompressor
+        from hermes_agent.agent.context_compressor import ContextCompressor
 
         cc = ContextCompressor(
             model="claude-opus-5",

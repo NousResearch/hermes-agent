@@ -9,8 +9,8 @@ floor (75% for <512K models) still applies on top of per-model overrides.
 
 from unittest.mock import patch
 
-from agent.context_compressor import ContextCompressor, resolve_model_threshold
-from agent.context_engine import ContextEngine
+from hermes_agent.agent.context_compressor import ContextCompressor, resolve_model_threshold
+from hermes_agent.agent.context_engine import ContextEngine
 
 
 # ---------------------------------------------------------------------------
@@ -37,7 +37,7 @@ class TestResolveModelThreshold:
 # ---------------------------------------------------------------------------
 
 class TestContextCompressorModelThresholds:
-    @patch("agent.context_compressor.get_model_context_length", return_value=1_000_000)
+    @patch("hermes_agent.agent.context_compressor.get_model_context_length", return_value=1_000_000)
     def test_init_large_context_with_override(self, _mock):
         """Large context (>=512K) + per-model override: override applies directly."""
         cc = ContextCompressor(
@@ -53,7 +53,7 @@ class TestContextCompressorModelThresholds:
 
 
 
-    @patch("agent.context_compressor.get_model_context_length", return_value=256_000)
+    @patch("hermes_agent.agent.context_compressor.get_model_context_length", return_value=256_000)
     def test_init_no_model_thresholds_dict(self, _mock):
         """Empty model_thresholds dict = backward compatible."""
         cc = ContextCompressor(
@@ -68,7 +68,7 @@ class TestContextCompressorModelThresholds:
         assert cc.model_thresholds == {}
 
 
-    @patch("agent.context_compressor.get_model_context_length")
+    @patch("hermes_agent.agent.context_compressor.get_model_context_length")
     def test_update_model_re_resolves_threshold(self, mock_ctx):
         """Switching models re-resolves the per-model threshold + re-applies floor."""
         mock_ctx.return_value = 256_000
@@ -139,7 +139,7 @@ class TestProviderScopedKeys:
         assert resolve_model_threshold("gpt-6-astra-900k", both, 0.50, "openai-codex") == 0.50
         assert resolve_model_threshold("gpt-6-astra", both, 0.50, "openai-codex") == 0.85
 
-    @patch("agent.context_compressor.get_model_context_length", return_value=1_100_000)
+    @patch("hermes_agent.agent.context_compressor.get_model_context_length", return_value=1_100_000)
     def test_compressor_switch_between_routes_rescopes(self, _mock):
         cc = ContextCompressor(
             model="gpt-6-astra", threshold_percent=0.50, provider="openai-codex",

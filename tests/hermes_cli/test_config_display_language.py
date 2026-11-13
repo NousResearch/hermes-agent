@@ -6,7 +6,7 @@ from __future__ import annotations
 import pytest
 import hermes_yaml as yaml
 
-from agent import i18n, i18n_layers
+from hermes_agent.agent import i18n, i18n_layers
 from hermes_cli.config import set_config_value
 
 

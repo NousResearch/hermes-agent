@@ -2,7 +2,7 @@
 
 from unittest.mock import MagicMock, patch
 
-from agent.context_compressor import (
+from hermes_agent.agent.context_compressor import (
     COMPRESSED_SUMMARY_METADATA_KEY,
     ContextCompressor,
     SUMMARY_PREFIX,
@@ -14,7 +14,7 @@ from agent.context_compressor import (
 
 
 def _compressor(protect_first_n: int = 1) -> ContextCompressor:
-    with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+    with patch("hermes_agent.agent.context_compressor.get_model_context_length", return_value=100000):
         return ContextCompressor(
             model="test/model",
             threshold_percent=0.85,
@@ -104,7 +104,7 @@ def test_handoff_in_protected_head_is_replaced_not_duplicated():
     compressor = _compressor()
     old_summary = "OLD-PROTECTED-HANDOFF unique old summary body"
 
-    with patch("agent.context_compressor.call_llm", return_value=_response("UPDATED summary body")):
+    with patch("hermes_agent.agent.context_compressor.call_llm", return_value=_response("UPDATED summary body")):
         compressed = compressor.compress(_messages_with_handoff(old_summary))
 
     # The summary may be emitted standalone or merged into the first tail
@@ -179,7 +179,7 @@ def test_resume_handoff_after_default_protected_head_decays_initial_turns():
     compressor = _compressor(protect_first_n=3)
     old_summary = "DEFAULT-RESTART-SUMMARY durable facts from before restart"
 
-    with patch("agent.context_compressor.call_llm", return_value=_response("fresh summary")) as mock_call:
+    with patch("hermes_agent.agent.context_compressor.call_llm", return_value=_response("fresh summary")) as mock_call:
         result = compressor.compress(_messages_with_default_handoff(old_summary))
 
     prompt = mock_call.call_args.kwargs["messages"][0]["content"]
@@ -238,7 +238,7 @@ def test_restart_simulation_fresh_compressor_does_not_reprotect_head():
 
     # End-to-end: the first post-restart compaction must not preserve the
     # pre-restart head turns or the old handoff verbatim.
-    with patch("agent.context_compressor.call_llm", return_value=_response("fresh summary")):
+    with patch("hermes_agent.agent.context_compressor.call_llm", return_value=_response("fresh summary")):
         result = restarted.compress(msgs)
     result_text = "\n".join(str(msg.get("content", "")) for msg in result)
     assert "PERSISTED-HANDOFF durable facts" not in result_text
@@ -265,7 +265,7 @@ def test_zero_protect_first_n_still_folds_restart_fossil():
         {"role": "user", "content": "active request"},
     ]
 
-    with patch("agent.context_compressor.call_llm", return_value=_response("fresh summary")):
+    with patch("hermes_agent.agent.context_compressor.call_llm", return_value=_response("fresh summary")):
         result = compressor.compress(msgs)
 
     result_text = "\n".join(str(msg.get("content", "")) for msg in result)
@@ -319,7 +319,7 @@ def test_restart_fossil_survives_summary_abort_then_retry():
 
     # Retry: the fossil beyond the narrow window is still folded, not copied
     # forward as a second stacked summary.
-    with patch("agent.context_compressor.call_llm", return_value=_response("fresh summary")):
+    with patch("hermes_agent.agent.context_compressor.call_llm", return_value=_response("fresh summary")):
         result = compressor.compress([dict(m) for m in msgs])
 
     assert all(old_summary not in str(msg.get("content", "")) for msg in result)
@@ -473,7 +473,7 @@ def test_fallback_handoff_anchors_reach_the_next_summarizer():
     handoff rows from its window as already folded. The next summarizer must therefore see the fallback's
     anchors, not only the stale in-memory summary from before the fallback."""
     compressor = _compressor()
-    with patch("agent.context_compressor.call_llm", return_value=_response("FIRST healthy summary")):
+    with patch("hermes_agent.agent.context_compressor.call_llm", return_value=_response("FIRST healthy summary")):
         messages = compressor.compress(_messages_with_handoff("seed summary"))
     assert (compressor._previous_summary or "").endswith("FIRST healthy summary")
 
@@ -487,7 +487,7 @@ def test_fallback_handoff_anchors_reach_the_next_summarizer():
     assert any("FALLBACK-ANCHOR-ASK" in str(m.get("content")) for m in messages)
 
     messages = messages + _turns("later")
-    with patch("agent.context_compressor.call_llm", return_value=_response("THIRD summary")) as mock_call:
+    with patch("hermes_agent.agent.context_compressor.call_llm", return_value=_response("THIRD summary")) as mock_call:
         compressor.compress(messages)
 
     prompt = mock_call.call_args.kwargs["messages"][0]["content"]

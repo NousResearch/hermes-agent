@@ -132,7 +132,7 @@ class Peer(BaseHTTPRequestHandler):
 
 server = ThreadingHTTPServer(("127.0.0.1", 0), Peer)
 threading.Thread(target=server.serve_forever, daemon=True).start()
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 from hermes_agent.hermes_state import SessionDB
 from hermes_agent.gateway.session import SessionStore, AsyncSessionStore, SessionSource
 from hermes_agent.gateway.config import GatewayConfig, Platform
@@ -151,7 +151,7 @@ runtime = dict(
     api_mode="chat_completions",
 )
 gateway_run._resolve_runtime_agent_kwargs = lambda: runtime
-import run_agent
+from hermes_agent import run_agent
 
 
 class ControlledAgent(AIAgent):

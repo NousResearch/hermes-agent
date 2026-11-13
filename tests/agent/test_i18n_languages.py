@@ -3,8 +3,8 @@
 
 from __future__ import annotations
 
-from agent import i18n
-from agent.i18n_languages import BUNDLED_LANGUAGE_INFO, describe_language
+from hermes_agent.agent import i18n
+from hermes_agent.agent.i18n_languages import BUNDLED_LANGUAGE_INFO, describe_language
 
 
 def test_bundled_table_matches_bundled_catalogs():
@@ -47,7 +47,7 @@ def test_language_surfaces_report_each_layer(monkeypatch, tmp_path):
     only show in English."""
     import hermes_yaml as yaml
 
-    from agent import i18n_layers
+    from hermes_agent.agent import i18n_layers
 
     home = tmp_path / "home"
     (home / "locales").mkdir(parents=True)

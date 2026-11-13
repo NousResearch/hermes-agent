@@ -23,7 +23,7 @@ def _wait_for(predicate, timeout: float = 2.0) -> None:
 
 @pytest.fixture
 def observer(monkeypatch):
-    from agent.plugin_stream_hooks import shutdown_plugin_stream_hook_dispatcher
+    from hermes_agent.agent.plugin_stream_hooks import shutdown_plugin_stream_hook_dispatcher
 
     shutdown_plugin_stream_hook_dispatcher()
     seen: list[dict] = []

@@ -3,8 +3,8 @@
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-import run_agent
-from agent.session_activity import ActivityProvenance
+from hermes_agent import run_agent
+from hermes_agent.agent.session_activity import ActivityProvenance
 
 
 def _agent_with_db(session_id: str = "sess-1"):
@@ -112,7 +112,7 @@ def test_touch_activity_persist_errors_are_swallowed(monkeypatch):
 
 def test_heartbeat_respects_cadence_constant(monkeypatch):
     """The rate limiter must key off the shared cadence constant."""
-    from agent.session_activity import (
+    from hermes_agent.agent.session_activity import (
         SESSION_ACTIVITY_HEARTBEAT_MIN_INTERVAL_SECONDS as INTERVAL,
     )
 

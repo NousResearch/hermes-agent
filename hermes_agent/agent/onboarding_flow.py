@@ -1,8 +1,8 @@
 """First-run onboarding as data: the beats, the run record, and how each event moves the record.
 
 Pure: no I/O, no clock. ``apply(record, event, facts, now=...)`` returns the next record, the result
-the model reads, and the key of the reminder that rides on it (``agent/onboarding_text.py`` renders
-it). The record is stored by ``agent/onboarding_record.py``; ``hermes_agent/tools/setup_beat_tool.py`` drives it.
+the model reads, and the key of the reminder that rides on it (``hermes_agent/agent/onboarding_text.py`` renders
+it). The record is stored by ``hermes_agent/agent/onboarding_record.py``; ``hermes_agent/tools/setup_beat_tool.py`` drives it.
 """
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
-from agent.onboarding_first_tasks import FIXED_ID, OWN_ID, card_options, pick_error
+from hermes_agent.agent.onboarding_first_tasks import FIXED_ID, OWN_ID, card_options, pick_error
 
 PENDING, SHOWN, DONE, SKIPPED = "pending", "shown", "done", "skipped"
 ONBOARDING, COMPLETE, PHASE_SKIPPED = "onboarding", "complete", "skipped"

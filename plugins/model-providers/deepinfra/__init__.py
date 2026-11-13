@@ -3,14 +3,14 @@ their own plugin subsystems)."""
 
 from typing import Any
 
-from agent.reasoning_effort import OPENAI_COMPAT_WIRE_EFFORTS, clamp_effort, requested_effort
+from hermes_agent.agent.reasoning_effort import OPENAI_COMPAT_WIRE_EFFORTS, clamp_effort, requested_effort
 from providers import register_provider
 from providers.base import ProviderProfile
 
 
 class _DeepInfraProfile(ProviderProfile):
     """DeepInfra profile with live vision-default discovery, so shared vision
-    resolution in ``agent/auxiliary_client.py`` stays provider-agnostic."""
+    resolution in ``hermes_agent/agent/auxiliary_client.py`` stays provider-agnostic."""
 
     def build_api_kwargs_extras(
         self, *, reasoning_config: dict | None = None, **context: Any
@@ -33,7 +33,7 @@ class _DeepInfraProfile(ProviderProfile):
         """First vision-capable *chat* model from the live catalog, or None. Key-gated so a box
         without DEEPINFRA_API_KEY never pays the round-trip; requires the ``chat`` surface tag so
         an image-gen model carrying a ``vision`` tag can't be picked as a chat vision backend."""
-        from agent.secret_scope import get_secret
+        from hermes_agent.agent.secret_scope import get_secret
 
         if not (get_secret("DEEPINFRA_API_KEY") or "").strip():
             return None

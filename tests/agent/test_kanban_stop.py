@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from agent.kanban_stop import (
+from hermes_agent.agent.kanban_stop import (
     build_kanban_stop_nudge,
     kanban_stop_nudge_enabled,
     session_called_kanban_terminal,
@@ -26,7 +26,7 @@ def test_env_can_disable(clear_kanban_env):
 
 
 def test_nudge_disabled_inside_delegated_child(clear_kanban_env):
-    from agent.delegation_context import delegated_child_context
+    from hermes_agent.agent.delegation_context import delegated_child_context
 
     clear_kanban_env.setenv("HERMES_KANBAN_TASK", "t_parent")
 
@@ -38,7 +38,7 @@ def test_nudge_disabled_inside_delegated_child(clear_kanban_env):
 
 
 def test_nudge_disabled_inside_non_dispatcher_context(clear_kanban_env):
-    from agent.delegation_context import non_dispatcher_owned_context
+    from hermes_agent.agent.delegation_context import non_dispatcher_owned_context
 
     clear_kanban_env.setenv("HERMES_KANBAN_TASK", "t_parent")
 

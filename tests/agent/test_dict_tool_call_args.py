@@ -45,9 +45,9 @@ class _FakeClient:
 
 
 def test_tool_call_validation_accepts_dict_arguments(monkeypatch):
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
-    monkeypatch.setattr("agent.process_bootstrap.OpenAI", lambda **kwargs: _FakeClient())
+    monkeypatch.setattr("hermes_agent.agent.process_bootstrap.OpenAI", lambda **kwargs: _FakeClient())
     monkeypatch.setattr(
         "hermes_agent.model_tools.get_tool_definitions",
         lambda *args, **kwargs: [{"function": {"name": "read_file"}}],

@@ -13,7 +13,7 @@ import sys
 import time
 from pathlib import Path, PurePosixPath
 
-from agent.runtime_self_protection import split_entry
+from hermes_agent.agent.runtime_self_protection import split_entry
 
 logger = logging.getLogger(__name__)
 
@@ -147,7 +147,7 @@ def _configured_terminal_cwd(task_id: str = "default") -> str | None:
     A hosted scope gets the terminal config's sanitized cwd (``_container_default_cwd``), the directory its terminal
     commands start in, never the raw value the config may have discarded."""
     # See #68559.
-    from agent.runtime_cwd import scope_terminal_cwd
+    from hermes_agent.agent.runtime_cwd import scope_terminal_cwd
     from hermes_agent.tools.environments.sandbox_scope import hosted_scope
 
     if hosted_scope() is not None:
@@ -228,7 +228,7 @@ def _ssh_remote_anchor(task_id: str) -> str:
     value that is neither ``~``-prefixed nor POSIX-absolute (a Windows or relative
     host path) is skipped. ``coerce_ssh_remote_cwd`` maps the host subprocess home back to ``~``.
     """
-    from agent.runtime_cwd import scope_terminal_cwd
+    from hermes_agent.agent.runtime_cwd import scope_terminal_cwd
     from hermes_agent.tools.terminal_tool import get_session_cwd, resolve_task_overrides
     from hermes_agent.tools.terminal_tool_config import coerce_ssh_remote_cwd
 

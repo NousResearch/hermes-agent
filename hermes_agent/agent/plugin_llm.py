@@ -6,7 +6,7 @@ arguments mirroring the host config shape; the host owns routing, auth, timeouts
 and fallback, so the plugin never sees raw tokens or keys. Every override knob is
 gated by the per-plugin ``plugins.entries.<id>.llm.allow_*_override`` trust flags
 (fail-closed: a missing block means "no overrides"). Backed by
-:func:`agent.auxiliary_client.call_llm`.
+:func:`hermes_agent.agent.auxiliary_client.call_llm`.
 """
 
 from __future__ import annotations
@@ -417,9 +417,9 @@ def _extract_text(response: Any) -> str:
 
 
 def _main_config_value(reader: str, default: str) -> str:
-    """Read the current main provider/model via ``agent.auxiliary_client``."""
+    """Read the current main provider/model via ``hermes_agent.agent.auxiliary_client``."""
     try:
-        import agent.auxiliary_client as ac
+        import hermes_agent.agent.auxiliary_client as ac
         return (getattr(ac, reader)() or "").strip() or default
     except Exception:  # pragma: no cover — defensive
         return default
@@ -607,7 +607,7 @@ class PluginLlm:
         whole path and receives the call kwargs."""
         if self._sync_caller is not None:
             return self._sync_caller(**kw)
-        from agent.auxiliary_client import call_llm
+        from hermes_agent.agent.auxiliary_client import call_llm
         call_kw, route_info = self._host_kwargs(kw)
         return self._attributed(kw, call_llm(**call_kw), route_info)
 
@@ -615,7 +615,7 @@ class PluginLlm:
         """Async sibling of :meth:`_invoke_sync` (``async_call_llm`` / ``async_caller``)."""
         if self._async_caller is not None:
             return await self._async_caller(**kw)
-        from agent.auxiliary_client import async_call_llm
+        from hermes_agent.agent.auxiliary_client import async_call_llm
         call_kw, route_info = self._host_kwargs(kw)
         return self._attributed(kw, await async_call_llm(**call_kw), route_info)
 

@@ -207,7 +207,7 @@ def _cfg_get_reasoning(params):
     session = _sessions.get(params.get("session_id", "")) or {}
     reasoning_config = session.get("create_reasoning_override")
     if session and not isinstance(reasoning_config, dict):
-        from agent.voice_turn_route import session_runtime_view
+        from hermes_agent.agent.voice_turn_route import session_runtime_view
         reasoning_config = getattr(session_runtime_view(session.get("agent")), "reasoning_config", None)
     if isinstance(reasoning_config, dict):
         enabled = reasoning_config.get("enabled") is not False
@@ -508,7 +508,7 @@ def _(rid, params: dict) -> dict:
     and consent lives with the CALLER (privacy notice first). Structured ``ok``/``error`` envelope so
     upload failures render inline. Optional: ``error_context`` (-> ``error-context.txt``),
     ``extra_files`` ({label -> text}), ``log_lines`` (default 200); all force-redacted."""
-    # Outside the try: the except path needs it, and agent.redact is a hard dependency.
+    # Outside the try: the except path needs it, and hermes_agent.agent.redact is a hard dependency.
     from hermes_cli.debug_redaction import redact_debug_support_text
 
     try:

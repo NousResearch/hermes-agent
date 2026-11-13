@@ -7,8 +7,8 @@ review must resolve to "skipped" instead of opening the masked prompt on the use
 
 from __future__ import annotations
 
-import run_agent as run_agent_module
-from run_agent import AIAgent
+import hermes_agent.run_agent as run_agent_module
+from hermes_agent.run_agent import AIAgent
 from tests.agent.test_background_review import ImmediateThread, _bare_agent
 from hermes_agent.tools import skills_tool
 from hermes_agent.tools.skills_tool_setup import _capture_required_environment_variables

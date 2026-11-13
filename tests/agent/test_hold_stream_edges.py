@@ -18,7 +18,7 @@ from tests.fakes.redactor_plugin import COMMENTARY, RAW, REWRITE, redactor_home,
 
 
 def _agent(server, **kwargs):
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     return AIAgent(base_url=server.base_url, api_key="sk-fake-e2e", provider="custom", model="fake-model",
                    quiet_mode=True, skip_context_files=True, skip_memory=True, enabled_toolsets=["todo"], **kwargs)
@@ -93,7 +93,7 @@ def test_held_transform_that_raises_withholds_the_reply():
     assert RAW not in result["final_response"] and RAW not in str(result["pre_transform_response"])
     assert RAW not in str(result["messages"][-1].get("content"))
     assert not [text for text in shown if text]
-    from agent.turn_finalizer import HELD_TRANSFORM_FAILED_REPLY
+    from hermes_agent.agent.turn_finalizer import HELD_TRANSFORM_FAILED_REPLY
     assert result["final_response"] == HELD_TRANSFORM_FAILED_REPLY
 
 
@@ -137,7 +137,7 @@ def test_held_commentary_stays_out_of_history_but_in_the_model_context():
 
 
 def test_codex_reply_that_failed_after_its_text_is_still_rewritten(monkeypatch):
-    from agent.transports.codex_app_server_session import CodexAppServerSession, TurnResult
+    from hermes_agent.agent.transports.codex_app_server_session import CodexAppServerSession, TurnResult
     from hermes_agent.gateway.session_controls import display_projection
     from hermes_cli import plugins
     from tests.agent.test_codex_app_server_integration import _make_codex_agent

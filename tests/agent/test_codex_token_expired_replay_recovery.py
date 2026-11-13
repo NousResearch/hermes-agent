@@ -12,9 +12,9 @@ from __future__ import annotations
 
 import pytest
 
-from agent.error_classifier import FailoverReason, classify_api_error
-from agent.turn_recovery import recover_after_classification
-from agent.turn_retry_state import TurnRetryState
+from hermes_agent.agent.error_classifier import FailoverReason, classify_api_error
+from hermes_agent.agent.turn_recovery import recover_after_classification
+from hermes_agent.agent.turn_retry_state import TurnRetryState
 
 _TOKEN_EXPIRED = "Provided authentication token is expired. Please try signing in again."
 
@@ -53,11 +53,11 @@ class _Agent:
         return False
 
     def _extract_api_error_context(self, error):
-        from agent.agent_runtime_helpers import extract_api_error_context
+        from hermes_agent.agent.agent_runtime_helpers import extract_api_error_context
         return extract_api_error_context(error)
 
     def _disable_codex_reasoning_replay(self, messages=None, **kwargs):
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
         return AIAgent._disable_codex_reasoning_replay(self, messages, **kwargs)
 
     def __getattr__(self, name):
@@ -115,8 +115,8 @@ def test_token_expired_without_cached_reasoning_stays_on_auth_path(err, history)
 def test_pooled_token_expired_strips_cached_reasoning_before_benching_entries():
     """A stale blob is a session-state problem: the strip must run before the pool benches
     every healthy entry (STATUS_EXHAUSTED) over a 401 the credentials did not cause."""
-    from agent.agent_runtime_helpers import recover_with_credential_pool
-    from agent.credential_pool import CredentialPool, PooledCredential
+    from hermes_agent.agent.agent_runtime_helpers import recover_with_credential_pool
+    from hermes_agent.agent.credential_pool import CredentialPool, PooledCredential
 
     agent, retry, messages = _Agent(), TurnRetryState(), _cached_history()
     entries = [

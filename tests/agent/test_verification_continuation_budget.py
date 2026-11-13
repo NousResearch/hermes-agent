@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 
 def _response(content="composed report"):
@@ -23,7 +23,7 @@ def agent(tmp_path, monkeypatch):
     with (
         patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]),
         patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
-        patch("agent.process_bootstrap.OpenAI"),
+        patch("hermes_agent.agent.process_bootstrap.OpenAI"),
     ):
         instance = AIAgent(
             session_id="verify-budget-test",
@@ -70,7 +70,7 @@ def test_verify_on_stop_preserves_composed_report_at_budget_limit(agent, monkeyp
     monkeypatch.setenv("HERMES_VERIFY_ON_STOP", "1")
 
     with (
-        patch("agent.verification_stop.build_verify_on_stop_nudge", return_value="verify it"),
+        patch("hermes_agent.agent.verification_stop.build_verify_on_stop_nudge", return_value="verify it"),
         patch("hermes_cli.plugins.invoke_hook", return_value=[]),
     ):
         result = agent.run_conversation("edit changed.py")
@@ -95,7 +95,7 @@ def test_pre_verify_preserves_composed_report_at_budget_limit(agent, monkeypatch
             "hermes_cli.plugins.get_pre_verify_continue_message",
             return_value="run project tests",
         ),
-        patch("agent.verify_hooks.max_verify_nudges", return_value=2),
+        patch("hermes_agent.agent.verify_hooks.max_verify_nudges", return_value=2),
         patch("hermes_cli.plugins.invoke_hook", return_value=[]),
     ):
         result = agent.run_conversation("edit changed.py")
@@ -134,7 +134,7 @@ def test_later_verified_response_supersedes_pending_report(agent, monkeypatch):
 
     with (
         patch(
-            "agent.verification_stop.build_verify_on_stop_nudge",
+            "hermes_agent.agent.verification_stop.build_verify_on_stop_nudge",
             side_effect=["verify it", None],
         ),
         patch("hermes_cli.plugins.invoke_hook", return_value=[]),
@@ -168,7 +168,7 @@ def test_multiple_verification_retries_publish_each_candidate_once(agent, monkey
 
     with (
         patch(
-            "agent.verification_stop.build_verify_on_stop_nudge",
+            "hermes_agent.agent.verification_stop.build_verify_on_stop_nudge",
             side_effect=nudge_side_effects,
         ),
         patch("hermes_cli.plugins.invoke_hook", return_value=[]),
@@ -205,7 +205,7 @@ def test_verify_on_stop_emits_interim_response_to_ui(agent, monkeypatch):
     agent.interim_assistant_callback = capture_callback
 
     with (
-        patch("agent.verification_stop.build_verify_on_stop_nudge", return_value="verify it"),
+        patch("hermes_agent.agent.verification_stop.build_verify_on_stop_nudge", return_value="verify it"),
         patch("hermes_cli.plugins.invoke_hook", return_value=[]),
     ):
         result = agent.run_conversation("edit changed.py")

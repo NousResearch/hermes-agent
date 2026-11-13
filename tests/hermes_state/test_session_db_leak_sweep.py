@@ -70,7 +70,7 @@ _upgrade_thread: list[threading.Thread] = []
 
 
 def test_slow_title_upgrade_thread_is_left_running_within_the_test():
-    from agent.title_generator import _UPGRADE_THREADS
+    from hermes_agent.agent.title_generator import _UPGRADE_THREADS
 
     thread = threading.Thread(target=time.sleep, args=(1.5,), name="auto-title", daemon=True)
     _UPGRADE_THREADS.add(thread)

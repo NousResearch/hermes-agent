@@ -83,12 +83,12 @@ def _rows(db, sql: str, cutoff: float) -> list[dict[str, Any]]:
 
 
 def _get_usage_analytics(days: int = 30, profile: Optional[str] = None):
-    from agent.insights import InsightsEngine
+    from hermes_agent.agent.insights import InsightsEngine
 
     db = _open_session_db_for_profile(profile, read_only=True)
     try:
         cutoff = time.time() - (days * 86400)
-        # Local calendar day, per-row (DST-correct), the same day /insights uses (agent/insights.py).
+        # Local calendar day, per-row (DST-correct), the same day /insights uses (hermes_agent/agent/insights.py).
         daily = _rows(db, """
             SELECT date(started_at, 'unixepoch', 'localtime') as day,
                    SUM(input_tokens) as input_tokens,
@@ -209,7 +209,7 @@ def _fold_session_only_rows(raw_rows: list[dict[str, Any]]) -> list[dict[str, An
 def _model_capabilities(provider: str, model_name: str) -> dict:
     """models.dev capability metadata for the card; {} when unknown or lookup fails."""
     try:
-        from agent.models_dev import get_model_capabilities
+        from hermes_agent.agent.models_dev import get_model_capabilities
         mc = get_model_capabilities(provider=provider, model=model_name)
     except Exception:
         return {}

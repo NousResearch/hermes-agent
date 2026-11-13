@@ -601,7 +601,7 @@ def _banner_left_lines(model: str, cwd: str, session_id, context_length, provide
                        context_pinned: bool = False, context_marker: str = "") -> list:
     """Model / cwd / session lines under the hero art. ``context_pinned`` marks a
     ``model.context_length`` pin so the user can tell it apart from provider metadata (#66168);
-    ``context_marker`` (``"pinned"`` / ``"fallback"``, agent.context_pin) also marks a defaulted window."""
+    ``context_marker`` (``"pinned"`` / ``"fallback"``, hermes_agent.agent.context_pin) also marks a defaulted window."""
     def _dim_sep(label: str) -> str:
         return f" [dim {dim}]·[/] [dim {dim}]{label}[/]"
     lines = []

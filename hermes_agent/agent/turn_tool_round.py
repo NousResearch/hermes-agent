@@ -1,7 +1,7 @@
 """One tool-calling round of the conversation turn loop: validate/cap/dedupe the model's
 tool calls, persist the tool-call turn BEFORE any side effect, execute the tools, honour
 guardrail halts / persistence failures, then compress after tool results. Nothing here
-imports ``agent.conversation_loop`` at module level (cycle) — loop-internal helpers resolve
+imports ``hermes_agent.agent.conversation_loop`` at module level (cycle) — loop-internal helpers resolve
 lazily.
 """
 
@@ -12,12 +12,12 @@ from dataclasses import dataclass
 import logging
 from typing import Any, Dict, Optional, Tuple
 
-from agent.message_metadata import append_message
-from agent.message_sanitization import coalesce_tool_call_id, normalize_provider_tool_call_ids
-from agent.turn_preflight import compress_after_tool_results
-from agent.turn_tool_validation import validate_tool_calls
+from hermes_agent.agent.message_metadata import append_message
+from hermes_agent.agent.message_sanitization import coalesce_tool_call_id, normalize_provider_tool_call_ids
+from hermes_agent.agent.turn_preflight import compress_after_tool_results
+from hermes_agent.agent.turn_tool_validation import validate_tool_calls
 
-logger = logging.getLogger("agent.conversation_loop")
+logger = logging.getLogger("hermes_agent.agent.conversation_loop")
 
 # Post-response housekeeping tools: a round made only of these mutes tool progress.
 _HOUSEKEEPING_TOOLS = frozenset({"memory", "todo_list", "skill_manage", "session_search"})
@@ -57,7 +57,7 @@ def run_tool_round(
     durability invariant: resume must see the executed block if a destructive tool restarts
     Hermes; a failed canonical append ends the turn rather than running tools from
     process-only state."""
-    from agent.conversation_loop import _invalid_tool_name_error_content
+    from hermes_agent.agent.conversation_loop import _invalid_tool_name_error_content
 
     def _verdict(action: str, result: Optional[dict[str, Any]] = None) -> ToolRoundVerdict:
         return ToolRoundVerdict(
@@ -89,7 +89,7 @@ def run_tool_round(
 
     # Normalize only this unpersisted turn. Each local bridge entry must pass
     # through the same scope, approvals, state and scheduling as a singleton.
-    from agent.tool_call_batches import expand_local_tool_batches
+    from hermes_agent.agent.tool_call_batches import expand_local_tool_batches
     assistant_message.tool_calls = expand_local_tool_batches(
         assistant_message.tool_calls, provider_data=getattr(assistant_message, "provider_data", None))
 
@@ -165,7 +165,7 @@ def run_tool_round(
 
     # Opt-in (compression.prepare_ahead): when this response put the session near the trigger,
     # write the next compaction summary while the tools run. No-op otherwise; never raises.
-    from agent.prepared_compaction import maybe_prepare
+    from hermes_agent.agent.prepared_compaction import maybe_prepare
     maybe_prepare(agent, messages, origin="tool-batch")
 
     agent._execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count)
@@ -249,7 +249,7 @@ def stage_tool_call_message(
     dropped-tool-call stall budget. Returns ``(assistant_msg, duplicate_previous_interim)``;
     the flag suppresses re-emitting interim commentary the previous ``incomplete`` row
     already showed."""
-    from agent.conversation_loop import _STALE_MARKER_RE
+    from hermes_agent.agent.conversation_loop import _STALE_MARKER_RE
 
     assistant_msg = agent._build_assistant_message(assistant_message, finish_reason)
 

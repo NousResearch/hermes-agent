@@ -4,7 +4,7 @@
 point (``skill_view`` resolves ``<plugin>:<skill>``). MCP servers are not: nothing connects them until
 ``reload.mcp``. :func:`connect_plugin_mcp` connects the plugin's servers one by one (the connector
 flow's ``register_mcp_servers({name: config})``), and :func:`live_notice` renders what became usable
-as the note an open chat receives on its next tool result or turn (``agent/plugin_live_notes.py``).
+as the note an open chat receives on its next tool result or turn (``hermes_agent/agent/plugin_live_notes.py``).
 
 MCP tools are deferred behind ``tool_search`` / ``tool_describe`` / ``tool_call``, so adding them to a
 live session leaves the model-facing tool array (and the cached prompt prefix) byte-identical.
@@ -102,7 +102,7 @@ def catalog_plugin_skill(written: str) -> Optional[str]:
 
 
 def live_notice(activation: dict[str, Any]) -> str:
-    """The note an open chat gets on its next tool result or turn (``agent/plugin_live_notes.py``): the
+    """The note an open chat gets on its next tool result or turn (``hermes_agent/agent/plugin_live_notes.py``): the
     plugin's skills and, per MCP server, its tool prefix and count or why it did not connect. Tools are
     not listed one by one: the note stays in the chat's history and rides every later request, and
     ``tool_search`` lists them on demand. Empty when nothing of the plugin is live now."""

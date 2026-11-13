@@ -15,12 +15,12 @@ import threading
 from types import SimpleNamespace
 from typing import Any, Optional
 
-from agent.sleep_clock import awake_seconds
+from hermes_agent.agent.sleep_clock import awake_seconds
 
 
 def _stream_socket(stream: Any) -> Any:
     """The raw socket under an SDK chunk stream (``stream.response`` is the ``httpx.Response``)."""
-    from agent.agent_runtime_helpers import _socket_from_response
+    from hermes_agent.agent.agent_runtime_helpers import _socket_from_response
     response = getattr(stream, "response", None)
     return _socket_from_response(response) if response is not None else None
 
@@ -111,7 +111,7 @@ class ChatStreamWatchdog:
                 return
             self.fired = True
             if self._sock is not None:
-                from agent.agent_runtime_helpers import _shutdown_socket
+                from hermes_agent.agent.agent_runtime_helpers import _shutdown_socket
                 _shutdown_socket(self._sock)
 
     def finish(self) -> None:
@@ -141,10 +141,10 @@ def chat_stream_windows(client: Any, kwargs: dict, task: Optional[str]) -> tuple
     ``providers.<id>.stale_timeout_seconds``, else context-scaled with the reasoning-model floor), so
     a model thinking silently on a large prompt is not cut; local servers keep their silent prefill
     on the request timeout (None). Both are capped at the request timeout."""
-    from agent.auxiliary_client import (
+    from hermes_agent.agent.auxiliary_client import (
         _AUX_STREAM_NO_PROGRESS_TIMEOUT_SECONDS, _RELAY_AUX_CALL_CONTEXT, _get_task_no_progress_timeout)
-    from agent.chat_completion_helpers import _cloud_stale_timeout_for
-    from agent.model_metadata import is_local_endpoint
+    from hermes_agent.agent.chat_completion_helpers import _cloud_stale_timeout_for
+    from hermes_agent.agent.model_metadata import is_local_endpoint
     window = _get_task_no_progress_timeout(task or "") or _AUX_STREAM_NO_PROGRESS_TIMEOUT_SECONDS
     first = None
     if not is_local_endpoint(str(getattr(client, "base_url", "") or "")):

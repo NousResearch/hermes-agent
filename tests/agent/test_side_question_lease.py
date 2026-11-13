@@ -1,4 +1,4 @@
-"""Turn leases for plugin side questions (``agent/side_question_lease.py``, ``ctx.side_question``).
+"""Turn leases for plugin side questions (``hermes_agent/agent/side_question_lease.py``, ``ctx.side_question``).
 
 Plugins load through real discovery from a temp ``HERMES_HOME``. The lease rules (issued only
 for a consented plugin, one attempt per turn shared across plugins, expiry, invalid once the
@@ -18,8 +18,8 @@ import hermes_yaml as yaml
 import pytest
 
 import hermes_cli.plugins as plugins_mod
-from agent import side_question_lease
-from agent.side_question_lease import issue_side_question_token, redeem_side_question
+from hermes_agent.agent import side_question_lease
+from hermes_agent.agent.side_question_lease import issue_side_question_token, redeem_side_question
 from hermes_cli.plugins import PluginContext
 
 CAP = "llm.side_question"
@@ -240,7 +240,7 @@ def test_timeout_is_clamped(executor, consented, given, used):
 
 
 def test_post_llm_call_hook_redeems_its_token_end_to_end(monkeypatch):
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     answers = Path(os.environ["HERMES_HOME"]) / "side_answers.json"
     _install_plugin("next-prompt", declares=True, hook_body=(
@@ -257,12 +257,12 @@ def test_post_llm_call_hook_redeems_its_token_end_to_end(monkeypatch):
         for text in ("The answer is 42.", "Ask why it is 42.")
     ]
     client.chat.completions.create.side_effect = lambda **kw: (requests.append(kw), replies.pop(0))[1]
-    monkeypatch.setattr("agent.title_generator.maybe_auto_title", lambda *a, **k: None)
+    monkeypatch.setattr("hermes_agent.agent.title_generator.maybe_auto_title", lambda *a, **k: None)
     with (
         patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]),
         patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
-        patch("agent.process_bootstrap.OpenAI", return_value=client),
-        patch("agent.model_metadata.fetch_model_metadata", return_value={}),
+        patch("hermes_agent.agent.process_bootstrap.OpenAI", return_value=client),
+        patch("hermes_agent.agent.model_metadata.fetch_model_metadata", return_value={}),
     ):
         parent = AIAgent(api_key="k", base_url="https://openrouter.ai/api/v1", model="test/model",
                          quiet_mode=True, skip_context_files=True, skip_memory=True)
@@ -279,7 +279,7 @@ def test_post_llm_call_hook_redeems_its_token_end_to_end(monkeypatch):
 def _observed_turn_with_side_question(monkeypatch, side_reply) -> list[dict]:
     """Run a real turn whose granted ``observer`` plugin asks a side question and records every
     request event; ``side_reply`` is what the provider returns to the side request."""
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     events = Path(os.environ["HERMES_HOME"]) / "events.jsonl"
     plugin_dir = Path(os.environ["HERMES_HOME"]) / "plugins" / "observer"
@@ -312,12 +312,12 @@ def _observed_turn_with_side_question(monkeypatch, side_reply) -> list[dict]:
     ]
     client = MagicMock()
     client.chat.completions.create.side_effect = lambda **kw: replies.pop(0)
-    monkeypatch.setattr("agent.title_generator.maybe_auto_title", lambda *a, **k: None)
+    monkeypatch.setattr("hermes_agent.agent.title_generator.maybe_auto_title", lambda *a, **k: None)
     with (
         patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]),
         patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
-        patch("agent.process_bootstrap.OpenAI", return_value=client),
-        patch("agent.model_metadata.fetch_model_metadata", return_value={}),
+        patch("hermes_agent.agent.process_bootstrap.OpenAI", return_value=client),
+        patch("hermes_agent.agent.model_metadata.fetch_model_metadata", return_value={}),
     ):
         parent = AIAgent(api_key="k", base_url="https://openrouter.ai/api/v1", model="test/model",
                          quiet_mode=True, skip_context_files=True, skip_memory=True)

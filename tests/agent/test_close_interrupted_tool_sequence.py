@@ -12,7 +12,7 @@ pin the helper's contract and prove the post-interrupt + next-user-message
 transcript is alternation-safe.
 """
 
-from agent.message_sanitization import close_interrupted_tool_sequence
+from hermes_agent.agent.message_sanitization import close_interrupted_tool_sequence
 
 
 def _tool_tail():

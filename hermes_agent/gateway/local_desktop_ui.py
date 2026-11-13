@@ -203,7 +203,7 @@ def _tour(turn, agent, payload) -> str:
 
 
 def _setup_beat(turn, agent, payload):
-    from agent.onboarding_flow import CARD_TIMEOUT_S
+    from hermes_agent.agent.onboarding_flow import CARD_TIMEOUT_S
     return _ask_result(turn, agent, "setup_beat", payload, CARD_TIMEOUT_S)
 
 

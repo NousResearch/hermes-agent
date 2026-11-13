@@ -462,7 +462,7 @@ class TestManagedKreaRouting:
         fake_provider = MagicMock()
         fake_provider.generate.return_value = {"success": True, "image": "/tmp/x.png"}
         monkeypatch.setattr(
-            "agent.image_gen_registry.get_provider", lambda name: fake_provider
+            "hermes_agent.agent.image_gen_registry.get_provider", lambda name: fake_provider
         )
         monkeypatch.setattr(
             "hermes_cli.plugins._ensure_plugins_discovered", lambda *a, **k: None
@@ -481,7 +481,7 @@ class TestManagedPortalRouting:
     """A Portal model under the managed selection reaches the Portal plugin — never FAL."""
 
     def _fake_registry(self, monkeypatch, fake_provider):
-        monkeypatch.setattr("agent.image_gen_registry.get_provider", lambda name: fake_provider)
+        monkeypatch.setattr("hermes_agent.agent.image_gen_registry.get_provider", lambda name: fake_provider)
         monkeypatch.setattr("hermes_cli.plugins._ensure_plugins_discovered", lambda *a, **k: None)
 
     def test_routes_portal_model_to_nous_plugin(self, image_tool, monkeypatch):
@@ -609,7 +609,7 @@ class TestUpscaleDispatchForwarding:
         fake_provider = MagicMock()
         fake_provider.generate.return_value = {"success": True, "image": "/tmp/x.png"}
         monkeypatch.setattr(
-            "agent.image_gen_registry.get_provider", lambda name: fake_provider
+            "hermes_agent.agent.image_gen_registry.get_provider", lambda name: fake_provider
         )
         monkeypatch.setattr(
             "hermes_cli.plugins._ensure_plugins_discovered", lambda *a, **k: None
@@ -627,7 +627,7 @@ class TestUpscaleDispatchForwarding:
         fake_provider = MagicMock()
         fake_provider.generate.return_value = {"success": True, "image": "/tmp/x.png"}
         monkeypatch.setattr(
-            "agent.image_gen_registry.get_provider", lambda name: fake_provider
+            "hermes_agent.agent.image_gen_registry.get_provider", lambda name: fake_provider
         )
         monkeypatch.setattr(
             "hermes_cli.plugins._ensure_plugins_discovered", lambda *a, **k: None

@@ -79,7 +79,7 @@ _SLOTS = [
 
 def _tick_current_aux_progress():
     """Simulate one substantive stream chunk: tick the thread-local aux progress hook."""
-    from agent.auxiliary_client import _aux_progress
+    from hermes_agent.agent.auxiliary_client import _aux_progress
 
     hook = getattr(_aux_progress, "hook", None)
     if callable(hook):
@@ -90,7 +90,7 @@ class TestFanoutStampsActivity:
     def test_streaming_advisor_chunks_stamp_activity(self, moa_config, monkeypatch):
         """Per-chunk ticks from a streaming advisor must reach ``_touch_activity`` —
         the watchdog samples that clock, so chunks re-arm it (#110015)."""
-        from agent import moa_loop
+        from hermes_agent.agent import moa_loop
 
         agent = _Agent()
         seen_threads = []
@@ -117,7 +117,7 @@ class TestFanoutStampsActivity:
     def test_each_reference_completion_stamps_activity(self, moa_config, monkeypatch):
         """Non-streaming advisors tick nothing per chunk, so each completion must
         itself be fan-out progress the watchdog can see."""
-        from agent import moa_loop
+        from hermes_agent.agent import moa_loop
 
         agent = _Agent()
         monkeypatch.setattr(moa_loop, "call_llm", lambda **kwargs: _response("advice"))
@@ -132,7 +132,7 @@ class TestFanoutStampsActivity:
     ):
         """No chunks and no completions = no activity stamps: a wedged advisor turn
         must stay abortable by the watchdog (the fix adds progress, never fakes it)."""
-        from agent import moa_loop
+        from hermes_agent.agent import moa_loop
 
         agent = _Agent()
 
@@ -151,7 +151,7 @@ class TestFanoutStampsActivity:
     def test_aggregate_moa_context_stamps_synthesis(self, moa_config, monkeypatch):
         """The one-shot /moa path (no facade) must stamp the aggregator synthesis
         too: it is the longest single call of that path."""
-        from agent import moa_loop
+        from hermes_agent.agent import moa_loop
 
         agent = _Agent()
         monkeypatch.setattr(moa_loop, "call_llm", lambda **kwargs: _response("advice"))
@@ -167,7 +167,7 @@ class TestFanoutStampsActivity:
 
     def test_fanout_without_agent_still_works(self, moa_config, monkeypatch):
         """agent=None (aux/preview callers, test doubles) keeps the old behaviour."""
-        from agent import moa_loop
+        from hermes_agent.agent import moa_loop
 
         monkeypatch.setattr(moa_loop, "call_llm", lambda **kwargs: _response("advice"))
         outputs = moa_loop._run_references_parallel(

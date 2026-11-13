@@ -6,9 +6,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent.anthropic_message_convert import convert_messages_to_anthropic
-from agent.message_sanitization import stale_thinking_reaches_wire
-from agent.model_metadata import estimate_tokens_rough
+from hermes_agent.agent.anthropic_message_convert import convert_messages_to_anthropic
+from hermes_agent.agent.message_sanitization import stale_thinking_reaches_wire
+from hermes_agent.agent.model_metadata import estimate_tokens_rough
 
 ANTHROPIC = ("anthropic", "https://api.anthropic.com")
 NOUS = ("nous", "https://inference-api.nousresearch.com/v1/messages")
@@ -60,8 +60,8 @@ def _carrier(thinking="secret chain", opaque=""):
 
 def _native_turn(agent, question, size, sig):
     """A turn stored by the real producer: Anthropic response -> transport -> assistant row."""
-    from agent.chat_completion_helpers import build_assistant_message
-    from agent.transports.anthropic import AnthropicTransport
+    from hermes_agent.agent.chat_completion_helpers import build_assistant_message
+    from hermes_agent.agent.transports.anthropic import AnthropicTransport
 
     response = SimpleNamespace(
         content=[
@@ -86,9 +86,9 @@ def _session_db(tmp_path, *session_ids):
 
 
 def _agent(db, session_id="s1", model="claude-opus-4-6", route=ANTHROPIC):
-    from agent.agent_runtime_helpers import copy_reasoning_content_for_api
-    from agent.message_sanitization import ReasoningReplayRoute
-    from agent.context_compressor import ContextCompressor
+    from hermes_agent.agent.agent_runtime_helpers import copy_reasoning_content_for_api
+    from hermes_agent.agent.message_sanitization import ReasoningReplayRoute
+    from hermes_agent.agent.context_compressor import ContextCompressor
 
     agent = SimpleNamespace(
         api_mode="anthropic_messages", provider=route[0], model=model, base_url=route[1],
@@ -117,7 +117,7 @@ def _agent(db, session_id="s1", model="claude-opus-4-6", route=ANTHROPIC):
 
 
 def _patch_assembly_loop(monkeypatch, selector=None):
-    import agent.conversation_loop as loop
+    import hermes_agent.agent.conversation_loop as loop
 
     monkeypatch.setattr(
         loop, "_apply_context_engine_selection",
@@ -136,7 +136,7 @@ def _select_canonical_clone(agent, api, canonical, incoming, logger=None):
 
 def _assemble_and_wire(agent, history):
     """Production request assembly, then the native converter: (assembled, wire messages)."""
-    from agent.turn_request_assembly import assemble_api_request
+    from hermes_agent.agent.turn_request_assembly import assemble_api_request
 
     assembled = assemble_api_request(
         agent, messages=copy.deepcopy(history), current_turn_user_idx=len(history) - 1,
@@ -173,9 +173,9 @@ def _assistant_text_blocks(wire):
 
 def _reject_signatures(agent, history):
     """Drive production signature-rejection recovery; the canonical history is never mutated."""
-    from agent.error_classifier import FailoverReason
-    from agent.turn_recovery import _recover_format_errors
-    from agent.turn_retry_state import TurnRetryState
+    from hermes_agent.agent.error_classifier import FailoverReason
+    from hermes_agent.agent.turn_recovery import _recover_format_errors
+    from hermes_agent.agent.turn_retry_state import TurnRetryState
 
     before, request, retry = copy.deepcopy(history), copy.deepcopy(history), TurnRetryState()
     assert _recover_format_errors(
@@ -223,8 +223,8 @@ def test_estimates_charge_exactly_the_thinking_the_wire_replays(tmp_path, monkey
     tail walk, and assembled request pressure by the same amount — the full block for every
     signed historical turn the route replays, nothing for latest-only routes, rejected,
     storage-only, or opaque (signature/redacted) bytes. A usage anchor still wins pressure."""
-    import agent.turn_request_assembly as assembly
-    from agent.turn_context import _preflight_request_tokens
+    import hermes_agent.agent.turn_request_assembly as assembly
+    from hermes_agent.agent.turn_context import _preflight_request_tokens
 
     model, route, replayed_blocks = _ACCOUNTING_CASES[case]
     agent = _agent(_session_db(tmp_path, "s1"), model=model, route=route)
@@ -310,7 +310,7 @@ def test_rejected_thinking_never_returns_and_nothing_else_is_suppressed(
     replays exactly the never-rejected signed thinking, whatever lifetime boundary it crosses;
     the rejection drops the stale usage anchor. Routes Anthropic does not sign for keep their
     own replay contract."""
-    from agent.conversation_compression import _carry_session_state_to_child
+    from hermes_agent.agent.conversation_compression import _carry_session_state_to_child
 
     db = _session_db(tmp_path, "s1", "s2")
     agent = (

@@ -14,7 +14,7 @@ class _Channel:
 
 
 def _controls():
-    from agent import managed_worker as worker
+    from hermes_agent.agent import managed_worker as worker
     controls = worker.WorkerControls.__new__(worker.WorkerControls)  # no stdin reader thread
     controls.channel, controls.route, controls.agent = _Channel(), 'route', None
     controls.stopped, controls.lock, controls.clarifications = threading.Event(), threading.Lock(), {}
@@ -40,7 +40,7 @@ def test_unanswered_clarify_times_out_at_the_configured_value(tmp_path, monkeypa
 
 @pytest.mark.parametrize('body', ['agent:\n  clarify_timeout: 0\n', 'clarify:\n  timeout: -1\n'])
 def test_nonpositive_clarify_timeout_waits_unbounded(tmp_path, monkeypatch, body):
-    from agent import managed_worker as worker
+    from hermes_agent.agent import managed_worker as worker
     _config(tmp_path, monkeypatch, body)
     waits = []
 

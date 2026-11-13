@@ -32,7 +32,7 @@ class _Agent:
 
 
 def test_worker_stop_hard_cancels_the_agent_before_and_after_construction(tmp_path, monkeypatch):
-    from agent import managed_worker as worker
+    from hermes_agent.agent import managed_worker as worker
     _Agent.calls = []
     controls = worker.WorkerControls.__new__(worker.WorkerControls)  # no stdin reader thread
     controls.agent, controls.stopped, controls.lock, controls.clarifications = _Agent(), threading.Event(), threading.Lock(), {}
@@ -58,11 +58,11 @@ def test_worker_stop_hard_cancels_the_agent_before_and_after_construction(tmp_pa
     monkeypatch.setattr(worker, 'discover_profile_mcp', lambda policy: None)
     monkeypatch.setattr(worker, 'retire_agent', lambda agent: None)
     monkeypatch.setattr(worker, 'WorkerControls', Latched)
-    monkeypatch.setattr('agent.runtime_session_store.WorkerRPC', lambda home: lambda *a, **k: {'owner_epoch': 1})
-    monkeypatch.setattr('agent.runtime_session_store.RuntimeSessionStore', Store)
+    monkeypatch.setattr('hermes_agent.agent.runtime_session_store.WorkerRPC', lambda home: lambda *a, **k: {'owner_epoch': 1})
+    monkeypatch.setattr('hermes_agent.agent.runtime_session_store.RuntimeSessionStore', Store)
     monkeypatch.setattr('hermes_agent.tools.process_registry.process_registry.recover_from_checkpoint', lambda: None)
-    monkeypatch.setattr('run_agent.AIAgent', _Agent)
-    monkeypatch.setattr('agent.title_generator.wait_for_title_upgrades', lambda: None)
+    monkeypatch.setattr('hermes_agent.run_agent.AIAgent', _Agent)
+    monkeypatch.setattr('hermes_agent.agent.title_generator.wait_for_title_upgrades', lambda: None)
     worker.execute(frame, SimpleNamespace(send=lambda kind, **payload: None))
     assert _Agent.calls == ['hard', 'hard'], 'a managed worker Stop must hard-cancel like the canonical Stop'
 

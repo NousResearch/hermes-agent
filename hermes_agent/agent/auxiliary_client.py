@@ -24,35 +24,35 @@ from types import SimpleNamespace
 from typing import Any, Callable, Dict, List, NamedTuple, Optional, Tuple, TYPE_CHECKING, Union
 from urllib.parse import urlparse, parse_qs, urlunparse
 
-from agent.local_prompt_progress import (
+from hermes_agent.agent.local_prompt_progress import (
     PromptReadingClock, current_prompt_reading_hook, prompt_progress, prompt_reading_hook, with_prompt_progress)
-from agent import auxiliary_call_outcome, auxiliary_error_policy as aux_errors
-from agent.error_classifier import (
+from hermes_agent.agent import auxiliary_call_outcome, auxiliary_error_policy as aux_errors
+from hermes_agent.agent.error_classifier import (
     FailoverReason,
     UNSUPPORTED_PARAM_MARKERS,
     is_reasoning_field_rejection,
     is_reasoning_required_rejection,
 )
-from agent.errors import InvalidProviderResponseError
-from agent.auxiliary_fallback_recovery import reapply_repairs
-from agent.auxiliary_managed_local import _is_managed_local_endpoint
-from agent.auxiliary_reasoning_floor import remember_reasoning_floor, with_reasoning_floor
-from agent.auxiliary_profile_gates import (
+from hermes_agent.agent.errors import InvalidProviderResponseError
+from hermes_agent.agent.auxiliary_fallback_recovery import reapply_repairs
+from hermes_agent.agent.auxiliary_managed_local import _is_managed_local_endpoint
+from hermes_agent.agent.auxiliary_reasoning_floor import remember_reasoning_floor, with_reasoning_floor
+from hermes_agent.agent.auxiliary_profile_gates import (
     PROFILE_REASONING_KEYS, contains_profile_reasoning_fields, profile_forwards_max_tokens,
 )
-from agent.auxiliary_structured_output import _route_key, _without_structured_output_format, remember_structured_output_rejection
-from agent.codex_headers import (
+from hermes_agent.agent.auxiliary_structured_output import _route_key, _without_structured_output_format, remember_structured_output_rejection
+from hermes_agent.agent.codex_headers import (
     CODEX_AUX_BASE_URL as _CODEX_AUX_BASE_URL,
     apply_required_codex_headers as _apply_required_codex_headers,
     codex_cloudflare_headers as _codex_cloudflare_headers,
     is_official_codex_base_url as _is_official_codex_base_url,
 )
-from agent.codex_runtime import _codex_event_has_content
-from agent.sdk_transform_bypass import bypass_chat_sdk_request_transform
+from hermes_agent.agent.codex_runtime import _codex_event_has_content
+from hermes_agent.agent.sdk_transform_bypass import bypass_chat_sdk_request_transform
 
 # `openai.OpenAI` is imported lazily (~240 ms cold); `OpenAI` below is a proxy
 # so in-module calls, `auxiliary_client.OpenAI` reads and
-# `patch("agent.auxiliary_client.OpenAI")` all keep working.
+# `patch("hermes_agent.agent.auxiliary_client.OpenAI")` all keep working.
 if TYPE_CHECKING:
     from openai import OpenAI
 
@@ -125,17 +125,17 @@ def aux_probe_mode():
         _aux_probe_state.active = prev
 
 
-from agent.credential_pool import load_pool
-from agent.credential_pool_model_cooldowns import pool_failure_reason
-from agent.custom_entry_pool import entry_scoped_pool, pool_for_aux_provider
-from agent.message_metadata import data_use_requirement
-from agent.model_metadata import MINIMUM_CONTEXT_LENGTH, get_model_context_length
+from hermes_agent.agent.credential_pool import load_pool
+from hermes_agent.agent.credential_pool_model_cooldowns import pool_failure_reason
+from hermes_agent.agent.custom_entry_pool import entry_scoped_pool, pool_for_aux_provider
+from hermes_agent.agent.message_metadata import data_use_requirement
+from hermes_agent.agent.model_metadata import MINIMUM_CONTEXT_LENGTH, get_model_context_length
 from hermes_cli.config import get_hermes_home
 from hermes_cli.config_providers import _canonical_api_mode
-from agent.auxiliary_health import (
+from hermes_agent.agent.auxiliary_health import (
     _custom_health_base_url, _unhealthy_cache_key, fallback_candidate_quarantine_ttl,
 )
-from agent.auxiliary_unavailable import (
+from hermes_agent.agent.auxiliary_unavailable import (
     AuxiliaryClientUnavailable, clear_nous_credential_failure, missing_provider_credentials_message,
     nous_credential_failure_detail, record_nous_credential_failure)
 from hermes_constants import OPENROUTER_BASE_URL, hermes_home_key
@@ -156,7 +156,7 @@ def _resolve_aux_verify(base_url: Optional[str]) -> Any:
     """httpx ``verify`` for an aux base_url, mirroring the main client (per-provider ``ssl_ca_cert`` /
     ``ssl_verify``; otherwise the OS trust store); any failure → httpx default (``True``)."""
     try:
-        from agent.ssl_verify import resolve_httpx_verify
+        from hermes_agent.agent.ssl_verify import resolve_httpx_verify
         from hermes_cli.config import get_custom_provider_tls_settings, load_config_readonly
         tls = get_custom_provider_tls_settings(str(base_url or ""), config=load_config_readonly())
         return resolve_httpx_verify(
@@ -171,7 +171,7 @@ _WARNED_KEEPALIVE_IMPORT_SKEW = False
 def _openai_http_client_kwargs(base_url: Optional[str], *, async_mode: bool = False) -> dict[str, Any]:
     """Inject keepalive httpx client with env-only proxy (not macOS system proxy)."""
     try:
-        from agent.process_bootstrap import build_keepalive_http_client
+        from hermes_agent.agent.process_bootstrap import build_keepalive_http_client
         client = build_keepalive_http_client(
             str(base_url or ""), async_mode=async_mode, verify=_resolve_aux_verify(base_url))
     except (ImportError, AttributeError):
@@ -624,7 +624,7 @@ def _is_codex_gpt54_or_gpt55(model: Optional[str], provider: Optional[str] = Non
     bare = _codex_route_bare_model(model, provider)
     if bare is None:
         return False
-    from agent.model_metadata import is_codex_context_variant
+    from hermes_agent.agent.model_metadata import is_codex_context_variant
     if is_codex_context_variant(bare):
         return False
     if "astra" in bare:
@@ -671,7 +671,7 @@ def _fixed_temperature_for_model(
     if _is_kimi_model(model):
         logger.debug("Omitting temperature for Kimi model %r (server-managed)", model)
         return OMIT_TEMPERATURE
-    from agent.gemini_native_adapter import gemini_sampling_deprecated
+    from hermes_agent.agent.gemini_native_adapter import gemini_sampling_deprecated
     if _is_openai_default_temperature_only(model) or gemini_sampling_deprecated(_bare_model(model)):
         logger.debug("Omitting temperature for %r (default-only, or Gemini 3.6+ ignores sampling)", model)
         return OMIT_TEMPERATURE
@@ -948,9 +948,9 @@ def _ai_gateway_headers() -> dict[str, str]:
     return {"HTTP-Referer": "https://hermes-agent.nousresearch.com", "X-Title": "Hermes Agent",
             "User-Agent": hermes_user_agent("HermesAgent")}
 
-# Nous Portal attribution tags, built per call. They come from agent.portal_tags so the client=
+# Nous Portal attribution tags, built per call. They come from hermes_agent.agent.portal_tags so the client=
 # marker tracks the canonical base version — never inline a literal here.
-from agent.portal_tags import nous_portal_tags as _nous_portal_tags
+from hermes_agent.agent.portal_tags import nous_portal_tags as _nous_portal_tags
 
 
 # _OPENROUTER_MODEL MUST stay a :free SKU (matching the free_only warning): this lane engages
@@ -1123,7 +1123,7 @@ def _scoped_key_env(name: str) -> str:
     """
     if not name:
         return ""
-    from agent.secret_scope import UnscopedSecretError, get_secret
+    from hermes_agent.agent.secret_scope import UnscopedSecretError, get_secret
 
     try:
         return (get_secret(name) or "").strip()
@@ -1134,7 +1134,7 @@ def _scoped_key_env(name: str) -> str:
 def _attempt_stream_socket(stream: Any) -> Any:
     """The raw socket under an SDK event stream (``stream.response`` is the ``httpx.Response``;
     httpcore publishes its connection as the ``network_stream`` extension), or None."""
-    from agent.agent_runtime_helpers import _socket_from_stream
+    from hermes_agent.agent.agent_runtime_helpers import _socket_from_stream
     extensions = getattr(getattr(stream, "response", None), "extensions", None)
     network_stream = extensions.get("network_stream") if isinstance(extensions, dict) else None
     return _socket_from_stream(network_stream) if network_stream is not None else None
@@ -1247,7 +1247,7 @@ class _CodexStreamGuard:
         if threading.get_ident() != self._owner_tid:
             sock = _attempt_stream_socket(stream)
             if sock is not None:
-                from agent.agent_runtime_helpers import _shutdown_socket
+                from hermes_agent.agent.agent_runtime_helpers import _shutdown_socket
                 _shutdown_socket(sock)
                 return
         _close_quietly(stream, failure_note)
@@ -1297,7 +1297,7 @@ class _CodexStreamGuard:
             _close_quietly(self._client, "client close during timeout failed")
         else:
             try:
-                from agent.agent_runtime_helpers import force_close_tcp_sockets
+                from hermes_agent.agent.agent_runtime_helpers import force_close_tcp_sockets
                 shutdown_count = force_close_tcp_sockets(self._client)
                 logger.info(
                     "Codex auxiliary client aborted (timeout, tcp_force_closed=%d, "
@@ -1397,14 +1397,14 @@ class _CodexCompletionsAdapter:
         """chat.completions kwargs → Responses API kwargs, ``(resp_kwargs, model, timeout)``; mirrors codex.py::build_kwargs."""
         # Separate system/instructions from replayable conversation messages, then route the rest through
         # the SINGLE shared chat->Responses converter used by the main agent transport
-        # (agent/transports/codex.py). Maintaining a private conversion loop here let chat-style messages
+        # (hermes_agent/agent/transports/codex.py). Maintaining a private conversion loop here let chat-style messages
         # with role="tool" leak straight into Responses input[] — which the Responses API rejects with
         # "Invalid value: 'tool'. Supported values are: 'assistant', 'system', 'developer', and 'user'."
         # (issue #5709, hit hard by flush_memories() / compression replaying real session history that
         # includes assistant tool_calls + role="tool" results). The shared converter encodes assistant tool
         # calls as `function_call` items and tool results as `function_call_output` items with a valid
         # call_id, so every Responses path normalizes tool history identically and cannot drift.
-        from agent.codex_responses_adapter import (
+        from hermes_agent.agent.codex_responses_adapter import (
             _chat_messages_to_responses_input,
             _classify_responses_issuer,
             _responses_tools,
@@ -1412,7 +1412,7 @@ class _CodexCompletionsAdapter:
             _wire_model_identity,
             classify_responses_route,
         )
-        from agent.transports.codex import _alias_wire_tools
+        from hermes_agent.agent.transports.codex import _alias_wire_tools
         model = kwargs.get("model", self._model)
         wire_model = _wire_model_identity(model)
         host = str(getattr(self._client, "base_url", "") or "")
@@ -1436,7 +1436,7 @@ class _CodexCompletionsAdapter:
                     "Codex/xAI Responses path: %s", exc,
                 )
         # Tool schemas go through the SAME converter (``strict: False``) and the SAME reserved-name
-        # aliasing (OpenCode / Perplexity / xAI) as agent/transports/codex.py::build_kwargs. A private
+        # aliasing (OpenCode / Perplexity / xAI) as hermes_agent/agent/transports/codex.py::build_kwargs. A private
         # list here sent raw names without ``strict``, so title/compression/MoA calls 400ed on routes
         # where the main loop worked (#114260). The alias map is request-local: it rides on the payload
         # (``_wire_aliases``, popped in ``create()``), never on the instance — aux adapters are shared.
@@ -1468,7 +1468,7 @@ class _CodexCompletionsAdapter:
         # (``replay_item_ids=False``) — same guard as build_kwargs. Aux calls
         # never send ``context_management`` (main-turn feature): no compaction checkpoint.
         # Auxiliary calls (context compression, flush_memories, MoA aggregation) go through this adapter
-        # instead of agent/transports/codex.py's build_kwargs, so they need the same guard applied
+        # instead of hermes_agent/agent/transports/codex.py's build_kwargs, so they need the same guard applied
         # independently. See #32716.
         # Aux requests run their own model; stamp/filter reasoning provenance against it, not the main agent's.
         issuer_kind = _classify_responses_issuer(base_url=host, **route._asdict())
@@ -1504,8 +1504,8 @@ class _CodexCompletionsAdapter:
                 # clamp to a listed level; ``()`` = the model takes no ``reasoning`` field at all — gpt-4o/4.1 on api.openai.com,
                 # #76255). ``enabled: False`` goes on the wire as ``effort: none`` where the vocabulary has it,
                 # since an omitted field leaves the model's default effort on (#75227).
-                from agent.reasoning_effort import clamp_effort
-                from agent.transports.codex import _codex_efforts_for_route
+                from hermes_agent.agent.reasoning_effort import clamp_effort
+                from hermes_agent.agent.transports.codex import _codex_efforts_for_route
                 supported = _codex_efforts_for_route(model, host, is_codex_backend=route.is_codex_backend)
                 if supported and reasoning_cfg.get("enabled") is not False:
                     # Truthy-only: Codex 400s on e.g. {"effort": null}, so falsy → default.
@@ -1528,8 +1528,8 @@ class _CodexCompletionsAdapter:
             # Reuse the Responses transport's single authoritative hash algorithm and session-scope
             # normalization so equivalent static prefixes route to the same cache bucket across modes,
             # without concentrating unrelated sessions into one shared bucket (see #78941).
-            from agent.transports.codex import _cache_scope_from_session_id, _content_cache_key
-            from agent.transports.codex import _default_prompt_cache_retention_for_request
+            from hermes_agent.agent.transports.codex import _cache_scope_from_session_id, _content_cache_key
+            from hermes_agent.agent.transports.codex import _default_prompt_cache_retention_for_request
             if not is_xai and route.endpoint.prompt_cache_key and "prompt_cache_key" not in resp_kwargs:
                 scope = _cache_scope_from_session_id(
                     _runtime_main_value("cache_scope") or _runtime_main_value("session_id")
@@ -1544,7 +1544,7 @@ class _CodexCompletionsAdapter:
         except Exception:
             logger.debug("Codex auxiliary: prompt_cache_key derivation skipped", exc_info=True)
         # Last, like the main transport: caller extra_body must not put a rejected Astra field back.
-        from agent.transports.codex import _sanitize_astra_request_kwargs
+        from hermes_agent.agent.transports.codex import _sanitize_astra_request_kwargs
         _sanitize_astra_request_kwargs(resp_kwargs, model, host)
         return resp_kwargs, model, timeout
 
@@ -1570,8 +1570,8 @@ class _CodexCompletionsAdapter:
         deadline_hit = False
         try:
             guard.start()
-            from agent.codex_runtime import _consume_codex_event_stream
-            from agent.sdk_transform_bypass import bypass_sdk_request_transform
+            from hermes_agent.agent.codex_runtime import _consume_codex_event_stream
+            from hermes_agent.agent.sdk_transform_bypass import bypass_sdk_request_transform
             # Keep bulk wire payload out of the SDK's GIL-holding request transform.
             stream_kwargs = bypass_sdk_request_transform({**resp_kwargs, "stream": True})
             event_stream = self._client.responses.create(**stream_kwargs)
@@ -1593,7 +1593,7 @@ class _CodexCompletionsAdapter:
                 guard.release_stream(event_stream)
             if final is None:
                 raise RuntimeError("Codex auxiliary Responses stream did not return a final response")
-            from agent.auxiliary_codex_response import _parse_codex_final_response
+            from hermes_agent.agent.auxiliary_codex_response import _parse_codex_final_response
 
             text_parts, tool_calls_raw, usage, finish_reason = _parse_codex_final_response(
                 final, issuer_kind=issuer_kind, issuer_model=issuer_model,
@@ -1714,13 +1714,13 @@ class _AnthropicCompletionsAdapter:
             candidate = str(getattr(real_client, "base_url", "") or "") or None
             if candidate:
                 with contextlib.suppress(Exception):
-                    from agent.anthropic_endpoints import _is_nous_portal_endpoint
+                    from hermes_agent.agent.anthropic_endpoints import _is_nous_portal_endpoint
                     if _is_nous_portal_endpoint(candidate):
                         self._base_url = candidate
 
     def create(self, **kwargs) -> Any:
-        from agent.anthropic_adapter import build_anthropic_kwargs, create_anthropic_message
-        from agent.transports import get_transport
+        from hermes_agent.agent.anthropic_adapter import build_anthropic_kwargs, create_anthropic_message
+        from hermes_agent.agent.transports import get_transport
         model = kwargs.get("model", self._model)
         # ZAI's Anthropic endpoint rejects max_tokens on vision models (code 1210);
         # callers signal this via _skip_zai_max_tokens.
@@ -1758,7 +1758,7 @@ class _AnthropicCompletionsAdapter:
         # Opus 4.7+ rejects non-default temperature/top_p/top_k; build_anthropic_kwargs
         # also strips these as a safety net — keep both layers.
         if temperature is not None:
-            from agent.anthropic_adapter import _forbids_sampling_params
+            from hermes_agent.agent.anthropic_adapter import _forbids_sampling_params
             if not _forbids_sampling_params(model):
                 anthropic_kwargs["temperature"] = temperature
         # Per-request HTTP headers (OpenCode session affinity); Messages create/stream accept them too.
@@ -1842,7 +1842,7 @@ class _BedrockCompletionsAdapter:
         self._model = model
 
     def create(self, **kwargs) -> Any:
-        from agent.bedrock_adapter import call_converse
+        from hermes_agent.agent.bedrock_adapter import call_converse
         model = kwargs.get("model", self._model)
         max_tokens = kwargs.get("max_tokens") or kwargs.get("max_completion_tokens")
         # OpenAI accepts ``stop`` as str or list; Converse requires a list.
@@ -1930,7 +1930,7 @@ def _maybe_wrap_anthropic(
     if api_mode != "anthropic_messages" and (api_mode or not _endpoint_speaks_anthropic_messages(base_url)):
         return client_obj
     try:
-        from agent.anthropic_adapter import build_anthropic_client
+        from hermes_agent.agent.anthropic_adapter import build_anthropic_client
     except ImportError:
         logger.warning(
             "Endpoint %s speaks Anthropic Messages but the anthropic SDK is "
@@ -2207,7 +2207,7 @@ def _resolve_api_key_provider() -> tuple[Optional[OpenAI], Optional[str]]:
         # Native Gemini, else OpenAI-wire + Anthropic rewrap.
         base_url = _to_openai_base_url(raw_base_url)
         if provider_id == "gemini":
-            from agent.gemini_native_adapter import GeminiNativeClient, is_native_gemini_base_url
+            from hermes_agent.agent.gemini_native_adapter import GeminiNativeClient, is_native_gemini_base_url
             if is_native_gemini_base_url(base_url):
                 return _tag_backend(GeminiNativeClient(api_key=api_key, base_url=base_url), provider_id), model
         if base_url_host_matches(base_url, "api.kimi.com"):
@@ -2234,7 +2234,7 @@ def _tag_backend(client: Any, provider: str) -> Any:
 
 
 def _route_client_headers(base_url: str, provider: str, *, is_vision: bool = False) -> Optional[dict]:
-    from agent.provider_route_hooks import route_answer
+    from hermes_agent.agent.provider_route_hooks import route_answer
     headers = route_answer("client_headers", provider=provider or "", base_url=base_url, has_images=is_vision)
     return dict(headers) if headers else None
 
@@ -2394,7 +2394,7 @@ def _try_nous(vision: bool = False) -> tuple[Optional[OpenAI], Optional[str]]:
             (nous or {}).get("inference_base_url") or _scoped_key_env("NOUS_INFERENCE_BASE_URL") or _NOUS_DEFAULT_BASE_URL
         ).rstrip("/")
     with contextlib.suppress(Exception):
-        from agent.nous_rate_guard import nous_rate_limit_remaining
+        from hermes_agent.agent.nous_rate_guard import nous_rate_limit_remaining
         from hermes_cli.anon_auth import is_anonymous_request
         anonymous = is_anonymous_request("nous", api_key)
         remaining = nous_rate_limit_remaining(anonymous=anonymous)
@@ -2657,7 +2657,7 @@ def _relay_sync_completion(
     client: Any, kwargs: dict[str, Any], *, provider: str | None = None,
     api_mode: str | None = None, create: Callable[[dict[str, Any]], Any] | None = None,
 ) -> Any:
-    from agent.auxiliary_wire import prepare_chat_messages, relay_chat_metadata
+    from hermes_agent.agent.auxiliary_wire import prepare_chat_messages, relay_chat_metadata
 
     kwargs = prepare_chat_messages(client, kwargs)
     # The progress hook is installed per TASK, so every attempt (retries, recovery rungs, fallbacks)
@@ -2676,8 +2676,8 @@ def _relay_sync_completion(
     if route is None:
         return _run_protected_sync_provider_call(callback, kwargs)
     provider_name, fallback_model, metadata = route
-    from agent import relay_llm
-    from agent.auxiliary_hooks import run_with_aux_hooks
+    from hermes_agent.agent import relay_llm
+    from hermes_agent.agent.auxiliary_hooks import run_with_aux_hooks
     model_name = str(kwargs.get("model") or fallback_model)
     try:
         return run_with_aux_hooks(
@@ -2700,7 +2700,7 @@ async def _relay_async_completion(
     client: Any, kwargs: dict[str, Any], *, provider: str | None = None,
     api_mode: str | None = None, create: Callable[[dict[str, Any]], Any] | None = None,
 ) -> Any:
-    from agent.auxiliary_wire import prepare_chat_messages, relay_chat_metadata
+    from hermes_agent.agent.auxiliary_wire import prepare_chat_messages, relay_chat_metadata
 
     kwargs = prepare_chat_messages(client, kwargs)
     # Async twin of the seam default above (#98466).
@@ -2711,8 +2711,8 @@ async def _relay_async_completion(
     if route is None:
         return await callback(kwargs)
     provider_name, fallback_model, metadata = route
-    from agent import relay_llm
-    from agent.auxiliary_hooks import arun_with_aux_hooks
+    from hermes_agent.agent import relay_llm
+    from hermes_agent.agent.auxiliary_hooks import arun_with_aux_hooks
     model_name = str(kwargs.get("model") or fallback_model)
     try:
         return await arun_with_aux_hooks(
@@ -2733,7 +2733,7 @@ async def _relay_async_completion(
 def _relay_sync_stream(
     client: Any, kwargs: dict[str, Any], *, provider: str | None = None, api_mode: str | None = None
 ) -> Any:
-    from agent.auxiliary_wire import prepare_chat_messages, relay_chat_metadata
+    from hermes_agent.agent.auxiliary_wire import prepare_chat_messages, relay_chat_metadata
 
     kwargs = prepare_chat_messages(client, kwargs)
     # The bypass runs inside the provider callback, AFTER Relay has seen (and possibly
@@ -2743,8 +2743,8 @@ def _relay_sync_stream(
     if route is None:
         return create(kwargs)
     provider_name, fallback_model, metadata = route
-    from agent import relay_llm
-    from agent.auxiliary_hooks import run_with_aux_hooks
+    from hermes_agent.agent import relay_llm
+    from hermes_agent.agent.auxiliary_hooks import run_with_aux_hooks
     model_name = str(kwargs.get("model") or fallback_model)
     return run_with_aux_hooks(
         lambda: relay_llm.stream_current(
@@ -2772,7 +2772,7 @@ def set_runtime_main(
     Context-local so concurrent gateway sessions don't clobber each other.
 
     ``cache_scope`` is the rotation-stable logical cache scope (compression- lineage root —
-    agent/prompt_cache_scope.py) resolved once per turn by turn_context; auxiliary Responses calls prefer it
+    hermes_agent/agent/prompt_cache_scope.py) resolved once per turn by turn_context; auxiliary Responses calls prefer it
     over ``session_id`` for prompt_cache_key derivation (#79017).
     """
     runtime = {
@@ -2917,8 +2917,8 @@ def _try_custom_endpoint() -> tuple[Optional[Any], Optional[str]]:
         # OAuth identity only when the host is exactly api.anthropic.com (key_cmd callable included,
         # #114967); third-party Anthropic-compatible gateways never get it.
         try:
-            from agent.anthropic_adapter import build_anthropic_client
-            from agent.anthropic_credentials import anthropic_route_is_oauth
+            from hermes_agent.agent.anthropic_adapter import build_anthropic_client
+            from hermes_agent.agent.anthropic_credentials import anthropic_route_is_oauth
             real_client = build_anthropic_client(custom_key, custom_base)
         except ImportError:
             logger.warning(
@@ -3045,8 +3045,8 @@ def _try_anthropic(explicit_api_key: Optional[str | Callable[[], str]] = None,
                    explicit_base_url: Optional[str] = None,
                    requested_model: Optional[str] = None) -> tuple[Optional[Any], Optional[str]]:
     try:
-        from agent.anthropic_adapter import build_anthropic_client
-        from agent.anthropic_credentials import resolve_anthropic_token
+        from hermes_agent.agent.anthropic_adapter import build_anthropic_client
+        from hermes_agent.agent.anthropic_credentials import resolve_anthropic_token
     except ImportError:
         return None, None
     model = _get_aux_model_for_provider("anthropic") or "claude-haiku-4-5-20251001"
@@ -3088,7 +3088,7 @@ def _try_anthropic(explicit_api_key: Optional[str | Callable[[], str]] = None,
             )
             return None, None
         base_url = override_url
-    from agent.anthropic_credentials import _is_oauth_token
+    from hermes_agent.agent.anthropic_credentials import _is_oauth_token
     is_oauth = _is_oauth_token(token)
     if _aux_probe_active():
         # Probe: token + adapter import resolved; skip real client construction.
@@ -3319,7 +3319,7 @@ def _is_reasoning_field_rejection(exc: Exception) -> bool:
 def _is_reasoning_required_rejection(exc: Exception) -> bool:
     """Provider 400 refusing to switch reasoning OFF ("Reasoning is mandatory for this endpoint and cannot
     be disabled"): the field is understood, only the disable is refused, so the rung steps the effort up to
-    the floor instead of dropping the field (agent/auxiliary_reasoning_floor.py)."""
+    the floor instead of dropping the field (hermes_agent/agent/auxiliary_reasoning_floor.py)."""
     status = getattr(exc, "status_code", None)
     if status is not None and status not in {400, 422}:
         return False
@@ -3675,7 +3675,7 @@ def _refresh_nous_credentials() -> bool:
 
 
 def _refresh_anthropic_credentials(failed_api_key: str = "") -> bool:
-    from agent.anthropic_credentials import read_claude_code_credentials, _refresh_oauth_token
+    from hermes_agent.agent.anthropic_credentials import read_claude_code_credentials, _refresh_oauth_token
     token = failed_api_key
     if not token:
         return False
@@ -3704,7 +3704,7 @@ def _refresh_xai_oauth_credentials() -> bool:
 def _refresh_vertex_credentials() -> bool:
     """Mirrors run_agent's Vertex refresh; the cache key ignores the rotating bearer, so
     without the eviction that follows, a ~1h-expired aux Vertex client 401s forever."""
-    from agent.vertex_adapter import get_vertex_config
+    from hermes_agent.agent.vertex_adapter import get_vertex_config
     token, base_url = get_vertex_config()
     return bool(isinstance(token, str) and token.strip() and isinstance(base_url, str) and base_url.strip())
 
@@ -3847,8 +3847,8 @@ def _replan_synchronous_cache_sections(
     messages: list, tools: Optional[list], *, destination: _FallbackDestination
 ) -> tuple[list, list]:
     """Plan one destination at the configured TTL (1h must not regress to 5m); one-shots never cache."""
-    from agent.agent_runtime_helpers import configured_cache_ttl, plan_cache_sections_for_destination
-    from agent.prompt_caching import is_one_shot_request
+    from hermes_agent.agent.agent_runtime_helpers import configured_cache_ttl, plan_cache_sections_for_destination
+    from hermes_agent.agent.prompt_caching import is_one_shot_request
     return plan_cache_sections_for_destination(
         messages, tools, provider=destination.provider, base_url=destination.base_url,
         api_mode=destination.api_mode or "", model=destination.model or "", cache_ttl=configured_cache_ttl(),
@@ -4017,7 +4017,7 @@ def _call_fallback_candidate_sync(
             ),
             task,
         )
-    from agent.auxiliary_fallback_recovery import send_with_parameter_rungs
+    from hermes_agent.agent.auxiliary_fallback_recovery import send_with_parameter_rungs
 
     def _attempt(step: _LadderStep) -> Any:
         client, request_kwargs, dest = step.args
@@ -4051,7 +4051,7 @@ async def _call_fallback_candidate_async(
                                           create=lambda request: _acreate_with_progress(client, request, provider=provider)),
             task,
         )
-    from agent.auxiliary_fallback_recovery import send_with_parameter_rungs_async
+    from hermes_agent.agent.auxiliary_fallback_recovery import send_with_parameter_rungs_async
 
     async def _attempt(step: _LadderStep) -> Any:
         client, request_kwargs, dest = step.args
@@ -4113,7 +4113,7 @@ def _failed_backend_skip(
     """Predicate ``skip(provider, model, base_url="")`` → True when a candidate must be skipped for the failed
     route. Scope: ``failed_model`` → model-scoped (only that deployment; timeout/connection/rate-limit);
     None → credential-wide (whole provider; auth/payment)."""
-    from agent.backend_identity import BackendIdentity, FailureScope, should_skip_candidate
+    from hermes_agent.agent.backend_identity import BackendIdentity, FailureScope, should_skip_candidate
     skip_model = (failed_model or "").strip().lower() or None
     failed_ident = BackendIdentity.build(
         provider=failed_provider, model=skip_model, base_url=failed_base_url)
@@ -4177,7 +4177,7 @@ def _try_main_agent_model_fallback(
 # ── Context-window screening for runtime fallback chains (issue #52392) ── When the runtime auxiliary
 # fallback chain selects a candidate that is reachable but has a context window smaller than the compression
 # task requires, the call errors out instead of continuing to the next, viable candidate. The startup
-# feasibility check in ``agent.conversation_compression.check_compression_model_feasibility`` already
+# feasibility check in ``hermes_agent.agent.conversation_compression.check_compression_model_feasibility`` already
 # filters too-small auxiliary models at startup, but the runtime fallback chain
 # (``_try_configured_fallback_chain`` and ``_try_main_fallback_chain``) does not apply the same filter, so
 # compression can stop at the first alive door even if the room behind it is too small. The helpers below
@@ -4564,7 +4564,7 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
     if isinstance(sync_client, BedrockAuxiliaryClient):
         return AsyncBedrockAuxiliaryClient(sync_client), model
     with contextlib.suppress(ImportError):
-        from agent.gemini_native_adapter import GeminiNativeClient, AsyncGeminiNativeClient
+        from hermes_agent.agent.gemini_native_adapter import GeminiNativeClient, AsyncGeminiNativeClient
         if isinstance(sync_client, GeminiNativeClient):
             return AsyncGeminiNativeClient(sync_client), model
     # ACP shims (subprocess, not an HTTP pool) are already async-safe and opt out of the wrapper.
@@ -4575,7 +4575,7 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
     # ``.api_key`` (which stays ""); rebuilding from the snapshot alone ships NO Authorization
     # header. Configured default_headers (a named entry's extra_headers) are likewise carried over,
     # merged last exactly as the SDK merges them on the sync client. See #109595.
-    from agent.auxiliary_async_rebuild import async_api_key, configured_default_headers
+    from hermes_agent.agent.auxiliary_async_rebuild import async_api_key, configured_default_headers
     async_kwargs = {"api_key": async_api_key(sync_client), "base_url": sync_base_url}
     if base_url_host_matches(sync_base_url, "openrouter.ai"):
         headers = _apply_user_default_headers(build_or_headers())
@@ -4584,7 +4584,7 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
     else:
         # Provider for the profile-header fallback is inferred from the hostname.
         try:
-            from agent.model_metadata import _infer_provider_from_url
+            from hermes_agent.agent.model_metadata import _infer_provider_from_url
             inferred = _infer_provider_from_url(sync_base_url) or ""
         except Exception:
             inferred = ""
@@ -4621,11 +4621,11 @@ def _named_custom_api_key(custom_entry: dict[str, Any], provider: str, custom_ba
         custom_key = _scoped_key_env(custom_key_env)
     custom_key_cmd = str(custom_entry.get("key_cmd", "") or "").strip()
     if custom_key_cmd:
-        from agent.command_token_source import build_command_token_provider
+        from hermes_agent.agent.command_token_source import build_command_token_provider
         custom_key = build_command_token_provider(custom_key_cmd, custom_entry.get("name") or provider) or custom_key
     if not custom_key:
         with contextlib.suppress(Exception):
-            from agent.credential_pool import custom_provider_pool_key_candidates
+            from hermes_agent.agent.credential_pool import custom_provider_pool_key_candidates
             pool_name = custom_entry.get("provider_key") or custom_entry.get("name") or provider
             for pool_key in custom_provider_pool_key_candidates(custom_base, pool_name):
                 try:
@@ -4647,12 +4647,12 @@ def _build_bedrock_client(provider: str, model: Optional[str], *, raw_codex: boo
     """AWS Bedrock: Claude → Anthropic Bedrock SDK (prompt caching, thinking); bare in-Region OpenAI IDs
     → Mantle Responses; everything else, incl. OpenAI ``us.``/``global.`` profiles, → Converse API."""
     try:
-        from agent.bedrock_adapter import (
+        from hermes_agent.agent.bedrock_adapter import (
             has_aws_credentials, is_anthropic_bedrock_model, resolve_bedrock_runtime_region,
             bedrock_openai_uses_mantle, bedrock_openai_base_url, resolve_bedrock_bearer_token,
             configure_bedrock_openai_client_kwargs,
         )
-        from agent.anthropic_adapter import build_anthropic_bedrock_client
+        from hermes_agent.agent.anthropic_adapter import build_anthropic_bedrock_client
     except ImportError:
         logger.warning("resolve_provider_client: bedrock requested but boto3, httpx/openai, or anthropic SDK not installed")
         return None, None
@@ -4666,7 +4666,7 @@ def _build_bedrock_client(provider: str, model: Optional[str], *, raw_codex: boo
     default_model = "anthropic.claude-haiku-4-5-20251001-v1:0"
     final_model = _normalize_resolved_model(model or default_model, provider) or default_model
     if bedrock_openai_uses_mantle(final_model):
-        # Module-level lazy ``OpenAI`` proxy on purpose so tests can patch("agent.auxiliary_client.OpenAI").
+        # Module-level lazy ``OpenAI`` proxy on purpose so tests can patch("hermes_agent.agent.auxiliary_client.OpenAI").
         client_kwargs: dict[str, Any] = {
             "api_key": resolve_bedrock_bearer_token() or "aws-sdk",
             "base_url": bedrock_openai_base_url(region),
@@ -4693,7 +4693,7 @@ def _build_bedrock_client(provider: str, model: Optional[str], *, raw_codex: boo
 def _build_vertex_client(provider: str, model: Optional[str]) -> tuple[Optional[Any], Optional[str]]:
     """Google Vertex AI: Gemini via the OpenAI-compatible endpoint with an OAuth2 bearer (standard OpenAI client)."""
     try:
-        from agent.vertex_adapter import get_vertex_config, has_vertex_credentials
+        from hermes_agent.agent.vertex_adapter import get_vertex_config, has_vertex_credentials
     except ImportError:
         logger.warning("resolve_provider_client: vertex requested but google-auth not installed")
         return None, None
@@ -4782,7 +4782,7 @@ def _wrap_transport(req: _ResolveRequest, client_obj: Any, final_model_str: str,
         return client
     # OpenCode relay targets pick the wire per model; a task/provider-level api_mode is stale for
     # every other model (#98799), so it is re-derived here like the main runtime does.
-    from agent.opencode_affinity import opencode_transport
+    from hermes_agent.agent.opencode_affinity import opencode_transport
     _oc_mode, _oc_base = opencode_transport(req.provider, final_model_str, base_url_str)
     if _oc_mode:
         req, base_url_str = req._replace(api_mode=_oc_mode), _oc_base
@@ -5046,7 +5046,7 @@ def _resolve_named_custom_branch(req: _ResolveRequest) -> Optional[_ResolveResul
     )
     # An OpenCode-family entry (``opencode-go-bridge``, #85589) persisted the api_mode of whichever
     # model was selected at save time; the relay picks the wire per model (#98799).
-    from agent.opencode_affinity import opencode_transport
+    from hermes_agent.agent.opencode_affinity import opencode_transport
     _oc_mode, _oc_base = opencode_transport(provider, final_model, custom_base)
     if _oc_mode:
         entry_api_mode, custom_base = _oc_mode, _oc_base
@@ -5057,8 +5057,8 @@ def _resolve_named_custom_branch(req: _ResolveRequest) -> Optional[_ResolveResul
     # Mirrors the anonymous-custom branch in _try_custom_endpoint(). See #15033.
     if entry_api_mode == "anthropic_messages":
         try:
-            from agent.anthropic_adapter import build_anthropic_client
-            from agent.anthropic_credentials import anthropic_route_is_oauth
+            from hermes_agent.agent.anthropic_adapter import build_anthropic_client
+            from hermes_agent.agent.anthropic_credentials import anthropic_route_is_oauth
             real_client = build_anthropic_client(custom_key, custom_base)
             if entry_headers:
                 # Same entry headers as the two OpenAI-wire arms; ``with_options`` merges onto the
@@ -5153,14 +5153,14 @@ def _resolve_api_key_branch(req: _ResolveRequest, pconfig: Any, resolve_creds: C
         logger.debug("resolve_provider_client: %s native client from provider profile (%s)", provider, final_model)
         return _route_client(req, profile_client, final_model)
     if provider == "gemini":
-        from agent.gemini_native_adapter import GeminiNativeClient, is_native_gemini_base_url
+        from hermes_agent.agent.gemini_native_adapter import GeminiNativeClient, is_native_gemini_base_url
         if is_native_gemini_base_url(base_url):
             client = GeminiNativeClient(api_key=api_key, base_url=base_url)
             logger.debug("resolve_provider_client: %s (%s)", provider, final_model)
             return _route_client(req, client, final_model)
     headers = _endpoint_default_headers(base_url, provider, is_vision=req.is_vision, xai=True)
     client = _create_openai_client(api_key=api_key, base_url=base_url, **({"default_headers": headers} if headers else {}))
-    from agent.provider_route_hooks import model_api_mode  # a Responses-only model: call_llm() streams responses
+    from hermes_agent.agent.provider_route_hooks import model_api_mode  # a Responses-only model: call_llm() streams responses
     from providers import get_provider_profile
     profile = get_provider_profile(provider) if final_model and not req.raw_codex else None
     if profile is not None and model_api_mode(profile, final_model) == "codex_responses":
@@ -5234,7 +5234,7 @@ def _resolve_registry_branch(req: _ResolveRequest) -> _ResolveResult:
         return _resolve_api_key_branch(req, pconfig, resolve_api_key_provider_credentials)
     if auth_type == "external_process":
         return _resolve_external_process_branch(req, resolve_external_process_provider_credentials(provider))
-    from agent.auxiliary_client_registry import REGISTRY_AUTHTYPE_ARMS
+    from hermes_agent.agent.auxiliary_client_registry import REGISTRY_AUTHTYPE_ARMS
     arm = REGISTRY_AUTHTYPE_ARMS.get(auth_type)
     if arm is not None:
         return arm(req)
@@ -5287,7 +5287,7 @@ def resolve_provider_client(
             if explicit_base_url and str(explicit_base_url).lower().startswith("moa://"):
                 explicit_base_url = None
                 explicit_api_key = None
-    from agent.auxiliary_local_runtime import bare_llamacpp_endpoint
+    from hermes_agent.agent.auxiliary_local_runtime import bare_llamacpp_endpoint
     local = bare_llamacpp_endpoint(original_provider, explicit_base_url, explicit_api_key)
     if local is not None:
         if not local[0]:
@@ -5363,7 +5363,7 @@ _VISION_AUTO_PROVIDER_ORDER = ("openrouter", "nous", "deepinfra")
 def _main_model_supports_vision(provider: str, model: Optional[str]) -> bool:
     """True when ``provider``/``model`` is known to accept image input; unknown capability → True (attempt the call)."""
     try:
-        from agent.image_routing import _lookup_supports_vision
+        from hermes_agent.agent.image_routing import _lookup_supports_vision
         from hermes_cli.config import load_config_readonly
     except ImportError:
         return True
@@ -5569,7 +5569,7 @@ def resolve_vision_provider_client(
 def auxiliary_max_tokens_param(value: int, *, model: Optional[str] = None) -> dict:
     """Max-tokens kwarg for the auxiliary provider: direct OpenAI, a custom endpoint whose profile declares
     it, and newer OpenAI-family models (by ``model`` name: custom endpoints fronting gpt-5.x) need max_completion_tokens."""
-    from agent.provider_route_hooks import route_answer
+    from hermes_agent.agent.provider_route_hooks import route_answer
     _custom_base = _current_custom_base_url()
     direct_openai_family = not _scoped_key_env("OPENROUTER_API_KEY") and _read_nous_auth() is None and (
         base_url_hostname(_custom_base) == "api.openai.com"
@@ -5860,7 +5860,7 @@ def _get_cached_client(
     """
     # A bare llama.cpp alias keys on the live local endpoint: a restarted server (new port/key)
     # must not be served the old client, and a stopped one resolves to nothing, not a cloud client.
-    from agent.auxiliary_local_runtime import bare_llamacpp_endpoint
+    from hermes_agent.agent.auxiliary_local_runtime import bare_llamacpp_endpoint
     local = bare_llamacpp_endpoint(provider, base_url, api_key)
     if local is not None:
         if not local[0]:
@@ -6093,8 +6093,8 @@ _COMPRESSION_TIMEOUT_FLOOR_SECONDS = 300.0
 
 
 # Read-time resolution of auxiliary.<task> (plugin defaults, inherit_from) lives in its own module;
-# re-exported here because callers and tests reach it as agent.auxiliary_client._get_auxiliary_task_config.
-from agent.auxiliary_task_config import _get_auxiliary_task_config
+# re-exported here because callers and tests reach it as hermes_agent.agent.auxiliary_client._get_auxiliary_task_config.
+from hermes_agent.agent.auxiliary_task_config import _get_auxiliary_task_config
 
 
 class CompressionFastLane(NamedTuple):
@@ -6216,7 +6216,7 @@ def _with_custom_endpoint_extra_body(
     if not base_url:
         return extra_body
     try:
-        from agent.agent_init import _custom_provider_extra_body_for_agent
+        from hermes_agent.agent.agent_init import _custom_provider_extra_body_for_agent
         from hermes_cli.config import get_compatible_custom_providers, load_config_readonly
         inherited = _custom_provider_extra_body_for_agent(
             provider=provider or "", model=model or "", base_url=str(base_url),
@@ -6311,7 +6311,7 @@ def _acquire_async_aux_semaphore(task: Optional[str]):
         loop = asyncio.get_running_loop()
     except RuntimeError:
         return None
-    from agent.cache_bounds import live_loop_table
+    from hermes_agent.agent.cache_bounds import live_loop_table
     from hermes_constants import hermes_home_key
     tables = live_loop_table(_aux_async_semaphores, loop, _aux_sem_lock)
     return _cached_semaphore(tables, (hermes_home_key(), task), limit, asyncio.Semaphore)
@@ -6393,7 +6393,7 @@ def _is_gemini_native_route(provider_norm: str, effective_base: str) -> bool:
     if not effective_base:
         return False
     try:
-        from agent.gemini_native_adapter import is_native_gemini_base_url
+        from hermes_agent.agent.gemini_native_adapter import is_native_gemini_base_url
         return is_native_gemini_base_url(effective_base)
     except Exception:
         return False
@@ -6525,13 +6525,13 @@ def _merge_aux_extra_body(
     merged_extra.update(caller_reasoning_fields)
     if not projection.handles_reasoning:
         # ``reasoning_config`` is already clamped to the OpenAI-compat wire by _build_call_kwargs.
-        from agent.reasoning_effort import generic_nested_reasoning
+        from hermes_agent.agent.reasoning_effort import generic_nested_reasoning
         merged_extra.update(generic_nested_reasoning(reasoning_config))
     # Caller/task ``extra_body.reasoning`` (``auxiliary.<task>.reasoning_effort`` folds in here via
     # _get_task_extra_body) takes the same wire clamp: Hermes-only ``ultra`` never reaches the
     # OpenAI-compat wire from any aux task (#112010).
     if isinstance(merged_extra.get("reasoning"), dict):
-        from agent.reasoning_effort import clamp_reasoning_config
+        from hermes_agent.agent.reasoning_effort import clamp_reasoning_config
         merged_extra["reasoning"] = clamp_reasoning_config(merged_extra["reasoning"])
     # Portal tags + sticky session_id fallback when the profile didn't supply them; session_id
     # keeps aux calls on the main turn's upstream instance (cache warmth) — tags alone are not
@@ -6541,7 +6541,7 @@ def _merge_aux_extra_body(
             merged_extra["tags"] = _nous_portal_tags()
         if "session_id" not in merged_extra:
             try:
-                from agent.portal_tags import get_conversation_context
+                from hermes_agent.agent.portal_tags import get_conversation_context
                 sticky_key = get_conversation_context()
             except Exception:
                 sticky_key = None
@@ -6574,7 +6574,7 @@ def _build_call_kwargs(
     elif fixed_temperature is not None:
         temperature = fixed_temperature
     if temperature is not None:
-        from agent.anthropic_adapter import _forbids_sampling_params
+        from hermes_agent.agent.anthropic_adapter import _forbids_sampling_params
         if not _forbids_sampling_params(model):
             kwargs["temperature"] = temperature
     provider_norm = str(provider or "").strip().lower()
@@ -6587,8 +6587,8 @@ def _build_call_kwargs(
     # ``extra_body.reasoning`` fallback. Clamp Hermes-internal levels (``ultra``) to the
     # OpenAI-compat wire ONCE here, before either path sees the config — the same entry clamp the
     # main transport applies (#89503); MoA aggregator/reference and aux calls 400'd without it (#112010).
-    from agent.reasoning_effort import chat_endpoint_efforts, clamp_reasoning_config
-    from agent.auxiliary_reasoning_floor import known_reasoning_floor
+    from hermes_agent.agent.reasoning_effort import chat_endpoint_efforts, clamp_reasoning_config
+    from hermes_agent.agent.auxiliary_reasoning_floor import known_reasoning_floor
     if isinstance(extra_body, dict):
         task_reasoning = extra_body.get("reasoning")
         if isinstance(task_reasoning, dict) and "enabled" in task_reasoning:
@@ -6601,7 +6601,7 @@ def _build_call_kwargs(
     kwargs.update(projection.top_level)
     merged_extra = _merge_aux_extra_body(extra_body, projection, reasoning_config, provider_norm)
     if "response_format" in merged_extra:
-        from agent.auxiliary_structured_output import without_unsupported_response_format
+        from hermes_agent.agent.auxiliary_structured_output import without_unsupported_response_format
         merged_extra = without_unsupported_response_format(merged_extra, provider_norm, effective_base, model, task)
     if merged_extra:
         kwargs["extra_body"] = merged_extra
@@ -6620,7 +6620,7 @@ def _build_call_kwargs(
             kwargs["_reasoning_config"] = dict(reasoning_config)
     # Conversation affinity (OpenCode relay, opt-in custom-provider header) — same key as the main
     # turn so compression/title/vision calls stay on the conversation's warm backend.
-    from agent.opencode_affinity import merge_session_affinity_headers
+    from hermes_agent.agent.opencode_affinity import merge_session_affinity_headers
     return merge_session_affinity_headers(kwargs, provider, base_url, _runtime_main_value("session_id") or None)
 
 
@@ -6643,7 +6643,7 @@ def _validate_llm_response(
             f"Auxiliary {task or 'call'}: LLM returned None response"
         )
     response = _unwrap_data_envelope(response, task)
-    from agent.aux_accounting import record_aux_usage
+    from hermes_agent.agent.aux_accounting import record_aux_usage
     record_aux_usage(response, task, provider=provider, base_url=base_url)
     # Adapter SimpleNamespace responses are fine — they have .choices[0].message.
     try:
@@ -6665,7 +6665,7 @@ def _validate_llm_response(
             _note_relay_auxiliary_error(invalid)
             raise invalid from exc
         response = recovered
-    from agent.transports.chat_completions import is_router_timeout_shim
+    from hermes_agent.agent.transports.chat_completions import is_router_timeout_shim
     if is_router_timeout_shim(response):
         # HTTP-200 router failure shim (#68396): invalid like a malformed shape so the
         # auxiliary fallback chain moves to the next candidate instead of titling with it.
@@ -6688,7 +6688,7 @@ def _complete_relay_auxiliary_call(*, outcome: str = "success", error_class: Opt
     context = _RELAY_AUX_CALL_CONTEXT.get()
     if context is None:
         return
-    from agent import relay_llm
+    from hermes_agent.agent import relay_llm
     noted: Optional[_RelayAttempt] = context.get("attempt")
     if not error_class and noted is not None:  # the ladder's verdict, else one classification
         embedded = isinstance(getattr(noted.error, auxiliary_call_outcome.PROVIDER_ERROR_ATTR, None), dict)
@@ -6990,7 +6990,7 @@ def _create_with_progress_once(
     if hasattr(chunks, "choices"):
         _notify_aux_provider_response()
         return chunks
-    from agent.auxiliary_stream_watchdog import chat_stream_windows
+    from hermes_agent.agent.auxiliary_stream_watchdog import chat_stream_windows
     return _aggregate_chat_stream(
         chunks, model=model, total_ceiling=total_ceiling, no_progress=chat_stream_windows(client, kwargs, task))
 
@@ -7001,7 +7001,7 @@ def _aggregate_chat_stream(
 ) -> Any:
     """Consume a chunk stream into a complete response; TimeoutError (phrased "timed out" so the
     classifier reads a timeout) past *total_ceiling* or the *no_progress* windows (#100501)."""
-    from agent.auxiliary_stream_watchdog import _close_chunk_stream, consume_chat_stream
+    from hermes_agent.agent.auxiliary_stream_watchdog import _close_chunk_stream, consume_chat_stream
     acc = _ChatStreamAccumulator(
         model=model, total_ceiling=total_ceiling, host_deadline=_current_aux_stream_deadline)
     try:
@@ -7117,7 +7117,7 @@ class _ChatStreamAccumulator:
         if delta is None:
             return False
         made_progress = False
-        from agent.message_content import flatten_message_text
+        from hermes_agent.agent.message_content import flatten_message_text
 
         piece = flatten_message_text(getattr(delta, "content", None), sep="")
         if piece:
@@ -7164,7 +7164,7 @@ async def _aggregate_chat_stream_async(
         async for chunk in chunks:
             acc.feed(chunk)
     finally:
-        from agent.auxiliary_stream_watchdog import _close_chunk_stream
+        from hermes_agent.agent.auxiliary_stream_watchdog import _close_chunk_stream
         pending = _close_chunk_stream(chunks, allow_aclose=True)
         if pending is not None:
             with contextlib.suppress(Exception):
@@ -7672,7 +7672,7 @@ def _ladder_credential_rungs(
     if pool_provider and first_err.verdict.should_rotate_credential:
         # No backoff retry for a payment/quota error: the same exhausted key stays refused.
         if aux_errors.same_key_retry(first_err.verdict):
-            from agent.auxiliary_rate_limit_backoff import rate_limit_retry_rungs
+            from hermes_agent.agent.auxiliary_rate_limit_backoff import rate_limit_retry_rungs
             resp, first_err = yield from rate_limit_retry_rungs(first_err, route, kwargs, accept)
             if first_err is None:
                 return resp, None
@@ -7750,7 +7750,7 @@ def _ladder_provider_fallback(failure: aux_errors.Failure, route: _LadderRoute, 
     # auth keeps skipping the credential surface, while billing is scoped to the endpoint:
     # separate custom URLs can carry separate credentials (or no billing relationship at all).
     _chain_failed_model = None if reason in ("auth error", "payment error") else route.final_model
-    from agent.backend_identity import FailureScope
+    from hermes_agent.agent.backend_identity import FailureScope
     _chain_failure_scope = (
         FailureScope.ENDPOINT
         if reason == "payment error" and _custom_health_base_url(resolved_provider, route.base_info)
@@ -8157,7 +8157,7 @@ def extract_content_or_reasoning(response, *, max_reasoning_chars: int | None = 
     content = raw.strip()
     if content:
         # Same precompiled closed-pair patterns as strip_think_blocks.
-        from agent.agent_runtime_helpers import _REASONING_BLOCK_PATTERNS
+        from hermes_agent.agent.agent_runtime_helpers import _REASONING_BLOCK_PATTERNS
         cleaned = content
         for pattern in _REASONING_BLOCK_PATTERNS:
             cleaned = pattern.sub("", cleaned)

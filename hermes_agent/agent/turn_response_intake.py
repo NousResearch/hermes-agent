@@ -1,7 +1,7 @@
 """Response intake for the conversation turn loop: normalize the raw provider response into
 the assistant message, splice agent-as-provider projections, fire ``post_api_request``, relay
 reasoning to the progress callback, and apply the incomplete-scratchpad / Codex-incomplete
-continuation guards. Nothing here imports ``agent.conversation_loop`` at module level (cycle).
+continuation guards. Nothing here imports ``hermes_agent.agent.conversation_loop`` at module level (cycle).
 """
 
 from __future__ import annotations
@@ -12,14 +12,14 @@ import logging
 import re
 from typing import Any, Dict, Optional
 
-from agent.provider_projection import splice_provider_projection
-from agent.think_scrubber import THINK_TAG_NAMES
-from agent.trajectory import has_incomplete_scratchpad
-from agent.turn_truncation import (
+from hermes_agent.agent.provider_projection import splice_provider_projection
+from hermes_agent.agent.think_scrubber import THINK_TAG_NAMES
+from hermes_agent.agent.trajectory import has_incomplete_scratchpad
+from hermes_agent.agent.turn_truncation import (
     CODEX_FALLBACK_ACTIVATED, continue_codex_incomplete, normalize_response_for_agent, partial_result,
 )
 
-logger = logging.getLogger("agent.conversation_loop")
+logger = logging.getLogger("hermes_agent.agent.conversation_loop")
 
 # One alternation over the shared tag list so this path tracks every tag the scrubber hides
 # (the old 3-of-9 list leaked <thinking>/<思考>/... previews), case-insensitive like the scrubber.
@@ -68,7 +68,7 @@ def _fire_post_api_request_hook(
     api_call_count: Any, api_duration: Any, api_start_time: Any, api_request_id: Any,
     effective_task_id: Any, turn_id: Any,
 ) -> None:
-    from agent.conversation_loop import _moa_reference_metrics_for_hook
+    from hermes_agent.agent.conversation_loop import _moa_reference_metrics_for_hook
 
     try:
         from hermes_cli.lifecycle import has_hook, invoke_hook as _invoke_hook
@@ -235,7 +235,7 @@ def normalize_model_response(
         if _codex_result is CODEX_FALLBACK_ACTIVATED:
             # The failover rewrote the Model:/Provider: identity on the cached system prompt;
             # rebind it so the next iteration's request is rebuilt with the new identity.
-            from agent.conversation_loop import _sync_failover_system_message
+            from hermes_agent.agent.conversation_loop import _sync_failover_system_message
             active_system_prompt = _sync_failover_system_message(agent, api_messages, active_system_prompt)
             return _verdict("continue")
         if _codex_result is not None:

@@ -18,7 +18,7 @@ CODEX_URL = "https://chatgpt.com/backend-api/codex"
 
 
 def test_fast_ultrafast_checks_the_session_endpoint(monkeypatch):
-    import agent.codex_service_tiers as tiers
+    import hermes_agent.agent.codex_service_tiers as tiers
 
     monkeypatch.setitem(cli_mod.CLI_CONFIG, "model", {
         "default": "claude-sonnet-5.5", "provider": "claude-subscription", "base_url": "process://claude-subscription"})

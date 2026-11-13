@@ -278,7 +278,7 @@ class GatewayChatView:
                                           tool_call_id=payload.get("tool_call_id") or None)
         elif not self.quiet:
             # Same line shape the in-process CLI prints: the tool's emoji and its primary argument.
-            from agent.display import build_tool_preview, get_tool_emoji
+            from hermes_agent.agent.display import build_tool_preview, get_tool_emoji
             name = payload.get("tool_name") or payload.get("name") or "tool"
             preview = build_tool_preview(name, payload.get("args") or {}, max_len=0)
             print(f"{get_tool_emoji(name)} {name}{f': {preview}' if preview else ''}", flush=True)
@@ -351,7 +351,7 @@ class GatewayChatView:
             # TUI-26: a bare stop phrase typed into this LOCAL session's voice chat (another viewer
             # turned it on) ended the chat on the owner; nothing was admitted and no turn follows.
             if not self.quiet:
-                from agent.i18n import t
+                from hermes_agent.agent.i18n import t
                 print(t("cli.voice.stop_phrase_typed"), flush=True)
             return receipt
         admission = (receipt or {}).get("admission_id")
@@ -445,7 +445,7 @@ class GatewayChatView:
         """The owner refused a guarded model target (cost / data policy / large context): ask as
         the in-process CLI does (``_confirm_expensive_model_switch``: switch anyway once, or cancel)
         on this composer. Only an explicit yes applies; anything else keeps the current model."""
-        from agent.i18n import t
+        from hermes_agent.agent.i18n import t
         from hermes_cli.gateway_mutations import confirm_choice, confirmation_title
         choices = [("once", t("cli.model.choice_switch_anyway"), t("cli.model.desc_switch_anyway")),
                    ("cancel", t("cli.model.choice_cancel"), t("cli.model.desc_keep_current_model"))]
@@ -643,7 +643,7 @@ def _oneshot_admission(receipt):
 def resume_footer(session_id):
     """The classic single-query exit block (``_print_exit_summary``): how to continue this session.
     A non-default profile needs ``-p`` because session ids are profile-scoped."""
-    from agent.i18n import t
+    from hermes_agent.agent.i18n import t
     from hermes_cli.profiles import get_active_profile_name
     profile = get_active_profile_name()
     flag = "" if profile in ("default", "custom") else f" -p {profile}"

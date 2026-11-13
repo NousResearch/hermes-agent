@@ -31,7 +31,7 @@ def _seed_pool(tmp_path, monkeypatch, entries, provider="openrouter"):
         json.dumps({"version": 1, "credential_pool": {provider: entries}})
     )
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-    from agent.credential_pool import load_pool
+    from hermes_agent.agent.credential_pool import load_pool
 
     return load_pool(provider)
 

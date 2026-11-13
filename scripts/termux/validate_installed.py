@@ -22,7 +22,7 @@ def run(argv: list[str], env: dict[str, str], cwd: Path) -> subprocess.Completed
 
 def stop_child_tree(child: subprocess.Popen) -> None:
     import psutil
-    from agent.deadline import kill_process_tree
+    from hermes_agent.agent.deadline import kill_process_tree
 
     if child.poll() is not None:
         return
@@ -116,7 +116,7 @@ def main() -> None:
         run([
             str(python), "-c",
             "import ctypes, ssl, sqlite3, bz2, lzma, zlib, hashlib, readline; "
-            "import cli, run_agent, hermes_agent.tui_gateway.server; "
+            "import cli; from hermes_agent import run_agent; import hermes_agent.tui_gateway.server; "
             "from hermes_cli.config import detect_install_method; "
             "assert detect_install_method() == 'apt'; "
             "print('CLI_AND_STDLIB_IMPORTS_OK')",

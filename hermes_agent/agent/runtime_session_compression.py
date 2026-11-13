@@ -21,13 +21,13 @@ class RuntimeSessionCompressionMixin:
         result = self._apply('compression.append', dict(messages=messages,
             compression_lock_holder=compression_lock_holder, turn_lease_holder=turn_lease_holder,
             turn_lease_ttl_seconds=turn_lease_ttl_seconds))
-        from agent.runtime_session_store import apply_row_annotations
+        from hermes_agent.agent.runtime_session_store import apply_row_annotations
         apply_row_annotations(messages, result['annotations'])
         return result['count']
 
     def get_session(self, session_id):
         if session_id != self.scope['session_id']:
-            from agent.runtime_session_store import WorkerPersistenceError
+            from hermes_agent.agent.runtime_session_store import WorkerPersistenceError
             ids = self._apply('compression.lineage', {'target': self.scope['session_id']})['readable_ids']
             if session_id not in ids:
                 raise WorkerPersistenceError('permission_denied')
@@ -88,7 +88,7 @@ class RuntimeSessionCompressionMixin:
             model_config_patch=model_config_patch, watermark=watermark, lock_holder=lock_holder,
             tail_count=tail_count, carried_messages=carried, covered_ids=covered_ids,
             unresolved_held=unresolved, held_for_cas=cas))
-        from agent.runtime_session_store import apply_row_annotations
+        from hermes_agent.agent.runtime_session_store import apply_row_annotations
         apply_row_annotations(compacted_messages, result['annotations'])
         return result['value']
 
@@ -102,13 +102,13 @@ class RuntimeSessionCompressionMixin:
             cwd=cwd, profile_name=profile_name, compression_lock_holder=compression_lock_holder,
             require_compression_lease=require_compression_lease, require_lease_refresh=require_lease_refresh,
             lease_ttl_seconds=lease_ttl_seconds, watermark=watermark, watermark_ceiling=watermark_ceiling))
-        from agent.runtime_session_store import apply_row_annotations
+        from hermes_agent.agent.runtime_session_store import apply_row_annotations
         apply_row_annotations(messages, result['annotations'])
 
     def _compression_receipt_journal(self, candidate, result):
         assignment = result.get('worker_assignment')
         if assignment:
-            from agent.runtime_session_store import WorkerPersistenceError
+            from hermes_agent.agent.runtime_session_store import WorkerPersistenceError
             if assignment['parent'] != self.scope['session_id']:
                 raise WorkerPersistenceError('outbox_scope_mismatch')
             candidate = dict(candidate, scope=dict(self.scope, session_id=assignment['session_id']))

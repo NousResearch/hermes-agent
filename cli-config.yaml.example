@@ -317,7 +317,7 @@ model:
 # Unified Timeouts (operation deadlines)
 # =============================================================================
 # One place to override Hermes's internal operation deadlines (seconds).
-# Keys are dotted paths resolved by agent/deadline.py:resolve_timeout().
+# Keys are dotted paths resolved by hermes_agent/agent/deadline.py:resolve_timeout().
 # Precedence: this section > legacy HERMES_* env var (back-compat) > built-in
 # default. 0 or a negative value disables the bound (unbounded); very large
 # values are clamped to a platform-safe maximum automatically.

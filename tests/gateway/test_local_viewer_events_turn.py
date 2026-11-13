@@ -75,7 +75,7 @@ def test_turn_sinks_publish_and_restore_on_the_shared_agent():
 
 def test_status_lines_the_agent_prints_reach_the_viewer():
     """``_safe_print`` (subagent completion, compaction, errors) routes through ``_print_fn``."""
-    from agent.status_output import StatusOutputMixin
+    from hermes_agent.agent.status_output import StatusOutputMixin
     from hermes_agent.gateway import local_viewer_events
     published = []
     agent = type('A', (StatusOutputMixin,), {})()
@@ -300,7 +300,7 @@ async def test_service_tier_is_a_session_scoped_fast_override(tmp_path, monkeypa
 
 def test_completion_payload_forwards_billing_failure_and_response_flags():
     """TUI-6: ``message.complete`` carries ``billing``, ``failure_reason``, ``warning``, ``response_previewed`` and ``response_transformed`` from the turn result on local-viewer turns only."""
-    from agent.billing_links import build_billing_block
+    from hermes_agent.agent.billing_links import build_billing_block
     from hermes_agent.gateway.session import SessionSource
     from hermes_agent.gateway.session_results import execution_result
     from hermes_agent.gateway.session_settlement_recovery import completion_payload

@@ -12,9 +12,9 @@ import shutil
 import threading
 import time
 
-from agent.i18n import t
-from agent import terminal_image
-from agent.pet import render as pet_render
+from hermes_agent.agent.i18n import t
+from hermes_agent.agent import terminal_image
+from hermes_agent.agent.pet import render as pet_render
 from hermes_cli.banner import _format_context_length
 from typing import Any, Dict, Optional
 
@@ -107,7 +107,7 @@ class CLIStatusBarMixin:
         arg = parts[1].strip().lower() if len(parts) > 1 else ""
 
         try:
-            from agent.battery import format_battery, read_battery
+            from hermes_agent.agent.battery import format_battery, read_battery
             reading = read_battery(use_cache=False)
         except Exception:
             reading = None
@@ -254,10 +254,10 @@ class CLIStatusBarMixin:
         except Exception:
             pass
 
-        # Battery reads are memoised inside agent.battery, so per-repaint polling is cheap.
+        # Battery reads are memoised inside hermes_agent.agent.battery, so per-repaint polling is cheap.
         if getattr(self, "_battery_visible", False):
             try:
-                from agent.battery import battery_category, format_battery, read_battery
+                from hermes_agent.agent.battery import battery_category, format_battery, read_battery
 
                 _batt = read_battery()
                 snapshot["battery_label"] = format_battery(_batt)
@@ -302,7 +302,7 @@ class CLIStatusBarMixin:
             # last_prompt_tokens parks at the -1 sentinel right after a compression until the
             # next real API call; clamp so the bar never renders "-1/200K".
             context_tokens = max(0, getattr(compressor, "last_prompt_tokens", 0) or 0)
-            from agent.context_breakdown import context_display_source
+            from hermes_agent.agent.context_breakdown import context_display_source
             snapshot["context_estimated"] = context_display_source(compressor) != "provider_usage"
             # Display-only anchoring: on reasoning models a long tool loop replays the turn's
             # thinking on every request, so the LAST request's prompt_tokens can exceed the
@@ -310,7 +310,7 @@ class CLIStatusBarMixin:
             # Anchor on the turn's FIRST response plus a delta estimate of appended messages.
             # The compression trigger keeps using real last-request usage.
             try:
-                from agent.usage_anchor import anchored_context_tokens
+                from hermes_agent.agent.usage_anchor import anchored_context_tokens
 
                 _msgs = getattr(agent, "_session_messages", None)
                 _anchored = anchored_context_tokens(
@@ -331,7 +331,7 @@ class CLIStatusBarMixin:
                 context_tokens = min(context_tokens, context_length)
             snapshot["context_tokens"] = context_tokens
             snapshot["context_length"] = context_length or None
-            from agent.context_pin import agent_context_marker
+            from hermes_agent.agent.context_pin import agent_context_marker
             marker = agent_context_marker(agent)
             snapshot["context_pinned"] = marker == "pinned"
             snapshot["context_fallback"] = marker == "fallback"
@@ -378,7 +378,7 @@ class CLIStatusBarMixin:
         snapshot["cache_hit_pct"] = pct
         snapshot["cache_hit_label"] = f"{pct:.0f}%" if pct is not None else ""
 
-        # Rolling avg latency / velocity over the deques kept by agent/conversation_loop.py
+        # Rolling avg latency / velocity over the deques kept by hermes_agent/agent/conversation_loop.py
         # (hidden on Codex app-server, which reports no latency).
         avg_lat = avg_vel = None
         try:
@@ -583,7 +583,7 @@ class CLIStatusBarMixin:
         if agent is None:
             return ""
         try:
-            from agent.turn_summary import format_token_flow
+            from hermes_agent.agent.turn_summary import format_token_flow
 
             produced = (getattr(agent, "session_output_tokens", 0) or 0) - (
                 getattr(self, "_turn_token_baseline", 0) or 0)
@@ -608,7 +608,7 @@ class CLIStatusBarMixin:
     def _turn_summary_begin(self) -> None:
         """Start per-turn accounting for the turn that is about to run."""
         try:
-            from agent.turn_summary import TurnSummaryCollector
+            from hermes_agent.agent.turn_summary import TurnSummaryCollector
 
             collector = getattr(self, "_turn_summary_collector", None)
             if collector is None:
@@ -665,7 +665,7 @@ class CLIStatusBarMixin:
         """(Re)resolve the active pet from config so ``/pet`` / ``hermes pets`` changes apply
         without a restart (mirrors the TUI's steady poll). Fail-open: any problem disables."""
         try:
-            from agent.pet import constants, store
+            from hermes_agent.agent.pet import constants, store
             from hermes_cli.config import load_config
             from utils import is_truthy_value
 
@@ -730,7 +730,7 @@ class CLIStatusBarMixin:
         """End-of-turn beat: failed on error, jump on a finished plan, else wave."""
         if not self._pet_enabled:
             return
-        from agent.pet.state import todos_all_done
+        from hermes_agent.agent.pet.state import todos_all_done
 
         if self._pet_turn_error:
             self._pet_flash("failed")
@@ -743,12 +743,12 @@ class CLIStatusBarMixin:
         self._pet_flash("jump" if done else "wave")
 
     def _derive_pet_state(self) -> str:
-        """A live transient beat wins; otherwise the shared ``agent.pet.state.derive_pet_state``
+        """A live transient beat wins; otherwise the shared ``hermes_agent.agent.pet.state.derive_pet_state``
         priority order so the CLI can't drift from the TUI/desktop."""
         if self._pet_event and time.monotonic() < self._pet_event_until:
             return self._pet_event
         self._pet_event = ""
-        from agent.pet.state import derive_pet_state
+        from hermes_agent.agent.pet.state import derive_pet_state
 
         # Any blocking modal (approval / clarify / sudo / secret / slash confirm) means the
         # agent is paused on the user → `waiting`, which outranks the in-flight signals.

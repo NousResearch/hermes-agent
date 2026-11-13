@@ -14,7 +14,7 @@ progress.
 
 from __future__ import annotations
 
-from agent.turn_context import (
+from hermes_agent.agent.turn_context import (
     compression_made_progress,
     _compression_warrants_another_preflight_pass,
 )

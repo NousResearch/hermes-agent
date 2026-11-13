@@ -1,7 +1,7 @@
 """Service-level orchestration for LSP clients.
 
 :class:`LSPService` bridges the synchronous file_operations layer and the async
-:class:`agent.lsp.client.LSPClient`: one asyncio loop in a background thread, one lazily
+:class:`hermes_agent.agent.lsp.client.LSPClient`: one asyncio loop in a background thread, one lazily
 spawned client per ``(server_id, workspace_root)`` — servers flagged ``multi_root`` (pyright) get ONE
 client per ``server_id`` and further roots (typically sibling git worktrees) are attached to the running
 process via ``workspace/didChangeWorkspaceFolders`` — a **broken-set** of pairs that failed
@@ -20,15 +20,15 @@ import threading
 import time
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from agent.lsp import eventlog
-from agent.lsp.client import DIAGNOSTICS_DOCUMENT_WAIT, LSPClient, _diagnostic_key as _diag_key
-from agent.lsp.edit_check import EditChecks
-from agent.lsp.servers import (
+from hermes_agent.agent.lsp import eventlog
+from hermes_agent.agent.lsp.client import DIAGNOSTICS_DOCUMENT_WAIT, LSPClient, _diagnostic_key as _diag_key
+from hermes_agent.agent.lsp.edit_check import EditChecks
+from hermes_agent.agent.lsp.servers import (
     SERVERS, UNTRUSTED_SAFE_SERVERS, ServerContext, ServerDef, custom_servers, find_server_for_file, language_id_for,
 )
-from agent.lsp.workspace import clear_cache, is_trusted_workspace, operator_workspace_roots, resolve_workspace_for_file
+from hermes_agent.agent.lsp.workspace import clear_cache, is_trusted_workspace, operator_workspace_roots, resolve_workspace_for_file
 
-logger = logging.getLogger("agent.lsp.manager")
+logger = logging.getLogger("hermes_agent.agent.lsp.manager")
 
 DEFAULT_IDLE_TIMEOUT = 600  # seconds; servers idle for >10min get reaped
 _DELTA_BASELINE_CAP = 256  # per-file pre-write snapshots; paths never written again would otherwise live forever (#62950)
@@ -109,7 +109,7 @@ class _BackgroundLoop:
 
     def run(self, coro, *, timeout: Optional[float] = None) -> Any:
         """Submit a coroutine to the loop and block for its result (or raise)."""
-        from agent.async_utils import safe_schedule_threadsafe
+        from hermes_agent.agent.async_utils import safe_schedule_threadsafe
         if self._loop is None:
             if asyncio.iscoroutine(coro):
                 coro.close()
@@ -136,7 +136,7 @@ class _BackgroundLoop:
 
 
 class LSPService:
-    """The process-wide LSP service; use :func:`agent.lsp.get_service` rather than constructing directly."""
+    """The process-wide LSP service; use :func:`hermes_agent.agent.lsp.get_service` rather than constructing directly."""
 
     def __init__(
         self, *, enabled: bool, wait_mode: str, wait_timeout: float, install_strategy: str,
@@ -364,7 +364,7 @@ class LSPService:
 
     def start_edit_check(self, file_path: str, *, pre_text: Optional[str], post_text: Optional[str] = None,
                          owner: Optional[str] = None, carry: tuple = ()):
-        """Non-blocking post-write check (``agent.lsp.edit_check``): a Future of the diagnostics the edit
+        """Non-blocking post-write check (``hermes_agent.agent.lsp.edit_check``): a Future of the diagnostics the edit
         introduced, or None when LSP doesn't handle the file.  Replaces snapshot_baseline +
         get_diagnostics_sync on the write path, which blocked the write on both waits.  ``owner`` = the
         editing session; ``carry`` = its undelivered notes for the file this check takes over.
@@ -372,7 +372,7 @@ class LSPService:
         snapshots, never whatever another session has written to the file since."""
         if not self.enabled_for(file_path):
             return None
-        from agent.lsp import edit_check
+        from hermes_agent.agent.lsp import edit_check
         return edit_check.start(self, file_path, pre_text=pre_text, post_text=post_text, owner=owner,
                                 carry=carry)
 
@@ -392,7 +392,7 @@ class LSPService:
         """Synchronously open ``file_path``, wait for diagnostics, return them.  Never raises.
 
         With ``delta`` (default) the result excludes the :meth:`snapshot_baseline`; ``line_shift`` (from
-        :func:`agent.lsp.range_shift.build_line_shift`) remaps that baseline into post-edit coordinates
+        :func:`hermes_agent.agent.lsp.range_shift.build_line_shift`) remaps that baseline into post-edit coordinates
         first, so pre-existing diagnostics that merely moved don't look introduced by this edit.
         ``[]`` when LSP is disabled, nothing matches, or the server can't be spawned.
         """
@@ -433,7 +433,7 @@ class LSPService:
         if baseline:
             if line_shift is not None:
                 # Entries that map into a deleted region drop out — they no longer apply.
-                from agent.lsp.range_shift import shift_baseline
+                from hermes_agent.agent.lsp.range_shift import shift_baseline
                 baseline = shift_baseline(baseline, line_shift)
             seen = {_diag_key(d) for d in baseline}
             diags = [d for d in diags if _diag_key(d) not in seen]

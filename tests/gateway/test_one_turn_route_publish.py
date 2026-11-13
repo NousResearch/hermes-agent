@@ -255,7 +255,7 @@ def test_a_same_provider_alias_without_an_endpoint_keeps_the_session_route(monke
     monkeypatch.setattr("hermes_cli.model_switch.list_provider_models",
                         lambda provider: ["claude-haiku-4-5", "claude-sonnet-4-6"] if provider == "anthropic" else [])
     monkeypatch.setattr("hermes_cli.models._PROVIDER_MODELS", {})
-    monkeypatch.setattr("agent.models_dev.fetch_models_dev", dict)
+    monkeypatch.setattr("hermes_agent.agent.models_dev.fetch_models_dev", dict)
     # The provider's default route, which the explicit provider re-resolves.
     monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", lambda **_k: {
         "provider": "anthropic", "api_key": "sk-default", "base_url": "https://api.anthropic.com",
@@ -287,7 +287,7 @@ def test_a_process_providers_declared_model_keeps_the_session_command(monkeypatc
     monkeypatch.setattr("hermes_cli.model_switch.list_provider_models", lambda provider: [])
     monkeypatch.setattr("hermes_cli.models_validate.validate_requested_model", lambda *a, **k: {
         "accepted": True, "persist": True, "recognized": True, "message": ""})
-    monkeypatch.setattr("agent.models_dev.fetch_models_dev", dict)
+    monkeypatch.setattr("hermes_agent.agent.models_dev.fetch_models_dev", dict)
     monkeypatch.setattr("hermes_cli.model_switch.get_model_info", lambda *a, **k: None)
     monkeypatch.setattr("hermes_cli.model_switch.get_model_capabilities", lambda *a, **k: None)
     monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", lambda **_k: {
@@ -324,7 +324,7 @@ def test_an_alias_runs_on_the_endpoint_the_switch_resolved_when_the_config_chang
     monkeypatch.setattr(model_switch, "DIRECT_ALIASES", {})
     monkeypatch.setattr(model_switch, "_DIRECT_ALIAS_IDENTITY", None)
     monkeypatch.setattr(model_switch, "_DIRECT_ALIAS_LOADED", None)
-    monkeypatch.setattr("agent.models_dev.fetch_models_dev", dict)
+    monkeypatch.setattr("hermes_agent.agent.models_dev.fetch_models_dev", dict)
     model, runtime = one_turn_runtime(
         {"model": "fast", "provider": "custom"}, "session-model",
         {"provider": "custom", "api_key": "sk-session", "base_url": SESSION_URL, "api_mode": "chat_completions",

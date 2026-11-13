@@ -13,7 +13,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
-import agent.auxiliary_client as aux
+import hermes_agent.agent.auxiliary_client as aux
 
 
 def _chunk(text, finish=None):

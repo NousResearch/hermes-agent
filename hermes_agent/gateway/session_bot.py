@@ -9,7 +9,7 @@ import logging
 from pathlib import Path
 import time
 
-from agent.turn_author import parse_turn_author
+from hermes_agent.agent.turn_author import parse_turn_author
 
 from hermes_agent.gateway.session_contract import SessionActor, SessionRef
 from hermes_agent.gateway.config import Platform
@@ -581,8 +581,8 @@ async def _maybe_retry(authority, home, path, record):
     re-admits the SAME identity, which the FIFO answers with the existing row (never a second turn).
 
     No user-row adoption: a transient owner-side failure persists the DM row and then CLOSES it with the
-    durable failed-turn boundary (``agent.conversation_loop._close_durable_failed_turn`` /
-    ``_hmwa_close_failed_turn``, #107070), so ``agent.session_persistence.adopt_unanswered_turn`` would
+    durable failed-turn boundary (``hermes_agent.agent.conversation_loop._close_durable_failed_turn`` /
+    ``_hmwa_close_failed_turn``, #107070), so ``hermes_agent.agent.session_persistence.adopt_unanswered_turn`` would
     decline by contract (a plain assistant row follows the DM) and the retry is a fresh turn after that
     boundary. A failure that left the DM as an OPEN tail (the context-pressure classes skip the closer)
     is not retried: the owner execution has no adoption seam, and the retry's DM would merge into it."""

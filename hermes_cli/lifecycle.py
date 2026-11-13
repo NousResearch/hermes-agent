@@ -9,7 +9,7 @@ logger = logging.getLogger(__name__)
 
 
 def _observe(hook_name: str, **kwargs: Any) -> None:
-    from agent.safe_worker_policy import safe_worker_enabled
+    from hermes_agent.agent.safe_worker_policy import safe_worker_enabled
 
     if safe_worker_enabled():
         return
@@ -29,7 +29,7 @@ def _plugin_hooks(hook_name: str, **kwargs: Any) -> list[Any]:
 
 def invoke_hook(hook_name: str, **kwargs: Any) -> list[Any]:
     """Notify first-party observers, then invoke compatibility plugin hooks."""
-    from agent.safe_worker_policy import safe_worker_enabled
+    from hermes_agent.agent.safe_worker_policy import safe_worker_enabled
 
     if safe_worker_enabled():
         return []
@@ -48,7 +48,7 @@ async def ainvoke_hook(hook_name: str, **kwargs: Any) -> list[Any]:
 
 def has_hook(hook_name: str) -> bool:
     """Return whether a first-party observer or plugin consumes a hook."""
-    from agent.safe_worker_policy import safe_worker_enabled
+    from hermes_agent.agent.safe_worker_policy import safe_worker_enabled
 
     if safe_worker_enabled():
         return False
@@ -70,7 +70,7 @@ def hook_known_unused(hook_name: str) -> bool:
     plugins or reading config, so an event loop may ask before spending a thread on it: safe mode,
     or this profile's plugins already loaded with none registered for a hook no first-party observer
     handles. False means it may be consumed: ask :func:`has_hook` off the loop."""
-    from agent.safe_worker_policy import safe_worker_enabled
+    from hermes_agent.agent.safe_worker_policy import safe_worker_enabled
 
     if safe_worker_enabled():
         return True
@@ -103,7 +103,7 @@ def finalize_session(**kwargs: Any) -> list[Any]:
     session_id = str(kwargs.get("session_id") or "")
     if session_id:
         try:
-            from agent import relay_runtime
+            from hermes_agent.agent import relay_runtime
 
             relay_runtime.SESSION_COORDINATOR.finalize_conversation(
                 profile_key=relay_runtime.current_profile_key(),

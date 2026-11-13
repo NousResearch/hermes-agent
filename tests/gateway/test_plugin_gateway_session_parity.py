@@ -249,7 +249,7 @@ def test_gateway_approval_hooks_report_a_cli_sessions_surface(tmp_path, monkeypa
 
 
 def test_plugin_context_reads_the_calling_sessions_cwd_and_surface(tmp_path):
-    from agent.runtime_cwd import set_session_cwd
+    from hermes_agent.agent.runtime_cwd import set_session_cwd
     from hermes_agent.gateway.session_context import set_session_vars
     from hermes_agent.gateway.session_policy import _ACTIVE_POLICY
 

@@ -21,7 +21,7 @@ import logging
 
 import hermes_cli.auth as auth_mod
 from hermes_cli import auth_nous
-from agent.credential_pool import CredentialPool, PooledCredential
+from hermes_agent.agent.credential_pool import CredentialPool, PooledCredential
 
 from tests.hermes_cli.test_auth_nous_provider import _invoke_jwt, _setup_nous_auth
 
@@ -110,7 +110,7 @@ def test_agent_401_refresh_passes_failed_bearer_as_stale_hint(monkeypatch):
     subagent rotates the shared grant again (the "no crash, N refreshes"
     variant of the Sep 2 stampede).
     """
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     agent = AIAgent.__new__(AIAgent)
     agent.provider = "nous"

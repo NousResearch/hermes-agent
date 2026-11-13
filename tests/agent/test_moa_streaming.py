@@ -51,8 +51,8 @@ def _facade(monkeypatch, tmp_path, on_call=None):
             return _response("reference advice")
         return _response("aggregator acted")
 
-    monkeypatch.setattr("agent.moa_loop.call_llm", fake_call_llm)
-    from agent.moa_loop import MoAChatCompletions
+    monkeypatch.setattr("hermes_agent.agent.moa_loop.call_llm", fake_call_llm)
+    from hermes_agent.agent.moa_loop import MoAChatCompletions
 
     return MoAChatCompletions("review"), calls
 
@@ -100,7 +100,7 @@ def test_build_moa_facade_ignores_fallback_model_name_when_restoring(monkeypatch
     _write_cfg(home)
     monkeypatch.setenv("HERMES_HOME", str(home))
 
-    from agent.moa_loop import build_moa_facade
+    from hermes_agent.agent.moa_loop import build_moa_facade
 
     agent = SimpleNamespace(
         provider="moa",
@@ -182,7 +182,7 @@ def test_call_llm_stream_returns_raw_stream_and_skips_validation(monkeypatch):
     """call_llm(stream=True) returns the client's raw stream object directly,
     attaches stream/stream_options to the request, and does NOT run response
     validation (which assumes a complete response)."""
-    from agent import auxiliary_client as ac
+    from hermes_agent.agent import auxiliary_client as ac
 
     captured = {}
 

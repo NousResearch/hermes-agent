@@ -1,6 +1,6 @@
 """Rotate the published auxiliary main-runtime key after a credential refresh.
 
-Split from ``agent.auxiliary_client`` (facade size cap).
+Split from ``hermes_agent.agent.auxiliary_client`` (facade size cap).
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ def rotate_runtime_main_api_key(old: Any, new: Any) -> None:
     A refresh can run inside a request worker's copied Context, where rebinding the ContextVar
     would stay invisible to the turn thread; the published dict is shared, so mutating it is not.
     """
-    from agent.auxiliary_client import _RUNTIME_MAIN_CONTEXT, _normalize_api_key
+    from hermes_agent.agent.auxiliary_client import _RUNTIME_MAIN_CONTEXT, _normalize_api_key
 
     runtime = _RUNTIME_MAIN_CONTEXT.get()
     if isinstance(runtime, dict) and runtime.get("api_key") == old:

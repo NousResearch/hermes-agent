@@ -66,7 +66,7 @@ def test_force_close_tcp_sockets_shutdown_only_no_close():
     FD-recycling race that corrupted ``kanban.db`` (issue #29507) will
     re-open. Pin the contract explicitly.
     """
-    from agent.agent_runtime_helpers import force_close_tcp_sockets
+    from hermes_agent.agent.agent_runtime_helpers import force_close_tcp_sockets
 
     sock = _FakeSocket()
     client = _build_fake_client(sock)
@@ -87,7 +87,7 @@ def test_force_close_tcp_sockets_uses_shut_rdwr():
     Half-close (e.g. SHUT_WR only) wouldn't unblock a worker blocked in
     ``recv``, defeating the whole point of the helper.
     """
-    from agent.agent_runtime_helpers import force_close_tcp_sockets
+    from hermes_agent.agent.agent_runtime_helpers import force_close_tcp_sockets
 
     captured = []
 
@@ -121,7 +121,7 @@ def test_agent_abort_request_openai_client_does_not_call_client_close(caplog):
     the FD race is back. Pin both the shutdown side-effect AND the absence
     of any ``client.close()`` call.
     """
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     sock = _FakeSocket()
     client = _build_fake_client(sock)
@@ -133,7 +133,7 @@ def test_agent_abort_request_openai_client_does_not_call_client_close(caplog):
     agent = AIAgent.__new__(AIAgent)
     agent._client_log_context = lambda: "provider=test"
 
-    with caplog.at_level(logging.INFO, logger="run_agent"):
+    with caplog.at_level(logging.INFO, logger="hermes_agent.run_agent"):
         agent._abort_request_openai_client(client, reason="interrupt_abort")
 
     # Sockets shut down (one in our fake pool).

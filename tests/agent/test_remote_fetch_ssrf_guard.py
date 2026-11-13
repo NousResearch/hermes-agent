@@ -74,7 +74,7 @@ def _sitemap_catalog(url: str, monkeypatch):
 
 
 def _fetch_manifest(url: str, monkeypatch):
-    from agent.pet import manifest
+    from hermes_agent.agent.pet import manifest
 
     monkeypatch.setattr(manifest, "MANIFEST_URL", url)
     return manifest.fetch_manifest(timeout=5, force=True)
@@ -82,15 +82,15 @@ def _fetch_manifest(url: str, monkeypatch):
 
 SITES = {
     "provider_media.save_url(image)": lambda u, mp, tmp: importlib.import_module(
-        "agent.image_gen_provider").save_url_image(u, timeout=5),
+        "hermes_agent.agent.image_gen_provider").save_url_image(u, timeout=5),
     "provider_media.save_url(video)": lambda u, mp, tmp: importlib.import_module(
-        "agent.video_gen_provider").save_url_video(u, timeout=5),
+        "hermes_agent.agent.video_gen_provider").save_url_video(u, timeout=5),
     "image_gen/openai::_load_image_bytes": lambda u, mp, tmp: importlib.import_module(
         "plugins.image_gen.openai")._load_image_bytes(u),
     "image_gen/openai-codex::_remote_image_to_data_url": lambda u, mp, tmp: importlib.import_module(
         "plugins.image_gen.openai-codex")._remote_image_to_data_url(u),
-    "pet/store::_http_get": lambda u, mp, tmp: importlib.import_module("agent.pet.store")._http_get(u, 5),
-    "pet/store::_download": lambda u, mp, tmp: importlib.import_module("agent.pet.store")._download(
+    "pet/store::_http_get": lambda u, mp, tmp: importlib.import_module("hermes_agent.agent.pet.store")._http_get(u, 5),
+    "pet/store::_download": lambda u, mp, tmp: importlib.import_module("hermes_agent.agent.pet.store")._download(
         u, tmp / "sheet.png", timeout=5),
     "pet/manifest::fetch_manifest": lambda u, mp, tmp: _fetch_manifest(u, mp),
     "tui_gateway/methods_images::_image_to_data_url": lambda u, mp, tmp: importlib.import_module(

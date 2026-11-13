@@ -472,7 +472,7 @@ class SshConnection:
             while not stop.wait(CONTROL_FORWARD_KEEPALIVE_S):
                 self.is_alive()
 
-        from agent.memory_provider import spawn_context_thread
+        from hermes_agent.agent.memory_provider import spawn_context_thread
 
         spawn_context_thread(_refresh, name="gateway-ssh-keepalive").start()
 

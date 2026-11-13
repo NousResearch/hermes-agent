@@ -1,6 +1,6 @@
 """Unified removal contract for every credential source Hermes reads from.
 
-Readers live in ``agent.credential_pool``; what is unified here is **removal**:
+Readers live in ``hermes_agent.agent.credential_pool``; what is unified here is **removal**:
 ``hermes auth remove <provider> <N>`` must make the entry stay gone across
 ``load_pool()`` calls. Each source registers a ``RemovalStep`` whose
 ``remove_fn`` cleans the external state the source reads from, and the

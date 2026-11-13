@@ -1,17 +1,17 @@
 """Compaction window planning for ContextCompressor: the head/middle/tail boundaries that compress() and
-the opt-in prepared-compaction pass (agent/prepared_compaction.py) both plan, and the splice of a prepared
+the opt-in prepared-compaction pass (hermes_agent/agent/prepared_compaction.py) both plan, and the splice of a prepared
 summary into that window."""
 
 from __future__ import annotations
 
 from typing import Any, Optional
 
-from agent.context_compressor_tail import tail_cut_progress_floor
-from agent.prepared_compaction import PreparedCompaction, PreparedSummary
+from hermes_agent.agent.context_compressor_tail import tail_cut_progress_floor
+from hermes_agent.agent.prepared_compaction import PreparedCompaction, PreparedSummary
 
 
 def _restart_probe_extra() -> int:
-    from agent.context_compressor import _RESTART_HANDOFF_PROBE_EXTRA_MESSAGES
+    from hermes_agent.agent.context_compressor import _RESTART_HANDOFF_PROBE_EXTRA_MESSAGES
     return _RESTART_HANDOFF_PROBE_EXTRA_MESSAGES
 
 
@@ -103,7 +103,7 @@ class CompactionWindowMixin:
 
     def _adopt_prepared_summary(self, prepared: PreparedSummary) -> str:
         """Adopt a prepared summary as an inline summary call would have left it; returns the handoff text."""
-        from agent.prepared_compaction import adopt
+        from hermes_agent.agent.prepared_compaction import adopt
 
         adopt(self, prepared)
         return prepared.summary

@@ -19,9 +19,9 @@ from hermes_constants import (
     get_hermes_home, get_scratch_dir, get_skills_dir, is_wsl, reset_hermes_home_override, set_hermes_home_override,
 )
 
-from agent.model_metadata import CHARS_PER_TOKEN
-from agent.runtime_cwd import resolve_agent_cwd
-from agent.skill_utils import (
+from hermes_agent.agent.model_metadata import CHARS_PER_TOKEN
+from hermes_agent.agent.runtime_cwd import resolve_agent_cwd
+from hermes_agent.agent.skill_utils import (
     EXCLUDED_SKILL_DIRS, SKILL_SUPPORT_DIRS,
     TIER_LOCAL, clip_skill_description, extract_skill_conditions, extract_skill_description,
     get_disabled_skill_names, get_skill_search_roots,
@@ -257,7 +257,7 @@ SESSION_SEARCH_GUIDANCE = (
 # patch-it coaching that used to open this block duplicated the ## Skills section (which teaches both "offer
 # to save as a skill" and "fix it with skill_manage(action='patch')") and skill_manage's own schema. The
 # [SKILL_PRUNED] reload rule that followed moved to the compaction summary, the only place markers exist
-# (agent/context_compressor_tail.py::with_skill_safety_rule): fresh sessions no longer pay for it.
+# (hermes_agent/agent/context_compressor_tail.py::with_skill_safety_rule): fresh sessions no longer pay for it.
 SKILLS_GUIDANCE = "When you work out a non-trivial workflow, record it with skill_manage for future reuse."
 
 KANBAN_GUIDANCE = (
@@ -401,7 +401,7 @@ TASK_COMPLETION_GUIDANCE = (
 # into a single assistant response collapses N turns into one, cutting both latency and the resent-context
 # cost that compounds over a long conversation. The hermes-agent runtime already executes a batch of tool
 # calls concurrently when they are independent (read-only tools always; path-scoped file ops when their
-# targets don't overlap — see run_agent._execute_tool_calls / tool_dispatch_helpers). The missing piece was
+# targets don't overlap — see hermes_agent.run_agent._execute_tool_calls / tool_dispatch_helpers). The missing piece was
 # telling the *model* to emit those calls together in the first place. Until now the only batching steer in
 # the prompt lived in GOOGLE_MODEL_OPERATIONAL_GUIDANCE — Gemini/Gemma got it, every other model got
 # nothing. Short on purpose — shipped in the cached system prompt to every user, every session. Token cost
@@ -565,8 +565,8 @@ STEER_MARKER_OPEN = (
 )
 STEER_MARKER_CLOSE = "[/OUT-OF-BAND USER MESSAGE]"
 # Text after the "[" that opens one of Hermes' own control frames (the steer marker above, the compaction
-# handoff and its fallbacks, runtime/system notes, agent.context_compressor._SYNTHETIC_USER_ROW_PREFIXES,
-# agent.title_generator._MACHINE_PREFIXES). Consumers that republish model output as role=user text
+# handoff and its fallbacks, runtime/system notes, hermes_agent.agent.context_compressor._SYNTHETIC_USER_ROW_PREFIXES,
+# hermes_agent.agent.title_generator._MACHINE_PREFIXES). Consumers that republish model output as role=user text
 # (hosted rooms) relabel these so a reply cannot reproduce the exact trusted shape. Keep the regex literal in
 # apps/desktop/src/plugins/hermes-bots/group-round-prompt.ts byte-equivalent to this list.
 CONTROL_FRAME_OPENERS = (
@@ -659,7 +659,7 @@ def hud_surface_note(valid_tool_names: set[str] | None = None,
 DEVELOPER_ROLE_MODELS = ("gpt-5", "codex")
 
 # Hints for core surfaces only. A messaging platform's hint ships with its plugin
-# (``PlatformEntry.platform_hint``, read by agent/system_prompt._default_platform_hint).
+# (``PlatformEntry.platform_hint``, read by hermes_agent/agent/system_prompt._default_platform_hint).
 PLATFORM_HINTS = {
     "cron": (
         "You are running as a scheduled cron job. There is no user present — you cannot ask questions, "
@@ -768,7 +768,7 @@ _BACKEND_PROBE_CACHE: dict[tuple[str, str, str], str] = {}
 def _plugin_backend_attr(backend: str, attr: str, default=None):
     """*attr* of a plugin-registered terminal backend, fail-soft (unknown backend / raising plugin -> *default*)."""
     try:
-        from agent.terminal_env_registry import provider_flag
+        from hermes_agent.agent.terminal_env_registry import provider_flag
         return provider_flag(backend, attr, default)
     except Exception:
         return default
@@ -1244,12 +1244,12 @@ def build_skills_system_prompt(
     """Compact skill index for the system prompt.
 
     Same-named skills resolve like skill_view: project > local > create_dir > external_dirs, and a
-    same-tier duplicate is listed under its exact relative path (``agent.skill_utils.resolve_skill_catalog``).
+    same-tier duplicate is listed under its exact relative path (``hermes_agent.agent.skill_utils.resolve_skill_catalog``).
     ``compact_categories`` (coding posture) demotes categories to a names-only line — nothing is ever hidden.
     ``skills_dir_override`` makes home resolution EXPLICIT: a build thread that never bound the HERMES_HOME
     ContextVar would otherwise leak the default profile's skills into a bot's prompt.
     """
-    from agent.safe_worker_policy import safe_worker_enabled
+    from hermes_agent.agent.safe_worker_policy import safe_worker_enabled
     from hermes_agent.tools.hosted_tool_policy import host_feature_enabled
 
     if safe_worker_enabled() or not host_feature_enabled("skills"):
@@ -1291,7 +1291,7 @@ def _scan_extra_root(root: Path, skill_files, tier: int, log_fmt: str) -> list[t
 
 def _label_visible_entries(visible_entries: list[dict], skills_by_category: dict[str, list[tuple[str, str]]]) -> None:
     """Index rows under each entry's ``load_name`` (what skill_view accepts)."""
-    from agent.skill_utils import TIER_PROJECT
+    from hermes_agent.agent.skill_utils import TIER_PROJECT
     for entry in (e for e in visible_entries if e["load_name"]):
         desc = entry.get("description", "")
         if entry["tier"] == TIER_PROJECT:
@@ -1337,7 +1337,7 @@ def _render_skills_index(
         if len(rows) > 1:
             index_lines.append(f"  {category}:")
         index_lines.extend(f"{indent}- {name}: {desc}" if desc else f"{indent}- {name}" for name, desc in rows.items())
-    from agent.oneshot_footprint import ONESHOT_SKILLS_LOAD_GUIDANCE, is_single_query_session
+    from hermes_agent.agent.oneshot_footprint import ONESHOT_SKILLS_LOAD_GUIDANCE, is_single_query_session
     if is_single_query_session():
         return (
             ONESHOT_SKILLS_LOAD_GUIDANCE
@@ -1368,7 +1368,7 @@ def _render_skills_index(
 
 
 def _oneshot_prompt_variant() -> bool:
-    from agent.oneshot_footprint import is_single_query_session
+    from hermes_agent.agent.oneshot_footprint import is_single_query_session
     return is_single_query_session()
 
 
@@ -1422,10 +1422,10 @@ def _build_skills_system_prompt_inner(
         for skill_file in iter_skill_index_files(skills_dir, "SKILL.md"):
             is_compatible, frontmatter, desc = _parse_skill_file(skill_file)
             candidates.append((_build_snapshot_entry(skill_file, skills_dir, frontmatter, desc), is_compatible))
-    # Every tier is resolved together, exactly as skill_view resolves names (agent.skill_utils precedence:
+    # Every tier is resolved together, exactly as skill_view resolves names (hermes_agent.agent.skill_utils precedence:
     # project > local > create_dir > external_dirs; same-tier duplicates listed by exact path). Hidden and
     # incompatible copies still take part — skill_view sees them too.
-    from agent.skill_utils import TIER_PROJECT, is_disabled_entry, iter_project_skill_files, resolve_skill_catalog
+    from hermes_agent.agent.skill_utils import TIER_PROJECT, is_disabled_entry, iter_project_skill_files, resolve_skill_catalog
     project_roots = [d for t, d in extra_roots if t == TIER_PROJECT and d.exists()]
     rows: list[tuple[dict, bool]] = []
     for root in project_roots:
@@ -1528,7 +1528,7 @@ def load_soul_md(context_length: Optional[int] = None, home_override: Path | Non
     ContextVar falls back to the launch home and reads the wrong profile's SOUL.md (#50233, same class as
     the skills-index leak fixed in #86313).
     """
-    from agent.safe_worker_policy import safe_worker_enabled
+    from hermes_agent.agent.safe_worker_policy import safe_worker_enabled
     from hermes_agent.tools.hosted_tool_policy import host_feature_enabled
 
     if safe_worker_enabled() or not host_feature_enabled("context_files"):
@@ -1648,7 +1648,7 @@ def _cursorrules_candidates(cwd_path: Path) -> list[tuple[str, Path, str]]:
 
 # Project-context types in priority order: the first type with any non-empty file wins, later types are
 # shadowed. Both the prompt build (loaders below) and the /context manifest
-# (``agent/context_file_sources.py``) enumerate files through these finders, so the two cannot drift.
+# (``hermes_agent/agent/context_file_sources.py``) enumerate files through these finders, so the two cannot drift.
 _CONTEXT_FILE_CANDIDATES = {
     "hermes_md": _hermes_md_candidates,
     "agents_md": _agents_md_candidates,
@@ -1670,7 +1670,7 @@ def _project_context_suppressed(cwd: Optional[str], cwd_path: Path, allow_instal
     the Hermes tree is a legitimate workspace when the user deliberately points a session at it — and
     CLI-style surfaces pass allow_install_tree_fallback=True because their launch dir IS the user's shell cwd
     (developing Hermes in-tree). See #64590."""
-    from agent.runtime_cwd import _is_install_tree
+    from hermes_agent.agent.runtime_cwd import _is_install_tree
     return cwd is None and not allow_install_tree_fallback and _is_install_tree(cwd_path)
 
 
@@ -1736,7 +1736,7 @@ def build_context_files_prompt(
     AGENTS.md chain (git root → cwd) → CLAUDE.md (cwd) → .cursorrules + .cursor/rules/*.mdc (cwd). SOUL.md
     from HERMES_HOME is independent and always included unless *skip_soul* (already the identity slot).
     """
-    from agent.safe_worker_policy import safe_worker_enabled
+    from hermes_agent.agent.safe_worker_policy import safe_worker_enabled
     from hermes_agent.tools.hosted_tool_policy import host_feature_enabled
 
     if safe_worker_enabled() or not host_feature_enabled("context_files"):

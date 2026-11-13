@@ -25,10 +25,10 @@ def blocked(*a, **kw):
     raise RuntimeError('Network disabled in unpaid cap probe')
 socket.socket.connect = blocked
 socket.create_connection = blocked
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 import hermes_agent.tools.delegate_tool as dt
-import agent.context_compressor as mod
-from agent.model_metadata import estimate_messages_tokens_rough
+import hermes_agent.agent.context_compressor as mod
+from hermes_agent.agent.model_metadata import estimate_messages_tokens_rough
 from hermes_agent.hermes_state import SessionDB
 from unittest.mock import patch
 print('IDENTITY',json.dumps({'tag':tag,'tree':root,'delegate':dt.__file__,'compressor':mod.__file__,'cap_present':hasattr(dt,'_apply_child_compression_cap'),'home':home}),flush=True)
@@ -77,7 +77,7 @@ if hasattr(dt,'_apply_child_compression_cap'):
         except Exception as exc:
             print('CONFIG_EXCEPTION',repr(raw),type(exc).__name__,str(exc),flush=True)
 # Accounting policy: the cap changes the threshold, not what route-aware pressure counts.
-from agent.turn_context import _preflight_request_tokens, _agent_stale_thinking_on_wire
+from hermes_agent.agent.turn_context import _preflight_request_tokens, _agent_stale_thinking_on_wire
 history=[{'role':'user','content':'review'}]
 for i in range(24):
     history += [{'role':'assistant','content':'observed','reasoning_content':'reasoning detail '*4000},{'role':'user','content':'continue'}]

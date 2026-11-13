@@ -16,7 +16,7 @@ from typing import Optional
 from rich.console import Console
 from rich.panel import Panel
 
-from agent.secret_sources import onepassword as op_src
+from hermes_agent.agent.secret_sources import onepassword as op_src
 from hermes_cli._secrets_common import (
     arg,
     cfg_str,

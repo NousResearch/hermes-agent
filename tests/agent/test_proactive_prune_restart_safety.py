@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 import pytest
 
-from agent.context_compressor import _estimate_msg_budget_tokens
+from hermes_agent.agent.context_compressor import _estimate_msg_budget_tokens
 from hermes_agent.hermes_state import SessionDB
 
 _REARM_KEY = "_proactive_prune_rearm_tokens"
@@ -40,7 +40,7 @@ def _history(*, large_chars: int = 24_000) -> list[dict]:
 
 def _build_agent(db: SessionDB, session_id: str, *, platform: str = "telegram"):
     with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         return AIAgent(
             api_key="test-key",

@@ -254,8 +254,8 @@ def test_new_session_resets_token_counters(tmp_path):
     """
     import types
 
-    from agent.context_engine import ContextEngine
-    from run_agent import AIAgent
+    from hermes_agent.agent.context_engine import ContextEngine
+    from hermes_agent.run_agent import AIAgent
 
     cli = _prepare_cli_with_active_session(tmp_path)
     agent = cli.agent

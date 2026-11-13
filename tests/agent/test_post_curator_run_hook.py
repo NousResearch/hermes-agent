@@ -3,7 +3,7 @@
 Fires once per curator pass, after the per-run report directory is fully
 written, with the ``run.json`` path in the payload. Goes through the
 standard lifecycle hook surface (``hermes_cli.lifecycle.invoke_hook``) so both
-Python plugins and shell-script hooks (``agent/shell_hooks.py``) receive
+Python plugins and shell-script hooks (``hermes_agent/agent/shell_hooks.py``) receive
 it with no extra wiring. Observer-only: return values are ignored, and a
 failing callback must never break the curator.
 """
@@ -42,7 +42,7 @@ def curator_env(tmp_path, monkeypatch):
 
     import hermes_constants
     importlib.reload(hermes_constants)
-    from agent import curator
+    from hermes_agent.agent import curator
     importlib.reload(curator)
     yield {"home": home, "curator": curator}
 

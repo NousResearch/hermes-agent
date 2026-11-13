@@ -1,4 +1,4 @@
-"""The per-path ``load_env_file()`` memo in ``agent.secret_scope``.
+"""The per-path ``load_env_file()`` memo in ``hermes_agent.agent.secret_scope``.
 
 ``build_profile_secret_scope()`` sits on the gateway's hot paths (every turn, cron fire, MCP/browser
 adoption, housekeeping drain) and used to re-read and re-parse the profile ``.env`` on each call.
@@ -15,7 +15,7 @@ import os
 
 import pytest
 
-import agent.secret_scope as ss
+import hermes_agent.agent.secret_scope as ss
 
 # Comfortably past the coarsest mtime resolution in common use (FAT32 truncates to two seconds).
 _MTIME_STEP_NS = 10_000_000_000

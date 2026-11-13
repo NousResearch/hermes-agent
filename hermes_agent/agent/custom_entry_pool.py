@@ -28,7 +28,7 @@ def entry_declares_credential(entry: Any) -> bool:
 def row_owned_by_entry(row: Any, entry: Any) -> bool:
     """Ownership by provenance: ``hermes auth add`` (manual) rows, and rows seeded from the entry's
     own ``key_env``. Rows the built-in seeded from its registry env vars or auth files are foreign."""
-    from agent.credential_pool import _is_manual_source
+    from hermes_agent.agent.credential_pool import _is_manual_source
     source = str(getattr(row, "source", "") or "").strip()
     own_env = {f"env:{name}" for name in (str(entry.get(k) or "").strip() for k in ("key_env", "api_key_env")) if name}
     return _is_manual_source(source) or source in own_env
@@ -42,7 +42,7 @@ def entry_scoped_pool(pool: Any, pool_key: str, entry: Optional[dict[str, Any]])
     The view shares the loaded rows and token baselines, so persisting it merges into the stored
     pool under its lock and leaves the built-in's omitted rows on disk.
     """
-    from agent.credential_pool import CUSTOM_POOL_PREFIX, CredentialPool
+    from hermes_agent.agent.credential_pool import CUSTOM_POOL_PREFIX, CredentialPool
     if pool is None or str(pool_key or "").startswith(CUSTOM_POOL_PREFIX) or not entry_declares_credential(entry):
         return pool
     rows = pool.entries()
@@ -62,7 +62,7 @@ def custom_entry_for_endpoint(
     """``(normalized_name, entry)`` of the configured custom entry that owns ``base_url``: by name
     first (a named entry's pool never serves another URL), else by URL. ``config`` is a frozen
     route's config, whose entry owns the endpoint even after a live edit."""
-    from agent import credential_pool as cp
+    from hermes_agent.agent import credential_pool as cp
     if not base_url:
         return None
     url = cp._norm_url(base_url)
@@ -74,7 +74,7 @@ def custom_entry_for_endpoint(
 
 def named_custom_entry(provider_name: Optional[str], config: Optional[dict] = None) -> Optional[tuple[str, dict[str, Any]]]:
     """``(normalized_name, entry)`` of the configured custom entry ``provider_name`` names, else None."""
-    from agent import credential_pool as cp
+    from hermes_agent.agent import credential_pool as cp
     aliases = cp._requested_custom_name_aliases(provider_name) if provider_name else set()
     return next(((n, e) for n, e in cp._iter_custom_providers(config) if aliases & cp._custom_entry_name_aliases(n, e)), None) if aliases else None
 
@@ -92,7 +92,7 @@ def pool_for_aux_provider(provider: Optional[str], pool_key: str, load: Callable
 
 def _custom_identity(provider: Optional[str], requested_provider: Optional[str]) -> tuple[bool, Optional[str]]:
     """``(is_custom, custom:<name> or None)`` for a runtime's provider / requested_provider pair."""
-    from agent.credential_pool import CUSTOM_POOL_PREFIX
+    from hermes_agent.agent.credential_pool import CUSTOM_POOL_PREFIX
     identities = [str(v or "").strip().lower() for v in (provider, requested_provider)]
     custom = any(v == "custom" or v.startswith(CUSTOM_POOL_PREFIX) for v in identities)
     return custom, next((v for v in identities if v.startswith(CUSTOM_POOL_PREFIX)), None)
@@ -122,7 +122,7 @@ def load_runtime_pool(
     ``snapshot`` is the ``_primary_runtime`` being restored: the owner it recorded wins over live
     config, so an edit can't reassign the endpoint or drop the entry's declared credential. A named
     identity whose snapshot recorded no owner gets None and keeps the snapshot's own credential."""
-    from agent.credential_pool import _pool_keys_for_custom_entry, load_pool, resolve_runtime_pool_key
+    from hermes_agent.agent.credential_pool import _pool_keys_for_custom_entry, load_pool, resolve_runtime_pool_key
     custom, name = _custom_identity(provider, requested_provider)
     if not custom:
         key = resolve_runtime_pool_key(provider, base_url)

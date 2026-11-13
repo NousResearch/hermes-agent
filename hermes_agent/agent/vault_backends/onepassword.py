@@ -17,11 +17,11 @@ import subprocess
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from agent.secret_sources.base import run_cli
-from agent.secret_sources.onepassword import _OP_ENV_ALLOWLIST, _scrub, find_op
-from agent.vault_backends.base import LoginBackend, UnlockRequired, run_with_stdin_secret
-from agent.vault_backends import unlock as _unlock
-from agent.vault_store import VaultItemMeta, normalize_origin
+from hermes_agent.agent.secret_sources.base import run_cli
+from hermes_agent.agent.secret_sources.onepassword import _OP_ENV_ALLOWLIST, _scrub, find_op
+from hermes_agent.agent.vault_backends.base import LoginBackend, UnlockRequired, run_with_stdin_secret
+from hermes_agent.agent.vault_backends import unlock as _unlock
+from hermes_agent.agent.vault_store import VaultItemMeta, normalize_origin
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +36,7 @@ class OnePasswordLoginBackend(LoginBackend):
 
     def __init__(self, cfg: Optional[dict] = None):
         self.cfg = cfg or {}
-        from agent.secret_scope import get_secret
+        from hermes_agent.agent.secret_scope import get_secret
         env_name = str(self.cfg.get("service_account_token_env") or "OP_SERVICE_ACCOUNT_TOKEN")
         self._service_token = get_secret(env_name, "") or ""
         self._item_vaults: dict[str, str] = {}  # item id -> vault id from the latest ``item list``
@@ -50,7 +50,7 @@ class OnePasswordLoginBackend(LoginBackend):
         return op
 
     def _env(self, session_token: Optional[str]) -> dict[str, str]:
-        from agent.secret_scope import get_secret
+        from hermes_agent.agent.secret_scope import get_secret
         env = {k: os.environ[k] for k in _OP_ENV_ALLOWLIST if k in os.environ and not k.startswith("OP_CONNECT_")}
         # Connect credentials outrank OP_SERVICE_ACCOUNT_TOKEN inside op, so they must come from the
         # profile's own secret scope like the service token does — never from the launch environment.

@@ -295,7 +295,7 @@ class _Runner:
             _RUNNERS.pop(self.op_id, None)
 
     def _detail(self, exc: Any, target: Target) -> str:
-        from agent.redact import redact_sensitive_text
+        from hermes_agent.agent.redact import redact_sensitive_text
 
         text = str(exc) or exc.__class__.__name__
         # Only credentials are secret: the Advanced choices (a profile name, a commit) stay readable.

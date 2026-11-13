@@ -29,7 +29,7 @@ def owner_run(tmp_path, monkeypatch):
     monkeypatch.setattr(scheduler, "_reload_dotenv_and_publish_delivery_target", lambda *_: None)
     monkeypatch.setattr(scheduler, "_resolve_cron_agent_setup", lambda *_: scheduler._CronAgentSetup(
         model="test", runtime={"provider": "test"}))
-    with patch("run_agent.AIAgent") as agent_cls:
+    with patch("hermes_agent.run_agent.AIAgent") as agent_cls:
         agent_cls.return_value.run_conversation.return_value = {"final_response": "ok"}
         try:
             yield owner, job, execution_id, agent_cls

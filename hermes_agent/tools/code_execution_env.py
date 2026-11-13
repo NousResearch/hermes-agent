@@ -31,7 +31,7 @@ _SECRET_SUBSTRINGS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL", "PASSW
 
 
 def is_secret_env_name(name: str) -> bool:
-    """The credential-name policy, shared with a local session's client environment (``agent.session_client_env``)."""
+    """The credential-name policy, shared with a local session's client environment (``hermes_agent.agent.session_client_env``)."""
     return any(s in name.upper() for s in _SECRET_SUBSTRINGS)
 
 # Non-secret runtime-location flags that repo-root modules a sandbox script
@@ -106,7 +106,7 @@ def _scrub_child_env(source_env, is_passthrough=None, is_windows=None, toolchain
     # delegate_task children are marked by a ContextVar, not os.environ, and the sandbox crosses
     # a process boundary: strip dispatcher-owned Kanban vars AFTER the scrub so an explicit
     # passthrough cannot re-grant a delegated child the parent's board mutation capability.
-    from agent.delegation_context import (
+    from hermes_agent.agent.delegation_context import (
         DELEGATED_CHILD_ENV_MARKER, delegated_child_subprocess_env,
     )
     scoped = delegated_child_subprocess_env(source_env)
@@ -123,7 +123,7 @@ def _build_child_env(*, rpc_endpoint: str, rpc_token: str, tmpdir: str,
                      child_python: str) -> dict[str, str]:
     """Build the scrubbed child environment both execution paths share."""
     from hermes_constants import apply_scratch_tmp_env, apply_subprocess_home_env, get_hermes_home_override
-    from agent.session_client_env import tool_env, toolchain_environ
+    from hermes_agent.agent.session_client_env import tool_env, toolchain_environ
     # A local session's client toolchain replaces the daemon's PATH / venv, then the whole scrub (secret
     # names, delegated-child restrictions) runs over the merged environment.
     child_env = _scrub_child_env(toolchain_environ(), toolchain=frozenset(tool_env()))
@@ -216,7 +216,7 @@ def _cache_probe_result(cache: dict, key: str, value):
 def _probe_python(python_path: str, code: str, *, text: bool = False):
     """Run ``python_path -c code``; None if missing, unspawnable, or past the 5s timeout."""
     try:
-        from agent.delegation_context import delegated_child_subprocess_env
+        from hermes_agent.agent.delegation_context import delegated_child_subprocess_env
         return subprocess.run(
             [python_path, "-c", code], timeout=5, capture_output=True, text=text,
             creationflags=subprocess.CREATE_NO_WINDOW if _IS_WINDOWS else 0,
@@ -267,7 +267,7 @@ def _resolve_child_python(mode: str) -> str:
     VIRTUAL_ENV/CONDA_PREFIX python if it exists and passes the 3.8+ probe, else ``sys.executable``."""
     if mode != "project":
         return sys.executable
-    from agent.session_client_env import toolchain_environ
+    from hermes_agent.agent.session_client_env import toolchain_environ
     environ = toolchain_environ()  # a local session's: its client's venv/conda, not the daemon's
     subdir, exe_names = ("Scripts", ("python.exe", "python3.exe")) if _IS_WINDOWS else ("bin", ("python", "python3"))
     for var in ("VIRTUAL_ENV", "CONDA_PREFIX"):
@@ -308,7 +308,7 @@ def _resolve_child_cwd(mode: str, staging_dir: str, task_id: str = "") -> str:
             session_cwd = None
         if session_cwd and os.path.isdir(session_cwd):
             return session_cwd
-    from agent.runtime_cwd import scope_terminal_cwd
+    from hermes_agent.agent.runtime_cwd import scope_terminal_cwd
     raw = scope_terminal_cwd().strip()
     for candidate in (os.path.expanduser(raw) if raw else "", os.getcwd()):
         if candidate and os.path.isdir(candidate):

@@ -11,7 +11,7 @@ from typing import Any, Optional
 from urllib.parse import quote
 
 from hermes_agent.gateway.config import PlatformConfig
-from agent.i18n import t
+from hermes_agent.agent.i18n import t
 from hermes_agent.gateway.platforms._shared import get_scoped_secret as _get_scoped_secret
 
 import httpx

@@ -4,7 +4,7 @@ Messaging platforms can opt out of the filesystem-heavy context-file
 discovery (SOUL.md, AGENTS.md, .cursorrules walks) that runs during
 AIAgent construction — especially impactful on Windows where stat() and
 directory walks are 10-100x slower. The agent-side parameters already
-exist (agent/agent_init.py); these tests pin the gateway wiring:
+exist (hermes_agent/agent/agent_init.py); these tests pin the gateway wiring:
 config -> signature -> AIAgent kwargs.
 """
 

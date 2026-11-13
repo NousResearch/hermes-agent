@@ -54,7 +54,7 @@ def _build_plan_update_from_todo_result(result: Any) -> AgentPlanUpdate | None:
 
 def _send_update(conn: acp.Client, session_id: str, loop: asyncio.AbstractEventLoop, update: Any) -> None:
     """Fire-and-forget an ACP session update from a worker thread."""
-    from agent.async_utils import safe_schedule_threadsafe
+    from hermes_agent.agent.async_utils import safe_schedule_threadsafe
 
     future = safe_schedule_threadsafe(
         conn.session_update(session_id, update), loop, logger=logger, log_message="Failed to send ACP update",
@@ -152,7 +152,7 @@ def make_tool_progress_cb(
         snapshot = None
         if name in {"write_file", "patch", "skill_manage"}:
             try:
-                from agent.display import capture_local_edit_snapshot
+                from hermes_agent.agent.display import capture_local_edit_snapshot
 
                 snapshot = capture_local_edit_snapshot(name, args)
             except Exception:

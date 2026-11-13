@@ -19,7 +19,7 @@ def _selection(args):
 
 
 def print_tool_listing(args) -> int:
-    from agent.i18n import t
+    from hermes_agent.agent.i18n import t
     enabled, disabled = _selection(args)
     if getattr(args, "list_tools", False):
         from hermes_agent.model_tools import get_tool_definitions, get_toolset_for_tool

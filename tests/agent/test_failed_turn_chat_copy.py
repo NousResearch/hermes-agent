@@ -2,7 +2,7 @@
 copy on every surface (the CLI-only 💡 hints used to be the only place with a next step).
 
 Behaviour contracts, not snapshots: each test asserts the relationship between a result
-and what ``agent/error_surface.py`` derives from it, plus the presence of the exact command
+and what ``hermes_agent/agent/error_surface.py`` derives from it, plus the presence of the exact command
 the user is told to run.
 """
 from __future__ import annotations
@@ -11,12 +11,12 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent.error_classifier import classify_api_error
-from agent.error_surface import LAYER_GATEWAY, LAYER_PROVIDER, build_error_surface_from_result
-from agent.turn_loop_errors import handle_outer_loop_error
-from agent.turn_recovery import max_retries_exhausted_result, nonretryable_client_error_result
-from agent.turn_failure_copy import SITE_FAILURE_CODES
-from agent.turn_response_check import retry_invalid_response
+from hermes_agent.agent.error_classifier import classify_api_error
+from hermes_agent.agent.error_surface import LAYER_GATEWAY, LAYER_PROVIDER, build_error_surface_from_result
+from hermes_agent.agent.turn_loop_errors import handle_outer_loop_error
+from hermes_agent.agent.turn_recovery import max_retries_exhausted_result, nonretryable_client_error_result
+from hermes_agent.agent.turn_failure_copy import SITE_FAILURE_CODES
+from hermes_agent.agent.turn_response_check import retry_invalid_response
 
 
 class _Agent:
@@ -120,7 +120,7 @@ def test_exhausted_plan_quota_429_names_the_reset_window_not_wait_a_minute():
     usage limit has been reached``, so the reset must travel through the classifier, not the text (#89401)."""
     import httpx
     import openai
-    from agent.api_error_summary import ApiErrorSummaryMixin
+    from hermes_agent.agent.api_error_summary import ApiErrorSummaryMixin
 
     body = {"error": {"type": "usage_limit_reached", "message": "The usage limit has been reached",
                       "resets_in_seconds": 30995, "plan_type": "pro"}}
@@ -179,7 +179,7 @@ def test_outer_loop_error_copy_has_no_apology_and_routes_to_gateway_layer():
     assert verdict.action == "break" and verdict.failed is True
     text = verdict.final_response
     assert text.rstrip().endswith("expected str, got list")  # raw detail last, not first
-    from agent.turn_failure_copy import exit_reason_failure
+    from hermes_agent.agent.turn_failure_copy import exit_reason_failure
 
     exit_failure = exit_reason_failure(verdict._turn_exit_reason)
     assert exit_failure.fails_turn is True  # the outer-error cap IS a failed turn
@@ -207,7 +207,7 @@ def test_interpreter_shutdown_copy_substitutes_the_real_session_id():
 @pytest.mark.parametrize("code", sorted(SITE_FAILURE_CODES))
 def test_site_failure_codes_never_collapse_to_unknown(code):
     """Every site code is listed in error_surface's layer table (no fall-through guesswork)."""
-    from agent.error_surface import _REASON_TO_LAYER
+    from hermes_agent.agent.error_surface import _REASON_TO_LAYER
 
     surface = build_error_surface_from_result({"failed": True, "error": "x", "failure_reason": code})
     assert surface["code"] == code

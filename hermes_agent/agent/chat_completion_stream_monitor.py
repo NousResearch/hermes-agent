@@ -11,11 +11,11 @@ import time
 from types import SimpleNamespace
 from urllib.parse import urlsplit
 
-from agent import chat_completion_wait_notice as wn
-from agent.model_metadata import is_local_endpoint
-from agent.proxy_bypass import is_loopback_host
-from agent.sleep_clock import SleepWatch
-from agent.stream_max_lifetime import StreamLifetime, StreamLifetimeExceeded, resolve_stream_max_lifetime
+from hermes_agent.agent import chat_completion_wait_notice as wn
+from hermes_agent.agent.model_metadata import is_local_endpoint
+from hermes_agent.agent.proxy_bypass import is_loopback_host
+from hermes_agent.agent.sleep_clock import SleepWatch
+from hermes_agent.agent.stream_max_lifetime import StreamLifetime, StreamLifetimeExceeded, resolve_stream_max_lifetime
 logger = logging.getLogger(__name__)
 
 # Kills of one dispatched attempt whose worker never unwinds before the monitor gives up on it.
@@ -89,7 +89,7 @@ class StreamingWaitMonitor:
         the unchanged request) instead. Returns whether a partial tool call is in flight."""
         tool_in_flight = bool(self.result.get("partial_tool_names")) or self.provider_tool_in_flight["yes"]
         if self.deltas_were_sent["yes"] and not tool_in_flight and not self._visible_text_delivered():
-            logging.getLogger("agent.chat_completion_helpers").warning(
+            logging.getLogger("hermes_agent.agent.chat_completion_helpers").warning(
                 "Stream died after deltas but before any visible text was delivered (0 chars, "
                 "no tool call in flight); treating as an undelivered stream failure: %s", exc)
             self._quiet(self.agent._reset_stream_delivery_tracking)
@@ -119,7 +119,7 @@ class StreamingWaitMonitor:
         REAL chunk arrived for 2s+ (never during healthy token flow); in-memory,
         no network. True while loading = heartbeat liveness, skip the rest of
         this iteration (the stale detector's local floor dwarfs any load)."""
-        from agent.chat_completion_local import _managed_local_load_notice
+        from hermes_agent.agent.chat_completion_local import _managed_local_load_notice
 
         m = self._mon
         if self._show_prompt_progress(now):
@@ -147,7 +147,7 @@ class StreamingWaitMonitor:
         """Prompt progress straight from the stream's own progress chunks (llama-server with
         ``return_progress``), at most once a second until the first token. Clears the line
         when the first token arrives. True when it showed progress."""
-        from agent.local_prompt_progress import prompt_progress_percent
+        from hermes_agent.agent.local_prompt_progress import prompt_progress_percent
 
         m = self._mon
         state = getattr(self, "prompt_progress", None)

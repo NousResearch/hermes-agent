@@ -1,7 +1,7 @@
 """Equivalent home paths address one provider slot and generation."""
 import logging
 
-from agent.provider_registry import ProviderRegistry
+from hermes_agent.agent.provider_registry import ProviderRegistry
 from hermes_constants import hermes_home_key
 
 

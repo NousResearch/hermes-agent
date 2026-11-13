@@ -24,7 +24,7 @@ def _catalog_down(_name):
 
 
 def test_ambient_credential_profile_keeps_identity_when_catalog_fails():
-    import agent.auxiliary_client as ac
+    import hermes_agent.agent.auxiliary_client as ac
 
     with patch("hermes_cli.providers.get_provider", side_effect=_catalog_down), \
             patch("hermes_cli.runtime_provider._get_named_custom_provider", return_value=None), \
@@ -36,7 +36,7 @@ def test_ambient_credential_profile_keeps_identity_when_catalog_fails():
 def test_ack_detector_transition_cue_names_only_acp_agents():
     """"Launching it on <X>" is a pending launch only for an ACP agent (an external_process profile: its
     name, alias or binary); "Launching it on Nous." names an inference provider and is a final answer."""
-    from agent.agent_runtime_helpers import looks_like_codex_intermediate_ack
+    from hermes_agent.agent.agent_runtime_helpers import looks_like_codex_intermediate_ack
 
     agent = SimpleNamespace(_strip_think_blocks=lambda s: s)
     acp = ProviderProfile(name="acme-acp", aliases=("acme",), auth_type="external_process", process_command="acmecli")
@@ -55,8 +55,8 @@ def test_ack_detector_transition_cue_names_only_acp_agents():
 
 
 def test_declared_message_carriers_are_unpriced():
-    from agent.message_metadata import unpriced_replay_fields
-    from agent.model_metadata import estimate_messages_tokens_rough
+    from hermes_agent.agent.message_metadata import unpriced_replay_fields
+    from hermes_agent.agent.model_metadata import estimate_messages_tokens_rough
 
     plain = {"role": "assistant", "content": "ok"}
     carried = {**plain, "acme_sig": "S" * 4000, "acme_thoughts": "T" * 4000}

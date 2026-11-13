@@ -138,7 +138,7 @@ def _managed(tmp_path, monkeypatch, text):
         assert kwargs['api_key'] == ''  # never a launch secret for a metadata probe
         return 1000
 
-    monkeypatch.setattr('agent.model_metadata.get_model_context_length_async', _context_length)
+    monkeypatch.setattr('hermes_agent.agent.model_metadata.get_model_context_length_async', _context_length)
     sent, spawned = [], []
 
     class Worker:
@@ -207,7 +207,7 @@ async def test_a_managed_turn_with_refused_references_answers_without_spawning(t
 
 @pytest.mark.asyncio
 async def test_a_bypass_session_expands_built_in_references_only(tmp_path, monkeypatch):
-    from agent.context_references import (ContextCompletionItem, ContextReferenceProvider,
+    from hermes_agent.agent.context_references import (ContextCompletionItem, ContextReferenceProvider,
                                           _context_reference_providers, register_context_reference_provider)
 
     class Probe(ContextReferenceProvider):

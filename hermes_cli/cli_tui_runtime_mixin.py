@@ -13,9 +13,9 @@ import shutil
 import sys
 import threading
 import time
-from agent.i18n import t
-from agent.interrupt_compat import request_hard_interrupt
-from agent import terminal_image
+from hermes_agent.agent.i18n import t
+from hermes_agent.agent.interrupt_compat import request_hard_interrupt
+from hermes_agent.agent import terminal_image
 from contextlib import suppress
 from hermes_constants import get_hermes_home
 from prompt_toolkit.application import Application
@@ -370,7 +370,7 @@ class CLITuiRuntimeMixin:
         if os.environ.get("HERMES_DEFER_AGENT_STARTUP") != "1":
             def _prewarm_agent_runtime() -> None:
                 try:
-                    import run_agent
+                    from hermes_agent import run_agent
                     import openai
                 except Exception:
                     logger.debug("agent runtime pre-import failed", exc_info=True)
@@ -391,7 +391,7 @@ class CLITuiRuntimeMixin:
                 )
         # One-time banner when ~/.openclaw/ is left over from a migration.
         try:
-            from agent.onboarding import (
+            from hermes_agent.agent.onboarding import (
                 OPENCLAW_RESIDUE_FLAG, detect_openclaw_residue, is_seen, mark_seen, openclaw_residue_hint_cli,
             )
             if not is_seen(self.config, OPENCLAW_RESIDUE_FLAG) and detect_openclaw_residue():
@@ -418,7 +418,7 @@ class CLITuiRuntimeMixin:
 
     def _run_startup_maintenance(self):
         with suppress(Exception):
-            from agent.curator import maybe_run_curator
+            from hermes_agent.agent.curator import maybe_run_curator
             maybe_run_curator(
                 idle_for_seconds=float("inf"),  # CLI startup = fully idle
                 on_summary=lambda msg: self._console_print(f"[dim #6b7684]💾 {msg}[/]"),
@@ -535,7 +535,7 @@ class CLITuiRuntimeMixin:
         with suppress(Exception):
             from hermes_agent.tools.voice_mode import cleanup_temp_recordings
             cleanup_temp_recordings()
-        from agent.vault_backends.unlock import (lock as _vault_lock, set_code_prompt_callback,
+        from hermes_agent.agent.vault_backends.unlock import (lock as _vault_lock, set_code_prompt_callback,
                                                  set_save_login_prompt_callback, set_unlock_prompt_callback)
         for _unset in (set_sudo_password_callback, set_approval_callback, set_secret_capture_callback,
                        set_unlock_prompt_callback, set_save_login_prompt_callback, set_code_prompt_callback):

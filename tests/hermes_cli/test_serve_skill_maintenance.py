@@ -13,7 +13,7 @@ async def test_removed_sessions_keep_profile_idle_watermark(tmp_path, monkeypatc
     from pathlib import Path
 
     import hermes_agent.tui_gateway.server as gateway
-    from agent.curator import load_state, save_state
+    from hermes_agent.agent.curator import load_state, save_state
     from hermes_cli.web_server_sessions import _auto_archive_ticker_loop, _skill_maintenance_idle_for
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -61,7 +61,7 @@ async def test_serve_timer_runs_due_curator_once_and_honors_pause(tmp_path, monk
     (tmp_path / "config.yaml").write_text(
         "curator:\n  enabled: true\n  consolidate: false\n  interval_hours: 168\n"
         "  min_idle_hours: 0\n  prune_builtins: false\n", encoding="utf-8")
-    from agent.curator import load_state, save_state, set_paused
+    from hermes_agent.agent.curator import load_state, save_state, set_paused
     from hermes_cli import web_server_sessions
 
     ticks = Queue()

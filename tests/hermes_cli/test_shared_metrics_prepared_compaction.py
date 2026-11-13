@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from agent import prepared_compaction as pc
+from hermes_agent.agent import prepared_compaction as pc
 from hermes_cli.observability import shared_metrics_contract as contract
 from hermes_cli.observability.shared_metrics import SharedMetricsStore
 from hermes_cli.observability.shared_metrics_snapshot import collect_install_snapshot
@@ -125,9 +125,9 @@ def test_pass_and_splice_outcomes_are_counted_in_the_owning_profile(tmp_path, ma
 
 
 def test_waste_modes_say_why(monkeypatch, marks):
-    from agent.auxiliary_client import aux_stream_deadline
-    from agent.conversation_compression_telemetry import _emit_compression_attempt_telemetry
-    import agent.context_compressor as module
+    from hermes_agent.agent.auxiliary_client import aux_stream_deadline
+    from hermes_agent.agent.conversation_compression_telemetry import _emit_compression_attempt_telemetry
+    import hermes_agent.agent.context_compressor as module
 
     msgs = _messages(30)
     # A compaction gives up waiting on a pass that runs past the host's deadline; the pass is told why it stops.

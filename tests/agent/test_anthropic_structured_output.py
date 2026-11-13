@@ -11,7 +11,7 @@ def _capture_anthropic_kwargs(
     extra_body: dict | None, *, model: str = "claude-sonnet-4-6",
     async_call: bool = False, top_level_kwargs: dict | None = None,
 ) -> dict:
-    from agent.auxiliary_client import (
+    from hermes_agent.agent.auxiliary_client import (
         _AnthropicCompletionsAdapter,
         _AsyncAnthropicCompletionsAdapter,
     )
@@ -40,9 +40,9 @@ def _capture_anthropic_kwargs(
     if extra_body is not None:
         call_kwargs["extra_body"] = extra_body
     with patch(
-        "agent.anthropic_adapter.create_anthropic_message",
+        "hermes_agent.agent.anthropic_adapter.create_anthropic_message",
         side_effect=_fake_create,
-    ), patch("agent.transports.get_transport") as mock_get_transport:
+    ), patch("hermes_agent.agent.transports.get_transport") as mock_get_transport:
         mock_get_transport.return_value.normalize_response.return_value = normalized
         call = adapter.create(
             model=model,

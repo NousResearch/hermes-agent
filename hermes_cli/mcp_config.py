@@ -31,7 +31,7 @@ _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 # (firstN/lastN is a reusable fragment). Redact by field identity: once a
 # recognized credential header key is found, replace its complete associated
 # value regardless of scheme, quoting, parameter order, or wire/JSON/Python
-# mapping serialization. Header names come from agent.redact so the lists
+# mapping serialization. Header names come from hermes_agent.agent.redact so the lists
 # cannot drift. The generic redactor then runs with force=True.
 _AUTH_SCHEME_PREFIX_RE = re.compile(
     r"^(?:Bearer|Basic|Token|Digest)\s+",
@@ -48,7 +48,7 @@ _PROBE_REDACTION_RES: Optional[tuple[re.Pattern[str], ...]] = None
 
 
 def _credential_header_names() -> str:
-    from agent.redact_headers import _SECRET_HEADER_NAMES
+    from hermes_agent.agent.redact_headers import _SECRET_HEADER_NAMES
 
     return rf"(?:(?:Proxy-)?Authorization|{_SECRET_HEADER_NAMES})"
 
@@ -122,7 +122,7 @@ def redact_mcp_probe_text(text: object) -> str:
     """Fully redact MCP probe/display strings before they leave the process.
 
     Recognized credential header fields (Authorization / Proxy-Authorization
-    and ``agent.redact_headers._SECRET_HEADER_NAMES``) have their complete associated
+    and ``hermes_agent.agent.redact_headers._SECRET_HEADER_NAMES``) have their complete associated
     value replaced with ``***``. Bare Bearer/Basic/Token/Digest spans are
     covered the same way. The generic secret redactor then runs with
     ``force=True`` as defense in depth.
@@ -135,7 +135,7 @@ def redact_mcp_probe_text(text: object) -> str:
     redacted = unquoted_mapping.sub(_sub_unquoted_mapping_header, redacted)
     redacted = wire.sub(_sub_wire_header, redacted)
     redacted = bare_scheme.sub(_sub_bare_scheme, redacted)
-    from agent.redact import redact_sensitive_text
+    from hermes_agent.agent.redact import redact_sensitive_text
 
     return redact_sensitive_text(redacted, force=True)
 
@@ -401,7 +401,7 @@ def _resolve_mcp_server_config(config: dict) -> dict:
     tool loading worked because it interpolates. (#37792)
     """
     from hermes_agent.tools.mcp_tool_config import _interpolate_env_vars
-    from agent.secret_scope import current_secret_scope
+    from hermes_agent.agent.secret_scope import current_secret_scope
 
     if current_secret_scope() is None:
         try:

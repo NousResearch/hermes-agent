@@ -57,7 +57,7 @@ def test_runtime_check_leaves_other_failures_uncoded():
 
 @pytest.mark.parametrize("enabled", [False, True])
 def test_turn_failure_is_an_endpoint_failure_not_a_rejected_key(llamacpp_home, enabled):
-    from agent.error_surface import build_error_surface_from_result
+    from hermes_agent.agent.error_surface import build_error_surface_from_result
     from hermes_agent.gateway.config import Platform
     from hermes_agent.gateway.run_turn_runner import _resolution_failure_reply
 
@@ -80,7 +80,7 @@ def test_turn_failure_is_an_endpoint_failure_not_a_rejected_key(llamacpp_home, e
 def test_chat_text_names_the_local_server_and_no_desktop_only_pane(llamacpp_home, enabled):
     """The messaging reply and the TUI/dashboard turn text both name the local model server, and
     neither points at Settings → Providers → Local models, a pane only the Desktop app has."""
-    from agent.error_surface import build_error_surface_from_result
+    from hermes_agent.agent.error_surface import build_error_surface_from_result
     from hermes_agent.gateway.config import Platform
     from hermes_agent.gateway.run_turn_runner import _resolution_failure_reply
     from hermes_agent.tui_gateway.user_messages import turn_error_text
@@ -106,7 +106,7 @@ def test_chat_text_names_the_local_server_and_no_desktop_only_pane(llamacpp_home
 def test_chat_text_suggests_retry_only_while_the_server_can_come_up(llamacpp_home, enabled):
     """A switched-off server never comes up on its own: the TUI/dashboard text (built from the
     error surface, as a turn builds it) names where to start it, never /retry."""
-    from agent.error_surface import build_error_surface_from_result
+    from hermes_agent.agent.error_surface import build_error_surface_from_result
     from hermes_agent.tui_gateway.user_messages import turn_error_text
 
     llamacpp_home({"enabled": enabled})

@@ -5,7 +5,7 @@ transports pass a custom transport (the wire-body cap), so HTTP_PROXY / HTTPS_PR
 ignored for every HTTP/SSE MCP server. The fix hands the SDK client explicit ``mounts``.
 
 Invariants: (1) a proxy that applies to the server URL becomes a mount and a NO_PROXY host
-(including the CIDR form only ``agent.proxy_bypass`` understands) stays direct; (2) both client
+(including the CIDR form only ``hermes_agent.agent.proxy_bypass`` understands) stays direct; (2) both client
 builders carry the mounts next to the body-cap transport, with headers/auth passthrough intact.
 """
 

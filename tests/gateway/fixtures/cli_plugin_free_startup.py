@@ -15,7 +15,7 @@ import traceback
 from contextlib import redirect_stdout
 from pathlib import Path
 
-from agent import skill_commands
+from hermes_agent.agent import skill_commands
 from hermes_cli import plugins
 
 calls = []

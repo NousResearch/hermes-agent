@@ -20,10 +20,10 @@ Retry authority is POSITIVE and TYPED — never inferred from an outcome shape:
   cooldown/breaker accounting (``KANBAN_RATE_LIMIT_EXIT_CODE``, see
   ``hermes_cli/cli_single_query.py::_single_query_exit_code``);
 * ``interrupted=True`` is never retried (the interrupt was persisted and
-  cleared by ``agent/turn_recovery.py::abort_turn_on_interrupt`` — re-entering
+  cleared by ``hermes_agent/agent/turn_recovery.py::abort_turn_on_interrupt`` — re-entering
   the model would resurrect explicitly cancelled work);
 * a turn that ended through the bounded terminal settlement is never retried
-  (``agent/turn_finalizer.py::_record_kanban_budget_exhausted`` already recorded
+  (``hermes_agent/agent/turn_finalizer.py::_record_kanban_budget_exhausted`` already recorded
   ``outcome="timed_out"`` and released the claim — #87096);
 * before EVERY attempt the worker proves it still owns the exact live run and
   unexpired claim lease (``worker_claim_is_live``). The proof is the carrier the
@@ -48,7 +48,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-from agent.error_classifier import FailoverReason
+from hermes_agent.agent.error_classifier import FailoverReason
 
 logger = logging.getLogger(__name__)
 
@@ -73,7 +73,7 @@ _NON_RECOVERABLE_REASONS = frozenset({
 
 #: ``turn_exit_reason`` prefixes that mean the turn already went through a
 #: durable terminal settlement (the run may be closed and its claim released):
-#: ``agent/turn_finalizer.py`` writes ``max_iterations_reached(N/M)`` right after
+#: ``hermes_agent/agent/turn_finalizer.py`` writes ``max_iterations_reached(N/M)`` right after
 #: recording ``outcome="timed_out"`` for an out-of-budget kanban worker (#87096).
 _TERMINAL_TURN_EXIT_PREFIXES = ("max_iterations_reached",)
 
@@ -296,7 +296,7 @@ def build_recovery_nudge(result: Any, *, attempt: int, max_attempts: int,
                          task_id: Optional[str] = None) -> str:
     """The synthetic user turn sent after a failed worker turn.
 
-    Mirrors the stop-nudge contract (agent/kanban_stop.py): plain text is not a
+    Mirrors the stop-nudge contract (hermes_agent/agent/kanban_stop.py): plain text is not a
     terminal state; the worker must finish with ``kanban_complete`` /
     ``kanban_block``. Emphasises "same session, do not start over" so the model
     reuses everything it already read/wrote instead of re-doing the work.

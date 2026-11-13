@@ -11,19 +11,19 @@ import logging
 import time
 from typing import Any, Dict, List, Optional
 
-from agent.compaction_events import publish_micro
-from agent.context_compressor_telemetry import _safe_int
-from agent.message_metadata import record_absorbed_message
-from agent.model_metadata import estimate_messages_tokens_rough, estimate_tokens_rough
+from hermes_agent.agent.compaction_events import publish_micro
+from hermes_agent.agent.context_compressor_telemetry import _safe_int
+from hermes_agent.agent.message_metadata import record_absorbed_message
+from hermes_agent.agent.model_metadata import estimate_messages_tokens_rough, estimate_tokens_rough
 
 # Log name parity with the origin module.
-logger = logging.getLogger("agent.context_compressor")
+logger = logging.getLogger("hermes_agent.agent.context_compressor")
 
 
 def _cc():
     """The origin module, resolved lazily: avoids the import cycle and keeps tests that patch
-    ``agent.context_compressor.X`` effective (attributes are read at call time)."""
-    from agent import context_compressor
+    ``hermes_agent.agent.context_compressor.X`` effective (attributes are read at call time)."""
+    from hermes_agent.agent import context_compressor
     return context_compressor
 
 
@@ -118,7 +118,7 @@ class MicroCompactionMixin:
 
     def _micro_summarize_one(self, exchange_text: str) -> Optional[str]:
         """Micro-summarize one exchange into the rolling summary via the aux LLM (None on failure)."""
-        from agent.auxiliary_client import aux_interrupt_protection, call_llm
+        from hermes_agent.agent.auxiliary_client import aux_interrupt_protection, call_llm
 
         call_kwargs = {
             "task": "compression",
@@ -151,7 +151,7 @@ class MicroCompactionMixin:
         content = message.get("content") if isinstance(message, dict) else getattr(message, "content", message)
         content = (content if isinstance(content, str) else str(content) if content else "").strip()
 
-        from agent.agent_runtime_helpers import strip_think_blocks
+        from hermes_agent.agent.agent_runtime_helpers import strip_think_blocks
         content = strip_think_blocks(None, content).strip()
         if not content:
             logger.info("micro-summarization returned empty content")
@@ -431,7 +431,7 @@ class MicroCompactionMixin:
             covered_ids = unresolved_held = None
             if held is not None and start_watermark is not None:
                 watermark = _cc()._archive_watermark_for(session_db, session_id, held, start_watermark)
-                from agent.conversation_compression_archive import coverage_for_commit
+                from hermes_agent.agent.conversation_compression_archive import coverage_for_commit
                 covered_ids, unresolved_held = coverage_for_commit(session_db, session_id, held)
             session_db.archive_and_compact(
                 session_id, compacted_messages, carried_messages=carried_messages, watermark=watermark,
@@ -498,7 +498,7 @@ class MicroCompactionMixin:
         """Merge consecutive plain-text real user turns left by a supersede. Same ``\\n\\n`` join as
         ``repair_message_sequence`` pass 2, done here so the marker and cursor are never collateral
         damage of the downstream repair. Lists untouched."""
-        from agent.turn_context import drop_stale_api_content
+        from hermes_agent.agent.turn_context import drop_stale_api_content
 
         def _plain_user(m: Any) -> bool:
             return (

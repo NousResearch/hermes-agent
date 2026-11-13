@@ -3,7 +3,7 @@
 Handles thinking-budget exhaustion, repetition-dominated truncation, content-filter stream
 stalls escalated to the fallback chain, text continuation nudges (up to 4, with the ceiling
 exit that drops the fragment trail), truncated tool-call retries with max_tokens boosts, and
-the final roll-back. Nothing here imports ``agent.conversation_loop`` at module level
+the final roll-back. Nothing here imports ``hermes_agent.agent.conversation_loop`` at module level
 (cycle); loop-internal helpers are imported lazily so tests patching them keep working.
 """
 
@@ -15,17 +15,17 @@ from contextlib import suppress
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
-from agent.error_classifier import FailoverReason
-from agent.message_metadata import append_message
-from agent.message_sanitization import close_interrupted_tool_sequence
-from agent.repetition_guard import is_repetition_dominated
-from agent.turn_api_call import stop_thinking_spinner
-from agent.turn_failure_copy import content_policy_copy, provider_label_for, site_copy, stamp_failure
-from agent.turn_retry_state import TurnRetryState
-from agent.usage_pricing import normalize_usage
+from hermes_agent.agent.error_classifier import FailoverReason
+from hermes_agent.agent.message_metadata import append_message
+from hermes_agent.agent.message_sanitization import close_interrupted_tool_sequence
+from hermes_agent.agent.repetition_guard import is_repetition_dominated
+from hermes_agent.agent.turn_api_call import stop_thinking_spinner
+from hermes_agent.agent.turn_failure_copy import content_policy_copy, provider_label_for, site_copy, stamp_failure
+from hermes_agent.agent.turn_retry_state import TurnRetryState
+from hermes_agent.agent.usage_pricing import normalize_usage
 from hermes_constants import PARTIAL_STREAM_STUB_ID
 
-logger = logging.getLogger("agent.conversation_loop")
+logger = logging.getLogger("hermes_agent.agent.conversation_loop")
 
 # codex_responses only reaches ``finish_reason == "length"`` for a tool call cut off by
 # max_output_tokens (turn_response_check.py::_derive_finish_reason); text truncation stays on
@@ -77,7 +77,7 @@ def collapse_continuation_trail(
     if parts is None and not found_trail:
         return ""
     messages[turn_start:] = retained
-    from agent.conversation_loop import _join_truncated_parts
+    from hermes_agent.agent.conversation_loop import _join_truncated_parts
     raw = fragment_parts if parts is None else parts
     join_parts = []
     for item in raw:
@@ -91,7 +91,7 @@ def collapse_continuation_trail(
     if partial and getattr(agent, "_hold_stream", False) is True:
         # A held turn showed none of these fragments: the stitched text reaches the user and the
         # stored row only through the turn's transform snapshot (fail closed: the withheld notice).
-        from agent.turn_finalizer import apply_llm_output_transform
+        from hermes_agent.agent.turn_finalizer import apply_llm_output_transform
         partial, _, _ = apply_llm_output_transform(agent, partial, turn_id=getattr(agent, "_current_turn_id", "") or "")
     if partial:
         append_message(messages, {"role": "assistant", "content": partial, "finish_reason": finish_reason})
@@ -315,7 +315,7 @@ def _continue_text(st: _Trunc, _retry: TurnRetryState, assistant_message: Any) -
     4), then the ceiling exit that drops the fragment trail and keeps the stitched partial.
     Never appends an interim assistant row with NO visible content — strict providers
     reject it with 400 — only the nudge."""
-    from agent.conversation_loop import _get_continuation_prompt, _join_truncated_parts
+    from hermes_agent.agent.conversation_loop import _get_continuation_prompt, _join_truncated_parts
 
     agent = st.agent
     messages = st.messages
@@ -383,7 +383,7 @@ def _model_output_limit(agent: Any) -> Optional[int]:
     if getattr(agent, "api_mode", None) != "anthropic_messages":
         return None
     # Local: only Anthropic-Messages turns need the adapter module.
-    from agent.anthropic_adapter import _get_anthropic_max_output
+    from hermes_agent.agent.anthropic_adapter import _get_anthropic_max_output
     return _get_anthropic_max_output(getattr(agent, "model", None) or "")
 
 
@@ -587,8 +587,8 @@ def continue_codex_incomplete(
     whole budget), the next attempt goes out with reasoning off and a doubled output
     cap — the same one-shot overrides the chat-completions length path uses — because
     re-sending the identical budget and effort re-burns the budget identically (#90393)."""
-    from agent.conversation_loop import _CODEX_INCOMPLETE_NUDGE
-    from agent.turn_response_check import _codex_finish_reason
+    from hermes_agent.agent.conversation_loop import _CODEX_INCOMPLETE_NUDGE
+    from hermes_agent.agent.turn_response_check import _codex_finish_reason
 
     agent._codex_incomplete_retries += 1
     n = agent._codex_incomplete_retries
@@ -627,10 +627,10 @@ def continue_codex_incomplete(
                 if _key not in interim_msg:
                     continue
                 if _key == "codex_reasoning_items":
-                    from agent.native_compaction import merge_interim_reasoning_items
+                    from hermes_agent.agent.native_compaction import merge_interim_reasoning_items
                     last_msg[_key] = merge_interim_reasoning_items(last_msg.get(_key), interim_msg[_key])
                     # The refreshed items are this response's: so is their replay price.
-                    from agent.message_metadata import stamp_reasoning_tokens, stamped_reasoning_tokens
+                    from hermes_agent.agent.message_metadata import stamp_reasoning_tokens, stamped_reasoning_tokens
                     stamp_reasoning_tokens(last_msg, stamped_reasoning_tokens(interim_msg))
                 else:
                     last_msg[_key] = interim_msg[_key]
@@ -729,7 +729,7 @@ def handle_content_policy_refusal(
     """HTTP-200 refusal (``finish_reason`` ``content_filter`` / ``guardrail_intervened``).
     Deterministic for the unchanged prompt — never retried: one configured-fallback try,
     else surface the refusal (explanation may live only in the reasoning channel)."""
-    from agent.conversation_loop import _arm_fallback_restart, _content_policy_blocked_result
+    from hermes_agent.agent.conversation_loop import _arm_fallback_restart, _content_policy_blocked_result
 
     _refusal_result = normalize_response_for_agent(agent, response)
     _refusal_text = (getattr(_refusal_result, "content", None) or "").strip()
@@ -800,7 +800,7 @@ def handle_content_policy_refusal(
     # set including the refused request + tool rounds — so returning it would re-poison CLI/ACP memory
     # even after the owner cleans the durable transcript (#149708 review). Build it from the real
     # turn boundary, and carry the refused run's durable boundary row so the owner drops the exact turn.
-    from agent.turn_context import history_before_current_turn, refused_turn_boundary_row_id
+    from hermes_agent.agent.turn_context import history_before_current_turn, refused_turn_boundary_row_id
     clean_history = history_before_current_turn(messages, current_turn_user_idx, conversation_history)
     _boundary_row_id = refused_turn_boundary_row_id(messages, current_turn_user_idx)
     return RefusalVerdict("return", _content_policy_blocked_result(

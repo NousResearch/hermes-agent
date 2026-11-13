@@ -12,7 +12,7 @@ import random
 
 import pytest
 
-from agent.delegation_context import delegated_child_context
+from hermes_agent.agent.delegation_context import delegated_child_context
 from hermes_cli.config import get_config_path
 from hermes_agent.tools import vision_tools_history_budget as budget
 from hermes_agent.tools.vision_tools import _vision_analyze_native
@@ -142,7 +142,7 @@ class TestNativeTurnDedupe:
     a second time by ``vision_analyze`` in the same request (#76411)."""
 
     def test_same_image_in_active_turn_returns_text_not_a_second_embed(self, tmp_path):
-        from agent.image_routing import build_native_content_parts
+        from hermes_agent.agent.image_routing import build_native_content_parts
         same, other = _png(tmp_path / "same.png"), _png(tmp_path / "other.png", noisy=True)
         parts, skipped = build_native_content_parts("look", [same])
         assert not skipped
@@ -160,8 +160,8 @@ class TestNativeTurnDedupe:
         result, not a second embed. After the turn the scope is gone and the image embeds again."""
         from types import SimpleNamespace
 
-        from agent.image_routing import build_native_content_parts
-        from run_agent import AIAgent
+        from hermes_agent.agent.image_routing import build_native_content_parts
+        from hermes_agent.run_agent import AIAgent
         from hermes_agent.tools import vision_tools
 
         same = _png(tmp_path / "same.png")
@@ -193,7 +193,7 @@ class TestNativeTurnDedupe:
             tool_results.append(result)
             return result
 
-        monkeypatch.setattr("agent.process_bootstrap.OpenAI",
+        monkeypatch.setattr("hermes_agent.agent.process_bootstrap.OpenAI",
                             lambda **kw: SimpleNamespace(chat=SimpleNamespace(completions=_Completions())))
         monkeypatch.setattr("hermes_agent.model_tools.get_tool_definitions",
                             lambda *a, **kw: [{"function": {"name": "vision_analyze"}}])

@@ -1,4 +1,4 @@
-"""The agent conversation loop — extracted from ``run_agent.AIAgent``.
+"""The agent conversation loop — extracted from ``hermes_agent.run_agent.AIAgent``.
 
 ``run_conversation(agent, ...)`` drives one user turn (model call, tool dispatch,
 retries, fallbacks, compression, post-turn hooks). Symbols that callers patch on
@@ -15,51 +15,51 @@ import time
 from dataclasses import dataclass, field, fields
 from typing import Any, Dict, List, Optional
 
-from agent.agent_runtime_helpers_placeholders import hidden_interrupt_placeholder_row
-from agent.codex_responses_adapter import _summarize_user_message_for_log
-from agent.fast_mode import begin_turn as begin_fast_mode_turn
-from agent.message_metadata import append_message, without_persistence_fields
-from agent.message_sanitization import _repair_tool_call_arguments, _sanitize_surrogates
-from agent.model_metadata import MINIMUM_CONTEXT_LENGTH, _estimate_tools_tokens_rough
-from agent.process_bootstrap import _install_safe_stdio
-from agent.prompt_builder import RUNTIME_ENVIRONMENT_END, RUNTIME_ENVIRONMENT_HEADING
-from agent.prompt_refresh import rebuild_for_refresh, requested_epoch, stamp_prompt_epoch, stored_prompt_refresh_epoch
-from agent.prompt_caching import (
+from hermes_agent.agent.agent_runtime_helpers_placeholders import hidden_interrupt_placeholder_row
+from hermes_agent.agent.codex_responses_adapter import _summarize_user_message_for_log
+from hermes_agent.agent.fast_mode import begin_turn as begin_fast_mode_turn
+from hermes_agent.agent.message_metadata import append_message, without_persistence_fields
+from hermes_agent.agent.message_sanitization import _repair_tool_call_arguments, _sanitize_surrogates
+from hermes_agent.agent.model_metadata import MINIMUM_CONTEXT_LENGTH, _estimate_tools_tokens_rough
+from hermes_agent.agent.process_bootstrap import _install_safe_stdio
+from hermes_agent.agent.prompt_builder import RUNTIME_ENVIRONMENT_END, RUNTIME_ENVIRONMENT_HEADING
+from hermes_agent.agent.prompt_refresh import rebuild_for_refresh, requested_epoch, stamp_prompt_epoch, stored_prompt_refresh_epoch
+from hermes_agent.agent.prompt_caching import (
     build_prompt_cache_plan,
     effective_cache_ttl,
     strip_anthropic_cache_control,
     strip_anthropic_tool_cache_control,
 )
-from agent.repetition_guard import REPETITION_LOOP_INTERRUPTED, is_runaway_repetition
-from agent.runtime_cwd import resolve_agent_cwd
-from agent.surface_switch import (
+from hermes_agent.agent.repetition_guard import REPETITION_LOOP_INTERRUPTED, is_runaway_repetition
+from hermes_agent.agent.runtime_cwd import resolve_agent_cwd
+from hermes_agent.agent.surface_switch import (
     identity_line_value, note_inert_pinned_tools, runtime_host_value, stage_surface_switch_note,
 )
-from agent.turn_context import PRE_LLM_BLOCK_EXIT_REASON, PreflightCompressionTimedOut, build_turn_context
+from hermes_agent.agent.turn_context import PRE_LLM_BLOCK_EXIT_REASON, PreflightCompressionTimedOut, build_turn_context
 from hermes_cli.observability.shared_metrics_efficiency import record_cache_break, record_prompt_rebuild
 from hermes_cli.plugins_dispatch import held_stream_transforms
-from agent.turn_retry_state import TurnRetryState
-from agent.turn_scripted_prelude import Prelude, play_prelude
+from hermes_agent.agent.turn_retry_state import TurnRetryState
+from hermes_agent.agent.turn_scripted_prelude import Prelude, play_prelude
 # Phase helpers of the turn loop, bound at import so a source-tree swap cannot load a
 # skewed phase mid-turn.
-from agent.turn_api_call import handle_api_interrupt, nous_rate_limit_guard, perform_api_call
-from agent.turn_api_error import handle_api_error
-from agent.turn_api_request import build_api_request
-from agent.turn_failure_copy import FAILED_TURN_DISPLAY_KIND, OPEN_TURN_TAIL_ROLES, failed_turn_notice, site_copy
-from agent.turn_final_response import finish_text_response
-from agent.turn_finalizer import finalize_turn
-from agent.turn_iteration_prep import (
+from hermes_agent.agent.turn_api_call import handle_api_interrupt, nous_rate_limit_guard, perform_api_call
+from hermes_agent.agent.turn_api_error import handle_api_error
+from hermes_agent.agent.turn_api_request import build_api_request
+from hermes_agent.agent.turn_failure_copy import FAILED_TURN_DISPLAY_KIND, OPEN_TURN_TAIL_ROLES, failed_turn_notice, site_copy
+from hermes_agent.agent.turn_final_response import finish_text_response
+from hermes_agent.agent.turn_finalizer import finalize_turn
+from hermes_agent.agent.turn_iteration_prep import (
     announce_api_call,
     apply_retry_restarts,
     begin_iteration,
     prepare_iteration,
 )
-from agent.turn_loop_errors import handle_outer_loop_error
-from agent.turn_preflight_gate import run_preflight_gate
-from agent.turn_request_assembly import assemble_api_request
-from agent.turn_response_check import check_api_response
-from agent.turn_response_intake import normalize_model_response
-from agent.turn_tool_round import run_tool_round
+from hermes_agent.agent.turn_loop_errors import handle_outer_loop_error
+from hermes_agent.agent.turn_preflight_gate import run_preflight_gate
+from hermes_agent.agent.turn_request_assembly import assemble_api_request
+from hermes_agent.agent.turn_response_check import check_api_response
+from hermes_agent.agent.turn_response_intake import normalize_model_response
+from hermes_agent.agent.turn_tool_round import run_tool_round
 from hermes_logging import set_session_context
 from hermes_agent.tools.skill_provenance import set_current_write_origin
 from utils import base_url_host_matches
@@ -96,7 +96,7 @@ def _midturn_request_pressure_tokens(
     needed (#96995).
     """
     try:
-        from agent.codex_responses_adapter import estimate_native_responses_preflight_tokens
+        from hermes_agent.agent.codex_responses_adapter import estimate_native_responses_preflight_tokens
         native = estimate_native_responses_preflight_tokens(
             agent, api_messages, system_prompt=effective_system or "",
             tools=getattr(agent, "tools", None) or None,
@@ -134,7 +134,7 @@ def _maybe_inject_run_budget_wrapup(agent: Any, messages: list[dict[str, Any]]) 
         (time.time() - started) < 0.8 * float(budget)
     ):
         return False
-    from agent.context_compressor import _DB_PERSISTED_MARKER
+    from hermes_agent.agent.context_compressor import _DB_PERSISTED_MARKER
     for msg in reversed(messages):
         if isinstance(msg, dict) and msg.get("role") == "tool":
             # Only the current tool-result tail is mutable; an older turn may already be
@@ -180,7 +180,7 @@ def _should_skip_model_call_for_reference_handoff(
     messages: list[dict[str, Any]], user_message: Any
 ) -> bool:
     """Guard post-compaction continues against sole-handoff active turns (#80622)."""
-    from agent.context_compressor import reference_handoff_would_drive_next_model_call
+    from hermes_agent.agent.context_compressor import reference_handoff_would_drive_next_model_call
     # A restored ask is an actionable non-synthetic user row appended after the
     # handoff — by construction the handoff no longer drives.
     return reference_handoff_would_drive_next_model_call(messages) and not (
@@ -367,7 +367,7 @@ def _credential_refresh_profile(agent: Any) -> Any:
     """The profile owning the live credential's runtime refresh: the agent's provider by name, else
     (a ``custom`` route at a provider's host) the profile serving the base URL's host. Only profiles
     that override ``refresh_runtime_credentials`` qualify."""
-    from agent.provider_route_hooks import route_profiles
+    from hermes_agent.agent.provider_route_hooks import route_profiles
 
     profiles = route_profiles("refresh_runtime_credentials", (getattr(agent, "provider", "") or "").strip().lower(),
                               str(getattr(agent, "base_url", "") or ""))
@@ -460,7 +460,7 @@ def _maybe_grow_local_window(agent: Any, compressor: Any,
 
 def _ra():
     """Lazy ``run_agent`` reference so patches on ``run_agent.*`` reach this code path."""
-    import run_agent
+    from hermes_agent import run_agent
     return run_agent
 
 
@@ -557,7 +557,7 @@ def _billing_or_entitlement_message(
 
     # Provider-agnostic billing URL so every text surface shows the same actionable link.
     try:
-        from agent.billing_links import build_billing_block
+        from hermes_agent.agent.billing_links import build_billing_block
         _link = build_billing_block(provider=provider, base_url=base_url, model=model)
         provider_label = _link.provider_label or provider_label
         billing_url = _link.billing_url
@@ -574,7 +574,7 @@ def _billing_or_entitlement_message(
 def _billing_block_dict(provider, base_url, model, message="", *, unverified: bool = False) -> Optional[dict]:
     """Best-effort structured billing descriptor (None if billing_links is unavailable)."""
     try:
-        from agent.billing_links import build_billing_block
+        from hermes_agent.agent.billing_links import build_billing_block
         block = build_billing_block(
             provider=provider, base_url=str(base_url), model=model, message=message
         ).to_dict()
@@ -600,15 +600,15 @@ def _usage_window_refusal(agent, classified, api_messages=None) -> tuple[str, Op
     """A usage-window 402 in the words of the credits limit line ("You've hit your daily limit · resets
     15:56 · /topup to add credits") plus when that allowance frees up (epoch
     seconds), so the chat and the error card say exactly what the notice says and the card can offer
-    a retry at the reset. The third item is the structured limit (:class:`agent.plan_limits.LimitHit`
+    a retry at the reset. The third item is the structured limit (:class:`hermes_agent.agent.plan_limits.LimitHit`
     payload: what ran out, the recommended models that still work, the credits option) every surface
     renders as buttons or a sentence. ``("", None, None)`` for every other billing failure."""
     context = getattr(classified, "error_context", None) or {}
     if not context.get("usage_window"):
         return "", None, None
     try:
-        from agent.credits_tracker import _window_hard_stop, window_stop_resets_at_ms
-        from agent.plan_limits import current_model_is_top_tier
+        from hermes_agent.agent.credits_tracker import _window_hard_stop, window_stop_resets_at_ms
+        from hermes_agent.agent.plan_limits import current_model_is_top_tier
         state = getattr(agent, "_credits_state", None)
         top_tier = current_model_is_top_tier(agent)
         stop = _window_hard_stop(state, model_is_free=False, model_is_top_tier=top_tier) if state is not None else None
@@ -631,8 +631,8 @@ def _usage_window_refusal(agent, classified, api_messages=None) -> tuple[str, Op
         resets_ms = window_stop_resets_at_ms(state, model_is_top_tier=top_tier) if state is not None else None
         limit = None
         try:
-            from agent.model_metadata import estimate_messages_tokens_rough
-            from agent.plan_limits import limit_hit
+            from hermes_agent.agent.model_metadata import estimate_messages_tokens_rough
+            from hermes_agent.agent.plan_limits import limit_hit
             hit = limit_hit(agent, message=message,
                             needed_tokens=estimate_messages_tokens_rough(api_messages or []) if api_messages else None)
             limit = hit.to_payload() if hit is not None else None
@@ -712,7 +712,7 @@ def _bot_chat_prompt_stale(agent, stored_prompt: str | None) -> bool:
         )
         home = None
         try:
-            from agent.system_prompt import _agent_home
+            from hermes_agent.agent.system_prompt import _agent_home
             home = _agent_home(agent)
         except Exception:
             pass
@@ -836,7 +836,7 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
             # The skills index cache (LRU + disk snapshot) does not watch the skills
             # dir; a capability refresh must rebuild THROUGH it or new skills are lost.
             try:
-                from agent.prompt_builder import clear_skills_system_prompt_cache
+                from hermes_agent.agent.prompt_builder import clear_skills_system_prompt_cache
                 clear_skills_system_prompt_cache(clear_snapshot=True)
             except Exception:
                 pass
@@ -886,7 +886,7 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
         # prefix is not persisted either; rebuild it for the early cache breakpoint or
         # fresh-per-turn gateway agents fall back to the single-breakpoint layout
         # (reconstruct_static_prefix gates on _use_prompt_caching, fails open to legacy).
-        from agent.system_prompt import reconstruct_static_prefix, restore_plugin_prompt_sections
+        from hermes_agent.agent.system_prompt import reconstruct_static_prefix, restore_plugin_prompt_sections
         restore_plugin_prompt_sections(agent, stored_prompt)
         reconstruct_static_prefix(agent, system_message=system_message)
         return
@@ -940,7 +940,7 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
     # Cold-start credits seed (L3) fallback for the first-turn path; TUI/desktop seed at
     # session open, so this is idempotent (skips when _credits_state exists). Fail-open.
     try:
-        from agent.credits_tracker import seed_credits_at_session_start
+        from hermes_agent.agent.credits_tracker import seed_credits_at_session_start
         seed_credits_at_session_start(agent)
     except Exception:
         logger.debug("cold-start credits seed failed (fail-open)", exc_info=True)
@@ -958,7 +958,7 @@ def _stored_prompt_matches_runtime(agent, prompt: str) -> bool:
     """Return False when the persisted runtime-identity lines are stale."""
     # Model/provider identity, then cwd drift.  A cwd change is a real content change (context
     # files, the workspace snapshot and the coding posture are all resolved from it), so it
-    # still rebuilds; the runtime surface does not (agent/surface_switch.py).
+    # still rebuilds; the runtime surface does not (hermes_agent/agent/surface_switch.py).
     # The builder omits an empty trailer line, so stored-but-now-empty is a route change too;
     # the rebuilt prompt then carries no line and matches from the next turn on.  Stored-empty
     # (pre-trailer prompts) keeps reusing.
@@ -980,7 +980,7 @@ def _stored_prompt_matches_runtime(agent, prompt: str) -> bool:
         return False
     # Platform is deliberately NOT an identity field: a surface switch does not invalidate the
     # stored bytes, it only makes their interface section out of date, and that is corrected by
-    # agent.surface_switch.stage_surface_switch_note without touching the cached prefix (#104414).
+    # hermes_agent.agent.surface_switch.stage_surface_switch_note without touching the cached prefix (#104414).
     return True
 
 
@@ -1277,13 +1277,13 @@ def _ensure_cached_system_prompt_static(agent, system_message=None) -> None:
     """Rebuild ``_cached_system_prompt_static`` when caching becomes active (#72626): sessions
     restored under a cache-off primary would otherwise fall back to the legacy layout after
     failover to a cache-on provider."""
-    from agent.system_prompt import reconstruct_static_prefix
+    from hermes_agent.agent.system_prompt import reconstruct_static_prefix
     reconstruct_static_prefix(agent, system_message=system_message, log_label="failover redecoration")
 
 
 def _peel_moa_guidance(messages: list[dict[str, Any]], guidance: Any) -> list[dict[str, Any]]:
     """Remove MoA reference guidance attached by ``_attach_reference_guidance``."""
-    from agent.moa_loop import peel_reference_guidance
+    from hermes_agent.agent.moa_loop import peel_reference_guidance
     return peel_reference_guidance(messages, guidance)
 
 
@@ -1316,7 +1316,7 @@ def _redecorate_prompt_cache_for_provider(
     elif agent._use_prompt_caching:
         _ensure_cached_system_prompt_static(agent, system_message=system_message)
         static = getattr(agent, "_cached_system_prompt_static", None)
-        from agent.prompt_caching import envelope_tool_part_cache_markers_supported
+        from hermes_agent.agent.prompt_caching import envelope_tool_part_cache_markers_supported
         plan = build_prompt_cache_plan(
             messages,
             planned_tools,
@@ -1344,12 +1344,12 @@ def _engine_overrides_hook(engine: Any, name: str) -> bool:
     """True when ``engine`` implements ContextEngine hook ``name`` itself.
 
     Non-implementing engines must pay nothing per turn; ``hasattr`` is not enough because
-    the ABC defines a no-op default. Lazy import avoids a cycle with agent.context_engine."""
+    the ABC defines a no-op default. Lazy import avoids a cycle with hermes_agent.agent.context_engine."""
     hook = getattr(engine, name, None)
     if engine is None or not callable(hook):
         return False
     try:
-        from agent.context_engine import ContextEngine as _CE
+        from hermes_agent.agent.context_engine import ContextEngine as _CE
         return getattr(hook, "__func__", None) is not getattr(_CE, name)
     except Exception:
         return True
@@ -1447,7 +1447,7 @@ def _preflight_timeout_result(agent, exc, conversation_history) -> dict[str, Any
     )
     # Clear the tripwire slot note_turn_start registered (the early return skips the persist
     # funnel). The user row is deliberately NOT persisted (#7100).
-    from agent.agent_runtime_helpers import note_turn_persisted
+    from hermes_agent.agent.agent_runtime_helpers import note_turn_persisted
     note_turn_persisted(agent)
     # Not _COMPRESSION_TIMEOUT_FINAL_RESPONSE — that describes a different state
     # (compression ran, could not reduce); the exception text carries the guidance.
@@ -1460,7 +1460,7 @@ def _preflight_timeout_result(agent, exc, conversation_history) -> dict[str, Any
 
 @dataclass
 class _LoopState:
-    """Every local the turn loop threads through the phase helpers in ``agent/turn_*.py``.
+    """Every local the turn loop threads through the phase helpers in ``hermes_agent/agent/turn_*.py``.
 
     Helpers take the loop locals they need as keyword arguments named like these fields and
     return a verdict whose non-``action``/``result`` fields carry the same names;
@@ -1608,7 +1608,7 @@ def _run_api_retry_loop(agent, s: _LoopState) -> Optional[dict[str, Any]]:
 
 
 def _finalize_from_state(agent: Any, s: _LoopState) -> dict[str, Any]:
-    """Post-loop finalization (agent/turn_finalizer.finalize_turn) fed from the loop state."""
+    """Post-loop finalization (hermes_agent/agent/turn_finalizer.finalize_turn) fed from the loop state."""
     return finalize_turn(agent, **{
         name: getattr(s, name)
         for name in inspect.signature(finalize_turn).parameters if name != "agent"
@@ -1619,7 +1619,7 @@ def _turn_without_loop(agent: Any, s: _LoopState, block_message: str) -> Optiona
     """The turn's result when it never enters the generic loop, else None. A ``pre_llm_call``
     veto finalizes with no inference request (the block message closes the transcript pair);
     the opt-in codex app-server runtime runs the whole turn in its subprocess
-    (agent/transports/codex_app_server_session.py)."""
+    (hermes_agent/agent/transports/codex_app_server_session.py)."""
     if block_message:
         s.final_response, s._turn_exit_reason = block_message, PRE_LLM_BLOCK_EXIT_REASON
         return _finalize_from_state(agent, s)
@@ -1634,7 +1634,7 @@ def _codex_app_server_turn(agent: Any, s: Any) -> Optional[dict[str, Any]]:
         messages=s.messages, effective_task_id=s.effective_task_id,
         should_review_memory=s._should_review_memory, turn_id=s.turn_id,
     )
-    from agent.turn_recovery import activate_codex_app_server_fallback
+    from hermes_agent.agent.turn_recovery import activate_codex_app_server_fallback
     if not activate_codex_app_server_fallback(agent, codex_result):
         return codex_result
     # Fallback activation rewrote provider/model/api_mode: retry this same user turn on the generic
@@ -1670,7 +1670,7 @@ def _run_conversation_turn(
     model-facing message; an empty string suppresses titling for this turn).
     ``persist_user_display_*``:
     display-only event rendering; the model still receives the message unchanged.
-    ``prelude``: scripted tool calls played before the first model call (``agent/turn_scripted_prelude.py``)."""
+    ``prelude``: scripted tool calls played before the first model call (``hermes_agent/agent/turn_scripted_prelude.py``)."""
     if moa_config is None:
         user_message, moa_config, persist_user_message = _decode_inline_moa_turn(
             user_message, persist_user_message
@@ -1720,7 +1720,7 @@ def _run_conversation_turn(
         return _preflight_timeout_result(agent, _preflight_timeout_exc, conversation_history)
     # Voice turns may run on auxiliary.voice_chat: bound after the prompt/row/compaction were settled
     # against the main model, undone in finalize_turn (and run_conversation's finally on early exits).
-    from agent.voice_turn_route import begin_voice_turn_route
+    from hermes_agent.agent.voice_turn_route import begin_voice_turn_route
     _ctx.active_system_prompt = begin_voice_turn_route(agent, _ctx.messages, _ctx.active_system_prompt)
 
     # Per-turn agent state (the gateway caches agents across turns, so none of this may
@@ -1830,9 +1830,9 @@ def run_conversation(
     ``{turn_id, current_turn_user_idx}`` pair is stamped beside the exact ``messages`` it
     addresses, after every history rewrite including post-turn micro-compaction.
     """
-    from agent.turn_context import export_current_turn_boundary
-    from agent.turn_finalizer import fence_result_reply, settle_held_final
-    from agent.voice_turn_route import end_voice_turn_route
+    from hermes_agent.agent.turn_context import export_current_turn_boundary
+    from hermes_agent.agent.turn_finalizer import fence_result_reply, settle_held_final
+    from hermes_agent.agent.voice_turn_route import end_voice_turn_route
     from hermes_agent.tools.vision_tools_history_budget import native_turn_images
 
     # Steer / redirect / interrupt set this mid-turn; the result reports whether the turn ran untouched.
@@ -1877,7 +1877,7 @@ def _failed_turn_display_metadata(agent, result: dict) -> dict:
     card from the transcript, after the live ``message.complete`` frame is gone. Every
     string is redacted with ``force=True``: the error came from a provider/tool, so a
     secret echoed in it must not reach the durable store (the redaction e2e boundary)."""
-    from agent.error_surface import build_error_surface_from_result
+    from hermes_agent.agent.error_surface import build_error_surface_from_result
 
     try:
         surface = build_error_surface_from_result(
@@ -1899,7 +1899,7 @@ def _redact_display_metadata(metadata: dict) -> dict:
     that escaped a provider or tool would otherwise reach the 'store' and 'export' sinks
     verbatim. ``force=True`` keeps the boundary closed even when ``security.redact_secrets``
     is off, matching the compressor's persistence boundary."""
-    from agent.redact import redact_sensitive_text
+    from hermes_agent.agent.redact import redact_sensitive_text
 
     def _redact(value):
         if isinstance(value, str):

@@ -5,21 +5,21 @@ diagnostics are unchanged, so waiting for a push costs the push latency (hundred
 or the whole wait budget (a clean edit never publishes).  It also forwards raw tsserver requests through
 ``workspace/executeCommand typescript.tsserverRequest``: ``syntacticDiagnosticsSync`` +
 ``semanticDiagnosticsSync`` answer for the text last synced, in about 10ms on a warm project.  The edit
-check (``agent.lsp.edit_check``) asks this module first and falls back to the push/pull wait when the
+check (``hermes_agent.agent.lsp.edit_check``) asks this module first and falls back to the push/pull wait when the
 server has no synchronous request or the request fails.
 
 Returned diagnostics use the shape typescript-language-server pushes (0-based range, numeric severity,
 ``source`` "typescript"), so a sync verdict and a pushed baseline compare equal by
-``agent.lsp.client._diagnostic_key``.
+``hermes_agent.agent.lsp.client._diagnostic_key``.
 """
 from __future__ import annotations
 
 import logging
 from typing import Any, Optional
 
-from agent.lsp.protocol import LSPProtocolError, LSPRequestError
+from hermes_agent.agent.lsp.protocol import LSPProtocolError, LSPRequestError
 
-logger = logging.getLogger("agent.lsp.sync_diagnostics")
+logger = logging.getLogger("hermes_agent.agent.lsp.sync_diagnostics")
 
 # tsserver category -> LSP DiagnosticSeverity, as typescript-language-server maps it.
 _TS_SEVERITY = {"error": 1, "warning": 2, "message": 3, "suggestion": 4}

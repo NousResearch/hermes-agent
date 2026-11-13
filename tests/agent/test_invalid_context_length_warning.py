@@ -13,12 +13,12 @@ def _build_agent(model_cfg, custom_providers=None, model=None):
     with (
         patch("hermes_cli.config.load_config", return_value=cfg),
         patch("hermes_cli.config.load_config_readonly", return_value=cfg),
-        patch("agent.model_metadata.get_model_context_length", return_value=128_000),
+        patch("hermes_agent.agent.model_metadata.get_model_context_length", return_value=128_000),
         patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]),
         patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
-        patch("agent.process_bootstrap.OpenAI"),
+        patch("hermes_agent.agent.process_bootstrap.OpenAI"),
     ):
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         agent = AIAgent(
             model=model or model_cfg.get("default") or "anthropic/claude-opus-4.6",
@@ -32,7 +32,7 @@ def _build_agent(model_cfg, custom_providers=None, model=None):
 
 def test_valid_integer_context_length_no_warning():
     """Plain integer context_length should work silently."""
-    with patch("run_agent.logger") as mock_logger:
+    with patch("hermes_agent.run_agent.logger") as mock_logger:
         agent = _build_agent({"default": "gpt5.4", "provider": "custom",
                               "base_url": "http://localhost:4000/v1",
                               "context_length": 256000})
@@ -43,7 +43,7 @@ def test_valid_integer_context_length_no_warning():
 
 def test_string_k_suffix_context_length_warns():
     """context_length: '256K' should warn the user clearly."""
-    with patch("run_agent.logger") as mock_logger:
+    with patch("hermes_agent.run_agent.logger") as mock_logger:
         agent = _build_agent({"default": "gpt5.4", "provider": "custom",
                               "base_url": "http://localhost:4000/v1",
                               "context_length": "256K"})

@@ -1,17 +1,17 @@
 """When the compression feasibility probe runs: after a main-runtime change, once a request first reaches
 the smallest summariser window, and again when a warm agent meets a compression route other than the one
-it probed. The probe itself is ``check_compression_model_feasibility`` in ``agent.conversation_compression``."""
+it probed. The probe itself is ``check_compression_model_feasibility`` in ``hermes_agent.agent.conversation_compression``."""
 
 from __future__ import annotations
 
 import logging
 from typing import Any
 
-logger = logging.getLogger("agent.conversation_compression")
+logger = logging.getLogger("hermes_agent.agent.conversation_compression")
 
 
 def _probe(agent: Any) -> None:
-    from agent.conversation_compression import check_compression_model_feasibility
+    from hermes_agent.agent.conversation_compression import check_compression_model_feasibility
     check_compression_model_feasibility(agent)
 
 
@@ -35,7 +35,7 @@ def compression_route_identity() -> tuple:
 
 
 def _route_identity() -> tuple:
-    from agent.auxiliary_task_config import _get_auxiliary_task_config
+    from hermes_agent.agent.auxiliary_task_config import _get_auxiliary_task_config
     cfg = _get_auxiliary_task_config("compression")
     route = tuple(str(cfg.get(k) or "") for k in ("provider", "model", "base_url", "context_length"))
     provider = route[0].strip()
@@ -102,7 +102,7 @@ def ensure_compression_feasibility_checked(agent: Any, estimated_tokens: int) ->
         if probed is None or route == probed:
             return
         _drop_stale_ceiling(agent)
-    from agent.model_metadata import MINIMUM_CONTEXT_LENGTH
+    from hermes_agent.agent.model_metadata import MINIMUM_CONTEXT_LENGTH
     if int(estimated_tokens or 0) < MINIMUM_CONTEXT_LENGTH:
         return
     try:

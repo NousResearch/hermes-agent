@@ -26,7 +26,7 @@ class TestReloadSkillsCLI:
     def test_reports_added_and_removed_and_queues_note(self, capsys):
         cli = _make_cli()
         with patch(
-            "agent.skill_commands.reload_skills",
+            "hermes_agent.agent.skill_commands.reload_skills",
             return_value={
                 "added": [
                     {"name": "alpha", "description": "Run alpha to do xyz"},
@@ -58,7 +58,7 @@ class TestReloadSkillsCLI:
     def test_reports_no_changes_and_queues_nothing(self, capsys):
         cli = _make_cli()
         with patch(
-            "agent.skill_commands.reload_skills",
+            "hermes_agent.agent.skill_commands.reload_skills",
             return_value={
                 "added": [],
                 "removed": [],
@@ -75,7 +75,7 @@ class TestReloadSkillsCLI:
     def test_handles_reload_failure_gracefully(self, capsys):
         cli = _make_cli()
         with patch(
-            "agent.skill_commands.reload_skills",
+            "hermes_agent.agent.skill_commands.reload_skills",
             side_effect=RuntimeError("boom"),
         ):
             cli._reload_skills()

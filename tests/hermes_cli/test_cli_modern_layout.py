@@ -199,7 +199,7 @@ def test_long_user_message_soft_wraps_so_a_resize_reflows_it(monkeypatch):
 def test_tool_rows_keep_the_classic_tool_emoji():
     """Each finished tool row leads with the same emoji the classic ``┊`` row shows (📖 read, 💻
     terminal…); a failed entry swaps it for the red ✗ so failures stay obvious."""
-    from agent.display import get_cute_tool_message
+    from hermes_agent.agent.display import get_cute_tool_message
     from hermes_cli.cli_modern_layout import tool_row
 
     # clarify has no dedicated renderer: both layouts take its registered emoji from one source.
@@ -214,7 +214,7 @@ def test_tool_rows_keep_the_classic_tool_emoji():
 def test_refused_skill_write_reads_neutral_not_failed():
     """A skill_manage write the agent will re-plan (size cap, stale old_string) keeps the tool's own
     emoji and a dim reason: no red ✗ for the agent's routine retry loop."""
-    from agent.display import get_tool_emoji
+    from hermes_agent.agent.display import get_tool_emoji
     from hermes_cli.cli_modern_layout import _RED, tool_row
 
     refused = ('{"success": false, "error": "operations[0] (patch on \'hermes-agent-dev\') failed: '

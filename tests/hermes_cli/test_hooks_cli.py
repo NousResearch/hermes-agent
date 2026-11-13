@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 import pytest
 
-from agent import shell_hooks
+from hermes_agent.agent import shell_hooks
 from hermes_cli import hooks as hooks_cli
 
 
@@ -159,7 +159,7 @@ class TestHooksDoctor:
         script = _hook_script(tmp_path, "#!/usr/bin/env bash\nprintf '{}\\n'\n")
 
         # Manually stash an allowlist entry with an old mtime
-        from agent.shell_hooks import allowlist_path
+        from hermes_agent.agent.shell_hooks import allowlist_path
         allowlist_path().parent.mkdir(parents=True, exist_ok=True)
         allowlist_path().write_text(json.dumps({
             "approvals": [
@@ -205,7 +205,7 @@ class TestHooksDoctor:
 def test_print_run_result_shows_decision_for_error_and_timeout():
     """A failing hook's decision must be printed, not hidden by early returns (#115968).
 
-    run_once always sets ``parsed`` (agent/shell_hooks.py::_evaluate_result), so `hooks test` must show
+    run_once always sets ``parsed`` (hermes_agent/agent/shell_hooks.py::_evaluate_result), so `hooks test` must show
     it even when the hook errored or timed out. Before this fix the ``return`` on error/timeout skipped
     the parsed tail, so a fail-closed blocker rendered identically to a fail-open pass-through.
     """

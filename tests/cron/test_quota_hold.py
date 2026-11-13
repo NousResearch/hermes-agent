@@ -126,7 +126,7 @@ def _tick(job, home, deliveries, resolve):
          patch("hermes_agent.cron.delivery_queue.enqueue",
                side_effect=lambda execution_id, jb, content, **kw: (
                    deliveries.append(content), {"status": "pending"})[1]), \
-         patch("run_agent.AIAgent") as agent_cls:
+         patch("hermes_agent.run_agent.AIAgent") as agent_cls:
         agent_cls.return_value.run_conversation.side_effect = RuntimeError("model said no")
         sched.run_one_job(dict(job))
 

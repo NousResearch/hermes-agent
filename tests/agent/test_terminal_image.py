@@ -1,4 +1,4 @@
-"""Terminal graphics: capability detection and the inline-image API (agent/terminal_image.py)."""
+"""Terminal graphics: capability detection and the inline-image API (hermes_agent/agent/terminal_image.py)."""
 
 from __future__ import annotations
 
@@ -6,8 +6,8 @@ import json
 
 import pytest
 
-from agent import terminal_image
-from agent.terminal_image import render_inline_image, resolve_inline_mode, tool_image_path
+from hermes_agent.agent import terminal_image
+from hermes_agent.agent.terminal_image import render_inline_image, resolve_inline_mode, tool_image_path
 
 PIL = pytest.importorskip("PIL.Image")
 

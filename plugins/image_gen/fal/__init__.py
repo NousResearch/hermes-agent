@@ -8,7 +8,7 @@ import json
 import logging
 from typing import Any, Dict, List, Optional
 
-from agent.image_gen_provider import DEFAULT_ASPECT_RATIO, resolve_aspect_ratio
+from hermes_agent.agent.image_gen_provider import DEFAULT_ASPECT_RATIO, resolve_aspect_ratio
 from plugins.image_gen._common import StaticImageGenProvider, catalog_rows
 
 logger = logging.getLogger(__name__)

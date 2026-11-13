@@ -253,7 +253,7 @@ def test_no_gates_behaves_exactly_as_before():
 @pytest.fixture
 def backend_and_session(tmp_path, monkeypatch):
     """A backend started in a project whose check passes, serving a session whose check fails."""
-    from agent.runtime_cwd import reset_session_cwd, set_session_cwd
+    from hermes_agent.agent.runtime_cwd import reset_session_cwd, set_session_cwd
 
     backend, session = tmp_path / "backend", tmp_path / "session"
     for folder, code in ((backend, 0), (session, 1)):
@@ -312,7 +312,7 @@ def test_missing_session_workspace_pauses_instead_of_running_elsewhere(backend_a
 
 
 def test_gate_without_a_session_workspace_keeps_the_launch_directory(backend_and_session):
-    from agent.runtime_cwd import clear_session_cwd
+    from hermes_agent.agent.runtime_cwd import clear_session_cwd
 
     backend, _session, _bind = backend_and_session
     clear_session_cwd()

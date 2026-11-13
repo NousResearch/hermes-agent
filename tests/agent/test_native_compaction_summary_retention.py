@@ -4,11 +4,11 @@
 whose ``role`` was not ``"user"`` — which silently deleted Hermes' own local
 compression summaries (``role="assistant"``) from the wire on every native
 compaction turn. These tests cover the fix's summary retention path, its
-reliance on the canonical ``agent.context_compressor`` provenance check (not
+reliance on the canonical ``hermes_agent.agent.context_compressor`` provenance check (not
 an ad-hoc heuristic), whole-or-drop truncation, and idempotency.
 """
 
-from agent.context_compressor import (
+from hermes_agent.agent.context_compressor import (
     COMPRESSED_SUMMARY_METADATA_KEY,
     ContextCompressor,
     SUMMARY_PREFIX,
@@ -16,7 +16,7 @@ from agent.context_compressor import (
     _MERGED_SUMMARY_DELIMITER,
     _SUMMARY_END_MARKER,
 )
-from agent.native_compaction import (
+from hermes_agent.agent.native_compaction import (
     _extract_item_text,
     _is_summary_item,
     prune_pre_checkpoint_items,
@@ -286,7 +286,7 @@ class TestChatMessagesToResponsesInputSummaryCarrierLoss:
     """
 
     def test_tool_result_merge_carrier_summary_survives_the_adapter(self):
-        from agent.codex_responses_adapter import _chat_messages_to_responses_input
+        from hermes_agent.agent.codex_responses_adapter import _chat_messages_to_responses_input
 
         merged = _merged_summary_content("preserved tool context")
         messages = [
@@ -333,7 +333,7 @@ class TestChatMessagesToResponsesInputSummaryCarrierLoss:
         assert items[0].get("type") == "compaction"
 
     def test_assistant_merge_carrier_with_stale_replay_summary_survives(self):
-        from agent.codex_responses_adapter import _chat_messages_to_responses_input
+        from hermes_agent.agent.codex_responses_adapter import _chat_messages_to_responses_input
 
         merged = _merged_summary_content("preserved assistant context")
         messages = [

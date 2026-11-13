@@ -2,7 +2,7 @@
 
 The checks live in ``hermes_agent/tools/environments/sandbox_conformance.py`` so a hosted backend plugin runs the
 same ones against its own provider; here they run against the recording stub, through the real tool
-registry, with hosted scopes bound by ``agent.runtime_scope.bind_state``. Local behaviour is covered
+registry, with hosted scopes bound by ``hermes_agent.agent.runtime_scope.bind_state``. Local behaviour is covered
 by the existing terminal/file/process suites, which run with no hosted scope bound.
 """
 
@@ -12,7 +12,7 @@ import json
 
 import pytest
 
-from agent import terminal_env_registry as reg
+from hermes_agent.agent import terminal_env_registry as reg
 from hermes_scope import Principal, Scope
 from hermes_agent.tools.environments import sandbox_conformance as conformance
 from hermes_agent.tools.environments.sandbox_scope import (
@@ -79,7 +79,7 @@ def test_a_hosted_scope_with_a_host_backend_runs_nothing_here(provider, monkeypa
 
 
 def test_a_builtin_backend_is_refused_in_a_hosted_scope(monkeypatch, provider):
-    from agent.runtime_scope import bind_state
+    from hermes_agent.agent.runtime_scope import bind_state
     from hermes_agent.tools.terminal_tool_backends import _create_environment
 
     with bind_state(A):
@@ -88,7 +88,7 @@ def test_a_builtin_backend_is_refused_in_a_hosted_scope(monkeypatch, provider):
 
 
 def test_an_environment_with_no_scope_bound_is_refused(provider):
-    from agent.runtime_scope import bind_state
+    from hermes_agent.agent.runtime_scope import bind_state
 
     with bind_state(A):
         conformance.call_tool("terminal", {"command": "true"}, task_id="t")
@@ -118,7 +118,7 @@ def test_local_long_lived_process_round_trip(tmp_path):
 def test_a_cached_environment_of_another_agent_is_refused_not_used(provider):
     """Even if another agent's sandbox ended up under this agent's cache key, it is refused and never
     reached: the guard checks the environment's own identity, not where it was found."""
-    from agent.runtime_scope import bind_state
+    from hermes_agent.agent.runtime_scope import bind_state
     from hermes_agent.tools import terminal_tool
 
     with bind_state(B):
@@ -140,7 +140,7 @@ def test_another_agents_process_never_makes_a_prefix_ambiguous(provider):
     """Process ids resolve by unique prefix. Another agent's process sharing the prefix is invisible:
     it neither resolves nor turns this agent's own lookup into an ambiguous miss (which would reveal
     that it exists)."""
-    from agent.runtime_scope import bind_state
+    from hermes_agent.agent.runtime_scope import bind_state
     from hermes_agent.tools.process_registry import ProcessSession, process_registry
 
     own = ProcessSession(id="proc_abcdef000001", command="own", sandbox_key=sandbox_identity(B).key, exited=True)
@@ -174,7 +174,7 @@ def test_local_long_lived_process_dies_with_hermes_until_stopped(tmp_path, monke
 def test_every_hosted_operation_receives_the_bound_scope():
     """A backend whose operations take ``**kwargs`` still receives the scope; one that cannot take it
     at all is refused when its sandbox is created, never silently handed no authority."""
-    from agent.runtime_scope import bind_state
+    from hermes_agent.agent.runtime_scope import bind_state
     from hermes_agent.tools.environments.sandbox_scope import require_hosted_interface
 
     class KwargsBackend:
@@ -213,7 +213,7 @@ def test_a_hosted_provider_without_the_interface_is_refused_at_creation(provider
             raise AssertionError("an environment without the interface was used")
 
     monkeypatch.setattr(provider, "create_environment", lambda **kw: NoScope())
-    from agent.runtime_scope import bind_state
+    from hermes_agent.agent.runtime_scope import bind_state
     with bind_state(A):
         result = conformance.call_tool("terminal", {"command": "id"}, task_id="t")
     assert "hosted operation interface" in json.dumps(result)
@@ -309,7 +309,7 @@ def test_alive_tolerates_a_posix_host_without_proc_stat(monkeypatch):
 def test_a_tui_poller_leaves_another_agents_event_for_it():
     """The TUI notification poller under B, sharing A's session key, hands A's event back rather than
     rendering or consuming it."""
-    from agent.runtime_scope import bind_state
+    from hermes_agent.agent.runtime_scope import bind_state
     from hermes_agent.tools.process_registry import process_registry
     from hermes_agent.tui_gateway.session_notifications import _notif_handle_event
 
@@ -329,7 +329,7 @@ def test_a_hosted_process_is_never_checkpointed_and_a_recovered_one_stays_its_ag
     import json
     import os
     from unittest.mock import patch
-    from agent.runtime_scope import bind_state
+    from hermes_agent.agent.runtime_scope import bind_state
     from hermes_agent.tools.process_registry import ProcessRegistry, ProcessSession
 
     registry = ProcessRegistry()
@@ -362,7 +362,7 @@ def test_media_is_never_read_on_host_with_a_host_backend_configured(provider, mo
     video and image-generation sources resolve in the sandbox (which a host backend cannot provide,
     so they fail closed)."""
     import asyncio
-    from agent.runtime_scope import bind_state
+    from hermes_agent.agent.runtime_scope import bind_state
     from hermes_agent.tools.image_generation_tool import _confine_source_images
     from hermes_agent.tools.image_source import ImageResolutionError, ResolveContext, resolve_image_source
     from hermes_agent.tools.vision_tools import _materialize_video
@@ -387,7 +387,7 @@ def test_local_scopes_build_byte_identical_environments(monkeypatch):
     machinery switched off entirely, and the environment is the backend's own object (no guard)."""
     import types
     from contextlib import nullcontext
-    from agent.runtime_scope import bind_state
+    from hermes_agent.agent.runtime_scope import bind_state
     from hermes_agent.tools import terminal_tool_backends as backends
     from hermes_agent.tools.environments import local, sandbox_scope
 
@@ -422,7 +422,7 @@ def test_an_acquired_stream_is_refused_under_another_scope():
     """start_process / attach_process hand back proxies: once acquired, a stream's pipes and poll
     stay A's, whoever holds the object (round-2 finding 16)."""
     import io
-    from agent.runtime_scope import bind_state
+    from hermes_agent.agent.runtime_scope import bind_state
     from hermes_agent.tools.environments.sandbox_scope import ProcessRef, ProcessStream
 
     class Backend:
@@ -461,7 +461,7 @@ def _buffered_stream_env():
 def test_foreign_buffered_stream_raw_io_is_refused():
     """A standard BufferedReader's ``raw`` (or any nested I/O object / descriptor) is not reachable
     through the proxy, so nothing acquired under A can be read under B."""
-    from agent.runtime_scope import bind_state
+    from hermes_agent.agent.runtime_scope import bind_state
     env = _buffered_stream_env()
     with bind_state(A):
         stream = env.start_process("service", ["cat"])

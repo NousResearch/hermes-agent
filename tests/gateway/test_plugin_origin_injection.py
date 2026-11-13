@@ -37,7 +37,7 @@ class _RecordingAdapter(BasePlatformAdapter):
         self._mark_disconnected()
 
     async def send(self, chat_id, content, reply_to=None, metadata=None):
-        from agent.secret_scope import get_secret
+        from hermes_agent.agent.secret_scope import get_secret
         from hermes_constants import get_hermes_home
         self.sent.append((str(chat_id), content))
         self.send_scopes.append((get_hermes_home(), get_secret("PROBE_MARKER")))
@@ -98,7 +98,7 @@ def gateway(tmp_path, monkeypatch):
     turns = []
 
     async def _fake_turn(message, context_prompt, history, source, session_id, **_kwargs):
-        from agent.secret_scope import get_secret
+        from hermes_agent.agent.secret_scope import get_secret
         from hermes_constants import get_hermes_home
         turns.append(SimpleNamespace(message=message, history=list(history), session_id=session_id,
                                      home=get_hermes_home(), marker=get_secret("PROBE_MARKER")))

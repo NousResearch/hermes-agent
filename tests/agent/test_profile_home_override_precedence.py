@@ -56,7 +56,7 @@ def _agent_for(home: Path, **overrides):
 def test_bound_override_wins_over_shared_db_home(tmp_path, monkeypatch):
     """Multiplex lane: shared launch-home DB + per-turn ContextVar binding.
     The override must win, not the db-derived launch home."""
-    from agent import system_prompt
+    from hermes_agent.agent import system_prompt
 
     root = tmp_path / "root"
     root.mkdir()
@@ -78,7 +78,7 @@ def test_bound_override_wins_over_shared_db_home(tmp_path, monkeypatch):
 
 def test_db_home_wins_on_bare_thread_without_override(tmp_path, monkeypatch):
     """Original #86313 scenario: unbound thread, dedicated per-profile DB."""
-    from agent import system_prompt
+    from hermes_agent.agent import system_prompt
 
     root = tmp_path / "root"
     bot_home = root / "profiles" / "mybot"
@@ -102,8 +102,8 @@ def test_full_prompt_scoped_to_bot_on_bare_thread(tmp_path, monkeypatch):
     """Wiring test: SOUL.md identity, skills block, and profile line must ALL
     come from the bot's home when building on an unbound thread with the
     bot's session DB — no mixed-profile prompt."""
-    from agent import prompt_builder
-    from agent.system_prompt import build_system_prompt
+    from hermes_agent.agent import prompt_builder
+    from hermes_agent.agent.system_prompt import build_system_prompt
 
     default_home = tmp_path / "root"
     default_skills = default_home / "skills" / "general" / "leaky-skill"
@@ -133,7 +133,7 @@ def test_full_prompt_scoped_to_bot_on_bare_thread(tmp_path, monkeypatch):
 
     def build():
         with (
-            patch("agent.prompt_builder.build_environment_hints", return_value=""),
+            patch("hermes_agent.agent.prompt_builder.build_environment_hints", return_value=""),
         ):
             result["prompt"] = build_system_prompt(agent)
 
@@ -155,7 +155,7 @@ def test_full_prompt_scoped_to_bot_on_bare_thread(tmp_path, monkeypatch):
 def test_plugin_session_info_profile_from_agent_home(tmp_path, monkeypatch):
     """Plugin prompt metadata must carry the agent's own profile name, not the
     ambient one (@helix4u's plugin half)."""
-    from agent import system_prompt
+    from hermes_agent.agent import system_prompt
 
     root = tmp_path / "root"
     bot_home = root / "profiles" / "mybot"

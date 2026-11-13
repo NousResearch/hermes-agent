@@ -36,7 +36,7 @@ from hermes_cli.middleware import (
 
 
 def test_portable_data_namespace_is_ascii_safe():
-    from agent.skill_utils import is_valid_namespace
+    from hermes_agent.agent.skill_utils import is_valid_namespace
 
     namespace = _portable_data_namespace("café/portable")
 
@@ -1113,13 +1113,13 @@ class TestForceReloadSymmetry:
     @pytest.fixture(autouse=True)
     def _cleanup_shell_hook_registry(self):
         yield
-        import agent.shell_hooks as shell_hooks_mod
+        import hermes_agent.agent.shell_hooks as shell_hooks_mod
 
         shell_hooks_mod.reset_for_tests()
 
 
     def test_shell_hook_re_register_failure_does_not_abort_reload(self, monkeypatch):
-        import agent.shell_hooks as shell_hooks_mod
+        import hermes_agent.agent.shell_hooks as shell_hooks_mod
 
         def _boom():
             raise RuntimeError("config unreadable")
@@ -1650,7 +1650,7 @@ class TestForceReloadSymmetry:
         not duplicated, not dropped (#92682 review).
         """
         import hermes_cli.plugins as plugins_mod
-        import agent.shell_hooks as shell_hooks_mod
+        import hermes_agent.agent.shell_hooks as shell_hooks_mod
 
         cfg = {"hooks": {"on_session_start": [{"command": "/bin/true"}]}}
         monkeypatch.setenv("HERMES_ACCEPT_HOOKS", "1")

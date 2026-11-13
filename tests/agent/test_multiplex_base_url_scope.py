@@ -1,6 +1,6 @@
 """Multiplex invariant: a scoped API key is never paired with the DEFAULT profile's base URL / proxy.
 
-`agent/auxiliary_client.py` already scopes provider keys via ``_scoped_key_env``; the base URLs beside
+`hermes_agent/agent/auxiliary_client.py` already scopes provider keys via ``_scoped_key_env``; the base URLs beside
 them (OPENAI_BASE_URL, XAI_BASE_URL, NOUS_INFERENCE_BASE_URL) and the gateway proxy URL / browser
 provider endpoints must follow the same rule, or a secondary's key is sent to another profile's host.
 """
@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from agent import secret_scope
+from hermes_agent.agent import secret_scope
 
 
 @pytest.fixture
@@ -26,7 +26,7 @@ def secondary_scope(monkeypatch):
 
 
 def test_base_urls_follow_the_scoped_key_not_default_environ(monkeypatch, secondary_scope, tmp_path):
-    import agent.auxiliary_client as aux
+    import hermes_agent.agent.auxiliary_client as aux
     import plugins.browser.browserbase.provider as browserbase
     import plugins.browser.firecrawl.provider as firecrawl
     import plugins.video_gen.xai as xai_video

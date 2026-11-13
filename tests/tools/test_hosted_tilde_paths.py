@@ -291,7 +291,7 @@ def test_hosted_tilde_starts_the_sandbox_under_the_callers_task(provider, monkey
 
 def test_local_scope_tilde_still_expands_to_the_profile_home(monkeypatch, host_home):
     import contextlib
-    from agent.runtime_scope import bind_state
+    from hermes_agent.agent.runtime_scope import bind_state
     from hermes_constants import get_hermes_home
     from hermes_scope import Principal, Scope
     from hermes_agent.tools.file_tools_paths import _expand_tilde

@@ -42,7 +42,7 @@ def test_native_mode_builds_image_parts_for_every_source_kind(tmp_path):
     path = _png(tmp_path)
     url = "https://example.test/mock.png"
     data_url = "data:image/png;base64," + base64.b64encode(_PNG).decode()
-    with patch("agent.image_routing.decide_image_input_mode", return_value="native"):
+    with patch("hermes_agent.agent.image_routing.decide_image_input_mode", return_value="native"):
         msg = _build_child_goal_message("Inspect the mock", [path, url, data_url], _FakeChild())
     assert msg[0]["type"] == "text" and "Inspect the mock" in msg[0]["text"]
     images = [p["image_url"]["url"] for p in msg if p.get("type") == "image_url"]
@@ -50,19 +50,19 @@ def test_native_mode_builds_image_parts_for_every_source_kind(tmp_path):
     assert images.count(data_url) == 2  # local file embedded as a data URL + the inline data URL passed verbatim
     assert data_url not in msg[0]["text"]  # inline base64 never leaks into the text part
     # every source unreadable → plain goal, no empty multimodal envelope
-    with patch("agent.image_routing.decide_image_input_mode", return_value="native"):
+    with patch("hermes_agent.agent.image_routing.decide_image_input_mode", return_value="native"):
         assert _build_child_goal_message("Goal text", [str(tmp_path / "nope.png")], _FakeChild()) == "Goal text"
 
 
 def test_text_mode_hints_and_failure_degrade(tmp_path):
     path = _png(tmp_path)
     url = "https://example.test/a.png"
-    with patch("agent.image_routing.decide_image_input_mode", return_value="text"):
+    with patch("hermes_agent.agent.image_routing.decide_image_input_mode", return_value="text"):
         msg = _build_child_goal_message("Goal", [path, url, str(tmp_path / "gone.png")], _FakeChild())
     assert isinstance(msg, str)
     assert f"[Image attached at: {path}]" in msg and f"[Image attached: {url}]" in msg and "vision_analyze" in msg
     assert "gone.png" not in msg
-    with patch("agent.image_routing.decide_image_input_mode", side_effect=RuntimeError("boom")):
+    with patch("hermes_agent.agent.image_routing.decide_image_input_mode", side_effect=RuntimeError("boom")):
         assert _build_child_goal_message("Plain goal", ["/tmp/x.png"], _FakeChild()) == "Plain goal"
 
 
@@ -82,7 +82,7 @@ def test_child_run_sends_multimodal_goal_turn(tmp_path):
 
     run = _ChildRun(_Child(), _Parent(), 0, "Describe it", None, None)
     with patch("hermes_agent.tools.delegate_tool_child_run._create_isolated_worktree", return_value=None), \
-            patch("agent.image_routing.decide_image_input_mode", return_value="native"):
+            patch("hermes_agent.agent.image_routing.decide_image_input_mode", return_value="native"):
         run.seed_workspace()
         result, failure, _ = run.await_child()
     assert failure is None and result["final_response"] == "ok"

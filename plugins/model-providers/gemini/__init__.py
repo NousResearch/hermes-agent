@@ -35,7 +35,7 @@ class GeminiProfile(ProviderProfile):
     def build_extra_body(self, *, session_id: str | None = None, **context: Any) -> dict[str, Any]:
         """Native: ``thinking_config``; OpenAI-compat /openai subpath:
         ``extra_body.google.thinking_config`` (snake_case)."""
-        from agent.transports.chat_completions import (
+        from hermes_agent.agent.transports.chat_completions import (
             _build_gemini_thinking_config,
             _is_gemini_openai_compat_base_url,
             _snake_case_gemini_thinking_config,
@@ -49,8 +49,8 @@ class GeminiProfile(ProviderProfile):
         if self.name == "gemini" and _is_gemini_openai_compat_base_url(base_url):
             thinking_config = _snake_case_gemini_thinking_config(raw)
             return {"extra_body": {"google": {"thinking_config": thinking_config}}} if thinking_config else {}
-        from agent.gemini_long_decode import long_decode_max_output_tokens
-        from agent.gemini_native_adapter import is_native_gemini_base_url
+        from hermes_agent.agent.gemini_long_decode import long_decode_max_output_tokens
+        from hermes_agent.agent.gemini_native_adapter import is_native_gemini_base_url
 
         # Long decode exists only on native generateContent (not /openai, not proxies).
         budget = long_decode_max_output_tokens(context.get("model") or "", context.get("reasoning_config"))
@@ -59,7 +59,7 @@ class GeminiProfile(ProviderProfile):
     def create_client(self, **client_kwargs: Any) -> Any:
         """The plugin's client (Interactions or generateContent per model) on a native Gemini base; None on
         the OpenAI-compatible ``/openai`` surface and proxies, which keep the standard OpenAI client."""
-        from agent.gemini_native_adapter import is_native_gemini_base_url
+        from hermes_agent.agent.gemini_native_adapter import is_native_gemini_base_url
 
         base_url = str(client_kwargs.get("base_url") or self.base_url or "")
         if not is_native_gemini_base_url(base_url):
@@ -77,8 +77,8 @@ def _keepalive_http_client(base_url: str) -> Any:
     """The keepalive client (and the provider's ``ssl_ca_cert`` / ``ssl_verify``) the core gives a native
     Gemini client; the profile hook receives the client kwargs after the core has consumed the TLS keys."""
     try:
-        from agent.process_bootstrap import build_keepalive_http_client
-        from agent.ssl_verify import resolve_httpx_verify
+        from hermes_agent.agent.process_bootstrap import build_keepalive_http_client
+        from hermes_agent.agent.ssl_verify import resolve_httpx_verify
         from hermes_cli.config_providers import get_custom_provider_tls_settings
 
         tls = get_custom_provider_tls_settings(base_url)

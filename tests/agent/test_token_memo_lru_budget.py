@@ -2,8 +2,8 @@
 its hits however many dead sessions or large bodies stream past it, even when it alone is larger than the
 budget, and idle bodies stop counting forever."""
 
-import agent.model_metadata as mm
-import agent.model_metadata_token_memo as memo
+import hermes_agent.agent.model_metadata as mm
+import hermes_agent.agent.model_metadata_token_memo as memo
 
 
 def _history(tag: str, n: int, size: int = 200) -> list[dict]:

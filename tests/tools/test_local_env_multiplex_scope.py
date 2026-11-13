@@ -16,8 +16,8 @@ _PROVIDER_KEY = "OPENAI_" + "API_KEY"
 
 
 def _multiplex(monkeypatch, scope):
-    monkeypatch.setattr("agent.secret_scope.is_multiplex_active", lambda: True)
-    monkeypatch.setattr("agent.secret_scope.current_secret_scope", lambda: scope)
+    monkeypatch.setattr("hermes_agent.agent.secret_scope.is_multiplex_active", lambda: True)
+    monkeypatch.setattr("hermes_agent.agent.secret_scope.current_secret_scope", lambda: scope)
 
 
 def test_served_profile_commands_see_their_own_scope(monkeypatch):
@@ -28,8 +28,8 @@ def test_served_profile_commands_see_their_own_scope(monkeypatch):
 
 
 def test_single_profile_keeps_the_process_env(monkeypatch):
-    monkeypatch.setattr("agent.secret_scope.is_multiplex_active", lambda: False)
-    monkeypatch.setattr("agent.secret_scope.current_secret_scope", lambda: {"MYAPP_AGENT_ID": "from-p2"})
+    monkeypatch.setattr("hermes_agent.agent.secret_scope.is_multiplex_active", lambda: False)
+    monkeypatch.setattr("hermes_agent.agent.secret_scope.current_secret_scope", lambda: {"MYAPP_AGENT_ID": "from-p2"})
     monkeypatch.setenv("MYAPP_AGENT_ID", "from-p1")
     env = _make_run_env({})
     assert env["MYAPP_AGENT_ID"] == "from-p1"

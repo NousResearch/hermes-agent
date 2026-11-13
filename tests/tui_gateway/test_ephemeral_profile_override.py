@@ -77,7 +77,7 @@ def override_calls():
         patch("hermes_agent.tui_gateway.server._clear_session_context"), \
         patch("hermes_agent.tui_gateway.server._session_cwd", return_value="/tmp"), \
         patch("hermes_agent.tui_gateway.server._emit"), \
-        patch("run_agent.AIAgent", return_value=agent_instance) as m_agent:
+        patch("hermes_agent.run_agent.AIAgent", return_value=agent_instance) as m_agent:
         yield {
             "homes": homes,
             "agent_cls": m_agent,

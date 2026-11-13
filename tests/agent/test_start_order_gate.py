@@ -27,7 +27,7 @@ def _make_agent(monkeypatch):
     """Minimal AIAgent-like stub, mirroring test_concurrent_interrupt.py."""
     monkeypatch.setenv("OPENROUTER_API_KEY", "")
     monkeypatch.setenv("HERMES_INFERENCE_PROVIDER", "")
-    import run_agent as _ra
+    import hermes_agent.run_agent as _ra
 
     class _Stub:
         _interrupt_requested = False
@@ -136,7 +136,7 @@ def test_wedged_dispatch_does_not_starve_later_tools(monkeypatch):
     Before the gate was bounded, tool_b/tool_c never started and were falsely
     reported as "timed out" despite doing zero work.
     """
-    import agent.tool_executor as te
+    import hermes_agent.agent.tool_executor as te
 
     agent = _make_agent(monkeypatch)
     monkeypatch.setattr(te, "_START_ORDER_GATE_TIMEOUT_S", 0.3)
@@ -176,7 +176,7 @@ def test_gate_timeout_stays_under_the_batch_deadline(monkeypatch):
     expires only after the deadline already blamed the parked tools — the exact
     bug the bound exists to fix.
     """
-    import agent.tool_executor as te
+    import hermes_agent.agent.tool_executor as te
 
     agent = _make_agent(monkeypatch)
     monkeypatch.setattr(te, "_resolve_concurrent_tool_timeout", lambda: 2.0)
@@ -207,7 +207,7 @@ def test_abandoned_batch_does_not_dispatch_late(monkeypatch):
     dispatches the tool anyway — wasted work plus a duplicate post_tool_call
     for a tool_call_id the turn already closed.
     """
-    import agent.tool_executor as te
+    import hermes_agent.agent.tool_executor as te
 
     agent = _make_agent(monkeypatch)
     # Long gate: only the abandonment signal can release the parked workers.

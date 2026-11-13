@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from hermes_agent.tui_gateway import server
-from agent.onboarding import PROFILE_BUILD_FLAG
+from hermes_agent.agent.onboarding import PROFILE_BUILD_FLAG
 from hermes_cli import profiles
 from hermes_cli.config import read_user_config_raw
 from tests.hermes_cli.anon_portal import as_local_desktop_backend

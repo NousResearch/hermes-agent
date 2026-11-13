@@ -115,7 +115,7 @@ class TestDumpSubagentTimeoutDiagnostic:
     def test_timeout_diagnostic_marks_long_goal_as_non_original(self, hermes_home):
         # #121572: an elided goal must carry the non-imitable counted marker,
         # never the bare "...[truncated]" the model could copy.
-        from agent.compression_marker import _COMPRESSION_MARKER_RE
+        from hermes_agent.agent.compression_marker import _COMPRESSION_MARKER_RE
         from hermes_agent.tools.delegate_tool import _dump_subagent_timeout_diagnostic
         child = _StubChild()
         path = _dump_subagent_timeout_diagnostic(

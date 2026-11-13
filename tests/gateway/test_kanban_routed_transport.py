@@ -167,7 +167,7 @@ def test_route_denials_leave_events_retryable_at_claim_and_send(tmp_path, monkey
 
 
 def test_kanban_wakes_install_the_destination_runtime_scope(tmp_path, monkeypatch):
-    from agent.secret_scope import get_secret
+    from hermes_agent.agent.secret_scope import get_secret
     from hermes_agent.gateway.run import _profile_runtime_scope
     from hermes_constants import get_hermes_home
 

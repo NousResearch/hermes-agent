@@ -146,7 +146,7 @@ class TestCommandTtsEnv:
     def test_env_passthrough_forwards_the_served_profiles_value(self, monkeypatch):
         """Under the multiplexer os.environ holds the launch profile's .env; a served profile's
         command provider must get its own declared key, never the launch profile's."""
-        from agent import secret_scope as ss
+        from hermes_agent.agent import secret_scope as ss
 
         monkeypatch.setenv("MY_TTS_TOKEN", "tok-launch")
         command = _shell_command(sys.executable, "-c", "import os; print(os.environ.get('MY_TTS_TOKEN'))")

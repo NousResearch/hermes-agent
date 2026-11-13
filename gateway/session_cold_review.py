@@ -12,6 +12,8 @@ import concurrent.futures
 import contextlib
 import logging
 
+from agent.pareto_router import min_coding_score
+
 logger = logging.getLogger(__name__)
 
 
@@ -81,7 +83,7 @@ def cold_review_parent(runner, source, session_key, session_id):
             service_tier=tier, request_overrides=route.get("request_overrides"),
             providers_allowed=pr.get("only"), providers_ignored=pr.get("ignore"), providers_order=pr.get("order"),
             provider_sort=pr.get("sort"), provider_require_parameters=pr.get("require_parameters", False),
-            provider_data_collection=pr.get("data_collection"),
+            provider_data_collection=pr.get("data_collection"), openrouter_min_coding_score=min_coding_score(user_config),
             session_id=session_id, platform=platform_key, gateway_session_key=session_key,
             session_db=getattr(runner._session_db, "_db", runner._session_db),
             # The session's backup providers, as its next turn would carry them: the reviewer inherits the chain.

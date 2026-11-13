@@ -854,6 +854,9 @@ def _same_model_parity_kwargs(agent: Any) -> dict[str, Any]:
         "reasoning_config": getattr(agent, "reasoning_config", None),
         "ephemeral_system_prompt": getattr(agent, "ephemeral_system_prompt", None),
         **{attr: val for attr in _PROVIDER_PIN_ATTRS if (val := getattr(agent, attr, None))},
+        # Pareto Code floor: 0.0 is a real (cheapest) floor, so only None is dropped.
+        **({} if (score := getattr(agent, "openrouter_min_coding_score", None)) is None
+           else {"openrouter_min_coding_score": score}),
     }
     # Prefill sits right after the system message, so a parent with prefill would diverge at
     # index 1. Deep copy: unicode-error recovery sanitizes prefill entries IN PLACE and must not

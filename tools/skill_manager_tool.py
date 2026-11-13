@@ -64,8 +64,22 @@ def _scan_required() -> bool:
     return _guard_agent_created_enabled() or _background_origin()
 
 
-def _finding_key(f) -> tuple[str, str, str]:
-    return (f.file, f.pattern_id, f.match)  # not the line: an edit above a finding moves it
+def _finding_keys(skill_dir: Path, findings) -> list[tuple[str, str, str]]:
+    """(file, pattern_id, sha256 of the full source line) per finding. Not the line number (an edit
+    above a finding moves it) and not ``f.match``, which the scanner truncates on long lines, so a
+    kept prefix with a new tail would match. Findings without a source line key on their match."""
+    lines: dict[str, list[bytes]] = {}
+    keys = []
+    for f in findings:
+        if f.line > 0 and f.file not in lines:
+            try:
+                lines[f.file] = re.split(rb"\r\n|\r|\n", (skill_dir / f.file).read_bytes())
+            except OSError:
+                lines[f.file] = []
+        src = lines.get(f.file, [])
+        text = src[f.line - 1].strip() if 0 < f.line <= len(src) else f.match.encode("utf-8", "replace")
+        keys.append((f.file, f.pattern_id, hashlib.sha256(text).hexdigest()))
+    return keys
 
 
 def _scan_baseline(skill_dir: Path) -> tuple[Optional[Counter], Optional[str]]:
@@ -74,18 +88,18 @@ def _scan_baseline(skill_dir: Path) -> tuple[Optional[Counter], Optional[str]]:
     if not _background_origin():
         return None, None
     try:
-        return Counter(_finding_key(f) for f in scan_skill(skill_dir, source="agent-created").findings), None
+        return Counter(_finding_keys(skill_dir, scan_skill(skill_dir, source="agent-created").findings)), None
     except Exception as e:  # a required scan that cannot finish must not allow the write
         logger.warning("Security scan failed for %s: %s", skill_dir, e, exc_info=True)
         return None, f"Security scan could not complete, so this skill was blocked: {e}"
 
 
-def _introduced_findings(result, baseline: Counter):
+def _introduced_findings(skill_dir: Path, result, baseline: Counter):
     remaining = Counter(baseline)
     new = []
-    for f in result.findings:
-        if remaining[_finding_key(f)] > 0:
-            remaining[_finding_key(f)] -= 1
+    for f, key in zip(result.findings, _finding_keys(skill_dir, result.findings)):
+        if remaining[key] > 0:
+            remaining[key] -= 1
         else:
             new.append(f)
     return replace(result, findings=new, verdict=_determine_verdict(new))
@@ -100,7 +114,7 @@ def _security_scan_skill(skill_dir: Path, baseline: Optional[Counter] = None) ->
     try:
         result = scan_skill(skill_dir, source="agent-created")
         if baseline is not None:
-            result = _introduced_findings(result, baseline)
+            result = _introduced_findings(skill_dir, result, baseline)
         allowed, reason = should_allow_install(result)
         if allowed is None:
             logger.warning("Agent-created skill blocked (dangerous findings): %s", reason)

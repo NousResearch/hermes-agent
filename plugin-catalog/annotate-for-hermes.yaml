@@ -1,0 +1,27 @@
+name: annotate-for-hermes
+repo: https://github.com/LarryLemonBot/annotate-for-hermes
+sha: 0ad110f202fb1dc1bb89850f200683251d0e5a3e
+title: "Annotate for Hermes"
+description: >-
+  Highlight passages in a reply, add comments, and send them together.
+  The annotate feature Hermes is missing. Works on macOS now; Windows
+  and Linux are next.
+maintainer: LarryLemonBot
+tier: community
+category: desktop
+version: "1.0.0"
+requires_hermes: ">=0.22.5"
+docs_url: https://github.com/LarryLemonBot/annotate-for-hermes#readme
+platforms: [macos]
+image: https://raw.githubusercontent.com/LarryLemonBot/annotate-for-hermes/0ad110f202fb1dc1bb89850f200683251d0e5a3e/docs/catalog-banner.png
+screenshots:
+  - https://raw.githubusercontent.com/LarryLemonBot/annotate-for-hermes/0ad110f202fb1dc1bb89850f200683251d0e5a3e/docs/annotation-preview.png
+known_issues:
+  - "Development preview: needs the annotation API from PR #146959. Stock Hermes through v0.23.0 does not include it. Do not merge until that API ships and compatibility is updated."
+  - "Works on macOS now. Windows and Linux are next. Screen readers, touch, and the official updater path are unverified."
+  - "Unsaved popover comments and highlights do not survive an app reload. Draft attachments do."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

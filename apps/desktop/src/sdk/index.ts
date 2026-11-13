@@ -1987,7 +1987,6 @@ export { useStore as useValue } from '@nanostores/react'
  *  the app root, so their queries cache, dedupe, poll (`refetchInterval`), and
  *  invalidate exactly like core screens — no hand-rolled atoms or polls. */
 export { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-/** An agent's mark where it is shown: the redesign's coloured tile, else the `fallback` you pass. */
 export { AgentMark } from '@/components/ui/agent-mark'
 /** Deterministic soft-body avatars from any string (name → face). String
  *  renderer for rasterization; React component for live rendering. */

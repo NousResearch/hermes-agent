@@ -2257,8 +2257,23 @@ class FeishuAdapter(FeishuChoiceCardsMixin, FeishuSyntheticEventsMixin, BasePlat
             return "*" in allowed_ids or bool(operator_ids & allowed_ids)
         # SessionSource.user_id is the tenant user_id, else open_id (_resolve_sender_profile).
         principal = str(user_id or "").strip() or normalized
-        # Feishu chat ids don't say DM vs group; "group" is the check's own default.
-        verdict = self._is_sender_authorized(principal, "group", str(chat_id or "") or None)
+        # Feishu chat ids don't say DM vs group; "group" is the check's own default. Resolve the
+        # real type from the chat-info cache the message lane warms (a card only exists because a
+        # message reached that chat), so a DM click follows DM admission instead of the group
+        # allowlist; cache misses stay "group" (fail-closed).
+        chat_type = self._cached_chat_type(chat_id)
+        chat_ref = str(chat_id or "") or None
+        # One human, three id forms (open_id/user_id/union_id): pairing records one form while the
+        # event may present another (card operators carry the tenant user_id; pairing recorded the
+        # open_id). Try each, primary first — the same any-form identity the allowlist branch
+        # applies above.
+        verdict = None
+        for candidate in dict.fromkeys(
+            x for x in (principal, str(union_id or "").strip(), str(open_id or "").strip()) if x
+        ):
+            verdict = self._is_sender_authorized(candidate, chat_type, chat_ref)
+            if verdict:
+                return True
         if verdict is None:
             logger.debug("[Feishu] No gateway authorization check for card operator %s; denying", normalized)
             return False
@@ -3193,6 +3208,12 @@ class FeishuAdapter(FeishuChoiceCardsMixin, FeishuSyntheticEventsMixin, BasePlat
         if resolved in {"group", "forum"}:
             return resolved
         return "dm" if event_chat_type == "p2p" else "group"
+
+    def _cached_chat_type(self, chat_id: str) -> str:
+        """dm/group/forum for a card click, from the sync chat-info cache; "group" when unknown."""
+        info = self._chat_info_cache.get(str(chat_id or "").strip()) or {}
+        resolved = str(info.get("type") or "").strip().lower()
+        return resolved if resolved in {"dm", "group", "forum"} else "group"
 
     async def _resolve_sender_profile(self, sender_id: Any, *, is_bot: bool = False) -> dict[str, Optional[str]]:
         """Map Feishu's ID tiers onto SessionSource: user_id (tenant) > open_id (app) as primary,

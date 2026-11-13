@@ -763,6 +763,7 @@
   "install.pasteSessionToken": ["ar"],
   "install.probeError": ["ar"],
   "install.probeErrorDetails": ["ar","ja","ru","zh","zh-hant"],
+  "install.probeTlsError": ["ar"],
   "install.probing": ["ar"],
   "install.remoteSetupDesc": ["ar"],
   "install.remoteSetupTitle": ["ar"],

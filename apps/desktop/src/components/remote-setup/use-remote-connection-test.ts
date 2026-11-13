@@ -93,7 +93,7 @@ export function useRemoteConnectionTest(options: RemoteConnectionTestOptions): R
           acceptProbe(result)
 
           if (!result.reachable || result.authMode === 'unknown') {
-            reportError(result.error || g.probeError)
+            reportError(result.errorKind === 'tls' ? g.probeTlsError : result.error || g.probeError)
           }
         }
 

@@ -37,6 +37,20 @@ interface RemoteSetupFieldsProps {
   onUrlChange?: () => void
 }
 
+interface ProbeErrorProps {
+  kind: RemoteSetup['probeErrorKind']
+  copy: { probeTlsError: string; probeError: string }
+}
+
+function ProbeError({ kind, copy }: ProbeErrorProps): ReactElement {
+  return (
+    <div className="flex items-center gap-2 text-sm text-destructive">
+      <AlertCircle className="size-4 shrink-0" />
+      {kind === 'tls' ? copy.probeTlsError : copy.probeError}
+    </div>
+  )
+}
+
 export function RemoteSetupFields({
   setup,
   disabled = false,
@@ -86,10 +100,7 @@ export function RemoteSetupFields({
         </div>
       ) : null}
       {!registry && setup.probeStatus === 'error' ? (
-        <div className="flex items-center gap-2 text-sm text-destructive">
-          <AlertCircle className="size-4" />
-          {copy.probeError}
-        </div>
+        <ProbeError copy={copy} kind={setup.probeErrorKind} />
       ) : null}
       {registry && !urlOnly ? (
         <Field stacked={false} title={g.authTitle}>

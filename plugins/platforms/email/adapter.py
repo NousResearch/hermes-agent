@@ -70,6 +70,8 @@ _PREAUTH_FETCH = (
     f"(BODY.PEEK[HEADER.FIELDS (FROM AUTHENTICATION-RESULTS {' '.join(h.upper() for h in _AUTOMATED_HEADERS)})]"
     f"<0.{_MAX_PREAUTH_HEADER_BYTES + 1}>)"
 )
+# The UID a FETCH reply names (RFC 3501 requires it in UID FETCH replies; unsolicited ones may omit it).
+_FETCH_UID_RE = re.compile(rb"\bUID (\d+)\b", re.IGNORECASE)
 # Authentication-Results clause head (``dmarc=pass``), matched only at the start of a clause.
 _AUTH_METHOD_RE = re.compile(r"\s*(dmarc|dkim|spf)\s*=\s*([a-z]+)", re.IGNORECASE)
 _NO_AUTH_RESULTS_REASON = "no Authentication-Results header"
@@ -209,13 +211,24 @@ def _is_automated_sender(address: str, headers: dict) -> bool:
         (value := headers.get(header, "")) and check(value) for header, check in _AUTOMATED_HEADERS.items())
 
 
-def _imap_payload(data: Any) -> Optional[bytes]:
-    """The bytes of a one-message IMAP FETCH response, or ``None`` for an unexpected shape (see #80032)."""
-    try:
-        payload = data[0][1]
-    except (IndexError, TypeError):
-        return None
-    return bytes(payload) if isinstance(payload, (bytes, bytearray)) else None
+def _imap_payload(data: Any, uid: Any) -> Optional[bytes]:
+    """The literal *uid*'s reply carries in an IMAP FETCH response, or ``None`` if there is none (see #80032).
+
+    ``data[0]`` is not necessarily ours: imaplib also returns the unsolicited FETCH replies it buffered earlier
+    (another client's flag change, another message), so they can come first. A literal whose reply names no UID
+    is used only when none names *uid*.
+    """
+    want = uid if isinstance(uid, bytes) else str(uid).encode()
+    fallback = None
+    for item in data if isinstance(data, (list, tuple)) else ():
+        if not (isinstance(item, tuple) and len(item) == 2 and isinstance(item[1], (bytes, bytearray))):
+            continue
+        named = _FETCH_UID_RE.search(item[0]) if isinstance(item[0], (bytes, bytearray)) else None
+        if named is None:
+            fallback = bytes(item[1]) if fallback is None else fallback
+        elif named.group(1) == want:
+            return bytes(item[1])
+    return fallback
 
 
 def check_email_requirements() -> bool:
@@ -687,7 +700,7 @@ class EmailAdapter(BasePlatformAdapter):
                     header_status, header_data = imap.uid("fetch", uid, _PREAUTH_FETCH)
                     if header_status != "OK":
                         continue
-                    raw_headers = _imap_payload(header_data)
+                    raw_headers = _imap_payload(header_data, uid)
                     if raw_headers is None or len(raw_headers) > _MAX_PREAUTH_HEADER_BYTES:
                         logger.warning("[Email] Unusable pre-authorization headers for UID %s, skipping", uid)
                         self._mark_uid_consumed(imap, uid)
@@ -708,7 +721,7 @@ class EmailAdapter(BasePlatformAdapter):
                     # but NOT before the fetch: a connection failure must leave the rest of the batch eligible for the next poll.
                     self._seen_uids.add(uid)
                     self._trim_seen_uids()
-                    if (raw_email := _imap_payload(msg_data)) is None:
+                    if (raw_email := _imap_payload(msg_data, uid)) is None:
                         logger.warning("[Email] Unexpected IMAP response structure for UID %s, skipping", uid)
                         continue
                     # One poison message (unparseable headers, pathological attachment, DNS hiccup) must not abort the batch or force a reconnect.

@@ -92,6 +92,15 @@ for command in (
 ''')
 
 
+def test_sequential_substitutions_with_a_single_quoted_double_quote_are_not_hardline():
+    # `'"'` is literal inside `$( )`, so each substitution closes; counting the `"` as an open
+    # double quote stacked every later `$(` and hardline-blocked ordinary scripts.
+    from tools.approval_detection import detect_hardline_command
+
+    for line in ("x=$(tr -d '\"' < f)", "v=$(jq '.name' d.json | sed 's/\\\"//g')"):
+        assert detect_hardline_command("\n".join([line] * 40)) == (False, None), line
+
+
 def test_shallow_and_sequential_substitutions_are_still_scanned():
     from tools.approval_detection import detect_dangerous_command
 

@@ -973,12 +973,9 @@ def _command_parser_limit_exceeded(command: str) -> bool:
 
 
 def _max_substitution_depth(command: str) -> int:
-    """Deepest `$(` nesting, in linear passes. Taking the max of a quote-blind count and quote-aware
-    ones (each `$(` opens a fresh quote context, as in the shell) only over-counts, which fails
-    closed: a quoted `)` cannot close a level, and single-quoted text that a `-c` payload later
-    runs is counted too. Sequential substitutions stay flat, so ordinary automation is unaffected."""
-    return max(_quote_blind_substitution_depth(command), _quoted_substitution_depth(command, True),
-               _quoted_substitution_depth(command, False))
+    """Deepest open `$(` nesting: the max of a quote-blind count and a shell-quoted one, so hidden
+    nesting fails closed while sequential substitutions stay flat."""
+    return max(_quote_blind_substitution_depth(command), _quoted_substitution_depth(command))
 
 
 def _quote_blind_substitution_depth(command: str) -> int:
@@ -992,13 +989,19 @@ def _quote_blind_substitution_depth(command: str) -> int:
     return deepest
 
 
-def _quoted_substitution_depth(command: str, honor_single_quotes: bool) -> int:
+def _quoted_substitution_depth(command: str) -> int:
+    # Quotes nest per `$(` level, as in the shell, so a quoted `)` closes nothing. A single-quoted region
+    # is literal here but is also measured as its own script (a `-c` payload runs it) on top of the
+    # current depth; its quote state never leaks out, so `$(tr -d '"' < f)` closes where the shell does.
     frames = [[None, 0]]  # per open `$(`: [quote state, unquoted `(` count]
     deepest, i, n = 0, 0, len(command)
     while i < n:
         char, frame = command[i], frames[-1]
-        if frame[0] == "'":
-            frame[0] = None if char == "'" else "'"
+        if char == "'" and frame[0] is None:
+            end = command.find("'", i + 1)
+            end = n if end < 0 else end
+            deepest = max(deepest, len(frames) - 1 + _quoted_substitution_depth(command[i + 1:end]))
+            i = end
         elif char == "\\":
             i += 1
         elif char == "$" and command.startswith("(", i + 1):
@@ -1007,7 +1010,7 @@ def _quoted_substitution_depth(command: str, honor_single_quotes: bool) -> int:
             i += 1
         elif frame[0] == '"':
             frame[0] = None if char == '"' else '"'
-        elif char == '"' or (char == "'" and honor_single_quotes):
+        elif char == '"':
             frame[0] = char
         elif char == "(":
             frame[1] += 1

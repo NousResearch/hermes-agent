@@ -63,7 +63,7 @@ class ComputeHost:
     _FRAME_HANDLERS: dict[str, str] = {
         "turn.start": "_handle_turn_start", "interrupt": "_handle_interrupt",
         "respond": "_handle_respond", "reload_mcp": "_handle_reload_mcp",
-        "control": "_handle_control", "shutdown": "_handle_shutdown"}
+        "control": "_handle_control", "terminal.file": "_handle_terminal_file", "shutdown": "_handle_shutdown"}
 
     def __init__(
         self, *, stdout: Any = None, max_workers: int | None = None,
@@ -73,6 +73,9 @@ class ComputeHost:
         self._executor = concurrent.futures.ThreadPoolExecutor(
             max_workers=max_workers or _default_workers(), thread_name_prefix="compute-host-turn")
         self._closed = threading.Event()
+        self._file_slots = threading.BoundedSemaphore(4)
+        self._file_executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=4, thread_name_prefix="compute-host-file")
         self._parent_pid = os.getppid()
         self._boot_id = uuid.uuid4().hex
         self._progress_counter = 0
@@ -102,6 +105,7 @@ class ComputeHost:
 
     def close(self) -> None:
         self._closed.set()
+        self._file_executor.shutdown(wait=False, cancel_futures=True)
         self._executor.shutdown(wait=False, cancel_futures=True)
         # Every caller hard-exits next (os._exit skips atexit): a foreground command still
         # running in its own process group would outlive the host.
@@ -191,6 +195,34 @@ class ComputeHost:
             if on_error is not None:
                 on_error(sid)
             self._reply(error_kind, sid, request_id, **error_extra, message=str(exc))
+
+    def _handle_terminal_file(self, frame: dict[str, Any]) -> None:
+        if self._closed.is_set() or not self._file_slots.acquire(blocking=False):
+            self._reply("terminal.file.error", str(frame.get("sid") or ""), frame.get("request_id"),
+                        code="ECONN", message="Terminal environment is unavailable")
+            return
+        try:
+            future = self._file_executor.submit(self._run_terminal_file, dict(frame))
+        except RuntimeError:
+            self._file_slots.release()
+            self._reply("terminal.file.error", str(frame.get("sid") or ""), frame.get("request_id"),
+                        code="ECONN", message="Terminal environment is unavailable")
+            return
+        # Also runs for queued futures cancelled by close(), which never enter the worker.
+        future.add_done_callback(lambda _future: self._file_slots.release())
+
+    def _run_terminal_file(self, frame: dict[str, Any]) -> None:
+        sid, request_id = str(frame.get("sid") or ""), frame.get("request_id")
+        try:
+            from tui_gateway import server
+            from tui_gateway.terminal_files import handle_file_request
+            result = handle_file_request(server, frame)
+            self._reply("terminal.file.ack", sid, request_id, result=result)
+        except (Exception, ConfigBackendUnavailable) as exc:
+            logging.getLogger(__name__).debug("terminal file request failed sid=%s", sid, exc_info=True)
+            self._reply("terminal.file.error", sid, request_id, code=getattr(exc, "code", "ECONN"),
+                        message=str(exc))
+
 
     def _handle_interrupt(self, frame: dict[str, Any]) -> None:
         def body(server: Any, sid: str, request_id: Any) -> None:

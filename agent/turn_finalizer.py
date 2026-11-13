@@ -543,12 +543,6 @@ def apply_llm_output_transform(
                         if isinstance(r, str) and r), None)
     if rewrite:
         pre_transform, final_response, transformed = final_response, rewrite, True
-    from agent.terminal_artifacts import materialize_terminal_media
-    materialized = materialize_terminal_media(final_response, getattr(agent, "_current_task_id", None))
-    if materialized != final_response:
-        if pre_transform is None:
-            pre_transform = final_response
-        final_response, transformed = materialized, True
     agent._llm_output_transform = (turn_id, transformed, pre_transform)
     return final_response, transformed, pre_transform
 
@@ -730,6 +724,10 @@ def finalize_turn(
         lambda: agent._save_trajectory(messages, _summarize_user_message_for_log(user_message), completed),
         _cleanup_errors, logger,
     )
+    _guarded_cleanup(
+        "cleanup_task_resources", lambda: agent._cleanup_task_resources(effective_task_id),
+        _cleanup_errors, logger,
+    )
     # Persist only after the transcript tail is shaped and scaffolding removed. Each
     # sub-step runs in the same order as the original inline block, and the
     # stream-recovered ``final_response`` is rebound the moment it is computed — BEFORE
@@ -755,11 +753,6 @@ def finalize_turn(
         agent._persist_session(messages, conversation_history)
 
     _guarded_cleanup("persist_session", _persist_step, _cleanup_errors, logger)
-    # Recovery-only replies also export their attachments before the producing sandbox disappears.
-    _guarded_cleanup(
-        "cleanup_task_resources", lambda: agent._cleanup_task_resources(effective_task_id),
-        _cleanup_errors, logger,
-    )
 
     # Keep the gateway's separate in-memory history snapshot current even on
     # cleanup error, so a later prompt isn't sent with a pre-turn snapshot.

@@ -272,9 +272,12 @@ export function localPreviewTarget(rawTarget: string, cwd?: string | null): Prev
   }
 }
 
-async function enrichPreviewTarget(target: PreviewTarget | null, scope?: DesktopFsSessionScope): Promise<PreviewTarget | null> {
+async function enrichPreviewTarget(
+  target: PreviewTarget | null,
+  scope?: DesktopFsSessionScope
+): Promise<PreviewTarget | null> {
   if (
-    !isDesktopFsRemoteMode() ||
+    (!isDesktopFsRemoteMode() && !scope?.backendOwned) ||
     !target ||
     target.kind !== 'file' ||
     target.previewKind === 'image' ||
@@ -314,6 +317,14 @@ export async function normalizeOrLocalPreviewTarget(
   cwd?: string | null,
   scope?: DesktopFsSessionScope
 ): Promise<PreviewTarget | null> {
+  if (scope?.backendOwned && !/^https?:/i.test(rawTarget)) {
+    // Home-relative paths belong to the gateway's home, not the transcript cwd.
+    const backendCwd = /^`?~[\\/\\\\]/.test(rawTarget.trim()) ? undefined : cwd
+    const target = await enrichPreviewTarget(localPreviewTarget(rawTarget, backendCwd), scope)
+
+    return target ? { ...target, fileScope: scope } : null
+  }
+
   try {
     const normalized = await window.hermesDesktop?.normalizePreviewTarget?.(rawTarget, cwd || undefined)
 

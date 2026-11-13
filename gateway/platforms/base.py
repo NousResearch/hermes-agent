@@ -1251,19 +1251,21 @@ MEDIA_EXTENSIONLESS_TAG_RE = re.compile(
     re.IGNORECASE)
 
 
-def _match_extensionless_path(scan_text: str, match: re.Match, *, validate=None) -> Optional[tuple[str, int]]:
+def _match_extensionless_path(scan_text: str, match: re.Match) -> Optional[tuple[str, int]]:
     """Extensionless MEDIA tag match -> validated on-disk ``(safe_path, end_offset)`` or None: the
     captured path first, then extended across single spaces (max 8 tokens, never past a newline
     or the next ``MEDIA:``).
 
-    A caller may bind validation to the producing backend instead of the host. Return the validated
-    path and scan end offset; never extend past a newline or the next ``MEDIA:`` (#24032).
+    When that fails validation, the candidate is progressively extended forward across single spaces
+    (validation-gated, bounded at 8 tokens, never past a newline or a subsequent ``MEDIA:`` keyword) so
+    unknown-extension paths containing spaces deliver (#24032). Returns ``(safe_path, end_offset)`` where
+    ``end_offset`` is the index in ``scan_text`` just past the matched path, or ``None`` when nothing
+    validates.
     """
-    validate = validate or validate_media_delivery_path
     path = _normalize_media_tag_path(match.group("path"))
     if not path:
         return None
-    safe = validate(path)
+    safe = validate_media_delivery_path(path)
     if safe:
         return safe, match.end("path")
     start = match.start("path")
@@ -1277,7 +1279,7 @@ def _match_extensionless_path(scan_text: str, match: re.Match, *, validate=None)
         if not token:
             break
         tok_end = pos + token.end()
-        safe = validate(_normalize_media_tag_path(segment[:tok_end]))
+        safe = validate_media_delivery_path(_normalize_media_tag_path(segment[:tok_end]))
         if safe:
             return safe, start + tok_end
         pos = tok_end

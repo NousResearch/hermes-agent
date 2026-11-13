@@ -1185,7 +1185,8 @@ class DockerEnvironment(BaseEnvironment):
         docker prune, OOM, daemon restart) recreate it and retry once."""
         result = super().execute(command, cwd, **kwargs)
         if (
-            result.get("returncode", 0) != 0
+            not kwargs.get("read_only", False)
+            and result.get("returncode", 0) != 0
             and self._is_container_gone(result.get("output", ""))
             and self._persist_across_processes
             and self._recreate_container()):

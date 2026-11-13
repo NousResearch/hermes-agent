@@ -27,6 +27,7 @@ import {
   desktopFileDiff,
   DesktopFileMissingError,
   desktopFsCacheKey,
+  type DesktopFsSessionScope,
   desktopGitRoot,
   isReadFileErrorResult,
   readDesktopFileDataUrl,
@@ -282,9 +283,23 @@ function dataUrlToBlob(dataUrl: string) {
   return new Blob([bytes], { type: 'application/pdf' })
 }
 
-async function readTextPreview(filePath: string, sessionId?: string) {
+async function readPreviewGitDiff(filePath: string, backendOwned: boolean): Promise<string> {
+  if (backendOwned) {
+    return ''
+  }
+
+  const root = await desktopGitRoot(filePath)
+
+  return root ? desktopFileDiff(root, filePath) : ''
+}
+
+async function readTextPreview(
+  filePath: string,
+  sessionId?: string,
+  scope?: DesktopFsSessionScope
+) {
   try {
-    return await readDesktopFileText(filePath, { sessionId })
+    return await readDesktopFileText(filePath, scope ?? { sessionId })
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
 
@@ -811,6 +826,8 @@ export function LocalFilePreview({
 
   useEffect(() => {
     let active = true
+    const fileScope = target.fileScope ?? { sessionId }
+    const backendOwned = Boolean(target.fileScope?.backendOwned)
 
     async function load() {
       if (blockedByTarget) {
@@ -831,7 +848,7 @@ export function LocalFilePreview({
         if (isImage || isPdf) {
           // Prefer bytes the caller already handed us (a pasted/dropped
           // screenshot) over re-reading a path that may be transient/unreadable.
-          const dataUrl = target.dataUrl || (await readDesktopFileDataUrl(filePath, { sessionId }))
+          const dataUrl = target.dataUrl || (await readDesktopFileDataUrl(filePath, fileScope))
 
           if (active) {
             setState({ dataUrl, loading: false })
@@ -840,7 +857,7 @@ export function LocalFilePreview({
           return
         }
 
-        const result = await readTextPreview(filePath, sessionId)
+        const result = await readTextPreview(filePath, sessionId, target.fileScope)
 
         if (active) {
           const shouldBlock = !forcePreview && (result.binary || (result.byteSize ?? 0) > TEXT_PREVIEW_MAX_BYTES)
@@ -859,8 +876,7 @@ export function LocalFilePreview({
           // Empty (clean file / not a repo / remote) just hides the option.
           if (!shouldBlock) {
             try {
-              const root = await desktopGitRoot(filePath)
-              const diff = root ? await desktopFileDiff(root, filePath) : ''
+              const diff = await readPreviewGitDiff(filePath, backendOwned)
 
               if (active && diff.trim()) {
                 setState(prev => (prev.text === result.text ? { ...prev, diff } : prev))
@@ -906,6 +922,7 @@ export function LocalFilePreview({
     reloadKey,
     selfReload,
     sessionId,
+    target.fileScope,
     target.dataUrl,
     target.language,
     target.url
@@ -1054,7 +1071,7 @@ export function LocalFilePreview({
       // choice. `force` is the user picking "overwrite" from that banner.
       if (!force) {
         try {
-          const current = await readTextPreview(filePath, sessionId)
+          const current = await readTextPreview(filePath, sessionId, target.fileScope)
 
           if (!current.binary && (current.text ?? '') !== baselineRef.current) {
             setConflict(true)
@@ -1070,7 +1087,7 @@ export function LocalFilePreview({
       // Also guards Overwrite: bypassing a content conflict never authorizes
       // writing the same path on another connection/profile or this device.
       requireEditorOwner()
-      await writeDesktopFileText(filePath, draftRef.current, { sessionId })
+      await writeDesktopFileText(filePath, draftRef.current, target.fileScope ?? { sessionId })
       baselineRef.current = draftRef.current
       setDirty(false)
       setConflict(false)

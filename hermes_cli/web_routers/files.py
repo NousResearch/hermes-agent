@@ -409,13 +409,25 @@ def _is_host_file(path: str, profile: Optional[str]) -> bool:
     return is_staged_upload(home, target)
 
 
-def _remote_fs_backend(path: str, profile: Optional[str]):
-    """The SSH workspace reader for *path*, or None when this host owns it. The host's pastes and
-    staged uploads are checked before the SSH machine is dialed, so they read back while that
-    machine is down; every other path is the SSH machine's to answer (see ``_fs_backend``)."""
+def _remote_fs_backend(path: str, profile: Optional[str], session: Optional[dict] = None):
+    """Keep host uploads and SSH routing; other remote paths need a live terminal.
+
+    A missing terminal never falls through to a readable host namesake, and a
+    file request must not create a replacement sandbox.
+    """
     if _is_host_file(path, profile):
         return None
-    return _fs_backend(profile)
+    ssh = _fs_backend(profile)
+    if ssh is not None:
+        return ssh
+    from hermes_cli.terminal_workspace_fs import get_terminal_workspace_fs
+    from hermes_cli.ssh_workspace_fs import SshWorkspaceFsError
+
+    with _profile_scope(profile), _agent_path_scope(_fs_profile_home(profile)):
+        try:
+            return get_terminal_workspace_fs(session)
+        except SshWorkspaceFsError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 def _raise_fs_backend_error(exc: Exception) -> None:
@@ -431,16 +443,19 @@ def _raise_fs_backend_error(exc: Exception) -> None:
         "EIO": 502,
         "ENOENT": 404,
         "ENOTREG": 400,
+        "EROFS": 400,
     }.get(exc.code, 400)
     detail = {
         "EACCES": "File is not readable",
         "ECONN": "SSH workspace is unavailable",
         "EFBIG": "File too large",
         "EINVAL": "Invalid path",
-        "EIO": "SSH workspace request failed",
+        "EIO": "Remote workspace request failed",
         "ENOENT": "File not found",
         "ENOTREG": "Only regular files can be read",
+        "EROFS": "Terminal attachment access is read-only",
     }.get(exc.code, str(exc) or "Filesystem request failed")
+    detail = detail.replace("SSH workspace", f"{getattr(exc, 'workspace_kind', 'SSH')} workspace")
     raise HTTPException(status_code=status, detail=detail)
 
 
@@ -836,7 +851,7 @@ async def issue_file_ticket(payload: FileTicketRequest, request: Request):
             )
         else:
             # An SSH profile's clip is captured on its SSH machine; a host-staged file on this host.
-            authority = await _remote_file_authority(payload.path, payload.profile, owner, _remote_stream_target)
+            authority = await _remote_file_authority(payload.path, payload.profile, owner, _remote_stream_target, session)
             path = payload.path
             if authority is None and (payload.session_id is not None or path.lower().startswith("file:")):
                 path = str(await _fs_download_path(path, payload.profile, payload.session_id, session=session))
@@ -892,7 +907,7 @@ async def stream_managed_file(
         target, size = await _ticketed_remote_target(authority, _remote_stream_target)
         return remote_media_response(request, authority.workspace, target, size, _fs_mime_type(Path(target)))
     if authority is None:
-        backend = await asyncio.to_thread(_remote_fs_backend, path, profile)
+        backend = await asyncio.to_thread(_remote_fs_backend, path, profile, session)
         if backend is not None:
             target, size = await asyncio.to_thread(_remote_stream_target, backend, path)
             return remote_media_response(request, backend, target, size, _fs_mime_type(Path(target)))
@@ -1080,7 +1095,7 @@ async def fs_read_text(
 ):
     session = await _fs_owned_session(session_id, profile)
     # A staged paste or pick previews from this host, as read-data-url reads it back to send.
-    backend = await asyncio.to_thread(_remote_fs_backend, path, profile)
+    backend = await asyncio.to_thread(_remote_fs_backend, path, profile, session)
     if backend is not None:
         try:
             data, size, target = await asyncio.to_thread(
@@ -1140,7 +1155,7 @@ async def fs_write_text(payload: FsWriteText, profile: Optional[str] = None):
     text = payload.content or ""
     session = await _fs_owned_session(payload.session_id, profile)
     # Save where read-text read: a staged paste or pick on this host, all else on the SSH machine.
-    backend = await asyncio.to_thread(_remote_fs_backend, payload.path, profile)
+    backend = await asyncio.to_thread(_remote_fs_backend, payload.path, profile, session)
     if backend is not None:
         try:
             target, byte_size = await asyncio.to_thread(
@@ -1249,7 +1264,7 @@ async def fs_read_data_url(
 ):
     from hermes_cli.web_server import _FS_DATA_URL_MAX_BYTES
     session = await _fs_owned_session(session_id, profile)
-    backend = await asyncio.to_thread(_remote_fs_backend, path, profile)
+    backend = await asyncio.to_thread(_remote_fs_backend, path, profile, session)
     if backend is not None:
         try:
             data, _size, target = await asyncio.to_thread(
@@ -1322,11 +1337,11 @@ def _remote_stream_target(backend, path: str) -> tuple[str, int]:
 
 
 async def _remote_file_authority(
-    path: str, profile: Optional[str], owner: Path, inspect,
+    path: str, profile: Optional[str], owner: Path, inspect, session: Optional[dict] = None,
 ) -> Optional[file_tickets.FileAuthority]:
     """A ticket's authority for *path* on the profile's SSH workspace, checked by *inspect*
     (download's or the stream's rules), or None when this host owns the path."""
-    backend = await asyncio.to_thread(_remote_fs_backend, path, profile)
+    backend = await asyncio.to_thread(_remote_fs_backend, path, profile, session)
     if backend is None:
         return None
     target, _size = await asyncio.to_thread(inspect, backend, path)
@@ -1366,7 +1381,7 @@ async def _fs_download_authority(
     profile's SSH workspace when it has one, else on this host under the same read rules."""
     from hermes_constants import named_profile_home
 
-    remote = await _remote_file_authority(path, profile, owner, _remote_download_target)
+    remote = await _remote_file_authority(path, profile, owner, _remote_download_target, session)
     if remote is not None:
         return remote
     local = await _fs_download_path(path, profile, session_id, session=session)
@@ -1420,7 +1435,7 @@ async def fs_download(
     authority = getattr(getattr(request, "state", None), "file_ticket_authority", None)
     if authority is not None:
         return await _ticketed_fs_download(request, authority, profile)
-    backend = await asyncio.to_thread(_remote_fs_backend, path, profile)
+    backend = await asyncio.to_thread(_remote_fs_backend, path, profile, session)
     if backend is not None:
         target, size = await asyncio.to_thread(_remote_download_target, backend, path)
         return _remote_download_response(request, backend, target, size)

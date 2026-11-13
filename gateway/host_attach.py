@@ -360,8 +360,49 @@ def standalone_attach_decision(our_home: Path, owner: Optional[HostGateway]) -> 
     return HostAttachDecision(START, "", owner)
 
 
+def _client_started(gateway: HostGateway) -> bool:
+    """Is the owner a gateway a client auto-started (``gateway run --idle-exit``,
+    ``hermes_cli.gateway_runtime_start``)? By its argv: read live, else as it stamped it into its home."""
+    from gateway.status import _read_process_cmdline, read_runtime_status
+
+    try:
+        argv = (_read_process_cmdline(gateway.pid) or "").split()
+        if not argv:
+            record = read_runtime_status(gateway.home / "gateway_state.json") or {}
+            argv = list(record.get("argv") or []) if record.get("pid") == gateway.pid else []
+    except Exception:
+        logger.debug("could not read the argv of gateway PID %s", gateway.pid, exc_info=True)
+        return False
+    return "--idle-exit" in argv
+
+
+def _external_supervisor_takes_host_back(gateway: HostGateway) -> bool:
+    """A ``gateway run --external-supervisor`` start replaces a client-started owner (GW-90, #143547).
+
+    A client that finds no gateway starts its own ``gateway run --idle-exit``. When that lands while the
+    supervised gateway is down (boot, a restart, a crash), the supervised start attached to it and exited
+    75, and a cron job or a messaging platform keeps the client-started one from ever idling out: every
+    later start exited 75 too and the host ran unsupervised. A client can start an installed service
+    instead of its own gateway, but nothing can find an external supervisor, so its start takes the host
+    back itself.
+
+    Not ``--replace`` for a supervised start (#79048: two supervised gateways would kill each other on
+    every respawn). Only an owner started with ``--idle-exit`` is replaced, and nothing respawns that one.
+    """
+    from gateway.restart import EXTERNAL_GATEWAY_SUPERVISOR_ENV, _TRUTHY
+
+    if str(os.environ.get(EXTERNAL_GATEWAY_SUPERVISOR_ENV, "")).strip().lower() not in _TRUTHY:
+        return False
+    if not _client_started(gateway):
+        return False
+    logger.info("gateway run --external-supervisor: taking the host back from the client-started gateway %s",
+                gateway.describe())
+    return True
+
+
 def decide(our_home: Path, *, replace: bool = False) -> HostAttachDecision:
     """Attach, rescan-then-attach, replace or refuse; configured standalone profiles may coexist.
+    ``replace`` is ``--replace``; an ``--external-supervisor`` start also replaces a client-started owner.
 
     Never raises: a broken probe degrades to ``START``, i.e. exactly the pre-rendezvous behaviour.
     """
@@ -373,7 +414,8 @@ def decide(our_home: Path, *, replace: bool = False) -> HostAttachDecision:
         return HostAttachDecision(START, "")
     if gateway is None or gateway.pid == os.getpid() or launched_by_other_tenant(gateway.home, our_home):
         return standalone_attach_decision(our_home, None) or HostAttachDecision(START, "")
-    if replace and (gateway.serves(profile) or not gateway.served_known):
+    if (replace or _external_supervisor_takes_host_back(gateway)) and (
+            gateway.serves(profile) or not gateway.served_known):
         # An owner known not to serve us is another profile's gateway: replacing it is always refused
         # (_replace_target_belongs_to_other_profile fails closed) and the gateway exits, so on a
         # one-process-per-profile fleet, whose generated units all carry --replace, every unit but

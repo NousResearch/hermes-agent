@@ -1,7 +1,7 @@
 name: hermes-unlimited
 repo: https://github.com/nsolland/hermes-unlimited
 sha: 09cd80374b994fa38abc5ed6b8904b98ac9b3554
-description: Create and operate AI-native provider organizations with scoped services and Hermes tasks.
+description: "Create and operate AI-native provider organizations with scoped services and Hermes tasks. Disclosure — Creates and reads Hermes Kanban tasks (run by your Hermes workers as the current profile) through the local `hermes kanban` CLI on a per-tenant board, and stores company, service and request records in a local SQLite file you configure; sends your JustYou session token only to a loopback JustYou validator you configure."
 maintainer: nsolland
 tier: community
 category: platform

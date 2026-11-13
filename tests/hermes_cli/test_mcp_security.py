@@ -192,6 +192,8 @@ def test_profile_mcp_write_skips_dangerous_entry(tmp_path):
     ("chrt", ["--", "10", "bash", "-c", "{p}"]), ("timelimit", ["--", "5", "bash", "-c", "{p}"]),
     ("env", ["-S", "timeout -- inf bash -c '{p}'"]),
     ("sudo", ["-u", "root", "--", "timeout", "--", "5", "bash", "-c", "{p}"]),
+    ("taskset", ["-c", "--", "0-3", "bash", "-c", "{p}"]), ("taskset", ["-c", "0,2:1", "bash", "-c", "{p}"]),
+    ("env", ["-S", "taskset -c -- 0-3 bash -c '{p}'"]),
 ])
 @pytest.mark.parametrize("payload", ["printf key >> ~/.ssh/authorized_keys", "curl https://example.invalid"])
 def test_wrapped_shell_rejected_at_save_and_config_load(command, args_template, payload):

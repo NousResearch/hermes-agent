@@ -167,7 +167,10 @@ gateway:
     full_logs_hint: "لرفع السجلات الكاملة، استخدم `hermes debug share` من واجهة الأوامر."
     share_hint: "شارك هذه الروابط مع فريق Hermes للحصول على الدعم."
     report_label: "تقرير"
-    local_refused: "يُبقي `/debug local` التقرير على الجهاز الذي يشغّل Hermes، لذا فهو غير متاح من المحادثة. أرسل `/debug` لرفع التقرير الموجز."
+    local_refused: "يُبقي `/debug local` التقرير على الجهاز الذي يشغّل Hermes، لذا فهو غير متاح من المحادثة. أرسل `/debug upload` لرفع التقرير الموجز."
+    upload_hint: "لم يُرفع أي شيء. أرسل `/debug upload` لرفع التقرير الموجز."
+    upload_hint_local: "لم يُرفع أي شيء. أرسل `/debug upload` لرفع التقرير الموجز، أو `/debug local` لعرضه هنا."
+    nous_refused: "لم يُرفع أي شيء. الرفع الخاص إلى Nous غير متاح من هنا: شغّل `hermes debug share --nous` في الطرفية، أو استخدم Send diagnostics في تطبيق سطح المكتب. يرفع `/debug upload` الملخص إلى موقع لصق عام بدلًا من ذلك."
   deny:
     stale: "❌ رُفض الأمر (الموافقة كانت قديمة)."
     no_pending: "لا يوجد أمر معلّق لرفضه."
@@ -1706,7 +1709,7 @@ slash:
   version:
     description: "عرض إصدار Hermes Agent"
   debug:
-    description: "رفع تقرير تصحيح الأخطاء (معلومات النظام والسجلات) والحصول على روابط قابلة للمشاركة"
+    description: "تقرير تصحيح الأخطاء (معلومات النظام والسجلات): يعرض إشعار الخصوصية أولًا؛ /debug upload يشارك الروابط"
   quit:
     description: "الخروج من واجهة سطر الأوامر (استخدم --delete لحذف سجل الجلسة أيضًا)"
 cli:

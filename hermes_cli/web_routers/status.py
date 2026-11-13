@@ -895,12 +895,16 @@ async def run_config_migrate(profile: Optional[str] = None):
 @router.post("/api/ops/debug-share")
 async def run_debug_share_endpoint(body: DebugShareRequest | None = None,
                                    profile: Optional[str] = None):
-    """Upload a redacted debug report + full logs and return the paste URLs. Synchronous,
+    """Upload a redacted debug report + full logs and return the paste URLs; refused (400) unless
+    the body carries ``consent: true`` from a user confirmation. Synchronous,
     unlike the other diagnostics actions: the point is the shareable URLs, returned as a
     structured payload the dashboard renders as copyable links."""
     from hermes_cli.debug import build_debug_share
     from hermes_cli.debug_redaction import redact_debug_support_text
     req = body or DebugShareRequest()
+    if not req.consent:
+        raise HTTPException(status_code=400,
+                            detail="Debug share requires explicit consent (consent: true)")
     try:
         result = await config_scoped_to_thread(profile, lambda: build_debug_share(
             log_lines=max(1, min(int(req.lines), 5000)), redact=bool(req.redact)))

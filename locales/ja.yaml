@@ -167,7 +167,10 @@ gateway:
     full_logs_hint: "完全なログのアップロードには、CLI から `hermes debug share` を使用してください。"
     share_hint: "サポートを受けるには、このリンクを Hermes チームに共有してください。"
     report_label: "レポート"
-    local_refused: "`/debug local` はレポートを Hermes を実行しているマシン上に保持するため、チャットからは使えません。要約レポートをアップロードするには `/debug` を送信してください。"
+    local_refused: "`/debug local` はレポートを Hermes を実行しているマシン上に保持するため、チャットからは使えません。要約レポートをアップロードするには `/debug upload` を送信してください。"
+    upload_hint: "何もアップロードされていません。要約レポートをアップロードするには `/debug upload` を送信してください。"
+    upload_hint_local: "何もアップロードされていません。要約レポートをアップロードするには `/debug upload` を、ここで表示するには `/debug local` を送信してください。"
+    nous_refused: "何もアップロードされていません。ここからは Nous へのプライベートアップロードは利用できません。ターミナルで `hermes debug share --nous` を実行するか、デスクトップアプリの Send diagnostics を使ってください。`/debug upload` は代わりに要約を公開ペーストにアップロードします。"
   deny:
     stale: "❌ コマンドを拒否しました (承認は期限切れでした)。"
     no_pending: "拒否待ちのコマンドはありません。"
@@ -1706,7 +1709,7 @@ slash:
   version:
     description: "Hermes Agent のバージョンを表示"
   debug:
-    description: "デバッグレポート（システム情報 + ログ）をアップロードして共有リンクを取得"
+    description: "デバッグレポート（システム情報 + ログ）: まずプライバシー通知を表示し、/debug upload でリンクを共有"
   quit:
     description: "CLI を終了（--delete でセッション履歴も削除）"
 cli:

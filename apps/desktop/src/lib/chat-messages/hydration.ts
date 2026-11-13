@@ -213,6 +213,52 @@ function parseDisplayMetadata(metadata: SessionMessage['display_metadata']): nul
   return parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : null
 }
 
+// session_completion_notes.py records local cron output as a finished note, not a model wake.
+// Its completion identities are JSON tuples; never classify a report by its prose.
+function isCronReport(message: SessionMessage): boolean {
+  if (message.role !== 'user' || message.display_kind !== 'internal_notification') {
+    return false
+  }
+
+  const identities = parseDisplayMetadata(message.display_metadata)?.completion_note
+
+  return Array.isArray(identities) && identities.some(identity => {
+    if (typeof identity !== 'string') {
+      return false
+    }
+
+    try {
+      const tuple: unknown = JSON.parse(identity)
+
+      return Array.isArray(tuple) && tuple[0] === 'cron'
+    } catch {
+      return false
+    }
+  })
+}
+
+// Display authorship can differ from the stored model role. Completed reports are opaque
+// deliverables, so user prompt/attachment cleanup must not strip their Markdown body.
+function messageDisplay(message: SessionMessage) {
+  const content =
+    message.display_content !== undefined
+      ? message.display_content
+      : message.content || message.text || message.context || message.name
+
+  const cronReport = isCronReport(message)
+  const contentRole = cronReport ? 'system' : message.role
+
+  const rawDisplayContent = transcriptContent(
+    message.display_kind,
+    contentRole,
+    timelineDisplayContent(message, displayContentForMessage(contentRole, content))
+  )
+
+  const displayRole = cronReport || isMachineNotice(message.display_kind) ? 'system' : message.role
+
+  return { content, rawDisplayContent, displayRole, cronReport }
+}
+
 // A micro-compaction merge (`display_metadata.model_only`) is the model's copy of prompts whose originals
 // the history shows: the owner's resume snapshot keeps it as an undo target, and it is never painted.
 function isPainted(message: SessionMessage): boolean {
@@ -532,18 +578,7 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
       return
     }
 
-    const content =
-      message.display_content !== undefined
-        ? message.display_content
-        : message.content || message.text || message.context || message.name
-
-    const rawDisplayContent = transcriptContent(
-      message.display_kind,
-      message.role,
-      timelineDisplayContent(message, displayContentForMessage(message.role, content))
-    )
-
-    const displayRole = isMachineNotice(message.display_kind) ? 'system' : message.role
+    const { content, rawDisplayContent, displayRole, cronReport } = messageDisplay(message)
 
     // Persisted user turns carry `@image:<path>` directive lines inline in
     // the text (see tui_gateway/server.py's persist-time rewrite). The
@@ -704,6 +739,7 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
         ? { asyncResult: asyncResultBody(displayContentForMessage(message.role, message.content || content)) }
         : {}),
       ...(message.display_kind === 'process_complete' ? { asyncResultKind: 'process' as const } : {}),
+      ...(cronReport ? { cronReport: true } : {}),
       timestamp: earliestTimestamp(message.timestamp, ...parts.map(part => part.timestamp)),
       ...(rowId !== undefined ? { rowId } : {}),
       ...(pendingAbsorbedRows > 0 ? { serverRowSpan: pendingAbsorbedRows + 1 } : {}),

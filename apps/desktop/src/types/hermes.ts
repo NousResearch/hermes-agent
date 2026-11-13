@@ -725,6 +725,8 @@ export type TimelineDisplayMetadata =
       display_text?: string
     }
   | { display_text: string }
+  /** Local completion notes carry JSON-encoded producer identity tuples. */
+  | { completion_note: string[]; completion_admission?: string; notification_category?: string }
   | { reactions: MessageReaction[] }
   | { tool_result_metadata: ToolResultMetadata }
   | { error?: string; error_surface?: unknown }
@@ -770,6 +772,7 @@ export interface SessionMessage {
     | 'content_refused'
     | 'failed_turn'
     | 'hidden'
+    | 'internal_notification'
     | 'model_switch'
     | 'personality_switch'
     | 'process_complete'

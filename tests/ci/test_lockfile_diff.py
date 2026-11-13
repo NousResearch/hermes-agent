@@ -20,6 +20,7 @@ from __future__ import annotations
 import importlib.util
 import json
 from pathlib import Path
+import re
 import subprocess
 
 import pytest
@@ -159,6 +160,59 @@ def test_pnpm_alias_and_new_edge_between_locked_versions_are_reported():
             ("string-width-cjs *(via @isaacs/cliui@8.0.2)*", "string-width@4.2.3", "string-width@5.1.2"),
         ],
     }
+
+
+def test_pnpm_repin_through_peer_suffixes_and_other_dependency_fields_is_reported():
+    # The repo lock's references mostly carry a peer suffix, its snapshots list
+    # transitivePeerDependencies, and moves also land in devDependencies and
+    # optionalDependencies. Here the consumer's own peer moves too (8 -> 9).
+    def variant(lock: str, peer: str) -> str:
+        for old, new in (("\n  pkg:\n    dependencies:\n", "\n  pkg:\n    devDependencies:\n"),
+                         ("  debug@4.3.4:\n    dependencies:\n", f"  debug@4.3.4(supports-color@{peer}):\n"
+                                                                "    optionalDependencies:\n")):
+            assert lock.count(old) == 1
+            lock = lock.replace(old, new)
+        lock = re.sub(r"(?m)^( +(?:version|ms): 2\.1\.[23])$", rf"\1(supports-color@{peer})", lock)
+        return re.sub(r"(\n    optionalDependencies:\n      ms: \S+\n)",
+                      r"\1    transitivePeerDependencies:\n      - supports-color\n", lock)
+
+    assert _mod.diff_pnpm_locks(variant(REPIN_BASE, "8.1.1"), variant(REPIN_HEAD, "9.4.0")) == {
+        "added": [],
+        "removed": [],
+        "updated": [
+            ("ms *(pkg)*", "2.1.3", "2.1.2"),
+            ("ms *(root)*", "2.1.2", "2.1.3"),
+            ("ms *(via debug@4.3.4)*", "2.1.2", "2.1.3"),
+        ],
+    }
+
+
+def _edit(lock: str, *edits: tuple[str, str, int]) -> str:
+    for pattern, replacement, count in edits:
+        lock, found = re.subn(pattern, replacement, lock)
+        assert found == count, pattern
+    return lock
+
+
+_ROOT_MS = r"specifier: 2\.1\.2\n        version: 2\.1\.2\n"  # the root's ms in repin-base
+
+
+@pytest.mark.parametrize(("edits", "row"), [
+    # The root moves from 2.1.2, still locked, to 2.1.4, which only the head locks.
+    ([(_ROOT_MS, "specifier: 2.1.4\n        version: 2.1.4\n", 1),
+      (r"\nsnapshots:\n", "\n  ms@2.1.4:\n    resolution: {integrity: sha512-x}\n\nsnapshots:\n", 1),
+      (r"\Z", "\n  ms@2.1.4: {}\n", 1)],
+     ("ms", "2.1.2, 2.1.3", "2.1.2, 2.1.3, 2.1.4")),
+    # The root and debug move from 2.1.2, which only the base locks, to 2.1.3, still locked.
+    ([(_ROOT_MS, "specifier: 2.1.3\n        version: 2.1.3\n", 1),
+      (r"      ms: 2\.1\.2\n", "      ms: 2.1.3\n", 1),
+      (r"\n  ms@2\.1\.2:(?: \{\}|\n    resolution: .*)\n", "\n", 2)],
+     ("ms", "2.1.2, 2.1.3", "2.1.3")),
+])
+def test_pnpm_move_to_or_from_a_version_locked_on_one_side_stays_one_package_row(edits, row):
+    # The package row already shows such a move, so no project or edge row repeats it.
+    assert _mod.diff_pnpm_locks(REPIN_BASE, _edit(REPIN_BASE, *edits)) == {
+        "added": [], "removed": [], "updated": [row]}
 
 
 def test_pnpm_project_that_appears_or_disappears_is_one_row():

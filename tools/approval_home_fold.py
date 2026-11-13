@@ -36,8 +36,9 @@ def _home_prefix_fold_regex(path: str):
     if not components or (len(components) == 1 and re.fullmatch(r"[A-Za-z]:", components[0])):
         return None
     # Optional leading root separator; a Windows drive letter is a component. Mandatory for the
-    # single-component home above, where the optional form would also fold relative same-named paths.
-    lead = r"[/\\]+" if len(components) == 1 else r"[/\\]*"
+    # single-component home above, where the optional form would also fold relative same-named paths,
+    # and anchored at a path start so a nested ``/data/root/x`` does not fold to ``/data~/x``.
+    lead = r"(?<![\w.~$}/\\-])[/\\]+" if len(components) == 1 else r"[/\\]*"
     return re.compile(lead + r"[/\\]+".join(re.escape(c) for c in components) + _PATH_TAIL)
 
 

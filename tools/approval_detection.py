@@ -97,6 +97,9 @@ _SENSITIVE_WRITE_TARGET = (
     rf'{_SHELL_RC_FILES}|{_CREDENTIAL_FILES})'
 )
 _USER_SENSITIVE_WRITE_TARGET = rf'(?:{_SSH_SENSITIVE_PATH}|{_SHELL_RC_FILES}|{_CREDENTIAL_FILES})'
+# touch/mkdir/ln: the home-side targets only; /etc is out of their scope (#85321) and admin commands
+# like `mkdir -p /etc/apt/keyrings` would be mislabelled as credential/SSH/shell-rc writes.
+_HOME_SENSITIVE_WRITE_TARGET = rf'(?:{_USER_SENSITIVE_WRITE_TARGET}|{_HERMES_ENV_PATH}|{_HERMES_CONFIG_PATH})'
 _PROJECT_SENSITIVE_WRITE_TARGET = rf'(?:{_PROJECT_ENV_PATH}|{_PROJECT_CONFIG_PATH})'
 # cp/mv/install: the sensitive path is a write target only as the LAST argument (destination), so
 # `cp config.yaml backup.yaml` (config.yaml as SOURCE) stays out.
@@ -798,8 +801,8 @@ DANGEROUS_PATTERNS = [
     # (`mkdir -p ~/.ssh && touch ~/.ssh/x`, `ln -sf evil ~/.bashrc`), pairing the write_file deny (#85321).
     # Command-position anchored so `ls -ln ~/.ssh` / `grep touch ~/.bashrc` stay out; any touch/mkdir operand
     # counts, but for ln only the destination (last operand) does, so linking OUT of these paths stays safe.
-    (rf'{_CMDPOS}(?:touch|mkdir)\s(?:[^\n;&|]*\s)?["\']?{_SENSITIVE_WRITE_TARGET}', "create a file in a sensitive credential/SSH/shell-rc path"),
-    (rf'{_CMDPOS}ln\s[^\n;&|]*\s["\']?{_SENSITIVE_WRITE_TARGET}[^\s"\']*["\']?\s*(?:[\n;&|)`]|$)', "link a file into a sensitive credential/SSH/shell-rc path"),
+    (rf'{_CMDPOS}(?:touch|mkdir)\s(?:[^\n;&|]*\s)?["\']?{_HOME_SENSITIVE_WRITE_TARGET}', "create a file in a sensitive credential/SSH/shell-rc path"),
+    (rf'{_CMDPOS}ln\s[^\n;&|]*\s["\']?{_HOME_SENSITIVE_WRITE_TARGET}[^\s"\']*["\']?\s*(?:[\n;&|)`]|$)', "link a file into a sensitive credential/SSH/shell-rc path"),
     # In-place edits mutate the file directly, bypassing redirection/tee/cp coverage; gate the same
     # startup/credential files.
     (rf'\bsed\s+-[^\s]*i.*(?:{_USER_SENSITIVE_WRITE_TARGET})[^\s"\']*', "in-place edit of sensitive credential/SSH/shell-rc path"),

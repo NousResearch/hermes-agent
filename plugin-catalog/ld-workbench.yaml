@@ -1,7 +1,7 @@
 name: ld-workbench
 title: Debate Workbench
 repo: https://github.com/Dgardenhire/hermes-ld-workbench
-sha: c377fa131f92ff15081bbe984ed93235510455e2
+sha: 0ca2acd72f7f9008ba7f24505cad2e58f764138b
 description: >-
   A new tool for high school debate students. Build a Lincoln-Douglas case with a coach, run a full timed round
   against an AI opponent, answer Extemp questions out loud, and study great speeches. You speak on a real clock
@@ -29,14 +29,14 @@ category: desktop
 requires_hermes: ">=0.21.6"
 docs_url: https://linchpin.studio/hermes/ld-workbench/manual/
 version: "0.2.0"
-image: "https://raw.githubusercontent.com/Dgardenhire/hermes-ld-workbench/c377fa131f92ff15081bbe984ed93235510455e2/docs/catalog/card.jpg"
+image: "https://raw.githubusercontent.com/Dgardenhire/hermes-ld-workbench/0ca2acd72f7f9008ba7f24505cad2e58f764138b/docs/catalog/card.jpg"
 screenshots:
-  - "https://raw.githubusercontent.com/Dgardenhire/hermes-ld-workbench/c377fa131f92ff15081bbe984ed93235510455e2/docs/shots/live/ballot.jpg"
-  - "https://raw.githubusercontent.com/Dgardenhire/hermes-ld-workbench/c377fa131f92ff15081bbe984ed93235510455e2/docs/shots/live/start-here.jpg"
-  - "https://raw.githubusercontent.com/Dgardenhire/hermes-ld-workbench/c377fa131f92ff15081bbe984ed93235510455e2/docs/shots/live/ballots-patterns.jpg"
-  - "https://raw.githubusercontent.com/Dgardenhire/hermes-ld-workbench/c377fa131f92ff15081bbe984ed93235510455e2/docs/shots/live/case-tools.jpg"
-  - "https://raw.githubusercontent.com/Dgardenhire/hermes-ld-workbench/c377fa131f92ff15081bbe984ed93235510455e2/docs/shots/live/rhetoric.jpg"
-  - "https://raw.githubusercontent.com/Dgardenhire/hermes-ld-workbench/c377fa131f92ff15081bbe984ed93235510455e2/docs/shots/live/ld-ballot.jpg"
+  - "https://raw.githubusercontent.com/Dgardenhire/hermes-ld-workbench/0ca2acd72f7f9008ba7f24505cad2e58f764138b/docs/shots/live/ballot.jpg"
+  - "https://raw.githubusercontent.com/Dgardenhire/hermes-ld-workbench/0ca2acd72f7f9008ba7f24505cad2e58f764138b/docs/shots/live/start-here.jpg"
+  - "https://raw.githubusercontent.com/Dgardenhire/hermes-ld-workbench/0ca2acd72f7f9008ba7f24505cad2e58f764138b/docs/shots/live/ballots-patterns.jpg"
+  - "https://raw.githubusercontent.com/Dgardenhire/hermes-ld-workbench/0ca2acd72f7f9008ba7f24505cad2e58f764138b/docs/shots/live/case-tools.jpg"
+  - "https://raw.githubusercontent.com/Dgardenhire/hermes-ld-workbench/0ca2acd72f7f9008ba7f24505cad2e58f764138b/docs/shots/live/rhetoric.jpg"
+  - "https://raw.githubusercontent.com/Dgardenhire/hermes-ld-workbench/0ca2acd72f7f9008ba7f24505cad2e58f764138b/docs/shots/live/ld-ballot.jpg"
 readme: true
 platforms: []
 known_issues:

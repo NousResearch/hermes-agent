@@ -2,6 +2,14 @@ import { normalizeProfileKey } from './profile'
 import { isSessionOwnerRoute, type SessionOwnerScope } from './session-request-router'
 import type { SessionTile } from './session-states'
 
+export function ownerProfileKey(owner: SessionOwnerScope): string | undefined {
+  if (isSessionOwnerRoute(owner)) {
+    return normalizeProfileKey(owner.profile)
+  }
+
+  return typeof owner === 'string' ? normalizeProfileKey(owner) : undefined
+}
+
 export function sameSessionOwner(left: SessionOwnerScope, right: SessionOwnerScope): boolean {
   if (isSessionOwnerRoute(left) && isSessionOwnerRoute(right)) {
     return (

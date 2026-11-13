@@ -42,7 +42,7 @@ import type { SessionInfo } from '@/types/hermes'
 
 import { dropStatusDrawersForProfile, migrateStatusDrawersForProfile } from './composer-status-drawer'
 import { registryConnectionKind } from './connection-registry-state'
-import { recordDislike } from './desktop-metrics'
+import { dropDesktopMetricsForProfile, migrateDesktopMetricsForProfile, recordDislike } from './desktop-metrics'
 import { dialedGatewayModeFor } from './gateway'
 import {
   adoptPendingRuntimeTabs,
@@ -94,7 +94,7 @@ import {
   type SessionOwnerScope,
   type SessionProfileRoute
 } from './session-request-router'
-import { mergeSessionTile, sameSessionOwner, tilesShareOwner } from './session-tile-identity'
+import { mergeSessionTile, ownerProfileKey, sameSessionOwner, tilesShareOwner } from './session-tile-identity'
 import { orderTilesByTree } from './session-tile-order'
 import { ackStoredSessionId, isMessagingCompletion, markSessionUnreadFinished } from './session-unread'
 import { migrateTranscriptTailsForProfile } from './transcript-tail-cache'
@@ -1583,14 +1583,6 @@ function rekeyTileList(
   return tiles.map(t => (t === stale ? { ...t, storedSessionId: nextStoredSessionId } : t))
 }
 
-function ownerProfileKey(owner: SessionOwnerScope): string | undefined {
-  if (isSessionOwnerRoute(owner)) {
-    return normalizeProfileKey(owner.profile)
-  }
-
-  return typeof owner === 'string' ? normalizeProfileKey(owner) : undefined
-}
-
 /**
  * Re-home an open tile after auto-compression rotates the conversation's stored
  * id (#98622). Without this, the tile stays keyed on the pre-rotation id while
@@ -2695,6 +2687,7 @@ export function dropTilesForProfile(
   // connection scope so deletion cannot erase same-named local tabs instead.
   const ambientConnection = tileConnectionId || LOCAL_CONNECTION_ID
   const removedScope = backendScopeKey(route ? routeConnection : ambientConnection, routeProfile || name)
+  dropDesktopMetricsForProfile(name, (route ? routeConnection : ambientConnection) || LOCAL_CONNECTION_ID)
 
   const ownerMatches = (owner: SessionProfileRoute | undefined): boolean => {
     if (!owner) {
@@ -2778,13 +2771,17 @@ export function dropTilesForProfile(
  * to a backend that no longer exists ("Couldn't open this session", #111868).
  * Local-connection state only; a remote gateway rename executes there.
  */
-export function migrateTilesForProfile(oldProfile: string, newProfile: string): void {
+export async function migrateTilesForProfile(oldProfile: string, newProfile: string): Promise<void> {
   const from = normalizeProfileKey(oldProfile)
   const to = normalizeProfileKey(newProfile)
 
   if (!from || !to || from === to) {
     return
   }
+
+  // Drain queued metric publications before changing local ownership. Keep all UI migrations
+  // below contiguous, so waiting for a frozen peer's coordinator cannot expose a half-rename.
+  await migrateDesktopMetricsForProfile(from, to)
 
   const isLocal = (owner: SessionProfileRoute | undefined) =>
     Boolean(owner) && (String(owner?.connectionId ?? '').trim() || 'local') === 'local'

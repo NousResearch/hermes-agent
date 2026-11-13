@@ -532,8 +532,63 @@ session/bot/profile names, paths and setting values never leave.
 | `hermes.desktop.action_use` | action (the app's built-in command/keybinding ids plus a few named buttons; plugin commands and numbered slot shortcuts are `other`, collapsed in the app before anything is kept), via (`click`/`shortcut`/`palette`/`menu`), count bucket | Which buttons and commands people press, and how: aggregated in the app per profile and reported once per finished day (no per-press rows). The row lands in the period of the day it describes, not the day it was sent; each day is recorded once per profile however many windows or backend restarts report it, and a day older than 8 days is dropped. |
 | `hermes.desktop.mode_use` | mode (`sessions`/`bots`), active-minutes bucket, messages-sent bucket, bot-count bucket | How Desktop time splits between Bot Mode and regular Sessions. One row per mode used that day, in that day's period (same once-per-profile-per-day latch as `action_use`); active time sums gaps between interactions of up to 5 minutes. |
 | `hermes.desktop.friction` | kind (`notice_dismissed`, `error_toast`, `renderer_crash`, `backend_disconnect`, `slow_frame`), detail (notice id, error category, crash reason, drop reason, frame-duration bucket) | What gets in the way. Error toasts carry only their code-defined category; renderer crashes are recorded by the app shell only when the crashed window's own profile collects, and reported by a window of that profile after it comes back; slow frames are long frames while the window is visible, capped per day. |
+| `hermes.desktop.long_frames.sum` | frame bucket (`50ms_to_100ms`, `100ms_to_250ms`, `250ms_to_1s`, `1s_to_5s`, `gte_5s`, or `none`), visible-minutes bucket | How often the Desktop window stutters. Every long animation frame (50 ms or more, as the browser reports them) while the window is visible is counted in the app per profile and reported once per finished day on its own call, so a backend that predates it still takes the day's other reports (same once-per-profile-per-day latch as `action_use`, kept separately). The value is the day's frame count in that bucket, never capped; each row carries the day's visible time so a rate is computable, and a visible day with no long frames reports one `none` row. |
 | `hermes.desktop.dislike` | signal (`quick_close`, `cancelled`, `setting_off_default`, `rage_click`, `undo`, `feature_disabled`), target, setting, direction | Signals that a feature is unwanted: a pane closed within 5s of opening, a dialog/flow backed out of, a setting moved to or away from its default (the key only; the backend compares the saved value to the default itself), three clicks on one control within a second, an undo, a shipped feature switched off. Capped per signal per day. |
 | `hermes.desktop.onboarding` | step (first-run steps: provider picker, sign-in, API key, local endpoint, model pick, choose later, free-tier screen, guided setup cards, consent, first message), event (`reached`/`completed`/`abandoned`) | Where first run stops. Each step event once per profile (latched in a small per-profile file); `abandoned` is a step still open when the app next starts. First run happens before the consent question, so until it is answered the app holds the step events in memory only (never on disk, never sent) and records them if the user opts in during that app session; a "no" or quitting first discards them. Switching collection off in the Desktop deletes those latches with the app's own copy. |
+
+Desktop visible-time spans are split at UTC midnight before a day is rolled or sent.
+The clock restarts on opt-in and profile changes; hidden and suspended time is excluded.
+Each renderer keeps its own journal. A finished day's report combines all windows'
+frame counts and visible time; overlapping visible windows contribute separately.
+Reporting waits for every pre-midnight cursor to close or **exceed** the 11-minute
+suspend limit (equality is still eligible). Persisted frames and checkpointed time
+survive a renderer crash; an unobserved crash/suspend tail is never invented.
+The UTC wall clock determines the usage day. A high-water mark prevents counting
+time twice after a backwards clock correction; observations of an already closed
+day are omitted rather than reassigned to another day.
+
+Publication, report freezing, acknowledgement, consent withdrawal and profile
+migration share one short ownership phase: Web Locks where available, otherwise
+an IndexedDB readwrite transaction. Network requests run outside that phase.
+The ordinary daily aggregate's complete read/modify/write shares that phase too,
+so a descheduled writer cannot restore old data beneath a recreated profile name.
+Daily RPC acknowledgements remain bound to their original cohort. Ordinary
+counters roll their UTC day at publication; frame timestamps retain their observed day.
+The first frame report is a verified, durable snapshot; concurrent sends and lost
+acknowledgements replay the same totals against the backend's first-day latch,
+not a correction that an older backend would ignore. A backend without the frame
+RPC still receives the day's other reports.
+
+Journals and pending reports expire after seven days. A renderer whose journal
+was pruned cannot resume its old ownership: the existing focus-time backend
+consent refresh must positively authorize a replacement collector. Coordination
+or persistence failures likewise stop that collector rather than retaining a
+frame-only reporter without visible time.
+
+Consent ownership is captured before an asynchronous status read or save. A fresh
+immutable local cohort permit is allocated before the RPC; it is not consent to
+collect. Only an accepted positive backend result can start a collector. Stale
+saved/read callbacks retain their original cohort across focus changes and
+renames. An off result revokes that cohort's transferred measurements, but cannot
+answer a newly recreated profile's offer or overwrite a newer owner's UI state.
+If a focus refresh retires the first-run answer's cohort during its save, the
+offer captures again and re-reads backend consent before applying it. It never
+replays an old saved opt-in over a newer withdrawal.
+These local keys are never telemetry dimensions or RPC fields.
+
+Rename waits for telemetry coordination before changing local tab/session
+ownership. A complete, verified quarantine copy is stored before retiring the
+source name. Interrupted destination writes retry only that immutable copy, never
+data collected by a newly recreated source profile. If storage cannot preserve
+an isolated copy, only those optional measurements are discarded; sessions and
+other user content are untouched. An unavailable coordinator or storage never
+turns a successful backend rename or consent save into a UI failure.
+
+When coordination fails, withdrawal may only remove its already-captured
+immutable permit, never resolve or replace the current owner's token. A fresh
+authorization uses a different permit. If the browser also denies that removal,
+durable deletion cannot be guaranteed; the affected renderer remains disabled.
+With neither Web Locks nor usable IndexedDB, optional collection stays paused.
 
 Sessions are summarized when they close (finalize, reset or process exit);
 delegated child sessions are not counted separately. Milestones latch in the

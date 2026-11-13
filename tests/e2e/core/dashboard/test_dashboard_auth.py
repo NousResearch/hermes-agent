@@ -138,7 +138,7 @@ def test_peer_route_refuses_every_credential_but_a_peer_pass(dash: H.Dashboard, 
             r = dash.http.request(method, _concrete(path), headers=headers, params=query,
                                   json={} if method != "GET" else None)
             body = r.json() if r.headers.get("content-type", "").startswith("application/json") else {}
-            if _PEER_REFUSALS.get(r.status_code) != body.get("error"):
+            if r.status_code not in _PEER_REFUSALS or _PEER_REFUSALS[r.status_code] != body.get("error"):
                 bad.append(f"{method} {path} ({label}) -> {r.status_code} {r.text[:120]!r}")
     assert not bad, "the peer route served or misanswered a caller without a peer pass:\n  " + "\n  ".join(bad)
     status = dash.http.get("/api/status").json()

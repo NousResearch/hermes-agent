@@ -29,8 +29,12 @@
   /* Panels laid on the canvas (chat sidebar, page panels, side tool panels): #0A0A1A@.90 over the
      canvas (856:2740), so the wing reads through at a tenth of its strength. */
   --portal-surface-panel: color-mix(in srgb, var(--portal-surface-canvas) 90%, transparent);
-  /* The stage: #07071A@.96 over the canvas (856:2809, Var1 147:7470), the skin's chrome. */
-  --portal-surface-stage: color-mix(in srgb, var(--ui-bg-chrome) 96%, var(--portal-surface-canvas));
+  /* Chat's own neutral (906:19804, 1089:8377, 1054:23044): white 5% on black, where pages keep the
+     skin's navy chrome (1036:7189). One value for the stage, the chat sidebar and the side tool panels;
+     point it at --ui-bg-chrome to put chat back on the skin's colour. */
+  --portal-surface-chat: color-mix(in srgb, var(--portal-raw-pure-white) 5%, var(--portal-raw-black));
+  /* The stage: the chat neutral at .96 over the canvas. */
+  --portal-surface-stage: color-mix(in srgb, var(--portal-surface-chat) 96%, var(--portal-surface-canvas));
   /* The chat sidebar's opaque fill (the shared sidebar surface). */
   --portal-sidebar-background: var(--portal-surface-canvas);
   /* Routed pages lay their body on the canvas (Overview 856:2809) and their nav on a panel. */
@@ -107,7 +111,9 @@
   --portal-neutral-selection-background: var(--portal-surface-selected);
   --portal-neutral-selection-stroke: var(--portal-stroke-selected);
   --portal-window-background: var(--portal-surface-canvas);
-  --portal-sidebar-panel-background: var(--portal-surface-panel);
+  /* The chat sidebar and side tool panels: the chat neutral at .90, so the wing still reads through
+     (1089:8226). */
+  --portal-sidebar-panel-background: color-mix(in srgb, var(--portal-surface-chat) 90%, transparent);
   --portal-panel-divider: var(--portal-stroke-hairline);
   --portal-control-fill: var(--portal-surface-control);
   --portal-control-fill-hover: var(--portal-surface-control-hover);
@@ -141,6 +147,7 @@
   --portal-page-canvas: var(--portal-surface-canvas);
   --portal-page-background: var(--portal-surface-stage);
   --portal-page-sidebar-background: var(--portal-sidebar-background);
+  --portal-sidebar-panel-background: var(--portal-surface-panel);
   --portal-surface-control: var(--portal-raw-ink-3);
   --portal-surface-control-hover: var(--portal-raw-ink-5);
   --portal-surface-control-pressed: var(--portal-raw-ink-8);

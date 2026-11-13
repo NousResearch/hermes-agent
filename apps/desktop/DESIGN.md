@@ -603,7 +603,8 @@ The tables below are generated from the CSS; do not edit them by hand.
 | `--portal-text-quaternary` | `color-mix(in srgb, var(--ui-base) 50%, transparent)` | `color-mix(in srgb, var(--ui-base) 64%, transparent)` |  |
 | `--portal-surface-canvas` | `var(--portal-skin-window, var(--ui-bg-chrome))` | `var(--portal-skin-window, color-mix(in srgb, var(--ui-base) 5%, var(--ui-bg-chrome)))` | Window canvas (rails, titlebar band): the skin's own canvas, else its chrome. |
 | `--portal-surface-panel` | `color-mix(in srgb, var(--portal-surface-canvas) 90%, transparent)` | `color-mix(in srgb, var(--portal-raw-pure-white) 30%, transparent)` | Panels laid on the canvas (chat sidebar, page panels, side tool panels): #0A0A1A@.90 over the canvas (856:2740), so the wing reads through at a tenth of its strength. |
-| `--portal-surface-stage` | `color-mix(in srgb, var(--ui-bg-chrome) 96%, var(--portal-surface-canvas))` | `color-mix(in srgb, var(--portal-raw-pure-white) 90%, var(--portal-surface-canvas))` | The stage: #07071A@.96 over the canvas (856:2809, Var1 147:7470), the skin's chrome. |
+| `--portal-surface-chat` | `color-mix(in srgb, var(--portal-raw-pure-white) 5%, var(--portal-raw-black))` | ″ | Chat's own neutral (906:19804, 1089:8377, 1054:23044): white 5% on black, where pages keep the skin's navy chrome (1036:7189). One value for the stage, the chat sidebar and the side tool panels; point it at --ui-bg-chrome to put chat back on the skin's colour. |
+| `--portal-surface-stage` | `color-mix(in srgb, var(--portal-surface-chat) 96%, var(--portal-surface-canvas))` | `color-mix(in srgb, var(--portal-raw-pure-white) 90%, var(--portal-surface-canvas))` | The stage: the chat neutral at .96 over the canvas. |
 | `--portal-sidebar-background` | `var(--portal-surface-canvas)` | `color-mix(in srgb, var(--portal-raw-pure-white) 30%, var(--portal-surface-canvas))` | The chat sidebar's opaque fill (the shared sidebar surface). |
 | `--portal-page-canvas` | `var(--ui-bg-chrome)` | `var(--portal-surface-canvas)` | Routed pages lay their body on the canvas (Overview 856:2809) and their nav on a panel. |
 | `--portal-page-background` | `var(--portal-page-canvas)` | `var(--portal-surface-stage)` |  |
@@ -649,7 +650,7 @@ The tables below are generated from the CSS; do not edit them by hand.
 | `--portal-neutral-selection-background` | `var(--portal-surface-selected)` | ″ |  |
 | `--portal-neutral-selection-stroke` | `var(--portal-stroke-selected)` | ″ |  |
 | `--portal-window-background` | `var(--portal-surface-canvas)` | ″ |  |
-| `--portal-sidebar-panel-background` | `var(--portal-surface-panel)` | ″ |  |
+| `--portal-sidebar-panel-background` | `color-mix(in srgb, var(--portal-surface-chat) 90%, transparent)` | `var(--portal-surface-panel)` | The chat sidebar and side tool panels: the chat neutral at .90, so the wing still reads through (1089:8226). |
 | `--portal-panel-divider` | `var(--portal-stroke-hairline)` | ″ |  |
 | `--portal-control-fill` | `var(--portal-surface-control)` | ″ |  |
 | `--portal-control-fill-hover` | `var(--portal-surface-control-hover)` | ″ |  |

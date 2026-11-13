@@ -354,7 +354,8 @@ class WebhookAdapter(BasePlatformAdapter):
     async def _deliver_to(self, delivery: dict[str, Any], chat_id: str, content: str) -> SendResult:
         deliver_type = delivery["deliver"]
         if deliver_type == "log":
-            logger.info("[webhook] Response for %s: %s", chat_id, content[:200])
+            logger.info("[webhook] Response for %s (%d chars)", chat_id, len(content))
+            logger.debug("[webhook] Response text for %s: %s", chat_id, content)
             return SendResult(success=True)
         if deliver_type == "github_comment":
             return await self._deliver_github_comment(content, delivery)
@@ -984,7 +985,8 @@ class WebhookAdapter(BasePlatformAdapter):
         """deliver_only: dispatch *content* to the same delivery helpers agent-mode ``send()`` uses."""
         deliver_type = delivery.get("deliver", "log")
         if deliver_type == "log":  # startup validation rejects deliver_only + log; guard defensively
-            logger.info("[webhook] direct-deliver log-only: %s", content[:200])
+            logger.info("[webhook] direct-deliver log-only (%d chars)", len(content))
+            logger.debug("[webhook] direct-deliver log-only text: %s", content)
             return SendResult(success=True)
         if deliver_type == "github_comment":
             return await self._deliver_github_comment(content, delivery)

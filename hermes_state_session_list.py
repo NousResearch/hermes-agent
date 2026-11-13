@@ -1,5 +1,34 @@
-"""Session-list page projection for ``SessionDB.list_sessions_rich``."""
+"""Session-list page projection and title-prefix filter for ``SessionDB.list_sessions_rich``."""
 from typing import Any
+
+from hermes_state_common import _COMPRESSION_CHILD_SQL, _non_continuation_child_sql, escape_like
+
+# SQLite's LIKE folds ASCII case, so the escaped LIKE is paired with an exact substr compare.
+_TITLE_PREFIX_SQL = "{a}.title LIKE ? ESCAPE '\\' AND substr({a}.title, 1, ?) = ?"
+
+
+def title_prefix_clause(prefix: str, *, lineage: bool) -> tuple[str, list[Any]]:
+    """``sessions s`` WHERE clause admitting rows whose title starts with *prefix* (case-sensitive).
+
+    *lineage*: the list shows one row per compressed conversation (its root, projected onto the
+    tip), but a compression rotation moves the title onto the tip and clears the ancestor's
+    (``_resolve_title_conflict``), so the match is walked back to the root over the same
+    continuation edge the title transfer uses. Without it every row stands for itself."""
+    params = [escape_like(prefix) + "%", len(prefix), prefix]
+    if not lineage:
+        return f"({_TITLE_PREFIX_SQL.format(a='s')})", params
+    edge = _COMPRESSION_CHILD_SQL.format(a="child") + _non_continuation_child_sql("child.", "parent.id")
+    return f"""s.id IN (
+        WITH RECURSIVE titled(id) AS (
+            SELECT t.id FROM sessions t WHERE {_TITLE_PREFIX_SQL.format(a='t')}
+            UNION
+            SELECT parent.id
+            FROM titled
+            JOIN sessions child ON child.id = titled.id
+            JOIN sessions parent ON parent.id = child.parent_session_id
+            WHERE {edge}
+        )
+        SELECT id FROM titled)""", params
 
 
 def project_compression_tips(db, sessions: list[dict[str, Any]], compact_rows: bool) -> list[dict[str, Any]]:

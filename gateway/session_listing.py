@@ -47,13 +47,15 @@ def legacy_readable(authority, actor, sid):
         return False
 
 
-def stored_picker_sessions(authority, actor, *, limit, include_hidden=False, workspace=None, picker=False):
+def stored_picker_sessions(authority, actor, *, limit, include_hidden=False, workspace=None, picker=False,
+                           title_prefix=None):
     """Offer legacy local rows only to the same native transport that may resume them.
 
     Canonical sessions are already in the live feed. Old local rows have no policy
     receipt until explicit resume; listing them must not claim or restore anything.
     *workspace*: only the folder's rows (``hermes -c``'s rule). *picker*: each row carries the picker
     fields, from the columns the listing already read (``gateway/session_picker_fields.py``).
+    *title_prefix*: only conversations titled with it; the query pages over matches alone.
     """
     if actor.profile_id != authority.profile_id:
         raise RuntimeStoreError('profile_mismatch')
@@ -64,7 +66,8 @@ def stored_picker_sessions(authority, actor, *, limit, include_hidden=False, wor
     sessions, offset, seen, sources = [], 0, set(), []  # sources: (first row, current segment, listed row)
     while len(sessions) < limit:
         rows = db.list_sessions_rich(exclude_sources=_excluded_sources(), limit=200, offset=offset,
-            order_by_last_active=True, compact_rows=True, include_hidden=include_hidden, workspace_key=workspace)
+            order_by_last_active=True, compact_rows=True, include_hidden=include_hidden, workspace_key=workspace,
+            title_prefix=title_prefix)
         for row in rows:
             local = row['source'] in _LOCAL_SOURCES or client_history_row(row)
             if not local and _messaging_platform(row['source']) is None:

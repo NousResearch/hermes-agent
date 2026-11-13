@@ -220,6 +220,9 @@ method("session.activate", params=SessionActivateParams, result=SessionActivateR
 
 class SessionListParams(ProfileParams):
     title: str | None = None  # exact-title lookup (title as identity); windowless
+    # Only conversations whose title starts with this, case-sensitive and unstripped ("Task: "),
+    # matched before ``limit`` so an older match is not lost behind newer rows.
+    title_prefix: str | None = None
     limit: int | None = None
     include_hidden: bool = False
 

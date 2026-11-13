@@ -2,14 +2,16 @@ import { useStore } from '@nanostores/react'
 import { useEffect, useRef, useState } from 'react'
 
 import { useSessionView } from '@/app/chat/session-view'
+import { resolveSessionOwner } from '@/app/session/hooks/use-session-actions/utils'
 import { useI18n } from '@/i18n'
 import { isDesktopFsRemoteMode } from '@/lib/desktop-fs'
 import { Download, FolderOpen, MonitorPlay } from '@/lib/icons'
 import { normalizeOrLocalPreviewTarget } from '@/lib/local-preview'
-import { downloadGatewayMediaFile } from '@/lib/media'
+import { downloadGatewayMediaFile, type GatewayFileOrigin } from '@/lib/media'
 import { previewName } from '@/lib/preview-targets'
 import { notifyError } from '@/store/notifications'
 import { $previewTabSources, closePreviewForSource, openPreview } from '@/store/preview'
+import { profileScopeForSessionOwner } from '@/store/session-request-router'
 
 /** What the Electron main process said about this target's LOCAL filesystem
  * state (#101683). `null` keeps the stock card — remote-backend targets keep
@@ -44,6 +46,35 @@ async function classifyLocalTarget(rawTarget: string, cwd?: string | null): Prom
   }
 
   return null
+}
+
+/** The backend that owns this card's file: the SESSION's own route when it
+ *  resolves. A local-route chat can be shown over a secondary route while the
+ *  window's published connection is a remote primary — borrowing that ambient
+ *  connection sends the save to the wrong backend ("Session not found" on the
+ *  remote for a local path). Falls back to the previous ambient resolution
+ *  when no owner resolves, so nothing regresses for drafts. */
+async function fileSaveOrigin(storedSessionId: null | string, runtimeId: null | string): Promise<GatewayFileOrigin | undefined> {
+  const sessionId = storedSessionId || runtimeId || ''
+
+  if (!sessionId) {
+    return undefined
+  }
+
+  if (!storedSessionId) {
+    return { sessionId }
+  }
+
+  try {
+    const scope = profileScopeForSessionOwner(await resolveSessionOwner(storedSessionId))
+
+    return {
+      sessionId: storedSessionId,
+      ...(typeof scope === 'string' ? { profile: scope } : scope ? { owner: scope } : {})
+    }
+  } catch {
+    return { sessionId: storedSessionId }
+  }
 }
 
 export function PreviewAttachment({ target }: { target: string }) {
@@ -204,9 +235,9 @@ export function PreviewAttachment({ target }: { target: string }) {
 
     try {
       // Works in both modes: the Electron main process fetches the bytes
-      // through the session's backend connection (local gateway or remote)
-      // and prompts for a save location.
-      const result = await downloadGatewayMediaFile(target, sessionId ? { sessionId } : undefined)
+      // through the SESSION's own backend connection (its registry route —
+      // local gateway or remote) and prompts for a save location.
+      const result = await downloadGatewayMediaFile(target, await fileSaveOrigin(storedId, runtimeId))
 
       if (mountedRef.current && result.saved) {
         setDownloaded(true)

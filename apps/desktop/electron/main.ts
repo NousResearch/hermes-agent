@@ -216,7 +216,7 @@ import { buildRemoteBlock } from './connection-remote-block'
 import { liveWindowState, overlayWindowState } from './connection-window-state'
 import { describeCrashReason, installCrashForensics } from './crash-forensics'
 import { adoptServedDashboardToken } from './dashboard-token'
-import { resolveDesktopHermesHome, resolveDesktopUserData } from './data-paths'
+import { resolveDesktopUserData } from './data-paths'
 import { registerDeepLinkProtocol as registerDeepLinkProtocolWith } from './deep-link-protocol'
 import { loadOrCreateInstallationId, sshOwnershipId } from './desktop-installation'
 import { formatDesktopLogLine, formatLogStamp } from './desktop-log-line'
@@ -310,7 +310,6 @@ import {
   resolveRequestedPathForIpc,
   resolveTimeoutMs,
   SAFE_STORAGE_ENCODING,
-  setSensitiveHermesHome,
   TEXT_PREVIEW_SOURCE_MAX_BYTES,
   tightenSecretFileMode,
   writeSecretFileAtomic
@@ -361,6 +360,7 @@ import { resolveDesktopClientVersion } from './local-runtime-version'
 import { localSkinProfileKey, registerLocalSkinIpc } from './local-skin'
 import { ACTIVE_LOG_POLL_MS, planLogRotation, reclaimActiveLogIfOversized } from './log-rotation'
 import { registerMachineProfile } from './machine-profile'
+import { resolveMainHermesHome } from './main-hermes-home'
 import { createMainProcessLagWatchdog } from './main-process-lag-watchdog'
 import { activateWindow, ensureMainWindow, shouldQuitOnLastChatClosed } from './main-window-lifecycle'
 import {
@@ -728,7 +728,6 @@ import {
   shouldSurfaceErrorForRendererStackCookieCrashLoop,
   writeGpuStackCookieMarker
 } from './windows-stack-cookie-fallback'
-import { readWindowsUserEnvVar } from './windows-user-env'
 import { isPackagedInstallPath as isPackagedInstallPathUnderRoots } from './workspace-cwd'
 import { readWslWindowsClipboardImage } from './wsl-clipboard-image'
 import { resolvePickerDefaultPath, setActiveGatewayProfile, setWslBridgeProfileState } from './wsl-path-bridge'
@@ -1259,13 +1258,7 @@ if (INSTALL_STAMP) {
 
 const DESKTOP_PROFILE_CONFIG_PATH: string = path.join(app.getPath('userData'), 'active-profile.json')
 
-const HERMES_HOME: string = resolveDesktopHermesHome({
-  home: app.getPath('home'),
-  directoryExists,
-  readWindowsHome: (): string | null => readWindowsUserEnvVar('HERMES_HOME')
-})
-
-setSensitiveHermesHome(HERMES_HOME)
+const HERMES_HOME: string = resolveMainHermesHome(app.getPath('home'))
 
 // #77311: `desktop.electron_flags` and the renderer heap ceiling
 // (`desktop.renderer_max_old_space_mb`) used to reach Chromium only through

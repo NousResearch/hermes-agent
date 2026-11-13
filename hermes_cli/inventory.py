@@ -25,6 +25,7 @@ class ConfigContext:
     user_providers: dict
     custom_providers: list
     excluded_providers: list = None
+    excluded_models: Optional[dict] = None
 
     def with_overrides(
         self, *, current_provider: Optional[str] = None, current_model: Optional[str] = None,
@@ -53,12 +54,17 @@ def load_picker_context() -> ConfigContext:
         current_base_url = str(model_cfg.get("base_url", "") or "")
     else:  # config.model can be a bare string in older configs
         current_model, current_provider, current_base_url = (str(model_cfg) if model_cfg else ""), "", ""
-    excluded = cfg.get("model_catalog", {}).get("excluded_providers") or []
+    catalog_cfg = cfg.get("model_catalog", {})
+    if not isinstance(catalog_cfg, dict):
+        catalog_cfg = {}
+    excluded = catalog_cfg.get("excluded_providers") or []
+    excluded_models = catalog_cfg.get("excluded_models") or {}
     return ConfigContext(
         current_provider=current_provider, current_model=current_model, current_base_url=current_base_url,
         user_providers=stringify_provider_map(cfg.get("providers")),
         custom_providers=get_compatible_custom_providers(cfg),
         excluded_providers=excluded if isinstance(excluded, list) else [],
+        excluded_models=excluded_models if isinstance(excluded_models, dict) else {},
     )
 
 
@@ -92,11 +98,14 @@ def build_models_payload(
     the coupling, ``False`` retains the full 5s budget (#103843)."""
     from hermes_cli.model_switch import list_authenticated_providers
 
+    # Provider-scoped exclusions must see the complete inventory before any picker cap is applied.
+    # Otherwise an allowed model after a run of excluded entries can disappear with the provider row.
+    base_max_models = None if ctx.excluded_models else max_models
     rows = list_authenticated_providers(
         current_provider=ctx.current_provider, current_base_url=ctx.current_base_url,
         current_model=ctx.current_model, user_providers=ctx.user_providers,
         custom_providers=ctx.custom_providers, force_fresh_nous_tier=force_fresh_nous_tier,
-        max_models=max_models, refresh=refresh, probe_custom_providers=probe_custom_providers,
+        max_models=base_max_models, refresh=refresh, probe_custom_providers=probe_custom_providers,
         probe_current_custom_provider=probe_current_custom_provider, for_picker=for_picker,
         excluded_providers=ctx.excluded_providers or [],
         non_blocking_catalogs=non_blocking_catalogs, fast_custom_probe=fast_custom_probe,
@@ -141,6 +150,23 @@ def build_models_payload(
 
     if include_unconfigured:
         rows = list(rows) + _without_slug(_append_unconfigured_rows(rows, ctx), "moa")
+    if ctx.excluded_models:
+        from hermes_cli.model_filters import filter_provider_rows
+        from hermes_cli.model_switch_providers import _cap_models
+
+        rows = filter_provider_rows(rows, ctx.excluded_models)
+        if max_models is not None:
+            capped_rows: list[dict] = []
+            for row in rows:
+                models = list(row.get("models") or [])
+                capped = _cap_models(models, max_models, _slug(row))
+                if len(capped) == len(models):
+                    capped_rows.append(row)
+                    continue
+                capped_row = dict(row)
+                capped_row["models"] = capped
+                capped_rows.append(capped_row)
+            rows = capped_rows
     if picker_hints:
         _apply_picker_hints(rows)
     if canonical_order:

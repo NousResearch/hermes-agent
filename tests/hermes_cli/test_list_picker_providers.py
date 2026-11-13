@@ -47,18 +47,67 @@ def _make_provider(slug, name=None, models=None, *, is_current=False,
 
 
 
+def test_excluded_models_filter_runs_after_openrouter_live_refresh(monkeypatch):
+    base = [_make_provider("openrouter", models=["placeholder/model"])]
+    live = [
+        ("anthropic/claude-opus-4.8", ""),
+        ("openai/gpt-5.6-sol", ""),
+        ("deepseek/deepseek-v4", ""),
+    ]
+
+    monkeypatch.setattr(
+        model_switch,
+        "list_authenticated_providers",
+        lambda **kw: list(base),
+    )
+    monkeypatch.setattr(
+        "hermes_cli.models.fetch_openrouter_models",
+        lambda *a, **kw: list(live),
+    )
+
+    result = model_switch_providers.list_picker_providers(
+        max_models=50,
+        excluded_models={
+            "openrouter": ["anthropic/*", "openai/*"],
+        },
+    )
+
+    assert result[0]["models"] == ["deepseek/deepseek-v4"]
+    assert result[0]["total_models"] == 1
 
 
+def test_exclusions_run_before_non_openrouter_picker_cap(monkeypatch):
+    base = [_make_provider(
+        "together",
+        models=[
+            "blocked/model-1",
+            "blocked/model-2",
+            "blocked/model-3",
+            "blocked/model-4",
+            "blocked/model-5",
+            "allowed/model-6",
+        ],
+    )]
+    captured = {}
 
+    def _capture(**kwargs):
+        captured.update(kwargs)
+        return list(base)
 
+    monkeypatch.setattr(
+        model_switch,
+        "list_authenticated_providers",
+        _capture,
+    )
 
+    result = model_switch_providers.list_picker_providers(
+        max_models=5,
+        excluded_models={"together": ["blocked/*"]},
+    )
 
-
-
-
-
-
-
+    assert captured["max_models"] is None
+    assert result[0]["models"] == ["allowed/model-6"]
+    assert result[0]["total_models"] == 1
 
 
 def test_passthrough_kwargs_to_base(monkeypatch):

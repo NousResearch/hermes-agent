@@ -3041,21 +3041,8 @@ def _coerce_config_set_value(key: str, value: str) -> Any:
     return value
 
 
-# Container roots absent from DEFAULT_CONFIG whose shape is nonetheless fixed by their readers,
-# so the guardrail holds before anything is on disk (#114471: `model.aliases notamap`).
-_KNOWN_CONTAINER_TYPES = {
-    "custom_providers": "list",
-    "providers": "mapping",
-    "model.aliases": "mapping",
-    "model_aliases": "mapping",
-    # Omitted from DEFAULT_CONFIG on purpose (an empty default would clobber a user allow-list),
-    # so without these rows `config set plugins.enabled foo` stored a string every reader ignored.
-    "plugins.enabled": "list",
-    "plugins.disabled": "list",
-    "model_catalog.excluded_providers": "list",
-}
-# List slots whose readers go through ``parse_config_string_list``: a bare name is one entry.
-_SCALAR_AS_ONE_ITEM_LIST_KEYS = frozenset({"agent.disabled_toolsets", "skills.disabled"})
+# Known-container tables moved to config_container_types; re-exported for callers.
+from hermes_cli.config_container_types import _KNOWN_CONTAINER_TYPES, _SCALAR_AS_ONE_ITEM_LIST_KEYS
 
 
 def _expected_container_type(key: str, user_config: dict[str, Any]) -> Optional[str]:

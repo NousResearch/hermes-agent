@@ -331,7 +331,7 @@ def _aux_flow_provider_model(task: str, provider_slug: str, curated_models: list
             return
     else:
         selected = _prompt_model_selection(model_list, current_model=current_model, pricing=pricing,
-                                           confirm_provider=provider_slug)
+                                           filter_provider=provider_slug, confirm_provider=provider_slug)
         if selected is None:
             print("No change.")
             return

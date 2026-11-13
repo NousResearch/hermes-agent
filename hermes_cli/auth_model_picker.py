@@ -258,8 +258,8 @@ def _prompt_model_selection(
     model_ids: list[str], current_model: str = "",
     pricing: Optional[dict[str, dict[str, str]]] = None,
     unavailable_models: Optional[list[str]] = None, portal_url: str = "",
-    unavailable_message: str = "", confirm_provider: str = "", confirm_base_url: str = "",
-    confirm_api_key: str = "", usage=None,
+    unavailable_message: str = "", filter_provider: str = "", confirm_provider: str = "",
+    confirm_base_url: str = "", confirm_api_key: str = "", usage=None,
     notes: Optional[dict[str, str]] = None, title: str = "Select default model:",
 ) -> Optional[str]:
     """Interactive model picker; current_model listed first. Returns the chosen model ID or None. *title* heads
@@ -272,6 +272,14 @@ def _prompt_model_selection(
     """
     from hermes_cli.cli_output import line_input
     _unavailable = unavailable_models or []
+    if filter_provider:
+        from hermes_cli.config import load_config
+        from hermes_cli.model_filters import filter_model_ids
+
+        catalog_cfg = load_config().get("model_catalog", {})
+        excluded_models = catalog_cfg.get("excluded_models", {}) if isinstance(catalog_cfg, dict) else {}
+        model_ids = filter_model_ids(filter_provider, model_ids, excluded_models)
+        _unavailable = filter_model_ids(filter_provider, _unavailable, excluded_models)
     # Sale chrome is Nous Portal-only, even if pricing.original is present for another provider.
     sale_chrome = (confirm_provider or "").strip().lower() == "nous"
 

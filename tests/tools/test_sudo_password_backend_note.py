@@ -108,8 +108,8 @@ def test_local_backend_logs_no_note(caplog):
     terminal_tool_sudo._set_cached_sudo_password(PW)
     local = _bare(LocalEnvironment)
     with caplog.at_level(logging.DEBUG, logger=NOTE_LOGGER):
-        exec_command, sudo_stdin = local._prepare_command("sudo true")
-    assert sudo_stdin == PW + "\n"
+        result = local._prepare_command("sudo true")
+    assert result == ("sudo -S -p '' true", PW + "\n")
     assert _notes(caplog) == []
 
 

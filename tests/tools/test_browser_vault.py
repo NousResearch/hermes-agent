@@ -500,6 +500,27 @@ class TestBrowserVaultTools:
         reg.get_or_start.assert_not_called()
         assert "s3cret-pw" not in json.dumps([str(c) for c in reg.mock_calls]) and "s3cret-pw" not in raw
 
+    def test_dead_registered_supervisor_is_reattached_not_reused(self):
+        """A supervisor whose thread died (gave up reconnecting / crashed) must not serve the fill:
+        the vault re-attaches to the task's session CDP endpoint instead."""
+        import threading
+        from tools import browser_vault_tool
+        from tools.browser_supervisor import CDPSupervisor
+
+        cdp_url = "ws://example.com:9222/devtools/browser/abc"
+        dead = CDPSupervisor(task_id="t", cdp_url=cdp_url)
+        dead._thread = threading.Thread(target=lambda: None)
+        dead._thread.start()
+        dead._thread.join()
+        assert not dead.is_healthy()
+
+        with patch("tools.browser_session.session_for_task", return_value={"cdp_url": cdp_url}),              patch("tools.browser_session_cdp.get_dialog_policy_config", return_value=("must_respond", 5.0)),              patch("tools.browser_supervisor.SUPERVISOR_REGISTRY") as reg:
+            reg.get.return_value = dead
+            got = browser_vault_tool._ensure_supervisor("t")
+        assert got is reg.get_or_start.return_value
+        reg.get_or_start.assert_called_once_with(task_id="t", cdp_url=cdp_url,
+                                                 dialog_policy="must_respond", dialog_timeout_s=5.0)
+
 
     def test_vault_canary_redacted_from_browser_cdp_results(self, store):
         """P1-1 regression: a filled, non-token-shaped canary password must be

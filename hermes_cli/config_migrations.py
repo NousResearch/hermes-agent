@@ -789,10 +789,57 @@ def _qwen_meant_the_cli_login(_model: dict[str, Any]) -> bool:
     DashScope key and no configured provider of that name."""
     from hermes_cli.auth import _qwen_cli_auth_path, has_usable_secret, read_credential_pool
     from hermes_cli.runtime_provider_custom import named_custom_provider_config_path
-    return (_qwen_cli_auth_path().is_file()
-            and not has_usable_secret(_cfg().get_env_value_prefer_dotenv("DASHSCOPE_API_KEY"))
-            and not read_credential_pool("alibaba")
+
+    def pool_has_secret(provider: str, fields: tuple[str, ...]) -> bool:
+        return any(
+            isinstance(entry, dict) and any(has_usable_secret(entry.get(field)) for field in fields)
+            for entry in read_credential_pool(provider)
+        )
+
+    key_env = str(_model.get("key_env") or _model.get("api_key_env") or "").strip()
+    dashscope_key = _cfg().get_env_value_prefer_dotenv("DASHSCOPE_API_KEY")
+    pointed_key = _cfg().get_env_value_prefer_dotenv(key_env) if key_env else None
+    oauth_exists = (_qwen_cli_auth_path().is_file()
+                    or pool_has_secret("qwen-oauth", ("access_token", "refresh_token")))
+    return (oauth_exists
+            and not has_usable_secret(dashscope_key)
+            and not has_usable_secret(pointed_key)
+            and not pool_has_secret("alibaba", ("access_token", "runtime_api_key"))
             and named_custom_provider_config_path("qwen", read_raw_config()) is None)
+
+
+def _migrate_to_54(results: dict[str, Any], quiet: bool) -> None:
+    """Rewrite only provider selectors, never model names or arbitrary nested payloads."""
+    config = read_raw_config()
+    entries: list[Any] = [config]  # a root ``provider:`` is folded into ``model`` on load
+
+    def add(value: Any) -> None:  # every slot below accepts one mapping or a list of them
+        entries.extend(value if isinstance(value, list) else [value])
+
+    model = _dict_at(config, "model")
+    for slot in (model, *(model.get(k) for k in ("default", "model", "name")),
+                 config.get("delegation"), config.get("fallback_model"), config.get("fallback_providers"),
+                 _dict_at(config, "delegation").get("fallback_providers")):
+        add(slot)
+    for task in _dict_at(config, "auxiliary").values():
+        if isinstance(task, dict):
+            add(task)
+            add(task.get("fallback_chain"))
+    moa = _dict_at(config, "moa")  # the top-level block and each preset carry the same two slots
+    for block in (moa, *_dict_at(moa, "presets").values()):
+        if isinstance(block, dict):
+            add(block.get("aggregator"))
+            add(block.get("reference_models"))
+
+    changed = False
+    for entry in entries:
+        if (isinstance(entry, dict) and _lower_is("qwen")(entry.get("provider"))
+                and _qwen_meant_the_cli_login(entry)):
+            entry["provider"] = "qwen-oauth"
+            changed = True
+    if changed:
+        _commit(config, results, quiet, "Qwen CLI provider selectors migrated to qwen-oauth",
+                "  ✓ Qwen CLI provider selectors: qwen → qwen-oauth (bare qwen now means Alibaba DashScope).")
 
 
 MIGRATIONS: tuple[tuple[int, Callable[[dict[str, Any], bool], None]], ...] = (
@@ -940,11 +987,7 @@ MIGRATIONS: tuple[tuple[int, Callable[[dict[str, Any], bool], None]], ...] = (
         message="  ✓ Lowered agent.clarify_timeout from 3600 to 90 seconds (unanswered questions no longer hold the chat for an hour)")),
     # 53 -> 54: bare ``qwen`` now means Alibaba DashScope everywhere (it meant the Qwen CLI login for
     # credentials only). A Qwen-CLI-only install keeps its login (see _qwen_meant_the_cli_login).
-    (54, functools.partial(
-        _rewrite_key, section="model", key="provider", match=_lower_is("qwen"), new="qwen-oauth",
-        added="model.provider=qwen-oauth (was: qwen)",
-        message="  ✓ model.provider: qwen → qwen-oauth. Bare `qwen` now means Alibaba DashScope; your Qwen CLI login is kept.",
-        extra_guard=_qwen_meant_the_cli_login)),
+    (54, _migrate_to_54),
 )
 
 #: Steps triggered by a legacy key or identifier (a renamed or retired key, a removed plugin or

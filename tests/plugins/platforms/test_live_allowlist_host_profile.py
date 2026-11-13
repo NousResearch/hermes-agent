@@ -196,9 +196,9 @@ def test_a_host_reload_never_touches_a_secondary_profiles_scope(_home, tmp_path,
 
 
 def test_a_host_reload_under_a_foreign_stamped_scope_waits_for_the_host(_home, tmp_path, multiplexed):
-    """A body holding another home's secret scope (no home override) cannot bridge the host's lists. Its
-    reload must neither write the host's lists into that scope nor acknowledge the edit, so the host's
-    own next event still applies it."""
+    """A body holding another home's secret scope (no home override) sees the host's edit first. The
+    reload runs under the host's own scope, so it never writes the host's lists into the foreign
+    mapping, and the host's next own event refuses the removed user."""
     from agent.secret_scope import current_secret_scope, reset_secret_scope, set_secret_scope
     from plugins.platforms.telegram.telegram_live_gates import refresh_telegram_gates
 
@@ -307,3 +307,33 @@ def test_a_host_discord_reload_under_a_foreign_stamped_scope_reads_the_hosts_own
     finally:
         reset_secret_scope(token)
     assert verdict is False
+
+
+def test_moving_users_between_lists_never_shows_a_reader_no_list(monkeypatch):
+    """With a grant on, one edit retracts one bridged list and adds another: the new one must land
+    before the old one goes (the retracted name here sorts first)."""
+    from gateway import config_loader
+    from gateway.platforms._shared import bridged_env_digest, bridged_env_marker, follow_bridged_env
+
+    old, new = "TELEGRAM_ALLOWED_USERS", "TELEGRAM_GROUP_ALLOWED_USERS"
+    seen = []
+
+    class _Scope(dict):
+        def pop(self, key, *default):
+            value = super().pop(key, *default)
+            seen.append(old in self or new in self)
+            return value
+
+    scope = _Scope({old: "111", bridged_env_marker(old): bridged_env_digest("111"),
+                    "GATEWAY_ALLOW_ALL_USERS": "true"})
+    for var in (old, bridged_env_marker(old)):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv(new, "111")
+    monkeypatch.setenv(bridged_env_marker(new), bridged_env_digest("111"))
+    monkeypatch.setenv("GATEWAY_ALLOW_ALL_USERS", "true")
+    monkeypatch.setattr(config_loader, "_BRIDGED_ALLOW_ALL_USERS", True)
+
+    follow_bridged_env(scope)
+
+    assert old not in scope and scope[new] == "111" and scope["GATEWAY_ALLOW_ALL_USERS"] == "true"
+    assert seen and all(seen), seen

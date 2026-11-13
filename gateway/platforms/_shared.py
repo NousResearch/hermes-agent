@@ -362,15 +362,20 @@ def follow_bridged_env(scope: dict) -> None:
         scope.pop("GATEWAY_ALLOW_ALL_USERS", None)
     prefix = BRIDGED_ENV_MARKER_PREFIX
     names = {key[len(prefix):] for key in (*scope, *live) if key.startswith(prefix) and key != prefix}
-    for name in names:
+    retracted = []
+    for name in sorted(names):  # deterministic, not hash-seed order
         marker = bridged_env_marker(name)
         if name in scope and bridged_env_digest(scope[name]) != scope.get(marker):
             continue
         if live.get(marker) is not None and bridged_env_digest(live.get(name)) == live[marker]:
             scope[name], scope[marker] = live[name], live[marker]
         elif name not in live and marker not in live:  # retracted: only the bridge removes both
-            scope.pop(name, None)
-            scope.pop(marker, None)
+            retracted.append((name, marker))
+    # Every new list lands before any old one goes: an edit moving users from one list to another
+    # never shows a reader "no list at all", which a still-on grant would turn into admit-all.
+    for name, marker in retracted:
+        scope.pop(name, None)
+        scope.pop(marker, None)
 
 
 def bridge_owns_env(name: str) -> bool:
@@ -484,8 +489,9 @@ def _reload_live_gate_extra(adapter: Any, keys: Iterable[str], version: tuple,
     # bound scope, and the installed launch mapping (frozen env + .env) then takes them, so the gate
     # below and the runner's env check both read the edited lists (multiplexed: launch_secret_scope).
     token = _LAUNCH_GATE_RELOAD.set(launch)
-    # A launch reload whose bridge still cannot run (a foreign home bound) left the env lists as they
-    # were: provisional, so the owner's own next event redoes it rather than finding it acknowledged.
+    # Fail-safe: _owner_scope binds the owner's own scope for a launch reload, so its bridge always
+    # runs and no current path makes this True. Should one ever skip the bridge, the env lists stay
+    # as they were and the edit stays unacknowledged, so the owner's own next event redoes it.
     provisional = launch and bridge_env_skipped()
     try:  # ONE checked load: the fallback env-only config would drop the YAML-held lists
         loaded = load_gateway_config(strict=True)

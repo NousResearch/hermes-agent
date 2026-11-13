@@ -28,7 +28,7 @@ _FILLER = r"(?:\w{1,64}\s{1,64}){0,8}"
 # Env var reference ending in a secret-ish suffix (see exfil comment below).
 _SECRET_VAR = r"\$\{?\w{0,256}(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)S?\b"
 # "forget your original instructions" (#26977); shared with tools/skills_guard.py.
-FORGET_RULES_RE = (r"(?<!n't\s)(?<!not\s)(?<!never\s)\bforget\s{1,64}(?:about\s{1,64})?(your|all|any|previous|prior|above|earlier)"
+FORGET_RULES_RE = (r"(?<!n[’']t\s)(?<!nt\s)(?<!not\s)(?<!never\s)\bforget\s{1,64}(?:about\s{1,64})?(your|all|any|previous|prior|above|earlier)"
                    r"\s{1,64}(?:\w{1,64}\s{1,64}){0,3}(instructions|rules|guidelines)\b")
 # Verb prefix for "modify agent config" patterns.
 _MODIFY = r"(update|modify|edit|write|change|append|add\s{1,64}to)\s{1,64}[^\n]{0,2048}"

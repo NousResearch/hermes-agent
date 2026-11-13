@@ -1,3 +1,4 @@
+import { useStore } from '@nanostores/react'
 import { useEffect, useRef, useState } from 'react'
 
 import { type ResolvedOwner, resolveOwnerNow } from '@/hermes'
@@ -7,6 +8,7 @@ import { fetchVoiceClientConfigFor } from '@/lib/voice-client-direct'
 import { type DictationStreamSession, openDictationStream } from '@/lib/voice-stream'
 import { recordFeatureUse } from '@/store/desktop-metrics'
 import { notify, notifyError } from '@/store/notifications'
+import { $voiceMaxRecordingSeconds } from '@/store/voice-prefs'
 
 import { useComposerScope } from '../scope'
 import type { VoiceActivityState, VoiceStatus } from '../types'
@@ -14,7 +16,6 @@ import type { VoiceActivityState, VoiceStatus } from '../types'
 import { useMicRecorder } from './use-mic-recorder'
 
 interface VoiceRecorderOptions {
-  maxRecordingSeconds: number
   onTranscribeAudio?: (audio: Blob, owner?: ResolvedOwner) => Promise<string>
   focusInput: () => void
   onTranscript: (text: string) => void
@@ -34,7 +35,6 @@ interface Dictation {
 }
 
 export function useVoiceRecorder({
-  maxRecordingSeconds,
   onTranscribeAudio,
   focusInput,
   onTranscript
@@ -42,6 +42,7 @@ export function useVoiceRecorder({
   const { t } = useI18n()
   const voiceCopy = t.notifications.voice
   const { handle, level, recording } = useMicRecorder(voiceCopy)
+  const maxRecordingSeconds = useStore($voiceMaxRecordingSeconds)
   // The scope's session owner (a Bot tile's own connection + profile); the
   // main composer leaves it unset and the ambient scope fills it at mic-open.
   const { connectionId: ownerConnectionId, profile: ownerProfile } = useComposerScope()

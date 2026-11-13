@@ -113,7 +113,6 @@ describe('useVoiceRecorder STT readiness barrier', () => {
     return renderHook(() =>
       useVoiceRecorder({
         focusInput: () => undefined,
-        maxRecordingSeconds: 30,
         onTranscript,
         onTranscribeAudio
       })

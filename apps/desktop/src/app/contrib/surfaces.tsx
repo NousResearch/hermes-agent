@@ -112,16 +112,10 @@ export const StatusbarSurface = memo(function StatusbarSurface({
 })
 
 /** The workspace pane: the real route table (chat + full-page views + plugin
- *  routes). Subscribes to the gateway instance/state and ROUTES_AREA itself;
- *  the voice cap arrives as a prop. ChatView subscribes to its own session
- *  atoms, so streaming never round-trips through the controller. */
-export const ChatRoutesSurface = memo(function ChatRoutesSurface({
-  actions,
-  maxVoiceRecordingSeconds
-}: {
-  actions: WiringActions
-  maxVoiceRecordingSeconds?: number
-}) {
+ *  routes). Subscribes to the gateway instance/state and ROUTES_AREA itself.
+ *  ChatView subscribes to its own session atoms, so streaming never
+ *  round-trips through the controller. */
+export const ChatRoutesSurface = memo(function ChatRoutesSurface({ actions }: { actions: WiringActions }) {
   const activeConnectionId = useStore($activeConnectionId)
   const activeGatewayProfile = useStore($activeGatewayProfile)
   const gateway = useStore($gateway)
@@ -163,7 +157,6 @@ export const ChatRoutesSurface = memo(function ChatRoutesSurface({
   const chatView = (
     <ChatView
       gateway={gateway}
-      maxVoiceRecordingSeconds={maxVoiceRecordingSeconds}
       modelMenuContent={modelMenuContent}
       modelOptionsOwnerConnectionId={activeConnectionId || undefined}
       modelOptionsProfile={activeGatewayProfile}

@@ -481,3 +481,33 @@ def scan_profile_flag(argv: list) -> tuple:
             saw_subcommand = True
         i += 2 if takes_value else 1
     return None, 0, None
+
+
+def gateway_run_no_supervise(argv) -> bool:
+    """True when the CLI would parse ``argv`` (no program name) as ``gateway run --no-supervise``.
+
+    The one decision for "this command is a foreground, unsupervised gateway run", shared by the
+    early profile pre-parse (``main._s6_supervised_gateway_run``) and the container boot
+    reconciler so both agree: the real parsers decide, so accepted abbreviations
+    (``--no-supervis``) and flag placement count exactly as they do when the command runs.
+    """
+    import contextlib
+    import io
+
+    from hermes_cli.subcommands.gateway import build_gateway_parser
+
+    args = list(argv)
+    _, consumed, index = scan_profile_flag(args)
+    if index is not None:  # stripped before argparse, as main._apply_profile_override does
+        args = args[:index] + args[index + consumed:]
+
+    parser, subparsers, _ = build_top_level_parser()
+    build_gateway_parser(subparsers, cmd_gateway=None, cmd_proxy=None, cmd_gateway_enroll=None)
+    sink = io.StringIO()
+    try:  # an invalid command (or --help) exits without running a gateway
+        with contextlib.redirect_stdout(sink), contextlib.redirect_stderr(sink):
+            parsed = parser.parse_args(args)
+    except SystemExit:
+        return False
+    return (parsed.command == "gateway" and getattr(parsed, "gateway_command", None) == "run"
+            and bool(getattr(parsed, "no_supervise", False)))

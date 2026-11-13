@@ -547,7 +547,9 @@ so nested surfaces never compound a veil; covers that cannot (`--portal-surface-
 `--portal-page-background`) take the veil flattened onto the ground. With a sidebar or page nav
 docked (wide), the figure artworks move right by Figma's own amount to stay on the stage; every
 image carries bleed past every placement (Ascend repeats across), so no window size ever reaches an
-image edge. Figma's
+image edge. The panels carry Figma's NOISE effects as tiny tiling `feTurbulence` SVGs
+(`assets/portal-noise-*.svg`, `--artwork-panel-noise`/`--artwork-stage-noise`): the sidebar kind in
+both themes, the stage in light. Figma's
 "01 · Artwork" screens are the canvas layer on its own, not an app state; it shows no setting to
 turn the art off or choose one.
 

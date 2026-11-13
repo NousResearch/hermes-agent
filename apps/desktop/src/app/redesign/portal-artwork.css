@@ -32,6 +32,14 @@
   --artwork-blend: var(--artwork-over-blend), var(--artwork-image-blend);
   /* The veil a stage painter lays over the art: a conversation's unless its zone holds a new chat. */
   --artwork-veil: var(--portal-surface-stage-veil-conversation);
+  /* Figma's NOISE on the panels: the sidebar kind's in both themes, the stage's in light only. */
+  --artwork-panel-noise: url('../../assets/portal-noise-dark.svg') 0 0 / 128px repeat;
+  --artwork-stage-noise: linear-gradient(transparent);
+}
+
+:root[data-shell='portal']:not(.dark) {
+  --artwork-panel-noise: url('../../assets/portal-noise-light.svg') 0 0 / 128px repeat;
+  --artwork-stage-noise: url('../../assets/portal-noise-light-stage.svg') 0 0 / 128px repeat;
 }
 
 /* Wide (breakpoints.ts): the chat sidebar docks beside a visible chat (its zone opens the window's
@@ -191,9 +199,9 @@
   > [data-panel-header]::before,
 :root[data-shell='portal'] [data-overlay-surface][data-page-surface] [data-glass-raised],
 :root[data-shell='portal'] [data-slot='composer-dock'][data-redesigned-composer]:not([data-popped-out])::before {
-  background: linear-gradient(var(--artwork-veil)), var(--artwork-paint);
+  background: var(--artwork-stage-noise), linear-gradient(var(--artwork-veil)), var(--artwork-paint);
   background-color: var(--portal-surface-canvas);
-  background-blend-mode: normal, var(--artwork-blend);
+  background-blend-mode: normal, normal, var(--artwork-blend);
 }
 
 /* A page's nav panel (Settings 16292:19818) and the side tool panes (Files, Review: the sidebar's
@@ -202,9 +210,9 @@
 :root[data-shell='portal']
   [data-tree-group][data-window-top]:is([data-zone-pane='files'], [data-zone-pane='review'])
   > [data-panel-header]::before {
-  background: linear-gradient(var(--portal-sidebar-panel-background)), var(--artwork-paint);
+  background: var(--artwork-panel-noise), linear-gradient(var(--portal-sidebar-panel-background)), var(--artwork-paint);
   background-color: var(--portal-surface-canvas);
-  background-blend-mode: normal, var(--artwork-blend);
+  background-blend-mode: normal, normal, var(--artwork-blend);
 }
 
 /* The stage's own layers leave the panel's paint showing. */

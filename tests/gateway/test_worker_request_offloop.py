@@ -186,3 +186,102 @@ async def test_retirement_during_verification_refuses_worker_write(monkeypatch, 
             await asyncio.gather(request, return_exceptions=True)
     with pytest.raises(RuntimeStoreError, match="runtime_retired"):
         await asyncio.wait_for(request, timeout=10)
+
+
+class _RetirableAuthority:
+    profile_id = "profile"
+    epoch = 7
+    db = object()
+
+    def __init__(self):
+        self.retired = False
+
+    def _require_admission_open(self):
+        pass
+
+    def authorize(self, actor, ref, capability):
+        pass
+
+    def wake_after_worker(self, session_id):
+        pass
+
+
+async def _drive_until_refused(monkeypatch, operation, blocked_leg, writes):
+    """Park one off-loop leg, retire the authority while it is parked, and return the
+    (already-awaited-to-completion) request task so the caller can assert refusal."""
+    from types import SimpleNamespace
+    from hermes_state_runtime import RuntimeStoreError
+
+    loop = asyncio.get_running_loop()
+    loop_thread = threading.get_ident()
+    entered = asyncio.Event()
+    release = threading.Event()
+    authority = _RetirableAuthority()
+    connection = SimpleNamespace(authority=authority, actor=_FakeActor())
+
+    def leg(name):
+        def run(*args):
+            assert threading.get_ident() != loop_thread, f"{name} blocked the event loop"
+            if name == blocked_leg:
+                loop.call_soon_threadsafe(entered.set)
+                assert release.wait(30), f"{name} was not released"
+            return "claim"
+        return run
+
+    monkeypatch.setattr(session_worker, "_claim", leg("claim"))
+    monkeypatch.setattr(session_worker, "_verify", leg("verify"))
+    monkeypatch.setattr(session_worker, "adopt_worker_execution",
+                        lambda *a, **k: writes.append("adopt") or "adopted")
+    monkeypatch.setattr(session_worker, "mutate_worker_execution",
+                        lambda *a, **k: writes.append("persist") or "saved")
+    monkeypatch.setattr(session_worker, "register_worker_execution",
+                        lambda *a, **k: writes.append("register") or "registered")
+
+    request = asyncio.create_task(session_worker.worker_request(
+        connection, "ref", _params(operation), operation=operation))
+    entered_task = asyncio.create_task(entered.wait())
+    done = set()
+    try:
+        done, _ = await asyncio.wait({entered_task, request}, timeout=10, return_when=asyncio.FIRST_COMPLETED)
+        if request in done:
+            await request
+        assert entered_task in done, f"{blocked_leg} did not start"
+        authority.retired = True
+    finally:
+        release.set()
+        entered_task.cancel()
+        await asyncio.gather(entered_task, return_exceptions=True)
+        if entered_task not in done:
+            request.cancel()
+            await asyncio.gather(request, return_exceptions=True)
+    return request
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["adopt", "persist"])
+@pytest.mark.parametrize("blocked_leg", ["claim", "verify"])
+async def test_retirement_during_authentication_refuses_ordinary_worker_write(
+    monkeypatch, operation, blocked_leg
+):
+    """Moving _claim/_verify off-loop added yield points between the serving check at the
+    top of worker_request and the adopt/mutate writes; a retirement while either leg is
+    parked must still refuse the write, the way the child/delegation routes already do."""
+    from hermes_state_runtime import RuntimeStoreError
+
+    writes = []
+    request = await _drive_until_refused(monkeypatch, operation, blocked_leg, writes)
+    with pytest.raises(RuntimeStoreError, match="runtime_retired"):
+        await asyncio.wait_for(request, timeout=10)
+    assert writes == [], f"retired authority accepted a {operation} write: {writes}"
+
+
+@pytest.mark.asyncio
+async def test_retirement_during_claim_refuses_register_write(monkeypatch):
+    """The register leg writes after only the claim await; same fence, same refusal."""
+    from hermes_state_runtime import RuntimeStoreError
+
+    writes = []
+    request = await _drive_until_refused(monkeypatch, "register", "claim", writes)
+    with pytest.raises(RuntimeStoreError, match="runtime_retired"):
+        await asyncio.wait_for(request, timeout=10)
+    assert writes == [], f"retired authority accepted a register write: {writes}"

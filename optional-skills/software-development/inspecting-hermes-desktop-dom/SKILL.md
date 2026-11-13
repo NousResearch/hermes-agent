@@ -1,7 +1,7 @@
 ---
 name: inspecting-hermes-desktop-dom
 description: "Read the live Hermes desktop DOM/CSS over CDP."
-version: 1.0.0
+version: 1.1.0
 author: Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
@@ -38,8 +38,8 @@ CDP; hand aesthetics to the user.
 - Checking a design token's computed value on a real node
 - Reading renderer console errors the user mentions but can't copy out
 
-**Don't use for:** perf profiling or heap work (`node-inspect-debugger`,
-`debugging-hermes-desktop`), or anything where the real question is "does this
+**Don't use for:** perf profiling or heap work (`node-inspect-debugger`, the
+`apps/desktop/scripts/perf/` harness), or anything where the real question is "does this
 look right".
 
 ## The port
@@ -53,16 +53,46 @@ Open on `127.0.0.1:9222` for any dev-server run. Closed in exactly two cases
 
 `HERMES_DESKTOP_CDP_PORT` moves the port (`=9333`) or disables it (`=off`).
 
+### Packaged builds: explicit user opt-in through `desktop.electron_flags`
+
+`dev-cdp.ts` never opens the port in a packaged build, but it does not strip a
+Chromium switch the user passes in. When the user explicitly wants their own
+packaged window inspected, the supported launcher path is the list-valued
+`desktop.electron_flags` setting (a plain string is rejected):
+
+```bash
+# Linux/Wayland: --ozone-platform=wayland is required, see below
+hermes config set desktop.electron_flags \
+  '["--ozone-platform=wayland", "--remote-debugging-port=9222", "--remote-debugging-address=127.0.0.1"]'
+# Revert when done (the port lets any local process drive the app and read sessions)
+hermes config set desktop.electron_flags '[]'
+```
+
+The user quits and relaunches the app themselves. Do not tell them to start
+the binary under `release/` directly: the window may never appear, because the
+launcher's environment is missing.
+
+**Wayland relaunch pitfall.** Without an explicit `--ozone-platform`, the first
+process (`electron/entry.ts` → `wslg-launch.ts`) re-executes itself with
+`--ozone-platform=…` and stays alive without windows. It receives the debugging
+flags too and binds the port first. The real app then logs
+`bind() failed … (98)` / `Cannot start http server for devtools` in
+`logs/desktop-chromium.log`, and the port answers with an empty `/json/list`.
+Putting `--ozone-platform` into the flags skips the relaunch. Confirm the
+owner with `ss -ltnp | grep 9222`.
+
 Check before doing anything else:
 
 ```bash
 curl -s --max-time 3 http://127.0.0.1:${HERMES_DESKTOP_CDP_PORT:-9222}/json/version
 ```
 
-Empty → no port. Do not guess another port silently.
+Empty → no port. Do not guess another port silently. A port that answers but
+lists no `page` target belongs to the wrong process (see the Wayland pitfall).
 
-**Never relaunch the user's app to get a port.** That destroys their session and
-their state. Launch your own isolated instance instead (below).
+**Never relaunch the user's app on your own to get a port.** That destroys their
+session and their state. Launch your own isolated instance instead (below), or
+use the packaged opt-in above with the user's agreement and let them restart.
 
 ## Reading the DOM
 
@@ -115,6 +145,20 @@ If the node carries no class of its own, the value is **inherited** — sweeping
 call sites will not fix it, and you need the ancestor rule. A plugin stylesheet
 (e.g. `@tailwindcss/typography`'s `prose a { font-weight: 500 }`) routinely beats
 a utility class; override on the shared class, not at each usage.
+
+## Driving the user's window
+
+Only drive input after the user agrees, and stop when they are working in it.
+
+- Check before and after every step that the layout is the one you expect: for
+  two session tabs in one stack, exactly one `[data-slot="pane-tab"]` with
+  `aria-selected="true"`. Abort on any drift. A session switch does not change
+  `location.hash`, and a stable message count is not proof that a switch happened.
+- `element.click()` on a pane tab does not activate it. Synthetic CDP mouse
+  presses on a tab can start a drag (`onEngage`) and move the tab into another
+  split, which changes the user's layout. Activate tabs from the keyboard instead:
+  `focus()` the tab, then `Input.dispatchKeyEvent` Enter (`pane-tab.tsx` handles
+  Enter/Space).
 
 ## Your own isolated instance
 

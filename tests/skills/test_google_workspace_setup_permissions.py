@@ -160,3 +160,59 @@ def test_setup_refresh_repairs_existing_token_permissions(
 
     assert setup_module.check_auth() is True
     assert setup_module.TOKEN_PATH.stat().st_mode & 0o777 == 0o600
+
+
+def test_client_secret_is_stored_owner_only(setup_module, tmp_path):
+    src = tmp_path / "downloaded_client_secret.json"
+    src.write_text('{"installed": {"client_id": "id", "client_secret": "s"}}', encoding="utf-8")
+    setup_module.CLIENT_SECRET_PATH.chmod(0o644)
+
+    setup_module.store_client_secret(str(src))
+
+    assert setup_module.CLIENT_SECRET_PATH.stat().st_mode & 0o777 == 0o600
+    assert json.loads(setup_module.CLIENT_SECRET_PATH.read_text(encoding="utf-8"))["installed"]["client_id"] == "id"
+
+
+def test_pending_auth_is_saved_owner_only(setup_module):
+    setup_module.PENDING_AUTH_PATH.unlink()
+
+    setup_module._save_pending_auth(state="s", code_verifier="v")
+
+    assert setup_module.PENDING_AUTH_PATH.stat().st_mode & 0o777 == 0o600
+    assert json.loads(setup_module.PENDING_AUTH_PATH.read_text(encoding="utf-8"))["code_verifier"] == "v"
+
+
+def test_gws_bridge_refresh_writes_token_owner_only(monkeypatch, tmp_path):
+    import io
+    import urllib.request
+
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    spec = importlib.util.spec_from_file_location(
+        "gws_bridge_permissions_test", SCRIPT_PATH.with_name("gws_bridge.py")
+    )
+    bridge = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(bridge)
+
+    token_path = bridge.get_token_path()
+    token_path.write_text("{}", encoding="utf-8")
+    token_path.chmod(0o644)
+    monkeypatch.setattr(
+        urllib.request,
+        "urlopen",
+        lambda req, timeout=None: io.BytesIO(b'{"access_token": "new", "expires_in": 3600}'),
+    )
+
+    bridge.refresh_token(
+        {
+            "client_id": "id",
+            "client_secret": "secret",
+            "refresh_token": "refresh",
+            "token_uri": "https://oauth2.googleapis.com/token",
+        }
+    )
+
+    assert token_path.stat().st_mode & 0o777 == 0o600
+    assert json.loads(token_path.read_text(encoding="utf-8"))["token"] == "new"

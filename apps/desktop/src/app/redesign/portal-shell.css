@@ -78,19 +78,27 @@
   border-start-end-radius: var(--portal-panel-radius);
 }
 
-/* ── Workspace frame ── the chat sidebar and the stage (or a page's nav and body) sit in one card
-   inset from the window, the artwork around it (Content 16292:14463: 15px corners, a soft shadow).
+/* ── Workspace frame ── the chat sidebar and the stage (or a page's nav and body), and in developer
+   mode the side tool panes, sit in one card on the canvas, the artwork around it (Content
+   16292:14463 at x 65–1265, y 60–865 of the 1280×880 window: 15px corners, a soft shadow, a 1px
+   highlight along its top). The rails are canvas chrome on either side of it: 5px from the global
+   rail, and from the developer rail when it shows, 15px from the window's end and floor otherwise.
    A phone (compact, breakpoints.ts: min-width 640px) keeps every pixel. */
 @media (min-width: 640px) {
   :root[data-shell='portal'] [data-slot='layout-cover'] {
     position: relative;
     isolation: isolate;
-    margin-inline-end: var(--portal-workspace-inset-end);
+    margin-inline: var(--portal-workspace-inset-start) var(--portal-workspace-inset-end);
     margin-block-end: var(--portal-workspace-inset-bottom);
   }
 
-  /* The shadow lies under the frame, which starts under the band. */
-  :root[data-shell='portal'] [data-slot='layout-cover']::before {
+  :root[data-shell='portal'] [data-slot='layout-cover']:has(+ [data-slot='developer-rail']) {
+    margin-inline-end: var(--portal-workspace-inset-start);
+  }
+
+  /* The shadow lies under the frame, which starts under the band; the highlight lies over it. */
+  :root[data-shell='portal'] [data-slot='layout-cover']::before,
+  :root[data-shell='portal'] [data-slot='layout-cover']::after {
     content: '';
     position: absolute;
     z-index: -1;
@@ -100,20 +108,41 @@
     pointer-events: none;
   }
 
+  :root[data-shell='portal'] [data-slot='layout-cover']::after {
+    z-index: 1;
+    box-shadow: var(--portal-shadow-workspace-highlight);
+  }
+
   :root[data-shell='portal'] [data-slot='layout-tree'] {
     overflow: clip;
     border-end-start-radius: var(--portal-panel-radius);
     border-end-end-radius: var(--portal-panel-radius);
   }
 
+  /* Inside the frame the panels meet without hairlines: their fills tell them apart (Panel and
+     Panel/flexible draw no stroke), and the frame's own edge is its shadow and highlight. */
+  :root[data-shell='portal'] [data-tree-group][data-window-top] > [data-panel-header]::before {
+    border-width: 0;
+  }
+
   :root[data-shell='portal'] [data-overlay-surface][data-page-surface] {
-    padding-inline-end: var(--portal-workspace-inset-end);
+    padding-inline: var(--portal-workspace-inset-start) var(--portal-workspace-inset-end);
     padding-block-end: var(--portal-workspace-inset-bottom);
   }
 
   :root[data-shell='portal'] [data-overlay-surface][data-page-surface] [data-glass-raised] {
     border-radius: var(--portal-panel-radius);
     box-shadow: var(--portal-shadow-workspace);
+  }
+
+  :root[data-shell='portal'] [data-overlay-surface][data-page-surface] [data-glass-raised]::after {
+    content: '';
+    position: absolute;
+    z-index: 1;
+    inset: 0;
+    border-radius: inherit;
+    box-shadow: var(--portal-shadow-workspace-highlight);
+    pointer-events: none;
   }
 }
 

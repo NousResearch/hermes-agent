@@ -71,10 +71,12 @@
      pages never moves the column sideways. */
   --portal-frame-inset: 1.25rem;
   --portal-stage-inset: 5.625rem;
-  /* The workspace frame's gap to the window edge, where the artwork shows (Prod - Desktop: the 10px
-     "inset" column 18521:22266 at the end, the 15px "Spacer" 18521:17513 at the floor). It starts at
-     the rail and under the band. 0 for both puts the panels back on the window's edges. */
-  --portal-workspace-inset-end: 0.625rem;
+  /* The workspace frame's gaps, where the artwork shows, measured in Figma's 1280×880 window
+     (Content 16292:14463 at x 65–1265, y 60–865): 5px past a 60px rail (and before the developer
+     rail), 15px to the window's end (the "inset" column 18521:22266 and the frame's 5px edge) and to
+     its floor (the "Spacer" 18521:17513). 0 for all three puts the panels back on the edges. */
+  --portal-workspace-inset-start: 0.3125rem;
+  --portal-workspace-inset-end: 0.9375rem;
   --portal-workspace-inset-bottom: 0.9375rem;
   /* The column's one max width per page kind: forms and details (1036:7189 General: 840), catalogs and
      tables (919:9281: 980), and the conversation shared by the transcript and the docked composer. */

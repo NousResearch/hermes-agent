@@ -35,6 +35,8 @@
   --portal-shadow-composer: 0 4px 4px var(--portal-raw-shadow-25);
   /* The workspace frame lifted off the artwork (16292:14463): a soft shadow up and around it. */
   --portal-shadow-workspace: 0 -4px 30px var(--portal-raw-shadow-20);
+  /* ...and its inner highlight along the top (inner shadow, 16292:14463): white .05, 1px down, 2px soft. */
+  --portal-shadow-workspace-highlight: inset 0 1px 2px var(--portal-raw-highlight-5);
 
   /* Names in use before the role names; Phase B moves their readers to the role and deletes them. */
   --portal-control-radius: var(--portal-radius-control);
@@ -49,4 +51,5 @@
   --portal-shadow-floating: 0 1px 2px var(--portal-raw-shadow-4), 0 8px 24px var(--portal-raw-shadow-8);
   /* Light's frame shadow falls below it (16292:23801). */
   --portal-shadow-workspace: 0 8px 12px var(--portal-raw-shadow-navy-10);
+  --portal-shadow-workspace-highlight: none;
 }

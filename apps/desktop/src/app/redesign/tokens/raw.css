@@ -35,6 +35,8 @@
   --portal-raw-shadow-20: rgb(0 0 0 / 0.2);
   --portal-raw-shadow-25: rgb(0 0 0 / 0.25);
   --portal-raw-shadow-50: rgb(0 0 0 / 0.5);
+  /* The workspace frame's top highlight (16292:14463): white at .05. */
+  --portal-raw-highlight-5: rgb(255 255 255 / 0.05);
   /* Light's workspace frame shadow ink (16292:23801): a navy at .1. */
   --portal-raw-shadow-navy-10: rgb(18 20 38 / 0.1);
   /* The ink ladder (LANGUAGE §1.1): Figma's light/2, 5, 10, 40 plus the page steps 3, 4, 8, 14, 22, 28.

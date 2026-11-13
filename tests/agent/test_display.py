@@ -97,6 +97,12 @@ class TestBuildToolPreview:
         "params = {'text': 'Hunter2Correct!'}\ncdp('Input.insertText', **params)",
         "params = {\"text\": \"Hunter2Correct!\"}\ncdp('Input.insertText', params)",
         "params = {'text': 'Hunter2Correct!'}\ncdp('Input.insertText', {**params})",
+        "fill_input('#p', ('Hunter2Correct!'))",
+        "fill_input('#p', '' 'Hunter2Correct!')",
+        "fill_input(text='Hunter2Correct!', selector='#p')",
+        "fill_input('#p', f'{1}Hunter2Correct!')",
+        "pw = ('Hunter2Correct!')\nfill_input('#p', pw)",
+        "fill_input('#p', ('Hunter2Correct!'",
     ])
     def test_browser_exec_typed_password_never_reaches_display(self, code):
         """#72298: an ordinary password typed by a browser_exec snippet matches no secret shape,

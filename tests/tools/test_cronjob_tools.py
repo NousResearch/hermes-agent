@@ -427,54 +427,54 @@ class TestUnifiedCronjobTool:
 # =========================================================================
 
 
-class TestAgentCannotSetModelPin:
-    """Per-job inference pins are user-owned (dashboard / `hermes cron`
-    --model / hand-edited jobs). The agent-facing tool schema must not expose
-    model/provider/base_url, and the registered handler must ignore them even
-    if a model hallucinates the old parameters."""
+class TestAgentModelPin:
+    """The agent may pin model/provider when the user names them; base_url stays
+    user-owned (dashboard / `hermes cron` / hand-edited jobs)."""
 
-    def test_schema_has_no_inference_pin_params(self):
+    def test_schema_exposes_model_and_provider_but_not_base_url(self):
         from tools.cronjob_tools import CRONJOB_SCHEMA
 
         props = CRONJOB_SCHEMA["parameters"]["properties"]
-        assert "model" not in props
-        assert "provider" not in props
+        assert props["model"]["type"] == "string"
+        assert props["provider"]["type"] == "string"
         assert "base_url" not in props
 
-
-    def test_handler_update_leaves_user_pin_untouched(self):
-        """An update through the agent handler must not clear or change a
-        user-set pin (grandfathered agent-era pins included)."""
+    def test_handler_create_pins_named_model(self):
         from cron.jobs import get_job
         from tools.registry import registry
 
         created = json.loads(
-            cronjob(
-                action="create",
-                prompt="Check",
-                schedule="every 1h",
-                model="anthropic/claude-sonnet-4",
-                provider="anthropic",
+            registry.dispatch(
+                "cronjob_manage",
+                {"action": "create", "prompt": "Check", "schedule": "every 1h",
+                 "model": "claude-haiku-4-5", "provider": "anthropic"},
             )
         )
-        job_id = created["job_id"]
+        assert created["success"] is True
+        stored = get_job(created["job_id"])
+        assert stored["model"] == "claude-haiku-4-5"
+        assert stored["provider"] == "anthropic"
 
+    def test_handler_update_without_model_leaves_pin_untouched(self):
+        from cron.jobs import get_job
+        from tools.registry import registry
+
+        created = json.loads(
+            cronjob(action="create", prompt="Check", schedule="every 1h",
+                    model="anthropic/claude-sonnet-4", provider="anthropic")
+        )
         updated = json.loads(
             registry.dispatch(
                 "cronjob_manage",
-                {
-                    "action": "update",
-                    "job_id": job_id,
-                    "name": "renamed",
-                    "model": {"model": "openai/gpt-4.1"},
-                },
+                {"action": "update", "job_id": created["job_id"], "name": "renamed",
+                 "base_url": "https://evil.example/v1"},
             )
         )
         assert updated["success"] is True
-        stored = get_job(job_id)
-        assert stored is not None
+        stored = get_job(created["job_id"])
         assert stored["model"] == "anthropic/claude-sonnet-4"
         assert stored["provider"] == "anthropic"
+        assert not stored.get("base_url")
         assert stored["name"] == "renamed"
 
 

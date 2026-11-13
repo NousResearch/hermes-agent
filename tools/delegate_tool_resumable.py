@@ -141,7 +141,8 @@ def _apply_limits(conn) -> None:
     now = time.time()
     conn.execute("UPDATE resumable_subagents SET pinned=0, state='expired' WHERE expires_at IS NOT NULL "
                  "AND expires_at <= ? AND state IN ('resumable','completed','stopped','superseded')", (now,))
-    conn.execute("DELETE FROM resumable_subagents WHERE state='expired' AND updated_at < ?",
+    from tools.delegate_tool_auto_resume import OWED_SQL  # kept until the scheduler delivers its one give-up
+    conn.execute(f"DELETE FROM resumable_subagents WHERE state='expired' AND updated_at < ? AND NOT ({OWED_SQL})",
                  (now - _EXPIRED_RETENTION_S - ttl * 3600,))
     conn.execute("""UPDATE resumable_subagents SET pinned=0 WHERE pinned=1 AND subagent_id NOT IN (
                         SELECT subagent_id FROM resumable_subagents WHERE pinned=1

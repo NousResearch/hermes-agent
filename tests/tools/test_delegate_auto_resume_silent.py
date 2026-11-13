@@ -233,3 +233,82 @@ def test_a_give_up_interrupted_before_its_commit_reports_once_on_a_later_tick(tm
         tick(lambda *args: None, capacity=3, now=time.time() + 120)
     assert len(_events(unit)) == 1
     assert _ledger(parent, f"{unit}:auto:{sid}") == ("failed", "pending")
+
+
+# ── a promised child is owed its one report whatever config, TTL or retention caps do ────────────────────────────
+def _sql(parent, sql, params=()):
+    import sqlite3
+    conn = sqlite3.connect(parent._session_db.db_path)  # health: allow HX015 -- test seeds a temp-home store
+    try:
+        with conn:
+            return conn.execute(sql, params).fetchall()
+    finally:
+        conn.close()
+
+
+def test_turning_auto_resume_off_still_reports_a_promised_child_once_and_the_guard_follows_its_deadline(tmp_path):
+    from hermes_constants import get_hermes_home
+    from tools.delegate_tool import delegate_task
+    from tools.delegate_tool_auto_resume import tick
+    _enable()
+    parent = _parent()
+    sid, unit = _silent_stop(tmp_path, parent)
+    _sql(parent, "UPDATE resumable_subagents SET record_json=json_set(record_json, '$.auto_first_stopped_at', ?) "
+                 "WHERE subagent_id=?", (time.time() - 7 * 3600, sid))
+    with patch("run_agent.AIAgent", side_effect=_ScriptedModel()):  # past its deadline, before any tick settled it
+        again = json.loads(delegate_task(goal="write the parser", background=True, parent_agent=parent))
+    assert again.get("status") == "dispatched", again
+    (get_hermes_home() / "config.yaml").write_text(json.dumps({"delegation": {"auto_resume": False}}))
+    dispatched = []
+    for _ in range(3):
+        assert tick(_scheduler(parent, dispatched), capacity=3) == []
+    events = _events(unit)
+    assert dispatched == [] and len(events) == 1 and events[0]["results"][0]["subagent_id"] == sid, events
+    assert "turned off" in events[0]["results"][0]["error"]
+
+
+def test_a_stop_while_auto_resume_is_off_still_cancels_a_promised_child(tmp_path):
+    from hermes_constants import get_hermes_home
+    from tools.delegate_tool_auto_resume import supersede_for_session, tick
+    _enable()
+    parent = _parent()
+    sid, unit = _silent_stop(tmp_path, parent)
+    cfg = get_hermes_home() / "config.yaml"
+    on = cfg.read_text()
+    cfg.write_text(json.dumps({"delegation": {"auto_resume": False}}))
+    assert supersede_for_session(parent_session_id=parent.session_id, reason="/stop") == 1
+    cfg.write_text(on)
+    dispatched = []
+    with patch("run_agent.AIAgent", side_effect=_AlwaysLimited()):
+        assert tick(_scheduler(parent, dispatched), capacity=3) == []
+    assert dispatched == [] and _db_rows(parent)[sid][0] == "superseded" and _events(unit) == []
+
+
+def test_retention_limits_never_eat_a_waiting_childs_report(tmp_path):
+    from tools.async_delegation import _MAX_RETAINED_COMPLETED, _prune_durable_records, _transaction
+    from tools.delegate_tool_auto_resume import tick
+    from pathlib import Path
+    from tools.delegate_tool_resumable import _apply_limits, _write
+    _enable()
+    parent = _parent()
+    sid, unit = _silent_stop(tmp_path, parent)
+    now = time.time()
+    with _transaction() as conn:  # rows the count cap may not delete must not count against it either
+        for i in range(_MAX_RETAINED_COMPLETED):
+            conn.execute("INSERT INTO async_delegations (delegation_id, origin_session, state, dispatched_at, "
+                         "updated_at, delivery_state) VALUES (?, '', 'error', ?, ?, 'delivered')", (f"kept-{i}", now, now))
+            conn.execute("INSERT INTO resumable_subagents (subagent_id, state, record_json, created_at, updated_at) "
+                         "VALUES (?, 'resumable', json(?), ?, ?)",
+                         (f"sa-{i}", json.dumps({"unit_id": f"kept-{i}", "auto_promised": True}), now, now))
+        conn.execute("INSERT INTO async_delegations (delegation_id, origin_session, state, dispatched_at, updated_at, "
+                     "delivery_state, event_json) VALUES ('fresh-pending', '', 'completed', ?, ?, 'pending', '{}')",
+                     (now, now))
+    _prune_durable_records()
+    assert _ledger(parent, "fresh-pending") is not None and _ledger(parent, unit) is not None
+    _sql(parent, "UPDATE resumable_subagents SET expires_at=? WHERE subagent_id=?", (time.time() - 1, sid))
+    _write(Path(parent._session_db.db_path), _apply_limits)  # TTL passed: the record moves to expired
+    assert _db_rows(parent)[sid][0] == "expired"
+    for _ in range(3):
+        tick(lambda *args: None, capacity=3, now=time.time() + 60)
+    events = _events(unit)
+    assert len(events) == 1 and "expired" in events[0]["results"][0]["error"], events

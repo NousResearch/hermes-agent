@@ -285,3 +285,114 @@ def test_docs_append_carries_tab_id_and_refuses_ambiguous_writes(api_module, mon
         api_module.docs_append(types.SimpleNamespace(doc_id="doc1", text="more", tab=None))
     err = json.loads(capsys.readouterr().err)
     assert "tabs" in err and len(err["tabs"]) == 3
+
+
+@pytest.fixture
+def raw_api_module(monkeypatch, tmp_path):
+    """google_api loaded WITHOUT the auth/binary stubs, for testing auth-mode logic."""
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    spec = importlib.util.spec_from_file_location("gws_api_raw_test", API_PATH)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
+
+
+class TestGwsNativeMode:
+    """Auth-mode resolution and credential routing for gws-native mode."""
+
+    def test_ensure_authenticated_hermes_mode(self, raw_api_module):
+        raw_api_module.TOKEN_PATH.write_text("{}")
+        assert raw_api_module._ensure_authenticated() == "hermes"
+
+    def test_ensure_authenticated_gws_native_mode(self, raw_api_module, monkeypatch):
+        assert not raw_api_module.TOKEN_PATH.exists()
+        monkeypatch.setattr(raw_api_module, "gws_native_authed", lambda: True)
+        assert raw_api_module._ensure_authenticated() == "gws-native"
+
+    def test_ensure_authenticated_exits_when_unauthed(self, raw_api_module, monkeypatch):
+        assert not raw_api_module.TOKEN_PATH.exists()
+        monkeypatch.setattr(raw_api_module, "gws_native_authed", lambda: False)
+        with pytest.raises(SystemExit):
+            raw_api_module._ensure_authenticated()
+
+    def test_gws_env_pins_token_in_hermes_mode(self, raw_api_module):
+        raw_api_module.TOKEN_PATH.write_text("{}")
+        env = raw_api_module._gws_env()
+        assert env["GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE"] == str(raw_api_module.TOKEN_PATH)
+
+    def test_gws_env_omits_token_in_native_mode(self, raw_api_module):
+        assert not raw_api_module.TOKEN_PATH.exists()
+        env = raw_api_module._gws_env()
+        assert "GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE" not in env
+
+    def test_gws_env_strips_inherited_override_in_native_mode(self, raw_api_module, monkeypatch):
+        """Regression: a stale parent-env override must not leak into gws children."""
+        assert not raw_api_module.TOKEN_PATH.exists()
+        monkeypatch.setenv("GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE", "/stale/hermes/google_token.json")
+        monkeypatch.setenv("SOME_UNRELATED_VAR", "keep-me")
+        env = raw_api_module._gws_env()
+        assert "GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE" not in env
+        assert env["SOME_UNRELATED_VAR"] == "keep-me"
+
+    def test_gws_env_inherited_override_replaced_in_hermes_mode(self, raw_api_module, monkeypatch):
+        """In hermes mode the pin always wins over whatever the parent exported."""
+        raw_api_module.TOKEN_PATH.write_text("{}")
+        monkeypatch.setenv("GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE", "/stale/other/path.json")
+        env = raw_api_module._gws_env()
+        assert env["GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE"] == str(raw_api_module.TOKEN_PATH)
+
+    def test_get_credentials_exits_in_gws_native_mode(self, raw_api_module, monkeypatch, capsys):
+        """Python-only ops (drive upload/download) must fail clearly, not crash, in gws-native mode."""
+        assert not raw_api_module.TOKEN_PATH.exists()
+        monkeypatch.setattr(raw_api_module, "gws_native_authed", lambda: True)
+        with pytest.raises(SystemExit):
+            raw_api_module.get_credentials()
+        assert "gws-native mode" in capsys.readouterr().err
+
+    @pytest.mark.parametrize("hermes_token", [False, True])
+    def test_run_gws_routes_credentials_to_real_child(self, raw_api_module, monkeypatch, hermes_token):
+        """Both auth modes enforce their env policy at the real operation boundary."""
+        key = "GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE"
+        monkeypatch.setenv(key, "/stale/hermes/google_token.json")
+        monkeypatch.setenv("GWS_TEST_SENTINEL", "preserved")
+        monkeypatch.setattr(raw_api_module, "gws_native_authed", lambda: True)
+        monkeypatch.setattr(raw_api_module, "_gws_binary", lambda: sys.executable)
+        if hermes_token:
+            raw_api_module.TOKEN_PATH.write_text("{}")
+        child = (
+            "import json, os; "
+            f"print(json.dumps({{'credentials': os.getenv({key!r}), "
+            "'sentinel': os.getenv('GWS_TEST_SENTINEL')}))"
+        )
+        result = raw_api_module._run_gws(["-c", child])
+        assert result == {
+            "credentials": str(raw_api_module.TOKEN_PATH) if hermes_token else None,
+            "sentinel": "preserved",
+        }
+        assert raw_api_module.os.environ[key] == "/stale/hermes/google_token.json"
+
+    @pytest.mark.parametrize("operation", ["drive_upload", "drive_download", "build_service"])
+    def test_python_only_operations_reject_native_before_imports(
+        self, raw_api_module, monkeypatch, capsys, operation
+    ):
+        import builtins
+
+        monkeypatch.setattr(raw_api_module, "gws_native_authed", lambda: True)
+        original_import = builtins.__import__
+
+        def without_google_client(name, *args, **kwargs):
+            if name.startswith("googleapiclient"):
+                raise ModuleNotFoundError("native-only install has no googleapiclient")
+            return original_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", without_google_client)
+        args = ("drive", "v3") if operation == "build_service" else (types.SimpleNamespace(),)
+        with pytest.raises(SystemExit) as exc:
+            getattr(raw_api_module, operation)(*args)
+        assert exc.value.code == 1
+        assert "gws-native mode" in capsys.readouterr().err
+

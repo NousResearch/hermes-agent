@@ -361,7 +361,7 @@ class TestSecondaryAdapterUnavailableRecovery:
         config = PlatformConfig(enabled=cause != "disabled", token="plugin-token")
         monkeypatch.setattr("gateway.config.load_gateway_config",
                             lambda: GatewayConfig(multiplex_profiles=True, platforms={Platform("irc"): config}))
-        monkeypatch.setattr(gateway_run, "_platform_has_bot_credential",
+        monkeypatch.setattr("gateway.run_adapter_credentials._platform_has_bot_credential",
                             lambda platform, cfg: cause != "no credential")
         if cause == "duplicate":
             runner._profile_adapters = {"owner": {Platform("irc"): _create(Platform("irc"), None)}}

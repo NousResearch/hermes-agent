@@ -647,8 +647,6 @@ gateway:
     media_delivery_failed_with_name: "⚠️ Não foi possível entregar o anexo de {kind} ({file_name})."
     delivery_failed_retry: "⚠️ Falha na entrega da mensagem após várias tentativas. Tente novamente — sua solicitação foi processada, mas a resposta não pôde ser enviada."
     plain_fallback_prefix: "(Falha na formatação da resposta, texto simples:)\n\n{content}"
-    turn_error_no_details: "nenhum detalhe disponível"
-    turn_error_detailed: "Desculpe, encontrei um erro ({error_type}).\n{error_detail}\nTente novamente ou use /reset para iniciar uma nova sessão."
     turn_error: "Desculpe, encontrei um erro."
     context_injection_refused: "Injeção de contexto recusada."
     no_home_channel: "📬 Nenhum canal principal está definido para {platform}. O canal principal é onde o Hermes entrega resultados de tarefas cron e mensagens entre plataformas.\n\nDigite {sethome_cmd} para tornar este chat seu canal principal, ou ignore para pular."
@@ -747,6 +745,8 @@ gateway:
     reject_loop: "O agente está em execução — use /loop status / pause / stop durante a execução, ou /stop antes de definir um novo loop."
     draining_maintenance: "⏳ Este agente está sendo drenado para uma ação de manutenção e não está aceitando novos turnos agora. Ele voltará em instantes — reenvie em breve."
     another_turn_running: "⏳ Outro turno ainda está em execução nesta sessão. Para proteger a transcrição, esta mensagem não foi processada. Aguarde o turno ativo terminar e reenvie."
+    setup_timeout: "⏳ A preparação do turno travou sem atividade do agente e foi cancelada. Envie sua mensagem novamente."
+    setup_waiting: "⏳ Este turno ainda está iniciando ({minutes} min, sem atividade do agente ainda). Sua mensagem está na fila. Use /stop para cancelá-lo junto com tudo o que está na fila."
     behavior_queue_short: "enfileira para o próximo turno"
     behavior_queue_long: "As mensagens serão enfileiradas para o próximo turno enquanto o Hermes estiver ocupado."
     behavior_steer_short: "redireciona para a execução atual (após a próxima chamada de ferramenta)"
@@ -980,6 +980,7 @@ platform:
     denied: "❌ Negado."
     approval_expired: "⌛ Aprovação expirada — o comando não foi executado (já excedeu o tempo limite ou foi resolvido em outro lugar)."
   shared:
+    response_as_file: "📎 Resposta longa: o texto completo está em anexo."
     truncated_suffix: "\n...(truncado)"
     unknown: "desconhecido"
     approval_expired: "⌛ Aprovação expirada — o comando não foi executado (já excedeu o tempo limite ou foi resolvido em outro lugar)."
@@ -1170,8 +1171,6 @@ platform:
         unknown: "Skill desconhecida: `{name}`. Comece a digitar para ver sugestões de preenchimento automático."
       auto_args_description: "Argumentos: {args_hint}"
       auto_description_fallback: "Executar /{name}"
-    limits:
-      response_truncated: "⚠️ **Resposta truncada** — esta resposta excedeu o limite de entrega ({max_messages} mensagens). {dropped_chars} caracteres não foram entregues; a resposta completa está nos logs da sessão."
     forum:
       default_title: "Nova publicação"
     voice:

@@ -1261,6 +1261,9 @@ export const zhOverrides = {
       voiceShortcutHintTitle: '语音录制快捷键',
       voiceShortcutHintDesc:
         '请在“设置 → 键盘快捷键”中设置语音录制快捷键（“开始 / 停止语音对话”）。voice.record_key 配置项仅适用于 CLI 和 TUI。',
+      desktopReadAloudTitle: '在此应用中朗读回复',
+      desktopReadAloudDesc:
+        '在 Desktop 中朗读每条完成的回复。与输入框按钮是同一个开关；对所有打开的窗口生效，关闭后会立即停止正在朗读的回复。下方的“朗读回复”用于消息平台和 CLI。',
       showOptions: '显示选项'
     },
     hudModifier: {

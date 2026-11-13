@@ -16,6 +16,7 @@ category: tools
 requires_hermes: ">=0.23.0"
 docs_url: https://github.com/salch-cred/deja-fix
 version: "0.1.0"
+image: https://raw.githubusercontent.com/salch-cred/deja-fix/1e89debbb94218c70ff652b79b69aa3766ebbf93/docs/assets/catalog.jpg
 
 capabilities:
   provides_tools: []

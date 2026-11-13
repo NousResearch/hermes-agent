@@ -377,8 +377,8 @@ class GatewayModelCommandsMixin:
     def _channel_override_for(self, source):
         """This chat's ``channel_overrides`` entry (model/provider), or None."""
         from gateway.run import _get_channel_override
-        cfg = getattr(self, "config", None)
-        if not cfg or source is None:
+        cfg = self._serving_channel_config(source) if source is not None else None
+        if not cfg:
             return None
         return _get_channel_override(
             cfg, source.platform, str(source.chat_id) if source.chat_id else "",
@@ -627,7 +627,8 @@ class GatewayModelCommandsMixin:
         # Turn precedence: session /model > channel_overrides > config.yaml.
         # The channel's full route as the turn resolves it, so a config-backed endpoint (custom) survives.
         from gateway.session_info_route import channel_override_route
-        _ch_model, _ch_route, _ch_forced = await asyncio.to_thread(channel_override_route, getattr(self, "config", None), source)
+        _ch_model, _ch_route, _ch_forced = await asyncio.to_thread(lambda: channel_override_route(
+            self._serving_channel_config(source) if source is not None else None, source))
         if _ch_model:
             ctx.apply_override({"model": _ch_model, **(_ch_route or ({"provider": _ch_forced} if _ch_forced else {}))})
         ctx.apply_override(self._session_model_overrides.get(session_key, {}))

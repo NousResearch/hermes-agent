@@ -799,14 +799,14 @@ def _make_run_env(env: dict) -> dict:
     )
     # While this profile's Bot Desktop is running, its DISPLAY/XAUTHORITY/DBUS ride along so GUI
     # apps the agent launches from the terminal open on the Bot Screen the user is watching, not
-    # on the user's own seat (#125830). published_env() is the pure read (no activity stamp — a
-    # plain ``ls`` must not keep the screen alive past idle_stop_minutes), and it wins over the
-    # login snapshot's seat DISPLAY; a user who wants their own seat uses an inline
-    # ``DISPLAY=:0 cmd`` prefix, which bash applies after this env. Empty (or module missing) →
-    # the seat env passes through untouched.
+    # on the user's own seat (#125830). host_published_env() is the pure read (no activity stamp — a
+    # plain ``ls`` must not keep the screen alive past idle_stop_minutes; empty for a screen inside the
+    # terminal backend), and it wins over the login snapshot's seat DISPLAY; a user who wants their own
+    # seat uses an inline ``DISPLAY=:0 cmd`` prefix, which bash applies after this env. Empty (or module
+    # missing) → the seat env passes through untouched.
     try:
-        from tools.bot_desktop.runtime import published_env
-        published = published_env()
+        from tools.bot_desktop.runtime import host_published_env
+        published = host_published_env()
     except Exception:
         published = {}
     if published:
@@ -1171,15 +1171,15 @@ class LocalEnvironment(BaseEnvironment):
             # The command dies with this process however it dies: a SIGKILLed / OOM-killed host left a
             # running `npm run dev` or `sleep` on init. Released once the wait returns (see below).
             own_process_groups([proc.pid])
-            proc._hermes_owned_pgid = proc.pid
-            with contextlib.suppress(ProcessLookupError):
-                proc._hermes_pgid = os.getpgid(proc.pid)
-                # Record the group leader's start-time fingerprint so _kill_process can
-                # detect PID/PGID recycling before signalling the group (#43044). The
-                # psutil fallback in get_process_start_time captures a baseline on every
-                # platform, macOS included.
-                from gateway.status import get_process_start_time
-                proc._hermes_pgid_start = get_process_start_time(proc.pid)
+            # start_new_session: the group is the leader's pid by construction (a getpgid read-back
+            # fails on macOS once a fast `cmd &` wrapper has exited, losing the group).
+            proc._hermes_owned_pgid = proc._hermes_pgid = proc.pid
+            # Record the group leader's start-time fingerprint so _kill_process can
+            # detect PID/PGID recycling before signalling the group (#43044). The
+            # psutil fallback in get_process_start_time captures a baseline on every
+            # platform, macOS included.
+            from gateway.status import get_process_start_time
+            proc._hermes_pgid_start = get_process_start_time(proc.pid)
         if stdin_data is not None:
             _pipe_stdin(proc, stdin_data)
         return proc
@@ -1207,9 +1207,10 @@ class LocalEnvironment(BaseEnvironment):
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
             **({"creationflags": windows_hide_flags()} if _IS_WINDOWS else {}))
         if not _IS_WINDOWS:
-            with contextlib.suppress(ProcessLookupError):
-                proc._hermes_pgid = os.getpgid(proc.pid)
-            proc._hermes_owned_pgid = proc.pid
+            # spawn_owned starts a new session, so the group is the leader's pid by construction.
+            # Never read back with getpgid: a leader that already exited (a fast `cmd &; exit`) has
+            # no pgid on macOS, and the stop could then never reach the descendants it left behind.
+            proc._hermes_pgid = proc._hermes_owned_pgid = proc.pid
         return proc
 
     def _kill_process(self, proc):

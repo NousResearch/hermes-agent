@@ -302,10 +302,10 @@ def recover_abandoned_delegations() -> int:
     if alive is None:
         return 0
     now, recovered = time.time(), 0
-    from tools.delegate_tool_resumable import plan_recovery, recover_abandoned
+    from tools.delegate_tool_resumable import continuable_of, plan_recovery, recover_abandoned
     plan = plan_recovery(_db_path(), alive)  # its git probes run before the write lock below
     with _DB_LOCK, _transaction() as conn:
-        resumable = recover_abandoned(conn, plan)
+        recover_abandoned(conn, plan)
         rows = conn.execute("""SELECT delegation_id, origin_session, origin_ui_session_id,
                       parent_session_id, dispatched_at, owner_pid,
                       owner_started_at, task_json, origin_session_id, result_json, state
@@ -329,7 +329,7 @@ def recover_abandoned_delegations() -> int:
                 diagnostics["transcript_tails"] = tails
             if hint := git_state_hint(task.get("owner_cwd")):
                 diagnostics["git_state_hint"] = hint
-            if continuable := resumable.get(delegation_id):
+            if continuable := continuable_of(conn, delegation_id):
                 diagnostics["resumable_subagent_ids"] = continuable
                 error += (" Its subagents can be continued on their own conversation and worktree: "
                           "delegate_task(action='continue', subagent_id=..., message=...); check git state and the "
@@ -976,6 +976,11 @@ def _dispatch_admitted(
     # unit queues behind a full pool and the stale monitor kills it before its child ever starts.
     executor = _get_executor(max(max_async_children, live_units))
 
+    from tools.approval_notify_lease import acquire, run as run_with_notify_lease
+    lease = acquire(session_key)
+    with _records_lock:
+        record["_approval_lease"] = lease
+
     def _worker() -> None:
         result: dict[str, Any] = {}
         status = "error"
@@ -985,7 +990,7 @@ def _dispatch_admitted(
                 # The stall clock starts when the runner starts; a unit queued behind a full pool is not stalled.
                 rec.update(_started=True, _progress_ts=time.time())
         try:
-            result = runner() or {}
+            result = run_with_notify_lease(lease, runner) or {}
             status = classify(result)
         except Exception as exc:
             logger.exception(f"Async delegation{label} %s crashed", delegation_id)
@@ -1000,9 +1005,18 @@ def _dispatch_admitted(
     retirement.acquire()
     try:
         future = executor.submit(propagate_context_to_thread(_worker))
-        future.add_done_callback(lambda _: retirement.release())
+        def worker_done(completed):
+            try:
+                lease.release()
+                if completed.cancelled():
+                    _finalize(delegation_id, crash_result("Worker cancelled before start", 0), "interrupted")
+            finally:
+                retirement.release()
+
+        future.add_done_callback(worker_done)
     except Exception as exc:  # pragma: no cover — pool submit failure is rare
         retirement.release()
+        lease.release()
         with _records_lock:
             _records.pop(delegation_id, None)
         if remote := worker_ledger():
@@ -1109,6 +1123,9 @@ def _finalize(delegation_id: str, result: Any, status: str) -> None:
         record["interrupt_fn"] = None  # drop the closure; child is done
         record["progress_fn"] = None  # stop stale-monitor sampling
         snapshot = dict(record)
+    lease = snapshot.get("_approval_lease")
+    if lease is not None:
+        lease.release()
     final = result(snapshot) if callable(result) else result
     _push_completion_event(snapshot, _keep_finished_children(snapshot, final, status), status)
     with _records_lock:
@@ -1407,6 +1424,10 @@ def list_async_delegations() -> list[dict[str, Any]]:
 
 def _interrupt_records(targets: list[dict[str, Any]], caller: str, reason: str, msg: str) -> int:
     """Call ``interrupt_fn`` on each record; log ``msg`` once; returns how many succeeded."""
+    for record in targets:
+        lease = record.get("_approval_lease")
+        if lease is not None:
+            lease.release()
     count = sum(
         _call_interrupt(r.get("interrupt_fn"), "%s: %s interrupt failed: %s", caller, r.get("delegation_id"))
         for r in targets)

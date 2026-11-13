@@ -647,8 +647,6 @@ gateway:
     media_delivery_failed_with_name: "⚠️ 无法发送{kind}附件（{file_name}）。"
     delivery_failed_retry: "⚠️ 多次尝试后消息仍发送失败。请重试——你的请求已处理，但响应无法送达。"
     plain_fallback_prefix: "（响应格式化失败，以下为纯文本：）\n\n{content}"
-    turn_error_no_details: "无可用详情"
-    turn_error_detailed: "抱歉，我遇到了一个错误（{error_type}）。\n{error_detail}\n请重试，或用 /reset 开始新会话。"
     turn_error: "抱歉，我遇到了一个错误。"
     context_injection_refused: "上下文注入已被拒绝。"
     no_home_channel: "📬 {platform} 尚未设置主频道。主频道是 Hermes 投递定时任务结果和跨平台消息的地方。\n\n输入 {sethome_cmd} 将此聊天设为主频道，或忽略以跳过。"
@@ -747,6 +745,8 @@ gateway:
     reject_loop: "代理正在运行——运行中可使用 /loop status / pause / stop，或先 /stop 再设置新循环。"
     draining_maintenance: "⏳ 此代理正在为维护操作排空任务，目前不接受新的回合。稍后即会恢复——请稍等片刻后重新发送。"
     another_turn_running: "⏳ 此会话上还有另一回合仍在运行。为保护对话记录，这条消息未被处理。请等待当前回合结束后重新发送。"
+    setup_timeout: "⏳ 本轮准备工作卡住且代理无任何活动，已取消。请重新发送你的消息。"
+    setup_waiting: "⏳ 本轮仍在启动中（{minutes} 分钟，代理尚无活动）。你的消息已排队。使用 /stop 可取消本轮及队列中的全部消息。"
     behavior_queue_short: "排队至下一回合"
     behavior_queue_long: "Hermes 忙碌时，消息将排队至下一回合处理。"
     behavior_steer_short: "引导至当前运行（下一次工具调用后）"
@@ -980,6 +980,7 @@ platform:
     denied: "❌ 已拒绝。"
     approval_expired: "⌛ 审批已过期——命令未执行（已超时或已在别处处理）。"
   shared:
+    response_as_file: "📎 回复较长：完整内容已作为文件附上。"
     truncated_suffix: "\n...（已截断）"
     unknown: "未知"
     approval_expired: "⌛ 审批已过期——命令未执行（已超时或已在别处处理）。"
@@ -1170,8 +1171,6 @@ platform:
         unknown: "未知技能：`{name}`。开始输入即可获得自动补全建议。"
       auto_args_description: "参数：{args_hint}"
       auto_description_fallback: "运行 /{name}"
-    limits:
-      response_truncated: "⚠️ **回复已截断** — 本次回复超出了投递上限（{max_messages} 条消息）。有 {dropped_chars} 个字符未能送达；完整回复见会话日志。"
     forum:
       default_title: "新帖子"
     voice:

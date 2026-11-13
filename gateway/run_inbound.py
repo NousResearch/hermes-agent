@@ -21,6 +21,7 @@ from pathlib import Path
 
 from agent.i18n import t
 from gateway.config import Platform
+from gateway.inbound_reply_context import reply_pointer
 from gateway.platforms.base import EphemeralReply
 from gateway.platforms.event import MessageEvent, MessageType, clean_attachment_filename
 from gateway.run_busy import approval_input_words
@@ -28,6 +29,7 @@ from gateway.run_inbound_media import rehome_inbound_media
 from gateway.run_inbound_hooks import GatewayInboundHooksMixin
 from gateway.run_inbound_transcription import GatewayInboundTranscriptionMixin
 from gateway.run_plugin_injection import GatewayPluginInjectionMixin
+from gateway.run_turn_setup_guard import cancel_preagent_setup, pending_setup_busy_notice
 from gateway.run_inbound_unauthorized import (
     UnauthorizedOwnerNotifier, pairing_code_reply, pairing_profile_arg, pairing_rate_limited_reply,
     unauthorized_owner_hint,
@@ -668,6 +670,7 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
             if _denied is not None:
                 return True, _denied
             if _cmd_def_inner.name in ("stop", "new"):
+                self._hm_drop_held_input(event)  # before the fence: a burst flushing later would pass it
                 await self._hm_stop_owner_turn(_quick_key)
             # Any recognized slash command dispatches per its declared busy_policy (dispatch /
             # interrupt_then_dispatch / reject). Unrecognized commands and plain text fall through.
@@ -682,7 +685,7 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         return False, None
 
     def _hm_drop_held_input(self, event: MessageEvent) -> None:
-        """An idle /stop, /new or /reset past the slash-access gate and command hooks: the text or media
+        """A /stop, /new or /reset past the slash-access gate (and idle, command hooks): the text or media
         burst the receiving adapter still holds is the old chat's, so it never becomes a turn after
         the command (#81370). A refused or hook-denied command leaves the caller's input alone."""
         if (adapter := self._intake_adapter_for(event.source)) is not None:
@@ -861,11 +864,12 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         running_agent = _ra_state.turn.agent if _ra_state else None
         if running_agent is _AGENT_PENDING_SENTINEL:  # agent still being set up
             if event.get_command() == "stop":  # force-clean the sentinel so the session is unlocked
+                cancel_preagent_setup(self, _quick_key)  # and end the setup still holding its claim
                 self._release_running_agent_state(_quick_key)
                 logger.info("HARD STOP (pending) for session %s — sentinel cleared", _quick_key)
                 return EphemeralReply(t("gateway.stop.force_stopped_pending"))
             self._hm_merge_pending_for_source(source, _quick_key, event, merge_text=True)  # picked up after start
-            return None
+            return pending_setup_busy_notice(self, _quick_key, source)
         if self._draining:
             queue_during_drain = self._queue_during_drain_enabled(effective_busy_input_mode)
             if queue_during_drain:
@@ -1353,6 +1357,9 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         # A failed admit stays the authority's answer (refusal notice or turn error), never a
         # pending legacy turn: that would run unadmitted, outside the FIFO's order.
         note_busy_admitting(event)
+        notice = pending_setup_busy_notice(self, _quick_key, source) if busy else None
+        if notice is not None:  # sent now: the admission below waits until this follow-up has run
+            await self._send_busy_ack_reply(event, self._delivery_adapter_for(source), notice)
         return True, await admit_message(authority, event)
 
     async def _handle_message(self, event: MessageEvent) -> Optional[str]:
@@ -1698,8 +1705,9 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
             # Adapters resolve the original message (or the user's native partial quote).
             # A preview here silently loses later list items and code; keep that context intact.
             reply_text = event.reply_to_text
-            _who = " your previous message" if getattr(event, "reply_to_is_own_message", False) else ""
-            message_text = f'[Replying to{_who}: "{reply_text}"]\n\n{message_text}'
+            own = bool(getattr(event, "reply_to_is_own_message", False))
+            replied_to = (source.platform, source.chat_id, event.reply_to_message_id)
+            message_text = f"{reply_pointer(str(reply_text), own_message=own, replied_to=replied_to)}\n\n{message_text}"
 
         # Discord: the triggering message id goes on the per-turn user message, never the cached
         # system prompt — it changes every turn and would bust the agent-cache signature. It is

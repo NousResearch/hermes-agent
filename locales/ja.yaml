@@ -647,8 +647,6 @@ gateway:
     media_delivery_failed_with_name: "⚠️ {kind}の添付ファイル ({file_name}) を配信できませんでした。"
     delivery_failed_retry: "⚠️ 複数回試みましたがメッセージを配信できませんでした。もう一度お試しください — リクエストは処理されましたが、応答を送信できませんでした。"
     plain_fallback_prefix: "(応答の書式設定に失敗したため、プレーンテキストで表示します:)\n\n{content}"
-    turn_error_no_details: "詳細情報はありません"
-    turn_error_detailed: "申し訳ありません。エラーが発生しました ({error_type})。\n{error_detail}\nもう一度試すか、/reset で新しいセッションを始めてください。"
     turn_error: "申し訳ありません。エラーが発生しました。"
     context_injection_refused: "コンテキストの注入を拒否しました。"
     no_home_channel: "📬 {platform} のホームチャンネルが設定されていません。ホームチャンネルは、Hermes が cron ジョブの結果やプラットフォーム間メッセージを配信する場所です。\n\nこのチャットをホームチャンネルにするには {sethome_cmd} と入力してください。不要な場合は無視してください。"
@@ -747,6 +745,8 @@ gateway:
     reject_loop: "エージェントが実行中です — 実行中は /loop status / pause / stop を使うか、新しいループを設定する前に /stop してください。"
     draining_maintenance: "⏳ このエージェントはメンテナンス操作のためドレイン中で、現在は新しいターンを受け付けていません。まもなく復帰しますので、少し待ってから再送信してください。"
     another_turn_running: "⏳ このセッションでは別のターンがまだ実行中です。トランスクリプトを保護するため、このメッセージは処理されませんでした。アクティブなターンの完了を待ってから再送信してください。"
+    setup_timeout: "⏳ ターンの準備がエージェントの動作なしで停止したため、キャンセルしました。メッセージを再送信してください。"
+    setup_waiting: "⏳ このターンはまだ開始中です（{minutes} 分、エージェントの動作はまだありません）。メッセージはキューに入っています。/stop でこのターンとキュー内のすべてをキャンセルできます。"
     behavior_queue_short: "次のターンにキュー"
     behavior_queue_long: "Hermes がビジー状態の間、メッセージは次のターンにキューされます。"
     behavior_steer_short: "現在の実行にステア (次のツール呼び出し後)"
@@ -980,6 +980,7 @@ platform:
     denied: "❌ 拒否しました。"
     approval_expired: "⌛ 承認の有効期限が切れました — コマンドは実行されませんでした（すでにタイムアウトしたか、別の場所で処理済みです）。"
   shared:
+    response_as_file: "📎 長い返信のため、全文をファイルで添付しました。"
     truncated_suffix: "\n...(省略)"
     unknown: "不明"
     approval_expired: "⌛ 承認の有効期限が切れました — コマンドは実行されませんでした（すでにタイムアウトしたか、別の場所で処理済みです）。"
@@ -1170,8 +1171,6 @@ platform:
         unknown: "不明なスキル: `{name}`。入力を始めると自動補完の候補が表示されます。"
       auto_args_description: "引数: {args_hint}"
       auto_description_fallback: "/{name} を実行"
-    limits:
-      response_truncated: "⚠️ **応答を省略しました** — この返信は配信上限 ({max_messages} メッセージ) を超えました。{dropped_chars} 文字が配信されていません。完全な応答はセッションログにあります。"
     forum:
       default_title: "新しい投稿"
     voice:

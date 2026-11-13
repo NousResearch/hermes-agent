@@ -215,6 +215,7 @@ jobs:
           set -o pipefail
           log="$RUNNER_TEMP/messaging-gateway.log"
           scripts/run_tests.sh -rs \
+            tests/gateway/test_session_terminal_cwd_restart.py \
             tests/gateway/test_native_role_reauthorization.py \
             tests/gateway/test_native_telegram_startup_recovery.py \
             tests/gateway/test_native_pause_notice.py \

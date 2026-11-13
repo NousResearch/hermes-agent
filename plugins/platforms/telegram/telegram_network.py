@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import socket
+import ssl
 import sys
 import time
 from typing import Iterable, Optional
@@ -31,6 +32,13 @@ def _describe_transport_error(error: Exception) -> str:
         return redact_sensitive_text(repr(error), force=True)
     except Exception:
         return type(error).__name__
+
+def _warn_walk_failed(reason: str, failures: list[tuple[str, str]]) -> None:
+    """The one WARNING a failed request owes: per-path failures log at INFO while the walk can still
+    recover (#152898), so every exit by exception after a failed path reports them here."""
+    logger.warning("[Telegram] Telegram API %s: %s", reason,
+                   "; ".join(f"{path} ({failure})" for path, failure in failures))
+
 
 # TCP keepalive so a half-open/CLOSE-WAIT long-poll errors out instead of blocking getUpdates forever
 # (Windows leaves SO_KEEPALIVE off). Idle/interval knobs are best-effort per Python/OS combo.
@@ -136,7 +144,7 @@ def build_ptb_requests(request_cls, *, fallback_ips: list[str], proxy_url: Optio
                                max_keepalive_connections=getupdates_keepalive_connections(),
                                keepalive_expiry=base.keepalive_expiry)
     transport_kwargs = {"socket_options": tcp_keepalive_socket_options(), "verify": verify,
-                        "connect_budget": _WALK_CONNECT_BUDGET_S, "proxy": proxy_url}
+                        "connect_budget": _WALK_CONNECT_BUDGET_S, "proxy": classic_proxy(proxy_url, verify)}
     extra = {"proxy": proxy_url} if proxy_url else {}
 
     def request(limits) -> object:
@@ -170,6 +178,59 @@ def proxy_target_hosts(base_url: Optional[str], fallback_ips: Iterable[str] = ()
     return [_TELEGRAM_API_HOST, *fallback_ips]
 
 
+def telegram_verify(extra: Optional[dict], default):
+    """The TLS context every Telegram client verifies with: ``default`` (the platform trust
+    context; ``None`` lets ``build_ptb_requests`` pick it), or, with ``platforms.telegram.extra.tls_classic_key_exchange: true``, the same trust
+    offering only the classic X25519 key share. That is for network paths that reset OpenSSL 3.5's
+    larger post-quantum ClientHello, where every Bot API path then fails with an empty
+    ``ConnectError`` (#147179). It keeps TLS 1.3, certificate and hostname checks. A value other
+    than a boolean is refused with a warning and keeps the default."""
+    value = (extra or {}).get("tls_classic_key_exchange", False)
+    if isinstance(value, str) and value.strip().lower() in {"true", "1", "yes", "on", "false", "0", "no", "off", ""}:
+        value = value.strip().lower() in {"true", "1", "yes", "on"}
+    if not isinstance(value, bool):
+        logger.warning("[Telegram] Ignoring platforms.telegram.extra.tls_classic_key_exchange=%r: expected true or false",
+                       value)
+        return default
+    if not value:
+        return default
+    logger.info("[Telegram] TLS: classic X25519 key exchange (tls_classic_key_exchange)")
+    return _classic_key_exchange_context()
+
+
+_CLASSIC_CONTEXTS: dict[int, ssl.SSLContext] = {}
+
+
+def classic_proxy(proxy_url, verify):
+    """``proxy_url`` for an httpx client verifying with ``verify``. An ``https://`` proxy has its own
+    outer TLS handshake, which httpx runs with the proxy's ``ssl_context``, never the client's
+    ``verify``; with the classic key exchange on, that outer hello would still be the large one the
+    path resets, so the proxy leg gets the same classic context. Anything else passes unchanged."""
+    if (isinstance(proxy_url, str) and proxy_url.strip().lower().startswith("https://")
+            and any(verify is ctx for ctx in _CLASSIC_CONTEXTS.values())):
+        return httpx.Proxy(proxy_url, ssl_context=verify)
+    return proxy_url
+
+
+def _classic_key_exchange_context() -> ssl.SSLContext:
+    """A context with ``platform_ssl_context()``'s trust (platform store plus ``SSL_CERT_FILE``)
+    offering only the classic X25519 share: a ~0.5 KB ClientHello instead of the ~1.5 KB
+    post-quantum hybrid one. Cached per base context so clients keep one stable identity.
+    truststore's injected context class keeps an inner context and does not forward
+    ``set_ecdh_curve``, so the group is set on that inner context when there is one."""
+    base = platform_ssl_context()
+    ctx = _CLASSIC_CONTEXTS.get(id(base))
+    if ctx is None:
+        ctx = type(base)(ssl.PROTOCOL_TLS_CLIENT)
+        ctx.load_default_certs()
+        ca = os.environ.get("SSL_CERT_FILE", "").strip()
+        if ca and os.path.isfile(ca):
+            ctx.load_verify_locations(cafile=ca)
+        getattr(ctx, "_ctx", ctx).set_ecdh_curve("X25519")
+        _CLASSIC_CONTEXTS[id(base)] = ctx
+    return ctx
+
+
 def _resolve_proxy_url(target_hosts=None) -> str | None:
     from gateway.platforms.base import resolve_proxy_url  # env vars + macOS system proxy
     return resolve_proxy_url("TELEGRAM_PROXY", target_hosts=target_hosts)
@@ -196,7 +257,7 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
         if "proxy" not in transport_kwargs:
             proxy_url = _resolve_proxy_url(target_hosts=[_TELEGRAM_API_HOST, *self._fallback_ips])
             if proxy_url:
-                transport_kwargs["proxy"] = proxy_url
+                transport_kwargs["proxy"] = classic_proxy(proxy_url, transport_kwargs.get("verify"))
         transport_kwargs.setdefault("limits", self._POOL_LIMITS)
         transport_kwargs.setdefault("socket_options", tcp_keepalive_socket_options())
         self._transport_kwargs = transport_kwargs
@@ -267,6 +328,7 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
         if request.url.host != _TELEGRAM_API_HOST or not self._fallback_ips:
             return await (await self._get_primary()).handle_async_request(request)
         last_error: Exception | None = None
+        failures: list[tuple[str, str]] = []
         order = self._attempt_order()
         walk_started = time.monotonic()
         for index, ip in enumerate(order):
@@ -295,32 +357,42 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
                         if self._sticky_ip is _UNSET or self._sticky_ip != ip:
                             self._sticky_ip = ip
                             if ip is not None:
-                                log = logger.warning if last_error is not None else logger.info
-                                log("[Telegram] Using sticky IPv4 Telegram API path %s (dual-stack hostname tried last — #87015)", ip)
+                                # A recovery after a failed path is INFO, not
+                                # WARNING: the request succeeded (#152898).
+                                logger.info("[Telegram] Using sticky IPv4 Telegram API path %s (dual-stack hostname tried last — #87015)", ip)
                 return response
             except Exception as exc:
                 last_error = exc
                 if not _is_retryable_connect_error(exc):
+                    if failures:  # earlier paths failed and are logged only at INFO so far
+                        _warn_walk_failed(f"failed on {ip or _TELEGRAM_API_HOST} ({_describe_transport_error(exc)}) "
+                                          "after earlier paths failed", failures)
                     raise
                 path = ip or _TELEGRAM_API_HOST
                 failure = _describe_transport_error(exc)
                 self._last_failure = (path, failure)
+                failures.append((path, failure))
                 if self._sticky_ip is not _UNSET and ip == self._sticky_ip:
                     async with self._sticky_lock:
                         if self._sticky_ip is not _UNSET and self._sticky_ip == ip:
                             self._sticky_ip = _UNSET
-                            logger.warning(
+                            logger.info(
                                 "[Telegram] Sticky Telegram path %s failed; re-walking IPv4 literals before the hostname",
                                 ip if ip is not None else "api.telegram.org")
                 if ip is None:
                     await self._reset_primary(transport)
-                    logger.warning("[Telegram] Dual-stack api.telegram.org path failed (%s)", failure)
+                    logger.info("[Telegram] Dual-stack api.telegram.org path failed (%s)", failure)
                     continue
-                logger.warning("[Telegram] IPv4 Telegram API IP %s failed: %s", ip, failure)
+                logger.info("[Telegram] IPv4 Telegram API IP %s failed: %s", ip, failure)
                 await self._reset_fallback(ip, transport)
                 continue
         if last_error is None:
             raise RuntimeError("All Telegram fallback IPs exhausted but no error was recorded")
+        # The connect budget can expire during a reset before later paths are tried.
+        # Do not claim all paths failed unless the walk actually attempted each one.
+        _warn_walk_failed(
+            "unreachable via all paths" if len(failures) == len(order)
+            else "connect budget exhausted before all paths were tried", failures)
         raise last_error
 
     async def aclose(self) -> None:
@@ -416,7 +488,7 @@ async def _query_doh_provider(client: httpx.AsyncClient, provider: dict) -> list
         return []
 
 
-async def discover_fallback_ips() -> list[str]:
+async def discover_fallback_ips(verify=None) -> list[str]:
     """Resolve api.telegram.org via Google + Cloudflare DoH; unique A records, in order. IPs matching the
     system resolver are deliberately KEPT (often the most reliable path); ``SEED_FALLBACK_IPS`` always
     form the tail, so a one-record DoH answer cannot make one edge the fallback path's single point of
@@ -425,8 +497,10 @@ async def discover_fallback_ips() -> list[str]:
     IPs that match the local system resolver are kept rather than excluded: in many networks the system-DNS
     IP is the most reliable path to api.telegram.org and a transient primary-path failure should be retried
     against the same address via the IP-rewrite path before the seed list is consulted (#14520).
+    ``verify`` is the Telegram client's TLS context (``telegram_verify``), default the platform one.
     """
-    async with httpx.AsyncClient(timeout=httpx.Timeout(_DOH_TIMEOUT), verify=platform_ssl_context()) as client:
+    verify = platform_ssl_context() if verify is None else verify
+    async with httpx.AsyncClient(timeout=httpx.Timeout(_DOH_TIMEOUT), verify=verify) as client:
         system_dns_task = asyncio.ensure_future(asyncio.to_thread(_resolve_system_dns))
         results = await asyncio.gather(*[_query_doh_provider(client, p) for p in _DOH_PROVIDERS], return_exceptions=True)
     # The getaddrinfo leg has no timeout of its own and only feeds the log line below — bound it.

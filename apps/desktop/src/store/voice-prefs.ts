@@ -24,6 +24,18 @@ function storeAutoSpeak(enabled: boolean, provisional: boolean) {
   $autoSpeakReplies.set(enabled)
 }
 
+// Follow the toggle in every open window. The preference sync announces another
+// window's change with a `storage` event; without this, turning read-aloud off
+// in one window left every other window still speaking.
+if (typeof window !== 'undefined') {
+  window.addEventListener('storage', event => {
+    if (event.key === AUTO_SPEAK_KEY) {
+      autoSpeakChosen = event.newValue !== null
+      $autoSpeakReplies.set(storedBoolean(AUTO_SPEAK_KEY, false))
+    }
+  })
+}
+
 // Backend default for `voice.stop_phrases` (DEFAULT_VOICE_STOP_PHRASES in
 // tools/voice_mode_transcript.py), used until `/api/config/defaults` answers.
 const BACKEND_DEFAULT_STOP_PHRASES: readonly string[] = ['stop']

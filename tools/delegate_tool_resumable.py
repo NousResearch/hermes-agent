@@ -487,13 +487,12 @@ def _still_abandoned(conn, sid: str, pid: Any, started: Any) -> Optional[dict[st
     return _row(conn, sid)
 
 
-def recover_abandoned(conn, plan: dict[str, tuple[Any, Any, list[str]]]) -> dict[str, list[str]]:
+def recover_abandoned(conn, plan: dict[str, tuple[Any, Any, list[str]]]) -> None:
     """Boot: each planned record (``plan_recovery``) still held by its dead owner becomes resumable (outcome
-    ``unknown``, or a gateway shutdown when that was marked), pinned on where it last was.
-    ``{delegation_id: [subagent_id, ...]}``. A row that died after the plan was made is reclaimed by ``claim``."""
-    recovered: dict[str, list[str]] = {}
+    ``unknown``, or a gateway shutdown when that was marked), pinned on where it last was. A row that died after
+    the plan was made is reclaimed by ``claim``."""
     if not plan:
-        return recovered
+        return
     _begin_immediate(conn)
     for sid, (pid, started, pins) in plan.items():
         record = _still_abandoned(conn, sid, pid, started)
@@ -501,8 +500,16 @@ def recover_abandoned(conn, plan: dict[str, tuple[Any, Any, list[str]]]) -> dict
             continue
         entry, cause = _abandoned_entry(record)
         _finish(conn, sid, record, entry, cause, cwd=record.get("cwd"), pins=pins)
-        recovered.setdefault(str(record.get("unit_id") or record.get("delegation_id") or ""), []).append(sid)
-    return recovered
+
+
+def continuable_of(conn, unit_id: str) -> list[str]:
+    """Every child of the async unit *unit_id* its parent can continue now: the ones boot recovery just finished,
+    and the ones that recorded their own resumable stop before the owner exited (a gateway restart stops each
+    child cleanly, while the unit's ledger row is left running)."""
+    return [sid for (sid,) in conn.execute(
+        "SELECT subagent_id FROM resumable_subagents WHERE state='resumable' AND COALESCE("
+        "json_extract(record_json, '$.unit_id'), json_extract(record_json, '$.delegation_id'))=? "
+        "ORDER BY created_at", (unit_id,))]
 
 
 def _reclaim_dead_owner(path: Optional[Path], sid: str, record: dict[str, Any]) -> Optional[dict[str, Any]]:

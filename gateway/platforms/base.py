@@ -22,6 +22,7 @@ from hermes_dir_acl import make_user_dir, unusable_dir_remedy
 from gateway.platforms.base_log_safety import describe_proxy_error, env_proxy_for_redaction, safe_proxy_url_for_log, safe_url_for_log
 from gateway.platforms.base_image_sniff import _looks_like_image
 from gateway.platforms.base_media_flags import pad_inline_flags
+from gateway.runtime_footer import footer_onto_photo_caption, send_footer_unless_captioned
 from gateway.platforms.session_model import _SessionModelSettingsMixin
 from utils import normalize_proxy_url, unlink_files_older_than
 from agent.i18n import t
@@ -433,9 +434,10 @@ from typing import TYPE_CHECKING, Dict, List, Optional, Any, Callable, Awaitable
 if (_checkout_root := str(Path(__file__).resolve().parents[2])) not in sys.path:
     sys.path.append(_checkout_root)  # append, never prepend: never shadow same-named installed packages
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.helpers import fence_state_after, typing_metadata_for_turn, typing_pause_key
+from gateway.platforms.helpers import fence_state_after, reply_file_off, try_reply_file, typing_metadata_for_turn, typing_pause_key
 from gateway.platforms.base_post_delivery import run_post_delivery_callback
-from gateway.platforms.base_delivery_ledger import finalize_final_obligation, ledger_bracket, record_final_obligation
+from gateway.platforms.base_delivery_ledger import (
+    finalize_final_obligation, ledger_attempted, ledger_bracket, record_final_obligation)
 from gateway.platforms.base_exec_approval import (
     approval_timeout_seconds, ea_action_labels, ea_default_reason_text, ea_header_text,
     ea_reason_label_text, ea_smart_deny_line_text, exec_approval_cmd_budget, format_approval_deadline_line,
@@ -3525,7 +3527,10 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
         failures fall back to a plain-text send, exhausted retries notify the user."""
         async def _send(text: str) -> SendResult:
             return await self.send(chat_id=chat_id, content=text, reply_to=reply_to, metadata=metadata)
-
+        tried, as_file = await try_reply_file(self, chat_id, content, reply_to=reply_to, metadata=metadata)
+        if as_file or tried:  # past MAX_SPLIT_MESSAGES: one file; a failed upload never retried as a file (#152012)
+            with reply_file_off():
+                return as_file or await self._send_with_retry(chat_id, content, reply_to, metadata, max_retries, base_delay)
         async def _send_again(previous: SendResult) -> Optional[SendResult]:
             """Retry: the whole payload normally; only the undelivered remainder after a partial split
             delivery (``raw_response["partial_overflow"]``). ``None`` when the adapter cannot resume — the
@@ -3538,12 +3543,9 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
         if result.success or self._send_retry_is_final(result):
             return result
         error_str = result.error or ""
-        # A rate-limited / flood-capped send is transient: it should back off
-        # (honoring the server's retry_after when present) rather than fall
-        # through to the plain-text fallback, which re-enters the ban and can
-        # truncate content.  Gate on the platform-neutral classifier as well so
-        # platforms that surface a rate limit without a retry_after field
-        # (e.g. Weixin raising a bare RuntimeError) get the same treatment.
+        # A rate-limited / flood-capped send is transient: back off (honoring the server's retry_after) rather
+        # than fall through to the plain-text fallback, which re-enters the ban and can truncate content. The
+        # platform-neutral classifier also matches a rate limit with no retry_after (Weixin's bare RuntimeError).
         is_rate_limited = self._is_rate_limited_error(error_str)
         is_network = (
             result.retryable
@@ -3808,12 +3810,12 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
         return bool(done and done())
 
     def _heal_stale_session_lock(self, session_key: str) -> bool:
-        """Clear a stale session lock; True if healed. On-entry safety net: without it a split-brain
-        (guard held, nothing processing) traps the chat in "Interrupting..." until restart."""
-        if session_key not in self._active_sessions or not self._session_task_is_stale(session_key):
+        """Clear a stale session lock (split-brain: guard held, nothing processing); True if healed."""
+        from gateway.platforms.base_session_command import command_in_flight  # it settles its own guard
+        if ((guard := self._active_sessions.get(session_key)) is None
+                or not self._session_task_is_stale(session_key) or command_in_flight(guard)):
             return False
-        logger.warning("[%s] Healing stale session lock for %s (owner task is done/absent)",
-                       self.name, session_key)
+        logger.warning("[%s] Healing stale session lock for %s (owner task done/absent)", self.name, session_key)
         self._active_sessions.pop(session_key, None)
         self._pending_messages.pop(session_key, None)
         self._requeue_counts.pop(session_key, None)
@@ -3888,27 +3890,9 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
             self._start_session_processing(pending_event, session_key)
 
     async def _dispatch_active_session_command(self, event: MessageEvent, session_key: str, cmd: str) -> None:
-        """Dispatch a reset-like bypass command (/stop, /new, /reset): keep a guard installed while
-        the runner handles it (follow-ups stay queued), cancel the old task AFTER the response,
-        drain once."""
-        logger.debug("[%s] Command '/%s' bypassing active-session guard for %s", self.name, cmd, session_key)
-        current_guard = self._active_sessions.get(session_key)
-        command_guard = asyncio.Event()
-        self._active_sessions[session_key] = command_guard
-        try:
-            # Send BEFORE cancelling so cancellation side effects can't drop the "/new"
-            # confirmation.
-            await self._dispatch_inline_reply(event, log_cmd=cmd)
-            await self.cancel_session_processing(session_key, release_guard=False, discard_pending=False)
-        except Exception:
-            # On failure restore the original guard so the session isn't left half-reset.
-            if self._active_sessions.get(session_key) is command_guard:
-                if session_key in self._session_tasks and current_guard is not None:
-                    self._active_sessions[session_key] = current_guard
-                else:
-                    self._release_session_guard(session_key, guard=command_guard)
-            raise
-        await self._drain_pending_after_session_command(session_key, command_guard)
+        """/stop, /new, /reset on a busy session: cancel only on the runner's verdict (#136759)."""
+        from gateway.platforms.base_session_command import dispatch_active_session_command
+        await dispatch_active_session_command(self, event, session_key, cmd)
 
     async def handle_message(self, event: MessageEvent) -> None:
         """Process an incoming message; returns quickly by spawning a background
@@ -3981,21 +3965,16 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
             from gateway.session_ingress_burst import dispatch_busy_burst
             await dispatch_busy_burst(self, event, session_key)  # main's photo/text burst merge
             return
-        # Bypass commands run inline: queued they'd leak as user text (/new) or deadlock
-        # (/approve, /deny — the agent is blocked on Event.wait).  Dispatch inline by
-        # calling the message handler directly and sending the response.  Do NOT use
-        # _process_message_background — it manages session lifecycle and its cleanup
-        # races with the running task (split-brain, see PR #4926).
-        # Certain commands must bypass the active-session guard and be dispatched directly to the gateway
-        # runner. Without this, they are queued as pending messages and either: See #4926.
-        self._canonicalize(event.source)  # identity FIRST (direct callers may skip handle_message)
+        # Bypass commands run inline (queued, /new would leak as user text and /approve, /deny deadlock on
+        # Event.wait); never via _process_message_background, whose cleanup races the running task (#4926).
+        src = event.source
+        self._canonicalize(src)  # identity FIRST (direct callers may skip handle_message)
         cmd = event.get_command()
         from hermes_cli.commands import (is_interrupt_then_dispatch, should_bypass_active_session)
         if should_bypass_active_session(cmd):
             try:
-                # /stop, /new, /reset: cancel + response + drain; other bypasses don't cancel.
+                # /stop, /new, /reset: response, then cancel + drain only if the runner accepted it.
                 if cmd and is_interrupt_then_dispatch(cmd):
-                    self._discard_text_debounce(session_key)
                     await self._dispatch_active_session_command(event, session_key, cmd)
                 else:
                     logger.debug("[%s] Command '/%s' bypassing active-session guard for %s",
@@ -4085,28 +4064,12 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
         lo, hi = bounds
         return random.uniform(lo / 1000.0, hi / 1000.0)
 
-    async def _synthesize_auto_tts(self, text_content: str) -> tuple[list[str], Optional[str]]:
-        """Synthesize auto-TTS audio -> ``(existing_paths, requested_path)``; empty/None on failure
-        (logged, never raised). Path built platform-aware HERE: HERMES_SESSION_PLATFORM is cleared
-        post-handler."""
-        paths: list[str] = []
-        requested_path = None
-        try:
-            from tools.tts_tool import text_to_speech_tool, check_tts_requirements
-            if check_tts_requirements():
-                import json as _json
-                speech_text = self.prepare_tts_text(text_content)
-                if not speech_text:
-                    raise ValueError("Empty text after markdown cleanup")
-                requested_path = build_auto_tts_output_path(self.platform)
-                tts_data = _json.loads(await asyncio.to_thread(
-                    text_to_speech_tool, text=speech_text, output_path=requested_path))
-                if tts_data.get("success", True):
-                    raw_tts_paths = tts_data.get("file_paths") or [tts_data.get("file_path")]
-                    paths = [str(path) for path in raw_tts_paths if path and Path(path).exists()]
-        except Exception as tts_err:
-            logger.warning("[%s] Auto-TTS failed: %s", self.name, tts_err)
-        return paths, requested_path
+    async def _synthesize_auto_tts(self, text_content: str, source: Optional[SessionSource] = None,
+                                   ) -> tuple[list[str], Optional[str]]:
+        """``(existing_paths, requested_path)``, synthesized in ``source``'s profile scope (the turn's
+        scope is gone post-handler); platform-aware path built HERE (HERMES_SESSION_PLATFORM is cleared)."""
+        from gateway.platforms.base_auto_tts import synthesize_auto_tts
+        return await synthesize_auto_tts(self, text_content, source, build_auto_tts_output_path)
 
     def _wants_auto_tts(self, event: MessageEvent, session_key: str, interrupt_event: asyncio.Event,
                         text_content: str, media_files: list) -> bool:
@@ -4207,9 +4170,9 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
                 chat_id=event.source.chat_id, images=images, metadata=metadata, human_delay=human_delay)
         except Exception as batch_err:
             logger.warning("[%s] Error batching images: %s", self.name, batch_err, exc_info=True)
-            record_delivery(SendResult(success=False, error=str(batch_err)))
-            return
-        record_delivery(result)
+            result = SendResult(success=False, error=str(batch_err))
+        record_delivery(result)  # a footer the captioned photo lost goes out on its own (#74547):
+        await send_footer_unless_captioned(self, event.source.chat_id, images, result, metadata, record_delivery)
 
     async def send_final_ledgered(
         self, event: MessageEvent, session_key: str, text_content: str, metadata: dict[str, Any], *,
@@ -4235,21 +4198,12 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
                                     is_ephemeral_response=is_ephemeral_response)
 
     async def ledger_attempted_final(self, event: MessageEvent, session_key: str, response: str, *,
-                                     error: str) -> None:
-        """A final already sent once whose outcome is unknown (the request left, the ACK never came):
-        ledger it as a failed row on the CURRENT transport instead of sending it again, so the timed
-        redelivery sends it once more WITH the may-be-a-duplicate marker and a lost send is not silence."""
+                                     error: str) -> bool:
+        """A final already sent once whose outcome is unknown: ledger it as a failed row so the timed
+        redelivery sends it WITH the may-be-a-duplicate marker. True only when a row was saved."""
         text = (await self._extract_response_content(
             response, event, session_key, is_ephemeral_response=False)).text_content
-        if not text:
-            return
-
-        async def _attempted(_delivery_adapter: "BasePlatformAdapter", obligation_id: Optional[str]) -> SendResult:
-            if obligation_id:
-                logger.warning("Final for session %s may not have landed; the delivery ledger "
-                               "redelivers it with the duplicate marker", session_key)
-            return SendResult(success=False, error=error)
-        await ledger_bracket(self, event, session_key, text, _attempted)
+        return bool(text) and await ledger_attempted(self, event, session_key, text, error)
 
     async def _release_turn_marker(self, event: MessageEvent) -> None:
         """Clear the crash marker handed to this delivery lifecycle only once the final reply is ledgered or
@@ -4276,12 +4230,11 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
         _thread_metadata = None
         try:
             _thread_metadata = _thread_metadata_for_event(event)
-            error_detail = str(e)[:300] if str(e) else t("gateway.notify.turn_error_no_details")
             # Only the policy reads bind the routed profile; the send stays in the launch scope
             # as before, so delivery bookkeeping keeps landing where boot-time recovery reads it.
             with self._media_delivery_scope(event.source):
                 content = None if diagnostic_wake_muted(event) else self.warning_text(
-                    t("gateway.notify.turn_error_detailed", error_type=type(e).__name__, error_detail=error_detail),
+                    t("gateway.errors.generic_failed"),  # raw exception text can carry credentials (logged above)
                     t("gateway.notify.turn_error"),
                     logical_platform=event.source.platform, chat_id=event.source.chat_id, metadata=_thread_metadata)
             if content is None:
@@ -4373,9 +4326,8 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
                                "no attachment; delivering recovered original to %s", self.name,
                                len(pre_extract), event.source.chat_id)
                 text_content = _recovered
-        return _ExtractedResponse(
-            text_content=text_content, images=images, media_files=media_files,
-            local_files=local_files, force_document_attachments=force_document, pre_extract=pre_extract)
+        return footer_onto_photo_caption(self, _ExtractedResponse(text_content=text_content, images=images, media_files=media_files,
+            local_files=local_files, force_document_attachments=force_document, pre_extract=pre_extract), _IMAGE_EXTS)  # #74547
 
     async def _fire_post_delivery_callback(self, session_key: str, interrupt_event: asyncio.Event) -> None:
         """Run the one-shot post-delivery callback (bounded, errors swallowed). The generation is
@@ -4418,9 +4370,9 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
             if result is not None:
                 delivery_attempted = True
                 delivery_succeeded = delivery_succeeded or bool(getattr(result, "success", False))
-        # Reuse the interrupt event handle_message() installed; new Event only if removed externally.
-        interrupt_event = self._active_sessions.get(session_key) or asyncio.Event()
-        self._active_sessions[session_key] = interrupt_event
+        from gateway.platforms.base_session_command import guard_under_commands  # the guard it was scheduled under
+        interrupt_event = guard_under_commands(self._active_sessions.get(session_key)) or asyncio.Event()
+        self._active_sessions.setdefault(session_key, interrupt_event)  # an in-flight command keeps its own
         _thread_metadata = _thread_metadata_for_event(event)
         _typing_metadata = typing_metadata_for_turn(  # fixed now: a later inbound must not move it
             self, event.source.chat_id, _reply_anchor_for_event(event), _thread_metadata)
@@ -4453,7 +4405,7 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
                 _tts_paths, _tts_requested_path = [], None
                 if self._wants_auto_tts(
                         event, session_key, interrupt_event, text_content, media_files):
-                    _tts_paths, _tts_requested_path = await self._synthesize_auto_tts(text_content)
+                    _tts_paths, _tts_requested_path = await self._synthesize_auto_tts(text_content, event.source)
                 # TTS plays before text; generated files are removed afterwards.
                 _tts_caption_delivered = False
                 for _tts_index, _tts_path in enumerate(_tts_paths):

@@ -1549,6 +1549,9 @@ export const esOverrides = {
         'Tamaño máximo de archivo local que el escritorio cargará para vistas previas y adjuntos de imagen, en MB. El valor por defecto es 16. Los adjuntos remotos no-imagen usan un límite separado de 256 MB. Un valor muy alto carga el archivo completo en memoria y puede congelar o bloquear la app.',
       attachmentSizeUnit: 'MB',
       attachmentSizeLabel: 'Tamaño máximo de vista previa / carga de imagen en megabytes',
+      desktopReadAloudTitle: 'Leer respuestas en voz alta en esta app',
+      desktopReadAloudDesc:
+        'Lee cada respuesta terminada en Desktop. Es el mismo interruptor que el del compositor; se aplica a todas las ventanas abiertas, y al apagarlo se detiene una respuesta a mitad de frase. «Leer respuestas en voz alta» abajo es para mensajería y la CLI.',
       showOptions: 'Mostrar opciones'
     },
     hudModifier: {

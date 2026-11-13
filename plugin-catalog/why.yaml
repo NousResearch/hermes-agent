@@ -16,6 +16,7 @@ category: tools
 requires_hermes: ">=0.23"
 docs_url: https://github.com/salch-cred/why
 version: "0.1.1"
+image: https://raw.githubusercontent.com/salch-cred/why/63888e2021a960068b50993422b700845d5e2e45/docs/assets/catalog.jpg
 
 capabilities:
   provides_tools: [why_line]

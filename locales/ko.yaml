@@ -647,8 +647,6 @@ gateway:
     media_delivery_failed_with_name: "⚠️ {kind} 첨부 파일({file_name})을 전달하지 못했어요."
     delivery_failed_retry: "⚠️ 여러 번 시도했지만 메시지 전달에 실패했어요. 요청은 처리됐지만 응답을 보낼 수 없었으니 다시 시도해 주세요."
     plain_fallback_prefix: "(응답 서식 지정에 실패해 일반 텍스트로 표시해요:)\n\n{content}"
-    turn_error_no_details: "자세한 정보 없음"
-    turn_error_detailed: "죄송해요, 오류가 발생했어요 ({error_type}).\n{error_detail}\n다시 시도하거나 /reset으로 새 세션을 시작하세요."
     turn_error: "죄송해요, 오류가 발생했어요."
     context_injection_refused: "컨텍스트 주입이 거부되었어요."
     no_home_channel: "📬 {platform}에 홈 채널이 설정되어 있지 않아요. 홈 채널은 Hermes가 크론 작업 결과와 플랫폼 간 메시지를 전달하는 곳이에요.\n\n이 채팅을 홈 채널로 만들려면 {sethome_cmd}을(를) 입력하고, 건너뛰려면 무시하세요."
@@ -747,6 +745,8 @@ gateway:
     reject_loop: "에이전트가 실행 중이에요 — 실행 중에는 /loop status / pause / stop을 사용하거나, 새 루프를 설정하기 전에 /stop하세요."
     draining_maintenance: "⏳ 이 에이전트는 유지 관리 작업을 위해 정리 중이어서 지금은 새 턴을 받지 않아요. 곧 돌아올 테니 잠시 후 다시 보내 주세요."
     another_turn_running: "⏳ 이 세션에서 다른 턴이 아직 실행 중이에요. 대화 기록을 보호하기 위해 이 메시지는 처리하지 않았어요. 활성 턴이 끝난 뒤 다시 보내 주세요."
+    setup_timeout: "⏳ 에이전트 활동 없이 턴 준비가 멈춰 취소되었습니다. 메시지를 다시 보내 주세요."
+    setup_waiting: "⏳ 이 턴은 아직 시작 중입니다({minutes}분, 아직 에이전트 활동 없음). 메시지는 대기열에 있습니다. /stop을 사용하면 이 턴과 대기열의 모든 메시지가 취소됩니다."
     behavior_queue_short: "다음 턴 대기열에 추가"
     behavior_queue_long: "Hermes가 바쁠 때 받은 메시지는 다음 턴 대기열에 추가돼요."
     behavior_steer_short: "현재 실행에 조정 메시지로 전달 (다음 도구 호출 뒤)"
@@ -980,6 +980,7 @@ platform:
     denied: "❌ 거부됨."
     approval_expired: "⌛ 승인이 만료되어 명령이 실행되지 않았어요 (이미 시간 초과되었거나 다른 곳에서 처리됨)."
   shared:
+    response_as_file: "📎 긴 답변이라 전체 내용을 파일로 첨부했습니다."
     truncated_suffix: "\n...(잘림)"
     unknown: "알 수 없음"
     approval_expired: "⌛ 승인이 만료되어 명령이 실행되지 않았어요 (이미 시간 초과되었거나 다른 곳에서 처리됨)."
@@ -1170,8 +1171,6 @@ platform:
         unknown: "알 수 없는 스킬: `{name}`. 입력을 시작하면 자동 완성 제안이 표시돼요."
       auto_args_description: "인수: {args_hint}"
       auto_description_fallback: "/{name} 실행"
-    limits:
-      response_truncated: "⚠️ **응답 잘림** — 이 답변이 전송 한도({max_messages}개 메시지)를 초과했어요. {dropped_chars}자가 전송되지 않았고, 전체 응답은 세션 로그에 있어요."
     forum:
       default_title: "새 게시물"
     voice:

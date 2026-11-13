@@ -21,7 +21,7 @@ import sys
 import tempfile
 import urllib.parse
 from datetime import datetime
-from pathlib import Path, PurePosixPath
+from pathlib import Path, PurePath, PurePosixPath
 from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
@@ -193,6 +193,14 @@ def _fs_mime_type(path: Path) -> str:
         return _FS_MIME_TYPES[suffix]
     guessed, _ = mimetypes.guess_type(str(path))
     return guessed or "application/octet-stream"
+
+
+def _fs_preview_type_path(requested: str, target) -> PurePath:
+    """The name a preview takes its MIME type and language from: the path as requested, so a
+    ``report.html`` link to an extensionless cache file previews as HTML. A requested name with
+    no extension falls back to the file it resolves to. Bytes and checks stay on *target*."""
+    alias = PurePath(str(requested or "").strip())
+    return alias if alias.suffix else PurePath(target)
 
 
 def _fs_looks_binary(data: bytes) -> bool:
@@ -1094,13 +1102,12 @@ async def fs_read_text(
             )
         except Exception as exc:
             _raise_fs_backend_error(exc)
-        # Keep the alias's preview type: reading a vetted realpath must not change its MIME.
-        target_path = Path(path)
+        type_path = _fs_preview_type_path(path, target)
         return {
             "binary": _fs_looks_binary(data[:4096]),
             "byteSize": size,
-            "language": _FS_PREVIEW_LANGUAGE_BY_EXT.get(target_path.suffix.lower(), "text"),
-            "mimeType": _fs_mime_type(target_path),
+            "language": _FS_PREVIEW_LANGUAGE_BY_EXT.get(type_path.suffix.lower(), "text"),
+            "mimeType": _fs_mime_type(type_path),
             "path": target,
             "text": data.decode("utf-8", errors="replace"),
             "truncated": size > _FS_TEXT_PREVIEW_MAX_BYTES,
@@ -1117,11 +1124,12 @@ async def fs_read_text(
     data = await asyncio.to_thread(
         _fs_read_bytes, target, min(st.st_size, _FS_TEXT_PREVIEW_MAX_BYTES),
     )
+    type_path = _fs_preview_type_path(path, target)
     return {
         "binary": _fs_looks_binary(data[:4096]),
         "byteSize": st.st_size,
-        "language": _FS_PREVIEW_LANGUAGE_BY_EXT.get(target.suffix.lower(), "text"),
-        "mimeType": _fs_mime_type(target),
+        "language": _FS_PREVIEW_LANGUAGE_BY_EXT.get(type_path.suffix.lower(), "text"),
+        "mimeType": _fs_mime_type(type_path),
         "path": str(target),
         "text": data.decode("utf-8", errors="replace"),
         "truncated": st.st_size > _FS_TEXT_PREVIEW_MAX_BYTES,
@@ -1283,14 +1291,13 @@ async def fs_read_data_url(
     backend = await asyncio.to_thread(_remote_fs_backend, path, profile)
     if backend is not None:
         try:
-            data, _size, _target = await asyncio.to_thread(
+            data, _size, target = await asyncio.to_thread(
                 _remote_read_bytes, backend, path, max_bytes=_FS_DATA_URL_MAX_BYTES
             )
         except Exception as exc:
             _raise_fs_backend_error(exc)
         encoded = base64.b64encode(data).decode("ascii")
-        # The caller's .html alias determines the preview type, not the target's suffix.
-        return {"dataUrl": f"data:{_fs_mime_type(Path(path))};base64,{encoded}"}
+        return {"dataUrl": f"data:{_fs_mime_type(_fs_preview_type_path(path, target))};base64,{encoded}"}
     target = await _fs_download_path(path, profile, session_id, session=session)
     # A browser paste or pick reads back to be sent wherever a locked files root sits: the server
     # wrote it into the profile's own image cache or staged uploads, outside the managed tree.
@@ -1308,7 +1315,8 @@ async def fs_read_data_url(
 
     def _render() -> JSONResponse:
         encoded = base64.b64encode(_fs_read_bytes(target)).decode("ascii")
-        return JSONResponse({"dataUrl": f"data:{_fs_mime_type(target)};base64,{encoded}"}, headers=validators)
+        mime_type = _fs_mime_type(_fs_preview_type_path(path, target))
+        return JSONResponse({"dataUrl": f"data:{mime_type};base64,{encoded}"}, headers=validators)
 
     # Read, encode and render off the event loop: up to 16 MB inline stalls every other request (and /api/ws).
     return await asyncio.to_thread(_render)

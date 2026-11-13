@@ -88,6 +88,8 @@ def interactive_setup() -> None:
             save_env_value("A2A_BEARER_TOKEN", token)
         if peer_tokens or token:
             ask("Bind host for remote access (e.g. 0.0.0.0)", "A2A_HOST")
+        elif get_env_value("A2A_PEER_TOKENS") or get_env_value("A2A_BEARER_TOKEN"):
+            print_warning("No new tokens saved — the A2A tokens already in .env stay in effect.")
         else:
             print_warning("No tokens entered — staying localhost-only.")
 

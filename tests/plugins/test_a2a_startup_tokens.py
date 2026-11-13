@@ -6,6 +6,8 @@ instead of reading as "no token configured" (which serves every caller).
 """
 from __future__ import annotations
 
+import pytest
+
 from plugins.platforms.a2a import security
 
 
@@ -103,3 +105,20 @@ def test_setup_refuses_to_save_peer_tokens_the_runtime_cannot_parse(monkeypatch)
         a2a.interactive_setup()
         assert saved.get("A2A_PEER_TOKENS") == expected
         assert any("name:token" in w for w in warnings) is (expected is None)
+
+
+@pytest.mark.parametrize("stored", [{"A2A_PEER_TOKENS": "vibe_abc123"}, {"A2A_BEARER_TOKEN": "shared"}])
+def test_setup_rerun_does_not_claim_localhost_only_over_a_stored_token(monkeypatch, stored):
+    """Enter at every prompt over a stored token: it stays in .env, so the wizard can't say localhost-only."""
+    import hermes_cli.setup as setup_mod
+    from plugins.platforms import a2a
+
+    warnings: list[str] = []
+    monkeypatch.setattr(setup_mod, "prompt", lambda _q, default=None, **_kw: default or "")
+    monkeypatch.setattr(setup_mod, "prompt_yes_no", lambda *_a, **_kw: True)
+    monkeypatch.setattr(setup_mod, "get_env_value", stored.get)
+    monkeypatch.setattr(setup_mod, "save_env_value", lambda *_a: None)
+    monkeypatch.setattr(setup_mod, "print_warning", warnings.append)
+    a2a.interactive_setup()
+    assert not any("localhost-only" in w for w in warnings)
+    assert any("stay in effect" in w for w in warnings)

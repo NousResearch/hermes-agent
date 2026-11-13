@@ -35,6 +35,7 @@ from tools.environments.docker_egress import (
 )
 from tools.environments.docker_ownership import (
     hand_back_sandbox_files, reclaim_sandbox_files, strip_sandbox_privileges)
+from tools import docker_host_mapping  # module (not from-import): keeps the test seam patchable
 from tools.environments.path_utils import sanitize_task_id_for_path
 from tools.environments.remote_common import (
     bash_argv, client_env_with, load_hermes_env_vars, prepend_unset, resolve_passthrough_env, run_capture)
@@ -553,10 +554,20 @@ def _readonly_skill_mount_args() -> list[str]:
     """``-v host:container:ro`` args for credential files, skill dirs and cache dirs. Read-only so the
     container can authenticate/read but never modify host state. Missing or wrong-kind sources are
     skipped with a warning (Docker-in-Docker auto-creates a missing file source as a directory,
-    which would exit 125)."""
+    which would exit 125).
+
+    When the gateway itself runs inside a container its HERMES_HOME (e.g. ``/opt/data``) is a
+    *gateway-internal* path while the daemon resolves every bind source on the HOST — without a
+    translation the sandbox mounts would point at empty host directories (#50798, #72389).
+    ``docker_host_mapping`` turns each source into the matching host path (auto-detected from the
+    gateway's own bind mounts, or ``terminal.docker_host_path_mapping``). Existence/kind checks
+    deliberately stay on the gateway view: the bytes live there; the mapping is only the daemon's
+    view of them.
+    """
     args: list[str] = []
     try:
         import tools.credential_files as cf
+        host_mapping = docker_host_mapping.resolve_host_mapping()
         for getter, expects_file, noun in _RO_MOUNT_SOURCES:
             for entry in getattr(cf, getter)():
                 src = Path(entry["host_path"])
@@ -568,8 +579,10 @@ def _readonly_skill_mount_args() -> list[str]:
                 if problem:
                     logger.warning("Docker: skipping %s mount — %s: %s", noun.split()[0], problem, src)
                     continue
-                args.extend(["-v", f"{entry['host_path']}:{entry['container_path']}:ro"])
-                logger.info("Docker: mounting %s %s -> %s", noun, entry["host_path"], entry["container_path"])
+                host_src = docker_host_mapping.apply_host_mapping(entry["host_path"], host_mapping)
+                suffix = "" if host_src == entry["host_path"] else f" (gateway view: {entry['host_path']})"
+                args.extend(["-v", f"{host_src}:{entry['container_path']}:ro"])
+                logger.info("Docker: mounting %s %s -> %s%s", noun, host_src, entry["container_path"], suffix)
     except Exception as e:
         logger.debug("Docker: could not load credential file mounts: %s", e)
     return args
@@ -857,6 +870,12 @@ class DockerEnvironment(BaseEnvironment):
         path is that directory. A Windows drive path is bound whenever it exists on
         the host — it can never be a path inside the Linux container, and the check
         is the drive shape, not a username.
+
+        Auto-created Hermes sources (sandbox home/workspace, cwd when it is a gateway
+        path) are validated on the gateway filesystem but emitted to the daemon through
+        ``docker_host_mapping`` so a containerized gateway's internal paths resolve to
+        the same directories on the host (#50798). User-authored ``docker_volumes``
+        specs are passed through untouched — the user already writes host paths there.
         """
         volume_args: list[str] = []
         for vol in (volumes or []):
@@ -899,6 +918,7 @@ class DockerEnvironment(BaseEnvironment):
 
         bind_at_workspace = bind_target == "/workspace"
         mount_workspace = not bind_at_workspace and not workspace_explicitly_mounted
+        host_mapping = docker_host_mapping.resolve_host_mapping()
 
         writable_args: list[str] = []
         if self._persistent:
@@ -913,14 +933,17 @@ class DockerEnvironment(BaseEnvironment):
                 os.makedirs(self._workspace_dir, exist_ok=True)
                 self._sandbox_mounts.append((self._workspace_dir, "/workspace"))
             for host_dir, container_path in self._sandbox_mounts:
-                writable_args += ["-v", f"{host_dir}:{container_path}"]
+                # Gateway view is kept in _sandbox_mounts (gateway-side chown/reclaim ops
+                # run there); only the daemon-facing -v source is host-translated.
+                writable_args += ["-v", f"{docker_host_mapping.apply_host_mapping(host_dir, host_mapping)}:{container_path}"]
         else:
             writable_args += ["--tmpfs", "/workspace:rw,exec,size=10g"] if mount_workspace else []
             writable_args += ["--tmpfs", "/home:rw,exec,size=1g", "--tmpfs", "/root:rw,exec,size=1g"]
 
         if bind_target:
-            logger.info("Mounting configured host cwd to %s: %s", bind_target, host_cwd_abs)
-            volume_args = ["-v", f"{host_cwd_abs}:{bind_target}", *volume_args]
+            host_cwd_src = docker_host_mapping.apply_host_mapping(host_cwd_abs, host_mapping)
+            logger.info("Mounting configured host cwd to %s: %s", bind_target, host_cwd_src)
+            volume_args = ["-v", f"{host_cwd_src}:{bind_target}", *volume_args]
         elif workspace_explicitly_mounted and not existing_mount:
             logger.debug("Skipping docker cwd mount: /workspace already mounted by user config")
         return volume_args, writable_args

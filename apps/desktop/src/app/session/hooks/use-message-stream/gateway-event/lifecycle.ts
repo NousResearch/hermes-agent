@@ -28,9 +28,13 @@ import { ingestBackendSkin } from '@/themes/backend-sync'
 import type { GatewayEventContext } from './types'
 
 function onGatewayReady(ready: GatewayEvent<'gateway.ready'>['payload'], activeSource: boolean): void {
-  // Seed the active skin into the desktop theme registry without applying,
-  // so a fresh connect never overrides the user's persisted desktop theme.
-  ingestBackendSkin(ready?.skin, { apply: false })
+  // These opt-in skins are authored for this Arabic desktop: the active
+  // gateway's initial selection must activate their scoped chat treatment.
+  // Other skins retain upstream's seed-only policy; background sources never
+  // repaint this window. The sync guard prevents reconnect snap-back.
+  const name = ready?.skin?.name?.trim()
+  const arabicSkin = name === 'hermes-arabi' || name === 'hermes-arabi-light'
+  ingestBackendSkin(ready?.skin, { apply: activeSource && arabicSkin })
   // Backends with the change watcher broadcast pet/cron/sessions change
   // events; consumers demote their legacy polls to slow backstops.
   setChangeEventsAvailable(Boolean(ready?.change_events))

@@ -3,6 +3,7 @@
 @import 'tw-shimmer';
 @import 'katex/dist/katex.min.css';
 @import '@vscode/codicons/dist/codicon.css';
+@import './themes/hermes-arabi.css';
 
 /* Titlebar clusters: 24×24 hit targets, 13.9px glyphs. codicon.css is
    unlayered (`font: 16px/1`); Tailwind utilities in @layer lose that fight. */
@@ -1869,6 +1870,26 @@ body.guest-pointer-lock :is(webview, iframe) {
   text-align: start;
 }
 
+/* Arabic needs the native system face before an installed Segoe UI (the
+   Windows face otherwise wins even on macOS). Scope like the CJK editor rules,
+   but include transcript prose; leave semantic strong/headings and code alone. */
+[data-slot='aui_thread-content']:lang(ar),
+[data-slot='composer-rich-input']:lang(ar) {
+  --conversation-text-base-size: 14px;
+  --conversation-base-line-height: 20px;
+  font-family: system-ui, 'SF Arabic', '.SF Arabic', 'Geeza Pro', 'Noto Sans Arabic', sans-serif;
+  font-weight: 400;
+}
+
+[data-slot='aui_assistant-message-content']:lang(ar),
+[data-slot='aui_user-inline-text']:lang(ar) {
+  line-height: calc(22px * var(--chat-text-scale, 1));
+}
+
+[data-slot='aui_assistant-message-content']:lang(ar) .aui-md {
+  line-height: inherit;
+}
+
 /* Keyed on the UI language, not installed fonts: PingFang/YaHei ship on every
    Mac/Windows box and would restyle Latin text for everyone. CJK-first is what
    makes shared codepoints (…—“”) render full-width. */
@@ -3733,7 +3754,7 @@ button[data-slot='aui_msg-reactions'] svg {
 [data-hud-shell] [data-slot='composer-root'] {
   /* Opaque, so anything docked to the composer (status stack, queue panel)
      paints the same solid fill the bar does — they share this var. */
-  --composer-fill: var(--dt-card);
+  --composer-fill: var(--dt-chat-composer-background, var(--dt-card));
   /* The base rule adds 5px of transparent grab margin for the peel-out drag,
      and the dock compensates with +10px of width. Neither applies here (the
      HUD composer doesn't peel out), and left in they inset the card unevenly
@@ -3758,19 +3779,20 @@ button[data-slot='aui_msg-reactions'] svg {
    breathing belongs to the thread and the chat surface; the bar just sits
    there, solid, like Spotlight does. */
 [data-hud-shell] [data-slot='composer-surface'] {
-  border: 1px solid var(--ui-stroke-secondary) !important;
+  border: var(--dt-chat-composer-border-width, 1px) solid var(--dt-chat-composer-border, var(--ui-stroke-secondary)) !important;
   /* Same radius as the band's top and the window's own corners, so the HUD
      reads as one object however the band is behaving. Its top corners let a
      sliver of band through, which is the point — the glass wraps the bar's
      shoulders instead of stopping in a straight line above it. */
-  border-radius: 0.75rem !important;
-  background: var(--dt-card) !important;
+  border-radius: var(--dt-chat-composer-radius, 0.75rem) !important;
+  background: var(--composer-fill) !important;
+  color: var(--dt-chat-composer-foreground, var(--dt-foreground));
   backdrop-filter: none !important;
   -webkit-backdrop-filter: none !important;
   /* Bottom edge only. Enough to lift the bar off whatever it is lying over —
      without it the HUD reads as pasted onto the other app — and tight enough
      that it never becomes a glow around a floating card. */
-  box-shadow: 0 2px 2px -1px rgb(0 0 0 / 0.12) !important;
+  box-shadow: var(--dt-chat-composer-shadow, 0 2px 2px -1px rgb(0 0 0 / 0.12)) !important;
   transition: border-color var(--hud-reveal) var(--hud-ease-enter);
 }
 
@@ -3780,7 +3802,7 @@ button[data-slot='aui_msg-reactions'] svg {
    the clearance moves the bar. Recolouring what is already drawn costs no
    space, cannot be clipped, and leaves the working arc as the only ring. */
 [data-hud-shell][data-hud-typing] [data-slot='composer-surface'] {
-  border-color: var(--dt-primary) !important;
+  border-color: var(--dt-chat-composer-border-focus, var(--dt-primary)) !important;
 }
 
 /* GAME OVERLAY — a fullscreen app owns the screen (data-hud-game, pushed by

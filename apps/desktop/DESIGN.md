@@ -386,7 +386,7 @@ from their root base tokens; do not multiply the global tokens or nest CSS zoom.
 - **Inline widgets** — a tool result that renders as a panel the user reads or
   acts on (clarify, artifact card) wears `WIDGET_SHELL_CLASS`
   (`src/components/chat/widget-shell.ts`): shared radius, the
-  `--ui-widget-surface-background` fill, no border. Its actions sit *outside*
+  `--ui-widget-surface-background` fill, no border. Its actions sit _outside_
   the panel, below it. Don't give one widget its own radius or fill.
 - Bordered surfaces in the transcript (tables, fences, callouts, attachments)
   use `--ui-stroke-tertiary`. Not `border-border` — that's the app-wide
@@ -445,8 +445,101 @@ from their root base tokens; do not multiply the global tokens or nest CSS zoom.
 - Install, onboarding, connecting, boot failure, and reauthentication are
   distinct states with shared visual primitives. Preserve their recovery
   semantics when unifying appearance.
+Arabic transcript/editor text (`:lang(ar)`) uses native system/Arabic faces
+before generic sans-serif, at weight 400. Do not append the Segoe-first UI
+stack: an installed Segoe UI otherwise takes the Arabic glyph fallback on macOS.
+The Arabic base is 14px, body leading 20px and transcript prose leading 22px;
+the user's Chat Text Size multiplier still applies. Preserve semantic bold,
+headings and isolated-LTR code; do not flatten descendant weights.
+
+### Arabic skin bubbles
+
+`src/themes/hermes-arabi.css` owns the opt-in treatment for `hermes-arabi`
+and `hermes-arabi-light` (including ThemeProvider's normalized name + mode).
+The dark Arabic skin honors Light appearance using the registered light sibling,
+or the existing synthesized light palette until that sibling is available.
+Explicit `hermes-arabi-light` stays a light single-palette skin in either mode.
+Dedicated `--dt-chat-{user,assistant}-{background,foreground}` tokens keep
+message colors separate from `--ui-chat-bubble-background`, which dialogs use.
+Shared geometry: `--dt-chat-bubble-{radius,padding-block,padding-inline,max-width}`.
+Sides are PHYSICAL in this opt-in skin (it deliberately differs
+from Grok, which mirrors them logically): user/action anchors always sit on
+the right and assistant content on the left, in Arabic and English alike. In
+RTL that means user = inline-start, assistant = inline-end. Text inside each
+bubble still aligns to `start`. Keep existing user restore/stop clearance and
+the transcript's turn spacing.
+
+The skin engine already supports `customCSS`; override these variables in its
+`:root` block. Defaults have zero specificity, so skin overrides win. No skin
+schema/backend change or modification of installed user skin files is required.
+
+Source: Grok Bot 0.79.3 renderer `index-FlssbLEI.css` (minified line 1):
+`.sand-ocoep0` → 18px prose radius; `.sand-figyqd` / `.sand-1q1yrnu` → 7px
+block padding; `.sand-vhurb8` / `.sand-11ct0s3` → 12px inline padding;
+`.sand-12qmj0a` / `.sand-18rdzox` → user / agent fill;
+`.sand-vc5jky` → `margin-inline-start:auto`; `.sand-pvyfi4` → `align-self:flex-end`
+(Grok's logical sides; not used — see the physical-sides rule above).
+`index.eager-app-Bpx4jnxc.js` assigns those classes in `JX.message` / `JX.user`.
+Group starts (`.sand-19snzy6`) add `--cursor-spacing-3` = 12px; continuation
+exceptions are separate. This skin retains Hermes's existing turn grouping.
+The cap follows Grok's `.sand-1q8iv8g` exactly:
+`min(80%, 560px, 100% - 82px)`. Apply the percentage cap once on the user
+action anchor, not again on its nested bubble; assistant content owns its cap.
+
+### Arabic skin composer
+
+The same skin stylesheet exposes `--dt-chat-composer-*` tokens for background,
+foreground, resting/focused border, border width, radius, shadow, selection
+background/foreground and caret. The shared `--composer-fill` bridge preserves
+one opaque fill across scrolled/focused/docked states. Only composer-root editors
+receive composer ink/selection/caret; inline user-message editing keeps user ink.
+The existing skin `customCSS` channel can override each token in `:root`.
+HUD's floating composer consumes these same tokens (with its original defaults
+for other skins); RTL uses the normal shared composer layout. Placeholder picks
+refresh when the locale resolves, even if the session has not changed.
+
+Verified source selectors in Grok's `index-FlssbLEI.css` (minified line 1):
+
+| Concern       | Selector / owner                                                                                                       | Light       | Dark        |
+| ------------- | ---------------------------------------------------------------------------------------------------------------------- | ----------- | ----------- |
+| Background    | `.sand-10e981r`, `--sand-bg-elevated`                                                                                  | `#ffffff`   | `#1f1f1f`   |
+| Rest border   | `.sand-17tbahu`, `--sand-border-secondary-translucent`                                                                 | `#1c1c1c1f` | `#f5f5f51a` |
+| Hover / focus | `.sand-iv08qi:hover` / `.sand-sb55g1:focus-within`, `--sand-border-primary-translucent`                                | `#1c1c1c3d` | `#f5f5f538` |
+| Selection     | `.ui-ostxn8 .ProseMirror::selection`, `.ui-btkxa0 .ProseMirror ::selection`, `--cursor-bg-active` → `--sand-bg-active` | `#1c1c1c14` | `#f5f5f514` |
+| Caret         | `.ui-zx44go`, `--cursor-text-primary` → `--sand-text-primary`                                                          | `#1c1c1c`   | `#f5f5f5`   |
+
+`index.eager-app-Bpx4jnxc.js`, `q$.frame` / `J$` (`sand-kit-message-input-frame`)
+connects the background/border/shadow classes to the real prompt frame. `xjt=.5`
+sets a 0.5px border via `.sand-1mw0n95`; `q$.radius` / `.sand-7yrpt8` uses
+18px expanded / 22px compact. Hermes already distinguishes the normal inline
+composer from the expanded/stacked editor in `useComposerMetrics`; that existing
+`stacked` result stamps `data-composer-expanded` on the root. The normal state
+uses `--dt-chat-composer-radius` = 22px; the stacked state uses
+`--dt-chat-composer-expanded-radius` = 18px, including width-forced stacking.
+No new size observer or keystroke subscription is added. The text field itself
+(`C1.field`, `.sand-jbqb8w`) is transparent.
+
+The frame shadow `.sand-jmgmaz` is literal in both appearances:
+`0 2px 8px -1px #0000000d, 0 1px 2px #00000008, 0 0 0 1px #e4e4e40a`.
+Focus changes the neutral border, not the shadow. Do not substitute the unrelated
+blue `--sand-border-focus-primary` ring or generic popover-shadow tokens here.
+Resolved theme colors were cross-checked against the audit's
+`resolved-theme-tokens.json`; the `Y5n` bridge maps cursor aliases to Sand tokens.
+The selection rules are shared editor rules (also bundled in
+`chunk-document-page-wxkGlv0G.js`), not a guessed blue browser selection.
+
 - Guide startup has a dedicated landing screen with the shared long-operation
   Loader and a localized startup label. It remains active until the guide's
+- Horizontal split handles sit at the owning child's inline-start edge, beside
+  its previous logical sibling. RTL mirrors the handle and its paint, not the
+  pane indices; convert physical pointer deltas to inline direction exactly once.
+  Master-detail list seams follow the same rule. The zone editor retains its
+  physical canvas coordinates.
+
+- The thread timeline rail sits at inline-end in both LTR and RTL. Its visible
+  hit targets have a reserved content gutter, so neither ticks nor clicks cover
+  message text. Hiding the rail restores the normal content padding.
+
   saved conversation is loaded. No greeting, composer, Skip setup, or statusbar
   appears early. Reduced motion uses a static BrandMark and the same label.
   On readiness, reveal the real conversation and fade controls in over 100ms.

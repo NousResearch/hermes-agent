@@ -48,6 +48,7 @@ from agent.message_sanitization import (
     _sanitize_messages_surrogates, _sanitize_surrogates, _repair_tool_call_arguments,
     normalize_finish_reason as _normalize_finish_reason, sanitize_outbound_kwargs, strip_images_for_rejecting_model,
 )
+from agent.reserved_egress import assert_no_unauthorized_reserved_egress
 from agent.reasoning_summaries import (
     append_streamed_reasoning_detail, separate_glued_reasoning_blocks, streamed_reasoning_detail_text)
 from agent.local_prompt_progress import prompt_progress, with_prompt_progress
@@ -2213,6 +2214,7 @@ def _codex_summary_attempt(agent, api_messages: list, api_request_id: str):
         codex_kwargs.pop("tools", None)
         codex_kwargs.pop("tool_choice", None)
         codex_kwargs.pop("parallel_tool_calls", None)
+        assert_no_unauthorized_reserved_egress(agent, codex_kwargs)
         # Route through the same seam as normal Codex turns: a direct _run_codex_stream
         # bypasses the stale/TTFB watchdogs, interrupt handling and client cleanup, so an
         # unattended cron summary could wedge forever (#70943).
@@ -2227,6 +2229,7 @@ def _anthropic_summary_attempt(agent, api_messages: list, api_request_id: str):
             reasoning_config=agent.reasoning_config, is_oauth=agent._is_anthropic_oauth,
             preserve_dots=agent._anthropic_preserve_dots(), base_url=getattr(agent, "_anthropic_base_url", None))
         ant_kw = _merge_nous_portal_messages_extra_body(agent, ant_kw, api_messages)
+        assert_no_unauthorized_reserved_egress(agent, ant_kw)
         response = _managed_summary_call(
             agent, api_request_id, ant_kw, agent._interruptible_api_call, retry_count=retry_count)
         return _summary_text(agent, response, strip_tool_prefix=agent._is_anthropic_oauth)
@@ -2242,6 +2245,7 @@ def _chat_summary_attempt(agent, api_messages: list, api_request_id: str):
     # The summary now carries ``tools``; on cache-planned routes the main loop scrubbed a deep
     # copy, so ``agent.tools`` may still hold bytes the provider 400s on.
     sanitize_outbound_kwargs(agent, summary_kwargs)
+    assert_no_unauthorized_reserved_egress(agent, summary_kwargs)
     from agent.conversation_loop import _moa_client_consumes_prepared_request
     if agent.provider == "moa" and _moa_client_consumes_prepared_request(agent.client):  # transport strips data_use
         summary_kwargs["_moa_prepared_request"] = agent.client.chat.completions.prepare(api_messages)

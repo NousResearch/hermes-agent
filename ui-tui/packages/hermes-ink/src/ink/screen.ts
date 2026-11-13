@@ -399,6 +399,35 @@ function packWord1(styleId: number, hyperlinkId: number, width: number): number 
 const EMPTY_CELL_VALUE = 0n
 
 /**
+ * Per-row record of a line that the renderer reordered from logical to visual
+ * order (see bidi.ts). The cell buffer only holds VISUAL order — that is what
+ * a bidi-unaware terminal paints — so text selection would otherwise copy the
+ * reversed run and paste it unreadable.
+ *
+ * Only rows whose ENTIRE content is one such line get an entry: the writer
+ * refuses to record when the row already has cells, and any later write to a
+ * recorded row drops the entry. That keeps the mapping unambiguous — the
+ * record's columns are the row's columns — so a selection can be remapped
+ * exactly. See `getSelectedText` / `mapBidiRowText`.
+ */
+export type BidiRow = {
+  /** Screen column the line starts at. */
+  x: number
+  /** Visual width in cells (sum of cluster widths, after reordering). */
+  width: number
+  /**
+   * Visual position → index into `logical`. `perm[i]` is the logical cluster
+   * now drawn at visual position `i` (position 0 being column `x`).
+   */
+  perm: number[]
+  /** Logical-order cluster values — the text as the model wrote it. */
+  logical: string[]
+  /** Terminal cell width of each logical cluster (`logical[i]`); 0-width
+   *  clusters occupy no column. */
+  clusterWidths: number[]
+}
+
+/**
  * Screen uses a packed Int32Array instead of Cell objects to eliminate GC
  * pressure. For a 200x120 screen, this avoids allocating 24,000 objects.
  *
@@ -465,6 +494,14 @@ export type Screen = Size & {
    * blitRegion/shiftRows.
    */
   softWrap: Int32Array
+
+  /**
+   * Per-ROW logical-order text for rows the bidi reorderer touched, keyed by
+   * row. Sparse (only RTL rows) and reset each frame; blitRegion/shiftRows
+   * carry entries the same way they carry softWrap. Read by getSelectedText
+   * to return logical order when copying. See BidiRow.
+   */
+  bidiRows: Map<number, BidiRow>
 }
 
 function isEmptyCellByIndex(screen: Screen, index: number): boolean {
@@ -550,7 +587,8 @@ export function createScreen(
     damage: undefined,
     noSelect: new Uint8Array(size),
     written: new Uint8Array(size),
-    softWrap: new Int32Array(height)
+    softWrap: new Int32Array(height),
+    bidiRows: new Map()
   }
 }
 
@@ -595,6 +633,7 @@ export function resetScreen(screen: Screen, width: number, height: number): void
   screen.noSelect.fill(0, 0, size)
   screen.written.fill(0, 0, size)
   screen.softWrap.fill(0, 0, height)
+  screen.bidiRows.clear()
 
   // Update dimensions
   screen.width = width
@@ -961,6 +1000,24 @@ export function blitRegion(
   // blitted content (a cached ink-text node) is what set the bit.
   dst.softWrap.set(src.softWrap.subarray(regionY, maxY), regionY)
 
+  // bidiRows rides along with its rows (same rationale as softWrap), but a
+  // record describes only the columns it covers — copy an entry ONLY when this
+  // blit reproduces its full column span in the destination. Otherwise drop it:
+  // selection then falls back to visual order for that row (today's behaviour),
+  // never to a mapping that no longer matches the cells. Skipped outright when
+  // neither side has records (the overwhelmingly common case — no RTL on screen).
+  if (src.bidiRows.size > 0 || dst.bidiRows.size > 0) {
+    for (let y = regionY; y < maxY; y++) {
+      const rec = src.bidiRows.get(y)
+
+      if (rec && regionX <= rec.x && maxX >= rec.x + rec.width) {
+        dst.bidiRows.set(y, rec)
+      } else {
+        dst.bidiRows.delete(y)
+      }
+    }
+  }
+
   // Fast path: contiguous memory when copying full-width rows at same stride
   if (regionX === 0 && maxX === src.width && src.width === dst.width) {
     const srcStart = regionY * srcStride
@@ -1055,6 +1112,19 @@ export function clearRegion(
 
   if (startX >= maxX || startY >= maxY) {
     return
+  }
+
+  // A cleared cell range invalidates any bidi row record it overlaps — the
+  // logical text no longer matches the (now empty) cells. Partial overlap
+  // drops the record too; selection then falls back to visual order.
+  if (screen.bidiRows.size > 0) {
+    for (let y = startY; y < maxY; y++) {
+      const rec = screen.bidiRows.get(y)
+
+      if (rec && rec.x < maxX && rec.x + rec.width > startX) {
+        screen.bidiRows.delete(y)
+      }
+    }
   }
 
   const cells = screen.cells
@@ -1157,6 +1227,7 @@ export function shiftRows(screen: Screen, top: number, bottom: number, n: number
   const written = screen.written
   const sw = screen.softWrap
   const absN = Math.abs(n)
+  const bidi = screen.bidiRows
 
   if (absN > bottom - top) {
     cells64.fill(EMPTY_CELL_VALUE, top * w, (bottom + 1) * w)
@@ -1164,7 +1235,39 @@ export function shiftRows(screen: Screen, top: number, bottom: number, n: number
     written.fill(0, top * w, (bottom + 1) * w)
     sw.fill(0, top, bottom + 1)
 
+    for (const row of bidi.keys()) {
+      if (row >= top && row <= bottom) {
+        bidi.delete(row)
+      }
+    }
+
     return
+  }
+
+  // bidiRows entries move with their rows; anything pushed outside [top,bottom]
+  // is gone with its cells.
+  if (bidi.size > 0) {
+    const moved = new Map<number, BidiRow>()
+
+    for (const [row, rec] of bidi) {
+      if (row < top || row > bottom) {
+        moved.set(row, rec)
+
+        continue
+      }
+
+      const next = row - n
+
+      if (next >= top && next <= bottom) {
+        moved.set(next, rec)
+      }
+    }
+
+    bidi.clear()
+
+    for (const [row, rec] of moved) {
+      bidi.set(row, rec)
+    }
   }
 
   if (n > 0) {

@@ -194,7 +194,9 @@ async def enable_webhooks(profile: Optional[str] = None):
 
 def _dashboard_route_signature(requested: Optional[str], expected: object) -> dict[str, str]:
     """The saved route's ``signature`` key (#84265). An unpinned route accepts every scheme, so
-    body-only GitHub/Linear MACs replay a captured V1 request; new routes are pinned to generic."""
+    body-only GitHub/Linear MACs replay a captured V1 request; new routes are pinned to generic.
+    A re-POST replaces the record, so an omitted field keeps the stored pin verbatim (even one the
+    gateway refuses, like ``False``); an explicit pick replaces it."""
     if requested is not None:
         return {"signature": requested}
     if not isinstance(expected, dict):
@@ -246,10 +248,6 @@ async def create_webhook(body: WebhookCreate, profile: Optional[str] = None):
         route["deliver_only"] = True
     if body.deliver_chat_id:
         route["deliver_extra"] = {"chat_id": body.deliver_chat_id}
-    if isinstance(expected, dict) and "signature" in expected:
-        # A re-POST replaces the record; dropping its pin would republish the route accepting every
-        # signature family again, body-only GitHub/Linear MACs included (#84265).
-        route["signature"] = expected["signature"]
 
     def _save():
         try:

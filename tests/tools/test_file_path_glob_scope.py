@@ -6,7 +6,6 @@ import pytest
 
 from tools.environments.local import LocalEnvironment
 from tools.file_operations import ShellFileOperations
-from tests.tools.test_file_operations import make_real_subprocess_env
 
 
 @pytest.mark.parametrize("order", ["discovery", "modified"])
@@ -23,7 +22,7 @@ def test_path_glob_preserves_scope_and_pagination(tmp_path, order, multiple_root
             if name.startswith("reference/"):
                 wanted.append(str(file))
     assert shutil.which("rg"), "This integration regression requires ripgrep"
-    ops = ShellFileOperations(make_real_subprocess_env(str(tmp_path)))
+    ops = ShellFileOperations(LocalEnvironment(cwd=str(tmp_path)))
     scope = [str(r) for r in roots] if multiple_roots else str(roots[0])
     expected = wanted if multiple_roots else wanted[:2]
     full = ops._search_files("**/reference/**", scope, limit=50, offset=0, order=order)
@@ -46,7 +45,7 @@ def test_recursive_basename_glob_without_ripgrep(tmp_path, monkeypatch):
     for file in wanted:
         file.write_text("fixture", encoding="utf-8")
     (tmp_path / "nested" / "other.txt").write_text("not Python", encoding="utf-8")
-    ops = ShellFileOperations(make_real_subprocess_env(str(tmp_path)))
+    ops = ShellFileOperations(LocalEnvironment(cwd=str(tmp_path)))
     monkeypatch.setattr(ops, "_has_command", lambda command: command == "find")
     result = ops._search_files("**/*.py", str(tmp_path), limit=50, offset=0)
     assert result.error is None

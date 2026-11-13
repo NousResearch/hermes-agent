@@ -44,7 +44,14 @@ vi.mock('electron', () => ({
     }
   }
 }))
-vi.mock('./tray-host', () => ({ watchLinuxTrayHost: async () => () => {} }))
+const host = vi.hoisted(() => ({ change: (_available: boolean) => {} }))
+vi.mock('./tray-host', () => ({
+  watchLinuxTrayHost: async (onChange: (available: boolean) => void) => {
+    host.change = onChange
+
+    return () => {}
+  }
+}))
 
 import { createMinimizeToTray } from './minimize-to-tray'
 
@@ -358,6 +365,40 @@ test('linux reuses one tray when minimize-to-tray is toggled off and on (#126353
     await controller.setEnabled(true)
     expect(native.trays).toHaveLength(1)
     expect(native.trays[0].destroyed).toBe(false)
+    main.minimize()
+    await flushDeferredHide()
+    expect(main.visible).toBe(false)
+    native.trays[0].menu[0].click()
+    expect(main.visible).toBe(true)
+  } finally {
+    restorePlatform()
+  }
+})
+
+test('linux keeps its tray through a temporary host loss and hides again once the host returns (#145282)', async () => {
+  setPlatform('linux')
+
+  try {
+    const { controller, main } = setup()
+    await controller.start()
+    await controller.setEnabled(true)
+    main.minimize()
+    await flushDeferredHide()
+    expect(main.visible).toBe(false)
+
+    host.change(false)
+    expect(main.visible).toBe(true)
+    expect(controller.status()).toEqual({ enabled: true, available: false })
+    main.minimize()
+    await flushDeferredHide()
+    expect(main.visible).toBe(true)
+    await controller.setEnabled(true)
+    expect(native.trays).toHaveLength(1)
+    expect(native.trays[0].destroyed).toBe(false)
+
+    main.restore()
+    host.change(true)
+    expect(controller.status()).toEqual({ enabled: true, available: true })
     main.minimize()
     await flushDeferredHide()
     expect(main.visible).toBe(false)

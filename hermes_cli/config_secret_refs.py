@@ -47,7 +47,7 @@ def aux_api_key_env(task: str) -> str:
         return "HERMES_DELEGATION_API_KEY"
     # Plugin task keys may contain repeated underscores; the gateway bridge preserves them.
     # Collapsing them here makes two distinct tasks load the same credential.
-    slug = re.sub(r"[^A-Z0-9_]+", "_", str(task or "").upper()).strip("_")
+    slug = re.sub(r"[^A-Z0-9_]+", "_", str(task or "").upper())
     return f"AUXILIARY_{slug or 'TASK'}_API_KEY"
 
 
@@ -217,13 +217,24 @@ def secret_key_env_for(env_name: str, value: Any, base_url: str = "") -> str:
     return env_name if secret_ref_for(env_name, value, base_url) != value else ""
 
 
-def _custom_provider_entry_name(user_config: dict, index: str) -> str:
-    entries = user_config.get("custom_providers")
-    if isinstance(entries, list) and index.isdigit() and int(index) < len(entries):
-        entry = entries[int(index)]
-        if isinstance(entry, dict) and str(entry.get("name") or "").strip():
-            return str(entry["name"])
-    return f"custom_providers_{index}"
+def _config_block(parts: list[str], user_config: dict) -> dict:
+    """The mapping that holds the leaf of ``parts`` (``{}`` when the path does not exist yet)."""
+    node: Any = user_config
+    for part in parts[:-1]:
+        if isinstance(node, list):
+            node = node[int(part)] if part.isdigit() and int(part) < len(node) else None
+        else:
+            node = node.get(part) if isinstance(node, dict) else None
+    return node if isinstance(node, dict) else {}
+
+
+def _custom_provider_entry_key_env(entry: dict, index: str) -> str:
+    """A ``custom_providers`` row's variable, named by the row's endpoint as
+    :func:`_save_custom_provider` names it: row names need not be unique and may equal a
+    ``providers.<name>`` key, so naming by name would let two hosts share one key."""
+    if endpoint_identity(_block_base_url(entry)):
+        return endpoint_api_key_env(_block_base_url(entry))
+    return provider_name_key_env(str(entry.get("name") or "").strip() or f"custom_providers_{index}")
 
 
 def config_path_api_key_env(parts: list[str], user_config: dict) -> Optional[str]:
@@ -241,7 +252,7 @@ def config_path_api_key_env(parts: list[str], user_config: dict) -> Optional[str
     if len(head) == 2 and head[0] == "providers":
         return provider_name_key_env(head[1])
     if len(head) == 2 and head[0] == "custom_providers":
-        return provider_name_key_env(_custom_provider_entry_name(user_config, head[1]))
+        return _custom_provider_entry_key_env(_config_block(parts, user_config), head[1])
     return None
 
 
@@ -250,11 +261,12 @@ def config_set_secret_value(key: str, value: Any, user_config: dict) -> Any:
     for a path in :func:`config_path_api_key_env` is saved to ``.env`` (a note names the variable)
     and its ``${VAR}`` reference returned; a refused ``.env`` write exits without writing."""
     from hermes_cli.config import _exit_invalid, _split_key_path
-    env_name = config_path_api_key_env(_split_key_path(key), user_config)
+    parts = _split_key_path(key)
+    env_name = config_path_api_key_env(parts, user_config)
     if env_name is None:
         return value
-    try:
-        stored = secret_ref_for(env_name, value)
+    try:  # the block's URL arms store_secret's refusal when another endpoint reads env_name
+        stored = secret_ref_for(env_name, value, _block_base_url(_config_block(parts, user_config)))
     except ValueError as exc:
         _exit_invalid(f"✗ {exc}")
     if stored != value:

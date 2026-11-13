@@ -598,9 +598,13 @@ def _apply_endpoint_key(entry: dict[str, Any], body: CustomEndpointUpdate, endpo
             raise HTTPException(status_code=400, detail=REDACTED_CREDENTIAL_WRITE_DETAIL)
         _store_endpoint_key(entry, env_var, submitted_key, base_url, stored_key)
     elif submitted_key is not None:
-        # Blank field means "clear the key", not "leave it alone".
-        from hermes_cli.config_secret_refs import other_endpoint_reads
-        if not other_endpoint_reads(env_var, base_url, stored_key):  # a legacy shared name
+        # Blank field means "clear the key", not "leave it alone". Keep a variable another block
+        # still reads: model.api_key (the main picker reuses this row's variable) or a legacy name.
+        from hermes_cli.config import read_raw_config
+        from hermes_cli.config_secret_refs import env_reference_owners
+        raw = read_raw_config()
+        own = raw["providers"].get(stored_key) if isinstance(raw.get("providers"), dict) else None
+        if not any(block is not own for block in env_reference_owners(raw, env_var)):
             remove_env_value(env_var)
         entry.pop("key_env", None)
         entry.pop("api_key", None)

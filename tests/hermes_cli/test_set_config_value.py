@@ -316,8 +316,8 @@ class TestListNavigation:
         assert len(reloaded["custom_providers"]) == 2
         # Entry 0 was updated
         # The secret moved to .env (#77471); the entry holds the reference.
-        from hermes_cli.config_secret_refs import provider_name_key_env
-        env_name = provider_name_key_env("provider-a")
+        from hermes_cli.config_secret_refs import endpoint_api_key_env
+        env_name = endpoint_api_key_env("https://a.example.com")
         assert reloaded["custom_providers"][0]["api_key"] == f"${{{env_name}}}"
         assert f"{env_name}=new-a" in _read_env(_isolated_hermes_home)
         assert reloaded["custom_providers"][0]["name"] == "provider-a"
@@ -344,8 +344,8 @@ class TestListNavigation:
         import hermes_yaml as yaml
         reloaded = yaml.safe_load(_read_config(_isolated_hermes_home))
         entry = reloaded["custom_providers"][0]
-        from hermes_cli.config_secret_refs import provider_name_key_env
-        assert entry["api_key"] == f"${{{provider_name_key_env('provider-a')}}}"
+        from hermes_cli.config_secret_refs import endpoint_api_key_env
+        assert entry["api_key"] == f"${{{endpoint_api_key_env('https://a.example.com')}}}"
         assert entry["name"] == "provider-a"
         assert entry["base_url"] == "https://a.example.com"
         assert set(entry["models"].keys()) == {"foo", "bar"}

@@ -144,17 +144,14 @@ def test_plugin_aux_task_keys_with_distinct_underscores_keep_distinct_credential
     from hermes_cli.config import load_config, read_raw_config
     from hermes_cli.main_provider_setup import _save_aux_choice
 
-    for task, host, key in (
-        ("my_task", "one.example", "KEY-ONE"),
-        ("my__task", "two.example", "KEY-TWO"),
-    ):
-        _save_aux_choice(task, provider="custom", model="m", base_url=f"https://{host}/v1", api_key=key)
+    tasks = (("my_task", "KEY-ONE"), ("my__task", "KEY-TWO"), ("my_task_", "KEY-THREE"), ("_my_task", "KEY-FOUR"))
+    for n, (task, key) in enumerate(tasks):
+        _save_aux_choice(task, provider="custom", model="m", base_url=f"https://h{n}.example/v1", api_key=key)
 
     raw = read_raw_config()["auxiliary"]
     resolved = load_config()["auxiliary"]
-    assert raw["my_task"]["api_key"] != raw["my__task"]["api_key"]
-    assert resolved["my_task"]["api_key"] == "KEY-ONE"
-    assert resolved["my__task"]["api_key"] == "KEY-TWO"
+    assert len({raw[task]["api_key"] for task, _ in tasks}) == len(tasks)
+    assert {task: resolved[task]["api_key"] for task, _ in tasks} == dict(tasks)
 
 
 def test_endpoint_names_separate_gateways_behind_one_host():
@@ -200,6 +197,49 @@ def test_provider_name_never_shares_an_endpoint_variable(home):
 
     assert load_config()["providers"]["my_host_com"]["api_key"] == "KEY-NAMED"
     assert resolve_runtime_provider(requested="custom:host")["api_key"] == "KEY-HOST"
+
+
+@pytest.mark.parametrize("config_text,second_key", [
+    ("custom_providers:\n- name: work\n  base_url: https://one.example/v1\n"
+     "- name: work\n  base_url: https://two.example/v1\n", "custom_providers.1.api_key"),
+    ("custom_providers:\n- name: work\n  base_url: https://one.example/v1\n"
+     "providers:\n  work:\n    base_url: https://two.example/v1\n", "providers.work.api_key"),
+])
+def test_config_set_rows_that_share_a_name_keep_their_own_keys(home, config_text, second_key):
+    """Row names are not unique: two blocks named ``work`` for different hosts must not share a
+    variable, or the second ``config set`` sends its key to the first host."""
+    from hermes_cli.config import load_config, set_config_value
+
+    (home / "config.yaml").write_text(config_text, encoding="utf-8")
+    set_config_value("custom_providers.0.api_key", "KEY-ONE")
+    set_config_value(second_key, "KEY-TWO")
+
+    cfg = load_config()
+    second = cfg["custom_providers"][1] if second_key.startswith("custom_") else cfg["providers"]["work"]
+    assert cfg["custom_providers"][0]["api_key"] == "KEY-ONE"
+    assert second["api_key"] == "KEY-TWO"
+
+
+def test_config_set_refuses_a_provider_key_another_endpoint_reads(home, monkeypatch):
+    """model.api_key shares a known row's variable; once ``config set`` moves that row to another
+    URL, setting its key must not re-key the main model's endpoint."""
+    from hermes_cli.config import load_config, set_config_value
+    from hermes_cli.web_models import CustomEndpointUpdate
+    from hermes_cli.web_routers.config_env import upsert_custom_endpoint
+    from hermes_cli.web_server_config import _apply_model_assignment_sync
+
+    monkeypatch.setattr(
+        "hermes_cli.models_validate.validate_requested_model",
+        lambda *a, **k: {"accepted": True, "persist": True, "recognized": True, "message": None})
+    (home / "config.yaml").write_text("model:\n  provider: openrouter\n  default: x\n", encoding="utf-8")
+    upsert_custom_endpoint(CustomEndpointUpdate(
+        id="lab", name="lab", base_url="https://a.example/v1", model="m", api_key="KEY-A"))
+    _apply_model_assignment_sync("main", "custom", "m", "", "https://a.example/v1", "KEY-A")
+    set_config_value("providers.lab.base_url", "https://b.example/v1")
+
+    with pytest.raises(SystemExit):
+        set_config_value("providers.lab.api_key", "KEY-B")
+    assert load_config()["model"]["api_key"] == "KEY-A"
 
 
 def test_store_refuses_to_overwrite_a_variable_another_endpoint_reads(home):
@@ -315,3 +355,30 @@ def test_store_refuses_a_variable_a_fallback_block_reads(home, block):
     (home / "config.yaml").write_text(block, encoding="utf-8")
     with pytest.raises(ValueError):
         store_secret("SHARED_KEY", "key-b", "https://b.example/v1")
+
+
+def test_clearing_an_endpoint_key_keeps_the_variable_the_main_model_reads(home, monkeypatch):
+    """The main picker points model.api_key at a known row's variable; a blank-key save of that row
+    must not delete it, or model.api_key resolves to the literal ``${VAR}``."""
+    from hermes_cli.config import load_config
+    from hermes_cli.web_models import CustomEndpointUpdate
+    from hermes_cli.web_routers.config_env import upsert_custom_endpoint
+    from hermes_cli.web_server_config import _apply_model_assignment_sync
+
+    monkeypatch.setattr(
+        "hermes_cli.models_validate.validate_requested_model",
+        lambda *a, **k: {"accepted": True, "persist": True, "recognized": True, "message": None})
+    (home / "config.yaml").write_text("model:\n  provider: openrouter\n  default: x\n", encoding="utf-8")
+    endpoint = {"id": "lab", "name": "lab", "base_url": "https://lab.example/v1", "model": "m"}
+    upsert_custom_endpoint(CustomEndpointUpdate(**endpoint, api_key="KEY-LAB"))
+    _apply_model_assignment_sync("main", "custom", "m", "", "https://lab.example/v1", "KEY-MAIN")
+
+    upsert_custom_endpoint(CustomEndpointUpdate(**endpoint, api_key=""))
+
+    assert "key_env" not in load_config()["providers"]["lab"]
+    assert load_config()["model"]["api_key"] == "KEY-MAIN"
+    # A variable only the cleared row reads is still deleted.
+    solo = {"id": "solo", "name": "solo", "base_url": "https://solo.example/v1", "model": "m"}
+    upsert_custom_endpoint(CustomEndpointUpdate(**solo, api_key="KEY-SOLO"))
+    upsert_custom_endpoint(CustomEndpointUpdate(**solo, api_key=""))
+    assert "KEY-SOLO" not in (home / ".env").read_text(encoding="utf-8")

@@ -1087,8 +1087,12 @@ def _lap_bare_custom_row(b: _PickerBuild, custom_providers: list | None) -> None
     models = [default_model] if default_model else []
     native_catalog_empty = False
     try:
+        from hermes_cli.auth_declared_providers import custom_catalog_probe_api_key
+        from hermes_cli.config import load_config
+        cfg_model = load_config().get("model")
+        probe_key = custom_catalog_probe_api_key(cfg_model if isinstance(cfg_model, dict) else {}, api_url, minted=False)
         discovered, native_catalog_empty = _discover_endpoint_models(
-            "", api_url, "custom", False, headers=None, api_mode=None,
+            probe_key, api_url, "custom", False, headers=None, api_mode=None,
             probe_live=bool(b.refresh or (b.probe_current_custom_provider and is_current)),
             discovery_allowed=True,
             fast_custom_probe=b.resolved_fast_custom_probe)

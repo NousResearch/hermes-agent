@@ -256,6 +256,44 @@ def _require_transcript_owner(session: dict) -> None:
     session["last_active"] = time.time()
 
 
+# Upper bound on one held claim: the compute-host supervisor drops an unanswered late-ack handler after its
+# _LATE_CONTROL_TTL_SECS (1800s), so a claim whose release can never fire stops pinning the lease then.
+_TRANSCRIPT_CLAIM_MAX_S = 1800.0
+
+
+def _hold_transcript_claim(session: dict):
+    """``_require_transcript_owner`` plus a busy claim the idle reaper honours until the returned (idempotent)
+    release runs. For off-turn writers that leave ``running`` False while they work — a model switch, a
+    compute-host ``/compress`` or ``/model`` whose host may outlast the idle window — so the reaper cannot free
+    the lease between the ownership check and the write."""
+    token = object()
+    with session.get("history_lock") or contextlib.nullcontext():
+        _require_transcript_owner(session)
+        claims = session.setdefault("_transcript_claims", {})
+        now = time.time()
+        for stale in [t for t, deadline in claims.items() if deadline <= now]:
+            claims.pop(stale, None)
+        claims[token] = now + _TRANSCRIPT_CLAIM_MAX_S
+
+    def release() -> None:
+        with session.get("history_lock") or contextlib.nullcontext():
+            session.get("_transcript_claims", {}).pop(token, None)
+    return release
+
+
+@contextlib.contextmanager
+def _transcript_claim(session: dict):
+    release = _hold_transcript_claim(session)
+    try:
+        yield
+    finally:
+        release()
+
+
+def _session_holds_transcript_claim(session: dict, now: float) -> bool:
+    return any(deadline > now for deadline in list((session.get("_transcript_claims") or {}).values()))
+
+
 def _session_not_owned_err(rid, exc: SessionNotOwned) -> dict:
     return _err(rid, 4090, str(exc), {"reason": exc.reason})
 

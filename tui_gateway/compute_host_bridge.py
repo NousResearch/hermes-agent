@@ -410,20 +410,40 @@ def _adopt_late_compute_host_compress_ack(sid: str, session: dict, ack: dict, *,
     _status_update(sid, "compacted", "✓ Context compression complete")
 
 
-def _compress_via_compute_host(rid, params: dict, session: dict) -> dict:
-    """``session.compress`` for a turn-isolated session: forward ``/compress`` to the host."""
-    with session["history_lock"]:
-        _require_transcript_owner(session)  # the host's commit rewrites this chat's transcript
-    sid = str(params.get("session_id") or "")
-    focus_topic = _str_param(params, "focus_topic")
+def _send_claimed_compute_host_control(sid: str, session: dict, *, route_name: str, command: str, compress: bool):
+    """A transcript-writing control (``/compress``, ``/model``) sent under a parent-side transcript claim: the host
+    works under a borrowed token while ``running`` stays False here, so without the claim the idle reaper could
+    release the real lease mid-compression. Released when the ack lands; on ``queue.Empty`` (a compress waiter
+    giving up) the late-ack adopter releases it instead, since the host is still writing."""
+    release = _hold_transcript_claim(session)  # raises SessionNotOwned when another surface took the chat
+    handed_to_late_ack = False
 
     def _on_late_ack(late: dict, _sid=sid) -> None:
-        _adopt_late_compute_host_compress_ack(_sid, session, late, route_name="session.compress")
+        try:
+            _adopt_late_compute_host_compress_ack(_sid, session, late, route_name=route_name)
+        finally:
+            release()
     try:
-        ack = _send_compute_host_control(
-            sid, route_name="session.compress", command="/compress" + (f" {focus_topic}" if focus_topic else ""),
+        return _send_compute_host_control(
+            sid, route_name=route_name, command=command, wait=True,
             # compression.context_total_ceiling_seconds: the host legitimately runs that long.
-            wait=True, timeout=_compute_host_compress_wait_seconds(), on_late_ack=_on_late_ack)
+            **({"timeout": _compute_host_compress_wait_seconds(), "on_late_ack": _on_late_ack} if compress else {}))
+    except queue.Empty:
+        handed_to_late_ack = compress
+        raise
+    finally:
+        if not handed_to_late_ack:
+            release()
+
+
+def _compress_via_compute_host(rid, params: dict, session: dict) -> dict:
+    """``session.compress`` for a turn-isolated session: forward ``/compress`` to the host."""
+    sid = str(params.get("session_id") or "")
+    focus_topic = _str_param(params, "focus_topic")
+    try:
+        ack = _send_claimed_compute_host_control(
+            sid, session, route_name="session.compress",
+            command="/compress" + (f" {focus_topic}" if focus_topic else ""), compress=True)
     except queue.Empty:
         # Waiter gave up, host still compressing; the late-ack handler adopts the rotated session when it
         # lands. Not an error (a 5019 here reported timeouts that later succeeded).

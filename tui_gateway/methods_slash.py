@@ -496,16 +496,12 @@ def _compute_host_slash(sid: str, session: dict, name: str, command: str) -> tup
     waits longer and installs a late-ack adopter so a slow compression still lands here."""
     route_name = f"slash.{name}"
     is_compress = name == "compress"
-    if name != "personality":  # the host's /model marker and /compress commit write this chat's transcript
-        with session["history_lock"]:
-            _require_transcript_owner(session)
-
-    def _on_late_ack(late: dict, _sid=sid) -> None:
-        _adopt_late_compute_host_compress_ack(_sid, session, late, route_name=route_name)
     try:
-        ack = _send_compute_host_control(
-            sid, route_name=route_name, command=command, wait=True,
-            **({"timeout": _compute_host_compress_wait_seconds(), "on_late_ack": _on_late_ack} if is_compress else {}))
+        if name == "personality":
+            ack = _send_compute_host_control(sid, route_name=route_name, command=command, wait=True)
+        else:  # the host's /model marker and /compress commit write this chat's transcript
+            ack = _send_claimed_compute_host_control(
+                sid, session, route_name=route_name, command=command, compress=is_compress)
     except queue.Empty:
         if is_compress:
             return "pending", "compression still running in the background; the transcript will refresh when it finishes"

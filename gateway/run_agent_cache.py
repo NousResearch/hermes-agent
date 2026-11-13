@@ -283,7 +283,7 @@ class GatewayAgentCacheMixin:
             )
         else:
             model = _resolve_gateway_model()
-        if policy_model or model == _resolve_gateway_model():
+        if not policy_model and model == _resolve_gateway_model():  # policy_model: turn_model expanded it
             # A ``model.default`` alias builds the agent on its backing id (#154786): compare against
             # that, or every turn reads as fallback drift and evicts the cached agent.
             with suppress(Exception):

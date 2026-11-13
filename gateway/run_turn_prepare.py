@@ -55,7 +55,7 @@ def _resolve_policy_agent_runtime(runner, policy, *, fallback=True) -> tuple[str
     frozen, model = policy.effective(authority)
     provider = (frozen.get('model') or {}).get('provider')
     configured = model  # a ``model.default`` alias resolves to its own model/endpoint/key (#154786)
-    model, runtime, fallback_entry = model_route_runtime(
+    model, runtime, fallback_entry, _aliased = model_route_runtime(
         policy, frozen, model, route_launch_key(authority, policy, frozen), fallback=fallback)
     if fallback_entry is not None:
         from hermes_cli.fallback_config import pre_agent_fallback_notice

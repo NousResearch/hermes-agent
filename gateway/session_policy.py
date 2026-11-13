@@ -1244,7 +1244,11 @@ def turn_model(policy, authority):
     report the frozen model and the post-turn fallback check would evict every switched agent."""
     token = _TURN_PROFILE.set((policy, policy.read_profile(authority, for_turn=True)))
     try:
-        return policy.current_model(authority)
+        frozen, model = policy.effective(authority, secrets=False)
+        # A default alias runs its backing model (#154786), expanded against the config that built the agent.
+        from gateway.session_worker_construct import policy_alias_request
+        aliased = policy_alias_request(policy, frozen, model, route_launch_key(authority, policy, frozen))
+        return aliased[0] if aliased else model
     finally:
         _TURN_PROFILE.reset(token)
 

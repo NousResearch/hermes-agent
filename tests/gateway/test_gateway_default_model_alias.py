@@ -111,6 +111,45 @@ def test_a_canonical_session_on_a_default_alias_runs_the_alias_route(tmp_path, m
     policy = replace(policy, model=run._resolve_gateway_model(policy.config()))  # session_local's no-model step
     frozen, model = policy.effective()
     assert model == "myalias"
-    model, runtime, _ = model_route_runtime(policy, frozen, model, None, fallback=fallback)
-    assert (model, runtime["base_url"], runtime["api_key"]) == (
-        "some-vendor/some-model-id", "http://127.0.0.1:9999/v1", "sk-alias-host")
+    model, runtime, _, aliased = model_route_runtime(policy, frozen, model, None, fallback=fallback)
+    assert (model, runtime["base_url"], runtime["api_key"], aliased) == (
+        "some-vendor/some-model-id", "http://127.0.0.1:9999/v1", "sk-alias-host", True)
+
+
+@pytest.mark.parametrize("pick, key", [({"provider": "openrouter"}, None), ({}, "sk-launch")],
+                         ids=["explicit-provider", "launch-key"])
+def test_an_explicit_launch_route_is_never_replaced_by_the_default_alias(tmp_path, monkeypatch, pick, key):
+    """A session created with its own provider or key keeps that route; only an unrouted default expands."""
+    from dataclasses import replace
+    from gateway.session_policy import build_policy
+    from gateway.session_worker_construct import policy_alias_request
+    monkeypatch.setenv("DEMO_API_KEY", "sk-alias-host")
+    policy = build_policy({"cwd": str(tmp_path), "toolsets": [], **pick}, _ALIAS_CONFIG, profile_terminal=False)
+    policy = replace(policy, model="myalias")
+    frozen, model = policy.effective()
+    assert policy_alias_request(policy, frozen, model, key) is None
+
+
+def test_a_same_name_alias_still_takes_its_own_worker_route(tmp_path, monkeypatch):
+    """An alias whose model id equals its name still routes the managed worker to the alias endpoint and key."""
+    from dataclasses import replace
+    from gateway.session_policy import build_policy
+    from gateway.session_worker_construct import worker_route
+    config = {"model": {"default": "gpt-4.1", "provider": "openrouter"},
+              "model_aliases": {"gpt-4.1": {"model": "gpt-4.1", "provider": "custom",
+                                            "base_url": "http://127.0.0.1:9999/v1", "key_env": "DEMO_API_KEY"}}}
+    monkeypatch.setenv("DEMO_API_KEY", "sk-alias-host")
+    policy = replace(build_policy({"cwd": str(tmp_path), "toolsets": []}, config, profile_terminal=False), model="gpt-4.1")
+    route = worker_route(policy, {"api_key": None})
+    assert (route["model"], route["base_url"], route["api_key"]) == ("gpt-4.1", "http://127.0.0.1:9999/v1", "sk-alias-host")
+
+
+def test_the_fallback_baseline_of_a_frozen_alias_session_is_its_frozen_backing_model(tmp_path, monkeypatch):
+    """The post-turn drift check reads the alias from the session's frozen config, not the live profile."""
+    from dataclasses import replace
+    from gateway.session_policy import build_policy, turn_model
+    monkeypatch.setenv("DEMO_API_KEY", "sk-alias-host")
+    policy = replace(build_policy({"cwd": str(tmp_path), "toolsets": []}, _ALIAS_CONFIG, profile_terminal=False),
+                     model="myalias")
+    monkeypatch.setattr(run, "_load_gateway_config", lambda: {"model": {"default": "myalias"}})  # alias removed live
+    assert turn_model(policy, None) == "some-vendor/some-model-id"

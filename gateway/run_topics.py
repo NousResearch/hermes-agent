@@ -566,7 +566,7 @@ class GatewayTopicThreadsMixin:
             relay_info = await self._await_relay_auto_thread_info(source)
             if relay_info is None:
                 return
-        adapter = self._delivery_adapter_for(source) if getattr(self, "adapters", None) else None
+        adapter = self._delivery_adapter_for(source)
         rename_thread = getattr(adapter, "rename_thread", None)
         if rename_thread is None:
             return

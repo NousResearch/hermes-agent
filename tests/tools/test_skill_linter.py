@@ -217,3 +217,48 @@ def test_oversized_body_flagged_above_budget_and_not_below():
     found = [f for f in lint_content(over) if f.rule == "oversized-body"]
     assert found and found[0].severity == WARNING
     assert "oversized-body" not in _rules(lint_content(under))
+
+
+def test_unknown_frontmatter_key_warns():
+    # A key nothing documents and nothing reads is drift; the finding names it so the author can
+    # decide to remove it or document the reader.
+    content = CLEAN.replace("license: MIT", "license: MIT\nweird_key: whatever")
+    found = [f for f in lint_content(content) if f.rule == "unknown-frontmatter-key"]
+    assert found and found[0].severity == WARNING
+    assert "weird_key" in found[0].message
+
+
+def test_undocumented_but_read_keys_are_not_flagged():
+    # dependencies (docs generator), prerequisites (setup flow), environments (offer-time gate),
+    # deps / compatibility (skills_tool) all have readers, so they are house metadata, not drift.
+    extra = (
+        "prerequisites:\n  env_vars: [MY_KEY]\n"
+        "environments: [kanban]\n"
+        "deps: [ffmpeg]\n"
+        "compatibility: hermes>=0.1\n"
+        "dependencies: [pytz]\n"
+    )
+    content = CLEAN.replace("license: MIT", "license: MIT\n" + extra)
+    assert "unknown-frontmatter-key" not in _rules(lint_content(content))
+
+
+def test_unknown_metadata_hermes_key_warns():
+    content = CLEAN.replace("    related_skills: []", "    related_skills: []\n    mystery: 1")
+    found = [f for f in lint_content(content) if f.rule == "unknown-frontmatter-key"]
+    assert found and "metadata.hermes.mystery" in found[0].message
+
+
+def test_triggers_key_flagged_until_a_reader_lands():
+    # Issue #100056 proposes `triggers:`; until something reads it, it is drift like any other key.
+    content = CLEAN.replace("license: MIT", "license: MIT\ntriggers: [x]")
+    assert "unknown-frontmatter-key" in _rules(lint_content(content))
+
+
+def test_metadata_upstream_pointer_not_flagged():
+    # tools/skills_hub_official.py fetches catalog stubs through metadata.hermes.upstream, so it is
+    # house metadata even though skills/AGENTS.md does not list it.
+    content = CLEAN.replace(
+        "    related_skills: []",
+        "    related_skills: []\n    upstream: NousResearch/hermes-agent/skills/x",
+    )
+    assert "unknown-frontmatter-key" not in _rules(lint_content(content))

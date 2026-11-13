@@ -54,6 +54,28 @@ _MAX_REFERENCE_FILES = 60
 # this budget is ~3x that (bundled skills average ~20k chars). The hard cap in skill_manager_tool
 # (100k) is a safety stop, not a target — agent-authored skills grew to sit right under it.
 _BODY_SOFT_BUDGET_CHARS = 24_000
+# unknown-frontmatter-key allowlist. Two sources, both required: keys named in CONTRIBUTING.md /
+# skills/AGENTS.md, and keys something actually reads. An undocumented key with a reader is not
+# drift, and flagging it would teach authors to delete working metadata — `dependencies` is only
+# read by website/scripts/generate-skill-docs.py, `prerequisites.env_vars` by
+# tools/skills_tool_setup.py, `environments` by agent/skill_utils.py, `deps` and
+# `compatibility` by tools/skills_tool.py. `triggers` is deliberately absent: nothing reads it
+# yet (that is issue #100056), so it reads as drift today.
+_DOCUMENTED_KEYS = frozenset({
+    "name", "description", "version", "author", "license", "platforms",
+    "required_environment_variables", "required_credential_files", "prerequisites", "setup",
+    "environments", "requires_apps", "deps", "compatibility",
+    "tags", "category", "metadata", "dependencies",
+})
+# metadata.hermes.*: tags/category/related_skills/config are in skills/AGENTS.md; blueprint is read
+# by tools/blueprints.py; upstream is the catalog pointer tools/skills_hub_official.py fetches from
+# (`_upstream_pointer_from_content`); the rest are the conditional-offer keys read by
+# agent/skill_utils.py `_CONDITION_KEYS` and agent/prompt_builder.py.
+_DOCUMENTED_HERMES_KEYS = frozenset({
+    "tags", "category", "related_skills", "config", "blueprint", "upstream",
+    "fallback_for_toolsets", "requires_toolsets", "fallback_for_tools",
+    "requires_tools", "session_platforms",
+})
 
 ERROR = "error"
 WARNING = "warning"
@@ -122,6 +144,29 @@ def _check_frontmatter(frontmatter: dict[str, Any], skill_dir: Optional[Path]) -
         if bad:
             yield _warn("platforms-value", f"platforms contains unrecognized value(s) {bad}; "
                         f"expected a subset of {sorted(valid)}.")
+    yield from _check_unknown_keys(frontmatter)
+
+
+def _check_unknown_keys(frontmatter: dict[str, Any]) -> Iterator[LintFinding]:
+    """Keys nothing documents and nothing reads: drift, not intent.
+
+    Severity is warning, not error: a plugin or a future loader may read a key this repo does not,
+    and the finding names the key so an author can decide whether to document it or drop it.
+    """
+    for key in frontmatter:
+        if key not in _DOCUMENTED_KEYS:
+            yield _warn("unknown-frontmatter-key",
+                        f"frontmatter key '{key}' is not documented in CONTRIBUTING.md or "
+                        f"skills/AGENTS.md and nothing in the loader, setup flow or docs generator "
+                        f"reads it. Remove it, or document what consumes it.")
+    meta = frontmatter.get("metadata")
+    hermes_meta = meta.get("hermes") if isinstance(meta, dict) else None
+    if isinstance(hermes_meta, dict):
+        for key in hermes_meta:
+            if key not in _DOCUMENTED_HERMES_KEYS:
+                yield _warn("unknown-frontmatter-key",
+                            f"metadata.hermes.{key} is not documented and nothing reads it. "
+                            f"Remove it, or document what consumes it.")
 
 
 def _check_body(body: str, skill_dir: Optional[Path]) -> Iterator[LintFinding]:

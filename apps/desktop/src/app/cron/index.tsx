@@ -1324,7 +1324,6 @@ export function DeliverCheckboxes({
   targets: CronDeliveryTarget[]
   value: string
 }) {
-  const { t } = useI18n()
   const selected = parseCronDeliveryTargets(value)
   const knownIds = new Set(targets.map(target => target.id))
 

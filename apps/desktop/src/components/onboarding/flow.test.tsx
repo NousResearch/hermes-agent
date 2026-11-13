@@ -194,7 +194,10 @@ describe('external CLI sign-in step', () => {
 
     const command = screen.getByText(longCommand, { exact: false }).closest('code')
 
-    expect(command?.getAttribute('data-selectable-text')).toBe('true')
+    const selectable = command?.querySelector('[data-selectable-text="true"]')
+
+    // Only the command is selectable: a copied "$" prompt would not run in a shell.
+    expect(selectable?.textContent).toBe(longCommand)
     expect(screen.getByRole('button', { name: 'Copy' })).toBeTruthy()
     expect(screen.getByRole('button', { name: "I've signed in" })).toBeTruthy()
   })

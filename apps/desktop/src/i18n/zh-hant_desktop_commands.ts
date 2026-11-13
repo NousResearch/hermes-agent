@@ -36,8 +36,7 @@ export const zhHantDesktopCommands = {
   saveDialogTitle: '儲存對話',
   savedTo: (path: string) => `對話已儲存到 ${path}`,
   saveCancelled: '未儲存（已取消）。',
-  exportRemote:
-    '/export 會從閘道主機打包設定檔，而閘道主機不是這台電腦。請在該主機上執行 `hermes profile export`。',
+  exportRemote: '/export 會從閘道主機打包設定檔，而閘道主機不是這台電腦。請在該主機上執行 `hermes profile export`。',
   importRemote:
     '/import 會在閘道主機上安裝設定檔，而閘道主機不是這台電腦。請在該主機上執行 `hermes profile import <archive>`。',
   timestampsUsage: '用法：/timestamps [on|off|status]',

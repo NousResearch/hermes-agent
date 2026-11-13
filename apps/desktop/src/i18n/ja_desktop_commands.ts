@@ -23,7 +23,8 @@ export const jaDesktopCommands = {
   processesHeader: (count: string) => `バックグラウンドプロセス（${count}）:`,
   configHeader: '設定（表示、承認、貼り付け、音声の設定のみ。それ以外は表示されません）:',
   configDefaults: '（既定値）',
-  configFooter: '設定画面で変更するか、ゲートウェイのホストで `hermes config edit` を使って config.yaml を編集してください。',
+  configFooter:
+    '設定画面で変更するか、ゲートウェイのホストで `hermes config edit` を使って config.yaml を編集してください。',
   historyHeader: (count: string) => `会話履歴（${count} 件のメッセージ）:`,
   historyEmpty: 'まだメッセージはありません。',
   historyYou: 'あなた',

@@ -23,7 +23,8 @@ export const esDesktopCommands = {
   processesHeader: (count: string) => `Procesos en segundo plano (${count}):`,
   configHeader: 'Configuración (pantalla, aprobaciones, pegado y voz; no se muestra nada más):',
   configDefaults: '(valores predeterminados)',
-  configFooter: 'Cambia los ajustes en Ajustes, o edita config.yaml con `hermes config edit` en el host de la pasarela.',
+  configFooter:
+    'Cambia los ajustes en Ajustes, o edita config.yaml con `hermes config edit` en el host de la pasarela.',
   historyHeader: (count: string) => `Historial de la conversación (${count} mensajes):`,
   historyEmpty: 'Todavía no hay mensajes.',
   historyYou: 'Tú',

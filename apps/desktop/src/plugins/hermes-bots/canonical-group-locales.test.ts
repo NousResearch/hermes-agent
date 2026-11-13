@@ -54,7 +54,6 @@ it.each(['peerJoinUnconfirmed', 'disbandMemberHomeUnknown', 'peerStartWithoutRet
     expect(text).toContain('Sie')
   }
 )
-
 const bannedTerms = {
   en: /\brooms?\b|gateway[- ]groups?|group driver|canonical|hosted room|RoomLink/iu,
   ja: /ルーム|部屋|ゲートウェイ(?:の)?グループ|グループの実行機能|正規の(?:グループ|チャット)|ホスト型/iu,

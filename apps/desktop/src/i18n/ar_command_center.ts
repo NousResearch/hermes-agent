@@ -199,8 +199,7 @@ export const arCommandCenter = {
     relayLink: {
       title: 'Team Gateway',
       badge: 'لا حاجة لرمز بوت',
-      intro: (platform: string) =>
-        `يصل ${platform} إلى هذا الوكيل عبر بوت Hermes المشترك. اربط حسابك في ${platform} ثم راسل البوت للتحدث مع وكيلك.`,
+      intro: (platform: string) => `يصل ${platform} إلى هذا الوكيل عبر بوت Hermes المشترك. اربط حسابك في ${platform} ثم راسل البوت للتحدث مع وكيلك.`,
       link: (platform: string) => `ربط ${platform}`,
       linkAnother: (platform: string) => `ربط حساب ${platform} آخر`,
       linkedAccounts: 'الحسابات المرتبطة',
@@ -221,8 +220,7 @@ export const arCommandCenter = {
       managedNote: (platform: string) => `يتولى Team Gateway المراسلة في هذا المثيل، لذا يوقف البوابة الاتصال المباشر بـ ${platform} عند كل تشغيل. لتشغيله بجانب المرحّل، اضبط GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS=true في بيئة البوابة (الاتصال المباشر يمنع المثيل من التقلص إلى الصفر وقد يسلّم الرسائل مرتين).`,
       managedIntro: 'تُربط حسابات هذا الوكيل من Nous Portal.',
       openPortal: 'اربط الحسابات في Nous Portal',
-      noNewAccount: (platform: string) =>
-        `لم يعد الرمز نشطًا ولم يظهر حساب جديد. إذا لم يكن حسابك في ${platform} مدرجًا، فاحصل على رمز جديد وحاول مرة أخرى.`
+      noNewAccount: (platform: string) => `لم يعد الرمز نشطًا ولم يظهر حساب جديد. إذا لم يكن حسابك في ${platform} مدرجًا، فاحصل على رمز جديد وحاول مرة أخرى.`
     },
     telegramQr: {
       title: 'اختر طريقة ربط بوت Telegram',

@@ -23,8 +23,7 @@ export const enDesktopCommands: DesktopCommandNotices = {
   processesHeader: count => `Background processes (${count}):`,
   configHeader: 'Configuration (display, approvals, paste and voice settings; everything else is not shown):',
   configDefaults: '(defaults)',
-  configFooter:
-    'Change settings in Settings, or edit config.yaml with `hermes config edit` on the gateway host.',
+  configFooter: 'Change settings in Settings, or edit config.yaml with `hermes config edit` on the gateway host.',
   historyHeader: count => `Conversation history (${count} messages):`,
   historyEmpty: 'No messages yet.',
   historyYou: 'You',

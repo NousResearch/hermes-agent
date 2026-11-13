@@ -121,6 +121,30 @@ async def test_plugin_card_prose_shows_typing_for_the_turn_it_starts():
 
 
 @pytest.mark.asyncio
+async def test_plugin_choice_reply_does_not_fake_a_new_turn_typing_indicator():
+    """A typed choice settles an idle plugin card; it does not launch a turn."""
+    adapter = _BypassAdapter()
+    adapter.gateway_runner = _runner(running=False)
+    event = _event("1")
+    session_key = _session_key(adapter, event)
+    adapter._active_sessions[session_key] = asyncio.Event()
+    _register_choice_card(session_key)
+
+    async def answer_card(inbound):
+        from tools import clarify_gateway as cm
+        adapter.handler_calls += 1
+        assert cm.attempt_text_response_for_session(session_key, inbound.text) == cm.TEXT_RESOLVED
+        await asyncio.sleep(0)  # the real gateway can await card retirement
+        return ""
+
+    adapter._message_handler = answer_card
+    await adapter._handle_message_while_active(event, session_key)
+
+    assert adapter.handler_calls == 1
+    assert adapter.send_typing.await_count == 0
+
+
+@pytest.mark.asyncio
 async def test_answer_to_a_running_turns_clarify_keeps_that_turns_own_indicator():
     adapter = _BypassAdapter()
     adapter._message_handler = _slow_handler(adapter)

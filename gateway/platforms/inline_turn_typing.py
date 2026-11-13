@@ -33,10 +33,28 @@ def _turn_is_live(adapter, session_key: str) -> bool:
         return True
 
 
+def _card_only_text_reply(event, session_key: str) -> bool:
+    """Accepted or retryable choice replies do not start an agent turn.
+
+    Use the clarify resolver's own pure classifier; invalid selections also keep
+    the card open rather than falling through to a turn.
+    """
+    from gateway.platforms.event import MessageType
+    if event.message_type != MessageType.TEXT or not isinstance(event.text, str):
+        return False
+    from tools import clarify_gateway
+
+    pending = clarify_gateway.get_pending_for_session(session_key, include_choice_prompts=True)
+    if pending is None:
+        return False
+    _, reason = clarify_gateway._coerce_text_response_detailed(pending, event.text)
+    return reason != "prose"
+
+
 async def dispatch_clarify_bypass(adapter, event, session_key: str) -> None:
     """Send the clarify text-intercept's reply inline, bracketed by the typing refresh a turn it
     starts would otherwise get from ``_process_message_background``."""
-    if _turn_is_live(adapter, session_key):
+    if _turn_is_live(adapter, session_key) or _card_only_text_reply(event, session_key):
         await adapter._dispatch_inline_reply(event)
         return
     from gateway.platforms.base import _reply_anchor_for_event, _thread_metadata_for_event

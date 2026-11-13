@@ -23,7 +23,7 @@ from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Any, Dict, FrozenSet, List, MutableMapping, Optional, Sequence, Tuple
+from typing import Any, Dict, FrozenSet, List, Mapping, MutableMapping, Optional, Sequence, Tuple
 
 SECRET_SOURCE_API_VERSION = 1
 
@@ -235,18 +235,40 @@ def run_cli(argv: Sequence[str], *, env: dict[str, str], timeout: float, label: 
         raise RuntimeError(f"failed to invoke {label}: {exc}") from exc
 
 
+# What a vault helper CLI needs from the parent: process location, locale, and
+# the standard proxy/TLS settings. Never a broad *_TOKEN/*_API_KEY pattern; each
+# caller adds its own auth names explicitly so the contract stays reviewable.
+_PROVIDER_ENV_BASE = (
+    "PATH", "HOME", "USERPROFILE", "SYSTEMROOT", "SystemRoot", "APPDATA", "LOCALAPPDATA",
+    "TMPDIR", "TMP", "TEMP", "LANG", "LC_ALL", "LC_CTYPE",
+    "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_RUNTIME_DIR",
+    "HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "NO_PROXY",
+    "https_proxy", "http_proxy", "all_proxy", "no_proxy",
+    "SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE",
+)
+
+
+def build_minimal_provider_env(source_env: Optional[Mapping[str, str]] = None, *,
+                               allow_env: Sequence[str] = (),
+                               extra_env: Optional[Mapping[str, str]] = None) -> dict[str, str]:
+    """Allowlisted env for a vault helper CLI child (never the full post-dotenv
+    ``os.environ``, which holds every provider credential). ``source_env``
+    defaults to the active per-fetch view so multiplex fetches stay profile-local."""
+    source = source_env if source_env is not None else get_source_environment()
+    env = {k: source[k] for k in (*_PROVIDER_ENV_BASE, *allow_env) if k in source}
+    if extra_env:
+        env.update(extra_env)
+    env["NO_COLOR"] = "1"
+    return env
+
+
 def run_secret_cli(argv: Sequence[str], *, allow_env: Sequence[str] = (), extra_env: Optional[dict[str, str]] = None,
                    timeout: float = DEFAULT_CLI_TIMEOUT_SECONDS) -> subprocess.CompletedProcess:
     """Run a secret-manager helper CLI with a minimal, allowlisted env (never the
     full post-dotenv ``os.environ``): PATH/HOME/locale basics plus ``allow_env``
     and ``extra_env``. ``NO_COLOR=1`` + ANSI-scrubbed stderr; stdin is /dev/null so
     a prompting helper fails fast. Pass user refs AFTER a ``--`` terminator."""
-    base_keep = ("PATH", "HOME", "USERPROFILE", "SYSTEMROOT", "TMPDIR", "TEMP",
-                 "LANG", "LC_ALL", "XDG_CONFIG_HOME", "XDG_DATA_HOME")
-    env = {k: os.environ[k] for k in (*base_keep, *allow_env) if k in os.environ}
-    if extra_env:
-        env.update(extra_env)
-    env.setdefault("NO_COLOR", "1")
+    env = build_minimal_provider_env(os.environ, allow_env=allow_env, extra_env=extra_env)
 
     name = Path(str(argv[0])).name
     proc = run_cli(argv, env=env, timeout=timeout, label=name,

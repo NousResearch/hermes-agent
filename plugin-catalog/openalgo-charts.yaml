@@ -1,0 +1,29 @@
+# Entrada para o plugin-catalog do Hermes (NousResearch/hermes-agent).
+#
+# Destino: plugin-catalog/openalgo-charts.yaml no repositório upstream, via PR.
+# Sem isso o cartão em Settings -> Plugins mostra apenas "on disk" (plugin instalado
+# por URL não é entrada de catálogo; a URL do catálogo é constante no código, não há
+# catálogo privado). Validado com hermes_cli.plugin_catalog.entry_from_mapping.
+name: openalgo-charts
+title: OpenAlgo Charts
+repo: https://github.com/godaliens/hermes-plugin-openalgo-charts
+sha: 42f6f45ad51db047c3e3629a8d6dbc70477522cb
+tier: community
+category: desktop
+description: >-
+  Terminal de grafico nativo no Hermes Desktop sobre OpenAlgo Charts 2.7.0 (Apache-2.0,
+  vendorizado no bundle): toolbar completa, rail de desenhos, 112 indicadores, alertas,
+  paineis Data/Objects e cinco feeds publicos de cripto (Binance, Hyperliquid, HL testnet,
+  Aster, Aster testnet). Sem chave, sem CDN, sem servico extra; chip na barra de
+  informacoes abre a UI web do OpenAlgo.
+maintainer: godaliens
+version: 1.2.0
+requires_hermes: ">=0.21.5"
+platforms:
+  - linux
+  - macos
+image: https://raw.githubusercontent.com/godaliens/hermes-plugin-openalgo-charts/42f6f45ad51db047c3e3629a8d6dbc70477522cb/assets/banner.jpg
+screenshots:
+  - https://raw.githubusercontent.com/godaliens/hermes-plugin-openalgo-charts/42f6f45ad51db047c3e3629a8d6dbc70477522cb/assets/screenshot-1.jpg
+docs_url: https://github.com/godaliens/hermes-plugin-openalgo-charts#readme
+capabilities: {}

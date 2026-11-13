@@ -29,6 +29,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from hermes_cli import kanban_db
+from hermes_cli import kanban_board_settings as board_settings
 from hermes_cli import kanban_workflow
 from hermes_cli.web_read_coalescing import coalesced_read
 from hermes_cli import kanban_db_connect as kbc
@@ -1631,21 +1632,48 @@ def get_workflow():
 
 
 @router.get("/orchestration")
-def get_orchestration_settings():
+def get_orchestration_settings(board: Optional[str] = Query(None)):
     """Current orchestration knobs from config.yaml plus the resolved effective
     values. An unset/unknown profile resolves to the active profile here; the
     decomposer prefers the root card's assignee in that case and uses the active
-    profile only for cards with no assignee."""
+    profile only for cards with no assignee.
+
+    With ``?board=<slug>`` the two profile knobs are read board-first
+    (``kanban.boards.<slug>`` -> global); the ``board_*`` fields carry the raw
+    board scope so a UI can show "overridden here" vs "inherited"."""
+    board_slug = _resolve_board(board)
     cfg = _load_config_or_empty()
     kanban_cfg = (cfg.get("kanban") or {}) if isinstance(cfg, dict) else {}
-    explicit = {k: (kanban_cfg.get(k) or "").strip() for k in _PROFILE_SETTINGS}
+    global_explicit = {k: (kanban_cfg.get(k) or "").strip() for k in _PROFILE_SETTINGS}
+    # A pin-collapsed board is indistinguishable from every sibling (design R1):
+    # the resolving readers suppress its override, so the panel must too, or it
+    # would show "overridden here" while dispatch actually uses the global.
+    if board_slug and board_settings.board_pin_suppressed(board_slug):
+        board_explicit = {k: "" for k in _PROFILE_SETTINGS}
+    else:
+        board_explicit = {
+            k: (board_settings.board_override(kanban_cfg, k, board_slug) or "")
+            for k in _PROFILE_SETTINGS
+        }
+    explicit = {k: (board_explicit[k] or global_explicit[k]) for k in _PROFILE_SETTINGS}
     resolved = dict(explicit)
     try:
         from hermes_cli import profiles as profiles_mod
         active_default = profiles_mod.get_active_profile_name() or "default"
-        for k, v in explicit.items():
-            if not v or not profiles_mod.profile_exists(v):
-                resolved[k] = active_default
+        for k in _PROFILE_SETTINGS:
+            # Per layer, not merged first: a board value naming an unknown
+            # profile falls through to a valid global instead of swallowing it.
+            resolved[k] = active_default
+            for candidate in (board_explicit[k], global_explicit[k]):
+                if not candidate:
+                    continue
+                try:
+                    exists = profiles_mod.profile_exists(candidate)
+                except OSError:
+                    exists = True  # filesystem lookup failed: trust the config (fail-open)
+                if exists:
+                    resolved[k] = candidate
+                    break
     except Exception:
         active_default = "default"
         resolved = {k: v or active_default for k, v in resolved.items()}
@@ -1656,7 +1684,11 @@ def get_orchestration_settings():
         "auto_promote_children": bool(kanban_cfg.get("auto_promote_children", True)),
         "resolved_orchestrator_profile": resolved["orchestrator_profile"],
         "resolved_default_assignee": resolved["default_assignee"],
-        "active_profile": active_default}
+        "active_profile": active_default,
+        "board": board_slug,
+        "board_orchestrator_profile": board_explicit["orchestrator_profile"],
+        "board_default_assignee": board_explicit["default_assignee"],
+    }
 
 
 def _validated_profile_name(raw: Optional[str], profiles_mod) -> str:
@@ -1672,13 +1704,42 @@ def _validated_profile_name(raw: Optional[str], profiles_mod) -> str:
     return name
 
 
+def _ci_existing_key(mapping: dict, wanted: str) -> Optional[str]:
+    """The existing key that matches ``wanted`` case-insensitively, else None.
+
+    Reads are case-insensitive (``board_override`` / ``_ci_lookup``); writes must
+    reuse the operator's existing spelling so a hand-written ``TSA-Mgmt`` does
+    not sprout a duplicate ``tsa-mgmt`` sibling that reads as a second board.
+    """
+    lowered = wanted.strip().lower()
+    for key in mapping:
+        if isinstance(key, str) and key.strip().lower() == lowered:
+            return key
+    return None
+
+
 @router.put("/orchestration")
-def set_orchestration_settings(payload: OrchestrationSettingsBody):
+def set_orchestration_settings(
+    payload: OrchestrationSettingsBody, board: Optional[str] = Query(None),
+):
     """Update orchestration knobs in config.yaml. Only fields explicitly passed
-    are written; empty profile strings clear the override."""
+    are written; empty profile strings clear the override.
+
+    Without ``board`` the global keys are written (unchanged). With
+    ``?board=<slug>`` the two profile knobs are written under
+    ``kanban.boards.<slug>`` and an explicit empty string removes that board's
+    override so it inherits the global again. ``auto_decompose`` /
+    ``auto_promote_children`` are not board-scoped in v1.
+
+    Slugs and setting keys are canonicalized on write to match the
+    case-insensitive reads: an existing ``TSA-Mgmt`` entry is reused, and any
+    case variant of ``default_assignee`` (e.g. ``Default_Assignee``) is replaced
+    by the canonical key so the entry cannot accumulate duplicates.
+    """
     with _errors_to_500("failed to load config"):
         from hermes_cli.config import load_config, save_config
         cfg = load_config() or {}
+    board_slug = _resolve_board(board)
     kanban_section = cfg.setdefault("kanban", {})
     if not isinstance(kanban_section, dict):
         kanban_section = cfg["kanban"] = {}
@@ -1686,12 +1747,31 @@ def set_orchestration_settings(payload: OrchestrationSettingsBody):
         from hermes_cli import profiles as profiles_mod
     except Exception:
         profiles_mod = None  # type: ignore
-    # Field order == write order (profiles validated first, then the booleans).
-    for key, value in payload.model_dump(exclude_none=True).items():
-        kanban_section[key] = _validated_profile_name(value, profiles_mod) if key in _PROFILE_SETTINGS else bool(value)
+    if board_slug:
+        boards = kanban_section.setdefault("boards", {})
+        if not isinstance(boards, dict):
+            boards = kanban_section["boards"] = {}
+        slug_key = _ci_existing_key(boards, board_slug) or board_slug
+        entry = boards.get(slug_key)
+        if not isinstance(entry, dict):
+            entry = boards[slug_key] = {}
+        for key, value in payload.model_dump(exclude_none=True).items():
+            if key not in _PROFILE_SETTINGS:
+                continue  # v1: board scope covers the two profile knobs only
+            name = _validated_profile_name(value, profiles_mod)
+            # Drop every case variant first (clear == write nothing), then write
+            # the canonical key so the entry holds at most one spelling.
+            for variant in [k for k in list(entry) if isinstance(k, str) and k.strip().lower() == key]:
+                entry.pop(variant, None)
+            if name:
+                entry[key] = name
+    else:
+        # Field order == write order (profiles validated first, then the booleans).
+        for key, value in payload.model_dump(exclude_none=True).items():
+            kanban_section[key] = _validated_profile_name(value, profiles_mod) if key in _PROFILE_SETTINGS else bool(value)
     with _errors_to_500("failed to save config"):
         save_config(cfg)
-    return get_orchestration_settings()  # callers re-render from the resolved state
+    return get_orchestration_settings(board=board)  # callers re-render from the resolved state
 
 
 # --- WebSocket: /events?since=<event_id>&board=<slug> ------------------------

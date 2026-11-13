@@ -155,7 +155,8 @@ transcript's own lifetime:
   none. A `registered`/`running`/`unknown` execution is never swept.
 - `state_meta` `gateway.admission.result.v1.*` — a settled turn's stored result is a retry
   cache: the newest 16 per session survive, and nothing for a session quiet past the
-  exact-retry horizon (`RETRY_HORIZON_S`, 7 days). A deleted session's compacted copy stays
+  exact-retry horizon: `sessions.retention_days` for a retention prune (at least one day),
+  never more than `RETRY_HORIZON_S` (7 days). A deleted session's compacted copy stays
   until `prune_retired_tombstones` closes that same horizon, so an exact retry after a
   delete still replays its answer. Past the bound, an API/bot/cron retry reads a definitive
   "no result" (never a second execution), and `gateway.local_policy.v1:*` receipts are

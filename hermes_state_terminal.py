@@ -257,7 +257,8 @@ def reclaim_admission_results(conn, *, older_than=None):
 
     Three reclaimed classes: a result with no settled admission and no tombstone still inside the
     horizon (nothing will ever read it), one whose session has been inactive past ``older_than``
-    (no retry is left to answer; default: the tombstone's own ``RETRY_HORIZON_S``), and every
+    (no retry is left to answer; default: the tombstone's own ``RETRY_HORIZON_S``; the retention
+    prune passes :func:`result_horizon_s`, so no result outlives its session's retention), and every
     result past the newest ``ADMISSION_RESULT_KEEP`` of its session. The newest results are
     untouched, so an in-flight retry still resolves byte-exact. A retired session keeps its
     compacted copy here until ``prune_retired_tombstones`` closes the horizon — that is the delete
@@ -275,11 +276,15 @@ def reclaim_admission_results(conn, *, older_than=None):
         "           THEN COALESCE(json_extract(t.value,'$.retired_at') >= ?, 1) ELSE 1 END)",
         (prefix + '*', cut, ADMISSION_PREFIX, cut, cutoff))
     from hermes_state_common import _sql_session_last_active_by_id
-    active = _sql_session_last_active_by_id('a.target_session_id')
+    # A compressed conversation keeps admitting on its root while its turns land on the tip the
+    # claim recorded (``lineage_json``): either one's activity keeps the conversation's results.
+    tip = "json_extract(a.lineage_json, '$[#-1]')"
+    active = (f"MAX(COALESCE({_sql_session_last_active_by_id('a.target_session_id')}, 0), "
+              f"COALESCE({_sql_session_last_active_by_id(tip)}, 0))")
     conn.execute(
         f"DELETE FROM state_meta WHERE key GLOB ? AND key IN ("
         f" SELECT m.key FROM state_meta m JOIN session_admissions a ON a.admission_id=substr(m.key,?)"
-        f" WHERE a.status='terminal' AND COALESCE({active}, 0) < ?)", (prefix + '*', cut, cutoff))
+        f" WHERE a.status='terminal' AND {active} < ?)", (prefix + '*', cut, cutoff))
     seen, victims = {}, []
     for key, session_id in conn.execute(
             "SELECT m.key, a.target_session_id FROM state_meta m JOIN session_admissions a"
@@ -289,6 +294,18 @@ def reclaim_admission_results(conn, *, older_than=None):
         if seen[session_id] > ADMISSION_RESULT_KEEP:
             victims.append((key,))
     conn.executemany('DELETE FROM state_meta WHERE key=?', victims)
+
+
+# Floor of the retention-capped horizon: a turn settled a moment ago keeps its result for a
+# client's prompt retry even under ``sessions.retention_days: 0``.
+MIN_RESULT_HORIZON_S = 86400
+
+
+def result_horizon_s(retention_days):
+    """Exact-retry horizon of a stored result under session retention *retention_days*: never
+    longer than the sessions it belongs to are kept, never longer than ``RETRY_HORIZON_S``."""
+    from hermes_state_mutation_retirement import RETRY_HORIZON_S
+    return min(float(RETRY_HORIZON_S), max(float(retention_days) * 86400, MIN_RESULT_HORIZON_S))
 
 
 def terminal_api_admissions(conn, request_id):

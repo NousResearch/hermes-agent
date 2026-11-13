@@ -382,6 +382,12 @@ class SessionMaintenanceMixin:
             # Deletion is not reversible, so the ended-session guard is structural here: the
             # archive-only escape hatch (#139597) must never reach the delete path.
             raise ValueError("prune_sessions() never deletes open sessions: include_open is archive-only")
+        # A retention prune (an age bound and nothing else) also caps the retry caches at that window:
+        # a settled turn's stored result never outlives the sessions it belongs to. A filtered prune
+        # (one source, a title, an explicit cutoff) says nothing about other sessions' retention.
+        from hermes_state_terminal import result_horizon_s
+        horizon = (result_horizon_s(older_than_days)
+                   if older_than_days is not None and source is None and not filters else None)
         where, where_params = self._prune_where(older_than_days, source, filters, whole_lineages=True)
         removed_ids: list[str] = []
         def _do(conn):
@@ -399,7 +405,7 @@ class SessionMaintenanceMixin:
             # the executions of a session it is deleting, so everything older than the retention
             # window (and every receipt past a terminal execution's newest few) is reclaimed here.
             reclaim_worker_receipts(conn, older_than_days=older_than_days)
-            reclaim_admission_results(conn)
+            reclaim_admission_results(conn, older_than=horizon)
             reclaim_stranded_policies(conn)
             if not session_ids:
                 return 0

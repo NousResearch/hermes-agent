@@ -254,6 +254,25 @@ class TestCompletionConsumed:
         assert not registry.is_completion_consumed("proc_gw")
 
 
+    def test_short_id_poll_dedupes_cli_completion_without_consuming_gateway_turn(self, registry):
+        """#94455: a short process ID should not duplicate the CLI completion turn.
+
+        Gateway/TUI watchers still deliver after read-only polls (#10156).
+        """
+        s = _make_session(sid="proc_a1b2c3d4", notify_on_complete=True, output="done")
+        s.exited = True
+        s.exit_code = 0
+        registry._running[s.id] = s
+        with patch.object(registry, "_write_checkpoint"):
+            registry._move_to_finished(s)
+
+        assert registry.completion_queue.qsize() == 1
+        result = registry.poll("a1b2")
+        assert result["status"] == "exited" and result["session_id"] == s.id
+        assert not registry.is_completion_consumed(s.id)  # only CLI is deduped
+        assert registry.drain_notifications() == []
+
+
     def test_wait_and_log_still_skip_cli_drain(self, registry):
         """wait()/read_log() consume the output, so the CLI drain skips their
         completions via _completion_consumed (the original #8228 contract)."""

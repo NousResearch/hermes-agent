@@ -1,7 +1,7 @@
 name: plan-mode
 title: Plan mode
 repo: https://github.com/100yenadmin/hermes-plan-mode
-sha: d131e9ec4048de1e54b3bbde669c9f33eb1888a1
+sha: c637863301bbcdee7faf3696966da131d4b38c70
 description: 'Plan mode for Hermes Agent: it explores read-only and writes a plan, and its edit tools stay blocked until
   you approve. Approval comes as a Claude Code-style card; Hermes'' Codex app-server runtime and TUI /background and btw
   side agents are outside the block (see the Disclosure). It works on every interactive Hermes surface: /plan or /planmode on blocks mutating Hermes tools dispatched
@@ -52,13 +52,13 @@ tier: community
 category: tools
 requires_hermes: '>=0.21.3'
 docs_url: https://github.com/100yenadmin/hermes-plan-mode#readme
-version: "1.5.0"
-image: https://raw.githubusercontent.com/100yenadmin/hermes-plan-mode/d131e9ec4048de1e54b3bbde669c9f33eb1888a1/docs/media/banner.jpg
+version: "1.5.1"
+image: https://raw.githubusercontent.com/100yenadmin/hermes-plan-mode/c637863301bbcdee7faf3696966da131d4b38c70/docs/media/banner.jpg
 screenshots:
-  - https://raw.githubusercontent.com/100yenadmin/hermes-plan-mode/d131e9ec4048de1e54b3bbde669c9f33eb1888a1/docs/media/cli-card.png
-  - https://raw.githubusercontent.com/100yenadmin/hermes-plan-mode/d131e9ec4048de1e54b3bbde669c9f33eb1888a1/docs/media/cli-edit-review.png
-  - https://raw.githubusercontent.com/100yenadmin/hermes-plan-mode/d131e9ec4048de1e54b3bbde669c9f33eb1888a1/docs/media/cli-card-implement.png
-  - https://raw.githubusercontent.com/100yenadmin/hermes-plan-mode/d131e9ec4048de1e54b3bbde669c9f33eb1888a1/docs/media/cli-edit-approve.png
+  - https://raw.githubusercontent.com/100yenadmin/hermes-plan-mode/c637863301bbcdee7faf3696966da131d4b38c70/docs/media/cli-card.png
+  - https://raw.githubusercontent.com/100yenadmin/hermes-plan-mode/c637863301bbcdee7faf3696966da131d4b38c70/docs/media/cli-edit-review.png
+  - https://raw.githubusercontent.com/100yenadmin/hermes-plan-mode/c637863301bbcdee7faf3696966da131d4b38c70/docs/media/cli-card-implement.png
+  - https://raw.githubusercontent.com/100yenadmin/hermes-plan-mode/c637863301bbcdee7faf3696966da131d4b38c70/docs/media/cli-edit-approve.png
 platforms: []
 capabilities:
   provides_tools:

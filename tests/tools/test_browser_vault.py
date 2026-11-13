@@ -500,6 +500,57 @@ class TestBrowserVaultTools:
         reg.get_or_start.assert_not_called()
         assert "s3cret-pw" not in json.dumps([str(c) for c in reg.mock_calls]) and "s3cret-pw" not in raw
 
+    def test_origin_read_attaches_to_the_configured_browser_without_a_session(self):
+        """A configured browser (browser.cdp_url) the task never opened with browser_exec, e.g. one an MCP
+        server drives: with no supervisor running, the origin read attaches to it instead of failing
+        with "Could not determine the current page origin"."""
+        from tools import browser_vault_tool
+
+        class Supervisor:
+            def evaluate_runtime(self, expression):
+                return {"ok": True, "result": "https://example.com/login"}
+
+        with patch("tools.browser_supervisor.SUPERVISOR_REGISTRY") as reg, \
+             patch("tools.browser_session.session_for_task", return_value={}), \
+             patch("tools.browser_session_cdp.get_cdp_override",
+                   return_value="ws://127.0.0.1:9222/devtools/browser/current"):
+            reg.get.return_value = None
+            reg.get_or_start.return_value = Supervisor()
+            assert browser_vault_tool._current_page_origin("task-1") == "https://example.com"
+        assert reg.get_or_start.call_args.kwargs["cdp_url"] == "ws://127.0.0.1:9222/devtools/browser/current"
+
+    def test_supervisor_reattaches_to_the_configured_browser_after_it_restarted(self):
+        """The supervisor gave up and left the registry when the configured browser went away. The task's
+        session still holds the endpoint resolved before, with the old browser id: the re-attach resolves
+        the configured endpoint afresh instead of aiming at the dead browser."""
+        from tools import browser_vault_tool
+
+        fresh = object()
+        with patch("tools.browser_supervisor.SUPERVISOR_REGISTRY") as reg, \
+             patch("tools.browser_session.session_for_task",
+                   return_value={"cdp_url": "ws://127.0.0.1:9222/devtools/browser/before-restart"}), \
+             patch("tools.browser_session_cdp.get_cdp_override",
+                   return_value="ws://127.0.0.1:9222/devtools/browser/after-restart"):
+            reg.get.return_value = None
+            reg.get_or_start.return_value = fresh
+            assert browser_vault_tool._ensure_supervisor("task-1") is fresh
+        assert reg.get_or_start.call_args.kwargs["cdp_url"] == "ws://127.0.0.1:9222/devtools/browser/after-restart"
+
+    def test_without_a_configured_browser_the_session_endpoint_is_used_as_before(self):
+        from tools import browser_vault_tool
+
+        with patch("tools.browser_supervisor.SUPERVISOR_REGISTRY") as reg, \
+             patch("tools.browser_session_cdp.get_cdp_override", return_value=""), \
+             patch("tools.browser_session_cdp.resolve_cdp_override", side_effect=lambda url: url + "/resolved"), \
+             patch("tools.browser_session.session_for_task", return_value={"cdp_url": "http://127.0.0.1:9333"}):
+            reg.get.return_value = None
+            browser_vault_tool._ensure_supervisor("task-1")
+            assert reg.get_or_start.call_args.kwargs["cdp_url"] == "http://127.0.0.1:9333/resolved"
+            reg.get_or_start.reset_mock()
+            with patch("tools.browser_session.session_for_task", return_value={}):
+                assert browser_vault_tool._ensure_supervisor("task-1") is None
+            reg.get_or_start.assert_not_called()
+
 
     def test_vault_canary_redacted_from_browser_cdp_results(self, store):
         """P1-1 regression: a filled, non-token-shaped canary password must be

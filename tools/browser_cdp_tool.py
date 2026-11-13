@@ -46,6 +46,15 @@ _CDP_FLAGGED_BINARY_PATHS: dict[str, tuple] = {
 }
 
 
+def _clamp_cdp_timeout(timeout: float) -> float:
+    """Schema max is 300s. Both the stateless and frame_id paths use this."""
+    try:
+        safe = float(timeout) if timeout else 30.0
+    except (TypeError, ValueError):
+        safe = 30.0
+    return max(1.0, min(safe, 300.0))
+
+
 def _redact_cdp_output(
     value: Any,
     *,
@@ -359,8 +368,13 @@ def _browser_cdp_via_supervisor(task_id: str, frame_id: str, method: str, params
     except Exception as exc:
         return tool_error(f"CDP call via supervisor failed: {type(exc).__name__}: {exc}", cdp_docs=CDP_DOCS_URL)
 
+    redacted = _redact_cdp_output(
+        result_msg.get("result", {}),
+        always_paths=_CDP_ALWAYS_BINARY_PATHS.get(method, ()),
+        flagged_paths=_CDP_FLAGGED_BINARY_PATHS.get(method, ()),
+    )
     return json.dumps({"success": True, "method": method, "frame_id": frame_id, "session_id": child_sid,
-                       "result": result_msg.get("result", {})}, ensure_ascii=False)
+                       "result": redacted}, ensure_ascii=False)
 
 
 def browser_cdp(method: str, params: Optional[dict[str, Any]] = None, target_id: Optional[str] = None,
@@ -371,6 +385,7 @@ def browser_cdp(method: str, params: Optional[dict[str, Any]] = None, target_id:
     hit signed-URL expiry (Browserbase). Both paths share the same private-page/SSRF guard. Returns JSON
     ``{"success": True, "method", "result"}`` or ``{"error": ...}``."""
     effective_task_id = task_id or "default"
+    safe_timeout = _clamp_cdp_timeout(timeout)
 
     if frame_id:
         # An OOPIF's frame id is its iframe target id, so the guard judges that frame (or fails closed).
@@ -379,7 +394,7 @@ def browser_cdp(method: str, params: Optional[dict[str, Any]] = None, target_id:
         if blocked:
             return blocked
         return _browser_cdp_via_supervisor(task_id=effective_task_id, frame_id=frame_id, method=method,
-                                           params=params, timeout=timeout)
+                                           params=params, timeout=safe_timeout)
 
     if not method or not isinstance(method, str):
         return tool_error("'method' is required (e.g. 'Target.getTargets')", cdp_docs=CDP_DOCS_URL)
@@ -402,11 +417,6 @@ def browser_cdp(method: str, params: Optional[dict[str, Any]] = None, target_id:
     if blocked:
         return blocked
 
-    try:
-        safe_timeout = float(timeout) if timeout else 30.0
-    except (TypeError, ValueError):
-        safe_timeout = 30.0
-    safe_timeout = max(1.0, min(safe_timeout, 300.0))
     try:
         result = _run_async(_cdp_call(endpoint, method, call_params, target_id, safe_timeout))
     except TimeoutError as exc:

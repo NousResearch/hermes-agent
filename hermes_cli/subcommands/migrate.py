@@ -42,6 +42,10 @@ def build_migrate_parser(subparsers) -> None:
     migrate_relay.set_defaults(func=_cmd_migrate_relay)
     _add_agent_import_parsers(migrate_subparsers)
     migrate_parser.set_defaults(func=cmd_migrate)
+    # ``hermes move`` (carry this profile to Hermes Cloud) is a sibling top-level command, registered
+    # here so the CLI facade does not grow.
+    from hermes_cli.subcommands.move import build_move_parser
+    build_move_parser(subparsers)
 
 
 def _add_agent_import_parsers(migrate_subparsers) -> None:

@@ -51,6 +51,11 @@ ALLOWLIST = {
     # hermes_cli.config is importable; it reads one display key best-effort and
     # defaults to the classic REPL on any error.
     "hermes_cli/main.py",
+    # _apply_config() parses the config.yaml MEMBER of an incoming move bundle:
+    # another install's data, not this home's file. The home's own config is
+    # read through require_readable_config_before_write() and saved with
+    # save_config().
+    "hermes_cli/move_receive.py",
 }
 
 # Directories that never count (tests may build fixture configs freely).

@@ -1,14 +1,14 @@
 name: dsers
 title: DSers — Multi-platform Dropshipping
 repo: https://github.com/dsers/dsers-agent-plugin
-sha: 58174bb9d9fdd8941eda76a9b898424852c6407e
+sha: f53c7348705e74ed7eaa304e772e006a253d4b10
 subdir: plugins/hermes
 maintainer: dsers
 tier: community
 category: tools
 requires_hermes: ">=0.22.5"
-version: "0.1.2"
-docs_url: https://github.com/dsers/dsers-agent-plugin/blob/58174bb9d9fdd8941eda76a9b898424852c6407e/plugins/hermes/README.md
+version: "0.1.3"
+docs_url: https://github.com/dsers/dsers-agent-plugin/blob/f53c7348705e74ed7eaa304e772e006a253d4b10/plugins/hermes/README.md
 readme: true
 platforms: []
 description: >-

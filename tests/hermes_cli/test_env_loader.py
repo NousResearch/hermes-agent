@@ -748,15 +748,18 @@ def test_lowercase_launch_only_keys_in_user_env_are_ignored(tmp_path, monkeypatc
     home.mkdir()
     (home / ".env").write_text(
         f"hermes_managed_dir={tmp_path}/untrusted\nHermes_Home={tmp_path}/b\n", encoding="utf-8")
-    monkeypatch.setenv("HERMES_HOME", str(home))
+    # Clear the lowercase names BEFORE setting HERMES_HOME: on Windows they fold onto the real keys.
     monkeypatch.delenv("hermes_managed_dir", raising=False)
     monkeypatch.delenv("Hermes_Home", raising=False)
+    monkeypatch.delenv("HERMES_MANAGED_DIR", raising=False)
+    monkeypatch.setenv("HERMES_HOME", str(home))
 
     with caplog.at_level("WARNING", logger="hermes_cli.env_loader"):
         load_hermes_dotenv(load_external_secrets=False)
 
-    assert "hermes_managed_dir" not in os.environ
-    assert "Hermes_Home" not in os.environ
+    # POSIX: the lowercase names stay unset. Windows (keys upper-cased): the real keys keep their values.
+    assert {"hermes_managed_dir", "Hermes_Home"}.isdisjoint(set(os.environ))  # iterate: `in` folds case
+    assert "HERMES_MANAGED_DIR" not in os.environ
     assert os.environ["HERMES_HOME"] == str(home)
     assert "hermes_managed_dir" in caplog.text  # the operator sees why the line had no effect
 

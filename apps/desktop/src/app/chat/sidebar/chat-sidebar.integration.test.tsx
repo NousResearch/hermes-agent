@@ -501,12 +501,14 @@ describe('ChatSidebar messaging sections across grouping views', () => {
     makeSessionInfo({ connection_id: 'local', id, last_active, profile: 'default', source: 'telegram', title: id })
 
   beforeEach(() => {
+    // SAFETY: the sidebar reads only the primary id and each connection's id, label and kind.
     $connectionsRegistry.set({
       version: 2,
       primary: 'local',
       secureTokenStorage: true,
       connections: [{ id: 'local', label: 'This computer', kind: 'local', tokenSet: false, tokenPreview: null }]
     } as NonNullable<typeof $connectionsRegistry.value>)
+    // SAFETY: the sidebar reads only each profile's name and is_default.
     $profiles.set([{ name: 'default', is_default: true }] as typeof $profiles.value)
     $sessions.set([
       makeSessionInfo({ connection_id: 'local', id: 'desk', last_active: 60, profile: 'default', title: 'desk' })

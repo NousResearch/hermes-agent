@@ -1319,6 +1319,7 @@ describe('followActiveSessionCwd (#105207)', () => {
       return { active_id: 'p_ys', projects: [project], scoped_session_ids: [] }
     })
 
+    // SAFETY: followActiveSessionCwd reaches the gateway only through `connectionState` and `request`.
     activeGateway.mockReturnValue({ connectionState: 'open', request } as never)
 
     return request

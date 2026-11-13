@@ -54,7 +54,7 @@ def test_multiplexed_actions_spawn_isolated_children_and_restore_caller_scope(
         for home in action_homes.values():
             (home / ".env").write_text("", encoding="utf-8")
     monkeypatch.setenv("ACTION_OPAQUE_VALUE", "launch-only-value")
-    allowed_token = env_passthrough._allowed_env_vars_var.set(set())
+    monkeypatch.setattr(env_passthrough, "_allowed_env_vars", set())
     env_passthrough.register_env_passthrough(["ACTION_OPAQUE_VALUE", "LANG"])
     launch_profile_policy.activate_multi_profile_hosting()
     caller_secrets = {"GRAFANA_SERVICE_ACCOUNT_TOKEN": "beta-token"} if routed else None
@@ -103,7 +103,6 @@ def test_multiplexed_actions_spawn_isolated_children_and_restore_caller_scope(
         terminal_scope.reset_terminal_scope(terminal_token)
         secret_scope.reset_secret_scope(secret_token)
         reset_hermes_home_override(home_token)
-        env_passthrough._allowed_env_vars_var.reset(allowed_token)
 
 
 def test_single_profile_action_keeps_ambient_scrubbing_and_caller_overrides(action_homes):

@@ -209,6 +209,17 @@ def _supplied_by_operator(name: str) -> bool:
 class _YamlEnvLoad:
     seen: set[str] = field(default_factory=set)
     failed: bool = False
+    # name -> (value, marker) before this load's first write: a load that raises restores them, so the
+    # adapter (last good lists) and the runner (process env) never check different policies.
+    prior: dict[str, tuple[Optional[str], Optional[str]]] = field(default_factory=dict)
+
+    def restore(self) -> None:
+        for name, values in self.prior.items():
+            for key, value in zip((name, bridged_env_marker(name)), values):
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
 
 
 # Loads are synchronous; copied contexts must not inherit another thread's partial seen-set.
@@ -238,7 +249,11 @@ def yaml_env_refresh():
         load = _YamlEnvLoad()
         _YAML_ENV_LOAD.current = load
         try:
-            yield
+            try:
+                yield
+            except BaseException:
+                load.restore()
+                raise
             if not load.failed:
                 for name, digest in before.items():
                     marker = bridged_env_marker(name)
@@ -280,6 +295,8 @@ def yaml_env_setter(*, fallback: bool = False) -> Callable[[str, Any], None]:
             if current is not None and current.strip():
                 if not _is_bridge_leftover(name, os.getenv(marker)) or _supplied_by_operator(name):
                     return  # the operator's value, not this bridge's leftover
+            if load is not None:
+                load.prior.setdefault(name, (current, os.getenv(marker)))
             os.environ[name] = bridged
             os.environ[marker] = bridged_env_digest(bridged)
 

@@ -299,3 +299,17 @@ def test_a_read_failure_after_a_good_read_never_applies_an_env_only_config(tmp_p
             assert adapter._is_allowed_user("9999", stranger, guild=guild, is_dm=False, channel_ids={"555"}) is False
     finally:
         reset_multiplex_context(token)
+
+
+def test_a_load_that_raises_leaves_the_bridged_env_as_it_was(_home):
+    """A YAML stage that raises after a plugin hook bridged its value (here the core top-level
+    require_mention fallback on a boolean ``telegram:`` block) must not leave that value in the
+    process env: the adapter keeps its last good list, so the runner's env check must too."""
+    _write(_home, {"allow_from": ["111"]})
+    load_gateway_config()
+    assert os.environ["DISCORD_ALLOWED_USERS"] == "111"
+    (_home / "config.yaml").write_text(yaml.safe_dump(
+        {"discord": {"allow_from": ["222"]}, "require_mention": True, "telegram": True}), encoding="utf-8")
+    with pytest.raises(TypeError):
+        load_gateway_config(strict=True)
+    assert os.environ["DISCORD_ALLOWED_USERS"] == "111"

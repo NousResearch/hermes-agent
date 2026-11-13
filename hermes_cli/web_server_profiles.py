@@ -143,8 +143,7 @@ def _parse_model_ids(resp: Any) -> list[str]:
 def _fallback_profile_entry(profiles_mod, name: str, home: Path, *, is_default: bool,
                             has_env: bool, gateway_running: Callable[[], bool]) -> dict[str, Any]:
     model, provider = _safe(lambda: profiles_mod._read_config_model(home), (None, None))
-    meta = lambda key, default: _safe(
-        lambda: profiles_mod.read_profile_meta(home).get(key, default), default)
+    meta = _safe(lambda: profiles_mod.read_profile_meta(home), {}).get
     return {
         "name": name, "path": str(home), "is_default": is_default, "model": model,
         "provider": provider, "has_env": has_env,

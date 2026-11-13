@@ -118,18 +118,25 @@ def _placed(home: Path, entry) -> Path:
     return home / "cache" / f"default-plugins.placed-{entry.name}"
 
 
-def fetch_allowed(home: Path) -> bool:
-    """``security.allow_lazy_installs`` for *home* (managed overlay applied), read without binding the
+def fetch_policy(home: Path) -> str:
+    """``"allowed"``, ``"denied"`` (``security.allow_lazy_installs`` off, or the env opt-out) or
+    ``"unreadable"`` for *home* (managed overlay applied). Nothing is fetched unless allowed, but an
+    unreadable config keeps the home owed, so a repaired file is picked up. Read without binding the
     profile: a whole-profile bind at boot would freeze the launch environment before boot sets it up."""
     if os.environ.get("HERMES_DISABLE_LAZY_INSTALLS", "").strip().lower() in ("1", "true", "yes"):
-        return False
+        return "denied"
     from gateway.config_loader import read_yaml_layers
     try:
         security = read_yaml_layers(home).get("security")
-    except Exception:  # health: allow BLE001 -- a malformed config never grants a fetch (as pm.install decides)
+    except Exception:  # health: allow BLE001 -- a malformed or unreadable config never grants a fetch
         logger.debug("default plugins: unreadable config for %s", home, exc_info=True)
-        return False
-    return (security if isinstance(security, dict) else {}).get("allow_lazy_installs", True) is True
+        return "unreadable"
+    allowed = (security if isinstance(security, dict) else {}).get("allow_lazy_installs", True) is True
+    return "allowed" if allowed else "denied"
+
+
+def fetch_allowed(home: Path) -> bool:
+    return fetch_policy(home) == "allowed"
 
 
 def install_defaults(home: Path, *, say: Callable[[str], None] = logger.info,
@@ -139,7 +146,10 @@ def install_defaults(home: Path, *, say: Callable[[str], None] = logger.info,
     from hermes_cli.left_core_migration import _first_cause, _install_into
     from hermes_cli.memory_provider_migration import _home_label, _note_failure, _note_success
     result: dict = {"installed": [], "owed": []}
-    if not fetch_allowed(home):
+    policy = fetch_policy(home)
+    if policy == "unreadable":
+        return {**result, "owed": [str(home)]}
+    if policy == "denied":
         return {**result, "skipped": "lazy-installs-disabled"}
     done = _recorded(home)
     pending = [entry for entry in (default_entries() if entries is None else entries) if entry.name not in done]
@@ -149,9 +159,10 @@ def install_defaults(home: Path, *, say: Callable[[str], None] = logger.info,
         if entry.name in have:
             continue
         try:
-            # At the pin selected for every home (a home's own catalog cache may trail it); reuses, and
-            # enables, a tree a refused enable left behind at that pin.
-            outcome = install(entry.name, entry.sha)
+            # At the pin selected for every home (a home's own catalog cache may trail it). A tree still
+            # on disk here is one an earlier automatic attempt left and nobody chose since (_settled):
+            # replaced, so a re-pin between attempts cannot wedge it at "already exists".
+            outcome = install(entry.name, entry.sha, force=_installed_dir(home, entry) is not None)
         except Exception as exc:  # health: allow BLE001 -- network, uv or kill list: reported per plugin, never raised
             outcome = {"ok": False, "error": str(exc)}
         if outcome.get("ok"):
@@ -181,7 +192,9 @@ def install_defaults_all_homes(*, say: Callable[[str], None] = print, wait: floa
     from hermes_cli.plugin_catalog import fetch_live_catalog
     from pm.plugins_state import dependency_homes
     summary: dict = {"installed": [], "owed": []}
-    homes = [home for home in dependency_homes() if fetch_allowed(home)]
+    policies = {home: fetch_policy(home) for home in dependency_homes()}
+    summary["owed"] += [str(home) for home, policy in policies.items() if policy == "unreadable"]
+    homes = [home for home, policy in policies.items() if policy == "allowed"]
     entries = default_entries() if homes else []  # no catalog read (or fetch) where nothing may install
     if homes and not (fetch_live_catalog() or {}).get("entries"):  # an expired offline cache has none
         # Offline: the in-tree defaults still install, but one the live catalog added since this release
@@ -233,7 +246,7 @@ def spawn_install(home: Optional[Path] = None) -> bool:
     from pm.environments import dependency_home_root
     from pm.paths import install_root
     root = Path(dependency_home_root())
-    if home is not None and not fetch_allowed(home):
+    if home is not None and fetch_policy(home) == "denied":
         return False
     _state(root, "settled").unlink(missing_ok=True)  # unsettled until a pass installs it, so every boot re-checks
     if _failed_recently(root, _BACKOFF):
@@ -303,7 +316,7 @@ def step_install_default_plugins() -> dict:
     from pm.environments import dependency_home_root
     from pm.plugins_state import dependency_homes
     try:
-        if not any(fetch_allowed(home) for home in dependency_homes()):
+        if all(fetch_policy(home) == "denied" for home in dependency_homes()):
             return {"ok": True, "skipped": "lazy-installs-disabled"}
         settled = _state(Path(dependency_home_root()), "settled")
         if settled.is_file() and settled.read_text(encoding="utf-8-sig").strip() == _identity():

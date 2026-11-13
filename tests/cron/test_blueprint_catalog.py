@@ -154,6 +154,17 @@ class TestCommandHandler:
         assert "Blocked" in res.text
         assert isolated_home.load_jobs() == []
 
+    def test_direct_create_refuses_unknown_bot_chat_deliver(self, isolated_home):
+        """The deliver half of the guard: a bot-chat target naming a profile that isn't on
+        this machine is refused before the job is stored, like the tool and dashboard paths."""
+        from hermes_cli.blueprint_cmd import handle_blueprint_command
+
+        res = handle_blueprint_command(
+            "important-mail criteria=invoices deliver=bot-chat:ghost_profile")
+        assert "Scheduled" not in res.text
+        assert "ghost_profile" in res.text
+        assert isolated_home.load_jobs() == []
+
 
 class TestDocsGenerator:
     def test_generator_emits_valid_index(self, tmp_path):

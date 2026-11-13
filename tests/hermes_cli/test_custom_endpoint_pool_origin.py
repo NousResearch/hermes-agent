@@ -105,6 +105,22 @@ def test_key_added_for_a_builtin_named_proxy_entry_records_the_proxy(client, nam
     assert _main_key(f"custom:{name}") == POOLED
 
 
+def test_anthropic_oauth_token_is_bound_to_anthropic_even_with_a_proxy_entry(_isolate_hermes_home, monkeypatch):
+    """The Anthropic browser login mints the token at Anthropic: a providers.anthropic proxy never gets it."""
+    from types import SimpleNamespace
+
+    from hermes_cli.auth import PROVIDER_REGISTRY
+    from hermes_cli.auth_commands import auth_add_command
+    _entry("anthropic")
+    monkeypatch.setattr("agent.anthropic_credentials.run_hermes_oauth_login_pure",
+                        lambda *_a, **_k: {"access_token": POOLED, "refresh_token": "r", "expires_at_ms": 4102444800000})
+    auth_add_command(SimpleNamespace(provider="anthropic", auth_type="oauth", api_key=None,
+                                     label="browser", timeout=None, no_browser=True))
+    assert [r.get("base_url") for r in _stored_rows("anthropic") if r.get("source") == "manual:hermes_pkce"] == [
+        PROVIDER_REGISTRY["anthropic"].inference_base_url]
+    assert _main_key("custom:anthropic") != POOLED
+
+
 def test_openrouter_pkce_key_is_bound_to_openrouter_even_with_a_proxy_entry(_isolate_hermes_home, monkeypatch):
     """The browser login mints the key at openrouter.ai: it is never the proxy's key."""
     from types import SimpleNamespace

@@ -255,7 +255,8 @@ _OAUTH_ADD_SPECS: dict[str, _OAuthAddSpec] = {
         fields=lambda creds, provider: {
             "refresh_token": creds.get("refresh_token"),
             "expires_at_ms": creds.get("expires_at_ms"),
-            "base_url": _provider_base_url(provider)}),
+            # Minted by Anthropic's login, never a providers.anthropic proxy's (as openrouter_pkce).
+            "base_url": PROVIDER_REGISTRY[provider].inference_base_url}),
     "openai-codex": _OAuthAddSpec(
         login=_codex_login,
         token=lambda creds: creds["tokens"]["access_token"],

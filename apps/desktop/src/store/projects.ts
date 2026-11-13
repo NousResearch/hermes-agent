@@ -286,12 +286,7 @@ export async function followActiveSessionCwd(cwd: string): Promise<void> {
   // Resolve only after the refresh, so a just-created/auto project is in the tree.
   const projectId = projectIdForCwd(target)
 
-  // The Projects tree only renders in grouped mode, and flipping the sidebar
-  // from a flat view is the user's choice, not the agent's: a session
-  // activation whose cwd sits in a repo must not silently replace the flat
-  // "Recents" list with project buckets (#105207). Follow the relocated
-  // session's project only when the project tree is already the visible
-  // surface — in a flat view the refresh above still keeps rows/data live.
+  // Grouping is the user's choice: follow into the project only when Project grouping is already on.
   if (!projectId || !$sidebarAgentsGrouped.get()) {
     return
   }

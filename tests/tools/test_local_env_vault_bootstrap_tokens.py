@@ -48,3 +48,32 @@ def test_sources_still_hand_the_token_to_their_own_cli(monkeypatch):
     bws_env = source_child_env()
     bws_env["BWS_ACCESS_TOKEN"] = "bws-token"  # what _run_bws_list does
     assert observe_child(bws_env, ["BWS_ACCESS_TOKEN"]) == {"BWS_ACCESS_TOKEN": "bws-token"}
+
+
+@pytest.mark.usefixtures("child_env")
+def test_launch_home_credentialed_children_keep_the_token(monkeypatch, tmp_path):
+    """A gateway Hermes starts for its own home and a ``key_cmd`` helper (``op read``) authenticate
+    to the vault themselves, so they keep the token, also when the process env (systemd, Docker -e)
+    holds it. A routed profile's child never gets the launch home's token."""
+    import shlex
+    import sys
+
+    from agent.command_token_source import _mint
+    from agent.secret_scope import reset_secret_scope, set_secret_scope
+    from hermes_constants import get_hermes_home
+
+    _seed(monkeypatch)
+    other = tmp_path / "hermes" / "profiles" / "other"
+    other.mkdir(parents=True)
+    own = local.served_profile_child_env(target_home=str(get_hermes_home()), inherit_credentials=True)
+    routed = local.served_profile_child_env(target_home=str(other), inherit_credentials=True)
+    token = set_secret_scope({}, profile_home=str(other))  # a served profile's scope, no target
+    try:
+        scoped = local.served_profile_child_env(inherit_credentials=True)
+    finally:
+        reset_secret_scope(token)
+    assert observe_child(own, VAULT_TOKENS) == {k: "fake-" + k for k in VAULT_TOKENS}
+    assert observe_child(routed, VAULT_TOKENS) == dict.fromkeys(VAULT_TOKENS)
+    assert observe_child(scoped, VAULT_TOKENS) == dict.fromkeys(VAULT_TOKENS)
+    key_cmd = shlex.join([sys.executable, "-c", "import os; print(os.environ['OP_SERVICE_ACCOUNT_TOKEN'])"])
+    assert _mint(key_cmd, "probe")[0] == "fake-OP_SERVICE_ACCOUNT_TOKEN"

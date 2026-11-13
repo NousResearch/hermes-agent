@@ -56,8 +56,8 @@ account is still the right way to feed provider keys to Hermes itself (`hermes s
 ### Service Account (Hermes's own secret resolution, or your own shell)
 
 A service-account token in `${HERMES_HOME:-~/.hermes}/.env` lets Hermes resolve `op://` references for
-its own provider keys at startup (`hermes secrets onepassword setup`). It is stripped from every process
-Hermes spawns, so `op` run through the Hermes terminal does not see it. To use the token with `op`
+its own provider keys at startup (`hermes secrets onepassword setup`). It is stripped from the processes the
+agent spawns, so `op` run through the Hermes terminal does not see it. To use the token with `op`
 directly, run those commands in your own shell, outside Hermes:
 
 ```bash

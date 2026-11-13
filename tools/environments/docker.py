@@ -798,13 +798,23 @@ class DockerEnvironment(BaseEnvironment):
         self._env = _normalize_env_dict(env)
         self._init_unset_passthrough_names: tuple[str, ...] = ()
         self._container_id: Optional[str] = None
-        self._reuse_owners = ReuseOwners(get_hermes_home()) if persist_across_processes and not shared_container_key else None
+        self._reuse_owners: ReuseOwners | None = None
         self._reuse_lease: ReuseLease | None = None
         self._init_env_values: dict[str, str] = {}
         self._workspace_dir: Optional[str] = None
         self._home_dir: Optional[str] = None
         # (host_dir, container_path) of the Hermes-created sandbox bind mounts; owner handback targets.
         self._sandbox_mounts: list[tuple[str, str]] = []
+        if persist_across_processes and not shared_container_key:
+            try:
+                self._reuse_owners = ReuseOwners(get_hermes_home())
+            except (sqlite3.Error, OSError) as exc:
+                raise EnvironmentConnectionError(
+                    f"Cannot initialize the Docker reuse ownership registry: {exc}",
+                    retry_hint="Check the Docker reuse ownership registry under "
+                    "runtime/docker-reuse-owners in your Hermes home for corruption or "
+                    "filesystem permission problems, repair it, then retry the command.",
+                ) from exc
         logger.info("DockerEnvironment volumes: %s", volumes)
         if volumes is not None and not isinstance(volumes, list):
             logger.warning("docker_volumes config is not a list: %r", volumes)
@@ -902,7 +912,11 @@ class DockerEnvironment(BaseEnvironment):
             strip_sandbox_privileges(self._docker_exe, self._container_id)
         reclaim_sandbox_files(self._docker_exe, self._container_id, self._sandbox_mounts)
         if self._reuse_owners is not None:
-            self._reuse_owners.supersede(self._labels, self._runtime_fp)
+            try:
+                self._reuse_owners.supersede(self._labels, self._runtime_fp)
+            except (sqlite3.Error, OSError) as exc:
+                # Reclamation can wait; this container already has a healthy owner.
+                logger.warning("Docker reuse ownership registry: deferring superseded container reclamation: %s", exc)
 
         # Init-time env forwarding args seed the snapshot.
         self._init_env_args = self._build_init_env_args()
@@ -1417,7 +1431,8 @@ class DockerEnvironment(BaseEnvironment):
             logger.error("Recovery: ownership database busy, deferring recreation: %s", exc)
             return False
         self._reuse_lease = None
-        self._container_id = None
+        # Keep the last ID until replacement succeeds, so a later command can
+        # observe Docker's missing-container error and retry transient recovery.
 
         try:
             self._refresh_runtime_fingerprint()
@@ -1436,7 +1451,7 @@ class DockerEnvironment(BaseEnvironment):
             self._restore_requested_image()
             try:
                 self._container_id = self._docker_run(self.cwd)
-            except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as e:
+            except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError, sqlite3.Error) as e:
                 logger.error("Recovery: failed to create new container: %s", e)
                 return False
 

@@ -16,7 +16,7 @@ from tests.tools.test_docker_environment import _labels_in_run_args, _make_dummy
 
 
 @pytest.fixture(autouse=True)
-def _teardowns_finish_under_the_fakes():
+def _teardowns_finish_under_the_fakes(monkeypatch):
     """Join daemon teardown workers before monkeypatch unwinds (same contract as
     test_docker_ownership_handback)."""
     yield

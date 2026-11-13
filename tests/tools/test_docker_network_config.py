@@ -73,6 +73,14 @@ def _reuse_guard_harness(
     """
     from tests.tools.test_docker_reuse_owners import registered_runtime_fingerprint
     commands = []
+    candidate_labels = {}
+    refresh_fingerprint = docker_env.DockerEnvironment._refresh_runtime_fingerprint
+
+    def seed_candidate_labels(self):
+        refresh_fingerprint(self)
+        # Keep this candidate eligible so the real network-mode guard decides reuse.
+        candidate_labels.update(self._labels)
+        candidate_labels["hermes-egress"] = "off"
 
     def fake_run(cmd, *args, **kwargs):
         commands.append(cmd)
@@ -83,10 +91,15 @@ def _reuse_guard_harness(
             stdout = ""
 
         if len(cmd) > 1 and cmd[1] == "ps":
-            # Matches the egress-aware reuse probe: with egress off the
-            # format string is ID\tState\tEgressLabel and docker renders a
-            # missing label as "<no value>".
-            Result.stdout = "existing-container-id\trunning\t<no value>\n"
+            filters = [cmd[i + 1] for i, arg in enumerate(cmd[:-1]) if arg == "--filter"]
+            for constraint in filters:
+                if not constraint.startswith("label="):
+                    continue
+                key, equals, value = constraint[6:].partition("=")
+                if key not in candidate_labels or (equals and candidate_labels[key] != value):
+                    break
+            else:
+                Result.stdout = "existing-container-id\trunning\n"
         elif len(cmd) > 1 and cmd[1] == "inspect":
             # Two probes share `inspect`: image identity (must match for reuse) and network mode.
             Result.stdout = f"{existing_image}\n" if ".Config.Image" in cmd[3] else f"{existing_mode}\n"
@@ -100,6 +113,7 @@ def _reuse_guard_harness(
         return Result()
 
     monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    monkeypatch.setattr(docker_env.DockerEnvironment, "_refresh_runtime_fingerprint", seed_candidate_labels)
     monkeypatch.setattr(docker_env.subprocess, "run", fake_run)
     monkeypatch.setattr(docker_env.DockerEnvironment, "_storage_opt_supported", lambda self: False)
     monkeypatch.setattr(

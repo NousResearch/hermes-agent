@@ -373,8 +373,10 @@ export async function setupMockBackend(options: MockBackendOptions = {}): Promis
     sandbox,
     cleanup: async () => {
       await app.close().catch(() => undefined)
-      await mock.close()
+      // The sandbox gateway outlives `app.close()`; stop it first, or an
+      // in-flight request it holds to the mock keeps `mock.close()` waiting.
       sandbox.cleanup()
+      await mock.close()
     },
   }
 }

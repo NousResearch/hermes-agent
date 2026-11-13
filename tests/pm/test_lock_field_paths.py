@@ -74,3 +74,9 @@ def test_userinfo_does_not_pass_as_loopback(tmp_path, url):
     local = urllib.request.Request("http://127.0.0.1:8000/a")
     with pytest.raises(DownloadError):
         _HttpsRedirectHandler().redirect_request(local, None, 302, "Found", {}, url)
+
+
+@pytest.mark.parametrize("url", ["file://localhost/etc/hosts", "ftp://127.0.0.1:2121/payload"])
+def test_only_plain_http_counts_as_loopback(tmp_path, url):
+    with pytest.raises(ValueError, match="non-https"):
+        Download([Source(url, tmp_path / "m")], partials_dir=tmp_path / "p").run()

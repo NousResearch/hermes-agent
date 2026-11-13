@@ -665,18 +665,21 @@ def _import_user_plugin_dir(plugin_dir: Path, source: str, module_name: str) -> 
         _import_user_module(plugin_dir, source, module_name)
 
 
-def _import_user_module(plugin_dir: Path, source: str, module_name: str) -> None:
+def _import_user_module(plugin_dir: Path, source: str, module_name: str, code_dir: Path | None = None) -> None:
+    """*code_dir*: where in-process code is imported from (a frozen copy of *plugin_dir*), default the dir."""
     from hermes_cli.plugin_isolation import ISOLATION_HOST, isolation_mode
     if isolation_mode() == ISOLATION_HOST:  # the plugin's code runs in the plugin host
-        _import_hosted_plugin_dir(plugin_dir, source, module_name)
+        _import_hosted_plugin_dir(plugin_dir, source, module_name, code_dir=code_dir)
     else:
-        _exec_plugin_module(plugin_dir, source, module_name)
+        _exec_plugin_module(code_dir or plugin_dir, source, module_name)
 
 
-def _import_hosted_plugin_dir(plugin_dir: Path, source: str, module_name: str) -> None:
+def _import_hosted_plugin_dir(plugin_dir: Path, source: str, module_name: str, *,
+                              code_dir: Path | None = None) -> None:
     """Register a plugin's profiles as plugin-host proxies; a profile that cannot cross the host
     boundary (e.g. it overrides ``create_client``) is imported in-process ALONE, with a warning,
-    so it never takes its hosted siblings down with it."""
+    so it never takes its hosted siblings down with it. The host is keyed by *plugin_dir*; that in-process
+    import reads *code_dir* (a frozen copy) when given."""
     global _current_source
     from hermes_cli.plugin_host_profiles import load_hosted_profiles
     layer = _REGISTRATION_TARGET.get()
@@ -699,7 +702,7 @@ def _import_hosted_plugin_dir(plugin_dir: Path, source: str, module_name: str) -
                            "in-process, NOT isolated by plugins.isolation: host", plugin_dir.name, name, reason)
         token = _REGISTRATION_ONLY.set(frozenset(in_process))
         try:
-            _exec_plugin_module(plugin_dir, source, module_name)
+            _exec_plugin_module(code_dir or plugin_dir, source, module_name)
         finally:
             _REGISTRATION_ONLY.reset(token)
         if module_name not in sys.modules:

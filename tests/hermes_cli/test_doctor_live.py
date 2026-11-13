@@ -136,6 +136,22 @@ class TestConfiguredOnlySelection:
         assert len(results) == 2
         assert all(r.status == "pass" for r in results)
 
+    def test_disabled_mcp_server_is_not_probed(self, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config_readonly",
+            lambda: {"mcp_servers": {"alpha": {"url": "https://x"},
+                                     "beta": {"url": "https://y", "enabled": False}}})
+        probed = []
+        monkeypatch.setattr(
+            doctor_live, "_probe_mcp_server",
+            lambda name, cfg, timeout: probed.append(name) or [("t", "d")])
+        issues: list[str] = []
+        results = {r.name: r for r in run_live_checks(issues) if r.name.startswith("MCP")}
+        assert probed == ["alpha"]
+        assert results["MCP: alpha"].status == "pass"
+        assert results["MCP: beta"].status == "skip"
+        assert issues == []
+
     def test_tts_local_provider_skipped(self, monkeypatch):
         monkeypatch.setattr(
             "hermes_cli.config.load_config_readonly",

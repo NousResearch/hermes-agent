@@ -532,10 +532,11 @@ def _live_pin(store, lockfile):
         owners = row.get("owners")
         if not owners:
             return True
+        # This checkout's own pin, judged like ``Facts.installed``: an artifact-less pin by version.
         target = row.get("target")
         identity = _identity(lockfile, name, target) if isinstance(target, str) else None
-        if (identity is not None and row.get("version") == lockfile.version(name)
-                and (target, tuple(row.get("artifacts") or ())) == (identity[0], tuple(identity[1]))):
+        if row.get("version") == lockfile.version(name) and (
+                identity is None or (target, tuple(row.get("artifacts") or ())) == identity):
             return True
         return any((root / owner).is_dir() for owner in owners for root in roots)
     return live

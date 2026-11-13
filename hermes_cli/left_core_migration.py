@@ -1142,12 +1142,15 @@ def _noticed(message: str, home: Path, feature: LeftCoreFeature, process_env: bo
 
 
 def _install_into(home: Path, *, consent: Optional[bool] = None) -> Callable[[str], dict]:
-    def _install(name: str, ref: Optional[str] = None, force: bool = False) -> dict:
+    def _install(name: str, ref: Optional[str] = None, replace: Optional[Path] = None) -> dict:
         from hermes_cli.plugins_cmd import dashboard_install_plugin
         from hermes_constants import reset_hermes_home_override, set_hermes_home_override
         token = set_hermes_home_override(home)
         try:
-            return dashboard_install_plugin("", force=force, enable=True, catalog_name=name, ref=ref,
+            if replace is not None:  # the caller's own leftover tree: removed, then a normal (unforced) install
+                from hermes_cli.plugins_cmd_remove import _remove_plugin_core
+                _remove_plugin_core(replace)
+            return dashboard_install_plugin("", force=False, enable=True, catalog_name=name, ref=ref,
                                             assume_deps_consent=_unattended_consent() if consent is None
                                             else consent)
         finally:

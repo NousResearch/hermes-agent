@@ -160,9 +160,10 @@ def install_defaults(home: Path, *, say: Callable[[str], None] = logger.info,
             continue
         try:
             # At the pin selected for every home (a home's own catalog cache may trail it). A tree still
-            # on disk here is one an earlier automatic attempt left and nobody chose since (_settled):
-            # replaced, so a re-pin between attempts cannot wedge it at "already exists".
-            outcome = install(entry.name, entry.sha, force=_installed_dir(home, entry) is not None)
+            # on disk here is one an earlier automatic attempt left and nobody chose since (_settled): that
+            # exact dir is removed first, so a re-pin cannot wedge it at "already exists", and the install
+            # itself stays unforced, so it never overwrites another plugin at the destination.
+            outcome = install(entry.name, entry.sha, replace=_installed_dir(home, entry))
         except Exception as exc:  # health: allow BLE001 -- network, uv or kill list: reported per plugin, never raised
             outcome = {"ok": False, "error": str(exc)}
         if outcome.get("ok"):

@@ -66,6 +66,17 @@ _GLOBAL_FLAGS = r'(?:-\S++(?:\s++(?!-\S)\S++)?\s++)*'
 # Same grammar for the docker/podman rules, which have always taken a separate value only after exactly
 # one whitespace character; keeping that means this fix changes no approval decision.
 _CONTAINER_GLOBAL_FLAGS = r'(?:-\S++(?:\s(?!-\S)\S++)?\s++)*'
+# Flags in a `hermes <group> <verb>` path. Before the group: global flags, one shell word each (quoted parts
+# may hold spaces: -p " work "), each with an optional value that is neither a flag nor the bare word
+# hermes (the search restarts there), so a long run stays linear. After the group only the profile flag
+# can appear (main._scan_profile_flag strips the first -p NAME, --profile NAME or --profile=NAME anywhere
+# before `--`; quotes may sit anywhere in its name), then argparse's `--`; both are matched possessively
+# so the path words never nest backtracking loops.
+_SHELL_WORD = r'(?:[^\s"\']++|"[^"]*+"|\'[^\']*+\')++'
+_HERMES_FLAGS = r'(?:(?=["\']?-)' + _SHELL_WORD + r'(?:\s++(?!["\']?-|hermes\s)' + _SHELL_WORD + r')?\s++)*'
+_PROFILE_FLAG_NAME = r'["\']*(?:' + r'["\']*'.join("-p") + "|" + r'["\']*'.join("--profile") + r')["\']*'
+_HERMES_PROFILE_FLAG = (r'(?:(?:(?=' + _PROFILE_FLAG_NAME + r'=)' + _SHELL_WORD + r'|(?=' + _PROFILE_FLAG_NAME + r'\s)'
+                        + _SHELL_WORD + r'\s++' + _SHELL_WORD + r')\s++)?+(?:["\']*-["\']*-["\']*\s++)?+')
 # macOS: /etc, /var, /tmp, /home are symlinks to /private/*, so /private/etc/sudoers would bypass a plain
 # "/etc/" check. Match both forms.
 _MACOS_PRIVATE_SYSTEM_PATH = r'/private/(?:etc|var|tmp|home)/'
@@ -694,6 +705,21 @@ DANGEROUS_PATTERNS = [
     (_CMDPOS + r'brew\s+' + _PKG_OPTS + r'(?:uninstall|remove|rm)\b', "package manager uninstall"),
 ]
 
+# Rules for hermes's own setup commands. Detection checks them after every other rule, check and command variant
+# (_last_pattern_descriptions), so a command that anything else flags keeps that finding's key: approval keys on the
+# first finding, and approving a setup command for the session must not cover anything else in the same command.
+_LAST_PATTERNS = [
+    # Extension installs and source trust load code or instructions into future sessions; argparse takes any
+    # unambiguous prefix of --install-deps.
+    (r'\bhermes\s+' + _HERMES_FLAGS + r'["\']?(?:'
+     + r'skills["\']?\s+' + _HERMES_PROFILE_FLAG + r'["\']?(?:install|update|trust'
+     + r'|tap["\']?\s+' + _HERMES_PROFILE_FLAG + r'["\']?add|snapshot["\']?\s+' + _HERMES_PROFILE_FLAG + r'["\']?import)'
+     + r'|plugins["\']?\s+' + _HERMES_PROFILE_FLAG + r'["\']?(?:install|update|enable|adopt|trust-update-url'
+     + r'|pack["\']?\s+' + _HERMES_PROFILE_FLAG + r'["\']?install|validate["\']?\s+[^;&|\n]*(?<!\S)["\']?--i[\w-]*)'
+     + r')(?![\w-])',
+     "install, enable or trust a skill or plugin (code and instructions every session loads)"),
+]
+
 
 _PIPE_REMOTE_TO_SHELL_DESCRIPTION = "pipe remote content to shell"
 _CUSTOM_MATCHERS = {
@@ -704,6 +730,7 @@ DANGEROUS_PATTERNS_COMPILED = [
     (_CUSTOM_MATCHERS[d]() if d in _CUSTOM_MATCHERS else re.compile(p, _RE_FLAGS), d)
     for p, d in DANGEROUS_PATTERNS
 ]
+_LAST_PATTERNS_COMPILED = [(re.compile(p, _RE_FLAGS), d) for p, d in _LAST_PATTERNS]
 # Dynamic-word rules look for glob/brace characters, which are ordinary data inside quotes
 # (`find . -name 'log-del*'`), so they scan the quote-masked variant like the positionless hardline rules.
 _QUOTE_MASKED_DANGEROUS_DESCRIPTIONS = frozenset({
@@ -1868,8 +1895,8 @@ def _quoted_text_is_executed(variant: str, pattern_re: "re.Pattern[str] | _PipeR
 
 def _iter_dangerous_descriptions(command: str, only: frozenset[str] | None = None):
     """Yield the description (= pattern key) of every dangerous match, in detection order; may repeat.
-    *only* restricts the scan to those pattern rules and skips the parser-limit, execution-flag and
-    gateway-splice checks, which no content rule is."""
+    *only* restricts the scan to those pattern rules and skips the parser-limit, execution-flag,
+    gateway-splice and _LAST_PATTERNS checks, which no content rule is."""
     if _command_parser_limit_exceeded(command):
         if only is None:
             yield _PARSER_LIMIT_DESCRIPTION
@@ -1879,8 +1906,10 @@ def _iter_dangerous_descriptions(command: str, only: frozenset[str] | None = Non
     patterns = DANGEROUS_PATTERNS_COMPILED if only is None else [
         (pattern_re, description) for pattern_re, description in DANGEROUS_PATTERNS_COMPILED if description in only
     ]
+    lowered_variants: list[str] = []
     for command_variant in _command_detection_variants(command):
         command_lower = _lower_preserving_flags(command_variant)
+        lowered_variants.append(command_lower)
         masked_lower: str | None = None
         for pattern_re, description in patterns:
             if description in _QUOTE_MASKED_DANGEROUS_DESCRIPTIONS or description == _PS_PIPE_ALIAS_DESCRIPTION:
@@ -1912,6 +1941,15 @@ def _iter_dangerous_descriptions(command: str, only: frozenset[str] | None = Non
         yield _GATEWAY_LIFECYCLE_SPLICE_DESCRIPTION
     if _HIDDEN_VARIATION_SELECTOR_RE.search(command):
         yield _INVISIBLE_UNICODE_DESCRIPTION
+    yield from _last_pattern_descriptions(lowered_variants)
+
+
+def _last_pattern_descriptions(lowered_variants: list[str]):
+    """Yield the description of every _LAST_PATTERNS rule that a lowered command variant matches."""
+    for command_lower in lowered_variants:
+        for pattern_re, description in _LAST_PATTERNS_COMPILED:
+            if pattern_re.search(command_lower):
+                yield description
 
 
 def detect_dangerous_command(command: str) -> tuple:

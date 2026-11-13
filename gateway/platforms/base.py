@@ -449,6 +449,7 @@ from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from gateway.warning_notifications import diagnostic_wake_muted
 from hermes_cli.observability.shared_metrics_gateway import records_delivery, stop_reply_clock
 from hermes_cli.home_data_layout import SECRET_CACHE_STORES
+from agent.file_safety import deny_path_under
 from gateway.session import SessionSource, build_session_key
 from gateway.session_transcript import TranscriptReadError
 from hermes_constants import CONNECTOR_DOWNLOADS_SUBDIR, get_default_hermes_root, get_hermes_dir, get_hermes_home
@@ -898,8 +899,7 @@ def _path_under_denied_prefix(resolved: Path) -> bool:
         resolved_denied = _resolve_path(denied, expand=True)
         if resolved_denied is None:
             continue
-        hit = resolved == resolved_denied or _path_is_within(resolved, resolved_denied)
-        if hit and resolved_denied != home:
+        if deny_path_under(resolved, resolved_denied) and resolved_denied != home:
             return True
     return False
 

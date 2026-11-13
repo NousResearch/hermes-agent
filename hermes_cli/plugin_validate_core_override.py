@@ -14,6 +14,11 @@ lookups, ``getattr(core, ...)``, iteration over core values, and calls to plugin
 return a core value. Rebinds are attribute assignment / deletion, ``setattr`` / ``delattr``,
 ``sys.modules[...] = ...``, ``mock.patch``, and passing a core value to a plugin helper that
 ``setattr``s its parameter.
+
+In-place mutation of a core object's PRIVATE state is a rebind too (``get_plugin_manager()._hooks[
+"x"].append(fn)``, ``mgr._middleware.clear()``, ``mgr._hooks[:] = []``). For these sinks a value
+returned by a core function also counts as core, but only a receiver chain with a private segment
+is judged, so calling a public method on a core object (``registry.add(...)``) stays clean.
 """
 
 from __future__ import annotations
@@ -120,11 +125,47 @@ def _call_name(node: ast.Call) -> str:
     return _dotted(node.func)
 
 
+# Methods that change a list / dict / set in place.
+_MUTATORS = frozenset({
+    "append", "extend", "insert", "remove", "pop", "clear", "update", "setdefault", "add", "discard", "popitem"})
+
+
+def _render(node: ast.AST) -> str:
+    """``get_plugin_manager()._hooks[...]``: a receiver chain as the finding names it."""
+    if isinstance(node, ast.Attribute):
+        return f"{_render(node.value)}.{node.attr}"
+    if isinstance(node, ast.Subscript):
+        return f"{_render(node.value)}[...]"
+    if isinstance(node, ast.Call):
+        return f"{_render(node.func)}()"
+    return node.id if isinstance(node, ast.Name) else "<core>"
+
+
+def _has_mutator_call(node: ast.AST) -> bool:
+    """Whether the chain already holds a mutator call (``m._hooks.setdefault(k, []).append``):
+    that inner call is the finding, the outer one would repeat it."""
+    while isinstance(node, (ast.Attribute, ast.Subscript, ast.Call)):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr in _MUTATORS:
+            return True
+        node = node.func if isinstance(node, ast.Call) else node.value
+    return False
+
+
+def _has_private_segment(node: ast.AST) -> bool:
+    """Whether an attribute in the chain (``mgr._hooks[...]``, ``m.__dict__``) is private."""
+    while isinstance(node, (ast.Attribute, ast.Subscript, ast.Call)):
+        if isinstance(node, ast.Attribute) and node.attr.startswith("_"):
+            return True
+        node = node.func if isinstance(node, ast.Call) else node.value
+    return False
+
+
 class _Analysis:
     def __init__(self, core_roots: frozenset, local: set[str]):
         self.core_roots = core_roots - local
         self.core_returners: set[str] = set()
         self.param_patchers: dict[str, set[int]] = {}
+        self.param_mutators: dict[str, set[int]] = {}  # helpers mutating a parameter's private state
         self.aliases: dict[str, str] = {}  # ``from .compat import server as gateway_server``
         self.constants: dict[str, str] = {}  # module-level ``NAME = "module.path"``
 
@@ -136,16 +177,19 @@ class _Analysis:
     def _core_module_name(self, name: object) -> bool:
         return isinstance(name, str) and name.split(".")[0] in self.core_roots
 
-    def is_core(self, node: ast.AST, tainted: set[str]) -> bool:
+    def is_core(self, node: ast.AST, tainted: set[str], calls: bool = False) -> bool:
+        """``calls``: a call to a core function returns core too (the private-state sinks only)."""
         if isinstance(node, ast.Name):
             return node.id in tainted
         if isinstance(node, ast.Attribute):
-            return self.is_core(node.value, tainted)
+            return self.is_core(node.value, tainted, calls)
         if isinstance(node, ast.Subscript):
             if _dotted(node.value) == "sys.modules":
                 return self._lookup_is_core(node.slice)
-            return self.is_core(node.value, tainted)
+            return self.is_core(node.value, tainted, calls)
         if isinstance(node, ast.Call):
+            if calls and self.is_core(node.func, tainted, calls):
+                return True
             name = _call_name(node)
             if name in ("importlib.import_module", "import_module", "__import__") and node.args:
                 return self._lookup_is_core(node.args[0])
@@ -155,7 +199,7 @@ class _Analysis:
                 return self.is_core(node.args[0], tainted)
             return self._func_key(node) in self.core_returners
         if isinstance(node, (ast.Tuple, ast.List, ast.Set)):
-            return any(self.is_core(e, tainted) for e in node.elts)
+            return any(self.is_core(e, tainted, calls) for e in node.elts)
         return False
 
     def _lookup_is_core(self, arg: ast.AST) -> bool:
@@ -169,8 +213,29 @@ class _Analysis:
             return "." in head and self._core_module_name(head)
         return isinstance(arg, ast.Constant) and self._core_module_name(arg.value)
 
+    def _private_core_state(self, node: ast.AST, derived: set[str]) -> bool:
+        return _has_private_segment(node) and self.is_core(node, derived, calls=True)
+
+    def private_mutations(self, node: ast.AST, derived: set[str]) -> list[str]:
+        """In-place writes to a core object's private state: a mutator call, or an item / slice
+        assignment or delete, on a private receiver chain."""
+        if isinstance(node, ast.Call):
+            func = node.func
+            if isinstance(func, ast.Attribute) and func.attr in _MUTATORS \
+                    and self._private_core_state(func.value, derived) and not _has_mutator_call(func.value):
+                return [f"{_render(func)}(...)"]
+            name = _call_name(node)
+            return [f"{name}({_dotted(node.args[i]) or '<core>'}, ...)"
+                    for i in sorted(self.param_mutators.get(self._func_key(node), ()))
+                    if i < len(node.args) and self.is_core(node.args[i], derived, calls=True)]
+        targets = node.targets if isinstance(node, (ast.Assign, ast.Delete)) else \
+            [node.target] if isinstance(node, (ast.AugAssign, ast.AnnAssign)) else []
+        return [_render(t) for target in targets
+                for t in (target.elts if isinstance(target, (ast.Tuple, ast.List)) else [target])
+                if isinstance(t, ast.Subscript) and self._private_core_state(t, derived)]
+
     # -- per-scope taint --------------------------------------------------------------------------
-    def scope_taint(self, body: list[ast.stmt], inherited: set[str]) -> set[str]:
+    def scope_taint(self, body: list[ast.stmt], inherited: set[str], calls: bool = False) -> set[str]:
         tainted = set(inherited)
         nodes = [n for stmt in body for n in _walk_scope(stmt)]
         for _ in range(4):
@@ -183,18 +248,19 @@ class _Analysis:
                 elif isinstance(node, ast.ImportFrom) and node.level == 0 and self._core_module_name(node.module):
                     tainted.update(a.asname or a.name for a in node.names)
                 elif isinstance(node, (ast.Assign, ast.AnnAssign)) and node.value is not None:
-                    if self.is_core(node.value, tainted):
+                    if self.is_core(node.value, tainted, calls):
                         targets = node.targets if isinstance(node, ast.Assign) else [node.target]
                         tainted.update(_bound_names(targets))
                 elif isinstance(node, (ast.For, ast.AsyncFor, ast.comprehension)):
-                    if self.is_core(node.iter, tainted):
+                    if self.is_core(node.iter, tainted, calls):
                         tainted.update(_bound_names([node.target]))
             if len(tainted) == before:
                 break
         return tainted
 
     # -- sinks ------------------------------------------------------------------------------------
-    def rebinds(self, node: ast.AST, tainted: set[str]) -> list[str]:
+    def rebinds(self, node: ast.AST, tainted: set[str], derived: set[str] | None = None) -> list[str]:
+        """``derived``: the scope's taint with core-function returns included (``scope_taint(calls=True)``)."""
         hits: list[str] = []
         targets: Sequence[ast.expr] = []
         if isinstance(node, ast.Assign):
@@ -226,7 +292,8 @@ class _Analysis:
                 for index in self.param_patchers.get(self._func_key(node), ()):
                     if index < len(node.args) and self.is_core(node.args[index], tainted):
                         hits.append(f"{name}({_dotted(node.args[index]) or '<core>'}, ...)")
-        return hits
+        return hits + [h for h in self.private_mutations(node, tainted if derived is None else derived)
+                       if h not in hits]
 
 
 def _walk_scope(stmt: ast.AST):
@@ -265,6 +332,34 @@ def _functions(tree: ast.AST):
     yield from visit(tree, False)
 
 
+def _summarise_helpers(analysis: _Analysis, trees: list) -> None:
+    """Fixpoint over the whole plugin: which helpers return core values, rebind a parameter, or
+    mutate a parameter's private state."""
+    for _ in range(4):
+        before = (len(analysis.core_returners), sum(len(v) for v in analysis.param_patchers.values()),
+                  sum(len(v) for v in analysis.param_mutators.values()))
+        for _rel, tree in trees:
+            module_taint = analysis.scope_taint(tree.body, set())
+            for func, is_method in _functions(tree):
+                taint = analysis.scope_taint(func.body, module_taint)
+                if any(isinstance(n, ast.Return) and n.value is not None and analysis.is_core(n.value, taint)
+                       for stmt in func.body for n in _walk_scope(stmt)):
+                    analysis.core_returners.add(func.name)
+                params = [a.arg for a in func.args.posonlyargs + func.args.args]
+                # A method is called as ``obj.bind(module, ...)``: its call-site args start after ``self``.
+                offset = 1 if is_method else 0
+                nodes = [n for stmt in func.body for n in _walk_scope(stmt)]
+                for index, param in enumerate(params[offset:]):
+                    if any(analysis.rebinds(n, {param}, set()) for n in nodes):
+                        analysis.param_patchers.setdefault(func.name, set()).add(index)
+                    if any(analysis.private_mutations(n, {param}) for n in nodes):
+                        analysis.param_mutators.setdefault(func.name, set()).add(index)
+        after = (len(analysis.core_returners), sum(len(v) for v in analysis.param_patchers.values()),
+                 sum(len(v) for v in analysis.param_mutators.values()))
+        if after == before:
+            break
+
+
 def core_override_findings(plugin_dir: Path) -> list[str]:
     """``["<target> (<rel>:<line>)", ...]`` for every runtime rebind of Hermes core in the plugin."""
     plugin_dir = Path(plugin_dir)
@@ -287,35 +382,19 @@ def core_override_findings(plugin_dir: Path) -> list[str]:
                     and isinstance(node.value.value, str):
                 analysis.constants.update({n: node.value.value for n in _bound_names(node.targets)})
 
-    # Fixpoint over the whole plugin: which helpers return core values / rebind a parameter.
-    for _ in range(4):
-        before = (len(analysis.core_returners), sum(len(v) for v in analysis.param_patchers.values()))
-        for _rel, tree in trees:
-            module_taint = analysis.scope_taint(tree.body, set())
-            for func, is_method in _functions(tree):
-                taint = analysis.scope_taint(func.body, module_taint)
-                if any(isinstance(n, ast.Return) and n.value is not None and analysis.is_core(n.value, taint)
-                       for stmt in func.body for n in _walk_scope(stmt)):
-                    analysis.core_returners.add(func.name)
-                params = [a.arg for a in func.args.posonlyargs + func.args.args]
-                # A method is called as ``obj.bind(module, ...)``: its call-site args start after ``self``.
-                offset = 1 if is_method else 0
-                for index, param in enumerate(params[offset:]):
-                    if any(analysis.rebinds(n, {param}) for stmt in func.body for n in _walk_scope(stmt)):
-                        analysis.param_patchers.setdefault(func.name, set()).add(index)
-        after = (len(analysis.core_returners), sum(len(v) for v in analysis.param_patchers.values()))
-        if after == before:
-            break
+    _summarise_helpers(analysis, trees)
 
     findings: list[str] = []
     for rel, tree in trees:
         module_taint = analysis.scope_taint(tree.body, set())
-        scopes = [(tree.body, module_taint)]
-        scopes += [(f.body, analysis.scope_taint(f.body, module_taint)) for f, _ in _functions(tree)]
-        for body, taint in scopes:
+        module_derived = analysis.scope_taint(tree.body, set(), calls=True)
+        scopes = [(tree.body, module_taint, module_derived)]
+        scopes += [(f.body, analysis.scope_taint(f.body, module_taint),
+                    analysis.scope_taint(f.body, module_derived, calls=True)) for f, _ in _functions(tree)]
+        for body, taint, derived in scopes:
             for stmt in body:
                 for node in _walk_scope(stmt):
-                    for target in analysis.rebinds(node, taint):
+                    for target in analysis.rebinds(node, taint, derived):
                         findings.append((rel.as_posix(), getattr(node, "lineno", 0), target))
     return [f"{target} ({rel}:{line})" for rel, line, target in sorted(set(findings))]
 

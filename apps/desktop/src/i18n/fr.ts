@@ -1554,6 +1554,9 @@ export const frOverrides = {
         "Taille maximale d'un fichier local que Desktop chargera pour les aperçus et les pièces jointes image, en Mo. La valeur par défaut est 16. Les pièces jointes distantes non-image utilisent une limite distincte de 256 Mo. Une valeur très élevée charge le fichier entier en mémoire et peut figer ou planter l'application.",
       attachmentSizeUnit: 'Mo',
       attachmentSizeLabel: 'Taille maximale de chargement des aperçus / images en mégaoctets',
+      desktopReadAloudTitle: 'Lire les réponses à haute voix dans cette app',
+      desktopReadAloudDesc:
+        "Lit chaque réponse terminée dans Desktop. Même interrupteur que celui du compositeur ; il s'applique à toutes les fenêtres ouvertes, et le désactiver coupe une réponse en pleine phrase. « Lire les réponses à haute voix » ci-dessous concerne la messagerie et la CLI.",
       showOptions: 'Afficher les options'
     },
     hudModifier: {

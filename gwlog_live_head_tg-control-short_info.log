@@ -1,0 +1,33 @@
+2026-11-13 05:35:09,481 INFO gateway.control_socket: Gateway control socket listening at /home/teknium/.hermes/cache/scratch/hermes-gw-1969398e9b4782b4/control.sock
+2026-11-13 05:35:09,577 INFO gateway.run: Starting Hermes Gateway...
+2026-11-13 05:35:09,578 INFO gateway.run: Session storage: /home/teknium/.hermes/hermes-agent/.worktrees/lane-b6-segdup/tmp9fqg17zw/tg-control-short/home/.hermes/sessions
+2026-11-13 05:35:09,579 INFO gateway.run: Agent budget: max_iterations=unlimited (agent.max_turns from config.yaml, else the HERMES_MAX_ITERATIONS bridge)
+2026-11-13 05:35:09,580 INFO gateway.run: Secret redaction: ENABLED (tool output, logs, and chat responses are scrubbed before delivery)
+2026-11-13 05:35:09,613 INFO gateway.run: Connecting to telegram...
+2026-11-13 05:35:09,618 INFO hermes_plugins.platforms__telegram.adapter: [Telegram] Using custom Telegram base_url: http://127.0.0.1:35523/bot
+2026-11-13 05:35:09,619 INFO hermes_plugins.platforms__telegram.adapter: [Telegram] Telegram fallback-IP transport disabled via env
+2026-11-13 05:35:09,679 WARNING hermes_plugins.platforms__telegram.adapter: [Telegram] Connecting to Telegram (attempt 1/8)…
+2026-11-13 05:35:09,729 INFO hermes_plugins.platforms__telegram.adapter: [Telegram] Cold boot: preserving Telegram updates queued while offline (platforms.telegram.extra.drop_pending_on_cold_boot: false)
+2026-11-13 05:35:10,086 INFO gateway.run: Model context warmed: fake-model -> 128000 tokens (config)
+2026-11-13 05:35:10,086 INFO gateway.run: Turn machinery warmed in 0.5s (19 tool schema(s) materialized)
+2026-11-13 05:35:11,738 INFO hermes_plugins.platforms__telegram.adapter: [Telegram] Telegram polling confirmed healthy: getUpdates progressing (generation 1)
+2026-11-13 05:35:11,739 WARNING hermes_plugins.platforms__telegram.adapter: [Telegram] Connected to Telegram (polling mode)
+2026-11-13 05:35:11,744 INFO gateway.run: ✓ telegram connected
+2026-11-13 05:35:11,832 INFO hermes_plugins.platforms__telegram.adapter: [Telegram] set_my_commands OK for scope BotCommandScopeDefault (60 cmds)
+2026-11-13 05:35:11,833 INFO hermes_plugins.platforms__telegram.adapter: [Telegram] set_my_commands OK for scope BotCommandScopeAllPrivateChats (60 cmds)
+2026-11-13 05:35:11,835 INFO hermes_plugins.platforms__telegram.adapter: [Telegram] set_my_commands OK for scope BotCommandScopeAllGroupChats (60 cmds)
+2026-11-13 05:35:11,835 INFO hermes_plugins.platforms__telegram.adapter: [Telegram] Telegram menu: 60 commands registered, 48 hidden (over 60 limit). Use /commands for full list.
+2026-11-13 05:35:11,915 INFO hermes_plugins.platforms__telegram.adapter: [Telegram] Flushing text batch agent:main:telegram:dm:111:from:111 (23 chars)
+2026-11-13 05:35:11,926 INFO gateway.run: Queued inbound message during gateway startup restore: platform=telegram chat=111
+2026-11-13 05:35:11,972 INFO gateway.run: Gateway running with 1 platform(s)
+2026-11-13 05:35:11,986 INFO gateway.run: Channel directory built: 0 target(s)
+2026-11-13 05:35:13,011 INFO gateway.run: Drained 1 inbound message(s) queued during startup restore
+2026-11-13 05:35:13,015 INFO gateway.run: Press Ctrl+C to stop
+2026-11-13 05:35:13,019 INFO gateway.run: kanban dispatcher: holding singleton dispatcher lock (/home/teknium/.hermes/hermes-agent/.worktrees/lane-b6-segdup/tmp9fqg17zw/tg-control-short/home/.hermes/kanban/.dispatcher.lock)
+2026-11-13 05:35:13,020 INFO gateway.run: kanban dispatcher: kanban.max_in_progress unset; using memory-derived default max_in_progress=8 (set kanban.max_in_progress in config.yaml to override)
+2026-11-13 05:35:13,025 INFO gateway.run: Cron scheduler will tick 1 profile(s): ['default']
+2026-11-13 05:35:13,028 INFO gateway.run: Gateway housekeeping started (interval=60s)
+2026-11-13 05:35:13,517 INFO gateway.run: inbound message: platform=telegram user=Tester chat=111 msg='probe please [in:probe]' reply_to_id=None reply_to_text=''
+2026-11-13 05:35:14,433 INFO gateway.run: Suppressing normal final send for session agent:main:telegram:dm:111: final delivery already confirmed (streamed=True previewed=False content_delivered=True).
+2026-11-13 05:35:14,434 INFO gateway.run: response ready: platform=telegram chat=111 session=agent:main:telegram:dm:111 time=0.9s api_calls=1 response=24 chars
+2026-11-13 05:35:18,021 INFO gateway.run: kanban dispatcher: embedded in gateway (interval=60.0s)

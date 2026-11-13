@@ -103,6 +103,9 @@ _MESSAGE_TYPE_BY_KIND = {
     "location": MessageType.TEXT, "contacts": MessageType.TEXT,
 }
 _HTTP_PREFIXES = ("http://", "https://")
+_PHONE_ALLOW_ID_RE = re.compile(r"^\+?[\d\s().-]+$")
+_PHONE_ALLOW_ID_DIGITS_RE = re.compile(r"^[1-9][0-9]{5,14}$")
+_BSUID_RE = re.compile(r"^[A-Z]{2}\.[A-Za-z0-9]{1,128}$")
 
 
 def _interactive_inner(raw_message: dict[str, Any]) -> dict[str, Any]:
@@ -239,16 +242,31 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         return self._reply_prefix.replace("\\n", "\n") if self._reply_prefix is not None else ""
 
     @staticmethod
-    def _normalize_allow_ids(ids: set[str]) -> set[str]:
-        """Normalize allowlist entries to bare wa_id (digits): strip ``@...`` JID suffixes and non-digits."""
-        return {re.sub(r"\D", "", entry.split("@", 1)[0]) or entry for entry in ids}
+    def _normalize_allow_id(entry: str) -> str:
+        """Normalize a phone allowlist entry without collapsing non-phone principals.
+
+        Cloud senders can be business-scoped user IDs (BSUIDs), whose letters are
+        part of the principal and must not be discarded like phone punctuation.
+        """
+        bare = entry.split("@", 1)[0].strip()
+        if _PHONE_ALLOW_ID_RE.fullmatch(bare):
+            digits = re.sub(r"\D", "", bare)
+            if _PHONE_ALLOW_ID_DIGITS_RE.fullmatch(digits):
+                return digits
+        return bare if _BSUID_RE.fullmatch(bare) else entry.strip()
+
+    @classmethod
+    def _normalize_allow_ids(cls, ids: set[str]) -> set[str]:
+        return {cls._normalize_allow_id(entry) for entry in ids}
 
     def _entry_matches(self, entries, target: str) -> bool:
-        """Bare-wa_id membership first (Cloud senders are digits), then the shared WhatsApp matcher
-        so ``*`` and phone/LID aliases keep working for DM intake and groups as they always did."""
+        """Match phone aliases while treating Cloud BSUIDs as exact principals."""
         entries = set(entries or ())
-        bare = re.sub(r"\D", "", str(target).split("@", 1)[0]) or target
-        return bare in self._normalize_allow_ids(entries) or super()._entry_matches(entries, target)
+        target = str(target).strip()
+        normalized = self._normalize_allow_ids(entries)
+        if _BSUID_RE.fullmatch(target):
+            return target in normalized or "*" in normalized
+        return self._normalize_allow_id(target) in normalized or super()._entry_matches(entries, target)
 
     def _webhook_identity_matches(self, entry_id: Any, metadata: Any) -> bool:
         """Bind a signed callback to this adapter's configured Meta identities."""

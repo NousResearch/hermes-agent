@@ -265,6 +265,7 @@ class StreamTransportMixin:
         for mid in (getattr(result, "message_id", None),
                     *(getattr(result, "continuation_message_ids", None) or ()), *(raw_ids or ())):
             self._track_preview_id(mid)
+        self._ceiling_observe(result)
 
     def _adapter_prefers_fresh_final(self, text: str) -> bool:
         """Adapter's prefers_fresh_final_streaming hook (Telegram's richer send path);
@@ -321,6 +322,7 @@ class StreamTransportMixin:
             self._delivery_ambiguous = is_turn_final
             stale_ids, result = (), None
         new_message_id = getattr(result, "message_id", None)
+        self._ceiling_observe(result)
         if stale_ids:  # best-effort preview cleanup; never delete the message just sent
             await self._delete_previews(stale_ids, skip=new_message_id, label="Fresh-final")
             self._preview_message_ids = set()
@@ -520,6 +522,7 @@ class StreamTransportMixin:
             self._track_preview_ids_from_result(result)
         else:
             # No editable id: fallback mode + sentinel so we don't re-enter first-send.
+            self._ceiling_note_unknown()
             self._enter_fallback_mode(self._visible_prefix())
             self._message_id = "__no_edit__"
         self._notify_new_message()
@@ -580,6 +583,7 @@ class StreamTransportMixin:
         final send from repeating it."""
         logger.warning("Stream send may have landed (timed out after the request left); "
                        "treating it as shown instead of sending it again")
+        self._ceiling_note_unknown()
         self._last_sent_text = text
         if finalize:
             self._delivery_ambiguous = True

@@ -1,0 +1,12 @@
+┌─────────────────────────────────────────────────────────┐
+│           ☤ Hermes Gateway Starting...                 │
+├─────────────────────────────────────────────────────────┤
+│  Messaging platforms + cron scheduler                    │
+│  Press Ctrl+C to stop                                   │
+└─────────────────────────────────────────────────────────┘
+
+2026-11-13 05:34:13,751 WARNING hermes_plugins.platforms__telegram.adapter: [Telegram] Connecting to Telegram (attempt 1/8)…
+2026-11-13 05:34:15,797 WARNING hermes_plugins.platforms__telegram.adapter: [Telegram] Connected to Telegram (polling mode)
+2026-11-13 05:34:19,074 WARNING gateway.stream_consumer: Reply needs more than 8 messages: it will be sent as a file
+🔧 Routed deferred tool 'todo_list' through 'tool_call'
+2026-11-13 05:34:20,403 WARNING gateway.stream_consumer: Reply needs more than 8 messages: it will be sent as a file

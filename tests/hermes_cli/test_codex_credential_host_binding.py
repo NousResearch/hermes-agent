@@ -514,3 +514,105 @@ def test_route_fallback_reads_the_profile_scoped_override_not_a_sibling_process_
             assert _codex_pool_route_base_url(GW) == expected
         finally:
             reset_secret_scope(token)
+
+
+def test_singleton_credential_reports_the_routed_profiles_host_not_a_siblings_env(monkeypatch):
+    """A singleton (``hermes auth login openai-codex``) token must be addressed to its own
+    profile's host, exactly as the pooled rows beside it already are.
+
+    ``resolve_codex_runtime_credentials`` returns the credential and the base URL as one pair, so a
+    base resolved from the launch process env sends a routed sibling's token to the launch profile's
+    gateway. Parity with the pooled return is the oracle — both returns of the same function.
+    """
+    from agent import secret_scope
+    from agent.secret_scope import reset_secret_scope, set_secret_scope
+    from hermes_cli.auth_codex import resolve_codex_runtime_credentials
+
+    home = _home(monkeypatch)
+    _write_config(home)
+    monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", True)
+    monkeypatch.setenv("HERMES_CODEX_BASE_URL", OTHER_GW)  # the LAUNCH profile's gateway
+
+    def _routed(scope):
+        token = set_secret_scope(scope)
+        try:
+            return resolve_codex_runtime_credentials(read_only=True)["base_url"]
+        finally:
+            reset_secret_scope(token)
+
+    for scope, expected in [({}, CHATGPT), ({"HERMES_CODEX_BASE_URL": GW + "/"}, GW)]:
+        _write_singleton(home, JWT)
+        singleton = _routed(scope)
+        _write_pool(home, OPAQUE)
+        assert (singleton, _routed(scope)) == (expected, expected)
+
+    # Control: no multiplexing — the process env is this one profile's own setting.
+    monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", False)
+    _write_singleton(home, JWT)
+    assert resolve_codex_runtime_credentials(read_only=True)["base_url"] == OTHER_GW
+
+
+def test_unscoped_multiplexed_read_degrades_to_canonical_like_the_pooled_route(monkeypatch):
+    """With multiplexing on and no scope installed, the owning profile is unknowable: both returns
+    resolve the canonical host rather than the launch profile's env (and neither raises on the
+    credential path)."""
+    from agent import secret_scope
+    from hermes_cli.auth_codex import resolve_codex_runtime_credentials
+
+    home = _home(monkeypatch)
+    _write_config(home)
+    monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", True)
+    monkeypatch.setenv("HERMES_CODEX_BASE_URL", OTHER_GW)
+
+    _write_singleton(home, JWT)
+    singleton = resolve_codex_runtime_credentials(read_only=True)["base_url"]
+    _write_pool(home, OPAQUE)
+    assert (singleton, resolve_codex_runtime_credentials(read_only=True)["base_url"]) == (
+        CHATGPT, CHATGPT)
+
+
+def test_unscoped_multiplexed_base_url_fallback_is_logged(monkeypatch, caplog):
+    """The unscoped degrade to chatgpt.com leaves a debug trace naming the cause, so an operator
+    whose gateway override was ignored has something to go on."""
+    import logging
+
+    from agent import secret_scope
+    from hermes_cli.auth_codex import _codex_base_url
+
+    _home(monkeypatch)
+    monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", True)
+    monkeypatch.setenv("HERMES_CODEX_BASE_URL", OTHER_GW)
+    with caplog.at_level(logging.DEBUG, logger="hermes_cli.auth"):
+        assert _codex_base_url() == CHATGPT
+    assert [r for r in caplog.records
+            if "No profile secret scope bound" in r.getMessage()
+            and r.exc_info and r.exc_info[0] is secret_scope.UnscopedSecretError]
+
+
+def test_singleton_credential_respects_config_only_codex_gateway(monkeypatch):
+    """With model.base_url but no scoped .env override, a singleton must use the
+    same gateway host as a pooled Codex credential, even under multiplexing.
+
+    Otherwise a routed profile sends its singleton token directly to chatgpt.com
+    while the pool route correctly uses its configured gateway (#121486).
+    """
+    from agent import secret_scope
+    from agent.secret_scope import reset_secret_scope, set_secret_scope
+    from hermes_cli.auth_codex import resolve_codex_runtime_credentials
+
+    home = _home(monkeypatch)
+    _write_config(home, base_url=GW)
+    monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", True)
+    monkeypatch.setenv("HERMES_CODEX_BASE_URL", OTHER_GW)  # launch sibling, not the active profile
+
+    scope = set_secret_scope({})  # routed profile has no .env override; only model.base_url
+    try:
+        _write_singleton(home, JWT)
+        singleton = resolve_codex_runtime_credentials(read_only=True)
+        _write_pool(home, OPAQUE)
+        pooled = resolve_codex_runtime_credentials(read_only=True)
+    finally:
+        reset_secret_scope(scope)
+
+    assert (singleton["api_key"], singleton["base_url"]) == (JWT, GW)
+    assert (pooled["api_key"], pooled["base_url"]) == (OPAQUE, GW)

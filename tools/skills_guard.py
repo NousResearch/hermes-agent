@@ -8,7 +8,6 @@ agent-config files surface only the low *_ref finding — static regexes cannot 
 destination; future coverage belongs as a fourth "mechanical" tier next to agent_config_mod_shell."""
 
 import re
-import fnmatch
 import hashlib
 import json
 from contextlib import suppress
@@ -20,7 +19,7 @@ from typing import List, Tuple
 from tools.skills_guard_credentials import SKILL_ONLY_PATTERNS, code_views, raise_provider_key_reads
 
 
-SCANNER_VERSION = "skills-guard-v11"
+SCANNER_VERSION = "skills-guard-v12"
 
 # NVIDIA-verified skills each ship a signed `skill.oms.sig` + governance `skill-card.md`.
 TRUSTED_REPOS = {
@@ -791,17 +790,16 @@ def _community_note(f: Finding) -> Finding:
 
 
 def scan_skill(skill_path: Path, source: str = "community") -> ScanResult:
-    """Structural checks + pattern scan of every text file in a skill dir (or a single file). A gitignore-style
-    `.skillignore` / `.clawhubignore` excludes dev/docs artifacts from BOTH passes; the ignore file itself is
-    always excluded and `SKILL.md` can never be un-ignored. *source* (e.g. "openai/skills") sets the trust level."""
+    """Structural checks + pattern scan of every file in a skill dir (or a single file). Bundle-supplied ignore
+    files (`.skillignore` / `.clawhubignore`) are NOT honored: they are authored by the publisher being scanned,
+    so a `*` would mask every payload. *source* (e.g. "openai/skills") sets the trust level."""
     name, trust = skill_path.name, _resolve_trust_level(source)
     findings: list[Finding] = []
     if skill_path.is_dir():
-        ignore = _load_skill_ignore(skill_path)
-        findings.extend(_check_structure(skill_path, ignore=ignore))
+        findings.extend(_check_structure(skill_path))
         for f in skill_path.rglob("*"):
-            if f.is_file() and not ignore(rel := str(f.relative_to(skill_path))):
-                findings.extend(scan_file(f, rel, skill=True))
+            if f.is_file():
+                findings.extend(scan_file(f, str(f.relative_to(skill_path)), skill=True))
     elif skill_path.is_file():
         findings.extend(scan_file(skill_path, skill_path.name, skill=True))
     if trust == "community":
@@ -896,9 +894,8 @@ def format_scan_report(result: ScanResult) -> str:
     return "\n".join(lines + [f"Decision: {status} — {reason}"])
 
 
-def _check_structure(skill_dir: Path, ignore=None) -> list[Finding]:
-    """Structural anomalies (counts, sizes, binaries, stray executables, escaping symlinks); *ignore(rel) -> bool*
-    excludes paths from every count and finding."""
+def _check_structure(skill_dir: Path) -> list[Finding]:
+    """Structural anomalies (counts, sizes, binaries, stray executables, escaping symlinks)."""
     findings = []
 
     def add(pid, sev, cat, rel, match, desc):
@@ -906,7 +903,7 @@ def _check_structure(skill_dir: Path, ignore=None) -> list[Finding]:
     file_count = total_size = 0
     for f in skill_dir.rglob("*"):
         rel = str(f.relative_to(skill_dir))
-        if not (f.is_file() or f.is_symlink()) or (ignore is not None and ignore(rel)):
+        if not (f.is_file() or f.is_symlink()):
             continue
         file_count += 1
         if f.is_symlink():
@@ -939,48 +936,6 @@ def _check_structure(skill_dir: Path, ignore=None) -> list[Finding]:
         add("oversized_skill", "low", "structural", "(directory)", f"{total_size // 1024}KB total",
             f"skill is {total_size // 1024}KB total (limit: {MAX_TOTAL_SIZE_KB}KB)")
     return findings
-
-
-# `.skillignore` is Hermes-native; `.clawhubignore` is honored for skills published through ClawHub.
-_SKILL_IGNORE_FILENAMES = (".skillignore", ".clawhubignore")
-
-
-def _load_skill_ignore(skill_dir: Path):
-    """Build ``ignore(rel_posix_path) -> bool`` from `.skillignore` / `.clawhubignore`. gitignore basics: blank
-    lines and ``#`` comments skipped; trailing ``/`` = directory (it and everything under it); ``*``/``?`` globs via
-    fnmatch on the full path and each segment; leading ``/`` anchors to the root. Ignore files always excluded;
-    ``SKILL.md`` never."""
-    patterns: list[str] = []
-    for ig in (skill_dir / name for name in _SKILL_IGNORE_FILENAMES):
-        with suppress(UnicodeDecodeError, OSError):
-            if ig.is_file():
-                patterns.extend(s for s in map(str.strip, ig.read_text(encoding="utf-8-sig").splitlines())
-                                if s and not s.startswith("#"))
-
-    def ignore(rel: str) -> bool:
-        rel_posix = Path(rel).as_posix()
-        segs = rel_posix.split("/")
-        base = segs[-1]
-        if base == "SKILL.md":
-            return False
-        if base in _SKILL_IGNORE_FILENAMES:
-            return True
-        for pat in patterns:
-            anchored = pat.startswith("/")
-            p = pat.strip("/")
-            if not p:
-                continue
-            below = rel_posix.startswith(p + "/")
-            if pat.endswith("/"):  # the dir itself or anything under it; unanchored also as an inner path component
-                if rel_posix == p or below or (not anchored and ("/" + p + "/") in ("/" + rel_posix + "/")):
-                    return True
-            # Unanchored: also the basename, any path segment, or a prefix dir (`docs` ignores docs/plans/x.md).
-            elif fnmatch.fnmatch(rel_posix, p) or (not anchored and (fnmatch.fnmatch(base, p) or below or (
-                    "/" not in p and any(fnmatch.fnmatch(seg, p) for seg in segs)))):
-                return True
-        return False
-
-    return ignore
 
 
 _SOURCE_PREFIX_ALIASES = ("skills-sh/", "skills.sh/", "skils-sh/", "skils.sh/")

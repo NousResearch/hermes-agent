@@ -944,7 +944,7 @@ Older configs with `compression.summary_model`, `compression.summary_provider`, 
 `AUXILIARY_WEB_EXTRACT_*` variables are obsolete: `web_extract` no longer uses an auxiliary LLM. Long pages are truncated deterministically with the full text stored on disk for `read_file` paging.
 :::
 
-For task-specific direct endpoints, Hermes uses the task's configured API key or `OPENAI_API_KEY`. It does not reuse `OPENROUTER_API_KEY` for those custom endpoints.
+For task-specific direct endpoints, Hermes uses the task's configured API key; without one, the main model's key on the main endpoint's exact origin, then `OPENAI_API_KEY` only for OpenAI hosts (`*.openai.com`, `*.openai.azure.com`) or the exact `OPENAI_BASE_URL` it is paired with. It does not reuse `OPENROUTER_API_KEY` for those custom endpoints.
 
 ## Fallback Providers (config.yaml only)
 

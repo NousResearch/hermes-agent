@@ -102,6 +102,7 @@ def prepare_webapp_renderer(
     installs are disabled, like ``hermes desktop --build-only``.
     """
     from hermes_cli.source_build import build_source_webapp, source_build_env, source_product_current
+    from hermes_cli.steward import is_bundled_payload
 
     project_root = project_root.resolve()
     dist = webapp_dist_dir(project_root)
@@ -112,6 +113,14 @@ def prepare_webapp_renderer(
         if force:
             raise WebappBuildError(f"The Webapp renderer at {dist} comes from {DIST_ENV} and cannot be rebuilt here")
         print(f"→ Using Hermes Webapp renderer from {DIST_ENV}: {dist}")
+        return dist
+    if is_bundled_payload(project_root):
+        # A desktop app's sealed payload ships the renderer prebuilt, without the sources or scripts to build it.
+        if not (dist / "index.html").is_file():
+            raise WebappBuildError(f"This desktop app ships no Webapp renderer at {dist}")
+        if force:
+            raise WebappBuildError(f"The Webapp renderer at {dist} ships with the desktop app and cannot be rebuilt")
+        print(f"→ Using the desktop app's Webapp renderer: {dist}")
         return dist
     if skip_build:
         # Reuse takes no build lock, like `hermes dashboard --skip-build`: the

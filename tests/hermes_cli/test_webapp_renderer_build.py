@@ -102,6 +102,37 @@ def test_a_packaged_bundle_is_served_as_shipped(tmp_path: Path, monkeypatch):
         webapp.prepare_webapp_renderer(tmp_path)
 
 
+def test_a_desktop_bundle_serves_the_renderer_it_ships(tmp_path: Path, monkeypatch):
+    """A desktop bundle's agent payload carries the renderer its build planted, and none of the
+    sources or scripts to rebuild it, inside an app that is read-only (WindowsApps) or signed (macOS).
+    The renderer is served as shipped: no build lock, no build, never rebuilt."""
+    from hermes_cli import source_build
+
+    payload = tmp_path / "agent-payload" / "hermes-agent"
+    payload.mkdir(parents=True)
+    (payload / "install-stamp.json").write_text('{"payload": "bundled", "distribution": "desktop-app"}',
+                                                encoding="utf-8")
+    dist = payload / "apps" / "desktop" / "dist-webapp"
+    dist.mkdir(parents=True)
+    (dist / "index.html").write_text("<!doctype html>", encoding="utf-8")
+    builds = []
+    monkeypatch.setattr(source_build, "source_build_env", lambda **_k: {})
+    monkeypatch.setattr(source_build, "build_source_webapp", lambda *a, **_k: builds.append(a))
+
+    shipped = sorted(payload.rglob("*"))
+    assert webapp.prepare_webapp_renderer(payload) == dist
+    assert webapp.prepare_webapp_renderer(payload, explicit=True) == dist
+    assert builds == []
+    assert sorted(payload.rglob("*")) == shipped
+    with pytest.raises(webapp.WebappBuildError, match="cannot be rebuilt"):
+        webapp.prepare_webapp_renderer(payload, force=True)
+
+    (dist / "index.html").unlink()
+    with pytest.raises(webapp.WebappBuildError, match="ships no Webapp renderer"):
+        webapp.prepare_webapp_renderer(payload)
+    assert builds == []
+
+
 def _assert_build_lock_excludes_second_open(tmp_path: Path):
     from pm.filesystem import lock_fd, unlock_fd
 

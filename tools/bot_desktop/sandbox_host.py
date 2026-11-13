@@ -136,10 +136,12 @@ def browser_profile_dir(env: Any) -> str:
     return f"{desktop_home(env).rstrip('/')}/.hermes/bot-desktop/browser-profile"
 
 
+# Playwright's Chromium folder is per arch: chrome-linux64 (x64), chrome-linux-arm64 (arm64), chrome-linux
+# (older builds). One glob covers them all, the same one docker/sandbox-desktop-smoke.sh checks the image with.
 _CHROMIUM_PROBE = (
     'for d in "${PLAYWRIGHT_BROWSERS_PATH:-}" /opt/playwright "$HOME/.cache/ms-playwright"; do'
     ' [ -n "$d" ] || continue;'
-    ' for c in "$d"/chromium-*/chrome-linux/chrome "$d"/chromium-*/chrome-linux64/chrome; do'
+    ' for c in "$d"/chromium-*/chrome-linux*/chrome; do'
     ' [ -x "$c" ] && { printf %s "$c"; exit 0; }; done; done; exit 1'
 )
 

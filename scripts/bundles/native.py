@@ -363,8 +363,9 @@ def main() -> int:
     parser.add_argument("--source", type=Path, required=True)
     parser.add_argument("--tui", type=Path)
     parser.add_argument("--web", type=Path)
+    parser.add_argument("--webapp", type=Path)
     args = parser.parse_args()
-    args.frontends = {name: path for name in ("tui", "web") if (path := getattr(args, name)) is not None}
+    args.frontends = {name: path for name in ("tui", "web", "webapp") if (path := getattr(args, name)) is not None}
     return _stage_native(args)
 
 

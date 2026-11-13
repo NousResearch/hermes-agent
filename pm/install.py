@@ -1039,7 +1039,7 @@ def drift(*, include_venv: bool = True) -> dict[str, str]:
             package = get_package(name)
         except KeyError:
             continue
-        if package.optional or package.internal:
+        if package.is_optional(target) or package.internal:
             continue
         if package.missing_reason(target) is not None:
             continue

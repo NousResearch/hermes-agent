@@ -647,8 +647,6 @@ gateway:
     media_delivery_failed_with_name: "⚠️ No se pudo entregar el adjunto de {kind} ({file_name})."
     delivery_failed_retry: "⚠️ La entrega del mensaje falló tras varios intentos. Inténtalo de nuevo — tu solicitud se procesó, pero la respuesta no se pudo enviar."
     plain_fallback_prefix: "(Falló el formato de la respuesta, texto sin formato:)\n\n{content}"
-    turn_error_no_details: "sin detalles disponibles"
-    turn_error_detailed: "Lo siento, ocurrió un error ({error_type}).\n{error_detail}\nInténtalo de nuevo o usa /reset para iniciar una sesión nueva."
     turn_error: "Lo siento, ocurrió un error."
     context_injection_refused: "Inyección de contexto rechazada."
     no_home_channel: "📬 No hay un canal principal configurado para {platform}. El canal principal es donde Hermes entrega los resultados de las tareas programadas (cron) y los mensajes entre plataformas.\n\nEscribe {sethome_cmd} para convertir este chat en tu canal principal, o ignora este mensaje para omitirlo."

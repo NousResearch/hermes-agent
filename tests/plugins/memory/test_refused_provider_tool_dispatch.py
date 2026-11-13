@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import shutil
 import sys
 
 import pytest
@@ -142,18 +143,29 @@ def test_owning_profile_still_reaches_its_provider_through_registry_tools(homes)
     assert _registry_call(beta_home) == {"rows": ["beta-row"]}
 
 
-def test_subclass_fallback_ctx_tool_still_refuses_shared_instance(homes):
+@pytest.mark.parametrize("loader", ["user_dir", "entry_point"])
+def test_subclass_fallback_ctx_tool_still_refuses_shared_instance(homes, loader):
     """A register(ctx) that only adds tools may let the loader find the provider subclass."""
     alpha_home, beta_home = homes
-    source = alpha_home.parents[2] / "site" / "sharedmem_singleton.py"
+    site = alpha_home.parents[2] / "site"
     fallback_source = _SHARED_MODULE.replace("    ctx.register_memory_provider(_provider)\n", "")
     assert fallback_source != _SHARED_MODULE
-    source.write_text(fallback_source, encoding="utf-8")
+    (site / "sharedmem_singleton.py").write_text(fallback_source, encoding="utf-8")
     for home in (alpha_home, beta_home):
-        (home / "plugins" / "sharedmem" / "__init__.py").write_text(
+        plugin_dir = home / "plugins" / "sharedmem"
+        if loader == "entry_point":  # a bare-module entry point goes through _load_provider_from_entry_point
+            shutil.rmtree(plugin_dir)
+            continue
+        (plugin_dir / "__init__.py").write_text(
             "# MemoryProvider\nfrom sharedmem_singleton import SharedProvider, register\n",
             encoding="utf-8",
         )
+    if loader == "entry_point":
+        dist = site / "sharedmem_ep-0.1.dist-info"
+        dist.mkdir()
+        (dist / "METADATA").write_text("Metadata-Version: 2.1\nName: sharedmem-ep\nVersion: 0.1\n", encoding="utf-8")
+        (dist / "entry_points.txt").write_text(
+            "[hermes_agent.memory_providers]\nsharedmem = sharedmem_singleton\n", encoding="utf-8")
 
     owner, _ = _build_manager(beta_home)
     type(owner).stores[str(beta_home)] = ["beta-private"]

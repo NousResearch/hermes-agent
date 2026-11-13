@@ -649,6 +649,17 @@ class CLIChatTurnMixin:
             _cprint(f"\n{t('cli.chat.delivering_leftover_steer', preview=preview)}")
             self._pending_input.put(_leftover_steer)
 
+        # Built-in per-turn footer line (CLI-owned; replaces the footer.py / generate_footer
+        # skill approach). Printed as the closing line of every interactive turn.
+        try:
+            from hermes_cli.turn_footer import compute_turn_footer_line
+            _footer_line = compute_turn_footer_line(config=getattr(self, "config", None), session_id=getattr(self, "session_id", None))
+            if _footer_line:
+                _cprint(_footer_line)
+        except Exception as e:
+            import sys as _sys
+            _sys.stderr.write(f"turn_footer: render failed: {e}\n")
+
         return response
 
     def _chat_resolve_interrupt(self, turn, agent_thread, interrupt_msg, response):

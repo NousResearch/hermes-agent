@@ -2,7 +2,7 @@ name: z-midi-console
 repo: https://github.com/zorroukk/z-midi-console
 sha: 99c79706d23eeaeb9911e4431e98b1426717a1c4
 subdir: ""
-description: Universal MIDI control-surface builder — any USB/MIDI synth as live on-screen controls in Hermes Desktop, MIDI-learn bindings, multi-synth deck, spectrum analyzers, software mod matrix, .mid export, seven agent tools. Zero Python dependencies.
+description: "Universal MIDI control-surface builder — any USB/MIDI synth as live on-screen controls in Hermes Desktop, MIDI-learn bindings, multi-synth deck, spectrum analyzers, software mod matrix, .mid export, seven agent tools. Zero Python dependencies. Disclosure — The MIDI Console chat box sends your typed request (masked for key- or token-shaped text), a summary of the active device preset (names, MIDI channel, control labels, CC numbers, modulation lanes) and the last few chat-box turns to your Hermes model, or the model you pin under Settings → Models → Auxiliary → MIDI Console chat; device presets, recorded takes and a log of every MIDI message sent are stored under plugin-data/z-midi-console in your Hermes home (a pre-0.2 store at %LOCALAPPDATA%/z-midi-console is copied in once and left in place); the audio analyzers read the companion audio-strip plugin's state file; the MIDI engine is Windows-only."
 maintainer: zorroukk
 tier: community
 category: tools

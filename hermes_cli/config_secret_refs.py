@@ -162,17 +162,41 @@ def _refuse_cross_endpoint_overwrite(env_name: str, value: str, base_url: str, o
                          "and it holds a different key")
 
 
-def known_endpoint_key_env(cfg: dict, base_url: str) -> str:
-    """The Hermes-written ``key_env`` of a ``providers`` / ``custom_providers`` row already registered
-    for ``base_url``, so a save for that endpoint updates the row's variable instead of forking a
-    second one. User-chosen names (``OPENAI_API_KEY``) are never reused: they may serve elsewhere."""
+def _endpoint_key_envs(cfg: dict, base_url: str):
+    """``(name, shared)`` for each Hermes-written ``key_env`` of a block registered for ``base_url``;
+    ``shared`` when another endpoint also reads the name (an older release keyed rows by host:port)."""
     wanted = _canonical_endpoint(base_url)
     for block in _credential_blocks(cfg):
         name = str(block.get("key_env") or "")
         if (name.startswith(("HERMES_CUSTOM_", "HERMES_PROVIDER_")) and _block_base_url(block)
                 and _canonical_endpoint(_block_base_url(block)) == wanted):
-            return name
-    return ""
+            yield name, other_endpoint_reads(name, base_url)
+
+
+def known_endpoint_key_env(cfg: dict, base_url: str) -> str:
+    """The Hermes-written ``key_env`` of a ``providers`` / ``custom_providers`` row already registered
+    for ``base_url``, so a save for that endpoint updates the row's variable instead of forking a
+    second one. User-chosen names (``OPENAI_API_KEY``) are never reused: they may serve elsewhere, and
+    neither is a name another endpoint also reads (:func:`shared_endpoint_key_envs`)."""
+    return next((name for name, shared in _endpoint_key_envs(cfg, base_url) if not shared), "")
+
+
+def shared_endpoint_key_envs(cfg: dict, base_url: str) -> list[str]:
+    """The legacy host:port ``key_env`` names this endpoint's blocks share with other endpoints (two
+    when rows spell the default port both ways). A writer that saves this endpoint's key under a new
+    variable moves the blocks onto it (:func:`repoint_endpoint_key_env`), else selecting them later
+    brings back the other key."""
+    return list(dict.fromkeys(name for name, shared in _endpoint_key_envs(cfg, base_url) if shared))
+
+
+def repoint_endpoint_key_env(cfg: dict, base_url: str, old_env: str, new_env: str) -> None:
+    """Point every block of ``cfg`` for ``base_url`` whose ``key_env`` is ``old_env`` at ``new_env``;
+    blocks for other endpoints keep ``old_env`` and the key it holds."""
+    wanted = _canonical_endpoint(base_url)
+    for block in _credential_blocks(cfg):
+        if (block.get("key_env") == old_env and _block_base_url(block)
+                and _canonical_endpoint(_block_base_url(block)) == wanted):
+            block["key_env"] = new_env
 
 
 def dashboard_endpoint_key_env(entry: dict, endpoint_id: str) -> str:

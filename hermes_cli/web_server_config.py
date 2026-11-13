@@ -678,9 +678,12 @@ def _apply_main_assignment_sync(cfg: dict, provider: str, model: str, base_url: 
     endpoint_already_known = (
         provider_lc in BARE_CUSTOM_SELECTORS and bool(base_url) and _endpoint_known_to_config(cfg, base_url))
     # The submitted key goes to .env; model.api_key and the registered row hold only its reference.
-    stored_key = api_key
+    stored_key, env_name, shared_envs = api_key, "", []
     if api_key.strip():
-        from hermes_cli.config_secret_refs import endpoint_api_key_env, known_endpoint_key_env, secret_ref_for
+        from hermes_cli.config_secret_refs import (
+            endpoint_api_key_env, known_endpoint_key_env, secret_ref_for, shared_endpoint_key_envs,
+        )
+        shared_envs = shared_endpoint_key_envs(cfg, result.base_url)
         # A row already registered for this endpoint keeps its variable, so model.api_key and the
         # row read the same key instead of two copies drifting apart.
         env_name = known_endpoint_key_env(cfg, result.base_url) or endpoint_api_key_env(result.base_url)
@@ -695,6 +698,12 @@ def _apply_main_assignment_sync(cfg: dict, provider: str, model: str, base_url: 
         # that host's key. A block for the same host (its ``key_env``) still supplies the credential.
         _resolve_assignment_credentials(model_cfg, provider, provider_entry)
     cfg["model"] = model_cfg
+    if shared_envs and stored_key != api_key:
+        # This endpoint's rows (and the key_env just copied from one) leave the variable it shares
+        # with another endpoint for the one holding the submitted key.
+        from hermes_cli.config_secret_refs import repoint_endpoint_key_env
+        for shared_env in shared_envs:
+            repoint_endpoint_key_env(cfg, result.base_url, shared_env, env_name)
 
     new_provider = provider.strip().lower()
     gateway_tools = _apply_nous_gateway_defaults(cfg) if new_provider == "nous" else []
@@ -744,6 +753,20 @@ def _aux_default_effort(slot: str) -> str:
     return str(block.get("reasoning_effort") or "") if isinstance(block, dict) else ""
 
 
+def _refuse_unwritable_aux_keys(slots: list, api_key: str) -> None:
+    """400 before ANY slot's key reaches ``.env`` when the write lock forbids one slot's variable,
+    so an all-tasks save never leaves an earlier slot's line behind with config.yaml unsaved."""
+    from hermes_cli.config import require_env_writable
+    from hermes_cli.config_secret_refs import aux_api_key_env, is_env_reference, refs_supported
+    if is_env_reference(api_key) or not refs_supported():
+        return
+    for slot in slots:
+        try:
+            require_env_writable(aux_api_key_env(slot), "set")
+        except ValueError as exc:  # the refusal names the variable, never the key
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 def _apply_aux_assignment_sync(cfg: dict, provider: str, model: str, task: str, base_url: str, api_key: str,
                                reasoning_effort: Optional[str] = _UNSET) -> dict:
     from hermes_cli.config import save_config
@@ -777,6 +800,8 @@ def _apply_aux_assignment_sync(cfg: dict, provider: str, model: str, task: str, 
 
     targets = [task] if task else list(slots)
     new_provider = provider.strip().lower()
+    if base_url and api_key:
+        _refuse_unwritable_aux_keys([slot for slot in targets if slot in slots], api_key)
     for slot in targets:
         if slot not in slots:
             raise HTTPException(status_code=400, detail=f"unknown auxiliary task: {slot}")
@@ -798,7 +823,10 @@ def _apply_aux_assignment_sync(cfg: dict, provider: str, model: str, task: str, 
             slot_cfg["base_url"] = base_url
             if api_key:
                 from hermes_cli.config_secret_refs import aux_api_key_env, secret_ref_for
-                slot_cfg["api_key"] = secret_ref_for(aux_api_key_env(slot), api_key)
+                try:
+                    slot_cfg["api_key"] = secret_ref_for(aux_api_key_env(slot), api_key)
+                except ValueError as exc:  # .env write lock: the refusal names the variable, never the key
+                    raise HTTPException(status_code=400, detail=str(exc)) from exc
         elif new_provider != prev_provider and new_provider != "custom":
             slot_cfg.pop("base_url", None)
             clear_model_endpoint_credentials(slot_cfg)

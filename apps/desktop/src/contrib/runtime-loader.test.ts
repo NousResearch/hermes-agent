@@ -5,7 +5,7 @@ import type * as HermesModule from '@/hermes'
 import { $previewScriptGrants, grantPreviewScript } from '@/store/plugin-preview-grants'
 
 import { emitGatewayEvent } from './events'
-import { $pluginRecords, publishPlugin, setPluginEnabled } from './plugins-store'
+import { $pluginRecords, noteEnabledAgentPackages, publishPlugin, setPluginEnabled } from './plugins-store'
 import {
   discoverRuntimePlugins,
   loadRuntimePlugin,
@@ -55,6 +55,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  noteEnabledAgentPackages([])
   delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
 })
 
@@ -213,6 +214,140 @@ describe('scanDiskPlugins (#66899)', () => {
     }
   })
 })
+
+  it('turns a unified half on when its agent package is already enabled', async () => {
+    desktopPluginsRoot.mockResolvedValue('/local/.hermes/desktop-plugins')
+    const root = '/local/.hermes/desktop-plugins'
+    const folder = `${root}/sync-half`
+
+    readDir.mockImplementation(async dir => {
+      if (dir === root) {
+        return { entries: [{ isDirectory: true, name: 'sync-half', path: folder }] }
+      }
+
+      if (dir === folder) {
+        return {
+          entries: [
+            { isDirectory: false, name: '.hermes-package.json', path: `${folder}/.hermes-package.json` },
+            { isDirectory: false, name: 'plugin.js', path: `${folder}/plugin.js` }
+          ]
+        }
+      }
+
+      return { entries: [] }
+    })
+
+    const register = vi.fn()
+
+    ;(globalThis as unknown as { __syncRegister: unknown }).__syncRegister = register
+    readFileText.mockImplementation(async file =>
+      file.endsWith('.hermes-package.json')
+        ? { text: JSON.stringify({ package: 'sync-pkg', source: '/x/plugins/sync-pkg/desktop', sourceMtimeMs: 1 }) }
+        : { text: 'export default { id: "sync-half", register: globalThis.__syncRegister }' }
+    )
+    watchPreviewFile.mockResolvedValue({ id: 'w-sync' })
+
+    const createObjectURL = vi.spyOn(URL, 'createObjectURL').mockImplementation(
+      blob =>
+        `data:text/javascript;base64,${Buffer.from((blob as unknown as { parts: string[] }).parts.join('')).toString('base64')}`
+    )
+    const revokeObjectURL = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => undefined)
+    const RealBlob = globalThis.Blob
+
+    vi.stubGlobal(
+      'Blob',
+      class {
+        parts: string[]
+        constructor(parts: string[]) {
+          this.parts = parts
+        }
+      }
+    )
+
+    try {
+      noteEnabledAgentPackages(['sync-pkg'])
+      await discoverRuntimePlugins()
+
+      expect(register).toHaveBeenCalledTimes(1)
+      expect($pluginRecords.get()['sync-half']).toMatchObject({ status: 'loaded', packageName: 'sync-pkg' })
+    } finally {
+      createObjectURL.mockRestore()
+      revokeObjectURL.mockRestore()
+      vi.stubGlobal('Blob', RealBlob)
+      delete (globalThis as unknown as { __syncRegister?: unknown }).__syncRegister
+      readDir.mockResolvedValue({ entries: [] })
+      await discoverRuntimePlugins()
+    }
+  })
+
+  it('leaves a unified half off when the user already switched that half off', async () => {
+    desktopPluginsRoot.mockResolvedValue('/local/.hermes/desktop-plugins')
+    const root = '/local/.hermes/desktop-plugins'
+    const folder = `${root}/off-half`
+
+    readDir.mockImplementation(async dir => {
+      if (dir === root) {
+        return { entries: [{ isDirectory: true, name: 'off-half', path: folder }] }
+      }
+
+      if (dir === folder) {
+        return {
+          entries: [
+            { isDirectory: false, name: '.hermes-package.json', path: `${folder}/.hermes-package.json` },
+            { isDirectory: false, name: 'plugin.js', path: `${folder}/plugin.js` }
+          ]
+        }
+      }
+
+      return { entries: [] }
+    })
+
+    const register = vi.fn()
+
+    ;(globalThis as unknown as { __offRegister: unknown }).__offRegister = register
+    readFileText.mockImplementation(async file =>
+      file.endsWith('.hermes-package.json')
+        ? { text: JSON.stringify({ package: 'off-pkg', source: '/x/plugins/off-pkg/desktop', sourceMtimeMs: 1 }) }
+        : { text: 'export default { id: "off-half", register: globalThis.__offRegister }' }
+    )
+    watchPreviewFile.mockResolvedValue({ id: 'w-off' })
+
+    const createObjectURL = vi.spyOn(URL, 'createObjectURL').mockImplementation(
+      blob =>
+        `data:text/javascript;base64,${Buffer.from((blob as unknown as { parts: string[] }).parts.join('')).toString('base64')}`
+    )
+    const revokeObjectURL = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => undefined)
+    const RealBlob = globalThis.Blob
+
+    vi.stubGlobal(
+      'Blob',
+      class {
+        parts: string[]
+        constructor(parts: string[]) {
+          this.parts = parts
+        }
+      }
+    )
+
+    try {
+      await discoverRuntimePlugins()
+      expect($pluginRecords.get()['off-half'].status).toBe('disabled')
+      expect(register).not.toHaveBeenCalled()
+
+      await setPluginEnabled('off-half', false)
+      noteEnabledAgentPackages(['off-pkg'])
+
+      expect(register).not.toHaveBeenCalled()
+      expect($pluginRecords.get()['off-half'].status).toBe('disabled')
+    } finally {
+      createObjectURL.mockRestore()
+      revokeObjectURL.mockRestore()
+      vi.stubGlobal('Blob', RealBlob)
+      delete (globalThis as unknown as { __offRegister?: unknown }).__offRegister
+      readDir.mockResolvedValue({ entries: [] })
+      await discoverRuntimePlugins()
+    }
+  })
 
 describe('watchRuntimePlugins dir watch (#66899)', () => {
   it('watches the Electron-resolved app root, never the backend hermes_home', async () => {

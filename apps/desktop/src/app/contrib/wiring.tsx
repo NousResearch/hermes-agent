@@ -39,6 +39,7 @@ import { type ChatMessage, chatMessageText } from '@/lib/chat-messages'
 import { isMessagingSource } from '@/lib/session-source'
 import { activateWakeIndicator } from '@/lib/wake-indicator'
 import { playWakeSound } from '@/lib/wake-sound'
+import { loadAgentPlugins } from '@/store/agent-plugins'
 import { $billingSettingsRequest } from '@/store/billing-block'
 import { $desktopBoot } from '@/store/boot'
 import { requestVoiceConversationStart } from '@/store/composer'
@@ -898,6 +899,16 @@ export function ContribWiring({ children }: { children: ReactNode }) {
       void armWakeWord(requestGateway)
     }
   }, [gatewayState, requestGateway])
+
+  useEffect(() => {
+    if (gatewayState !== 'open' || isAuxiliaryWindow()) {
+      return
+    }
+
+    // CLI enable writes plugins.enabled without opening Capabilities, so the
+    // desktop half would stay dark until someone found its switch.
+    void loadAgentPlugins(requestGateway, activeGatewayProfile || null)
+  }, [activeGatewayProfile, gatewayState, requestGateway])
 
   useEffect(() => {
     if (gatewayState !== 'open' || isAuxiliaryWindow()) {

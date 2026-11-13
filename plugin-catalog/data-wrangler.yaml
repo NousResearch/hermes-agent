@@ -1,0 +1,21 @@
+name: data-wrangler
+title: Data Wrangler
+repo: https://github.com/yogeshchoudhary555/hermes-data-wrangler
+sha: 7c32cb873cb12dd37fa585e3ca2cb05033e16221
+version: "1.0.0"
+description: "Deterministic tools for local tabular data — the counting a model should never guess at. table_profile computes an exact profile of a CSV/TSV/JSON/JSONL file (row and column counts, inferred types, null counts and percentages, distinct counts, min/max/mean/median, top text values, duplicate-row and empty-row counts). table_query runs one read-only SQL query over the file in SQLite (table `data`): writes are refused up front and again by a connection authorizer, results are row-capped with the total matched count always reported, and a 10-second query budget applies. table_clean writes a cleaned copy — snake_case headers, trimmed cells, fully-empty rows dropped, exact duplicates removed (optionally on a subset of columns) — and returns a full change report; the input file is never modified. A bundled data-tables skill teaches the profile → query → clean → verify workflow. Python standard library only (csv/json/sqlite3): no dependencies, no configuration, no credentials. Disclosure: reads only the local data files named in a tool call, writes exactly the one cleaned output file per table_clean call, makes no network calls, runs no shell commands or background processes, collects no telemetry, and keeps no state between calls (queries run in an in-memory database)."
+maintainer: yogeshchoudhary555
+tier: community
+category: tools
+requires_hermes: ">=0.22"
+docs_url: https://github.com/yogeshchoudhary555/hermes-data-wrangler#readme
+readme: true
+platforms: [linux, macos, windows]
+capabilities:
+  provides_tools:
+    - table_profile
+    - table_query
+    - table_clean
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -28,6 +28,7 @@ export const zhHantChat = {
     startVoice: '開始語音對話',
     openDirective: '開啟',
     queueMessage: '排隊訊息',
+    compactingNotice: '正在壓縮上下文 — 傳送的訊息將排隊',
     stop: '停止',
     send: '傳送',
     speaking: '說話中',

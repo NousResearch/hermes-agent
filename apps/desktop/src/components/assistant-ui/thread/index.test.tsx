@@ -28,7 +28,8 @@ vi.mock('@/components/assistant-ui/thread/timeline', () => ({
 
 vi.mock('@/components/assistant-ui/thread/status', () => ({
   BackgroundResumeNotice: () => null,
-  CenteredThreadSpinner: () => null
+  CenteredThreadSpinner: () => null,
+  CompactingStatusRow: () => null
 }))
 
 vi.mock('@/i18n', () => ({

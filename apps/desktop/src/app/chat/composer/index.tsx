@@ -1,14 +1,6 @@
 import { ComposerPrimitive } from '@assistant-ui/react'
 import { useStore } from '@nanostores/react'
-import {
-  type ClipboardEvent,
-  type FormEvent,
-  type KeyboardEvent,
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef
-} from 'react'
+import { type ClipboardEvent, type FormEvent, type KeyboardEvent, useCallback, useEffect, useMemo, useRef } from 'react'
 
 import { useTourMarker } from '@/app/chat/tour-marker'
 import type { GatewayRequester } from '@/app/contrib/types'
@@ -45,7 +37,7 @@ import { useTheme } from '@/themes'
 
 import { AttachmentList } from './attachments'
 import { deriveBusySubmitState } from './busy-submit-state'
-import { ComposerDockGlow, QueuedEditBanner } from './chat-bar-parts'
+import { ComposerContextNotices, ComposerDockGlow, QueuedEditBanner } from './chat-bar-parts'
 import {
   acceptsTriggerCompletion,
   COMPOSER_FADE_BACKGROUND,
@@ -90,7 +82,6 @@ import { ActionBadges } from './micro-actions'
 import { chipTypedPathOnSpace, pathifyRefs } from './path-refs'
 import { PreparedImageRecovery } from './prepared-image-recovery'
 import { renderComposerQueueSlot, useComposerQueueScopeKey } from './queue-slot'
-import { RestoredDraftNotice } from './restored-draft-notice'
 import {
   beginComposerComposition,
   deleteChipBeforeCaret,
@@ -130,6 +121,7 @@ function controlRowGridClass(singleColumn: boolean, stacked: boolean): string {
     : 'grid-cols-[auto_1fr_auto] items-center gap-(--composer-control-gap) [grid-template-areas:"menu_input_controls"]'
 }
 
+// health: allow FUNC_LINES -- the `compacting` input to deriveBusySubmitState is the /compress queue-semantics seam (Fixes #147491); the notice mount folds into ComposerContextNotices to give a line back, so net +1 is the feature's minimum footprint
 export function ChatBar({
   busy,
   cwd,
@@ -375,6 +367,7 @@ export function ChatBar({
     attachments,
     busy,
     clearDraft,
+    compacting,
     draftRef,
     focusInput,
     loadIntoComposer,
@@ -433,6 +426,7 @@ export function ChatBar({
     attachments,
     busy,
     clearDraft,
+    compacting,
     disabled,
     draftScopeRef,
     draftRef,
@@ -1131,6 +1125,7 @@ export function ChatBar({
       busyAction={busyAction}
       canSubmit={canSubmit}
       cardWaiting={cardWaiting}
+      compacting={compacting}
       compactModelPill={poppedOut || compactPill}
       conversation={{
         active: voiceConversationActive,
@@ -1494,7 +1489,7 @@ export function ChatBar({
                     additions beside the "+" menu and before the controls.
                     All four render nothing until something contributes. */}
                   <ContribSlot area={COMPOSER_AREAS.top} />
-                  <RestoredDraftNotice
+                  <ComposerContextNotices
                     freshDraft={activeQueueSessionKey === null}
                     onUndone={clearDraft}
                     readLiveText={syncDraftFromEditor}

@@ -262,6 +262,17 @@ describe('shouldAutoDrain', () => {
     // HALT — the park must hold the head back until they resume.
     expect(shouldAutoDrain({ isBusy: false, parked: true, queueLength: 1 })).toBe(false)
   })
+
+  it('does not drain while a standalone compression runs', () => {
+    // A standalone /compress has no live turn, so `busy` is false the whole
+    // time: without this gate the queue would be pulled straight into the
+    // compression the user was told it would wait behind.
+    expect(shouldAutoDrain({ compacting: true, isBusy: false, queueLength: 1 })).toBe(false)
+  })
+
+  it('drains once the compression ends', () => {
+    expect(shouldAutoDrain({ compacting: false, isBusy: false, queueLength: 1 })).toBe(true)
+  })
 })
 
 describe('parked queue sessions', () => {

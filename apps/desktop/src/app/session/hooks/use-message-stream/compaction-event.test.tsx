@@ -5,7 +5,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import {
   $compactingSessions,
+  $compactionProgressById,
   markCompressDeferred,
+  sessionCompactionProgress,
   setSessionCompacting,
   takeCompressDeferred
 } from '@/store/compaction'
@@ -28,6 +30,7 @@ function emit(type: GatewayEvent['type'], payload: GatewayEvent['payload'] = {})
 describe('useMessageStream compaction lifecycle', () => {
   beforeEach(() => {
     $compactingSessions.set({})
+    $compactionProgressById.set({})
     clearNotifications()
     takeCompressDeferred(SID)
   })
@@ -35,6 +38,7 @@ describe('useMessageStream compaction lifecycle', () => {
   afterEach(() => {
     cleanup()
     $compactingSessions.set({})
+    $compactionProgressById.set({})
     vi.restoreAllMocks()
   })
 
@@ -62,12 +66,27 @@ describe('useMessageStream compaction lifecycle', () => {
     mountStream()
     setSessionCompacting(OTHER_SID, true)
 
-    emit('status.update', { kind: 'compressing', text: '\u280b compressing 42 messages (~120,000 tok)\u2026' })
+    emit('status.update', { kind: 'compressing', text: '⠋ compressing 42 messages (~120,000 tok)…' })
     expect($compactingSessions.get()).toEqual({ [OTHER_SID]: true, [SID]: true })
 
     emit('status.update', { kind: 'ready' })
 
     expect($compactingSessions.get()).toEqual({ [OTHER_SID]: true })
+  })
+
+  // The same payload the phase test above proves also streams live progress.
+  // The status row narrates from it; the terminal edge must retire it with the
+  // phase or a stale line would greet the next open of this session.
+  it('keeps the streamed progress text and clears it on the terminal edge', () => {
+    mountStream()
+
+    emit('status.update', { kind: 'compressing', text: '⠋ compressing 42 messages (~120,000 tok)…' })
+    expect(sessionCompactionProgress(SID).get()?.text).toBe('⠋ compressing 42 messages (~120,000 tok)…')
+    expect(sessionCompactionProgress(SID).get()?.since).toBeTypeOf('number')
+
+    emit('status.update', { kind: 'ready' })
+
+    expect(sessionCompactionProgress(SID).get()).toBeNull()
   })
 
   it('clears the compaction phase on the structured completion edge', () => {

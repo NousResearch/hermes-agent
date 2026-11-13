@@ -7,7 +7,12 @@ import { errorCardText } from '@/lib/error-surface-copy'
 import { isProviderSetupErrorCode, isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
 import { type AgentNoticePayload, clearAgentNotice, nativeNoticeInput, showAgentNotice } from '@/store/agent-notices'
 import { clearSettledClarifyRequest } from '@/store/clarify'
-import { reconcileSessionCompacting, setSessionCompacting, takeCompressDeferred } from '@/store/compaction'
+import {
+  reconcileSessionCompacting,
+  setSessionCompacting,
+  setSessionCompactionProgress,
+  takeCompressDeferred
+} from '@/store/compaction'
 import { refreshBackgroundProcesses } from '@/store/composer-status'
 import { applyGoalStatusText } from '@/store/goals'
 import { dispatchNativeNotification } from '@/store/native-notifications'
@@ -64,6 +69,100 @@ function toastGatewayError(
 
 /** status.update / review.summary / notification.show / notification.clear /
  *  error — the status-and-notice tail of the dispatcher. */
+const COMPACTION_STATUS_KINDS = new Set(['compacting', 'compressing', 'compacted', 'ready'])
+
+function isCompactionStatusKind(kind: unknown): boolean {
+  return typeof kind === 'string' && COMPACTION_STATUS_KINDS.has(kind)
+}
+
+/** One phase, two spellings: entering (`compacting`/`compressing`) sets the flag and keeps
+ *  the payload's live progress text (`compressing 42 messages (~120,000 tok)…`) so the
+ *  status row narrates the wait; leaving (`compacted`/`ready`) retires it and announces a
+ *  compress that finished while nothing was on screen. */
+function applyCompactionStatus(ctx: GatewayEventContext): void {
+  const { deps, payload, isActiveEvent, occurredAt } = ctx
+  const sessionId = ctx.sessionId
+
+  if (!sessionId) {
+    return
+  }
+
+  const {
+    compactedTurnRef,
+    flushQueuedDeltas,
+    hydrateFromStoredSession,
+    sessionStateByRuntimeIdRef,
+    updateSessionState
+  } = deps
+
+  if (payload?.kind === 'compacting' || payload?.kind === 'compressing') {
+    setSessionCompacting(sessionId, true)
+    setSessionCompactionProgress(sessionId, coerceGatewayText(payload?.text).trim() || undefined)
+    compactedTurnRef.current.add(sessionId)
+
+    return
+  }
+
+  reconcileSessionCompacting(sessionId, 'terminal')
+  compactedTurnRef.current.delete(sessionId)
+
+  // That same `pending` reply returned before the compress handler could
+  // render the summary or flip its "still running in the background" toast,
+  // so this edge is the only completion the client ever sees. Without
+  // announcing it a deferred /compress finishes in silence: the corner toast
+  // merely expires and the transcript changes underneath the user with no
+  // acknowledgement it ever ran.
+  const deferredCompress = takeCompressDeferred(sessionId)
+
+  const completionText = coerceGatewayText(payload?.text).trim() || translateNow('notifications.compressDeferredDone')
+
+  if (deferredCompress) {
+    // Reuse the id the compress handler notified under, so this replaces the
+    // pending toast in place instead of stacking a second one.
+    notify({
+      durationMs: 5_000,
+      id: `session-compress:${sessionId}`,
+      kind: 'success',
+      message: completionText
+    })
+  }
+
+  const announceDeferredCompress = () => {
+    if (!deferredCompress) {
+      return
+    }
+
+    flushQueuedDeltas(sessionId)
+    updateSessionState(sessionId, state => ({
+      ...state,
+      messages: [
+        ...state.messages,
+        {
+          id: `compress-complete-${occurredAt ?? Date.now()}`,
+          role: 'system',
+          parts: [textPart(completionText, occurredAt)],
+          timestamp: occurredAt
+        }
+      ]
+    }))
+  }
+
+  // A compress that finished with no live turn (manual /compress whose RPC
+  // answered `pending` because the compute host outlived the wait, #97948) has
+  // no turn-end hydrate to refresh the transcript — the summarized bubbles
+  // would stay on screen forever. Mid-turn compaction still defers to the
+  // turn's own settle path. The notice is appended only after that hydrate
+  // resolves: it replaces the transcript wholesale and would otherwise drop
+  // the line we just added.
+  const state = sessionStateByRuntimeIdRef.current.get(sessionId)
+
+  if (isActiveEvent && state && !state.busy && !state.awaitingResponse && !state.streamId) {
+    void hydrateFromStoredSession(3, state.storedSessionId, sessionId).then(announceDeferredCompress)
+  } else {
+    announceDeferredCompress()
+  }
+}
+
 export function handleStatusEvent(ctx: GatewayEventContext): boolean {
   const { deps, event, payload, sessionId, isActiveEvent, occurredAt } = ctx
 
@@ -80,72 +179,12 @@ export function handleStatusEvent(ctx: GatewayEventContext): boolean {
   if (event.type === 'status.update') {
     // `compacting`/`compacted` is auto-compaction's pair. Manual /compress
     // pins `compressing` and always clears it with `ready` (the `finally` in
-    // methods_session._compress_live). Both spellings drive the same phase —
-    // the TUI has matched the pair since createGatewayEventHandler.ts:904;
-    // without `compressing` the desktop showed no progress for /compress.
-    if (sessionId && (payload?.kind === 'compacting' || payload?.kind === 'compressing')) {
-      setSessionCompacting(sessionId, true)
-      compactedTurnRef.current.add(sessionId)
-    } else if (sessionId && (payload?.kind === 'compacted' || payload?.kind === 'ready')) {
-      reconcileSessionCompacting(sessionId, 'terminal')
-      compactedTurnRef.current.delete(sessionId)
-
-      // That same `pending` reply returned before the compress handler could
-      // render the summary or flip its "still running in the background"
-      // toast, so this edge is the only completion the client ever sees.
-      // Without announcing it a deferred /compress finishes in silence: the
-      // corner toast merely expires and the transcript changes underneath the
-      // user with no acknowledgement it ever ran.
-      const deferredCompress = takeCompressDeferred(sessionId)
-
-      const completionText =
-        coerceGatewayText(payload?.text).trim() || translateNow('notifications.compressDeferredDone')
-
-      if (deferredCompress) {
-        // Reuse the id the compress handler notified under, so this replaces
-        // the pending toast in place instead of stacking a second one.
-        notify({
-          durationMs: 5_000,
-          id: `session-compress:${sessionId}`,
-          kind: 'success',
-          message: completionText
-        })
-      }
-
-      const announceDeferredCompress = () => {
-        if (!deferredCompress) {
-          return
-        }
-
-        flushQueuedDeltas(sessionId)
-        updateSessionState(sessionId, state => ({
-          ...state,
-          messages: [
-            ...state.messages,
-            {
-              id: `compress-complete-${occurredAt ?? Date.now()}`,
-              role: 'system',
-              parts: [textPart(completionText, occurredAt)],
-              timestamp: occurredAt
-            }
-          ]
-        }))
-      }
-
-      // A compress that finished with no live turn (manual /compress whose
-      // RPC answered `pending` because the compute host outlived the wait,
-      // #97948) has no turn-end hydrate to refresh the transcript — the
-      // summarized bubbles would stay on screen forever. Mid-turn compaction
-      // still defers to the turn's own settle path. The notice is appended
-      // only after that hydrate resolves: it replaces the transcript wholesale
-      // and would otherwise drop the line we just added.
-      const state = sessionStateByRuntimeIdRef.current.get(sessionId)
-
-      if (isActiveEvent && state && !state.busy && !state.awaitingResponse && !state.streamId) {
-        void hydrateFromStoredSession(3, state.storedSessionId, sessionId).then(announceDeferredCompress)
-      } else {
-        announceDeferredCompress()
-      }
+    // methods_session._compress_live, mirrored on the canonical mutate path).
+    // Both spellings drive the same phase — the TUI has matched the pair since
+    // createGatewayEventHandler.ts:904; without `compressing` the desktop
+    // showed no progress for /compress.
+    if (sessionId && isCompactionStatusKind(payload?.kind)) {
+      applyCompactionStatus(ctx)
     } else if (sessionId && payload?.kind === 'process') {
       // The gateway's notification poller announces background process
       // completions / watch matches here — re-sync the status stack.

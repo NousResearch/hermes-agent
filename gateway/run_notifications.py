@@ -752,17 +752,16 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         from gateway.run import _drain_gateway_watch_events, _format_gateway_process_notification
         watch_events = _drain_gateway_watch_events(completion_queue)
         for evt in watch_events:
-            next_retry_at = evt.get("_watch_next_retry_at")
-            if next_retry_at is not None and next_retry_at > time.monotonic():
-                # Backoff between refused injections: hold the event for a later drain tick
-                # instead of re-attempting admission every 2 s (#140899).
-                completion_queue.put(evt)
-                continue
             async with self._completion_event_scope(evt):
                 from tools.process_registry_notifications import should_surface_notification
                 if not should_surface_notification(evt):
                     continue
                 if self._load_background_notifications_mode() == "off":
+                    continue
+                next_retry_at = evt.get("_watch_next_retry_at")
+                if next_retry_at is not None and next_retry_at > time.monotonic():
+                    # Keep backoff for enabled notices; suppressed ones should be discarded now.
+                    completion_queue.put(evt)
                     continue
                 if evt.get("type") == "heartbeat":
                     from gateway.session_automation import deliver_heartbeat
@@ -1023,11 +1022,14 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
                 await admit_internal_event(adapter, synth_event)
             return True
         except WakeNotAccepted as exc:
-            # Permanent only on proof: a pin the authority's state shows gone (/new, #141562) or a
-            # final code. An unowned or foreign-pinned refusal may still find its owner (d6635ffe03b).
+            # Permanent only on proof: a pin the authority's state shows gone (/new, #141562), a
+            # routing snapshot that can never rebuild its own key (#143720), or a final code. An
+            # unowned or foreign-pinned refusal may still find its owner (d6635ffe03b).
             from gateway.wake import PERMANENT_REFUSAL_REASONS
             pin_gone = await self._watch_pin_gone(evt, str(exc), log=not raise_not_accepted)
-            exc.permanent = pin_gone or exc.reason in PERMANENT_REFUSAL_REASONS
+            route_drifted = (exc.reason == "admission_conflict"
+                             and await self._watch_route_identity_drifted(evt, source))
+            exc.permanent = pin_gone or route_drifted or exc.reason in PERMANENT_REFUSAL_REASONS
             if pin_gone and not raise_not_accepted:
                 return None
             if not raise_not_accepted:

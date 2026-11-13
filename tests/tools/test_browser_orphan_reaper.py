@@ -21,11 +21,23 @@ from tools import browser_session_lifecycle as lifecycle
 
 _DEAD_OWNER = 99999
 _LIVE_OTHER_OWNER = 88888
+_REAL_TERMINATE = launcher._terminate
+_IGNORES_SIGTERM = ("import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+                    "print('ready', flush=True); time.sleep(60)")
+
+
+def _stub_terminate(monkeypatch, terminated) -> None:
+    """Signal nothing: record the pid, which then reads as gone, like a browser that obeyed its signals."""
+    def terminate(pid, start_time, proc):
+        terminated.append(pid)
+        alive = launcher._pid_alive
+        monkeypatch.setattr(launcher, "_pid_alive", lambda other: other != pid and alive(other))
+    monkeypatch.setattr(launcher, "_terminate", terminate)
 
 
 @pytest.fixture
 def records(monkeypatch):
-    """The test profile's launch records dir; nothing is ever signalled (``_terminate`` only records)."""
+    """The test profile's launch records dir; nothing is ever signalled (see ``_stub_terminate``)."""
     from hermes_constants import get_hermes_home
     home = Path(get_hermes_home())
     path = home / "cache" / "browser" / "chromium-records"
@@ -35,7 +47,7 @@ def records(monkeypatch):
     monkeypatch.setattr(launcher, "_browsers", {})
     monkeypatch.setattr(launcher, "_procs", {})
     terminated = []
-    monkeypatch.setattr(launcher, "_terminate", lambda pid, start_time, proc: terminated.append(pid))
+    _stub_terminate(monkeypatch, terminated)
     return SimpleNamespace(dir=path, terminated=terminated,
                            ephemeral=lambda name: str(home / "cache" / "browser" / "chromium" / name))
 
@@ -309,7 +321,7 @@ def test_records_of_every_served_profile_are_reaped(tmp_path, monkeypatch):
     monkeypatch.setattr(launcher, "_browsers", {})
     monkeypatch.setattr(launcher, "_served_homes", set(), raising=False)
     terminated = []
-    monkeypatch.setattr(launcher, "_terminate", lambda pid, start_time, proc: terminated.append(pid))
+    _stub_terminate(monkeypatch, terminated)
     monkeypatch.setattr(launcher, "_pid_alive", _alive(1111, 2222))
     monkeypatch.setattr(launcher, "_start_time", lambda pid: 777)
     monkeypatch.setattr(launcher, "_cmdline_names_dir", lambda pid, udd: True)
@@ -325,6 +337,70 @@ def test_records_of_every_served_profile_are_reaped(tmp_path, monkeypatch):
     assert lifecycle.reap_orphaned_browser_sessions() == 2
     assert sorted(terminated) == [1111, 2222]
     assert not (home_b / "cache" / "browser" / "chromium" / "orphan-2222").exists()
+
+
+class TestRecordOutlivesAnUnprovenBrowser:
+    """A launch record is the only handle a later reaper has on its browser, so it and the throwaway profile
+    go only once that browser is gone or proven to be something else."""
+
+    @pytest.mark.platforms("linux", "macos")
+    def test_browser_that_survives_its_signals_keeps_its_record_and_profile(self, records, monkeypatch):
+        """Real process, real signals: SIGTERM is ignored and ``terminal.daemon_term_grace_seconds: 0`` turns off
+        the SIGKILL escalation, so the browser outlives the reap. The next pass finishes the job once it is gone."""
+        from tools.process_registry import ProcessRegistry
+        monkeypatch.setattr(launcher, "_terminate", _REAL_TERMINATE)
+        monkeypatch.setattr(ProcessRegistry, "_daemon_term_grace_seconds", staticmethod(lambda: 0))
+        monkeypatch.setattr(ProcessRegistry, "_KILL_SETTLE_SECONDS", 0.2)
+        udd = Path(records.ephemeral("survivor"))
+        (udd / "Default").mkdir(parents=True)
+        proc = subprocess.Popen([sys.executable, "-c", _IGNORES_SIGTERM, f"--user-data-dir={udd}"],
+                                stdout=subprocess.PIPE, text=True)
+        try:
+            assert proc.stdout.readline().strip() == "ready"
+            start_time = wait_until(lambda: launcher._start_time(proc.pid), what="the stand-in's start time")
+            rec = _record(records, pid=proc.pid, udd=str(udd), start_time=start_time)
+
+            assert launcher.reap_orphaned_browsers() == 0
+            assert proc.poll() is None
+            assert rec.exists() and (udd / "Default").is_dir()
+
+            proc.kill()
+            proc.wait()
+            assert launcher.reap_orphaned_browsers() == 0
+            assert not rec.exists() and not udd.exists()
+        finally:
+            proc.kill()
+            proc.wait()
+            proc.stdout.close()
+
+    @pytest.mark.parametrize("unreadable", ["start_time", "argv"])
+    def test_browser_whose_identity_cannot_be_read_keeps_its_record_and_profile(self, records, monkeypatch, unreadable):
+        """Alive, but its identity cannot be read right now: never signalled, and not forgotten either."""
+        import psutil
+        udd = Path(records.ephemeral("unreadable"))
+        (udd / "Default").mkdir(parents=True)
+        rec = _record(records, pid=4242, udd=str(udd))
+        monkeypatch.setattr(launcher, "_pid_alive", _alive(4242))
+        monkeypatch.setattr(launcher, "_start_time", lambda pid: None if unreadable == "start_time" else 777)
+        monkeypatch.setattr(psutil, "Process", lambda pid: (_ for _ in ()).throw(psutil.AccessDenied(pid)))
+
+        assert launcher.reap_orphaned_browsers() == 0
+
+        assert records.terminated == []
+        assert rec.exists() and (udd / "Default").is_dir()
+
+    def test_recycled_pid_drops_the_record_without_a_signal(self, records, monkeypatch):
+        """Another start time proves the browser is gone: keeping this record would only leak it."""
+        udd = Path(records.ephemeral("recycled"))
+        (udd / "Default").mkdir(parents=True)
+        rec = _record(records, pid=4242, udd=str(udd))
+        monkeypatch.setattr(launcher, "_pid_alive", _alive(4242))
+        monkeypatch.setattr(launcher, "_start_time", lambda pid: 888)
+
+        assert launcher.reap_orphaned_browsers() == 0
+
+        assert records.terminated == []
+        assert not rec.exists() and not udd.exists()
 
 
 class TestPeriodicOrphanReap:

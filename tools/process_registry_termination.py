@@ -146,6 +146,16 @@ class ProcessTerminationMixin:
     # escalated kill as incomplete.
     _KILL_SETTLE_SECONDS = 1.0
 
+    @classmethod
+    def _outlived_kill(cls, still_running) -> bool:
+        """``still_running()`` still holds once the kill signals have had time to land."""
+        deadline = time.monotonic() + cls._KILL_SETTLE_SECONDS
+        while still_running():
+            if time.monotonic() >= deadline:
+                return True
+            time.sleep(0.05)
+        return False
+
     def _post_kill_survivors(self, session: "ProcessSession") -> list[int]:
         """Host PIDs still alive once the kill signals have had time to land (#115490).
 

@@ -36,7 +36,11 @@ export interface RevalidateRemoteConnectionOptions<TConnection extends RemoteCon
   connectionPromise: Promise<TConnection>
   currentConnectionPromise: () => null | Promise<TConnection>
   log: (message: string) => void
-  probe: (connection: TConnection, path: string, options: { timeoutMs: number }) => Promise<unknown>
+  probe: (
+    connection: TConnection,
+    path: string,
+    options: { timeoutMs: number; freshConnection?: boolean }
+  ) => Promise<unknown>
   resetConnection: () => void
   tracker: RemoteLivenessTracker
 }
@@ -83,7 +87,11 @@ export class RemoteRevalidationCoordinator {
 interface EnsureHealthyPooledRemoteBackendForDispatchOptions<TConnection extends RemoteConnectionDescriptor> {
   connectionPromise: Promise<TConnection>
   currentConnectionPromise: () => null | Promise<TConnection>
-  probe: (connection: TConnection, path: string, options: { timeoutMs: number }) => Promise<unknown>
+  probe: (
+    connection: TConnection,
+    path: string,
+    options: { timeoutMs: number; freshConnection?: boolean }
+  ) => Promise<unknown>
   reconnect: () => Promise<TConnection>
   retire: (error: unknown) => Promise<void> | void
 }
@@ -112,9 +120,11 @@ export async function ensureHealthyPooledRemoteBackendForDispatch<TConnection ex
       return reconnect()
     }
 
+    const deadline = Date.now() + POOLED_REMOTE_DISPATCH_PROBE_TIMEOUT_MS
     try {
       await probe(connection, '/api/health', {
-        timeoutMs: POOLED_REMOTE_DISPATCH_PROBE_TIMEOUT_MS
+        timeoutMs: POOLED_REMOTE_DISPATCH_PROBE_TIMEOUT_MS,
+        freshConnection: true
       })
     } catch (healthError) {
       // A remote that predates /api/health would otherwise 404 every dispatch,
@@ -125,7 +135,8 @@ export async function ensureHealthyPooledRemoteBackendForDispatch<TConnection ex
       }
 
       await probe(connection, '/api/status', {
-        timeoutMs: POOLED_REMOTE_DISPATCH_PROBE_TIMEOUT_MS
+        timeoutMs: Math.max(1, deadline - Date.now()),
+        freshConnection: true
       })
     }
   } catch (error) {
@@ -206,7 +217,11 @@ export interface PooledRemoteEntry<TConnection extends RemoteConnectionDescripto
 export interface RevalidatePooledRemoteBackendsOptions<TConnection extends RemoteConnectionDescriptor> {
   entries: Iterable<[string, PooledRemoteEntry<TConnection>]>
   log: (message: string) => void
-  probe: (connection: TConnection, path: string, options: { timeoutMs: number }) => Promise<unknown>
+  probe: (
+    connection: TConnection,
+    path: string,
+    options: { timeoutMs: number; freshConnection?: boolean }
+  ) => Promise<unknown>
   stopBackend: (profile: string) => void
   tracker: RemoteLivenessTracker
 }
@@ -241,7 +256,7 @@ export async function revalidatePooledRemoteBackends<TConnection extends RemoteC
         }
 
         const connection = await entry.connectionPromise
-        await probe(connection, '/api/status', { timeoutMs: REMOTE_LIVENESS_TIMEOUT_MS })
+        await probe(connection, '/api/status', { timeoutMs: REMOTE_LIVENESS_TIMEOUT_MS, freshConnection: true })
         tracker.recordSuccess(baseUrl)
       } catch {
         const failure = tracker.recordFailure(baseUrl)
@@ -267,7 +282,11 @@ export async function revalidatePooledRemoteBackends<TConnection extends RemoteC
 export interface RevalidateSuspectPooledRemoteBackendsOptions<TConnection extends RemoteConnectionDescriptor> {
   entries: Iterable<[string, PooledRemoteEntry<TConnection>]>
   log: (message: string) => void
-  probe: (connection: TConnection, path: string, options: { timeoutMs: number }) => Promise<unknown>
+  probe: (
+    connection: TConnection,
+    path: string,
+    options: { timeoutMs: number; freshConnection?: boolean }
+  ) => Promise<unknown>
   /** Re-dial a retired pool key so the tunnel is rebuilt eagerly, not on the next click. */
   rebuild: (poolKey: string) => Promise<unknown>
   /** Tear down the dead descriptor (pool entry + SSH tunnel/master) for this key. */
@@ -316,7 +335,7 @@ export async function revalidateSuspectPooledRemoteBackends<TConnection extends 
         }
 
         const connection = await entry.connectionPromise
-        await probe(connection, '/api/status', { timeoutMs: REMOTE_LIVENESS_TIMEOUT_MS })
+        await probe(connection, '/api/status', { timeoutMs: REMOTE_LIVENESS_TIMEOUT_MS, freshConnection: true })
         tracker.recordSuccess(baseUrl)
 
         return
@@ -450,7 +469,7 @@ export async function revalidateRemoteConnection<TConnection extends RemoteConne
   const baseUrl = connection.baseUrl.replace(/\/+$/, '')
 
   try {
-    await probe(connection, '/api/status', { timeoutMs: REMOTE_LIVENESS_TIMEOUT_MS })
+    await probe(connection, '/api/status', { timeoutMs: REMOTE_LIVENESS_TIMEOUT_MS, freshConnection: true })
 
     if (currentConnectionPromise() !== connectionPromise) {
       return { ok: true, rebuilt: false }

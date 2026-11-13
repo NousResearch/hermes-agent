@@ -3,7 +3,6 @@ import assert from 'node:assert/strict'
 import { test } from 'vitest'
 
 import {
-  DEFAULT_HEALTH_PROBE_TIMEOUT_MS,
   isAuthRejectionError,
   isGatedMissingHealthError,
   isMissingHealthEndpointError,
@@ -94,16 +93,18 @@ test('does not fall back to heavyweight /api/status for transient health failure
   assert.ok(calls.every(call => call[0] === 'public' && call[1].endsWith('/api/health')))
 })
 
-test('probes health on a short timeout but leaves the legacy fallback its own', async () => {
+test('isolates readiness and legacy fallback within the remaining boot budget', async () => {
   const timeouts: (number | undefined)[] = []
 
   await waitForHermesReady('http://127.0.0.1:9000', {
     fetchPublicJson: async (_url, options) => {
+      assert.equal(options?.freshConnection, true)
       timeouts.push(options?.timeoutMs)
 
       throw new Error('404: {"detail":"Not Found"}')
     },
     fetchJson: async (_url, _token, options) => {
+      assert.equal(options?.freshConnection, true)
       timeouts.push(options?.timeoutMs)
 
       return { version: 'old' }
@@ -113,7 +114,8 @@ test('probes health on a short timeout but leaves the legacy fallback its own', 
     pollMs: 1
   })
 
-  assert.deepEqual(timeouts, [DEFAULT_HEALTH_PROBE_TIMEOUT_MS, undefined])
+  assert.equal(timeouts.length, 2)
+  assert.ok(timeouts.every(timeout => timeout! > 0 && timeout! <= 100))
 })
 
 function connectionRefused(port: number): Error {

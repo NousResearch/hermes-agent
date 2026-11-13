@@ -112,17 +112,18 @@ def _direct_io_args(executable: Path) -> tuple[str, ...]:
 class LlamaServerSupervisor:
     """Own one llama-server router process for the life of a Hermes session."""
 
-    # A model that has gone quiet gets its VRAM back after this long. A constant, not a knob:
-    # long enough that an active conversation never trips it, short enough that a wandered-off
-    # session frees ~20 GiB within the hour. No exemptions: demand reloads anything the user
-    # comes back to.
-    IDLE_UNLOAD_S = 15 * 60
+    # A model that has gone quiet gets its VRAM and system RAM back after this long.
+    # Configurable via local_runtime.idle_timeout_seconds (default: 300s = 5 minutes).
+    # 0 disables auto-unload. Demand reloads anything on the next request.
+    IDLE_UNLOAD_S = 300
 
     def __init__(self, binary: Path, models_dir: Path, *,
                  models_max: int = 4, port: int | None = None,
                  extra_args: list[str] | None = None,
                  log_path: Path | None = None,
-                 preset_path: Path | None = None):
+                 preset_path: Path | None = None,
+                 idle_timeout_s: float | int | None = None,
+                 is_busy_fn: Callable[[], bool] | None = None):
         # The exact engine binary (PM store path, backend-selected), handed
         # in by boot — the supervisor never discovers binaries itself: a
         # legacy-directory scan could resurrect bytes pm did not pin.
@@ -131,6 +132,10 @@ class LlamaServerSupervisor:
         self.models_max = models_max
         self.port = port or _stable_port()
         self.api_key = _stable_api_key()
+        self.idle_timeout_s = (float(idle_timeout_s) if idle_timeout_s is not None
+                               else float(self.IDLE_UNLOAD_S))
+        self.IDLE_UNLOAD_S = self.idle_timeout_s
+        self.is_busy_fn = is_busy_fn
         self.extra_args = list(extra_args or [])
         self.log_path = log_path or (self.models_dir.parent / "logs" / "llama-server.log")
         self.preset_path = preset_path
@@ -406,10 +411,12 @@ class LlamaServerSupervisor:
             time.sleep(0.3)
 
     def sweep_idle(self, now: float | None = None) -> list[str]:
-        """Unload models idle past IDLE_UNLOAD_S; returns their ids. Idle = no busy slots and no
-        queued work, tracked per model across calls; a model seen busy resets its clock. A
-        failed telemetry probe is neither idle nor busy: the clock is kept, so a flaky probe
-        cannot pin a resident model (and its VRAM) indefinitely."""
+        """Unload models idle past idle_timeout_s; returns their ids. Idle = no busy slots, no
+        queued work, and agent not executing turns, tracked per model across calls; a model seen busy
+        resets its clock. A failed telemetry probe is neither idle nor busy: the clock is kept, so a flaky
+        probe cannot pin a resident model (and its VRAM) indefinitely."""
+        if self.idle_timeout_s <= 0:
+            return []
         now = time.monotonic() if now is None else now
         unloaded: list[str] = []
         try:
@@ -429,13 +436,14 @@ class LlamaServerSupervisor:
                 self._idle_since.pop(model_id, None)
                 continue
             first_idle = self._idle_since.setdefault(model_id, now)
-            if now - first_idle < self.IDLE_UNLOAD_S:
+            if now - first_idle < self.idle_timeout_s:
                 continue
             try:
                 self.unload_model(model_id)
                 self._idle_since.pop(model_id, None)
                 unloaded.append(model_id)
-                logger.info("idle-unloaded %s (idle %ds)", model_id, int(now - first_idle))
+                logger.info("idle-unloaded %s (idle %ds >= %ds)", model_id,
+                            int(now - first_idle), int(self.idle_timeout_s))
             except Exception as exc:
                 logger.warning("idle unload of %s failed: %s", model_id, exc)
         return unloaded
@@ -465,6 +473,25 @@ class LlamaServerSupervisor:
 
     # ── telemetry ────────────────────────────────────────────
 
+    def _is_agent_busy(self) -> bool:
+        """True if the agent, relay, or a scheduled job is actively executing work."""
+        if self.is_busy_fn is not None:
+            try:
+                if self.is_busy_fn():
+                    return True
+            except Exception as exc:
+                logger.debug("is_busy_fn check failed: %s", exc)
+        with suppress(Exception):
+            from agent.relay_runtime import SESSION_COORDINATOR
+            with SESSION_COORDINATOR._active_turns_lock:
+                if any(SESSION_COORDINATOR._active_turns.values()):
+                    return True
+        with suppress(Exception):
+            from cron.scheduler import get_running_job_ids
+            if get_running_job_ids():
+                return True
+        return False
+
     def is_idle(self, model_id: str | None = None) -> bool:
         """No processing requests and no busy slots. Router quirk: /slots and /metrics are
         per-child and require ?model= (bare calls 400). With ``model_id`` checks that one child;
@@ -477,6 +504,8 @@ class LlamaServerSupervisor:
         for activity — that resets the idle clock and pins the model's VRAM. A model that
         isn't loaded is idle: the router answers 400 for it (the reads don't autoload)."""
         try:
+            if self._is_agent_busy():
+                return False
             loaded = ([model_id] if model_id is not None
                       else [m for m, status in self.models().items() if status in _RESIDENT])
             for mid in loaded:

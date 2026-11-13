@@ -158,9 +158,9 @@ export const TITLEBAR_CHROME_CHANGED_EVENT = 'hermes:titlebar-chrome-changed'
 
 /** Width of the redesign's left rail column (Figma 906:19409). */
 export const PORTAL_RAIL_WIDTH = 60
-/** Band controls clear macOS traffic lights (906:19415, in the rail column): Figma's header pads
- *  them 70px past the rail (906:19463, x = 130). */
-export const PORTAL_BAND_LEAD_MAC = PORTAL_RAIL_WIDTH + 70
+/** Band controls clear macOS traffic lights (in the rail column): Figma's breadcrumb starts its
+ *  Back/Forward group 90px past the rail (navigation 16292:15284, x = 150). */
+export const PORTAL_BAND_LEAD_MAC = PORTAL_RAIL_WIDTH + 90
 /** With no native lights on the left (Windows/Linux and the browser report no position, macOS
  *  fullscreen hides them), controls align with the sidebar and page-nav text inset (x = 80). */
 export const PORTAL_BAND_LEAD_PLAIN = PORTAL_RAIL_WIDTH + 20

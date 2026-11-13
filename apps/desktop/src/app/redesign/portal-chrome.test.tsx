@@ -22,6 +22,7 @@ import { $statusbarHiddenIds } from '@/store/statusbar-prefs'
 import { stubMenuDomApis, stubResizeObserver } from '@/test/jsdom'
 import { makeSessionInfo } from '@/test/session-info'
 
+import { PortalAgentSettingsButton, PortalBandAgentSettings } from './portal-agent-settings'
 import { PortalConversationHeader, usePortalConversation } from './portal-conversation-header'
 import { PortalStatusMenu } from './portal-status-menu'
 
@@ -70,7 +71,7 @@ it('fails closed for unknown session owners, and resolves cron owners after load
   $selectedStoredSessionId.set('scheduled-chat')
   render(
     <MemoryRouter>
-      <PortalConversationHeader paneId="workspace" />
+      <PortalAgentSettingsButton paneId="workspace" />
       <Location />
     </MemoryRouter>
   )
@@ -86,7 +87,7 @@ it('keeps a profile-only primary conversation on its source when another machine
   $selectedStoredSessionId.set('primary-chat')
   render(
     <MemoryRouter>
-      <PortalConversationHeader paneId="workspace" />
+      <PortalAgentSettingsButton paneId="workspace" />
       <Location />
     </MemoryRouter>
   )
@@ -94,6 +95,22 @@ it('keeps a profile-only primary conversation on its source when another machine
   act(() => $primaryGatewayRoute.set({ connectionId: 'local', mode: 'local' }))
   fireEvent.click(screen.getByRole('button', { name: 'Agent settings' }))
   expect(screen.getByRole('status').textContent).toBe('?agentProfile=research&connection=local')
+})
+
+it('carries the main chat’s Agent settings in the band, never in its stage header, and drops it on a page', () => {
+  $sessions.set([makeSessionInfo({ id: 'main-chat', connection_id: 'local', profile: 'research' })])
+  $selectedStoredSessionId.set('main-chat')
+  render(
+    <MemoryRouter>
+      <PortalConversationHeader paneId="workspace" />
+      <PortalBandAgentSettings />
+      <Location />
+    </MemoryRouter>
+  )
+  fireEvent.click(screen.getByRole('button', { name: 'Agent settings' }))
+  expect(screen.getByRole('status').textContent).toBe('?agentProfile=research&connection=local')
+  act(() => $workspaceIsPage.set(true))
+  expect(screen.queryByRole('button', { name: 'Agent settings' })).toBeNull()
 })
 
 it('only replaces conversation chrome in Portal, leaving settings and tools alone', () => {

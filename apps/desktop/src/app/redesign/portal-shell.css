@@ -154,9 +154,9 @@
 
 /* ── Chrome buttons ───────────────────────────────────────────────────────────────────────── */
 
-/* 30×30 r3, a 2% ink fill and a 16px glyph at the quaternary tone (op .4 dark). Figma draws no
-   hover/pressed states: they take the next steps of the same ink ladder. Selection (the open
-   destination, a shown tool pane) is the brand square with its 1px ring (Overview 856:2665). */
+/* 30×30 r3, the band's navy tile and a 16px glyph at .4 (16292:15285). Figma draws no hover/pressed
+   states: they brighten the tile a step each. Selection (a shown tool pane) is the brand square with
+   its 1px ring (Overview 856:2665). */
 :root[data-shell='portal'] .portal-chrome-button {
   inline-size: var(--portal-chrome-button-size);
   block-size: var(--portal-chrome-button-size);
@@ -164,7 +164,7 @@
   border-radius: var(--portal-radius-control);
   background-color: var(--portal-surface-chrome);
   box-shadow: none;
-  color: var(--ui-text-quaternary);
+  color: var(--portal-text-chrome);
   font-size: 1rem;
 }
 
@@ -537,7 +537,8 @@
 
 /* ── Titlebar band ────────────────────────────────────────────────────────────────────────── */
 
-/* The session tab rides the stage's leading edge (Figma 906:19481 at x 380). It is anchored to the
+/* The session tab rides the stage's leading edge, --portal-session-tab-inset past it (16292:15297).
+   It is anchored to the
    workspace pane itself (CSS anchor positioning), so it tracks a sash drag, a sidebar collapse or a
    window resize in the same frame as the panels, with no script in the path; the measured
    --workspace-* edges are only the fallback where the anchor is absent. The cluster spans the
@@ -555,7 +556,10 @@
   );
 
   position-anchor: --portal-workspace;
-  left: max(anchor(left, var(--workspace-left, 0px)), var(--portal-session-tab-lead));
+  left: max(
+    calc(anchor(left, var(--workspace-left, 0px)) + var(--portal-session-tab-inset)),
+    var(--portal-session-tab-lead)
+  );
   right: max(anchor(right, var(--workspace-right, 0px)), var(--portal-session-tab-trail));
   min-width: 0;
   /* The span is band, not control: it drags the window and passes the pointer through; only the
@@ -581,7 +585,7 @@
   -webkit-app-region: no-drag;
 }
 
-/* 30px pill, 6px padding, 2% ink, r3, 13px label. */
+/* 30px pill, the band's navy tile, r3; its label at the UI step (Figma's 13 drawn at 14). */
 :root[data-shell='portal'] .portal-session-tab-title {
   display: block;
   min-width: 0;
@@ -596,6 +600,11 @@
   line-height: var(--portal-chrome-button-size);
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* The main chat's Agent settings closes the band's trailing cluster (16292:15303). */
+:root[data-shell='portal'] [data-titlebar-cluster='right'] > [data-slot='portal-agent-settings'] {
+  margin-inline-end: var(--portal-band-trail-inset);
 }
 
 /* Too narrow for a readable title: the pill steps aside and "+" stays. */

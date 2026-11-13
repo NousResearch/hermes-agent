@@ -5,6 +5,7 @@ import { useLocation, useNavigate } from 'react-router'
 
 import { hudTargetSessionId } from '@/app/hud/handoff'
 import { $widthClass } from '@/app/redesign/breakpoints'
+import { PortalBandAgentSettings } from '@/app/redesign/portal-agent-settings'
 import { PANE_TOGGLE_REVEAL_EVENT } from '@/components/pane-shell'
 import { toggleLayoutEditMode } from '@/components/pane-shell/edit-mode'
 import { $narrowOverlayPaneIds } from '@/components/pane-shell/narrow-overlay-state'
@@ -581,6 +582,7 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
         {visibleRightFixedTools.map(tool => (
           <TitlebarToolButton key={tool.id} navigate={navigate} portal={portal} tool={tool} />
         ))}
+        <PortalBandAgentSettings />
         <Slot area="titleBar.right" />
       </div>
     </>

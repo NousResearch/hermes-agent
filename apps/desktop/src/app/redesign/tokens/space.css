@@ -107,6 +107,12 @@
   --portal-page-tab-inset: 0.75rem;
   /* The actions of a dialog or drawer footer (1038:7792): taller than the page's 36px buttons. */
   --portal-dialog-action-height: 2.75rem;
+  /* The band's title pill starts 25px past the stage's leading edge (tab 16292:15297 at x 425, the
+     stage at 400), after the Back/Forward group. */
+  --portal-session-tab-inset: 1.5625rem;
+  /* The band's trailing Agent settings ends 15px inside the workspace frame (settings-2 16292:15303):
+     the trailing cluster stands 12px off the window, the frame 10px, so the button steps 13px in. */
+  --portal-band-trail-inset: 0.8125rem;
   /* Row heights: 30 chrome buttons (906:19469), 40 panel list rows (1038:7408). */
   --portal-row-chrome: 1.875rem;
   --portal-row-panel: 2.5rem;

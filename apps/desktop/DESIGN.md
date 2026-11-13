@@ -349,10 +349,14 @@ agent card's `sidebar.profileGroup.header` contributions sit beside that button,
 agent actions (ellipsis, caret, kebab) are bare glyphs that appear on hover, keyboard
 focus or an open menu; touch keeps them visible. Arrow keys, Home and End walk the
 visible rows; right-click opens the row menu. Captions and meta keep the AA ladder
-where Figma's inks fail 4.5:1. The band's leading cluster starts at
-`--portal-band-start` (x 130 past macOS traffic lights, else 80) and the session pill
-is anchored to the stage's leading edge with CSS anchor positioning, so it tracks a
-sash drag in the same frame.
+where Figma's inks fail 4.5:1. The band's leading cluster (Back/Forward on the native app) starts at
+`--portal-band-start` (x 150 past macOS traffic lights, navigation 16292:15284; else 80) and the
+session pill is anchored 25px past the stage's leading edge (tab 16292:15297) with CSS anchor
+positioning, so it tracks a sash drag in the same frame. Band buttons and the pill are navy tiles
+(white .05 / black .60 / blue .20) with glyphs at .4. The main chat's Agent settings is the band's
+trailing sliders button (settings-2 16292:15304), present wherever a conversation holds the stage;
+an extra tile keeps its own in its header. The stage keeps its "machine // agent" line at its top end
+in the mono caption style, though Figma draws none.
 The global Agents icon uses the Figma robot silhouette tinted by `currentColor`,
 sharing its peers' inactive, hover, and selected tones in both light and dark themes;
 rail destinations rest at .4 ink on navy tiles and the open one takes the brighter tile with its glyph in
@@ -655,9 +659,10 @@ The tables below are generated from the CSS; do not edit them by hand.
 | `--portal-surface-selected` | `var(--portal-raw-ink-5)` | ″ | Neutral selection: list rows, nav rows (1036:7409), with --portal-stroke-selected. |
 | `--portal-surface-row-hover` | `var(--portal-raw-ink-3)` | ″ | A row under the pointer on a panel, the stage or a card: one ink step over its rest. |
 | `--portal-surface-skeleton` | `var(--portal-raw-ink-8)` | ″ | Content still loading (skeleton bars, tiles and rows): one quiet ink block on any surface. |
-| `--portal-surface-chrome` | `var(--portal-raw-ink-2)` | ″ | 30px chrome buttons and the session pill (906:19469): rest, hover, pressed. |
-| `--portal-surface-chrome-hover` | `var(--portal-raw-ink-5)` | ″ |  |
-| `--portal-surface-chrome-pressed` | `var(--portal-raw-ink-10)` | ″ |  |
+| `--portal-surface-chrome` | `color-mix( in srgb, var(--portal-raw-pure-white) 5%, color-mix(in srgb, var(--portal-raw-black) 60%, color-mix(in srgb, var(--portal-raw-blue) 20%, transparent)) )` | `color-mix(in srgb, var(--portal-raw-pure-white) 20%, transparent)` | 30px chrome buttons and the session pill: the band's navy tile, white .05 / black .60 / blue .20 (16292:15285, 16292:15297), the glyph at .4; hover and pressed brighten a step each. |
+| `--portal-surface-chrome-hover` | `color-mix( in srgb, var(--portal-raw-pure-white) 8%, color-mix(in srgb, var(--portal-raw-black) 60%, color-mix(in srgb, var(--portal-raw-blue) 30%, transparent)) )` | `var(--portal-raw-ink-5)` |  |
+| `--portal-surface-chrome-pressed` | `color-mix( in srgb, var(--portal-raw-pure-white) 10%, color-mix(in srgb, var(--portal-raw-black) 60%, color-mix(in srgb, var(--portal-raw-blue) 40%, transparent)) )` | `var(--portal-raw-ink-10)` |  |
+| `--portal-text-chrome` | `var(--portal-raw-ink-40)` | `color-mix(in srgb, var(--ui-base) 48%, transparent)` |  |
 | `--portal-rail-fill` | `color-mix( in srgb, var(--portal-raw-pure-white) 5%, color-mix(in srgb, var(--portal-raw-black) 60%, color-mix(in srgb, var(--portal-raw-blue) 20%, transparent)) )` | `color-mix(in srgb, var(--portal-raw-pure-white) 20%, transparent)` | The global rail's buttons (ico 16292:15253): a navy tile, white .05 / black .60 / blue .20, the glyph at .4; the open destination white .10 / black .60 / blue .40 (16292:15245) with its glyph in full ink. Hover takes the step between them. |
 | `--portal-rail-fill-hover` | `color-mix( in srgb, var(--portal-raw-pure-white) 8%, color-mix(in srgb, var(--portal-raw-black) 60%, color-mix(in srgb, var(--portal-raw-blue) 30%, transparent)) )` | `var(--portal-raw-ink-5)` |  |
 | `--portal-rail-fill-selected` | `color-mix( in srgb, var(--portal-raw-pure-white) 10%, color-mix(in srgb, var(--portal-raw-black) 60%, color-mix(in srgb, var(--portal-raw-blue) 40%, transparent)) )` | `var(--portal-raw-ink-10)` |  |
@@ -786,6 +791,8 @@ The tables below are generated from the CSS; do not edit them by hand.
 | `--portal-page-tab-height` | `2rem` | ″ |  |
 | `--portal-page-tab-inset` | `0.75rem` | ″ |  |
 | `--portal-dialog-action-height` | `2.75rem` | ″ | The actions of a dialog or drawer footer (1038:7792): taller than the page's 36px buttons. |
+| `--portal-session-tab-inset` | `1.5625rem` | ″ | The band's title pill starts 25px past the stage's leading edge (tab 16292:15297 at x 425, the stage at 400), after the Back/Forward group. |
+| `--portal-band-trail-inset` | `0.8125rem` | ″ | The band's trailing Agent settings ends 15px inside the workspace frame (settings-2 16292:15303): the trailing cluster stands 12px off the window, the frame 10px, so the button steps 13px in. |
 | `--portal-row-chrome` | `1.875rem` | ″ | Row heights: 30 chrome buttons (906:19469), 40 panel list rows (1038:7408). |
 | `--portal-row-panel` | `2.5rem` | ″ |  |
 | `--page-nav-width` | `var(--portal-panel-width)` | ″ | Names in use before the role names; Phase B moves their readers to the role and deletes them. |

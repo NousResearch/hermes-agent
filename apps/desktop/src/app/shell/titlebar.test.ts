@@ -146,12 +146,12 @@ describe('titlebarBandHeight', () => {
 })
 
 describe('portalBandLeadingInset', () => {
-  it('starts at x=130 past macOS traffic lights', () => {
-    expect(portalBandLeadingInset({ x: 23, y: 23 }, false, true)).toBe(130)
+  it('starts at x=150 past macOS traffic lights', () => {
+    expect(portalBandLeadingInset({ x: 23, y: 23 }, false, true)).toBe(150)
   })
 
   it('assumes lights on a mac before native state arrives', () => {
-    expect(portalBandLeadingInset(undefined, false, true)).toBe(130)
+    expect(portalBandLeadingInset(undefined, false, true)).toBe(150)
   })
 
   it('aligns with the content inset (x=80) on Windows/Linux/web', () => {
@@ -166,7 +166,7 @@ describe('portalBandLeadingInset', () => {
 
   it('moves in by the rail on a compact window, where the rail has no column', () => {
     expect(portalBandLeadingInset(null, false, false, true)).toBe(80 - PORTAL_RAIL_WIDTH)
-    expect(portalBandLeadingInset({ x: 23, y: 23 }, false, true, true)).toBe(130 - PORTAL_RAIL_WIDTH)
+    expect(portalBandLeadingInset({ x: 23, y: 23 }, false, true, true)).toBe(150 - PORTAL_RAIL_WIDTH)
   })
 
   it('publishes the live start on the root for the band clusters and page toolbars', () => {
@@ -175,7 +175,7 @@ describe('portalBandLeadingInset', () => {
     const stop = installTitlebarBandProperty(root)
 
     $connection.set({ isFullscreen: false, windowButtonPosition: { x: 23, y: 23 } } as HermesConnection)
-    expect(start()).toBe('130px')
+    expect(start()).toBe('150px')
     $connection.set({ isFullscreen: true, windowButtonPosition: { x: 23, y: 23 } } as HermesConnection)
     expect(start()).toBe('80px')
     $connection.set({ isFullscreen: false, windowButtonPosition: null } as HermesConnection)

@@ -74,16 +74,19 @@ it('replaces chat tabs without remounting drafts, preserves mixed tabs and minim
     </MemoryRouter>
   )
 
+  // The main chat's stage header (its Agent settings rides the band).
+  const stageHeader = () => document.querySelector('[data-slot="portal-conversation-header"]')
+
   try {
     const view = render(host())
-    expect(screen.getByRole('button', { name: 'Agent settings' })).toBeTruthy()
+    expect(stageHeader()).toBeTruthy()
     expect(screen.queryByRole('tab', { name: /My chat/ })).toBeNull()
     fireEvent.change(screen.getByRole('textbox', { name: 'Draft' }), { target: { value: 'Keep this draft' } })
     fireEvent.click(screen.getByRole('button', { name: 'Open settings page' }))
-    expect(screen.queryByRole('button', { name: 'Agent settings' })).toBeNull()
+    expect(stageHeader()).toBeNull()
     expect((screen.getByRole('textbox', { name: 'Draft' }) as HTMLInputElement).value).toBe('Keep this draft')
     fireEvent.click(screen.getByRole('button', { name: 'Return to chat' }))
-    expect(screen.getByRole('button', { name: 'Agent settings' })).toBeTruthy()
+    expect(stageHeader()).toBeTruthy()
     act(() => $shellChoice.set(false))
     view.rerender(host())
     expect(screen.getByRole('tab', { name: /My chat/ })).toBeTruthy()
@@ -93,9 +96,9 @@ it('replaces chat tabs without remounting drafts, preserves mixed tabs and minim
     act(() => $shellChoice.set(true))
     view.rerender(host({ ...node, panes: ['workspace', 'test-tool'] }))
     expect(screen.getByRole('tab', { name: /Tool/ })).toBeTruthy()
-    expect(screen.getByRole('button', { name: 'Agent settings' })).toBeTruthy()
+    expect(stageHeader()).toBeTruthy()
     view.rerender(host({ ...node, minimized: true }))
-    expect(screen.queryByRole('button', { name: 'Agent settings' })).toBeNull()
+    expect(stageHeader()).toBeNull()
     expect(screen.getByRole('tab', { name: /My chat/ })).toBeTruthy()
   } finally {
     cleanup()

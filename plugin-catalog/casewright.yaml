@@ -1,0 +1,14 @@
+name: casewright
+repo: https://github.com/Zlyorka/casewright
+sha: 9bba27d70ae3ab5a2e7f79854a13d000a72ade7c
+subdir: ""
+description: Case orchestration on the kanban board — one brief becomes verifiable task cards with dependency gating, verdict gates and a bounded repair pass.
+maintainer: Zlyorka
+tier: community
+category: automation
+requires_hermes: ">=0.23.0"
+version: "0.8.1"
+screenshots: []
+capabilities:
+  provides_tools: [case_decide, case_open, case_verdict, case_status, case_manage]
+  requires_env: []

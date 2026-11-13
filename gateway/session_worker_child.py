@@ -40,6 +40,7 @@ def delegation_limits(authority, execution_id, session_id):
 async def worker_child_request(connection, ref, params):
     """worker.persist ``child.reserve``: the parent's full claim and assignment are verified first."""
     import asyncio
+    from gateway.session_authorities import require_serving
     from gateway.session_worker import _SCOPE, _claim, _verify
     if set(params) != _SCOPE | {'epoch', 'sequence', 'operation', 'payload'}:
         raise AuthorityRefusal('invalid_params')
@@ -47,6 +48,7 @@ async def worker_child_request(connection, ref, params):
     if 'worker:adopt' not in connection.actor.capabilities:
         raise AuthorityRefusal('permission_denied')
     await asyncio.to_thread(_verify, connection, ref, params, claim)
+    require_serving(connection.authority)
     authority = connection.authority
     workers = authority_persistence(authority).worker_executions
 

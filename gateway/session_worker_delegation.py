@@ -67,6 +67,7 @@ def persist_worker_delegation(store, *, epoch, execution_id, session_id, generat
 async def worker_delegation_request(connection, ref, params):
     """worker.persist delegation-family hook; all authentication stays mandatory."""
     import asyncio
+    from gateway.session_authorities import require_serving
     from gateway.session_worker import _SCOPE, _claim, _verify
     if set(params) != _SCOPE | {'epoch', 'sequence', 'operation', 'payload'}:
         raise AuthorityRefusal('invalid_params')
@@ -75,6 +76,7 @@ async def worker_delegation_request(connection, ref, params):
     if 'worker:adopt' not in connection.actor.capabilities:
         raise AuthorityRefusal('permission_denied')
     await asyncio.to_thread(_verify, connection, ref, params, claim)
+    require_serving(authority)
 
     from gateway.session_persistence import authority_persistence
     store = authority_persistence(authority)

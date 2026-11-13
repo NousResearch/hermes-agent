@@ -1,0 +1,16 @@
+name: hostinger
+repo: https://github.com/J182Razor/hermes-hostinger-plugin
+sha: f420a466e0ce873cdc6af822de729be7b706c816
+description: 'Control Hostinger VPS and shared hosting from Hermes: VPS lifecycle, snapshots, firewall, DNS, domains, SSL, deployments, billing/usage. Wraps Hostinger REST API. Requires HOSTINGER_API_TOKEN.'
+maintainer: J182Razor
+tier: community
+category: tools
+requires_hermes: ">=0.22.0"
+version: "1.0.0"
+platforms: []
+capabilities:
+  provides_tools: [list_vps, vps_action, vps_snapshots, vps_firewall, list_domains, dns_records, ssl_status, deploy, billing_summary, list_hosting]
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: [HOSTINGER_API_TOKEN]
+docs_url: https://github.com/J182Razor/hermes-hostinger-plugin

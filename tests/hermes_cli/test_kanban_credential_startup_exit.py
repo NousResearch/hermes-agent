@@ -57,3 +57,32 @@ def test_turn_result_takes_precedence_over_startup_flags(monkeypatch, result, ex
     monkeypatch.setenv("HERMES_KANBAN_TASK", "t_fixture")
     assert cli._single_query_exit_code(
         result, credentials_terminal=True, credentials_rate_limited=True) == expected
+
+
+@pytest.mark.parametrize("model,general_token,expected_kind", [
+    # The pool benched *this* model while other models still resolve: a cooldown, not a
+    # missing credential. Booking it as a plain failure spent a card's retry budget.
+    ("claude-opus-5-5", "a-token", "rate_limited"),
+    # No credential at all is still an ordinary startup failure.
+    ("claude-opus-5-5", None, "plain"),
+])
+def test_a_model_benched_in_the_credential_pool_books_the_quota_wall(monkeypatch, model, general_token, expected_kind):
+    """Regression: the benched-for-this-model ``AuthError`` carried no upstream-quota code, so
+    ``credential_failure_flags`` saw neither a quota wall nor a re-login and a Kanban worker
+    booked exit 1 — a crash — for a pool cooldown that lifts on its own."""
+    from hermes_cli import runtime_provider
+    from hermes_cli.auth import is_rate_limited_auth_error
+    from hermes_cli.kanban_db import KANBAN_RATE_LIMIT_EXIT_CODE
+    from hermes_cli.turn_exit import credential_failure_flags, turn_exit_code
+
+    monkeypatch.setattr("agent.anthropic_credentials.resolve_anthropic_token",
+                        lambda model=None: None if model else general_token)
+    with pytest.raises(AuthError) as caught:
+        runtime_provider._anthropic_token_or_raise(model=model)
+    code = turn_exit_code(None, kanban_worker=True, **credential_failure_flags(caught.value))
+    if expected_kind == "rate_limited":
+        assert is_rate_limited_auth_error(caught.value)
+        assert code == KANBAN_RATE_LIMIT_EXIT_CODE
+    else:
+        assert not is_rate_limited_auth_error(caught.value)
+        assert code == 1

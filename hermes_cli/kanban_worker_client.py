@@ -146,10 +146,19 @@ async def _await_receipt(client, params, board_db, claim):
 
 def _exit_code(receipt, params, board_db):
     from hermes_cli.gateway_client import GatewayClientError
-    if receipt['status'] == 'unknown':
-        raise GatewayClientError('Kanban execution unknown; retained by owner')
     from gateway.session_kanban import worker_result
     result = worker_result(board_db, params)
+    if receipt['status'] == 'unknown':
+        # The owner cannot prove how this attempt ended and must not guess, but this attempt's own
+        # worker may have booked a definite result before it went away: a managed worker that dies
+        # after its reservation (a credential wall during agent construction, a lost interpreter)
+        # commits the admission ``unknown`` by design (gateway.session_managed_worker) while
+        # ``record_start_failure``/``_record_worker_result`` keep its exit in ``worker_result``.
+        # That exit is the attempt's own answer, so report it: the dispatcher classifies it (a
+        # quota wall is requeued without spending the card's failure budget) instead of booking
+        # an ambiguous fault the work never had. No booked result keeps the refusal.
+        if not result:
+            raise GatewayClientError('Kanban execution unknown; retained by owner')
     # The attempt's reply ends the log, as a one-shot worker's did: crash diagnostics quote it.
     if result.get('last_output'):
         print(result['last_output'])

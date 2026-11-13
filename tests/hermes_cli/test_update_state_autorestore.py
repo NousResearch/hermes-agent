@@ -353,6 +353,77 @@ def test_no_this_update_snapshot_leaves_corrupt_db_unchanged(tmp_path, monkeypat
     assert "Auto-restored" not in out
 
 
+@pytest.mark.parametrize("live_state", ["locked", "corrupt"])
+@pytest.mark.parametrize("this_update", ["no_snapshot", "snapshot_without_state_db"])
+def test_no_fresh_snapshot_never_rolls_live_db_back_to_an_older_one(
+    tmp_path, monkeypatch, capsys, live_state, this_update,
+):
+    """#147938 reporter's case: this update took no fresh state.db snapshot (backup off or
+    failed, code-no-op, or state.db over the quick-snapshot cap) and the only image on disk
+    is months old. Whether the live DB reads as locked or as definitely corrupt, the guard
+    must leave it byte-for-byte unchanged and never reach the restore primitive."""
+    from hermes_cli import backup, sqlite_safe_read, update_cmd
+
+    home = tmp_path / "home"
+    home.mkdir()
+    state = home / "state.db"
+    # The months-old snapshot: valid, fewer rows — selecting it would be silent data loss.
+    _make_valid_db(state, 2)
+    stale_id = backup.create_quick_snapshot(label="months-old", hermes_home=home)
+    assert stale_id
+    stale_state = home / "state-snapshots" / stale_id / "state.db"
+    stale_bytes = stale_state.read_bytes()
+    state.unlink()
+    _make_valid_db(state, 40)
+
+    snapshot_id = None
+    if this_update == "snapshot_without_state_db":
+        # This update's snapshot exists but skipped state.db (e.g. over the 1 GiB cap).
+        snapshot_id = backup.create_quick_snapshot(label="pre-update", hermes_home=home)
+        assert snapshot_id and snapshot_id != stale_id
+        (home / "state-snapshots" / snapshot_id / "state.db").unlink()
+
+    monkeypatch.setattr(update_cmd, "get_hermes_home", lambda: home)
+    monkeypatch.setattr(backup, "_sibling_profile_homes", lambda _h: [])
+    monkeypatch.setattr(
+        "hermes_cli.backup_restore._safe_restore_db",
+        lambda *a, **k: pytest.fail("live state.db must not be restored without a fresh snapshot"),
+    )
+
+    holder = None
+    if live_state == "locked":
+        # Windows sharing violation: raw header read refused AND the DB is held exclusively.
+        real_read = sqlite_safe_read.read_header_bytes_preopen
+        monkeypatch.setattr(
+            sqlite_safe_read, "read_header_bytes_preopen",
+            lambda path, **kw: None if Path(path) == state else real_read(path, **kw),
+        )
+        holder = sqlite3.connect(state)
+        holder.execute("BEGIN EXCLUSIVE")
+    else:
+        state.write_bytes(b"\x00" * max(state.stat().st_size, 4096))
+    before = state.read_bytes()
+
+    try:
+        update_cmd._verify_and_restore_state_dbs_post_update(snapshot_id)
+    finally:
+        if holder is not None:
+            holder.rollback()
+            holder.close()
+
+    assert state.read_bytes() == before
+    assert stale_state.read_bytes() == stale_bytes
+    out = capsys.readouterr().out
+    assert "Auto-restored" not in out
+    assert stale_id not in out
+    if live_state == "locked":
+        assert "verification deferred" in out
+        assert "verification failed" not in out
+        assert _row_count(state) == 40
+    else:
+        assert "left unchanged" in out
+
+
 def test_this_update_snapshot_restores_genuine_corruption(tmp_path, monkeypatch, capsys):
     """Genuine corruption still restores — but only from this update's snapshot."""
     from hermes_cli import backup, update_cmd

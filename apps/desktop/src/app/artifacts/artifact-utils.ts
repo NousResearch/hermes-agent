@@ -112,7 +112,7 @@ function looksLikeArtifact(value: string, explicit = false): boolean {
   return IMAGE_EXT_RE.test(value) || FILE_EXT_RE.test(value)
 }
 
-function artifactSessionTitle(session: SessionInfo): string {
+export function artifactSessionTitle(session: SessionInfo): string {
   return session.title?.trim() || session.preview?.trim() || 'Untitled session'
 }
 

@@ -31,7 +31,7 @@ const RAIL_PAGE_PRELOADS: Record<string, (() => Promise<unknown>)[]> = {
     CapabilitiesView.preload,
     async () => (await import('./capabilities/prefetch')).prefetchCapabilitiesInventory()
   ],
-  artifacts: [ArtifactsView.preload, async () => (await import('./artifacts/artifacts-index')).prefetchArtifactIndex()],
+  artifacts: [ArtifactsView.preload, async () => (await import('@/store/item-index')).refreshItemIndex()],
   cron: [CronView.preload],
   settings: [SettingsView.preload]
 }

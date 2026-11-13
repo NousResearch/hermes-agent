@@ -35,7 +35,7 @@ vi.mock('./agent-settings/entry', () => ({
 
 vi.mock('./agent-settings/overview-queries', () => ({ prefetchLandingAgentOverview: nested.agentOverview }))
 vi.mock('./capabilities/prefetch', () => ({ prefetchCapabilitiesInventory: nested.capabilities }))
-vi.mock('./artifacts/artifacts-index', () => ({ prefetchArtifactIndex: nested.artifacts }))
+vi.mock('@/store/item-index', () => ({ refreshItemIndex: nested.artifacts }))
 
 const idle = new Map<number, () => void>()
 let nextId = 0

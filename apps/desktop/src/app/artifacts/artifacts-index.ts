@@ -33,15 +33,10 @@ async function indexArtifacts(): Promise<ArtifactIndex> {
   }
 }
 
-/** The Library's index is server truth cached per machine: a revisit (or a click after the idle
- *  prefetch) paints the last index at once and refreshes behind it. */
-export const artifactIndexQuery = (connectionId: null | string) =>
+/** Classic's Library index is server truth cached per machine for the app's lifetime: a revisit
+ *  paints the last index at once and refreshes behind it. The redesign reads store/item-index. */
+const artifactIndexQuery = (connectionId: null | string) =>
   queryOptions({ queryKey: ['artifact-index', connectionId ?? 'local'], queryFn: indexArtifacts })
-
-/** Warm the active machine's index before the Library is opened. */
-export function prefetchArtifactIndex(): Promise<void> {
-  return queryClient.prefetchQuery(artifactIndexQuery($activeConnectionId.get()))
-}
 
 /** An index that failed to load reads as an empty library (the failure is a toast). */
 const EMPTY_ARTIFACTS: ArtifactRecord[] = []

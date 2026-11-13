@@ -1,6 +1,6 @@
 """Tests for profile delegation guardrails:
-1. Profile memory & context bootstrap (skip_memory=False, skip_context_files=False when profile_home is set).
-2. Session attribution in SQLite init model config (delegated_profile and delegate_identity).
+1. Profile memory bootstrap: the target's MEMORY.md/USER.md load without re-enabling context files or providers.
+2. Session attribution in the child's init model config (delegated_profile and delegate_identity).
 3. Monotonic non-widening delegation ceilings (spawn depth and orchestrator role).
 """
 
@@ -45,58 +45,55 @@ def _parent(*, session_id="parent-sess", depth=0, max_spawn_depth=None, orchestr
     return parent
 
 
-def test_profile_route_bootstraps_memory_and_context_files(tmp_path):
-    """When profile_home is set, the child AIAgent is built with skip_context_files=False and skip_memory=False.
-    When profile_home is None, default subagent isolation (skip=True) is preserved."""
+def test_profile_route_loads_profile_memory_without_context_or_provider_side_effects(isolated_home):
+    """A profile child gets the target profile's MEMORY.md/USER.md (not the caller's) while keeping
+    skip_context_files=True (project context already rides the ephemeral prompt once) and the old
+    skip_memory value (no external memory provider starts as a side effect)."""
     from tools.delegate_tool import _build_child_agent
+    from tools.memory_tool_store import ENTRY_DELIMITER
 
-    profile_dir = tmp_path / "profiles" / "specialist"
-    profile_dir.mkdir(parents=True)
+    (isolated_home / "memories").mkdir(exist_ok=True)
+    (isolated_home / "memories" / "MEMORY.md").write_text("CALLER-ONLY NOTE", encoding="utf-8")
+    profile_dir = isolated_home / "profiles" / "specialist"
+    (profile_dir / "memories").mkdir(parents=True)
+    (profile_dir / "config.yaml").write_text("model:\n  default: target-model\n", encoding="utf-8")
+    (profile_dir / "memories" / "MEMORY.md").write_text(
+        ENTRY_DELIMITER.join(["Specialist owns the ledger schema", "Ledger lives in ops/ledger"]), encoding="utf-8")
+    (profile_dir / "memories" / "USER.md").write_text("Owner prefers terse reports", encoding="utf-8")
 
     captured = {}
 
     def mock_agent(**kwargs):
+        captured.clear()
         captured.update(kwargs)
         child = MagicMock()
         child.session_id = "child-sess"
+        child._memory_store = None  # what _init_memory leaves on a memory_agent_context="subagent" child
         return child
 
     parent = _parent()
-
-    # 1. Profiled child
     with patch("run_agent.AIAgent", side_effect=mock_agent):
-        _build_child_agent(
-            task_index=0,
-            goal="specialist work",
-            context="ctx",
-            toolsets=None,
-            model="test-model",
-            max_iterations=10,
-            task_count=1,
-            parent_agent=parent,
-            profile_home=profile_dir,
+        child = _build_child_agent(
+            task_index=0, goal="specialist work", context="ctx", toolsets=None, model="test-model",
+            max_iterations=10, task_count=1, parent_agent=parent, profile_home=profile_dir,
         )
-    assert captured.get("skip_context_files") is False
-    assert captured.get("skip_memory") is False
-    assert captured.get("load_soul_identity") is True
+    assert captured["skip_context_files"] is True
+    assert captured["skip_memory"] is True
+    assert captured["load_soul_identity"] is True
+    memory_block = child._memory_store.format_for_system_prompt("memory")
+    assert "Specialist owns the ledger schema" in memory_block and "Ledger lives in ops/ledger" in memory_block
+    assert "CALLER-ONLY NOTE" not in memory_block
+    assert "Owner prefers terse reports" in child._memory_store.format_for_system_prompt("user")
+    assert (child._memory_enabled, child._user_profile_enabled) == (True, True)
 
-    # 2. Non-profiled child
-    captured.clear()
     with patch("run_agent.AIAgent", side_effect=mock_agent):
-        _build_child_agent(
-            task_index=0,
-            goal="ordinary work",
-            context="ctx",
-            toolsets=None,
-            model="test-model",
-            max_iterations=10,
-            task_count=1,
-            parent_agent=parent,
-            profile_home=None,
+        child = _build_child_agent(
+            task_index=0, goal="ordinary work", context="ctx", toolsets=None, model="test-model",
+            max_iterations=10, task_count=1, parent_agent=parent, profile_home=None,
         )
-    assert captured.get("skip_context_files") is True
-    assert captured.get("skip_memory") is True
+    assert (captured["skip_context_files"], captured["skip_memory"]) == (True, True)
     assert "load_soul_identity" not in captured
+    assert child._memory_store is None
 
 
 def test_profile_route_persists_session_attribution(tmp_path):
@@ -134,7 +131,22 @@ def test_profile_route_persists_session_attribution(tmp_path):
     assert child._session_init_model_config.get("_delegate_from") == "commissioner-sess-99"
 
 
-def test_profile_delegation_monotonic_ceiling_cannot_be_enlarged_by_target(tmp_path):
+def test_default_profile_route_is_attributed_as_default(isolated_home):
+    """The default profile's home is the Hermes root, whose basename (``.hermes``) is not its id."""
+    from tools.delegate_tool import _build_child_agent
+
+    child = MagicMock()
+    child.session_id, child._session_init_model_config = "default-child", {}
+    with patch("run_agent.AIAgent", return_value=child):
+        _build_child_agent(
+            task_index=0, goal="default route", context=None, toolsets=None, model="test-model",
+            max_iterations=5, task_count=1, parent_agent=_parent(), profile_home=isolated_home,
+        )
+    assert child._delegated_profile == "default"
+    assert child._session_init_model_config["delegate_identity"] == "profile:default"
+
+
+def test_profile_delegation_monotonic_ceiling_cannot_be_enlarged_by_target(tmp_path, monkeypatch):
     """Security finding F4: Restrictive commissioner (depth: 1, orchestrator: false) delegating
     to a profile whose config has max_spawn_depth: 3 and orchestrator_enabled: true remains a leaf."""
     from tools.delegate_tool import _build_child_agent
@@ -146,6 +158,11 @@ def test_profile_delegation_monotonic_ceiling_cannot_be_enlarged_by_target(tmp_p
         encoding="utf-8",
     )
 
+    monkeypatch.delenv("HERMES_IGNORE_USER_CONFIG", raising=False)
+    from tools.delegate_tool import _get_max_spawn_depth, _get_orchestrator_enabled
+    from tools.delegate_tool_routes import delegated_profile_scope
+    with delegated_profile_scope(profile_dir):  # control: the real readers see the permissive target
+        assert (_get_max_spawn_depth(), _get_orchestrator_enabled()) == (3, True)
     parent = _parent(max_spawn_depth=1, orchestrator_enabled=False)
 
     def mock_agent(**kwargs):
@@ -153,11 +170,7 @@ def test_profile_delegation_monotonic_ceiling_cannot_be_enlarged_by_target(tmp_p
         child.session_id = "child-sess"
         return child
 
-    with (
-        patch("run_agent.AIAgent", side_effect=mock_agent),
-        patch("tools.delegate_tool._get_max_spawn_depth", return_value=3),
-        patch("tools.delegate_tool._get_orchestrator_enabled", return_value=True),
-    ):
+    with patch("run_agent.AIAgent", side_effect=mock_agent):
         child = _build_child_agent(
             task_index=0,
             goal="try escalating permissions",
@@ -211,19 +224,22 @@ def test_profile_delegation_ceiling_narrowed_by_target(tmp_path):
     assert child._delegate_orchestrator_enabled is False
 
 
-def test_profile_delegation_nested_ceiling_preservation():
-    """Child delegating at depth >= ceiling is refused pre-spawn."""
-    from tools.delegate_tool import delegate_task
+def test_stamped_ceiling_refuses_a_spawn_the_live_config_would_allow(isolated_home, monkeypatch):
+    """delegate_task mins the live max_spawn_depth (3) with the child's stamped ceiling (1): a depth-1
+    child is refused even though the config alone would admit it."""
     import json
+    from tools.delegate_tool import _get_max_spawn_depth, delegate_task
 
-    parent = _parent(depth=2, max_spawn_depth=2)
-
+    monkeypatch.delenv("HERMES_IGNORE_USER_CONFIG", raising=False)
+    (isolated_home / "config.yaml").write_text(yaml.safe_dump({
+        "model": {"default": "parent-model"}, "delegation": {"max_spawn_depth": 3},
+    }))
+    assert _get_max_spawn_depth() == 3  # control: without the stamp, depth 1 < 3 would spawn
     res = json.loads(delegate_task(
-        tasks=[{"goal": "nested task that exceeds ceiling"}],
-        parent_agent=parent,
+        tasks=[{"goal": "nested task past the stamped ceiling"}],
+        parent_agent=_parent(depth=1, max_spawn_depth=1),
     ))
-    assert "error" in res
-    assert "Delegation depth limit reached" in res["error"]
+    assert "Delegation depth limit reached (depth=1, max_spawn_depth=1)" in res["error"]
 
 
 def test_target_profile_narrows_using_real_config(tmp_path, isolated_home, monkeypatch):

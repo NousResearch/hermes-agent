@@ -1739,11 +1739,13 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
             return None
 
     @staticmethod
-    def _stop_kill_tool_subprocesses(phase: str) -> list:
+    def _stop_kill_tool_subprocesses(phase: str, restart: bool = False) -> list:
         """Kill tool subprocesses + terminal envs + browsers; returns cron job IDs marked interrupted.
 
         Called twice: after a drain timeout (reclaim children before systemd SIGKILLs) and as a final
         catch-all. Best-effort; one failing subsystem cannot block the rest.
+        ``restart`` marks a self-restart (the gateway comes right back): persist_on_release
+        jobs are kept alive for re-adoption instead of host-shutdown orphans.
         """
 
         def _step(label: str, fn: Callable[[], Any]) -> Any:
@@ -1756,6 +1758,16 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
 
         def _kill_processes() -> None:
             from tools.process_registry import process_registry
+            if restart:
+                # Gateway RESTART: the gateway comes right back, so keep persist_on_release
+                # jobs alive — recover_from_checkpoint re-adopts them at boot (watchers
+                # re-armed), and one that dies in the gap is announced through the
+                # interruption-notice replay instead of vanishing. Non-persist processes are
+                # still swept (source=gateway_restart) and owe their owner a death notice.
+                _count_step(
+                    "Shutdown (%s): killed %d tool subprocess(es) (persist_on_release kept for restart)",
+                    lambda: process_registry.kill_all(source="gateway_restart"))
+                return
             # Host shutdown: kill even persist_on_release jobs or they become
             # PPID=1 orphans (#41225/#46778); an explicit source reaches them.
             _count_step(
@@ -1802,7 +1814,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
         return _marked_cron_jobs
 
     @staticmethod
-    async def _stop_kill_tool_subprocesses_off_loop(phase: str) -> list:
+    async def _stop_kill_tool_subprocesses_off_loop(phase: str, restart: bool = False) -> list:
         """Run _stop_kill_tool_subprocesses in a worker thread; returns cron job IDs marked interrupted.
 
         ``kill_all`` fans out into per-target ``kill_process`` calls that do blocking work
@@ -1816,7 +1828,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
         watchdog remains the hard backstop.
         """
         return await asyncio.to_thread(
-            GatewayShutdownMixin._stop_kill_tool_subprocesses, phase
+            GatewayShutdownMixin._stop_kill_tool_subprocesses, phase, restart
         )
 
     async def _stop_begin_teardown(self, ctx: GatewayShutdownMixin._StopContext) -> None:
@@ -1932,7 +1944,8 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
             logger.debug("Re-signaled interrupt for work still live at settle-window exit")
         # Kill tool subprocesses NOW: deferring past adapter/DB teardown risks the systemd cgroup SIGKILL.
         # Off-loop: the sweep does blocking kills that must not monopolize the event loop (#116327).
-        _interrupted_cron_jobs = await GatewayRunner._stop_kill_tool_subprocesses_off_loop("post-interrupt")
+        _interrupted_cron_jobs = await GatewayRunner._stop_kill_tool_subprocesses_off_loop(
+            "post-interrupt", restart=self._restart_requested)
         logger.info("Shutdown phase: post-interrupt tool kill done at +%.2fs", ctx.elapsed())
         # Last window with the transport up (the cron worker's own notice arrives after teardown).
         with _log_suppressed(logging.DEBUG, "Cron interrupt notification failed: %s"):
@@ -2013,7 +2026,8 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
         self._shutdown_event.set()
         # Global catch-all subprocess kill (safe to repeat) for the graceful path and late respawns.
         # Off-loop: same blocking sweep as the post-interrupt kill (#116327).
-        await GatewayRunner._stop_kill_tool_subprocesses_off_loop("final-cleanup")
+        await GatewayRunner._stop_kill_tool_subprocesses_off_loop(
+            "final-cleanup", restart=self._restart_requested)
         logger.info("Shutdown phase: final-cleanup tool kill done at +%.2fs", ctx.elapsed())
         # Reap the auxiliary-client cache: clients bound to dead worker-thread loops leak httpx transports.
         def _reap_aux_clients() -> None:

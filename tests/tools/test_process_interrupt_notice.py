@@ -313,3 +313,39 @@ class TestReplayAfterRestart:
             "agent:work:feishu:forum:oc_x:omt_y",
         ]
         assert registry.arm_interrupt_notices() == 0  # repeat scan is idempotent
+
+# =========================================================================
+# persist_on_release across a gateway restart: keep alive when possible
+# =========================================================================
+
+class TestRestartKeepsPersistedJobs:
+    def test_gateway_restart_sweep_skips_persisted_jobs(self, registry):
+        volatile = _make_session(sid="proc_volatile", persist=False)
+        persisted = _make_session(sid="proc_persisted", persist=True)
+        registry._running[volatile.id] = volatile
+        registry._running[persisted.id] = persisted
+        calls = []
+
+        def fake_kill(session_id, **kwargs):
+            calls.append((session_id, kwargs.get("source")))
+            registry._running[session_id].exited = True
+            return {"status": "killed"}
+
+        registry.kill_process = fake_kill
+        assert registry.kill_all(None, source="gateway_restart") == 1
+        assert [c[0] for c in calls] == ["proc_volatile"]
+        assert calls[0][1] == "gateway_restart"
+        assert persisted.exited is False
+
+    def test_host_shutdown_still_kills_persisted_jobs(self, registry):
+        persisted = _make_session(sid="proc_persisted", persist=True)
+        registry._running[persisted.id] = persisted
+        calls = []
+        registry.kill_process = lambda session_id, **kw: (
+            calls.append(session_id) or {"status": "killed"})
+        assert registry.kill_all(None, source="gateway_shutdown") == 1
+        assert calls == ["proc_persisted"]
+
+    def test_gateway_restart_is_a_lifecycle_source(self):
+        assert "gateway_restart" in ProcessRegistry._LIFECYCLE_KILL_SOURCES
+        assert "gateway_restart" in INTERRUPT_KILL_SOURCES

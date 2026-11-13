@@ -1828,7 +1828,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         """Arm one death-notice watcher per undelivered interruption record.
 
         A process killed by lifecycle cleanup (``agent_close`` / ``kill_all`` /
-        ``gateway_shutdown``) or found dead at boot carried a completion
+        ``gateway_shutdown`` / ``gateway_restart``) or found dead at boot carried a completion
         contract (``notify_on_complete`` / ``persist_on_release``): its death must reach the agent
         instead of silently disappearing with the killed watcher. Each pending receipt becomes a
         one-shot synthetic watcher (``interrupted_death`` + ``dead_session``) that delivers through
@@ -2570,7 +2570,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
     # recovery / turn abandon / gateway restart), not a deliberate stop: those must skip
     # persist_on_release sessions. An explicit stop (process_manage kill, CLI /stop) passes
     # its own source string and still reaches them.
-    _LIFECYCLE_KILL_SOURCES = frozenset({"kill_all", "gateway_turn_timeout", "agent_close"})
+    _LIFECYCLE_KILL_SOURCES = frozenset({"kill_all", "gateway_turn_timeout", "agent_close", "gateway_restart"})
 
     def kill_started_since(self, task_id: str, baseline_ids, *, source: str) -> int:
         """Kill ``task_id`` processes created after ``baseline_ids``. Output is

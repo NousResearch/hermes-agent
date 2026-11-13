@@ -5,7 +5,7 @@ adopted as live PIDs. Each producer writes its own file so independent one-shot
 parents cannot overwrite each other's results in the running-PID checkpoint.
 
 Exception — interruption notices: a process killed by Hermes lifecycle cleanup
-(``agent_close`` / ``kill_all`` / ``gateway_shutdown``) or
+(``agent_close`` / ``kill_all`` / ``gateway_shutdown`` / ``gateway_restart``) or
 found dead at boot carried a completion contract (``notify_on_complete`` or
 ``persist_on_release``), so its death must reach the agent instead of silently
 disappearing with the killed watcher. Such receipts carry
@@ -41,7 +41,7 @@ _RESULT_FIELDS = (
 # terminated by Hermes cleanup, not by the user or its own exit. ``gateway_turn_timeout``
 # is deliberately absent — an abandoned-turn reap is a deliberate stop ("so a killed
 # abandoned process can't revive stopped work") and must not wake anyone.
-INTERRUPT_KILL_SOURCES = frozenset({"agent_close", "kill_all", "gateway_shutdown"})
+INTERRUPT_KILL_SOURCES = frozenset({"agent_close", "kill_all", "gateway_shutdown", "gateway_restart"})
 # Exit kinds that interrupt a completion contract and owe a death notice.
 _INTERRUPT_REASONS = {"killed": INTERRUPT_KILL_SOURCES, "lost": frozenset({"gateway_downtime"})}
 

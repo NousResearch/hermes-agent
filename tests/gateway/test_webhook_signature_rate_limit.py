@@ -16,6 +16,7 @@ The correct order is:
 import hashlib
 import hmac
 import json
+import logging
 
 import pytest
 from aiohttp import web
@@ -142,3 +143,38 @@ class TestSignatureBeforeRateLimit:
         assert len(captured_events) == 1
 
 
+
+
+class TestRateLimitRejectionIsLogged:
+    """A 429 is the only trace of a dropped delivery, and senders like GitHub do not retry it."""
+
+    @pytest.mark.asyncio
+    async def test_rate_limited_delivery_logs_a_warning_naming_route_and_delivery(self, caplog):
+        secret = "test-secret-key"
+        routes = {"gh": {"secret": secret, "events": ["push"], "prompt": "Event: {event}", "deliver": "log"}}
+        adapter = _make_adapter(routes, rate_limit=1)
+
+        async def _capture(event):
+            pass
+
+        adapter.handle_message = _capture
+        body = json.dumps(SIMPLE_PAYLOAD).encode()
+        caplog.set_level(logging.WARNING, logger="gateway.platforms.webhook")
+
+        async with TestClient(TestServer(_create_app(adapter))) as cli:
+            statuses = []
+            for delivery in ("first", "over-limit"):
+                resp = await cli.post("/webhooks/gh", data=body, headers={
+                    "Content-Type": "application/json",
+                    "X-GitHub-Event": "push",
+                    "X-Hub-Signature-256": _github_signature(body, secret),
+                    "X-GitHub-Delivery": delivery,
+                })
+                statuses.append(resp.status)
+
+        assert statuses == [202, 429]
+        warnings = [r.getMessage() for r in caplog.records
+                    if r.levelno == logging.WARNING and "Rate limit exceeded" in r.getMessage()]
+        assert len(warnings) == 1
+        assert "gh" in warnings[0] and "over-limit" in warnings[0] and "push" in warnings[0]
+        assert "first" not in warnings[0]

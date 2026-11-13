@@ -1,4 +1,4 @@
-"""Regression for #61411: one logging event cannot forge extra records."""
+"""Regression for #61409: one logging event cannot forge extra records."""
 
 import logging
 import sys
@@ -12,10 +12,11 @@ _FMT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
 _BREAKS = ("\n", "\r", "\x00", "\x1b", "\x85", "\u2028", "\u2029")
 
 
+@pytest.mark.parametrize("stamp", ["2026-07-09 12:00:00", "2026-07-09T12:00:00"])
 @pytest.mark.parametrize("separator", _BREAKS)
 @pytest.mark.parametrize("exception", [False, True])
-def test_untrusted_text_cannot_add_records(tmp_path, separator, exception):
-    payload = f"before{separator}2026-07-09 12:00:00 ERROR gateway.run: forged entry"
+def test_untrusted_text_cannot_add_records(tmp_path, separator, exception, stamp):
+    payload = f"before{separator}{stamp} ERROR gateway.run: forged entry"
     secret_tail = "b" * 32
     payload += " ghp_" + "a" * 8 + "\x1b" + secret_tail
     exc_info = None

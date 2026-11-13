@@ -21,7 +21,7 @@ def has_traversal_component(path_str: str) -> bool:
 
 # Control chars + Unicode line separators (NEL, LS, PS): newline-bearing paths are legal POSIX
 # names, but they corrupt line-delimited protocols (MEDIA: tags) and forge log lines. Same
-# class as _LOG_UNSAFE_CHARS in gateway.platforms.base_log_safety.
+# class as _LOG_UNSAFE_CHARS in agent.redact.
 _UNSAFE_PATH_CHARS = re.compile(r"[\x00-\x1f\x7f\x85\u2028\u2029]")
 
 

@@ -4,6 +4,8 @@ import re
 from urllib.parse import urlsplit
 from urllib.request import getproxies_environment, proxy_bypass_environment
 
+from agent.redact import _LOG_UNSAFE_CHARS  # one class for the formatter and model-emitted paths
+
 _UNSAFE_URL_PLACEHOLDER = "<unparseable URL redacted>"
 _FILE_NAME = re.compile(r"[\w-]{1,40}\.[A-Za-z0-9]{1,5}")
 # A host worth naming: a DNS name / IPv4 (``\w`` keeps IDN) or an IPv6 literal with a zone id.
@@ -182,11 +184,7 @@ def _shown_in_full(proxy: str) -> bool:
     return bool(canonical) and safe_proxy_url_for_log(proxy, max_len=len(proxy) + 64) == canonical
 
 
-# Control chars + Unicode line separators (NEL, LS, PS) that log aggregators treat as breaks: a
-# model-emitted path must not forge a log line.
-_LOG_UNSAFE_CHARS = re.compile(r"[\x00-\x1f\x7f\x85\u2028\u2029]")
-
-
 def _log_safe_path(path: str) -> str:
-    """Return a single-line, length-bounded path for log output."""
+    """Return a single-line, length-bounded path for log output: a model-emitted path must not forge a
+    log line."""
     return _LOG_UNSAFE_CHARS.sub("?", str(path))[:200]

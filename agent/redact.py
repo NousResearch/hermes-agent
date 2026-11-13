@@ -1901,10 +1901,13 @@ def _reset_plugin_redaction_patterns() -> None:
         _rebuild_prefix_matcher()
 
 
-# Keep traceback newlines, but remove terminal controls and other line separators.
+# Control chars + Unicode line separators (NEL, LS, PS) that log aggregators treat as breaks:
+# interpolated text must not forge a log line.
 _LOG_UNSAFE_CHARS = re.compile(r"[\x00-\x1f\x7f\x85\u2028\u2029]")
+# Same class minus "\n": the appended traceback/stack keeps its line structure.
 _EXC_UNSAFE_CHARS = re.compile(r"[\x00-\x09\x0b-\x1f\x7f\x85\u2028\u2029]")
-_TS_LINE_START = re.compile(r"\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}")
+# hermes_cli/logs.py _TS_RE (searched anywhere in a line) makes any stamped line a record.
+_LOG_LINE_STAMP = re.compile(r"(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2}:\d{2})")
 
 
 class RedactingFormatter(logging.Formatter):
@@ -1917,10 +1920,9 @@ class RedactingFormatter(logging.Formatter):
         safe_record.args = None
         formatted = redact_sensitive_text(super().format(safe_record))
         first, *rest = _EXC_UNSAFE_CHARS.sub(" ", formatted).split("\n")
-        # hermes logs recognizes timestamp-prefixed physical lines as records.
-        return "\n".join([first, *(
-            " " + line if _TS_LINE_START.match(line) else line for line in rest
-        )])
+        # Traceback lines carry exception text; break their stamps so `hermes logs` keeps them
+        # as continuation lines of this record.
+        return "\n".join([first, *(_LOG_LINE_STAMP.sub(r"\1_\2", line) for line in rest)])
 
     def formatMessage(self, record: logging.LogRecord) -> str:
         from hermes_logging import display_record  # lazy: hermes_logging imports this module lazily

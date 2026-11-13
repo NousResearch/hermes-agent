@@ -1,15 +1,15 @@
 name: hermes-watchdog
 repo: https://github.com/33hodl/hermes-watchdog
-sha: aec98ca57a5429118f823232973f6139cde1666c
+sha: 6278508caa62a291383982045491ac06dfe7e38a
 title: Hermes Watchdog
-description: "Scheduled jobs break without telling you. A job fails at 3am, so Hermes Watchdog tries the fix that fits (retry it, restart what broke, or pause it), then checks whether the next run worked. You only hear about it when the fix didn't take. Free, no API keys, one command to install. Disclosure - reads this profile's local cron store, fires the failing job through Hermes's own cronjob tool or pauses it, and marks the core incident alerted or closed through core's own ack as it hands work over; check steps run only from a user-authored playbook file, with a minimal environment (PATH, HOME, LANG plus what that step names); it also writes its own ledger in plugin-data."
-image: "https://raw.githubusercontent.com/33hodl/hermes-watchdog/aec98ca57a5429118f823232973f6139cde1666c/docs/banner.png"
+description: "Scheduled jobs break without telling you. A job fails at 3am, so Hermes Watchdog tries the fix that fits (retry it, restart what broke, or pause it), then checks whether the next run worked. You only hear about it when the fix didn't take; an incident it handed to you closes itself after 24 hours if nothing new comes in. Free, no API keys, one command to install. Disclosure - reads this profile's local cron store, fires the failing job through Hermes's own cronjob tool or pauses it, and marks the core incident alerted or closed through core's own ack as it hands work over; check steps run only from a user-authored playbook file, with a minimal environment (PATH, HOME, LANG plus what that step names); it also writes its own ledger in plugin-data. Its opt-in demo creates, runs and then removes a no-agent cron job and writes an executable script (mode 0755) under $HERMES_HOME/scripts; if Hermes stops partway through, that job and script stay behind."
+image: "https://raw.githubusercontent.com/33hodl/hermes-watchdog/6278508caa62a291383982045491ac06dfe7e38a/docs/banner.png"
 maintainer: 33hodl
 tier: community
 category: automation
 requires_hermes: ">=0.22"
 docs_url: https://github.com/33hodl/hermes-watchdog#readme
-version: "0.5.4"
+version: "0.5.5"
 platforms: []
 capabilities:
   provides_tools:
@@ -21,4 +21,4 @@ capabilities:
   provides_middleware: []
   requires_env: []
 screenshots:
-  - https://raw.githubusercontent.com/33hodl/hermes-watchdog/aec98ca57a5429118f823232973f6139cde1666c/docs/ui-page.png
+  - https://raw.githubusercontent.com/33hodl/hermes-watchdog/6278508caa62a291383982045491ac06dfe7e38a/docs/ui-page.png

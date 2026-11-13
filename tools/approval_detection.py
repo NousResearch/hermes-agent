@@ -751,11 +751,14 @@ for _canonical_key, _legacy_key in [
     _PATTERN_KEY_ALIASES.setdefault(_canonical_key, set()).update({_canonical_key, _legacy_key})
     _PATTERN_KEY_ALIASES.setdefault(_legacy_key, set()).update({_legacy_key, _canonical_key})
 
-# Scoping the force-delete flag to (?-i:-D) changed this pattern's regex-derived legacy key;
-# keep the pre-change spelling resolvable so approvals stored under it still match.
-_old_branch_key = r"git\s+branch\s+-D"
-_PATTERN_KEY_ALIASES.setdefault("git branch force delete", set()).add(_old_branch_key)
-_PATTERN_KEY_ALIASES.setdefault(_old_branch_key, set()).add("git branch force delete")
+# Regex edits change a pattern's regex-derived legacy key; keep each pre-change spelling resolvable so
+# approvals stored under it still match: (?-i:-D) scoping, and the optional drive letter (#38964).
+for _canonical_key, _old_key in [
+    ("git branch force delete", r"git\s+branch\s+-D"),
+    ("delete in root path", r"rm\s+(-[^\s]*\s+)*/"),
+]:
+    _PATTERN_KEY_ALIASES.setdefault(_canonical_key, set()).add(_old_key)
+    _PATTERN_KEY_ALIASES.setdefault(_old_key, set()).add(_canonical_key)
 
 
 def _approval_key_aliases(pattern_key: str) -> set[str]:
@@ -1700,6 +1703,13 @@ def _command_detection_variants(command: str):
         win_variant = _normalize_command_for_detection(_mask_quoted_newlines(command.replace("\\", "/")))
         if fresh(win_variant):
             yield win_variant
+        # The marked variants below see the backslash-stripped text (`a && rm -rf C:\*` -> `C:*`), so the
+        # command-start-anchored rm floor needs a marked copy of the flattened path too. Mark on the RAW
+        # command (faithful quote state, see `faithful` below), then flatten.
+        marked_win = _normalize_command_for_detection(
+            _mark_command_starts(_mask_quoted_newlines(command), marker=" \n").replace("\\", "/"))
+        if fresh(marked_win):
+            yield marked_win
     # Program-bearing options are parsed in their owning command's context; surfacing only the payload lets the
     # hardline floor inspect what will actually run without promoting similar flags or quoted prose.
     pending = [normalized]

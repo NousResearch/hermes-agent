@@ -200,6 +200,15 @@ def list_session_admissions(db, *, session_id: str, pending_only: bool = True) -
         return [_row(row) for row in conn.execute(sql, (session_id,))]
 
 
+def latest_session_admission(db, *, session_id: str, accept) -> dict | None:
+    """The newest admission whose payload ``accept`` takes, read newest-first and stopping at the
+    first match: a restored lane needs only its latest envelope, not the session's whole history."""
+    with db._read_ctx() as conn:
+        rows = conn.execute("SELECT * FROM session_admissions WHERE target_session_id=? ORDER BY seq DESC",
+                            (session_id,))
+        return next((row for row in map(_row, rows) if accept(row['payload'])), None)
+
+
 _ANY_HEAD = object()
 
 

@@ -66,6 +66,7 @@ import {
   $lastReadAtBySessionId,
   $messagingSessions,
   $selectedStoredSessionId,
+  $sessionOwnerRevision,
   $sessions,
   $unlistedSessionOwnerRows,
   $workspaceCwdOwner,
@@ -140,7 +141,7 @@ export function recordSessionEventScope(event: { connectionId?: string; profile?
       profile: String(event.profile ?? '').trim() || 'default'
     })
 
-    // An owner resolved after the focus moved must still re-home the rail.
+    $sessionOwnerRevision.set($sessionOwnerRevision.get() + 1)
     syncPreviewScope()
 
     return
@@ -155,6 +156,7 @@ export function recordSessionEventScope(event: { connectionId?: string; profile?
     const profileKey = normalizeProfileKey(profile)
     sessionOwnerByRuntimeId.set(event.session_id, profileKey)
     sessionScopeByRuntimeId.set(event.session_id, profileKey)
+    $sessionOwnerRevision.set($sessionOwnerRevision.get() + 1)
   }
 
   syncPreviewScope()
@@ -195,6 +197,7 @@ export function forgetProfileOnlyRuntimeOwners(profile: string): void {
     if (typeof owner === 'string' && normalizeProfileKey(owner) === retired) {
       sessionOwnerByRuntimeId.delete(runtimeId)
       sessionScopeByRuntimeId.delete(runtimeId)
+      $sessionOwnerRevision.set($sessionOwnerRevision.get() + 1)
     }
   }
 }
@@ -911,15 +914,14 @@ export function releaseSessionTranscript(runtimeId: string, state?: ClientSessio
 }
 
 export function dropSessionState(runtimeId: string) {
-  // Disarm the watchdog — a dropped runtime must not fire a stale clear later.
-  // Settle-grace entries are keyed by stored id and self-expire; leave them so
-  // a just-finished session's row survives merge eviction even if its tile or
-  // cached runtime is dropped in the meantime.
+  // Disarm runtime timers, but retain self-expiring stored-id settle grace so
+  // a just-finished session survives merge eviction after its runtime is dropped.
   clearWatchdog(runtimeId)
   clearEventSilence(runtimeId)
   clearSessionProviderWait(runtimeId)
   sessionScopeByRuntimeId.delete(runtimeId)
   sessionOwnerByRuntimeId.delete(runtimeId)
+  $sessionOwnerRevision.set($sessionOwnerRevision.get() + 1)
   // A runtime that never bound a stored id never will now (#73890).
   forgetPendingRuntimeTabs(runtimeId)
 
@@ -934,11 +936,8 @@ export function dropSessionState(runtimeId: string) {
   $sessionStates.set(rest)
 }
 
-/** Drop every cached session state — used on soft gateway-mode apply so the
- *  computed working / attention sets drain to empty alongside the session list.
- *  Also disarms every watchdog timer and drops all settle-grace entries: a
- *  wiped gateway's sessions must not fire stale clears or linger in the
- *  sidebar merge keep-set after the switch. */
+/** Soft gateway-mode apply drains cached state, working/attention membership,
+ *  watchdogs and settle grace so stale sessions cannot fire or linger. */
 export function clearAllSessionStates() {
   for (const timer of sessionWatchdogTimers.values()) {
     clearTimeout(timer)
@@ -957,6 +956,7 @@ export function clearAllSessionStates() {
   clearAllProviderWaits()
   sessionScopeByRuntimeId.clear()
   sessionOwnerByRuntimeId.clear()
+  $sessionOwnerRevision.set($sessionOwnerRevision.get() + 1)
   forgetPendingRuntimeTabs()
   $stalledSessionIds.set([])
   $sessionStates.set({})

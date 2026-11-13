@@ -1258,10 +1258,6 @@ def _is_junction(path: Path) -> bool:
     return bool(check and check())
 
 
-# Serialize destination checks against other /api/fs mutations in this process.
-_rename_locks: dict[str, asyncio.Lock] = {}
-
-
 def _fs_mutation_policy_guard(target: Path, request: Request, *, remote: bool = False) -> None:
     """Apply the managed-files lock boundary to filesystem mutations."""
     policy = _managed_files_policy(request, create_root=False)
@@ -1281,10 +1277,6 @@ def _fs_mutation_policy_guard_raw(
 ) -> None:
     target = Path(raw_path).expanduser() if expanduser else Path(raw_path)
     _fs_mutation_policy_guard(target, request, remote=remote)
-
-
-def _fs_parent_lock(parent: Path) -> asyncio.Lock:
-    return _rename_locks.setdefault(str(parent), asyncio.Lock())
 
 
 def _fs_mutation_target(raw_path: str) -> Path:
@@ -1355,8 +1347,7 @@ async def fs_create(payload: FsCreate, request: Request, profile: Optional[str] 
 
     await asyncio.to_thread(_fs_mutation_policy_guard_raw, payload.path, request, expanduser=True)
     target = await asyncio.to_thread(_fs_mutation_target, payload.path)
-    async with _fs_parent_lock(target.parent):
-        await asyncio.to_thread(mutate_local, target, request, profile, "create", directory=payload.directory)
+    await asyncio.to_thread(mutate_local, target, request, profile, "create", directory=payload.directory)
     return {"ok": True, "path": str(target), "isDirectory": bool(payload.directory)}
 
 
@@ -1378,8 +1369,7 @@ async def fs_rename(payload: FsRename, request: Request, profile: Optional[str] 
     await asyncio.to_thread(_fs_mutation_policy_guard_raw, payload.path, request, expanduser=True)
     target = await asyncio.to_thread(_fs_mutation_target, payload.path)
     destination = target.parent / name
-    async with _fs_parent_lock(target.parent):
-        await asyncio.to_thread(mutate_local, target, request, profile, "rename", destination=destination)
+    await asyncio.to_thread(mutate_local, target, request, profile, "rename", destination=destination)
     return {"ok": True, "path": str(destination)}
 
 
@@ -1405,8 +1395,7 @@ async def fs_delete(payload: FsDelete, request: Request, profile: Optional[str] 
         raise HTTPException(status_code=400, detail="Cannot delete the managed directory root or its ancestor")
     await asyncio.to_thread(_fs_mutation_policy_guard, requested, request)
     target = await asyncio.to_thread(_fs_mutation_target, payload.path)
-    async with _fs_parent_lock(target.parent):
-        await asyncio.to_thread(mutate_local, target, request, profile, "delete", recursive=payload.recursive)
+    await asyncio.to_thread(mutate_local, target, request, profile, "delete", recursive=payload.recursive)
     return {"ok": True, "path": str(target)}
 
 

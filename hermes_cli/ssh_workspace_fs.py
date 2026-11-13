@@ -36,9 +36,19 @@ def sensitive(path):
     return False
 
 
-def check(path):
+def check_policy(path):
     if sensitive(path):
         fail('EACCES')
+    for root in roots:
+        if path == root or root.startswith(path.rstrip('/') + '/'):
+            fail('EINVAL')
+    for prefix in protected:
+        if path == prefix or path.startswith(prefix + '/'):
+            fail('EACCES')
+
+
+def check(path):
+    check_policy(path)
     # Keep the final component: rename/unlink/replace act on the entry, not its referent.
     parent = os.path.dirname(path)
     current = parent
@@ -47,14 +57,8 @@ def check(path):
             fail('EINVAL')
         current = os.path.dirname(current)
     entry = os.path.join(os.path.realpath(parent), os.path.basename(path))
-    if sensitive(entry):
-        fail('EACCES')
-    for root in roots:
-        if entry == root or root.startswith(entry.rstrip('/') + '/'):
-            fail('EINVAL')
-    for prefix in protected:
-        if entry == prefix or entry.startswith(prefix + '/'):
-            fail('EACCES')
+    check_policy(entry)
+    return entry
 
 
 try:
@@ -71,8 +75,7 @@ try:
         for location in {os.path.normpath(home), os.path.realpath(home)}:
             protected.extend(os.path.join(location, p) for p in policy['home_directories'])
     targets = policy['targets']
-    for target in targets:
-        check(target)
+    entries = [check(target) for target in targets]
     source = targets[0]
     if policy['scan'] and stat.S_ISDIR(os.lstat(source).st_mode):
         # scandir/lstat raise on unreadable or vanished entries: never silently skip a subtree.
@@ -82,6 +85,11 @@ try:
             with os.scandir(parent) as children:
                 for child in children:
                     check(child.path)
+                    if len(targets) > 1:
+                        relative = os.path.relpath(child.path, source)
+                        # The destination subtree does not exist yet; inspect policy only.
+                        check_policy(os.path.join(targets[1], relative))
+                        check_policy(os.path.join(entries[1], relative))
                     if stat.S_ISDIR(child.stat(follow_symlinks=False).st_mode):
                         pending.append(child.path)
 except FileNotFoundError:
@@ -437,17 +445,31 @@ rmdir -- "$target" 2>/dev/null || { printf '__HERMES_FS_ERROR__:ENOTEMPTY\\n'; e
             raise SshWorkspaceFsError("EFBIG")
         # os.replace acts on the final entry even for a link to a directory; plain mv can
         # instead move the temporary file INTO that directory. Never write through the link.
+        # Atomic replacement preserves regular-file mode, not ownership or ACLs. New files
+        # and replaced links use 0666 masked by the remote process umask.
         worker = r'''
 import os, stat, sys, tempfile
 path = sys.argv[1]
 tmp = None
 try:
-    if os.path.lexists(path) and not (stat.S_ISREG(os.lstat(path).st_mode) or os.path.islink(path)):
+    try:
+        existing = os.lstat(path)
+    except FileNotFoundError:
+        existing = None
+    if existing is not None and not (stat.S_ISREG(existing.st_mode) or stat.S_ISLNK(existing.st_mode)):
         print('__HERMES_FS_ERROR__:ENOTREG')
         sys.exit(1)
+    if existing is not None and stat.S_ISREG(existing.st_mode):
+        mode = stat.S_IMODE(existing.st_mode)
+    else:
+        mask = os.umask(0)
+        os.umask(mask)
+        mode = 0o666 & ~mask
     fd, tmp = tempfile.mkstemp(prefix='.hermes-tmp-', dir=os.path.dirname(path))
     with os.fdopen(fd, 'wb') as output:
         output.write(sys.stdin.buffer.read())
+        output.flush()
+        os.fchmod(output.fileno(), mode)
     os.replace(tmp, path)
 except OSError as exc:
     print('__HERMES_FS_ERROR__:' + ('ENOENT' if isinstance(exc, FileNotFoundError) else 'EACCES'))

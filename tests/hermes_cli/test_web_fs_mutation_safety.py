@@ -7,7 +7,7 @@ import threading
 import pytest
 from starlette.testclient import TestClient
 
-from hermes_cli import web_server, web_fs_mutations
+from hermes_cli import sqlite_safe_read, web_server, web_fs_mutations
 from hermes_cli.sqlite_safe_read import connect_tracked, offline_file_access
 from hermes_cli.web_routers import files
 
@@ -168,6 +168,78 @@ def test_rename_atomically_refuses_a_late_collision(workspace, monkeypatch):
     assert mutate(client, "rename", source, name=destination.name).status_code == 409
     assert source.read_text() == "source"
     assert destination.read_text() == "winner"
+
+
+@pytest.mark.parametrize("operation", ["rename", "delete"])
+def test_canonical_lock_covers_tree_admission_and_destructive_effect(workspace, monkeypatch, operation):
+    root, client = workspace
+    tree = root / "tree"
+    tree.mkdir()
+    child = tree / "child.txt"
+    child.write_text("content")
+    checked = []
+    started = threading.Event()
+    opened = threading.Event()
+    failures = []
+    threads = []
+    real_guard = web_fs_mutations._entry_guard
+    real_effect = web_fs_mutations._rename if operation == "rename" else web_fs_mutations._delete
+
+    def assert_registry_locked(phase):
+        result = []
+
+        def attempt():
+            acquired = sqlite_safe_read._live_lock.acquire(blocking=False)
+            result.append(acquired)
+            if acquired:
+                sqlite_safe_read._live_lock.release()
+
+        thread = threading.Thread(target=attempt)
+        thread.start()
+        thread.join(5)
+        assert not thread.is_alive()
+        assert result == [False], f"registry lock not held during {phase}"
+        checked.append(phase)
+
+    def open_database():
+        try:
+            started.set()
+            conn = connect_tracked(root / "other.sqlite")
+            opened.set()
+            conn.close()
+        except BaseException as exc:
+            failures.append(exc)
+
+    def guard(entry):
+        if entry == child:
+            assert_registry_locked("descendant admission")
+            thread = threading.Thread(target=open_database)
+            threads.append(thread)
+            thread.start()
+            assert started.wait(5)
+        return real_guard(entry)
+
+    def effect(*args):
+        assert_registry_locked("destructive effect")
+        assert started.is_set()
+        assert not opened.is_set()
+        return real_effect(*args)
+
+    monkeypatch.setattr(web_fs_mutations, "_entry_guard", guard)
+    monkeypatch.setattr(web_fs_mutations, "_rename" if operation == "rename" else "_delete", effect)
+    try:
+        response = mutate(client, operation, tree, name="renamed", recursive=True)
+        assert response.status_code == 200
+    finally:
+        for thread in threads:
+            thread.join(5)
+            assert not thread.is_alive()
+    assert not failures
+    assert opened.is_set()
+    assert checked == ["descendant admission", "destructive effect"]
+    assert not tree.exists()
+    if operation == "rename":
+        assert (root / "renamed" / child.name).read_text() == "content"
 
 
 def test_registry_admission_and_effect_hold_one_lifecycle_lock(workspace, monkeypatch):

@@ -229,6 +229,47 @@ def test_rename_checks_destination_and_noop_source_policy(shell_workspace, proje
     _denied(lambda: shell_workspace.rename(str(project / "missing"), "missing"), "ENOENT")
 
 
+@pytest.mark.platforms("linux")
+def test_rename_checks_mapped_destination_descendants(shell_workspace):
+    home = Path(shell_workspace._env._remote_home)
+    source = home / "staging"
+    sentinel = source / "gh" / "sentinel.txt"
+    sentinel.parent.mkdir(parents=True)
+    sentinel.write_bytes(b"keep")
+    _denied(lambda: shell_workspace.rename(str(source), ".config"))
+    assert sentinel.read_bytes() == b"keep"
+    assert not (home / ".config").exists()
+    assert shell_workspace.rename(str(source), "ordinary") == str(home / "ordinary")
+    assert (home / "ordinary" / "gh" / "sentinel.txt").read_bytes() == b"keep"
+
+
+@pytest.mark.parametrize("kind,expected", [("existing", 0o754), ("new", 0o664), ("link", 0o664)])
+@pytest.mark.platforms("posix")
+def test_atomic_save_modes_under_remote_umask(shell_workspace, project, kind, expected):
+    original_execute = shell_workspace._env.execute
+
+    def with_umask(command, **kwargs):
+        return original_execute("umask 002\n" + command, **kwargs)
+
+    shell_workspace._env.execute = with_umask
+    target = project / "file"
+    referent = project / "referent"
+    if kind == "existing":
+        target.write_bytes(b"old")
+        target.chmod(0o754)
+    elif kind == "link":
+        referent.write_bytes(b"keep")
+        referent.chmod(0o600)
+        target.symlink_to(referent)
+    shell_workspace.write_text(str(target), "new", max_bytes=100)  # windows-footgun: ok — adapter API
+    assert not target.is_symlink()
+    assert target.stat().st_mode & 0o7777 == expected
+    assert target.read_bytes() == b"new"
+    if kind == "link":
+        assert referent.read_bytes() == b"keep"
+        assert referent.stat().st_mode & 0o7777 == 0o600
+
+
 @pytest.mark.parametrize("operation", ["rename", "delete"])
 @pytest.mark.platforms("posix")
 def test_unreadable_subtree_scan_fails_closed(shell_workspace, project, operation):

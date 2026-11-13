@@ -122,16 +122,14 @@ function bridge() {
 function remoteFsApi<T>(
   path: string,
   body?: Record<string, unknown>,
-  methodOrOwner: 'DELETE' | 'POST' | { connectionId?: string; profile?: string } = 'POST',
-  owner?: ResolvedOwner
+  owner?: { connectionId?: string; profile?: string }
 ): Promise<T> {
-  if (typeof methodOrOwner !== 'string') {
-    return hermesApi<T>(body ? { ...methodOrOwner, body, method: 'POST', path } : { ...methodOrOwner, path })
-  }
-
-  const request = body ? { body, method: methodOrOwner, path } : { path }
-
-  return owner ? hermesApiAs(owner, request) : hermesApi<T>({ ...request, profile: desktopFsProfile() })
+  return hermesApi<T>({
+    profile: desktopFsProfile(),
+    ...owner,
+    path,
+    ...(body ? { body, method: 'POST' as const } : {})
+  })
 }
 
 // Reject a user-entered name that would break out of its parent dir. Mirrors the
@@ -329,12 +327,11 @@ export async function renameDesktopPath(
   const operation = assertCurrentOperationScope(scope)
 
   if (operation.mode === 'remote') {
-    const result = await remoteFsApi<{ ok?: boolean; path?: string }>(
-      '/api/fs/rename',
-      { name: newName, path },
-      'POST',
-      operation
-    )
+    const result = await hermesApiAs<{ ok?: boolean; path?: string }>(operation, {
+      path: '/api/fs/rename',
+      body: { name: newName, path },
+      method: 'POST'
+    })
 
     return result.path || path
   }
@@ -383,12 +380,11 @@ export async function createDesktopEntry(
     return joined
   }
 
-  const result = await remoteFsApi<{ ok?: boolean; path?: string }>(
-    '/api/fs/create',
-    { directory, path: joined },
-    'POST',
-    operation
-  )
+  const result = await hermesApiAs<{ ok?: boolean; path?: string }>(operation, {
+    path: '/api/fs/create',
+    body: { directory, path: joined },
+    method: 'POST'
+  })
 
   return result.path || joined
 }
@@ -404,7 +400,7 @@ export async function trashDesktopPath(path: string, scope?: DesktopFsOperationS
   const operation = assertCurrentOperationScope(scope)
 
   if (operation.mode === 'remote') {
-    await remoteFsApi('/api/fs/delete', { path, recursive: true }, 'DELETE', operation)
+    await hermesApiAs(operation, { path: '/api/fs/delete', body: { path, recursive: true }, method: 'DELETE' })
 
     return
   }

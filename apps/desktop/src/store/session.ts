@@ -1233,7 +1233,10 @@ function normalizeOwnerRoute(route: SessionOwnerRoute): SessionOwnerRoute {
   }
 }
 
+export const $sessionOwnerRevision = atom(0) // Invalidates map-backed owner hints and runtime provenance.
+
 function persistSessionOwnerHints(): void {
+  $sessionOwnerRevision.set($sessionOwnerRevision.get() + 1)
   writeJson(
     SESSION_OWNER_HINTS_KEY,
     sessionOwnerHints.size === 0 ? null : [...sessionOwnerHints.values()].map(entry => [entry.id, entry.route])
@@ -1265,8 +1268,7 @@ function rememberSessionOwnerHint(sessionId: string, route: SessionOwnerRoute): 
   return true
 }
 
-/** Load persisted hints (oldest first, so LRU order survives). Malformed or
- *  foreign-shaped entries are skipped; nothing here can throw. */
+/** Load valid persisted hints oldest-first, retaining LRU order. */
 export function hydrateSessionOwnerHints(): void {
   const raw = readJson<unknown>(SESSION_OWNER_HINTS_KEY)
 
@@ -1310,9 +1312,7 @@ export function setSessionOwnerHint(sessionId: string, route: SessionOwnerRoute)
   }
 }
 
-/** Drop every hint naming `connectionId` — the registry no longer has it, so
- *  nothing can dial that route again (fail-closed would otherwise pin those
- *  sessions to a dead source forever). */
+/** Drop retired-connection hints so sessions are not pinned to a dead source. */
 export function forgetSessionOwnerHintsForConnection(connectionId: string): void {
   const id = connectionId.trim()
 

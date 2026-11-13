@@ -4,7 +4,7 @@ These are accident-prevention guards, not an OS containment boundary. The SQLite
 registry serializes tracked connections in this process, not other processes.
 """
 
-from contextlib import ExitStack, contextmanager
+from contextlib import contextmanager
 from pathlib import Path
 import errno
 import os
@@ -42,15 +42,16 @@ def _offline_mutation(target: Path, destination: Path | None, *, scan: bool):
     try:
         # The first admission takes the canonical registry lock before traversal. Every
         # descendant is checked under that same reentrant lock, held through the effect.
-        with ExitStack() as stack:
-            stack.enter_context(offline_file_access(target, what="mutate"))
+        with offline_file_access(target, what="mutate"):
             for entry in _footprint(target) if scan else (target,):
                 _entry_guard(entry)
-                stack.enter_context(offline_file_access(entry, what="mutate"))
+                with offline_file_access(entry, what="mutate"):
+                    pass
                 if destination is not None:
                     mapped = destination / entry.relative_to(target)
                     _entry_guard(mapped)
-                    stack.enter_context(offline_file_access(mapped, what="mutate"))
+                    with offline_file_access(mapped, what="mutate"):
+                        pass
             yield
     except LiveConnectionError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc

@@ -10,7 +10,7 @@ import {
   ContextMenuTrigger
 } from '@/components/ui/context-menu'
 import { translateNow, useI18n } from '@/i18n'
-import { type DesktopFsOperationScope, isDesktopFsRemoteMode } from '@/lib/desktop-fs'
+import { isDesktopFsRemoteMode } from '@/lib/desktop-fs'
 import { isSubmitEnter } from '@/lib/ime'
 import { IS_MAC } from '@/lib/keybinds/combo'
 import { cn } from '@/lib/utils'
@@ -29,6 +29,7 @@ import {
   executeFileDelete,
   executeFileRename,
   type FileActionDialog,
+  type FileActionScope,
   type FileActionTarget,
   requestFileDelete,
   requestNewEntry,
@@ -187,7 +188,7 @@ export function InlineRenameInput(props: InlineRenameInputProps) {
   return <OwnedInlineRenameInput {...props} key={owner ? editorKeys.get(owner) : 0} />
 }
 
-function ownsInlineRename(path: string, scope: DesktopFsOperationScope | null): boolean {
+function ownsInlineRename(path: string, scope: FileActionScope | null): boolean {
   return scope !== null && $renamingPath.get() === path && $renamingScope.get() === scope
 }
 

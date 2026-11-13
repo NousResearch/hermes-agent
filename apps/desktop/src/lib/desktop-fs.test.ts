@@ -382,8 +382,9 @@ describe('desktop filesystem facade', () => {
     expect(selectPaths).not.toHaveBeenCalled()
   })
 
-  it('routes mutations through the gateway FS API in remote mode', async () => {
+  it('routes remote mutations through their captured owner rather than the ambient API connection', async () => {
     $connection.set({ connectionId: 'gw-files', mode: 'remote', profile: 'team-remote' } as never)
+    setApiRequestConnection('unrelated-gateway')
 
     await expect(renameDesktopPath('/remote/old.txt', 'new.txt')).resolves.toBe('/remote/renamed.txt')
     await expect(createDesktopEntry('/remote/project', 'notes.md', false)).resolves.toBe('/remote/new-entry')

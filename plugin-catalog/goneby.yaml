@@ -2,14 +2,7 @@ name: goneby
 repo: https://github.com/rahlquist/goneby
 sha: a4e326e5ba87c56de64e7f44d837f538b703180f
 title: GoneBy
-description: >-
-  Retroactive project memory for LLM agents. Captures every turn into an
-  encrypted per-project write-ahead log (zero tokens during work), then at
-  project close walks the log backward from the shipped product — the oracle —
-  keeping only entries that verifiably contributed; survivors are embedded
-  (MRL-truncated) and stored in Valkey or Qdrant for semantic search in later
-  sessions. General plugin: coexists with any memory provider instead of
-  replacing it.
+description: "Retroactive project memory for LLM agents. Captures every turn into an encrypted per-project write-ahead log (zero tokens during work), then at project close walks the log backward from the shipped product — the oracle — keeping only entries that verifiably contributed; survivors are embedded (MRL-truncated) and stored in Valkey or Qdrant for semantic search in later sessions. General plugin: coexists with any memory provider instead of replacing it. Disclosure — On by default, GoneBy records every chat turn of each project (your messages, the assistant's replies and tool output text) into an encrypted log under your Hermes profile's plugin-data folder. When you close a project, it sends the log to your configured model to choose which entries to keep, sends the kept text to the embedding endpoint you configure (default localhost), and stores it unencrypted in your Valkey or Qdrant database (default localhost). Turn capture off with the `auto_capture` setting or `/goneby gate off`."
 maintainer: rahlquist
 tier: community
 category: memory

@@ -310,6 +310,12 @@ def build_top_level_parser():
         help="Quiet mode for programmatic use: suppress banner, spinner, and tool previews. Only output the final response and session info.",
     )
     chat_parser.add_argument(
+        "--emit-result-record",
+        action="store_true",
+        default=False,
+        help="With --quiet, emit a structured final result record to stderr for automation wrappers.",
+    )
+    chat_parser.add_argument(
         "--resume",
         "-r",
         metavar="SESSION_ID",

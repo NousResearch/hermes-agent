@@ -109,6 +109,7 @@ Common options:
 | `-s`, `--skills <name>` | Preload one or more skills for the session (can be repeated or comma-separated). |
 | `-v`, `--verbose` | Verbose output. |
 | `-Q`, `--quiet` | Programmatic mode: suppress banner/spinner/tool previews. |
+| `--emit-result-record` | Emit a structured `hermes_result` record to stderr before the terminal `session_id` line. Requires single-query classic CLI mode: use `-q/--query`, `-Q/--quiet`, and `--cli` when TUI is configured as the default. Unsupported interactive, non-quiet, or TUI combinations fail instead of silently omitting the record. |
 | `--image <path>` | Attach a local image to a single query. |
 | `--resume <session>` / `--continue [name]` | Resume a session directly from `chat`. |
 | `--worktree` | Create an isolated git worktree for this run. |

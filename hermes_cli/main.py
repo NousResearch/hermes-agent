@@ -2217,6 +2217,13 @@ def cmd_chat(args):
     """Run interactive chat CLI."""
     use_tui = _resolve_use_tui(args)
 
+    if getattr(args, "emit_result_record", False) and use_tui:
+        print(
+            "Error: --emit-result-record requires the classic CLI; add --cli.",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+
     _apply_safe_mode(args)
 
     # Resolve --continue into --resume with the latest session or by name
@@ -2385,6 +2392,7 @@ def cmd_chat(args):
         "worktree": getattr(args, "worktree", False),
         "checkpoints": getattr(args, "checkpoints", False),
         "pass_session_id": getattr(args, "pass_session_id", False),
+        "emit_result_record": getattr(args, "emit_result_record", False),
         "max_turns": getattr(args, "max_turns", None),
         "ignore_rules": getattr(args, "ignore_rules", False) or getattr(args, "safe_mode", False),
         "ignore_user_config": getattr(args, "ignore_user_config", False) or getattr(args, "safe_mode", False),

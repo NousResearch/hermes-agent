@@ -1225,6 +1225,21 @@ def _notify_single_query_session_finalize(cli, *, reason: str = "shutdown") -> N
         _single_query_finalize_attempted_session_ids.add(session_id)
 
 
+def _format_result_record(result: Any, session_id: str) -> str:
+    """Format the opt-in machine result emitted before interpreter teardown."""
+    completed = (
+        isinstance(result, dict)
+        and result.get("completed") is True
+        and result.get("failed") is False
+    )
+    payload = {
+        "schema_version": 1,
+        "status": "completed" if completed else "failed",
+        "session_id": str(session_id or ""),
+    }
+    return f"hermes_result: {json.dumps(payload, separators=(',', ':'))}"
+
+
 def _finalize_single_query(cli) -> None:
     """Close one-shot CLI resources before releasing the active session lease."""
     try:
@@ -15776,6 +15791,7 @@ def main(
     w: bool = False,
     checkpoints: bool = False,
     pass_session_id: bool = False,
+    emit_result_record: bool = False,
     ignore_user_config: bool = False,
     ignore_rules: bool = False,
 ):
@@ -15794,6 +15810,7 @@ def main(
         base_url: Base URL for the API
         max_turns: Maximum tool-calling iterations (default: 60)
         verbose: Enable verbose logging
+        emit_result_record: In quiet mode, emit a structured result record to stderr
         compact: Use compact display mode
         list_tools: List available tools and exit
         list_toolsets: List available toolsets and exit
@@ -15813,6 +15830,12 @@ def main(
         python cli.py -w -q "Fix issue #123"     # Single query in worktree
     """
     global _active_worktree
+
+    if emit_result_record and (not quiet or not (query or q)):
+        raise ValueError(
+            "--emit-result-record requires quiet single-query mode "
+            "(-q/--query with -Q/--quiet)"
+        )
 
     # Force UTF-8 stdio on Windows before any banner/print() runs — the
     # Rich console prints Unicode box-drawing characters that would
@@ -16203,6 +16226,12 @@ def main(
                                 _run_kanban_goal_loop_q(cli, response)
                             except Exception as _goal_exc:
                                 logger.debug("kanban goal loop failed: %s", _goal_exc)
+
+                        if emit_result_record:
+                            print(
+                                _format_result_record(result, cli.session_id),
+                                file=sys.stderr,
+                            )
 
                         # Session ID goes to stderr so piped stdout is clean.
                         print(f"\nsession_id: {cli.session_id}", file=sys.stderr)

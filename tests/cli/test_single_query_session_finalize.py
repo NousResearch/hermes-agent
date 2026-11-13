@@ -1,3 +1,4 @@
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -9,6 +10,48 @@ import cli
 def reset_single_query_finalize_state(monkeypatch):
     monkeypatch.setattr(cli, "_single_query_finalize_attempted_session_ids", set())
     monkeypatch.setattr(cli, "_cleanup_done", False)
+
+
+def test_format_result_record_uses_positive_structured_completion_evidence():
+    record = cli._format_result_record(
+        {"completed": True, "failed": False, "final_response": "done"},
+        "completed-session",
+    )
+
+    assert json.loads(record.removeprefix("hermes_result: ")) == {
+        "schema_version": 1,
+        "status": "completed",
+        "session_id": "completed-session",
+    }
+
+
+@pytest.mark.parametrize(
+    "result",
+    [
+        {"completed": True},
+        {"completed": True, "failed": None},
+        {"completed": True, "failed": 1},
+        {"completed": True, "failed": "yes"},
+    ],
+)
+def test_format_result_record_fails_closed_without_explicit_false_failure(result):
+    record = cli._format_result_record(result, "failed-session")
+
+    assert json.loads(record.removeprefix("hermes_result: "))["status"] == "failed"
+
+
+@pytest.mark.parametrize(
+    ("query", "quiet"),
+    [(None, True), ("machine task", False)],
+)
+def test_result_record_requires_quiet_single_query_mode(query, quiet):
+    with pytest.raises(ValueError, match="quiet single-query"):
+        cli.main(
+            query=query,
+            quiet=quiet,
+            emit_result_record=True,
+            list_tools=True,
+        )
 
 
 def test_finalize_single_query_runs_cleanup_without_reemitting_finalize_before_release(monkeypatch):
@@ -200,7 +243,7 @@ def test_human_single_query_main_finalizes_after_query(monkeypatch):
     ]
 
 
-def test_quiet_single_query_main_finalizes_while_preserving_exit_code(monkeypatch):
+def test_quiet_single_query_main_finalizes_while_preserving_exit_code(monkeypatch, capsys):
     calls = []
 
     import cli as cli_mod
@@ -262,9 +305,22 @@ def test_quiet_single_query_main_finalizes_while_preserving_exit_code(monkeypatc
     )
 
     with pytest.raises(SystemExit) as exc_info:
-        cli_mod.main(query="hello", quiet=True, toolsets="terminal")
+        cli_mod.main(
+            query="hello",
+            quiet=True,
+            emit_result_record=True,
+            toolsets="terminal",
+        )
 
     assert exc_info.value.code == 1
     assert ("claim", "cli", True) in calls
     assert ("run", "hello", []) in calls
     assert calls[-1] == ("finalize", "quiet-session")
+    stderr_lines = capsys.readouterr().err.splitlines()
+    record_line = next(line for line in stderr_lines if line.startswith("hermes_result: "))
+    assert json.loads(record_line.removeprefix("hermes_result: ")) == {
+        "schema_version": 1,
+        "status": "failed",
+        "session_id": "quiet-session",
+    }
+    assert stderr_lines[-1] == "session_id: quiet-session"

@@ -8,7 +8,7 @@ import logging
 import time
 from dataclasses import dataclass
 from typing import Optional
-from tools.mcp_tool_common import _core, _get_lifecycle_seconds, _jittered, _resolve_tool_timeout
+from tools.mcp_tool_common import _core, _exc_str, _get_lifecycle_seconds, _jittered, _resolve_tool_timeout
 from tools import mcp_tool_errors as _errors
 from tools import mcp_tool_registration as _registration
 from tools import mcp_tool_sampling as _sampling
@@ -136,9 +136,15 @@ class MCPServerRunMixin:
                             await self._keepalive_probe()
                     except Exception as exc:
                         root = _errors._unwrap_exception_group(exc)
-                        logger.warning("MCP server '%s' keepalive failed, triggering reconnect (state: connected → "
-                                       "degraded): %s: %s", self.name, type(root).__name__, root)
-                        self.mark_suspect(f"keepalive failed: {type(root).__name__}: {root}")
+                        # Prefer _exc_str: arg-less TimeoutError/ConnectionResetError
+                        # stringify to "" under %s / f-strings (#65787).
+                        logger.warning(
+                            "MCP server '%s' keepalive failed, triggering reconnect "
+                            "(state: connected → degraded): %s",
+                            self.name,
+                            _exc_str(root),
+                        )
+                        self.mark_suspect(f"keepalive failed: {_exc_str(root)}")
                         self._reconnect_event.set()
                         break
                     # Survived a full keepalive interval: real proof of health.

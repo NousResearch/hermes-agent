@@ -16,6 +16,7 @@ from gateway.run_turn import _unexpected_silence_reply
 from gateway.session_identity import RoutingIdentity
 from hermes_constants import get_hermes_home
 from tests.gateway.test_gateway_silence_tokens import _runner
+from gateway.session import SessionSource
 from tests.gateway.test_platform_allow_silence import (
     CHANNEL_ID, THREAD, _event, _live, _queued, _recovered, _result, _slack_source, _wa_source, _write,
 )
@@ -173,3 +174,22 @@ async def test_suppressed_notice_is_still_logged(monkeypatch, tmp_path, caplog):
         assert await _live(runner, _event(_wa_source())) == ""
 
     assert any("warning notifications are suppressed" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("platform_block,silent", [
+    ({}, False), ({"allow_silence": True}, True),
+], ids=["suppression-only-keeps-the-notice", "explicit-dm-opt-in"])
+async def test_suppression_never_newly_silences_a_dm(monkeypatch, tmp_path, platform_block, silent):
+    """A user who already hid warnings must not lose the only answer a direct question gets."""
+    _profile({**GLOBAL, "platforms": {"whatsapp": platform_block}})
+    from gateway.config import load_gateway_config
+    runner = _runner(monkeypatch, tmp_path)
+    runner.config = load_gateway_config()
+    dm = SessionSource(platform=Platform.WHATSAPP, chat_id="6281234567890@s.whatsapp.net", chat_type="dm",
+                       user_id="6281234567890@s.whatsapp.net")
+
+    response = await _live(runner, _event(dm, reply_expected=True))
+
+    assert response == ("" if silent else _unexpected_silence_reply())
+

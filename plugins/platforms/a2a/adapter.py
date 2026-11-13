@@ -153,6 +153,21 @@ def _safe_context_slug(value: str, max_len: int = 96) -> str:
 class A2ARequestHandler(BaseHTTPRequestHandler):
     """HTTP handler for the A2A JSON-RPC surface; all state lives on ``self.server.adapter``."""
 
+    # The stdlib defaults are ``server_version = "BaseHTTP/0.6"`` and
+    # ``sys_version = "Python/<ver>"``. Neither is a real product version:
+    # "BaseHTTP/0.6" is a hard-coded token that has never been bumped (it is
+    # identical in Python 2 and 3.14), and "Python/3.14.9" just leaks the
+    # runtime. Advertising them makes vulnerability scanners match the legacy
+    # Python-2 ``BaseHTTPServer`` module name and report a bogus
+    # "BaseHTTPServer backlevel" finding against this listener. Override both
+    # so the ``Server:`` header identifies Hermes instead. Behaviour is
+    # unchanged.
+    server_version = "Hermes-A2A"
+    sys_version = ""
+
+    def version_string(self) -> str:  # pragma: no cover - trivial
+        return self.server_version
+
     @property
     def adapter(self) -> A2AAdapter:
         return self.server.adapter  # type: ignore[attr-defined]

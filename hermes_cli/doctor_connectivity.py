@@ -212,7 +212,7 @@ def _anthropic_messages_probe(base: str, key: str):
     normalized, kwargs = _base_client_kwargs(base, None)
     auth = {"Authorization": f"Bearer {key}"} if _requires_bearer_auth(normalized) else {"x-api-key": key}
     headers = {"anthropic-version": "2023-06-01", "User-Agent": hermes_user_agent(), **auth}
-    model = str(_model_cfg().get("default") or "").strip() or "claude-sonnet-4-5"
+    model = str(_model_cfg().get("default") or "").strip() or "claude-sonnet-4-6"
     body = {"model": model, "max_tokens": 1, "messages": [{"role": "user", "content": "ping"}]}
     return httpx.post(normalized + "/v1/messages", headers=headers, params=kwargs.get("default_query"), json=body, timeout=10)
 

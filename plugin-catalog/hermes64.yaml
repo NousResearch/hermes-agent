@@ -3,7 +3,7 @@ repo: https://github.com/Qhantom-Labs/hermes64
 sha: 17ab9a3a5be3ef7928181c303e6dd002e54fd96e
 subdir: ""
 title: Hermes64
-description: Author and edit room-based N64-era-style 3D games with story checks, bot playtests and local exports.
+description: "Author and edit room-based N64-era-style 3D games with story checks, bot playtests and local exports. Disclosure — Builds and playtests run Godot, Blender, Python and ffmpeg as local child processes (macOS: sandboxed, no network, writes confined to the game project; Windows: only after the owner opts into the Job Object runner, which has no network or write confinement). `/hermes64 setup --fetch --yes`, typed by the user, downloads SHA-512-pinned official Godot 4.6.2 files from github.com/godotengine (export templates about 1.25 GB) and clears macOS quarantine on the verified app. Hub downloads stay off until the owner sets `hub_url`. A `pre_llm_call` hook adds a hint steering game requests to Hermes64 into the user's turn, and the Studio tab can start a local 127.0.0.1 server for a web export or launch exported macOS/Windows builds."
 maintainer: Qhantom-Labs
 tier: community
 category: tools

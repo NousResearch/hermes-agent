@@ -55,6 +55,14 @@ async function grant(files: PluginFiles, folder = vault): Promise<string> {
 // Linux volumes are case-sensitive, so they stand in for a case-sensitive
 // macOS volume here: `Vault` and `vault` are two folders.
 describe('case on a case-sensitive macOS volume', () => {
+  beforeEach(context => {
+    // These cases need distinct directory identities, not merely POSIX APIs.
+    // Probe the actual fixture volume: macOS APFS is often case-insensitive.
+    if (fs.existsSync(path.join(scratch, 'home', 'vault'))) {
+      context.skip()
+    }
+  })
+
   it.runIf(posix)('a link from the granted Vault into a sibling vault is outside the folder', async () => {
     const files = make('darwin')
     const id = await grant(files)

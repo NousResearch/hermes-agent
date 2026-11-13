@@ -1,0 +1,18 @@
+name: reduck
+title: Reduck
+repo: https://github.com/reduck-ai/reduck-hermes-plugin
+sha: fa47b46bdd426d94cd65e64b19e7f5dd35d9aaf8
+version: "0.1.0"
+description: "Run tested browser scripts on any website, in your own Chrome signed in as you or on a Reduck-hosted browser, through Reduck's MCP server (https://mcp.reduck.ai). Configuration only: plugin.json + mcp.json. Disclosure — every Reduck tool call and its arguments go to mcp.reduck.ai with your REDUCK_API_KEY; runs act on websites as you (in your paired Chrome or a Reduck-hosted browser) and can submit forms, post or buy when a script does that, and Hermes does not ask before these remote tools run; runs, traces and scripts are stored on your Reduck account and hosted-browser runs use plan credits; the tool set comes from the server at runtime, not from the pinned sha."
+maintainer: reduck-ai
+tier: community
+category: web
+docs_url: https://docs.reduck.ai
+requires_hermes: ">=0.22.3"
+known_issues:
+  - "On Hermes 0.22.7 and older, the Reduck tools can stop after a reconnect (the header is sent as the literal ${REDUCK_API_KEY}). Restart Hermes to connect again."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

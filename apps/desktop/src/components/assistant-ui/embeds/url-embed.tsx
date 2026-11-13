@@ -7,7 +7,7 @@ import { PrettyLink } from '@/lib/external-link'
 import { $embedAllowed, $embedMode } from '@/store/embed-consent'
 
 import { EmbedFacade } from './embed-consent'
-import { EMBED_MAX_H } from './embed-size'
+import { EMBED_DEFAULT_H, EMBED_MAX_H } from './embed-size'
 import { EmbedFail } from './fail'
 import type { EmbedDescriptor } from './providers/types'
 import { RichBoundary } from './rich-boundary'
@@ -22,14 +22,15 @@ function intrinsicHeight(descriptor: EmbedDescriptor): number {
     return Math.round((descriptor.maxWidth ?? 640) / descriptor.aspectRatio)
   }
 
-  return descriptor.height ?? 320
+  return descriptor.height ?? EMBED_DEFAULT_H
 }
 
 function LazyRenderer({ descriptor }: { descriptor: EmbedDescriptor }) {
-  // X and Instagram load their official blockquote script in-document. The tweet
-  // check also narrows the union to FrameEmbed for the iframe renderers below.
+  // X and Instagram get a sandboxed iframe that sizes itself from the embed
+  // page's height messages. The tweet check also narrows the union to
+  // FrameEmbed for the iframe renderers below.
   if (descriptor.renderer === 'tweet' || descriptor.provider === 'instagram') {
-    return <SocialEmbedRenderer descriptor={descriptor} />
+    return <SocialEmbedRenderer descriptor={descriptor} key={descriptor.id} />
   }
 
   if (descriptor.provider === 'youtube') {
@@ -50,9 +51,10 @@ export function UrlEmbed({ descriptor }: { descriptor: EmbedDescriptor }) {
 
   // Privacy gate: don't reach out to the provider until consented. `off` keeps
   // it a plain link; otherwise the placeholder shows until "Load" (this embed)
-  // or "Always allow" / global `always` permits the fetch.
+  // or "Always allow" / global `always` permits the fetch. The URL is the plain
+  // link's label: without one PrettyLink would fetch the provider page for a title.
   if (mode === 'off') {
-    return <PrettyLink className="wrap-anywhere" href={descriptor.sourceUrl} />
+    return <PrettyLink className="wrap-anywhere" fallbackLabel={descriptor.sourceUrl} href={descriptor.sourceUrl} />
   }
 
   const consented = mode === 'always' || loaded || allowed.includes(descriptor.provider)

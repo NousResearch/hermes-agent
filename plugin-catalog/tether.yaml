@@ -1,0 +1,26 @@
+name: tether
+repo: https://github.com/Zek-Takai/hermes-tether
+sha: adc4bfdc679c0514bc6d26e4241d6975493a8f87
+subdir: plugin/tether
+title: Hermes Tether
+version: "0.1.0"
+description: "One Hermes agent, many machines: lends a remote Hermes agent the terminal, files, screen and apps of your paired desktop machines (macOS and Windows). Say 'tether <machine>' and the agent's terminal, file and computer-use tools act on that machine under its own Hermes rules and approvals; send 'untether' to bring them home. Each machine dials the host over a pinned, mutual TLS 1.3 link (256-bit suites only), and the person at the machine allows every session on its own screen before anything runs. Includes a Tether panel for Hermes Desktop (paired machines, labels, idle limits, connection log). Disclosure — the host listens on the LAN or tailnet address you configure (default 127.0.0.1) and each paired device connects to it over pinned mutual TLS 1.3; no third-party services, no telemetry; while a machine is tethered, the host session's shell commands, file reads/writes and computer use run on that device after the person there allows the session, judged by the device's own Hermes rules (its hardline/deny floors always; commands the host's approval gate already passed skip the device's own approval prompts); skills opened during a tethered session are copied read-only into a per-session workspace on the device and removed when it closes; background tasks: the link listener (host), the device's connection, an idle sweeper and a settings watcher; stores one Ed25519 key per machine, encrypted at rest, with its passphrase in Hermes's secret store; adds a short per-turn note while a machine is tethered; reads private Hermes approval internals (tools.approval) and fails closed if they change."
+maintainer: Zek-Takai
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+platforms: []
+image: https://raw.githubusercontent.com/Zek-Takai/hermes-tether/adc4bfdc679c0514bc6d26e4241d6975493a8f87/docs/media/tether-banner.png
+screenshots:
+  - https://raw.githubusercontent.com/Zek-Takai/hermes-tether/adc4bfdc679c0514bc6d26e4241d6975493a8f87/docs/media/tether-desktop.png
+  - https://raw.githubusercontent.com/Zek-Takai/hermes-tether/adc4bfdc679c0514bc6d26e4241d6975493a8f87/docs/media/tether-demo.gif
+known_issues:
+  - "Devices must be macOS or Windows; the host must be macOS or Linux (it uses a POSIX file lock and Unix socket). On a device, Hermes must run in the signed-in desktop session so the consent prompt can appear."
+  - "Computer use on the device needs the companion plugin tether_screen, installed by hand from plugin/tether_screen in the repository. Its validation stops at the capability probe exactly like Hermes's bundled computer-use plugin."
+  - "Several Hermes Desktops connected to one backend share it: closing one ends the chat open in the other."
+  - "'untether' closes a connection only when it is sent as a message on its own."
+capabilities:
+  provides_tools: [devices]
+  provides_hooks: [pre_llm_call, post_llm_call, post_tool_call, transform_tool_result]
+  provides_middleware: [tool_execution]
+  requires_env: []

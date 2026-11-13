@@ -1,0 +1,20 @@
+name: sendsafe
+title: SendSafe
+repo: https://github.com/NSEVEjk0/hermes-sendsafe
+sha: 3a94c3162c110898bb91763f9000fb070e9d8f29
+description: Inspect hidden Word and Excel content before risky reads, and create verified visible-content sharing copies.
+maintainer: NSEVEjk0
+tier: community
+category: tools
+version: "0.1.0"
+requires_hermes: ">=0.23.0"
+screenshots:
+  - https://raw.githubusercontent.com/NSEVEjk0/hermes-sendsafe/3a94c3162c110898bb91763f9000fb070e9d8f29/docs/screenshots/excel-inspection.png
+  - https://raw.githubusercontent.com/NSEVEjk0/hermes-sendsafe/3a94c3162c110898bb91763f9000fb070e9d8f29/docs/screenshots/sharing-copy.png
+  - https://raw.githubusercontent.com/NSEVEjk0/hermes-sendsafe/3a94c3162c110898bb91763f9000fb070e9d8f29/docs/screenshots/word-copy.png
+capabilities:
+  provides_tools: [sendsafe_inspect, sendsafe_prepare, sendsafe_verify]
+  provides_hooks: [pre_tool_call]
+  provides_middleware: []
+  requires_env: []
+

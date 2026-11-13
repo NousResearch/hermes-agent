@@ -17,12 +17,26 @@ from gateway.config import PlatformConfig
 # ---------------------------------------------------------------------------
 # Mock the telegram package if it's not installed
 # ---------------------------------------------------------------------------
-from plugins.platforms.telegram.adapter import (  # noqa: E402
-    TelegramAdapter,
-    _escape_mdv2,
-    _strip_mdv2,
-    _wrap_markdown_tables,
-)
+from plugins.platforms.telegram.adapter import TelegramAdapter, _strip_mdv2
+from plugins.platforms.telegram.telegram_markdown import _escape_mdv2, _wrap_markdown_tables
+
+
+def _assert_balanced_mdv2_code_entities(text: str) -> None:
+    """Assert that every unescaped MarkdownV2 code delimiter is closed."""
+    delimiter = None
+    index = 0
+    while index < len(text):
+        if text[index] == "\\":
+            index += 2
+            continue
+        if text.startswith("```", index):
+            delimiter = None if delimiter == "```" else "```"
+            index += 3
+            continue
+        if text[index] == "`":
+            delimiter = None if delimiter == "`" else "`"
+        index += 1
+    assert delimiter is None, f"unclosed {delimiter} code entity in {text!r}"
 
 
 # ---------------------------------------------------------------------------
@@ -76,6 +90,31 @@ class TestFormatMessageBasic:
 
 class TestFormatMessageCodeBlocks:
 
+    def test_repeated_fenced_tool_progress_stays_a_code_block(self, adapter):
+        """Regression for #138148: the dedup counter must not trail a closing fence, on both the
+        queued progress bubble and the native stream-consumer path."""
+        import queue
+
+        from gateway.run_turn_progress import GatewayTurnProgressMixin as M
+
+        progress = "💻 terminal\n```\nssh -F /opt/data/home/.ssh/config fed...\n```"
+        native_lines = []
+        sc = SimpleNamespace(accepts_tool_progress=True, on_tool_progress=native_lines.append)
+        for consumer in (None, sc):
+            ctx = SimpleNamespace(last_progress_msg=[None], repeat_count=[0], progress_queue=queue.Queue())
+            runner = SimpleNamespace(_ctx=ctx, _stream_consumer=lambda c=consumer: c)
+            for _ in range(4):
+                M._progress_emit(runner, progress)
+            if consumer is None:
+                st = SimpleNamespace(progress_lines=[])
+                while not ctx.progress_queue.empty():
+                    rendered = M._progress_absorb(runner, st, ctx.progress_queue.get())
+            else:
+                rendered = native_lines[-1]
+            assert rendered.endswith("```\n(×4)"), rendered
+            formatted = adapter.format_message(rendered)
+            assert "\\`\\`\\`" not in formatted
+            assert "```\nssh -F /opt/data/home/.ssh/config fed...\n```" in formatted
 
     def test_code_block_special_chars_not_escaped(self, adapter):
         text = "```\nif (x > 0) { return !x; }\n```"
@@ -114,6 +153,122 @@ class TestFormatMessageCodeBlocks:
         # \\ in input → \\\\ in output (each \ escaped once)
         assert r"`\\\\server\\share`" in result
 
+    def test_inline_triple_backticks_not_treated_as_fence(self, adapter):
+        r"""Inline ``` spans must not be swallowed by the fenced-block regex.
+
+        Regression for the over-matching fence regex that turned a single-line
+        inline triple-backtick span into a mangled MarkdownV2 <pre> entity
+        (Telegram: "can't find end of pre entity"), forcing a plain-text
+        fallback that dropped all rich formatting.
+        """
+        text = "the syntax is ```like this``` inline"
+        result = adapter.format_message(text)
+        # Content is preserved, and the inline span is NOT emitted as a raw
+        # fenced block: no unescaped triple-backtick run survives to open an
+        # unbalanced <pre> entity (the literal backticks are escaped instead).
+        assert "like this" in result
+        assert "```" not in result
+
+    def test_fence_and_inline_backticks_mixed(self, adapter):
+        r"""A real fenced block still gets protected even when the same message
+        also contains inline triple backticks elsewhere."""
+        text = "```\nx = 1\n```\nand inline ```y``` after"
+        result = adapter.format_message(text)
+        # The standalone fenced block is protected verbatim...
+        assert "```\nx = 1\n```" in result
+        # ...and the trailing inline ```y``` does not spawn a second,
+        # unbalanced fence — only the real block's two fences remain.
+        assert result.count("```") == 2
+        assert "y" in result
+
+    def test_fence_with_trailing_whitespace_on_close(self, adapter):
+        r"""A closing fence with trailing spaces must not double up the ```."""
+        text = "```\ncode\n```   "
+        result = adapter.format_message(text)
+        # Exactly one closing fence, not "``````".
+        assert "``````" not in result
+        assert "code" in result
+
+    def test_fence_with_crlf_line_endings_is_protected(self, adapter):
+        r"""A fenced block whose lines end in CRLF (``\r\n``) — e.g. content
+        that originated on Windows — must still be protected. The closing-fence
+        anchor tolerates a trailing ``\r`` before the line end; without it the
+        block goes unrecognized and its backticks are escaped into literal
+        ``\``` runs, dropping the code formatting."""
+        text = "```\r\ncode\r\n```\r\n"
+        result = adapter.format_message(text)
+        # Protected as a real fence: the body survives and the fence backticks
+        # are emitted literally, not escaped (which is what an unmatched close
+        # would produce).
+        assert "code" in result
+        assert "\\`" not in result
+
+    def test_midline_opened_fence_stays_protected(self, adapter):
+        r"""A fence opened after lead-in prose on the same line ("Here is the
+        code: ```") is a real <pre> block on main and must stay one: the
+        line-start-only anchor downgraded it to escaped literal prose."""
+        text = "Here is the code: ```python\nprint('hi')\n```"
+        result = adapter.format_message(text)
+        assert "```python\nprint('hi')\n```" in result
+        assert "\\`" not in result
+
+    def test_list_nested_indented_fence_stays_protected(self, adapter):
+        r"""Fences indented by 4+ spaces (code nested in lists/blockquotes) are
+        real <pre> blocks on main and must stay one regardless of indent."""
+        text = "- item:\n    ```\n    code\n    ```"
+        result = adapter.format_message(text)
+        assert "    ```\n    code\n    ```" in result
+        assert "\\`" not in result
+
+    def test_midline_fence_after_inline_code_lead_in(self, adapter):
+        r"""An inline code span in the lead-in must not stop the fence opened
+        later on the same line from being protected."""
+        text = "use `foo` then: ```python\nx\n```"
+        result = adapter.format_message(text)
+        assert "```python\nx\n```" in result
+        assert "`foo`" in result
+        assert "\\`" not in result
+
+    def test_inline_pair_then_real_fence_both_handled(self, adapter):
+        r"""An inline triple-backtick pair on one line must not swallow a real
+        line-start fence that follows it (the pre-anchored regex over-matched
+        from the inline pair; the old unanchored regex matched from it too)."""
+        text = "the syntax is ```like this``` inline\n```python\nx\n```"
+        result = adapter.format_message(text)
+        # The real fence is protected verbatim...
+        assert "```python\nx\n```" in result
+        # ...the inline pair is escaped as literal text (no raw ``` for it)...
+        assert "like this" in result
+        # ...and exactly the one real block's two fences remain.
+        assert result.count("```") == 2
+
+    def test_nested_backticks_preserve_markdownv2_formatting(self, adapter):
+        text = (
+            "**Раздел**\n"
+            "- `**жирный**`, `*курсив*`, `~~зачёркнутый~~`, `||спойлер||`\n"
+            "- `` `код` `` и ``` блоки кода ```\n"
+            "- `[ссылка](url)`, заголовки `##`\n"
+            "**Вывод**\n"
+            "5. Не мешай `**` и эмодзи внутри одной строки — каша."
+        )
+
+        result = adapter.format_message(text)
+
+        assert "*Раздел*" in result
+        assert r"\`\` `код` \`\`" in result
+        assert r"`**`" in result
+        _assert_balanced_mdv2_code_entities(result)
+
+    def test_double_backtick_span_collapses_to_telegram_inline_code(self, adapter):
+        result = adapter.format_message("Use ``value`` now")
+
+        assert result == "Use `value` now"
+
+    def test_inline_code_does_not_span_newlines(self, adapter):
+        result = adapter.format_message("`orphan\n(foo)`")
+
+        assert result == "\\`orphan\n\\(foo\\)\\`"
+
 
 @pytest.mark.asyncio
 async def test_final_send_does_not_retrigger_typing(adapter):
@@ -132,6 +287,32 @@ async def test_final_send_does_not_retrigger_typing(adapter):
     adapter._bot.send_chat_action.assert_not_called()
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("rich", [False, True])
+async def test_silent_cron_delivery_does_not_retrigger_typing(adapter, rich):
+    """A ``cron.delivery.notify: false`` delivery (job_id, notify=False) owns no typing loop, so a re-arm
+    would leave '...typing' showing after the scheduled message; an intermediate send still re-arms."""
+    import asyncio
+
+    adapter._bot = MagicMock()
+    adapter._bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=1))
+    adapter._rich_messages_enabled = rich
+    adapter._should_attempt_rich = lambda *_a, **_k: rich
+    adapter._try_send_rich = AsyncMock(return_value=SimpleNamespace(success=True, message_id="1"))
+    adapter.send_typing = AsyncMock()  # the re-arm itself; per-chat typing pacing is telegram_typing_gate's job
+
+    result = await adapter.send("12345", "Cron brief", metadata={"job_id": "j1", "notify": False})
+    for _ in range(5):
+        await asyncio.sleep(0)
+    assert result.success is True
+    adapter.send_typing.assert_not_called()
+
+    await adapter.send("67890", "Working on it")
+    for _ in range(5):
+        await asyncio.sleep(0)
+    adapter.send_typing.assert_called_once()
+
+
 # =========================================================================
 # format_message - bold and italic
 # =========================================================================
@@ -144,6 +325,49 @@ class TestFormatMessageBoldItalic:
         assert "*bold*" in result
         # Original ** should be gone
         assert "**" not in result
+
+    def test_bold_italic_combined(self, adapter):
+        """***bold italic*** resolves both delimiter families, not a corrupted literal."""
+        assert adapter.format_message("***bold italic***") == "_*bold italic*_"
+
+    def test_bold_with_inner_italic(self, adapter):
+        """Inner *italic* markers inside **bold** stay emphasis instead of being escaped."""
+        assert adapter.format_message("**bold *italic* text**") == "*bold _italic_ text*"
+
+    def test_bold_spans_single_newline(self, adapter):
+        """Bold may cross one newline within a paragraph."""
+        assert adapter.format_message("**bold\ntext**") == "*bold\ntext*"
+
+    def test_bold_does_not_span_paragraph(self, adapter):
+        """** across a blank line stays unmatched literal text."""
+        result = adapter.format_message("**para one\n\npara two**")
+        assert "bold" not in result.strip("*") and result.startswith("\\*")
+
+    def test_nested_double_emphasis(self, adapter):
+        """**outer *mid **deep** mid* outer** keeps the italic; the inner bold merges into the outer
+        one because MarkdownV2 reads a * inside bold as its closer."""
+        assert (
+            adapter.format_message("**outer *mid **deep** mid* outer**")
+            == "*outer _mid deep mid_ outer*"
+        )
+
+    def test_italic_wrapping_bold(self, adapter):
+        """*a **b** c* keeps the inner bold."""
+        assert adapter.format_message("*a **b** c*") == "_a *b* c_"
+
+    def test_quad_asterisk_bold(self, adapter):
+        """****bold**** collapses to a single valid bold (MarkdownV2 cannot nest bold in bold)."""
+        assert adapter.format_message("****bold****") == "*bold*"
+
+    def test_spaced_asterisks_stay_literal(self, adapter):
+        """Multiplication-style 'a * b * c' must not become fake italic."""
+        assert adapter.format_message("a * b * c") == "a \\* b \\* c"
+
+    def test_unmatched_markers_preserved_as_text(self, adapter):
+        """Lone asterisk runs survive as escaped literals, never stripped or balanced."""
+        assert adapter.format_message("****") == "\\*\\*\\*\\*"
+        assert adapter.format_message("a**b") == "a\\*\\*b"
+        assert adapter.format_message("unmatched * star") == "unmatched \\* star"
 
 
     def test_reload_mcp_summary_escapes_dynamic_server_names(self, adapter):
@@ -281,6 +505,36 @@ class TestFormatMessageBlockquote:
         assert "> not expandable" in result
         assert "\\|" in result
         assert "\\>" not in result
+
+
+    def test_expandable_blockquote_single_line(self, adapter):
+        result = adapter.format_message("**> Only line||")
+        assert result == "**> Only line||"
+
+
+    def test_expandable_blockquote_multiline_keeps_closing_mark(self, adapter):
+        """Telegram's documented form: **> opens, || ends the LAST line of the block."""
+        text = "**> First line\n> Second line\n> Last line||"
+        result = adapter.format_message(text)
+        assert result == "**> First line\n> Second line\n> Last line||"
+
+
+    def test_expandable_blockquote_mark_escaped_before_last_line(self, adapter):
+        """A raw || before the block's last line is rejected by Telegram as an unterminated spoiler."""
+        result = adapter.format_message("**> First line||\n> Second line")
+        assert result == "**> First line\\|\\|\n> Second line"
+
+
+    def test_expandable_blockquote_ends_at_next_opener(self, adapter):
+        """A **> line starts a new quote block, so each block keeps its own closing mark."""
+        text = "> Plain quote\n**> Hidden one\n> Hidden two||"
+        result = adapter.format_message(text)
+        assert result == "> Plain quote\n**> Hidden one\n> Hidden two||"
+
+
+    def test_expandable_blockquote_escapes_content(self, adapter):
+        result = adapter.format_message("**> Step 1.\n> Done (ok)!||")
+        assert result == "**> Step 1\\.\n> Done \\(ok\\)\\!||"
 
 
 # =========================================================================
@@ -451,7 +705,62 @@ async def test_send_escapes_chunk_indicator_for_markdownv2(adapter):
 
 
 class TestEditMessageStreamingSafety:
+    @pytest.fixture(autouse=True)
+    def _real_link_preview_options(self, monkeypatch):
+        # The suite's telegram stub makes LinkPreviewOptions a MagicMock whose
+        # attributes are always truthy mocks; record the real kwargs instead.
+        import plugins.platforms.telegram.adapter as tg_adapter
 
+        monkeypatch.setattr(
+            tg_adapter, "LinkPreviewOptions", lambda **kw: SimpleNamespace(**kw)
+        )
+
+    @staticmethod
+    def _assert_link_previews_disabled(kwargs):
+        assert (
+            kwargs.get("disable_web_page_preview") is True
+            or (
+                kwargs.get("link_preview_options") is not None
+                and kwargs["link_preview_options"].is_disabled is True
+            )
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("finalize", "edit_side_effect", "expected_edits"),
+        [
+            (False, None, 1),
+            # Final edit: MarkdownV2 rejected, then the plain-text fallback edit.
+            (True, [Exception("bad markdown"), None], 2),
+        ],
+    )
+    async def test_every_legacy_edit_disables_link_preview_when_configured(
+        self, finalize, edit_side_effect, expected_edits
+    ):
+        """Regression for #61018: disable_link_previews reached sends but not
+        editMessageText, so streamed and finalized replies grew preview cards."""
+        adapter = TelegramAdapter(
+            PlatformConfig(
+                enabled=True,
+                token="fake-token",
+                extra={"disable_link_previews": True},
+            )
+        )
+        adapter._bot = MagicMock()
+        adapter._bot.edit_message_text = AsyncMock(side_effect=edit_side_effect)
+
+        result = await adapter.edit_message(
+            "123",
+            "456",
+            "reply https://example.com **bold**",
+            finalize=finalize,
+        )
+
+        assert result.success is True
+        edits = adapter._bot.edit_message_text.await_args_list
+        assert len(edits) == expected_edits
+        for edit in edits:
+            self._assert_link_previews_disabled(edit.kwargs)
 
     @pytest.mark.asyncio
     async def test_message_too_long_splits_into_continuations_not_silent_truncation(self):
@@ -490,6 +799,37 @@ class TestEditMessageStreamingSafety:
         # Continuations were sent threaded as replies for visual grouping.
         assert adapter._bot.send_message.await_count == len(result.continuation_message_ids)
 
+    @pytest.mark.asyncio
+    async def test_message_too_long_first_chunk_edit_disables_link_preview(self):
+        """The overflow split edits chunk 1 in place; it must honor the same
+        setting as the continuation sends that follow it (#61018)."""
+        adapter = TelegramAdapter(
+            PlatformConfig(
+                enabled=True,
+                token="fake-token",
+                extra={"disable_link_previews": True},
+            )
+        )
+        adapter._bot = MagicMock()
+        adapter._bot.edit_message_text = AsyncMock()
+        _next_id = [1000]
+
+        async def _fake_send(**kwargs):
+            _next_id[0] += 1
+            return SimpleNamespace(message_id=_next_id[0])
+
+        adapter._bot.send_message = AsyncMock(side_effect=_fake_send)
+
+        result = await adapter.edit_message(
+            "123",
+            "456",
+            "https://example.com " + ("x" * 6000),
+            finalize=True,
+        )
+
+        assert result.success is True
+        first_edit = adapter._bot.edit_message_text.await_args_list[0].kwargs
+        self._assert_link_previews_disabled(first_edit)
 
     @pytest.mark.asyncio
     async def test_mid_stream_overflow_truncates_instead_of_splitting(self):
@@ -640,3 +980,20 @@ class TestTelegramGuestMentionGating:
         message.caption_entities = [_guest_mention_entity(text)]
 
         assert adapter._should_process_message(message) is True
+
+
+def test_ignore_root_dm_makes_the_root_dm_a_command_lobby():
+    """``extra.ignore_root_dm`` drops plain root-DM text for chats with ``dm_topics``; commands, topic messages
+    and chats without topics still pass."""
+    a = TelegramAdapter(PlatformConfig(enabled=True, token="t", extra={
+        "ignore_root_dm": True, "dm_topics": [{"chat_id": 111, "topics": []}]}))
+
+    def msg(chat, thread=None):
+        return SimpleNamespace(chat=SimpleNamespace(id=chat, type="private"), message_thread_id=thread,
+                               is_topic_message=thread is not None, from_user=SimpleNamespace(id=chat, is_bot=False),
+                               text="hi", entities=None, caption_entities=None, reply_to_message=None)
+
+    assert a._should_process_message(msg(111)) is False
+    assert a._should_process_message(msg(111), is_command=True) is True
+    assert a._should_process_message(msg(111, 7)) is True
+    assert a._should_process_message(msg(222)) is True

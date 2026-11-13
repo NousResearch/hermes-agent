@@ -1,0 +1,25 @@
+name: model-forge
+title: Model Forge
+repo: https://github.com/mr-pewpy/model-forge
+sha: 931cc74bdc7c7dc0341a871566582e561d5e3a9e
+subdir: model-forge
+description: "Local models for every modality — chat, vision, OCR, image generation and editing, video, 3D meshes, music, SFX and voice. Model Forge finds your hardware (local probes; remote compute targets use the budgets you declare), shows which models fit, maps each model to the right inference engine (llama.cpp, Strata, Ollama, vLLM, ComfyUI, a user-configured OpenAI-compatible media gateway and more), pulls the model, and wires it into Hermes as a provider — so chat, image_generate, video_generate, vision and TTS run on hardware you control with no account and no API key. Six tools: model_forge_status (targets, VRAM/RAM, engines, loaded models), model_forge_browse (per-modality model catalog with hardware-fit verdicts), model_forge_target_add (register compute targets), model_forge_install (pull models through engine-native paths), model_forge_activate (wire a running chat model into Hermes), model_forge_generate_media (3D, music and SFX jobs through a user-configured OpenAI-compatible media gateway). Disclosure — model pulls download weights from huggingface.co or modelscope.cn on user request, and model_forge_browse queries the public huggingface.co model API for fresh listings unless fresh=false (optional HF_TOKEN / MODELSCOPE_API_TOKEN pull credentials live in plugin settings, are read only through Hermes' secret route and are sent only to their own host family); shell commands are limited to read-only hardware probes (nvidia-smi, rocm-smi); hardware probes read local system state (GPU queries, sysfs, the Windows memory API) while remote compute targets use user-declared budgets; adding a compute target and model_forge_activate with apply=true (which rewrites model.default, model.provider and base_url in config.yaml) each ask for Hermes approval first; media jobs and Maya pulls POST prompts and image bytes to user-configured endpoints; the bundled TTS helper POSTs text and base64 voice-clone reference audio to a user-configured /v1/audio/speech endpoint; the only background process is a download daemon thread; no telemetry."
+maintainer: mr-pewpy
+tier: community
+category: tools
+version: "1.0.0"
+requires_hermes: ">=0.23.0"
+readme: true
+platforms: []
+capabilities:
+  provides_tools:
+    - model_forge_status
+    - model_forge_browse
+    - model_forge_target_add
+    - model_forge_install
+    - model_forge_activate
+    - model_forge_generate_media
+  provides_hooks:
+    - pre_tool_call
+  provides_middleware: []
+  requires_env: []

@@ -55,8 +55,10 @@ function setSessionValue<T extends boolean | number>(
   target.set(next)
 }
 
-export const setThreadAtBottom = (isAtBottom: boolean, sessionId: string | null = null) => {
-  setSessionValue($threadScrolledUpBySession, sessionId, !isAtBottom, false)
+// `scrolledUp` dims the composer; it diverges from the jump pill once the reader
+// stalls (see list.tsx), so the composer comes back while the pill stays.
+export const setThreadAtBottom = (isAtBottom: boolean, sessionId: string | null = null, scrolledUp = !isAtBottom) => {
+  setSessionValue($threadScrolledUpBySession, sessionId, scrolledUp, false)
   setSessionValue($threadJumpButtonVisibleBySession, sessionId, !isAtBottom, false)
 }
 
@@ -67,13 +69,14 @@ export const resetThreadScroll = (sessionId: string | null = null) => {
 
 export const publishThreadAtBottom = (
   isAtBottom: boolean,
-  publisher: { paneVisible: boolean; sessionId?: string | null }
+  publisher: { paneVisible: boolean; sessionId?: string | null },
+  scrolledUp = !isAtBottom
 ): void => {
   if (!publisher.paneVisible) {
     return
   }
 
-  setThreadAtBottom(isAtBottom, publisher.sessionId)
+  setThreadAtBottom(isAtBottom, publisher.sessionId, scrolledUp)
 }
 
 export const resetPublishedThreadScroll = (publisher: { paneVisible: boolean; sessionId?: string | null }): void => {

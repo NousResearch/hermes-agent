@@ -1,0 +1,27 @@
+name: oneiros
+title: Oneiros Dream Cycle
+repo: https://github.com/noblebrown-69/hermes-oneiros
+sha: c9bd78835f6388f04b23a9171c331e6270ef2b73
+description: "Your agent sleeps on it. Nightly proposal-only memory consolidation with morning review, receipts, and one-step rollback. No model calls. Distinct from hermes-dreaming. Disclosure — Oneiros reads the profile's memory files, session history (state.db, read-only) and memory-hygiene report files to propose memory edits; when the user enables apply it rewrites MEMORY.md/USER.md inside the active profile under Hermes' memory file lock, keeping snapshots, receipts and rollback; no model calls and no network."
+maintainer: noblebrown-69
+tier: community
+category: memory
+version: "0.8.8"
+image: "https://raw.githubusercontent.com/noblebrown-69/hermes-oneiros/c9bd78835f6388f04b23a9171c331e6270ef2b73/assets/banner.png"
+docs_url: "https://github.com/noblebrown-69/hermes-oneiros/blob/c9bd78835f6388f04b23a9171c331e6270ef2b73/README.md"
+readme: true
+platforms: []
+capabilities:
+  provides_tools:
+    - dream_cycle_propose
+    - dream_cycle_status
+    - dream_cycle_apply
+    - dream_cycle_rollback
+    - dream_cycle_receipts
+    - dream_cycle_review_status
+    - dream_cycle_snooze
+  provides_hooks:
+    - pre_llm_call
+    - on_session_open
+  provides_middleware: []
+  requires_env: []

@@ -1,0 +1,17 @@
+name: modelscout
+repo: https://github.com/iknowterry/modelscout
+sha: "aa936d847124ffa2655f630f93269de38efaaba9"
+subdir: plugins/modelscout
+title: ModelScout
+description: "Per-task model choice from the models you actually have, so light work stops spending frontier-model tokens and subscription usage limits last longer. A pre_llm_call hook shows a short card for each new task (tier, best-fit model from your keys, subscriptions and live models.dev pricing, and why), then routes the work to a right-sized delegate_task child, up or down tier, asks, or stays, per your defaults. Bundles the modelscout skill and a /modelscout command for settings and a measured savings report. Disclosure — reads and writes ~/.claude/modelscout-profile.json (settings shared with ModelScout on other agents), appends routed-child outcomes (tier, model, status; no goal text) to ~/.claude/modelscout-outcomes.jsonl, and reads the model inventory and catalog JSON beside it plus Hermes's own models_dev_cache.json; it opens Hermes state.db read-only to look up a routed child's model and for the savings report, which also reads Claude Code transcripts read-only. A pre_llm_call hook adds routing instructions to each new task's prompt and can steer work into delegated subagents. In Hermes the plugin code makes no network calls and reads no credentials. On Claude Code, Codex and Gemini CLI (not Hermes), hooks/session_start.py runs scripts/catalog.py in a detached process to fetch the public models.dev catalog weekly, sending no keys or user data (`modelscout: catalog off` disables it). The bundled skill's optional discover-models.sh, run through the terminal tool, reads provider API-key env vars, sends each only to its own provider's list-models endpoint and fetches the public models.dev catalog. No telemetry or self-updating, and no background processes in Hermes."
+maintainer: iknowterry
+tier: community
+category: models
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/iknowterry/modelscout/blob/aa936d847124ffa2655f630f93269de38efaaba9/plugins/modelscout/README.md
+version: "0.3.10"
+capabilities:
+  provides_tools: []
+  provides_hooks: [pre_llm_call, subagent_start, subagent_stop]
+  provides_middleware: []
+  requires_env: []

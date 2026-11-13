@@ -23,7 +23,7 @@ import pytest
 
 import tools.file_tools as ft
 import tools.file_tools_paths as ftp
-import tools.terminal_tool as terminal_tool
+from tools import terminal_tool
 
 
 @pytest.fixture
@@ -50,7 +50,7 @@ def test_relative_terminal_cwd_anchors_to_absolute_not_process_cwd(_isolated_cwd
     make it absolute deterministically. We assert the resolved path is
     absolute and stable regardless of where os.getcwd() points.
     """
-    workspace, decoy = _isolated_cwd
+    _workspace, _decoy = _isolated_cwd
     # Poison config: literal relative '.'
     monkeypatch.setenv("TERMINAL_CWD", ".")
 
@@ -72,7 +72,7 @@ def test_live_tracking_cwd_wins_over_relative_terminal_cwd(_isolated_cwd, monkey
     worktree) must override a stale relative TERMINAL_CWD so edits land where
     the agent is actually working.
     """
-    workspace, decoy = _isolated_cwd
+    workspace, _decoy = _isolated_cwd
     monkeypatch.setenv("TERMINAL_CWD", ".")
     terminal_tool.record_session_cwd("default", str(workspace))
 
@@ -83,7 +83,7 @@ def test_live_tracking_cwd_wins_over_relative_terminal_cwd(_isolated_cwd, monkey
 
 def test_absolute_terminal_cwd_used_verbatim(_isolated_cwd, monkeypatch):
     """An absolute TERMINAL_CWD is the resolution base (no live tracking)."""
-    workspace, decoy = _isolated_cwd
+    workspace, _decoy = _isolated_cwd
     monkeypatch.setenv("TERMINAL_CWD", str(workspace))
 
     resolved = ftp._resolve_path_for_task("target.py", task_id="default")
@@ -138,7 +138,7 @@ def test_container_relative_path_keeps_container_cwd_symlink(tmp_path, monkeypat
 
 def test_resolution_base_always_absolute_no_terminal_cwd(_isolated_cwd, monkeypatch):
     """With TERMINAL_CWD unset, the base falls back to an ABSOLUTE process cwd."""
-    workspace, decoy = _isolated_cwd
+    _workspace, _decoy = _isolated_cwd
     monkeypatch.delenv("TERMINAL_CWD", raising=False)
 
     resolved = ftp._resolve_path_for_task("target.py", task_id="default")
@@ -352,3 +352,25 @@ def test_v4a_delete_and_move_act_on_a_symlink_not_its_target(
     assert str(link) in out["files_modified"]
     if dest:
         assert os.readlink(workspace / dest) == "safe/base.yaml"
+
+
+@pytest.mark.parametrize("live_cwd", [None, "/srv/project-a"], ids=["no-env", "shared-env-moved"])
+def test_container_relative_path_without_a_recorded_cwd_uses_the_backend_cwd(_isolated_cwd, monkeypatch, live_cwd):
+    """A container session with no recorded cwd resolves relative paths against the backend's configured cwd, the
+    same place its terminal commands start: never the process cwd (a host dir such as ``/opt/data`` the sandbox
+    lacks), and never a shared env's live cwd (wherever ANOTHER session last ``cd``'d)."""
+    _workspace, decoy = _isolated_cwd
+    monkeypatch.delenv("TERMINAL_CWD", raising=False)
+    monkeypatch.setattr(terminal_tool, "_get_env_config", lambda: {"env_type": "modal", "cwd": "/root"})
+    envs = {}
+    if live_cwd:
+        envs["default"] = type("ModalEnvironment", (), {"cwd": live_cwd})()
+    monkeypatch.setattr(terminal_tool, "_active_environments", envs)
+
+    resolved = ftp._resolve_path_for_task("notes/todo.md", task_id="b")
+    command_cwd = terminal_tool._resolve_command_cwd(
+        workdir=None, default_cwd="/root", session_key="b", env_type="modal")
+
+    assert resolved == PurePosixPath("/root") / "notes" / "todo.md"
+    assert resolved.parent.parent == PurePosixPath(command_cwd)
+    assert not str(resolved).startswith(str(decoy))

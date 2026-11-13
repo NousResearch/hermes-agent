@@ -60,7 +60,7 @@ class TestGithubCommentDeliveryOffLoop:
         stop = True
         try:
             await asyncio.wait_for(task, timeout=2)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             task.cancel()
 
         assert result.success is True

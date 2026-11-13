@@ -1,0 +1,18 @@
+name: transcribo
+title: Transcribo
+repo: https://github.com/santigamo/transcribo-skill
+sha: 15328a428076e8e0d4b800c5b5759b15694e0fa8
+version: "1.0.0"
+description: "Transcribe audio and video files to text with speaker labels through Transcribo's hosted MCP server (Streamable HTTP at https://api.transcribo.es/mcp, OAuth sign-in, no keys in config), in Spanish and 60 languages in total, up to 4 hours per file. Takes local files, public links, and Google Drive or Dropbox links. Bundles the transcribo workflow skill. Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only. Disclosure — every tool call goes to Transcribo's hosted server (api.transcribo.es) and acts on the user's Transcribo account; the tool set is served by that server at runtime and is not covered by the pinned sha. Audio is uploaded to Transcribo, and the transcript and a compressed copy of the audio stay in the account until the user deletes them. start_transcription and start_uploaded_transcription spend the account's audio balance. To send a local file, the skill has the agent run curl to upload it to a presigned URL. Sign-in runs the pinned mcp-remote@0.1.49 through npx (Node.js 20.18.1+ and npm required), which opens a browser and a local callback port on first use and stores OAuth tokens under ~/.mcp-auth. The package marks the server untrusted, so Hermes asks before every tool the server does not mark read-only and refuses them in unattended runs."
+maintainer: Transcribo
+tier: community
+category: tools
+docs_url: https://github.com/santigamo/transcribo-skill#install-in-hermes-agent
+requires_hermes: ">=0.21.6"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

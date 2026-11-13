@@ -421,7 +421,7 @@ def test_automatic_desktop_cleanup_preserves_sibling_and_releases_sole_owner_lea
     def _profile_db(_session: dict):
         yield _FakeDB()
 
-    monkeypatch.setattr(server, "_load_cfg", lambda: {})
+    monkeypatch.setattr(server, "_load_cfg", dict)
     monkeypatch.setattr(server, "_get_db", lambda: None)
     monkeypatch.setattr(server, "_session_db", _profile_db)
     monkeypatch.setattr(

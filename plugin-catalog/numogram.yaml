@@ -1,0 +1,24 @@
+name: numogram
+title: "numogram: Hermes debugs your ESP32"
+repo: https://github.com/zblauser/numogram-hermes-plugin
+sha: 025547ff83c073200ddf94fd2def3c8ca57e7b9e
+description: "Hermes debugs ESP32 firmware on real hardware. It watches the board's serial port, maps crash addresses to source lines from the ELF, fixes the code, builds with idf.py and flashes with esptool, then reads the log to confirm the fix. A crash wakes the session on its own. Also checks firmware GPIO use against a KiCad netlist (swapped signals, strapping, flash and USB pins) and audits chip security read-only. NUMOGRAM_PORT=virtual runs an emulated ESP32-C3 in Espressif's QEMU, so it works without a board. Disclosure — board_build and board_flash go through Hermes's approval prompt (a pre_tool_call hook, one approval rule per tool) and are blocked when nobody can answer; a build runs ESP-IDF's export.sh, idf.py and the project's own CMake and Python scripts and writes the build directory it is given. Runs esptool, espefuse summary (read-only; the plugin has no eFuse write) and, for the virtual board only, Espressif's qemu-system-riscv32 with networking off, always with fixed argument lists, and each child gets an environment allowlist (PATH, HOME, locale, ESP-IDF variables), never Hermes's keys or tokens. Background: a serial watcher thread while watching is on, and a QEMU process for the virtual board that stops when Hermes exits. Network: none beyond loopback (unauthenticated) to its own macOS USB bridge or virtual board, or the socket:// address set in NUMOGRAM_PORT. Reads the project, build, ELF and netlist paths it is given; writes its own state only under the active Hermes profile's home (get_hermes_home() / numogram). Serial output is passed to the model as untrusted data; wake-up messages are built from fixed text and validated hex. The bridge and virtual board drop eFuse write commands. No credentials, no telemetry."
+maintainer: zblauser
+tier: community
+category: tools
+requires_hermes: ">=0.22.7"
+version: "0.1.2"
+image: https://github.com/user-attachments/assets/17a79988-4bcf-428f-bb96-9a06b30780db
+docs_url: https://github.com/zblauser/numogram-hermes-plugin/blob/025547ff83c073200ddf94fd2def3c8ca57e7b9e/README.md
+readme: true
+platforms: [linux, macos]
+known_issues:
+  - "One board at a time. Building and flashing need an ESP-IDF project; board_build needs ESP-IDF where Hermes runs."
+  - "Tested end to end on an ESP32-P4 over USB-Serial/JTAG and on the emulated ESP32-C3. Other chips use the same paths but are untested on hardware; crash parsing on Xtensa chips (ESP32, S2, S3) is untested."
+  - "The macOS bridge supports boards on the chip's own USB-Serial/JTAG port, not boards behind a USB-UART bridge chip."
+  - "The virtual board needs Espressif's qemu-system-riscv32 (idf_tools.py install qemu-riscv32)."
+capabilities:
+  provides_tools: [board_build, board_pins, board_status, board_watch, board_log, board_flash, board_crash, board_audit, board_note]
+  provides_hooks: [pre_tool_call, pre_llm_call, post_llm_call]
+  provides_middleware: []
+  requires_env: []

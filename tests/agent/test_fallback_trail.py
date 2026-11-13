@@ -305,7 +305,7 @@ def test_max_retries_exhausted_result_renders_the_walk():
                           role="fallback", reason="rate limit")
 
     result = max_retries_exhausted_result(
-        agent, err, classified, max_retries=3, is_rate_limited=True,
+        agent, err, classified, attempts=3, is_rate_limited=True,
         error_msg=str(err).lower(), api_kwargs=None, api_messages=[], messages=[],
         conversation_history=[], api_call_count=5, approx_tokens=1200,
         provider="gemini", base_url=agent.base_url, model=agent.model,

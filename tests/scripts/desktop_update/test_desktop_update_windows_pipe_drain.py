@@ -133,6 +133,7 @@ def test_update_step_survives_pipe_leak_flood_and_live_child_stall(
         timeout=300,
         env=env,
         cwd=str(REPO_ROOT),
+        check=False,
     )
 
     # Keep the real flood output on disk instead of flooding the CI log on failure.

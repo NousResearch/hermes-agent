@@ -28,7 +28,7 @@ describe('voiceProviderKeys', () => {
 
   it('scopes to the exact provider segment (no prefix bleed)', () => {
     expect(voiceProviderKeys('tts', 'mini')).toEqual([])
-    expect(voiceProviderKeys('stt', 'openai')).toEqual(['stt.openai.model'])
+    expect(voiceProviderKeys('stt', 'openai')).toEqual(['stt.openai.model', 'stt.openai.streaming_model'])
   })
 })
 

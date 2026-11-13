@@ -1,15 +1,17 @@
-"""`hermes gateway tickets`: HTTP tickets for a client that reaches the gateway over SSH.
+"""`hermes gateway tickets`: HTTP and WebSocket tickets for a client that reaches the gateway over SSH.
 
 The real CLI runs as a subprocess, as an SSH exec would run it: `--probe` against nothing, and
 `--serve` against a real control socket with a real ticket store, then against a real gateway
-whose HTTP auth redeems the ticket.
+whose HTTP auth and WebSocket redeem the ticket.
 """
+import asyncio
 from contextlib import contextmanager
 import json
 import os
 from pathlib import Path
 import shutil
 import signal
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -18,10 +20,13 @@ import time
 import httpx
 import pytest
 
+from websockets.asyncio.client import connect
+from websockets.exceptions import InvalidStatus
+
 from gateway.runtime_bootstrap import TicketStore
 from tests.gateway.test_native_http_auth import daemon, headers
 from tests.gateway.test_normal_runtime_boot import control
-from tests.hermes_cli.test_gateway_attach import REPO, _serve
+from tests.hermes_cli.test_gateway_attach import REPO, _attach, _serve
 
 
 @pytest.fixture
@@ -72,7 +77,7 @@ def test_probe_names_the_protocol_and_purposes_without_a_gateway(home):
     run = _run(home, "--probe")
     assert run.returncode == 0, run.stderr
     assert json.loads(run.stdout) == {
-        "protocol": 1, "purposes": ["native-http", "native-profile-create", "native-profile-registry"],
+        "protocol": 1, "purposes": ["native-http", "native-profile-create", "native-profile-registry", "interactive"],
         # This test process is not an elevated Windows session-0 login.
         "windows_service_session": False}
     assert len(run.stdout.splitlines()) == 1
@@ -135,7 +140,7 @@ def test_serve_answers_each_request_line_with_one_single_use_http_ticket(home):
     ('{"id":true,"purpose":"native-http"}', None, "invalid_request"),
     ('{"id":{"a":1},"purpose":"native-http"}', None, "invalid_request"),
     ('{"id":4}', 4, "unsupported_purpose"),
-    ('{"id":5,"purpose":"interactive"}', 5, "unsupported_purpose"),
+    ('{"id":5,"purpose":"exposure"}', 5, "unsupported_purpose"),
     ('{"id":6,"purpose":["native-http"]}', 6, "unsupported_purpose"),
 ])
 def test_a_malformed_line_gets_an_error_reply_and_the_channel_stays_open(home, line, request_id, code):
@@ -302,6 +307,47 @@ def test_a_profile_the_gateway_cannot_ticket_is_an_error_reply_and_the_channel_s
     finally:
         stop()
     assert "Traceback" not in done["stderr"]
+
+
+@pytest.mark.platforms("linux", "macos")
+def test_serve_mints_the_host_scoped_interactive_ticket_for_the_websocket(home):
+    beta = _named(home, "beta")
+    tickets = TicketStore("owner", frozenset({str(home), str(beta)}))
+    stop = _serve(home, tickets)
+    try:
+        with _channel(home) as (_hello, ask, done):
+            reply = ask('{"id":"ws","purpose":"interactive"}')
+            assert {k: v for k, v in reply.items() if k != "ticket"} == {"id": "ws", "ok": True, "expires_in": 30}
+            # The WebSocket's purpose only: the HTTP API's redeem refuses it and leaves it unspent.
+            with pytest.raises(PermissionError):
+                tickets.redeem(reply["ticket"], profile_id=None, purpose="native-http")
+            grant = tickets.redeem(reply["ticket"], profile_id=None, purpose="interactive")
+            # Desktop's local grant: the launch profile's home, every served profile selectable.
+            assert (grant["profile_id"], grant["scope"]) == (str(home), "host")
+            assert grant["capabilities"] == tickets.redeem(
+                tickets.mint(profile_id=str(home), subject="uid:1", purpose="interactive", scope="host"),
+                profile_id=None, purpose="interactive")["capabilities"]
+            with pytest.raises(PermissionError):
+                tickets.redeem(reply["ticket"], profile_id=None, purpose="interactive")
+    finally:
+        stop()
+    assert reply["ticket"] not in done["stderr"]
+
+
+@pytest.mark.platforms("linux", "macos")
+@pytest.mark.parametrize("profile", ["beta", "default", None, "no-such", 7])
+def test_an_interactive_request_that_names_a_profile_is_refused(home, profile):
+    beta = _named(home, "beta")
+    tickets = TicketStore("owner", frozenset({str(home), str(beta)}))
+    stop = _serve(home, tickets)
+    try:
+        with _channel(home) as (_hello, ask, _done):
+            refused = ask(json.dumps({"id": 3, "purpose": "interactive", "profile": profile}))
+            assert (refused["id"], refused["ok"], refused["error"]["code"]) == (3, False, "invalid_request")
+            assert "ticket" not in refused and not tickets.outstanding()
+            assert ask('{"id":4,"purpose":"interactive"}')["ok"] is True
+    finally:
+        stop()
 
 
 @contextmanager
@@ -488,3 +534,62 @@ def test_the_gateway_takes_profile_management_tickets_on_their_own_routes_only(t
             gone = ask('{"id":9,"purpose":"native-http","profile":"beta"}')
             assert (gone["ok"], gone["error"]["code"]) == (False, "unknown_profile")
             assert client.get("/api/profiles/delta/soul", headers=ticket("native-http", "delta")).status_code == 200
+
+
+async def _socket_calls(origin, ticket, calls):
+    """Dial /api/ws with *ticket* and answer each (method, params): its result, or its error message."""
+    url = origin.replace("http:", "ws:") + "/api/ws"
+    answers = []
+    async with connect(url, subprotocols=["hermes-gateway-v1", "hermes-gateway-ticket." + ticket], proxy=None) as ws:
+        assert ws.subprotocol == "hermes-gateway-v1"
+        for number, (method, params) in enumerate(calls):
+            await ws.send(json.dumps({"jsonrpc": "2.0", "id": number, "method": method, "params": params}))
+            async with asyncio.timeout(30):
+                while (reply := json.loads(await ws.recv())).get("id") != number:
+                    pass
+            answers.append(reply["result"] if "result" in reply else reply["error"]["message"])
+    return answers
+
+
+def _stored_sessions(profile_home):
+    with sqlite3.connect(f"file:{profile_home / 'state.db'}?mode=ro", uri=True) as db:
+        return {row[0] for row in db.execute("SELECT id FROM sessions")}
+
+
+@pytest.mark.platforms("linux")
+def test_one_served_interactive_ticket_opens_a_socket_that_works_in_every_profile(tmp_path):
+    with _multiplexing_daemon(tmp_path, ("beta",)) as (home, _descriptor), _channel(home) as (hello, ask, _done):
+        origin, beta = hello["endpoint"]["api_origin"], home / "profiles" / "beta"
+        ticket = ask('{"id":1,"purpose":"interactive"}')["ticket"]
+        in_beta, listed, in_default, named_default, unserved = asyncio.run(_socket_calls(origin, ticket, [
+            ("session.create", {"request_id": "ssh-beta", "source": "cli", "profile": "beta"}),
+            ("session.list", {"profile": "beta"}),
+            ("session.create", {"request_id": "ssh-default", "source": "cli"}),
+            ("session.create", {"request_id": "ssh-default-named", "source": "cli", "profile": "default"}),
+            ("session.list", {"profile": "nobody"})]))
+        # One socket, both profiles: each session is committed in the store of the profile it named.
+        assert in_beta["session_id"] in _stored_sessions(beta)
+        assert in_beta["session_id"] in {row["session_id"] for row in listed["sessions"]}
+        assert {in_default["session_id"], named_default["session_id"]} <= _stored_sessions(home)
+        assert in_beta["session_id"] not in _stored_sessions(home)
+        assert in_default["session_id"] not in _stored_sessions(beta)
+        # Host scope is the profiles this gateway serves, nothing else.
+        assert unserved == "profile_mismatch"
+        # Single-use: the same ticket opens no second socket, and it is no HTTP ticket.
+        with pytest.raises(InvalidStatus):
+            asyncio.run(_socket_calls(origin, ticket, []))
+        with httpx.Client(base_url=origin, trust_env=False, timeout=60) as client:
+            unspent = ask('{"id":2,"purpose":"interactive"}')["ticket"]
+            assert client.get("/api/config", headers=headers(unspent)).status_code == 401
+
+
+@pytest.mark.platforms("linux")
+def test_the_ticket_attach_returns_still_reaches_its_own_profile_only(tmp_path):
+    with _multiplexing_daemon(tmp_path, ("beta",)) as (home, _descriptor):
+        attached = json.loads(_attach(home).stdout)
+        refused, own = asyncio.run(_socket_calls(attached["endpoint"]["api_origin"], attached["ticket"], [
+            ("session.create", {"request_id": "attach-beta", "source": "cli", "profile": "beta"}),
+            ("session.create", {"request_id": "attach-default", "source": "cli"})]))
+        assert refused == "profile_mismatch"
+        assert own["session_id"] in _stored_sessions(home)
+        assert not _stored_sessions(home / "profiles" / "beta")

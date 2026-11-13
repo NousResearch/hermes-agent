@@ -151,13 +151,14 @@ def build_gateway_parser(
     from hermes_cli.gateway_runtime_tickets import cmd_gateway_tickets
     gateway_tickets = gateway_subparsers.add_parser(
         "tickets",
-        help="Mint single-use HTTP tickets for a client that reaches the gateway over SSH",
+        help="Mint single-use HTTP and WebSocket tickets for a client that reaches the gateway over SSH",
         description="For a client that forwards the gateway's loopback port (for example over SSH) and "
                     "calls its HTTP API. --probe prints what this host can mint and touches no gateway. "
                     "--serve prints a hello line with the running gateway's endpoint, then answers each "
                     'stdin line {"id": ..., "purpose": "native-http"} with one stdout line holding a '
                     'single-use ticket, until stdin closes. A line may add "profile": "<name>" for '
-                    "another profile the same gateway serves. It never starts a gateway: use "
+                    'another profile the same gateway serves. Purpose "interactive" is the WebSocket\'s '
+                    "ticket for every profile that gateway serves. It never starts a gateway: use "
                     "`hermes gateway attach --start` for that. Tickets are credentials: they are printed "
                     "for the calling process only and never logged.",
         epilog="Exit codes: 0 probe printed, or --serve ended at stdin EOF; 2 invalid invocation; "

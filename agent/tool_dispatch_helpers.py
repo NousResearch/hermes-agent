@@ -18,6 +18,7 @@ from typing import Any, Dict, List, Optional
 
 from agent.compression_marker import _COMPRESSION_MARKER_ARTIFACT_RE
 from agent.message_metadata import stamp_message_timestamp
+from agent.redact_secret_sources import redact_secret_source_values
 from agent.tool_result_classification import (
     FILE_MUTATING_TOOL_NAMES as _FILE_MUTATING_TOOLS,
     tool_may_have_side_effect,
@@ -438,6 +439,17 @@ def _trajectory_normalize_msg(msg: dict[str, Any]) -> dict[str, Any]:
     return msg
 
 
+def _redact_secret_source_content(content: Any) -> Any:
+    """Scrub applied secret-source values from a result's text before it becomes provider context:
+    not every tool runs its output through ``redact_sensitive_text`` (MCP, web, plugin tools)."""
+    if isinstance(content, str):
+        return redact_secret_source_values(content)
+    if isinstance(content, list):
+        return [{**item, "text": redact_secret_source_values(item["text"])} if _is_text_item(item) else item
+                for item in content]
+    return content
+
+
 def _normalize_tool_call_id(tool_call_id: Any) -> Any:
     """Normalize a composite bridge id to its canonical call-id half."""
     if isinstance(tool_call_id, str) and "|" in tool_call_id:
@@ -460,6 +472,7 @@ def make_tool_result_message(
     tool_call_id = _normalize_tool_call_id(tool_call_id)
     # Elision notice is appended to the RAW content first, THEN wrapped, so it sits inside
     # the untrusted block next to the data it describes — once, at construction (cache-safe).
+    content = _redact_secret_source_content(content)
     wrapped = _maybe_wrap_untrusted(name, _maybe_append_elision_notice(name, content))
     message = stamp_message_timestamp({
         "role": "tool",

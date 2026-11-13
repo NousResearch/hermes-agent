@@ -1047,6 +1047,11 @@ function ModelFamilyRow({
 
   const isCurrent = activeId !== null
   const { name, tag } = modelDisplayParts(family.id)
+  // Lead the row with the provider route the id actually carries (`cx/`,
+  // `atr/atmo/`, `oc/`) so an aggregator's model can be told apart before it is
+  // hovered or picked. The friendly name alone drops it, and two routes can
+  // carry the same base id (#130349 follow-up).
+  const idPath = family.id.includes('/') ? family.id.slice(0, family.id.lastIndexOf('/') + 1) : ''
   const decoration = useModelMenuRowDecoration({ label: name, model: family.id, provider: provider.slug })
   const caps = provider.capabilities?.[family.id]
   const limit = familyLimit(provider, family, isCurrent)
@@ -1168,6 +1173,7 @@ function ModelFamilyRow({
         </Tip>
         <span className={cn('flex min-w-0 flex-1 items-center gap-1.5', limit.tone)}>
           {decoration.icon !== undefined ? <ModelMenuRowIcon icon={decoration.icon} /> : null}
+          {idPath ? <span className="shrink-0 text-(--ui-text-tertiary)">{idPath}</span> : null}
           <span className="min-w-0 truncate">
             <HighlightMatches foldSeparators query={search} text={name} />
           </span>

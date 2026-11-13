@@ -11,11 +11,12 @@ import logging
 import time
 from concurrent.futures import FIRST_COMPLETED, wait as _cf_wait
 from dataclasses import dataclass, field, replace
+from functools import partial
 from typing import Any, Dict, List, Optional
 
 from hermes_cli.observability.shared_metrics_loop import begin_delegation_run, finish_delegation_unit
 from tools.async_delegation import _new_delegation_id, record_unit_child
-from tools.delegate_tool_child_run import _attach_child, _detach_child, _fabricated_entry, _signal_child_stop
+from tools.delegate_tool_child_run import _attach_child, _close_child, _detach_child, _fabricated_entry, _signal_child_stop
 from tools.delegate_tool_progress import (
     SUBAGENT_FAILURE_STATUSES, _print_completion_line, _quiet, describe_subagent_failure, format_batch_tag,
 )
@@ -53,6 +54,9 @@ class _Batch:
     # Result entries of tasks their backend refused (no child): joined into a sync result, listed in a background
     # call's dispatch payload. Units carved for async dispatch never carry them.
     refused: list = field(default_factory=list)
+    # The delegation.auto_resume scheduler's continue: refused instead of run inline when it cannot detach (its
+    # caller is not a turn, so a joined result would never reach the parent).
+    detached_only: bool = False
 
     def owner_kwargs(self) -> dict[str, Any]:
         """Steer/stop authority of the originating session, passed to every child run."""
@@ -119,6 +123,30 @@ def _record_finished_child(batch: _Batch, entry: Any, honor_parent_interrupt: bo
     if not honor_parent_interrupt and batch.unit_id and isinstance(entry, dict):
         record_unit_child(batch.unit_id, entry)
 
+
+def _waiting_on_resume(entry: dict[str, Any]) -> bool:
+    from tools.delegate_tool_auto_resume import waiting_on_resume
+    return waiting_on_resume(entry)
+
+
+def _release_unstarted_child(batch: _Batch, child: Any) -> None:
+    """Teardown for a child whose run never started (``_run_single_child``'s finally never runs for it)."""
+    from tools.delegate_tool_resumable import release_unstarted
+    release_unstarted(child)
+    _detach_child(batch.parent_agent, child)
+    _close_child(child, "Failed to close a subagent that never started")
+
+def _run_gated(batch: _Batch, gate: Any, honor_parent_interrupt: bool, i: int, task: dict[str, Any],
+               child: Any) -> dict[str, Any]:
+    """``batch.run_child`` behind the prompt-cache warm-up gate; a child stopped while it waited never starts.
+    A detached (background) unit ignores the parent's turn interrupt, so only the child's own stop skips it."""
+    parent = batch.parent_agent if honor_parent_interrupt else None
+    entry = gate.run(child, lambda: batch.run_child(i, task, child), parent=parent)
+    if entry is not None:
+        return entry
+    _release_unstarted_child(batch, child)
+    return _fabricated_entry(i, "interrupted", "Stopped while waiting for the batch's shared prompt cache", child)
+
 def _run_children_parallel(batch: _Batch, results: list, *, honor_parent_interrupt: bool) -> None:
     """Run the batch's children in parallel, appending entries to ``results`` (sorted by task_index on return, one
     completion line printed per child). Polls futures with a short ``wait()`` timeout instead of ``as_completed()``
@@ -150,9 +178,13 @@ def _run_children_parallel(batch: _Batch, results: list, *, honor_parent_interru
     # uninterruptible call defeats the interrupt fast-path: the poll loop marks
     # it interrupted and returns, then the join hangs forever. Shutdown without
     # waiting on the interrupt path instead (same shape as moa_loop).
-    interrupted = False
+    interrupted, futures = False, {}
     try:
-        futures = {executor.submit(contextvars.copy_context().run, batch.run_child, i, t, child): i for i, t, child in batch.children}
+        from tools.delegate_tool_config import _get_prefix_stagger_seconds
+        from tools.delegate_tool_prefix_gate import PrefixCacheGate
+        gate = PrefixCacheGate.for_children(batch.children, _get_prefix_stagger_seconds())
+        run = batch.run_child if gate is None else partial(_run_gated, batch, gate, honor_parent_interrupt)
+        futures = {executor.submit(contextvars.copy_context().run, run, i, t, child): i for i, t, child in batch.children}
         pending = set(futures)
         while pending:
             if honor_parent_interrupt and getattr(parent_agent, "_interrupt_requested", False) is True:
@@ -167,9 +199,10 @@ def _run_children_parallel(batch: _Batch, results: list, *, honor_parent_interru
                 _record_finished_child(batch, entry, honor_parent_interrupt)
                 _report_child_done(parent_agent, spinner_ref, entry, _tag, task_labels, n_tasks, n_here - len(results))
                 if (not honor_parent_interrupt and batch.unit_id and entry.get("status") in SUBAGENT_FAILURE_STATUSES
-                        and len(results) < n_here):
+                        and len(results) < n_here and not _waiting_on_resume(entry)):
                     # Detached unit, a sibling is still running: tell the parent NOW, not when the last one finishes.
-                    # Non-durable and separate from the unit's final result (which is still delivered once).
+                    # Non-durable and separate from the unit's final result (which is still delivered once). A child
+                    # promised an automatic resume is not failed: it reports once, later (delegate_tool_auto_resume).
                     with _quiet("task failure notice failed", exc_info=True):
                         from tools.async_delegation import push_task_failure_notice
                         _i = entry.get("task_index", -1)
@@ -180,6 +213,9 @@ def _run_children_parallel(batch: _Batch, results: list, *, honor_parent_interru
         # Abandoned workers unwind on their own (daemon threads, and the
         # child-run layer already applies the deferred-close transport drain).
         executor.shutdown(wait=not interrupted, cancel_futures=interrupted)
+        for future, idx in futures.items() if interrupted else ():
+            if future.cancelled():  # queued behind max_concurrent_children: never started, so never cleaned up
+                _release_unstarted_child(batch, _child_by_index.get(idx))
     results.sort(key=lambda r: r["task_index"])  # match input order
 
 def _execute_and_aggregate(batch: _Batch, *, honor_parent_interrupt: bool = True) -> dict:
@@ -197,6 +233,11 @@ def _execute_and_aggregate(batch: _Batch, *, honor_parent_interrupt: bool = True
     else:
         _run_children_parallel(batch, results, honor_parent_interrupt=honor_parent_interrupt)
 
+    children_by_index = {i: child for i, _, child in batch.children}
+    for entry in results:
+        sid = getattr(children_by_index.get(entry.get("task_index")), "_subagent_id", None)
+        if isinstance(sid, str) and sid:
+            entry["subagent_id"] = sid
     _finalize_child_results(results, batch.task_list, batch.children, batch.parent_agent)
     total_duration = round(time.monotonic() - batch.overall_start, 2)
     for entry in results:
@@ -213,6 +254,10 @@ def _execute_and_aggregate(batch: _Batch, *, honor_parent_interrupt: bool = True
     finish_delegation_unit(batch.task_list, results, background=not honor_parent_interrupt)
 
     combined: dict[str, Any] = {"results": results, "total_duration_seconds": total_duration}
+    # The desktop delegate card joins live subagent state by this id; without it
+    # a repeated goal string lets an older card claim this call's children (#136532).
+    if batch.live_deleg_id:
+        combined["delegation_id"] = batch.live_deleg_id
     # Runtime truth about children's background processes, as prose the parent can't miss inside the JSON.
     from tools.process_registry_notifications import _process_accounting_lines
     process_notes = [line for entry in results for line in _process_accounting_lines(entry)]
@@ -439,7 +484,7 @@ def _dispatch_background(batch: _Batch) -> str:
         batch.origin_wake_sid, batch.origin_session_history_delivery,
         oneshot_session=getattr(batch.parent_agent, "_oneshot_session", None) is True,  # agent_is_oneshot's pin
     )
-    if wake_sid is None:
+    if wake_sid is None:  # (a detached-only continue checked this before building its child)
         logger.info("delegate_task: async delivery unsupported on this session runtime; running the batch synchronously instead.")
         return _run_sync_with_note(batch, "no_async")
 
@@ -459,6 +504,8 @@ def _dispatch_background(batch: _Batch) -> str:
         # cache/delegation/live/<id>/; several units suffix it (-1, -2, ...) and the call keeps the bare id.
         unit_id = batch.live_deleg_id if len(units) == 1 else (f"{batch.live_deleg_id}-{k + 1}" if batch.live_deleg_id else None)
         unit.unit_id = unit_id = unit_id or _new_delegation_id()  # fixed before the runner can start
+        for _, _, child in unit.children:
+            child._delegation_unit_id = unit_id  # its durable record names the ledger row recovery reports on
         # The worker can start before admission returns. Detach only this unit:
         # unsubmitted units must still receive parent stops while a fallback runs.
         for _, _, child in unit.children:
@@ -469,6 +516,8 @@ def _dispatch_background(batch: _Batch) -> str:
             dispatched.append((unit, dispatch["delegation_id"]))
             continue
         _restore_parent_cancellation(unit)
+        if not dispatched and batch.detached_only:
+            return _refuse_detached_only(batch, f"the background pool is at capacity ({dispatch.get('error', 'rejected')})")
         if not dispatched:
             logger.info(
                 "delegate_task: async pool at capacity (%s); running the whole batch synchronously instead.",
@@ -484,6 +533,14 @@ def _dispatch_background(batch: _Batch) -> str:
         payload["inline_results"] = inline_results
     return json.dumps(payload, ensure_ascii=False)
 
+def _refuse_detached_only(batch: _Batch, why: str) -> str:
+    """A detached-only batch that cannot detach: nothing ran, its children are released."""
+    from tools.registry import tool_error
+    for _, _, child in batch.children:
+        _release_unstarted_child(batch, child)
+    return tool_error(f"Not continued: {why}.")
+
+
 def _run_batch(batch: _Batch, background: bool) -> str:
     """Tool result JSON: a dispatch handle (background) or the joined combined results."""
     from tools.delegate_tool import session_joins_delegation
@@ -491,6 +548,6 @@ def _run_batch(batch: _Batch, background: bool) -> str:
     begin_delegation_run(
         batch.task_list, subagents=len(batch.children), depth=getattr(batch.parent_agent, "_delegate_depth", 0) + 1,
     )
-    if background and not session_joins_delegation(batch.parent_agent):
+    if batch.detached_only or (background and not session_joins_delegation(batch.parent_agent)):
         return _dispatch_background(batch)
     return json.dumps(_execute_and_aggregate(batch), ensure_ascii=False)

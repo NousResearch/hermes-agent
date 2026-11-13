@@ -1,0 +1,42 @@
+name: sentinel
+title: SENTINEL OS
+repo: https://github.com/folarihn/Sentinel
+sha: 525fd7a1c8a9eb99c03270c2ab57039378bc132a
+version: "0.2.2"
+description: "Local runtime policy, redacted execution history, supported-file recovery, agent preflight tools and a runaway breaker, with Telegram-ready /sentinel commands. Trusted hooks, not an OS sandbox; native approval modes apply and backups retain original bytes."
+maintainer: folarihn
+tier: community
+category: tools
+requires_hermes: ">=0.21.5"
+platforms:
+  - windows
+  - linux
+  - macos
+readme: true
+screenshots:
+  - https://raw.githubusercontent.com/folarihn/Sentinel/525fd7a1c8a9eb99c03270c2ab57039378bc132a/docs/images/overview-desktop.jpg
+  - https://raw.githubusercontent.com/folarihn/Sentinel/525fd7a1c8a9eb99c03270c2ab57039378bc132a/docs/images/guard-desktop.jpg
+  - https://raw.githubusercontent.com/folarihn/Sentinel/525fd7a1c8a9eb99c03270c2ab57039378bc132a/docs/images/guard-mobile.jpg
+known_issues:
+  - "Trusted in-process hooks, not an OS sandbox; protection depends on the plugin being enabled and loaded."
+  - "Native Hermes approval modes stay authoritative; YOLO can skip approval escalation but never turns a Sentinel BLOCK into an allow."
+  - "Shell analysis is conservative; directory-scoped missions block shell work that cannot be confined."
+  - "Recovery covers supported local files only; it cannot undo remote APIs, emails, deployments or database writes."
+  - "Checkpoint backups keep original file bytes in the local state folder; protect it with OS permissions."
+  - "Delivery of /sentinel replies and alerts inside the Telegram app is not yet verified end to end."
+capabilities:
+  provides_tools:
+    - sentinel_preflight
+    - sentinel_scope
+    - sentinel_checkpoint
+  provides_middleware: []
+  requires_env: []
+  provides_hooks:
+    - pre_tool_call
+    - post_tool_call
+    - on_session_start
+    - on_session_end
+    - subagent_start
+    - subagent_stop
+    - pre_approval_request
+    - post_approval_response

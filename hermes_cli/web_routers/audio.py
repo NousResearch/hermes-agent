@@ -18,12 +18,13 @@ import urllib.parse
 import urllib.request
 from fastapi import APIRouter
 from hermes_cli.dashboard_auth.native_http import grant_home_scope
-from hermes_cli.web_routers._common import http_failure
+from hermes_cli.web_routers._common import client_error, http_failure
 from hermes_cli.web_deps import late
 from hermes_cli.web_server_chat import _ws_auth_ok, _ws_request_is_allowed
 from hermes_cli.web_server_gateway import _read_dashboard_json_response, _split_text_for_speak_stream
+from hermes_cli.web_server_surface import policy
 from hermes_cli.web_session_sockets import SPEAK_STREAM_SOCKET, TRANSCRIBE_STREAM_SOCKET
-from fastapi import HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import HTTPException, Request, WebSocket, WebSocketDisconnect
 from hermes_cli.web_models import (
     AudioTranscriptionRequest,
     STTLeaseRequest,
@@ -140,7 +141,7 @@ async def transcribe_audio_upload(
         # the client quietly re-listens instead of showing a failure toast.
         if "empty transcript" in err.lower():
             return {"ok": True, "transcript": "", "provider": result.get("provider")}
-        raise HTTPException(status_code=400, detail=err)
+        raise HTTPException(status_code=400, detail=client_error(err))
 
     return {
         "ok": True, "transcript": str(result.get("transcript") or "").strip(),
@@ -149,7 +150,7 @@ async def transcribe_audio_upload(
 
 
 @router.get("/api/audio/voice-config")
-async def get_client_voice_config(profile: Optional[str] = None):
+async def get_client_voice_config(request: Request, profile: Optional[str] = None):
     """The active profile's STT/TTS config for CLIENT-DIRECT voice.
 
     Lets the desktop cut the audio relay hop: mic audio goes straight to the
@@ -162,11 +163,13 @@ async def get_client_voice_config(profile: Optional[str] = None):
     Same trust boundary as every profile-scoped route: the caller is an
     authenticated client that can already drive the agent. Keys in the
     response are held in client memory only, never persisted client-side.
-    Gate: ``voice.client_direct`` in config.yaml (default true).
+    Gate: ``voice.client_direct`` in config.yaml (default true), and the
+    serving surface (``client_direct_voice``: the Webapp always relays).
     """
     from tools.voice_client_config import resolve_client_voice_config
+    client_direct = policy(request.app.state).client_direct_voice
     try:
-        result = await _run_config_scoped(profile, resolve_client_voice_config)
+        result = await _run_config_scoped(profile, lambda: resolve_client_voice_config(client_direct))
     except HTTPException:
         raise  # an unknown ?profile= is the scope's 404, not a reason to fall back to relay
     except Exception:
@@ -204,9 +207,9 @@ async def create_voice_live_session(payload: VoiceLiveSessionRequest, profile: O
     try:
         result = await _run_config_scoped(profile, lambda: create_webrtc_session(sdp, payload.history))
     except ValueError as exc:
-        raise HTTPException(status_code=503, detail=str(exc))
+        raise HTTPException(status_code=503, detail=client_error(exc))
     except RuntimeError as exc:
-        raise HTTPException(status_code=502, detail=str(exc))
+        raise HTTPException(status_code=502, detail=client_error(exc))
     return {"ok": True, **result}
 
 
@@ -318,7 +321,7 @@ async def speak_text(payload: TTSSpeakRequest, profile: Optional[str] = None):
 
     if not result.get("success"):
         raise HTTPException(
-            status_code=400, detail=result.get("error") or "Speech synthesis failed",
+            status_code=400, detail=client_error(result.get("error") or "Speech synthesis failed"),
         )
 
     file_path = result.get("file_path")
@@ -384,6 +387,8 @@ async def tts_lease(payload: TTSLeaseRequest, profile: Optional[str] = None):
     except Exception as exc:
         _log.warning("TTS lease %s (%s) failed: %s", lease, payload.active, exc)
         result = {"leases": None, "action": "error", "error": str(exc)}
+    if result.get("error"):  # warm-up never raises: a load failure returns as error=str(exc)
+        result = {**result, "error": client_error(result["error"])}
     return {"ok": True, "lease": lease, "active": payload.active, **result}
 
 
@@ -512,6 +517,8 @@ async def stt_lease(payload: STTLeaseRequest, profile: Optional[str] = None):
     except Exception as exc:
         _log.warning("STT lease %s (%s) failed: %s", lease, payload.active, exc)
         result = {"leases": None, "action": "error", "error": str(exc)}
+    if result.get("error"):  # warm-up never raises: a load failure returns as error=str(exc)
+        result = {**result, "error": client_error(result["error"])}
     return {"ok": True, "lease": lease, "active": payload.active, **result}
 
 
@@ -594,7 +601,7 @@ async def transcribe_stream_ws(ws: WebSocket) -> None:
             await ws.send_json({"type": "final", "transcript": result.get("transcript", ""),
                                 "provider": result.get("provider", "")})
         else:
-            await ws.send_json({"type": "error", "message": result.get("error") or "transcription failed"})
+            await ws.send_json({"type": "error", "message": client_error(result.get("error") or "transcription failed")})
         await ws.close()
 
 

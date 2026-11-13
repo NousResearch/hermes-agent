@@ -1294,6 +1294,7 @@ class DockerEnvironment(BaseEnvironment):
         the thread to finish before the interpreter exits, so ``docker stop`` / ``docker rm`` actually
         completes when we do trigger it.
         """
+        self.stop_all_processes()  # streams into the container: their host-side exec clients too
         container_id = self._container_id
         if not container_id:
             # Bind-mount dirs are still dropped in non-persistent mode.

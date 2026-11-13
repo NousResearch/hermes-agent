@@ -28,7 +28,9 @@ from tools.environments.base_session_env import (
     _SHELL_ENV_NAME_RE, _SNAP_TMP_SUFFIX, _cwd_marker, _pipe_marker, _snapshot_bootstrap_script, _split_cwd_marker,
     _wrap_command_script,
 )
+from tools.environments.base_processes import LongLivedProcessMixin
 from tools.environments.base_wait import _WaitTrace
+from tools.terminal_tool_sudo_askpass import fill_timeout_token, sudo_askpass_supported_once
 from utils import atomic_json_write, env_var_enabled, file_signature
 
 logger = logging.getLogger(__name__)
@@ -260,10 +262,12 @@ def env_uses_host_filesystem(env: object) -> bool:
 # ---------------------------------------------------------------------------
 
 
-class BaseEnvironment(ABC):
+class BaseEnvironment(LongLivedProcessMixin, ABC):
     """Common interface and unified execution flow for all Hermes backends. Subclasses
     implement ``_run_bash()`` and ``cleanup()``; the base provides ``execute()`` with
-    snapshot sourcing, CWD tracking, interrupt handling and timeout enforcement."""
+    snapshot sourcing, CWD tracking, interrupt handling and timeout enforcement, and the
+    long-lived process surface (``start_process`` / ``attach_process`` / ``stop_process``,
+    ``base_processes``)."""
 
     # How execute() hands stdin to _run_bash: "pipe" (process stdin, default),
     # "payload" (passed through as stdin_data; the backend transports it via its
@@ -292,6 +296,14 @@ class BaseEnvironment(ABC):
     # backends set this too; the name avoids the sudoers keyword the install
     # scanner flags in plugin code.
     _passwordless_sudo_probe_supported: bool = False
+
+    # Whether background processes spawned through this env are gone, for this env object, once
+    # cleanup() returns: ended with the sandbox, or no longer reachable through it (persist-mode
+    # Docker drops its container id, so the old object can't poll the job). Teardown then
+    # settles them as lost so their pollers stop. A backend whose processes outlive cleanup()
+    # and stay reachable through the same object (SSH reconnects) sets False so the poller keeps
+    # collecting the real result. Plugin contract: website/docs/developer-guide/terminal-environment-plugin.md.
+    cleanup_stops_processes: bool = True
 
     # Local and Docker override this because they resolve allowlisted values
     # through the active profile scope; other backends keep plain snapshots.
@@ -338,7 +350,9 @@ class BaseEnvironment(ABC):
 
     @abstractmethod
     def cleanup(self):
-        """Release backend resources (container, instance, connection)."""
+        """Release backend resources (container, instance, connection). Raise only while the
+        sandbox may still be live: once it is destroyed, log later failures instead, since a
+        raise skips settling its background processes (see ``cleanup_stops_processes``)."""
         ...
 
     # --- File extraction (backend -> host) ---
@@ -696,6 +710,7 @@ class BaseEnvironment(ABC):
             from tools.terminal_tool_sudo import _rewrite_compound_background
             exec_command = _rewrite_compound_background(exec_command)
         effective_timeout = timeout or self.timeout
+        exec_command = fill_timeout_token(exec_command, effective_timeout)
         effective_cwd = cwd or self.cwd
 
         # Merge sudo stdin with caller stdin.
@@ -805,19 +820,17 @@ class BaseEnvironment(ABC):
             pass
 
     def _prepare_command(self, command: str) -> tuple[str, str | None]:
-        """Rewrite sudo for a piped password, or leave it alone when this backend has NOPASSWD.
-
-        Also applies the macOS ``open`` frontmost raise-ladder (a pure string
-        rewrite, no-op on non-Darwin) so files opened via tool calls are
-        brought to the front instead of landing behind the Hermes window.
-        """
+        """Rewrite sudo for an askpass helper or a piped password (untouched under NOPASSWD) and
+        apply the macOS ``open`` raise-ladder (no-op off Darwin) so opened files come to the front."""
         from tools.terminal_tool_macos_open import _transform_macos_open_command
         from tools.terminal_tool_sudo import _transform_sudo_command
         return _transform_sudo_command(
             _transform_macos_open_command(command),
             sudo_nopasswd_check=self._sudo_nopasswd_works,
+            askpass_supported=self._sudo_askpass_supported,
         )
 
+    _sudo_askpass_supported = sudo_askpass_supported_once
     _SUDO_PROBE_TIMEOUT_S = 3
 
     def _sudo_nopasswd_works(self) -> bool:

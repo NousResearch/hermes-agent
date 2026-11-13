@@ -952,6 +952,26 @@ class TestCollectShareBundle:
         assert "export.csv?token=***&page=2" in bundle
         assert "***:***@10.0.0.5:3128" in bundle
 
+    def test_redaction_masks_credentials_pasted_into_a_chat(self, hermes_home):
+        """#64351: the gateway logs an inbound preview; a pasted OAuth client secret or access
+        token has no secret-named key beside it once the preview cuts the JSON."""
+        from hermes_cli.debug import collect_share_bundle
+
+        client_secret = "GOCSPX-" + "k1fQ7zP2mX9vLk4nRt8wYb1cDf6"
+        access_token = "ya29." + "a0AfH6SMBq7zP2mX9vLk4nRt8wYb1cDf6gHj3sA0"
+        (hermes_home / "logs" / "gateway.log").write_text(
+            "2026-07-14 11:00:00 INFO gateway.run: inbound message: platform=telegram user=u chat=1 "
+            f"msg='client_secret\":\"{client_secret}\",\"redirect_uris\":[' reply_to_id=None\n"
+            "2026-07-14 11:00:01 INFO gateway.run: inbound message: platform=telegram user=u chat=1 "
+            f"msg='my token is {access_token}' reply_to_id=None\n"
+        )
+        with patch("hermes_cli.dump.run_dump"):
+            bundle = "\n".join(collect_share_bundle(log_lines=50, redact=True).values())
+
+        assert "inbound message: platform=telegram" in bundle
+        assert client_secret not in bundle
+        assert access_token not in bundle
+
 
 
 

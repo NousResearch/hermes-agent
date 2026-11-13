@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import re
+from contextlib import suppress
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -283,7 +284,8 @@ def _content_filter_fallback(st: _Trunc, _retry: TurnRetryState) -> Optional[Tru
         force=True, diagnostic=True,
     )
     agent._emit_diagnostic_status("Content filter terminated stream; switching to fallback...")
-    if agent._try_activate_fallback():
+    if agent._try_activate_fallback(reason=FailoverReason.content_policy_blocked):
+        logger.warning("%sContent filter terminated the stream — switched to fallback", agent.log_prefix)
         # Roll partial content back to the last clean turn so the fallback gets a
         # coherent continuation point; unmark survivors (their text left the partial).
         if st.truncated_response_parts:
@@ -627,6 +629,9 @@ def continue_codex_incomplete(
                 if _key == "codex_reasoning_items":
                     from agent.native_compaction import merge_interim_reasoning_items
                     last_msg[_key] = merge_interim_reasoning_items(last_msg.get(_key), interim_msg[_key])
+                    # The refreshed items are this response's: so is their replay price.
+                    from agent.message_metadata import stamp_reasoning_tokens, stamped_reasoning_tokens
+                    stamp_reasoning_tokens(last_msg, stamped_reasoning_tokens(interim_msg))
                 else:
                     last_msg[_key] = interim_msg[_key]
         else:
@@ -635,6 +640,7 @@ def continue_codex_incomplete(
 
     if reasoning_only and streak >= 3:
         if agent._try_activate_fallback(reason=FailoverReason.incomplete_response):
+            logger.warning("%sCodex reasoning-only stall after %d attempts — switched to fallback", agent.log_prefix, streak)
             # The trigger may have consumed the turn budget; without a grace call the loop
             # exits before the fallback is ever asked.
             if api_call_count >= agent.max_iterations or agent.iteration_budget.remaining <= 0:
@@ -718,6 +724,7 @@ def handle_content_policy_refusal(
     messages: list[dict[str, Any]], api_messages: Any, api_kwargs: Any, active_system_prompt: Any,
     conversation_history: Any, api_call_count: int, effective_task_id: Any, turn_id: Any,
     api_request_id: Any, api_start_time: float, retry_count: int, max_retries: int,
+    current_turn_user_idx: Any = None,
 ) -> RefusalVerdict:
     """HTTP-200 refusal (``finish_reason`` ``content_filter`` / ``guardrail_intervened``).
     Deterministic for the unchanged prompt — never retried: one configured-fallback try,
@@ -746,31 +753,58 @@ def handle_content_policy_refusal(
     )
     stop_thinking_spinner(agent, thinking_spinner)
 
-    if agent._has_pending_fallback():
-        agent._buffer_diagnostic_status("⚠️ Model declined to respond (safety refusal) — trying fallback...")
-    if agent._try_activate_fallback():
-        active_system_prompt = _arm_fallback_restart(agent, api_messages, active_system_prompt, _retry)
-        return RefusalVerdict("break", None, active_system_prompt)
-
-    agent._flush_status_buffer()
     _refusal_log = _refusal_text[:500] + "..." if len(_refusal_text) > 500 else _refusal_text
     # native_stop_reason tells an Anthropic classifier refusal (``refusal``) from a Bedrock guardrail
-    # block (``end_turn``); both arrive here as content_filter.
+    # block (``end_turn``); both arrive here as content_filter. Logged before the fallback try so a
+    # refusal the fallback answers still leaves its cause in agent.log (#124874).
     logger.warning(
         "%sModel declined to respond (finish_reason=content_filter). model=%s provider=%s "
         "native_stop_reason=%s stop_details=%s refusal=%s",
         agent.log_prefix, agent.model, agent.provider,
-        getattr(response, "stop_reason", None) or "n/a", _stop_details or "n/a",
+        getattr(response, "stop_reason", None) or "n/a", str(_stop_details or "n/a")[:500],
         _refusal_log or "(no text)",
     )
+    if agent._has_pending_fallback():
+        agent._buffer_diagnostic_status("⚠️ Model declined to respond (safety refusal) — trying fallback...")
+    # Name the cause: without a reason the switch notice reads "unavailable (provider failure)",
+    # while the same refusal raised as an HTTP 400 (DeepSeek's "Content Exists Risk") says
+    # "content policy blocked the request" (#124874). Not a rate-limit reason, so no cooldown is armed.
+    if agent._try_activate_fallback(reason=FailoverReason.content_policy_blocked):
+        active_system_prompt = _arm_fallback_restart(agent, api_messages, active_system_prompt, _retry)
+        return RefusalVerdict("break", None, active_system_prompt)
+
+    agent._flush_status_buffer()
     agent._emit_diagnostic_status("⚠️ The model declined to respond to this request (safety refusal).")
     _refusal_response = "⚠️ " + content_policy_copy(
         label=provider_label_for(agent.provider),
         summary=_refusal_text or "the model returned no explanation",
     )
     agent._cleanup_task_resources(effective_task_id)
-    agent._persist_session(messages, conversation_history)
+    # Do not persist the refused turn. A safety refusal is deterministic for the unchanged
+    # conversation (the filter judges the whole thread), so a durable refused turn re-trips the
+    # filter on every later message and locks the chat — the "stuck session" report. Hand the caller
+    # the PRE-refusal history so an in-memory surface (CLI/TUI/ACP keep ``result["messages"]`` as the
+    # live history) carries nothing forward, and flush token usage for the call that was made. The
+    # gateway reloads history from the durable transcript each turn, so it also drops the refused
+    # turn owner-side after the lease releases (``_drop_content_policy_refused_turn`` in
+    # run_turn_persistence) — a transcript mutation is refused while the turn lease is held, and a
+    # managed worker never mutates its own transcript. Mirrors the context_overflow no-grow rule
+    # (#1630); transient failures keep their persist-and-replay path, only a non-retryable block is
+    # dropped.
+    _db = getattr(agent, "_session_db", None)
+    if _db is not None:
+        with suppress(Exception):
+            _db.flush_token_counts()
+    # Hand back the CLEAN pre-refusal history, not the loop's ``conversation_history``: an in-place
+    # compaction this turn rewrote that baseline into ``list(messages)`` — the whole poisoned working
+    # set including the refused request + tool rounds — so returning it would re-poison CLI/ACP memory
+    # even after the owner cleans the durable transcript (#149708 review). Build it from the real
+    # turn boundary, and carry the refused run's durable boundary row so the owner drops the exact turn.
+    from agent.turn_context import history_before_current_turn, refused_turn_boundary_row_id
+    clean_history = history_before_current_turn(messages, current_turn_user_idx, conversation_history)
+    _boundary_row_id = refused_turn_boundary_row_id(messages, current_turn_user_idx)
     return RefusalVerdict("return", _content_policy_blocked_result(
-        messages, api_call_count, final_response=_refusal_response,
+        clean_history, api_call_count, final_response=_refusal_response,
         error_detail=_refusal_text or "model declined (content_filter)",
+        boundary_row_id=_boundary_row_id,
     ), active_system_prompt)

@@ -186,7 +186,10 @@ def _safe_restore_db(src: Path, dst: Path) -> bool:
 def _restore_epoch(path: Path) -> int:
     if not path.exists():
         return 0
-    with closing(sqlite3.connect(read_only_db_uri(path), uri=True)) as conn:
+    from hermes_cli.sqlite_safe_read import connect_tracked
+
+    with closing(connect_tracked(read_only_db_uri(path), uri=True, tracking_path=path,
+                                 connect_fn=sqlite3.connect)) as conn:
         if not conn.execute("SELECT 1 FROM sqlite_master WHERE name='runtime_epoch'").fetchone():
             return 0
         row = conn.execute("SELECT epoch FROM runtime_epoch WHERE singleton=1").fetchone()
@@ -226,7 +229,7 @@ def _restore_epoch_source(src: Path, dst: Path):
         prepared = Path(work) / 'state.db'
         if not _safe_copy_db(src, prepared):
             raise OSError('Unable to stage a restore with a safe runtime epoch')
-        with closing(sqlite3.connect(prepared)) as conn:
+        with closing(sqlite3.connect(prepared)) as conn:  # health: allow HX015 -- private staging copy in a temp dir
             conn.execute("""CREATE TABLE IF NOT EXISTS runtime_epoch (
                 singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
                 epoch INTEGER NOT NULL CHECK (epoch > 0), instance_id TEXT NOT NULL)""")
@@ -267,9 +270,11 @@ def _restore_db_pages(src: Path, dst: Path) -> bool:
     Callers go through ``_safe_restore_db``, which validates *src* and holds
     the maintenance reservation and epoch floor around this publication.
     """
+    from hermes_cli.sqlite_safe_read import connect_tracked
+
     dst_conn: Optional[sqlite3.Connection] = None
     try:
-        dst_conn = sqlite3.connect(str(dst))
+        dst_conn = connect_tracked(str(dst), tracking_path=dst)
         try:
             # Force a WAL checkpoint so the backup starts from a clean
             # state rather than writing on top of a deep WAL.
@@ -277,7 +282,7 @@ def _restore_db_pages(src: Path, dst: Path) -> bool:
         except sqlite3.Error as exc:
             # Optional: backup() still publishes over a deep WAL, just less tidily.
             logger.debug("Pre-restore WAL checkpoint of %s skipped: %s", dst, exc)
-        src_conn = sqlite3.connect(read_only_db_uri(src), uri=True)
+        src_conn = sqlite3.connect(read_only_db_uri(src), uri=True)  # health: allow HX015 -- the backup being restored, not a live store
         try:
             src_conn.backup(dst_conn)
         finally:
@@ -550,7 +555,9 @@ def _count_session_rows(path: Path) -> Optional[tuple[int, int]]:
     if not path.is_file():
         return None
     try:
-        conn = sqlite3.connect(read_only_db_uri(path), uri=True)
+        from hermes_cli.sqlite_safe_read import connect_tracked
+
+        conn = connect_tracked(read_only_db_uri(path), uri=True, tracking_path=path, connect_fn=sqlite3.connect)
     except sqlite3.Error:
         return None
     try:

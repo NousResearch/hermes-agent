@@ -1,0 +1,36 @@
+name: z-midi-console
+repo: https://github.com/zorroukk/z-midi-console
+sha: 99c79706d23eeaeb9911e4431e98b1426717a1c4
+subdir: ""
+description: "Universal MIDI control-surface builder — any USB/MIDI synth as live on-screen controls in Hermes Desktop, MIDI-learn bindings, multi-synth deck, spectrum analyzers, software mod matrix, .mid export, seven agent tools. Zero Python dependencies. Disclosure — The MIDI Console chat box sends your typed request (masked for key- or token-shaped text), a summary of the active device preset (names, MIDI channel, control labels, CC numbers, modulation lanes) and the last few chat-box turns to your Hermes model, or the model you pin under Settings → Models → Auxiliary → MIDI Console chat; device presets, recorded takes and a log of every MIDI message sent are stored under plugin-data/z-midi-console in your Hermes home (a pre-0.2 store at %LOCALAPPDATA%/z-midi-console is copied in once and left in place); the audio analyzers read the companion audio-strip plugin's state file; the MIDI engine is Windows-only."
+maintainer: zorroukk
+tier: community
+category: tools
+requires_hermes: ">=0.23.1"
+docs_url: ""
+version: "0.2.0"
+image: https://raw.githubusercontent.com/zorroukk/z-midi-console/99c79706d23eeaeb9911e4431e98b1426717a1c4/docs/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/zorroukk/z-midi-console/99c79706d23eeaeb9911e4431e98b1426717a1c4/docs/screenshots/01-surface.png
+  - https://raw.githubusercontent.com/zorroukk/z-midi-console/99c79706d23eeaeb9911e4431e98b1426717a1c4/docs/screenshots/02-editor.png
+  - https://raw.githubusercontent.com/zorroukk/z-midi-console/99c79706d23eeaeb9911e4431e98b1426717a1c4/docs/screenshots/04-chat.png
+  - https://raw.githubusercontent.com/zorroukk/z-midi-console/99c79706d23eeaeb9911e4431e98b1426717a1c4/docs/screenshots/05-matrix.png
+readme: true
+platforms: []          # loads everywhere; MIDI engine is Windows (honest 'none' elsewhere)
+title: "Z's MIDI Console"
+onboarding: false
+known_issues:
+  - "Windows is the only fully supported platform (winmm MIDI backend); on macOS/Linux the plugin loads and reports backend: none."
+  - "Desktop audio / microphone analyzers read the optional companion audio-strip plugin's published state; with it absent or opted out, MIDI-sourced analyzers still work and audio lanes show an honest unavailable note."
+capabilities:
+  provides_tools:
+    - midi_devices
+    - midi_status
+    - midi_send
+    - midi_control
+    - midi_profile
+    - midi_matrix
+    - midi_recorder
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -1,0 +1,19 @@
+name: reapx
+title: "ReapX"
+repo: https://github.com/BigBossRabbit/reapx
+sha: 1d465e712013b59e396ddcf39a5162d34dfb1976
+description: "Turn the bookmarks you saved on X into ready-to-load, registered Hermes skills — without the paid X API. The plugin is data-in: `reapx_import` runs the whole pipeline — map, categorize into a fixed set of domains, two-track assess (integrate-into-your-makeup and business-opportunity), generate, register (`reapx:<name>`) — from a bookmarks file you point it at, or from items passed inline (collected by you through the host's own browser tooling); `reapx_status` is read-only state; `reapx_review` surfaces everything LLM-shaped item by item for the human before anything is relied on. Incremental via a persistent seen-ledger (a bookmark is never processed twice). The map / categorize / assess stages optionally run through the host LLM (`ctx.llm`, one registered auxiliary task) with a deterministic rules engine as the bit-for-bit fallback (`enrich: rules` = zero LLM calls); generate is never the LLM. Registration: handler-time `register_skill`, live in the same session; `register_generated_skills` defaults to false — generated skills land in the review and on disk, and register only after you say so. Settings are read from plugin config only (tool args can never flip enrichment, lift a spend cap, or force registration). Disclosure — Derived from starlearner-nexus (same owner; different input and engine). The plugin reads no browser profile, cookie store or keychain; the repo also ships standalone browser-harvest scripts (scripts/fetch_x_bookmarks.py, scripts/cookie_store.py) that copy your browser's Cookies database and drive it over CDP, run by hand only and never imported by the plugin. `reapx_import` reads the bookmarks JSON file at the path you or the agent name (or the configured `import_dir`). LLM enrichment is on by default (`enrich: rules` turns it off) and sends bookmark text to your active provider through Hermes (`ctx.llm`), capped by `llm_max_items`. Generated skills are written to the plugin's own data dir and registered only when `register_generated_skills` is turned on. No other network calls, no telemetry, no stored credentials."
+maintainer: BigBossRabbit
+tier: community
+category: tools
+requires_hermes: ">=0.22.6"
+version: "1.0.0"
+platforms: []
+capabilities:
+  provides_tools:
+    - reapx_import
+    - reapx_status
+    - reapx_review
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

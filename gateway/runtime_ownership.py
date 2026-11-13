@@ -236,6 +236,24 @@ def maintenance_holder(home: Path, purpose: str) -> dict | None:
     return record
 
 
+def runtime_lock_held_elsewhere(home: Path) -> bool:
+    """Whether another process holds *home*'s ``gateway.lock`` flock. A flock lives on an open file
+    description, so it answers across PID namespaces where a recorded PID cannot (#123081). This
+    process's own reservation answers False: whoever wrote the record cannot hold it too. A lock
+    file that is absent or cannot be opened answers True: unknown is never "free"."""
+    home = canonical_home(home)
+    if process_ownership.owns(home):
+        return False
+    lock_path = home / 'gateway.lock'
+    if not lock_path.exists():
+        return True
+    from gateway.status import is_gateway_runtime_lock_active
+    try:
+        return is_gateway_runtime_lock_active(lock_path)
+    except OSError:
+        return True
+
+
 def lock_record_unpublished(home: Path) -> bool:
     """True when *home*'s ``gateway.lock`` record names no live holder yet: empty, torn, or a dead
     previous holder's. :meth:`ProfileOwnership.reserve` takes the flock BEFORE it writes the record,

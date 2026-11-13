@@ -117,22 +117,14 @@ describe('frameSizeFromMessage', () => {
     type: 'hermes-inline-preview-size',
     token: 'tok',
     height: 500,
-    width: 300,
     ...over
   })
 
   it('accepts our message with our token, height clamped', () => {
-    expect(frameSizeFromMessage(msg(), 'tok')).toEqual({ height: 500, width: 300 })
+    expect(frameSizeFromMessage(msg(), 'tok')).toEqual({ height: 500 })
     expect(frameSizeFromMessage(msg({ height: 12 }), 'tok')?.height).toBe(120)
     expect(frameSizeFromMessage(msg({ height: 5000 }), 'tok')?.height).toBe(1200)
     expect(frameSizeFromMessage(msg({ height: 500.7 }), 'tok')?.height).toBe(501)
-  })
-
-  it('sanitizes width to 0 when missing or hostile', () => {
-    expect(frameSizeFromMessage(msg({ width: undefined }), 'tok')?.width).toBe(0)
-    expect(frameSizeFromMessage(msg({ width: 'wide' }), 'tok')?.width).toBe(0)
-    expect(frameSizeFromMessage(msg({ width: Infinity }), 'tok')?.width).toBe(0)
-    expect(frameSizeFromMessage(msg({ width: -10 }), 'tok')?.width).toBe(0)
   })
 
   it('rejects wrong type, wrong token, and hostile shapes', () => {

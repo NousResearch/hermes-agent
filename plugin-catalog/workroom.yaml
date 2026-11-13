@@ -1,0 +1,96 @@
+name: workroom
+title: Workroom
+repo: https://github.com/Pratiikpy/workroom-for-hermes
+sha: "4d44e9dc229fd5a89d7973881c6e14dbb083e525"
+description: >-
+  Gives the agent a room to work on Word, PowerPoint and Excel files while you
+  stay in charge. Figures are linked to their source cells and kept in step when
+  a source changes; the agent can prepare a release but has no tool to approve one;
+  figures in its text are marked supported, calculated or not verified from what it
+  read; a reply that claims a file that does not exist gets one honest line.
+  Desktop panels: Needs you, Made (list or gallery), Room, Rules.
+  Disclosure: reads and writes only inside the folders the user registers and in
+  the plugin data directory; no network calls, no telemetry, no self-updater, no
+  native binary. To be able to put protected files back, the safety net reads, in
+  memory, the bytes of every managed or protected file of a registered project
+  (including .env and key files) before a shell, code or editing tool runs; they are
+  never shown to the agent and are kept in plugin data only if the agent changed the
+  file (the agent's version). Hooks (pre_tool_call,
+  post_tool_call, transform_tool_result, transform_llm_output, pre_llm_call,
+  pre_verify, subagent_start, subagent_stop) can block a tool call, append one line
+  to a tool result or reply, and, after a shell, code or other editing tool runs,
+  put back any Office or protected file of a registered project that changed (the
+  agent's version is kept in plugin data); they never approve or auto-approve.
+  To check the figures in the agent's text it stores, in a local SQLite file in
+  the plugin data directory, the text of tool results the agent read this session
+  (capped at 20 MB per session) and the owner's chat messages; nothing is sent
+  anywhere.
+  Subprocesses: a local Python child to build files; the Windows icacls tool once
+  for the signing key file; PowerShell only on request on Windows with PowerPoint to
+  draw slide pictures, or LibreOffice (soffice) for the same on other systems when
+  it is installed. Starts no scheduled job itself (a user-created Hermes cron job
+  may run its watch script, which can prepare a release but never approves one).
+maintainer: Pratiikpy
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+version: "0.4.0"
+docs_url: https://github.com/Pratiikpy/workroom-for-hermes#readme
+readme: true
+platforms: [windows, macos, linux]
+image: https://raw.githubusercontent.com/Pratiikpy/workroom-for-hermes/4d44e9dc229fd5a89d7973881c6e14dbb083e525/docs/screenshots/00-hero-change-map.png
+screenshots:
+  - https://raw.githubusercontent.com/Pratiikpy/workroom-for-hermes/4d44e9dc229fd5a89d7973881c6e14dbb083e525/docs/screenshots/pane-needs-you.png
+  - https://raw.githubusercontent.com/Pratiikpy/workroom-for-hermes/4d44e9dc229fd5a89d7973881c6e14dbb083e525/docs/screenshots/pane-made-gallery.png
+  - https://raw.githubusercontent.com/Pratiikpy/workroom-for-hermes/4d44e9dc229fd5a89d7973881c6e14dbb083e525/docs/screenshots/pane-figure-proof.png
+  - https://raw.githubusercontent.com/Pratiikpy/workroom-for-hermes/4d44e9dc229fd5a89d7973881c6e14dbb083e525/docs/screenshots/05-before-and-after.png
+known_issues:
+  - "Verified on Windows with the real Hermes Desktop and Office. The test suite passes on Windows, Linux (fresh clone) and in macOS CI; the Hermes Desktop screens were run on Windows only."
+  - "The safety net reverts files that other plugins' tools wrote inside registered projects, and appends one line to those tool results; this is by design and listed in docs/LIMITS.md."
+  - "A plugin that bundles its own copy of the PowerPoint or Word library (paper-pptx, paper-docx) cannot share an environment with python-pptx and python-docx; Workroom then cannot build new decks or reports, while reading, editing and releasing existing files keep working."
+  - "Real-model checks (bypass, approve, injection, folder tidy) were run with one model, 3 to 5 runs per case, so they are counts, not rates."
+  - "On a very large report the first import asks many questions (3,841 on one blind run, about 88% of them real)."
+capabilities:
+  provides_tools:
+    - workroom_status
+    - workroom_add_project
+    - workroom_discover
+    - workroom_plan
+    - workroom_explain_figure
+    - workroom_selftest
+    - workroom_stage_release
+    - workroom_roll_forward
+    - workroom_find_calculations
+    - workroom_create
+    - workroom_list_sources
+    - workroom_instructions
+    - workroom_propose_instruction
+    - workroom_list_pages
+    - workroom_read_page
+    - workroom_edit_page
+    - workroom_export_page
+    - workroom_where_used
+    - workroom_what_if
+    - workroom_release_record
+    - workroom_recipe_status
+    - workroom_recipe_propose
+    - workroom_room_read
+    - workroom_room_add_source
+    - workroom_room_remember
+    - workroom_deliverable_register
+    - workroom_attention
+    - workroom_find_text
+    - workroom_edit_text
+    - workroom_verify
+    - workroom_layout_check
+  provides_hooks:
+    - pre_tool_call
+    - pre_llm_call
+    - post_tool_call
+    - transform_tool_result
+    - pre_verify
+    - transform_llm_output
+    - subagent_start
+    - subagent_stop
+  provides_middleware: []
+  requires_env: []

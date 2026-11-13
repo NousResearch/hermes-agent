@@ -1,21 +1,41 @@
 name: mediarag
 repo: https://github.com/dyiapanis/mediarag
-sha: 29d47c34f53340eb3a4267792c61f38c34ee8e03
-description: "Multimodal local search over documents and media: pdf, office files, notes, images,\naudio and subtitles in one corpus, queried by meaning from any MCP-capable agent.\nDocuments and media sit level in the same index, so \"which file mentions the landing\"\nand \"where is the clip where I said it\" are the same kind of question. Retrieval is\nhybrid — semantic vectors fused with an FTS5/BM25 keyword lane — and results carry\nsnippets, timestamps and image thumbnails.\n\nEverything runs locally: the corpus is a SQLite file you own, the embedding weights\ndownload once (~285MB) and every search after that runs offline. Nothing is uploaded\nand there is no telemetry — the only network calls are ones you ask for: an http(s)\nsource you add, or the optional Raindrop adapter.\n\nShips as an Agent Plugins v1 package — a stdio MCP server for conforming clients, plus\nfive native Hermes tools so one gateway serves every agent with the model loaded once.\nLinux and Windows. Disclosure — downloads the ~285 MB EmbeddingGemma-2 ONNX weights from Hugging Face (pinned revision) on first setup; `mediarag_add_source` fetches user-supplied http(s) URLs (public hosts only, re-checked on every redirect) and runs packaged or user `sources.d` adapters as local subprocesses, including the optional Raindrop.io adapter, which sends RAINDROP_API_TOKEN to Raindrop's API; the standalone MCP launcher can build its own Python environment with `uv` from PyPI (~1.7 GB incl. torch) only when MEDIARAG_AUTO_BOOTSTRAP=1."
+sha: 8b2423d52d3ef1e8da9e0418fd7218c8b899f05c
+description: 'Local, offline semantic search across your documents, notes, images, audio and subtitles: one index you query by meaning from Hermes or any MCP client, with snippets, timestamps and thumbnails from PDFs, Office files, photos and recordings.
+
+
+  Disclosure —
+
+
+  - Downloads about 480 MB of EmbeddingGemma-2 ONNX model weights from Hugging Face at a pinned revision on first setup; offline after that.
+
+  - Reads the folders you point it at, outside the plugin directory.
+
+  - Runs pandoc, pdftotext, ffmpeg and curl from PATH; ffmpeg samples video files at 0.5 frames per second (first 240 frames) into its local cache to index them.
+
+  - Fetches the http(s) URLs you add, from public hosts only, re-checked on every redirect.
+
+  - Runs source adapters as local subprocesses; the optional Raindrop and Notion adapters send RAINDROP_API_TOKEN to Raindrop''s API and NOTION_TOKEN to api.notion.com.
+
+  - With MEDIARAG_AUTO_BOOTSTRAP=1, the standalone MCP launcher installs its Python environment from PyPI, about 1.7 GB.'
 maintainer: dyiapanis
 tier: community
 category: tools
 docs_url: https://github.com/dyiapanis/mediarag#readme
-version: "0.1.19"
+version: 0.1.22
+image: https://raw.githubusercontent.com/dyiapanis/mediarag/8b2423d52d3ef1e8da9e0418fd7218c8b899f05c/assets/banner.jpg
 readme: true
-platforms: [linux, windows]
+platforms:
+- linux
+- macos
+- windows
 capabilities:
   provides_tools:
-    - mediarag_search
-    - mediarag_add_note
-    - mediarag_ingest_dir
-    - mediarag_add_source
-    - mediarag_status
+  - mediarag_search
+  - mediarag_add_note
+  - mediarag_ingest_dir
+  - mediarag_add_source
+  - mediarag_status
   provides_hooks: []
   provides_middleware: []
   requires_env: []

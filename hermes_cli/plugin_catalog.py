@@ -29,6 +29,8 @@ from datetime import UTC
 logger = logging.getLogger(__name__)
 
 CATALOG_TIERS = ("official", "verified", "community")
+# Tiers whose entries may set ``default: true`` (installed in every home): Nous or the vendor stands behind them.
+DEFAULT_TIERS = frozenset({"official", "verified"})
 # Browse taxonomy for the catalog page / picker. Entries without one land on the Desktop shelf
 # (the common case for community submissions); "general" is for plugins that fit no shelf.
 CATALOG_CATEGORIES = ("desktop", "memory", "platform", "web", "tools", "voice", "automation", "models", "general")
@@ -38,7 +40,10 @@ LIVE_CATALOG_TTL_SECONDS = 6 * 60 * 60
 LIVE_CATALOG_MAX_STALE_SECONDS = 24 * 60 * 60
 LIVE_CATALOG_FAILURE_TTL_SECONDS = 60.0
 _REQUEST_TIMEOUT = 5.0
-_MAX_LIVE_BYTES = 2 * 1024 * 1024
+# The published doc passed 2 MiB on 2026-11-09 (2,109,306 bytes for 1,268 entries, about 1.7 KB each), and a
+# client that refuses it silently installs its own in-tree pins and misses newer removals. 16 MiB leaves
+# room for roughly 9,000 entries while still bounding a hostile or broken response.
+_MAX_LIVE_BYTES = 16 * 1024 * 1024
 
 _SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 _VERSION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,31}$")
@@ -53,6 +58,16 @@ def is_allowed_image_url(url: str) -> bool:
     parts = urlsplit(url)
     host = (parts.hostname or "").lower()
     return parts.scheme == "https" and bool(host) and (host in IMAGE_HOSTS or host.endswith(IMAGE_HOST_SUFFIX))
+
+
+def is_https_url(url: str) -> bool:
+    """``docs_url`` lands in an ``<a href>`` on the dashboard: any https host, never ``javascript:``/``data:``."""
+    from urllib.parse import urlsplit
+    try:
+        parts = urlsplit(url)
+    except ValueError:  # "https://[": a malformed authority drops the link, never the whole catalog
+        return False
+    return parts.scheme == "https" and bool((parts.hostname or "").strip())
 _NAME_RE = re.compile(r"^[a-z0-9_-]{1,64}$")
 
 
@@ -91,6 +106,7 @@ class PluginCatalogEntry:
     platforms: list[str] = field(default_factory=list)  # empty = all OSes
     title: str = ""              # human name ("NVIDIA App"); empty = derived from ``name``
     onboarding: bool = False     # curated: offered on the desktop onboarding card
+    default: bool = False        # installed and enabled once in every home (official/verified only)
     capabilities: CatalogCapabilities = field(default_factory=CatalogCapabilities)
     known_issues: list[str] = field(default_factory=list)  # #124058: informational; drivers come from plugin-catalog/*.yaml
 
@@ -108,6 +124,7 @@ class PluginCatalogEntry:
             "subdir": self.subdir, "docs_url": self.docs_url, "version": self.version, "image": self.image,
             "screenshots": list(self.screenshots), "readme": self.readme,
             "platforms": list(self.platforms), "title": self.title, "onboarding": self.onboarding,
+            "default": self.default,
             "capabilities": {
                 "provides_tools": list(caps.provides_tools), "provides_hooks": list(caps.provides_hooks),
                 "provides_middleware": list(caps.provides_middleware), "requires_env": list(caps.requires_env),
@@ -158,6 +175,15 @@ def entry_from_mapping(data: Any, label: str) -> Optional[PluginCatalogEntry]:
     if image and not is_allowed_image_url(image):
         logger.warning("Plugin catalog: %s: ignoring image %r (must be https on a GitHub host)", label, image)
         image = ""
+    docs_url = str(data.get("docs_url") or "").strip()
+    if docs_url and not is_https_url(docs_url):
+        logger.warning("Plugin catalog: %s: ignoring docs_url %r (must be an https URL)", label, docs_url)
+        docs_url = ""
+    default = data.get("default") is True
+    if default and tier not in DEFAULT_TIERS:
+        logger.warning("Plugin catalog: %s: ignoring default: true (tier %s; only %s entries ship by default)",
+                       label, tier, "/".join(sorted(DEFAULT_TIERS)))
+        default = False
     screenshots = [s for s in _str_list(data.get("screenshots")) if is_allowed_image_url(s)]
     if len(screenshots) != len(_str_list(data.get("screenshots"))):
         logger.warning("Plugin catalog: %s: ignoring screenshots off GitHub hosts", label)
@@ -166,10 +192,10 @@ def entry_from_mapping(data: Any, label: str) -> Optional[PluginCatalogEntry]:
         description=str(data.get("description") or "").strip(),
         maintainer=str(data.get("maintainer") or "").strip(), tier=tier, category=category,
         requires_hermes=str(data.get("requires_hermes") or "").strip(),
-        subdir=str(data.get("subdir") or "").strip(), docs_url=str(data.get("docs_url") or "").strip(),
+        subdir=str(data.get("subdir") or "").strip(), docs_url=docs_url,
         version=version, image=image, screenshots=screenshots, readme=data.get("readme") is not False,
         platforms=_str_list(data.get("platforms")),
-        title=str(data.get("title") or "").strip(), onboarding=data.get("onboarding") is True,
+        title=str(data.get("title") or "").strip(), onboarding=data.get("onboarding") is True, default=default,
         known_issues=_str_list(data.get("known_issues")),
         capabilities=CatalogCapabilities(
             provides_tools=_str_list(caps.get("provides_tools")), provides_hooks=_str_list(caps.get("provides_hooks")),
@@ -490,7 +516,7 @@ def load_catalog_live() -> list[PluginCatalogEntry]:
 # Curated display fields a published doc older than the field does not carry. ``generated_at`` is the
 # docs build time, not the content time, so a rebuild of an older catalog outranks a checkout that added
 # the field; a doc that has the key (even ``false``) decides.
-_CURATED_FIELDS = ("onboarding", "title")
+_CURATED_FIELDS = ("onboarding", "title", "default")
 
 
 def _with_curated_fields(live: PluginCatalogEntry, tree: Optional[PluginCatalogEntry], raw: dict[str, Any]

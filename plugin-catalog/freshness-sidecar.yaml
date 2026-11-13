@@ -1,0 +1,31 @@
+name: freshness-sidecar
+repo: https://github.com/neweraXX/freshness-sidecar
+sha: fbcb965fe90dc9658ca7a483422619a74c2b5d69
+title: Freshness Sidecar
+description: >-
+  Notes bound to a source file: before every turn each note's file is re-hashed, so the
+  agent is told a fact is STALE (or MISSING) the moment its file changes, instead of
+  confidently repeating an outdated value. /fresh add|list|check|forget works from the CLI
+  and messaging gateways without the model; a freshness_note tool exposes the same actions to
+  the model. Runs alongside any memory provider (does not take the memory.provider slot).
+  Disclosure — reads explicitly registered local files within the session's workspace to
+  compute bounded SHA-256 checks (1 MiB cap; symlinks, files outside the workspace and
+  credential-looking files are refused). Stores note text, paths and hashes in profile-scoped
+  plugin data. Selected notes and status snapshots are added to the user turn sent to the
+  configured model and persist in Hermes history; forgetting a note stops future recall but
+  does not erase copies already in history. FRESH means matching bytes, not verified truth.
+  No network calls, subprocesses, background services, credential access or self-update.
+maintainer: neweraXX
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/neweraXX/freshness-sidecar#readme
+version: "0.1.0"
+platforms: []
+capabilities:
+  provides_tools:
+    - freshness_note
+  provides_hooks:
+    - pre_llm_call
+  provides_middleware: []
+  requires_env: []

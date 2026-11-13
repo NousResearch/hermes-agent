@@ -1,0 +1,49 @@
+name: unified-inbox
+title: Unified Inbox
+repo: https://github.com/krushna-sahu1/unified-inbox
+sha: c40db03612f0f4e233e80129e7849ad3e77c360f
+version: "1.4.1"
+requires_hermes: ">=0.23.0"
+description: "One inbox for the user's WhatsApp, Instagram and LinkedIn messages through their own Unipile account (API v2): a synced local copy, search in any language, triage with a reason for each chat, memory of people and open items, drafts in the user's own writing style, scam warnings, plans offered for the calendar, translation, a people radar and a spoken brief, plus an Inbox page in the web dashboard and Hermes Desktop. Every send and reaction goes through Hermes's own approval prompt (a pre_tool_call hook) and is refused when approval would be skipped (yolo mode, approvals off, cron), under hard pacing limits. Disclosure — calls the Unipile API (api.unipile.com) with the user's key; Unipile reaches WhatsApp, Instagram and LinkedIn through unofficial access, which may break those platforms' terms. Every send and reaction goes through Hermes's own approval prompt and is refused under yolo mode, approvals off or unattended runs; the model may attach any file the user can read (key and login files excepted), and each file is named in that prompt. Optional and off until configured: a cloud embedding provider (OpenAI, Gemini, Cohere or Voyage AI) that receives message text, the user's own Supabase project for two-way sync (api.supabase.com once, to create tables), a private iCal address read for busy times, a webhook receiver on 127.0.0.1 that accepts only HMAC-signed Unipile deliveries, and alerts injected into a chat the user picks. Runs a background sync thread by default that summarises, drafts and translates new messages with Hermes's model (capped per day); text sent to a model or provider has one-time codes, passwords and card, bank and ID numbers removed first. Stores chats, messages, memory and a send log in SQLite under the plugin's data folder; secrets come only from Hermes's secret store. Calls Hermes internals that are not a stable plugin API (tools.transcription_tools.transcribe_audio for voice notes, private tools.approval checks). No telemetry, no shell commands, no self-update."
+maintainer: krushna-sahu1
+tier: community
+category: tools
+docs_url: https://github.com/krushna-sahu1/unified-inbox/blob/c40db03612f0f4e233e80129e7849ad3e77c360f/README.md
+image: https://raw.githubusercontent.com/krushna-sahu1/unified-inbox/c40db03612f0f4e233e80129e7849ad3e77c360f/assets/readme/catalog-card.png
+screenshots:
+  - https://raw.githubusercontent.com/krushna-sahu1/unified-inbox/c40db03612f0f4e233e80129e7849ad3e77c360f/assets/readme/screens/today.png
+  - https://raw.githubusercontent.com/krushna-sahu1/unified-inbox/c40db03612f0f4e233e80129e7849ad3e77c360f/assets/readme/screens/approve.png
+  - https://raw.githubusercontent.com/krushna-sahu1/unified-inbox/c40db03612f0f4e233e80129e7849ad3e77c360f/assets/readme/screens/chat.png
+  - https://raw.githubusercontent.com/krushna-sahu1/unified-inbox/c40db03612f0f4e233e80129e7849ad3e77c360f/assets/readme/screens/radar.png
+  - https://raw.githubusercontent.com/krushna-sahu1/unified-inbox/c40db03612f0f4e233e80129e7849ad3e77c360f/assets/readme/screens/setup-light.png
+  - https://raw.githubusercontent.com/krushna-sahu1/unified-inbox/c40db03612f0f4e233e80129e7849ad3e77c360f/assets/readme/screens/phone.png
+readme: true
+platforms: []
+capabilities:
+  provides_tools:
+    - inbox_status
+    - inbox_list_chats
+    - inbox_read_chat
+    - inbox_search
+    - inbox_triage
+    - inbox_updates
+    - inbox_context
+    - inbox_loops
+    - inbox_memory
+    - inbox_schedule
+    - inbox_watch
+    - inbox_draft_reply
+    - inbox_list_drafts
+    - inbox_send
+    - inbox_react
+    - inbox_attachment
+    - inbox_mark_read
+    - inbox_safety
+    - inbox_calendar
+    - inbox_translate
+    - inbox_radar
+    - inbox_brief
+  provides_hooks:
+    - pre_tool_call
+  provides_middleware: []
+  requires_env: []

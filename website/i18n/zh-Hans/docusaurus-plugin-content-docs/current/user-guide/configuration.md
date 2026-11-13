@@ -654,8 +654,9 @@ auxiliary:
   compression:
     model: glm-4.7
     base_url: https://api.z.ai/api/coding/paas/v4
+    api_key: ${GLM_API_KEY}
 ```
-指向自定义 OpenAI 兼容端点。使用 `OPENAI_API_KEY` 进行认证。
+指向自定义 OpenAI 兼容端点，使用 `api_key` 认证。未设置时，Hermes 仅在与主端点源完全相同时重用主模型的密钥，`OPENAI_API_KEY` 仅发送到 OpenAI 主机或与之配对的 `OPENAI_BASE_URL`。
 
 ### 三个旋钮的交互方式
 
@@ -790,7 +791,7 @@ Qwen Cloud（阿里巴巴 DashScope）上游将缓存 TTL 限制为 5 分钟，�
 
 不存在禁用此功能的旋钮 —— 缓存始终开启，即使在单轮对话中也能节省费用，因为仅系统提示词就占输入 token 数的相当大比例。
 
-## 辅助模型
+## 辅助模型 {#auxiliary-models}
 
 Hermes 使用"辅助"模型处理图像分析、浏览器截图分析、会话标题生成和上下文压缩等附带任务。默认情况下（`auxiliary.*.provider: "auto"`），Hermes 将每个辅助任务路由到您的**主聊天模型** —— 与您在 `hermes model` 中选择的相同 provider/模型。您无需配置任何内容即可开始，但请注意，在昂贵的推理模型（Opus、MiniMax M2.7 等）上，辅助任务会增加显著成本。如果您希望无论主模型如何都使用便宜且快速的附带任务，请显式设置 `auxiliary.<task>.provider` 和 `auxiliary.<task>.model`（例如，在 OpenRouter 上使用 Gemini Flash 进行视觉分析）。（网页提取不是辅助任务：`web_extract` 和浏览器快照会确定性截断长内容，并将完整文本存储供 `read_file` 分页读取 —— 不涉及 LLM。）
 
@@ -839,7 +840,7 @@ Hermes 中的每个模型槽位 —— 辅助任务、压缩、回退 —— 使
 | `model` | 请求的模型 | provider 的默认值 |
 | `base_url` | 自定义 OpenAI 兼容端点（覆盖 provider） | 未设置 |
 
-当设置 `base_url` 时，Hermes 忽略 provider 并直接调用该端点（使用 `api_key` 或 `OPENAI_API_KEY` 进行认证）。当仅设置 `provider` 时，Hermes 使用该 provider 的内置认证和基础 URL。
+当设置 `base_url` 时，Hermes 忽略 provider 并直接调用该端点（使用 `api_key` 认证；`OPENAI_API_KEY` 仅用于 OpenAI 主机或与之配对的 `OPENAI_BASE_URL`）。当仅设置 `provider` 时，Hermes 使用该 provider 的内置认证和基础 URL。
 
 辅助任务的可用 providers：`auto`、`main`，以及[provider 注册表](../reference/environment-variables.md)中的任何 provider —— `openrouter`、`nous`、`openai-codex`、`anthropic`、`gemini`、`qwen-oauth`、`zai`、`kimi-coding`、`kimi-coding-cn`、`minimax`、`minimax-cn`、`minimax-oauth`、`deepseek`、`nvidia`、`xai`、`xai-oauth`、`ollama-cloud`、`alibaba`、`bedrock`、`huggingface`、`arcee`、`xiaomi`、`kilocode`、`opencode-zen`、`opencode-go`、`ai-gateway`、`azure-foundry` —— 或您 `custom_providers` 列表中任何命名的自定义 provider（例如 `provider: "beans"`）。
 
@@ -868,7 +869,7 @@ auxiliary:
     provider: "auto"           # "auto"、"openrouter"、"nous"、"codex"、"main" 等
     model: ""                  # 例如 "openai/gpt-4o"、"google/gemini-2.5-flash"
     base_url: ""               # 自定义 OpenAI 兼容端点（覆盖 provider）
-    api_key: ""                # base_url 的 API 密钥（回退到 OPENAI_API_KEY）
+    api_key: ""                # base_url 的 API 密钥（OPENAI_API_KEY 回退：仅限 OpenAI 主机）
     timeout: 120               # 秒 —— LLM API 调用超时；视觉负载需要宽裕的超时
     download_timeout: 30       # 秒 —— 图像 HTTP 下载；慢速连接请增加
 
@@ -890,14 +891,6 @@ auxiliary:
     #     model: google/gemini-2.5-flash
     #     base_url: ""
     #     api_key: ""
-
-  # 技能中心 —— 技能匹配和搜索
-  skills_hub:
-    provider: "auto"
-    model: ""
-    base_url: ""
-    api_key: ""
-    timeout: 30
 
   # MCP 工具调度
   mcp:
@@ -954,7 +947,7 @@ auxiliary:
 | `model` | 该 provider 的模型名称 |
 | `base_url` | （可选）自定义 OpenAI 兼容端点 |
 
-`fallback_chain` 适用于任何辅助任务 —— `compression`、`vision`、`approval`、`skills_hub`、`mcp` 等。
+`fallback_chain` 适用于任何辅助任务 —— `compression`、`vision`、`approval`、`mcp` 等。
 
 ### OpenRouter 路由和辅助任务的 Pareto Code
 
@@ -1030,7 +1023,7 @@ auxiliary:
     model: "qwen2.5-vl"
 ```
 
-`base_url` 优先于 `provider`，因此这是将辅助任务路由到特定端点的最明确方式。对于直接端点覆盖，Hermes 使用配置的 `api_key` 或回退到 `OPENAI_API_KEY`；它不会为该自定义端点重用 `OPENROUTER_API_KEY`。两者都未设置时，只有当 `base_url` 与主端点的源（scheme、主机和端口）完全相同时，才会重用主模型的密钥。主端点是会话当前运行的端点（`/model` 切换后即为切换后的端点），并且只与它自己的密钥配对，绝不会使用另一个端点的密钥。
+`base_url` 优先于 `provider`，因此这是将辅助任务路由到特定端点的最明确方式。对于直接端点覆盖，Hermes 使用配置的 `api_key`；它不会为该自定义端点重用 `OPENROUTER_API_KEY`。未设置时，只有当 `base_url` 与主端点的源（scheme、主机和端口）完全相同时，才会重用主模型的密钥。主端点是会话当前运行的端点（`/model` 切换后即为切换后的端点），并且只与它自己的密钥配对，绝不会使用另一个端点的密钥。`OPENAI_API_KEY` 是最后的回退，仅发送到 OpenAI 主机（`*.openai.com`、`*.openai.azure.com`）或与之配对的 `OPENAI_BASE_URL`；其他端点需要自己的 `api_key`。
 
 **使用 OpenAI API 密钥进行视觉：**
 ```yaml
@@ -1411,7 +1404,7 @@ streaming:
 **新的最终消息（Telegram）：** Telegram 的 `editMessageText` 保留原始消息时间戳，因此长时间运行的流式回复即使在完成后也会保留第一个 token 的时间戳。设置 `fresh_final_after_seconds > 0` 可选择将旧预览作为全新的最终消息传递，并尽力删除旧预览。默认值为 `0`，始终就地最终化流式回复，避免某些客户端短暂显示重复消息再删除其中一条。
 
 :::note
-主开关 `streaming.enabled` 默认为 `false`——在你启用之前不会有任何流式传输。启用后，是否流式传输按**平台**决定：Telegram 默认带有 `display.platforms.telegram.streaming: true`（流式传输），Discord 为 `display.platforms.discord.streaming: false`（不流式传输）。因此启用流式传输后，Telegram 开箱即用地流式传输，Discord 在你修改其开关之前仍使用整条消息回复。你可以在仪表盘的 **Channels** 开关中或直接在 `~/.hermes/config.yaml` 中调整这些按平台的开关。
+主开关 `streaming.enabled` 默认为 `false`——在你启用之前不会有任何流式传输。启用后，是否流式传输按**平台**决定：Telegram 默认带有 `display.platforms.telegram.streaming: true`（流式传输），Discord 为 `display.platforms.discord.streaming: false`（不流式传输）。因此启用流式传输后，Telegram 开箱即用地流式传输，Discord 在你修改其开关之前仍使用整条消息回复。你可以在仪表盘的 **Channels** 开关中或直接在 `~/.hermes/config.yaml` 中调整这些按平台的开关；这些按平台的开关会在每条消息时重新读取，因此无需重启即可生效。而 `streaming:` 配置段本身（`enabled`、`transport`、`edit_interval`、`buffer_threshold`、`cursor`、`fresh_final_after_seconds`）只在网关启动时读取一次：修改其中任何键后，需要重启网关才能生效。注意按平台的开关只能在主开关范围内收窄，不能独自启用流式传输。
 :::
 
 ## 群聊会话隔离

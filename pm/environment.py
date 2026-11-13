@@ -75,6 +75,8 @@ _STREAM_TAIL_MARKERS = _RESOLVER_MARKERS + (_BYTECODE_COMPILE_MARKER, *_BUILD_MA
 # not purged before, so this bounds a cache with several damaged entries, never
 # a loop on one broken wheel.
 _CACHE_RECOVERY_ROUNDS = 3
+# The pyvenv.cfg key every PM-built environment carries; site ignores keys it does not know.
+PM_BUILT_KEY = "hermes-pm-built"
 
 
 class ResolutionConflict(InstallError):
@@ -260,7 +262,7 @@ def managed_environment(destination: Path, *, python: Path | None = None,
                         cache: Path | None = None, env: Mapping[str, str] | None = None,
                         offline: bool = False, explicit: bool = False,
                         output: TextIO | None = None, realize: bool = True) -> PythonEnvironment:
-    from pm._uv import _toolchain
+    from pm._uv import _toolchain  # noqa: TID251
     from pm.packages import uv_cache_dir
 
     tools = _toolchain(explicit=explicit, realize=realize)
@@ -394,6 +396,10 @@ class PythonEnvironment:
         )
         if result.returncode:
             raise InstallError("venv", f"uv venv failed: {result.stderr[-600:]}")
+        # Marks the environment as PM's whatever interpreter it runs: a checkout `.venv` built by
+        # `pm.build_env --python <any>` is never read as a pre-PM install (pm.extras._built_by_pm).
+        with (self.destination / "pyvenv.cfg").open("a", encoding="utf-8") as cfg:
+            cfg.write(f"{PM_BUILT_KEY} = true\n")
 
     def lock(self, source: Path, *, upgrade: bool = False, timeout: int = 1800) -> None:
         command = ["lock", "--python", str(self.python)]
@@ -404,8 +410,15 @@ class PythonEnvironment:
             raise classify_uv_failure("lock", result.returncode, result.stderr or result.stdout)
 
     def check_lock(self, source: Path) -> None:
-        result = self._run(["lock", "--check", "--python", str(self.python)],
-                           cwd=source, timeout=1800)
+        command = ["lock", "--check", "--python", str(self.python)]
+        # Online, uv re-downloads every direct-URL wheel even when the lock already satisfies
+        # the manifest, so one unreachable release asset (kittentts) failed every CI job's
+        # setup. Offline answers a current lock from the lock alone; only a lock it cannot
+        # vouch for goes online, where uv names what is stale.
+        if not self.offline and replace(self, offline=True, output=None)._run(
+                command, cwd=source, timeout=1800).returncode == 0:
+            return
+        result = self._run(command, cwd=source, timeout=1800)
         if result.returncode:
             raise classify_uv_failure("lock", result.returncode, result.stderr or result.stdout)
 

@@ -1,0 +1,36 @@
+name: autom
+title: Autom
+repo: https://github.com/automdev/hermes-plugin-autom
+sha: 78109c9c8c40451cc5a6753115c122b70407918a
+version: "1.1.0"
+description: "Live search engine results for Hermes through the Autom SERP API: tools for Google Search, News, Images, Videos, Shopping, Maps and Autocomplete, Bing, Brave web, images and videos, DuckDuckGo and Yahoo, a search that falls back across engines, Google locations and account usage. Also a backend for the built-in web_search tool (Google organic results). Disclosure — sends each search query and the tool arguments to api.autom.dev with your AUTOM_API_KEY, and calls use Autom credits (1 per search; locations and usage are free). Reads the key only through Hermes's secret scope. Registers 17 tools and a web_search backend, no hooks or middleware, writes no files, starts no processes, has no telemetry or self-updater, and uses only the Python standard library."
+maintainer: automdev
+tier: community
+category: web
+requires_hermes: ">=0.21.6"
+docs_url: https://github.com/automdev/hermes-plugin-autom#readme
+readme: true
+platforms: []
+capabilities:
+  provides_tools:
+    - autom_google_search
+    - autom_google_search_light
+    - autom_google_news
+    - autom_google_images
+    - autom_google_videos
+    - autom_google_shopping
+    - autom_google_maps
+    - autom_google_autocomplete
+    - autom_search
+    - autom_bing_search
+    - autom_brave_search
+    - autom_brave_images
+    - autom_brave_videos
+    - autom_duckduckgo_search
+    - autom_yahoo_search
+    - autom_google_locations
+    - autom_usage
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - AUTOM_API_KEY

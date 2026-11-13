@@ -80,6 +80,7 @@ Routes define how different webhook sources are handled. Each route is a named e
 |----------|----------|-------------|
 | `events` | No | List of event types to accept (e.g. `["pull_request"]`). If empty, all events are accepted. Event type is read from `X-GitHub-Event`, `X-GitLab-Event`, or `event_type` in the payload. |
 | `secret` | **Yes** | HMAC secret for signature validation. Falls back to the global `secret` if not set on the route. Set to `"INSECURE_NO_AUTH"` for testing only (skips validation). |
+| `signature` | No | Pin the route to one signature scheme: `generic` (`X-Webhook-Signature-V2` + `X-Webhook-Timestamp`, or Standard Webhooks / Svix headers), `github` (`X-Hub-Signature-256`), `gitlab` (`X-Gitlab-Token`, or a GitLab signing token sent as Standard Webhooks headers) or `linear` (`Linear-Signature`). Every other header family gets `401`. Omit it to accept every supported scheme (the behaviour before this key existed). `hermes webhook subscribe` writes `signature: generic` for new routes. Recommended; see [Pin the signature scheme](#pin-the-signature-scheme). |
 | `profile` | No | Profile authorized to execute this route when `gateway.multiplex_profiles` is enabled. Omit it for a default-profile-only route; set a profile name (for example `coder`) to bind the route and its secret to `/p/coder/webhooks/<route>`. Dynamic subscriptions set it with `hermes webhook subscribe <name> --route-profile coder`. |
 | `prompt` | No | Template string with dot-notation payload access (e.g. `{pull_request.title}`). If omitted, the full JSON payload is dumped into the prompt. Payload fields are untrusted — see [Authenticated does not mean trusted](#authenticated-does-not-mean-trusted). |
 | `filters` | No | Declarative payload filters evaluated after auth/body/event filtering and before agent or direct delivery work. Non-matches return `{"status":"ignored","reason":"filter"}` with HTTP 200. |
@@ -106,6 +107,7 @@ platforms:
         github-pr:
           events: ["pull_request"]
           secret: "github-webhook-secret"
+          signature: github
           prompt: |
             Review this pull request:
             Repository: {repository.full_name}
@@ -179,6 +181,7 @@ platforms:
         github-pr:
           events: ["pull_request"]
           secret: "github-webhook-secret"
+          signature: github
           coalesce:
             key: "{repository.full_name}#{pull_request.number}"
             window_seconds: 30      # quiet window (default 30)
@@ -322,6 +325,7 @@ platforms:
         gitlab-mr:
           events: ["merge_request"]
           secret: "your-gitlab-secret-token"
+          signature: gitlab
           prompt: |
             Review this merge request:
             Project: {project.path_with_namespace}
@@ -465,6 +469,7 @@ platforms:
         pr-feedback:
           events: ["pull_request_review"]
           secret: "github-webhook-secret"
+          signature: github
           cron_job: "pr-review-sweeper"        # existing job ID or name
           prompt: |
             PR #{number} in {repository.full_name} received new review feedback
@@ -476,6 +481,7 @@ platforms:
 ```bash
 hermes webhook subscribe pr-feedback \
   --events "pull_request_review" \
+  --signature github \
   --cron-job "pr-review-sweeper" \
   --prompt "PR #{number} received feedback: {review.body}"
 ```
@@ -500,6 +506,7 @@ In addition to static routes in `config.yaml`, you can create webhook subscripti
 ```bash
 hermes webhook subscribe github-issues \
   --events "issues" \
+  --signature github \
   --prompt "New issue #{issue.number}: {issue.title}\nBy: {issue.user.login}\n\n{issue.body}" \
   --deliver telegram \
   --deliver-chat-id "-100123456789" \
@@ -507,6 +514,8 @@ hermes webhook subscribe github-issues \
 ```
 
 This returns the webhook URL and an auto-generated HMAC secret. Configure your service to POST to that URL.
+
+New subscriptions are pinned to `--signature generic` (timestamp-bound V2 or Standard Webhooks) unless you pass `--signature github`, `gitlab` or `linear` for a provider that signs its own way. Updating an existing subscription keeps its pin. A dashboard re-save of an existing route keeps its pin too, and MCP event subscriptions are pinned to `generic` when first created.
 
 ### List subscriptions
 
@@ -526,6 +535,8 @@ hermes webhook remove github-issues
 hermes webhook test github-issues
 hermes webhook test github-issues --payload '{"issue": {"number": 42, "title": "Test"}}'
 ```
+
+`test` signs the way the route's `signature` pin expects: `X-Hub-Signature-256` for `github`, `X-Gitlab-Token` for `gitlab`, `Linear-Signature` for `linear`, and `X-Webhook-Signature-V2` + `X-Webhook-Timestamp` for `generic` or unpinned routes.
 
 ### How dynamic subscriptions work
 
@@ -596,9 +607,27 @@ The adapter validates incoming webhook signatures using the appropriate method f
 - **GitLab**: `X-Gitlab-Token` header — plain secret string match
 - **Standard Webhooks**: `webhook-id`, `webhook-timestamp`, and `webhook-signature` headers — signed content is `{id}.{timestamp}.{raw_body}` with a `v1,<base64-hmac-sha256>` signature
 - **Generic (V2, recommended)**: `X-Webhook-Signature-V2` + `X-Webhook-Timestamp` headers — HMAC-SHA256 hex digest of `<timestamp>.<body>`. The timestamp (Unix seconds) must be within ±300 seconds of the server clock, which prevents captured requests from being replayed later.
-- **Generic (V1, legacy)**: `X-Webhook-Signature` header — raw HMAC-SHA256 hex digest of the body only. Still accepted for backward compatibility, but it has no replay protection (a captured request replays indefinitely); the gateway logs a deprecation warning once per route. Switch senders to V2.
+- **Generic (V1, rejected)**: `X-Webhook-Signature` signs only the body, so a captured request remains valid after the delivery-ID cache expires. V1-only requests receive `401 Unauthorized`, including on loopback. Switch senders to the timestamp-bound V2 format above; the gateway logs migration instructions once per route.
 
 If a secret is configured but no recognized signature header is present, the request is rejected.
+
+### Pin the signature scheme {#pin-the-signature-scheme}
+
+GitHub (`X-Hub-Signature-256`), Linear (`Linear-Signature`) and the rejected V1 header all carry the same value: HMAC-SHA256 of the body under the route secret, with no timestamp. On a route without `signature`, a captured V1 request can therefore still be replayed by moving its MAC into `Linear-Signature` (or `X-Hub-Signature-256` with a `sha256=` prefix) and sending a fresh delivery ID. Set `signature` on every route so it accepts only the scheme its sender uses:
+
+```yaml
+routes:
+  github-pr:
+    secret: "github-webhook-secret"
+    signature: github      # only X-Hub-Signature-256
+  deploy-hook:
+    secret: "deploy-secret"
+    signature: generic     # only X-Webhook-Signature-V2 + X-Webhook-Timestamp, or Standard Webhooks
+```
+
+An unknown value is a configuration error: a static route stops the adapter from starting, a dynamic subscription is skipped, and neither falls back to accepting every scheme.
+
+If a sender used body-only V1 (`X-Webhook-Signature`), **rotate that route's secret** when you move it to V2. Old captures stop validating under every header family only once the secret changes. GitHub and Linear signatures have no timestamp of their own, so a pinned `github`/`linear` route still relies on the 1-hour delivery-ID cache against replays of its own provider's requests.
 
 ### Secret is required
 
@@ -668,6 +697,8 @@ This is the same trust model that applies to everything the agent reads: web pag
 - Ensure the secret in your route config exactly matches the secret configured in the webhook source
 - For GitHub, the secret is HMAC-based — check `X-Hub-Signature-256`
 - For GitLab, the secret is a plain token match — check `X-Gitlab-Token`
+- For generic senders, use `X-Webhook-Signature-V2` and `X-Webhook-Timestamp`; body-only V1 signatures are rejected
+- A route with `signature` set rejects every other scheme with `401` (look for `is pinned to signature` in the gateway log); a subscription created by `hermes webhook subscribe` without `--signature` is pinned to `generic`
 - Check gateway logs for `Invalid signature` warnings
 
 ### Event being ignored

@@ -458,8 +458,9 @@ update) or `pnpm fetch`, so another pnpm 12 passes those. The backstop for a
 lockfile written that way is CI: every change to `pnpm-lock.yaml` runs the JS checks,
 which install it with the pinned pnpm under `--frozen-lockfile` (with
 `--lockfile-only` when the installed tree is cached). That proves the lockfile matches
-the manifests and the release-age policy, not which pnpm wrote it. A user agent
-overridden through `pnpm_config_user_agent` is refused as well.
+the manifests and the release-age policy, not which pnpm wrote it. The preinstall
+reads the user agent pnpm reports, so a `pnpm_config_user_agent` override is
+refused unless it names the pinned version.
 
 In the repository root and the JS workspace folders, npm refuses every command that
 installs or resolves dependencies (`npm install` with or without `--ignore-scripts`,

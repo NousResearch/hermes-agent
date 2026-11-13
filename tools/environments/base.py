@@ -822,13 +822,16 @@ class BaseEnvironment(LongLivedProcessMixin, ABC):
     def _prepare_command(self, command: str) -> tuple[str, str | None]:
         """Rewrite sudo for an askpass helper or a piped password (untouched under NOPASSWD) and
         apply the macOS ``open`` raise-ladder (no-op off Darwin) so opened files come to the front."""
+        from tools.environments.sudo_password_note import note_sudo_password_sent
         from tools.terminal_tool_macos_open import _transform_macos_open_command
         from tools.terminal_tool_sudo import _transform_sudo_command
-        return _transform_sudo_command(
+        prepared = _transform_sudo_command(
             _transform_macos_open_command(command),
             sudo_nopasswd_check=self._sudo_nopasswd_works,
             askpass_supported=self._sudo_askpass_supported,
         )
+        note_sudo_password_sent(self, prepared[1])  # once per non-local backend class
+        return prepared
 
     _sudo_askpass_supported = sudo_askpass_supported_once
     _SUDO_PROBE_TIMEOUT_S = 3

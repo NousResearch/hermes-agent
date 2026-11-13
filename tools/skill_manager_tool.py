@@ -28,9 +28,10 @@ from agent.skill_utils import (
     parse_frontmatter as _parse_frontmatter,
     SKILL_PROMPT_DESC_LIMIT)
 from tools.skill_manager_guards import (
+    _approved_background_review, _is_curator_write,
     _background_review_delete_guard, _background_review_preflight, _background_review_read_before_write_guard,
     _containing_skills_root, _curator_consolidation_delete_guard, _is_path_redirect, _pinned_guard,
-    _validate_delete_target, _is_background_review, _refusal as _err)
+    _validate_delete_target, _refusal as _err)
 from tools.skill_manager_batch import (
     _PATCH_EITHER_OR, _PATCH_NEEDS_NEW_STRING, _PATCH_NEEDS_OLD_STRING, _op_shape_error, _skill_manage_batch)
 from tools.skills_guard import scan_skill, should_allow_install, format_scan_report
@@ -595,7 +596,7 @@ def _delete_skill(name: str, absorbed_into: Optional[str] = None) -> dict[str, A
     # Curator consolidations must be RECOVERABLE (`hermes curator restore`): archive instead
     # of rmtree. Foreground deletes keep hard-delete semantics.
     absorbed_note = f" Content absorbed into '{absorbed_target}'." if absorbed_target else ""
-    if _is_background_review():
+    if _is_curator_write():
         try:
             from tools.skill_usage import archive_skill
             ok, archive_msg = archive_skill(name)
@@ -713,13 +714,18 @@ def _skill_manage_from(payload: dict[str, Any], **extra) -> str:
         **{k: payload.get(k) for k in _FLAT_OP_KEYS}, **extra)
 
 
-def apply_skill_pending(payload: dict[str, Any]) -> str:
-    """Replay a staged skill write, bypassing the gate (the /skills approve handler)."""
-    token = _skill_gate_bypass.set(True)
-    try:
+def apply_skill_pending(payload: dict[str, Any], *, origin: str = "foreground") -> str:
+    """Replay an approved write with its durable policy and audit origin, outside the review turn."""
+    from tools.skill_ledger import reset_ledger_actor, set_ledger_actor
+    from tools.skill_provenance import BACKGROUND_REVIEW
+
+    with ExitStack() as scope:
+        scope.callback(_skill_gate_bypass.reset, _skill_gate_bypass.set(True))
+        curator = origin == BACKGROUND_REVIEW
+        scope.callback(_approved_background_review.reset, _approved_background_review.set(curator))
+        if curator:
+            scope.callback(reset_ledger_actor, set_ledger_actor("curator"))
         return _skill_manage_from(payload)
-    finally:
-        _skill_gate_bypass.reset(token)
 
 
 def _act_patch(a):

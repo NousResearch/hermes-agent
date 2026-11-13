@@ -12,6 +12,10 @@ from typing import Any, Dict, Optional
 
 logger = logging.getLogger("tools.skill_manager_tool")
 
+# Approved proposals retain durable curator policy, not the review turn's transient read marks.
+_approved_background_review: _ctxvars.ContextVar[bool] = _ctxvars.ContextVar(
+    "skill_approved_background_review", default=False)
+
 
 def _refusal(message: str, **extra: Any) -> dict[str, Any]:
     return {"success": False, "error": message, **extra}
@@ -24,6 +28,11 @@ def _is_background_review() -> bool:
         return bool(is_background_review())
     except Exception:
         return False
+
+
+def _is_curator_write() -> bool:
+    """Live review or approved review proposal; never used for read-before-write guards."""
+    return _is_background_review() or _approved_background_review.get()
 
 
 def _resolved_str(path: Path) -> str:
@@ -165,7 +174,7 @@ def _background_review_delete_guard(name: str, skill_dir: Path) -> Optional[dict
     """Refuse autonomous deletes of anything but curator-owned sediment. Content writes are not
     gated by ownership: the review fork exists to improve every skill it learns from, and every
     write is ledgered and reversible, while an archive removes a skill the user relies on."""
-    if not _is_background_review():
+    if not _is_curator_write():
         return None
     refuse = "Refusing background curator delete for"
     if _is_pinned(name, "pinned skill guard"):
@@ -240,7 +249,7 @@ def _locked_guard(name: str, action: str) -> Optional[dict[str, Any]]:
         locked = next((c for c in candidates if skill_usage.is_locked(c)), None)
     except Exception:
         logger.warning("locked skill guard lookup failed for %s", name, exc_info=True)
-        if not _is_background_review():
+        if not _is_curator_write():
             return None  # a corrupt sidecar must not freeze every skill edit in normal turns
         return _refusal(
             f"Refusing {action} for skill '{name}': its lock state could not be verified because the "
@@ -275,7 +284,7 @@ def _curator_consolidation_delete_guard(
     with zero verified consolidations (``consolidated_this_run == 0``), leaving active automations pointing
     at names that no longer resolve. Refuse it; keep the skill active.
     """
-    if not _is_background_review() or (isinstance(absorbed_into, str) and absorbed_into.strip()):
+    if not _is_curator_write() or (isinstance(absorbed_into, str) and absorbed_into.strip()):
         return None
     return _refusal(
         f"Refusing background curator delete of skill '{name}': the consolidation pass may only "

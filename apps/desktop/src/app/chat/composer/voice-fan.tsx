@@ -7,6 +7,7 @@ import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { Ear, EarOff, iconSize, Loader2, Square, Volume2, VolumeX } from '@/lib/icons'
 import { cn } from '@/lib/utils'
+import { $sttEnabled } from '@/store/voice-prefs'
 import { $wakeWord, toggleWakeWord } from '@/store/wake-word'
 
 import { ACTIVE_ICON_BTN, GHOST_ICON_BTN } from './control-classes'
@@ -36,6 +37,7 @@ export function VoiceFan({ autoSpeak, disabled, state, voiceStatus, onDictate, o
   const { t } = useI18n()
   const c = t.composer
   const wake = useStore($wakeWord)
+  const sttOn = useStore($sttEnabled)
 
   const phrase = wake.phrase || 'hey hermes'
   const dictating = state.voice.active || voiceStatus !== 'idle'
@@ -49,7 +51,7 @@ export function VoiceFan({ autoSpeak, disabled, state, voiceStatus, onDictate, o
         ? c.transcribingDictation
         : c.voiceDictation
 
-  const hubLabel = dictating ? dictationLabel : c.voiceDictation
+  const hubLabel = !sttOn ? `${dictationLabel} — ${t.desktop.sttDisabled}` : dictating ? dictationLabel : c.voiceDictation
 
   const dictate = useCallback(() => {
     triggerHaptic(dictating ? 'close' : 'open')
@@ -63,7 +65,7 @@ export function VoiceFan({ autoSpeak, disabled, state, voiceStatus, onDictate, o
       id: 'dictate',
       active: dictating,
       className: cn(GHOST_ICON_BTN, 'rounded-full p-0', dictating && ACTIVE_ICON_BTN),
-      disabled: disabled || !state.voice.enabled || voiceStatus === 'transcribing',
+      disabled: disabled || !state.voice.enabled || !sttOn || voiceStatus === 'transcribing',
       icon:
         voiceStatus === 'recording' ? (
           <Square className={cn('fill-current', iconSize.xs)} />
@@ -75,7 +77,7 @@ export function VoiceFan({ autoSpeak, disabled, state, voiceStatus, onDictate, o
       label: hubLabel,
       onSelect: dictate
     }),
-    [dictate, dictating, disabled, hubLabel, state.voice.enabled, voiceStatus]
+    [dictate, dictating, disabled, hubLabel, state.voice.enabled, sttOn, voiceStatus]
   )
 
   const items = useMemo<FanMenuItem[]>(

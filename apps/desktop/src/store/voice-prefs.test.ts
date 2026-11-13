@@ -11,11 +11,13 @@ import { isVoiceStopCommand } from '@/lib/voice-stop-word'
 import {
   $bargeInEnabled,
   $bargeInThresholdMultiplier,
+  $sttEnabled,
   $voiceSilenceMs,
   $voiceStopPhrase,
   $voiceStopPhraseConfig,
   applyBargeInEnabledFromConfig,
   applyBargeInThresholdFromConfig,
+  applySttEnabledFromConfig,
   applyVoiceSilenceMsFromConfig,
   applyVoiceStopPhraseFromConfig
 } from './voice-prefs'
@@ -259,6 +261,37 @@ describe('applyVoiceSilenceMsFromConfig', () => {
       applyVoiceSilenceMsFromConfig({ voice: { silence_duration: 0.7 } }, backendDefault)
       applyVoiceSilenceMsFromConfig({ voice: { silence_duration: raw } }, backendDefault)
       expect($voiceSilenceMs.get()).toBe(1_250)
+    }
+  })
+})
+
+// `stt.enabled` gates dictation in the composer, so it must agree with the
+// backend's own switch (`transcription_tools.is_stt_enabled` ->
+// `utils.is_truthy_value(..., default=True)`) — a YAML string "false" disables,
+// and an absent key never does.
+describe('applySttEnabledFromConfig', () => {
+  it('disables on an explicit false-ish value, including the YAML string form', () => {
+    for (const raw of [false, 'false', 'off', 'no', '0', 0]) {
+      $sttEnabled.set(true)
+      applySttEnabledFromConfig({ stt: { enabled: raw } })
+      expect($sttEnabled.get()).toBe(false)
+    }
+  })
+
+  it('stays enabled when the key is absent, true, or not a value it can read', () => {
+    for (const config of [
+      {},
+      { stt: {} },
+      { stt: { enabled: true } },
+      { stt: { enabled: 'yes' } },
+      { stt: { enabled: 1 } },
+      { stt: { enabled: null } },
+      { stt: null },
+      null
+    ]) {
+      $sttEnabled.set(false)
+      applySttEnabledFromConfig(config)
+      expect($sttEnabled.get()).toBe(true)
     }
   })
 })

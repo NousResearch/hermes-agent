@@ -540,6 +540,39 @@ _AUTO_HEARTBEAT_MIN_INTERVAL_SECONDS = 60.0
 _auto_heartbeat_last_attempt: float = 0.0
 _auto_heartbeat_fence_warned = False
 
+# Belt for terminal closes this worker cannot be signalled about (cross-host closer,
+# pre-termination dispatcher): when the card is already done/archived and THIS process
+# did not close it, the auto-heartbeat bridge self-terminates instead of beating for a
+# run nothing tracks (2026-11-05 zombie-writer incident). Set by _handle_complete so a
+# worker never cuts its own post-completion finalisation.
+_terminal_close_by_this_worker = False
+_KANBAN_BELT_TERMINAL_STATUSES = frozenset({"done", "archived"})
+
+
+def _self_terminate_displaced_worker(tid: str, status: str) -> None:
+    """SIGTERM this process: its card was closed by someone else. Self-signalling (not
+    os._exit) reuses the runtime's normal SIGTERM shutdown path, and the dispatcher's
+    TERM→KILL escalation treats this worker exactly like one it terminated itself."""
+    import signal
+    logger.warning(
+        "kanban worker self-exit: task %s reached terminal status '%s' without this "
+        "process closing it — the run was displaced; SIGTERM self", tid, status)
+    os.kill(os.getpid(), signal.SIGTERM)
+
+
+def _belt_exit_if_card_closed_elsewhere(kb, conn, tid: str) -> None:
+    """Fail-open terminal-status poll; only an affirmative terminal read exits."""
+    if _terminal_close_by_this_worker or _is_delegated_child_context():
+        return
+    try:
+        row = conn.execute("SELECT status FROM tasks WHERE id = ?", (tid,)).fetchone()
+    except Exception:
+        logger.debug("kanban belt: status poll failed for %s", tid, exc_info=True)
+        return
+    status = row["status"] if row else None
+    if status in _KANBAN_BELT_TERMINAL_STATUSES:
+        _self_terminate_displaced_worker(tid, str(status))
+
 
 def register_current_worker_from_env() -> bool:
     """Record this worker's pid on its run when the dispatcher died before it could
@@ -600,6 +633,7 @@ def heartbeat_current_worker_from_env() -> bool:
                 except Exception:
                     logger.debug("auto-heartbeat: %s failed", op, exc_info=True)
                     succeeded = False
+            _belt_exit_if_card_closed_elsewhere(kb, conn, tid)
         return succeeded
     except Exception:
         logger.debug("auto-heartbeat: bridge failed", exc_info=True)
@@ -750,6 +784,11 @@ def _handle_complete(args: dict, **kw) -> str:
             ok = kb.complete_task(
                 conn, tid, result=result, summary=summary, metadata=metadata,
                 created_cards=created_cards, expected_run_id=_worker_run_id(tid))
+            if ok:
+                # This process closed its own card: the auto-heartbeat belt must never
+                # read the fresh terminal status as a displacement and cut finalisation.
+                global _terminal_close_by_this_worker
+                _terminal_close_by_this_worker = True
         except kb.ArtifactPreservationError as artifact_err:
             # Structured rejection — surface the phantom ids so the worker can retry with a corrected list
             # or drop the field. Audit event already landed in the DB. The task itself was NOT mutated (the

@@ -91,7 +91,7 @@ export function ChoiceButton({
       type="button"
     >
       <KeyBadge char={char} preview={active} selected={Boolean(selected)} />
-      <span className="flex-1 wrap-anywhere">
+      <span className="flex-1 wrap-anywhere" data-bidi-prose="">
         <ChoiceLabel choice={choice} />
       </span>
     </button>

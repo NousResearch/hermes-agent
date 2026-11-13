@@ -10,11 +10,15 @@ same claim + ``continue`` path as ``delegate_task(action='continue')``:
 Never: ``ON_FIX`` / ``HANDOFF`` / ``REPAIR_THEN_CONTINUE`` records, user stops, expired records, records whose pin the
 cap dropped, nested children (their parent is a subagent that joined them inside its own turn).
 
-The parent wins. A due record is ``superseded`` (kept, pinned and still continuable by hand until its TTL) when, after
-it stopped, its parent conversation moved on: the parent session is gone or ended deliberately (``/new``, deleted,
-closed), or the same parent lineage started another delegation in the same repository. ``/stop`` and session ends mark
-it the same way at once (:func:`supersede_for_session`), and ``delegate_task(action='stop')`` on a resumable child
-dismisses it (:func:`dismiss`).
+Explicit cancel only. A due record is ``superseded`` (kept, pinned and still continuable by hand until its TTL) only
+when its parent session is gone or ended deliberately (``/new``, deleted, closed). ``/stop`` and session ends mark it the
+same way at once (:func:`supersede_for_session`), ``delegate_task(action='stop')`` on a resumable child dismisses it
+(:func:`dismiss`), and the parent's own continue takes it over. Other work the parent starts never cancels it.
+
+Silent while pending: a stop that promised a resume delivers no completion (``async_delegation``); the parent sees it in
+``delegate_task(action='list')`` (:func:`waiting_entries`). It reports once: the resumed run's own result, or ONE
+terminal failure when it gives up (attempts used, ``delegation.auto_resume_deadline_minutes`` passed since its first
+stop, or a permanent refusal) (:func:`_give_up`).
 
 Bounded: at most ``MAX_AUTO_ATTEMPTS`` automatic attempts per record, counted in the record BEFORE the attempt runs so
 a resume that kills the gateway cannot loop across boots; at most ``delegation.max_concurrent_children`` running async
@@ -35,6 +39,7 @@ from tools.delegate_tool_resumable import AUTO_AT, AUTO_ON_BOOT
 logger = logging.getLogger("tools.delegate_tool")  # log-record parity with the origin module
 
 MAX_AUTO_ATTEMPTS = 2
+DEFAULT_DEADLINE_MINUTES = 360
 SUPERSEDED = "superseded"
 CANCELLED = "Not continued: its parent cancelled the automatic resume"
 STAND_IN_FAILED = "Not continued: the scheduler could not build the parent's stand-in"
@@ -51,14 +56,59 @@ def enabled() -> bool:
     return is_truthy_value(_load_config().get("auto_resume", False))
 
 
+def _deadline_s() -> float:
+    from tools.delegate_tool_config import _load_config
+    try:
+        return max(0.0, float(_load_config().get("auto_resume_deadline_minutes", DEFAULT_DEADLINE_MINUTES))) * 60
+    except (TypeError, ValueError):
+        return DEFAULT_DEADLINE_MINUTES * 60.0
+
+
+def _first_stopped_at(record: dict[str, Any]) -> float:
+    return float(record.get("auto_first_stopped_at") or record.get("stopped_at") or time.time())
+
+
+def _hhmm(ts: float) -> str:
+    return time.strftime("%H:%M", time.localtime(ts))
+
+
+def give_up_reason(record: dict[str, Any], now: Optional[float] = None, *, at: Optional[float] = None) -> Optional[str]:
+    """Why the scheduler stops trying *record* (its attempts are used, or its deadline passed, or the next attempt
+    *at* would land past it), else None."""
+    if int(record.get("auto_attempts") or 0) >= MAX_AUTO_ATTEMPTS:
+        return (f"gave up after {MAX_AUTO_ATTEMPTS} automatic attempts (last stop: "
+                f"{record.get('failure_reason') or record.get('outcome') or 'unknown'})")
+    deadline = _first_stopped_at(record) + _deadline_s()
+    if (now or time.time()) > deadline or (at is not None and at > deadline):
+        return (f"gave up: the automatic-resume deadline ({_deadline_s() / 60:g} minutes after its first stop, "
+                f"{_hhmm(deadline)}) " + ("passed" if at is None or (now or time.time()) > deadline
+                                           else "falls before the limit resets"))
+    return None
+
+
 def promise(record: dict[str, Any]) -> Optional[dict[str, Any]]:
-    """What the stop notice may promise for a just-stopped record: ``{"at": epoch}`` or ``{"on_boot": True}``, or
-    None when this record will not be resumed automatically."""
-    if not enabled() or not _scheduler_runs() or int(record.get("auto_attempts") or 0) >= MAX_AUTO_ATTEMPTS:
+    """What the stop may promise for a just-stopped record: ``{"at": epoch, "attempt": n}`` or ``{"on_boot": True,
+    "attempt": n}``, or None when this record will not be resumed automatically."""
+    if not enabled() or not _scheduler_runs():
         return None
     if record.get("resume_mode") == AUTO_AT and isinstance(record.get("next_attempt_at"), (int, float)):
-        return {"at": float(record["next_attempt_at"])}
-    return {"on_boot": True} if record.get("resume_mode") == AUTO_ON_BOOT else None
+        auto: dict[str, Any] = {"at": float(record["next_attempt_at"])}
+    elif record.get("resume_mode") == AUTO_ON_BOOT:
+        auto = {"on_boot": True}
+    else:
+        return None
+    if give_up_reason(record, at=auto.get("at")):
+        return None
+    return {**auto, "attempt": int(record.get("auto_attempts") or 0) + 1,
+            "gives_up_at": _first_stopped_at(record) + _deadline_s()}
+
+
+def gave_up(record: dict[str, Any]) -> Optional[str]:
+    """For a just-stopped record the scheduler would resume but no longer will: why (the stop's own completion is
+    then the one terminal report), else None."""
+    if not enabled() or not _scheduler_runs() or record.get("resume_mode") not in (AUTO_AT, AUTO_ON_BOOT):
+        return None
+    return give_up_reason(record, at=record.get("next_attempt_at") if record.get("resume_mode") == AUTO_AT else None)
 
 
 def _scheduler_runs() -> bool:
@@ -69,26 +119,35 @@ def _scheduler_runs() -> bool:
     return process_ownership.owns(get_hermes_home())
 
 
+def waiting_text(auto: dict[str, Any]) -> str:
+    """``waiting to resume at HH:MM (attempt n of 2)``."""
+    when = f"at {_hhmm(auto['at'])}" if auto.get("at") else "once the gateway is back up"
+    out = f"waiting to resume {when} (attempt {auto.get('attempt') or 1} of {MAX_AUTO_ATTEMPTS})"
+    return out + (f"; gives up at {_hhmm(auto['gives_up_at'])}" if auto.get("gives_up_at") else "")
+
+
 def notice_line(sid: str, auto: dict[str, Any]) -> str:
-    """The sentence a stop notice carries for a child the scheduler will continue."""
-    when = (f"at {time.strftime('%H:%M', time.localtime(auto['at']))} (when the limit resets)" if auto.get("at")
-            else "as soon as the gateway is back up")
-    return (f"Subagent {sid} WILL resume automatically {when}, on its own conversation and worktree (at most "
-            f"{MAX_AUTO_ATTEMPTS} automatic attempts). Do not re-dispatch this task: its result will arrive here. To "
-            f"cancel the automatic resume, call delegate_task(action='stop', subagent_id='{sid}'); a new subagent "
-            "you start in the same repository also cancels it.")
+    """The sentence a mixed unit's notice carries for a child the scheduler will continue."""
+    return (f"Subagent {sid} is {waiting_text(auto)}, on its own conversation and worktree. Do not re-dispatch it: "
+            "its result, or one failure if it gives up, will arrive here. To cancel it, call "
+            f"delegate_task(action='stop', subagent_id='{sid}').")
 
 
-def boot_notice(conn, sids: list[str], records: dict[str, dict[str, Any]]) -> str:
-    """Boot recovery's sentence for crashed children the scheduler will continue ('' when none will); each promised
-    record is stamped ``auto_promised`` on boot recovery's own connection."""
+def gave_up_line(sid: str, reason: str) -> str:
+    return (f"Automatic resume of subagent {sid} {reason}. It is still continuable by hand: "
+            f"delegate_task(action='continue', subagent_id='{sid}', message=...), or re-dispatch the task.")
+
+
+def boot_notice(conn, sids: list[str], records: dict[str, dict[str, Any]]) -> tuple[str, list[str]]:
+    """Boot recovery's sentence for crashed children the scheduler will continue ('' when none will) and their ids;
+    each promised record is stamped ``auto_promised`` on boot recovery's own connection."""
     promised = {sid: auto for sid in sids if (record := records.get(sid)) and record.get("unit_id")
                 and not record.get("auto_off") and (auto := promise({**record, "resume_mode": AUTO_ON_BOOT}))}
     for sid in promised:
         conn.execute("UPDATE resumable_subagents SET record_json=json_set(record_json, '$.auto_promised', json('true'))"
                      " WHERE subagent_id=?", (sid,))
     lines = [notice_line(sid, auto) for sid, auto in promised.items()]
-    return (" " + " ".join(lines)) if lines else ""
+    return ((" " + " ".join(lines)) if lines else ""), list(promised)
 
 
 # ── storage ────────────────────────────────────────────────────────────────
@@ -132,19 +191,11 @@ def _unit_row(unit_id: Any) -> Optional[dict[str, Any]]:
     """The async ledger row the child's background unit reported on (its completion route), or None."""
     if not unit_id:
         return None
-    cols = ("origin_session", "origin_ui_session_id", "parent_session_id", "origin_session_id", "task_json")
+    cols = ("origin_session", "origin_ui_session_id", "parent_session_id", "origin_session_id", "task_json",
+            "result_json", "dispatched_at")
     got = _write(lambda conn: conn.execute(f"SELECT {', '.join(cols)} FROM async_delegations WHERE delegation_id=?",
                                            (str(unit_id),)).fetchone())
     return dict(zip(cols, got)) if got else None
-
-
-def _records_since(conn, stopped_at: float, exclude: str) -> list[dict[str, Any]]:
-    """Every OTHER record a parent SPAWNED after *stopped_at* (a continue of another child, or this scheduler's,
-    is not new work)."""
-    rows = conn.execute("SELECT subagent_id, record_json FROM resumable_subagents WHERE subagent_id != ?",
-                        (exclude,)).fetchall()
-    return [r for r in (json.loads(raw or "{}") for _sid, raw in rows) if r.get("run_origin", "spawn") == "spawn"
-            and float(r.get("run_started_at") or 0) > stopped_at]
 
 
 # ── verdicts ───────────────────────────────────────────────────────────────
@@ -160,25 +211,6 @@ def _lineage(conn, parent_sid: str) -> tuple[set[str], Optional[dict[str, Any]]]
     return set(chain), ({"ended_at": tip[0], "end_reason": tip[1]} if tip else None)
 
 
-def _repo_of(path: Any) -> Optional[str]:
-    """The repository a path is in, named by its main worktree (so every isolation worktree of one repository
-    names the same one), else the path itself."""
-    if not isinstance(path, str) or not path:
-        return None
-    from tools.delegate_tool_resumable import _worktrees_of
-    trees = _worktrees_of(path)
-    return trees[0] if trees else os.path.realpath(path)
-
-
-def _repos(record: dict[str, Any]) -> set[str]:
-    """Every repository a record's run started in, moved to, was isolated in or pins. An isolation worktree names
-    its repository itself (``repo_root``): a finished child's tree may already be pruned."""
-    worktree = record.get("worktree") or {}
-    paths = [record.get("cwd"), record.get("start_cwd"), worktree.get("path"), *(record.get("pin_paths") or ())]
-    repos = {repo for repo in map(_repo_of, paths) if repo}
-    return repos | ({_repo_of(worktree["repo_root"])} if worktree.get("repo_root") else set())
-
-
 def _parent_ended(row: Optional[dict[str, Any]]) -> Optional[str]:
     if row is None:
         return "its parent session no longer exists"
@@ -192,19 +224,8 @@ def _parent_ended(row: Optional[dict[str, Any]]) -> Optional[str]:
 def superseded_reason(conn, record: dict[str, Any], parent_sid: str) -> Optional[str]:
     """Why the parent no longer wants *record* resumed, or None while it still does (read on *conn*, so inside a
     write transaction nothing the parent does can land between this answer and the write that acts on it)."""
-    lineage, tip_row = _lineage(conn, parent_sid)
-    if ended := _parent_ended(tip_row):
-        return ended
-    stopped_at = float(record.get("stopped_at") or 0)
-    mine = None
-    for other in _records_since(conn, stopped_at, record["subagent_id"]):
-        if not lineage & set(other.get("owners") or ()):
-            continue
-        mine = _repos(record) if mine is None else mine
-        if shared := mine & _repos(other):
-            return (f"its parent started subagent {other.get('subagent_id')} in {min(shared)} after it "
-                    "stopped")
-    return None
+    _lineage_ids, tip_row = _lineage(conn, parent_sid)
+    return _parent_ended(tip_row)
 
 
 def _due(record: dict[str, Any], now: float) -> bool:
@@ -241,7 +262,9 @@ def _cause(record: dict[str, Any]) -> str:
 
 def resume_message(record: dict[str, Any]) -> str:
     return (f"Your run was stopped by {_cause(record)}; continue where you left off. Check git status and the effect "
-            "of your last tool call before re-running anything with side effects.")
+            "of your last tool call before re-running anything with side effects. If your last tool call has no "
+            "recorded result and you cannot establish whether it ran, do not repeat it: finish with a result that "
+            "starts with \"BLOCKED:\" and names that tool call.")
 
 
 def _claim(record: dict[str, Any], parent_sid: str) -> tuple[Optional[dict[str, Any]], Optional[str]]:
@@ -285,7 +308,7 @@ def take_claim(path: Any, sid: str) -> Optional[dict[str, Any]]:
 
 def confirm_start(path: Any, sid: str) -> Optional[str]:
     """Right before the continued child is dispatched: the eligibility check, in one write transaction. None while
-    the parent has not cancelled it (stop, /stop, /new, a replacement in the same repository), else the reason, with
+    the parent has not cancelled it (stop, /stop, /new), else the reason, with
     the row left as the parent's decision put it (or moved to ``superseded``). The claim stays cancellable as
     unstarted until the run records itself: :func:`admit_start` gives the parent the last word there."""
     from tools.delegate_tool_resumable import _begin_immediate, _row, _write as write
@@ -363,11 +386,17 @@ def _resume(record: dict[str, Any], unit: dict[str, Any], start: Callable[..., O
 
 
 def _verdict(record: dict[str, Any], now: float) -> tuple[str, Any]:
-    """``(kind, payload)``: ``wait``, ``never`` (note), ``supersede`` (note) or ``run`` (its async ledger row)."""
+    """``(kind, payload)``: ``wait``, ``never`` (note), ``give_up`` (reason: a promised record's one terminal
+    failure), ``supersede`` (note) or ``run`` (its async ledger row)."""
+    if record.get("auto_gave_up"):
+        return "wait", None  # its terminal failure was delivered; nothing more to do
+    promised = bool(record.get("auto_promised"))
+    if promised and (reason := give_up_reason(record, now)):
+        return "give_up", reason
     if not _due(record, now):
         return "wait", None
     if blocked := _blocked(record):
-        return "never", blocked
+        return ("give_up" if promised else "never"), blocked
     unit = _unit_row(record.get("unit_id"))
     if unit is None or not unit.get("parent_session_id"):
         return "never", "no background completion route (a nested or joined child)"
@@ -387,6 +416,9 @@ def tick(start: Callable[..., Optional[str]], *, capacity: int, now: Optional[fl
     for record in _candidates(now):
         kind, payload = _verdict(record, now)
         sid = record["subagent_id"]
+        if kind == "give_up":
+            _give_up(record, payload)
+            continue
         if kind == "never":
             if record.get("auto_note") != payload:
                 _write(lambda conn, n=payload: _note(conn, sid, state=None, note=n))
@@ -402,6 +434,67 @@ def tick(start: Callable[..., Optional[str]], *, capacity: int, now: Optional[fl
         if _resume(record, payload, start) == "resumed":
             resumed.append(sid)
     return resumed
+
+
+def _give_up(record: dict[str, Any], reason: str) -> bool:
+    """A promised record will not be resumed: mark it (once) and deliver ONE failed completion to the parent, on the
+    route of the unit that reported its last stop, with its last summary and transcript tail."""
+    sid = record["subagent_id"]
+    claimed = _write(lambda conn: conn.execute(
+        "UPDATE resumable_subagents SET record_json=json_set(record_json, '$.auto_gave_up', ?, '$.auto_off', ?, "
+        "'$.auto_note', ?), updated_at=? WHERE subagent_id=? AND state='resumable' "
+        "AND json_extract(record_json, '$.auto_gave_up') IS NULL", (reason, reason, reason, time.time(), sid)).rowcount)
+    if claimed != 1:
+        return False
+    row = _unit_row(record.get("unit_id"))
+    if row is None:
+        logger.info("Subagent %s gave up on automatic resume (%s) but has no completion route", sid, reason)
+        return False
+    from tools.async_delegation import _ROUTING_KEYS, _push_completion_event
+    from tools.async_delegation_recovery_hints import transcript_tails
+    task = json.loads(row.get("task_json") or "{}")
+    prior = json.loads(row.get("result_json") or "{}") or {}
+    last = next((r for r in (prior.get("results") or [prior]) if r.get("subagent_id") == sid), {})
+    index = last.get("task_index", (task.get("task_indexes") or [0])[0])
+    tails = transcript_tails(task.get("task_transcripts") or {})
+    tail = tails.get(str(index)) or tails.get(index) or next(iter(tails.values()), None)
+    entry = {"task_index": index, "subagent_id": sid, "status": "failed", "summary": last.get("summary"),
+             "error": f"automatic resume {reason}", "auto_gave_up": reason, "failure_reason": record.get("failure_reason"),
+             **({"transcript_tail": tail} if tail else {})}
+    unit = {"delegation_id": record["unit_id"], "session_key": row.get("origin_session") or "",
+            "origin_ui_session_id": row.get("origin_ui_session_id") or "", "parent_session_id": row["parent_session_id"],
+            "origin_session_id": row.get("origin_session_id") or "", "is_batch": True,
+            **{k: task.get(k) for k in ("goal", "goals", "context", "toolsets", "role", "model")},
+            "dispatched_at": row.get("dispatched_at"), "completed_at": time.time(),
+            **{k: task[k] for k in _ROUTING_KEYS if task.get(k)}}
+    _push_completion_event(unit, {"results": [entry], "error": None}, "failed")
+    logger.info("Subagent %s: automatic resume %s; delivered one failure to its parent", sid, reason)
+    return True
+
+
+def waiting_entries(parent_agent: Any) -> list[dict[str, Any]]:
+    """``delegate_task(action='list')`` rows for this parent's children waiting on a promised automatic resume."""
+    if not enabled():
+        return []
+    from tools.delegate_tool_registry import _owns_subagent_record
+    from tools.delegate_tool_resumable import _db_path_for, _write as write
+    path = _db_path_for(parent_agent)
+    rows = (write(path, lambda conn: conn.execute(
+        "SELECT subagent_id, record_json FROM resumable_subagents WHERE state='resumable'").fetchall())
+            if path is not None else None) or []
+    out = []
+    for sid, raw in rows:
+        r = json.loads(raw or "{}")
+        if not r.get("auto_promised") or r.get("auto_off") or r.get("auto_gave_up"):
+            continue
+        if not _owns_subagent_record({"ancestor_owner_session_ids": r.get("owners") or ()}, parent_agent):
+            continue
+        auto = {"at": r.get("next_attempt_at") if r.get("resume_mode") == AUTO_AT else None,
+                "attempt": int(r.get("auto_attempts") or 0) + 1, "gives_up_at": _first_stopped_at(r) + _deadline_s()}
+        out.append({"subagent_id": sid, "goal": r.get("goal"), "model": r.get("model"), "status": "waiting_to_resume",
+                    "next_attempt_at": auto["at"], "auto_attempts": int(r.get("auto_attempts") or 0),
+                    "note": waiting_text(auto)})
+    return out
 
 
 # ── parent actions ─────────────────────────────────────────────────────────

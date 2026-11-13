@@ -230,17 +230,19 @@ def _prune_durable_records() -> None:
                    )""", (pending_count - _MAX_DURABLE_PENDING,))
 
 
-def _persist_completion(event: dict[str, Any], result: dict[str, Any]) -> None:
+def _persist_completion(event: dict[str, Any], result: dict[str, Any], *, delivery: str = "pending") -> None:
+    """*delivery* ``delivered``: a unit whose every child waits on a promised automatic resume is recorded but never
+    offered (restart recovery must not resurrect it)."""
     event, result = redact_completion_event(event), redact_child_result(result)
     if remote := worker_ledger():
         return remote.complete(event, result)
     now = time.time()
     with _DB_LOCK, _transaction() as conn:
         conn.execute("""UPDATE async_delegations SET state=?, completed_at=?, updated_at=?,
-               event_json=?, result_json=?, delivery_state='pending'
+               event_json=?, result_json=?, delivery_state=?
                WHERE delegation_id=?""",
             (event.get("status", "completed"), event.get("completed_at", now), now,
-             json.dumps(event), json.dumps(result), event["delegation_id"]))
+             json.dumps(event), json.dumps(result), delivery, event["delegation_id"]))
 
 
 def record_unit_child(delegation_id: str, entry: dict[str, Any]) -> None:
@@ -330,13 +332,18 @@ def recover_abandoned_delegations() -> int:
                 diagnostics["transcript_tails"] = tails
             if hint := git_state_hint(task.get("owner_cwd")):
                 diagnostics["git_state_hint"] = hint
+            silent = False
             if continuable := continuable_of(conn, delegation_id):
                 diagnostics["resumable_subagent_ids"] = continuable
                 from tools.delegate_tool_auto_resume import boot_notice
-                error += boot_notice(conn, continuable, recovered_records) or (
+                notice, promised = boot_notice(conn, continuable, recovered_records)
+                error += notice or (
                     " Its subagents can be continued on their own conversation and worktree: "
                     "delegate_task(action='continue', subagent_id=..., message=...); check git state and the "
                     "last tool before re-running side effects.")
+                n_tasks = len(task.get("task_indexes") or task.get("goals") or [0])
+                finished = any(r.get("status") != "unknown" for r in recovered_results or ())
+                silent = len(promised) >= n_tasks and not finished  # every child will resume: no wake
             event = {
                 "type": "async_delegation", "delegation_id": delegation_id, "session_key": session_key,
                 "origin_ui_session_id": origin_ui, "origin_session_id": origin_sid or "",
@@ -351,8 +358,9 @@ def recover_abandoned_delegations() -> int:
                       **({"results": recovered_results} if recovered_results else {})}
             event, result = redact_completion_event(event), redact_child_result(result)
             conn.execute("""UPDATE async_delegations SET state='unknown', completed_at=?,
-                   updated_at=?, event_json=?, result_json=?, delivery_state='pending'
-                   WHERE delegation_id=?""", (now, now, json.dumps(event), json.dumps(result), delegation_id))
+                   updated_at=?, event_json=?, result_json=?, delivery_state=?
+                   WHERE delegation_id=?""", (now, now, json.dumps(event), json.dumps(result),
+                                              "delivered" if silent else "pending", delegation_id))
             recovered += 1
     return recovered
 
@@ -1160,6 +1168,12 @@ def _push_completion_event(record: dict[str, Any], result: dict[str, Any], statu
         result = {**result, **_stall_meta(record)}
     is_batch = bool(record.get("is_batch"))
     label = " batch" if is_batch else ""
+    children = result.get("results") or ([] if is_batch else [result])
+    waiting = [r for r in children if isinstance(r.get("auto_resume"), dict)]
+    silent = bool(children) and len(waiting) == len(children)  # every child will resume: the parent hears nothing
+    if waiting and not silent:  # a mixed unit: the promised child reads as waiting, not failed
+        result = {**result, "results": [{**r, "status": "waiting_to_resume"} if r in waiting else r
+                                        for r in children]}
     try:
         from tools.process_registry import process_registry
     except Exception as exc:  # pragma: no cover
@@ -1195,10 +1209,14 @@ def _push_completion_event(record: dict[str, Any], result: dict[str, Any], statu
         **{k: record[k] for k in _ROUTING_KEYS if record.get(k)},
         **{k: result[k] for k in _STALL_META_KEYS if k in result}}
     try:
-        _persist_completion(evt, result)
+        _persist_completion(evt, result, delivery="delivered" if silent else "pending")
     except Exception as exc:
         logger.error(f"Async delegation{label} %s: durable completion write failed; delivering in-memory "
                      "only (a restart may report this unit as unknown): %s", record.get("delegation_id"), exc)
+    if silent:
+        logger.info("Async delegation %s: every child waits on an automatic resume; no completion delivered",
+                    record.get("delegation_id"))
+        return
     try:
         process_registry.completion_queue.put(evt)
     except Exception as exc:  # pragma: no cover

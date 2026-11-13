@@ -84,8 +84,9 @@ the exit code `hermes gateway ensure` gives that verdict (`5` when absent):
 
 `id` is an integer or a string of your choice. `purpose` is one of the probe's `purposes`.
 An optional `"profile": "<name>"` asks for a ticket for another profile of the same gateway (see
-[Profiles](#profiles)); without it the ticket is for the profile the command runs in. A request line may be at most 65536 bytes (64 KiB),
-not counting its newline; a longer line is discarded as it is read and gets one `invalid_request`
+[Profiles](#profiles)); without it the ticket is for the profile the command runs in. Leave the
+key out to mean that: `"profile": null` is refused, not read as absent. A request line may be at most 65536 bytes (64 KiB),
+not counting its line ending (LF or CRLF); a longer line is discarded as it is read and gets one `invalid_request`
 reply. Each request line gets exactly one reply line, in order, carrying your `id`:
 
 ```json
@@ -95,11 +96,11 @@ reply. Each request line gets exactly one reply line, in order, carrying your `i
 
 | `error.code` | Meaning |
 |--------------|---------|
-| `invalid_request` | The line is not a JSON object with an integer or string `id`, is nested too deeply to parse, or is longer than 65536 bytes (64 KiB, newline excluded). The reply's `id` is `null`. The channel stays open. |
-| `invalid_request` (with your `id`) | `profile` is not a string holding a valid profile name. |
+| `invalid_request` | The line is not a JSON object with an integer or string `id`, is nested too deeply to parse, or is longer than 65536 bytes (64 KiB, line ending excluded). The reply's `id` is `null`. The channel stays open. |
+| `invalid_request` (with your `id`) | `profile` is present and is not a string holding a valid profile name (`null` included). |
 | `unsupported_purpose` | `purpose` is missing or not in the probe's `purposes`. |
 | `unknown_profile` | No profile of that name exists on the host. |
-| `profile_not_served` | The profile exists, but the running gateway does not serve it (it has a gateway of its own, or is parked). The channel is still good for other profiles. |
+| `profile_not_served` | The profile exists, but the running gateway does not serve it (it has a gateway of its own, or is parked). Only answered when the same gateway, still `ready`, lists the profiles it serves and this one is not among them; otherwise the refusal is `ticket_unavailable`. The channel is still good for other profiles. |
 | `ticket_unavailable` | The gateway did not mint the ticket: it stopped, was replaced, or refused. Close the channel, run `attach` again and open a new one. |
 
 Close stdin to end the command; it exits `0`.

@@ -666,6 +666,11 @@ class GatewayTurnPrepareMixin:
         # One-time prompt if no home channel is set (webhooks deliver to configured targets instead).
         if not human_platform:
             return
+        # Under allow_admin_from gating a non-admin can't run /sethome; on a customer-facing bot
+        # the nudge would only leak operator setup to the customer.
+        from gateway.slash_access import policy_for_runner_source
+        if not policy_for_runner_source(self, source).can_run(source.user_id, "sethome"):
+            return
         platform_name = source.platform.value
         env_key = _home_target_env_var(platform_name)
         # Multiplex: the home channel may live only in the profile secret scope, not os.environ.

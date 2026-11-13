@@ -3742,7 +3742,9 @@ def _launch_external_cron_worker(job: dict) -> bool:
     # a dispatch deadline shorter than the adoption grace made the two guards
     # around one handoff disagree.
     deadline = time.monotonic() + HANDOFF_ADOPTION_GRACE_SECONDS
-    while time.monotonic() < deadline:
+    # A worker can publish its ack during exit polling after the grace deadline;
+    # give the already-visible ack one last pass through the normal handoff path.
+    while time.monotonic() < deadline or ack_path.exists():
         if ack_path.exists():
             try:
                 acknowledgement = json.loads(ack_path.read_text(encoding="utf-8-sig"))

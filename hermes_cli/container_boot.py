@@ -128,8 +128,10 @@ def reconcile_profile_gateways(
     folded, default_should_start = list(fold.folded), fold.root_should_start
     # A foreground `gateway run --no-supervise` CMD IS the container's one gateway; booting the
     # s6 root slot from persisted intent as well puts two pollers on one bot token (#152152).
-    if _is_foreground_gateway_run_request(
-            tuple(container_argv) if container_argv is not None else _read_container_argv()):
+    # A standalone profile's foreground gateway serves only that profile, so the root slot stays.
+    foreground = _foreground_gateway_profile(
+        tuple(container_argv) if container_argv is not None else _read_container_argv(), hermes_home)
+    if foreground is not None and foreground not in standalone:
         default_should_start = False
     if folded and default_prior_state not in _AUTOSTART_STATES:
         log.warning("%s", boot_notice(folded))
@@ -236,14 +238,26 @@ def _is_legacy_gateway_run_request(argv: Sequence[str]) -> bool:
     return len(args) >= 2 and args[0] == "gateway" and args[1] == "run"
 
 
-def _is_foreground_gateway_run_request(argv: Sequence[str]) -> bool:
-    """True when the container CMD runs the gateway itself, outside s6 (``--no-supervise`` or
-    HERMES_GATEWAY_NO_SUPERVISE), including behind global flags like ``-p <profile>``."""
+def _foreground_gateway_profile(argv: Sequence[str], hermes_home: Path) -> str | None:
+    """The profile a container CMD's own foreground gateway serves, or None when the CMD runs no
+    gateway outside s6. Foreground means ``--no-supervise`` or HERMES_GATEWAY_NO_SUPERVISE on
+    ``gateway run`` or bare ``gateway`` (which runs too); the profile is ``-p``/``--profile``,
+    else the sticky ``active_profile`` the unsupervised run follows (#22502)."""
     args = _strip_container_argv_prefix(argv)
-    if not any(args[i:i + 2] == ["gateway", "run"] for i in range(len(args))):
-        return False
-    return "--no-supervise" in args or \
+    if "gateway" not in args:
+        return None
+    sub = next((a for a in args[args.index("gateway") + 1:] if not a.startswith("-")), None)
+    no_supervise = "--no-supervise" in args or \
         os.environ.get("HERMES_GATEWAY_NO_SUPERVISE", "").lower() in ("1", "true", "yes")
+    if sub not in (None, "run") or not no_supervise:
+        return None
+    for i, arg in enumerate(args):
+        if arg in ("-p", "--profile") and i + 1 < len(args):
+            return args[i + 1].strip().casefold()
+        if arg.startswith("--profile="):
+            return arg.split("=", 1)[1].strip().casefold()
+    from hermes_cli.profiles import get_active_profile
+    return get_active_profile(hermes_home)
 
 
 def _is_dashboard_container(argv: Sequence[str]) -> bool:

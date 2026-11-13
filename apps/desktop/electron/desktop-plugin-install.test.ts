@@ -213,6 +213,41 @@ describe('probePluginRepo', () => {
 
     expect(result).toMatchObject({ ok: true, agent: true, agentName: 'nested-agent' })
   })
+
+  it('reads a catalog pick at its pin when the plugin folder lives only on another branch', async () => {
+    // A catalog pin on a side branch: the default branch never had the folder, the install checks out the pin.
+    const repo = mkdtemp('hermes-plugin-pinned-')
+    roots.push(repo)
+    const git = (...args: string[]) => execFileSync('git', args, { cwd: repo, stdio: 'pipe' }).toString().trim()
+    const ident = ['-c', 'user.email=fixture@example.com', '-c', 'user.name=Fixture']
+    git('init', '-q', '-b', 'main')
+    git('config', 'uploadpack.allowFilter', 'true')
+    fs.writeFileSync(path.join(repo, 'README.md'), 'no plugin here\n')
+    git('add', '.')
+    git(...ident, 'commit', '-qm', 'main')
+    git('checkout', '-q', '-b', 'hermes')
+    const plugin = path.join(repo, '.hermes-plugin')
+    fs.mkdirSync(plugin)
+    fs.writeFileSync(path.join(plugin, 'plugin.yaml'), 'name: pinned-agent\n')
+    fs.writeFileSync(path.join(plugin, '__init__.py'), 'def register(ctx): pass\n')
+    git('add', '.')
+    git(...ident, 'commit', '-qm', 'plugin')
+    const pin = git('rev-parse', 'HEAD')
+    git('checkout', '-q', 'main')
+    const identifier = `${pathToFileURL(repo).href}#.hermes-plugin`
+
+    expect(await probePluginRepo('git', identifier)).toMatchObject({
+      ok: false,
+      error: "Plugin subdirectory '.hermes-plugin' does not exist in the repository."
+    })
+    expect(await probePluginRepo('git', identifier, { ref: pin.toUpperCase() })).toMatchObject({
+      ok: true,
+      agent: true,
+      agentName: 'pinned-agent',
+      sha: pin
+    })
+    expect(await probePluginRepo('git', identifier, { ref: 'main' })).toMatchObject({ ok: false })
+  }, 30_000)
 })
 
 describe('installDesktopPluginFromGit', () => {

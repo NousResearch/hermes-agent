@@ -136,8 +136,8 @@ function notifyAgentFollowUps(result: AgentPluginInstallResult, name: string, de
 /** The commit the dialog showed, which both halves are held to: a branch that moved, or a catalog entry
  *  re-pinned, since must not install a tree nobody reviewed. A catalog pick shows its reviewed pin
  *  (`request.sha`), unless the backend read the entry at that pin (`probe.catalogPin`: the browser-hosted
- *  app), whose commit a re-inspection re-reads. Electron's probe reads the branch tip, which a catalog
- *  install never checks out. */
+ *  app), whose commit a re-inspection re-reads. Electron's probe reads the pin's peeled commit, while the
+ *  pin itself may name a tag object. */
 export function reviewedCommit({ probe, request }: Pick<InstallPlan, 'probe' | 'request'>): string | undefined {
   return !request.catalogName || probe.catalogPin ? probe.sha : request.sha
 }

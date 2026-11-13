@@ -29,7 +29,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from tools.code_kernel import RUNNER_CELL_SOURCE, KernelRegistry
+from tools.code_kernel import RUNNER_CELL_SOURCE, KernelRegistry, stale_modules_warning
 
 logger = logging.getLogger(__name__)
 
@@ -460,4 +460,7 @@ def _run_attached_cell(kernel: RemoteKernel, key: tuple, code: str, *, env, task
             "restart, or idle self-exit); state from earlier calls was lost and a fresh kernel was started."))
     if cell_status == "error" and result["traceback"]:
         result["error"] = result["traceback"].strip().splitlines()[-1]
+    stale_warning = stale_modules_warning(cell_payload)
+    if stale_warning:
+        kernel_info["warning"] = stale_warning  # the caller rebuilds the result but keeps `kernel`
     return result

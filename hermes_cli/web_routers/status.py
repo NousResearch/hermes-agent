@@ -30,6 +30,7 @@ from hermes_cli.version_info import get_version_info
 from hermes_constants import get_process_hermes_home, profile_name_for_home
 from hermes_cli.web_models import CuratorPause, LearningNodeRef, LearningNodeEdit, DebugShareRequest
 from hermes_cli.web_routers._common import config_scoped_to_thread, destructive_profile, scoped_to_thread
+from hermes_cli.web_routers.status_public import redact_status_for_unverified
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -527,22 +528,28 @@ _WEBAPP_SIGNED_OUT_STATUS_KEYS = frozenset({
     "auth_required", "auth_providers", "auth_flows"})
 
 
-async def _webapp_caller_signed_out(request: Request) -> bool:
-    """True when this request reached the gateway's Webapp behind its sign-in gate with no
-    session the gate would accept. ``/api/status`` is public, so the gate never verified one."""
+async def _status_caller_verified(request: Request) -> bool:
+    """True when the caller carries a credential the auth gate would accept on a gated route
+    (session cookie/bearer, native principal, or the loopback session token). ``/api/status`` is
+    public, so the gate never verified one. ``None`` is an in-process caller, not a network one."""
     from hermes_cli.web_server import _require_token
-    from hermes_cli.web_server_surface import surface
-    if request is None or surface(request.app.state) != "webapp" \
-            or not getattr(request.app.state, "auth_required", False):
-        return False
-    if getattr(request.state, "session", None) is None:
+    if request is None:
+        return True
+    if getattr(request.app.state, "auth_required", False) and getattr(request.state, "session", None) is None:
         from hermes_cli.dashboard_auth.middleware import peek_session
         request.state.session = await run_in_threadpool(peek_session, request)
     try:
         _require_token(request)
     except HTTPException:
-        return True
-    return False
+        return False
+    return True
+
+
+def _webapp_caller_signed_out(request: Request, verified: bool) -> bool:
+    """True when this request reached the gateway's Webapp behind its sign-in gate unverified."""
+    from hermes_cli.web_server_surface import surface
+    return (not verified and surface(request.app.state) == "webapp"
+            and bool(getattr(request.app.state, "auth_required", False)))
 
 
 @router.get("/api/status")
@@ -556,7 +563,8 @@ async def get_status(profile: Optional[str] = None,
     process-global skills-module attributes a concurrent request would cross-restore.
     """
     from hermes_cli.web_server import _GATEWAY_HEALTH_URL
-    signed_out = await _webapp_caller_signed_out(request)
+    verified = await _status_caller_verified(request)
+    signed_out = _webapp_caller_signed_out(request, verified)
     status_scope = None
     # A signed-out caller's ``?profile=`` is ignored: an unknown name's 404 would tell it which exist.
     requested_profile = "" if signed_out else (profile or "").strip()
@@ -645,6 +653,8 @@ async def get_status(profile: Optional[str] = None,
                 "env_path": str(get_env_path()), "gateway_pid": gateway["gateway_pid"],
                 "gateway_health_url": _GATEWAY_HEALTH_URL, "gateways": topology["gateways"]})
 
+        if not verified:
+            redact_status_for_unverified(status)
         if signed_out:
             return {key: value for key, value in status.items() if key in _WEBAPP_SIGNED_OUT_STATUS_KEYS}
         return status

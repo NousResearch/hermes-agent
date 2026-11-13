@@ -146,3 +146,20 @@ def test_screen_overlay_never_adds_the_desktop_xdg_dirs(monkeypatch, lane):
     assert env["DISPLAY"] == ":20"
     leak = {k: env.get(k) for k in _DESKTOP_XDG if k in env}
     assert leak == {}, "a terminal command must not inherit the desktop's private XDG dirs"
+
+
+@pytest.mark.parametrize("lane", ["foreground", "background"])
+def test_a_sandbox_hosted_screen_publishes_nothing_to_a_host_child(monkeypatch, lane):
+    """The overlay reads host_published_env(), not published_env(): while the screen lives inside the
+    terminal backend, the published values name a display, an Xauthority file and XDG dirs on the
+    sandbox side, which a process started on this machine cannot open."""
+    from tools.bot_desktop import sandbox_host
+
+    _publish(monkeypatch, _SCREEN)
+    monkeypatch.setattr(sandbox_host, "_read_marker", lambda: {"backend": "FakeSandbox"})
+    monkeypatch.setenv("DISPLAY", ":0")
+    monkeypatch.delenv("XAUTHORITY", raising=False)
+
+    env = _lane_env(lane)
+    assert env["DISPLAY"] == ":0"
+    assert env.get("XAUTHORITY", "") != _SCREEN["XAUTHORITY"]

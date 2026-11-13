@@ -798,11 +798,12 @@ def apply_bot_desktop_screen_env(env: dict) -> dict:
     without the overlay died with ``cannot open display`` (#150076, the background half of #125830). Only
     the display/auth/bus values cross (``_BOT_DESKTOP_SCREEN_KEYS``): the screen's published XDG dirs are
     its own private ones, and a terminal child that inherited them would read and write the desktop's
-    config, data and cache instead of the session's. ``published_env()`` is the pure read (no activity
-    stamp, so a plain ``ls`` must not keep the screen alive past idle_stop_minutes), and the values win
-    over the seat env the way an inline ``DISPLAY=:0 cmd`` prefix does for bash. Screen down, module
-    missing, unreadable state dir → *env* passes through untouched. ``WAYLAND_DISPLAY`` is dropped because
-    the screen is X11: a leaked Wayland socket flips GTK/Chromium backends.
+    config, data and cache instead of the session's. ``host_published_env()`` is the pure read (no
+    activity stamp, so a plain ``ls`` must not keep the screen alive past idle_stop_minutes) and it
+    withholds a screen hosted inside the terminal backend, whose values are sandbox-side paths; the
+    values win over the seat env the way an inline ``DISPLAY=:0 cmd`` prefix does for bash. Screen
+    down, module missing, unreadable state dir → *env* passes through untouched. ``WAYLAND_DISPLAY``
+    is dropped because the screen is X11: a leaked Wayland socket flips GTK/Chromium backends.
     """
     published = _published_bot_desktop_env()
     screen = {key: published[key] for key in _BOT_DESKTOP_SCREEN_KEYS if key in published}
@@ -814,8 +815,8 @@ def apply_bot_desktop_screen_env(env: dict) -> dict:
 
 def _published_bot_desktop_env() -> dict[str, str]:
     try:
-        from tools.bot_desktop.runtime import published_env
-        return dict(published_env())
+        from tools.bot_desktop.runtime import host_published_env
+        return dict(host_published_env())
     except Exception:  # health: allow BLE001 -- an optional feature's probe must never break every terminal command
         return {}
 
@@ -836,7 +837,8 @@ def _make_run_env(env: dict) -> dict:
     # While this profile's Bot Desktop is running, its DISPLAY/XAUTHORITY/DBUS ride along so GUI
     # apps the agent launches from the terminal open on the Bot Screen the user is watching, not
     # on the user's own seat (#125830); the overlay is shared with the background spawn lane, which
-    # had been left without it (#150076).
+    # had been left without it (#150076). host_published_env() is the pure read, and it drops a
+    # screen hosted inside the terminal backend, whose values name paths on the sandbox side.
     apply_bot_desktop_screen_env(run_env)
     return run_env
 
@@ -1197,15 +1199,15 @@ class LocalEnvironment(BaseEnvironment):
             # The command dies with this process however it dies: a SIGKILLed / OOM-killed host left a
             # running `npm run dev` or `sleep` on init. Released once the wait returns (see below).
             own_process_groups([proc.pid])
-            proc._hermes_owned_pgid = proc.pid
-            with contextlib.suppress(ProcessLookupError):
-                proc._hermes_pgid = os.getpgid(proc.pid)
-                # Record the group leader's start-time fingerprint so _kill_process can
-                # detect PID/PGID recycling before signalling the group (#43044). The
-                # psutil fallback in get_process_start_time captures a baseline on every
-                # platform, macOS included.
-                from gateway.status import get_process_start_time
-                proc._hermes_pgid_start = get_process_start_time(proc.pid)
+            # start_new_session: the group is the leader's pid by construction (a getpgid read-back
+            # fails on macOS once a fast `cmd &` wrapper has exited, losing the group).
+            proc._hermes_owned_pgid = proc._hermes_pgid = proc.pid
+            # Record the group leader's start-time fingerprint so _kill_process can
+            # detect PID/PGID recycling before signalling the group (#43044). The
+            # psutil fallback in get_process_start_time captures a baseline on every
+            # platform, macOS included.
+            from gateway.status import get_process_start_time
+            proc._hermes_pgid_start = get_process_start_time(proc.pid)
         if stdin_data is not None:
             _pipe_stdin(proc, stdin_data)
         return proc
@@ -1233,9 +1235,10 @@ class LocalEnvironment(BaseEnvironment):
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
             **({"creationflags": windows_hide_flags()} if _IS_WINDOWS else {}))
         if not _IS_WINDOWS:
-            with contextlib.suppress(ProcessLookupError):
-                proc._hermes_pgid = os.getpgid(proc.pid)
-            proc._hermes_owned_pgid = proc.pid
+            # spawn_owned starts a new session, so the group is the leader's pid by construction.
+            # Never read back with getpgid: a leader that already exited (a fast `cmd &; exit`) has
+            # no pgid on macOS, and the stop could then never reach the descendants it left behind.
+            proc._hermes_pgid = proc._hermes_owned_pgid = proc.pid
         return proc
 
     def _kill_process(self, proc):

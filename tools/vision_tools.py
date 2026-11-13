@@ -1078,7 +1078,8 @@ async def _materialize_video(video_url: str, task_id: Optional[str], temp_paths:
     shared media resolver with ``permitted=("video",)`` — the exact pipeline vision_analyze uses
     (media-cache host reads, bounded in-sandbox exec-read, credential-read guard, ingest cap)."""
     from tools.image_source import (
-        ImageResolutionError, ResolveContext, _is_local_terminal_backend, resolve_image_source,
+        ImageResolutionError, ResolveContext, _is_local_terminal_backend, local_source_spelling,
+        resolve_image_source,
     )
     from tools.hosted_tool_policy import host_feature_enabled
     if not host_feature_enabled("media_processing"):
@@ -1102,6 +1103,8 @@ async def _materialize_video(video_url: str, task_id: Optional[str], temp_paths:
         _write_private_bytes(path, resolved.data)
         temp_paths.append(path)
         return path
+    if path_like:
+        local_path = Path(await asyncio.to_thread(local_source_spelling, str(local_path)))
     if local_path.is_file():
         from agent.file_safety import raise_if_read_blocked
         raise_if_read_blocked(str(local_path))

@@ -154,6 +154,17 @@
       "entries": [
         "hermes_cli.plugin_session:session_client"
       ]
+    },
+    {
+      "source": "plugins/index.md § Check file paths and read YAML with Hermes's own helpers",
+      "entries": [
+        "agent.file_safety:get_read_block_error",
+        "agent.file_safety:raise_if_read_blocked",
+        "agent.file_safety:is_write_denied",
+        "agent.file_safety:get_write_denied_error",
+        "hermes_yaml:safe_load",
+        "hermes_yaml:safe_dump"
+      ]
     }
   ]
 }

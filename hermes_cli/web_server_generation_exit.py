@@ -2,6 +2,7 @@
 
 from pathlib import Path
 
+from hermes_cli._startup_fast import project_root_str
 from hermes_cli.web_server_skew_exit import (
     DEFAULT_SKEW_POLL_S,
     _run_retirement_watchdog,
@@ -20,7 +21,7 @@ def start_generation_watchdog(
 ):
     if not owned:
         return None
-    observer = observer or GenerationObserver(Path(__file__).resolve().parent.parent)
+    observer = observer or GenerationObserver(Path(project_root_str()))
 
     def observe():
         reason = observer.probe()

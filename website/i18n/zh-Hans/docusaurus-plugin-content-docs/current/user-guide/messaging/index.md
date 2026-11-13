@@ -32,7 +32,7 @@ description: "通过 Telegram、Discord、Slack、WhatsApp、Signal、SMS、Emai
 | Weixin | ✅ | ✅ | ✅ | — | — | ✅ | ✅ |
 | BlueBubbles | — | ✅ | ✅ | — | ✅ | ✅ | — |
 | QQ | ✅ | ✅ | ✅ | — | — | ✅ | — |
-| Yuanbao | ✅ | ✅ | ✅ | — | — | ✅ | ✅ |
+| Yuanbao（Labs 插件） | ✅ | ✅ | ✅ | — | — | ✅ | ✅ |
 | Microsoft Teams | — | ✅ | — | ✅ | — | ✅ | — |
 | LINE | — | ✅ | ✅ | — | — | ✅ | — |
 | ntfy | — | — | — | — | — | — | — |
@@ -63,7 +63,7 @@ flowchart TB
     wx[Weixin]
     bb[BlueBubbles]
     qq[QQ]
-    yb[Yuanbao]
+    yb["Yuanbao (plugin)"]
     ms[Microsoft Teams]
     api["API Server<br/>(OpenAI-compatible)"]
     wh[Webhooks]
@@ -444,7 +444,7 @@ launchd plist 是静态的——如果你在配置网关后安装了新工具（
 | Weixin | `hermes-weixin` | 完整工具，包括终端 |
 | BlueBubbles | `hermes-bluebubbles` | 完整工具，包括终端 |
 | QQBot | `hermes-qqbot` | 完整工具，包括终端 |
-| Yuanbao | `hermes-yuanbao` | 完整工具，包括终端 |
+| Yuanbao（Labs 插件） | `hermes-yuanbao` | 完整工具，外加 `yuanbao` Hermes Labs 插件提供的 `yb_*` 群组/私聊/贴纸工具 |
 | Microsoft Teams | `hermes-teams` | 完整工具，包括终端 |
 | API Server | `hermes-api-server` | 完整工具（去除 `clarify`、`send_message`、`text_to_speech`——程序化访问没有交互用户） |
 | Webhooks | `hermes-webhook` | 完整工具，包括终端 |
@@ -485,16 +485,22 @@ launchd plist 是静态的——如果你在配置网关后安装了新工具（
 
 ### 重启通知
 
-当网关重启（或在有进行中会话时关闭）时，它可以向每个平台的主频道发送一条"agent 已恢复"/"agent 被中断"的一次性消息。这由 `gateway-config.yaml` 中每个平台的 `gateway_restart_notification` 标志控制，默认为 `true`：
+当网关重启（或在有进行中会话时关闭）时，它可以向每个平台的主频道发送一条"agent 已恢复"/"agent 被中断"的一次性消息。这由 `config.yaml` 中每个平台的 `gateway_restart_notification` 标志控制，默认为 `true`：
+
+使用包含 `platform` 和 `chat_id` 的 `home_channel` 对象配置通知目标：
 
 ```yaml
 gateway:
   platforms:
     telegram:
-      home_chat_id: "123456789"
+      home_channel:
+        platform: telegram
+        chat_id: "123456789"
       gateway_restart_notification: false   # 为此平台关闭
     discord:
-      home_chat_id: "987654321"
+      home_channel:
+        platform: discord
+        chat_id: "987654321"
       # gateway_restart_notification 未设置 → 默认为 true
 ```
 
@@ -502,7 +508,7 @@ gateway:
 
 ### 正在输入指示器
 
-当 agent 正在处理消息时，网关会在支持的平台上显示实时的输入状态——Telegram/Discord/Signal 上的"正在输入……"气泡，或 Slack 上的"is thinking…"助手状态。这由 `gateway-config.yaml` 中每个平台的 `typing_indicator` 标志控制，默认为 `true`：
+当 agent 正在处理消息时，网关会在支持的平台上显示实时的输入状态——Telegram/Discord/Signal 上的"正在输入……"气泡，或 Slack 上的"is thinking…"助手状态。这由 `config.yaml` 中每个平台的 `typing_indicator` 标志控制，默认为 `true`：
 
 ```yaml
 gateway:
@@ -562,7 +568,7 @@ display:
 - [Weixin 配置（微信）](weixin.md)
 - [BlueBubbles 配置（iMessage）](bluebubbles.md)
 - [QQBot 配置](qqbot.md)
-- [Yuanbao 配置](yuanbao.md)
+- [Yuanbao](yuanbao.md)（Hermes Labs 插件）
 - [Microsoft Teams 配置](teams.md)
 - [Teams 会议流水线](teams-meetings.md)
 - [Open WebUI + API Server](open-webui.md)

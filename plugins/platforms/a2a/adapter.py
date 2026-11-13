@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import contextvars
 import hashlib
 import json
 import logging
@@ -16,7 +17,6 @@ import socket
 import threading
 import time
 import urllib.parse
-import urllib.request
 from collections import OrderedDict, deque
 from concurrent.futures import Future
 from concurrent.futures import TimeoutError as FuturesTimeout
@@ -157,6 +157,20 @@ class A2ARequestHandler(BaseHTTPRequestHandler):
     def adapter(self) -> A2AAdapter:
         return self.server.adapter  # type: ignore[attr-defined]
 
+    def parse_request(self) -> bool:
+        """Without a token, refuse any request whose ``Host`` is not a loopback name, before a route
+        runs: a page on a hostname re-resolved to 127.0.0.1 (DNS rebinding) is same-origin to this
+        listener and could otherwise read its served-agent list and Agent Card."""
+        if not super().parse_request():
+            return False
+        adapter = self.adapter
+        if adapter._security_context.localhost_only() and not security.is_loopback_host_header(
+                self.headers.get("Host"), adapter._public_url):
+            self._error(403, None, protocol.ERR_UNAUTHORIZED,
+                        "Host must be a loopback name or the A2A_PUBLIC_URL host (no A2A token configured)")
+            return False
+        return True
+
     def log_message(self, format, *args):
         logger.debug("A2A http: " + format, *args)  # silence the default stderr access log
 
@@ -218,6 +232,8 @@ class A2ARequestHandler(BaseHTTPRequestHandler):
         identity = adapter._security_context.authenticate(self.headers.get("Authorization"), self._client_ip())
         if identity is None:
             return self._error(401, None, protocol.ERR_UNAUTHORIZED, "unauthorized")
+        if adapter._security_context.localhost_only() and (refusal := security.browser_post_refusal(self.headers)):
+            return self._error(403, None, protocol.ERR_UNAUTHORIZED, refusal)
         try:
             length = int(self.headers.get("Content-Length", 0))
             if length > _MAX_BODY:
@@ -281,6 +297,9 @@ class A2AAdapter(BasePlatformAdapter):
         # do_GET/do_POST run on ThreadingHTTPServer's per-connection OS threads, which never inherit
         # the profile scope contextvar (same class as A2A_PORT above).
         self._public_url = _get_scoped_secret("A2A_PUBLIC_URL", "").strip()
+        # Push callbacks are checked and sent from those threads too; run them in this scope so the
+        # shared SSRF guard reads this profile's allow_private_urls / fake_ip_ranges.
+        self._scope_ctx = contextvars.copy_context()
         self._agents = self._load_served_agents(extra)
         self._httpd: Optional[ThreadingHTTPServer] = None
         self._server_thread = self._watchdog_thread = None  # type: Optional[threading.Thread]
@@ -330,6 +349,10 @@ class A2AAdapter(BasePlatformAdapter):
         logger.info("A2A: serving Agent Card + JSON-RPC on http://%s:%s (%s) as %r; %d routed agent(s)", self.host, self.port,
                     "localhost-only" if self._security_context.localhost_only() else "REMOTE (bearer auth)", self.agent_name, len(self._agents))
         sec = self._security_context
+        if sec.unusable_peer_tokens:
+            logger.error("A2A: A2A_PEER_TOKENS is set but has no name:token pair (expected \"alice:tok1,bob:tok2\"); %s",
+                         "only the shared A2A_BEARER_TOKEN is accepted." if sec.bearer_token
+                         else "every request is refused (401) until it is fixed.")
         if sec.dispatch_fails_closed():
             logger.error("A2A: exposed on non-loopback bind %s with no A2A_TRUSTED_PEERS; every dispatch will be refused (403). "
                          "Set A2A_TRUSTED_PEERS, or A2A_ALLOW_ALL_USERS=true for a trusted network.", self.host)
@@ -830,16 +853,16 @@ class A2AAdapter(BasePlatformAdapter):
         callback_url = self.tasks.pop_push_url(task_id)
         if not callback_url:
             return
-        if not security.is_safe_callback_url(callback_url, localhost_mode=self._security_context.localhost_only()):
+        scope, localhost_mode = self._scope_ctx.copy(), self._security_context.localhost_only()
+        if not scope.run(security.is_safe_callback_url, callback_url, localhost_mode=localhost_mode):
             return fail("blocked — unsafe callback URL: %s", callback_url)
         payload = protocol.status_update(task_id, context_id, state, (reply or "")[:2000])
         headers = {"Content-Type": "application/json"}
         if signature := self._security_context.sign_push_payload(payload):
             headers["X-A2A-Signature"] = signature
         try:
-            req = urllib.request.Request(callback_url, data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST")
-            with urllib.request.urlopen(req, timeout=10) as resp:
-                status = resp.status
+            status = scope.run(security.post_callback, callback_url, json.dumps(payload).encode("utf-8"), headers,
+                               localhost_mode=localhost_mode)
         except Exception as e:
             return fail("failed: %s", e)
         if not 200 <= status < 300:

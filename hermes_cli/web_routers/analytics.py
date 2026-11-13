@@ -14,7 +14,7 @@ from fastapi import APIRouter, HTTPException, Query
 
 from hermes_cli.config import get_config_path, read_raw_config
 from hermes_cli.web_deps import late
-from hermes_cli.web_routers._common import corrupt_store_as_status
+from hermes_cli.web_routers._common import corrupt_store_as_status, http_failure
 from hermes_cli.web_server_profiles import (
     _approval_mode_of, _aux_task_summary, _aux_usage_rows, _broadcast_gateway_session_info, _is_other_profile, _merge_aux_into_by_model,
 )
@@ -41,11 +41,15 @@ async def get_config_raw(profile: Optional[str] = None):
     process's own profile, which is wrong under the global profile switcher.
     """
     def _run():
+        from hermes_cli.config_backend import supports_file_tooling
+        if not supports_file_tooling():
+            # The raw editor shows the file's bytes; a non-file backend has no file.
+            raise HTTPException(status_code=409, detail="This config backend has no raw config file")
         with _profile_scope(profile):
             path = get_config_path()
-        if not path.exists():
+        if not path.exists():  # config-reader: ok — file tooling (gated above)
             return {"yaml": "", "path": str(path)}
-        return {"yaml": path.read_text(encoding="utf-8-sig"), "path": str(path)}
+        return {"yaml": path.read_text(encoding="utf-8-sig"), "path": str(path)}  # config-reader: ok — file tooling (gated above)
 
     return await asyncio.to_thread(_run)
 
@@ -53,7 +57,10 @@ async def get_config_raw(profile: Optional[str] = None):
 @router.put("/api/config/raw")
 async def update_config_raw(body: RawConfigUpdate, profile: Optional[str] = None):
     def _run():
-        parsed = yaml.safe_load(body.yaml_text)
+        try:
+            parsed = yaml.safe_load(body.yaml_text)
+        except yaml.YAMLError as e:
+            raise HTTPException(status_code=400, detail=f"Invalid YAML: {e}")
         if not isinstance(parsed, dict):
             raise HTTPException(status_code=400, detail="YAML must be a mapping")
         with _profile_scope(body.profile or profile):
@@ -67,10 +74,8 @@ async def update_config_raw(body: RawConfigUpdate, profile: Optional[str] = None
             _broadcast_gateway_session_info()
         return {"ok": True}
 
-    try:
+    with http_failure("PUT /api/config/raw failed", 500, detail="Internal server error"):
         return await asyncio.to_thread(_run)
-    except yaml.YAMLError as e:
-        raise HTTPException(status_code=400, detail=f"Invalid YAML: {e}")
 
 
 def _rows(db, sql: str, cutoff: float) -> list[dict[str, Any]]:

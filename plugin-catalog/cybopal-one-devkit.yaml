@@ -1,0 +1,29 @@
+name: cybopal-one-devkit
+title: CyboPal ONE DevKit (unofficial)
+repo: https://github.com/drowzeys/hermes-cybopal-one-devkit
+sha: "6a0c7b956ba1a5b01a2e22764cc493472f065972"
+version: "0.2.3"
+description: "Unofficial, not made or endorsed by CyboPal. Drive a CyboPal ONE (a 27-inch 4K screen on a 6-DOF robotic arm with the Pauli companion display) from Hermes: follow, posture presets, exact poses, gestures, both screens (markdown, pictures and videos), both cameras and an emergency stop; design new actions on the simulator and save them to run unchanged on the hardware. Works today against the open source CyboPal ONE DevKit live simulator. Disclosure — sends HTTP commands, screen text and any picture or video file the agent is given (PNG/JPEG/WebP/GIF/MP4/WebM, up to 64 MB, checked by content) only to the device_url setting (default http://127.0.0.1:5000), never following redirects or environment proxies; saves camera pictures (newest 30) and saved routines in the profile's plugin-data/cybopal-one-devkit; moves physical hardware when device_url points at a real CyboPal ONE (allow_motion off refuses all motion, and only the person's /cybopal resume command can release an emergency stop)."
+maintainer: drowzeys
+tier: community
+category: tools
+requires_hermes: ">=0.22.7"
+image: "https://raw.githubusercontent.com/drowzeys/hermes-cybopal-one-devkit/6a0c7b956ba1a5b01a2e22764cc493472f065972/assets/catalog/banner.png"
+screenshots:
+  - "https://raw.githubusercontent.com/drowzeys/hermes-cybopal-one-devkit/6a0c7b956ba1a5b01a2e22764cc493472f065972/assets/catalog/01-hermes-driving.jpg"
+  - "https://raw.githubusercontent.com/drowzeys/hermes-cybopal-one-devkit/6a0c7b956ba1a5b01a2e22764cc493472f065972/assets/catalog/02-emergency-stop.jpg"
+readme: true
+platforms: []
+capabilities:
+  provides_tools:
+    - cybopal_status
+    - cybopal_mode
+    - cybopal_pose
+    - cybopal_display
+    - cybopal_show
+    - cybopal_look
+    - cybopal_routine
+    - cybopal_stop
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

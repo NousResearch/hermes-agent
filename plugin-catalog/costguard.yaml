@@ -1,0 +1,22 @@
+name: costguard
+repo: https://github.com/Whydiriki700/costguard
+sha: 967e2b7ac9fed33698d430906bd6feba0339a6fe
+title: CostGuard
+description: "A brake pedal for model spend. Meters every API call per session and per day from the provider's own usage block; dollar figures are estimates computed only for models in its price table and are never invented for unknown models. When a provider reports no usage (common with streaming OpenAI-compatible endpoints), it falls back to request-size estimates and flags those calls as estimated in every total, never pricing them. Warns the agent at a configurable ratio of any configured budget and blocks tool calls once a session or daily token/cost budget is exceeded, stopping the tool loops where runaway spend happens; with no budget configured it only meters and reports. Disclosure: observes API request/response metadata (token usage, model, session id) and tool call names in profiles where it is enabled; stores only aggregate counters locally under $HERMES_HOME/costguard/; makes no network calls; the brake cannot cancel the reply already being generated when a budget trips, it stops the tool work that reply tries next."
+maintainer: Whydiriki700
+tier: community
+category: tools
+version: "0.1.0"
+requires_hermes: ">=0.22.0"
+docs_url: https://github.com/Whydiriki700/costguard
+platforms: []
+capabilities:
+  provides_tools:
+    - costguard_status
+  provides_hooks:
+    - pre_api_request
+    - post_api_request
+    - pre_llm_call
+    - pre_tool_call
+  provides_middleware: []
+  requires_env: []

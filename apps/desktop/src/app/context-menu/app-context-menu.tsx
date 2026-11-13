@@ -8,7 +8,6 @@ import { openStarMapNodeMenuFor } from '@/app/starmap/context-menu-handle'
 import { DROPDOWN_KIT } from '@/components/ui/actions-menu'
 import { Codicon } from '@/components/ui/codicon'
 import { HERMES_CONTEXT_MENU_TRIGGER_ATTR } from '@/components/ui/context-menu'
-import { writeClipboardText } from '@/components/ui/copy-button'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -18,14 +17,20 @@ import {
   DropdownMenuTrigger
 } from '@/components/ui/dropdown-menu'
 import { useContributions } from '@/contrib/react/use-contributions'
+import { registry } from '@/contrib/registry'
+import type { Contribution } from '@/contrib/types'
 import { type Translations, useI18n } from '@/i18n'
+import { copyImageFromUrl } from '@/lib/browser-image-copy'
+import { writeClipboardText } from '@/lib/clipboard'
 import { hostPathLabel, hudForcesNativeLinks, normalizeExternalUrl, openExternalLink } from '@/lib/external-link'
+import { hostHas } from '@/lib/host-capabilities'
 import { formatCombo } from '@/lib/keybinds/combo'
 import { isRemoteGateway } from '@/lib/media'
 import { reachablePreviewUrl } from '@/lib/preview-reach'
+import { isBrowserOwnedTouch } from '@/lib/touch-interaction'
 import { openPreview } from '@/store/preview'
 
-import { type ComposerMenuRow, resolveComposerMenuSections } from './composer-menu'
+import { type ComposerMenuRow, type ComposerMenuTarget, resolveComposerMenuSections } from './composer-menu'
 import { ShellMenuItems } from './shell-menu-items'
 import {
   $contextMenu,
@@ -35,7 +40,7 @@ import {
   openDomContextMenu,
   openTerminalContextMenu
 } from './store'
-import { isWebUrl, resolveDomTarget } from './target'
+import { type ContextMenuDomTarget, isWebUrl, resolveDomTarget } from './target'
 
 /** Marks a surface that owns PLAIN right-clicks itself (the user-message
  *  reaction bubble). Owned targets inside it — links, images, editables,
@@ -54,6 +59,88 @@ const EDIT_SHORTCUTS = {
   paste: formatCombo('mod+v'),
   selectAll: formatCombo('mod+a')
 } as const
+
+function isNativeMediaContextMenu(event: MouseEvent): boolean {
+  const path = typeof event.composedPath === 'function' ? event.composedPath() : []
+
+  return [event.target, ...path].some(target => target instanceof HTMLMediaElement)
+}
+
+/** Take a gesture the app menu answers away from other renderer handlers,
+ * cancelling the browser's native menu only where it would open alongside. */
+function claimContextMenuGesture(event: MouseEvent) {
+  if (hostHas('browserContextMenu')) {
+    event.preventDefault()
+  }
+
+  event.stopPropagation()
+}
+
+const resolvedComposerSections = new WeakMap<
+  ComposerMenuTarget,
+  { contributions: readonly Contribution[]; sections: ComposerMenuRow[][] }
+>()
+
+/** A provider's `items` runs once per right-click: a browser host's gesture asks first whether
+ * any rows apply, and the open menu reuses that answer until a plugin registers or unloads. */
+function composerSectionsFor(contributions: readonly Contribution[], target: ComposerMenuTarget): ComposerMenuRow[][] {
+  const resolved = resolvedComposerSections.get(target)
+
+  if (resolved?.contributions === contributions) {
+    return resolved.sections
+  }
+
+  const sections = resolveComposerMenuSections(contributions, target)
+
+  resolvedComposerSections.set(target, { contributions, sections })
+
+  return sections
+}
+
+/** Our Cut, Copy and Paste run through Electron main (`contextMenuEdit`) and our spelling rows
+ * come from its spellcheck feed; a browser host has neither. */
+function lacksEditVerbs(): boolean {
+  return !hostHas('mainProcessEditVerbs') && !window.hermesDesktop?.contextMenuEdit
+}
+
+/** Without them an editable keeps the browser's own menu, where both work: pane and row menus
+ * stay closed and the native menu is not cancelled. Plugin rows that apply there keep the app
+ * menu, which then leaves out the verbs it cannot run. Returns whether it left the gesture. */
+function leaveEditableToBrowser(event: MouseEvent, target: ContextMenuDomTarget): boolean {
+  const composer = target.composer
+
+  const left = Boolean(
+    target.editable &&
+    lacksEditVerbs() &&
+    !(composer && composerSectionsFor(registry.getArea(COMPOSER_AREAS.contextMenu), composer).length)
+  )
+
+  if (left) {
+    event.stopPropagation()
+  }
+
+  return left
+}
+
+// A checkbox, radio, slider or button has no edit verbs or spelling for the browser to offer.
+const TEXT_INPUT_TYPES = new Set(['email', 'number', 'password', 'search', 'tel', 'text', 'url'])
+
+/** A row, tab or status-bar menu yields only to a text field inside it: any other control there
+ * still opens the row's menu, and a host with our edit verbs resolves nothing. */
+function leaveRowTextFieldToBrowser(event: MouseEvent, element: Element | null) {
+  if (!lacksEditVerbs()) {
+    return
+  }
+
+  const typed =
+    element instanceof HTMLInputElement
+      ? TEXT_INPUT_TYPES.has(element.type)
+      : element instanceof HTMLTextAreaElement || Boolean(element?.closest('[contenteditable]'))
+
+  if (typed) {
+    leaveEditableToBrowser(event, resolveDomTarget(element))
+  }
+}
 
 function isLoopbackUrl(url: string): boolean {
   try {
@@ -133,6 +220,72 @@ function composerItemSections(sections: ComposerMenuRow[][], afterClose: (run: (
   )
 }
 
+function hasCuttableSelection(formField: HTMLInputElement | HTMLTextAreaElement | null, selectionText: string) {
+  return formField ? (formField.selectionStart ?? 0) !== (formField.selectionEnd ?? 0) : selectionText.length > 0
+}
+
+function copyDomImage(imageUrl: string) {
+  if (window.hermesDesktop?.contextMenuCopyImage) {
+    void window.hermesDesktop.contextMenuCopyImage()
+  } else if (imageUrl) {
+    void copyImageFromUrl(imageUrl)
+  }
+}
+
+function domImageSection(target: ContextMenuDomTarget, copy: Translations['contextMenu'], openInApp: boolean): ReactNode[] {
+  const imageIsWeb = isWebUrl(target.imageUrl)
+
+  return [
+    imageIsWeb && openInApp ? (
+      <Item
+        icon="globe"
+        key="image-open-app"
+        label={copy.link.openInApp}
+        onSelect={() =>
+          openPreview({
+            kind: 'url',
+            label: hostPathLabel(target.imageUrl),
+            source: target.imageUrl,
+            url: target.imageUrl
+          })
+        }
+      />
+    ) : null,
+    imageIsWeb ? (
+      <Item
+        icon="link-external"
+        key="image-open-external"
+        label={copy.link.openExternal}
+        onSelect={() => openExternalLink(target.imageUrl)}
+      />
+    ) : null,
+    window.hermesDesktop?.contextMenuCopyImage || target.imageUrl ? (
+      <Item
+        icon="file-media"
+        key="image-copy"
+        label={copy.image.copyImage}
+        onSelect={() => copyDomImage(target.imageUrl)}
+      />
+    ) : null,
+    target.imageUrl ? (
+      <Item
+        icon="copy"
+        key="image-copy-address"
+        label={copy.image.copyImageAddress}
+        onSelect={() => void writeClipboardText(target.imageUrl)}
+      />
+    ) : null,
+    target.imageUrl ? (
+      <Item
+        icon="save"
+        key="image-save"
+        label={copy.image.saveImageAs}
+        onSelect={() => void window.hermesDesktop?.saveImageFromUrl?.(target.imageUrl)}
+      />
+    ) : null
+  ].filter(Boolean)
+}
+
 function domSections(
   open: Extract<OpenContextMenu, { kind: 'dom' }>,
   t: Translations,
@@ -143,7 +296,6 @@ function domSections(
   const sections: ReactNode[][] = []
   const linkUrl = target.linkUrl ? normalizeExternalUrl(target.linkUrl) : ''
   const linkIsWeb = isWebUrl(linkUrl)
-  const imageIsWeb = isWebUrl(target.imageUrl)
   const openInApp = !hudForcesNativeLinks()
   const showResolvedCopy = linkIsWeb && isRemoteGateway() && isLoopbackUrl(linkUrl)
 
@@ -235,55 +387,7 @@ function domSections(
   }
 
   if (target.onImage) {
-    sections.push(
-      [
-        imageIsWeb && openInApp ? (
-          <Item
-            icon="globe"
-            key="image-open-app"
-            label={copy.link.openInApp}
-            onSelect={() =>
-              openPreview({
-                kind: 'url',
-                label: hostPathLabel(target.imageUrl),
-                source: target.imageUrl,
-                url: target.imageUrl
-              })
-            }
-          />
-        ) : null,
-        imageIsWeb ? (
-          <Item
-            icon="link-external"
-            key="image-open-external"
-            label={copy.link.openExternal}
-            onSelect={() => openExternalLink(target.imageUrl)}
-          />
-        ) : null,
-        <Item
-          icon="file-media"
-          key="image-copy"
-          label={copy.image.copyImage}
-          onSelect={() => void window.hermesDesktop?.contextMenuCopyImage?.()}
-        />,
-        target.imageUrl ? (
-          <Item
-            icon="copy"
-            key="image-copy-address"
-            label={copy.image.copyImageAddress}
-            onSelect={() => void writeClipboardText(target.imageUrl)}
-          />
-        ) : null,
-        target.imageUrl ? (
-          <Item
-            icon="save"
-            key="image-save"
-            label={copy.image.saveImageAs}
-            onSelect={() => void window.hermesDesktop?.saveImageFromUrl?.(target.imageUrl)}
-          />
-        ) : null
-      ].filter(Boolean)
-    )
+    sections.push(domImageSection(target, copy, openInApp))
   }
 
   if (target.editable) {
@@ -331,11 +435,9 @@ function domSections(
 
     const hasFieldText = fieldText.length > 0
 
-    const canCutCopy = formField
-      ? (formField.selectionStart ?? 0) !== (formField.selectionEnd ?? 0)
-      : target.selectionText.length > 0
+    const canCutCopy = hasCuttableSelection(formField, target.selectionText)
 
-    sections.push([
+    const editVerbs = [
       <Item
         disabled={!canCutCopy}
         key="edit-cut"
@@ -356,7 +458,13 @@ function domSections(
         onSelect={() => editableCommand('paste')}
         shortcut={EDIT_SHORTCUTS.paste}
       />
-    ])
+    ]
+
+    // Never offer a verb that cannot run: without contextMenuEdit only plugin rows bring us here.
+    if (!lacksEditVerbs()) {
+      sections.push(editVerbs)
+    }
+
     sections.push([
       <Item
         disabled={!hasFieldText}
@@ -571,25 +679,42 @@ export function AppContextMenu() {
   // registers or unloads while the menu is up.
   const composerSections = useMemo(
     () =>
-      composerTarget && composerContributions.length
-        ? resolveComposerMenuSections(composerContributions, composerTarget)
-        : [],
+      composerTarget && composerContributions.length ? composerSectionsFor(composerContributions, composerTarget) : [],
     [composerContributions, composerTarget]
   )
 
   useEffect(() => {
-    // stopPropagation beats other renderer handlers; preventDefault is never
-    // called because Chromium emits the main-process context-menu event (the
-    // spellcheck + image-coordinate source) only for unprevented gestures —
-    // and with no Menu.popup anywhere, "default" means no menu at all.
+    // Electron needs unprevented gestures for main-process spellcheck and
+    // image coordinates. Webapp must cancel the browser's native menu when
+    // we own the gesture, or it opens alongside the app menu; editables keep
+    // the native menu there, for its working edit verbs and spelling suggestions.
     const onContextMenu = (event: MouseEvent) => {
       const element = event.target instanceof Element ? event.target : null
+
+      // Stop pane/row fallback menus without cancelling the native menu.
+      // Explicit app actions live in More.
+      if (isBrowserOwnedTouch(event)) {
+        event.stopPropagation()
+
+        return
+      }
 
       const trigger = element?.closest(`[${HERMES_CONTEXT_MENU_TRIGGER_ATTR}], [data-slot="context-menu-trigger"]`)
 
       // Only the pane-body wrapper is a fallback menu. Explicit row, tab and
       // status-bar menus still own their whole gesture, even inside a pane.
       if (trigger && !trigger.hasAttribute('data-zone-body')) {
+        // A text field in one (the Files tree's inline rename) still keeps the browser's own menu.
+        leaveRowTextFieldToBrowser(event, element)
+
+        return
+      }
+
+      // Browser-owned media controls need their native context menu, including
+      // save and picture-in-picture actions. Chromium can retarget a control
+      // hit through the media element's UA shadow tree, so inspect the whole
+      // composed path instead of relying only on event.target.
+      if (hostHas('browserContextMenu') && isNativeMediaContextMenu(event)) {
         return
       }
 
@@ -607,7 +732,7 @@ export function AppContextMenu() {
       const terminal = terminalMenuHandleFor(element)
 
       if (terminal) {
-        event.stopPropagation()
+        claimContextMenuGesture(event)
         openTerminalContextMenu(event.clientX, event.clientY, terminal)
 
         return
@@ -627,6 +752,10 @@ export function AppContextMenu() {
 
       const owned = Boolean(target.linkUrl || target.onImage || target.editable || selected)
 
+      if (leaveEditableToBrowser(event, target)) {
+        return
+      }
+
       // A selection elsewhere in the same pane must not take its bare menu.
       if (!owned && trigger) {
         return
@@ -638,7 +767,7 @@ export function AppContextMenu() {
         return
       }
 
-      event.stopPropagation()
+      claimContextMenuGesture(event)
       openDomContextMenu(event.clientX, event.clientY, target)
     }
 

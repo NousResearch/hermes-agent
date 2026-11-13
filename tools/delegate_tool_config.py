@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Any, Dict, List, NamedTuple, Optional
+from contextlib import contextmanager
+from contextvars import ContextVar
+from typing import Any, Dict, Iterator, List, NamedTuple, Optional
 from utils import base_url_hostname, is_truthy_value
 from hermes_cli.fallback_config import scoped_fallback_chain
 
@@ -90,6 +92,15 @@ def _get_oneshot_max_children() -> int:
     )
 
 
+def _get_prefix_stagger_seconds() -> float:
+    """delegation.prefix_stagger_seconds: longest a batch sibling waits for the first child's response to start so
+    its request reads the shared prompt cache (0 = off, the default). See tools/delegate_tool_prefix_gate.py."""
+    return _knob(
+        "prefix_stagger_seconds", None, lambda v: min(60.0, max(0.0, float(v))), 0.0,
+        "delegation.prefix_stagger_seconds=%r is not a number; the prompt-cache warm-up wait is off",
+    )
+
+
 def _get_max_concurrent_children() -> int:
     """delegation.max_concurrent_children > DELEGATION_MAX_CONCURRENT_CHILDREN env > 10.
 
@@ -111,6 +122,48 @@ def _get_independent_completions() -> bool:
     """delegation.independent_completions (bool, default False): split a background call into per-task / per-group
     completion messages that land as each finishes. Off = one consolidated message when the whole call is done."""
     return is_truthy_value(_cfg().get("independent_completions", False))
+
+# delegation.gateway_mode: "background" (alias "async") always detaches; "inline" joins in the turn; anything else is
+# "auto". Read from the gateway turn's own (profile-scoped) user config, not from this process's config.
+_GATEWAY_MODES = {"inline": True, "background": False, "async": False}
+
+def gateway_delegation_inline(user_config: Any, platform_key: str, *, interim_enabled: bool) -> bool:
+    """Whether a gateway session joins its top-level delegations inside the turn (``delegation.gateway_mode``).
+
+    ``auto`` (default) joins on a human chat whose interim assistant messages are off (the gateway's resolved
+    ``display.interim_assistant_messages``, platform overrides included): there the "status, end your turn" reply
+    the background path asks for would be delivered as the turn's answer, then the real answer as a second message.
+    API, local and webhook surfaces keep the background path under ``auto``."""
+    from gateway.session_context import NON_MESSAGING_SESSION_SURFACES
+    section = user_config.get("delegation") if isinstance(user_config, dict) else None
+    mode = str(section.get("gateway_mode") or "auto").strip().lower() if isinstance(section, dict) else "auto"
+    if mode in _GATEWAY_MODES:
+        return _GATEWAY_MODES[mode]
+    return not interim_enabled and str(platform_key or "").lower() not in NON_MESSAGING_SESSION_SURFACES
+
+# Set by the gateway around building a session's agent; read once by that agent's first tool build.
+_GATEWAY_DELEGATION_INLINE: ContextVar[bool] = ContextVar("hermes_gateway_delegation_inline", default=False)
+
+@contextmanager
+def gateway_delegation_inline_scope(inline: bool) -> Iterator[None]:
+    """Build an agent whose tools carry the joined ``delegate_task`` variant (frozen on the agent by
+    :func:`agent_joins_delegation`). Dispatch reads the variant the session carries, not this flag."""
+    token = _GATEWAY_DELEGATION_INLINE.set(bool(inline))
+    try:
+        yield
+    finally:
+        _GATEWAY_DELEGATION_INLINE.reset(token)
+
+def agent_joins_delegation(agent: Any) -> bool:
+    """The gateway's inline decision, frozen on *agent* at its first tool build (like ``agent_is_oneshot``) and
+    re-frozen from a restored tools[] pin (``tools.delegate_tool.adopt_session_delegation_mode``), so later rebuilds
+    outside the build scope keep the session's ``delegate_task`` bytes. Dispatch does not read this: it follows the
+    schema the session carries (``tools.delegate_tool.session_joins_delegation``)."""
+    cached = getattr(agent, "_delegation_inline", None)
+    if not isinstance(cached, bool):
+        cached = _GATEWAY_DELEGATION_INLINE.get()
+        agent._delegation_inline = cached
+    return cached
 
 def _get_worktree_isolation() -> bool:
     """delegation.worktree_isolation (bool, default False): each child gets its own
@@ -349,8 +402,6 @@ def _direct_endpoint_credentials(v: dict, explicit_request_overrides) -> dict:
         provider, api_mode = "openai-codex", "codex_responses"
     elif host == "api.anthropic.com":
         provider, api_mode = "anthropic", "anthropic_messages"
-    elif "api.kimi.com/coding" in base_lower:
-        api_mode = "anthropic_messages"
     # Explicit delegation.api_mode always wins over the URL heuristic; a provider plugin's
     # registered dialect counts as explicit.
     from agent.transports import registered_api_modes
@@ -376,12 +427,14 @@ def _direct_endpoint_credentials(v: dict, explicit_request_overrides) -> dict:
         _merge_request_overrides(request_overrides, explicit_request_overrides),
     )
 
-def _runtime_provider_credentials(v: dict, explicit_request_overrides) -> dict:
-    """``delegation.provider`` branch: full bundle via the runtime provider system."""
+def _runtime_provider_credentials(v: dict, explicit_request_overrides, explicit_base_url: Optional[str] = None) -> dict:
+    """``delegation.provider`` branch: full bundle via the runtime provider system. ``explicit_base_url`` is handed
+    to the resolver the way the main agent hands it ``model.base_url``: the provider keeps its own key on it."""
     configured_provider = v["provider"]
     try:
         from hermes_cli.runtime_provider import resolve_runtime_provider
-        runtime = resolve_runtime_provider(requested=configured_provider, target_model=v["model"])
+        endpoint = {"explicit_base_url": explicit_base_url} if explicit_base_url else {}
+        runtime = resolve_runtime_provider(requested=configured_provider, target_model=v["model"], **endpoint)
     except Exception as exc:
         raise ValueError(
             f"Cannot resolve delegation provider '{configured_provider}': {exc}. "
@@ -392,9 +445,10 @@ def _runtime_provider_credentials(v: dict, explicit_request_overrides) -> dict:
 
     api_key = runtime.get("api_key", "")
     if not api_key:
+        endpoint_hint = f", or set delegation.api_key for {explicit_base_url}" if explicit_base_url else ""
         raise ValueError(
             f"Delegation provider '{configured_provider}' resolved but has no API key. "
-            f"Set the appropriate environment variable or run 'hermes auth'."
+            f"Set the appropriate environment variable or run 'hermes auth'{endpoint_hint}."
         )
     # A pinned ACP transport command must exist — refuse the spawn loudly rather than letting the child
     # silently fall back to another transport (#80450).
@@ -422,9 +476,20 @@ def _runtime_provider_credentials(v: dict, explicit_request_overrides) -> dict:
         command=pinned_command, args=list(runtime.get("args") or []),
     )
 
+def _resolver_kept_endpoint(named: dict, configured_url: str) -> bool:
+    """Whether the runtime resolver used ``configured_url``, allowing for its own path normalisation (OpenCode
+    relay path, LM Studio, Actual, and the ``/v1`` that Messages-mode resolvers strip): a resolver without a base_url
+    knob returns its default endpoint, often on the same host."""
+    from hermes_cli.runtime_provider import _finalize_base_url
+    expected = _finalize_base_url(named["provider"] or "", named["api_mode"] or "", configured_url)
+    def sans_version(url: str) -> str:
+        return (url or "").rstrip("/").removesuffix("/v1")
+    return sans_version(named["base_url"]) == sans_version(expected)
+
 def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     """Child credential bundle from the ``delegation`` config section. Three branches: ``base_url`` set → direct
-    endpoint (``api_key`` None means inherit the parent's key, so providers keyed outside OPENAI_API_KEY work);
+    endpoint (``api_key`` None means inherit the parent's key, so providers keyed outside OPENAI_API_KEY work; a
+    named provider instead resolves its own key with base_url as the explicit endpoint);
     ``provider`` set → full bundle via the runtime provider system (same path as CLI/gateway startup); neither →
     None values, child inherits everything. ``request_overrides`` is honored on every branch. Raises ValueError
     with a user-facing message."""
@@ -434,6 +499,19 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     is_native_sdk_provider = (values["provider"] or "").strip().lower() in _NATIVE_SDK_PROVIDERS
 
     if values["base_url"] and not is_native_sdk_provider:
+        if (values["provider"] or "").lower() not in ("", "custom", "auto") and not values["api_key"]:
+            # The parent's key belongs to the parent's provider: a named provider resolves its own key for this URL.
+            named = _runtime_provider_credentials(values, explicit_request_overrides, values["base_url"])
+            if not _resolver_kept_endpoint(named, values["base_url"]):
+                # The resolver ignored the override (provider without a base_url knob): don't silently reroute.
+                raise ValueError(
+                    f"Delegation provider '{values['provider']}' does not accept delegation.base_url "
+                    f"({values['base_url']}); it resolved to {named['base_url']}. Remove delegation.base_url, "
+                    f"or set delegation.api_key for a direct endpoint."
+                )
+            if values["api_mode"]:
+                named["api_mode"] = values["api_mode"]
+            return named
         return _direct_endpoint_credentials(values, explicit_request_overrides)
     if not values["provider"]:
         # Pure inherit; explicit request_overrides still merge OVER the parent's.
@@ -529,7 +607,7 @@ def _resolve_child_runtime(
     pinned provider is actually honoured."""
     effective_model = model or parent_agent.model
     # provider/base_url are one bundle: all from the override, or all from the parent. Per-field fallback built
-    # children like an override provider pointed at the PARENT's endpoint (e.g. copilot credentials on the
+    # children like an override provider pointed at the PARENT's endpoint (e.g. one provider's credentials on the
     # parent's Codex URL), which 404s on every request and can't be rescued by the fallback chain, whose dedup
     # matches provider+model and so skips the entry as a self-loop. _inherit_parent_endpoint recovers the
     # parent's live endpoint (with its key), which is meaningless for a different provider.
@@ -571,22 +649,12 @@ def _resolve_child_runtime(
     effective_acp_args = list(
         override_acp_args if override_acp_args is not None else (getattr(parent_agent, "acp_args", []) or [])
     )
-    # A pinned provider must use direct API calls; inheriting the parent's ACP
-    # transport would bypass the override credentials entirely.
-    # Inheriting acp_command unconditionally causes run_agent.py to initialize CopilotACPClient, bypassing
-    # override credentials entirely (issue #16816).
+    # A pinned provider must use direct API calls; inheriting the parent's ACP transport would build the
+    # ACP client and bypass the override credentials entirely (issue #16816).
     if override_provider and not override_acp_command:
         effective_acp_command, effective_acp_args = None, []
-    # Defensive: validate trusted delegation.command exists on PATH before honoring it. An explicitly pinned
-    # transport that cannot run must fail the spawn loudly (#80450) — silently falling back to the default
-    # transport would run the child somewhere the user explicitly routed it away from. Normally unreachable
-    # via delegate_task, which pre-validates the command in _resolve_delegation_credentials.
-    if override_acp_command:
-        from providers import get_provider_profile
-        profile = get_provider_profile(effective_provider or "")
-        # A generic process command does not imply the legacy ACP protocol.
-        if profile is None or profile.auth_type != "external_process":
-            effective_provider, effective_api_mode = "copilot-acp", "chat_completions"
+    # A pinned command arrives only with the runtime of the provider that resolved it, so the selected
+    # provider (and its api_mode) is kept as is.
 
     # A named provider identity is endpoint-scoped. Preserve it only when the
     # child inherits the exact parent route; an override owns its final identity.

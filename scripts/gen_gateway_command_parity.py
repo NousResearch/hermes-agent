@@ -30,7 +30,7 @@ NOT_A_LOCAL_READ = {
     "agents": "gateway-wide: lists every chat's running agents and the process's async jobs",
     "platform": "messaging adapters; `pause`/`resume` mutate them",
     "sessions": "messaging origin-scoped listing (`/sessions all` needs a messaging admin)",
-    "debug": "uploads logs to a public paste",
+    "debug": "`/debug upload` uploads logs to a public paste (bare `/debug` is the privacy notice)",
     "save": "the gateway handler writes its file on the gateway host; Desktop saves `session.export` text "
             "through its own dialog",
     "rollback": "restores filesystem checkpoints",
@@ -78,7 +78,7 @@ def _base_note(cmd):
         return "per-session setting (gateway handler)"
     if cmd.name in NOT_A_LOCAL_READ:
         return NOT_A_LOCAL_READ[cmd.name]
-    if cmd.gateway_only:
+    if cmd.gateway_only and classic_cell(cmd).startswith("messaging-only"):
         return "messaging-only"
     if cmd.cli_only:
         return "client-local (cli_only)"

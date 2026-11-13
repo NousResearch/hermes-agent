@@ -7,11 +7,12 @@ import logging
 from pathlib import Path
 
 from gateway.drain_control import open_restart_wait
+from hermes_cli._startup_fast import project_root_str
 from pm.generation_lifecycle import GenerationObserver
 
 log = logging.getLogger(__name__)
 POLL_S = 30.0
-_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+_PROJECT_ROOT = Path(project_root_str())
 
 
 async def dependency_generation_watcher(

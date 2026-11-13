@@ -58,8 +58,11 @@ meaningful:
    (querying `data-slot` / `data-tour` / `data-sidebar` / `data-testid`
    elements from `document`, or a `document.body` MutationObserver, to restyle,
    hide, click or rewrite core UI). `hermes plugins validate` refuses these at
-   admission (`desktop surface` check); a plugin that needs a capability the
-   SDK lacks asks for an SDK hook instead of patching around it.
+   admission (`desktop surface` check) and warns, for the reviewer, on raw
+   `window.hermesDesktop` bridge calls and on the app's markup selected any
+   other way (`[data-slot]`, `[data-tree-*]` in CSS text or `closest()`); a
+   plugin that needs a capability the SDK lacks asks for an SDK hook instead
+   of patching around it.
 9. **No runtime overrides of Hermes core.** A listed plugin extends Hermes only
    through public surfaces: hooks, middleware, provider profiles and the
    other `register_*` APIs, and Desktop SDK slots and routes. It must not
@@ -69,7 +72,8 @@ meaningful:
    patching the same seam silently break each other, and every core release
    can break both. `hermes plugins validate` refuses these at admission (`no
    core override` check), and warns (without failing) on each import of an
-   undocumented core module, by file and line. If the hook you need does not
+   undocumented core module and each call to a private method of a core
+   object it is handed (`db._execute_write(...)`), by file and line. If the hook you need does not
    exist, open an issue describing it: we would rather add the seam than list
    a patch.
 10. **Dependency security policy is the plugin's.** Hermes's 3-day
@@ -154,6 +158,24 @@ meaningful:
    <pinned sha>`). A binary a user's own machine fetches at setup time is allowed
    only from the upstream tool's official source, pinned by checksum, and
    disclosed (rule 13) — never bundled and never from an unofficial mirror.
+18. **Password managers come from their vendor.** A plugin that registers a
+   `browser_vault` login backend (`ctx.register_login_backend`) is listed only at
+   `tier: verified`, submitted from the password-manager vendor's own repository
+   by that vendor, or at `tier: official` when Nous maintains it. Community-tier,
+   fork and third-party listings of a login backend are declined. Hermes enforces
+   the same rule when the plugin loads: a login backend is accepted only from a
+   plugin bundled with Hermes or installed from this catalog at `verified` or
+   `official` tier and at the reviewed pin, as recorded in Hermes's own install
+   record (never a file inside the plugin). Local-directory, Git URL, `--ref`,
+   `--allow-removed`, project and pip installs are refused, and no setting
+   relaxes it.
+19. **No plugins built to reach infringing content.** A plugin whose main
+   purpose is to find, stream or download copyrighted films, shows, music, books,
+   games or software from sources that are not licensed to distribute them
+   (piracy aggregators, unofficial mirrors, cracked-release indexes) is declined,
+   however clean its code. A general-purpose tool such as a browser, downloader
+   or media player is fine; one that ships with those sources built in, or whose
+   description points users at them, is not.
 <!-- admission-rules:end -->
 
 The step-by-step submission guide, with the same rules and what reviewers check,
@@ -185,6 +207,7 @@ readme: true                # optional, default true; the README at the PINNED S
 platforms: []               # optional, e.g. [linux, macos]; empty = all
 title: ""                   # optional human name on cards ("NVIDIA App"); default = name
 onboarding: false           # optional; offered on the Desktop onboarding card (official or verified entries only)
+default: false              # optional; installed and enabled once in every home (official or verified entries only)
 known_issues: []            # optional strings shown at the install prompt; informational, never blocks
 capabilities:
   provides_tools: []
@@ -198,8 +221,16 @@ capabilities:
 the plugin integrates into Hermes, and that company is well known or reputable.
 `community`: everything else. Only Nous maintainers set `official` or
 `verified`; a contributor PR that sets either is changed to `community` in
-review (the `/plugin-catalog/` CODEOWNERS review is the gate; no CI check
-inspects the tier value).
+review (maintainer review is the gate; no CI check inspects the tier value).
+
+`default: true` ships an entry to every Hermes home: it is installed at its pin
+and enabled at the end of every install (source installer, Desktop, Docker, Nix,
+Termux: on first start where the installer runs no Hermes code), again by
+`hermes update` for a default added since, and when a profile is created. Each
+home gets it once: a user who removes or disables it keeps that choice through
+every later update. Only `official` and `verified` entries may set it; the
+validator refuses it elsewhere and Hermes ignores it on any other tier. Homes
+with `security.allow_lazy_installs: false` fetch nothing.
 
 `version`, `image`, `screenshots` and `readme` are cosmetic: none is parsed or
 used to pick what installs. The sha stays the release; bump `version` in the
@@ -234,6 +265,10 @@ file removal, users who already installed it are unaffected). It is welcome back
 problem is fixed; a name squatter comes back under a distinct name. When a new rule affects
 entries that are already listed, their authors get an issue on their repository explaining
 the change and time to update before anything is delisted.
+
+Entries whose repository was deleted, or whose pinned commit no longer exists (force-pushed
+away), are delisted automatically: `.github/workflows/catalog-dead-repos.yml` checks every entry
+each week and opens one PR deleting the dead ones, for a maintainer to review.
 
 ## Names
 

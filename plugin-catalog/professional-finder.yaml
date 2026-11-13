@@ -1,0 +1,19 @@
+name: professional-finder
+title: Professional Finder
+repo: https://github.com/KellerAI/hermes-plugins
+sha: cf34342f951cb5dffcaea34c1c2a44f6d8ddbe22
+subdir: professional-finder
+description: "Skills-only plugin. Finds, shortlists, license-checks and vets licensed professionals in any US state from public license registries and regulator records, and drafts outreach the user sends. Not a background check and not intended to be a consumer report (FCRA); confirm findings with the issuing board. Disclosure: no tools, hooks, MCP servers, shell or stored credentials; uses the agent's own web tools to open public registries; sends nothing to KellerAI."
+maintainer: KellerAI
+tier: community
+category: general
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/KellerAI/hermes-plugins/tree/main/professional-finder#readme
+version: "1.0.0"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

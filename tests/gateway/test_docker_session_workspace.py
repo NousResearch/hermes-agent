@@ -38,14 +38,14 @@ def _policy(home, cwd, persistent, mount=True):
     return restore_policy(asdict(build_policy({'source': 'cli', 'cwd': str(cwd), 'model': 'm'}, {})))
 
 
-def _turn(policy, session_id):
+def _turn(policy, session_id, profile=''):
     """The gateway turn's own scope: frozen policy, session key, and the turn's workspace binding."""
     from contextlib import ExitStack
     from gateway.session_context import clear_session_vars, set_session_vars
     from gateway.session_policy import bind_turn_workspace, policy_scope
     stack = ExitStack()
     stack.enter_context(policy_scope(policy))
-    tokens = set_session_vars(session_key=f'agent:main:local:dm:{session_id}')
+    tokens = set_session_vars(session_key=f'agent:main:local:dm:{session_id}', profile=profile)
     stack.callback(clear_session_vars, tokens)
     bind_turn_workspace(policy, session_id)
     return stack
@@ -79,6 +79,78 @@ def test_persistent_container_is_keyed_per_workspace_not_per_profile(home, tmp_p
     assert (plans['local-a'][1], plans['local-b'][1]) == (str(ws1), str(ws2))
     # Same workspace: still ONE persistent container, shared across sessions as before.
     assert plans['local-c'] == plans['local-a']
+
+
+@pytest.mark.parametrize("mount", [False, True])
+@pytest.mark.parametrize("profile", ["default", "beta"])
+def test_desktop_workspace_registration_preserves_unmounted_profile_sandbox(
+    home, tmp_path, monkeypatch, mount, profile
+):
+    from tools import terminal_tool
+    from tui_gateway import server
+
+    profile_home = home if profile == "default" else home / "profiles" / profile
+    profile_home.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("HERMES_HOME", str(profile_home))
+    workspaces = [tmp_path / "first", tmp_path / "second"]
+    plans = []
+    for index, workspace in enumerate(workspaces):
+        workspace.mkdir()
+        sid = f"desktop-{index}"
+        policy = _policy(profile_home, workspace, persistent=True, mount=mount)
+        with _turn(policy, sid, profile):
+            # Desktop registers its cwd independently of the gateway's host-mount binding.
+            vars(server)["_register_session_cwd"](
+                {
+                    "session_key": sid,
+                    "cwd": str(workspace),
+                    "explicit_cwd": True,
+                    "source": "desktop",
+                }
+            )
+            overrides = terminal_tool.resolve_task_overrides(sid)
+            assert overrides["cwd_source"] == ("session" if mount else "process")
+            if not mount:
+                assert overrides["cwd"] == ""
+                terminal_tool.record_session_cwd(sid, "/workspace/subdir")
+                vars(server)["_register_session_cwd"](
+                    {
+                        "session_key": sid,
+                        "cwd": str(workspace),
+                        "explicit_cwd": True,
+                        "source": "desktop",
+                    }
+                )
+                assert terminal_tool.get_session_cwd(sid) == "/workspace/subdir"
+            plans.append(_plan(sid))
+            assert (
+                terminal_tool._resolve_container_task_id(plans[-1][0]) == plans[-1][0]
+            )
+
+    with _turn(policy, "cli-without-workspace", profile):
+        terminal_tool.clear_task_env_overrides("cli-without-workspace")
+        cli_key = _plan("cli-without-workspace")[0]
+
+    if mount:
+        assert plans[0][0] != plans[1][0]
+        assert [plan[1] for plan in plans] == [
+            str(workspace) for workspace in workspaces
+        ]
+    else:
+        expected = "default" if profile == "default" else f"profile:{profile}"
+        assert cli_key == expected
+        assert plans == [(expected, None), (expected, None)]
+
+
+def test_a_registered_workspace_does_not_split_an_unmounted_profile_sandbox(home, tmp_path):
+    """Any ``cwd_source: "session"`` workspace (not just the gated writers') keeps the profile key."""
+    from tools.terminal_tool import register_task_env_overrides, workspace_key_for
+    ws = tmp_path / 'ws'
+    ws.mkdir()
+    with _turn(_policy(home, ws, persistent=True, mount=False), 'local-a'):
+        register_task_env_overrides('local-a', {
+            'cwd': str(ws), 'cwd_source': 'session', 'workspace_key': workspace_key_for(str(ws))})
+        assert _plan('local-a') == ('default', None)
 
 
 def test_binding_keeps_a_cd_and_follows_a_workspace_move(home, tmp_path):
@@ -355,3 +427,143 @@ def test_named_launch_profiles_managed_worker_turn_keeps_its_sessions_workspace_
     with policy_scope(policy):
         session_kanban.run_worker_turns(Agent(), frame, [])
     assert seen['key'] == session_key
+
+
+def test_desktop_session_container_binds_its_workspace_not_the_backend_launch_dir(home, tmp_path, monkeypatch):
+    """#119170: persistent Docker gives a Desktop session with a workspace its own ``:ws:`` container,
+    which must bind that workspace, not the backend's launch dir (``$HOME``, so ``~/.ssh`` in the
+    sandbox). No gateway policy scope here: the Desktop backend's TERMINAL_CWD is its own launch dir."""
+    from gateway.session_context import clear_session_vars, set_session_vars
+    from tools import terminal_tool
+    from tui_gateway import server
+    launch_home = tmp_path / 'user-home'
+    (launch_home / '.ssh').mkdir(parents=True)
+    ws1, ws2 = tmp_path / 'ws1', tmp_path / 'ws2'
+    ws1.mkdir(), ws2.mkdir()
+    for name, value in (('TERMINAL_ENV', 'docker'), ('TERMINAL_CONTAINER_PERSISTENT', 'true'),
+                        ('TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE', 'true'), ('TERMINAL_CWD', str(launch_home))):
+        monkeypatch.setenv(name, value)
+    monkeypatch.setattr(terminal_tool, '_terminal_config_bridge_attempted', True)
+    plans = {}
+    for sid, ws in (('desktop-a', ws1), ('desktop-b', ws2), ('desktop-none', None)):
+        tokens = set_session_vars(session_key=sid, profile='')
+        try:
+            if ws is not None:
+                vars(server)['_register_session_cwd'](
+                    {'session_key': sid, 'cwd': str(ws), 'explicit_cwd': True, 'source': 'desktop'})
+            terminal_tool.register_container_alias(f'{sid}-child', sid)
+            plans[sid] = _plan(sid)
+            assert _plan(f'{sid}-child') == plans[sid]  # a delegate child runs in its parent's container
+        finally:
+            clear_session_vars(tokens)
+    # Each workspace-keyed container binds its own workspace (main: both bound the launch home).
+    assert ':ws:' in plans['desktop-a'][0] and plans['desktop-a'][0] != plans['desktop-b'][0]
+    assert (plans['desktop-a'][1], plans['desktop-b'][1]) == (str(ws1), str(ws2))
+    # The profile container, shared by every session without a workspace, keeps the legacy mount.
+    assert plans['desktop-none'] == ('default', str(launch_home))
+
+
+def _desktop_shared_mode(monkeypatch, launch_home):
+    from tools import terminal_tool
+    for name, value in (('TERMINAL_ENV', 'docker'), ('TERMINAL_CONTAINER_PERSISTENT', 'true'),
+                        ('TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE', 'true'), ('TERMINAL_CWD', str(launch_home))):
+        monkeypatch.setenv(name, value)
+    monkeypatch.setattr(terminal_tool, '_terminal_config_bridge_attempted', True)
+
+
+def test_workspace_container_never_falls_back_to_the_launch_dir(home, tmp_path, monkeypatch):
+    """#119170: a ``:ws:`` container whose workspace is gone mounts nothing, never the launch dir."""
+    from gateway.session_context import clear_session_vars, set_session_vars
+    from tui_gateway import server
+    launch_home = tmp_path / 'user-home'
+    (launch_home / '.ssh').mkdir(parents=True)
+    ws = tmp_path / 'ws'
+    ws.mkdir()
+    _desktop_shared_mode(monkeypatch, launch_home)
+    tokens = set_session_vars(session_key='desktop-gone', profile='')
+    try:
+        vars(server)['_register_session_cwd'](
+            {'session_key': 'desktop-gone', 'cwd': str(ws), 'explicit_cwd': True, 'source': 'desktop'})
+        ws.rmdir()
+        key, mount = _plan('desktop-gone')
+    finally:
+        clear_session_vars(tokens)
+    assert ':ws:' in key and mount is None
+
+
+@pytest.mark.parametrize('workspace', ['/rootfs/project', '/workspace2/project'])
+def test_workspace_merely_prefixed_like_a_container_path_is_mounted(home, tmp_path, monkeypatch, workspace):
+    """The in-container guard matches path segments: ``/rootfs`` is a host dir, not ``/root``."""
+    import os
+    from gateway.session_context import clear_session_vars, set_session_vars
+    from tui_gateway import server
+    launch_home = tmp_path / 'user-home'
+    launch_home.mkdir()
+    _desktop_shared_mode(monkeypatch, launch_home)
+    real_isdir = os.path.isdir
+    monkeypatch.setattr(os.path, 'isdir', lambda p: p == workspace or real_isdir(p))
+    tokens = set_session_vars(session_key='desktop-rootfs', profile='')
+    try:
+        vars(server)['_register_session_cwd'](
+            {'session_key': 'desktop-rootfs', 'cwd': workspace, 'explicit_cwd': True, 'source': 'desktop'})
+        key, mount = _plan('desktop-rootfs')
+    finally:
+        clear_session_vars(tokens)
+    assert ':ws:' in key and mount == workspace
+
+
+def test_root_launched_backend_keeps_the_guards_for_a_mounted_workspace(home, tmp_path, monkeypatch):
+    """A launch dir under /root gives no config host_cwd, but the ``:ws:`` container still binds the
+    session's workspace: the dangerous-command guards must not take the empty-sandbox fast path."""
+    from gateway.session_context import clear_session_vars, set_session_vars
+    from tools import terminal_tool
+    from tui_gateway import server
+    ws = tmp_path / 'project'
+    ws.mkdir()
+    _desktop_shared_mode(monkeypatch, '/root')
+    tokens = set_session_vars(session_key='desktop-root', profile='')
+    try:
+        vars(server)['_register_session_cwd'](
+            {'session_key': 'desktop-root', 'cwd': str(ws), 'explicit_cwd': True, 'source': 'desktop'})
+        key, mount = _plan('desktop-root')
+    finally:
+        clear_session_vars(tokens)
+    assert ':ws:' in key and mount == str(ws)
+    assert terminal_tool._docker_has_host_access(terminal_tool._get_env_config()) is True
+
+
+def test_operator_shared_key_with_ws_marker_keeps_launch_mount(home, tmp_path, monkeypatch):
+    """An operator's shared key containing ':ws:' is not a workspace container."""
+    from gateway.session_context import clear_session_vars, set_session_vars
+
+    launch_home = tmp_path / 'user-home'
+    launch_home.mkdir()
+    _desktop_shared_mode(monkeypatch, launch_home)
+    monkeypatch.setenv('TERMINAL_DOCKER_SHARED_CONTAINER_KEY', 'team:ws:common')
+    tokens = set_session_vars(session_key='desktop-shared-marker', profile='')
+    try:
+        assert _plan('desktop-shared-marker') == ('shared:team:ws:common', str(launch_home))
+    finally:
+        clear_session_vars(tokens)
+
+
+def test_operator_shared_key_ending_in_a_workspace_digest_never_binds_that_workspace(home, tmp_path, monkeypatch):
+    """A shared container named like ``<x>:ws:<digest>`` is reused by every session: it must not be
+    bound to the one session whose workspace digest its name happens to end with."""
+    from gateway.session_context import clear_session_vars, set_session_vars
+    from tools.terminal_tool import workspace_key_for
+    from tui_gateway import server
+    launch_home = tmp_path / 'user-home'
+    launch_home.mkdir()
+    ws = tmp_path / 'project'
+    ws.mkdir()
+    _desktop_shared_mode(monkeypatch, launch_home)
+    monkeypatch.setenv('TERMINAL_DOCKER_SHARED_CONTAINER_KEY', f'team:ws:{workspace_key_for(str(ws))}')
+    tokens = set_session_vars(session_key='desktop-shared-digest', profile='')
+    try:
+        vars(server)['_register_session_cwd'](
+            {'session_key': 'desktop-shared-digest', 'cwd': str(ws), 'explicit_cwd': True, 'source': 'desktop'})
+        key, mount = _plan('desktop-shared-digest')
+    finally:
+        clear_session_vars(tokens)
+    assert key.startswith('shared:team:ws:') and mount == str(launch_home)

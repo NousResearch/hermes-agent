@@ -50,3 +50,6 @@ class StandaloneSendPolicy:
     # Generic text-only path: call the sender per chunk directly, skipping the live adapter and
     # any ``send_message_handler``.
     text_direct: bool = False
+    # A text needing more than this many messages goes out whole as one ``.md`` file through the
+    # sender's own upload (#152012); if that upload fails it is sent as messages. 0 = never.
+    reply_file_over: int = 0

@@ -3,8 +3,8 @@
 // be copied/run on base and candidate checkouts.
 //
 // Run from ui-tui:
-//   npx tsx scripts/bench-history-scroll.tsx
-//   npx tsx scripts/bench-history-scroll.tsx --warmups=2 --samples=5 --items=100,1000,10000
+//   pnpm exec tsx scripts/bench-history-scroll.tsx
+//   pnpm exec tsx scripts/bench-history-scroll.tsx --warmups=2 --samples=5 --items=100,1000,10000
 //
 // In addition to the virtual-history workloads, every run mounts one
 // oversized bordered/fill box at each RENDERER_EXTENT inside the fixed

@@ -1,8 +1,8 @@
-#!/usr/bin/env -S npx tsx
+#!/usr/bin/env -S pnpm exec tsx
 // Emit <repo>/locales/_keys.tui.json: the sorted flat key list of the bundled
 // TUI English catalog. `hermes plugins validate` checks a pack's `<lang>.tui.yaml`
-// keys against this file, so it is regenerated on every `npm run build` and
-// committed. Run directly: `npm run i18n:keys` (add `--check` to verify only).
+// keys against this file, so it is regenerated on every `pnpm run build` and
+// committed. Run directly: `pnpm run i18n:keys` (add `--check` to verify only).
 
 import { readFileSync, writeFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
@@ -26,7 +26,7 @@ if (process.argv.includes('--check')) {
   }
 
   if (current !== body) {
-    console.error(`${target} is stale — run \`npm run i18n:keys\` in ui-tui/`)
+    console.error(`${target} is stale — run \`pnpm run i18n:keys\` in ui-tui/`)
     process.exit(1)
   }
 

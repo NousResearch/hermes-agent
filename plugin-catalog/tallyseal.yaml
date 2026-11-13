@@ -1,0 +1,16 @@
+name: tallyseal
+title: TallySeal
+repo: https://github.com/Venkat-RJ/hermes-tallyseal
+sha: "67be27f463e92a9d847492f2591c1af9aa3720d0"
+version: "0.1.0"
+description: "Checks each group in a CSV report against a pinned source and seals the exact report bytes that pass. Disclosure: the check tool directly reads source.csv and report.csv in an operator-configured host folder and returns counts, record numbers and hashes. The local seal command writes a new file to an operator-selected path. No network, subprocesses, credentials or telemetry."
+maintainer: Venkat-RJ
+tier: community
+category: tools
+requires_hermes: ">=0.23.1"
+platforms: [macos, linux]
+capabilities:
+  provides_tools: [tallyseal_check]
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

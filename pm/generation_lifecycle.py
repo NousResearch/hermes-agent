@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-from contextlib import contextmanager
 from pathlib import Path
 
 log = logging.getLogger(__name__)
@@ -38,18 +37,13 @@ class GenerationObserver:
         self.known = self.state in _BOOT_ENVIRONMENTS
         self.boot = _BOOT_ENVIRONMENTS.get(self.state)
 
-    @contextmanager
     def scope(self):
-        from hermes_constants import (
-            reset_hermes_home_override,
-            set_hermes_home_override,
-        )
+        from agent.runtime_scope import bind_state, scope_for_profile
 
-        token = set_hermes_home_override(self.home)
-        try:
-            yield
-        finally:
-            reset_hermes_home_override(token)
+        # This watcher only needs its install's file paths, and does not use credentials or tools.
+        return bind_state(
+            scope_for_profile(self.home), secrets={}, terminal=False, hydrate_secrets=False
+        )
 
     def probe(self) -> str | None:
         """Changed reason, empty string when current, None when publication is indeterminate."""

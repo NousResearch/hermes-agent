@@ -1,0 +1,36 @@
+name: stoa
+title: Stoa
+repo: https://github.com/jarrett-del/hermes-stoa
+sha: 9215f6ba5b6df357f0d41faeb49d89e8924342bd
+description: "The CRM for Hermes Agent, a lightweight one you talk to: map a market, find the leads, run the pipeline and see it through to cash. Hermes runs it and you approve: what it finds waits for your yes or no, and every change can be taken back. Optional paid lookups and network calls happen only with your own keys; the README's Disclosure section lists everything it reads, writes and sends. Disclosure — optional network calls to api.peopledatalabs.com (paid per result, capped), api.exa.ai and public-api.granola.ai only when their keys are set; dictation on the page is the browser's own speech recognition (in Chrome, Google's service) and runs only while its button is on; reads the notes folder, .csv and .tsv files in its imports folder, a folder you name or the working directory, and a file you drop on the page; writes only inside its own data folder, including daily backup copies of each pipeline; scheduled jobs reach the desk only when you add cron to its channels setting, and then change only what its autonomy setting allows (by default they only log what they find and leave every other change waiting for your approval; \"Run it\" lets them make any change); the automations offered under /blueprint run only when you switch them on, and the Google Sheet ones use your own Google connection in Hermes; invoices and payments are records kept on the desk, never sent or charged; a Slack button works only for the person a card was posted for or the people listed in slack_users; with allow_gateway_injection a button click queues one agent turn in the thread; the page's dock sends what you type to a visible conversation of its own. Hermes Agent Plugin Hackathon entry."
+maintainer: jarrett-del
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+version: "0.15.0"
+platforms: [linux, macos]
+image: https://raw.githubusercontent.com/jarrett-del/hermes-stoa/9215f6ba5b6df357f0d41faeb49d89e8924342bd/docs/banner.jpg
+screenshots:
+  - https://raw.githubusercontent.com/jarrett-del/hermes-stoa/9215f6ba5b6df357f0d41faeb49d89e8924342bd/docs/desktop-today.jpg
+  - https://raw.githubusercontent.com/jarrett-del/hermes-stoa/9215f6ba5b6df357f0d41faeb49d89e8924342bd/docs/desktop-pipeline.jpg
+  - https://raw.githubusercontent.com/jarrett-del/hermes-stoa/9215f6ba5b6df357f0d41faeb49d89e8924342bd/docs/desktop-searches.jpg
+  - https://raw.githubusercontent.com/jarrett-del/hermes-stoa/9215f6ba5b6df357f0d41faeb49d89e8924342bd/docs/desktop-cash.jpg
+  - https://raw.githubusercontent.com/jarrett-del/hermes-stoa/9215f6ba5b6df357f0d41faeb49d89e8924342bd/docs/desktop-undo.jpg
+  - https://raw.githubusercontent.com/jarrett-del/hermes-stoa/9215f6ba5b6df357f0d41faeb49d89e8924342bd/docs/desktop-market.jpg
+capabilities:
+  provides_tools:
+    - gtm_pipeline
+    - gtm_deal
+    - gtm_card
+    - gtm_market
+    - gtm_enrich
+    - gtm_notes
+    - gtm_playbook
+    - gtm_export
+    - gtm_intake
+    - gtm_contact
+    - gtm_invoice
+    - gtm_group
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

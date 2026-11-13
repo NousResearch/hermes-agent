@@ -53,14 +53,33 @@ def model_in_transaction(db, conn, session_id, payload, prepared):
     model_config = json.loads(row[0] or '{}')
     model_config['provider'] = config['provider']
     conn.execute('UPDATE sessions SET model=?,model_config=? WHERE id=?', (model, _json(model_config), target))
-    # This selection is newer than any pick still waiting for a turn boundary: that pick is superseded.
-    conn.execute('DELETE FROM state_meta WHERE key=?', (DEFERRED_PICK_PREFIX + session_id,))
+    # This selection is newer than any model pick still waiting for a turn boundary: that pick is superseded.
+    # A level deferred beside it stays unless this selection carries its own, as defer_pick keeps it.
+    key = DEFERRED_PICK_PREFIX + session_id
+    row = conn.execute('SELECT value FROM state_meta WHERE key=?', (key,)).fetchone()
+    level = json.loads(row[0]).get('reasoning') if row is not None and 'reasoning' not in payload else None
+    if level is None:
+        conn.execute('DELETE FROM state_meta WHERE key=?', (key,))
+    else:
+        conn.execute('UPDATE state_meta SET value=? WHERE key=?', (_json({'reasoning': level}), key))
     return {session_id, target}, {'model': model, 'provider': config['provider'], 'execution_generation': generation,
                                   **({'effort': payload['reasoning']} if 'reasoning' in payload else {})}
 
 
 def reasoning_in_transaction(db, conn, session_id, payload, prepared):
+    from hermes_state_runtime import _json
     snapshot, generation = _commit_policy(db, conn, session_id, prepared)
+    # This level is newer than any still waiting for a turn boundary, beside or inside a deferred model pick.
+    key = DEFERRED_PICK_PREFIX + session_id
+    row = conn.execute('SELECT value FROM state_meta WHERE key=?', (key,)).fetchone()
+    if row is not None:
+        pick = json.loads(row[0])
+        pick.pop('reasoning', None)
+        pick.get('payload', {}).pop('reasoning', None)
+        if 'application_id' in pick:
+            conn.execute('UPDATE state_meta SET value=? WHERE key=?', (_json(pick), key))
+        else:
+            conn.execute('DELETE FROM state_meta WHERE key=?', (key,))
     return {session_id, snapshot['target']}, {'effort': payload['effort'], 'execution_generation': generation}
 
 

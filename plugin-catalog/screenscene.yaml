@@ -2,7 +2,7 @@ name: screenscene
 title: ScreenScene
 repo: https://github.com/solocreativeone/screenscene
 sha: 111e781820cb0e1597ca67c0511ad09beb8e93f9
-description: "Narrated explainer video generator using screenshots, narration, and animation. Disclosure: calls the ElevenLabs API over HTTPS and sends the narration text; runs manim and ffmpeg as subprocesses; writes temporary files and the final MP4 to ~/screenscene_output."
+description: "Narrated explainer video generator using screenshots, narration, and animation. Disclosure — sends each beat's narration text to api.elevenlabs.io with your ElevenLabs key; runs your installed manim, ffmpeg and ffprobe as subprocesses with a minimal environment (manim executes a scene script the plugin generates); reads the image file the agent names; writes the final MP4 to ~/screenscene_output, outside the Hermes profile."
 maintainer: solocreativeone
 tier: community
 category: tools

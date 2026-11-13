@@ -161,3 +161,19 @@ def test_shared_comment_predicate_and_detached_legacy_parity(monkeypatch):
     monkeypatch.setattr(production_scan.tokenize, 'generate_tokens',
                         lambda _: pytest.fail('marker-free source must not be tokenized'))
     assert production_scan.comment_lines('x.submit(f)\n', guard.MARKER) == set()
+
+
+@pytest.mark.parametrize('separator', ['-', '--', '---', '—', '—-', '--—', '— —'])
+def test_separator_only_marker_reasons_are_rejected(separator):
+    from scripts.ci.production_scan import comment_lines
+    for marker in ('thread-hop: ok', 'detached-spawn: ok'):
+        assert comment_lines(f'x.submit(f) # {marker} {separator}\n', marker) == set()
+    assert len(guard.sites('tools/a.py', f'x.submit(f) # thread-hop: ok {separator}\n')) == 1
+
+
+@pytest.mark.parametrize('separator', ['-', '--', '---', '—'])
+def test_marker_reasons_with_explanations_remain_valid(separator):
+    from scripts.ci.production_scan import comment_lines
+    for marker in ('thread-hop: ok', 'detached-spawn: ok'):
+        assert comment_lines(f'x.submit(f) # {marker} {separator} process-scoped work\n', marker) == {1}
+    assert guard.sites('tools/a.py', f'x.submit(f) # thread-hop: ok {separator} process-scoped work\n') == {}

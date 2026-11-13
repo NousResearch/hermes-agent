@@ -13,7 +13,7 @@ SKIP_PARTS = {"tests", "__pycache__", "evals", "node_modules"}
 def comment_lines(text: str, marker: str) -> set[int]:
     if marker not in text:
         return set()
-    pattern = re.compile(re.escape(marker) + r"\s*(?:—|-+)\s*\S")
+    pattern = re.compile(re.escape(marker) + r"\s*(?:—|-+)\s*[^\s—-]")
     return {token.start[0] for token in tokenize.generate_tokens(io.StringIO(text).readline)
             if token.type == tokenize.COMMENT and pattern.search(token.string)}
 

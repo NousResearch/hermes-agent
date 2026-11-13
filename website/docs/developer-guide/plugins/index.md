@@ -1287,6 +1287,24 @@ validate` accepts those spellings and reports a bare `import agent.file_safety` 
 To read Hermes's own settings, use `load_config_readonly()` from `hermes_cli.config` rather than
 parsing `config.yaml` yourself.
 
+### Send a credentialed HTTP request without leaking it on redirect
+
+Plain `urllib.request.urlopen` follows a redirect to another host with your `Authorization` header
+still attached. `hermes_cli.urllib_security.open_credentialed_url(request, timeout=...)` opens a
+`urllib.request.Request` the way Hermes's own provider calls do: credential headers are dropped when
+a redirect leaves the original origin, and the process's installed opener (proxy, TLS trust) is kept.
+
+```python
+import urllib.request
+
+from hermes_cli.urllib_security import open_credentialed_url
+
+def fetch_models(base_url, api_key):
+    request = urllib.request.Request(f"{base_url}/models", headers={"Authorization": f"Bearer {api_key}"})
+    with open_credentialed_url(request, timeout=10) as response:
+        return response.read()
+```
+
 ### Ship a language pack
 
 A plugin can add a UI language or override the wording of an existing one for every surface at once —

@@ -149,17 +149,13 @@ def test_worker_profile_scope_reports_the_assigned_profiles_home_mode(profile_b)
         f"the profile's own home_mode is missing from its terminal policy: {scope!r}")
 
 
-def test_worker_for_another_profile_does_not_inherit_the_dispatchers_home_mode(
-        profile_b, tmp_path, monkeypatch):
-    """The spawned env must not carry the LAUNCH profile's mode over B's own config (#146103).
+def test_served_child_env_for_another_profile_drops_the_launch_home_mode(profile_b, monkeypatch):
+    """A child acting for B (``hermes -p b`` workers, ``key_cmd`` helpers, browser drivers) must not
+    inherit the LAUNCH profile's bridged ``TERMINAL_HOME_MODE``: B's child bridges its own
+    ``terminal.home_mode``, and an inherited one wins wherever B's config leaves it unset (#146103)."""
+    from tools.environments.local import served_profile_child_env
 
-    ``gateway/run.py`` bridges ``terminal.home_mode`` into ``TERMINAL_HOME_MODE`` for the
-    dispatcher's process, and that value describes the LAUNCH profile (``auto`` = the OS user's
-    real home). Inheriting it silenced B's ``home_mode: profile`` in the worker's own terminal —
-    the isolation a profile relies on (no ``~/.ssh``, no ``~/.config/gh``). The child re-bridges
-    its own config, so the launch value must not cross.
-    """
-    monkeypatch.setenv("TERMINAL_HOME_MODE", "auto")  # what the dispatcher's bridge exported
-    env = _spawn_env_for_profile_b(monkeypatch, tmp_path)
+    monkeypatch.setenv("TERMINAL_HOME_MODE", "profile")  # what the dispatcher's bridge exported
+    env = served_profile_child_env(target_home=str(profile_b))
     assert "TERMINAL_HOME_MODE" not in env, (
-        f"B's worker inherited the dispatcher's terminal home mode: {env['TERMINAL_HOME_MODE']!r}")
+        f"B's child inherited the launch profile's home mode: {env['TERMINAL_HOME_MODE']!r}")

@@ -58,12 +58,26 @@ def _build_inspection_agent(platform: str) -> Any:
     cfg = load_config()
     model_cfg = cfg.get("model", {}) if isinstance(cfg.get("model"), dict) else {}
     agent_cfg = cfg.get("agent") or {}
-    return AIAgent(
+    # The dummy URL makes agent init discard a custom endpoint's context pin.
+    # Keep that URL for the no-network guarantee, then restore the default
+    # model's valid pin on this disposable inspection agent before rendering.
+    raw_context_pin = model_cfg.get("context_length")
+    try:
+        context_pin = int(raw_context_pin or 0) if not isinstance(raw_context_pin, bool) else 0
+    except (TypeError, ValueError):
+        context_pin = 0
+    agent = AIAgent(
         model=model_cfg.get("default") or model_cfg.get("model") or "",
         api_key="inspect-only", base_url="https://openrouter.ai/api/v1", quiet_mode=True, save_trajectories=False,
         platform=platform, enabled_toolsets=sorted(_get_platform_tools(cfg, platform)),
         disabled_toolsets=parse_config_string_list(agent_cfg.get("disabled_toolsets")) or None,
     )
+    if context_pin > 0:
+        from agent.agent_init import set_config_context_length
+
+        set_config_context_length(agent, context_pin)
+        agent.context_compressor.context_length = context_pin
+    return agent
 
 
 def _skill_md_paths_by_name() -> dict[str, Path]:

@@ -4,6 +4,7 @@ holding SKILL.md (YAML frontmatter + instructions) plus optional references/, te
 scripts/. `skills_list` returns name/description only; `skill_view` returns full content and
 linked files. Sibling modules (skills_tool_setup / _plugin / _dedup) re-export here."""
 
+from datetime import date, datetime
 import contextvars
 import json
 import logging
@@ -625,6 +626,37 @@ def _log_security_warnings(name: str, skill_md: Path, content: str, all_dirs, ac
         logger.warning("Skill security warning for '%s': %s", name, "; ".join(warnings))
 
 
+# A skill that declares `volatile: true` and `verified_at` opts into a load-time
+# re-check reminder. Only the declared date is compared — no commands, no network,
+# no model calls — so the check is deterministic and side-effect free.
+_FRESHNESS_REVIEW_DAYS = 90
+
+
+def _freshness_note(frontmatter: dict, today: date | None = None) -> str | None:
+    """Return the re-check reminder for a marked skill whose verification is old."""
+    if frontmatter.get("volatile") is not True:
+        return None
+    raw = frontmatter.get("verified_at")
+    try:
+        if isinstance(raw, datetime):
+            verified = raw.date()          # YAML timestamps are datetime (a date subclass)
+        elif isinstance(raw, date):
+            verified = raw
+        elif isinstance(raw, str):
+            verified = date.fromisoformat(raw.strip())
+        else:
+            return None
+        today = today or date.today()
+        age = (today - verified).days
+        if age < _FRESHNESS_REVIEW_DAYS:
+            return None
+        return (f"This skill's external facts were verified on {verified.isoformat()} "
+                f"({age} days ago). Re-confirm version-specific details with the "
+                "verification steps in the skill before relying on them.")
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
 @_host_skills
 def skill_view(
     name: str, file_path: str | None = None, task_id: str | None = None, preprocess: bool = True) -> str:
@@ -721,6 +753,9 @@ def skill_view(
             **readiness_extras}
         if deps_note:
             result["deps_note"] = deps_note
+        freshness_note = _freshness_note(frontmatter)
+        if freshness_note:
+            result["freshness_note"] = freshness_note
         _mark_background_review_read(skill_md)
         if frontmatter.get("compatibility"):  # agentskills.io optional fields
             result["compatibility"] = frontmatter["compatibility"]

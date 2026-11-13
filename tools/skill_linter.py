@@ -42,6 +42,12 @@ _FORBIDDEN_FILES = ("README.md", "CHANGELOG.md", "install.sh", ".env", ".env.exa
 # Presence of the load-bearing section is checked, not exact ordering, so the
 # linter is not a change-detector.
 _EXPECTED_SECTIONS = ("When to Use", "When to use")
+# stale-prone-content: a fenced example that pins a nested configuration schema
+# (``backend.type = ...``, ``folder.aliases.sent = ...``). Counting only dotted
+# keys keeps prose mentions, plain flags and one-off version strings quiet. A
+# skill that already declares both freshness markers has completed the loop.
+_VOLATILE_FACT_RE = re.compile(r"(?m)^\s*[a-zA-Z_][\w-]*(?:\.[\w-]+)+\s*=")
+_VOLATILE_FACT_MIN = 3
 # incident-log-shape: at least this many PR/issue refs AND this density (per 1k chars of prose).
 _INCIDENT_REF_MIN = 4
 _INCIDENT_REF_PER_KCHAR = 0.5  # the 100k incident-log SKILL.md this targets sat at ~0.7
@@ -202,10 +208,32 @@ def lint_content(content: str, *, skill_dir: Optional[Path] = None) -> list[Lint
     the create path needs before the file exists.
     """
     frontmatter, body = parse_frontmatter(content)
-    findings = list(_check_frontmatter(frontmatter, skill_dir)) + list(_check_body(body, skill_dir))
+    findings = (list(_check_frontmatter(frontmatter, skill_dir))
+                + list(_check_body(body, skill_dir))
+                + list(_check_freshness_markers(frontmatter, body)))
     if skill_dir is not None:
         findings += _check_files(frontmatter, skill_dir)
     return findings
+
+
+def _check_freshness_markers(frontmatter: dict[str, Any], body: str) -> Iterator[LintFinding]:
+    """Advisory: point out pinned external facts and offer the freshness markers.
+
+    A skill that declares ``volatile: true`` plus ``verified_at`` has opted into
+    the load-time re-check reminder, so no finding is needed. Detection is purely
+    textual and deterministic — no commands, no network, no model calls.
+    """
+    if frontmatter.get("volatile") and frontmatter.get("verified_at"):
+        return
+    fenced = "".join(re.findall(r"```.*?```", body, flags=re.DOTALL))
+    facts = len(_VOLATILE_FACT_RE.findall(fenced))
+    if facts >= _VOLATILE_FACT_MIN:
+        yield _warn(
+            "stale-prone-content",
+            f"{facts} dotted configuration keys are pinned in a fenced example. Express them as "
+            "verification steps against the installed tool, or declare `volatile: true` and "
+            "`verified_at: YYYY-MM-DD` in frontmatter so skill_view prompts a re-check when "
+            "the verification is old.")
 
 
 def lint_skill(skill_md_path: Path) -> list[LintFinding]:

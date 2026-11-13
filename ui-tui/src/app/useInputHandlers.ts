@@ -921,7 +921,6 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
           return
         }
 
-        cActions.clearIn()
         actions.sys(t('slashCmd.core.steer.queued', preview.length > 50 ? `${preview.slice(0, 50)}…` : preview))
       })
 

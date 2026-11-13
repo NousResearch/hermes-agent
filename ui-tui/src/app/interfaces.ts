@@ -452,7 +452,8 @@ export interface ComposerActions {
   setInput: StateSetter<string>
   setInputBuf: StateSetter<string[]>
   setQueueEdit: (index: null | number) => void
-  /** Steer a server-queued row's own text into the running turn; false when it stays queued. */
+  /** Steer a server-queued row's own text into the running turn; false when it stays queued. Clears the
+   *  composer on success only while it still holds the draft the steer started from. */
   steerQueue: (index: number) => Promise<boolean>
   takeQueue: (index: number, editedDisplay?: string) => QueueItem | Promise<QueueItem | undefined> | undefined
   /** Reconcile attached payloads against tokens still present in the text. */

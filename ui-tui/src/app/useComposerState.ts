@@ -791,6 +791,30 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
     return () => isCurrentDestination(destination) && epoch === draftEpoch.current
   }, [])
 
+  // Steer the highlighted queued row into the running turn. The row is consumed by the owner, so the
+  // edit that was open on it ends; the composer is cleared only while it still holds the draft the
+  // steer started from. Text typed (or another row picked) while the request was in flight is kept.
+  const steerQueueRow = useCallback(
+    async (index: number) => {
+      const destination = captureDestination()
+      const draft = captureDraft(inputRef.current)
+      const steered = await steerQ(index)
+
+      if (!steered || !isCurrentDestination(destination)) {
+        return steered
+      }
+
+      if (isFresh(draft)) {
+        clearIn()
+      } else if (queueEditRef.current === index) {
+        setQueueEdit(null)
+      }
+
+      return steered
+    },
+    [captureDraft, clearIn, isFresh, queueEditRef, setQueueEdit, steerQ]
+  )
+
   /** A key typed outside the composer (backtrack browse), appended after any paste still resolving. */
   const appendText = useCallback(
     (text: string) => {
@@ -968,7 +992,7 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
       setInput,
       setInputBuf,
       setQueueEdit,
-      steerQueue: steerQ,
+      steerQueue: steerQueueRow,
       takeQueue: takeQ,
       syncTokens,
       togglePaste
@@ -995,7 +1019,7 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
       setHistoryIdx,
       setInput,
       setQueueEdit,
-      steerQ,
+      steerQueueRow,
       takeQ,
       setInputBuf,
       syncTokens,

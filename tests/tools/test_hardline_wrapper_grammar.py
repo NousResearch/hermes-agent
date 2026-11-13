@@ -13,10 +13,17 @@ _RUNS_THE_VERB = [
     "timeout infinity reboot",
     "timeout 1e3 reboot",
     "timeout -s KILL .5s reboot",
+    "timeout +5 reboot",
+    "timeout +.5 reboot",
     # A carrier exposed only once its payload is wrapper-peeled.
     "su -c \"xargs su -c 'nice reboot'\"",
     "xargs env -S 'nice reboot'",
     "xargs env -S reboot",
+    # env -S inside a short-option bundle still carries the command (`-iS` = -i plus -S).
+    "env -iS 'nice' reboot",
+    "env -vS 'nice' reboot",
+    "env -iS reboot",
+    "env -iSnice reboot",
     # In `sudo -ul`, `l` is -u's value (the user), not --list.
     "sudo -ul reboot",
 ]
@@ -30,6 +37,7 @@ _PRINTS_THE_VERB = [
     "env -S echo reboot",
     "env -S'echo' reboot",
     "env --split-string='echo' reboot",
+    "env -iS echo reboot",
 ]
 
 

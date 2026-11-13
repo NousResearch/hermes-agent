@@ -1635,23 +1635,33 @@ def _split_env_string(payload: str) -> list[str] | None:
 
 
 def _env_split_payload(tokens: list[str]) -> str | None:
+    from tools.approval_wrappers import _short_bundle
+
     index = 1
     while index < len(tokens):
         token = tokens[index]
         if token == "--" or not token.startswith("-"):
             return None
         option, equals, value = token.partition("=")
-        if option == "--split-string" or token.startswith("-S"):
-            attached = equals if option == "--split-string" else len(token) > 2
-            if not attached:
-                index += 1
-            payload = (value if option == "--split-string" else token[2:]) if attached else (
-                tokens[index] if index < len(tokens) else "")
-            args = _split_env_string(payload)
-            # Protect literal separators when reusing command-position detection;
-            # only a real shell -c carrier may turn these argv bytes into code.
-            return shlex.join(args + tokens[index + 1:]) if args is not None else None
-        index += 2 if not equals and option in _COMMAND_WRAPPER_OPTIONS_WITH_ARG["env"] else 1
+        if option == "--split-string":
+            attached = value if equals else None
+        elif token.startswith("--"):
+            index += 2 if not equals and option in _COMMAND_WRAPPER_OPTIONS_WITH_ARG["env"] else 1
+            continue
+        else:
+            # getopt bundle: the first valued option owns the rest of the word (`-iS'nice'`, `-uS`).
+            _, owner, rest = _short_bundle("env", token)
+            if owner != "-S":
+                index += 2 if owner and not rest else 1
+                continue
+            attached = rest or None
+        if attached is None:
+            index += 1
+        payload = attached if attached is not None else (tokens[index] if index < len(tokens) else "")
+        args = _split_env_string(payload)
+        # Protect literal separators when reusing command-position detection;
+        # only a real shell -c carrier may turn these argv bytes into code.
+        return shlex.join(args + tokens[index + 1:]) if args is not None else None
     return None
 
 

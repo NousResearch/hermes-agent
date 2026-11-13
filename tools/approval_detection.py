@@ -331,6 +331,26 @@ class _PipeRemoteToShellMatcher:
         return None
 
 
+_DEV_SOCKET_RE = re.compile(r"/dev/(?:tcp|udp)/", re.IGNORECASE)
+# Redirect operators bash opens a /dev/tcp target for (`<<` is a heredoc delimiter, `>&N` a dup).
+_DEV_SOCKET_REDIRECT_OP_RE = re.compile(r"&>>?|[0-9]*(?:<>|>>|>&|<&|>\||(?<!<)<(?!<)|>)")
+
+
+class _DevSocketRedirectMatcher:
+    """`... > /dev/tcp/h/p` reverse shells. The operator is found on the quote-masked text, so prose that
+    quotes a redirect stays quiet; the operand is then read and dequoted from the real text, so a quoted
+    target (`> "/dev/tcp/h/1"`, `3<>'/dev/udp/h/53'`, `> /dev/"tcp"/h/1`) still counts."""
+
+    def search(self, text: str):
+        if "/dev/" not in text.lower():
+            return None
+        for op in _DEV_SOCKET_REDIRECT_OP_RE.finditer(_mask_quoted_prose(text)):
+            _, _, word = _read_shell_word(text, op.end())
+            if _DEV_SOCKET_RE.match(_deobfuscate_shell_word_for_detection(word)):
+                return op
+        return None
+
+
 def _contains_shell_carrier(command: str) -> bool:
     """Return whether any command-position word is a shell-carrying command."""
     return any(
@@ -535,8 +555,8 @@ DANGEROUS_PATTERNS = [
     (_CMDPOS + r'(?:source|\.)\s+<\s*\(\s*(curl|wget)\b', "execute remote script via process substitution"),
     # eval/source/. $(curl ...) — equivalent to piping remote content to a shell.
     (r'(?:\beval\b|\bsource\b|\.)\s*(?:\$\(\s*|`\s*)(?:curl|wget)\b', "execute remote content via command substitution"),
-    # Reverse shells (parity with Skills Guard's network rows). The /dev/tcp redirect has no command word to
-    # anchor, so it scans the quote-masked variant; nc/socat are command-position anchored.
+    # Reverse shells (parity with Skills Guard's network rows). Not compiled: DANGEROUS_PATTERNS_COMPILED swaps in
+    # _DevSocketRedirectMatcher, which dequotes the redirect operand; nc/socat are command-position anchored.
     (r'[<>]&?\s*/dev/(?:tcp|udp)/', _DEV_TCP_REDIRECT_DESCRIPTION),
     # The flag may be quoted (`nc "-e" sh h 1` still passes -e); a whitespace-led `#` starts a shell comment, so
     # the span stops there and `nc -z h 80 # -e note` stays quiet.
@@ -716,6 +736,7 @@ _PIPE_REMOTE_TO_SHELL_DESCRIPTION = "pipe remote content to shell"
 _CUSTOM_MATCHERS = {
     _PIPE_REMOTE_TO_SHELL_DESCRIPTION: _PipeRemoteToShellMatcher,
     _WMIC_SHADOW_DELETE_DESCRIPTION: _WmicShadowDeleteMatcher,
+    _DEV_TCP_REDIRECT_DESCRIPTION: _DevSocketRedirectMatcher,
 }
 DANGEROUS_PATTERNS_COMPILED = [
     (_CUSTOM_MATCHERS[d]() if d in _CUSTOM_MATCHERS else re.compile(p, _RE_FLAGS), d)
@@ -724,7 +745,6 @@ DANGEROUS_PATTERNS_COMPILED = [
 # Dynamic-word rules look for glob/brace characters, which are ordinary data inside quotes
 # (`find . -name 'log-del*'`), so they scan the quote-masked variant like the positionless hardline rules.
 _QUOTE_MASKED_DANGEROUS_DESCRIPTIONS = frozenset({
-    _DEV_TCP_REDIRECT_DESCRIPTION,
     "find dynamic shell word may expand to destructive flag",
     "dynamic shell word may expand to arbitrary program execution flag",
 })

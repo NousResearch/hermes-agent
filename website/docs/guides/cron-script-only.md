@@ -162,6 +162,22 @@ Interpreter choice is by file extension:
 
 We intentionally do NOT honour `#!/...` shebangs — keeping the interpreter set explicit and small reduces the surface the scheduler trusts.
 
+### Telling a cron run from a manual run
+
+Every script the scheduler runs (a `no_agent` job, an LLM job's pre-run script, or a monitor script) gets `HERMES_CRON_RUN=1` in its environment. Running the same file by hand does not (`hermes cron run <job>` dispatches the job, so it does). A watchdog that changes state when it alerts, such as deleting its state file after a "service is back" notice or writing a dedup file, should do that only when the variable is set. Otherwise a manual check consumes the alert: it prints to your terminal and the next scheduled run has nothing left to deliver.
+
+```bash
+#!/usr/bin/env bash
+STATE="${HERMES_HOME:-$HOME/.hermes}/scripts/.api-down"
+[ -f "$STATE" ] || exit 0              # nothing pending: silent tick
+if [ "${HERMES_CRON_RUN:-}" != "1" ]; then
+  echo "[dry-run] recovery alert pending" >&2
+  exit 0                               # manual run: report, change nothing
+fi
+rm -f "$STATE"
+echo "API is back up."
+```
+
 ### Using your own Python environment
 
 By default a Python cron script runs under Hermes' own Python environment, which only carries Hermes' own dependencies — so a script that imports `openpyxl`, a database driver, or any other package you installed would fail with `ModuleNotFoundError`.

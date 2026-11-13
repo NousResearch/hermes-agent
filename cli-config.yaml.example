@@ -73,6 +73,23 @@ plugins:
   clone_timeout_seconds: 300
 
 # =============================================================================
+# Model Route Policy (optional)
+# =============================================================================
+# Disabled by default. When enabled, Hermes refuses to resolve a main-agent route
+# (session start, fallback chain) or an auxiliary route (compression, titles,
+# vision, ...) whose provider, model or endpoint host is denied; a denied primary
+# is never replaced by an unrelated route. A present but malformed (or empty)
+# routing_policy block is an error: every model resolution fails until it is
+# fixed or removed. See hermes_cli/routing_policy.py.
+# routing_policy:
+#   enabled: true
+#   require_explicit: false  # Require an explicit provider and model (no auto-discovery or silent defaults).
+#   deny:
+#     providers: []          # e.g. ["example-provider"]
+#     models: []             # glob patterns, e.g. ["vendor/*", "model-family-*"]
+#     base_url_hosts: []     # hosts or absolute URLs, e.g. ["api.example.com"]
+
+# =============================================================================
 # Model Configuration
 # =============================================================================
 model:

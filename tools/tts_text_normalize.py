@@ -150,22 +150,34 @@ _HASH_PREFIX_HEX_RE = re.compile(
     r"\b(?:sha(?:-?256|-?512|-?1|3)?|blake2[ab]?|md5|crc32?)[:\s]+[0-9a-fA-F]{7,64}", re.IGNORECASE)
 _HEX_RUN_RE = re.compile(r"(?<![0-9a-fA-F])[0-9a-fA-F]{7,64}(?![0-9a-fA-F])")
 _IDENTIFIER_TOKEN_RE = re.compile(r"[A-Za-z0-9_./~@-]+")
-_DATE_TOKEN_RE = re.compile(r"\d{4}[-/]\d{1,2}(?:[-/]\d{1,2})?")
+# Calendar dates a voice should read out: ISO ("2026-11-16", "2026/06/02") and the day-first /
+# dotted forms most locales write ("16/11", "17/11/2026", "16-11-2026", "16.11.2026"). Only
+# year-first was recognised, so every day-first date fell through to the path/ID rules and was
+# silenced (#148906).
+_DATE_TOKEN_RE = re.compile(
+    r"(?:\d{4}[-/]\d{1,2}(?:[-/]\d{1,2})?"
+    r"|(?:0?[1-9]|[12]\d|3[01])[./-](?:0?[1-9]|1[0-2])(?:[./-](?:\d{2}|\d{4}))?)")
 
 
 def _is_dense_identifier(token: str) -> bool:
     """True for a machine token a voice would spell out character by character."""
-    if "@" in token or _DATE_TOKEN_RE.fullmatch(token):
-        return False  # email addresses, dates ("2026-09-28", "2026/06/02")
+    if "@" in token:
+        return False  # email addresses
+    # A sentence-final period is not part of the token: `... on 2026-11-16.` must still read as
+    # a date, and `see config.yaml.` as the filename it is.
+    stem = token.rstrip(".")
+    if _DATE_TOKEN_RE.fullmatch(stem):
+        return False  # dates ("2026-09-28", "16/11", "17/11/2026")
     if token.startswith(("~/", "./", "../", "/")):
         return True  # filesystem paths
     if "/" in token and (_FILENAME_EXT_RE.search(token) or any(char.isdigit() for char in token)):
         return True  # paths and dense model IDs ("meta-llama/Llama-3.3-70B-Instruct")
     if _FILENAME_EXT_RE.search(token) or _UUID_RE.search(token):
         return True
-    # Hex-hash runs ("73688014f78", "e3b0c442...") — digit-free runs
-    # ("defaced") are legitimate words and stay.
-    if _HEX_RUN_RE.fullmatch(token) and re.search(r"\d", token):
+    # Hex-hash runs ("73688014f78", "e3b0c442..."). A run with no hex letter is a decimal
+    # number a voice reads out ("978303529" on an invoice), and digit-free runs ("defaced")
+    # are legitimate words: both stay.
+    if _HEX_RUN_RE.fullmatch(token) and re.search(r"[a-fA-F]", token):
         return True
     digits = any(char.isdigit() for char in token)
     if not digits:

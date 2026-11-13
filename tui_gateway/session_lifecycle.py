@@ -71,10 +71,18 @@ def _claim_active_session_slot(
 ) -> tuple[Any, str | None]:
     try:
         from hermes_cli.active_sessions import try_acquire_active_session
-        return try_acquire_active_session(
-            session_id=session_key, surface=surface, config=_load_cfg(), registry_home=profile_home,
-            metadata=_lease_metadata(live_session_id),
-            track_liveness=str(surface or "").strip().lower() == "desktop")
+        from tui_gateway.launch_profile_policy import launch_profile_runtime_scope
+
+        # Admission runs before the turn binds its profile. Policy and writer registry
+        # must share the session's owner, including launch sessions in a foreign RPC scope.
+        home = Path(profile_home) if profile_home else _launch_home()
+        scope = (_session_profile_runtime_scope({"profile_home": home}, hydrate_secrets=False)
+                 if profile_home else launch_profile_runtime_scope(home))
+        with scope:
+            return try_acquire_active_session(
+                session_id=session_key, surface=surface, config=_load_cfg(), registry_home=home,
+                metadata=_lease_metadata(live_session_id),
+                track_liveness=str(surface or "").strip().lower() == "desktop")
     except Exception as exc:
         logger.warning("Failed to claim active session slot: %s", exc)
         # Fail CLOSED: an errored claim has NOT proven the session unowned; lease-less = silent double-writer hole.

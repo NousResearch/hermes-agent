@@ -134,6 +134,12 @@ def _smart_approve(command: str, description: str) -> str:
             # uncertain outcome, but is indistinguishable from a genuine ESCALATE in the logs
             # unless this fires above DEBUG.
             finish_reason = getattr(response.choices[0], "finish_reason", None)
+            if finish_reason == "content_filter":
+                # A provider's content filter is not a verdict. In an unattended run an escalation is a refusal,
+                # so ask the first fallback provider once before giving up.
+                answer = _fallback_verdict(call_llm, smart_timeout, system_prompt, user_prompt)
+                if answer:
+                    return _VERDICTS.get(answer, "escalate")
             logger.warning("Smart approvals: guardian returned an empty answer "
                            "(finish_reason=%s), escalating", finish_reason)
             return "escalate"
@@ -144,6 +150,26 @@ def _smart_approve(command: str, description: str) -> str:
         logger.warning("Smart approvals: LLM call failed after %.1fs (%s: %s), escalating",
                        time.monotonic() - _smart_t0, type(e).__name__, e)
         return "escalate"
+
+
+def _fallback_verdict(call_llm, timeout, system_prompt: str, user_prompt: str) -> str:
+    """The guardian's answer from the first ``fallback_providers`` entry; ``""`` if there is none.
+    A failing call raises into ``_smart_approve``'s handler, which logs it and escalates."""
+    from hermes_cli.config import load_config_readonly
+    from hermes_cli.fallback_config import get_fallback_chain
+
+    entry = next(iter(get_fallback_chain(load_config_readonly())), {})
+    if not entry.get("provider"):
+        return ""
+    logger.warning("Smart approvals: guardian answer blocked by a content filter; asking fallback %s",
+                   entry["provider"])
+    response = call_llm(
+        task="approval", provider=entry["provider"], model=entry.get("model"), base_url=entry.get("base_url"),
+        api_key=entry.get("api_key"), temperature=0, max_tokens=16, timeout=timeout,
+        messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
+        reasoning_config=_verdict_reasoning(),
+    )
+    return (response.choices[0].message.content or "").strip().upper()
 
 
 def _smart_verdict(command: str, description: str, pattern_key: str,

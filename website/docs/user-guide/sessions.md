@@ -1232,8 +1232,9 @@ activity is older than `retention_days`
 session stays resumable — and the row is aged from its close, so it is only
 deleted by a *later* pass after a further full retention window. Messaging
 platform sessions (Telegram, Discord, …), TUI/desktop sessions, pinned
-sessions, and sessions with a live turn or compression in progress are
-never closed by this sweep.
+sessions, sessions with a live turn or compression in progress, and sessions
+that already have a compression or reset successor are never closed by this
+sweep.
 
 **Local sessions nobody closed.** A CLI, TUI or Desktop session whose last
 viewer disappeared without closing it (a killed terminal, a dropped connection,

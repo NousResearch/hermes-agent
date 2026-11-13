@@ -88,6 +88,9 @@ def test_connection_staggers_past_blackholed_ipv6(monkeypatch):
                 return errno.EINPROGRESS
             return 0
 
+        def getpeername(self):
+            return ("192.0.2.1", 443)
+
         def close(self):
             self.closed = True
 

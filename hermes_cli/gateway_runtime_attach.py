@@ -97,10 +97,8 @@ def attach_gateway(home: str | Path, *, start: bool, recover: bool = False, time
     discovery waits at most ``DISCOVER_TIMEOUT`` of it. A daemon this starts ends itself once idle.
     A failed mint (control socket I/O, a refused or changed grant) raises ``TicketUnavailable``.
     """
-    from hermes_cli.gateway_client import _session_ticket
     from hermes_cli.gateway_runtime import (attachable, discover_gateway_endpoint, ensure_gateway_runtime,
                                            gateway_profile_home)
-    from hermes_cli.gateway_runtime_discovery import DiscoveryError
 
     home = gateway_profile_home(home)
     receipt = (ensure_gateway_runtime(home, timeout=timeout, idle_exit=True) if start
@@ -109,9 +107,18 @@ def attach_gateway(home: str | Path, *, start: bool, recover: bool = False, time
         receipt = ensure_gateway_runtime(home, timeout=timeout, idle_exit=True)
     if not attachable(receipt):
         return GatewayAttach(receipt)
+    return GatewayAttach(receipt, mint_ticket(home, receipt.endpoint))
+
+
+def mint_ticket(home: str | Path, endpoint, *, purpose: str = "interactive") -> str:
+    """One single-use ``purpose`` ticket from the owner at ``endpoint`` (an attachable discovery's).
+    A failed mint (control socket I/O, a refused or changed grant) raises ``TicketUnavailable``."""
+    from hermes_cli.gateway_client import _session_ticket
+    from hermes_cli.gateway_runtime_discovery import DiscoveryError
+
     try:
         # A profile served by the default multiplexer has no socket of its own; the host mints its ticket.
-        return GatewayAttach(receipt, _session_ticket(home, receipt.endpoint))
+        return _session_ticket(Path(home), endpoint, purpose=purpose)
     except DiscoveryError as exc:
         raise TicketUnavailable(exc.reason, exc.bounded_detail(500)) from exc
     except (OSError, ValueError) as exc:

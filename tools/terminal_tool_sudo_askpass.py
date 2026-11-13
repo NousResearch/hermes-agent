@@ -5,7 +5,7 @@ sudo invocation through a helper script instead of the stdin shared by the whole
 ``build_prologue`` emits the shell text that runs before the rewritten command: it reads the
 single password line the caller prepends to stdin, keeps it in a detached writer that serves
 it through a FIFO once per counted sudo, and tears everything down when the command's shell
-(and every child holding fd 19) exits or after a timeout. The per-environment
+(and every child holding fd 19) exits, or a timeout after that shell is gone. The per-environment
 ``CAPABILITY_PROBE`` decides whether a backend can use it; ``has_own_stdin_or_askpass`` keeps
 commands that already manage sudo's input on the stdin form.
 """
@@ -60,10 +60,14 @@ _PROLOGUE_TEMPLATE = (
     "  done; } 8<&- &\n"
     "    __hermes_sudo_w=$!\n"
     "    \\builtin unset __hermes_sudo_pw\n"
-    # A timed-out read (status > 128) while the command's shell ($$) still runs, as after a
-    # yield to the background, keeps serving; EOF on fd 19 or a gone shell ends the wait.
-    "    while \\builtin read -r -t @TIMEOUT@ __hermes_sudo_x <&8; \\builtin test $? -gt 128 &&\n"
-    "      \\builtin kill -0 $$ 2>/dev/null; do \\builtin :; done\n"
+    # A timed-out read while the command's shell ($$) still runs, as after a yield to the
+    # background, keeps serving; EOF on fd 19 or a gone shell ends the wait. A timeout is status
+    # > 128 on bash 4+, and status 1 after the full wait on bash 3.2 (EOF returns 1 at once).
+    "    __hermes_sudo_t=@TIMEOUT@\n"
+    '    while SECONDS=0; \\builtin read -r -t "$__hermes_sudo_t" __hermes_sudo_x <&8; __hermes_sudo_r=$?\n'
+    '      { \\builtin test "$__hermes_sudo_r" -gt 128 || { \\builtin test "$__hermes_sudo_r" -ne 0 &&\n'
+    '        \\builtin test "$SECONDS" -ge "$__hermes_sudo_t"; }; } && \\builtin kill -0 $$ 2>/dev/null\n'
+    "    do \\builtin :; done\n"
     '\\builtin kill "$__hermes_sudo_w" 2>/dev/null\n'
     '\\exec 7<>"$__hermes_sudo_dir/p" 2>/dev/null\n'
     '\\command rm -rf "$__hermes_sudo_dir"\n'

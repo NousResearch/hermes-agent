@@ -111,7 +111,7 @@ def test_execute_fills_timeout_token_with_effective_timeout_plus_30(configured_p
 
     (wrapped, _stdin, run_timeout), = env.command_runs()
     assert TOKEN not in wrapped
-    assert f"read -r -t {expected} __hermes_sudo_x <&8" in wrapped
+    assert f"__hermes_sudo_t={expected}\n" in wrapped
     assert run_timeout == (timeout or 10)
 
 
@@ -504,10 +504,7 @@ def test_live_timeout_kill_leaves_no_temp_dir(live_env):
     env, sudo, temp_dir = live_env
     result = env.execute(f"sleep 20; {sudo} true", timeout=2)
     assert result["returncode"] == 124, result
-    deadline = time.monotonic() + 5
-    while list(temp_dir.glob("hermes-sudo.*")) and time.monotonic() < deadline:
-        time.sleep(0.05)
-    assert list(temp_dir.glob("hermes-sudo.*")) == []
+    wait_until(lambda: not list(temp_dir.glob("hermes-sudo.*")), timeout=5, what="askpass dir removed")
 
 
 @_needs_posix_shell

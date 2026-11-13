@@ -1,0 +1,13 @@
+{
+  "before": {
+    "cards": 0,
+    "text": "{\"address\":\"123 Main St\",\"url\":\"https://example.com/listing\"}\n",
+    "screenshot": "publication-listing-before.png"
+  },
+  "after": {
+    "cards": 1,
+    "text": "123 Main St\nexample.com",
+    "screenshot": "publication-listing-after.png"
+  },
+  "scope": "Same real listing fixture and final renderer. Before loads the original 6ab2db828 rich-boundary module; after loads the repaired module. Both settle unchanged fence text."
+}

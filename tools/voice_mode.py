@@ -135,6 +135,44 @@ def _default_input_samplerate(sd) -> int:
     return SAMPLE_RATE
 
 
+def _default_output_samplerate(sd) -> Optional[int]:
+    """Default output device rate, or None when unknown/invalid."""
+    with suppress(Exception):
+        info = sd.query_devices(None, "output")
+        rate = info.get("default_samplerate") if isinstance(info, dict) else getattr(info, "default_samplerate", None)
+        if isinstance(rate, (int, float)) and rate > 0:
+            return int(round(rate))
+    return None
+
+
+def _resample_int16_mono(np, audio, src_rate: int, dst_rate: int):
+    """Linear-interpolate int16 mono PCM from *src_rate* to *dst_rate*."""
+    audio = np.asarray(audio).reshape(-1)
+    if src_rate == dst_rate or len(audio) == 0:
+        return audio if getattr(audio, "dtype", None) == np.int16 else audio.astype(np.int16)
+    dst_len = int(round(len(audio) * dst_rate / src_rate))
+    if dst_len <= 0:
+        return np.zeros(0, dtype=np.int16)
+    src_x = np.arange(len(audio), dtype=np.float64)
+    dst_x = np.linspace(0.0, len(audio) - 1, dst_len, dtype=np.float64)
+    resampled = np.interp(dst_x, src_x, audio.astype(np.float64))
+    return np.clip(np.rint(resampled), -32768, 32767).astype(np.int16)
+
+
+def _prepare_pcm_for_output(sd, np, audio, src_rate: int):
+    """On Windows, resample PCM to the default output device rate when it differs.
+
+    Fail-open: non-Windows, or a missing/invalid device rate, leaves
+    ``(audio, src_rate)`` unchanged so PortAudio still plays at the source rate.
+    """
+    if platform.system() != "Windows":
+        return audio, src_rate
+    dst_rate = _default_output_samplerate(sd)
+    if not dst_rate or not src_rate or dst_rate == src_rate:
+        return audio, src_rate
+    return _resample_int16_mono(np, audio, src_rate, dst_rate), dst_rate
+
+
 # ── Environment detection ──
 def _voice_capture_install_hint(error: BaseException | None = None) -> str:
     """Why audio capture is unavailable. ``_import_audio`` already tried to enable the
@@ -406,7 +444,8 @@ def play_beep(frequency: int = 880, duration: float = 0.12, count: int = 1) -> N
             sd, _ = _import_audio()
         except (ImportError, OSError):
             return
-        _sd_play_blocking(sd, audio, SAMPLE_RATE, timeout=2.0)
+        audio, out_rate = _prepare_pcm_for_output(sd, np, audio, SAMPLE_RATE)
+        _sd_play_blocking(sd, audio, out_rate, timeout=2.0)
     except Exception as e:
         logger.debug("Beep playback failed: %s", e)
 
@@ -482,8 +521,9 @@ def _thinking_sound_loop(stop: threading.Event, should_play) -> None:
             if should_play is None or should_play():
                 blip = blips[i % len(blips)]
                 i += 1
-                sd.play(blip, samplerate=SAMPLE_RATE)
-                stop.wait(len(blip) / SAMPLE_RATE + 0.02)
+                out, out_rate = _prepare_pcm_for_output(sd, np, blip, SAMPLE_RATE)
+                sd.play(out, samplerate=out_rate)
+                stop.wait(len(out) / out_rate + 0.02)
                 sd.stop()
         except Exception as e:
             logger.debug("Thinking sound blip failed: %s", e)
@@ -807,25 +847,16 @@ class AudioRecorder(_RecorderBase):
                 self._on_audio_block(np, indata)
 
         stream = None
-        for attempt in range(2):
-            try:  # may block on CoreAudio (first call only)
-                stream = sd.InputStream(samplerate=self._sample_rate, channels=CHANNELS, dtype=DTYPE,
-                                        callback=_callback)
-                stream.start()
-                break
-            except Exception as e:
-                with suppress(Exception):
-                    stream.close()
-                stream = None
-                # PortAudio paTimedOut (-9987): a cold host-API bridge (WSLg ALSA->Pulse
-                # with a SUSPENDED RDP source) missed the 1 s thread-start window. The
-                # failed open itself wakes the bridge, so one immediate retry succeeds
-                # where the user's second key press would have (#109303).
-                if attempt or "timed out" not in str(e).lower():
-                    raise RuntimeError(
-                        f"Failed to open audio input stream: {e}. "
-                        "Check that a microphone is connected and accessible.") from e
-                logger.info("Audio input stream start timed out; retrying once")
+        try:  # may block on CoreAudio (first call only)
+            stream = sd.InputStream(samplerate=self._sample_rate, channels=CHANNELS, dtype=DTYPE,
+                                    callback=_callback)
+            stream.start()
+        except Exception as e:
+            with suppress(Exception):
+                stream.close()
+            raise RuntimeError(
+                f"Failed to open audio input stream: {e}. "
+                "Check that a microphone is connected and accessible.") from e
         self._stream = stream
 
     def start(self, on_silence_stop=None) -> None:
@@ -1028,6 +1059,7 @@ def _play_wav_via_sounddevice(file_path: str) -> bool:
             frames = wf.readframes(wf.getnframes())
             audio_data = np.frombuffer(frames, dtype=np.int16)
             sample_rate = wf.getframerate()
+        audio_data, sample_rate = _prepare_pcm_for_output(sd, np, audio_data, sample_rate)
         # WSLg RDP audio needs a warmup to avoid crackling: the RDP channel takes
         # ~100 ms to stabilise and the small default blocksize worsens
         # clock-adjustment jitter (microsoft/wslg#1257).

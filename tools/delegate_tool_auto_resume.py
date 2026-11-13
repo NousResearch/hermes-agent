@@ -139,15 +139,26 @@ def gave_up_line(sid: str, reason: str) -> str:
 
 
 def boot_notice(conn, sids: list[str], records: dict[str, dict[str, Any]]) -> tuple[str, list[str]]:
-    """Boot recovery's sentence for crashed children the scheduler will continue ('' when none will) and their ids;
-    each promised record is stamped ``auto_promised`` on boot recovery's own connection."""
-    promised = {sid: auto for sid in sids if (record := records.get(sid)) and record.get("unit_id")
-                and not record.get("auto_off") and (auto := promise({**record, "resume_mode": AUTO_ON_BOOT}))}
-    for sid in promised:
+    """Boot recovery's sentence for crashed children the scheduler will continue ('' when none will) and the ids
+    the parent hears about only from the scheduler: the promised ones, and the ones whose crashed run was their last
+    chance (attempts used or deadline passed). Each is stamped ``auto_promised`` on boot recovery's own connection,
+    so the scheduler's next tick resumes it or, for the second kind, delivers its ONE give-up failure
+    (:func:`_give_up`) instead of boot recovery's generic "outcome unknown"."""
+    promised, spent = {}, []
+    for sid in sids:
+        record = records.get(sid)
+        if not record or not record.get("unit_id") or record.get("auto_off"):
+            continue
+        candidate = {**record, "resume_mode": AUTO_ON_BOOT}
+        if auto := promise(candidate):
+            promised[sid] = auto
+        elif gave_up(candidate):
+            spent.append(sid)
+    for sid in [*promised, *spent]:
         conn.execute("UPDATE resumable_subagents SET record_json=json_set(record_json, '$.auto_promised', json('true'))"
                      " WHERE subagent_id=?", (sid,))
     lines = [notice_line(sid, auto) for sid, auto in promised.items()]
-    return ((" " + " ".join(lines)) if lines else ""), list(promised)
+    return ((" " + " ".join(lines)) if lines else ""), [*promised, *spent]
 
 
 # ── storage ────────────────────────────────────────────────────────────────
@@ -447,7 +458,7 @@ def _give_up(record: dict[str, Any], reason: str) -> bool:
     if claimed != 1:
         return False
     row = _unit_row(record.get("unit_id"))
-    if row is None:
+    if row is None:  # pruning keeps a waiting child's row (KEEP_WAITING_UNITS_SQL): only a nested/joined child
         logger.info("Subagent %s gave up on automatic resume (%s) but has no completion route", sid, reason)
         return False
     from tools.async_delegation import _ROUTING_KEYS, _push_completion_event
@@ -495,6 +506,39 @@ def waiting_entries(parent_agent: Any) -> list[dict[str, Any]]:
                     "next_attempt_at": auto["at"], "auto_attempts": int(r.get("auto_attempts") or 0),
                     "note": waiting_text(auto)})
     return out
+
+
+def refuse_waiting_duplicates(task_list: list[dict[str, Any]], routes: list[Any], parent_agent: Any) -> list[Any]:
+    """*routes* with each task whose goal is exactly (``strip()``) the goal of one of this parent's children waiting
+    on a promised automatic resume refused alone: a second copy would race the first on the same work."""
+    waiting = {str(w.get("goal") or "").strip(): w for w in waiting_entries(parent_agent)}
+    waiting.pop("", None)
+    if not waiting:
+        return routes
+    from dataclasses import replace
+    out = list(routes)
+    for i, task in enumerate(task_list):
+        hit = waiting.get(str(task.get("goal") or "").strip())
+        if hit and not out[i].error:
+            sid = hit["subagent_id"]
+            out[i] = replace(out[i], error=(
+                f"Not dispatched: subagent {sid} already has this exact goal and is {hit['note']}. Either wait for "
+                f"it (its result, or one failure if it gives up, arrives on its own), or call "
+                f"delegate_task(action='stop', subagent_id='{sid}') first and then re-dispatch."))
+    return out
+
+
+# Pruning keeps the ledger row a waiting child reports on: a silent unit is 'delivered', the first kind the
+# count cap deletes, and the give-up failure (:func:`_give_up`) is routed through that row.
+KEEP_WAITING_UNITS_SQL = (
+    " AND delegation_id NOT IN (SELECT json_extract(record_json, '$.unit_id') FROM resumable_subagents WHERE "
+    "state='resumable' AND json_extract(record_json, '$.auto_promised') AND json_extract(record_json, "
+    "'$.auto_gave_up') IS NULL AND json_extract(record_json, '$.unit_id') IS NOT NULL)")
+
+
+def waiting_on_resume(entry: dict[str, Any]) -> bool:
+    """A ledger result entry (or boot result) for a child still waiting on its promised automatic resume."""
+    return isinstance(entry.get("auto_resume"), dict) or bool(entry.get("waiting_to_resume"))
 
 
 # ── parent actions ─────────────────────────────────────────────────────────

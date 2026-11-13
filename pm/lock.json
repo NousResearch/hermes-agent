@@ -576,11 +576,11 @@
     "npm": {
       "artifacts": {
         "any": {
-          "sha256": "5dbb86c71d07a1957f2e90734092dd6a58bdcd9ebc2d8d41ca1c6e6a21d364e1",
-          "url": "https://registry.npmjs.org/npm/-/npm-12.0.2.tgz"
+          "sha256": "07fecbf753e2c3bc10ebeb3e9ed8738f6a0cc1292998b79e2e9f1dd2a5525e0c",
+          "url": "https://registry.npmjs.org/npm/-/npm-12.2.2.tgz"
         }
       },
-      "version": "12.0.2"
+      "version": "12.2.2"
     },
     "pnpm": {
       "artifacts": {

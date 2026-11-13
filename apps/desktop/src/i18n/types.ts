@@ -1013,6 +1013,8 @@ export interface Translations extends NoticeTranslations {
       attachmentSizeLabel: string
       voiceShortcutHintTitle: string
       voiceShortcutHintDesc: string
+      desktopReadAloudTitle: string
+      desktopReadAloudDesc: string
       showOptions: string
     }
     hudModifier: {

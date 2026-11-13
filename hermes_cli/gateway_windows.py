@@ -570,15 +570,42 @@ def _atomic_write(path: Path, content: str, tmp: Path, *, encoding: str = "utf-8
 
 # ── Install / uninstall
 
-def _resolve_task_user() -> str | None:
-    """Return ``DOMAIN\\USER`` if available, else bare USERNAME, else None."""
-    username = os.environ.get("USERNAME") or os.environ.get("USER") or os.environ.get("LOGNAME")
-    if not username:
+def _whoami_user() -> str | None:
+    """Account of the current logon token as ``DOMAIN\\user`` via ``whoami.exe``, or None.
+
+    Runs on any platform: POSIX ``whoami`` prints a bare name with no backslash, which fails
+    the ``\\`` check below and yields None (the caller then falls back to env vars).
+    """
+    try:
+        proc = subprocess.run(
+            ["whoami"], capture_output=True, text=False, timeout=10,
+            creationflags=windows_hide_flags(), check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
         return None
-    if "\\" in username:
-        return username
-    domain = os.environ.get("USERDOMAIN")
-    return f"{domain}\\{username}" if domain else username
+    out = _decode_schtasks_output(proc.stdout or b"").strip()
+    if proc.returncode != 0 or "\\" not in out or len(out) > 256:
+        return None
+    return out
+
+
+def _resolve_task_user() -> str | None:
+    """Return ``DOMAIN\\USER`` for the current account, else bare USERNAME, else None.
+
+    Env ``USERDOMAIN`` is untrustworthy in SSH sessions — there it reports ``WORKGROUP``, and
+    ``WORKGROUP\\user`` maps to no SID, so ``schtasks /Create /XML`` fails with "account name
+    and SID do not map" (帐户名与安全标识间无任何映射完成). ``whoami`` reads the real logon
+    token instead, so prefer it and fall back to the env vars when it is unavailable.
+    """
+    username = os.environ.get("USERNAME") or os.environ.get("USER") or os.environ.get("LOGNAME")
+    env_candidate: str | None = None
+    if username:
+        if "\\" in username:
+            env_candidate = username
+        else:
+            domain = os.environ.get("USERDOMAIN")
+            env_candidate = f"{domain}\\{username}" if domain else username
+    return _whoami_user() or env_candidate
 
 
 def _build_scheduled_task_xml(task_name: str, launcher_path: Path, user: str | None) -> str:

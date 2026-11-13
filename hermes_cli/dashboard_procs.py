@@ -27,35 +27,16 @@ def _append_row(rows: list[tuple[int, str]], pid_text: str, command: str) -> Non
 
 
 def _iter_process_table() -> list[tuple[int, str]]:
-    """``(pid, cmdline)`` for every process, via wmic (Windows) or ps. Raises on scan failure."""
+    """``(pid, cmdline)`` for every process, via wmic/Get-CimInstance (Windows) or ps. Raises on scan failure."""
     rows: list[tuple[int, str]] = []
     if sys.platform == "win32":
-        # errors="ignore": wmic may emit the system code page. bounded_probe_run, not run():
-        # run()'s post-timeout cleanup joins pipe readers unbounded and a conhost descendant
-        # holding duplicated handles wedges it forever.
-        # In text mode, subprocess output decoding depends on Python's configuration (locale-dependent by
-        # default, or UTF-8 in UTF-8 mode). The important protection here is errors="ignore": it prevents a
-        # reader-thread UnicodeDecodeError from leaving result.stdout=None and turning the later .split()
-        # into an AttributeError (#17049). bounded_probe_run (rather than subprocess.run with a timeout)
-        # keeps a slow scan from wedging the caller forever: run()'s post-timeout cleanup joins the pipe
-        # reader threads unbounded, and a conhost.exe descendant holding duplicated pipe handles blocks that
-        # join indefinitely (#87134). It also passes CREATE_NO_WINDOW: this scan can run from the windowless
-        # pythonw.exe desktop/gateway backend during an update, where a bare wmic spawn would pop a console
-        # window.
-        from hermes_cli._subprocess_compat import bounded_probe_run
-        result = bounded_probe_run(
-            ["wmic", "process", "get", "ProcessId,CommandLine", "/FORMAT:LIST"],
-            timeout=10, errors="ignore")
-        if result is None or result.returncode != 0 or result.stdout is None:
-            return rows
-        current_cmd = ""
-        for line in result.stdout.split("\n"):
-            line = line.strip()
-            if line.startswith("CommandLine="):
-                current_cmd = line[len("CommandLine=") :]
-            elif line.startswith("ProcessId="):
-                _append_row(rows, line[len("ProcessId=") :], current_cmd)
-        return rows
+        # The gateway scan's listing, not a private wmic call: WMIC is an optional Feature on Demand,
+        # absent by default on current Windows 11, and a bare wmic scan then saw no backends at all, so
+        # ``hermes update`` left every stale dashboard running. The shared helper falls back to
+        # Get-CimInstance and keeps the bounded_probe_run / errors="ignore" guarantees (#17049, #87134).
+        from hermes_cli.gateway import _iter_windows_list_processes, _windows_process_listing
+        listing = _windows_process_listing()
+        return list(_iter_windows_list_processes(listing)) if listing else rows
     # ps, not `pgrep -f "hermes.*dashboard"` (greedy regex; consistent with gateway pid scan).
     result = subprocess.run(["ps", "-A", "-o", "pid=,command="], timeout=10, **_PS_RUN_KWARGS, check=False)
     if result.returncode == 0:
@@ -622,8 +603,8 @@ def _kill_stale_dashboard_processes(
     ``HERMES_HOME`` are candidates; unknown ownership fails closed. This is
     used by ``dashboard --stop`` and the per-profile update cleanup.
 
-    Manually-started dashboards are not auto-restarted because we don't know the original launch args
-    (--host, --port, --insecure, --tui, --no-open). See #68934.
+    Manually-started fixed-port backends are respawned from the argv captured before the kill, on
+    every platform; Desktop ``--port 0`` children stay Desktop-owned. See #68934.
     *already_restarted_units* names units (no ``.service`` suffix) the caller already handled directly —
     e.g. ``hermes update``'s systemd fleet-restart loop, which restarts, declines (without root) or fails
     ``hermes-serve*``/``hermes-dashboard*`` units, reporting each, before this function runs. Without excluding them,
@@ -665,7 +646,11 @@ def _kill_stale_dashboard_processes(
     def _launchd_owner(pid: int, cmdline: list[str] | None):
         return _dash._launchd_job_owning_backend(pid, cmdline, launchd_jobs, ancestors=_process_ancestors(pid))
 
-    if restart_managed and sys.platform != "win32":
+    # Not POSIX-only: on Windows the systemd probes answer None and launchd_jobs is empty, so every
+    # backend lands on the argv branch. A fixed-port Windows dashboard/serve (Startup-folder launcher
+    # behind tailscale serve, remote serve) must come back after update just like a POSIX one;
+    # Desktop ``--port 0`` children are still dropped by _filter_dashboard_respawn_candidates.
+    if restart_managed:
         for pid in pids:
             pid_cgroup[pid] = _dash._get_pid_cgroup_path(pid)
             pid_service[pid] = _dash._get_systemd_service_for_pid(pid)

@@ -281,6 +281,66 @@ class TestJobObjectMechanismLive:
             )
 
 
+class TestDashboardRespawnLive:
+    """``hermes update`` respawns a stopped fixed-port dashboard from inside the updater's job (a
+    Desktop-driven update runs in Electron's). ``start_new_session`` is ignored on Windows, so the
+    respawned dashboard stayed in that job and died with it right after the update reported it
+    restarted."""
+
+    def test_respawned_dashboard_survives_the_updater_job_teardown(self, tmp_path):
+        self._respawn_inside_job(tmp_path, allow_breakaway=True)
+
+    def test_job_forbidding_breakaway_still_gets_its_dashboard_respawned(self, tmp_path):
+        """A job without BREAKAWAY_OK refuses CREATE_BREAKAWAY_FROM_JOB (winerror 5); the respawn
+        falls back to plain detach instead of booking the dashboard as not brought back."""
+        self._respawn_inside_job(tmp_path, allow_breakaway=False)
+
+    def _respawn_inside_job(self, tmp_path, *, allow_breakaway: bool):
+        k = _kernel32()
+        pid_file = tmp_path / "dashboard.pid"
+        # The "dashboard" records its own pid (atomic replace) and stays resident.
+        dashboard = (
+            "import os, pathlib, time\n"
+            f"tmp = pathlib.Path(r'{pid_file}.tmp')\n"
+            "tmp.write_text(str(os.getpid()), encoding='utf-8')\n"
+            f"os.replace(tmp, r'{pid_file}')\n"
+            "time.sleep(120)\n"
+        )
+        driver_source = (
+            "import os, sys\n"
+            f"sys.path.insert(0, r'{_REPO_ROOT!s}')\n"
+            f"os.environ['HERMES_HOME'] = r'{tmp_path / 'home'}'\n"
+            "from hermes_cli import main_dashboard\n"
+            f"failed = main_dashboard._respawn_dashboard_processes([[sys.executable, '-c', {dashboard!r},"
+            " 'dashboard', '--port', '9119']])\n"
+            "sys.exit(1 if failed else 0)\n"
+        )
+        job = _make_kill_on_close_job(k, allow_breakaway=allow_breakaway)
+        handle = None
+        pid = None
+        try:
+            driver = _start_driver_in_job(k, job, [sys.executable, "-c", driver_source])
+            assert driver.wait(timeout=60) == 0, "respawn reported a failure"
+            assert _wait_for(lambda: _read_pid(pid_file) is not None), "dashboard never started"
+            pid = _read_pid(pid_file)
+            handle = k.OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+            assert handle, f"OpenProcess({pid}) failed (winerror={ctypes.get_last_error()})"
+            if not allow_breakaway:
+                return  # spawned through the fallback; this job's teardown would take it, by design
+            assert k.CloseHandle(job), "CloseHandle(job) failed"
+            job = None
+            assert k.WaitForSingleObject(handle, 3000) == WAIT_TIMEOUT, (
+                "the respawned dashboard must outlive the updater's kill-on-close job"
+            )
+        finally:
+            if job:
+                k.CloseHandle(job)
+            if pid:
+                subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True, check=False)
+            if handle:
+                k.CloseHandle(handle)
+
+
 class TestWatcherRespawnLive:
     """Drive the real ``_spawn_gateway_restart_watcher`` with real processes."""
 

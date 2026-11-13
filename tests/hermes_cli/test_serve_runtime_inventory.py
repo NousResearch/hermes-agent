@@ -181,11 +181,8 @@ def test_scan_dashboard_processes_includes_ledger_only_serves(monkeypatch):
     fake_pi = SimpleNamespace(ledger_entries=lambda **k: [profiled])
     monkeypatch.setitem(sys.modules, "hermes_cli.process_identity", fake_pi)
 
-    # Force the ps/wmic scan itself to find nothing.
-    fake_run = SimpleNamespace(returncode=0, stdout="")
-    monkeypatch.setattr(
-        dp.subprocess, "run", lambda *a, **k: fake_run
-    )
+    # Force the process-table scan itself to find nothing (on Windows it is not a subprocess.run).
+    monkeypatch.setattr(dp, "_iter_process_table", list)
     result = dp._scan_dashboard_processes()
     assert (8123, profiled["argv"]) in result
 
@@ -195,8 +192,7 @@ def test_scan_dashboard_processes_ledger_respects_exclusions(monkeypatch):
     entry = _ledger_entry(pid=8124)
     fake_pi = SimpleNamespace(ledger_entries=lambda **k: [entry])
     monkeypatch.setitem(sys.modules, "hermes_cli.process_identity", fake_pi)
-    fake_run = SimpleNamespace(returncode=0, stdout="")
-    monkeypatch.setattr(dp.subprocess, "run", lambda *a, **k: fake_run)
+    monkeypatch.setattr(dp, "_iter_process_table", list)
 
     assert dp._scan_dashboard_processes(exclude_pids={8124}) == []
 

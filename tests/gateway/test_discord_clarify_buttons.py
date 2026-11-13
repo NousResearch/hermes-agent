@@ -331,3 +331,86 @@ async def test_many_long_choices_fit_content_and_render_literally():
     content = channel.send.call_args.kwargs["content"]
     assert len(content) <= 2000 and all(f"TARGET={env}" in content for env in ("staging", "canary", "prod", "sandbox"))
 
+
+
+# ===========================================================================
+# retire_clarify_card — a clarify that ends without a click
+# ===========================================================================
+
+def _adapter_with_sent_card(*, msg_id=4242):
+    adapter = _make_adapter(allowed_users={"42"})
+    embed = MagicMock()
+    embed.color = None
+    embed.set_footer = MagicMock()
+    fetched = SimpleNamespace(embeds=[embed], edit=AsyncMock())
+    sent_msg = MagicMock()
+    sent_msg.id = msg_id
+    channel = MagicMock()
+    channel.send = AsyncMock(return_value=sent_msg)
+    channel.fetch_message = AsyncMock(return_value=fetched)
+    adapter._client.get_channel = MagicMock(return_value=channel)
+    return adapter, channel, fetched, embed
+
+
+class TestDiscordRetireClarifyCard:
+    """The gateway calls retire_clarify_card after a typed answer, a timeout or a reset."""
+
+    def setup_method(self):
+        _clear_clarify_state()
+
+    @pytest.mark.asyncio
+    async def test_typed_answer_drops_buttons_and_stamps_notice(self):
+        adapter, channel, fetched, embed = _adapter_with_sent_card()
+        await adapter.send_clarify(chat_id="9001", question="Budget?", choices=["low", "high"],
+                                   clarify_id="cidR", session_key="sk-R")
+        view = channel.send.call_args.kwargs["view"]
+
+        await adapter.retire_clarify_card("cidR", "✅ answered: option two")
+
+        channel.fetch_message.assert_awaited_once_with(4242)
+        fetched.edit.assert_awaited_once()
+        assert fetched.edit.call_args.kwargs["view"] is None  # buttons removed
+        embed.set_footer.assert_called_once_with(text="✅ answered: option two")
+        assert view.resolved is True  # a late click is answered "already answered"
+        assert view.is_finished()  # its own timeout can't stamp "expired" over the answer
+
+    @pytest.mark.asyncio
+    async def test_open_ended_card_is_stamped_too(self):
+        adapter, channel, fetched, embed = _adapter_with_sent_card()
+        await adapter.send_clarify(chat_id="9001", question="Name?", choices=None,
+                                   clarify_id="cidO", session_key="sk-O")
+
+        await adapter.retire_clarify_card("cidO", "⏰ expired")
+
+        fetched.edit.assert_awaited_once()
+        embed.set_footer.assert_called_once_with(text="⏰ expired")
+
+    @pytest.mark.asyncio
+    async def test_second_call_and_unknown_id_are_noops(self):
+        adapter, channel, fetched, _ = _adapter_with_sent_card()
+        await adapter.send_clarify(chat_id="9001", question="?", choices=["a"],
+                                   clarify_id="cidN", session_key="sk-N")
+
+        await adapter.retire_clarify_card("cidN", "✅ answered: a")
+        await adapter.retire_clarify_card("cidN", "⏰ expired")
+        await adapter.retire_clarify_card("never-sent", "⏰ expired")
+
+        assert fetched.edit.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_edit_failure_is_swallowed(self):
+        adapter, channel, fetched, _ = _adapter_with_sent_card()
+        fetched.edit.side_effect = RuntimeError("message deleted")
+        await adapter.send_clarify(chat_id="9001", question="?", choices=["a"],
+                                   clarify_id="cidF", session_key="sk-F")
+
+        await adapter.retire_clarify_card("cidF", "✅ answered: a")  # must not raise
+
+    @pytest.mark.asyncio
+    async def test_card_map_is_bounded(self):
+        adapter, channel, _, _ = _adapter_with_sent_card()
+        for i in range(adapter._CLARIFY_CARD_MAX + 5):
+            await adapter.send_clarify(chat_id="9001", question="?", choices=None,
+                                       clarify_id=f"c{i}", session_key="sk")
+        assert len(adapter._clarify_cards) == adapter._CLARIFY_CARD_MAX
+        assert "c0" not in adapter._clarify_cards

@@ -8,6 +8,7 @@ import pytest
 import hermes_constants
 from hermes_cli.config import atomic_config_replace, atomic_config_write
 from hermes_cli.config_backend import write_config_key
+from hermes_cli.xai_retirement import apply_migration, find_retired_xai_refs
 
 pytestmark = pytest.mark.platforms("posix")  # POSIX permission bits
 
@@ -46,13 +47,15 @@ def test_world_writable_config_loses_other_bits(config_path, writer):
     assert "new" in config_path.read_text(encoding="utf-8")
 
 
-def test_group_bits_are_kept(config_path):
+@pytest.mark.parametrize(("before", "after"), [(0o675, 0o670), (0o2676, 0o2670)], ids=["0675", "setgid-2676"])
+def test_group_bits_and_setgid_are_kept(config_path, before, after):
     # Shared-group homes are a documented setup: only "other" access is removed.
-    os.chmod(config_path, 0o675)
+    os.chown(config_path, -1, os.getegid())  # setgid on a file sticks only for a group we are in
+    os.chmod(config_path, before)
 
     write_config_key(config_path, "model.default", "new")
 
-    assert _mode(config_path) == 0o670
+    assert _mode(config_path) == after
 
 
 def test_managed_install_mode_is_left_alone(config_path, monkeypatch):
@@ -62,3 +65,16 @@ def test_managed_install_mode_is_left_alone(config_path, monkeypatch):
     atomic_config_write(config_path, {"model": {"default": "new"}})
 
     assert _mode(config_path) == 0o644
+
+
+def test_xai_migration_drops_world_access(config_path):
+    config_path.write_text("principal:\n  provider: xai\n  model: grok-code-fast-1\n", encoding="utf-8")
+    os.chmod(config_path, 0o666)
+    from hermes_cli.config import read_user_config_raw
+    issues = find_retired_xai_refs(read_user_config_raw(config_path))
+    assert issues
+
+    result = apply_migration(config_path, issues, backup=False)
+
+    assert result.config_changed
+    assert _mode(config_path) == 0o660

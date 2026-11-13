@@ -41,6 +41,9 @@ def finish_profile_layout(profile_dir: Path, *, no_skills: bool, clone_all: bool
     # had no file until first write and the profile silently inherited shell API keys —
     # read by users as "the new profile reads the root .env". Skipped when a clone copied one.
     _seed_file_if_missing(profile_dir / ".env", _PLACEHOLDER_ENV, 0o600)
+    # A clone's copy2/copytree carries the source config.yaml's mode, world bits included.
+    from hermes_cli.config_backend import drop_other_access
+    drop_other_access(profile_dir / "config.yaml")
 
     # Default SOUL.md to customize immediately (skipped when a clone already provided one).
     with contextlib.suppress(Exception):  # best-effort — don't fail profile creation over this

@@ -25,6 +25,6 @@ updated: YYYY-MM-DD
 
 <!--
 Bullets between the notes-extract:begin / :end fences are managed by the skill
-and addressed by their ^nx-id. Anything you write OUTSIDE the fences is never
+and addressed by their ^nx-id. Body text you write OUTSIDE the fences is never
 touched. A retracted item moves to a "<section>-archive" fenced region.
 -->

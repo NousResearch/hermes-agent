@@ -17,7 +17,9 @@ Turn a folder of local markdown notes into structured **People** and
 ideas, and write them into per-entity files keyed by a stable claim id so
 re-runs never duplicate. It does **not** do general Obsidian CRUD (use the
 `obsidian` skill for that), makes **no** network/API calls, and **never**
-modifies text you wrote outside its managed fences.
+modifies body text you wrote outside its managed fences. Only its owned
+frontmatter fields (`type`, `id`, `name`, `aliases`, `updated`) are refreshed;
+human-added YAML and existing project `status` values are preserved.
 
 ## When to Use
 
@@ -100,9 +102,14 @@ and `Ideas-Projects/`.
 - **Same-name people are not merged blindly.** A slug collision with a different
   entity creates `<slug>-2.md` and reports `needs_confirm`; confirm with the
   user before treating them as one person.
-- **Only fenced content is managed.** Anything outside the
-  `notes-extract:begin/end` fences is yours; the skill never edits or reorders
-  it. State lives under `HERMES_HOME`, never in the vault.
+- **Body edits are fenced; frontmatter ownership is explicit.** Body text
+  outside the `notes-extract:begin/end` fences and unowned YAML are yours;
+  the skill never edits or reorders them. See `references/schema.md` for the
+  owned fields.
+- **Back up extraction state with the vault.** State lives under `HERMES_HOME`,
+  never in the vault, and is required for source reconciliation and aliases.
+  It is not rebuildable from bullet hashes. Missing/unusable state with existing
+  entity output files stops scan/upsert; restore the state backup before retrying.
 - **Out of scope:** Apple Notes, always-on recording devices, and database
   backends are not handled here.
 

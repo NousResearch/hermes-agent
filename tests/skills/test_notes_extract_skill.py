@@ -218,6 +218,7 @@ def test_scan_new_changed_unchanged(mods, vault):
 
 def test_scan_skips_generated_and_dotdirs(mods, vault):
     _state, notes_scan, _ = mods
+    _state.save_state(vault, _state.empty_state(vault))
     _write(vault / "real.md", "x")
     _write(vault / "People" / "jane.md", "generated")
     _write(vault / "Ideas-Projects" / "p.md", "generated")
@@ -252,6 +253,155 @@ def test_slugify_unicode(mods):
     assert _state.slugify("José O'Brien") == "jose-o-brien"
     assert _state.slugify("Anne-Marie") == "anne-marie"
     assert _state.slugify("张伟").startswith("n-")  # pure CJK → hash fallback
+
+
+@pytest.mark.parametrize("kind,section,folder", [
+    ("person", "facts", "People"), ("project", "ideas", "Ideas-Projects"),
+])
+def test_unowned_frontmatter_preserved_on_region_change(mods, vault, kind, section, folder):
+    entry = person_entry("Atlas", section, {}, "Old")
+    entry["entity"]["kind"] = kind
+    run(mods, vault, [entry])
+    path = vault / folder / "atlas.md"
+    unowned = ('# Human metadata: keep spacing and comments\n'
+               'tags: [private, "keep: me"] # custom\n'
+               'details:\n  priority: high\n  nested:\n    owner: human\n'
+               'summary: |\n  First line.\n  updated: not a top-level key\n'
+               '"custom:key": "quoted value"\n\n')
+    text = path.read_text(encoding="utf-8").replace("id:", unowned + "id:", 1)
+    text = text.replace("\nupdated:", "\n# Before updated\nupdated:", 1)
+    path.write_text(text, encoding="utf-8")
+    entry["text"] = "Changed"
+    run(mods, vault, [entry], clock=FIXED2)
+    after = path.read_text(encoding="utf-8")
+    assert unowned in after
+    assert "# Before updated\nupdated: 2026-03-04" in after
+    assert "Changed" in after
+    assert len(bullets(mods, path, section)) == 1
+    run(mods, vault, [entry], clock=FIXED2)
+    assert path.read_text(encoding="utf-8") == after
+
+
+@pytest.mark.parametrize("loss", ["missing", "corrupt", "version", "not-object", "incomplete"])
+def test_cache_loss_refuses_existing_outputs_without_modification(mods, vault, loss):
+    import json
+    state_mod, _, _ = mods
+    run(mods, vault, [person_entry("Jane Doe", "facts", {}, "Original", aliases=["Jane"])])
+    path = vault / "People" / "jane-doe.md"
+    before = path.read_bytes()
+    cache = state_mod.state_path(vault)
+    if loss == "missing":
+        cache.unlink()
+    else:
+        cache.write_text({"corrupt": "{bad", "version": json.dumps({"version": -1}),
+                          "not-object": "[]", "incomplete": '{"version": 1}'}[loss], encoding="utf-8")
+    with pytest.raises(ValueError, match="Restore.*state.*backup"):
+        state_mod.load_state(vault)
+    assert path.read_bytes() == before
+
+
+def test_cache_loss_empty_vault_rescans_sources(mods, vault):
+    state_mod, scan, _ = mods
+    _write(vault / "source.md", "Source")
+    run(mods, vault, [], source="source.md", sha="old-sha")
+    state_mod.state_path(vault).unlink()
+    state = state_mod.load_state(vault)
+    assert state["sources"] == state["entities"] == state["alias_index"] == {}
+    assert scan.scan(vault, [], state, include_unchanged=False)[0]["status"] == "new"
+
+
+def test_cache_loss_cli_refuses_scan_and_upsert(mods, vault):
+    import os
+    import subprocess
+    import sys
+    state_mod, _, _ = mods
+    run(mods, vault, [person_entry("Jane Doe", "facts", {}, "Original")])
+    path = vault / "People" / "jane-doe.md"
+    before = path.read_bytes()
+    state_mod.state_path(vault).unlink()
+    for script, args in [("notes_scan.py", []), ("upsert_entry.py", [
+            "--source-path", str(vault / "note.md"), "--entries-json", "[]"])]:
+        proc = subprocess.run([sys.executable, str(SCRIPTS / script), "--vault", str(vault), *args],
+                              capture_output=True, text=True, env=os.environ.copy(), timeout=10)
+        assert proc.returncode != 0
+        assert "Restore the state file from backup" in proc.stderr
+        assert path.read_bytes() == before
+        assert not state_mod.state_path(vault).exists()
+
+
+def test_project_status_and_owned_multiline_aliases(mods, vault):
+    entry = {"entity": {"kind": "project", "name": "Atlas", "aliases": ["Shared"]},
+             "section": "ideas", "claim": {}, "text": "Old"}
+    run(mods, vault, [entry])
+    path = vault / "Ideas-Projects" / "atlas.md"
+    text = path.read_text(encoding="utf-8")
+    text = text.replace("status: active", "status: paused # human choice")
+    text = text.replace("aliases: [Shared]", "aliases:\n  - Shared\n# Keep comment")
+    path.write_text(text, encoding="utf-8")
+    entry["text"] = "Changed"
+    run(mods, vault, [entry])
+    after = path.read_text(encoding="utf-8")
+    assert "status: paused # human choice" in after
+    assert "aliases: [Shared]\n# Keep comment\n" in after
+    assert "  - Shared" not in after
+
+
+@pytest.mark.parametrize("first_kind", ["person", "project"])
+def test_same_name_and_alias_are_scoped_by_kind(mods, vault, first_kind):
+    state_mod, _, _ = mods
+    kinds = [first_kind, "project" if first_kind == "person" else "person"]
+    entries = []
+    for kind in kinds:
+        entry = person_entry("Atlas", "facts" if kind == "person" else "ideas",
+                             {}, kind, aliases=["Shared"])
+        entry["entity"]["kind"] = kind
+        entries.append(entry)
+    run(mods, vault, entries)
+    for entry in entries:
+        entry["entity"]["name"] = "Shared"
+        entry["text"] += " via alias"
+    run(mods, vault, entries)
+    state = state_mod.load_state(vault)
+    assert len(state["entities"]) == 2
+    for kind, folder, section in [("person", "People", "facts"),
+                                  ("project", "Ideas-Projects", "ideas")]:
+        eid = state_mod.entity_id(kind, "Atlas")
+        path = vault / folder / "atlas.md"
+        assert f"id: {eid}" in path.read_text(encoding="utf-8")
+        assert state["alias_index"][kind]["shared"] == eid
+        assert len(bullets(mods, path, section)) == 1
+        assert f"{kind} via alias" in bullets(mods, path, section)[0][1]
+        assert not (vault / folder / "shared.md").exists()
+
+
+def test_legacy_alias_index_migrates_without_losing_sources(mods, vault):
+    state_mod, _, _ = mods
+    run(mods, vault, [person_entry("Jane Doe", "facts", {}, "Fact", aliases=["Jane"])])
+    state = state_mod.load_state(vault)
+    sources = state["sources"].copy()
+    eid = state_mod.entity_id("person", "Jane Doe")
+    state["alias_index"] = {"jane doe": eid, "jane": eid}
+    state_mod.save_state(vault, state)
+    migrated = state_mod.load_state(vault)
+    assert migrated["sources"] == sources
+    assert migrated["alias_index"]["person"]["jane"] == eid
+    run(mods, vault, [person_entry("Jane", "facts", {}, "Via alias")], source="other.md")
+    assert not (vault / "People" / "jane.md").exists()
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+def test_resolved_name_history_survives_reload(mods, vault, legacy):
+    state_mod, _, _ = mods
+    run(mods, vault, [person_entry("Jane Doe", "facts", {}, "Original", aliases=["Jane"])])
+    run(mods, vault, [person_entry("J. Doe", "facts", {}, "Variant", aliases=["Jane"])])
+    if legacy:
+        state = state_mod.load_state(vault)
+        state["alias_index"] = state["alias_index"]["person"]
+        state_mod.save_state(vault, state)
+    run(mods, vault, [person_entry("J. Doe", "facts", {}, "Reloaded")])
+    assert not (vault / "People" / "j-doe.md").exists()
+    assert len(state_mod.load_state(vault)["entities"]) == 1
+    assert "Reloaded" in bullets(mods, vault / "People" / "jane-doe.md", "facts")[0][1]
 
 
 def test_description_under_60_chars():

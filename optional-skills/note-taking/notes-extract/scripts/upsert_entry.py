@@ -2,9 +2,9 @@
 """Idempotently merge extracted entries into People/Project entity files.
 
 Reads a batch of structured entries for ONE source note (JSON) and writes them
-into per-entity markdown files inside managed-region fences. Only content
-between the fences is ever rewritten; anything a human types outside them is
-preserved byte-for-byte. Entries are addressed by a claim-keyed stable id, so
+into per-entity markdown files inside managed-region fences. Only fenced body
+content and script-owned frontmatter fields are rewritten; other body text and
+unowned YAML are preserved verbatim. Entries use a claim-keyed stable id, so
 rewording a fact does not duplicate it and re-running is convergent.
 
 Usage (invoke through the `terminal` tool):
@@ -51,7 +51,7 @@ OUTPUT_DIRS = {"person": "People", "project": "Ideas-Projects"}
 
 
 # --------------------------------------------------------------------------- #
-# Frontmatter (minimal, deterministic — we own these files)
+# Frontmatter (owned scalar fields; preserve all other YAML verbatim)
 # --------------------------------------------------------------------------- #
 def split_frontmatter(text: str) -> tuple[dict, str]:
     """Return ({key: rawvalue}, body). Empty dict + full text if no frontmatter."""
@@ -70,17 +70,38 @@ def split_frontmatter(text: str) -> tuple[dict, str]:
     return fm, body
 
 
-def render_frontmatter(fm: dict, kind: str) -> str:
+def render_frontmatter(fm: dict, kind: str, original: str | None = None) -> str:
+    """Update owned fields without parsing/re-serializing human-owned YAML."""
     keys = ["type", "id", "name", "aliases"]
     if kind == "project":
         keys.append("status")
     keys.append("updated")
-    lines = ["---"]
+    lines = ["---\n"]
+    seen = set()
+    if original and original.startswith("---\n"):
+        end = original.find("\n---\n", 4)
+        if end != -1:
+            owned_continuation = False
+            for line in original[4:end + 1].splitlines(keepends=True):
+                match = re.match(r"^([A-Za-z_][\w-]*):", line)
+                if match and match.group(1) in keys:
+                    key = match.group(1)
+                    seen.add(key)
+                    # Status is user-editable, not an extraction output.
+                    lines.append(line if key == "status" else f"{key}: {fm[key]}\n")
+                    owned_continuation = key != "status"
+                elif line.strip() and not line.lstrip().startswith("#"):
+                    if not line[0].isspace():
+                        owned_continuation = False
+                    if not owned_continuation:
+                        lines.append(line)
+                else:
+                    lines.append(line)
     for k in keys:
-        if k in fm:
-            lines.append(f"{k}: {fm[k]}")
-    lines.append("---")
-    return "\n".join(lines) + "\n"
+        if k in fm and k not in seen:
+            lines.append(f"{k}: {fm[k]}\n")
+    lines.append("---\n")
+    return "".join(lines)
 
 
 def aliases_to_field(aliases: list[str]) -> str:
@@ -198,9 +219,11 @@ def bullet_line(text: str, link: str, date: str, eid: str) -> str:
 def resolve_entity(state: dict, kind: str, name: str, aliases: list[str]) -> str:
     """Find an existing entity by name/alias, else mint a deterministic id."""
     keys = [norm_key(name)] + [norm_key(a) for a in aliases]
+    index = state["alias_index"].get(kind, {})
     for k in keys:
-        if k in state["alias_index"]:
-            return state["alias_index"][k]
+        eid = index.get(k)
+        if eid and state["entities"].get(eid, {}).get("kind") == kind:
+            return eid
     return make_entity_id(kind, name)
 
 
@@ -234,7 +257,7 @@ def upsert_source(vault: Path, source_path: str, source_link: str, source_sha: s
                 if a and a not in ent["aliases"]:
                     ent["aliases"].append(a)
         for k in [norm_key(name)] + [norm_key(a) for a in aliases]:
-            state["alias_index"].setdefault(k, eid)
+            state["alias_index"].setdefault(kind, {}).setdefault(k, eid)
         if path not in per_file:
             per_file[path] = {"eid": eid, "kind": kind, "ent": ent,
                               "assert": {}, "retract": set(), "collided": collided}
@@ -365,7 +388,7 @@ def _apply_file(path: Path, ctx: dict, date: str, report: dict) -> None:
         report["entries"].append({"file": str(path), "action": "unchanged"})
         return
     fm["updated"] = date
-    atomic_write_text(path, render_frontmatter(fm, kind) + new_body)
+    atomic_write_text(path, render_frontmatter(fm, kind, old_text) + new_body)
     report["entries"].append({"file": str(path), "action": "written"})
 
 

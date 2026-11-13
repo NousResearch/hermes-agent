@@ -21,6 +21,6 @@ updated: YYYY-MM-DD
 
 <!--
 Bullets between the notes-extract:begin / :end fences are managed by the skill
-and addressed by their ^nx-id. Anything you write OUTSIDE the fences (extra
+and addressed by their ^nx-id. Body text you write OUTSIDE the fences (extra
 sections, notes, edits) is never touched. Edit freely outside the fences.
 -->

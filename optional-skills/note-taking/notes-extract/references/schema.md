@@ -40,15 +40,21 @@ source_id)[:8]`, written as an Obsidian block id at the end of the bullet:
   `id:` in frontmatter.
 - The **slug** (filename) is NFKD-transliterated ASCII; pure non-ASCII names
   fall back to a short hash. Names are NFC-normalized first.
-- An **alias index** in state maps normalized name/alias → `entity_id`, so
-  "Jane", "Jane Doe" route to the same file.
+- An **alias index** in state maps entity kind → normalized name/alias →
+  `entity_id`, so "Jane", "Jane Doe" route to the same person file without
+  colliding with a project of either name. On load, legacy unscoped indexes
+  are migrated using each referenced entity's kind, preserving previously
+  resolved name variants; entity names/aliases fill any missing index entries.
 - A slug collision with a *different* entity gets a `-2` suffix and a
   `needs_confirm` flag in the run report — two people are never silently merged.
 
 ## Managed regions
 
-Generated bullets live between fences; everything outside is human-owned and
-never modified:
+Generated bullets live between fences; body text outside is human-owned and
+never modified. Frontmatter fields `type`, `id`, `name`, `aliases`, and `updated`
+are script-owned. A project's `status` defaults to `active` but existing values
+are preserved. All other frontmatter (including nested YAML, block scalars,
+comments, and ordering) is retained verbatim, not parsed and re-serialized:
 
 ```
 ## Facts
@@ -57,9 +63,19 @@ never modified:
 <!-- notes-extract:end facts -->
 ```
 
-## State (cache, not source of truth)
+## State (required extraction history, not a rebuildable cache)
 
 Stored under `HERMES_HOME/notes-extract/<vault-hash>.json` (never in the vault).
 Records per-source sha + emitted entry ids (for change detection and per-source
-reconciliation) and the entity/alias index. If deleted, a rescan re-derives the
-same content from the `^nx-` ids already present in the files.
+reconciliation) and the entity/alias index. Back up this file together with
+the vault. The Markdown files are the readable output, but their `^nx-` hashes
+cannot recover source-to-entry ownership or canonical-name/alias history.
+
+If state is missing, unreadable, malformed, or has an unsupported version while
+either output directory contains Markdown files, scan/upsert refuse to proceed
+without changing the outputs. Restore the state file from backup before
+continuing. Automatic reconstruction from entity files is not supported. Without
+a backup, keep the old outputs separately and run a fresh extraction into a
+clean vault/output tree; do not merge it blindly into the old generated files.
+When no entity output files exist, starting with empty state is safe: a scan
+reports all source notes as new and extraction starts from scratch.

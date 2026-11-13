@@ -112,7 +112,7 @@ def atomic_write_text(path: Path, text: str) -> None:
 
 
 def state_path(vault: Path) -> Path:
-    """Per-vault state cache under HERMES_HOME, keyed by vault path hash."""
+    """Per-vault extraction history under HERMES_HOME, keyed by vault path hash."""
     key = hashlib.sha256(str(vault.resolve()).encode("utf-8")).hexdigest()[:16]
     return get_hermes_home() / "notes-extract" / f"{key}.json"
 
@@ -123,20 +123,42 @@ def empty_state(vault: Path) -> dict:
         "vault": str(vault.resolve()),
         "sources": {},      # source_id -> {path, link, sha, entries: [{id, entity_id, section}]}
         "entities": {},     # entity_id -> {kind, slug, name, aliases}
-        "alias_index": {},  # norm_key(name/alias) -> entity_id
+        "alias_index": {},  # kind -> {norm_key(name/alias): entity_id}
     }
 
 
 def load_state(vault: Path) -> dict:
+    """Load required extraction history; refuse unsafe resets over existing output."""
     p = state_path(vault)
-    if not p.exists():
-        return empty_state(vault)
     try:
         data = json.loads(p.read_text(encoding="utf-8"))
     except (ValueError, OSError):
+        data = None
+    if (not isinstance(data, dict) or data.get("version") != STATE_VERSION
+            or not all(isinstance(data.get(k), dict) for k in ("sources", "entities"))):
+        if any(any((vault / folder).glob("*.md")) for folder in ("People", "Ideas-Projects")):
+            raise ValueError(
+                f"Missing or unusable notes-extract state at {p}. "
+                "Restore the state file from backup before updating existing entity files; "
+                "source reconciliation and alias history cannot be rebuilt from bullet IDs."
+            )
         return empty_state(vault)
-    if data.get("version") != STATE_VERSION:
-        return empty_state(vault)
+    # Migrate the saved index, preserving names previously resolved via aliases
+    # that may not appear in the entity's own alias list. Keep source history.
+    saved_index = data.get("alias_index", {})
+    data["alias_index"] = {}
+    if isinstance(saved_index, dict):
+        for key, value in saved_index.items():
+            pairs = value.items() if isinstance(value, dict) else [(key, value)]
+            for alias, eid in pairs:
+                ent = data["entities"].get(eid) if isinstance(eid, str) else None
+                if ent and (not isinstance(value, dict) or key == ent["kind"]):
+                    index = data["alias_index"].setdefault(ent["kind"], {})
+                    index.setdefault(alias, eid)
+    for eid, ent in data["entities"].items():
+        index = data["alias_index"].setdefault(ent["kind"], {})
+        for name in [ent["name"], *ent["aliases"]]:
+            index.setdefault(norm_key(name), eid)
     return data
 
 

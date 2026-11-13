@@ -177,6 +177,7 @@ def test_trims_trailing_blank_frames(tmp_path):
         "review": 5,
         "jump": 5,
         "waiting": 0,
+        "sleep": 6,  # opt-in state; no pet.json behavior → idle row
     }
 
 

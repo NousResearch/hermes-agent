@@ -152,3 +152,12 @@ describe('$petState reads the active runtime slice, not the $busy mirror (#84434
     expect($petAtRest.get()).toBe(true)
   })
 })
+
+describe('sleepy (pet.json behaviors.sleep)', () => {
+  it('naps only at rest; any activity outranks it', () => {
+    expect(derivePetState({ sleepy: true })).toBe('sleep')
+    expect(derivePetState({ sleepy: true, busy: true })).toBe('run')
+    expect(derivePetState({ sleepy: true, awaitingInput: true })).toBe('waiting')
+    expect(derivePetState({ sleepy: true, error: true })).toBe('failed')
+  })
+})

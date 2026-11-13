@@ -22,7 +22,7 @@ import { reactRoot } from '@/test/react-root'
 
 import { installWindowStateBridge, setDocumentHidden, type WindowStateBridge } from '../../test/window-state'
 
-import { PetSprite } from './pet-sprite'
+import { PetSprite, roamHopRow, ROW_ROTATION_LOOPS } from './pet-sprite'
 
 const INFO = {
   enabled: true,
@@ -130,6 +130,61 @@ describe('PetSprite RAF scheduling', () => {
     expect(raf.request).toHaveBeenCalledTimes(2)
   })
 
+  it('draws the row a pet.json behavior points a state at', () => {
+    const raf = installRaf()
+
+    const info = {
+      ...INFO,
+      stateRows: ['idle', 'failed', 'review', 'crying'],
+      behaviors: { rows: { failed: 'crying' as const } }
+    }
+
+    mount.render(<PetSprite info={info} stateOverride="failed" />)
+
+    act(() => {
+      raf.runNext(0)
+    })
+
+    // crying is row 3 → sy = 3 * 16
+    expect(drawImage).toHaveBeenCalledWith(expect.anything(), 0, 48, 16, 16, 0, 0, 16, 16)
+  })
+
+  it('cycles a state through its listed rows, one slot of loops each', () => {
+    const raf = installRaf()
+    const slotMs = INFO.loopMs * ROW_ROTATION_LOOPS
+    const now = vi.spyOn(Date, 'now').mockReturnValue(slotMs * 3)
+    const info = { ...INFO, stateRows: ['idle', 'running', 'dancing', 'juggling'], behaviors: { rows: { run: ['dancing', 'juggling'] } } }
+
+    mount.render(<PetSprite info={info} stateOverride="run" />)
+    act(() => raf.runNext(0))
+    // slot 3 → juggling (row 3)
+    expect(drawImage).toHaveBeenLastCalledWith(expect.anything(), 0, 48, 16, 16, 0, 0, 16, 16)
+
+    now.mockReturnValue(slotMs * 4)
+    act(() => vi.advanceTimersByTime(slotMs))
+
+    while (raf.pending()) {
+      act(() => raf.runNext(slotMs * 4))
+    }
+
+    // slot 4 → dancing (row 2)
+    expect(drawImage).toHaveBeenLastCalledWith(expect.anything(), expect.any(Number), 32, 16, 16, 0, 0, 16, 16)
+    now.mockRestore()
+  })
+
+  it('ignores a behavior whose row the sheet lacks', () => {
+    const raf = installRaf()
+    const info = { ...INFO, stateRows: ['idle', 'failed'], behaviors: { rows: { failed: 'crying' } } }
+
+    mount.render(<PetSprite info={info} stateOverride="failed" />)
+
+    act(() => {
+      raf.runNext(0)
+    })
+
+    expect(drawImage).toHaveBeenCalledWith(expect.anything(), 0, 16, 16, 16, 0, 0, 16, 16)
+  })
+
   it('uses a DPR-sized backing store while preserving the CSS footprint', () => {
     Object.defineProperty(window, 'devicePixelRatio', { configurable: true, value: 2 })
     const raf = installRaf()
@@ -195,5 +250,14 @@ describe('PetSprite RAF scheduling', () => {
       window.dispatchEvent(new Event('focus'))
     })
     expect(raf.pending()).toBe(0)
+  })
+})
+
+describe('roamHopRow', () => {
+  it("uses the sheet's own jump row for roam hops, never a remapped state", () => {
+    expect(roamHopRow('jump', ['idle', 'jumping', 'smiling'])).toBe('jumping')
+    expect(roamHopRow('jump')).toBe('jumping')
+    expect(roamHopRow('walk', ['idle', 'jumping'])).toBeUndefined()
+    expect(roamHopRow('jump', ['idle'])).toBeUndefined()
   })
 })

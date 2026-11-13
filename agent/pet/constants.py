@@ -8,6 +8,7 @@ current 9-row Codex sheets.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from enum import Enum
 
 # Frame geometry (pixels). Codex/petdex sheets are 8 cols x 9 rows (1536x1872);
@@ -63,6 +64,9 @@ class PetState(str, Enum):
     REVIEW = "review"
     JUMP = "jump"
     WAITING = "waiting"
+    # Opt-in: only pets whose ``pet.json`` declares a ``sleep`` behavior ever enter it
+    # (see :mod:`agent.pet.behaviors`); otherwise it renders the idle row.
+    SLEEP = "sleep"
 
 
 # Legacy Hermes/petdex row order (top -> bottom) for the older 8-row, 9-column atlas.
@@ -95,7 +99,7 @@ def state_rows_for_grid(row_count: int | None) -> list[str]:
     return CODEX_STATE_ROWS if rows >= len(CODEX_STATE_ROWS) else LEGACY_STATE_ROWS
 
 
-def state_row_index(state: PetState | str, row_count: int | None = None) -> int:
-    """Return the spritesheet row index for *state* (clamped, never raises)."""
-    rows = state_rows_for_grid(row_count)
+def state_row_index(state: PetState | str, row_count: int | None = None, rows: Sequence[str] | None = None) -> int:
+    """Return the spritesheet row index for *state* in *rows* (default: inferred from *row_count*); never raises."""
+    rows = rows or state_rows_for_grid(row_count)
     return next((rows.index(name) for name in state_aliases_for(state) if name in rows), 0)  # 0 = idle row

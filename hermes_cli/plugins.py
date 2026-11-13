@@ -732,7 +732,6 @@ _plugin_managers_by_home: dict[Path, PluginManager] = {}
 _plugin_managers_lock = threading.RLock()
 _plugin_manager_teardown_condition = threading.Condition(_plugin_managers_lock)
 _plugin_manager_teardown_owners: dict[Path, tuple[int, Optional[PluginManager]]] = {}
-_scoped_plugin_listeners: dict[Path, list] = {}
 
 # Process-wide messaging-gateway host. A multiplexed gateway owns one scheduler while plugins are
 # isolated in per-profile managers, so every manager in this process must see the same live host.
@@ -871,9 +870,6 @@ def get_plugin_manager(*, _attach_hosts: bool = True) -> PluginManager:
                 if manager is None:
                     manager = PluginManager(scope_key=hermes_home_key(current_home))
                     _plugin_managers_by_home[current_home] = manager
-                    for listener in _scoped_plugin_listeners.get(current_home, ()):
-                        listener[1]()
-                        listener[1] = manager.on_plugin_loaded(listener[0](manager))
                 _plugin_manager = manager
     if _attach_hosts:
         _attach_published_gateway_host(manager)
@@ -882,38 +878,30 @@ def get_plugin_manager(*, _attach_hosts: bool = True) -> PluginManager:
 
 
 def subscribe_plugin_loaded_for_home(manager, callback):
-    """Subscribe a process owner across replacement of its home manager; return cleanup."""
-    home = Path(manager.scope_key)
+    """Subscribe to the current manager; retirement invalidates this subscription."""
     with _plugin_manager_teardown_condition:
-        # The caller may have received a manager immediately before its retirement.
         current = get_plugin_manager(_attach_hosts=False)
         if current.scope_key != manager.scope_key:
             raise ValueError("plugin listener must be registered in its home scope")
-        if manager is not current and not manager._retired:
-            return manager.on_plugin_loaded(lambda summaries: callback(manager, summaries))
-        manager = current
         if manager._retired:
+            raise RuntimeError("cannot subscribe a retired manager")
+        if manager is not current:
+            current = manager  # standalone manager used by embedders
+        if current._retired:
             raise RuntimeError("cannot subscribe during manager retirement")
         active = [True]
 
-        def bind(bound):
-            def notify(summaries):
-                if active[0] and not bound._retired:
-                    callback(bound, summaries)
-            return notify
+        def notify(summaries):
+            if active[0] and not current._retired:
+                callback(current, summaries)
 
-        entry = [bind, manager.on_plugin_loaded(bind(manager))]
-        _scoped_plugin_listeners.setdefault(home, []).append(entry)
+        cancel = current.on_plugin_loaded(notify)
 
     def unsubscribe():
-        with _plugin_manager_teardown_condition:
-            active[0] = False
-            entries = _scoped_plugin_listeners.get(home, [])
-            if entry in entries:
-                entries.remove(entry)
-                entry[1]()
-                if not entries:
-                    _scoped_plugin_listeners.pop(home, None)
+        active[0] = False
+        cancel()
+
+    unsubscribe.manager = current
     return unsubscribe
 
 
@@ -931,7 +919,6 @@ def _reset_plugin_managers_for_tests() -> None:
             except Exception:
                 logger.debug("test plugin-manager unload failed", exc_info=True)
         _plugin_managers_by_home.clear()
-        _scoped_plugin_listeners.clear()
         _plugin_manager = None
     with _published_gateway_host_lock:
         _published_gateway_message_injector = None

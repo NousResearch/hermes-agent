@@ -1687,8 +1687,13 @@ def _ensure_plugin_activation_listener() -> None:
     manager = get_plugin_manager()
     scope = manager.scope_key
     with _plugin_activation_lock:
-        if scope in _plugin_activation_subscribed:
+        previous = _plugin_activation_subscribed.get(scope)
+        if previous is not None and previous.manager is manager and not manager._retired:
             return
+        if previous is not None:
+            previous()
+            _plugin_activation_subscribed.pop(scope, None)
+        _plugin_activations.pop(scope, None)
 
     def _on_loaded(source, summaries) -> None:
         with _plugin_activation_lock:

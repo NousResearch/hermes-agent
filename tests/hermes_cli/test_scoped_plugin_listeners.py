@@ -1,4 +1,4 @@
-"""Home-scoped process listeners survive replacement without crossing profiles."""
+"""Manager-scoped listeners retire without crossing profiles."""
 import threading
 
 from hermes_cli import plugins
@@ -16,22 +16,20 @@ def test_listener_replacement_unsubscribe_and_stale_dispatch(monkeypatch, tmp_pa
     new = plugins.get_plugin_manager()
     assert not old._plugin_loaded_listeners
     stale(["stale"])
-    new._plugin_loaded_listeners[-1](["new"])
-    assert seen == [(new, ["new"])]
-    cancel()
-    cancel()
     assert not new._plugin_loaded_listeners
-    assert not plugins._scoped_plugin_listeners.get(new.home_path)
+    assert seen == []
+    cancel()
+    cancel()
 
 
-def test_registration_waits_for_retirement_and_attaches_replacement(monkeypatch, tmp_path):
+def test_registration_waits_for_retirement_and_rejects_retired_manager(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     old = plugins.get_plugin_manager()
     reserved = threading.Event()
     release = threading.Event()
     registered = threading.Event()
     seen = []
-    cleanup = []
+    errors = []
 
     def retire():
         with reserve_plugin_manager_for_home(tmp_path):
@@ -39,7 +37,10 @@ def test_registration_waits_for_retirement_and_attaches_replacement(monkeypatch,
             assert release.wait(5)
 
     def register():
-        cleanup.append(plugins.subscribe_plugin_loaded_for_home(old, lambda manager, event: seen.append(manager)))
+        try:
+            plugins.subscribe_plugin_loaded_for_home(old, lambda manager, event: seen.append(manager))
+        except RuntimeError as exc:
+            errors.append(str(exc))
         registered.set()
 
     a = threading.Thread(target=retire)
@@ -53,9 +54,9 @@ def test_registration_waits_for_retirement_and_attaches_replacement(monkeypatch,
     b.join(5)
     assert not a.is_alive() and not b.is_alive() and registered.is_set()
     new = plugins.get_plugin_manager()
-    new._plugin_loaded_listeners[-1](["new"])
-    assert seen == [new]
-    cleanup[0]()
+    assert not new._plugin_loaded_listeners
+    assert errors == ["cannot subscribe a retired manager"]
+    assert not seen
 
 
 def test_tui_profile_activation_isolation_and_replacement(monkeypatch, tmp_path):
@@ -74,6 +75,7 @@ def test_tui_profile_activation_isolation_and_replacement(monkeypatch, tmp_path)
     assert unload_plugin_manager_for_home(a)
     new = plugins.get_plugin_manager()
     assert "activation" not in methods_tools._with_activation({}, "same")
+    methods_tools._ensure_plugin_activation_listener()
     new._plugin_loaded_listeners[-1]([{"name": "same", "key": "same", "source": "new"}])
     assert methods_tools._with_activation({}, "same")["activation"]["source"] == "new"
     for scope in (old.scope_key, str(b.resolve())):
@@ -108,6 +110,7 @@ def test_gateway_queued_retired_event_is_not_rewired(monkeypatch, tmp_path):
     old._plugin_loaded_listeners[-1](["old"])
     assert unload_plugin_manager_for_home(tmp_path)
     new = plugins.get_plugin_manager()
+    runner._subscribe_plugin_rewire(new, loop=loop)
     new._plugin_loaded_listeners[-1](["new"])
     for callback in loop.pending:
         callback()

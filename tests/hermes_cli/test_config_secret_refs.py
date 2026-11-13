@@ -485,3 +485,32 @@ def test_dashboard_main_save_moves_an_endpoint_off_a_shared_legacy_variable(home
 
     assert load_config()["model"]["api_key"] == "KEY-A"
     assert f"{_LEGACY_SHARED}=KEY-B" in (home / ".env").read_text(encoding="utf-8")
+
+
+def test_write_locked_env_refuses_an_aux_endpoint_key_without_a_traceback_or_a_500(home, monkeypatch, capsys):
+    """A managed ``.env`` that forbids the aux variable: ``hermes model`` prints the refusal and saves
+    nothing, and the dashboard answers 400 with it, never an opaque 500 or a dangling reference."""
+    import asyncio
+
+    from fastapi import HTTPException
+
+    import hermes_cli.main_provider_setup as mps
+    from hermes_cli import config
+    from hermes_cli.web_models import ModelAssignment
+    from hermes_cli.web_routers.models import set_model_assignment
+
+    (home / "config.yaml").write_text("model:\n  provider: openrouter\n  default: x/y\n", encoding="utf-8")
+    monkeypatch.setattr(config, "env_write_refusal", lambda key, action: f"Cannot {action} {key}: managed")
+    answers = iter(["http://127.0.0.1:11434/v1", "qwen3:8b", SECRET])
+    monkeypatch.setattr(mps, "_ask", lambda *a, **k: next(answers))
+    monkeypatch.setattr(mps, "_prompt_aux_reasoning_effort", lambda *a, **k: None)
+
+    mps._aux_flow_custom_endpoint("compression", {})
+
+    assert "Cannot set AUXILIARY_COMPRESSION_API_KEY: managed" in capsys.readouterr().out
+    body = ModelAssignment(scope="auxiliary", task="vision", provider="custom", model="qwen3:8b",
+                           base_url="http://127.0.0.1:11434/v1", api_key=SECRET, confirm_expensive_model=True)
+    with pytest.raises(HTTPException) as refusal:
+        asyncio.run(set_model_assignment(body))
+    assert (refusal.value.status_code, refusal.value.detail) == (400, "Cannot set AUXILIARY_VISION_API_KEY: managed")
+    assert SECRET not in _config_text(home) and "AUXILIARY_" not in _config_text(home)

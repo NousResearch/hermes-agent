@@ -798,7 +798,10 @@ def _apply_aux_assignment_sync(cfg: dict, provider: str, model: str, task: str, 
             slot_cfg["base_url"] = base_url
             if api_key:
                 from hermes_cli.config_secret_refs import aux_api_key_env, secret_ref_for
-                slot_cfg["api_key"] = secret_ref_for(aux_api_key_env(slot), api_key)
+                try:
+                    slot_cfg["api_key"] = secret_ref_for(aux_api_key_env(slot), api_key)
+                except ValueError as exc:  # .env write lock: the refusal names the variable, never the key
+                    raise HTTPException(status_code=400, detail=str(exc)) from exc
         elif new_provider != prev_provider and new_provider != "custom":
             slot_cfg.pop("base_url", None)
             clear_model_endpoint_credentials(slot_cfg)

@@ -125,6 +125,15 @@ _HARDLINE_SYSTEM_DIRS = (r'/home|/home/\*|/root|/root/\*|/etc|/etc/\*|/usr|/usr/
 # backslashes in replacement fields are unsupported on the 3.11 floor). _CMDPOS-anchored so `rm`
 # must be an actual command word — "rm -rf /" as DATA in `git commit -m "…rm -rf /…"` must not trip the floor.
 _RM_FLAG_PREFIX = _CMDPOS + r'rm\s+(-[^\s]*\s+)*'
+# Windows drive root (`C:/`, `C:/*`, `C:/*.*`; backslashes are flattened to `/` by the
+# Windows-path detection variant).
+_HARDLINE_DRIVE_ROOT = r'[a-z]:/+(?:\*(?:\.\*)?)?'
+# PowerShell -Recurse and its unambiguous prefixes (same set as _PS_RECURSE below).
+_PS_RECURSE_HL = r'-r(?:e(?:c(?:u(?:r(?:s(?:e)?)?)?)?)?)?\b'
+# _CMDPOS, optionally followed by a powershell/pwsh/cmd launcher and its switches (a switch may
+# take one bare value: `-ExecutionPolicy Bypass`) and an opening quote around the script.
+_WIN_CMDPOS = (_CMDPOS + r'(?:(?:[^\s;&|"\'`]*[\\/])?(?:powershell|pwsh|cmd)(?:\.exe)?'
+               r'(?:\s+[-/][^\s"\']+(?:\s+\w+(?=\s+[-/"\']))?)*\s+["\']?)?')
 # Package-manager global options, each optionally taking ONE non-dash operand.
 _PKG_OPTS = r'(?:-[^\s]+(?:\s+[^-\s][^\s]*)?\s+)*'
 
@@ -161,17 +170,18 @@ HARDLINE_PATTERNS = [
     (_CMDPOS + r'init\s+[06]\b', "init 0/6 (shutdown/reboot)"),
     (_CMDPOS + r'systemctl\s+(poweroff|reboot|halt|kexec)\b', "systemctl poweroff/reboot"),
     (_CMDPOS + r'telinit\s+[06]\b', "telinit 0/6 (shutdown/reboot)"),
-    # Windows analogues of the two rules above (#69472 follow-up). Neither
-    # is bare English prose like "reboot"/"shutdown" (which need _CMDPOS to
-    # avoid matching inside strings/comments), so plain \b word-boundary
-    # matching is enough here — same style as the Windows tier below in
-    # DANGEROUS_PATTERNS. These were previously undetected entirely (not
-    # even a bypassable approval prompt): power-state change with no
-    # recovery path, and filesystem format with no recovery path, matching
-    # the "wipe the disk or power the box off" floor this list exists for.
-    (r'\b(?:restart|stop)-computer\b', "system shutdown/reboot (PowerShell)"),
-    (r'\bformat-volume\b', "format filesystem (Format-Volume)"),
-    (r'\bformat(?:\.com)?\s+[a-z]:', "format drive (format.com)"),
+    # Windows analogues of the shutdown / mkfs / dd / root-rm rules. Command-position anchored like
+    # the POSIX rules (#93392), also behind a powershell/pwsh/cmd launcher because cmdlets are
+    # only reachable that way from git-bash, so `git commit -m "never format c:"` stays runnable.
+    (_WIN_CMDPOS + r'(?:restart|stop)-computer\b', "system shutdown/reboot (PowerShell)"),
+    (_WIN_CMDPOS + r'format-volume\b', "format filesystem (Format-Volume)"),
+    (_WIN_CMDPOS + r'format(?:\.com)?\s+[a-z]:', "format drive (format.com)"),
+    (_WIN_CMDPOS + r'clear-disk\b', "wipe disk (Clear-Disk)"),
+    # Recursive delete whose target is a drive ROOT (`C:\`, `C:\*`, `C:/*.*`); `C:\build` and
+    # `C:` (the drive's current directory) fall through to the DANGEROUS tier.
+    (_WIN_CMDPOS + r'(?:remove-item|ri|rm|rd|rmdir|del|erase)\b(?=[^\n;&|]*\s(?:/s\b|' + _PS_RECURSE_HL + r'))'
+     r'[^\n;&|]*\s' + _hardline_rm_path(_HARDLINE_DRIVE_ROOT, r'(?:\s|$|[)`;|&"\'])'), "recursive delete of drive root"),
+    (_RM_FLAG_PREFIX + _hardline_rm_path(_HARDLINE_DRIVE_ROOT), "recursive delete of drive root"),
 ]
 
 # Pre-compiled at module load so the hot-path matcher never pays the cold re.compile fan-out
@@ -1708,6 +1718,10 @@ def _command_detection_variants(command: str):
         win_variant = _normalize_command_for_detection(_mask_quoted_newlines(command.replace("\\", "/")))
         if fresh(win_variant):
             yield win_variant
+            # Its command starts too, so `Get-Date; rd /s /q C:\` reaches the _CMDPOS drive-root rules.
+            marked_win = _mark_command_starts(win_variant)
+            if fresh(marked_win):
+                yield marked_win
     # Program-bearing options are parsed in their owning command's context; surfacing only the payload lets the
     # hardline floor inspect what will actually run without promoting similar flags or quoted prose.
     pending = [normalized]

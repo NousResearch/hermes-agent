@@ -147,7 +147,7 @@ Some commands are so catastrophic — irreversible filesystem wipes, fork bombs,
 - Cron jobs running in headless `approve` mode
 - User explicitly clicking "allow always"
 
-The blocklist is the floor below `--yolo`. It trips **before** the approval layer even sees the command, and there's no override flag. Patterns currently covered (not exhaustive; kept in sync with `tools/approval.py::UNRECOVERABLE_BLOCKLIST`):
+The blocklist is the floor below `--yolo`. It trips **before** the approval layer even sees the command, and there's no override flag. Patterns currently covered (not exhaustive; kept in sync with `tools/approval_detection.py::HARDLINE_PATTERNS`):
 
 | Pattern | Why it's hardline |
 |---|---|
@@ -156,6 +156,8 @@ The blocklist is the floor below `--yolo`. It trips **before** the approval laye
 | `:(){ :\|:& };:` (bash fork bomb) | Pegs the host until reboot |
 | `mkfs.*` on a mounted root device | Formats the live system |
 | `dd if=/dev/zero of=/dev/sd*` | Zeroes a physical disk |
+| `format C:`, `Format-Volume`, `Clear-Disk`, `rd /s /q C:\`, `Remove-Item -Recurse C:\` | Windows analogues: format/wipe a volume or recursively delete a drive root |
+| `Restart-Computer` / `Stop-Computer` | Windows analogue of `shutdown`/`reboot` |
 | Piping untrusted URLs to `sh` at the rootfs top level | Remote-code-execution attack vector too broad to approve |
 
 If you hit the blocklist, the tool call returns an explanatory error to the agent and nothing runs. If a legitimate workflow needs one of these commands (you're the operator of a wipe-and-reinstall pipeline, for example), run it outside the agent.

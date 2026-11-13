@@ -276,3 +276,45 @@ class TestHardlineWindowsDestructiveTier:
     ])
     def test_benign_or_non_hardline_commands_not_flagged(self, cmd):
         assert not _is_hardline(cmd), f"should NOT be hardline-blocked: {cmd}"
+
+
+class TestHardlineWindowsWipesAndDriveRootDeletes:
+    """Windows filesystem wipes and drive-root recursive deletes are hardline (#87419), anchored
+    to command position (directly or behind a powershell/pwsh/cmd launcher) like the POSIX rules."""
+
+    @pytest.mark.parametrize("cmd", [
+        "format.com C: /q",
+        "cmd /c format d: /y",
+        "ls; format c:",
+        'powershell -NoProfile -ExecutionPolicy Bypass "Format-Volume -DriveLetter D"',
+        r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe -c Stop-Computer",
+        "pwsh -c Clear-Disk -Number 0 -RemoveData",
+        r"del /F /S /Q C:\*",
+        r"erase /s /q c:\*.*",
+        "rd /s /q C:\\",
+        r"rmdir /s /q D:/",
+        r'cmd /c "rd /s /q C:\"',
+        "Remove-Item -Recurse -Force C:\\",
+        r"Remove-Item C:\* -Recurse -Force",
+        r"ri -r -fo C:\ ",
+        r"Get-Date; Remove-Item -Recurse C:\*.*",
+        r"rm -rf C:/",
+    ])
+    def test_windows_wipes_are_hardline(self, cmd):
+        assert _is_hardline(cmd), f"should be hardline-blocked: {cmd}"
+
+    @pytest.mark.parametrize("cmd", [
+        'git commit -m "docs: never run format c: here"',
+        'grep -r "format c:" docs',
+        "echo Restart-Computer",
+        # Deeper paths and non-recursive forms stay in the (approvable) DANGEROUS tier.
+        r"rd /s /q C:\build",
+        r"del /s /q C:\Users\me\build\*.tmp",
+        r"Remove-Item -Recurse -Force C:\temp\x",
+        r"Remove-Item C:\ ",
+        r"del C:\*",
+        r"rm -rf C:/work",
+        r"Get-ChildItem -Recurse C:\ ",
+    ])
+    def test_prose_and_non_root_targets_not_hardline(self, cmd):
+        assert not _is_hardline(cmd), f"should NOT be hardline-blocked: {cmd}"

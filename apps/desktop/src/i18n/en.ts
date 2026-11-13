@@ -2025,16 +2025,19 @@ export const en: Translations = {
       browserRealProfile: {
         label: 'Use My Real Browser Profile',
         description:
-          'Copies your default browser\'s logins and cookies into a managed snapshot the agent browses with, and signs the in-app Browser tab in with them too. Your live profile is never opened directly. Applies to new sessions.',
+          "Copies your default browser's logins and cookies into a managed snapshot the agent browses with, and signs the in-app Browser tab in with them too. Your live profile is never opened directly. Applies to new sessions.",
         enabledTitle: 'Real-profile browsing on',
         enabledMessage: 'New sessions will browse with a snapshot of your default browser profile.',
         disabledTitle: 'Real-profile browsing off',
-        disabledMessage: 'The profile snapshot will be deleted and the in-app browser signed out of it; new sessions use a clean browser.',
+        disabledMessage:
+          'The profile snapshot will be deleted and the in-app browser signed out of it; new sessions use a clean browser.',
         failedSave: 'Could not save the real-profile setting',
         reimportSignins: 'Re-import sign-ins',
         signinsImportedTitle: 'In-app browser sign-ins',
-        signinsImported: count => `Signed the in-app browser in with ${count} cookie${count === 1 ? '' : 's'} from your browser profile.`,
-        signinsRemote: 'This backend runs on another machine, so its browser profile is not imported into the in-app browser.',
+        signinsImported: count =>
+          `Signed the in-app browser in with ${count} cookie${count === 1 ? '' : 's'} from your browser profile.`,
+        signinsRemote:
+          'This backend runs on another machine, so its browser profile is not imported into the in-app browser.',
         signinsFailed: 'Could not import sign-ins into the in-app browser',
         prompt: {
           title: 'Stay signed in to your sites',
@@ -2480,7 +2483,8 @@ export const en: Translations = {
       backup: 'Create backup',
       backupDesc: 'Zip config, memories, skills, and sessions',
       debugShare: 'Debug share',
-      debugShareDesc: 'Upload a summary (versions, config keys, error counts; no log text), get a shareable link (auto-deletes in 6h)',
+      debugShareDesc:
+        'Upload a summary (versions, config keys, error counts; no log text), get a shareable link (auto-deletes in 6h)',
       debugShareConfirm: 'Upload debug report to a public paste?',
       debugShareConfirmDesc:
         'Uploads a summary to a public paste service: Hermes, Python and OS versions, connected platform and toolset names, config key names (no values) and warning/error counts. It contains no log lines or message text. Pastes auto-delete after 6 hours; if paste.rs is unreachable, the dpaste.com fallback keeps them public for 1 day and they cannot be deleted early.',
@@ -2605,7 +2609,8 @@ export const en: Translations = {
     relayLink: {
       title: 'Team Gateway',
       badge: 'No bot token needed',
-      intro: (platform: string) => `${platform} reaches this agent through the shared Hermes bot. Link your ${platform} account to it and message the bot to talk to your agent.`,
+      intro: (platform: string) =>
+        `${platform} reaches this agent through the shared Hermes bot. Link your ${platform} account to it and message the bot to talk to your agent.`,
       link: (platform: string) => `Link ${platform}`,
       linkAnother: (platform: string) => `Link another ${platform} account`,
       linkedAccounts: 'Linked accounts',
@@ -2623,10 +2628,12 @@ export const en: Translations = {
       refused: (platform: string) => `${platform} refused the link. Get a new code and try again.`,
       qrAlt: (platform: string) => `QR code for the shared ${platform} bot`,
       managed: 'Managed by Team Gateway',
-      managedNote: (platform: string) => `Team Gateway carries messaging on this deployment, so the gateway turns the direct ${platform} connection off at every start. To run it alongside the relay, set GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS=true in the gateway's environment (a direct connection keeps the instance from scaling to zero and can deliver messages twice).`,
+      managedNote: (platform: string) =>
+        `Team Gateway carries messaging on this deployment, so the gateway turns the direct ${platform} connection off at every start. To run it alongside the relay, set GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS=true in the gateway's environment (a direct connection keeps the instance from scaling to zero and can deliver messages twice).`,
       managedIntro: "This agent's accounts are linked from Nous Portal.",
       openPortal: 'Link accounts in Nous Portal',
-      noNewAccount: (platform: string) => `The code is no longer active and no new account appeared. If your ${platform} account isn't listed, get a new code and try again.`
+      noNewAccount: (platform: string) =>
+        `The code is no longer active and no new account appeared. If your ${platform} account isn't listed, get a new code and try again.`
     },
     telegramQr: {
       title: 'Choose how to connect your Telegram bot',
@@ -2792,7 +2799,8 @@ export const en: Translations = {
     fieldDeliver: 'Deliver to',
     fieldDeliverOnly: 'Deliver payload only',
     fieldSignature: 'Signature',
-    fieldSignatureHint: 'The only signature scheme this route accepts. GitHub, GitLab and Linear deliveries need their own pin.',
+    fieldSignatureHint:
+      'The only signature scheme this route accepts. GitHub, GitLab and Linear deliveries need their own pin.',
     signatureOptions: {
       generic: 'Generic (timestamped)',
       github: 'GitHub',
@@ -3465,7 +3473,8 @@ export const en: Translations = {
       '/topup': 'Show your Nous balance and manage billing on the portal',
       '/platform': 'Pause, resume, or list a failing gateway platform',
       '/version': 'Show Hermes Agent version',
-      '/debug': 'Debug report (versions, config keys, error counts; no log text): shows the privacy notice; /debug upload shares links',
+      '/debug':
+        'Debug report (versions, config keys, error counts; no log text): shows the privacy notice; /debug upload shares links',
       '/model': 'Switch the model for this session'
     },
     hotkeyDescs: {
@@ -4305,12 +4314,9 @@ export const en: Translations = {
     terminalCloseAll: 'Close all',
     terminalNewOn: 'New terminal on…',
     terminalGatewayRemoved: 'Removed gateway',
-    terminalGatewayRemovedBody:
-      'The gateway this terminal ran on was removed, so it can\'t reopen. Close this tab.',
-    terminalGatewayNoShellBody:
-      'This gateway has no shell access, so this terminal can\'t reopen. Close this tab.',
-    terminalDisconnectedBody:
-      'Terminal disconnected. Press Enter to start a new shell; scrollback is preserved.',
+    terminalGatewayRemovedBody: "The gateway this terminal ran on was removed, so it can't reopen. Close this tab.",
+    terminalGatewayNoShellBody: "This gateway has no shell access, so this terminal can't reopen. Close this tab.",
+    terminalDisconnectedBody: 'Terminal disconnected. Press Enter to start a new shell; scrollback is preserved.',
     terminalDropUploadFailed: name => `Could not upload ${name}`,
     terminalDropTooLargeTitle: 'Too large to upload',
     terminalDropTooLarge: (names, limit) => `Each file can be up to ${limit}. Not uploaded: ${names}`,

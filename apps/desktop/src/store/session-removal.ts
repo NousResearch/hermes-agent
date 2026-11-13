@@ -125,6 +125,25 @@ export function tombstoneRowIds(session: {
   return [session.id, ...(session._lineage_root_id ? [session._lineage_root_id] : []), ...(session._lineage_ids ?? [])]
 }
 
+/** Does the removed-id set name this row under ANY identity it has answered to?
+ *
+ *  A render overlay reads a project snapshot that is only refreshed on
+ *  structural edges, so a conversation compressed since that snapshot is still
+ *  filed under an OLDER segment id while the archive/delete armed the tombstone
+ *  on the live tip and the lineage root. A bare `removed.has(session.id)` then
+ *  leaves the row on screen until the tree is rebuilt (the same lineage-blind
+ *  match #123685 fixed on the page-ingestion path). */
+export function sessionIsRemoved(
+  removed: ReadonlySet<string>,
+  session: {
+    _lineage_ids?: null | string[]
+    _lineage_root_id?: null | string
+    id: string
+  }
+): boolean {
+  return removed.size > 0 && tombstoneRowIds(session).some(id => removed.has(id))
+}
+
 export function tombstoneSessions(ids: Array<null | string | undefined>): void {
   const next = new Set($removedSessionIds.get())
 

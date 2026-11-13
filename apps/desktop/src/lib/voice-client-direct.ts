@@ -29,6 +29,7 @@ export interface DirectSttConfig {
   language: null | string
   /** Seconds the gateway allows one transcription request (`stt.openai.timeout`); absent on older backends. */
   timeout_s?: null | number
+  response_format?: null | string
   /** Silence-hallucination contract the relay path applies (`is_whisper_hallucination`);
    *  absent on older backends — a matching transcript is still returned as-is then. */
   hallucination_filter?: null | { phrases: string[]; repeat_regex: string }
@@ -47,6 +48,8 @@ export interface DirectTtsConfig {
   min_len?: null | number
   /** Optional tts.openai fields the server forwards verbatim (lang_code, consent_attestation). */
   extra_body?: Record<string, unknown>
+  /** Only set by providers whose speech endpoint takes a language field (mittwald). */
+  language?: null | string
 }
 
 interface RelayConfig {
@@ -309,7 +312,7 @@ export async function transcribeAudioClientDirect(audio: Blob, owner?: ResolvedO
       form.set('model', stt.model)
     }
 
-    form.set('response_format', 'text')
+    form.set('response_format', stt.response_format || 'text')
 
     if (stt.language) {
       form.set('language', stt.language)
@@ -410,6 +413,10 @@ export async function synthesizeSpeechClientDirect(tts: DirectTtsConfig, text: s
 
     if (tts.speed && tts.speed !== 1) {
       body.speed = tts.speed
+    }
+
+    if (tts.language) {
+      body.language = tts.language
     }
 
     const response = await fetch(`${tts.base_url.replace(/\/+$/, '')}/audio/speech`, {

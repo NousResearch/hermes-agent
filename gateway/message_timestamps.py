@@ -20,12 +20,20 @@ from hermes_time import safe_strftime
 # Leading timestamp prefix, either the current human format
 # ``[Tue 2026-04-28 13:40:53 CEST]`` or the older ISO one
 # ``[2026-04-13T17:02:06+0200]`` / ``[...+02:00]`` (human tried first).
+#
+# The timezone token must allow internal spaces: ``format_message_timestamp``
+# builds it from ``strftime("%Z")``, which is a short abbreviation on POSIX
+# (``CEST``) but the full descriptive name on Windows (``Pacific Daylight
+# Time``) whenever no IANA timezone is configured and the system zone is used.
+# A space-free token could not strip a prefix this module had just written, so
+# re-rendering stacked ``[timestamp] [timestamp] ...``. The closing ``]``
+# bounds the match, so it never runs past the prefix.
 _TIMESTAMP_PREFIX_RE = re.compile(
     r"^\[(?:"
     r"(?P<dow>[A-Z][a-z]{2}) "
     r"(?P<date>\d{4}-\d{2}-\d{2}) "
     r"(?P<time>\d{2}:\d{2}:\d{2})"
-    r"(?: (?P<tz>[A-Za-z0-9_+\-/:]+))?"
+    r"(?: (?P<tz>[A-Za-z0-9_+\-/:]+(?: [A-Za-z0-9_+\-/:]+)*))?"
     r"|(?P<iso>\d{4}-\d{2}-\d{2}T[^\]]+)"
     r")\]\s*"
 )

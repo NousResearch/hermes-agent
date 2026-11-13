@@ -86,6 +86,15 @@ DEEPSEEK_V4_OVERRIDES: dict[str, str] = {"xhigh": "max"}
 OLLAMA_CLOUD_EFFORTS: tuple[str, ...] = ("none", "low", "medium", "high", "max")
 OLLAMA_CLOUD_OVERRIDES: dict[str, str] = {"xhigh": "max"}
 
+#: MiniMax M3.1 on MiniMax's own Anthropic-compatible endpoints: the depth knob is
+#: ``output_config.effort``, whose ladder stops at ``max`` — ``ultra`` is a Hermes-internal step
+#: with no MiniMax counterpart, and ``minimal`` is a legacy alias for low. ``none`` is absent
+#: because thinking cannot be switched off on this route.
+MINIMAX_M31_EFFORTS: tuple[str, ...] = ("low", "medium", "high", "xhigh", "max")
+#: Providers that speak MiniMax's own Anthropic-compatible contract. Scoped to these names so a
+#: relay serving the same model slug (OpenRouter's ``minimax/minimax-m3``) keeps its own ladder.
+_MINIMAX_PROVIDERS = frozenset({"minimax", "minimax-cn", "minimax-oauth"})
+
 #: Meta Model API (Muse): rejects ``none``.
 META_AI_EFFORTS: tuple[str, ...] = ("minimal", "low", "medium", "high", "xhigh")
 
@@ -166,10 +175,16 @@ def route_supported_efforts(
     OpenAI-compatible vocabulary (narrower providers clamp again downstream, never upward). On the
     Codex app-server runtime ``ultra`` is codex's own harness mode, accepted wherever the model's
     ladder reaches ``max`` (codex runs it at ``max``; a model without ``max`` rejects it), so it is
-    sent verbatim there."""
+    sent verbatim there.
+
+    MiniMax's own Anthropic-compatible endpoints publish their own ladder (``low``..``max``) for
+    ``output_config.effort``; declaring it here makes the Desktop's picker show the honest clamp
+    ("ultra sends max on this route") instead of pretending ``ultra``/``minimal`` are verbatim."""
     if (provider or "").strip().lower() == "openai-codex":
         supported = codex_supported_efforts(model)
         return (*supported, "ultra") if api_mode == "codex_app_server" and "max" in supported else supported
+    if _is_minimax_adaptive_route(provider, model, base_url):
+        return MINIMAX_M31_EFFORTS
     from hermes_cli.local_runtime.capabilities import managed_reasoning_efforts
     local = managed_reasoning_efforts(provider or "", base_url or "", model or "")
     # llama-server turns thinking off for ``none`` itself, so a chat template never sees that level.
@@ -181,6 +196,29 @@ def chat_endpoint_efforts(model: Optional[str], base_url: Optional[str]) -> tupl
     decides, whatever provider name the route carries: the managed local server answers with the
     levels the model's chat template accepts, every other endpoint with the OpenAI-compatible set."""
     return route_supported_efforts("custom", model, None, base_url)
+
+
+def _is_minimax_adaptive_route(
+    provider: Optional[str], model: Optional[str], base_url: Optional[str] = None,
+) -> bool:
+    """True for the MiniMax M3.1 line served by MiniMax's own Anthropic-compatible endpoint.
+
+    The endpoint carries the contract (``output_config.effort``) and the model carries the
+    ladder it applies to, so both halves are checked:
+
+    - a known ``base_url`` must be MiniMax's own endpoint — a relay serving the same slug
+      speaks a different contract and keeps its own vocabulary;
+    - when the route carries no ``base_url`` (the ``/reasoning`` menus know the provider and
+      the model, not the endpoint), the provider name decides: ``minimax``, ``minimax-cn`` and
+      ``minimax-oauth`` are MiniMax's own routes.
+    """
+    from agent.anthropic_endpoints import _is_minimax_anthropic_endpoint
+    slug = (model or "").strip().lower().rsplit("/", 1)[-1]
+    if not (slug.startswith("minimax-m3.1") or slug.startswith("minimax-m3-1")):
+        return False
+    if base_url:
+        return _is_minimax_anthropic_endpoint(base_url)
+    return (provider or "").strip().lower() in _MINIMAX_PROVIDERS
 
 
 def effort_display_label(

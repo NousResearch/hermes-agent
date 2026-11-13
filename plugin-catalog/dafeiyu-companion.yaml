@@ -1,0 +1,38 @@
+name: dafeiyu-companion
+repo: https://github.com/rayyichen310/dafeiyu-companion
+sha: a6af770e04f8aa892b0aa0980989d347f0ba9737
+title: Dafeiyu Companion
+description: >-
+  Companion features for a Chinese-speaking persona bot (大肥魚 / Dafeiyu) on Discord: reaction
+  stickers chosen by deepseek-flash before each reply is sent, an offline Chinese internet-meme wiki
+  (search_meme_wiki), joke seeds, a persona reminder and per-feature switches (companion_switch).
+  Disclosure — on every reply on an enabled platform (Discord by default) the user message (up to
+  500 characters) and the reply (up to 2,000) are sent to api.deepseek.com; an optional,
+  user-configured embedding endpoint receives sticker captions and reaction text. Reads and writes
+  <HERMES_HOME>/companion-data/ and <HERMES_HOME>/config/companion.json, outside the plugin
+  directory. A setup script (fetch_sources.sh, run by the user, never by the plugin) downloads about
+  320 MB of sticker images and a meme database from GitHub at pinned versions with SHA-256 checks;
+  the sticker packs are non-commercial fan works and are not redistributed by this repository.
+  No shell commands at runtime; one short-lived background thread builds the embedding index when
+  that mode is on.
+maintainer: rayyichen310
+tier: community
+category: general
+requires_hermes: ">=0.22.5"
+version: "1.0.0"
+docs_url: https://github.com/rayyichen310/dafeiyu-companion/blob/a6af770e04f8aa892b0aa0980989d347f0ba9737/README.md
+readme: true
+known_issues:
+  - Prompts, injected text and sticker captions are in Chinese; the plugin is built for one persona.
+  - Run fetch_sources.sh after installing; without the downloaded data the features log an error and stay silent.
+capabilities:
+  provides_tools:
+    - companion_switch
+    - search_meme_wiki
+  provides_hooks:
+    - pre_llm_call
+    - transform_llm_output
+  provides_middleware:
+    - llm_request
+  requires_env:
+    - DEEPSEEK_API_KEY

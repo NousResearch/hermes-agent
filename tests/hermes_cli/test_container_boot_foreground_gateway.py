@@ -18,6 +18,7 @@ _WRAPPER = ["/init", "/opt/hermes/docker/main-wrapper.sh"]
         (["gateway", "run"], True, False),
         (["gateway"], True, False),  # bare `gateway` runs the gateway too
         (["-p", "coder", "gateway", "run", "--no-supervise"], False, False),
+        (["-p", "gateway", "gateway", "run", "--no-supervise"], False, False),  # profile named gateway
         (["-p", "solo", "gateway", "run", "--no-supervise"], False, True),  # standalone: serves only solo
         (["gateway", "run"], False, True),  # bare run redirects to s6: the slot IS the gateway
         (["gateway", "status"], True, True),
@@ -25,7 +26,7 @@ _WRAPPER = ["/init", "/opt/hermes/docker/main-wrapper.sh"]
 )
 def test_foreground_gateway_cmd_leaves_s6_root_slot_down(tmp_path, monkeypatch, cmd, env_opt_out, slot_up):
     home, scandir = tmp_path / "data", tmp_path / "scan"
-    for name, standalone in (("coder", False), ("solo", True)):
+    for name, standalone in (("coder", False), ("gateway", False), ("solo", True)):
         profile = home / "profiles" / name
         profile.mkdir(parents=True)
         (profile / "SOUL.md").write_text("x", encoding="utf-8")

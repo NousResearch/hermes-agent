@@ -20,12 +20,19 @@ class ProcessCheckpointMixin:
     def _write_checkpoint(self, extra_entries: Optional[list[dict[str, Any]]] = None):
         """Write running process metadata to the checkpoint file atomically."""
         from tools.process_registry import _checkpoint_path, _CHECKPOINT_FIELDS
+        from tools.environments.sandbox_scope import hosted_scope
 
+        # A hosted caller only changes its own agent's records, which are never persisted here, so
+        # it has no host change to write: it neither takes the lock nor rewrites this host's file.
+        if hosted_scope() is not None:
+            return
         try:
             with self._lock:
                 entries = []
                 for s in self._running.values():
-                    if s.exited:
+                    # A hosted agent's process is not this host's to persist: its record (command,
+                    # cwd, owner) stays in memory, whoever triggers the write (scoped or not).
+                    if s.exited or s.sandbox_key:
                         continue
                     # Backfill the start time so recovery can detect PID recycling
                     # even for sessions spawned before this field existed.
@@ -136,7 +143,7 @@ class ProcessCheckpointMixin:
             fields.update(
                 command=entry.get("command", "unknown"),
                 owner_task_id=entry.get("owner_task_id", "") or entry.get("task_id", ""),
-                started_at=entry.get("started_at", time.time()))
+                started_at=entry.get("started_at", time.time()), sandbox_key=entry.get("sandbox_key", ""))
             # detached: no Popen handle, but can report status + kill; a worker spawn's output log
             # (and recorded exit) outlives its spawner, so tail it from the start.
             fields["output_log"] = log

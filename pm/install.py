@@ -20,7 +20,8 @@ from pm.lock import Facts, Lockfile
 from pm.package import InstallError, Package, Runner, StatePackage, compose_env
 from pm.plugin_inputs import Candidates, Members, PluginInput, Selection, StagedUpdate
 from pm.registry import get_package, walk
-from pm.store import Store, current_target, digest_matches, merge_tree, tree_digest
+from pm.store import (Store, current_target, digest_matches, entry_component, fetch_entry_name, merge_tree,
+                      tree_digest)
 
 LOG = logging.getLogger(__name__)
 
@@ -233,7 +234,7 @@ def _remove_entry(store: Store, entry_name: str, *, attempts: int = 5) -> None:
     """
     import time
 
-    entry = store.entry(entry_name)
+    entry = store.entry(entry_component(entry_name))
     for attempt in range(attempts):
         try:
             if entry.is_symlink() or not entry.is_dir():
@@ -293,7 +294,7 @@ def _reclaim_set_aside(store: Store) -> int:
 def _remove_downloads(store: Store, artifacts: list[dict]) -> None:
     """Release this package's archives after publication, under its store lock."""
     for artifact in artifacts:
-        _discard_entry(store, f"fetch-{artifact['sha256']}")
+        _discard_entry(store, fetch_entry_name(artifact["sha256"]))
 
 
 def _entry_verified(package: Package, fact: dict, store: Store, target: str) -> bool:
@@ -460,6 +461,7 @@ def _install(
     entry = store.entry(entry_name)
     if getattr(package, "pin_only", False):
         return entry
+    entry_component(entry_name)
     artifacts = lockfile.artifacts(package.name, target)
     pin = json.dumps({"target": target, "sha256": [a["sha256"] for a in artifacts]})
 
@@ -1039,7 +1041,7 @@ def drift(*, include_venv: bool = True) -> dict[str, str]:
             package = get_package(name)
         except KeyError:
             continue
-        if package.optional or package.internal:
+        if package.is_optional(target) or package.internal:
             continue
         if package.missing_reason(target) is not None:
             continue

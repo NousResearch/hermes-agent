@@ -15,6 +15,7 @@ category: tools
 requires_hermes: ">=0.23"
 docs_url: https://github.com/salch-cred/visual-gate
 version: "1.1.1"
+image: https://raw.githubusercontent.com/salch-cred/visual-gate/f5f0bde73bff267a56c48e735c9e04063e9693b3/docs/assets/catalog.jpg
 
 capabilities:
   provides_tools: [vg_capture, vg_diff, vg_a11y, vg_gate, vg_baselines, vg_doctor]

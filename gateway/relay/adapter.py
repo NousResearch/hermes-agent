@@ -28,6 +28,7 @@ from gateway.platforms.event import ProcessingOutcome
 from gateway.platforms.helpers import clarify_text_with_choices
 from agent.i18n import t
 from gateway.relay.adapter_discord_interaction import RelayDiscordInteractionMixin
+from gateway.relay.admitted_authors import note_delivered
 from gateway.relay.descriptor import CapabilityDescriptor
 from gateway.relay.egress import (
     EGRESS_DECLINE_CODE,
@@ -908,6 +909,7 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
             self._evict_oldest(self._seen_inbound, self._SEEN_INBOUND_MAX)
         try:
             self._capture_ingress_scope(event)
+            note_delivered(event.source)  # a delivered Discord message: its author is admitted here
             await self._remember_discord_labels(event.source)
             self._stamp_slack_session_thread(event)
             # A structured prompt answer resolves its waiting primitive and is CONSUMED —
@@ -1997,14 +1999,8 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
             )
             return True
         pending = self._pending_prompts.get(str(prompt_id)) or {}
-        from gateway.relay.prompt_resolvers import prompt_refusal
-        actor = None
-        if pending.get("kind") in ("exec_approval", "slash_confirm", "clarify"):
-            from gateway.approval_actor import runner_answer_policy
-            # Identity first: this answer is consumed before handle_message, and without the transport
-            # identity the admin lookup read the routed runtime profile instead of the bot-owning one.
-            self._canonicalize(event.source)
-            actor = {"actor_id": getattr(event.source, "user_id", ""), "admin_ids": runner_answer_policy(event.source)}
+        from gateway.relay.prompt_resolvers import prompt_actor, prompt_refusal
+        actor = prompt_actor(self, event) if pending.get("kind") in ("exec_approval", "slash_confirm", "clarify") else None
         if actor and (refusal := prompt_refusal(pending, actor, option_id)):
             # Left pending: only the requester (or an approver) can consume it.
             self._send_lifecycle_ack(str(pending.get("chat_id") or getattr(event.source, "chat_id", "")),

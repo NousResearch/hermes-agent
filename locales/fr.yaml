@@ -193,7 +193,10 @@ gateway:
     full_logs_hint: "Pour envoyer les journaux complets, utilisez `hermes debug share` depuis la CLI."
     share_hint: "Partagez ces liens avec l'équipe Hermes pour obtenir de l'aide."
     report_label: "Rapport"
-    local_refused: "`/debug local` garde le rapport sur la machine qui exécute Hermes ; il n'est donc pas disponible depuis une discussion. Envoyez `/debug` pour téléverser le rapport de synthèse."
+    local_refused: "`/debug local` garde le rapport sur la machine qui exécute Hermes ; il n'est donc pas disponible depuis une discussion. Envoyez `/debug upload` pour téléverser le rapport de synthèse."
+    upload_hint: "Rien n'a été téléversé. Envoyez `/debug upload` pour téléverser le rapport de synthèse."
+    upload_hint_local: "Rien n'a été téléversé. Envoyez `/debug upload` pour téléverser le rapport de synthèse, ou `/debug local` pour l'afficher ici."
+    nous_refused: "Rien n'a été téléversé. Les envois privés vers Nous ne sont pas disponibles ici : lancez `hermes debug share --nous` dans un terminal, ou utilisez Send diagnostics dans l'application de bureau. `/debug upload` téléverse plutôt la synthèse vers un paste public."
   deny:
     stale: "❌ Commande refusée (l'approbation était périmée)."
     no_pending: "Aucune commande en attente de refus."
@@ -368,6 +371,7 @@ gateway:
     title_error_untitled: "\n⚠️ {error} — session démarrée sans titre."
     title_empty_untitled: "\n⚠️ Le titre est vide après nettoyage — session démarrée sans titre."
     tip: "\n✦ Astuce : {tip}"
+    paused_left: "\n⚠️ {count} message(s) envoyé(s) pendant la pause de la conversation précédente sont toujours enregistrés dans la conversation précédente, sans réponse. Pour les exécuter : /resume {session_id}, puis {discard}."
   restart:
     in_progress: "⏳ Redémarrage du gateway déjà en cours..."
     restarting: "♻ Redémarrage du gateway. Si vous n'êtes pas notifié dans les 60 secondes, redémarrez depuis la console avec `hermes gateway restart`."
@@ -749,11 +753,6 @@ gateway:
       (Échec du formatage de la réponse, texte brut :)
 
       {content}
-    turn_error_no_details: "aucun détail disponible"
-    turn_error_detailed: |-
-      Désolé, j'ai rencontré une erreur ({error_type}).
-      {error_detail}
-      Réessayez ou utilisez /reset pour démarrer une nouvelle session.
     turn_error: "Désolé, j'ai rencontré une erreur."
     context_injection_refused: "Injection de contexte refusée."
     no_home_channel: |-
@@ -867,6 +866,8 @@ gateway:
     reject_loop: "L'agent est en cours d'exécution — utilisez /loop status / pause / stop pendant l'exécution, ou /stop avant de définir une nouvelle boucle."
     draining_maintenance: "⏳ Cet agent se vide pour une opération de maintenance et n'accepte pas de nouveaux tours pour le moment. Il sera de retour dans un instant — merci de renvoyer votre message d'ici peu."
     another_turn_running: "⏳ Un autre tour est encore en cours sur cette session. Pour protéger la transcription, ce message n'a pas été traité. Attendez la fin du tour actif, puis renvoyez-le."
+    setup_timeout: "⏳ La préparation du tour s'est bloquée sans activité de l'agent et a été annulée. Merci de renvoyer ton message."
+    setup_waiting: "⏳ Ce tour démarre encore ({minutes} min, aucune activité de l'agent pour l'instant). Ton message est en file d'attente. Utilise /stop pour l'annuler, ainsi que tout ce qui est en file d'attente."
     behavior_queue_short: "mise en file pour le prochain tour"
     behavior_queue_long: "Les messages seront mis en file pour le prochain tour pendant que Hermes est occupé."
     behavior_steer_short: "orientation de l'exécution en cours (après le prochain appel d'outil)"
@@ -1170,6 +1171,7 @@ platform:
     denied: "❌ Refusé."
     approval_expired: "⌛ Approbation expirée — la commande n'a pas été exécutée (délai dépassé ou déjà résolue ailleurs)."
   shared:
+    response_as_file: "📎 Réponse longue : le texte complet est en pièce jointe."
     truncated_suffix: |2-
 
       ...(tronqué)
@@ -1371,8 +1373,6 @@ platform:
         unknown: "Skill inconnue : `{name}`. Commencez à taper pour obtenir des suggestions."
       auto_args_description: "Arguments : {args_hint}"
       auto_description_fallback: "Exécuter /{name}"
-    limits:
-      response_truncated: "⚠️ **Réponse tronquée** — cette réponse a dépassé la limite d'envoi ({max_messages} messages). {dropped_chars} caractères n'ont pas été transmis ; la réponse complète se trouve dans les journaux de la session."
     forum:
       default_title: "Nouvelle publication"
     voice:
@@ -1958,7 +1958,7 @@ slash:
   version:
     description: "Afficher la version de Hermes Agent"
   debug:
-    description: "Envoyer un rapport de débogage (infos système + journaux) et obtenir des liens partageables"
+    description: "Rapport de débogage (infos système + journaux) : affiche d'abord l'avis de confidentialité ; /debug upload partage les liens"
   quit:
     description: "Quitter la CLI (--delete supprime aussi l'historique de session)"
 cli:

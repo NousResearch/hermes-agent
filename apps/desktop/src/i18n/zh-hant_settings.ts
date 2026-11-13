@@ -823,6 +823,9 @@ export const zhHantSettings = {
       voiceShortcutHintTitle: '語音錄製快捷鍵',
       voiceShortcutHintDesc:
         '請在「設定 → 鍵盤快捷鍵」中設定語音錄製快捷鍵（「Start / stop voice conversation」）。voice.record_key 設定僅適用於 CLI 和 TUI。',
+      desktopReadAloudTitle: '在此應用程式中朗讀回覆',
+      desktopReadAloudDesc:
+        '在 Desktop 中朗讀每則完成的回覆。與輸入框按鈕是同一個開關；對所有開啟的視窗生效，關閉後會立即停止正在朗讀的回覆。下方的「朗讀回覆」用於訊息平台和 CLI。',
       showOptions: '顯示選項'
     },
     hudModifier: {

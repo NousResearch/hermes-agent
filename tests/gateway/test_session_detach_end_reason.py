@@ -5,6 +5,8 @@ from types import SimpleNamespace
 
 import pytest
 
+pytestmark = pytest.mark.usefixtures("authority_cwd_in_tmp")  # symbolic profile ids are relative homes
+
 
 @pytest.mark.asyncio
 async def test_detach_with_end_reason_ends_the_idle_local_row(tmp_path, monkeypatch):

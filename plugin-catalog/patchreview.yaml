@@ -1,0 +1,18 @@
+name: patchreview
+title: PatchReview
+repo: https://github.com/Bilalsnz/plugin
+sha: d579c1c71a0681182fee22cc1820bb7bb13280d7
+description: "Routes recognized file-writing tool calls through Hermes' native human-approval gate with a proposed diff. PatchReview never exposes model-callable accept tools and never writes target files: on approval, Hermes executes the original tool through its normal write path and protections. Full-content and exact string-replacement previews support replace_all; unsupported or unparseable recognized calls are blocked. Coverage is limited to recognized tool names and does not intercept shell commands, scripts, or unrelated processes. The plugin makes no network calls, sends no telemetry, invokes no shell commands, stores no credentials, and starts no background processes."
+maintainer: Bilalsnz
+tier: community
+category: tools
+requires_hermes: ">=0.20"
+docs_url: https://github.com/Bilalsnz/plugin/blob/d579c1c71a0681182fee22cc1820bb7bb13280d7/README.md
+version: "1.0.0"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_tool_call
+  provides_middleware: []
+  requires_env: []

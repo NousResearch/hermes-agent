@@ -8,7 +8,9 @@ the human-merged approval gate; SHA bumps are new, re-reviewed PRs; ``removed.ya
 
 Live refresh: the docs build publishes the same data as ONE JSON document
 (``website/scripts/extract-plugins.py`` → ``/docs/api/plugin-catalog.json``, like the skills index), so
-an installed Hermes sees new entries and removals without updating. A fetch failure reuses the last valid
+an installed Hermes sees new entries and removals without updating. The doc is built from the same merged
+directory on ``main``, so it is trusted only as served over HTTPS by the docs host or its GitHub Pages
+origin (redirects elsewhere are refused). A fetch failure reuses the last valid
 cached copy regardless of age, then falls back to the in-tree copy when no valid cache exists.
 """
 
@@ -29,6 +31,8 @@ from datetime import UTC
 logger = logging.getLogger(__name__)
 
 CATALOG_TIERS = ("official", "verified", "community")
+# Tiers whose entries may set ``default: true`` (installed in every home): Nous or the vendor stands behind them.
+DEFAULT_TIERS = frozenset({"official", "verified"})
 # Browse taxonomy for the catalog page / picker. Entries without one land on the Desktop shelf
 # (the common case for community submissions); "general" is for plugins that fit no shelf.
 CATALOG_CATEGORIES = ("desktop", "memory", "platform", "web", "tools", "voice", "automation", "models", "general")
@@ -42,6 +46,11 @@ _REQUEST_TIMEOUT = 5.0
 # client that refuses it silently installs its own in-tree pins and misses newer removals. 16 MiB leaves
 # room for roughly 9,000 entries while still bounding a hostile or broken response.
 _MAX_LIVE_BYTES = 16 * 1024 * 1024
+# The docs host 301s the document to GitHub Pages. A redirect anywhere else (or to plain http) is
+# refused: the document names the repo + sha every catalog install clones, so its integrity rests on
+# HTTPS to hosts Nous publishes to, and an open redirect must not extend that trust to a third host.
+_LIVE_CATALOG_HOSTS = frozenset({"hermes-agent.nousresearch.com", "nousresearch.github.io"})
+_MAX_LIVE_REDIRECTS = 5
 
 _SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 _VERSION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,31}$")
@@ -56,6 +65,16 @@ def is_allowed_image_url(url: str) -> bool:
     parts = urlsplit(url)
     host = (parts.hostname or "").lower()
     return parts.scheme == "https" and bool(host) and (host in IMAGE_HOSTS or host.endswith(IMAGE_HOST_SUFFIX))
+
+
+def is_https_url(url: str) -> bool:
+    """``docs_url`` lands in an ``<a href>`` on the dashboard: any https host, never ``javascript:``/``data:``."""
+    from urllib.parse import urlsplit
+    try:
+        parts = urlsplit(url)
+    except ValueError:  # "https://[": a malformed authority drops the link, never the whole catalog
+        return False
+    return parts.scheme == "https" and bool((parts.hostname or "").strip())
 _NAME_RE = re.compile(r"^[a-z0-9_-]{1,64}$")
 
 
@@ -94,6 +113,7 @@ class PluginCatalogEntry:
     platforms: list[str] = field(default_factory=list)  # empty = all OSes
     title: str = ""              # human name ("NVIDIA App"); empty = derived from ``name``
     onboarding: bool = False     # curated: offered on the desktop onboarding card
+    default: bool = False        # installed and enabled once in every home (official/verified only)
     capabilities: CatalogCapabilities = field(default_factory=CatalogCapabilities)
     known_issues: list[str] = field(default_factory=list)  # #124058: informational; drivers come from plugin-catalog/*.yaml
 
@@ -111,6 +131,7 @@ class PluginCatalogEntry:
             "subdir": self.subdir, "docs_url": self.docs_url, "version": self.version, "image": self.image,
             "screenshots": list(self.screenshots), "readme": self.readme,
             "platforms": list(self.platforms), "title": self.title, "onboarding": self.onboarding,
+            "default": self.default,
             "capabilities": {
                 "provides_tools": list(caps.provides_tools), "provides_hooks": list(caps.provides_hooks),
                 "provides_middleware": list(caps.provides_middleware), "requires_env": list(caps.requires_env),
@@ -161,6 +182,15 @@ def entry_from_mapping(data: Any, label: str) -> Optional[PluginCatalogEntry]:
     if image and not is_allowed_image_url(image):
         logger.warning("Plugin catalog: %s: ignoring image %r (must be https on a GitHub host)", label, image)
         image = ""
+    docs_url = str(data.get("docs_url") or "").strip()
+    if docs_url and not is_https_url(docs_url):
+        logger.warning("Plugin catalog: %s: ignoring docs_url %r (must be an https URL)", label, docs_url)
+        docs_url = ""
+    default = data.get("default") is True
+    if default and tier not in DEFAULT_TIERS:
+        logger.warning("Plugin catalog: %s: ignoring default: true (tier %s; only %s entries ship by default)",
+                       label, tier, "/".join(sorted(DEFAULT_TIERS)))
+        default = False
     screenshots = [s for s in _str_list(data.get("screenshots")) if is_allowed_image_url(s)]
     if len(screenshots) != len(_str_list(data.get("screenshots"))):
         logger.warning("Plugin catalog: %s: ignoring screenshots off GitHub hosts", label)
@@ -169,10 +199,10 @@ def entry_from_mapping(data: Any, label: str) -> Optional[PluginCatalogEntry]:
         description=str(data.get("description") or "").strip(),
         maintainer=str(data.get("maintainer") or "").strip(), tier=tier, category=category,
         requires_hermes=str(data.get("requires_hermes") or "").strip(),
-        subdir=str(data.get("subdir") or "").strip(), docs_url=str(data.get("docs_url") or "").strip(),
+        subdir=str(data.get("subdir") or "").strip(), docs_url=docs_url,
         version=version, image=image, screenshots=screenshots, readme=data.get("readme") is not False,
         platforms=_str_list(data.get("platforms")),
-        title=str(data.get("title") or "").strip(), onboarding=data.get("onboarding") is True,
+        title=str(data.get("title") or "").strip(), onboarding=data.get("onboarding") is True, default=default,
         known_issues=_str_list(data.get("known_issues")),
         capabilities=CatalogCapabilities(
             provides_tools=_str_list(caps.get("provides_tools")), provides_hooks=_str_list(caps.get("provides_hooks")),
@@ -354,6 +384,53 @@ def _stale_live_cache(cache: Path) -> Optional[dict[str, Any]]:
         return None
 
 
+def _download_live_catalog(httpx: Any) -> bytes:
+    """Body of :data:`LIVE_CATALOG_URL`, following redirects only onto :data:`_LIVE_CATALOG_HOSTS`
+    over HTTPS and refusing a decoded body past :data:`_MAX_LIVE_BYTES` (see :func:`_read_capped`)."""
+    url = LIVE_CATALOG_URL
+    for _hop in range(_MAX_LIVE_REDIRECTS + 1):
+        with httpx.stream("GET", url, headers={"Accept-Encoding": "gzip"}, timeout=_REQUEST_TIMEOUT,
+                          follow_redirects=False) as resp:
+            if resp.next_request is not None:
+                target = resp.next_request.url
+                if target.scheme != "https" or target.host not in _LIVE_CATALOG_HOSTS:
+                    raise ValueError(f"live catalog redirected off the catalog hosts: {target}")
+                url = str(target)
+                continue
+            resp.raise_for_status()
+            return _read_capped(resp)
+    raise ValueError("live catalog: too many redirects")
+
+
+def _read_capped(resp: Any) -> bytes:
+    """Read the body while holding at most :data:`_MAX_LIVE_BYTES` (+1) decoded bytes in memory.
+
+    httpx's own decoder (``iter_bytes``) inflates each wire chunk whole and chains stacked
+    encodings, so a 64 KB gzip chunk could expand to 64 MiB before any size check. The raw bytes are
+    inflated here with a ``max_length`` bound instead; only ``identity`` and one ``gzip`` layer (all
+    we ask for) are accepted."""
+    import zlib
+
+    encoding = resp.headers.get("content-encoding", "identity").strip().lower()
+    if encoding not in ("identity", "gzip"):
+        raise ValueError(f"live catalog: unsupported content-encoding {encoding!r}")
+    inflate = zlib.decompressobj(16 + zlib.MAX_WBITS) if encoding == "gzip" else None
+    body = bytearray()
+    raw_len = 0
+    for chunk in resp.iter_raw():
+        raw_len += len(chunk)
+        if inflate is None:
+            body += chunk
+        while inflate is not None and chunk and not inflate.eof and len(body) <= _MAX_LIVE_BYTES:
+            body += inflate.decompress(chunk, _MAX_LIVE_BYTES + 1 - len(body))
+            chunk = inflate.unconsumed_tail
+        if len(body) > _MAX_LIVE_BYTES or raw_len > _MAX_LIVE_BYTES:
+            raise ValueError("live catalog payload too large")
+    if inflate is not None and not inflate.eof:
+        raise ValueError("live catalog: truncated gzip body")
+    return bytes(body)
+
+
 def fetch_live_catalog(*, force: bool = False) -> Optional[dict[str, Any]]:
     """The published ``plugin-catalog.json`` (``{"entries": [...], "removed": [...]}``), cached under
     ``HERMES_HOME/cache`` for :data:`LIVE_CATALOG_TTL_SECONDS`. ``None`` on ANY failure — callers fall
@@ -374,11 +451,7 @@ def fetch_live_catalog(*, force: bool = False) -> Optional[dict[str, Any]]:
         from hermes_constants import mkdir_under_hermes_home
         from utils import atomic_write_text
 
-        resp = httpx.get(LIVE_CATALOG_URL, timeout=_REQUEST_TIMEOUT, follow_redirects=True)
-        resp.raise_for_status()
-        if len(resp.content) > _MAX_LIVE_BYTES:
-            raise ValueError("live catalog payload too large")
-        data = resp.json()
+        data = json.loads(_download_live_catalog(httpx))
         if not isinstance(data, dict) or not isinstance(data.get("entries"), list):
             raise ValueError("unexpected live catalog payload")
         mkdir_under_hermes_home(cache.parent)
@@ -493,7 +566,7 @@ def load_catalog_live() -> list[PluginCatalogEntry]:
 # Curated display fields a published doc older than the field does not carry. ``generated_at`` is the
 # docs build time, not the content time, so a rebuild of an older catalog outranks a checkout that added
 # the field; a doc that has the key (even ``false``) decides.
-_CURATED_FIELDS = ("onboarding", "title")
+_CURATED_FIELDS = ("onboarding", "title", "default")
 
 
 def _with_curated_fields(live: PluginCatalogEntry, tree: Optional[PluginCatalogEntry], raw: dict[str, Any]

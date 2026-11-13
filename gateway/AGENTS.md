@@ -55,6 +55,12 @@ truth: `chat.*Stream` speaks STANDARD markdown, not mrkdwn; `stopStream.markdown
 `startStream`/`stopStream` are Tier 2 (~20/min). Check `draft_stream_is_message is True` —
 MagicMock adapters in older tests auto-create truthy attributes.
 
+## No user content in INFO+ logs
+
+Logs reach `hermes debug share` uploads: never log bodies, subjects, display names, addresses or
+phones at INFO+. Log `len(text)`, an id, `hash_for_log(chat_id)` or `redact_phone(...)`; the raw
+value goes to DEBUG (HX017).
+
 ## Background process notifications
 
 `terminal(background=true, notify_on_complete=true)` arms a watcher on the gateway loop
@@ -162,7 +168,7 @@ gateway under the backend, and do NOT "fix" update locks by widening the tree-ki
   fallback-after-miss leak); import the shared one. `tests/gateway/test_shared_platform_boilerplate.py`
   asserts every plugin's `_env_enablement` reads only through it.
 - **Scope is bound per profile activity, not per turn.** `run.py::_profile_runtime_scope(home)`
-  wraps a routed turn (`run_turn.py::_profile_scope_for_source`); the same binding wraps every path
+  (one `Scope`: `agent/runtime_scope.py`, HX016) wraps a routed turn (`run_turn.py::_profile_scope_for_source`); the same binding wraps every path
   that touches a session's home, secrets or terminal scope with no turn on the stack: release and
   eviction (`run_agent_cache.py::_run_release_in_profile_scope` — TTL, LRU and memory-pressure
   eviction all route through it so `on_session_end`/memory flush hit the OWNING profile's provider),
@@ -170,8 +176,8 @@ gateway under the backend, and do NOT "fix" update locks by widening the tree-ki
   (`platforms/base.py::_media_delivery_scope`), deferred callbacks (pickers, reactions — capture the
   routed home at command time, re-enter the scope in the callback), notifiers and outbound webhooks.
   Resolve the owning home from the session record (`profile_home`, `agent:<profile>:` key), never
-  from `os.environ`, which holds the launch profile. Why: eviction that flushed under the launch scope
-  wrote a secondary profile's memories into the default profile's store, silently.
+  from `os.environ`, which holds the launch profile. Why: eviction under the launch scope wrote a
+  secondary profile's memories into the default profile's store.
 - **`api_server` rebuilds the agent per request but not the memory provider.** The adapter bypasses
   `TurnRunner` and the agent cache (per-request callbacks, model route, ephemeral prompt), so
   `platforms/api_server_memory_sessions.py` parks each session's initialised `MemoryManager` between

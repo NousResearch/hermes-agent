@@ -1868,8 +1868,8 @@ def _rebind_fallback_credential_pool(agent, fb_provider: str, fb_model: str) -> 
             agent._credential_pool = agent._credential_pool_entry_id = None
     if getattr(agent, "_credential_pool", None) is None:
         try:
-            from agent.credential_pool import load_pool
-            fallback_pool = load_pool(fb_provider)
+            from agent.custom_entry_pool import load_route_pool
+            fallback_pool = load_route_pool(fb_provider, getattr(agent, "base_url", None))
             if fallback_pool and fallback_pool.has_credentials():
                 agent._credential_pool = fallback_pool
                 logger.info("Fallback to %s/%s: attached fallback credential pool", fb_provider, fb_model)

@@ -4,9 +4,10 @@
 call. That is right for a result the parent will read next time, but a failed subagent leaves the
 parent's plan stalled until a human returns: a provider refusal (``content_policy_blocked``) stopped a
 background subagent and the parent sat on the note for 48 minutes. A final delegation result with a
-failed child now runs as the parent's turn, so it can re-dispatch (on another model) or report. A
-successful result, a parent/user stop, and the early per-task notice stay notes. So do a manual cron
-run's result, a failure in a chat its viewer closed, and a failure past the unattended-wake limit.
+failed child now runs as the parent's turn, so it can re-dispatch (on another model) or report, as a
+successful one does (test_unviewed_completion_resumes_parent.py). The early per-task notice stays a
+note. So do a manual cron run's result, a failure in a chat its viewer closed, and a failure past the
+unattended-wake limit.
 """
 import pytest
 
@@ -51,9 +52,9 @@ def _notes(authority, target, name):
     (("error",), True),                     # the reported case: the only child refused
     (("timeout",), True),
     (("completed", "failed"), True),        # one failed sibling is enough
-    (("completed",), False),                # a result the parent reads next time stays a note
-    (("interrupted",), False),              # a parent/user stop is not a failure to recover from
-    (("cancelled", "completed"), False),
+    (("completed",), True),                 # a finished result resumes the parent too
+    (("interrupted",), True),               # unbounded like a success: a stop is not a failure
+    (("cancelled", "completed"), True),
 ], ids=["refused", "timeout", "mixed", "success", "interrupted", "cancelled"])
 async def test_unviewed_failed_delegation_runs_as_a_turn(tmp_path, monkeypatch, statuses, turn):
     runner, authority, ref, _actor = await _local(tmp_path, monkeypatch)
@@ -148,11 +149,12 @@ def _batch_event(status):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("stall,turn", [({"stalled_after_quiet_seconds": 600.0}, True), ({}, False)],
+@pytest.mark.parametrize("stall,failed", [({"stalled_after_quiet_seconds": 600.0}, True), ({}, False)],
                          ids=["stall-monitor", "user-stop"])
-async def test_unit_the_stall_monitor_stopped_wakes_the_parent(tmp_path, monkeypatch, stall, turn):
+async def test_unit_the_stall_monitor_stopped_wakes_the_parent(tmp_path, monkeypatch, stall, failed):
     """A stuck child that honours the stall monitor's stop reports ``interrupted``, as a user stop does:
-    the unit's stall context is what makes it a failure to recover from."""
+    the unit's stall context is what makes it a failure to recover from (bounded, and told why). Both
+    resume the parent."""
     runner, authority, ref, _actor = await _local(tmp_path, monkeypatch)
     try:
         route, target = authority.sessions[ref.session_id].route, _target(runner, authority, ref)
@@ -160,10 +162,9 @@ async def test_unit_the_stall_monitor_stopped_wakes_the_parent(tmp_path, monkeyp
         assert await runner._deliver_async_delegation_group([evt]) is True
         seen = _turns(runner, authority, target, "deleg_stall")
         await authority._drain(ref)
-        assert len(seen) == int(turn)
-        assert len(_notes(authority, target, "deleg_stall")) == int(not turn)
-        if turn:
-            assert "stall monitor stopped this unit after 600s" in seen[0][0]
+        assert len(seen) == 1 and _notes(authority, target, "deleg_stall") == []
+        assert ("stall monitor stopped this unit after 600s" in seen[0][0]) is failed
+        assert authority.sessions[ref.session_id].unattended_wakes == int(failed)
     finally:
         authority.db.close()
 

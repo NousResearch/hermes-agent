@@ -7,12 +7,21 @@ renders exactly as before), ``served_model`` (opt-in, ``alias → served``: the 
 proxy reported via ``x-litellm-model-id`` / ``x-litellm-model-api-base``, or Hermes' own fallback
 route; skipped when the served model is the requested one), ``cwd`` (home-relative). ``gateway/run.py`` appends the footer to the
 final response only (never to tool-progress or streaming partials); when streaming already
-delivered the text, it goes out as a trailing message via ``send_trailing_footer()``."""
+delivered the text, it goes out as a trailing message via ``send_trailing_footer()``.
+
+Photo replies (#74547): where the footer would be a message of its own (the trailing send after a
+streamed reply, or a reply whose only text is the footer) it rides the last photo's caption instead,
+on adapters that declare ``media_caption_limit`` (the caption length one ``send_multiple_images``
+photo renders; Telegram: 1024) and only when it fits; otherwise it is sent as before.
+``FooteredReply`` carries the footer next to the reply text to the adapter's send path."""
 
 from __future__ import annotations
 
+import dataclasses
 import os
+from pathlib import Path
 from typing import Any, Iterable, Optional
+from urllib.parse import quote
 
 _DEFAULT_FIELDS: tuple[str, ...] = ("model", "context_pct", "cwd")
 _SEP = " · "
@@ -118,3 +127,77 @@ def build_footer_line(*, user_config: dict[str, Any] | None, platform_key: str |
                                  context_length=context_length, cwd=cwd, turn_seconds=turn_seconds,
                                  requested_model=requested_model, served_model=served_model,
                                  fields=cfg.get("fields") or _DEFAULT_FIELDS)
+
+
+class FooteredReply(str):
+    """A final reply whose text ends with ``\n\n<runtime_footer>``. Plain text everywhere; any
+    rewrite yields a plain ``str`` again, so the footer then simply stays in the text."""
+    runtime_footer: str
+
+    def __new__(cls, text: str, footer: str):
+        instance = super().__new__(cls, f"{text}\n\n{footer}")
+        instance.runtime_footer = footer
+        return instance
+
+
+class _FooterCaption(str):
+    """A photo caption that carries the runtime footer (``caption_with_footer``)."""
+    runtime_footer: str
+
+
+def caption_with_footer(adapter: Any, images: list, footer: str) -> tuple[list, bool]:
+    """``(images, True)`` with ``footer`` on the last ``(url, alt)`` photo's caption when the
+    adapter declares ``media_caption_limit`` and the caption fits it (UTF-16 units). Never on an
+    animation: a GIF goes out on its own path, whose failure the batch result does not list."""
+    limit = int(getattr(adapter, "media_caption_limit", 0) or 0)
+    target = next((i for i in range(len(images) - 1, -1, -1)
+                   if not adapter._is_animation_url(images[i][0])), None) if footer and limit > 0 else None
+    if target is None:
+        return images, False
+    url, alt = images[target]
+    caption = _FooterCaption(f"{alt}\n\n{footer}" if alt else footer)
+    if len(caption.encode("utf-16-le")) // 2 > limit:
+        return images, False
+    caption.runtime_footer = footer
+    return [*images[:target], (url, caption), *images[target + 1:]], True
+
+
+def caption_landed(result: Any, images: list) -> bool:
+    """The photo whose caption carries the footer was delivered, or is queued for a re-upload that
+    carries it (``raw_response["deferred"]``: flood control; a separate footer would repeat it).
+    ``success`` means at least one photo landed, so that photo listed in ``raw_response["failed"]``
+    (``(path_or_url, error)``) took the footer with it. False when no caption carries it."""
+    url = next((u for u, alt in images if getattr(alt, "runtime_footer", "")), None)
+    raw = getattr(result, "raw_response", None)
+    raw = raw if isinstance(raw, dict) else {}
+    if url is None or url in (raw.get("deferred") or ()):
+        return url is not None
+    if not getattr(result, "success", False):
+        return False
+    from urllib.parse import unquote
+    lost = {str(item[0]) for item in raw.get("failed") or () if item}
+    return url not in lost and unquote(url.removeprefix("file://")) not in lost
+
+
+async def send_footer_unless_captioned(adapter: Any, chat_id: str, images: list, result: Any,
+                                       metadata: Any, record_delivery: Any) -> None:
+    """Non-streamed send path: the footer a photo caption carried, sent as its own message (as
+    before #74547) when that photo did not land."""
+    footer = next((alt.runtime_footer for _u, alt in images if getattr(alt, "runtime_footer", "")), "")
+    if footer and not caption_landed(result, images):
+        record_delivery(await adapter._send_with_retry(chat_id=chat_id, content=footer, metadata=metadata))
+
+
+def footer_onto_photo_caption(adapter: Any, extracted: Any, image_exts: Iterable[str]) -> Any:
+    """The adapter send path's ``_ExtractedResponse``, with a footer-only text moved onto the last
+    photo's caption (MEDIA photos join the photo batch): otherwise the footer is its own message."""
+    footer = getattr(extracted.pre_extract, "runtime_footer", "")
+    if not footer or extracted.force_document_attachments or extracted.text_content.strip() != footer.strip():
+        return extracted
+    photos = [p for p, voice in extracted.media_files if not voice and Path(p).suffix.lower() in image_exts]
+    images, attached = caption_with_footer(
+        adapter, [*extracted.images, *((f"file://{quote(p)}", "") for p in photos)], footer)
+    if not attached:
+        return extracted
+    return dataclasses.replace(extracted, text_content="", images=images,
+                               media_files=[m for m in extracted.media_files if m[0] not in photos])

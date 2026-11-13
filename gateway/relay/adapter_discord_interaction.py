@@ -107,6 +107,9 @@ class RelayDiscordInteractionMixin:
                     # A prompt-token component press is consumed (same gate as _on_inbound).
                     if await self._consume_prompt_response(event):
                         return
+                    if not self._interaction_admitted(event):
+                        logger.info("relay: Discord interaction from a sender not admitted here dropped")
+                        return
                     src = event.source
                     src.chat_name, src.chat_topic = await self._discord_chat_labels_for(
                         str(src.scope_id or ""), src.chat_id)
@@ -120,6 +123,14 @@ class RelayDiscordInteractionMixin:
             )
         except Exception:
             logger.warning("relay passthrough_forward handling failed", exc_info=True)
+
+    def _interaction_admitted(self, event) -> bool:
+        from gateway.approval_actor import runner_answer_policy
+        from gateway.relay.admitted_authors import interaction_admitted
+
+        # Identity first, as for a prompt press: the admin lookup reads the bot-owning profile's policy.
+        self._canonicalize(event.source)
+        return interaction_admitted(event, runner_answer_policy(event.source).admin_user_ids)
 
     def _discord_interaction_to_event(self, forward):
         """Convert a forwarded Discord interaction body to a MessageEvent, or None for

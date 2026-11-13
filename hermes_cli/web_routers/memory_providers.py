@@ -22,7 +22,8 @@ from hermes_cli.web_server_memory import (
     _coerce_bool, _field_default, _field_is_set, _field_value, _field_visible, _load_memory_provider, _memory_provider_manifest, _memory_provider_setup_info, _memory_provider_setup_manifest, _normalize_memory_provider_schema, _read_memory_provider_existing_values, _require_memory_provider_ready, _run_setup_command,
 )
 from hermes_cli.web_models import MemoryProviderConfigUpdate, MemoryProviderSetupRequest
-from hermes_cli.web_routers._common import _CONFIG_MUTATION_LOCK, scoped_to_thread
+from hermes_cli.config_backend import CONFIG_MUTATION_LOCK
+from hermes_cli.web_routers._common import scoped_to_thread
 from plugins.memory.config_schema import (
     STORAGE_FLAT_JSON, STORAGE_PROVIDER, ProviderConfigSchema, ProviderField, get_provider_config_schema,
 )
@@ -296,7 +297,7 @@ def _update_memory_provider_config(provider: ProviderConfigSchema, values: dict[
     if writer is None:  # an unknown kind must not fall back to writing a stray flat file
         raise ValueError(f"Memory provider {provider.name} declares unsupported config storage {provider.storage!r}")
     writer(provider, values)
-    with _CONFIG_MUTATION_LOCK:  # RMW span vs. the dashboard's config autosave
+    with CONFIG_MUTATION_LOCK:  # RMW span vs. the dashboard's config autosave
         config = load_config()
         memory_config = _memory_section(config)
         if memory_config.get("provider") != provider.name:
@@ -450,7 +451,7 @@ def _save_memory_provider_native_config(name: str, provider: Any, values: dict[s
         if _BaseMemoryProvider is None or type(provider).save_config is not _BaseMemoryProvider.save_config:
             provider.save_config(values, str(get_hermes_home()))
             return
-    with _CONFIG_MUTATION_LOCK:  # RMW span vs. the dashboard's config autosave
+    with CONFIG_MUTATION_LOCK:  # RMW span vs. the dashboard's config autosave
         cfg = load_config()
         memory_cfg = _memory_section(cfg)
         current = memory_cfg.get(name)
@@ -557,7 +558,7 @@ async def update_memory_provider_config(
             raise _unknown_provider(name)
         _write_memory_provider_config_values(name, provider, values)
         _require_memory_provider_ready(name)
-        with _CONFIG_MUTATION_LOCK:  # RMW span vs. the dashboard's config autosave
+        with CONFIG_MUTATION_LOCK:  # RMW span vs. the dashboard's config autosave
             config = load_config()
             _memory_section(config)["provider"] = name
             save_config(config)

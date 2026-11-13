@@ -23,7 +23,9 @@ def _make_adapter(monkeypatch, **extra):
             **extra,
         },
     )
-    return BlueBubblesAdapter(cfg)
+    adapter = BlueBubblesAdapter(cfg)
+    adapter.set_authorization_check(lambda *args, **kwargs: True)  # the runner wires one at startup
+    return adapter
 
 
 class TestBlueBubblesConfigLoading:
@@ -625,3 +627,35 @@ class TestBlueBubblesPluginRegistration:
         assert policy is None or not policy.text_direct
         assert not hasattr(senders, "_send_bluebubbles")
         assert all(p["key"] != "bluebubbles" for p in wiz._PLATFORMS)
+
+
+class TestBlueBubblesAttachmentAuthorization:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("verdict", [False, None])
+    async def test_attachment_from_unauthorized_sender_is_not_downloaded(self, monkeypatch, verdict):
+        adapter = _make_adapter(monkeypatch, send_read_receipts=False)
+        adapter.set_authorization_check(None if verdict is None else (lambda *args, **kwargs: verdict))
+        handled = []
+
+        async def fake_handle_message(event):
+            handled.append(event)
+
+        download = AsyncMock(return_value="/tmp/cached.jpg")
+        monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
+        monkeypatch.setattr(adapter, "_download_attachment", download)
+        response = await adapter._handle_webhook(_FakeBlueBubblesRequest({
+            "type": "new-message",
+            "data": {
+                "guid": "msg-att-stranger",
+                "text": "",
+                "handle": {"address": "+155****0199"},
+                "isFromMe": False,
+                "chats": [{"guid": "iMessage;-;+155****0199"}],
+                "attachments": [{"guid": "att-1", "mimeType": "image/jpeg"}],
+            },
+        }))
+        await asyncio.sleep(0)
+
+        assert response.status == 200
+        download.assert_not_awaited()
+        assert [e.media_urls for e in handled] == [[]]  # still dispatched so the runner can deny/pair

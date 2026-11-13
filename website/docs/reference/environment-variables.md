@@ -6,7 +6,7 @@ description: "Complete reference of all environment variables used by Hermes Age
 
 # Environment Variables Reference
 
-Hermes reads environment variables from the process environment and, for user-managed secrets, from `~/.hermes/.env`. Keep API keys, bot tokens, OAuth secrets, and other credentials in `.env`; prefer `config.yaml` for non-secret behaviour settings when a config key exists. Some variables below are process-only overrides or internal bridge variables and should not be committed to `.env` just because they are documented here.
+Hermes reads environment variables from the process environment and, for user-managed secrets, from `~/.hermes/.env`. Keep API keys, bot tokens, OAuth secrets, and other credentials in `.env`; prefer `config.yaml` for non-secret behaviour settings when a config key exists. Some variables below are process-only overrides or internal bridge variables and should not be committed to `.env` just because they are documented here. Values written by the platform YAML bridge (and the Telegram/Signal mention fallbacks) are refreshed when that config changes, including across a daemon replacement. After a successful full YAML load, a removed key also retracts its unchanged bridge-owned value; failed loads do not trigger this cleanup, and explicit process, user `.env`, or managed `.env` values still take precedence. The bridge tracks what it wrote in `HERMES_BRIDGED_<NAME>` variables holding a SHA-256 digest of the value, never the value itself, and they are removed from every agent subprocess; a process export whose value happens to equal the bridge's own earlier write is treated as the bridge's and follows `config.yaml`.
 
 ## LLM Providers
 
@@ -256,7 +256,7 @@ These variables configure the [Tool Gateway](../user-guide/features/tool-gateway
 | `TERMINAL_TIMEOUT` | Command timeout in seconds |
 | `TERMINAL_LIFETIME_SECONDS` | Max lifetime for terminal sessions in seconds |
 | `TERMINAL_CWD` | Deprecated direct override for gateway/cron terminal sessions. Prefer `terminal.cwd` in `config.yaml`; CLI still uses the launch directory. |
-| `SUDO_PASSWORD` | Enable sudo without interactive prompt |
+| `SUDO_PASSWORD` | Enable sudo without interactive prompt. Sent to the backend that runs the command; see [Sudo Support](../user-guide/features/tools.md#sudo-support) |
 
 For cloud sandbox backends, persistence is filesystem-oriented. `TERMINAL_LIFETIME_SECONDS` controls when Hermes cleans up an idle terminal session, and later resumes may recreate the sandbox rather than keep the same live processes running.
 
@@ -320,7 +320,11 @@ These are set automatically by the Docker terminal backend when `proxy.enabled: 
 | `TELEGRAM_CRON_THREAD_ID` | Forum topic ID to receive cron deliveries; overrides `TELEGRAM_HOME_CHANNEL_THREAD_ID` for cron only. Use in topic mode so replies to cron messages open a new session instead of hitting the system lobby (#24409). |
 | `TELEGRAM_WEBHOOK_URL` | Public HTTPS URL for webhook mode (enables webhook instead of polling) |
 | `TELEGRAM_WEBHOOK_PORT` | Local listen port for webhook server (default: `8443`) |
+| `TELEGRAM_WEBHOOK_HOST` | Local bind host for the webhook server. Default: unset → dual-stack bind on all interfaces (IPv4+IPv6). Set explicitly on IPv6-only deployments (e.g. Fly.io 6PN). Equivalent to `platforms.telegram.extra.webhook_host`. |
 | `TELEGRAM_WEBHOOK_SECRET` | Secret token Telegram echoes back in each update for verification. **Required whenever `TELEGRAM_WEBHOOK_URL` is set** — the gateway refuses to start without it (GHSA-3vpc-7q5r-276h). Generate with `openssl rand -hex 32`. |
+| `TELEGRAM_ALLOW_BOTS` | Allow messages from other bots to be processed (`none` = reject all bot messages, `mentions` = allow only when the bot is @mentioned, `all` = allow all bot messages; default: `none`). Equivalent to `telegram.allow_bots`. |
+| `TELEGRAM_GUEST_MODE` | Let non-allowlisted groups trigger the bot only by an explicit @mention, every turn (default: `false`). Equivalent to `telegram.guest_mode`. |
+| `TELEGRAM_OBSERVE_UNMENTIONED_GROUP_MESSAGES` | Passively observe unmentioned group messages into shared session context, in allowlisted chats/topics only (default: `false`). Equivalent to `telegram.observe_unmentioned_group_messages`. |
 | `TELEGRAM_REACTIONS` | Enable emoji reactions on messages during processing (default: `false`) |
 | `TELEGRAM_REQUIRE_MENTION` | Require an explicit trigger before responding in Telegram groups. Equivalent to `telegram.require_mention` in `config.yaml`. |
 | `TELEGRAM_MENTION_PATTERNS` | JSON array, newline-separated list, or comma-separated list of regex wake-word patterns accepted when Telegram group mention gating is enabled. Equivalent to `telegram.mention_patterns`. |
@@ -393,6 +397,7 @@ These are set automatically by the Docker terminal backend when `proxy.enabled: 
 | `WHATSAPP_HOME_CHANNEL` | Default chat ID for cron / notification delivery. |
 | `WHATSAPP_HOME_CHANNEL_NAME` | Display name for the WhatsApp home channel. |
 | `WHATSAPP_DEBUG` | Log raw message events in the bridge for troubleshooting (`true`/`false`) |
+| `HERMES_WHATSAPP_BRIDGE_TOKEN` | Set by the gateway on the bridge subprocess only (never in `.env`): the per-session secret from `platforms/whatsapp/session/.bridge-token` that every bridge HTTP route requires as a bearer token. A bridge started without it refuses to serve. |
 | `WHATSAPP_CLOUD_PHONE_NUMBER_ID` | Meta Phone Number ID from the WhatsApp Business Cloud API (15–17 digits; **not** the phone number itself) |
 | `WHATSAPP_CLOUD_ACCESS_TOKEN` | Meta access token (starts with `EAA`); temporary tokens expire after 24h, System User tokens are permanent |
 | `WHATSAPP_CLOUD_APP_SECRET` | 32-char hex app secret used to verify inbound webhook signatures |
@@ -768,7 +773,7 @@ Advanced per-platform knobs for throttling the outbound message batcher. Most us
 | `HERMES_TELEGRAM_TEXT_BATCH_SPLIT_DELAY_SECONDS` | Delay between split chunks when a single Telegram message exceeds the length limit (default: `2.0`). |
 | `HERMES_SIMPLEX_TEXT_BATCH_DELAY` | Quiet-period seconds (default: `0.8`) used to concatenate rapid-fire inbound text messages into a single MessageEvent — same pattern as Telegram's text batching. |
 | `HERMES_TELEGRAM_MEDIA_BATCH_DELAY_SECONDS` | Grace window before flushing queued Telegram media (default: `0.6`). |
-| `HERMES_TELEGRAM_FOLLOWUP_GRACE_SECONDS` | Delay before sending a follow-up after the agent finishes, to avoid racing the last stream chunk. |
+| `HERMES_TELEGRAM_FOLLOWUP_GRACE_SECONDS` | Seconds after a turn starts during which a plain Telegram text follow-up joins the queue instead of interrupting or redirecting that turn (default `3`; `0` disables the grace). Commands and media are not held. |
 | `HERMES_TELEGRAM_HTTP_CONNECT_TIMEOUT` / `_READ_TIMEOUT` / `_WRITE_TIMEOUT` / `_POOL_TIMEOUT` | Override the underlying `python-telegram-bot` HTTP timeouts (seconds). |
 | `HERMES_TELEGRAM_INIT_TIMEOUT` | Per-attempt cap (seconds) on the Telegram `initialize()` connect chain during gateway startup, so an unreachable fallback-IP chain can't block startup indefinitely (default: `30`). |
 | `HERMES_TELEGRAM_HTTP_POOL_SIZE` | Max concurrent HTTP connections to the Telegram API. |
@@ -943,7 +948,7 @@ Older configs with `compression.summary_model`, `compression.summary_provider`, 
 `AUXILIARY_WEB_EXTRACT_*` variables are obsolete: `web_extract` no longer uses an auxiliary LLM. Long pages are truncated deterministically with the full text stored on disk for `read_file` paging.
 :::
 
-For task-specific direct endpoints, Hermes uses the task's configured API key or `OPENAI_API_KEY`. It does not reuse `OPENROUTER_API_KEY` for those custom endpoints.
+For task-specific direct endpoints, Hermes uses the task's configured API key; without one, the main model's key on the main endpoint's exact origin, then `OPENAI_API_KEY` only for OpenAI hosts (`*.openai.com`, `*.openai.azure.com`) or the exact `OPENAI_BASE_URL` it is paired with. It does not reuse `OPENROUTER_API_KEY` for those custom endpoints.
 
 ## Fallback Providers (config.yaml only)
 

@@ -163,8 +163,8 @@ def _session_override_snapshot(override: dict) -> dict:
 def _resolve_channel_runtime(runner, source, model, runtime_kwargs) -> tuple[str, dict]:
     from gateway.run import _get_channel_override, _resolve_runtime_agent_kwargs_for_provider
 
-    cfg = getattr(runner, "config", None)
-    if cfg and source is not None:
+    cfg = runner._serving_channel_config(source) if source is not None else None
+    if cfg:
         ch = _get_channel_override(
             cfg, source.platform, str(source.chat_id) if source.chat_id else "",
             thread_id=str(source.thread_id) if getattr(source, "thread_id", None) else None,
@@ -491,9 +491,14 @@ class GatewayTurnPrepareMixin:
             # A binding whose sessions row is gone (deleted with foreign_keys OFF, so ON DELETE CASCADE
             # never fired) is stale, not a resume target: switching onto it lets the next peer refresh
             # re-create the row and the topic silently re-adopts an old transcript (#139283).
-            if self._session_db is not None and not await self._session_db.get_session(bound_session_id):
-                logger.warning("Telegram topic binding for %s points at session %s with no sessions row; "
-                               "keeping the current session and rebinding", session_key, bound_session_id)
+            # A binding naming a delegate subagent's row (written while the route was captured by it,
+            # #138210) is not the topic's conversation either: following it hands the user to the worker.
+            bound_row = await self._session_db.get_session(bound_session_id) if self._session_db is not None else None
+            from gateway.session_lifecycle import is_delegate_child_row
+            if self._session_db is not None and (not bound_row or is_delegate_child_row(bound_row)):
+                logger.warning("Telegram topic binding for %s points at session %s with %s; keeping the "
+                               "current session and rebinding", session_key, bound_session_id,
+                               "a delegate subagent's row" if bound_row else "no sessions row")
                 try:  # CAS on the stale id: a /new that rebound the topic during the await wins
                     await asyncio.to_thread(self._record_telegram_topic_binding, source, session_entry,
                                             expected_session_id=stored_session_id)
@@ -660,6 +665,11 @@ class GatewayTurnPrepareMixin:
 
         # One-time prompt if no home channel is set (webhooks deliver to configured targets instead).
         if not human_platform:
+            return
+        # Under allow_admin_from gating a non-admin can't run /sethome; on a customer-facing bot
+        # the nudge would only leak operator setup to the customer.
+        from gateway.slash_access import policy_for_runner_source
+        if not policy_for_runner_source(self, source).can_run(source.user_id, "sethome"):
             return
         platform_name = source.platform.value
         env_key = _home_target_env_var(platform_name)

@@ -26,6 +26,23 @@ async def ledger_bracket(adapter: Any, event: Any, session_key: str, text_conten
     return result, delivery_adapter
 
 
+async def ledger_attempted(adapter: Any, event: Any, session_key: str, text: str, error: str) -> bool:
+    """``BasePlatformAdapter.ledger_attempted_final``: ledger ``text`` on the CURRENT transport as a failed
+    row instead of sending it again, so the timed redelivery sends it once more with the duplicate marker
+    and a lost send is not silence. False when nothing was saved (ledger off, a refused reply)."""
+    saved: list[str] = []
+
+    async def _attempted(_delivery_adapter: Any, obligation_id: Optional[str]) -> Any:
+        from gateway.platforms.base import SendResult
+        if obligation_id:
+            saved.append(obligation_id)
+            logger.warning("Final for session %s may not have landed; the delivery ledger "
+                           "redelivers it with the duplicate marker", session_key)
+        return SendResult(success=False, error=error)
+    await ledger_bracket(adapter, event, session_key, text, _attempted)
+    return bool(saved)
+
+
 async def record_final_obligation(adapter: Any, event: Any, session_key: str, text_content: str,
                             delivery_adapter: Any, is_ephemeral_response: bool) -> Optional[str]:
     """Ledger the final response BEFORE the send so a crash before platform ACK redelivers on

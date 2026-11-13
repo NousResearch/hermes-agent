@@ -69,6 +69,8 @@ class Package:
         when a platform needs a completely different url.
     gaps: targets this package does NOT exist for, with the reason
         (upstream ships no artifact). Everything else is available.
+    on_demand: targets where a package that is otherwise required is optional,
+        with the reason. It stays available there; nothing requires it up front.
     """
 
     name: str = ""
@@ -79,6 +81,7 @@ class Package:
     on_path: bool = True
     url: str = ""
     gaps: dict[str, str] = {}
+    on_demand: dict[str, str] = {}
     # How the lockfile `version` field labels this package for `pm update`:
     #   "semver" — one shared version across targets (node 26.7.0, uv 0.12.3).
     #   "minor"  — the version label is major.minor; each target's exact
@@ -92,6 +95,9 @@ class Package:
 
     def missing_reason(self, target: str) -> Optional[str]:
         return self.gaps.get(target)
+
+    def is_optional(self, target: str) -> bool:
+        return self.optional or target in self.on_demand
 
     def latest_versions(self, target: str, locked: Optional[str] = None) -> list[str]:
         """Newest-first candidate versions for `target` — the "how do I find

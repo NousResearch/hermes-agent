@@ -104,11 +104,13 @@ def _caller_receives_completion(session) -> bool:
     suppressed unless handed off or ``delegation.surface_child_process_notifications`` is on). Fails
     closed: an unbound caller cannot prove ownership of a keyed process."""
     from gateway.session_context import get_session_env
+    from tools.environments.sandbox_scope import producer_fields
     from tools.process_registry import ProcessRegistry
     from tools.process_registry_notifications import should_surface_notification
     caller_key = get_session_env("HERMES_SESSION_KEY", "")
     evt = {"type": "completion", "session_id": session.id, "session_key": session.session_key,
-           "task_id": session.task_id, "owner_task_id": session.owner_task_id}
+           "task_id": session.task_id, "owner_task_id": session.owner_task_id,
+           **producer_fields(session.sandbox_key)}
     if session.session_key and not caller_key:
         return False
     return ProcessRegistry._owns_event(evt, caller_key, None, False) and should_surface_notification(evt)

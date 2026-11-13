@@ -96,7 +96,7 @@ def _mint(portal, *, aud=f"agent:{_INSTANCE}", kid=_KID, **extra) -> str:
     url, private = portal
     now = int(time.time())
     claims = {"iss": url, "aud": aud, "sub": "usr_abc", "iat": now, "exp": now + 900,
-              "oauth_contract_version": 1, **extra}
+              "oauth_contract_version": 1, "scope": "agent_dashboard:access", **extra}
     return jwt.encode(claims, private, algorithm="RS256", headers={"kid": kid})
 
 

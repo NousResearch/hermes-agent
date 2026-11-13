@@ -1,24 +1,10 @@
 name: cardworthscanner
-description: "TCG Price, Centering Ratio & PSA Grading ROI Engine for Pokemon and Yu-Gi-Oh!"
-version: "1.0.1"
-author: "AbigailDavised"
-homepage: "https://cardworthscanner.com"
-repository: "https://github.com/AbigailDavised/cardworthscanner-mcp"
-mcp:
-  type: "streamable-http"
-  url: "https://cardworthscanner.com/api/mcp"
-tools:
-  - calculate_psa_grading_roi
-  - calculate_card_centering_grade
-  - lookup_tcg_card_market_price
-  - lookup_psa_bgs_cgc_grading_standards
-  - identify_vintage_pokemon_edition_markers
-  - compare_card_grading_company_tiers
-  - estimate_ebay_tcgplayer_seller_net_payout
-  - check_card_sleeve_and_holder_dimensions
-tags:
-  - "tcg"
-  - "pokemon"
-  - "psa-grading"
-  - "collectibles"
-  - "arbitrage"
+repo: https://github.com/AbigailDavised/cardworthscanner-mcp
+sha: b45c23ed10e2f96b37c3029353bc72929fe6e91b
+title: CardWorthScanner
+description: PSA/BGS/CGC trading card grading ROI calculator, centering inspector and TCG market valuation (Pokemon, Yu-Gi-Oh!) via the hosted CardWorthScanner MCP server.
+maintainer: AbigailDavised
+tier: community
+category: tools
+docs_url: https://github.com/AbigailDavised/cardworthscanner-mcp#readme
+version: "1.0.2"

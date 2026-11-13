@@ -268,3 +268,38 @@ def test_init_fallback_to_anthropic_builds_the_native_client():
         assert agent._primary_runtime["api_mode"] == "anthropic_messages"
         assert agent._primary_runtime["anthropic_api_key"] == "sk-ant-fallback-1234567890"
         assert agent._primary_runtime["anthropic_base_url"] == "https://api.anthropic.com"
+
+
+def test_init_anthropic_fallback_snapshots_the_routed_base_url():
+    """#150445: init fallback must retain the resolved endpoint, not the dead primary's URL.
+
+    The native SDK can be built successfully while agent.base_url stays at the exhausted
+    Codex route's None and _primary_runtime therefore snapshots the wrong endpoint.
+    """
+    fallback_url = "https://api.anthropic.com"
+    fb_client = _mock_client(api_key="sk-ant-fallback-1234567890", base_url=fallback_url)
+
+    def fake_resolve(provider, model=None, raw_codex=False,
+                     explicit_base_url=None, explicit_api_key=None):
+        if provider == "anthropic":
+            return fb_client, "claude-opus-4-6"
+        return None, None  # exhausted Codex primary
+
+    with patch("agent.auxiliary_client.resolve_provider_client", side_effect=fake_resolve), \
+         patch("agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()), \
+         patch("model_tools.get_tool_definitions", return_value=_make_tool_defs()), \
+         patch("model_tools.check_toolset_requirements", return_value={}), \
+         patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()):
+        agent = AIAgent(
+            provider="openai-codex",
+            model="gpt-5.4",
+            api_key=None,
+            base_url=None,
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+            fallback_model=[{"provider": "anthropic", "model": "claude-opus-4-6"}],
+        )
+
+    assert agent.base_url == fallback_url
+    assert agent._primary_runtime["base_url"] == fallback_url

@@ -806,10 +806,12 @@ def _routed_client_kwargs(agent, fallback_model, _provider_timeout) -> Optional[
         if getattr(agent, "api_mode", None) == "anthropic_messages":
             # The fallback speaks the Anthropic wire (#141486, #150445): build the native client,
             # as the per-turn fallback does, instead of an OpenAI client for the dead primary.
+            # Keep the selected route identity and runtime snapshot on the same endpoint as the SDK.
+            agent.base_url = str(_fb_client.base_url)
             _key_provider = vars(_fb_client).get("_api_key_provider")
             _init_anthropic_client(
                 agent, _key_provider if callable(_key_provider) else _fb_client.api_key,
-                str(_fb_client.base_url), _provider_timeout,
+                agent.base_url, _provider_timeout,
             )
             return None
         return _client_kwargs_from_routed(_fb_client, _provider_timeout)

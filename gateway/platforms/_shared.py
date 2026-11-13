@@ -212,6 +212,7 @@ class _YamlEnvLoad:
     # name -> (value, marker) before this load's first write: a load that raises restores them, so the
     # adapter (last good lists) and the runner (process env) never check different policies.
     prior: dict[str, tuple[Optional[str], Optional[str]]] = field(default_factory=dict)
+    undo: list[Callable[[], None]] = field(default_factory=list)  # ownership state kept outside the env
 
     def restore(self) -> None:
         for name, values in self.prior.items():
@@ -220,6 +221,8 @@ class _YamlEnvLoad:
                     os.environ.pop(key, None)
                 else:
                     os.environ[key] = value
+        for undo in self.undo:
+            undo()
 
 
 # Loads are synchronous; copied contexts must not inherit another thread's partial seen-set.
@@ -263,6 +266,16 @@ def yaml_env_refresh():
                         os.environ.pop(marker, None)
         finally:
             del _YAML_ENV_LOAD.current
+
+
+def record_yaml_env_prior(name: str, undo: Callable[[], None]) -> None:
+    """Record *name* before a bridge writes it outside :func:`yaml_env_setter` (the allow-all grant),
+    so a load that raises restores it and runs *undo* to roll back that writer's ownership flag."""
+    with _YAML_ENV_LOCK:
+        load = getattr(_YAML_ENV_LOAD, "current", None)
+        if load is not None and name not in load.prior:
+            load.prior[name] = (os.getenv(name), os.getenv(bridged_env_marker(name)))
+            load.undo.append(undo)
 
 
 def yaml_env_setter(*, fallback: bool = False) -> Callable[[str, Any], None]:

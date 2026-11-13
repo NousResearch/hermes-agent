@@ -352,6 +352,25 @@ def test_a_load_that_raises_leaves_the_bridged_env_as_it_was(_home):
     assert os.environ["DISCORD_ALLOWED_USERS"] == "111"
 
 
+def test_a_load_that_raises_leaves_the_allow_all_grant_as_it_was(_home, monkeypatch):
+    """``allow_all_users: true`` added in the same edit as a later-stage failure must not stay
+    published: the adapter keeps its last good lists, so the runner's allow-all check must too."""
+    from gateway import config_loader
+
+    monkeypatch.setattr(config_loader, "_BRIDGED_ALLOW_ALL_USERS", False)
+    _write(_home, {"allow_from": ["111"]})
+    load_gateway_config()
+    (_home / "config.yaml").write_text(yaml.safe_dump(
+        {"allow_all_users": True, "require_mention": True, "telegram": True}), encoding="utf-8")
+    with pytest.raises(TypeError):
+        load_gateway_config(strict=True)
+    assert os.environ.get("GATEWAY_ALLOW_ALL_USERS") is None
+    monkeypatch.setenv("GATEWAY_ALLOW_ALL_USERS", "1")  # the operator's own grant, set afterwards
+    _write(_home, {"allow_from": ["111"]})
+    load_gateway_config()
+    assert (os.environ.get("GATEWAY_ALLOW_ALL_USERS"), config_loader.bridged_allow_all_users()) == ("1", None)
+
+
 def test_an_edit_made_while_the_adapter_starts_up_still_applies(_home):
     """Startup loads the config, then spends time on dependencies before connect marks the baseline;
     a role removed in that gap must be refused, so the baseline is the version that built the gates."""

@@ -7,6 +7,7 @@ silently replaced by the nested one. Both overwrite whatever legacy gateway.json
 """
 
 import contextlib
+import functools
 import json
 import logging
 import os
@@ -57,6 +58,11 @@ _BRIDGED_ALLOW_ALL_USERS = False
 def bridged_allow_all_users() -> Optional[str]:
     """``os.environ['GATEWAY_ALLOW_ALL_USERS']`` when it is the bridge's own write, else None."""
     return os.environ.get("GATEWAY_ALLOW_ALL_USERS") if _BRIDGED_ALLOW_ALL_USERS else None
+
+
+def _set_bridged_allow_all(owned: bool) -> None:
+    global _BRIDGED_ALLOW_ALL_USERS
+    _BRIDGED_ALLOW_ALL_USERS = owned
 
 
 def drop_bridged_env(env: dict) -> dict:
@@ -440,7 +446,7 @@ def bridge_core_env_settings(yaml_cfg: dict, platforms_data: dict) -> None:
     sets ``GATEWAY_ALLOW_ALL_USERS`` in its own ``.env`` like every other scoped authorization gate.
     """
     global _BRIDGED_ALLOW_ALL_USERS
-    from gateway.platforms._shared import profile_scoped, yaml_env_setter
+    from gateway.platforms._shared import profile_scoped, record_yaml_env_prior, yaml_env_setter
 
     skip_env_bridge = profile_scoped()
     set_env = yaml_env_setter(fallback=True)
@@ -452,6 +458,7 @@ def bridge_core_env_settings(yaml_cfg: dict, platforms_data: dict) -> None:
     # false + reload); an operator's explicit env var still wins. Only a truthy grant is exported:
     # presence-based readers treat any non-empty value as "auth configured".
     if not skip_env_bridge and (_BRIDGED_ALLOW_ALL_USERS or not os.getenv("GATEWAY_ALLOW_ALL_USERS")):
+        record_yaml_env_prior("GATEWAY_ALLOW_ALL_USERS", functools.partial(_set_bridged_allow_all, _BRIDGED_ALLOW_ALL_USERS))
         _BRIDGED_ALLOW_ALL_USERS = str(allow_all).lower() in {"true", "1", "yes"}
         if _BRIDGED_ALLOW_ALL_USERS:
             os.environ["GATEWAY_ALLOW_ALL_USERS"] = "true"

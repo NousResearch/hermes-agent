@@ -477,8 +477,8 @@ def _outcome(job: _ForkJob, fork: Any, result: Any, timed_out: threading.Event) 
 def _run_job(job: _ForkJob) -> None:
     """Worker body, in the captured turn context (profile + secret scope)."""
     from agent.background_review import (
-        _bg_review_auto_deny, _digest_history, _interrupt_background_review, _set_thread_approval_callback,
-        build_cache_parity_fork, finish_background_review_run, release_cache_parity_fork,
+        _bg_review_auto_deny, _digest_history, _interrupt_background_review, _review_input_token_budget,
+        _set_thread_approval_callback, build_cache_parity_fork, finish_background_review_run, release_cache_parity_fork,
     )
     from agent.auxiliary_hooks import end_loop_aux_attempt
     from agent.side_question import trim_snapshot_for_fork
@@ -509,10 +509,11 @@ def _run_job(job: _ForkJob) -> None:
             if not routed:
                 _pin_capture(fork, capture)
             fork.session_id = capture.session_id
-            budget = fork._review_input_token_budget
-            if job.input_budget is not None:
-                budget = min(job.input_budget, budget) if budget else job.input_budget
-            fork._review_input_token_budget = budget
+            # The ceiling is the user's own review bound (auxiliary.background_review), never the
+            # fork's routing block: that is {} without ``task`` and the plugin's own defaults with one.
+            bounds = [b for b in (fork._review_input_token_budget, _review_input_token_budget(None, fork),
+                                  job.input_budget) if b]
+            fork._review_input_token_budget = min(bounds) if bounds else None
             fork._loop_aux_task = (PLUGIN_FORK_TASK, {"plugin_id": job.plugin_id})
             _track_child(parent, fork, register=True)
             # The allowlist is read again here, against the live session agent and the fork that

@@ -268,6 +268,22 @@ def test_pnpm_section_reads_an_explicit_key():
         section(explicit.replace("  : dependencies:", "    dependencies:"), "snapshots")
 
 
+def test_pnpm_explicit_quoted_file_key_preserves_embedded_colon_space():
+    from scripts.ci.pnpm_lock import section, section_keys
+
+    # POSIX file: paths can contain ": ", so js-yaml quotes their keys.
+    # Real pnpm switches to an explicit mapping key above 1024 characters.
+    path = "/".join(["a" * 150] * 7) + "/package: with space"
+    key = f"ms@file:vendor/{path}"
+    assert len(key) > 1024
+    old = "  ms@2.1.2:\\n    resolution:".replace("\\n", "\n")
+    assert REPIN_HEAD.count(old) == 1
+    explicit = REPIN_HEAD.replace(old, f"  ? '{key}'\\n  : resolution:".replace("\\n", "\n"), 1)
+
+    assert key in section(explicit, "packages")
+    assert key in section_keys(explicit, "packages")
+
+
 @pytest.mark.parametrize(("old", "new"), [
     ("    dependencies:\n      ms:\n        specifier: 2.1.3\n        version: 2.1.3\n",
      "    dependencies: {ms: {specifier: 2.1.3, version: 2.1.3}}\n"),  # a flow map

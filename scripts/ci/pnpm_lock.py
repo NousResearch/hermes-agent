@@ -10,7 +10,6 @@ from __future__ import annotations
 import json
 import re
 
-_KEY = re.compile(r"^  (\S.*?):(?: .*)?$")
 # A key (quoted, or plain up to the first ``: ``) and its inline value, if any.
 _ENTRY = re.compile(r"""^('(?:[^']|'')*'|"(?:[^"\\]|\\.)*"|[^'"\s].*?):(?: (.*))?$""")
 # Any top-level key (plain, or quoted as pnpm's emitter quotes ambiguous keys) ends
@@ -126,7 +125,7 @@ def section_keys(text: str, name: str) -> list[str]:
     for line in _section_lines(text, name):
         if not line.strip() or line.startswith("   "):
             continue  # blank separators and each entry's own fields
-        match = _KEY.match(line)
+        match = _ENTRY.match(line[2:]) if line.startswith("  ") else None
         if not match:
             raise ValueError(f"pnpm-lock.yaml: unreadable {name} line: {line}")
         keys.append(_unquote(match[1]))

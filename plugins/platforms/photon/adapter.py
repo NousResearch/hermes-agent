@@ -50,7 +50,7 @@ from utils import atomic_json_write
 from .auth import load_project_credentials
 # Sidecar dir resolution is lazy (never at import): it probes the filesystem and may
 # mirror files. Tests monkeypatch sidecar_paths._SIDECAR_DIR.
-from .sidecar_paths import _NPM_ERROR_LOG_MAX_CHARS, _lock_newer_than_install, _npm_error_log, _sidecar_dir
+from .sidecar_paths import _PNPM_ERROR_LOG_MAX_CHARS, _lock_newer_than_install, _pnpm_error_log, _sidecar_dir
 from .sidecar_paths import dir_writable as _dir_writable
 from hermes_constants import find_node_executable, with_hermes_node_path
 import contextlib
@@ -71,7 +71,7 @@ _RUNTIME_RECORD_NAME = "photon-sidecar.json"
 _DEDUP_MAX_SIZE = 4000  # the gRPC stream is at-least-once and a reconnect can replay
 _DEDUP_WINDOW_SECONDS = 48 * 3600
 _FFFC_WAIT_SECONDS = 15.0  # wait for the real attachment after a U+FFFC placeholder
-_NPM_REINSTALL_TIMEOUT = 600  # a wedged self-heal `npm ci` must not stall connect indefinitely
+_PNPM_REINSTALL_TIMEOUT = 600  # a wedged self-heal `pnpm install` must not stall connect indefinitely
 # Photon / Envoy / spectrum-ts substrings meaning transient upstream overload.
 _PHOTON_RETRYABLE_PATTERNS = (
     "internal sidecar error", "upstream connect error", "upstream unavailable", "connection dropped",
@@ -216,7 +216,7 @@ def _sidecar_error_from_response(path: str, status_code: int, text: str,
 
 def sidecar_deps_installed() -> bool:
     """True when spectrum-ts is present under node_modules/ (not just node_modules/
-    itself: npm creates it before aborting on ENOSPC/timeout/EACCES)."""
+    itself: pnpm creates it before aborting on ENOSPC/timeout/EACCES)."""
     return (_sidecar_dir() / "node_modules" / "spectrum-ts").exists()
 
 
@@ -243,32 +243,32 @@ def check_requirements() -> bool:
         return False
     if not sidecar_deps_installed():
         # spectrum-ts not installed yet, or node_modules/ was partially created
-        # by an aborted npm install (ENOSPC, network timeout, EACCES).
+        # by an aborted pnpm install (ENOSPC, network timeout, EACCES).
         # Checking spectrum-ts presence — not just node_modules/ existence —
         # prevents a false positive where an empty/broken node_modules/ dir
         # causes check_requirements() to return True while the sidecar crashes
         # at runtime with an unrelated-looking missing-module error.
         #
-        # NS-606: if we can self-install at connect time — npm on PATH and
+        # NS-606: if we can self-install at connect time — pnpm on PATH and
         # the (resolved, possibly mirrored) sidecar dir is writable — report
         # available so the gateway creates the adapter and ``_start_sidecar``
         # cold-installs from the committed lockfile (on hosted images the
         # user has no CLI to run `hermes photon setup`, so the connect path
         # must self-heal). Otherwise keep returning False so
         # `hermes setup` / status surface the missing-deps state.
-        if (find_node_executable("npm") or can_prepare) and _dir_writable(_sidecar_dir()):
+        if (find_node_executable("pnpm") or can_prepare) and _dir_writable(_sidecar_dir()):
             return True
         # DEBUG, not WARNING: normal pre-setup state, and check_fn is polled from hot paths.
-        npm_error = ""
+        pnpm_error = ""
         with contextlib.suppress(OSError):
-            if _npm_error_log().exists():
-                npm_error = _npm_error_log().read_text(encoding="utf-8-sig").strip()[:_NPM_ERROR_LOG_MAX_CHARS]
-        if npm_error:
+            if _pnpm_error_log().exists():
+                pnpm_error = _pnpm_error_log().read_text(encoding="utf-8-sig").strip()[:_PNPM_ERROR_LOG_MAX_CHARS]
+        if pnpm_error:
             logger.debug(
                 "photon: spectrum-ts not installed at %s "
-                "(last npm error: %s) — run: hermes photon setup",
+                "(last pnpm error: %s) — run: hermes photon setup",
                 _sidecar_dir(),
-                npm_error,
+                pnpm_error,
             )
         else:
             logger.debug(
@@ -288,39 +288,39 @@ def _sidecar_deps_stale() -> bool:
 def _reinstall_sidecar_deps() -> None:
     """Reinstall the sidecar's node_modules from the lockfile (blocking).
 
-    Mirrors ``hermes photon install-sidecar``: ``npm ci`` for an exact,
-    reproducible install, falling back to ``npm install`` if the lockfile is
-    missing or drifted. Runs the postinstall patch as part of the install.
-    Best-effort — a failure here just leaves the (stale) deps in place and the
-    normal ``_start_sidecar`` readiness check reports the real error.
+    Mirrors ``hermes photon install-sidecar``: ``pnpm install --frozen-lockfile``
+    for an exact, reproducible install, falling back to ``pnpm install`` if the
+    lockfile is missing or drifted. Runs the postinstall patch as part of the
+    install. Best-effort — a failure here just leaves the (stale) deps in place
+    and the normal ``_start_sidecar`` readiness check reports the real error.
     """
     import pm
 
     try:
-        npm = find_node_executable("npm")
+        pnpm = find_node_executable("pnpm")
         env = with_hermes_node_path()
-        if npm is None:
-            env = pm.ensure("npm").env
-            installed = pm.installed_package("npm")
+        if pnpm is None:
+            env = pm.ensure("pnpm").env
+            installed = pm.installed_package("pnpm")
             if installed is None or installed.binary is None:
-                raise pm.InstallError("npm", "ensured but no selected binary was recorded")
-            npm = str(installed.binary)
+                raise pm.InstallError("pnpm", "ensured but no selected binary was recorded")
+            pnpm = str(installed.binary)
     except pm.InstallError as exc:
         logger.warning("[photon] cannot prepare sidecar dependencies: %s", exc)
         return
     from hermes_cli._subprocess_compat import windows_hide_flags  # no console flash on Windows
 
-    def _run(verb: str) -> subprocess.CompletedProcess:
+    def _run(*args: str) -> subprocess.CompletedProcess:
         return subprocess.run(
-            [npm, verb], stdin=subprocess.DEVNULL, cwd=str(_sidecar_dir()), capture_output=True, text=True, encoding="utf-8",
-            errors="replace", check=False, env=env, timeout=_NPM_REINSTALL_TIMEOUT, creationflags=windows_hide_flags())
+            [pnpm, *args], stdin=subprocess.DEVNULL, cwd=str(_sidecar_dir()), capture_output=True, text=True, encoding="utf-8",
+            errors="replace", check=False, env=env, timeout=_PNPM_REINSTALL_TIMEOUT, creationflags=windows_hide_flags())
     try:
-        result = _run("ci")
+        result = _run("install", "--frozen-lockfile")
         if result.returncode != 0:
-            logger.warning("[photon] sidecar `npm ci` failed; falling back to `npm install`")
+            logger.warning("[photon] sidecar `pnpm install --frozen-lockfile` failed; falling back to `pnpm install`")
             result = _run("install")
     except subprocess.TimeoutExpired:  # retried on the next reconnect tick
-        logger.error("[photon] sidecar dependency reinstall timed out after %ss", _NPM_REINSTALL_TIMEOUT)
+        logger.error("[photon] sidecar dependency reinstall timed out after %ss", _PNPM_REINSTALL_TIMEOUT)
         return
     if result.returncode == 0:
         logger.info("[photon] sidecar dependencies reinstalled from lockfile")
@@ -1020,8 +1020,8 @@ class PhotonAdapter(BasePlatformAdapter):
                 # Deterministic on immutable images — non-retryable so it doesn't spin silently.
                 raise PhotonSidecarStartupError(
                     f"Photon sidecar deps could not be installed into "
-                    f"{_sidecar_dir()} (see log for the npm error). "
-                    f"Run: cd {_sidecar_dir()} && npm ci   (or `hermes photon setup`)",
+                    f"{_sidecar_dir()} (see log for the pnpm error). "
+                    f"Run: cd {_sidecar_dir()} && pnpm install --frozen-lockfile   (or `hermes photon setup`)",
                     code="SIDECAR_DEPS_MISSING", retryable=False)
         # `hermes update` bumps the lockfile without reinstalling node_modules; the sidecar
         # would spawn against stale deps and die on every reconnect.

@@ -237,7 +237,7 @@ of every suite that reads it.
 | ↳ Deny unrelated histories (step) | | `pull_request` only | push, dispatch, release |
 | ↳ Check contributors (step) | | `python` or `catalog` | neither |
 | ↳ Check uv.lock (step) | | `uv_lock` | neither lockfile nor pyproject changed |
-| ↳ JS lockfile diff, `pnpm-lock.yaml` and the sidecar's `package-lock.json` (advisory steps) | | PR and `npm_lock` | push, or no lockfile change |
+| ↳ JS lockfile diff, the `pnpm-lock.yaml` files (advisory steps) | | PR and `npm_lock` | push, or no lockfile change |
 | ↳ Prompt surface diff (advisory steps) | | PR and `python` | push, or no Python change |
 | ↳ Lint Docker scripts (steps) | | `docker_meta` | no Docker meta change |
 | ↳ Supply-chain scan / PyPI upper bounds (steps) | | PR and `scan` / `deps` | push, or neither lane |

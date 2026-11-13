@@ -31,7 +31,7 @@ Lanes:
   PyPI, so a diff that touches neither ``pyproject.toml`` nor ``uv.lock``
   must not run it.
 * ``npm_lock``    — semantic JS lockfile diff PR comment (pnpm-lock.yaml and
-  the Photon sidecar's package-lock.json).
+  the standalone projects' pnpm-lock.yaml files).
 * ``bootstrap``   — the bootstrap installer lane: install.sh sandbox install,
   pin-fragment drift check, and shipped version-stamp verification.
 * ``desktop_updater`` — the Windows desktop-update hand-off script and the

@@ -1,14 +1,14 @@
-"""Regression tests for the npm stderr capture + error log persistence fix.
+"""Regression tests for the pnpm stderr capture + error log persistence fix.
 
 Each test covers a specific failure vector introduced by the Risk 3 solution:
 
 1. _install_sidecar() return code unchanged — still 0 on success, non-zero on failure
-2. _install_sidecar() with no npm on PATH — still returns 1, no OSError on log write
-3. _NPM_ERROR_LOG write fails (OSError / read-only fs) — silently handled, no exception
-4. _NPM_ERROR_LOG read fails in check_requirements() — silently handled, returns False
-5. _NPM_ERROR_LOG is empty string — not written, check_requirements() falls back gracefully
-6. _NPM_ERROR_LOG from prior failed run exists when next run succeeds — cleared
-7. check_requirements() with no _NPM_ERROR_LOG — debug log still emitted without error detail
+2. _install_sidecar() with no pnpm on PATH — still returns 1, no OSError on log write
+3. _PNPM_ERROR_LOG write fails (OSError / read-only fs) — silently handled, no exception
+4. _PNPM_ERROR_LOG read fails in check_requirements() — silently handled, returns False
+5. _PNPM_ERROR_LOG is empty string — not written, check_requirements() falls back gracefully
+6. _PNPM_ERROR_LOG from prior failed run exists when next run succeeds — cleared
+7. check_requirements() with no _PNPM_ERROR_LOG — debug log still emitted without error detail
 8. proc.stderr is None (edge case on some platforms) — no AttributeError, no crash
 """
 from __future__ import annotations
@@ -36,13 +36,13 @@ _requires_node = pytest.mark.skipif(
 def test_regression_return_code_zero_on_success(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """_install_sidecar() must still return 0 on npm success."""
-    monkeypatch.setattr(cli_mod, "find_node_executable", lambda _: "/usr/bin/npm")
+    """_install_sidecar() must still return 0 on pnpm success."""
+    monkeypatch.setattr(cli_mod, "find_node_executable", lambda _: "/usr/bin/pnpm")
     monkeypatch.setattr(
         cli_mod.subprocess, "run",
         lambda cmd, **kw: types.SimpleNamespace(returncode=0, stderr=""),
     )
-    monkeypatch.setattr(sidecar_paths, "_NPM_ERROR_LOG", tmp_path / ".photon-npm-error.log")
+    monkeypatch.setattr(sidecar_paths, "_PNPM_ERROR_LOG", tmp_path / ".photon-pnpm-error.log")
     assert cli_mod._install_sidecar() == 0
 
 
@@ -53,13 +53,13 @@ def test_regression_return_code_zero_on_success(
 def test_regression_oserror_on_log_write_does_not_propagate(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """If writing _NPM_ERROR_LOG raises OSError (read-only fs, permission denied),
+    """If writing _PNPM_ERROR_LOG raises OSError (read-only fs, permission denied),
     _install_sidecar() must NOT propagate the exception — it still returns the
-    npm exit code."""
+    pnpm exit code."""
     def _bad_log_write(*args, **kwargs):
         raise OSError("read-only file system")
 
-    error_log = tmp_path / ".photon-npm-error.log"
+    error_log = tmp_path / ".photon-pnpm-error.log"
     # Monkey-patch write_text on the Path object via a subclass
     class _UnwritablePath(type(error_log)):
         def write_text(self, *a, **kw):
@@ -69,15 +69,15 @@ def test_regression_oserror_on_log_write_does_not_propagate(
         def exists(self):
             return False
 
-    monkeypatch.setattr(cli_mod, "find_node_executable", lambda _: "/usr/bin/npm")
+    monkeypatch.setattr(cli_mod, "find_node_executable", lambda _: "/usr/bin/pnpm")
     monkeypatch.setattr(
         cli_mod.subprocess, "run",
-        lambda cmd, **kw: types.SimpleNamespace(returncode=1, stderr="npm ERR!"),
+        lambda cmd, **kw: types.SimpleNamespace(returncode=1, stderr="pnpm ERR!"),
     )
-    monkeypatch.setattr(sidecar_paths, "_NPM_ERROR_LOG", _UnwritablePath(error_log))
+    monkeypatch.setattr(sidecar_paths, "_PNPM_ERROR_LOG", _UnwritablePath(error_log))
 
     rc = cli_mod._install_sidecar()
-    assert rc == 1  # still returns the npm exit code
+    assert rc == 1  # still returns the pnpm exit code
 
 
 # ---------------------------------------------------------------------------
@@ -92,20 +92,20 @@ def test_regression_oserror_on_log_write_does_not_propagate(
 def test_regression_empty_stderr_does_not_write_log(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """If npm fails but stderr is empty (some npm versions), _NPM_ERROR_LOG must
+    """If pnpm fails but stderr is empty (some pnpm versions), _PNPM_ERROR_LOG must
     NOT be written — an empty file would mislead check_requirements()."""
-    error_log = tmp_path / ".photon-npm-error.log"
-    monkeypatch.setattr(cli_mod, "find_node_executable", lambda _: "/usr/bin/npm")
+    error_log = tmp_path / ".photon-pnpm-error.log"
+    monkeypatch.setattr(cli_mod, "find_node_executable", lambda _: "/usr/bin/pnpm")
     monkeypatch.setattr(
         cli_mod.subprocess, "run",
         lambda cmd, **kw: types.SimpleNamespace(returncode=1, stderr=""),
     )
-    monkeypatch.setattr(sidecar_paths, "_NPM_ERROR_LOG", error_log)
+    monkeypatch.setattr(sidecar_paths, "_PNPM_ERROR_LOG", error_log)
 
     cli_mod._install_sidecar()
 
     assert not error_log.exists(), (
-        "_NPM_ERROR_LOG must not be created when stderr is empty"
+        "_PNPM_ERROR_LOG must not be created when stderr is empty"
     )
 
 
@@ -116,21 +116,21 @@ def test_regression_empty_stderr_does_not_write_log(
 def test_regression_permissionerror_on_success_unlink_does_not_propagate(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """A successful npm install must still return 0 even if deleting the
-    stale _NPM_ERROR_LOG raises something other than FileNotFoundError
+    """A successful pnpm install must still return 0 even if deleting the
+    stale _PNPM_ERROR_LOG raises something other than FileNotFoundError
     (e.g. PermissionError on a locked file) — the unlink is best-effort."""
-    error_log = tmp_path / ".photon-npm-error.log"
+    error_log = tmp_path / ".photon-pnpm-error.log"
 
     class _UnremovablePath(type(error_log)):
         def unlink(self, *a, **kw):
             raise PermissionError("access denied")
 
-    monkeypatch.setattr(cli_mod, "find_node_executable", lambda _: "/usr/bin/npm")
+    monkeypatch.setattr(cli_mod, "find_node_executable", lambda _: "/usr/bin/pnpm")
     monkeypatch.setattr(
         cli_mod.subprocess, "run",
         lambda cmd, **kw: types.SimpleNamespace(returncode=0, stderr=""),
     )
-    monkeypatch.setattr(sidecar_paths, "_NPM_ERROR_LOG", _UnremovablePath(error_log))
+    monkeypatch.setattr(sidecar_paths, "_PNPM_ERROR_LOG", _UnremovablePath(error_log))
 
     rc = cli_mod._install_sidecar()
     assert rc == 0  # PermissionError on cleanup must not fail the install
@@ -139,23 +139,23 @@ def test_regression_permissionerror_on_success_unlink_does_not_propagate(
 def test_regression_long_stderr_truncated_before_write(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """A huge npm stderr must be bounded before it hits disk, not just when
-    read back later — otherwise a verbose npm failure writes an unbounded
+    """A huge pnpm stderr must be bounded before it hits disk, not just when
+    read back later — otherwise a verbose pnpm failure writes an unbounded
     file to the sidecar directory on every retry."""
-    error_log = tmp_path / ".photon-npm-error.log"
-    huge_stderr = "npm ERR! " + ("x" * 10_000)
+    error_log = tmp_path / ".photon-pnpm-error.log"
+    huge_stderr = "pnpm ERR! " + ("x" * 10_000)
 
-    monkeypatch.setattr(cli_mod, "find_node_executable", lambda _: "/usr/bin/npm")
+    monkeypatch.setattr(cli_mod, "find_node_executable", lambda _: "/usr/bin/pnpm")
     monkeypatch.setattr(
         cli_mod.subprocess, "run",
         lambda cmd, **kw: types.SimpleNamespace(returncode=1, stderr=huge_stderr),
     )
-    monkeypatch.setattr(sidecar_paths, "_NPM_ERROR_LOG", error_log)
+    monkeypatch.setattr(sidecar_paths, "_PNPM_ERROR_LOG", error_log)
 
     cli_mod._install_sidecar()
 
     written = error_log.read_text(encoding="utf-8")
-    assert len(written) <= cli_mod._NPM_ERROR_LOG_MAX_CHARS
+    assert len(written) <= cli_mod._PNPM_ERROR_LOG_MAX_CHARS
 
 
 def test_regression_none_stderr_does_not_crash(
@@ -163,12 +163,12 @@ def test_regression_none_stderr_does_not_crash(
 ) -> None:
     """On some platforms/configurations proc.stderr can be None even with
     stderr=PIPE (e.g. encoding errors).  _install_sidecar() must handle this."""
-    monkeypatch.setattr(cli_mod, "find_node_executable", lambda _: "/usr/bin/npm")
+    monkeypatch.setattr(cli_mod, "find_node_executable", lambda _: "/usr/bin/pnpm")
     monkeypatch.setattr(
         cli_mod.subprocess, "run",
         lambda cmd, **kw: types.SimpleNamespace(returncode=1, stderr=None),
     )
-    monkeypatch.setattr(sidecar_paths, "_NPM_ERROR_LOG", tmp_path / ".photon-npm-error.log")
+    monkeypatch.setattr(sidecar_paths, "_PNPM_ERROR_LOG", tmp_path / ".photon-pnpm-error.log")
 
     rc = cli_mod._install_sidecar()
     assert rc == 1  # must not raise AttributeError
@@ -181,19 +181,19 @@ def test_regression_none_stderr_does_not_crash(
 def test_regression_stale_log_not_surfaced_after_successful_reinstall(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """If npm install succeeds on a retry but a stale _NPM_ERROR_LOG from the
+    """If pnpm install succeeds on a retry but a stale _PNPM_ERROR_LOG from the
     prior failed run still exists, check_requirements() must NOT surface the
     stale error after the successful reinstall clears it."""
-    error_log = tmp_path / ".photon-npm-error.log"
-    error_log.write_text("stale: npm ERR! old failure", encoding="utf-8")
+    error_log = tmp_path / ".photon-pnpm-error.log"
+    error_log.write_text("stale: pnpm ERR! old failure", encoding="utf-8")
 
     # Successful reinstall clears the log
-    monkeypatch.setattr(cli_mod, "find_node_executable", lambda _: "/usr/bin/npm")
+    monkeypatch.setattr(cli_mod, "find_node_executable", lambda _: "/usr/bin/pnpm")
     monkeypatch.setattr(
         cli_mod.subprocess, "run",
         lambda cmd, **kw: types.SimpleNamespace(returncode=0, stderr=""),
     )
-    monkeypatch.setattr(sidecar_paths, "_NPM_ERROR_LOG", error_log)
+    monkeypatch.setattr(sidecar_paths, "_PNPM_ERROR_LOG", error_log)
     cli_mod._install_sidecar()
     assert not error_log.exists(), "Success must clear the stale error log"
 
@@ -203,7 +203,7 @@ def test_regression_stale_log_not_surfaced_after_successful_reinstall(
     monkeypatch.setattr(adapter_mod, "HTTPX_AVAILABLE", True)
     monkeypatch.setattr(adapter_mod, "find_node_executable", lambda _name: "/pm/node")
     monkeypatch.setattr(sidecar_paths, "_SIDECAR_DIR", tmp_path)
-    monkeypatch.setattr(sidecar_paths, "_NPM_ERROR_LOG", error_log)
+    monkeypatch.setattr(sidecar_paths, "_PNPM_ERROR_LOG", error_log)
 
     with caplog.at_level(logging.DEBUG, logger="plugins.platforms.photon.adapter"):
         result = adapter_mod.check_requirements()
@@ -220,13 +220,13 @@ def test_regression_stale_log_not_surfaced_after_successful_reinstall(
 def test_regression_debug_log_emitted_even_without_error_log(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """When node_modules is missing and no _NPM_ERROR_LOG exists (first-time
+    """When node_modules is missing and no _PNPM_ERROR_LOG exists (first-time
     setup, not a failed install), check_requirements() must still emit a DEBUG
     line pointing to the sidecar path."""
     monkeypatch.setattr(adapter_mod, "HTTPX_AVAILABLE", True)
     monkeypatch.setattr(adapter_mod, "find_node_executable", lambda _name: "/pm/node")
     monkeypatch.setattr(sidecar_paths, "_SIDECAR_DIR", tmp_path)
-    monkeypatch.setattr(sidecar_paths, "_NPM_ERROR_LOG", tmp_path / ".photon-npm-error.log")
+    monkeypatch.setattr(sidecar_paths, "_PNPM_ERROR_LOG", tmp_path / ".photon-pnpm-error.log")
     # NS-606: disable self-heal so the debug-log branch is reached.
     monkeypatch.setattr(adapter_mod, "_dir_writable", lambda _p: False)
     # node_modules NOT created, error log NOT created

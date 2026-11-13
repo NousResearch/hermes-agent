@@ -5,7 +5,7 @@ Hosted images keep the plugin tree read-only (EROFS), so, mirroring
 source dir → run in place; (3) read-only with baked, current ``node_modules`` → in place;
 (4) read-only and deps missing/stale → mirror the source files to
 ``$HERMES_HOME/photon/sidecar``. The mirror is refreshed by content compare; ``node_modules``
-is left alone so the lockfile-vs-install-marker check triggers ``npm ci`` inside the mirror.
+is left alone so the lockfile-vs-install-marker check triggers ``pnpm install`` inside the mirror.
 Resolution never happens at import time (it probes/copies on disk).
 """
 from __future__ import annotations
@@ -21,14 +21,14 @@ logger = logging.getLogger(__name__)
 
 SOURCE_SIDECAR_DIR = Path(__file__).parent / "sidecar"
 # Files that define the sidecar; node_modules is deliberately absent (baked on managed
-# images or installed by npm in the mirror).
-_MIRROR_FILES = ("index.mjs", "package.json", "package-lock.json", "patch-spectrum-mixed-attachments.mjs")
+# images or installed by pnpm in the mirror).
+_MIRROR_FILES = ("index.mjs", "package.json", "pnpm-lock.yaml", "pnpm-workspace.yaml", "patch-spectrum-mixed-attachments.mjs")
 # Tests monkeypatch these module globals directly; the accessors honor a non-None value.
 _SIDECAR_DIR: Optional[Path] = None
-# Written by `hermes photon install-sidecar` on npm failure so check_requirements() can
+# Written by `hermes photon install-sidecar` on pnpm failure so check_requirements() can
 # surface the root cause later; cleared on success.
-_NPM_ERROR_LOG: Optional[Path] = None
-_NPM_ERROR_LOG_MAX_CHARS = 300
+_PNPM_ERROR_LOG: Optional[Path] = None
+_PNPM_ERROR_LOG_MAX_CHARS = 300
 
 
 def dir_writable(path: Path) -> bool:
@@ -47,11 +47,11 @@ _dir_writable = dir_writable
 
 
 def _lock_newer_than_install(sidecar_dir: Path) -> bool:
-    """True when the committed lockfile postdates npm's install marker
-    (``node_modules/.package-lock.json``) — the same signal ``npm ci`` uses. False on any
+    """True when the committed lockfile postdates pnpm's install marker
+    (``node_modules/.modules.yaml``) — the same signal a frozen install uses. False on any
     stat failure so an odd filesystem never blocks start."""
-    lockfile = sidecar_dir / "package-lock.json"
-    marker = sidecar_dir / "node_modules" / ".package-lock.json"
+    lockfile = sidecar_dir / "pnpm-lock.yaml"
+    marker = sidecar_dir / "node_modules" / ".modules.yaml"
     try:
         return lockfile.stat().st_mtime > marker.stat().st_mtime
     except OSError:
@@ -95,6 +95,6 @@ def _sidecar_dir() -> Path:
     return _SIDECAR_DIR
 
 
-def _npm_error_log() -> Path:
-    """Path of the persisted npm-failure log (derived from the sidecar dir)."""
-    return _NPM_ERROR_LOG if _NPM_ERROR_LOG is not None else _sidecar_dir() / ".photon-npm-error.log"
+def _pnpm_error_log() -> Path:
+    """Path of the persisted pnpm-failure log (derived from the sidecar dir)."""
+    return _PNPM_ERROR_LOG if _PNPM_ERROR_LOG is not None else _sidecar_dir() / ".photon-pnpm-error.log"

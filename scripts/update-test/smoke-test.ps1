@@ -169,8 +169,8 @@ function New-Fixture {
   Set-Content -LiteralPath (Join-Path $H 'cron\jobs.json') -Value 'jobs'
   Set-Content -LiteralPath (Join-Path $H 'photon\sidecar\index.mjs') -Value 'console.log(1)'
   Set-Content -LiteralPath (Join-Path $H 'photon\sidecar\package.json') -Value '{"name":"sidecar"}'
-  Set-Content -LiteralPath (Join-Path $H 'photon\sidecar\package-lock.json') -Value '{"lockfileVersion":3}'
-  Set-Content -LiteralPath (Join-Path $H 'photon\sidecar\node_modules\.package-lock.json') -Value '{"lockfileVersion":3}'
+  Set-Content -LiteralPath (Join-Path $H 'photon\sidecar\pnpm-lock.yaml') -Value 'lockfileVersion: 9.0'
+  Set-Content -LiteralPath (Join-Path $H 'photon\sidecar\node_modules\.modules.yaml') -Value 'hoistPattern:'
 
   # SQL goes through a temp script FILE: a `-c` argument carrying quotes gets
   # reshaped by PowerShell's native-argument handling and fails to parse.
@@ -281,7 +281,7 @@ try {
   Check '.env restored' (Test-Path -LiteralPath (Join-Path $H '.env'))
   Check 'memories restored' (Test-Path -LiteralPath (Join-Path $H 'memories\note.md'))
   Check 'plugin marker restored' (Test-Path -LiteralPath (Join-Path $H 'plugins\mnemosyne-wrapper\mnemosyne-wrapper.json'))
-  Check 'photon sidecar marker restored' (Test-Path -LiteralPath (Join-Path $H 'photon\sidecar\node_modules\.package-lock.json'))
+  Check 'photon sidecar marker restored' (Test-Path -LiteralPath (Join-Path $H 'photon\sidecar\node_modules\.modules.yaml'))
   Check 'PM store restored' (Test-Path -LiteralPath (Join-Path $Install '.hermes-runtime\python\interpreter.bin'))
   Check 'checkout restored' (Test-Path -LiteralPath (Join-Path $Install '.git'))
   Check 'checkout HEAD restored' (((& git -C $Install rev-parse HEAD | Out-String).Trim()) -eq $HeadSha)

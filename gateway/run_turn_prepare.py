@@ -59,14 +59,14 @@ def _resolve_policy_agent_runtime(runner, policy, *, fallback=True, record_notic
                                             fallback=fallback)
     if fallback_entry is not None:
         from hermes_cli.fallback_config import pre_agent_fallback_notice
+        from agent.primary_auth_fallback import RUNTIME_KEY, set_pending_primary_auth_failure
+        set_pending_primary_auth_failure(runtime.get(RUNTIME_KEY))
         notice = pre_agent_fallback_notice(
             provider or '', model or '',
             runtime.get('provider') or fallback_entry.get('provider') or 'unknown',
             fallback_entry.get('model') or 'default')
         if record_notice:
             runner._pre_agent_fallback_notice = notice
-            from agent.primary_auth_fallback import RUNTIME_KEY
-            runner._pre_agent_primary_auth_failure = runtime.get(RUNTIME_KEY)
         return fallback_entry['model'], _runtime_agent_kwargs(runtime)
     return model, _runtime_agent_kwargs(runtime)
 
@@ -209,7 +209,9 @@ class GatewayTurnPrepareMixin:
         # turn (#74349). Set again below only when THIS resolution fell back.
         if record_notice:
             self._pre_agent_fallback_notice = None
-            self._pre_agent_primary_auth_failure = None
+        # This turn's context only (each gateway turn runs in its own context copy), so no record_notice gate.
+        from agent.primary_auth_fallback import set_pending_primary_auth_failure
+        set_pending_primary_auth_failure(None)
         policy = policy_for_source(self, source) if source is not None else None
         if policy is not None:
             return _resolve_policy_agent_runtime(self, policy, fallback=fallback, record_notice=record_notice)
@@ -272,9 +274,7 @@ class GatewayTurnPrepareMixin:
         # runner surfaces it through the agent's one-shot fallback notice (#74349).
         notice = runtime_kwargs.pop("_fallback_notice", None)
         from agent.primary_auth_fallback import RUNTIME_KEY
-        primary_auth_failure = runtime_kwargs.pop(RUNTIME_KEY, None)
-        if record_notice:
-            self._pre_agent_primary_auth_failure = primary_auth_failure
+        set_pending_primary_auth_failure(runtime_kwargs.pop(RUNTIME_KEY, None))
         runtime_model = runtime_kwargs.pop("model", None)
         if runtime_model:
             logger.info("Runtime provider supplied explicit model override: %s -> %s", model, runtime_model)

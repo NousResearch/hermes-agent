@@ -114,7 +114,7 @@ def test_broken_environment_keeps_explicit_repair_entry_reachable(tmp_path, monk
     record = runtime_facts_path(repo)
     record.parent.mkdir(parents=True)
     record.write_text(json.dumps({"packages": {"venv": {"environment": str(tmp_path / "missing")}}}))
-    code = "import sys; sys.argv = ['hermes', *sys.argv[1:]]; import hermes_bootstrap; print('bootstrap-ready')"
+    code = "import sys; sys.argv = ['hermes', *sys.argv[1:]]; from hermes_agent import hermes_bootstrap; print('bootstrap-ready')"
     result = subprocess.run([sys.executable, "-c", code, *command], env=dict(os.environ),
                             capture_output=True, text=True, timeout=30, check=False)
     assert (result.returncode == 0) is allowed, result.stderr

@@ -14,7 +14,7 @@ from hermes_agent.tui_gateway import server
 
 def test_secondary_profile_session_cwd_is_found_inside_its_scope(monkeypatch, tmp_path):
     from hermes_agent.agent import secret_scope
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
     monkeypatch.setattr(terminal_tool, "_task_env_overrides", {})
     monkeypatch.setattr(terminal_tool, "_session_cwd", {})

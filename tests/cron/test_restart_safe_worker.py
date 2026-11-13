@@ -147,7 +147,7 @@ def test_external_worker_adopts_execution_and_runs_payload_once(
         }),
         encoding="utf-8",
     )
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     observed_homes = []
     adopted = Mock(
@@ -327,9 +327,9 @@ def test_launch_external_worker_treats_a_routed_fire_as_multiplexed(tmp_path, mo
     and the worker inherited the launch profile's residue. The payload must carry ``True`` and the
     worker env must not carry a launch-only value — and the context must not outlive the handoff."""
     from hermes_agent.cron import scheduler
-    import hermes_constants
+    from hermes_agent import hermes_constants
     from hermes_agent.agent import secret_scope
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
     from hermes_agent.tools.process_registry import GatewayChildDispatch
 
     launch = tmp_path / "launch"
@@ -849,7 +849,7 @@ def test_booted_worker_drops_the_marker_before_any_job_child(monkeypatch):
     later inherit this environment and would otherwise re-run the worker dependency boot."""
     from hermes_agent.cron import worker_bootstrap
 
-    monkeypatch.setitem(sys.modules, "hermes_bootstrap", SimpleNamespace())
+    monkeypatch.setitem(sys.modules, "hermes_agent.hermes_bootstrap", SimpleNamespace())
     monkeypatch.setenv(worker_bootstrap.WORKER_MARKER, "1")
     worker_bootstrap.finish_worker_boot()
     assert worker_bootstrap.WORKER_MARKER not in os.environ

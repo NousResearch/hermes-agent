@@ -13,9 +13,9 @@ import threading
 from typing import Any, Callable, Optional
 
 from hermes_agent.agent.browser_provider import BrowserProvider
-from hermes_constants import get_hermes_home_override, hermes_home_key
+from hermes_agent.hermes_constants import get_hermes_home_override, hermes_home_key
 from hermes_agent.tools.tool_backend_helpers import normalize_browser_cloud_provider
-from utils import is_truthy_value
+from hermes_agent.utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
 
@@ -119,7 +119,7 @@ def user_data_dir() -> str:
     raw = os.path.expanduser(raw)
     if os.path.isabs(raw):
         return raw
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     return str(get_hermes_home() / raw)
 
 

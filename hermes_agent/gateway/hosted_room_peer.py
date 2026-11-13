@@ -48,7 +48,7 @@ _ROOM_GRANT_SECRET_FILE = ".room-link-grant-secret"
 @lru_cache(maxsize=32)
 def _gateway_room_grant_secret_for_home(home_value: str) -> bytes:
     """Load one restart-scoped grant secret for an exact installation root."""
-    from utils import fsync_directory
+    from hermes_agent.utils import fsync_directory
     (home := Path(home_value)).mkdir(parents=True, exist_ok=True)
     path = home / _ROOM_GRANT_SECRET_FILE
     def _read() -> bytes:
@@ -89,7 +89,7 @@ def gateway_room_grant_secret(root: Path | str | None = None) -> bytes:
     or capability RPCs, and is shared only by this installation's gateway processes.
     """
     if root is None:
-        from hermes_constants import get_hermes_home
+        from hermes_agent.hermes_constants import get_hermes_home
         # Profile routing uses a context-local HERMES_HOME override; the process environment
         # retains the installation root and is the authority here.
         root = os.environ.get("HERMES_HOME") or get_hermes_home()
@@ -101,7 +101,7 @@ def gateway_room_grant_secret_available(root: Path | str | None = None) -> bool:
     read-only capability probe must never create the file (``gateway_room_grant_secret`` does,
     when a grant is first issued)."""
     if root is None:
-        from hermes_constants import get_hermes_home
+        from hermes_agent.hermes_constants import get_hermes_home
         root = os.environ.get("HERMES_HOME") or get_hermes_home()
     home = Path(root).expanduser().resolve()
     path = home / _ROOM_GRANT_SECRET_FILE
@@ -324,7 +324,7 @@ def served_room_link_endpoint(target_profile: str) -> dict[str, Any]:
     override = os.getenv("HERMES_ROOM_LINK_URL")
     if override is None and (own := _room_link_url_from_config(str(get_profile_dir(target_profile)))):
         return local_room_link_endpoint(own)
-    from hermes_constants import get_default_hermes_root
+    from hermes_agent.hermes_constants import get_default_hermes_root
     root_listener = _room_link_url_from_config(str(get_default_hermes_root())) if is_multiplex_active() else None
     inherited = str((override if override is not None else root_listener) or "").strip()
     if not inherited:
@@ -336,7 +336,7 @@ def served_room_link_endpoint(target_profile: str) -> dict[str, Any]:
 def _room_link_url_from_config(home: str) -> str | None:
     """Read the restart-scoped user setting without polling config on probes."""
     from hermes_agent.gateway.config import load_gateway_config
-    from hermes_constants import get_hermes_home, reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import get_hermes_home, reset_hermes_home_override, set_hermes_home_override
     if str(get_hermes_home()) == home:
         value = load_gateway_config().room_link_url
     else:
@@ -352,7 +352,7 @@ def _configured_room_link_url() -> str | None:
     """Resolve the explicit endpoint: env override > profile config > root config."""
     if (override := os.getenv("HERMES_ROOM_LINK_URL")) is not None:
         return override
-    from hermes_constants import get_default_hermes_root, get_hermes_home
+    from hermes_agent.hermes_constants import get_default_hermes_root, get_hermes_home
     home = get_hermes_home()
     if configured := _room_link_url_from_config(str(home)):
         return configured

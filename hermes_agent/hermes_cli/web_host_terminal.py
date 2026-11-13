@@ -29,7 +29,7 @@ def shell_command(candidate: str) -> Optional[str]:
     A relative path is refused: the PTY chdirs into the workspace before exec,
     so it would name a different file than the one checked here.
     """
-    from hermes_platform.resolver import locate_command
+    from hermes_agent.hermes_platform.resolver import locate_command
 
     raw = (candidate or "").strip()
     found = locate_command(raw).command if raw else ()
@@ -104,10 +104,10 @@ def resolve_argv(
     from hermes_agent.gateway.run import _profile_runtime_scope
     from hermes_agent.hermes_cli import __version__
     from hermes_agent.hermes_cli.config import TERMINAL_CONFIG_ENV_MAP
-    from hermes_constants import (
+    from hermes_agent.hermes_constants import (
         get_process_hermes_home, reset_hermes_home_override, set_hermes_home_override,
     )
-    from hermes_platform.host.facts import os_family
+    from hermes_agent.hermes_platform.host.facts import os_family
     from hermes_agent.tools.environments.local import build_subprocess_env, served_profile_child_env
     from hermes_agent.tools.terminal_scope import enforce_no_refusal, get_terminal_scope
     from hermes_agent.tui_gateway.launch_profile_policy import (

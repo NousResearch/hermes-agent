@@ -28,7 +28,7 @@ from hermes_agent.hermes_cli import __release_date__
 from hermes_agent.hermes_cli.config import get_config_path, get_env_path
 from hermes_agent.hermes_cli.isolated_scope import isolated_launch_profile, scope_to_launch_profile
 from hermes_agent.hermes_cli.version_info import get_version_info
-from hermes_constants import get_process_hermes_home, profile_name_for_home
+from hermes_agent.hermes_constants import get_process_hermes_home, profile_name_for_home
 from hermes_agent.hermes_cli.web_models import CuratorPause, LearningNodeRef, LearningNodeEdit, DebugShareRequest
 from hermes_agent.hermes_cli.web_routers._common import config_scoped_to_thread, destructive_profile, scoped_to_thread
 from hermes_agent.hermes_cli.web_routers.status_public import redact_status_for_unverified
@@ -508,7 +508,7 @@ def _status_local_reads() -> dict[str, Any]:
 def _fts_rebuild_status() -> Optional[dict[str, Any]]:
     """Deferred FTS rebuild progress of this home's state.db (read-only open), or None."""
     from hermes_agent.hermes_state import SessionDB as _SDB
-    from hermes_constants import get_hermes_home as _ghh
+    from hermes_agent.hermes_constants import get_hermes_home as _ghh
     _db_path = _ghh() / "state.db"
     if not _db_path.exists():
         return None
@@ -942,7 +942,7 @@ async def get_logs(
         return {"file": file, "lines": []}
 
     try:
-        from hermes_logging import COMPONENT_PREFIXES
+        from hermes_agent.hermes_logging import COMPONENT_PREFIXES
     except ImportError:
         COMPONENT_PREFIXES = {}
     # "ALL"/"all"/empty → no filter (None, not (): _matches_filters treats an empty tuple as

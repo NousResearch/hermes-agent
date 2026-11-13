@@ -145,7 +145,7 @@ def test_sweeps_skip_sessions_with_live_work_and_retire_the_rest(tmp_path):
 def test_startup_repair_latches_after_a_refusal_and_warns_once(monkeypatch, caplog, tmp_path):
     from hermes_agent import cli
     import hermes_agent.hermes_cli.config
-    import hermes_constants
+    from hermes_agent import hermes_constants
 
     monkeypatch.setattr(hermes_agent.hermes_cli.config, 'load_config', lambda: {'sessions': {'auto_prune': False}})
     monkeypatch.setattr(hermes_constants, 'get_hermes_home', lambda: tmp_path)

@@ -179,7 +179,7 @@ def _reset_prompt_toolkit_output_cache():
 def probe_root(tmp_path):
     """A fixture checkout the installation launcher can boot from.
 
-    ``runtime_command`` prepends the checkout root and runs ``import hermes_bootstrap``
+    ``runtime_command`` prepends the checkout root and runs ``from hermes_agent import hermes_bootstrap``
     before the probe body, exactly as production does. Tests that point the import
     guard at a scratch tree need that module present, or the probe dies before its
     health marker — a developer venv whose editable ``.pth`` shadows the root hides

@@ -18,7 +18,7 @@ def resolved_skin() -> dict:
     try:
         from hermes_agent.hermes_cli.config_effective import load_user_config_effective
         from hermes_agent.hermes_cli.skin_engine import get_active_skin, init_skin_from_config
-        from hermes_constants import get_hermes_home
+        from hermes_agent.hermes_constants import get_hermes_home
         init_skin_from_config(load_user_config_effective(get_hermes_home() / "config.yaml"))
         skin = get_active_skin()
         return {

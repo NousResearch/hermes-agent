@@ -10,9 +10,9 @@ from dataclasses import dataclass
 import re
 from typing import Literal, Protocol
 
-from hermes_platform.host import facts
-from hermes_platform.resolver.app import AppDef, AppResolver
-from hermes_platform.resolver.core import Candidate, CheckState, Resolution
+from hermes_agent.hermes_platform.host import facts
+from hermes_agent.hermes_platform.resolver.app import AppDef, AppResolver
+from hermes_agent.hermes_platform.resolver.core import Candidate, CheckState, Resolution
 
 AvailabilityState = Literal[
     "available",

@@ -32,7 +32,7 @@ from hermes_agent.gateway.platforms.helpers import MessageDeduplicator, bounded_
 from hermes_agent.gateway.platforms.access_policy_mixin import OwnAccessPolicyMixin
 from hermes_agent.gateway.platforms.base import gateway_trust_env, BasePlatformAdapter, SendResult, describe_proxy_error, env_proxy_for_redaction
 from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
-from utils import env_float
+from hermes_agent.utils import env_float
 
 from hermes_agent.gateway.platforms._shared import get_scoped_secret as _get_scoped_secret, send_error
 from hermes_agent.gateway.platforms.send_targets import StandaloneSendPolicy, parse_nonempty

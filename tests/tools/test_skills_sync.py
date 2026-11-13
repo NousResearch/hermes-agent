@@ -531,7 +531,7 @@ class TestDroppedBuiltinProvenance:
             return sync_skills(quiet=True)
 
     def test_catalog_drop_keeps_builtin_provenance_while_a_copy_exists(self, tmp_path):
-        from hermes_constants import get_hermes_home
+        from hermes_agent.hermes_constants import get_hermes_home
         from hermes_agent.tools.skill_usage import provenance
 
         skills = get_hermes_home() / "skills"
@@ -548,7 +548,7 @@ class TestDroppedBuiltinProvenance:
 
     def test_suppressed_builtin_is_not_agent_authored_after_manifest_cleanup(self, tmp_path):
         """Profiles an older sync already cleaned: the curator suppression list only records built-ins."""
-        from hermes_constants import get_hermes_home
+        from hermes_agent.hermes_constants import get_hermes_home
         from hermes_agent.tools.skill_usage import provenance
 
         skills = get_hermes_home() / "skills"
@@ -982,7 +982,7 @@ class TestCallTimeDirResolution:
     """
 
     def test_accessors_follow_hermes_home_override(self, tmp_path):
-        from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+        from hermes_agent.hermes_constants import set_hermes_home_override, reset_hermes_home_override
         import hermes_agent.tools.skills_sync as ss
 
         profile_home = tmp_path / "profiles" / "research"
@@ -995,7 +995,7 @@ class TestCallTimeDirResolution:
             reset_hermes_home_override(token)
 
     def test_explicit_module_patch_wins_over_override(self, tmp_path):
-        from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+        from hermes_agent.hermes_constants import set_hermes_home_override, reset_hermes_home_override
         import hermes_agent.tools.skills_sync as ss
 
         patched = tmp_path / "patched-skills"
@@ -1014,7 +1014,7 @@ class TestCallTimeDirResolution:
         was computed against the wrong home (#65828's sharpest edge): a
         legitimate delete in the scoped profile would be refused, and a stale
         path under the import-time home would pass the guard."""
-        from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+        from hermes_agent.hermes_constants import set_hermes_home_override, reset_hermes_home_override
         import hermes_agent.tools.skills_sync as ss
 
         profile_home = tmp_path / "profiles" / "worker"

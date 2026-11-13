@@ -97,7 +97,7 @@ async def test_upstream_authorized_a2a_input_admits_durally_with_provenance(
     same provenance-bearing re-check the unified gateway runs for every A2A task (#139199)."""
     from hermes_agent.gateway.session_authority import SessionAuthority, initialize_session_authority
     from hermes_agent.gateway.session_ingress_context import native_callback, register_transport_home
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from hermes_agent.hermes_state_runtime import list_session_admissions
     from plugins.platforms.a2a.adapter import A2AAdapter
 
@@ -137,7 +137,7 @@ async def test_same_principal_without_adapter_declaration_is_refused_by_native_a
     source (``forge``) changes nothing: only the adapter object is read."""
     from hermes_agent.gateway.session_authority import SessionAuthority, initialize_session_authority
     from hermes_agent.gateway.session_ingress_context import native_callback, register_transport_home
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from plugins.platforms.a2a.adapter import A2AAdapter
 
     class UndeclaredAdapter(A2AAdapter):

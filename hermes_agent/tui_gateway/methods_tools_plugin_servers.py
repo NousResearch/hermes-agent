@@ -45,7 +45,7 @@ def _plugin_server_rows(
         if connected:
             rows.append({"name": name, "state": "connected", "sentence": ""})
             continue
-        decl = _tools_mod("hermes_platform.declaration").lookup(internal_name)
+        decl = _tools_mod("hermes_agent.hermes_platform.declaration").lookup(internal_name)
         status = liveness.status(internal_name)
         if decl is None or status is None:
             rows.append({"name": name, "state": "unknown", "sentence": ""})

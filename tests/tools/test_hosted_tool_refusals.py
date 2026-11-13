@@ -19,7 +19,7 @@ import sys
 import pytest
 
 from hermes_agent.agent.runtime_scope import bind_state
-from hermes_scope import Principal, Scope
+from hermes_agent.hermes_scope import Principal, Scope
 from hermes_agent.tools.hosted_tool_policy import HostedToolRefused
 
 A = Scope("acme", "agent-a", Principal("u1"), owner=Principal("u1"), can_administer=True)

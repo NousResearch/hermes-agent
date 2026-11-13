@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from typing import Any, List, Optional
 from hermes_agent.agent.command_token_source import build_command_token_provider, materialize_probe_api_key
 from hermes_agent.hermes_cli.providers import custom_provider_aliases, custom_provider_slug, get_label
-from utils import base_url_host_matches
+from hermes_agent.utils import base_url_host_matches
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("hermes_agent.hermes_cli.model_switch")

@@ -740,7 +740,7 @@ def test_multiplex_ticker_isolates_profile_failures(tmp_path):
     cycle, nor darken their status (#74878)."""
     from hermes_agent.cron.jobs import get_ticker_last_error, record_ticker_error, use_cron_store
     from hermes_agent.cron.scheduler_provider import InProcessCronScheduler
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     failing_home = tmp_path / "failing"
     healthy_home = tmp_path / "healthy"
@@ -792,7 +792,7 @@ def test_multiplex_recovery_isolates_profile_failures(tmp_path):
     import sqlite3
 
     from hermes_agent.cron.scheduler_provider import InProcessCronScheduler
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     failing_home = tmp_path / "failing"
     healthy_home = tmp_path / "healthy"
@@ -847,7 +847,7 @@ def test_multiplex_ticker_reenumerates_profiles_each_cycle(tmp_path):
     import threading
     from unittest.mock import patch
     from hermes_agent.cron.scheduler_provider import InProcessCronScheduler
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     alpha = tmp_path / "alpha"
     gamma = tmp_path / "gamma"

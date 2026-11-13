@@ -604,7 +604,7 @@ def _remove_tree(path: Path) -> str | None:
 
     The ``\\\\?\\`` prefix reaches past MAX_PATH (the checkout carries 159-character paths); a
     just-killed process can hold a handle for a moment, so a failure is retried."""
-    from utils import rmtree_readonly
+    from hermes_agent.utils import rmtree_readonly
 
     error: OSError | None = None
     for _ in range(5):

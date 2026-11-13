@@ -80,7 +80,7 @@ def register_synthetic_package(name: str, search_locations: list[str]) -> None:
 def user_plugins_dir() -> Optional[Path]:
     """Return ``$HERMES_HOME/plugins/`` or None if unavailable."""
     try:
-        from hermes_constants import get_hermes_home
+        from hermes_agent.hermes_constants import get_hermes_home
         d = get_hermes_home() / "plugins"
         return d if d.is_dir() else None
     except Exception:
@@ -106,7 +106,7 @@ def iter_plugin_dirs(root: Path) -> list[Path]:
 def read_plugin_description(plugin_dir: Path) -> str:
     """Return ``description`` from ``plugin.yaml`` (empty string if absent/unreadable)."""
     try:
-        from utils import fast_safe_load
+        from hermes_agent.utils import fast_safe_load
 
         with open(plugin_dir / "plugin.yaml", encoding="utf-8-sig") as f:
             meta = fast_safe_load(f) or {}

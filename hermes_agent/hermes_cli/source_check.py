@@ -17,7 +17,7 @@ from urllib.parse import quote
 import urllib.error
 import urllib.request
 
-from hermes_constants import get_hermes_home
+from hermes_agent.hermes_constants import get_hermes_home
 from hermes_agent.hermes_cli.source_releases import OFFICIAL_REPOSITORY, _GITHUB_ORIGIN, resolve_source_target
 
 logger = logging.getLogger(__name__)
@@ -284,7 +284,7 @@ def _cached_status(cache_file: Path, identity: dict, now: float) -> Optional[dic
 
 def _write_cache(cache_file: Path, identity: dict, now: float, result: dict) -> None:
     try:
-        from utils import atomic_json_write
+        from hermes_agent.utils import atomic_json_write
         cache_file.parent.mkdir(parents=True, exist_ok=True)
         atomic_json_write(cache_file, {"identity": identity, "ts": now, "status": result})
     except OSError as exc:
@@ -397,7 +397,7 @@ def _github_predates_runtime(repository: str, sha: str, cache_file: Path) -> Opt
         return None
     verdict = _read_runtime_verdict(repository, sha)
     try:
-        from utils import atomic_json_write
+        from hermes_agent.utils import atomic_json_write
         cache_file.parent.mkdir(parents=True, exist_ok=True)
         atomic_json_write(cache_file, {**known, sha: verdict if verdict is not None else
                                       {"retryAt": time.time() + _UPDATE_CHECK_FAILURE_CACHE_SECONDS}})
@@ -475,7 +475,7 @@ def _heal_deleted_branch(branch_config_path: Path, desktop_config: dict) -> None
     """Point the Desktop branch setting back at main after its branch was deleted upstream."""
     # Do not overwrite a concurrent choice made while the network probe ran.
     if _read_json(branch_config_path) == desktop_config:
-        from utils import atomic_json_write
+        from hermes_agent.utils import atomic_json_write
         atomic_json_write(branch_config_path, {**desktop_config, "branch": "main"})
 
 
@@ -630,7 +630,7 @@ def main() -> None:
     args = parser.parse_args()
     with contextlib.redirect_stdout(sys.stderr):
         if args.set_channel:
-            from hermes_constants import set_hermes_home_override
+            from hermes_agent.hermes_constants import set_hermes_home_override
             from hermes_agent.hermes_cli.update_channel import set_install_channel
 
             # The record belongs in the --home profile's config.yaml, as the check reads it.

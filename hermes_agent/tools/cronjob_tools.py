@@ -12,7 +12,7 @@ from typing import Any, Dict, List, Optional, Union
 
 import copy
 
-from hermes_constants import display_hermes_home
+from hermes_agent.hermes_constants import display_hermes_home
 
 logger = logging.getLogger(__name__)
 
@@ -360,7 +360,7 @@ def _run_claimed_job(job: dict[str, Any], extra_prompt: Optional[str] = None) ->
         # ticker (``tick_adapters_for``) does — fail closed, never the default bot (#124248). A
         # resolution error propagates to the ``except`` below and marks the run failed.
         if runner is not None and hasattr(runner, "_adapters_for_profile"):
-            from hermes_constants import get_hermes_home, profile_name_for_home
+            from hermes_agent.hermes_constants import get_hermes_home, profile_name_for_home
 
             profile = profile_name_for_home(get_hermes_home())
             adapters = runner._adapters_for_profile(profile)
@@ -507,7 +507,7 @@ def _run_session_usage(job_id: str, execution_id: Optional[str]) -> dict[str, An
         return {}
     import sqlite3
 
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from hermes_agent.hermes_state import SessionDB
     # A missing or locked state.db costs the notice its usage line, never the completion.
     try:
@@ -1227,7 +1227,7 @@ def check_cronjob_requirements() -> bool:
     ``env_var_enabled``. An external cron worker has the presence vars stripped from its env, so
     the cron session marker keeps ``cron.allow_agent_scheduling`` meaningful there."""
     from hermes_agent.gateway.session_context import get_session_env
-    from utils import env_var_enabled, is_truthy_value
+    from hermes_agent.utils import env_var_enabled, is_truthy_value
     return (
         env_var_enabled("HERMES_INTERACTIVE")
         or env_var_enabled("HERMES_GATEWAY_SESSION")

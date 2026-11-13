@@ -249,7 +249,7 @@ class GatewayPluginInjectionMixin:
         ``None`` when this gateway does not serve it."""
         if home is None:
             return None
-        from hermes_constants import get_routing_process_hermes_home, hermes_home_key
+        from hermes_agent.hermes_constants import get_routing_process_hermes_home, hermes_home_key
         key = hermes_home_key(home)
         if getattr(getattr(self, "config", None), "multiplex_profiles", False):
             from hermes_agent.gateway.run import _multiplex_profile_homes

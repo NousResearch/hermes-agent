@@ -40,7 +40,7 @@ def _cache_path():
 
 
 def _key(model: Any, base_url: Any) -> str:
-    from utils import base_url_hostname
+    from hermes_agent.utils import base_url_hostname
 
     return f"{model or ''}@{base_url_hostname(base_url or '') or ''}"
 
@@ -55,7 +55,7 @@ def _read_cache() -> dict[str, int]:
 def _table() -> dict[str, int]:
     """The active profile's learned table, loaded lazily from its cache file."""
     global _LOADED
-    from hermes_constants import get_hermes_home_override, hermes_home_key
+    from hermes_agent.hermes_constants import get_hermes_home_override, hermes_home_key
 
     if get_hermes_home_override() is None:
         if not _LOADED:
@@ -137,7 +137,7 @@ def calibrate_from_usage(agent: Any, messages: list[dict[str, Any]], prompt_toke
     table[key] = learned
     _image_cost_var.set(learned)
     try:
-        from utils import atomic_json_write
+        from hermes_agent.utils import atomic_json_write
 
         atomic_json_write(_cache_path(), dict(table), indent=0, separators=(",", ":"))
     except Exception:

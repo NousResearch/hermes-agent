@@ -45,7 +45,7 @@ def _wire_common(main_mod, monkeypatch):
     monkeypatch.setitem(sys.modules, "uvicorn", types.SimpleNamespace())
     monkeypatch.setitem(
         sys.modules,
-        "hermes_logging",
+        "hermes_agent.hermes_logging",
         types.SimpleNamespace(setup_logging=lambda **_k: None),
     )
     monkeypatch.setitem(

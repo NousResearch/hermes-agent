@@ -285,7 +285,7 @@ def test_removing_the_last_plugin_source_revokes_its_process_env_value(
     import hermes_agent.agent.secret_sources.registry as reg
     from hermes_agent.agent.secret_scope import get_secret
     from hermes_agent.hermes_cli import env_loader
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
     reg._reset_registry_for_tests()
     env_loader.reset_secret_source_cache()

@@ -1,10 +1,10 @@
-"""``hermes_platform.host.summary``: the machine and account facts desktop first-run onboarding reads."""
+"""``hermes_agent.hermes_platform.host.summary``: the machine and account facts desktop first-run onboarding reads."""
 
 from __future__ import annotations
 
 import pytest
 
-from hermes_platform.host import facts, summary
+from hermes_agent.hermes_platform.host import facts, summary
 
 # The display name NVIDIA ships for the RTX Spark SoC (tests/hermes_cli/test_local_n1x_pci_identity.py).
 _N1X = "NVIDIA RTX Spark N1X"

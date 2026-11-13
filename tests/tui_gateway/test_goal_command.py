@@ -539,7 +539,7 @@ def test_goal_draft_uses_session_profile_without_blocking_rpc_reader(
     server, session, monkeypatch, tmp_path, method,
 ):
     from hermes_agent.hermes_cli import goals
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from hermes_agent import hermes_state
 
     # Restore call-time profile resolution; conftest pins this constant to one DB.

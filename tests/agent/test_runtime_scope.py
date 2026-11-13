@@ -20,8 +20,8 @@ from hermes_agent.agent.secret_scope import (
     reset_secret_scope,
     set_secret_scope,
 )
-from hermes_constants import get_hermes_home, hermes_home_key, reset_hermes_home_override, set_hermes_home_override
-from hermes_scope import (
+from hermes_agent.hermes_constants import get_hermes_home, hermes_home_key, reset_hermes_home_override, set_hermes_home_override
+from hermes_agent.hermes_scope import (
     LOCAL_OWNER,
     Fence,
     Group,
@@ -269,7 +269,7 @@ def test_a_cross_profile_terminal_switch_keeps_the_callers_overlay(two_profiles)
 
 
 def test_setters_whose_tokens_are_discarded_do_not_grow_the_state(two_profiles):
-    import hermes_scope
+    from hermes_agent import hermes_scope
     a, _b = two_profiles
 
     def depth() -> int:
@@ -365,7 +365,7 @@ def test_a_reset_cannot_leave_a_hosted_agent_from_inside_it(two_profiles):
 def test_a_mirrored_hermes_home_is_not_mistaken_for_the_launch_profile(tmp_path, monkeypatch):
     """An embedding host pins the launch home and mirrors the served profile into ``HERMES_HOME``:
     binding that profile must give it its own secrets, never the launch profile's env-only keys."""
-    from hermes_constants import pin_process_hermes_home
+    from hermes_agent.hermes_constants import pin_process_hermes_home
     from hermes_agent.tui_gateway.launch_profile_policy import activate_multi_profile_hosting
     launch, served = tmp_path / "launch", _profile(tmp_path, "b", "local")
     launch.mkdir()
@@ -388,14 +388,14 @@ def test_home_reads_during_another_threads_first_scope_import_see_no_override(mo
     an unbound read, not an AttributeError."""
     import sys
     import types
-    from hermes_constants import get_hermes_home_override
-    monkeypatch.setitem(sys.modules, "hermes_scope", types.ModuleType("hermes_scope"))
+    from hermes_agent.hermes_constants import get_hermes_home_override
+    monkeypatch.setitem(sys.modules, "hermes_agent.hermes_scope", types.ModuleType("hermes_agent.hermes_scope"))
     assert get_hermes_home_override() is None
 
 
 def test_a_reassigned_token_variable_does_not_grow_the_state(two_profiles):
     import contextvars
-    import hermes_scope
+    from hermes_agent import hermes_scope
     a, _b = two_profiles
 
     def run() -> int:

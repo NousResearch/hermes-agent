@@ -71,7 +71,7 @@ def _try_acquire_mcp_discovery_lock() -> Any:
     # would serialize discovery across profiles and never coordinate with B's own single-profile processes.
     from hermes_agent.tools import mcp_tool as _origin
     try:
-        from hermes_constants import get_hermes_home, get_hermes_home_override
+        from hermes_agent.hermes_constants import get_hermes_home, get_hermes_home_override
         if get_hermes_home_override() is not None:
             lock_path = str(get_hermes_home() / ".mcp-discovery.lock")
         else:
@@ -104,7 +104,7 @@ def _wrap_with_home_override(coro: Coroutine) -> Coroutine:
     """Carry the caller's context-local HERMES_HOME override into ``coro`` (task-local on the MCP
     loop, so concurrent scopes don't interfere)."""
     try:
-        from hermes_constants import get_hermes_home_override, reset_hermes_home_override, set_hermes_home_override
+        from hermes_agent.hermes_constants import get_hermes_home_override, reset_hermes_home_override, set_hermes_home_override
         home_override = get_hermes_home_override()
     except Exception:
         home_override = None

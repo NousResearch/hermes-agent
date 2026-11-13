@@ -68,7 +68,7 @@ def slash_commands() -> list[str]:
 def _yaml_paths(text: str) -> set[str]:
     import warnings
 
-    from hermes_yaml import safe_load
+    from hermes_agent.hermes_yaml import safe_load
     from ruamel.yaml.error import YAMLError
 
     paths: set[str] = set()

@@ -386,7 +386,7 @@ def test_a_hermes_home_at_a_deleted_profile_is_refused_like_its_profile_flag(wor
     """``HERMES_HOME`` naming a deleted profile is refused exactly as ``-p <name>`` is, so signing
     out never replaces the default gateway's credential instead."""
     from hermes_agent.gateway.webapp_listener import TOKEN_PATH, browser_session_token
-    from hermes_constants import mark_named_profile_deleted
+    from hermes_agent.hermes_constants import mark_named_profile_deleted
 
     gone = world["root"] / "profiles" / "gone"
     if deleted == "tombstoned":

@@ -4,7 +4,7 @@ installer-owned install-metadata ``catalog`` record; the install endpoint has no
 from __future__ import annotations
 
 import pytest
-import hermes_yaml as yaml
+import hermes_agent.hermes_yaml as yaml
 
 from hermes_agent.hermes_cli import plugin_catalog as pc_cat
 
@@ -19,7 +19,7 @@ def client(monkeypatch, tmp_path, _isolate_hermes_home):
     except ImportError:
         pytest.skip("fastapi/starlette not installed")
     from hermes_agent import hermes_state
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from hermes_agent.hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
 
     monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", get_hermes_home() / "state.db")
@@ -42,7 +42,7 @@ def client(monkeypatch, tmp_path, _isolate_hermes_home):
 def _install(name: str, sidecar: dict | None):
     """A user-dir plugin; *sidecar* records catalog provenance the way the installer does — on the
     installer-owned ``.install-metadata.json`` record (an in-tree ``.hermes-catalog.json`` is inert)."""
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from hermes_agent.hermes_cli.plugins_cmd import _read_install_metadata, _write_install_metadata
     d = get_hermes_home() / "plugins" / name
     d.mkdir(parents=True)

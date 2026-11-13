@@ -182,7 +182,7 @@ def run_probe(repo, receipt):
     sys.path.insert(0, str(repo))
     logging.disable(logging.CRITICAL)
     import httpx
-    from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+    from hermes_agent.hermes_constants import set_hermes_home_override, reset_hermes_home_override
     from hermes_agent.tui_gateway import mcp_oauth_sessions as sessions
     from hermes_agent.tools.mcp_oauth import HermesTokenStorage
 

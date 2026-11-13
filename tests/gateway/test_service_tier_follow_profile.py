@@ -6,7 +6,7 @@ import pytest
 
 from hermes_agent.gateway.session_contract import SessionRef
 from hermes_agent.gateway.session_policy import policy_for_source
-from hermes_constants import get_hermes_home
+from hermes_agent.hermes_constants import get_hermes_home
 from tests.gateway.test_session_create_tier_cwd import _owner
 
 

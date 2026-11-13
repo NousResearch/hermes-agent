@@ -223,7 +223,7 @@ def _slot_label(slot: dict[str, Any]) -> str:
 def _slot_reasoning_config(slot: dict[str, Any]) -> dict[str, Any] | None:
     """Translate optional per-MoA-slot reasoning_effort into runtime config."""
     try:
-        from hermes_constants import parse_reasoning_effort
+        from hermes_agent.hermes_constants import parse_reasoning_effort
         return parse_reasoning_effort(slot.get("reasoning_effort"))
     except Exception:  # pragma: no cover - bad config must not break MoA
         return None
@@ -240,7 +240,7 @@ def _aggregator_reasoning_config(aggregator: dict[str, Any]) -> dict[str, Any] |
         return cfg
     try:
         from hermes_agent.hermes_cli.config import load_config
-        from hermes_constants import resolve_reasoning_config
+        from hermes_agent.hermes_constants import resolve_reasoning_config
         return resolve_reasoning_config(load_config() or {}, str(aggregator.get("model") or ""))
     except Exception:  # pragma: no cover - bad config must not break MoA
         return None
@@ -256,7 +256,7 @@ def _slot_runtime(slot: dict[str, Any]) -> dict[str, Any]:
     model = str(slot.get("model") or "").strip()
     # hermes_home_key() in the key: the resolved api_key/base_url are per-profile, and under a
     # multiplex gateway two profiles can share (provider, model) with different accounts.
-    from hermes_constants import hermes_home_key
+    from hermes_agent.hermes_constants import hermes_home_key
     cache_key = (hermes_home_key(), provider, model)
     now = time.monotonic()
     with _runtime_cache_lock:

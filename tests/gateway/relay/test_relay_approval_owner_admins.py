@@ -18,7 +18,7 @@ def relay(tmp_path, monkeypatch):
     from hermes_agent.gateway.relay.descriptor import CONTRACT_VERSION, CapabilityDescriptor
     from hermes_agent.gateway.run import GatewayRunner
     from hermes_agent.hermes_cli.profiles import get_profile_dir
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from hermes_agent.tools import approval
 
     (get_hermes_home() / "config.yaml").write_text("approvals:\n  approvers: []\n")

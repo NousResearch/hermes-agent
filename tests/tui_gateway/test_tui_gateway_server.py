@@ -14,7 +14,7 @@ from unittest.mock import Mock, patch
 import pytest
 
 from hermes_agent.gateway.owner_identity import host_owner_subject as _owner
-from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
 from hermes_agent.hermes_cli.active_sessions import active_session_registry_snapshot
 from hermes_agent.hermes_cli.browser_connect import ChromeDebugLaunch
 from hermes_agent.tools import async_delegation as ad
@@ -762,7 +762,7 @@ def test_session_context_explicit_cwd_for_ephemeral_task(monkeypatch, tmp_path):
 
 
 def _write_profile_cfg(home: Path, cwd: str | None) -> Path:
-    import hermes_yaml as yaml
+    import hermes_agent.hermes_yaml as yaml
 
     home.mkdir(parents=True, exist_ok=True)
     cfg = {"terminal": {"cwd": cwd}} if cwd is not None else {}
@@ -773,7 +773,7 @@ def _write_profile_cfg(home: Path, cwd: str | None) -> Path:
 def test_profile_scoped_mcp_discovery_uses_target_home(monkeypatch, tmp_path):
     """MCP discovery must start under the selected profile's HERMES_HOME."""
     from hermes_agent.hermes_cli import mcp_startup
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from hermes_agent.tui_gateway import entry
 
     profile_home = tmp_path / "profiles" / "sheepyr"
@@ -820,7 +820,7 @@ def test_profile_scoped_agent_build_starts_mcp_discovery_in_profile_home(
     import threading
     import uuid
 
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     profile_home = tmp_path / "profiles" / "sheepyr"
     profile_home.mkdir(parents=True)
@@ -8768,7 +8768,7 @@ def test_config_set_yolo_stale_session_id_is_refused_not_process_scoped(monkeypa
 
 def test_config_set_yolo_global_scope_writes_approvals_mode(tmp_path, monkeypatch):
     """Shift+click the desktop zap -> scope="global" flips persistent approvals.mode."""
-    import hermes_yaml as yaml
+    import hermes_agent.hermes_yaml as yaml
 
     cfg_path = tmp_path / "config.yaml"
     cfg_path.write_text(yaml.safe_dump({"approvals": {"mode": "manual"}}), encoding="utf-8")
@@ -8799,7 +8799,7 @@ def test_config_set_yolo_global_scope_writes_approvals_mode(tmp_path, monkeypatc
 def test_config_get_approval_mode_uses_smart_default_when_key_is_missing(
     tmp_path, monkeypatch
 ):
-    import hermes_yaml as yaml
+    import hermes_agent.hermes_yaml as yaml
 
     monkeypatch.setattr(server, "_hermes_home", tmp_path)
     # Point the canonical resolver (load_config → env HERMES_HOME) at the
@@ -8819,7 +8819,7 @@ def test_config_get_approval_mode_uses_smart_default_when_key_is_missing(
 def test_config_get_approval_mode_fails_safe_to_manual_for_invalid_explicit_value(
     tmp_path, monkeypatch
 ):
-    import hermes_yaml as yaml
+    import hermes_agent.hermes_yaml as yaml
 
     monkeypatch.setattr(server, "_hermes_home", tmp_path)
     # _load_approval_mode delegates to the canonical resolver in
@@ -8838,7 +8838,7 @@ def test_config_get_approval_mode_fails_safe_to_manual_for_invalid_explicit_valu
 
 
 def test_config_get_approval_mode_normalizes_yaml_off(tmp_path, monkeypatch):
-    import hermes_yaml as yaml
+    import hermes_agent.hermes_yaml as yaml
 
     monkeypatch.setattr(server, "_hermes_home", tmp_path)
     # See fail-safe test above: the canonical resolver reads via
@@ -8857,7 +8857,7 @@ def test_config_get_approval_mode_normalizes_yaml_off(tmp_path, monkeypatch):
 def test_config_set_approval_mode_persists_three_way_value_and_emits_live_status(
     tmp_path, monkeypatch
 ):
-    import hermes_yaml as yaml
+    import hermes_agent.hermes_yaml as yaml
 
     monkeypatch.setattr(server, "_hermes_home", tmp_path)
     # config.set writes via server._hermes_home, but the post-write
@@ -8892,7 +8892,7 @@ def test_pet_gallery_quoted_false_enabled_reports_disabled(tmp_path, monkeypatch
     quoted YAML value kept the petdex mascot enabled against the operator's
     explicit intent.
     """
-    import hermes_yaml as yaml
+    import hermes_agent.hermes_yaml as yaml
 
     monkeypatch.setattr(server, "_hermes_home", tmp_path)
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -8969,7 +8969,7 @@ def test_config_set_approval_mode_rejects_unknown_value():
 
 def test_config_set_yolo_global_scope_honors_explicit_value(tmp_path, monkeypatch):
     """An explicit value pins global approvals.mode regardless of prior state."""
-    import hermes_yaml as yaml
+    import hermes_agent.hermes_yaml as yaml
 
     cfg_path = tmp_path / "config.yaml"
     cfg_path.write_text(yaml.safe_dump({"approvals": {"mode": "manual"}}), encoding="utf-8")
@@ -9211,7 +9211,7 @@ def test_config_get_busy_survives_non_dict_display(monkeypatch):
 
 
 def test_config_set_statusbar_survives_non_dict_display(tmp_path, monkeypatch):
-    import hermes_yaml as yaml
+    import hermes_agent.hermes_yaml as yaml
 
     cfg_path = tmp_path / "config.yaml"
     cfg_path.write_text(yaml.safe_dump({"display": "broken"}), encoding="utf-8")
@@ -9231,7 +9231,7 @@ def test_config_set_statusbar_survives_non_dict_display(tmp_path, monkeypatch):
 
 
 def test_config_set_details_mode_pins_all_sections(tmp_path, monkeypatch):
-    import hermes_yaml as yaml
+    import hermes_agent.hermes_yaml as yaml
 
     cfg_path = tmp_path / "config.yaml"
     cfg_path.write_text(
@@ -9261,7 +9261,7 @@ def test_config_set_details_mode_pins_all_sections(tmp_path, monkeypatch):
 
 
 def test_config_set_section_writes_per_section_override(tmp_path, monkeypatch):
-    import hermes_yaml as yaml
+    import hermes_agent.hermes_yaml as yaml
 
     cfg_path = tmp_path / "config.yaml"
     monkeypatch.setattr(server, "_hermes_home", tmp_path)
@@ -9280,7 +9280,7 @@ def test_config_set_section_writes_per_section_override(tmp_path, monkeypatch):
 
 
 def test_config_set_section_clears_override_on_empty_value(tmp_path, monkeypatch):
-    import hermes_yaml as yaml
+    import hermes_agent.hermes_yaml as yaml
 
     cfg_path = tmp_path / "config.yaml"
     cfg_path.write_text(
@@ -9701,7 +9701,7 @@ def test_setup_readiness_scopes_to_requested_profile(monkeypatch, tmp_path):
     credentials must not make an unconfigured bot look ready, and the bot's
     own .env must be what the strict check sees."""
     from hermes_agent.agent import secret_scope
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     bot_home = tmp_path / "profiles" / "bot"
     bot_home.mkdir(parents=True)
@@ -10265,7 +10265,7 @@ def test_config_set_model_recovers_failed_profile_resume_after_build_completes(
     boundary. Provider resolution is the only model-switch leaf replaced.
     """
     from hermes_agent.agent.secret_scope import current_secret_scope
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     launch_url = "https://launch.example/v1"
     profile_url = "https://profile.example/v1"
@@ -20913,7 +20913,7 @@ def test_save_cfg_preserves_user_comments(tmp_path, monkeypatch):
     assert "# provider rationale" in text
     assert "# trailing skin note" in text
 
-    import hermes_yaml as _yaml
+    import hermes_agent.hermes_yaml as _yaml
 
     parsed = _yaml.safe_load(text)
     assert parsed["display"]["skin"] == "mono"
@@ -21995,7 +21995,7 @@ def test_persist_live_session_system_prompt_uses_profile_home(monkeypatch, tmp_p
         _session_db = None
 
         def _build_system_prompt(self, system_message=None):
-            from hermes_constants import get_hermes_home
+            from hermes_agent.hermes_constants import get_hermes_home
             home = get_hermes_home()
             built_homes.append(str(home))
             soul = (
@@ -22028,7 +22028,7 @@ def test_persist_live_session_system_prompt_uses_profile_home(monkeypatch, tmp_p
     assert "Work persona" in agent._cached_system_prompt
 
     # The override must have been reset after the call.
-    from hermes_constants import get_hermes_home_override
+    from hermes_agent.hermes_constants import get_hermes_home_override
     assert get_hermes_home_override() is None
 
 
@@ -22065,7 +22065,7 @@ def test_persist_live_session_system_prompt_restores_pre_existing_override(tmp_p
     not just the unset case: when a caller already holds an override, the
     persist call must scope to the session's profile and then hand the
     caller's override back, rather than clearing it to None."""
-    from hermes_constants import get_hermes_home_override
+    from hermes_agent.hermes_constants import get_hermes_home_override
 
     outer_home = tmp_path / "profile-outer"
     outer_home.mkdir()
@@ -22084,7 +22084,7 @@ def test_persist_live_session_system_prompt_restores_pre_existing_override(tmp_p
         _session_db = None
 
         def _build_system_prompt(self, system_message=None):
-            from hermes_constants import get_hermes_home
+            from hermes_agent.hermes_constants import get_hermes_home
             built_homes.append(str(get_hermes_home()))
             return "inner prompt"
 

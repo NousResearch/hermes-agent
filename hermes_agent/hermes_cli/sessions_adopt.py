@@ -121,7 +121,7 @@ def cmd_adopt(args) -> int:
     import asyncio
     from websockets.exceptions import WebSocketException
     from hermes_agent.hermes_cli.gateway_client import GatewayClientError
-    from hermes_constants import display_hermes_home, get_hermes_home
+    from hermes_agent.hermes_constants import display_hermes_home, get_hermes_home
 
     path = get_hermes_home() / 'state.db'
     if not path.exists():

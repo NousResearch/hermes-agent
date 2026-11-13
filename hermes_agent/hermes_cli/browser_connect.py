@@ -28,7 +28,7 @@ from pathlib import Path
 
 from hermes_agent.agent.deadline import poll_until
 from hermes_agent.agent.proxy_bypass import is_loopback_host
-from hermes_constants import get_hermes_home
+from hermes_agent.hermes_constants import get_hermes_home
 
 logger = logging.getLogger(__name__)
 

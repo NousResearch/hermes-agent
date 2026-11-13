@@ -31,7 +31,7 @@ def assignment(tmp_path, monkeypatch, *, finite=True, unattended=False, yolo=Fal
 def test_child_executes_under_finite_policy_and_preserves_receipt(tmp_path, monkeypatch, unattended):
     from hermes_agent.agent import managed_worker as worker
     from hermes_agent.gateway.session_finite import finite_turn_required, unattended_turn
-    from hermes_scope import Fence, current_scope
+    from hermes_agent.hermes_scope import Fence, current_scope
     from hermes_agent.tools.approval import _yolo_active, clear_session
     frame, _ = assignment(tmp_path, monkeypatch, unattended=unattended)
     frame['scope'].update(epoch=3, generation=8)  # distinct, so a swapped fence is caught

@@ -7,7 +7,7 @@ import pytest
 
 from hermes_agent.hermes_cli.profile_identity import migrate_profile_identity
 from hermes_agent.hermes_cli.profiles import create_profile, rename_profile
-from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
 import hermes_agent.tools.checkpoint_manager as cm
 from hermes_agent.tools.checkpoint_manager import CheckpointManager
 from hermes_agent.tools import checkpoint_maintenance as maintenance

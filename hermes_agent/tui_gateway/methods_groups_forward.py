@@ -60,7 +60,7 @@ def _home(server, params: dict):
         if home is None:
             raise ValueError(f"profile '{profile}' is unavailable")
         return Path(home)
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     return Path(get_hermes_home())
 
 

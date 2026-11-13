@@ -107,7 +107,7 @@ def openai_reasoning_family(model: Any) -> Optional[str]:
 
 
 def _is_openai_api_issuer(issuer_kind: Any) -> bool:
-    from utils import base_url_hostname
+    from hermes_agent.utils import base_url_hostname
 
     return isinstance(issuer_kind, str) and issuer_kind.startswith("other:") and (
         base_url_hostname(issuer_kind[len("other:"):]).lower() == "api.openai.com"
@@ -781,7 +781,7 @@ class ResponsesRouteFlags(NamedTuple):
 def classify_responses_route(agent: Any) -> ResponsesRouteFlags:
     """Classify the agent's Responses route from provider + base URL. Host checks are
     exact-host-or-subdomain, never substring (``evil.com/chatgpt.com`` is not ChatGPT)."""
-    from utils import base_url_hostname
+    from hermes_agent.utils import base_url_hostname
     provider = getattr(agent, "provider", None)
     base_url = str(getattr(agent, "base_url", "") or "")
     hostname = str(getattr(agent, "_base_url_hostname", "") or "").lower() or base_url_hostname(base_url)

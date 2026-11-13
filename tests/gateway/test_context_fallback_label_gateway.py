@@ -94,7 +94,7 @@ async def test_context_marks_a_non_resident_sessions_defaulted_route():
 @pytest.mark.asyncio
 async def test_model_switch_does_not_show_a_discarded_pin(tmp_path, monkeypatch):
     """The configured model's 128K pin is dropped for the new route, so it must not label the new window."""
-    import hermes_yaml as yaml
+    import hermes_agent.hermes_yaml as yaml
     from hermes_agent.hermes_cli.model_switch import ModelSwitchResult
     from tests.gateway.test_model_command_context_offload import _event, _runner_with_store
     runner = _runner_with_store(tmp_path, monkeypatch)

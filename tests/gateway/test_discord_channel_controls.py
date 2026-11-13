@@ -218,7 +218,7 @@ async def test_auto_thread_failure_skips_agent_and_notifies_user(adapter, monkey
 
 def test_config_bridges_ignored_channels(monkeypatch, tmp_path):
     """hermes_agent/gateway/config.py bridges discord.ignored_channels to env var."""
-    import hermes_yaml as yaml
+    import hermes_agent.hermes_yaml as yaml
     config_file = tmp_path / "config.yaml"
     config_file.write_text(yaml.safe_dump({
         "discord": {

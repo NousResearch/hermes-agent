@@ -45,7 +45,7 @@ def _detect_gpu_vendor() -> str | None:
     platform host facts so Intel and AMD do not silently demote ``auto`` to CPU.
     """
     from hermes_agent.hermes_cli.local_runtime.hardware import _cached_nvidia_gpu_query
-    from hermes_platform.host.facts import gpu_class
+    from hermes_agent.hermes_platform.host.facts import gpu_class
 
     query = _cached_nvidia_gpu_query()
     if query is not None and query.get("gpu_name"):
@@ -57,7 +57,7 @@ def _detect_gpu_vendor() -> str | None:
 def models_dir() -> Path:
     """Machine-scoped, deliberately NOT profile-scoped: a 20 GB GGUF is a machine asset, and every
     profile shares the one managed server that serves it (same rule as runtimes_root())."""
-    from hermes_constants import get_default_hermes_root
+    from hermes_agent.hermes_constants import get_default_hermes_root
 
     return get_default_hermes_root() / "models"
 
@@ -101,7 +101,7 @@ def adopt_legacy_models() -> list[Path]:
     adopting two profiles' same-named file at once, and a same name is the same catalog variant).
     Two processes racing on one file are harmless: the loser's rename finds the source gone and
     skips it. Returns the new paths of the moved files."""
-    from hermes_constants import get_default_hermes_root, named_profile_has_identity
+    from hermes_agent.hermes_constants import get_default_hermes_root, named_profile_has_identity
 
     profiles_root = get_default_hermes_root() / "profiles"
     if not profiles_root.is_dir():
@@ -320,7 +320,7 @@ def refit_idle_presets(sup) -> bool:
         sup._refit_usable = live.usable_vram_bytes
         if text == path.read_text(encoding="utf-8-sig"):
             return False
-        from utils import atomic_write_text
+        from hermes_agent.utils import atomic_write_text
 
         atomic_write_text(path, text, tmp_prefix=f".{path.name}_", mode=0o600)
         sup.reload_presets()

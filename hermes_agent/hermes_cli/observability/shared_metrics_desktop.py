@@ -48,7 +48,7 @@ def _utc_day() -> str:
 
 
 def _home() -> str:
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     return str(get_hermes_home())
 
@@ -110,7 +110,7 @@ def _friction_fields(*, kind: Any, detail: Any) -> dict[str, str] | None:
 
 def _claim_onboarding(step: str, event: str) -> bool:
     """Once per (step, event) per profile, across processes: an O_EXCL latch file (≤ ~51 of them)."""
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     directory = get_hermes_home() / "telemetry" / "shared_metrics" / ONBOARDING_LATCH_DIRNAME
     directory.mkdir(parents=True, exist_ok=True)
@@ -123,7 +123,7 @@ def _claim_onboarding(step: str, event: str) -> bool:
 
 def purge_onboarding_latches() -> None:
     """Collection turned off: drop the per-profile onboarding latches like the renderer drops its copy."""
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     shutil.rmtree(get_hermes_home() / "telemetry" / "shared_metrics" / ONBOARDING_LATCH_DIRNAME, ignore_errors=True)
 

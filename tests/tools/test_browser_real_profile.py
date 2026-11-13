@@ -211,7 +211,7 @@ class TestRealProfileCdpLaunch:
 
     @staticmethod
     def _resolve_in(home, result: dict):
-        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
         token = set_hermes_home_override(str(home))
         try:
             result[str(home)] = rp.real_profile_cdp()
@@ -223,7 +223,7 @@ class TestRealProfileCdpLaunch:
         """A launch stuck in an expensive step (an abandoned worker) fails its own profile's next call fast
         with a clear error, and never holds up another profile's launch."""
         import threading
-        from hermes_constants import get_hermes_home
+        from hermes_agent.hermes_constants import get_hermes_home
 
         monkeypatch.setattr(rp, "_LOCK_TIMEOUT_S", 0.5)
         home_a, home_b = tmp_path / "a", tmp_path / "b"

@@ -22,7 +22,7 @@ def client(monkeypatch, _isolate_hermes_home):
         pytest.skip("fastapi/starlette not installed")
 
     from hermes_agent import hermes_state
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from hermes_agent.hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
 
     monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", get_hermes_home() / "state.db")
@@ -66,7 +66,7 @@ def _profiles(db_path):
 
 
 def test_backfill_stamps_only_null_rows_and_is_idempotent(client):
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     db_path = get_hermes_home() / "state.db"
     _seed(
@@ -106,7 +106,7 @@ def test_backfilled_rows_circulate_owned_on_the_list_endpoint(client):
     """After the backfill, the durable stamp (not just the per-response
     serving-profile decoration) owns the rows: the raw DB column is non-NULL,
     which is what survives into any other consumer of state.db."""
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     db_path = get_hermes_home() / "state.db"
     _seed(db_path, [("legacy-null-3", None)])
@@ -125,7 +125,7 @@ def test_backfilled_rows_circulate_owned_on_the_list_endpoint(client):
 
 def test_backfill_treats_empty_string_profile_as_legacy(client):
     """TRIM('') rows are the same stranded class as NULL — stamp them too."""
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     db_path = get_hermes_home() / "state.db"
     _seed(db_path, [("legacy-empty", None)])

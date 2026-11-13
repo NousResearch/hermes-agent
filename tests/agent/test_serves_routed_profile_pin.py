@@ -7,7 +7,7 @@ live env var then saw the served home as the launch home: MCP connections were k
 (shared across profiles), the launch residue was never stripped from the served profile's child env,
 the launch profile's bridged allow-all grant was seeded into the served profile's secret scope, and
 the served profile's ``terminal.*`` config was bridged into the shared process env.
-``hermes_constants.pin_process_hermes_home`` gives such hosts one stable anchor for all of them.
+``hermes_agent.hermes_constants.pin_process_hermes_home`` gives such hosts one stable anchor for all of them.
 """
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-import hermes_constants
+from hermes_agent import hermes_constants
 from hermes_agent.agent.secret_scope import _is_process_home, serves_routed_profile
 from hermes_agent.hermes_cli.env_loader import _process_hermes_home
 from hermes_agent.tools.environments.local import _is_routed_home

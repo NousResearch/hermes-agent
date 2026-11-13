@@ -121,8 +121,8 @@ via `copy_context()` and unwind deterministically — nothing is written to
 ### One scope value
 
 The scope, the home override, the secret scope and the terminal policy are one
-immutable value, `hermes_scope.ScopeState`, in a single contextvar. The scope is
-`hermes_scope.Scope(tenant, agent, actor, owner=, can_administer=)`:
+immutable value, `hermes_agent.hermes_scope.ScopeState`, in a single contextvar. The scope is
+`hermes_agent.hermes_scope.Scope(tenant, agent, actor, owner=, can_administer=)`:
 
 - `actor` is `Principal(id)` (a person) or `System(reason)` (cron, kanban,
   housekeeping).
@@ -214,7 +214,7 @@ process environment (`#88441`).
 
 ## The HERMES_HOME override
 
-`hermes_constants.py` holds a context-local override consulted by
+`hermes_agent/hermes_constants.py` holds a context-local override consulted by
 `get_hermes_home()` before the `HERMES_HOME` env var. Everything that resolves
 paths through it — config, `state.db`, skills, memory, SOUL, sessions, kanban,
 goals, plugin discovery, MCP startup — follows the active profile
@@ -381,6 +381,6 @@ out of scope for this document.
 
 - [Multi-profile gateways](../user-guide/multi-profile-gateways.md) — user-facing guide, including `profile_routes`
   and the standalone one-gateway-per-profile alternative.
-- `hermes_agent/agent/secret_scope.py`, `hermes_constants.py`, `hermes_agent/gateway/profile_routing.py`,
+- `hermes_agent/agent/secret_scope.py`, `hermes_agent/hermes_constants.py`, `hermes_agent/gateway/profile_routing.py`,
   `hermes_agent/gateway/run.py` (`_profile_runtime_scope`), `hermes_agent/hermes_cli/profiles.py`
   (`profiles_to_serve`), `hermes_agent/gateway/session.py`, `hermes_agent/tui_gateway/methods_profiles.py`.

@@ -23,7 +23,7 @@ def _race_first_install_id(
     if start_barrier is not None:
         start_barrier.wait(timeout=10)
     if writer_entered is not None:
-        import utils
+        from hermes_agent import utils
         original_mkstemp = utils.tempfile.mkstemp
 
         def held_mkstemp(*args, **kwargs):

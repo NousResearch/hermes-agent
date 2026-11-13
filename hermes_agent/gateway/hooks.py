@@ -14,11 +14,11 @@ import threading
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
-import hermes_yaml as yaml
+import hermes_agent.hermes_yaml as yaml
 
 from hermes_agent.hermes_cli.config import get_hermes_home
 from hermes_agent.hermes_cli.plugin_isolation import import_user_code
-from hermes_constants import hermes_home_key
+from hermes_agent.hermes_constants import hermes_home_key
 
 
 HOOKS_DIR = get_hermes_home() / "hooks"

@@ -22,7 +22,7 @@ from pathlib import Path
 
 from hermes_agent.hermes_cli.local_runtime.devices import GGML_DEVICE_GPU
 from hermes_agent.hermes_cli.local_runtime.estimator import HardwareBudget
-from hermes_platform.host.facts import gpu_class
+from hermes_agent.hermes_platform.host.facts import gpu_class
 
 logger = logging.getLogger(__name__)
 
@@ -486,7 +486,7 @@ def _windows_igpu_bytes(device: dict | None) -> int | None:
     keeps the model in system RAM. Not the engine's own figure: ggml-vulkan sums every memory heap
     of an integrated GPU, host-visible ones included, so it can exceed what Windows grants.
     """
-    from hermes_platform.host.gpu_adapters import windows_gpu_adapters
+    from hermes_agent.hermes_platform.host.gpu_adapters import windows_gpu_adapters
 
     hardware = [a for a in windows_gpu_adapters() if not a.software]
     named = [a for a in hardware if device is not None and a.description == device["description"]]

@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-import hermes_yaml as yaml
+import hermes_agent.hermes_yaml as yaml
 from tests.hermes_cli.plugin_worker_support import (
     isolated_python as isolated_python,  # noqa: PLC0414 -- the self-alias is load-bearing: it suppresses F811 for the pytest fixture parameter shadowing this import
     plugin_world as plugin_world,  # noqa: PLC0414 -- the self-alias is load-bearing: it suppresses F811 for the pytest fixture parameter shadowing this import
@@ -66,7 +66,7 @@ def world(tmp_path, monkeypatch):
     def pin(sha: str) -> None:
         current["demo"] = PluginCatalogEntry(name="demo", repo=URL, sha=sha, description="d", maintainer="m")
     monkeypatch.setattr(plugins_cmd_catalog, "get_live_catalog_entry", lambda name: current.get(name))
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     return get_hermes_home(), repo, pin
 
 

@@ -109,7 +109,7 @@ def resolve_profile(home: str, *, identify: Callable[[], dict[str, Any]], own_ho
     from hermes_agent.hermes_cli import gateway_runtime as runtime
     from hermes_agent.hermes_cli.gateway_client import GATEWAY_WS_PROTOCOL, GATEWAY_WS_TICKET_PREFIX, gateway_ws_target
     from hermes_agent.hermes_cli.gateway_runtime_attach import failure_message
-    from hermes_constants import get_default_hermes_root
+    from hermes_agent.hermes_constants import get_default_hermes_root
 
     own = Path(runtime._canonical_home(own_home))
     requested = _contained_home(home, own)

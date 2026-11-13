@@ -28,7 +28,7 @@ def served_host(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setenv("HERMES_PROFILE", "served")
     monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(locks))
-    monkeypatch.setattr("hermes_constants.get_default_hermes_root", lambda: root)
+    monkeypatch.setattr("hermes_agent.hermes_constants.get_default_hermes_root", lambda: root)
     monkeypatch.setattr("hermes_agent.hermes_cli.gateway.find_gateway_pids", list)
     monkeypatch.setattr("hermes_agent.gateway.status.is_gateway_runtime_lock_active", lambda lock_path=None: False)
     # A live owner holds the host lock for its lifetime (run.py claims before it publishes).

@@ -34,7 +34,7 @@ def fleet(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(root))
     # The pytest seat-belt in the root write-through compares the global path
     # against $HOME/.hermes/auth.json; our root is elsewhere, so writes go.
-    import hermes_constants
+    from hermes_agent import hermes_constants
     hermes_constants._default_hermes_root_memo = None  # type: ignore[attr-defined]
 
     expired = int((time.time() - 3600) * 1000)
@@ -241,7 +241,7 @@ def test_strip_helper_leaves_shared_root_auth_store_unchanged(fleet, link):
 def test_strip_helper_fails_closed_when_root_store_cannot_be_resolved(fleet, monkeypatch):
     """Credential hygiene must not mutate auth when store identity is unknown."""
     from hermes_agent.hermes_cli.auth import strip_cloned_single_use_oauth_grants
-    import hermes_constants
+    from hermes_agent import hermes_constants
 
     root = fleet["root"]
     _seed_codex_grant(root)

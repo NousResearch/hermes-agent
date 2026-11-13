@@ -389,7 +389,7 @@ def test_unwritable_store_is_shown_in_cron_status_and_announced_once(cron_store,
     (profile / "cron").symlink_to(cron_dir, target_is_directory=True)
     runner = SimpleNamespace(_send_home_channel_message=send, _served_profile_homes={"p": profile},
                              _served_home_channel_transports=lambda: iter([("p", "telegram", None, home, object())]))
-    monkeypatch.setattr("hermes_constants.get_routing_process_hermes_home", lambda: cron_store / "launch")
+    monkeypatch.setattr("hermes_agent.hermes_constants.get_routing_process_hermes_home", lambda: cron_store / "launch")
     # A manual loop clock: the real one-hour "recovered" window only elapses when the test says
     # so, so every case below is decided by event order, never by wall-clock timing.
     loop = asyncio.new_event_loop()

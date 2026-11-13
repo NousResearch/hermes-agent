@@ -23,9 +23,9 @@ import uuid
 from collections import deque
 from contextlib import contextmanager, suppress
 from pathlib import Path
-from hermes_dir_acl import make_user_dir
+from hermes_agent.hermes_dir_acl import make_user_dir
 
-from hermes_constants import get_hermes_home, mkdir_under_hermes_home
+from hermes_agent.hermes_constants import get_hermes_home, mkdir_under_hermes_home
 from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple, TypeVar, cast
 
 from hermes_agent.hermes_state_common import (
@@ -391,7 +391,7 @@ def format_session_db_unavailable(
     cannot host SQLite's write-ahead log: when the raw cause carries one of those markers the
     message names the network-drive suspicion, because ``hermes doctor --fix`` cannot repair a
     mount — only moving the file can."""
-    from hermes_constants import profile_cli_selector
+    from hermes_agent.hermes_constants import profile_cli_selector
 
     profile_arg = profile_cli_selector()
     cause = get_last_init_error()

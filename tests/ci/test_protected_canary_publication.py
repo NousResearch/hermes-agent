@@ -15,7 +15,7 @@ import subprocess
 import sys
 import zipfile
 
-import hermes_yaml
+from hermes_agent import hermes_yaml
 import pytest
 
 from hermes_agent.hermes_cli.release_channels import ChannelReader

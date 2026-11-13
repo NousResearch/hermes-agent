@@ -21,8 +21,8 @@ def resolve_external_process_command(command: str) -> Optional[str]:
     """Absolute path of the provider CLI ``command``, or ``None`` when nothing executable matches."""
     if not command:
         return None
-    from hermes_platform.resolver import locate_command
-    from hermes_platform.resolver.known_dirs import user_local_bin
+    from hermes_agent.hermes_platform.resolver import locate_command
+    from hermes_agent.hermes_platform.resolver.known_dirs import user_local_bin
 
     lookup = command
     if os.sep in command or (os.altsep and os.altsep in command):

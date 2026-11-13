@@ -22,7 +22,7 @@ import time as _time_mod
 from pathlib import Path
 from typing import Callable, Optional
 from hermes_agent.hermes_cli.desktop_console import desktop_console_output, desktop_launch_notice
-from hermes_platform.host import facts
+from hermes_agent.hermes_platform.host import facts
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("hermes_agent.hermes_cli.main")
@@ -1026,7 +1026,7 @@ def _refresh_installed_desktop_apps(desktop_dir: Path) -> None:
     for problem in problems:
         print(f"  ⚠ {problem}")
     from hermes_agent.hermes_cli.gui_uninstall import desktop_install_record
-    from utils import atomic_json_write, read_json_or_empty
+    from hermes_agent.utils import atomic_json_write, read_json_or_empty
     # A copy that failed to reinstall stays recorded, so the next update retries it. Every
     # `hermes desktop` launch lands here: write only when the set changed.
     apps = [str(app) for app in owned]
@@ -1064,7 +1064,7 @@ def _owns_installed_desktop_apps() -> bool:
     if sys.platform != "darwin":
         return False
     from hermes_agent.hermes_cli.main import PROJECT_ROOT
-    from hermes_constants import get_default_hermes_root
+    from hermes_agent.hermes_constants import get_default_hermes_root
     return Path(PROJECT_ROOT).resolve() == (get_default_hermes_root() / "hermes-agent").resolve()
 
 
@@ -1079,7 +1079,7 @@ def _installed_desktop_apps() -> list[Path]:
     if not _owns_installed_desktop_apps():
         return []
     from hermes_agent.hermes_cli.gui_uninstall import desktop_install_record, packaged_gui_app_paths
-    from utils import read_json_or_empty
+    from hermes_agent.utils import read_json_or_empty
     candidates = packaged_gui_app_paths()
     if owned := _update_owned_macos_bundles(candidates):
         return owned
@@ -1539,7 +1539,7 @@ def _prefer_wsl_d3d12(env: dict) -> None:
     llvmpipe unless GALLIUM_DRIVER selects d3d12, and it must be set before Electron spawns
     its GPU process (setting it from JS is too late). Explicit Mesa choices win; hosts without
     the driver are left alone."""
-    from hermes_constants import is_wsl
+    from hermes_agent.hermes_constants import is_wsl
     if any(key in env for key in _MESA_DRIVER_OVERRIDES):
         return
     if is_wsl() and _WSL_DXG_DEVICE.exists() and any(driver.is_file() for driver in _WSL_D3D12_DRIVERS):
@@ -1555,7 +1555,7 @@ _DESKTOP_TMPDIR_ENV = "HERMES_DESKTOP_TMPDIR"
 def _desktop_launch_env(args: argparse.Namespace) -> tuple[dict, list[str]]:
     """Electron child env + config-supplied extra flags. ``desktop.*`` config is bridged to env vars
     Electron already reads; an explicit env var wins over config (and over keychain detection)."""
-    from hermes_constants import socket_safe_tmpdir, with_hermes_node_path
+    from hermes_agent.hermes_constants import socket_safe_tmpdir, with_hermes_node_path
     # with_hermes_node_path() copies os.environ when called with no arg.
     env = with_hermes_node_path()
     tmpdir = env.get("TMPDIR", "")
@@ -1725,7 +1725,7 @@ def cmd_gui(args: argparse.Namespace):
         sys.exit(1)
 
     with contextlib.suppress(Exception):
-        from hermes_logging import setup_logging as _setup_logging_gui
+        from hermes_agent.hermes_logging import setup_logging as _setup_logging_gui
         _setup_logging_gui(mode="gui")
 
     env, config_electron_flags = _desktop_launch_env(args)

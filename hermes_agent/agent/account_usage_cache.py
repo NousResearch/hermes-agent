@@ -41,7 +41,7 @@ _inflight: set[tuple[str, str, str, str]] = set()
 
 
 def _key(provider: str, identity_id: Optional[str] = None, base_url: Optional[str] = None) -> tuple[str, str, str, str]:
-    from hermes_constants import hermes_home_key
+    from hermes_agent.hermes_constants import hermes_home_key
 
     return (
         hermes_home_key(),

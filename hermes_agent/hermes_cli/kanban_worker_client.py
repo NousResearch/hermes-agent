@@ -2,9 +2,9 @@
 # Spawned as a bare ``sys.executable -m``: in a PM install that interpreter carries no dependencies
 # until hermes_bootstrap selects the committed environment, so it must be the first import.
 try:
-    import hermes_bootstrap
+    import hermes_agent.hermes_bootstrap as hermes_bootstrap  # noqa: PLR0402
 except ModuleNotFoundError as exc:
-    if exc.name != "hermes_bootstrap" and not "hermes_bootstrap".startswith(f"{exc.name}."):
+    if exc.name != "hermes_agent.hermes_bootstrap" and not "hermes_agent.hermes_bootstrap".startswith(f"{exc.name}."):
         raise
 
 import asyncio

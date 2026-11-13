@@ -140,7 +140,7 @@ class TestPeerWritesAfterLatch:
 
 def test_readiness_state_db_and_session_store_agree_on_corrupt(_isolate_hermes_home):
     from hermes_agent.gateway.readiness import collect_runtime_readiness
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     path = get_hermes_home() / "state.db"
     _seed(path, count=1)
@@ -157,7 +157,7 @@ def test_readiness_state_db_and_session_store_agree_on_corrupt(_isolate_hermes_h
 
 def test_readiness_probe_latches_a_file_that_is_not_a_database(_isolate_hermes_home):
     from hermes_agent.gateway.readiness import _probe_state_db
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     home = get_hermes_home()
     (home / "state.db").write_bytes(b"this is not sqlite" * 512)
@@ -178,7 +178,7 @@ def client(monkeypatch, _isolate_hermes_home):
     from hermes_agent import hermes_state
     from hermes_agent.hermes_cli.web_routers import profiles as profiles_routes
     from hermes_agent.hermes_cli.web_server import _SESSION_HEADER_NAME, _SESSION_TOKEN, app
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     monkeypatch.setattr(profiles_routes, "_SIDEBAR_CACHE_TTL_SECONDS", 0.0)
     monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", get_hermes_home() / "state.db")
@@ -189,7 +189,7 @@ def client(monkeypatch, _isolate_hermes_home):
 
 
 def test_corrupt_state_db_is_published_to_every_desktop_surface(client):
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     path = get_hermes_home() / "state.db"
     _seed(path)

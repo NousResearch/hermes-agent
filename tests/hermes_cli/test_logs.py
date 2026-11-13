@@ -71,7 +71,7 @@ class TestLineMatchesComponent:
         # gateway prefixes (COMPONENT_PREFIXES["gateway"]) the CLI passes, not a
         # bare ("gateway",), since the logger name no longer literally starts
         # with "gateway".
-        from hermes_logging import COMPONENT_PREFIXES
+        from hermes_agent.hermes_logging import COMPONENT_PREFIXES
         line = "2026-04-11 10:23:45 INFO plugins.platforms.telegram.adapter: msg"
         assert _line_matches_component(line, COMPONENT_PREFIXES["gateway"])
 
@@ -144,7 +144,7 @@ class TestReadTail:
             f"{new} ERROR gateway.run: new failure\n", *frames, "ValueError: new\n",
         ]))
         since = datetime.now() - timedelta(hours=1)
-        from hermes_logging import COMPONENT_PREFIXES
+        from hermes_agent.hermes_logging import COMPONENT_PREFIXES
 
         def read(**filters):
             return "".join(_read_tail(log_file, 50, has_filters=True, **filters))
@@ -167,7 +167,7 @@ def _python_log_line(logger_name: str) -> str:
     import logging
 
     from hermes_agent.agent.redact import RedactingFormatter
-    from hermes_logging import _LOG_FORMAT
+    from hermes_agent.hermes_logging import _LOG_FORMAT
 
     record = logging.LogRecord(logger_name, logging.WARNING, __file__, 1, "sample", None, None)
     record.session_tag = ""

@@ -13,9 +13,9 @@ import re
 import time
 import uuid
 from contextlib import ExitStack, contextmanager
-from hermes_dir_acl import make_user_dir, unusable_dir_remedy
+from hermes_agent.hermes_dir_acl import make_user_dir, unusable_dir_remedy
 
-from utils import atomic_json_write, fsync_directory
+from hermes_agent.utils import atomic_json_write, fsync_directory
 from pathlib import Path
 from typing import Any, Callable
 

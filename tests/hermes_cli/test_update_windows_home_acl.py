@@ -5,7 +5,7 @@ import subprocess
 
 import pytest
 
-import hermes_dir_acl
+from hermes_agent import hermes_dir_acl
 from hermes_agent.hermes_cli import update_windows_acl as maint
 
 

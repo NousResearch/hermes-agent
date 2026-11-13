@@ -145,7 +145,7 @@ def test_console_cancel_stops_forked_agent_request_before_reporting(console_clie
 
     from hermes_agent.agent import curator
     from hermes_agent.hermes_cli.web_routers import chat_ws
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from hermes_agent.tools import skill_usage
 
     # The LLM pass only forks when an agent-created skill is a candidate: bundled

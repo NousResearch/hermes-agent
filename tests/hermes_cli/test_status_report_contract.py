@@ -99,7 +99,7 @@ def _render_tui() -> str:
 
 
 def test_three_status_surfaces_report_the_same_common_fields():
-    with patch("hermes_constants.display_hermes_home", return_value=HOME), \
+    with patch("hermes_agent.hermes_constants.display_hermes_home", return_value=HOME), \
          patch("hermes_agent.tools.approval_context._get_approval_mode", side_effect=RuntimeError("n/a")):
         outputs = {"cli": _render_cli(), "gateway": _render_gateway(), "tui": _render_tui()}
 

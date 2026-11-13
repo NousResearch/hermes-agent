@@ -22,7 +22,7 @@ import time
 import uuid
 from pathlib import Path
 from typing import Any, Dict, Optional
-from hermes_dir_acl import make_user_dir
+from hermes_agent.hermes_dir_acl import make_user_dir
 
 logger = logging.getLogger(__name__)
 
@@ -43,9 +43,9 @@ _REPLAYED_UNREMOVABLE: set[Path] = set()
 
 def _get_flush_dir():
     """Return the pending-messages flush directory under the active HERMES_HOME."""
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     flush_dir = get_hermes_home() / "pending_messages"
-    from hermes_constants import assert_named_profile_home_live
+    from hermes_agent.hermes_constants import assert_named_profile_home_live
     assert_named_profile_home_live(flush_dir)
     make_user_dir(flush_dir, parents=True, exist_ok=True, mode=0o700)
     if os.name == "posix":
@@ -55,7 +55,7 @@ def _get_flush_dir():
 
 def _write_payload(flush_dir: Path, payload: dict[str, Any]) -> Path:
     """Atomically write one private, uniquely named recovery payload; return its path."""
-    from utils import atomic_json_write
+    from hermes_agent.utils import atomic_json_write
     final_path = flush_dir / f"pending-{uuid.uuid4().hex}.json"
     atomic_json_write(final_path, payload, mode=0o600, default=str)
     if os.name == "posix":
@@ -450,7 +450,7 @@ def recover_gateway_pending(runner) -> int:
     holds back are marked on the session store, so their next live row drains the spool first.
     """
     from hermes_agent.gateway.run import _multiplex_profile_homes
-    from hermes_constants import get_hermes_home, reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import get_hermes_home, reset_hermes_home_override, set_hermes_home_override
 
     store = runner.session_store
     recovered, held_back = recover_pending_spool(session_resolver=store.resolve_session_id_for_key)

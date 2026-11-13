@@ -213,7 +213,7 @@ def test_the_desktop_boot_work_runs_for_the_launch_profile_whichever_profile_con
     profile must not build the launch record from that profile's home."""
     from hermes_agent.agent import secret_scope
     from hermes_agent.hermes_cli import free_tier_bootstrap, onboarding_run
-    from hermes_constants import get_hermes_home, get_process_hermes_home, set_hermes_home_override
+    from hermes_agent.hermes_constants import get_hermes_home, get_process_hermes_home, set_hermes_home_override
     from hermes_agent.tui_gateway import server
     launch = get_process_hermes_home()
     secondary = tmp_path / "profiles" / "work"
@@ -228,7 +228,7 @@ def test_the_desktop_boot_work_runs_for_the_launch_profile_whichever_profile_con
         server.begin_local_desktop_boot()
         assert free_tier_bootstrap.wait_for_record(timeout=20) is not None
     finally:
-        from hermes_constants import reset_hermes_home_override
+        from hermes_agent.hermes_constants import reset_hermes_home_override
         reset_hermes_home_override(token)
         free_tier_bootstrap.reset_for_tests()
     assert seen == [launch]

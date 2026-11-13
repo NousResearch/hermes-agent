@@ -42,7 +42,7 @@ def _launch_bot_token_names() -> set[str]:
     the launch profile's: a manual ``hermes -p X gateway run`` from that shell has it too, so it stays."""
     from hermes_agent.agent.secret_scope import load_env_file
     from hermes_agent.hermes_cli.env_loader import launch_dotenv_keys, source_supplied_names
-    from hermes_constants import get_routing_process_hermes_home
+    from hermes_agent.hermes_constants import get_routing_process_hermes_home
     from hermes_agent.tools.environments.local_env_policy import _ADAPTER_SECRET_ENV, _home_adapter_secret_env
     from hermes_agent.gateway.restart import is_supervised_gateway_launch
     adapter_secrets = _ADAPTER_SECRET_ENV | _home_adapter_secret_env()
@@ -69,7 +69,7 @@ def profile_gateway_restart_env(home: Optional[str]) -> Optional[dict[str, str]]
     if not home:
         return None
     from hermes_agent.agent.secret_scope import build_profile_secret_scope
-    from hermes_constants import apply_scratch_tmp_env, get_default_hermes_root, get_routing_process_hermes_home
+    from hermes_agent.hermes_constants import apply_scratch_tmp_env, get_default_hermes_root, get_routing_process_hermes_home
     from hermes_agent.tools.environments.local import strip_launch_profile_env
     target = Path(home).resolve()
     if target != get_default_hermes_root().resolve() and target == get_routing_process_hermes_home().resolve():

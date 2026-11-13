@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from hermes_agent.gateway.platforms._shared import coerce_port as _coerce_int
-from hermes_constants import get_hermes_home
+from hermes_agent.hermes_constants import get_hermes_home
 
 PROTOCOL_VERSION = "1.0"
 

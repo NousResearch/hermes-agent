@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-import hermes_yaml as yaml
+import hermes_agent.hermes_yaml as yaml
 import pytest
 
 from hermes_agent.tui_gateway import server

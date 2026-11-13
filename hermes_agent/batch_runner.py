@@ -8,10 +8,10 @@ statistics aggregated across all batches. See ``main`` (fire CLI) for usage.
 
 # hermes_bootstrap must be the very first import — UTF-8 stdio on Windows, no-op on POSIX.
 try:
-    import hermes_bootstrap
+    import hermes_agent.hermes_bootstrap as hermes_bootstrap  # noqa: PLR0402
 except ModuleNotFoundError as exc:
     # Partial ``hermes update`` (git reset landed, ``uv pip install -e .`` did not).
-    if exc.name != "hermes_bootstrap" and not "hermes_bootstrap".startswith(f"{exc.name}."):
+    if exc.name != "hermes_agent.hermes_bootstrap" and not "hermes_agent.hermes_bootstrap".startswith(f"{exc.name}."):
         raise  # the bootstrap exists but cannot load: skipping it would skip PM activation
 
 import json
@@ -538,7 +538,7 @@ class BatchRunner:
     def _save_checkpoint(self, checkpoint_data: dict[str, Any], lock: Optional[Lock] = None):
         """Atomically write *checkpoint_data* (stamped ``last_updated``), under *lock* if given."""
         checkpoint_data["last_updated"] = datetime.now().isoformat()
-        from utils import atomic_json_write
+        from hermes_agent.utils import atomic_json_write
         if lock:
             with lock:
                 atomic_json_write(self.checkpoint_file, checkpoint_data)

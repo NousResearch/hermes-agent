@@ -28,7 +28,7 @@ def _uncached_sidebar_endpoints(monkeypatch):
 def profiles_on_disk(tmp_path, monkeypatch, _isolate_hermes_home):
     """An isolated default home plus one named profile, each with a state.db."""
     from hermes_agent.hermes_cli import profiles
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     default_home = get_hermes_home()
     profiles_root = default_home / "profiles"
@@ -53,7 +53,7 @@ def client(monkeypatch, profiles_on_disk):
 
     from hermes_agent import hermes_state
     from hermes_agent.hermes_cli.web_server import _SESSION_HEADER_NAME, _SESSION_TOKEN, app
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", get_hermes_home() / "state.db")
     c = TestClient(app)
@@ -258,7 +258,7 @@ class TestCrossProfileProjectTree:
         real_build = gateway_server._build_project_tree
 
         def explode_for_worker(db, **kwargs):
-            from hermes_constants import get_hermes_home
+            from hermes_agent.hermes_constants import get_hermes_home
 
             if get_hermes_home().name == "worker":
                 raise RuntimeError("worker store is unreadable")

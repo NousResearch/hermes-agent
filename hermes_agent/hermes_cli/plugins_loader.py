@@ -22,7 +22,7 @@ from functools import wraps
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Mapping, Optional, Union
 
-from hermes_constants import get_hermes_home, reset_hermes_home_override, set_hermes_home_override
+from hermes_agent.hermes_constants import get_hermes_home, reset_hermes_home_override, set_hermes_home_override
 from hermes_agent.registration_lifecycle import replacement_coordinator
 from hermes_agent.hermes_cli.plugins_discovery import ENTRY_POINTS_GROUP, _select_entry_point_group
 from hermes_agent.hermes_cli.plugins_manifest import PluginManifest, manifest_key, portable_mcp_server_name, validate_config_schema
@@ -755,7 +755,7 @@ class PluginLoaderMixin:
                 except Exception as exc:
                     logger.warning("Agent Plugin '%s' skill '%s' skipped: %s", lookup_key, skill.name, exc)
             from hermes_agent.hermes_cli.agent_plugins import _clear_liveness, _set_liveness
-            from hermes_platform import declaration
+            from hermes_agent.hermes_platform import declaration
             registered: list[str] = []
             try:
                 for server_name, config in package.mcp_servers.items():

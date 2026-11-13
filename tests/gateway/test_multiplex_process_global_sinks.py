@@ -6,7 +6,7 @@ from __future__ import annotations
 import os
 
 from hermes_agent.agent.secret_scope import reset_secret_scope, set_multiplex_active, set_secret_scope
-from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
 
 def _under_secondary(home, fn):

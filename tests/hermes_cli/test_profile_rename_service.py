@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 
 from hermes_agent.hermes_cli import gateway, profiles
-from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
 
 @pytest.fixture

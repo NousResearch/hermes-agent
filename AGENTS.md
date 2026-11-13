@@ -82,8 +82,8 @@ hermes-agent/
 │   ├── model_tools.py        # Tool orchestration, handle_function_call(); discovery in tools/registry.py
 │   ├── toolsets.py           # TOOLSETS dict, _HERMES_CORE_TOOLS
 │   ├── cli.py                # HermesCLI (REPL, slash dispatch) + hermes_cli/cli_*_mixin.py
-│   └── hermes_state.py       # SessionDB facade; hermes_state_*.py siblings
-├── hermes_constants.py   # get_hermes_home(), display_hermes_home() — profile-aware paths
+│   ├── hermes_state.py       # SessionDB facade; hermes_state_*.py siblings
+│   └── hermes_constants.py   # get_hermes_home(), display_hermes_home() — profile-aware paths
 ├── scripts/              # check, run_tests.sh, code_health/, ci/
 ├── evals/                # live-model A/B and probe harnesses
 └── website/              # Docusaurus docs (developer-guide/ holds the long-form area docs)
@@ -159,7 +159,7 @@ Every former god file is a **facade** (public entry points + the names other pac
 | `hermes_agent/cron/`, kanban | `hermes_agent/cron/AGENTS.md` | scheduler invariants, job fields, kanban dispatcher |
 | `tests/` | `tests/AGENTS.md` | runner, placement, OS markers, `wine2e`, banned test shapes |
 | `pm/`, `pyproject.toml` | `pm/AGENTS.md` | pinning policy, PM-owned environments, release-age rule |
-| `hermes_platform/` | `hermes_platform/AGENTS.md` | host facts, resolvers |
+| `hermes_agent/hermes_platform/` | `hermes_agent/hermes_platform/AGENTS.md` | host facts, resolvers |
 | `hermes_agent/acp_adapter/` | `website/docs/developer-guide/acp-internals.md` | ACP server for editors |
 | `hermes_agent/providers/` | `hermes_agent/providers/README.md` | `ProviderProfile` registry and ABC |
 

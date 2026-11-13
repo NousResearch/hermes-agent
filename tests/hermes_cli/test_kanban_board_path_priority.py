@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 
 from hermes_agent.hermes_cli import kanban_db as kb
-from hermes_constants import get_default_hermes_root
+from hermes_agent.hermes_constants import get_default_hermes_root
 
 
 @pytest.fixture(autouse=True)

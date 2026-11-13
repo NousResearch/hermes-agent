@@ -78,7 +78,7 @@ def _resolve_repo_dir() -> Path | None:
         return repo_dir
     # The PROCESS home: this is the running code's identity and is cached
     # process-wide, so a profile's context-local override must not pick it.
-    from hermes_constants import get_process_hermes_home
+    from hermes_agent.hermes_constants import get_process_hermes_home
 
     candidate = get_process_hermes_home() / "hermes-agent"
     if (candidate / ".git").exists():

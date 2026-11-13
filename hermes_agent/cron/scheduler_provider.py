@@ -109,7 +109,7 @@ def routed_profile_fire(home=None) -> bool:
     the span the profile's secret scope covers, and the restart-safe handoff marks the worker
     payload with it. The launch identity is ``get_routing_process_hermes_home()`` (hermes_agent/gateway/AGENTS.md
     "One launch-home identity")."""
-    from hermes_constants import get_hermes_home, get_routing_process_hermes_home, hermes_home_key
+    from hermes_agent.hermes_constants import get_hermes_home, get_routing_process_hermes_home, hermes_home_key
 
     target = home if home is not None else get_hermes_home()
     return hermes_home_key(target) != hermes_home_key(get_routing_process_hermes_home())
@@ -119,7 +119,7 @@ def routed_profile_fire(home=None) -> bool:
 def _profile_cron_scope(home):
     """Scope the calling thread to one profile's home + cron store for the block."""
     from hermes_agent.cron.jobs import use_cron_store
-    from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+    from hermes_agent.hermes_constants import set_hermes_home_override, reset_hermes_home_override
 
     # Record per-profile heartbeat after each tick cycle. Distinguish a COMPLETED cycle (``_tick_error``
     # unset) — where each profile's beat reflects its own outcome, so a yielding profile does not darken
@@ -444,7 +444,7 @@ class InProcessCronScheduler(CronScheduler):
         from hermes_agent.cron.scheduler import tick as cron_tick
         from hermes_agent.cron.jobs import clear_ticker_error, record_ticker_error, record_ticker_heartbeat
         from hermes_agent.cron.scheduler_ownership import register_ticked_homes
-        from hermes_constants import get_process_hermes_home
+        from hermes_agent.hermes_constants import get_process_hermes_home
         from hermes_agent.cron.dispatch_hold import note_dispatching, note_held
 
         logger.info("In-process cron scheduler started (interval=%ds)", interval)

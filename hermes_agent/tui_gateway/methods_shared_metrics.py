@@ -85,7 +85,7 @@ def _(rid, params: dict) -> dict:
     if not enabled:
         from hermes_agent.hermes_cli.observability.shared_metrics_desktop import purge_onboarding_latches
         from hermes_agent.hermes_cli.observability.shared_metrics_process import purge_pending_receipts
-        from hermes_constants import get_hermes_home
+        from hermes_agent.hermes_constants import get_hermes_home
 
         purge_onboarding_latches()
         purge_pending_receipts(get_hermes_home())

@@ -116,7 +116,7 @@ def checkpoint_required_from_config() -> bool:
     init from the same ``load_config_readonly()`` call, so parent and child answer from one source and
     a fork is given a provider exactly when it would refuse to compact without one. An unreadable
     config reads as "not armed", matching ``init_agent``."""
-    from utils import is_truthy_value
+    from hermes_agent.utils import is_truthy_value
 
     try:
         from hermes_agent.hermes_cli.config import load_config_readonly

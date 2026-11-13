@@ -48,7 +48,7 @@ def two_profiles(tmp_path, monkeypatch):
 
 
 def _session_in(home: Path) -> dict:
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
     from hermes_agent.tools.browser_session import get_session_info
     from hermes_agent.tools.browser_use_cli import _backend_cache_key
     token = set_hermes_home_override(str(home))
@@ -78,7 +78,7 @@ def test_profile_a_then_b_then_a_each_get_their_own_browser(two_profiles):
 
 
 def test_cleaning_up_one_profile_leaves_the_other_profiles_browser_running(two_profiles):
-    from hermes_constants import hermes_home_key
+    from hermes_agent.hermes_constants import hermes_home_key
     from hermes_agent.tools.browser_launcher import get_browser
     from hermes_agent.tools.browser_session_lifecycle import cleanup_profile_browsers
     a = _session_in(two_profiles["a"])

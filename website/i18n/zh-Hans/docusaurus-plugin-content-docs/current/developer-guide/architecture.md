@@ -52,13 +52,13 @@ description: "Hermes Agent 内部结构——主要子系统、执行路径、�
 
 ```text
 hermes-agent/
-├── hermes_constants.py       # HERMES_HOME、感知 profile 的路径
 ├── hermes_agent/             # Python 包
 │   ├── run_agent.py              # AIAgent — 核心对话循环（大文件）
 │   ├── cli.py                    # HermesCLI — 交互式终端 UI（大文件）
 │   ├── model_tools.py            # 工具发现、schema 收集、分发
 │   ├── toolsets.py               # 工具分组与平台预设
 │   ├── hermes_state.py           # 带 FTS5 的 SQLite 会话/状态数据库
+│   ├── hermes_constants.py       # HERMES_HOME、感知 profile 的路径
 │   ├── batch_runner.py           # 批量轨迹生成
 │   │
 │   ├── agent/                    # Agent 内部模块

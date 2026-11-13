@@ -12,7 +12,7 @@ See: https://github.com/NousResearch/hermes-agent/issues/29015
 
 from pathlib import Path
 
-import hermes_constants
+from hermes_agent import hermes_constants
 
 
 
@@ -21,7 +21,7 @@ import hermes_constants
 # ---------------------------------------------------------------------------
 
 class TestGetSubprocessHome:
-    """Unit tests for hermes_constants.get_subprocess_home()."""
+    """Unit tests for hermes_agent.hermes_constants.get_subprocess_home()."""
 
     def _host_mode(self, monkeypatch):
         monkeypatch.setattr(hermes_constants, "is_container", lambda: False)
@@ -44,7 +44,7 @@ class TestGetSubprocessHome:
         profile_home.mkdir(parents=True)
         monkeypatch.setenv("HOME", str(real_home))
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-        from hermes_constants import get_subprocess_home
+        from hermes_agent.hermes_constants import get_subprocess_home
         assert get_subprocess_home() is None
 
     def test_host_auto_repairs_missing_home(self, tmp_path, monkeypatch):
@@ -57,7 +57,7 @@ class TestGetSubprocessHome:
         monkeypatch.delenv("HOME", raising=False)
         monkeypatch.setenv("HERMES_REAL_HOME", str(real_home))
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-        from hermes_constants import get_subprocess_home
+        from hermes_agent.hermes_constants import get_subprocess_home
         assert get_subprocess_home() == str(real_home)
 
     def test_terminal_child_env_carries_home_when_host_has_none(self, tmp_path, monkeypatch):
@@ -82,7 +82,7 @@ class TestGetSubprocessHome:
         profile_home = hermes_home / "home"
         profile_home.mkdir(parents=True)
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-        from hermes_constants import get_subprocess_home
+        from hermes_agent.hermes_constants import get_subprocess_home
         assert get_subprocess_home() == str(profile_home)
 
     def test_returns_profile_specific_path(self, tmp_path, monkeypatch):
@@ -94,7 +94,7 @@ class TestGetSubprocessHome:
         profile_home.mkdir()
         monkeypatch.setenv("TERMINAL_HOME_MODE", "profile")
         monkeypatch.setenv("HERMES_HOME", str(profile_dir))
-        from hermes_constants import get_subprocess_home
+        from hermes_agent.hermes_constants import get_subprocess_home
         assert get_subprocess_home() == str(profile_home)
 
     def test_real_mode_repairs_parent_home_already_pointing_at_profile(self, tmp_path, monkeypatch):
@@ -109,7 +109,7 @@ class TestGetSubprocessHome:
         monkeypatch.setenv("HOME", str(profile_home))
         monkeypatch.setenv("HERMES_REAL_HOME", str(real_home))
 
-        from hermes_constants import get_subprocess_home, get_real_home
+        from hermes_agent.hermes_constants import get_subprocess_home, get_real_home
 
         assert get_real_home() == str(real_home)
         assert get_subprocess_home() == str(real_home)
@@ -123,7 +123,7 @@ class TestGetSubprocessHome:
             p.mkdir(parents=True)
             (p / "home").mkdir()
 
-        from hermes_constants import get_subprocess_home
+        from hermes_agent.hermes_constants import get_subprocess_home
 
         monkeypatch.setenv("HERMES_HOME", str(base / "alpha"))
         home_a = get_subprocess_home()

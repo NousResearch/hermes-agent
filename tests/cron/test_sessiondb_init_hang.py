@@ -38,7 +38,7 @@ def owner_run(tmp_path, monkeypatch):
 
 
 def test_sessiondb_init_preserves_multiplex_profile_context(owner_run, tmp_path):
-    from hermes_constants import get_hermes_home, reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import get_hermes_home, reset_hermes_home_override, set_hermes_home_override
 
     owner, job, execution_id, agent_cls = owner_run
     profile_home = tmp_path / "profiles" / "jobsearch"

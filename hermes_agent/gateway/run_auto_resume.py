@@ -104,7 +104,7 @@ def _start_continue(runner: Any, record: dict[str, Any], unit: dict[str, Any], m
     """Continue one claimed child; None once it is dispatched, else the refusal text. Runs on a worker thread in the
     profile's scope, inside a fresh context so the parent's routing binding never leaks into another task."""
     from hermes_agent.gateway.session_context import reset_session_vars, set_session_vars
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from hermes_agent.hermes_state_registry import acquire, release_or_close
     reset_session_vars()
     route = _session_route(unit)
@@ -121,7 +121,7 @@ def _start_continue(runner: Any, record: dict[str, Any], unit: dict[str, Any], m
 
 
 def _profile_homes(runner: Any) -> list[tuple[str, Path]]:
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     homes = dict(getattr(runner, "_served_profile_homes", None) or {})
     primary = getattr(runner, "_primary_profile_name", None) or "default"
     homes.setdefault(primary, get_hermes_home())
@@ -130,7 +130,7 @@ def _profile_homes(runner: Any) -> list[tuple[str, Path]]:
 
 def _capacity() -> int:
     """The bound profile's ``delegation.max_concurrent_children`` minus the units THIS profile has running."""
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from hermes_agent.tools.async_delegation import active_count
     from hermes_agent.tools.delegate_tool_config import _get_max_concurrent_children
     return _get_max_concurrent_children() - active_count(home=get_hermes_home())

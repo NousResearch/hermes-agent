@@ -10,7 +10,7 @@ import sys
 
 import pytest
 
-from hermes_constants import get_hermes_home
+from hermes_agent.hermes_constants import get_hermes_home
 
 
 @pytest.fixture
@@ -223,8 +223,8 @@ async def test_a_replace_unit_that_replaced_nothing_is_still_refused_when_it_los
     monkeypatch.setattr("hermes_agent.gateway.run._host_attach_or_none", AsyncMock(return_value=None))
     monkeypatch.setattr("hermes_agent.gateway.status.get_running_pid", lambda: None)
     monkeypatch.setattr("hermes_agent.tools.skills_sync.sync_skills", lambda quiet=True: None)
-    monkeypatch.setattr("hermes_logging.setup_logging", lambda hermes_home, mode: tmp_path)
-    monkeypatch.setattr("hermes_logging._add_rotating_handler", lambda *args, **kwargs: None)
+    monkeypatch.setattr("hermes_agent.hermes_logging.setup_logging", lambda hermes_home, mode: tmp_path)
+    monkeypatch.setattr("hermes_agent.hermes_logging._add_rotating_handler", lambda *args, **kwargs: None)
     monkeypatch.setattr("hermes_agent.gateway.run.GatewayRunner", _RunnerMustNotStart)
     # The lock holder is a multiplexer: the standalone start-beside carve-out must not rescue a
     # --replace unit. Patched where _claim_host_gateway_role reads it; the request_serve_profile

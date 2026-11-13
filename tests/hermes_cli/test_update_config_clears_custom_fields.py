@@ -13,7 +13,7 @@ the persisted value here is safe.
 
 from __future__ import annotations
 
-import hermes_yaml as yaml
+import hermes_agent.hermes_yaml as yaml
 
 from hermes_agent.hermes_cli.auth import _update_config_for_provider
 from hermes_agent.hermes_cli.config import clear_model_endpoint_credentials, get_config_path

@@ -11,14 +11,14 @@ from unittest.mock import patch
 
 import pytest
 
-import hermes_logging
+from hermes_agent import hermes_logging
 # Use whatever RotatingFileHandler class hermes_logging actually resolved so
 # the autouse fixture's isinstance checks (which strip rotating handlers
 # between tests) match the real handlers on every platform. hermes_logging
 # aliases concurrent-log-handler's ConcurrentRotatingFileHandler on Windows
 # (the #44873 fix) but keeps stdlib RotatingFileHandler on POSIX, so importing
 # the name from the module under test keeps the two in lockstep.
-from hermes_logging import RotatingFileHandler
+from hermes_agent.hermes_logging import RotatingFileHandler
 
 
 @pytest.fixture(autouse=True)
@@ -112,7 +112,7 @@ def test_repeated_setup_routes_records_once(hermes_home, mode, component, config
 class TestSetupLogging:
     def test_profile_routing_follows_context_home(self, hermes_home, tmp_path):
         """Desktop multiplex cron records are written to their owning profile."""
-        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
         profile_home = tmp_path / "profile-b"
         profile_home.mkdir()
@@ -145,7 +145,7 @@ class TestSetupLogging:
         """The listener thread formats every record after its profile scope is gone, so a routed profile's own
         agent.log was redacted by the LAUNCH profile's policy: raw credentials if only the launch opted out."""
         from hermes_agent.agent import redact
-        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
         monkeypatch.setattr(redact, "_REDACT_ENABLED", launch_redacts)
         monkeypatch.setattr(redact, "_ENV_POLICY_BY_HOME", {})
@@ -175,7 +175,7 @@ class TestSetupLogging:
 
     def test_release_profile_log_handlers_closes_only_deleted_profile(self, hermes_home, tmp_path):
         """Profile deletion releases its routed log files without disturbing another profile."""
-        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
         deleted_home = tmp_path / "profile-deleted"
         other_home = tmp_path / "profile-other"
@@ -221,7 +221,7 @@ class TestSetupLogging:
         handler beside the first home's would receive every profile's records."""
         from logging.handlers import RotatingFileHandler
 
-        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
         profile_home = tmp_path / "profile-b"
         profile_home.mkdir()
@@ -250,7 +250,7 @@ class TestSetupLogging:
         up must not add a second writer for its home on top of the router."""
         from logging.handlers import RotatingFileHandler
 
-        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
         profile_home = tmp_path / "profile-b"
         profile_home.mkdir()
@@ -272,7 +272,7 @@ class TestSetupLogging:
     def test_a_component_log_added_after_routing_is_routed_too(self, hermes_home, tmp_path):
         """setup_logging(mode="gateway") for an already-known home AFTER a second home turned
         routing on: gateway.log must be a routed writer, not a bare handler taking every home."""
-        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
         profile_home = tmp_path / "profile-b"
         profile_home.mkdir()
@@ -304,7 +304,7 @@ class TestSetupLogging:
         retrying (and stderr-spamming) the vanished logs/ path on every record
         (#103777).
         """
-        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
         profile_home = tmp_path / "profile-deleted"
         profile_home.mkdir()
@@ -360,7 +360,7 @@ class TestSetupLogging:
         removes just logs/ of a live profile, whose records must still land somewhere."""
         import shutil
 
-        from hermes_constants import (
+        from hermes_agent.hermes_constants import (
             mark_named_profile_deleted, reset_hermes_home_override, set_hermes_home_override,
         )
 
@@ -409,7 +409,7 @@ class TestSetupLogging:
         ``closed-per-write`` is how concurrent-log-handler behaves on Windows: the stream is
         closed after every write, which must not read as a skipped write.
         """
-        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
         if stream_closed_after_write:
             real_emit = hermes_logging._ManagedRotatingFileHandler.emit
@@ -456,7 +456,7 @@ class TestSetupLogging:
 
     def test_explicit_params_override_config(self, hermes_home):
         """Explicit function params take precedence over config.yaml."""
-        import hermes_yaml as yaml
+        import hermes_agent.hermes_yaml as yaml
         config = {"logging": {"level": "DEBUG"}}
         (hermes_home / "config.yaml").write_text(yaml.safe_dump(config))
 
@@ -602,7 +602,7 @@ class TestWindowsConcurrentLogLockTimeout:
                 captured_warnings.append(record)
 
         listener = _Capture()
-        logging.getLogger("hermes_logging").addHandler(listener)
+        logging.getLogger("hermes_agent.hermes_logging").addHandler(listener)
         monkeypatch = pytest.MonkeyPatch()
         monkeypatch.setattr(hermes_logging, "_windows_lock_timeout_warned", False)
         try:
@@ -623,7 +623,7 @@ class TestWindowsConcurrentLogLockTimeout:
             assert "concurrent-log-handler" in captured_warnings[0].getMessage()
         finally:
             monkeypatch.undo()
-            logging.getLogger("hermes_logging").removeHandler(listener)
+            logging.getLogger("hermes_agent.hermes_logging").removeHandler(listener)
             logger.removeHandler(handler)
             handler.close()
 
@@ -636,7 +636,7 @@ class TestWindowsConcurrentLogLockTimeout:
         monkeypatch = pytest.MonkeyPatch()
         monkeypatch.setattr(hermes_logging, "_windows_lock_timeout_warned", False)
         try:
-            with caplog.at_level(logging.WARNING, logger="hermes_logging"):
+            with caplog.at_level(logging.WARNING, logger="hermes_agent.hermes_logging"):
                 hermes_logging._warn_windows_lock_timeout_once()
                 hermes_logging._warn_windows_lock_timeout_once()
         finally:
@@ -728,7 +728,7 @@ class TestReadLoggingConfig:
         assert backup is None
 
     def test_reads_logging_section(self, hermes_home):
-        import hermes_yaml as yaml
+        import hermes_agent.hermes_yaml as yaml
         config = {"logging": {"level": "DEBUG", "max_size_mb": 10, "backup_count": 5}}
         (hermes_home / "config.yaml").write_text(yaml.safe_dump(config), encoding="utf-8")
 

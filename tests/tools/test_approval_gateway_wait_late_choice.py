@@ -92,7 +92,7 @@ def test_prompt_and_wait_use_same_profile_timeout_when_config_changes(monkeypatc
 
 
 def test_gateway_approval_captures_routed_profiles_timeout(tmp_path, monkeypatch):
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
     _clear()
     default = tmp_path / "default"

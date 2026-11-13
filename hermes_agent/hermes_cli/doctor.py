@@ -9,7 +9,7 @@ import sys
 
 from hermes_agent.hermes_cli.config import get_env_path, get_hermes_home, get_project_root
 from hermes_agent.hermes_cli.env_loader import load_hermes_dotenv
-from hermes_constants import display_hermes_home
+from hermes_agent.hermes_constants import display_hermes_home
 
 PROJECT_ROOT = get_project_root()
 HERMES_HOME = get_hermes_home()

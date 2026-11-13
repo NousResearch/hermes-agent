@@ -50,7 +50,7 @@ from hermes_agent.gateway.platforms.whatsapp_common import WhatsAppBehaviorMixin
 from hermes_agent.gateway.platforms.access_policy_mixin import OPTIN_TRUTHY as _OPTIN_TRUTHY
 from hermes_agent.gateway.platforms.media_cache import ext_for_mime
 from hermes_agent.gateway import rich_sent_store
-from hermes_constants import get_hermes_dir
+from hermes_agent.hermes_constants import get_hermes_dir
 
 logger = logging.getLogger(__name__)
 

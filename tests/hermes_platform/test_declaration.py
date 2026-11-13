@@ -12,9 +12,9 @@ from pathlib import Path
 
 import pytest
 
-from hermes_platform.declaration import DeclarationError, parse_declaration
-from hermes_platform.resolver.app import AppDef, AppLocation, AppResolver
-from hermes_platform.resolver.availability import Availability, availability, version_at_least
+from hermes_agent.hermes_platform.declaration import DeclarationError, parse_declaration
+from hermes_agent.hermes_platform.resolver.app import AppDef, AppLocation, AppResolver
+from hermes_agent.hermes_platform.resolver.availability import Availability, availability, version_at_least
 
 WHERE = "test-plugin/plugin.yaml"
 
@@ -99,7 +99,7 @@ def test_availability_no_requirements_does_no_io():
 ])
 def test_requires_gpu_gates_on_the_host_gpu_class(monkeypatch, gpu_class, state):
     """No `app:` block is needed; an unreadable GPU passes; the OS gate runs first and reads no GPU."""
-    from hermes_platform.host import facts
+    from hermes_agent.hermes_platform.host import facts
 
     monkeypatch.setattr(facts, "gpu_class", lambda: gpu_class)
     decl = parse_declaration("thing-mcp", None, {"gpu": "nvidia"}, where=WHERE)
@@ -215,7 +215,7 @@ def test_unexpanded_locations_are_missing_even_when_cwd_contains_them(tmp_path, 
 
 
 def test_registry_mutations_are_visible_and_notify_once(monkeypatch):
-    from hermes_platform import declaration
+    from hermes_agent.hermes_platform import declaration
 
     decl = parse_declaration("thing-mcp", None, None, where=WHERE)
     changes = []
@@ -232,7 +232,7 @@ def test_registry_mutations_are_visible_and_notify_once(monkeypatch):
 
 def test_skill_requires_apps_gate(tmp_path, monkeypatch):
     from hermes_agent.agent import skill_utils
-    from hermes_platform import declaration
+    from hermes_agent.hermes_platform import declaration
 
     monkeypatch.setattr(declaration, "_REGISTRY", {})
     decl = parse_declaration(

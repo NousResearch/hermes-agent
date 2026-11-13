@@ -6,7 +6,7 @@ import pytest
 
 from hermes_agent.hermes_cli import process_identity, update_cmd_fleet as fleet, update_inventory, update_receipt
 from hermes_agent.hermes_cli.update_inventory import RuntimeRecord, UpdatePlan
-from hermes_constants import get_hermes_home
+from hermes_agent.hermes_constants import get_hermes_home
 import hermes_agent.hermes_cli.update_host_obligation as host_obligation
 
 MANUAL = {"kind": "serve", "profile": "work", "pid": 900, "supervisor": "manual-serve", "restart_via": "respawn-argv", "code_sha": "old", "detail": {"create_time": 1000.0}}

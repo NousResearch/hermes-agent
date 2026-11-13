@@ -3,7 +3,7 @@
 from hermes_agent.hermes_cli.web_routers.sessions import _project_for_display
 from hermes_agent.tui_gateway.server import _history_to_messages
 from hermes_agent.agent.history_commentary import visible_commentary
-from hermes_constants import get_hermes_home_override
+from hermes_agent.hermes_constants import get_hermes_home_override
 
 import asyncio
 import pytest
@@ -195,7 +195,7 @@ def test_rest_pages_bind_the_history_owner_for_messages_and_around(
 def test_unscoped_rest_history_uses_custom_home_of_its_database(monkeypatch, tmp_path):
     from hermes_agent.hermes_cli import config as config_mod
     from hermes_agent.hermes_cli.web_routers import sessions
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
     from hermes_agent import hermes_state_timeline
 
     custom, default = tmp_path / "custom", tmp_path / "default"

@@ -5,7 +5,7 @@ Deriving the env var from the provider id (``f"{id.upper()}_API_KEY"``) invents 
 reads ``DASHSCOPE_API_KEY``. Both the auxiliary ladder and main-agent init share one helper.
 """
 import pytest
-import hermes_yaml as yaml
+import hermes_agent.hermes_yaml as yaml
 
 from hermes_agent.agent.auxiliary_unavailable import missing_provider_credentials_message
 from hermes_agent.hermes_cli.auth import PROVIDER_REGISTRY

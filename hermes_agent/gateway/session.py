@@ -461,7 +461,7 @@ def build_session_context_prompt(context: SessionContext, *, redact_pii: bool = 
             lines.append(f"  - {platform.value}: {safe_name} (ID: {safe_id})")
 
     lines += ["", "**Delivery options for scheduled tasks:**"]
-    from hermes_constants import display_hermes_home
+    from hermes_agent.hermes_constants import display_hermes_home
     if src.platform == Platform.LOCAL:
         lines.append("- `\"origin\"` → Local output (saved to files)")
     else:
@@ -896,7 +896,7 @@ class SessionStore(
         # The routing index needs exactly one home for its lifetime: the gateway's own, captured
         # before any profile scope exists (see ``_routing_db``).
         try:
-            from hermes_constants import get_hermes_home
+            from hermes_agent.hermes_constants import get_hermes_home
 
             self._routing_home: Optional[Path] = Path(get_hermes_home())
         except Exception:

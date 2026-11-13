@@ -109,7 +109,7 @@ _PERMISSIVE_CAPS = {"has_members_intent": True, "has_message_content": True, "de
 
 
 def _capability_disk_cache_path() -> Path:
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     return get_hermes_home() / "cache" / "discord_capabilities.json"
 
 

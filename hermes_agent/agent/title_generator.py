@@ -184,7 +184,7 @@ def _title_language() -> str:
 
 def _auto_title_enabled() -> bool:
     try:
-        from utils import is_truthy_value
+        from hermes_agent.utils import is_truthy_value
         return is_truthy_value(_title_config().get("enabled"), default=True)
     except Exception:
         logger.debug("Failed to read title_generation.enabled", exc_info=True)
@@ -194,7 +194,7 @@ def _auto_title_enabled() -> bool:
 def _model_title_upgrade_enabled() -> bool:
     """Distinct from ``enabled``: keep the instant derived title, skip the background model call (#85194)."""
     try:
-        from utils import is_truthy_value
+        from hermes_agent.utils import is_truthy_value
         return is_truthy_value(_title_config().get("model_upgrade_enabled"), default=True)
     except Exception:
         logger.debug("Failed to read title_generation.model_upgrade_enabled", exc_info=True)

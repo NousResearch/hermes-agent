@@ -8,7 +8,7 @@ from contextlib import contextmanager, nullcontext
 from contextvars import copy_context
 from typing import Dict, Iterator, Optional, Set
 
-from hermes_constants import hermes_home_key
+from hermes_agent.hermes_constants import hermes_home_key
 
 _mcp_discovery_lock = threading.Lock()
 # Discovery slot per profile home (``hermes_home_key()`` follows the context-local HERMES_HOME

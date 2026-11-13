@@ -63,7 +63,7 @@ def _limited_child(tmp_path, parent):
 
 def test_a_stop_from_before_opt_in_is_never_resumed_once_auto_resume_is_turned_on(tmp_path):
     """auto_resume off at stop time: the notice told the parent to continue by hand, so no later opt-in resumes it."""
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from hermes_agent.tools.delegate_tool_auto_resume import tick
     _enable()
     (get_hermes_home() / 'config.yaml').write_text(json.dumps({'delegation': {'worktree_isolation': True}}))

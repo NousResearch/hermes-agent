@@ -27,7 +27,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
-import hermes_yaml as yaml
+import hermes_agent.hermes_yaml as yaml
 
 from tests.fakes.fake_llm_provider import Error, FakeLLMServer, Text
 
@@ -247,7 +247,7 @@ def inference_hosts() -> frozenset[str]:
     from urllib.parse import urlparse
 
     from hermes_agent.hermes_cli.auth import PROVIDER_REGISTRY
-    from hermes_constants import OPENROUTER_BASE_URL
+    from hermes_agent.hermes_constants import OPENROUTER_BASE_URL
 
     urls = [getattr(p, "inference_base_url", "") or "" for p in PROVIDER_REGISTRY.values()] + [OPENROUTER_BASE_URL]
     return frozenset(h for h in (urlparse(u).hostname for u in urls) if h and h not in {"127.0.0.1", "localhost"})

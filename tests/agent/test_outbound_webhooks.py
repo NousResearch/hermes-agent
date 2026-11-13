@@ -322,7 +322,7 @@ class TestPayload:
     def test_profile_field_reflects_bound_profile_home(self, tmp_path, monkeypatch):
         """Receivers behind a multiplexed gateway need to know which profile
         fired (#92674): ``profile`` follows the bound home at fire time."""
-        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         profile_home = tmp_path / "profiles" / "b"

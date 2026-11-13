@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 from urllib.parse import urljoin
 
-from utils import is_truthy_value
+from hermes_agent.utils import is_truthy_value
 from hermes_agent.tools.transcription_audio import _transcode_audio_for_stt
 from hermes_agent.tools.transcription_common import (
     DEFAULT_GROQ_STT_MODEL, DEFAULT_STT_MODEL, ELEVENLABS_STT_BASE_URL,

@@ -16,7 +16,7 @@ from hermes_agent.hermes_cli.nous_account import format_nous_portal_entitlement_
 from hermes_agent.hermes_cli.nous_subscription import MANAGED_FEATURE_COVERAGE_CATEGORY, NousSubscriptionFeatures
 from hermes_agent.tools.tool_backend_helpers import NOUS_MANAGED_PROVIDER, fal_key_is_configured
 from hermes_agent.tools.transcription_common import STT_MODEL_CATALOG, STT_MODEL_CONFIG_KEY
-from utils import base_url_hostname, is_truthy_value
+from hermes_agent.utils import base_url_hostname, is_truthy_value
 
 logger = logging.getLogger("hermes_agent.hermes_cli.tools_config")
 

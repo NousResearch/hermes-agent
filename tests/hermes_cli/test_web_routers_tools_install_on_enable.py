@@ -22,7 +22,7 @@ class TestToggleToolsetInstallOnEnable:
             pytest.skip("fastapi/starlette not installed")
 
         from hermes_agent import hermes_state
-        from hermes_constants import get_hermes_home
+        from hermes_agent.hermes_constants import get_hermes_home
         from hermes_agent.hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
 
         monkeypatch.setattr(

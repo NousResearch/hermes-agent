@@ -6,7 +6,7 @@ or clean up. Real plugin, real host process, real loader against a temp HERMES_H
 
 from __future__ import annotations
 
-import hermes_yaml as yaml
+import hermes_agent.hermes_yaml as yaml
 import pytest
 
 from hermes_agent.hermes_cli import plugins as plugins_mod

@@ -27,7 +27,7 @@ import threading
 from pathlib import Path
 
 from pm.filesystem import is_junction
-from utils import rmtree_readonly
+from hermes_agent.utils import rmtree_readonly
 
 logger = logging.getLogger(__name__)
 

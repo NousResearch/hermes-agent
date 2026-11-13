@@ -20,7 +20,7 @@ def _state(path):
 
 
 def test_a_hosted_background_start_and_kill_leave_the_host_checkpoint_alone(provider):
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     ckpt = get_hermes_home() / "processes.json"
     before = _state(ckpt)
     with conformance._bind(A):
@@ -36,7 +36,7 @@ def test_a_hosted_background_start_and_kill_leave_the_host_checkpoint_alone(prov
 
 def test_hosted_process_manage_does_not_load_or_prune_host_receipts(provider, monkeypatch):
     from hermes_agent.gateway.session_context import scoped_current_session_id
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from hermes_agent.tools import process_registry_results as results
 
     directory = get_hermes_home() / "logs" / "process-results"
@@ -64,7 +64,7 @@ def test_hosted_process_manage_does_not_load_or_prune_host_receipts(provider, mo
 
 
 def test_a_local_background_start_still_writes_the_checkpoint(tmp_path):
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from hermes_agent.tools.process_registry import ProcessRegistry
     ckpt = get_hermes_home() / "processes.json"
     registry = ProcessRegistry()
@@ -79,7 +79,7 @@ def test_a_remote_kernel_command_on_a_later_turn_runs_under_that_turns_scope():
     """The kernel record keeps the scope of the turn that spawned it; a later turn of the same
     sandbox runs its kernel commands under its own scope (and fence), not the spawning turn's."""
     from hermes_agent.agent.runtime_scope import bind_state
-    from hermes_scope import Fence
+    from hermes_agent.hermes_scope import Fence
     from hermes_agent.tools.code_kernel_remote import RemoteKernel
     from hermes_agent.tools.environments.sandbox_scope import ScopedEnvironment, sandbox_identity
 

@@ -30,7 +30,7 @@ import copy
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-from utils import mtime_is_racy
+from hermes_agent.utils import mtime_is_racy
 
 # Each keyed by resolved profile path. One entry per profile the roster has painted; a removed
 # profile leaves one stale entry, so a memo is dropped whole once it grows past any plausible fleet.

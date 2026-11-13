@@ -46,14 +46,14 @@ from hermes_agent.gateway.platforms.helpers import compile_mention_patterns, spo
 from hermes_agent.gateway.platforms.helpers import bypasses_chat_order, chat_ordered_work, voice_mention_gate_enabled
 from hermes_agent.gateway.platforms.helpers import MessageDeduplicator, bounded_put, cancel_task
 from hermes_agent.gateway.platforms.send_targets import regex_stripped_parser
-from utils import atomic_json_write
+from hermes_agent.utils import atomic_json_write
 
 from .auth import load_project_credentials
 # Sidecar dir resolution is lazy (never at import): it probes the filesystem and may
 # mirror files. Tests monkeypatch sidecar_paths._SIDECAR_DIR.
 from .sidecar_paths import _NPM_ERROR_LOG_MAX_CHARS, _lock_newer_than_install, _npm_error_log, _sidecar_dir
 from .sidecar_paths import dir_writable as _dir_writable
-from hermes_constants import find_node_executable, with_hermes_node_path
+from hermes_agent.hermes_constants import find_node_executable, with_hermes_node_path
 import contextlib
 
 logger = logging.getLogger(__name__)
@@ -105,7 +105,7 @@ async def _aiter_ndjson_lines(response: Any) -> AsyncIterator[str]:
 # -- Sidecar runtime record ----------------------------------------------------
 
 def _runtime_record_path() -> Path:
-    from hermes_constants import get_hermes_home  # honors profile overrides
+    from hermes_agent.hermes_constants import get_hermes_home  # honors profile overrides
     return get_hermes_home() / _RUNTIME_RECORD_NAME
 
 

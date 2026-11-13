@@ -1,7 +1,7 @@
 """Regression test for #25676 — nested gateway.streaming config must be loaded."""
 from unittest.mock import patch
 
-import hermes_yaml as yaml
+import hermes_agent.hermes_yaml as yaml
 
 
 

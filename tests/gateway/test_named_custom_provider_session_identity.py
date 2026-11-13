@@ -97,7 +97,7 @@ def test_bare_custom_sync_uses_canonical_endpoint_fallback(tmp_path, monkeypatch
 
 def test_tui_runtime_config_and_session_info_keep_requested_custom_slug(monkeypatch):
     from hermes_agent.hermes_cli.config import atomic_config_write, get_config_path
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     atomic_config_write(get_config_path(), CONFIG)
     agent = _agent()
@@ -232,7 +232,7 @@ def test_moved_entry_with_no_old_owner_is_not_saved_beside_the_old_endpoint(tmp_
 def test_live_unpersisted_session_reports_the_requested_entry(monkeypatch):
     """A built session reattached before its first turn reports the entry it runs, not the adapter class."""
     from hermes_agent.hermes_cli.config import atomic_config_write, get_config_path
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from hermes_agent.tui_gateway.server import _live_session_identity
 
     atomic_config_write(get_config_path(), CONFIG)

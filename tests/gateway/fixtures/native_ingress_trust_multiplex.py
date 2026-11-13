@@ -7,7 +7,7 @@ from tests.waiting import async_wait_until
 
 async def multiplex_probe(runner, authority, primary, state, mode, peer):
     from hermes_agent.agent.secret_scope import set_multiplex_active, get_secret
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from hermes_agent.run_agent import AIAgent
 
     # Observe the actual worker entry without replacing its implementation or auth.

@@ -27,7 +27,7 @@ def _get_mcp_stderr_log() -> Any:
     """Shared append-mode handle for MCP subprocess stderr, cached until shutdown PER PROFILE HOME (a
     multiplexed gateway's secondary profile must log under ITS ``logs/``, not the launch profile's). Must
     expose a real fd (asyncio wires the child's stderr to it); falls back to ``/dev/null``, then real stderr."""
-    from hermes_constants import get_hermes_home, hermes_home_key, mkdir_under_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home, hermes_home_key, mkdir_under_hermes_home
     home_key = hermes_home_key()
     with _mcp_stderr_log_lock:
         fh = _mcp_stderr_log_fh.get(home_key)
@@ -230,7 +230,7 @@ def _build_safe_env(user_env: Optional[dict]) -> dict:
     # guard. Resolve at call time: ``get_hermes_home()`` honours the served-profile
     # contextvar, which does not cross the process boundary, while ``os.environ`` holds only
     # the launch profile's home. An explicit server ``env.HERMES_HOME`` still wins below.
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     env["HERMES_HOME"] = str(get_hermes_home())
     if user_env:
         # An entry rendered from one whole ``${VAR}`` that is unset (or empty) counts as absent, so
@@ -292,7 +292,7 @@ def _managed_launcher(command: str) -> Optional[tuple[str, list[str]]]:
         launcher = pm.uv_launcher(command)
         dirs = [str(launcher.parent)] if launcher is not None else []
     else:
-        from hermes_constants import with_hermes_node_path
+        from hermes_agent.hermes_constants import with_hermes_node_path
 
         dirs = [d for d in with_hermes_node_path({"PATH": ""})["PATH"].split(os.pathsep) if d]
     executable = shutil.which(command, path=os.pathsep.join(dirs)) if dirs else None
@@ -325,7 +325,7 @@ def _is_hermes_managed_bin_dir(directory: str) -> bool:
         return False
     if resolved == Path(sys.executable).resolve().parent:
         return True
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     try:
         home = Path(get_hermes_home()).resolve()
     except Exception:
@@ -428,7 +428,7 @@ def _npx_bin_candidates(bin_dir: str, name: str, *, windows: Optional[bool] = No
     """Launcher paths to try for *name* inside an npx cache's ``.bin``, in order. On Windows that
     directory holds the extensionless sh script plus ``<name>.cmd``/``<name>.ps1``; the sh one
     cannot be spawned there and ``os.access(X_OK)`` is only an existence check, so select by
-    extension (same precedence as ``hermes_constants._candidate_node_command_names``). ``windows``
+    extension (same precedence as ``hermes_agent.hermes_constants._candidate_node_command_names``). ``windows``
     is injectable so the branch is testable without patching ``os.name`` process-wide."""
     is_windows = os.name == "nt" if windows is None else windows
     if is_windows:
@@ -538,7 +538,7 @@ def _packaged_npx_entry(command: str, args: list) -> Optional[tuple]:
     scope, _, bare = spec.rpartition("/") if spec.startswith("@") else ("", "", spec)
     base, _, version = bare.partition("@")
     name = (f"{scope}/" if scope else "") + base
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     prefix = Path(get_hermes_home()) / "cache" / "mcp-npx" / hashlib.sha256(spec.encode()).hexdigest()[:16]
     manifest = prefix / "node_modules" / name / "package.json"
@@ -720,7 +720,7 @@ def _load_mcp_config() -> dict[str, dict]:
         return {}
     try:
         from hermes_agent.hermes_cli.config import load_config
-        from utils import env_var_enabled as _env_enabled
+        from hermes_agent.utils import env_var_enabled as _env_enabled
         if _env_enabled("HERMES_SAFE_MODE"):
             return {}
         servers = load_config().get("mcp_servers")

@@ -341,7 +341,7 @@ class RetainDBMemoryProvider(MemoryProvider):
         self._session_id, self._user_id = session_id, kwargs.get("user_id", "default") or "default"
         self._agent_id = kwargs.get("agent_id", "hermes") or "hermes"
         # Bind to the profile the manager names, not the ambient one (multiplexing contract, MemoryProvider).
-        from hermes_constants import get_hermes_home
+        from hermes_agent.hermes_constants import get_hermes_home
         home = Path(kwargs["hermes_home"]) if kwargs.get("hermes_home") else get_hermes_home()
         self._queue = _WriteQueue(self._client, home / "retaindb_queue.db")
         soul = (home / "SOUL.md").read_text(encoding="utf-8-sig", errors="replace").strip() if (home / "SOUL.md").exists() else ""

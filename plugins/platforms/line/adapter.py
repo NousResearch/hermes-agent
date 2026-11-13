@@ -809,7 +809,7 @@ class LineAdapter(BasePlatformAdapter):
         if not path.is_file():
             return web.Response(status=404, text="not found")
         try:
-            from hermes_constants import get_hermes_home
+            from hermes_agent.hermes_constants import get_hermes_home
             hermes_home = Path(get_hermes_home()).resolve()
         except Exception:
             hermes_home = Path.home().joinpath(".hermes").resolve()

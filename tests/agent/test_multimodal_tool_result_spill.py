@@ -34,7 +34,7 @@ def _envelope(text: str) -> dict:
 
 def test_oversized_multimodal_text_part_is_spilled_and_recoverable(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: tmp_path, raising=False)
+    monkeypatch.setattr("hermes_agent.hermes_constants.get_hermes_home", lambda: tmp_path, raising=False)
     big = "x" * 760_396
     agent = _make_agent()
     (tool_msg,) = _run_sequential(agent, _envelope(big))

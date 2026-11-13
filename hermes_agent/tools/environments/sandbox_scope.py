@@ -2,7 +2,7 @@
 
 A hosted deployment serves many tenants' agents from one process, and every agent's commands,
 code, background processes and files live in that agent's own remote sandbox. The sandbox an
-operation reaches is therefore decided here, from the bound :class:`hermes_scope.Scope`'s
+operation reaches is therefore decided here, from the bound :class:`hermes_agent.hermes_scope.Scope`'s
 ``(tenant, agent)``, and from nothing a caller hands in: not a tool argument, not a task id, not
 a profile path. Two calls for the same agent share one sandbox; a call for another agent can never
 be routed to it.
@@ -13,7 +13,7 @@ operation, and hands the backend that scope with the call. A handle that names a
 environment object, a long-lived process reference) is refused with
 :class:`CrossAgentHandleRefused`, and so is any operation with no scope bound.
 
-A local install (no scope, or a scope whose tenant is ``hermes_scope.LOCAL_TENANT``) is untouched:
+A local install (no scope, or a scope whose tenant is ``hermes_agent.hermes_scope.LOCAL_TENANT``) is untouched:
 :func:`hosted_scope` is ``None`` there and every caller keeps today's behaviour.
 """
 
@@ -27,7 +27,7 @@ from dataclasses import dataclass, field
 from typing import IO, Any, Callable, Optional
 from urllib.parse import quote
 
-from hermes_scope import Scope, current_scope
+from hermes_agent.hermes_scope import Scope, current_scope
 
 
 class CrossAgentHandleRefused(PermissionError):

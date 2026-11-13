@@ -31,7 +31,7 @@ def _set_row(parent, sid, **cols):
 
 def test_a_resumable_outcome_without_a_durable_record_is_pruned_as_before(tmp_path, monkeypatch):
     """No record (its write failed): nothing pins the tree, so the stop prunes it as main did."""
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from hermes_agent.tools.delegate_tool import delegate_task
     from hermes_agent.tools.terminal_tool import get_session_cwd, record_session_cwd
 
@@ -109,7 +109,7 @@ def test_a_finished_tool_call_checkpoints_the_running_childs_cwd(tmp_path, monke
 @pytest.mark.parametrize("reason", ["billing", None])
 def test_a_resumable_isolated_child_keeps_its_worktree_and_continues_in_it(tmp_path, reason):
     """A usage limit (AUTO_AT) or a provider failure (ON_FIX) keeps the child's isolation tree for the continue."""
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from hermes_agent.tools.delegate_tool import delegate_task
     from hermes_agent.tools.terminal_tool import get_session_cwd, record_session_cwd
 
@@ -242,7 +242,7 @@ def test_claim_reclaims_a_row_whose_owner_died_after_boot_recovery(owner):
 
 def test_boot_recovery_holds_no_write_lock_while_it_probes_git(monkeypatch):
     import hermes_agent.tools.delegate_tool_resumable as resumable
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from hermes_agent.hermes_state import SessionDB
     from hermes_agent.tools.async_delegation import recover_abandoned_delegations
 
@@ -328,7 +328,7 @@ def test_a_continue_resumes_the_childs_newest_conversation_segment(stopped):
 
 def test_each_profiles_pins_obey_that_profiles_own_cap():
     import hermes_agent.tools.delegate_tool_resumable as resumable
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from hermes_agent.hermes_state import SessionDB
 
     default = get_hermes_home()

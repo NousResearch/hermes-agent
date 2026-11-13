@@ -49,7 +49,7 @@ def ensure_gateway_service(context: str = "setup", *, interactive: bool = False,
     install preference. False leaves foreground/unmanaged startup to the caller.
     """
     from hermes_agent.hermes_cli import gateway as gw
-    from hermes_constants import is_container
+    from hermes_agent.hermes_constants import is_container
 
     if is_container():
         gw.print_info("Run hermes gateway run as the container main process; use a Docker restart policy for persistence.")

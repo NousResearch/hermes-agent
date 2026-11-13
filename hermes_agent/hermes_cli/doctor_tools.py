@@ -12,7 +12,7 @@ from pathlib import Path
 from hermes_agent.hermes_cli.doctor_platform import _system_package_install_cmd
 from hermes_agent.hermes_cli.doctor_report import Finding, _fail_and_issue, check_bool, check_info, check_ok, check_warn, doctor_check
 from hermes_agent.hermes_cli.vercel_auth import describe_vercel_auth
-from hermes_constants import is_termux as _is_termux
+from hermes_agent.hermes_constants import is_termux as _is_termux
 from hermes_agent.tools.environments.docker import docker_runtime_name, docker_runtime_start_hint, find_docker
 
 
@@ -295,7 +295,7 @@ def _check_terminal_backend(should_fix: bool, f: Finding) -> None:
     """Docker/SSH/Daytona/Vercel/plugin terminal backends, gated on TERMINAL_ENV."""
     terminal_env = os.getenv("TERMINAL_ENV", "local")
     try:
-        from hermes_constants import is_container as _is_container
+        from hermes_agent.hermes_constants import is_container as _is_container
         running_in_container = _is_container()
     except Exception:
         running_in_container = False
@@ -399,7 +399,7 @@ def _audit_one(tool: str, cwd, label: str, audit_extra: list[str], manual_issues
     never prescribes a local mutating fix command. See #116774.
     """
     import json
-    from hermes_constants import with_hermes_node_path
+    from hermes_agent.hermes_constants import with_hermes_node_path
     from pm.packages import pnpm_env
     env = with_hermes_node_path()
     if audit_extra:  # pnpm rows: its state and metadata cache stay Hermes-owned, not in the user's XDG dirs

@@ -71,7 +71,7 @@ def test_commit_backend_update_routes_refuse_before_checks_or_spawns(commit_buil
     import hermes_agent.hermes_cli.web_server as server
     import hermes_agent.hermes_cli.web_server_gateway as gateway
     from hermes_agent.hermes_cli import banner, source_check
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     monkeypatch.setattr(server, "PROJECT_ROOT", commit_build)
     monkeypatch.setattr(gateway, "_ACTION_LOG_DIR", tmp_path / "logs")

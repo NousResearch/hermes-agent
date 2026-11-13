@@ -8,7 +8,7 @@ import os
 import threading
 import time
 from contextlib import contextmanager
-import hermes_yaml as yaml
+import hermes_agent.hermes_yaml as yaml
 from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket, WebSocketException
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from hermes_agent.hermes_cli.config import cfg_get, get_process_hermes_home
-from utils import env_var_enabled
+from hermes_agent.utils import env_var_enabled
 
 # Serve assets with explicit MIME types: the host's map (on Windows the
 # registry can map .js -> text/plain) must not decide the Content-Type of
@@ -563,7 +563,7 @@ def _dashboard_plugin_search_dirs() -> list[tuple]:
     a bare non-empty check let ``=0``/``=false`` silently enable it (GHSA-5qr3-c538-wm9j).
     """
     from hermes_agent.hermes_cli.plugins import get_bundled_plugins_dir
-    from hermes_constants import get_default_hermes_root
+    from hermes_agent.hermes_constants import get_default_hermes_root
 
     bundled_root = get_bundled_plugins_dir()
     # User dashboard plugins are a dashboard-owned asset (same category as theme YAML): resolve them from
@@ -763,7 +763,7 @@ def _merged_plugins_hub(force_refresh: bool = False) -> dict[str, Any]:
     from hermes_agent.hermes_cli.web_server_memory import _discover_memory_provider_statuses, _normalize_memory_provider_name
     from hermes_agent.hermes_cli.web_server import _get_dashboard_plugins
     from hermes_agent.hermes_cli.config import get_hermes_home, load_config
-    from hermes_constants import hermes_home_key
+    from hermes_agent.hermes_constants import hermes_home_key
 
     cache_key = hermes_home_key(get_hermes_home())
     now = time.monotonic()
@@ -889,7 +889,7 @@ def _launch_profile_scope():
     """Resolve config as the launch profile's, whichever profile the request is scoped to: home and
     secrets switch together, so the launch config's ``${VAR}`` refs (and its last-good copy) never
     expand through another profile's secrets."""
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
     from hermes_agent.hermes_cli.web_server_profiles import _config_profile_scope
     token = set_hermes_home_override(None)
     try:

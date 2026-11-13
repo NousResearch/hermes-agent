@@ -49,7 +49,7 @@ def _pm_has_no_chromium() -> bool:
 
 
 def _system_executable() -> str | None:
-    from hermes_platform.resolver import locate_command
+    from hermes_agent.hermes_platform.resolver import locate_command
 
     for name in _SYSTEM_CHROMIUM_COMMANDS:
         found = locate_command(name).command
@@ -74,7 +74,7 @@ def chromium_executable(*, allow_override: bool = True) -> str | None:
 
 def chromium_missing_hint() -> str:
     """One actionable line for "no Chromium" on this machine. Never suggests npm."""
-    from hermes_platform.host.runtime import is_termux
+    from hermes_agent.hermes_platform.host.runtime import is_termux
 
     if pinned := _configured_executable():  # the pin wins over every other source, so name it
         return (f"browser.executable_path is set to {pinned}, which is not a browser on this machine: fix the "

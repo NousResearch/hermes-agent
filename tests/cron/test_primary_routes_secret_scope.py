@@ -9,13 +9,13 @@ tick, and a satellite key of the same name was substituted into the primary's co
 
 import logging
 
-import hermes_yaml as yaml
+import hermes_agent.hermes_yaml as yaml
 import pytest
 
 from hermes_agent.agent.secret_scope import reset_secret_scope, set_secret_scope
 from hermes_agent.cron.scheduler_preflight import _primary_profile_routes_for_current_home
 from hermes_agent.hermes_cli import managed_scope
-from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
 
 @pytest.fixture
@@ -23,7 +23,7 @@ def satellite_home(tmp_path, monkeypatch):
     root = tmp_path / "root"
     sat_home = root / "profiles" / "sat"
     sat_home.mkdir(parents=True)
-    monkeypatch.setattr("hermes_constants.get_default_hermes_root", lambda: root)
+    monkeypatch.setattr("hermes_agent.hermes_constants.get_default_hermes_root", lambda: root)
     monkeypatch.setenv("HERMES_MANAGED_DIR", str(tmp_path / "no-managed"))
     monkeypatch.delenv("ROUTE_CHAT_ID", raising=False)
     managed_scope.invalidate_managed_cache()
@@ -77,7 +77,7 @@ def test_caller_scope_restored_after_lookup(satellite_home):
 def test_real_profile_bind_of_satellite_does_not_leak_into_primary_refs(satellite_home):
     """The gateway drain binds the satellite's WHOLE scope (``_profile_runtime_scope``), not a bare mapping."""
     from hermes_agent.agent.runtime_scope import bind_profile_scope
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     _, sat_home = satellite_home
     (sat_home / ".env").write_text("ROUTE_CHAT_ID=-100satellite\n", encoding="utf-8")
     with bind_profile_scope(sat_home, hydrate_secrets=False):

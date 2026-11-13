@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import pytest
 
 from hermes_agent.agent.chat_completion_helpers import cleanup_task_resources
-from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
 
 @pytest.fixture

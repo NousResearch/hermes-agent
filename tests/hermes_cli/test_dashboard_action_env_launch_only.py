@@ -21,7 +21,7 @@ def test_planted_dotenv_line_does_not_strip_launch_managed_dir(tmp_path, monkeyp
     monkeypatch.setenv("HERMES_HOME", str(root))
     monkeypatch.setenv("HERMES_MANAGED_DIR", "/etc/org-policy")
     monkeypatch.setenv("FOO_RESIDUE", "1")
-    import hermes_constants
+    from hermes_agent import hermes_constants
     monkeypatch.setattr(hermes_constants, "_default_hermes_root_memo", None)
 
     from hermes_agent.hermes_cli.web_server_gateway import _profile_action_environment

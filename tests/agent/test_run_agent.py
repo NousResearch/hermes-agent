@@ -4400,7 +4400,7 @@ class TestRunConversation:
         network drop — that wording sends the user chasing a network
         problem a stream_diag log with finish_reason_seen=False would
         already have ruled out."""
-        from hermes_constants import PARTIAL_STREAM_STUB_ID
+        from hermes_agent.hermes_constants import PARTIAL_STREAM_STUB_ID
 
         self._setup_agent(agent)
         bad_tc = _mock_tool_call(
@@ -4438,7 +4438,7 @@ class TestRunConversation:
         keep printing the original 'stream ended before completion'
         wording — issue #102766 asks that this case's existing wording
         stay as-is, only the clean-EOF case gets new wording."""
-        from hermes_constants import PARTIAL_STREAM_STUB_ID
+        from hermes_agent.hermes_constants import PARTIAL_STREAM_STUB_ID
 
         self._setup_agent(agent)
         bad_tc = _mock_tool_call(
@@ -4509,7 +4509,7 @@ class TestRunConversation:
         retry up to 3 times rather than hard-failing after one — and recover
         if a retry produces a complete tool call. Regression for the false
         'model hit max output tokens' on Opus when the stream simply dropped."""
-        from hermes_constants import PARTIAL_STREAM_STUB_ID
+        from hermes_agent.hermes_constants import PARTIAL_STREAM_STUB_ID
 
         self._setup_agent(agent)
         agent.valid_tool_names.add("write_file")
@@ -4554,7 +4554,7 @@ class TestRunConversation:
         carries a tool_calls list). Confirms the zero-byte trigger is wired
         end-to-end through the retry loop, not just detected at the
         chat_completion_helpers unit level."""
-        from hermes_constants import PARTIAL_STREAM_STUB_ID
+        from hermes_agent.hermes_constants import PARTIAL_STREAM_STUB_ID
 
         self._setup_agent(agent)
         agent.valid_tool_names.add("write_file")
@@ -6302,7 +6302,7 @@ class TestStreamingApiCall:
         # (id=PARTIAL_STREAM_STUB_ID, tool_calls=None so it can't execute,
         # finish_reason=length so the loop's continuation machinery fires with
         # chunking guidance) rather than stamping a normal 'length' truncation.
-        from hermes_constants import PARTIAL_STREAM_STUB_ID
+        from hermes_agent.hermes_constants import PARTIAL_STREAM_STUB_ID
         chunks = [
             _make_chunk(tool_calls=[_make_tc_delta(0, "call_1", "write_file", '{"path":"x.txt","content":"hel')]),
         ]
@@ -6339,7 +6339,7 @@ class TestStreamingApiCall:
         # Cut after the first digit of "timeout": 600. Every string is closed, so the
         # prefix repairs to valid JSON that carries timeout=6. Without a finish_reason
         # nothing says the model was done: retry, never run what happened to arrive.
-        from hermes_constants import PARTIAL_STREAM_STUB_ID
+        from hermes_agent.hermes_constants import PARTIAL_STREAM_STUB_ID
         raw = '{"command": "make deploy", "timeout": 6'
         chunks = [_make_chunk(tool_calls=[_make_tc_delta(0, "call_1", "terminal", raw)])]
         if finish_reason:

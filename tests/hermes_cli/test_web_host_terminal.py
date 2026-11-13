@@ -73,7 +73,7 @@ def test_host_terminal_policy_rejects_dashboard_and_unauthenticated_public_bind(
 
 def _assert_host_terminal_resolver_uses_real_host(tmp_path):
     from hermes_agent.hermes_cli import web_host_terminal
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     argv, cwd, env, shell_name = web_host_terminal.resolve_argv(
         home=get_hermes_home(), requested_cwd=str(tmp_path)
@@ -120,7 +120,7 @@ def test_host_terminal_resolver_applies_selected_profile_home_and_config(
 def test_host_terminal_shell_inherits_no_package_manager_settings(tmp_path, monkeypatch):
     """`pnpm run` injects lowercase npm_*/pnpm_config_* names; a user's own NPM_CONFIG_* stays."""
     from hermes_agent.hermes_cli import web_host_terminal
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     leaked = {"pnpm_config_store_dir": str(tmp_path / "store"), "npm_config_cache": str(tmp_path / "cache"),
               "npm_config_prefix": str(tmp_path / "prefix"), "npm_package_name": "hermes-agent"}
@@ -145,7 +145,7 @@ def test_host_terminal_resolver_uses_real_linux_shell(tmp_path, monkeypatch):
 def test_host_terminal_relative_shell_never_reaches_argv(tmp_path, monkeypatch):
     """The PTY chdirs into the workspace before exec, so the shell it runs is the one checked only if argv[0] is absolute."""
     from hermes_agent.hermes_cli import web_host_terminal
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     server_cwd = tmp_path / "server"
     workspace = tmp_path / "workspace"

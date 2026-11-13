@@ -26,7 +26,7 @@ def test_agent_cron_is_transport_only_and_refuses_without_owner(monkeypatch):
 def test_owner_ticker_uses_direct_admission_without_loopback(monkeypatch):
     from hermes_agent.gateway import session_cron
     from types import SimpleNamespace
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     import threading
 
     async def probe():
@@ -59,7 +59,7 @@ def test_owner_ticker_uses_direct_admission_without_loopback(monkeypatch):
 def test_lost_cron_ack_retains_identity_instead_of_reporting_failure(tmp_path, monkeypatch):
     from hermes_agent.cron.scheduler_authority import run_canonical_job, CronExecutionUnknown
     from hermes_agent.hermes_cli import gateway_client
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     import json
     import pytest
 

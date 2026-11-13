@@ -2,7 +2,7 @@
   "root_from_file": {
     "cron/scheduler.py": 1,
     "gateway/platforms/base.py": 1,
-    "hermes_bootstrap.py": 2,
+    "hermes_bootstrap.py": 3,
     "hermes_cli/__init__.py": 1,
     "hermes_cli/_early_recovery.py": 2,
     "hermes_cli/_launchers.py": 3,
@@ -27,6 +27,7 @@
   "module_sys_path": {
     "cron/scheduler.py": 1,
     "gateway/platforms/base.py": 1,
+    "hermes_bootstrap.py": 1,
     "hermes_cli/cron.py": 1,
     "hermes_cli/main.py": 1,
     "hermes_cli/web_server.py": 1,
@@ -37,7 +38,7 @@
   "reasons": {
     "cron/scheduler.py": "sys.path bootstrap before the first Hermes import (group C, part 2b)",
     "gateway/platforms/base.py": "sys.path bootstrap before the first Hermes import (group C, part 2b)",
-    "hermes_bootstrap.py": "runs before any Hermes package imports",
+    "hermes_bootstrap.py": "runs before any Hermes package imports; the root file repairs a torn update before hermes_agent/ is importable",
     "hermes_cli/__init__.py": "package init; cannot import its own submodule while an old updater swaps the tree",
     "hermes_cli/_early_recovery.py": "loaded as a single file during recovery, no package imports",
     "hermes_cli/_launchers.py": "launcher templates run before Hermes imports and across the update swap",

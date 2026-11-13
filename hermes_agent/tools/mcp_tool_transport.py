@@ -9,7 +9,7 @@ import urllib.parse
 import urllib.request
 from contextlib import asynccontextmanager
 from typing import Dict, Optional, Set
-from utils import normalize_proxy_url
+from hermes_agent.utils import normalize_proxy_url
 from hermes_agent.agent.proxy_bypass import is_loopback_host, should_bypass_proxy
 from hermes_agent.agent import runtime_cwd as _runtime_cwd
 from hermes_agent.tools.mcp_tool_errors import _MCP_HTTP_MAX_BODY_BYTES, NonMcpEndpointError, _apply_identity_header, _describe_http_failure, _handshake_answered_with_unsupported_version, _handshake_rejected_as_modern, _is_streamable_http_rejection, _make_http_rejection_recorder, _make_mcp_body_cap_transport, _make_redirect_header_stripper, _resolve_client_cert, _unwrap_exception_group
@@ -95,9 +95,9 @@ class LiveEndpointUnavailable(ConnectionError):
 
 def _live_endpoint(server_name: str) -> Optional[tuple[str, dict]]:
     from hermes_agent.agent.redact import register_vault_redaction_value
-    from hermes_platform import declaration
-    from hermes_platform.host import facts
-    from hermes_platform.resolver.app import AppResolver
+    from hermes_agent.hermes_platform import declaration
+    from hermes_agent.hermes_platform.host import facts
+    from hermes_agent.hermes_platform.resolver.app import AppResolver
     from hermes_agent.tools.mcp_liveness import liveness_for
 
     live = liveness_for(server_name)

@@ -128,7 +128,7 @@ def test_frames_play_through_grows_visibility():
 def test_memory_rows_carry_their_card_body_for_fingerprinted_ids():
     """The chart looks a memory card up by node id. Node ids carry the card's fingerprint, so a
     lookup keyed on the bare `memory:<source>:<index>` shape would render every body empty."""
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     memories = get_hermes_home() / "memories"
     memories.mkdir(parents=True, exist_ok=True)

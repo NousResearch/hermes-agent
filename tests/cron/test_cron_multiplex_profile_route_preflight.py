@@ -15,13 +15,13 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
-import hermes_yaml as yaml
+import hermes_agent.hermes_yaml as yaml
 
 from hermes_agent.cron.scheduler_preflight import (
     _delivery_platform_routed_from_primary_gateway,
     _preflight_check_delivery,
 )
-from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
 
 PRIMARY_YAML = {
@@ -61,7 +61,7 @@ def multiplex_homes(tmp_path, monkeypatch):
     grant_home.mkdir(parents=True)
     (root / "config.yaml").write_text(yaml.safe_dump(PRIMARY_YAML), encoding="utf-8")
     monkeypatch.setattr(
-        "hermes_constants.get_default_hermes_root", lambda: root
+        "hermes_agent.hermes_constants.get_default_hermes_root", lambda: root
     )
     token = set_hermes_home_override(str(grant_home))
     yield root, grant_home
@@ -92,7 +92,7 @@ class TestRoutedSatellitePreflight:
         (root / "config.yaml").write_text(yaml.safe_dump(PRIMARY_YAML),
                                           encoding="utf-8")
         monkeypatch.setattr(
-            "hermes_constants.get_default_hermes_root", lambda: root
+            "hermes_agent.hermes_constants.get_default_hermes_root", lambda: root
         )
         token = set_hermes_home_override(str(other_home))
         try:
@@ -115,7 +115,7 @@ class TestRoutedSatellitePreflight:
         grant_home = root / "profiles" / "grant"
         grant_home.mkdir(parents=True)
         monkeypatch.setattr(
-            "hermes_constants.get_default_hermes_root", lambda: root
+            "hermes_agent.hermes_constants.get_default_hermes_root", lambda: root
         )
         token = set_hermes_home_override(str(grant_home))
         try:
@@ -137,7 +137,7 @@ class TestRoutedSatellitePreflight:
         cfg["gateway"]["profile_routes"][0]["enabled"] = False
         (root / "config.yaml").write_text(yaml.safe_dump(cfg), encoding="utf-8")
         monkeypatch.setattr(
-            "hermes_constants.get_default_hermes_root", lambda: root
+            "hermes_agent.hermes_constants.get_default_hermes_root", lambda: root
         )
         token = set_hermes_home_override(str(grant_home))
         try:

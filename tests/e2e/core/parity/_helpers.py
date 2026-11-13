@@ -28,7 +28,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
-import hermes_yaml as yaml
+import hermes_agent.hermes_yaml as yaml
 
 from tests.fakes.fake_llm_provider import FakeLLMServer, Text, ToolCall, write_hermes_home
 

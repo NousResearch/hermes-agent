@@ -10,7 +10,7 @@ import logging
 import os
 from hermes_agent.agent.i18n import t
 from hermes_agent.hermes_cli.config import cfg_get
-from utils import env_var_enabled, is_truthy_value
+from hermes_agent.utils import env_var_enabled, is_truthy_value
 
 logger = logging.getLogger("hermes_agent.tools.approval")
 

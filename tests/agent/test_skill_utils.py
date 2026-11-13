@@ -48,7 +48,7 @@ skills:
 """.strip(),
         encoding="utf-8",
     )
-    import utils
+    from hermes_agent import utils
     parse_count = 0
     real_load = utils.fast_safe_load
 
@@ -87,7 +87,7 @@ class TestMultiprofileRawConfigCache:
     def _patch_config_parser(monkeypatch, parse):
         """Route config.yaml parses through *parse(text)*: the backend parses with
         ``utils.fast_safe_load`` on the open file."""
-        import utils
+        from hermes_agent import utils
 
         real = utils.fast_safe_load
         monkeypatch.setattr(utils, "fast_safe_load", lambda stream: parse(stream.read(), real))
@@ -95,7 +95,7 @@ class TestMultiprofileRawConfigCache:
     @staticmethod
     def _load_under(home) -> list:
         from hermes_agent.agent import skill_utils
-        from hermes_constants import (
+        from hermes_agent.hermes_constants import (
             reset_hermes_home_override,
             set_hermes_home_override,
         )

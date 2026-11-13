@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import Any, Iterator, Mapping, Optional
 
 from hermes_agent.tools.bot_mode_probe import _default_home, _hermes_root, alias_forms
-from utils import atomic_json_write, unlink_files_older_than
+from hermes_agent.utils import atomic_json_write, unlink_files_older_than
 
 logger = logging.getLogger(__name__)
 
@@ -90,7 +90,7 @@ def relay_root(root: Path | str) -> Path:
 def _ensure_dirs(root: Path | str) -> Path:
     base = relay_root(root)
     for sub in (OUTBOX_DIR, CLAIMED_DIR, REPLIES_DIR):
-        from hermes_constants import mkdir_under_hermes_home
+        from hermes_agent.hermes_constants import mkdir_under_hermes_home
         mkdir_under_hermes_home(base / sub)
     return base
 
@@ -567,7 +567,7 @@ def delivery_env(author: Optional[dict], profile_home: str | Path | None = None)
     home."""
     from hermes_agent.agent.secret_scope import current_secret_scope, is_multiplex_active
     from hermes_agent.agent.turn_author import TURN_AUTHOR_ENV, turn_author_env
-    from hermes_constants import get_hermes_home_override, get_routing_process_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home_override, get_routing_process_hermes_home
     from hermes_agent.tools.environments.local import served_profile_child_env
 
     # ``_profile_home`` answers None for the launch profile by design and a relay RPC binds no scope,

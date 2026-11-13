@@ -957,7 +957,7 @@ def restore_interrupted_pull(project_root: Path | None = None, *, after_failure:
     edits are never touched; the updater's autostash (if any) stays in ``git stash list``. Concurrent
     launches take turns (``_restore_claim``); a launch that waited out another's restore relaunches.
 
-    A torn ``hermes_bootstrap.py``, ``hermes_agent/hermes_cli/__init__.py`` or recovery/lock/custody module fails
+    A torn ``hermes_agent/hermes_bootstrap.py``, ``hermes_agent/hermes_cli/__init__.py`` or recovery/lock/custody module fails
     before (or inside) the checkout's copy of this code: a minted launcher then runs the copy the
     updater published beside the marker (``RECOVERY_CLOSURE``). Limits, by design: other entry points
     (``python -m``, the ``hermes-agent`` hook's ``hermes_agent/agent/__init__.py``) have no such fallback, and a

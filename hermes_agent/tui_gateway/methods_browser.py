@@ -87,7 +87,7 @@ def _connect_local_default(port: int, system: str, announce) -> str | None:
 def _reap_profile_browsers() -> None:
     """Close the current profile's browsers only: the live connection is per profile, so other
     profiles' sessions on a multiplexed gateway keep theirs."""
-    from hermes_constants import hermes_home_key
+    from hermes_agent.hermes_constants import hermes_home_key
     from hermes_agent.tools.browser_session_lifecycle import cleanup_profile_browsers
     cleanup_profile_browsers(hermes_home_key())
 

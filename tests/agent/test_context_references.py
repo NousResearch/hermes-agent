@@ -699,7 +699,7 @@ async def test_side_thread_expansion_guards_the_served_profile_home(tmp_path: Pa
     """Inside a running loop (the gateway / TUI turn) the sync wrapper hops to a side thread; that
     thread must inherit the caller's profile scope so the credential guard checks the SERVED
     profile's home, not the launch profile's (a served profile's skill-hub cache was attachable)."""
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
     from hermes_agent.agent.context_references import preprocess_context_references
 
     launch_home = tmp_path / "launch"

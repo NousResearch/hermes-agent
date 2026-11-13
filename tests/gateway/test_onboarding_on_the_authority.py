@@ -207,7 +207,7 @@ async def test_start_from_a_secondary_profile_claims_in_the_default_home(tmp_pat
     from hermes_agent.gateway.session_authorities import SessionAuthorities
     from hermes_agent.gateway.session_authority import initialize_session_authority
     from hermes_agent.gateway.session_controls import AuthorityConnection
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from hermes_agent.hermes_state import SessionDB
     desktop = await _desktop(tmp_path, monkeypatch, [])
     home = tmp_path / ".hermes"

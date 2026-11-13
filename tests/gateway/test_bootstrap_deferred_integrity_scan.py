@@ -40,7 +40,7 @@ def _startup(monkeypatch, tmp_path):
     class _LiveRunner:
         def __init__(self, config):
             from hermes_agent.gateway.session import SessionStore
-            from hermes_constants import get_hermes_home
+            from hermes_agent.hermes_constants import get_hermes_home
             from hermes_agent.hermes_state import SessionDB
             self.session_store = SessionStore(get_hermes_home() / "sessions", config)
             self._session_db = SessionDB(get_hermes_home() / "state.db")
@@ -87,8 +87,8 @@ def _startup(monkeypatch, tmp_path):
     monkeypatch.setattr("hermes_agent.gateway.run._host_attach_or_none", AsyncMock(return_value=None))
     monkeypatch.setattr("hermes_agent.gateway.status.get_running_pid", lambda: None)
     monkeypatch.setattr("hermes_agent.tools.skills_sync.sync_skills", lambda quiet=True: None)
-    monkeypatch.setattr("hermes_logging.setup_logging", lambda hermes_home, mode: tmp_path)
-    monkeypatch.setattr("hermes_logging._add_rotating_handler", lambda *args, **kwargs: None)
+    monkeypatch.setattr("hermes_agent.hermes_logging.setup_logging", lambda hermes_home, mode: tmp_path)
+    monkeypatch.setattr("hermes_agent.hermes_logging._add_rotating_handler", lambda *args, **kwargs: None)
     monkeypatch.setattr("hermes_agent.gateway.run.GatewayRunner", _LiveRunner)
     monkeypatch.setattr(ledger, "record_startup", lambda: state["evidence"])
     monkeypatch.setattr(ledger, "run_deferred_integrity_check", scan)

@@ -40,7 +40,7 @@ def pool(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path / "fakehome"))
     monkeypatch.setenv("HERMES_HOME", str(root))
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    import hermes_constants
+    from hermes_agent import hermes_constants
     hermes_constants._default_hermes_root_memo = None  # type: ignore[attr-defined]
     (root / "auth.json").write_text(json.dumps({"credential_pool": {"openai-codex": [
         {"id": f"cred-{i}", "label": f"acct-{i}", "auth_type": "oauth", "priority": i, "source": "manual",

@@ -11,7 +11,7 @@ from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
 from hermes_agent.gateway.platforms.base import BasePlatformAdapter, ProcessingOutcome, SendResult
 from hermes_agent.gateway.platforms.event import MessageEvent
 from hermes_agent.gateway.run import GatewayRunner
-from hermes_constants import get_hermes_home
+from hermes_agent.hermes_constants import get_hermes_home
 
 
 class RecordingAdapter(BasePlatformAdapter):

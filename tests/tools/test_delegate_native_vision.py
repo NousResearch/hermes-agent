@@ -11,7 +11,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from hermes_agent.agent.auxiliary_client import reset_runtime_main, set_runtime_main
-from hermes_constants import get_hermes_home
+from hermes_agent.hermes_constants import get_hermes_home
 from hermes_agent.tools import vision_tools
 from hermes_agent.tools.delegate_tool_config import _resolve_child_runtime
 from hermes_agent.tools.registry import registry

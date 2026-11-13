@@ -21,7 +21,7 @@ import pytest
 
 pytest.importorskip("croniter")
 
-import hermes_time
+from hermes_agent import hermes_time
 from hermes_agent.cron import jobs
 
 LA = ZoneInfo("America/Los_Angeles")

@@ -20,7 +20,7 @@ from hermes_agent.hermes_cli.auth_constants import (
     XAI_ACCESS_TOKEN_REFRESH_SKEW_SECONDS, XAI_OAUTH_CLIENT_ID, XAI_OAUTH_DEVICE_CODE_URL,
     XAI_OAUTH_DISCOVERY_URL, XAI_OAUTH_SCOPE, _FORM_JSON_HEADERS, _xai_err, httpx,
 )
-from utils import env_float
+from hermes_agent.utils import env_float
 
 if TYPE_CHECKING:  # annotation-only; the runtime import would be a cycle
     from hermes_agent.hermes_cli.auth import ProviderConfig

@@ -158,7 +158,7 @@ def rmtree_collecting_permission_errors(entry: Path) -> list[str]:
 
 
 def removal_hint(entry: Path) -> str:
-    from hermes_platform.resolver import locate_command
+    from hermes_agent.hermes_platform.resolver import locate_command
 
     hint = f"sudo rm -rf {shlex.quote(os.fspath(entry))}"
     if locate_command("docker").command:

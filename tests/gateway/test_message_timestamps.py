@@ -11,7 +11,7 @@ from hermes_agent.gateway.message_timestamps import (
     format_message_timestamp,
     render_user_content_with_timestamp,
 )
-from hermes_time import safe_strftime
+from hermes_agent.hermes_time import safe_strftime
 
 
 BERLIN = ZoneInfo("Europe/Berlin")
@@ -237,7 +237,7 @@ def test_compactor_restatement_replays_unstamped_through_session_db(tmp_path):
     from hermes_agent.gateway.run import _build_gateway_agent_history
     from hermes_agent.gateway.session import SessionStore
     from hermes_agent.hermes_state import SessionDB
-    from hermes_time import get_timezone
+    from hermes_agent.hermes_time import get_timezone
 
     sent_at = _epoch(2026, 4, 28, 13, 40, 53)
     messages = [{"role": "system", "content": "sys"},

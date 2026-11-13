@@ -305,7 +305,7 @@ class TestGlobalAllowPrivateUrls:
         self, tmp_path, monkeypatch, profile_order
     ):
         """Multiplexed profiles must resolve their own private-URL policy."""
-        from hermes_constants import (
+        from hermes_agent.hermes_constants import (
             reset_hermes_home_override,
             set_hermes_home_override,
         )

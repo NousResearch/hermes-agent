@@ -93,7 +93,7 @@ def read_ref(path: Path) -> Optional[dict]:
 
 
 def write_ref(path: Path, ref: dict) -> None:
-    from utils import atomic_write_bytes
+    from hermes_agent.utils import atomic_write_bytes
     atomic_write_bytes(path, json.dumps(ref, indent=2).encode("utf-8"), mode=0o600, fsync_dir=True)
 
 

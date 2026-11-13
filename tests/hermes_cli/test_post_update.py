@@ -109,7 +109,7 @@ def test_boot_keeps_the_steps_before_a_failing_one_and_retries_it_each_start(
     every start of the same revision, and ``hermes doctor`` says why the version is behind."""
     import json
 
-    import hermes_yaml as yaml
+    import hermes_agent.hermes_yaml as yaml
     from hermes_agent.hermes_cli import boot_bootstrap
     from hermes_agent.hermes_cli.config import DEFAULT_CONFIG
     from hermes_agent.hermes_cli.doctor_config import _drift_config_version
@@ -156,7 +156,7 @@ def test_a_retry_that_raises_still_owes_the_step(tmp_path, monkeypatch):
     succeeded clears it."""
     import json
 
-    import hermes_yaml as yaml
+    import hermes_agent.hermes_yaml as yaml
     from hermes_agent.hermes_cli import boot_bootstrap
     from hermes_agent.hermes_cli.config import DEFAULT_CONFIG
 

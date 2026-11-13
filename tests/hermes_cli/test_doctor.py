@@ -14,7 +14,7 @@ from types import SimpleNamespace
 import pytest
 
 from hermes_agent.hermes_cli import doctor
-import hermes_constants
+from hermes_agent import hermes_constants
 from hermes_agent.hermes_cli import config as config_mod
 import hermes_agent.hermes_cli.gateway as gateway_cli
 from hermes_agent.hermes_cli import doctor as doctor_mod
@@ -343,7 +343,7 @@ class TestDoctorMemoryProviderSection:
         """Create a minimal HERMES_HOME with config.yaml."""
         home = tmp_path / ".hermes"
         home.mkdir(parents=True, exist_ok=True)
-        import hermes_yaml as yaml
+        import hermes_agent.hermes_yaml as yaml
         config = dict(memory_config or {})
         if provider:
             config["provider"] = provider
@@ -451,7 +451,7 @@ def test_run_doctor_accepts_named_provider_from_providers_section(monkeypatch, t
     home = tmp_path / ".hermes"
     home.mkdir(parents=True, exist_ok=True)
 
-    import hermes_yaml as yaml
+    import hermes_agent.hermes_yaml as yaml
 
     (home / "config.yaml").write_text(
         yaml.safe_dump(
@@ -917,7 +917,7 @@ def test_doctor_fix_reports_pm_install_failure(monkeypatch, tmp_path):
 def test_missing_chromium_is_info_when_config_needs_none(monkeypatch, tmp_path, browser_yaml, reason):
     """A CDP override, Lightpanda or a cloud provider runs no local Chromium: no warning row."""
     from hermes_agent.hermes_cli import doctor_tools
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     (get_hermes_home() / "config.yaml").write_text(browser_yaml, encoding="utf-8")
     monkeypatch.delenv("BROWSER_CDP_URL", raising=False)
@@ -1544,7 +1544,7 @@ def test_docker_daemon_probe_uses_version_not_info(monkeypatch):
 def test_doctor_reports_auxiliary_blocks_that_do_not_resolve(tmp_path, monkeypatch):
     """A routed auxiliary.<task> block that the runtime resolver rejects is a doctor finding, not a
     silent fall-back to the main model (#116055); a resolvable one is not flagged."""
-    import hermes_yaml as yaml
+    import hermes_agent.hermes_yaml as yaml
     from hermes_agent.hermes_cli import doctor_config
 
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")

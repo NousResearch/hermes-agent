@@ -56,7 +56,7 @@ def _unscoped_profile_secrets() -> dict:
     if _UNSCOPED_PROFILE_SECRETS is None:
         try:
             from hermes_agent.agent.secret_scope import build_profile_secret_scope
-            from hermes_constants import get_hermes_home
+            from hermes_agent.hermes_constants import get_hermes_home
             _UNSCOPED_PROFILE_SECRETS = dict(build_profile_secret_scope(get_hermes_home()))
         except Exception:
             logger.warning(

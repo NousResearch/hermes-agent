@@ -2,7 +2,7 @@
 
 from hermes_agent.gateway.config import Platform
 from hermes_agent.gateway.platform_env import EnvCred, home_step, int_or, mention_patterns, strip_slash, truthy_token
-from utils import is_truthy_value
+from hermes_agent.utils import is_truthy_value
 
 ENV_ENABLE_CREDENTIALS = ("BLUEBUBBLES_SERVER_URL", "BLUEBUBBLES_PASSWORD")
 # ``require_mention`` is always written: an unset env reads as "" -> False.

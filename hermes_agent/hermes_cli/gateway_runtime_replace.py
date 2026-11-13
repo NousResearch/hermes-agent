@@ -36,7 +36,7 @@ REFUSAL_DETAIL = {
 
 
 def _install_root() -> Path:
-    from hermes_constants import get_default_hermes_root
+    from hermes_agent.hermes_constants import get_default_hermes_root
     return Path(get_default_hermes_root()).resolve()
 
 

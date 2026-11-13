@@ -183,12 +183,12 @@ class RemoteBackend:
 
     @staticmethod
     def _key(home: Path) -> str:
-        from hermes_constants import hermes_home_key
+        from hermes_agent.hermes_constants import hermes_home_key
         return hermes_home_key(home)
 
     @staticmethod
     def _profile_for(home: Path) -> str:
-        from hermes_constants import PROFILE_ID_RE, profile_name_for_home
+        from hermes_agent.hermes_constants import PROFILE_ID_RE, profile_name_for_home
         name = profile_name_for_home(home)
         if not name or not PROFILE_ID_RE.match(name):
             raise ConfigBackendUnavailable(
@@ -417,7 +417,7 @@ class RemoteBackend:
         """Run the migrations from schema *current* over a private copy of *doc* and return it.
         Nothing is published: only this thread sees the copy while the steps run (:class:`_Private`)."""
         from hermes_agent.hermes_cli.config_migrations import run_migrations
-        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
         m = _Private(st=st, doc=copy.deepcopy(doc), serial=next(_PRIVATE_SERIAL))
         m.doc["_config_version"] = current
         private_token = _PRIVATE.set(m)

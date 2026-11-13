@@ -709,7 +709,7 @@ class ReasoningReplayRoute(NamedTuple):
 def matches_reasoning_echo_family(family: str, provider: Any, model: Any, base_url: Any) -> bool:
     """True when (provider, model, base_url) matches one echo-back family (families can overlap;
     membership is tested independently). Raises KeyError for an unknown family."""
-    from utils import base_url_host_matches
+    from hermes_agent.utils import base_url_host_matches
 
     _, raw_providers, lowered_providers, model_subs, hosts = _REASONING_ECHO_RULE_BY_FAMILY[family]
     model_lower = (model or "").lower()
@@ -733,7 +733,7 @@ def needs_reasoning_echo(provider: Any, model: Any, base_url: Any) -> bool:
 
 def route_reasoning_carriers(provider: Any, base_url: Any) -> frozenset:
     """Reasoning carriers the chat-completions route reads (before any runtime rejection)."""
-    from utils import base_url_host_matches
+    from hermes_agent.utils import base_url_host_matches
 
     provider_lower = (provider or "").strip().lower()
     carriers = next(
@@ -1047,7 +1047,7 @@ def rejected_reasoning_fields(error_body: Any, sent_messages: Any) -> frozenset:
 def reasoning_route_key(agent: Any) -> tuple[str, str, str]:
     """``(provider, base_url host, model)``: one gateway serves models on different upstream lanes,
     so a rejection learned for one model must not strip carriers from its siblings."""
-    from utils import base_url_hostname
+    from hermes_agent.utils import base_url_hostname
 
     return (
         (getattr(agent, "provider", "") or "").strip().lower(),

@@ -7,7 +7,7 @@ hardcoded "~/.hermes/scripts/" in its messages even though resolution goes
 through get_hermes_home(), which is per-profile.
 """
 
-from hermes_constants import get_hermes_home
+from hermes_agent.hermes_constants import get_hermes_home
 from hermes_agent.tools.cronjob_job_args import _validate_cron_script_path
 
 

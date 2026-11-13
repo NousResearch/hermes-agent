@@ -448,7 +448,7 @@ def create_task(payload: CreateTaskBody, board: Optional[str] = Query(None)):
         if task and task.status == "ready" and task.assignee:
             try:
                 from hermes_agent.hermes_cli.kanban import _check_dispatcher_presence
-                from hermes_constants import get_hermes_home
+                from hermes_agent.hermes_constants import get_hermes_home
                 running, message = _check_dispatcher_presence(hermes_home=get_hermes_home())
                 if not running and message:
                     body["warning"] = message
@@ -1572,7 +1572,7 @@ def update_profile_description(profile_name: str, payload: DescribeBody):
         from hermes_agent.hermes_cli import profiles as profiles_mod
         canon = profiles_mod.normalize_profile_name(profile_name)
         if canon == "default":
-            from hermes_constants import get_hermes_home  # type: ignore
+            from hermes_agent.hermes_constants import get_hermes_home  # type: ignore
             profile_dir = Path(get_hermes_home())
         else:
             profile_dir = profiles_mod.get_profile_dir(canon)

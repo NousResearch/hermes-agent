@@ -73,7 +73,7 @@ class TestSessionIsolationKeying:
         _disable_isolation(monkeypatch)
         # The default profile's home stays on the shared "default" key (a named-profile
         # home would take the profile path, so run from a real default root).
-        import hermes_constants
+        from hermes_agent import hermes_constants
 
         root = hermes_constants._get_platform_default_hermes_home()  # conftest's per-test native root
         root.mkdir(parents=True, exist_ok=True)
@@ -144,7 +144,7 @@ class TestRoutedScopeQualification:
 
     def test_colliding_session_id_is_isolated_per_routed_profile(self, monkeypatch, tmp_path):
         from hermes_agent.agent import secret_scope
-        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
         _enable_isolation(monkeypatch)
         raw = "api-9a5f7809eec0aac1"

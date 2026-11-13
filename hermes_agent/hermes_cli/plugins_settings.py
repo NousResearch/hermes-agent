@@ -45,7 +45,7 @@ def _manifest_config_schema(plugin_dir: Optional[Path]) -> Mapping[str, Mapping[
     manifest = Path(plugin_dir) / "plugin.yaml"
     try:
         if manifest.is_file():
-            from utils import fast_safe_load
+            from hermes_agent.utils import fast_safe_load
             data = fast_safe_load(manifest.read_text(encoding="utf-8-sig")) or {}
             raw = data.get("config_schema") if isinstance(data, Mapping) else None
         else:

@@ -9,8 +9,8 @@ from pathlib import Path
 
 import pytest
 
-import hermes_yaml as yaml
-from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+import hermes_agent.hermes_yaml as yaml
+from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
 _PLUGIN = '''
 from pathlib import Path

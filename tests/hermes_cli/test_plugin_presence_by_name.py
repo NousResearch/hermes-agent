@@ -31,7 +31,7 @@ def _entry(name, *, platforms=(), title="", description=""):
 
 @pytest.fixture
 def catalog(monkeypatch):
-    from hermes_platform.host import facts
+    from hermes_agent.hermes_platform.host import facts
 
     here = {"darwin": "macos", "win32": "windows"}.get(facts.os_family(), "linux")
     other = "windows" if here != "windows" else "macos"

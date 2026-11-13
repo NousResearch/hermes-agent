@@ -243,7 +243,7 @@ def test_local_recorded_tilde_cwd_still_anchors_at_the_profile_home(monkeypatch,
 
     monkeypatch.setenv("TERMINAL_ENV", "local")
     monkeypatch.delenv("TERMINAL_CWD", raising=False)
-    monkeypatch.setattr("hermes_constants.get_subprocess_home", lambda: host_home)
+    monkeypatch.setattr("hermes_agent.hermes_constants.get_subprocess_home", lambda: host_home)
     monkeypatch.setattr(terminal_tool, "_session_cwd", {})
     terminal_tool.record_session_cwd("t", "~")
     assert file_tools_paths._authoritative_workspace_root("t") == "~"
@@ -292,11 +292,11 @@ def test_hosted_tilde_starts_the_sandbox_under_the_callers_task(provider, monkey
 def test_local_scope_tilde_still_expands_to_the_profile_home(monkeypatch, host_home):
     import contextlib
     from hermes_agent.agent.runtime_scope import bind_state
-    from hermes_constants import get_hermes_home
-    from hermes_scope import Principal, Scope
+    from hermes_agent.hermes_constants import get_hermes_home
+    from hermes_agent.hermes_scope import Principal, Scope
     from hermes_agent.tools.file_tools_paths import _expand_tilde
 
-    monkeypatch.setattr("hermes_constants.get_subprocess_home", lambda: host_home)
+    monkeypatch.setattr("hermes_agent.hermes_constants.get_subprocess_home", lambda: host_home)
     for scope in (None, Scope("local", str(get_hermes_home()), Principal("local"))):
         with bind_state(scope) if scope is not None else contextlib.nullcontext():
             assert _expand_tilde("~/notes.txt") == f"{host_home}/notes.txt"

@@ -106,7 +106,7 @@ def test_a_tree_the_child_made_stays_pinned_after_it_leaves_that_repository(tmp_
 
 
 def test_a_late_record_write_never_recreates_a_removed_profile_and_stays_owner_only(tmp_path):
-    from hermes_constants import get_hermes_home, profile_tombstone_path
+    from hermes_agent.hermes_constants import get_hermes_home, profile_tombstone_path
     from hermes_agent.tools import delegate_tool_resumable as r
     removed = get_hermes_home() / "profiles" / "removed"
     tomb = profile_tombstone_path(removed)
@@ -128,7 +128,7 @@ def test_boot_recovery_names_the_continuable_children_on_the_row_that_reports_th
     """A crash leaves the children's records running; a gateway restart (SIGTERM) lets each child record its
     resumable stop while the owner exits before the unit's row turns terminal. Either way the recovered notice
     names every child the parent can continue."""
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from hermes_agent.tools import async_delegation as ad
     from hermes_agent.tools.delegate_tool import delegate_task
     (get_hermes_home() / "config.yaml").write_text(json.dumps({"delegation": {"independent_completions": independent}}))

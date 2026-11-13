@@ -468,7 +468,7 @@ def _profiles(authority, actor, home, params, siblings=()):
     """The Bots roster: this profile's row, then every profile it can name. ``siblings`` is
     ``_roster_siblings``' snapshot; a sibling with a reader carries the same session fields."""
     from hermes_agent.hermes_cli.profiles import _profile_info
-    import hermes_yaml as yaml
+    import hermes_agent.hermes_yaml as yaml
     include_sessions = params.get('include_sessions', True)
     if type(include_sessions) is not bool:
         raise RuntimeStoreError('invalid_params')
@@ -569,7 +569,7 @@ def _lstat_key(path):
 
 def _named_profile_dirs():
     from hermes_agent.hermes_cli.profiles import _get_profiles_root, _iter_named_profile_dirs
-    from hermes_constants import _PROFILE_IDENTITY_MARKERS, profile_tombstone_path
+    from hermes_agent.hermes_constants import _PROFILE_IDENTITY_MARKERS, profile_tombstone_path
     profiles_root = _get_profiles_root()
     try:
         with os.scandir(profiles_root) as entries:
@@ -620,7 +620,7 @@ def _ui_meta_revisions(meta):
 def _discovered_profile_meta(name, meta_path):
     """A sibling's parsed ``profile.yaml``, or ``{}``. One unreadable file (a legacy code page,
     bad YAML, a permission error) degrades that row to basic metadata; it never fails the roster."""
-    import hermes_yaml as yaml
+    import hermes_agent.hermes_yaml as yaml
     try:
         raw = meta_path.read_bytes()
     except (FileNotFoundError, NotADirectoryError, IsADirectoryError):

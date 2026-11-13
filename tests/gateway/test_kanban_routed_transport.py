@@ -136,7 +136,7 @@ def test_route_denials_leave_events_retryable_at_claim_and_send(tmp_path, monkey
 
     good = completion()
     # A tombstoned (deleted) owner profile is no longer served by the multiplexer.
-    from hermes_constants import clear_named_profile_deleted, mark_named_profile_deleted
+    from hermes_agent.hermes_constants import clear_named_profile_deleted, mark_named_profile_deleted
     yuki_home = tmp_path / ".hermes" / "profiles" / "yuki"
     mark_named_profile_deleted(yuki_home)
     assert not collect(runner)
@@ -169,7 +169,7 @@ def test_route_denials_leave_events_retryable_at_claim_and_send(tmp_path, monkey
 def test_kanban_wakes_install_the_destination_runtime_scope(tmp_path, monkeypatch):
     from hermes_agent.agent.secret_scope import get_secret
     from hermes_agent.gateway.run import _profile_runtime_scope
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     runner = setup_runner(tmp_path, monkeypatch)
     home = tmp_path / ".hermes"

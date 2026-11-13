@@ -81,7 +81,7 @@ class Advice:
 def _home(home: Optional[Path]) -> Path:
     if home is not None:
         return Path(home)
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     return get_hermes_home()
 
 
@@ -139,7 +139,7 @@ def snoozed(home: Optional[Path] = None, *, now: Optional[float] = None) -> bool
 
 
 def snooze(home: Optional[Path] = None, seconds: float = SNOOZE_SECONDS) -> None:
-    from utils import atomic_json_write
+    from hermes_agent.utils import atomic_json_write
     atomic_json_write(_snooze_path(home), {"snoozed_until": time.time() + seconds})
 
 
@@ -213,7 +213,7 @@ def _read_estimate(home: Optional[Path]) -> dict:
 def _store_estimate(home: Optional[Path], **fields) -> None:
     """Merge *fields* (each stamped with the time) into the estimate sidecar; a full disk that
     cannot take the write just means the next estimate measures again."""
-    from utils import atomic_json_write
+    from hermes_agent.utils import atomic_json_write
     data = _read_estimate(home)
     now = time.time()
     for key, value in fields.items():
@@ -345,9 +345,9 @@ def managed() -> bool:
 def decide(enable: bool, home: Optional[Path] = None) -> bool:
     """Persist the user's answer as an explicit ``sessions.auto_prune``; ends the prompt for good.
     False when the save failed or did not take effect (an administrator-managed value wins)."""
-    import hermes_yaml as yaml
+    import hermes_agent.hermes_yaml as yaml
     from hermes_agent.hermes_cli.config_backend import ConfigWriteError, write_config_key
-    from hermes_constants import mkdir_under_hermes_home
+    from hermes_agent.hermes_constants import mkdir_under_hermes_home
     if managed():
         return False
     path = _home(home) / "config.yaml"

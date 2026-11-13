@@ -14,7 +14,7 @@ async def test_each_claimed_turn_binds_its_admission_fence(monkeypatch):
     from hermes_agent.gateway.platforms.event import MessageEvent
     from hermes_agent.gateway.session_authority import initialize_session_authority
     from hermes_agent.gateway.session_results import execution_result
-    from hermes_scope import LOCAL_OWNER, Fence, TurnScope, current_scope
+    from hermes_agent.hermes_scope import LOCAL_OWNER, Fence, TurnScope, current_scope
     from hermes_agent.hermes_state_runtime import list_session_admissions
 
     runner, adapter, _sent = _owner(monkeypatch)

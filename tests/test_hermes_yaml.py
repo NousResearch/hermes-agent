@@ -5,8 +5,8 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-import hermes_yaml as yaml
-from utils import fast_safe_load
+import hermes_agent.hermes_yaml as yaml
+from hermes_agent.utils import fast_safe_load
 
 
 @pytest.mark.parametrize("load", [yaml.safe_load, fast_safe_load])

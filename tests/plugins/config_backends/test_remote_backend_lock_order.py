@@ -112,7 +112,7 @@ def test_boot_retry_warning_through_the_real_redacting_formatter(plane, monkeypa
     import logging
 
     from hermes_agent.agent.redact import RedactingFormatter
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
     backend = remote_pkg.get_remote_backend()
     formatted: list = []
@@ -152,7 +152,7 @@ def test_the_formatter_never_reads_config(tmp_path, monkeypatch):
     import hermes_agent.hermes_cli.config_backend as cb
     from hermes_agent.agent import redact
     from hermes_agent.agent.redact import RedactingFormatter
-    from hermes_constants import hermes_home_key, reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import hermes_home_key, reset_hermes_home_override, set_hermes_home_override
 
     reads: list = []
 

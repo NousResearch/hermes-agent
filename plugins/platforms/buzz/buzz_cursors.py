@@ -15,7 +15,7 @@ _CURSOR_STATE_FILENAME = "channel-cursors.json"
 class BuzzCursorMixin:
     @staticmethod
     def _cursor_path() -> Path:
-        from hermes_constants import get_hermes_home
+        from hermes_agent.hermes_constants import get_hermes_home
         return get_hermes_home() / _CURSOR_STATE_SUBDIR / _CURSOR_STATE_FILENAME
 
     def _load_cursors(self) -> None:
@@ -61,7 +61,7 @@ class BuzzCursorMixin:
     @staticmethod
     def _write_cursors(path: Path, payload: dict) -> None:
         try:
-            from utils import atomic_json_write
+            from hermes_agent.utils import atomic_json_write
             atomic_json_write(path, payload, indent=None)
         except Exception:
             logger.debug("Buzz: could not persist channel cursors", exc_info=True)

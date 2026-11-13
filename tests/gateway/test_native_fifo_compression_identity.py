@@ -11,7 +11,7 @@ async def test_native_fifo_identity_is_stable_across_compression(tmp_path, monke
     from hermes_agent.gateway.run import GatewayRunner
     from hermes_agent.gateway.session_authority import initialize_session_authority, SessionAuthority
     from hermes_agent.gateway.session_ingress_context import native_callback
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from hermes_agent.hermes_state_runtime import list_session_admissions
     from plugins.platforms.discord.adapter import DiscordAdapter
 

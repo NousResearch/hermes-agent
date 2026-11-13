@@ -11,7 +11,7 @@ import textwrap
 
 import pytest
 
-from hermes_constants import get_hermes_home
+from hermes_agent.hermes_constants import get_hermes_home
 from hermes_agent.tools import desktop_ui
 from hermes_agent.tools.react_to_message_tool import check_react_requirements
 from hermes_agent.tools.tip_tool import check_tips_enabled

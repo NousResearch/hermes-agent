@@ -28,7 +28,7 @@ from hermes_agent.agent.reasoning_effort import (
     kimi_supported_efforts,
     requested_effort,
 )
-from hermes_constants import VALID_REASONING_EFFORTS
+from hermes_agent.hermes_constants import VALID_REASONING_EFFORTS
 
 
 class TestLadderContract:

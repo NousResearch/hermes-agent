@@ -627,7 +627,7 @@ def _strip_ollama_cloud_suffix(model_id: str) -> str:
 
 
 def _ollama_cloud_cache_path() -> Path:
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     return get_hermes_home() / "ollama_cloud_models_cache.json"
 
 

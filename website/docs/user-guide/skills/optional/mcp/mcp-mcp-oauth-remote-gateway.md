@@ -157,7 +157,7 @@ built-in flow won't work.
 ### 2. Find HERMES_HOME and the config path
 
 ```bash
-HERMES_HOME=$(python3 -c 'from hermes_constants import get_hermes_home; print(get_hermes_home())')
+HERMES_HOME=$(python3 -c 'from hermes_agent.hermes_constants import get_hermes_home; print(get_hermes_home())')
 echo "config: $HERMES_HOME/config.yaml"
 echo "tokens: $HERMES_HOME/mcp-tokens/"
 ```

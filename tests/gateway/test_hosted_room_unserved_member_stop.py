@@ -92,7 +92,7 @@ def test_a_live_daemon_that_does_not_answer_keeps_the_turn(tmp_path, deferred, l
 
 
 def test_a_deleted_profile_whose_entry_remains_settles_once_its_daemon_is_gone(tmp_path, deferred):
-    from hermes_constants import mark_named_profile_deleted
+    from hermes_agent.hermes_constants import mark_named_profile_deleted
     home = tmp_path.resolve() / 'profiles' / 'two'
     service, db, identity, _roster = deferred(home)
     mark_named_profile_deleted(home)  # `hermes profile delete` tombstones it; the config entry stays

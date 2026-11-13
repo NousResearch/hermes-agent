@@ -726,7 +726,7 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str, *,
     import hashlib
     import json
     import uuid
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from hermes_agent.hermes_cli.profiles import get_profile_dir
     from hermes_agent.tools.bot_live_delivery import (
         deliver_to_live_owner, find_canonical_live_owner, read_delivery_result,
@@ -1820,7 +1820,7 @@ def _deliver_result(
             continue
         if target["platform"] == "local":
             from hermes_agent.gateway.session_cron import deliver_to_local_chat
-            from hermes_constants import get_hermes_home
+            from hermes_agent.hermes_constants import get_hermes_home
             local_error = deliver_to_local_chat(get_hermes_home(), target["chat_id"],
                                                 cleaned_delivery_content, diagnostic=for_failure)
             if local_error:

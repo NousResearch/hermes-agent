@@ -101,7 +101,7 @@ def test_capacity_counts_only_this_profiles_running_units(tmp_path, monkeypatch)
     """One gateway serves many profiles: another profile's running units never use up this one's slots."""
     from hermes_agent.agent.runtime_scope import bind_profile_scope
     from hermes_agent.gateway.run_auto_resume import _capacity
-    from hermes_constants import hermes_home_key
+    from hermes_agent.hermes_constants import hermes_home_key
     from hermes_agent.tools import async_delegation
     other, mine = tmp_path / "other", tmp_path / "mine"
     for home, cap in ((other, 2), (mine, 3)):

@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from hermes_constants import get_hermes_home
+from hermes_agent.hermes_constants import get_hermes_home
 
 logger = logging.getLogger(__name__)
 
@@ -350,7 +350,7 @@ _active_skin_by_home: dict[str, tuple[str, SkinConfig]] = {}
 
 
 def _routed_home_key() -> Optional[str]:
-    from hermes_constants import get_hermes_home_override, hermes_home_key
+    from hermes_agent.hermes_constants import get_hermes_home_override, hermes_home_key
     return None if get_hermes_home_override() is None else hermes_home_key()
 
 
@@ -369,7 +369,7 @@ def _skins_dir() -> Path:
 def _load_skin_from_yaml(path: Path) -> Optional[dict[str, Any]]:
     """Load a skin definition from a YAML file; None on any failure."""
     try:
-        import hermes_yaml as yaml
+        import hermes_agent.hermes_yaml as yaml
         with open(path, "r", encoding="utf-8-sig") as f:
             data = yaml.safe_load(f)
         if isinstance(data, dict) and "name" in data:

@@ -198,7 +198,7 @@ def test_default_entries_keep_the_tier_and_platform_rules(monkeypatch):
     import dataclasses
 
     import hermes_agent.hermes_cli.plugin_catalog as catalog
-    from hermes_platform.host.facts import os_family
+    from hermes_agent.hermes_platform.host.facts import os_family
     elsewhere = "linux" if os_family() == "win32" else "windows"
     entries = [_entry("here"), dataclasses.replace(_entry("merged"), tier="community"),
                dataclasses.replace(_entry("elsewhere"), platforms=[elsewhere])]
@@ -254,7 +254,7 @@ def test_a_retry_that_removed_our_leftover_and_then_failed_stays_owed(tmp_path, 
             attempts.append(name)
             if discard is not None:  # the real remove path, as the installer runs it
                 from hermes_agent.hermes_cli.plugins_cmd_remove import _remove_plugin_core
-                from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+                from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
                 token = set_hermes_home_override(h)
                 try:
                     _remove_plugin_core(discard)

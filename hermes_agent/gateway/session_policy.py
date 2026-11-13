@@ -286,7 +286,7 @@ class LocalSessionPolicy:
         if not self.follows_profile:
             return self.reasoning_config
         from hermes_agent.gateway.session_authorities import active_authority
-        from hermes_constants import resolve_reasoning_config
+        from hermes_agent.hermes_constants import resolve_reasoning_config
         config, model = self.effective(active_authority(runner), secrets=False)
         return resolve_reasoning_config(config, model or '')
 
@@ -354,7 +354,7 @@ class LocalSessionPolicy:
 
     @property
     def reasoning_config(self):
-        from hermes_constants import resolve_reasoning_config
+        from hermes_agent.hermes_constants import resolve_reasoning_config
         return resolve_reasoning_config(self.config(), self.model or '')
 
 
@@ -433,7 +433,7 @@ def build_policy(params, config, *, private_secrets=None, profile_terminal=True,
                  client_local=False):
     from hermes_agent.agent.runtime_cwd import resolve_agent_cwd
     from hermes_agent.tools.terminal_scope import build_profile_terminal_scope, default_terminal_scope
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     source = params.get('source', 'cli')
     if source == 'a2a':
@@ -523,7 +523,7 @@ def _profile_workspace_cwd(home):
     """A NAMED profile's configured ``terminal.cwd``, which beats a client cwd the Desktop only inherited
     (``cwd_explicit: false``; main's ``_completion_cwd``). Placeholders and missing dirs are unset."""
     import os
-    from hermes_constants import profile_name_for_home
+    from hermes_agent.hermes_constants import profile_name_for_home
     if profile_name_for_home(home) in {None, 'default'}:
         return None
     from hermes_agent.hermes_cli.config import read_user_config_raw
@@ -598,7 +598,7 @@ def _apply_launch_overrides(params, config):
     """Validate the explicit model/agent launch overrides and fold them into *config*."""
     from urllib.parse import urlsplit
     from hermes_agent.hermes_cli.config import resolve_turn_limit
-    from hermes_constants import parse_reasoning_effort
+    from hermes_agent.hermes_constants import parse_reasoning_effort
     params = _with_entry_pick(_without_auto_pick(params), config)
     picks_profile_entry = 'provider' in params and _keeps_profile_route(params['provider'], config)
     if 'provider' in params and not picks_profile_entry:

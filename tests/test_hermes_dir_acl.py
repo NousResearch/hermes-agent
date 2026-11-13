@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-import hermes_dir_acl
+from hermes_agent import hermes_dir_acl
 
 
 @pytest.mark.platforms("posix")
@@ -107,7 +107,7 @@ def test_make_user_dir_refuses_an_existing_leaf_that_is_a_link(elevated_windows,
     (home / "cache").mkdir()
     planted = home / "cache" / "images"
     planted.symlink_to(outside, target_is_directory=True)
-    with caplog.at_level("WARNING", logger="hermes_dir_acl"):
+    with caplog.at_level("WARNING", logger="hermes_agent.hermes_dir_acl"):
         hermes_dir_acl.make_user_dir(planted, parents=True, exist_ok=True)
         hermes_dir_acl.make_user_dir(planted, parents=True, exist_ok=True)
     assert touched == []

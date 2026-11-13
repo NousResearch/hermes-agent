@@ -19,7 +19,7 @@ import json
 import zipfile
 
 import pytest
-import hermes_yaml as yaml
+import hermes_agent.hermes_yaml as yaml
 
 
 @pytest.fixture(autouse=True)
@@ -47,7 +47,7 @@ def _multiplex_state_is_per_test():
 @pytest.fixture
 def homes(tmp_path, monkeypatch, _isolate_hermes_home):
     """Isolated launch home + one named profile, both seeded with real files."""
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from hermes_agent.hermes_cli import profiles
 
     launch_home = get_hermes_home()

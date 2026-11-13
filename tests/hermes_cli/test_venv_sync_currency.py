@@ -5,7 +5,7 @@ import os
 from pathlib import Path
 import subprocess
 
-import hermes_yaml as yaml
+import hermes_agent.hermes_yaml as yaml
 
 from hermes_agent.hermes_cli import venv_sync
 from pm.environments import install_state_dir, selected_venv

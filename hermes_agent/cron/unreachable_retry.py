@@ -24,7 +24,7 @@ from datetime import datetime
 from typing import Any, Dict, Optional
 
 from hermes_agent.cron.constants import is_recurring
-from hermes_time import now as _hermes_now
+from hermes_agent.hermes_time import now as _hermes_now
 
 logger = logging.getLogger("hermes_agent.cron.scheduler")
 

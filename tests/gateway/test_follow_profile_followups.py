@@ -26,7 +26,7 @@ def _profile(home, model, port, key, **extra):
 @pytest.fixture
 def home(monkeypatch):
     from hermes_agent.gateway import run
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     home = get_hermes_home()
     home.mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(run, '_hermes_home', home)

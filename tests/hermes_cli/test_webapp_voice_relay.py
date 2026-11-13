@@ -11,7 +11,7 @@ import sys
 from pathlib import Path
 
 import pytest
-import hermes_yaml as yaml
+import hermes_agent.hermes_yaml as yaml
 from starlette.testclient import TestClient
 
 _TOKEN = "a" * 43

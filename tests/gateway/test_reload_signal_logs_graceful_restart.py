@@ -20,7 +20,7 @@ class _AbortedStartupRunner:
         # and stops it on every exit path (same shape as test_startup_restart_race.py).
         from hermes_agent.gateway.session import SessionStore
         from hermes_agent.hermes_state import SessionDB
-        from hermes_constants import get_hermes_home
+        from hermes_agent.hermes_constants import get_hermes_home
         self.session_store = SessionStore(get_hermes_home() / 'sessions', config)
         self._session_db = SessionDB(get_hermes_home() / 'state.db')
         self.session_store._db = self._session_db
@@ -61,7 +61,7 @@ async def test_sigusr1_handler_installed_by_start_gateway_logs_graceful_restart(
         ("hermes_agent.gateway.status.remove_pid_file", lambda: None),
         ("hermes_agent.gateway.status.release_gateway_runtime_lock", lambda: None),
         ("hermes_agent.tools.skills_sync.sync_skills", lambda quiet=True: None),
-        ("hermes_logging.setup_logging", lambda hermes_home, mode: None),
+        ("hermes_agent.hermes_logging.setup_logging", lambda hermes_home, mode: None),
         ("hermes_agent.tools.mcp_tool_lifecycle.shutdown_mcp_servers", lambda: None),
     ):
         monkeypatch.setattr(target, value)

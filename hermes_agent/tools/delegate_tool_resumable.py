@@ -85,7 +85,7 @@ def _db_path_for(parent_agent: Any = None) -> Optional[Path]:
     path = getattr(getattr(parent_agent, "_session_db", None), "db_path", None)
     if isinstance(path, (str, Path)):
         return Path(path)
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     return get_hermes_home() / "state.db"
 
 

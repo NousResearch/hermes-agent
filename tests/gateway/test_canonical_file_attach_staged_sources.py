@@ -118,7 +118,7 @@ async def test_a_staged_pick_attaches_while_another_profile_is_starting(owner):
 async def test_a_deleted_source_profile_does_not_vouch_for_its_receipt(owner):
     """The rule every named-home write follows (``assert_named_profile_home_live``): a profile whose
     deletion is recorded, or whose home is gone, has no live uploads, even while its files remain."""
-    from hermes_constants import mark_named_profile_deleted
+    from hermes_agent.hermes_constants import mark_named_profile_deleted
     receipt = owner.upload(owner.worker)
     source = Path(receipt['path'])
     mark_named_profile_deleted(owner.worker)
@@ -165,7 +165,7 @@ async def test_a_missing_upload_never_falls_back_to_supplied_bytes(owner):
 
 @pytest.mark.asyncio
 async def test_an_upload_that_grew_past_the_browser_limit_is_not_copied(owner):
-    from hermes_constants import WEBAPP_ATTACHMENT_MAX_BYTES
+    from hermes_agent.hermes_constants import WEBAPP_ATTACHMENT_MAX_BYTES
     receipt = owner.upload()
     os.truncate(receipt['path'], WEBAPP_ATTACHMENT_MAX_BYTES + 1)
     assert isinstance(await owner.attach(receipt), str)  # refused

@@ -17,7 +17,7 @@ import json
 from typing import Any, Dict
 
 import pytest
-import hermes_yaml as yaml
+import hermes_agent.hermes_yaml as yaml
 
 from hermes_agent.agent import image_gen_registry
 from hermes_agent.agent.image_gen_provider import ImageGenProvider

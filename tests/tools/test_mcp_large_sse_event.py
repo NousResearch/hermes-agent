@@ -15,8 +15,8 @@ import sys
 
 import pytest
 
-import hermes_yaml as yaml
-from hermes_constants import get_hermes_home
+import hermes_agent.hermes_yaml as yaml
+from hermes_agent.hermes_constants import get_hermes_home
 from tests.waiting import wait_until
 
 _SERVER = """

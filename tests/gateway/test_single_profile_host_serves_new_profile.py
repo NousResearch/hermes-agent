@@ -12,7 +12,7 @@ from types import SimpleNamespace
 
 import pytest
 
-import hermes_constants
+from hermes_agent import hermes_constants
 from hermes_agent.agent.secret_scope import is_multiplex_active
 from hermes_agent.gateway.config import GatewayConfig
 from hermes_agent.gateway.run import GatewayRunner

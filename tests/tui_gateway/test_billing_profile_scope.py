@@ -188,7 +188,7 @@ def test_sibling_routes_use_the_same_profile_scope(runtime, caplog, method, para
 def test_step_up_binds_the_profile_before_starting_the_external_flow(runtime, monkeypatch, profile):
     from hermes_agent.agent.secret_scope import get_secret
     from hermes_agent.hermes_cli import auth
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     seen = []
     def external_device_flow(**kwargs):

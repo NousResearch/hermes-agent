@@ -49,7 +49,7 @@ def _migrate_sibling_profile_configs(notes: dict[str, list[str]] | None = None,
     from hermes_agent.hermes_cli.config import check_config_version, get_missing_config_fields, migrate_config
     migrated: list[tuple[str, int, int]] = []
     with _best_effort('Sibling profile enumeration failed: %s'):
-        from hermes_constants import (
+        from hermes_agent.hermes_constants import (
             get_process_hermes_home, reset_hermes_home_override, set_hermes_home_override)
         from hermes_agent.hermes_cli.backup import _sibling_profile_homes
         active_home = Path(get_process_hermes_home())

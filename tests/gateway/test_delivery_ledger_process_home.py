@@ -18,7 +18,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-import hermes_constants
+from hermes_agent import hermes_constants
 from hermes_agent.gateway import delivery_ledger as dl
 from hermes_agent.gateway.config import Platform, PlatformConfig
 from hermes_agent.gateway.platforms.base import BasePlatformAdapter, SendResult

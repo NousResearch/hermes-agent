@@ -204,7 +204,7 @@ def _loaded(home: Optional[Path]) -> dict[str, int]:
 
 
 def _write(path: Path, records: dict[str, int]) -> None:
-    from utils import atomic_write_text
+    from hermes_agent.utils import atomic_write_text
 
     try:
         path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)

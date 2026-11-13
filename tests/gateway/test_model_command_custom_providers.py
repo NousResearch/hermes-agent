@@ -3,7 +3,7 @@
 import threading
 
 import pytest
-import hermes_yaml as yaml
+import hermes_agent.hermes_yaml as yaml
 
 from hermes_agent.gateway.config import Platform
 from hermes_agent.gateway.platforms.event import MessageEvent, MessageType

@@ -4,7 +4,7 @@
 ``/tmp`` is not portable: Termux has no ``/tmp`` at all, native Windows has no such directory,
 macOS aliases it to ``/private/tmp`` (breaking naive path comparisons), and on most Linux
 distributions it is a RAM-backed tmpfs that fills under Hermes load. Hermes resolves scratch
-space through one helper (``hermes_constants.get_scratch_dir()`` → ``HERMES_HOME/cache/scratch``,
+space through one helper (``hermes_agent.hermes_constants.get_scratch_dir()`` → ``HERMES_HOME/cache/scratch``,
 which every Hermes process also exports as ``TMPDIR``/``TMP``/``TEMP``), and prompts + skills
 must steer the model the same way, because a literal ``/tmp`` in a SKILL.md or system prompt
 becomes a literal ``/tmp`` in the model's shell commands on every platform.

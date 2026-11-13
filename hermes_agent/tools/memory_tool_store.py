@@ -13,7 +13,7 @@ from contextvars import ContextVar
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from utils import atomic_write_text
+from hermes_agent.utils import atomic_write_text
 from hermes_agent.tools.threat_patterns import first_threat_message as _first_threat_message
 
 logger = logging.getLogger("hermes_agent.tools.memory_tool")
@@ -242,7 +242,7 @@ class MemoryStore:
 
         for target in ("memory", "user"):
             path = self._path_for(target)
-            from hermes_constants import mkdir_under_hermes_home
+            from hermes_agent.hermes_constants import mkdir_under_hermes_home
 
             mkdir_under_hermes_home(path.parent)
             # Deduplicate (order-preserving, first occurrence wins).
@@ -265,7 +265,7 @@ class MemoryStore:
         from hermes_agent.tools import memory_tool as _mt  # fcntl/msvcrt live (and are patched) there
         fcntl, msvcrt = _mt.fcntl, _mt.msvcrt
         lock_path = path.with_suffix(path.suffix + ".lock")
-        from hermes_constants import mkdir_under_hermes_home
+        from hermes_agent.hermes_constants import mkdir_under_hermes_home
 
         mkdir_under_hermes_home(lock_path.parent)
         if fcntl is None and msvcrt is None:
@@ -394,7 +394,7 @@ class MemoryStore:
                         return _drift_error(path, bak)
                     extra_fields["drift_backup"] = bak
             self._set_entries(target, result[0])
-            from hermes_constants import mkdir_under_hermes_home
+            from hermes_agent.hermes_constants import mkdir_under_hermes_home
 
             mkdir_under_hermes_home(path.parent)
             self._write_file(path, result[0])

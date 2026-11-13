@@ -25,7 +25,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-import hermes_constants
+from hermes_agent import hermes_constants
 from hermes_agent import hermes_state
 from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
 from hermes_agent.gateway.platforms.api_server import APIServerAdapter

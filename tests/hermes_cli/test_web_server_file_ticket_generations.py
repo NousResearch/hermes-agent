@@ -2,7 +2,7 @@
 
 A ticket captures the resolved file and the named profile homes it belongs to (the target's and the
 session/profile owner's); once one of them is deleted (main's tombstone rule,
-``hermes_constants.assert_named_profile_home_live``) the ticket is refused, and a new one cannot be
+``hermes_agent.hermes_constants.assert_named_profile_home_live``) the ticket is refused, and a new one cannot be
 minted.
 """
 import asyncio
@@ -21,7 +21,7 @@ from starlette.responses import FileResponse
 
 from hermes_agent.hermes_cli import web_server, web_server_file_tickets
 from hermes_agent.hermes_cli.web_routers import files
-from hermes_constants import mark_named_profile_deleted
+from hermes_agent.hermes_constants import mark_named_profile_deleted
 
 
 @pytest.fixture

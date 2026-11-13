@@ -31,7 +31,7 @@ def test_worker_publishes_selection_even_when_dependencies_are_current(client, t
             "home": str(home), "enabled": ["plain"], "disabled": ["old"], "extra_dirs": [],
         }))
         result = receipt.last_for_update("selection-publication", consume=True)
-    from utils import fast_safe_load
+    from hermes_agent.utils import fast_safe_load
     assert fast_safe_load(config.read_text())["plugins"] == {"enabled": ["plain"], "disabled": ["old"]}
     assert '# keep my comment' in config.read_text()
     assert 'model: "untouched"' in config.read_text()
@@ -267,7 +267,7 @@ def test_worker_death_recovers_at_each_durable_publication_boundary(
         if not committed:
             assert tree_digest(target) == before_tree
     else:
-        from utils import fast_safe_load
+        from hermes_agent.utils import fast_safe_load
         assert fast_safe_load(config.read_text())["plugins"]["enabled"] == (["example"] if committed else [])
     assert not (state / "publication.json").exists()
     assert not list(target.parent.glob(".previous-*"))
@@ -425,7 +425,7 @@ def test_inactive_portable_publication_does_not_inspect_unrelated_dependency_man
 
 
 def test_selection_preserves_yaml11_values_and_quotes_plugin_names(client, tmp_path, monkeypatch):
-    import hermes_yaml
+    from hermes_agent import hermes_yaml
     _current_environment(tmp_path, monkeypatch, [])
     home = tmp_path / "home"
     config = home / "config.yaml"
@@ -460,7 +460,7 @@ def test_explicit_publication_keeps_its_intent_through_tool_acquisition(client, 
 def test_stale_enablement_cannot_replace_a_newer_selection(client, tmp_path, monkeypatch):
     from hermes_agent.hermes_cli import plugins_cmd as pc
     from hermes_agent.hermes_cli.plugins_admission import AdmissionRefused
-    from utils import fast_safe_load
+    from hermes_agent.utils import fast_safe_load
     _current_environment(tmp_path, monkeypatch, [])
     config = tmp_path / "home/config.yaml"
     config.write_text("plugins: {enabled: [], disabled: []}\n")

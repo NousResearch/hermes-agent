@@ -61,7 +61,7 @@ def test_a_promised_stop_delivers_nothing_and_list_shows_it_waiting(tmp_path):
 
 
 def test_past_the_deadline_the_parent_gets_exactly_one_failure(tmp_path):
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from hermes_agent.tools.delegate_tool_auto_resume import tick
     _enable()
     parent, dispatched = _parent(), []
@@ -81,7 +81,7 @@ def test_past_the_deadline_the_parent_gets_exactly_one_failure(tmp_path):
 
 
 def _deadline(minutes):
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     (get_hermes_home() / "config.yaml").write_text(json.dumps(
         {"delegation": {"auto_resume": True, "worktree_isolation": True, "auto_resume_deadline_minutes": minutes}}))
 
@@ -140,7 +140,7 @@ def test_a_spawn_with_a_waiting_childs_exact_goal_is_refused_until_it_is_stopped
 
 
 def test_the_duplicate_guard_is_off_without_auto_resume(tmp_path):
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from tests.tools.test_delegate_continue import _ScriptedModel
     from hermes_agent.tools.delegate_tool import delegate_task
     _enable()
@@ -252,7 +252,7 @@ def _sql(parent, sql, params=()):
 
 
 def test_turning_auto_resume_off_still_reports_a_promised_child_once_and_the_guard_follows_its_deadline(tmp_path):
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from hermes_agent.tools.delegate_tool import delegate_task
     from hermes_agent.tools.delegate_tool_auto_resume import tick
     _enable()
@@ -273,7 +273,7 @@ def test_turning_auto_resume_off_still_reports_a_promised_child_once_and_the_gua
 
 
 def test_a_stop_while_auto_resume_is_off_still_cancels_a_promised_child(tmp_path):
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from hermes_agent.tools.delegate_tool_auto_resume import supersede_for_session, tick
     _enable()
     parent = _parent()
@@ -327,7 +327,7 @@ def _expire(parent, sid):
 
 
 def _cancelled_then_expired(tmp_path, cancel, *, expire_first):
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from hermes_agent.tools.delegate_tool_auto_resume import tick
     _enable()
     parent = _parent()
@@ -367,7 +367,7 @@ def test_a_child_its_parent_cancelled_never_reports_even_when_its_record_expires
 
 
 def _home():
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     return get_hermes_home()
 
 

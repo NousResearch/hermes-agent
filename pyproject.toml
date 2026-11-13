@@ -607,7 +607,8 @@ opt-in-extras = ["kittentts"]
 # must exist; an update to a tree that lacks one is refused. A change that moves one of these
 # files updates its path here.
 update-startup-files = [
-  "hermes_bootstrap.py", "hermes_agent/hermes_cli/_parser.py", "hermes_cli/_launchers.py",
+  "hermes_bootstrap.py", "hermes_agent/hermes_bootstrap.py", "hermes_agent/hermes_cli/_parser.py",
+  "hermes_cli/_launchers.py",
   "hermes_agent/hermes_cli/_launchers.py",
   "hermes_agent/hermes_cli/_early_recovery.py", "hermes_cli/update_lock.py", "hermes_agent/hermes_cli/update_lock.py",
   "hermes_agent/hermes_cli/update_custody.py",
@@ -619,7 +620,8 @@ update-startup-files = [
   "model_tools.py",
   "hermes_agent/model_tools.py", "toolsets.py",
   "hermes_agent/toolsets.py",
-  "hermes_constants.py", "hermes_agent/__init__.py", "hermes_agent/compat/__init__.py",
+  "hermes_constants.py", "hermes_agent/hermes_constants.py", "hermes_agent/__init__.py",
+  "hermes_agent/compat/__init__.py",
   "hermes_agent/compat/finder.py", "hermes_agent/compat/moves.py",
 ]
 
@@ -732,8 +734,6 @@ include = [
   "plugins.*",
   "providers",
   "providers.*",
-  "hermes_platform",
-  "hermes_platform.*",
   "hermes_agent",
   "hermes_agent.*",
   "pm",

@@ -335,7 +335,7 @@ def _collection_on() -> bool:
 
 def _claim_update_id(update_id: Any) -> tuple[bool, Path | None]:
     """``(first, latch)``: first is False when this profile already counted ``update_id``."""
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     if not isinstance(update_id, str) or not _UPDATE_ID.fullmatch(update_id):
         return True, None  # nothing stable to dedupe on
@@ -399,7 +399,7 @@ def purge_pending_updates(home: Path) -> None:
 def report_pending_updates() -> None:
     """Record receipts a pre-pull interpreter parked (it must not import pulled code). Never raises."""
     try:
-        from hermes_constants import get_hermes_home
+        from hermes_agent.hermes_constants import get_hermes_home
 
         from .shared_metrics_process import _claim, settle_claim
 

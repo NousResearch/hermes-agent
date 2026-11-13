@@ -13,7 +13,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-from hermes_constants import get_default_hermes_root
+from hermes_agent.hermes_constants import get_default_hermes_root
 
 _HEX32 = re.compile(r"[0-9a-f]{32}\Z")
 _HEX16 = re.compile(r"[0-9a-f]{16}\Z")

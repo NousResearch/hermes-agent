@@ -46,7 +46,7 @@ def collect_disk_status(home: Optional[Path] = None) -> dict[str, Any]:
     status: dict[str, Any] = {"pressure": "unknown", "total_mb": None, "free_mb": None, "used_percent": None}
     try:
         if home is None:
-            from hermes_constants import get_hermes_home
+            from hermes_agent.hermes_constants import get_hermes_home
 
             home = get_hermes_home()
         usage = shutil.disk_usage(home)

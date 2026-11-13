@@ -8,7 +8,7 @@ import httpx
 import pytest
 from openai import OpenAI
 
-import hermes_yaml as yaml
+import hermes_agent.hermes_yaml as yaml
 from hermes_agent.hermes_cli import fallback_check as fc
 
 _KEY = "sk-fbcheck" + "K" * 30
@@ -16,7 +16,7 @@ _KEY = "sk-fbcheck" + "K" * 30
 
 # tests/conftest.py already points HERMES_HOME at a per-test dir and blanks credential env vars.
 def _config(chain):
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     data = {"custom_providers": [{"name": "local-oai", "base_url": "http://127.0.0.1:9/v1", "api_key": _KEY}],
             "fallback_providers": chain}
     (get_hermes_home() / "config.yaml").write_text(yaml.safe_dump(data), encoding="utf-8")

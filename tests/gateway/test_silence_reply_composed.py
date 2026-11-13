@@ -8,7 +8,7 @@ from unittest.mock import MagicMock
 import pytest
 
 import hermes_agent.gateway.run as gateway_run
-import hermes_yaml as yaml
+import hermes_agent.hermes_yaml as yaml
 from hermes_agent import run_agent
 from hermes_agent.gateway.config import Platform
 from hermes_agent.gateway.platforms.event import MessageEvent

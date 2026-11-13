@@ -11,7 +11,7 @@ from hermes_agent.hermes_cli import update_cmd_fleet_verify as fleet_verify
 from hermes_agent.hermes_cli import update_receipt
 from hermes_agent.hermes_cli.update_inventory import RuntimeRecord, UpdatePlan
 from hermes_agent.hermes_cli.update_serve_obligations import defer_manual_serve, retain_receipt_manual_serves
-from hermes_constants import get_hermes_home
+from hermes_agent.hermes_constants import get_hermes_home
 
 
 @pytest.mark.parametrize("kind", ["serve", "dashboard"])

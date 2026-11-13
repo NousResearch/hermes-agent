@@ -11,7 +11,7 @@ from hermes_agent.gateway.platform_registry import PlatformEntry, PlatformRegist
 from hermes_agent.gateway.run import GatewayRunner
 from hermes_agent.gateway.session_authority import SessionAuthority, initialize_session_authority
 from hermes_agent.gateway.session_ingress_context import native_callback
-from hermes_constants import get_hermes_home
+from hermes_agent.hermes_constants import get_hermes_home
 from hermes_agent.hermes_state_runtime import list_session_admissions
 from tests.gateway._plugin_adapter_loader import load_plugin_adapter
 

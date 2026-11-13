@@ -24,7 +24,7 @@ from hermes_agent.agent.secret_sources.base import (
     ErrorKind, FetchResult, SecretSource, classify_cli_error, coerce_float,
     get_source_environment, is_valid_env_name, run_cli,
 )
-from hermes_constants import is_launch_only_env_key
+from hermes_agent.hermes_constants import is_launch_only_env_key
 
 logger = logging.getLogger(__name__)
 

@@ -49,7 +49,7 @@ def test_stderr_survives_logging_threshold(caplog, level):
 @pytest.mark.platforms("windows")
 @pytest.mark.parametrize("stream", ["stdout", "stderr"])
 def test_complete_records_reach_redacted_logs(tmp_path, monkeypatch, caplog, stream):
-    import hermes_logging
+    from hermes_agent import hermes_logging
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     hermes_logging._reset_queued_handlers()

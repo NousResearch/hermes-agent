@@ -23,7 +23,7 @@ from types import SimpleNamespace
 from typing import Optional
 
 from hermes_agent.hermes_cli.browser_runtime import chromium_executable
-from utils import atomic_json_write
+from hermes_agent.utils import atomic_json_write
 
 # Short three-segment code, a lookup URL, or /new. Anything else is rejected.
 MEET_URL_RE = re.compile(

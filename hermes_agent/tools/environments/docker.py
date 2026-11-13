@@ -22,7 +22,7 @@ import uuid
 from pathlib import Path
 from typing import Optional
 
-from hermes_constants import get_hermes_home
+from hermes_agent.hermes_constants import get_hermes_home
 from hermes_agent.tools.environments.base import BaseEnvironment, EnvironmentConnectionError, _SHELL_ENV_NAME_RE, get_sandbox_dir
 from hermes_agent.tools.terminal_tool_config import (
     _host_path_key, _is_windows_drive_path, cwd_follows_host_mount, home_profile_name,

@@ -86,7 +86,7 @@ def _render_distribution_plan(plan) -> None:
 
 def _profile_status(args):
     """Bare ``hermes profile`` — show current profile status."""
-    from hermes_constants import display_hermes_home
+    from hermes_agent.hermes_constants import display_hermes_home
     from hermes_agent.hermes_cli.profiles import format_profile_label, get_active_profile_name, list_profiles
     profile_name = get_active_profile_name()
     dhh = display_hermes_home()
@@ -290,7 +290,7 @@ def _describe_target_dir(name: str) -> Path:
     everything else to its named directory."""
     from hermes_agent.hermes_cli import profiles as _profiles_mod
     if _profiles_mod.normalize_profile_name(name) == "default":
-        from hermes_constants import get_hermes_home as _hh
+        from hermes_agent.hermes_constants import get_hermes_home as _hh
         return Path(_hh())
     return _profiles_mod.get_profile_dir(name)
 

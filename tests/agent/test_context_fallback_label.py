@@ -85,7 +85,7 @@ class TestFallbackMarker:
     def test_profiles_keep_their_own_label(self, tmp_path, defaulted_first):
         """Greptile: a multiplexed gateway resolves for several profiles; one profile's answer is not another's."""
         from hermes_agent.agent.context_pin import context_window_marker
-        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
         homes = {"defaulted": tmp_path / "a", "confirmed": tmp_path / "b"}
         for home in homes.values():
             home.mkdir()

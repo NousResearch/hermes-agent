@@ -8,7 +8,7 @@ import json
 import os
 from typing import Any, Callable
 
-from hermes_constants import display_hermes_home
+from hermes_agent.hermes_constants import display_hermes_home
 from hermes_agent.gateway.config import Platform, load_gateway_config
 from plugins.teams_pipeline.meetings import (
     enrich_meeting_with_call_record, fetch_preferred_transcript_text, list_recording_artifacts, resolve_meeting_reference)

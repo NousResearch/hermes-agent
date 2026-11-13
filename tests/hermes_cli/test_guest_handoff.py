@@ -403,7 +403,7 @@ def test_a_long_lived_process_with_a_guest_still_runs_the_handoff_worker(portal,
 
 def test_a_guest_token_still_cached_from_a_connector_call_does_not_skip_the_move(portal):
     from hermes_agent.hermes_cli import auth
-    from hermes_constants import hermes_home_key
+    from hermes_agent.hermes_constants import hermes_home_key
     _mint_guest()
     auth._RESOLVE_TOKEN_CACHE[hermes_home_key()] = (time.monotonic(), make_jwt())   # the guest's own token
     _persist(_account())

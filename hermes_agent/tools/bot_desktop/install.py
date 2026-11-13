@@ -25,7 +25,7 @@ from pathlib import Path
 import time
 from typing import Callable, Optional
 
-from hermes_constants import hermes_home_key
+from hermes_agent.hermes_constants import hermes_home_key
 from hermes_agent.tools.bot_desktop import runtime
 
 logger = logging.getLogger(__name__)

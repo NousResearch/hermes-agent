@@ -40,14 +40,14 @@ def set_multiplex_active(active: bool) -> None:
     """Mark whether the process is a profile multiplexer (get_secret fails closed).
 
     Activation also pins the launch home for routed-profile decisions
-    (``hermes_constants.pin_process_hermes_home``) unless an embedding host already pinned one:
+    (``hermes_agent.hermes_constants.pin_process_hermes_home``) unless an embedding host already pinned one:
     from here on "is this task routed" compares the override against the home the process was
     launched with, not against whatever a host later mirrors into ``os.environ["HERMES_HOME"]``.
     Deactivation releases only the pin activation itself created — a transient toggle
     (``gateway_migrate._multiplex_read_mode``, a cron worker restoring the caller's mode) must not
     drop the host's explicit pin (#119242)."""
     global _MULTIPLEX_ACTIVE, _AUTO_PINNED_HOME
-    from hermes_constants import (
+    from hermes_agent.hermes_constants import (
         get_routing_process_hermes_home,
         pin_process_hermes_home,
         process_hermes_home_is_pinned,
@@ -84,11 +84,11 @@ def serves_routed_profile() -> bool:
     per-profile cron ticker) or a secret scope stamped with a foreign home is bound. The MCP
     registry scope and the check_fn cache key both follow this predicate so a served profile's
     view never aliases the launch profile's (#111151). A host that mirrors the turn's profile into
-    ``HERMES_HOME`` pins its own home with ``hermes_constants.pin_process_hermes_home`` so the
+    ``HERMES_HOME`` pins its own home with ``hermes_agent.hermes_constants.pin_process_hermes_home`` so the
     mirror cannot flip this predicate."""
     if is_multiplex_active():
         return True
-    from hermes_constants import get_hermes_home_override, get_routing_process_hermes_home, hermes_home_key
+    from hermes_agent.hermes_constants import get_hermes_home_override, get_routing_process_hermes_home, hermes_home_key
     own = hermes_home_key(get_routing_process_hermes_home())
     bound = _bound_secrets()
     if bound is not None and bound.profile_home and hermes_home_key(bound.profile_home) != own:
@@ -99,7 +99,7 @@ def serves_routed_profile() -> bool:
 
 def _bound_secrets():
     """The installed secret scope: the ``secrets`` field of the runtime scope state."""
-    from hermes_scope import current_state
+    from hermes_agent.hermes_scope import current_state
     return current_state().secrets
 
 
@@ -159,7 +159,7 @@ def set_secret_scope(secrets: Optional[Mapping[str, str]], *, profile_home: Opti
     home) moves the whole scope to that profile with *secrets* as its secret scope (local) or
     raises ``ScopeSwitchRefused`` (hosted); clearing raises ``ScopeSwitchRefused`` too, since the
     scope's home and terminal policy would stay behind."""
-    from hermes_scope import BoundSecrets, ScopeSwitchRefused, current_scope, push_state
+    from hermes_agent.hermes_scope import BoundSecrets, ScopeSwitchRefused, current_scope, push_state
     scope = current_scope()
     if scope is not None:
         if secrets is None:
@@ -167,7 +167,7 @@ def set_secret_scope(secrets: Optional[Mapping[str, str]], *, profile_home: Opti
                 "set_secret_scope(None) inside a bound scope would leave its home and terminal "
                 "policy without their secrets; bind a scope at the activity's entry point")
         from hermes_agent.agent.runtime_scope import legacy_switch
-        from hermes_constants import get_routing_process_hermes_home
+        from hermes_agent.hermes_constants import get_routing_process_hermes_home
         # Unstamped marks the launch profile, by the same identity serves_routed_profile uses.
         switched = legacy_switch(profile_home or get_routing_process_hermes_home(), secrets=secrets)
         if switched is not None:
@@ -202,7 +202,7 @@ _GLOBAL_ENV_EXACT = frozenset({
     "HERMES_MAX_ITERATIONS", "HERMES_API_TIMEOUT",
     "HERMES_REDACT_SECRETS", "HERMES_NOUS_TIMEOUT_SECONDS",
     "_HERMES_GATEWAY",
-    # Managed-scope bootstrap: launch-only (see hermes_constants.LAUNCH_ONLY_ENV_KEYS) —
+    # Managed-scope bootstrap: launch-only (see hermes_agent.hermes_constants.LAUNCH_ONLY_ENV_KEYS) —
     # every process must resolve the SAME directory or a routed child silently loses
     # administrator policy, so it is never residue and never profile-scoped (#135200).
     "HERMES_MANAGED_DIR",
@@ -237,7 +237,7 @@ _GLOBAL_ENV_PREFIXES = (
 
 def _is_global_env(name: str) -> bool:
     """True for genuinely process-global (non-profile-secret) env vars."""
-    from hermes_constants import is_launch_only_env_key  # case-folded: Windows env names (#135200)
+    from hermes_agent.hermes_constants import is_launch_only_env_key  # case-folded: Windows env names (#135200)
     return name in _GLOBAL_ENV_EXACT or name.startswith(_GLOBAL_ENV_PREFIXES) or is_launch_only_env_key(name)
 
 
@@ -433,7 +433,7 @@ def build_profile_secret_scope(hermes_home: Path) -> dict[str, str]:
     # under multiplexing) do not — a planted .env entry would otherwise survive
     # into the mapping as a readable value. The external/managed paths below
     # already drop them via _is_global_env; this is the one entry that doesn't.
-    from hermes_constants import is_launch_only_env_key
+    from hermes_agent.hermes_constants import is_launch_only_env_key
     secrets = {k: v for k, v in secrets.items() if not is_launch_only_env_key(k)}
     dotenv = dict(secrets)
     try:
@@ -486,7 +486,7 @@ def _is_process_home(hermes_home: Path) -> bool:
     """Is *hermes_home* the profile this process serves as its own? Same launch-home identity as
     ``serves_routed_profile()``: a host that mirrors a served profile into ``HERMES_HOME`` would
     otherwise seed the launch profile's bridged allow-all grant into that profile's scope."""
-    from hermes_constants import get_routing_process_hermes_home
+    from hermes_agent.hermes_constants import get_routing_process_hermes_home
     try:
         return Path(hermes_home).resolve() == get_routing_process_hermes_home().resolve()
     except OSError:

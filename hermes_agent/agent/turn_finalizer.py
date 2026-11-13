@@ -843,7 +843,7 @@ def finalize_turn(
     # surfaces status="error" (desktop can toast) instead of a quiet complete frame, plus
     # the machine-readable cause 'session_persistence_failed:<locked|compression|...>'.
     if failed and str(_turn_exit_reason) == "session_persistence_failed":
-        from hermes_constants import profile_cli_selector
+        from hermes_agent.hermes_constants import profile_cli_selector
 
         # Never rebind final_response here: the memory sync and the background-review gate
         # below must still see an empty response on a persistence-failed turn.

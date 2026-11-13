@@ -12,7 +12,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from hermes_constants import get_hermes_home, reset_hermes_home_override, set_hermes_home_override
+from hermes_agent.hermes_constants import get_hermes_home, reset_hermes_home_override, set_hermes_home_override
 
 
 def _probe_home(seen: dict, key: str = "home"):

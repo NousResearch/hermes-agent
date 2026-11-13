@@ -5,7 +5,7 @@ from threading import Thread
 from typing import Any
 from unittest.mock import Mock
 
-import hermes_yaml
+from hermes_agent import hermes_yaml
 import pytest
 
 from hermes_agent.hermes_cli import config, models_validate, profiles
@@ -15,7 +15,7 @@ from hermes_agent.hermes_cli.profile_provision import (
     inherit_launch_model,
     provision_profile,
 )
-from hermes_constants import get_hermes_home
+from hermes_agent.hermes_constants import get_hermes_home
 from hermes_agent.tui_gateway.launch_profile_policy import profile_config_scope
 
 

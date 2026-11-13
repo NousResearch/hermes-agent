@@ -22,7 +22,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from hermes_agent.agent.runtime_scope import bind_state
-from hermes_scope import Principal, Scope
+from hermes_agent.hermes_scope import Principal, Scope
 from tests.tools.test_sandbox_scope_conformance import A, B
 from tests.tools.test_sandbox_scope_conformance import provider as _conformance_provider
 from hermes_agent.tools.environments import sandbox_conformance as c
@@ -33,7 +33,7 @@ provider = _conformance_provider  # the recording-sandbox fixture, by its name
 def _local_scope() -> Scope:
     """The local install's scope, homed at the test's HERMES_HOME (a relative agent path would
     make ``bind_state`` stamp a home under the working directory)."""
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     return Scope("local", str(get_hermes_home()), Principal("local"))
 
 
@@ -258,7 +258,7 @@ def test_the_memory_store_itself_never_touches_the_host_file_in_a_hosted_scope()
 
 
 def test_session_search_reads_no_host_history():
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from hermes_agent.hermes_state import SessionDB
     from hermes_agent.tools.registry import registry
     db = SessionDB(get_hermes_home() / "state.db")
@@ -285,7 +285,7 @@ def test_recall_never_opens_the_profile_state_db(monkeypatch):
 
 def test_web_extract_never_spills_to_host(provider, monkeypatch):
     import hermes_agent.tools.web_tools as web
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from hermes_agent.tools.registry import registry
 
     async def safe(url):
@@ -336,7 +336,7 @@ def test_video_is_not_materialized_on_host():
 
 def test_startup_context_reads_no_host_file(tmp_path, monkeypatch):
     from hermes_agent.agent.prompt_builder import build_context_files_prompt, load_soul_md
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     (tmp_path / "AGENTS.md").write_text("HOST-STARTUP-PRIVATE")
     (get_hermes_home() / "SOUL.md").write_text("HOST-SOUL-PRIVATE")
     with c._watch_host(tmp_path) as touched, bind_state(A):

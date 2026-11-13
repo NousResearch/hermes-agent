@@ -69,7 +69,7 @@ def home_with_meta_plugin(tmp_path, monkeypatch):
     import hermes_agent.providers as providers  # noqa: PLR0402
     from hermes_agent.hermes_cli import auth_plugin_providers as app
     from hermes_agent.hermes_cli.auth import PROVIDER_REGISTRY
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
     plugin = tmp_path / "plugins" / "model-providers" / "my-meta"
     plugin.mkdir(parents=True)

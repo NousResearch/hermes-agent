@@ -102,7 +102,7 @@ def _failure_version(path: Path) -> tuple:
     """What a parse-failure record is matched on: ``file_cache_version`` hashed even once settled,
     because the record is compared long after it was taken and a same-tick same-size fix must clear
     it. An unreadable file (the OSError failures) gets its stat signature and the error's name."""
-    from utils import file_cache_version
+    from hermes_agent.utils import file_cache_version
     try:
         return file_cache_version(path, always_digest=True)
     except OSError:
@@ -162,5 +162,5 @@ def _refuse_overwrite(config_path: Path, reason: str, exc: Exception, fix: str) 
 
 
 def _backups_dir_display() -> str:
-    from hermes_constants import display_hermes_home
+    from hermes_agent.hermes_constants import display_hermes_home
     return f"{display_hermes_home()}/backups/config/"

@@ -158,8 +158,8 @@ def short_alias(directory: Path, link: Path) -> Path:
 
 def _msvc_identity() -> dict[str, str] | None:
     """The newest VC toolset vswhere reports, with its default tools version."""
-    from hermes_platform.resolver import locate_command
-    from hermes_platform.resolver.known_dirs import visual_studio_installer_dirs
+    from hermes_agent.hermes_platform.resolver import locate_command
+    from hermes_agent.hermes_platform.resolver.known_dirs import visual_studio_installer_dirs
 
     vswhere = locate_command("vswhere.exe", known_dirs=visual_studio_installer_dirs())
     if not vswhere.found:

@@ -130,8 +130,26 @@ def test_git_unpack_requires_a_windows_host(tmp_path, monkeypatch):
 
 
 def test_target_uses_shared_native_arch(monkeypatch):
-    from hermes_platform.host import facts
+    from hermes_agent.hermes_platform.host import facts
     from pm import store
 
     monkeypatch.setattr(facts, "native_arch", lambda: "arm64")
     assert store._native_machine() == "arm64"
+
+
+@pytest.mark.parametrize("missing", ["hermes_agent", "hermes_agent.hermes_platform"])
+def test_target_falls_back_to_the_os_without_the_app(monkeypatch, missing):
+    """PM's own runtime (and the Dockerfile's early stage) runs before ``hermes_agent`` is whole."""
+    import sys
+
+    from pm import store
+
+    class Absent:
+        def find_spec(self, fullname, path=None, target=None):
+            if fullname == missing:
+                raise ModuleNotFoundError(f"No module named {missing!r}", name=missing)
+
+    for name in [n for n in sys.modules if n == missing or n.startswith(missing + ".")]:
+        monkeypatch.delitem(sys.modules, name)
+    monkeypatch.setattr(sys, "meta_path", [Absent(), *sys.meta_path])
+    assert store._native_machine()

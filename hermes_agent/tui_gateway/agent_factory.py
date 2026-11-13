@@ -271,12 +271,12 @@ def _display_mouse_tracking(display: dict) -> str:
 
 
 def _load_reasoning_config(model: str = "") -> dict | None:
-    """Via the shared chokepoint :func:`hermes_constants.resolve_reasoning_config` (per-model override >
+    """Via the shared chokepoint :func:`hermes_agent.hermes_constants.resolve_reasoning_config` (per-model override >
     global ``agent.reasoning_effort``; YAML False = disabled).
 
     Closes #21256.
     """
-    from hermes_constants import resolve_reasoning_config
+    from hermes_agent.hermes_constants import resolve_reasoning_config
     return resolve_reasoning_config(_load_cfg(), model)
 
 

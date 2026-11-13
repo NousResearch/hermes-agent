@@ -16,7 +16,7 @@ from datetime import datetime, timezone, UTC
 from typing import Any, Dict, List, Optional, Union
 
 from hermes_agent.hermes_state_common import _BOUNDARY_END_REASONS
-from hermes_time import safe_strftime
+from hermes_agent.hermes_time import safe_strftime
 
 # Hidden from browsing/searching — integrations (HERMES_SESSION_SOURCE=tool), delegate
 # subagent runs, kanban workers are not the user's history.
@@ -606,7 +606,7 @@ def session_search(query: str = "", role_filter: str | None = None, limit: int |
                    after: str | None = None, before: str | None = None, exclude_session_ids: Optional[list[str]] = None) -> str:
     """Run session search, closing DBs opened here. Positional order is frozen for old callers;
     new parameters are appended after ``detail``."""
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from hermes_agent.hermes_state import SessionDB, format_session_db_unavailable
     from hermes_agent.hermes_state_registry import release_or_close
     owned_dbs: list[Any] = []

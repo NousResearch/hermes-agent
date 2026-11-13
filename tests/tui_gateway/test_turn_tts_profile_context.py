@@ -4,7 +4,7 @@ import threading
 
 import pytest
 
-from hermes_constants import get_hermes_home, reset_hermes_home_override, set_hermes_home_override
+from hermes_agent.hermes_constants import get_hermes_home, reset_hermes_home_override, set_hermes_home_override
 
 
 @pytest.fixture

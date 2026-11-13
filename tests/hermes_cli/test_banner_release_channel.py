@@ -13,7 +13,7 @@ from hermes_agent.hermes_cli.version_info import get_version_info
 
 @pytest.mark.parametrize("channel", ["stable", "canary", "preview-from-r2"])
 def test_release_channel_never_compares_main_or_reuses_main_cache(tmp_path, monkeypatch, channel):
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     root = tmp_path / "source"
     root.mkdir()

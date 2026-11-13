@@ -38,7 +38,7 @@ async def _pick_model(authority, owner, live, payload, row):
     as its session override. Returns the receipt fields, or the guard's confirmation request."""
     from hermes_agent.gateway.session_mutation_model import _Route, _selection_guard_refusal, is_model_reset
     from hermes_agent.gateway.slash_commands_model import _ModelSwitchContext
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     runner = authority.runner
     ctx = _ModelSwitchContext(session_key=live.route, source=live.source,
                               config_path=get_hermes_home() / 'config.yaml', persist_global=False)

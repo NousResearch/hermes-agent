@@ -66,7 +66,7 @@ def _note_fire_refused(job_ids, detail: str) -> None:
 def refuse_agent_jobs_without_gateway(due_jobs: list) -> list:
     """Return the due jobs a headless tick may dispatch; agent jobs are held back (skipped, not
     failed) when no ready gateway serves this home. Logs once per tick, not once per job."""
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     agent_jobs = [job for job in due_jobs if not job.get("no_agent")]
     if not agent_jobs:

@@ -214,7 +214,7 @@ def _warn_if_secondary_multiplex_profile() -> bool:
     """Warn when relay routing stamps landed in a secondary profile's .env that a multiplexed gateway
     will never read. Returns True when the warning fired (caller suppresses the restart text)."""
     try:
-        from hermes_constants import get_default_hermes_root
+        from hermes_agent.hermes_constants import get_default_hermes_root
         from hermes_agent.hermes_cli.config import get_hermes_home
 
         default_root = Path(get_default_hermes_root()).resolve()

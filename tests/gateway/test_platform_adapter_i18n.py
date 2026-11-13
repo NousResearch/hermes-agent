@@ -31,7 +31,7 @@ from plugins.platforms.telegram.adapter import TelegramAdapter, _TOAST_LIMIT
 def fake_locale(tmp_path, monkeypatch):
     """Point the catalog loader at a throwaway locales dir with an ``xx`` catalog whose values carry
     HTML metacharacters and exceed every platform cap; ``activate()`` switches the language to it."""
-    import hermes_yaml as yaml
+    import hermes_agent.hermes_yaml as yaml
 
     locales = tmp_path / "locales"
     locales.mkdir()

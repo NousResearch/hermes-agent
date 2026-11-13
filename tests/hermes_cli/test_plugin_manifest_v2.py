@@ -10,7 +10,7 @@ import logging
 from types import SimpleNamespace
 
 import pytest
-import hermes_yaml as yaml
+import hermes_agent.hermes_yaml as yaml
 
 from hermes_agent.hermes_cli.plugins import (
     PluginManager,

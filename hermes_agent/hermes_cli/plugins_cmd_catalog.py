@@ -283,7 +283,7 @@ def _refuse_unsupported_catalog_platform(entry: PluginCatalogEntry) -> None:
     if not entry.platforms:
         return
     from hermes_agent.hermes_cli.plugins_cmd import PluginOperationError
-    from hermes_platform.host.facts import os_family
+    from hermes_agent.hermes_platform.host.facts import os_family
 
     current = os_family()
     if current not in normalized_platforms(entry.platforms):

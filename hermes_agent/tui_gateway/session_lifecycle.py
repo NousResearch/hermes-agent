@@ -634,7 +634,7 @@ def _pop_session_by_id(sid: str) -> dict | None:
     with _sessions_lock:
         session = _sessions.pop(sid, None)
         if session is not None:
-            from hermes_constants import get_hermes_home
+            from hermes_agent.hermes_constants import get_hermes_home
 
             home = str(Path(session.get("profile_home") or get_hermes_home()).resolve())
             last_active = time.time() if session.get("running") else float(session.get("last_active") or 0)

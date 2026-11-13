@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any, Union
 from urllib.parse import urlparse
 
-import hermes_yaml as yaml
+import hermes_agent.hermes_yaml as yaml
 
 logger = logging.getLogger(__name__)
 
@@ -395,7 +395,7 @@ def _atomic_write(path: Path, write, *, prefix: str, encoding: str = "utf-8", mo
     # A profile delete leaves a tombstone beside its removed home.  Background
     # writers may retain that home in a context variable, so a plain mkdir here
     # would resurrect the profile before the write can fail.
-    from hermes_constants import mkdir_under_hermes_home
+    from hermes_agent.hermes_constants import mkdir_under_hermes_home
 
     mkdir_under_hermes_home(path.parent)
     if mode is None and not path.exists():
@@ -563,7 +563,7 @@ def atomic_roundtrip_yaml_update(path: str | Path, key_path: str, value: Any) ->
     from hermes_agent.hermes_cli.config import _greedy_literal_match, _split_key_path
 
     path = Path(path)
-    from hermes_constants import mkdir_under_hermes_home
+    from hermes_agent.hermes_constants import mkdir_under_hermes_home
 
     mkdir_under_hermes_home(path.parent)
     yaml_rt, config = _roundtrip_load(path)
@@ -633,7 +633,7 @@ def atomic_roundtrip_yaml_save(path: str | Path, new_state: dict, *,
     from hermes_agent.hermes_cli.config import require_readable_config_before_write
 
     path = Path(path)
-    from hermes_constants import mkdir_under_hermes_home
+    from hermes_agent.hermes_constants import mkdir_under_hermes_home
 
     mkdir_under_hermes_home(path.parent)
     require_readable_config_before_write(path)

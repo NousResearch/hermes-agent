@@ -45,7 +45,7 @@ def test_language_surfaces_report_each_layer(monkeypatch, tmp_path):
     """Bundled Korean has core + TUI strings and no Desktop catalog; a user overlay or a pack adds the
     surface it ships. ``i18n.languages`` carries this so the Desktop can leave out a language it would
     only show in English."""
-    import hermes_yaml as yaml
+    import hermes_agent.hermes_yaml as yaml
 
     from hermes_agent.agent import i18n_layers
 

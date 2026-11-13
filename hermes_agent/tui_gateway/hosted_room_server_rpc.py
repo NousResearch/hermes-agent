@@ -82,7 +82,7 @@ class HostedRoomServerRPC:
                                 on_terminal, member_id, images=())
         from hermes_agent.gateway.session_hosted_attachments import bound_submission_payload, prepare_before_submit
         from hermes_agent.gateway.session_ingress_media import capture_lease
-        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
         home = self.server._profile_home(profile)
         # The member's own caches receive its files (the gateway route's owner scope), and the
         # capture lease holds them until prompt.submit has persisted the row that names them.

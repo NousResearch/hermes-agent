@@ -1221,7 +1221,7 @@ def test_managed_config_cannot_override_shared_metrics_consent(
     managed_enabled,
 ):
     from hermes_agent.hermes_cli import config, managed_scope
-    from hermes_constants import (
+    from hermes_agent.hermes_constants import (
         reset_hermes_home_override,
         set_hermes_home_override,
     )
@@ -2567,7 +2567,7 @@ def test_task_ends_do_not_wait_on_the_process_wide_flush_barrier(parked_flush, t
 def test_background_flush_runs_under_the_finishing_turns_profile(
     direct_runtime, tmp_path, monkeypatch
 ):
-    from hermes_constants import get_hermes_home, reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import get_hermes_home, reset_hermes_home_override, set_hermes_home_override
 
     seen: list[Any] = []
     monkeypatch.setattr(
@@ -2933,7 +2933,7 @@ def test_milestone_install_age_is_the_subscriber_profile_not_the_relay_thread(tm
 
     from hermes_agent.hermes_cli.observability.shared_metrics import SharedMetricsStore
     from hermes_agent.hermes_cli.observability.shared_metrics_subscriber import SharedMetricsSubscriber
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
     launch, other = tmp_path / "A", tmp_path / "B"
     for home in (launch, other):

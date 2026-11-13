@@ -280,7 +280,7 @@ class TestStatusEndpointTopology:
             pytest.skip("fastapi/starlette not installed")
 
         from hermes_agent import hermes_state
-        from hermes_constants import get_hermes_home
+        from hermes_agent.hermes_constants import get_hermes_home
         from hermes_agent.hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
 
         monkeypatch.setattr(
@@ -627,7 +627,7 @@ class TestStatusEndpointTopology:
         from hermes_agent.gateway import host_topology
         from hermes_agent.gateway.status import GatewayLiveness
         import hermes_agent.hermes_cli.web_routers.status as status_router
-        from hermes_constants import get_process_hermes_home
+        from hermes_agent.hermes_constants import get_process_hermes_home
 
         monkeypatch.setattr(_gw_status, "read_runtime_status", lambda path=None: record)
         monkeypatch.setattr(_gw_status, "get_runtime_status_running_pid",

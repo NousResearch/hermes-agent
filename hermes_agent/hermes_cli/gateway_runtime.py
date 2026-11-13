@@ -436,7 +436,7 @@ def ensure_gateway_runtime(profile_home: str | Path, *, timeout: float | None = 
         RuntimeStartError, discover_existing_gateway_service, remaining,
         start_existing_gateway_service,
     )
-    from hermes_constants import get_default_hermes_root, get_process_hermes_home
+    from hermes_agent.hermes_constants import get_default_hermes_root, get_process_hermes_home
 
     from hermes_agent.hermes_cli.gateway_launchd_runtime import GatewayJob
     from hermes_agent.hermes_cli.gateway_runtime_progress import StartRunway

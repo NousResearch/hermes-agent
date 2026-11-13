@@ -86,7 +86,7 @@ def _local_profile_dir(name: str) -> Optional[Path]:
 def _is_profile(local: Optional[Path]) -> bool:
     """Whether ``-p <name>``'s directory here is a profile: it carries an identity marker. A shell a deleted
     profile left behind carries none (``create_profile`` replaces it), and nothing else creates one."""
-    from hermes_constants import named_profile_has_identity
+    from hermes_agent.hermes_constants import named_profile_has_identity
     return local is not None and local.is_dir() and named_profile_has_identity(local)
 
 
@@ -127,7 +127,7 @@ def create_through_gateway(request: ProfileCreateRequest) -> Optional[ProfileCre
         # The profile this terminal runs in, resolved like the local dial (an overlay task home is served by
         # the profile its lock names); a home outside the profiles tree has no name a gateway can resolve.
         from hermes_agent.hermes_cli.gateway_runtime import gateway_profile_home
-        from hermes_constants import get_hermes_home, profile_name_for_home
+        from hermes_agent.hermes_constants import get_hermes_home, profile_name_for_home
         profile = profile_name_for_home(gateway_profile_home(get_hermes_home()))
         if not profile:
             raise GatewayCreateError(f"this terminal's HERMES_HOME is not a named profile, so {where} cannot "

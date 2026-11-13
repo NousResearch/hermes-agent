@@ -213,7 +213,7 @@ def test_a_sibling_migration_that_stopped_stays_owed_after_update(tmp_path, monk
     sweep still finishes and the snapshot nets still run, then the update records a follow-up."""
     from pathlib import Path
 
-    import hermes_yaml as yaml
+    import hermes_agent.hermes_yaml as yaml
     from hermes_agent.hermes_cli import update_cmd_config
 
     root = tmp_path / '.hermes'

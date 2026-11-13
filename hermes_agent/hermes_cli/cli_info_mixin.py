@@ -16,9 +16,9 @@ import time
 from typing import Any, NamedTuple
 
 from hermes_agent.agent.i18n import t
-from hermes_constants import is_termux as _is_termux_environment
+from hermes_agent.hermes_constants import is_termux as _is_termux_environment
 from rich.markup import escape as _escape
-from utils import base_url_hostname
+from hermes_agent.utils import base_url_hostname
 
 from hermes_agent.hermes_cli.cli_modal_mixin import _gated_confirm
 from hermes_agent.hermes_cli.colors import Colors as _Colors

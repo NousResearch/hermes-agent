@@ -5,11 +5,11 @@ browser.backend is dropped (``off`` gets a one-time notice); AGENT_BROWSER_* fro
 default core let the env override.
 """
 
-import hermes_yaml as yaml
+import hermes_agent.hermes_yaml as yaml
 import pytest
 
 from hermes_agent.hermes_cli.config_defaults import DEFAULT_CONFIG
-from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
 _AB_ENV = ("AGENT_BROWSER_EXECUTABLE_PATH", "AGENT_BROWSER_PROFILE", "AGENT_BROWSER_ARGS",
            "AGENT_BROWSER_HEADED", "AGENT_BROWSER_ENGINE")

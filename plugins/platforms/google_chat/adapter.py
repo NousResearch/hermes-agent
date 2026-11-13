@@ -428,7 +428,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
         # Last inbound thread per space: DMs get a NEW thread per top-level message but users
         # see one conversation, so thread_id leaves the source (stable session key) and is cached here.
         self._last_inbound_thread: dict[str, str] = {}
-        from hermes_constants import get_hermes_home as _get_hermes_home
+        from hermes_agent.hermes_constants import get_hermes_home as _get_hermes_home
         self._thread_count_store = _ThreadCountStore(_get_hermes_home() / "google_chat_thread_counts.json")
         # In-flight typing-card creates per chat_id: reserved BEFORE the API call so
         # concurrent _keep_typing calls wait instead of duplicating cards.
@@ -543,7 +543,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
     # -- bot identity --------------------------------------------------------
     def _bot_id_cache_path(self) -> _Path:
         """Resolved at call time so multiplexed profiles don't share one cache file."""
-        from hermes_constants import get_hermes_home as _get_hermes_home
+        from hermes_agent.hermes_constants import get_hermes_home as _get_hermes_home
         return _get_hermes_home() / "google_chat_bot_id.json"
 
     def _load_cached_bot_id(self) -> Optional[str]:

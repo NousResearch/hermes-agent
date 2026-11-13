@@ -442,7 +442,7 @@ def test_ensure_runtime_credentials_records_quota_vs_bad_key(monkeypatch, tmp_pa
 
 
 def test_model_flow_nous_does_not_restore_stale_custom_api_key(tmp_path, monkeypatch):
-    import hermes_yaml as yaml
+    import hermes_agent.hermes_yaml as yaml
 
     config_home = tmp_path / "hermes"
     config_home.mkdir()
@@ -512,7 +512,7 @@ def test_model_flow_nous_does_not_restore_stale_custom_api_key(tmp_path, monkeyp
 
 
 def _seed_stale_custom_model(tmp_path, monkeypatch):
-    import hermes_yaml as yaml
+    import hermes_agent.hermes_yaml as yaml
 
     config_home = tmp_path / "hermes"
     config_home.mkdir()
@@ -814,7 +814,7 @@ def test_cmd_model_forwards_nous_login_tls_options(monkeypatch):
 
 def test_save_custom_provider_uses_provided_name(monkeypatch, tmp_path):
     """When a display name is passed, it should appear in the saved entry."""
-    import hermes_yaml as yaml
+    import hermes_agent.hermes_yaml as yaml
     from hermes_agent.hermes_cli.main_provider_setup import _save_custom_provider
 
     cfg_path = tmp_path / "config.yaml"
@@ -836,7 +836,7 @@ def test_save_custom_provider_uses_provided_name(monkeypatch, tmp_path):
 
 def test_save_custom_provider_references_the_key_instead_of_inlining_it(monkeypatch, tmp_path):
     """With key_env set the entry must not carry the secret (#69449)."""
-    import hermes_yaml as yaml
+    import hermes_agent.hermes_yaml as yaml
     from hermes_agent.hermes_cli.main_provider_setup import _save_custom_provider
 
     cfg_path = tmp_path / "config.yaml"

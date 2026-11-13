@@ -17,7 +17,7 @@ def test_uv_cache_dir_seeds_from_payload(monkeypatch, tmp_path):
     (payload / "uv-cache" / "wheels-v5").mkdir(parents=True)
     (payload / "uv-cache" / "wheels-v5" / "some.pkg").write_text("x", encoding="utf-8")
 
-    import hermes_constants
+    from hermes_agent import hermes_constants
 
     monkeypatch.setattr(hermes_constants, "get_default_hermes_root", lambda: home)
     import pm.paths as paths_mod
@@ -38,7 +38,7 @@ def test_uv_cache_dir_seeds_from_payload(monkeypatch, tmp_path):
 def test_uv_cache_dir_cold_machine_no_payload(monkeypatch, tmp_path):
     home = tmp_path / "home"
     home.mkdir()
-    import hermes_constants
+    from hermes_agent import hermes_constants
 
     monkeypatch.setattr(hermes_constants, "get_default_hermes_root", lambda: home)
     import pm.paths as paths_mod

@@ -14,7 +14,7 @@ import logging
 import os
 import time
 from typing import Any, Mapping, Optional
-from utils import atomic_write_text
+from hermes_agent.utils import atomic_write_text
 from hermes_agent.agent.retry_utils import parse_retry_after_seconds
 from hermes_agent.agent.rate_limit_tracker import (
     _BUCKET_TAGS, _fmt_seconds, _safe_float, _safe_int, has_rate_limit_headers, lower_headers,
@@ -37,7 +37,7 @@ format_remaining = _fmt_seconds
 def _state_path(*, anonymous: bool = False) -> str:
     """Path to the Nous rate limit state file."""
     try:
-        from hermes_constants import get_hermes_home
+        from hermes_agent.hermes_constants import get_hermes_home
         base = get_hermes_home()
     except ImportError:
         base = os.path.join(os.path.expanduser("~"), ".hermes")

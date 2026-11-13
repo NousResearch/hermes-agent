@@ -46,9 +46,9 @@ from hermes_agent.agent.tool_guardrails import (
 from hermes_agent.hermes_cli.config import DEFAULT_CONFIG, cfg_get
 from hermes_agent.hermes_cli.route_identity import normalize_route_base_url
 from hermes_agent.hermes_cli.timeouts import get_provider_request_timeout
-from hermes_constants import get_hermes_home
+from hermes_agent.hermes_constants import get_hermes_home
 from hermes_agent.hermes_state_ids import new_session_id
-from utils import base_url_host_matches, is_truthy_value
+from hermes_agent.utils import base_url_host_matches, is_truthy_value
 
 # Same logger name as run_agent so caplog/patches on "run_agent" see our records.
 logger = logging.getLogger("hermes_agent.run_agent")
@@ -612,7 +612,7 @@ def _init_turn_state(agent, run_budget_seconds):
 def _setup_logging(agent):
     # agent.log (INFO+) + errors.log (WARNING+); idempotent so per-message gateway agents
     # don't duplicate handlers.
-    from hermes_logging import setup_logging, setup_verbose_logging
+    from hermes_agent.hermes_logging import setup_logging, setup_verbose_logging
     # The ACTIVE home, not run_agent's import-time freeze: a Desktop serve backend builds agents
     # for several profiles inside set_hermes_home_override(), and the frozen launch home made
     # setup_logging() see a home it already served, so it never adopted the profile and every
@@ -845,7 +845,7 @@ def _routed_client_kwargs(agent, fallback_model, _provider_timeout) -> Optional[
         # Explicit non-OpenRouter provider with no creds and no usable fallback: fail fast.
         from hermes_agent.agent.auxiliary_unavailable import ProviderNotConfiguredError, missing_provider_credentials_message
         raise ProviderNotConfiguredError(missing_provider_credentials_message(_explicit))
-    from hermes_constants import profile_cli_selector
+    from hermes_agent.hermes_constants import profile_cli_selector
     from hermes_agent.agent.auxiliary_unavailable import ProviderNotConfiguredError
     _sel = profile_cli_selector()
     raise ProviderNotConfiguredError(

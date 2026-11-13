@@ -166,7 +166,7 @@ print(json.dumps(boot_bootstrap.run_boot_bootstrap(root)))
             changed = subprocess.run([*command, 'go'], env=env, capture_output=True, text=True, timeout=30, check=False)
             assert changed.returncode == 0, changed.stderr
             assert json.loads(changed.stdout.splitlines()[-1])['home']['migrate']['ok']
-            import hermes_yaml
+            from hermes_agent import hermes_yaml
             assert hermes_yaml.safe_load((home / 'config.yaml').read_text())['_config_version'] == DEFAULT_CONFIG['_config_version']
     finally:
         release.touch()

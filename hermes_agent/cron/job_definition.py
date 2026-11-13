@@ -8,7 +8,7 @@ from typing import Any, Dict
 
 from hermes_agent.cron.jobs import _apply_schedule_update, _jobs_lock, is_job_runnable, load_jobs, parse_schedule, save_jobs
 from hermes_agent.cron.quota_hold import clear_state as _clear_quota_hold
-from hermes_time import now as _hermes_now
+from hermes_agent.hermes_time import now as _hermes_now
 
 JOB_DEFINITION_FIELDS = frozenset({
     "name", "prompt", "skills", "skill", "model", "provider", "base_url",

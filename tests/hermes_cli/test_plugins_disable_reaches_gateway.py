@@ -98,7 +98,7 @@ def test_an_explicit_refusal_is_reported_not_called_silence(home, monkeypatch, c
 def shared_root(tmp_path, monkeypatch):
     root = tmp_path / "shared-root"
     root.mkdir()
-    monkeypatch.setattr("hermes_constants.get_default_hermes_root", lambda: root)
+    monkeypatch.setattr("hermes_agent.hermes_constants.get_default_hermes_root", lambda: root)
     return root
 
 

@@ -122,7 +122,7 @@ def test_console_script_runs_in_the_selected_profile(tmp_path, flags, profile):
     driver = (
         "import sys, acp\n"
         "async def fake_run_agent(agent, **kw):\n"
-        "    from hermes_constants import get_hermes_home\n"
+        "    from hermes_agent.hermes_constants import get_hermes_home\n"
         "    print('SERVED', get_hermes_home())\n"
         "acp.run_agent = fake_run_agent\n"
         f"sys.argv = ['hermes-acp', *{flags!r}]\n"

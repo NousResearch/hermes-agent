@@ -16,7 +16,7 @@ import sys
 import pytest
 
 from hermes_agent.agent.memory_manager import MemoryManager
-from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
 _TOOL = "sharedmem_recall"
 

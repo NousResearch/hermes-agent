@@ -55,7 +55,7 @@ _TRANSIENT_REFUSALS = ("still running", "being continued", "still stopping", "pa
 def enabled() -> bool:
     """``delegation.auto_resume`` of the bound profile (opt-in, default off)."""
     from hermes_agent.tools.delegate_tool_config import _load_config
-    from utils import is_truthy_value
+    from hermes_agent.utils import is_truthy_value
     return is_truthy_value(_load_config().get("auto_resume", False))
 
 
@@ -118,7 +118,7 @@ def _scheduler_runs() -> bool:
     """Whether this process is the gateway serving the bound profile, so its watcher will run the resume (a
     background child's completion route is this process's). A classic CLI parent has no scheduler: no promise."""
     from hermes_agent.gateway.runtime_ownership import process_ownership
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     return process_ownership.owns(get_hermes_home())
 
 
@@ -166,7 +166,7 @@ def boot_notice(conn, sids: list[str], records: dict[str, dict[str, Any]]) -> tu
 
 # ── storage ────────────────────────────────────────────────────────────────
 def _db() -> Path:
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     return get_hermes_home() / "state.db"
 
 

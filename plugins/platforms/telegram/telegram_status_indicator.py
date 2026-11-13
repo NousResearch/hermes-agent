@@ -32,12 +32,12 @@ def _bot_key(bot: Any) -> str:
 
 
 def _captures(adapter: TelegramAdapter) -> dict:
-    from utils import read_json_or_empty
+    from hermes_agent.utils import read_json_or_empty
     return read_json_or_empty(_state_path(adapter))
 
 
 def _write_captures(adapter: TelegramAdapter, data: dict) -> None:
-    from utils import atomic_json_write
+    from hermes_agent.utils import atomic_json_write
     atomic_json_write(_state_path(adapter), data)
 
 

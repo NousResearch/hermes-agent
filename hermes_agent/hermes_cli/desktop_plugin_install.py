@@ -21,8 +21,8 @@ from pathlib import Path
 from typing import Any, Optional
 
 from hermes_agent.hermes_cli import desktop_plugin_halves as halves
-from hermes_constants import get_default_hermes_root
-from utils import rmtree_readonly
+from hermes_agent.hermes_constants import get_default_hermes_root
+from hermes_agent.utils import rmtree_readonly
 
 DESKTOP_PLUGINS_DIR = "desktop-plugins"
 _COMMIT = re.compile(r"[0-9a-f]{40}")

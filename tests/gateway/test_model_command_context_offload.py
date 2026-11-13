@@ -38,7 +38,7 @@ def _event(text: str) -> MessageEvent:
 
 def _runner_with_store(tmp_path, monkeypatch):
     """Minimal GatewayRunner harness driving the real /model handler."""
-    import hermes_yaml as _yaml
+    import hermes_agent.hermes_yaml as _yaml
 
     import hermes_agent.gateway.run as gateway_run
     from hermes_agent.gateway.run import GatewayRunner
@@ -65,7 +65,7 @@ def _runner_with_store(tmp_path, monkeypatch):
             provider_label="OpenRouter",
         ),
     )
-    monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: hermes_home)
+    monkeypatch.setattr("hermes_agent.hermes_constants.get_hermes_home", lambda: hermes_home)
     monkeypatch.setattr("hermes_agent.hermes_cli.config.get_hermes_home", lambda: hermes_home)
     # No expensive-model confirmation detour.
     monkeypatch.setattr(

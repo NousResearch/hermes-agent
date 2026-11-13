@@ -65,7 +65,7 @@ def test_historical_payload_maps_to_takeover_request_schema(tmp_path, desktop, r
     # write_handoff resolves the home through hermes_constants; the child tree is the whole
     # sys.path (CI has no editable finder), so give it the names the hand-off reads (the
     # payload lands beside the receipts in the ROOT home, which is HERMES_HOME here).
-    (root / "hermes_constants.py").write_text(
+    (root / "hermes_agent/hermes_constants.py").write_text(
         "import os\nfrom pathlib import Path\n"
         "def get_hermes_home():\n    return Path(os.environ['HERMES_HOME'])\n"
         "get_default_hermes_root = get_hermes_home\n", encoding="utf-8",
@@ -562,7 +562,7 @@ def test_a_finish_child_that_cannot_start_after_the_commit_is_owed_not_failed(tm
     OSError starting update_finish used to land in the preparation catch-all: receipt failed,
     .update_exit_code=1, exit 1 for a committed update (review C7, invariant 3)."""
     from hermes_agent.hermes_cli import _update_takeover, update_custody, update_lock, update_receipt
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     class _Lock:
         holder = None
@@ -604,7 +604,7 @@ def test_the_takeover_breadcrumb_is_written_temp_fsync_rename(tmp_path, monkeypa
     """With the host record unwritable the takeover falls back to the per-home breadcrumb; it was
     written in place (review C12, invariant 5): a crash mid-write left a truncated debt record."""
     from hermes_agent.hermes_cli import _update_takeover, update_host_obligation
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     monkeypatch.setattr(update_host_obligation, "write_host_obligation", lambda **_kw: False)
     monkeypatch.setattr(_update_takeover, "_head_sha", lambda _root: "a" * 40)

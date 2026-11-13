@@ -27,7 +27,7 @@ from unittest.mock import patch
 import pytest
 
 import hermes_agent.cron.scheduler as scheduler_mod
-from hermes_constants import hermes_home_key
+from hermes_agent.hermes_constants import hermes_home_key
 
 
 @pytest.fixture()

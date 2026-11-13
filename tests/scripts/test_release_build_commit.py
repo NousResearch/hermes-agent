@@ -33,7 +33,7 @@ def fixture_repo(tmp_path):
     for relative in ('scripts/release.py', 'scripts/release-content-types.json',
                      'hermes_agent/__init__.py', 'hermes_agent/hermes_cli/__init__.py',
                      'hermes_agent/hermes_cli/update_channel.py', 'hermes_agent/hermes_cli/release_channels.py',
-                     'pm/paths.py', 'pm/environments.py', 'hermes_constants.py'):
+                     'pm/paths.py', 'pm/environments.py', 'hermes_agent/hermes_constants.py'):
         dest = repo / relative
         dest.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(ROOT / relative, dest)

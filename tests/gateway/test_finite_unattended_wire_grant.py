@@ -26,7 +26,7 @@ async def _rpc(connection, method, **params):
 async def test_only_the_local_cli_owner_may_submit_an_unattended_turn(monkeypatch):
     from hermes_agent.gateway import run
     from hermes_agent.gateway.session_controls import AuthorityConnection
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from hermes_agent.hermes_state_runtime import list_session_admissions
     home = get_hermes_home()
     home.mkdir(parents=True, exist_ok=True)

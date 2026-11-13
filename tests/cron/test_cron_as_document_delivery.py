@@ -14,7 +14,7 @@ import pytest
 from hermes_agent.cron.scheduler import _deliver_result
 from hermes_agent.cron.scheduler_delivery_media import _send_media_via_adapter
 from hermes_agent.gateway.config import Platform, PlatformConfig
-from hermes_constants import get_hermes_home
+from hermes_agent.hermes_constants import get_hermes_home
 
 
 class _Result:

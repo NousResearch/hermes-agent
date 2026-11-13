@@ -23,7 +23,7 @@ from hermes_agent.hermes_cli.auth_constants import (
     AuthError, DEFAULT_NOUS_PORTAL_URL, DEVICE_AUTH_POLL_INTERVAL_CAP_SECONDS,
     DEVICE_CODE_GRANT_TYPE, OAUTH_OVER_SSH_DOCS_URL, httpx)
 from hermes_agent.hermes_cli.auth_error_copy import DeviceCodeExpired
-from utils import is_truthy_value
+from hermes_agent.utils import is_truthy_value
 
 # Log-record parity with the origin module (caplog tests pin "hermes_agent.hermes_cli.auth").
 logger = logging.getLogger("hermes_agent.hermes_cli.auth")
@@ -442,7 +442,7 @@ def _print_login_success(
     print()
     print("Login successful!")
     if show_auth_state:
-        from hermes_constants import display_hermes_home as _dhh
+        from hermes_agent.hermes_constants import display_hermes_home as _dhh
         print(f"  Auth state: {_dhh()}/auth.json")
     print(f"  Config updated: {config_path} (model.provider={provider_id})")
 

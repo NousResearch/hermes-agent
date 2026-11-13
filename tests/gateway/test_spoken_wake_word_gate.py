@@ -260,7 +260,7 @@ async def test_telegram_gate_transcribes_in_the_routed_profile(tmp_path, monkeyp
     """A shared bot's chat routed to another profile: the gate's STT runs in that profile's scope
     (its ``stt`` config and secrets), the scope the turn enters, never the receiving bot's."""
     import contextlib
-    from hermes_constants import get_hermes_home, reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import get_hermes_home, reset_hermes_home_override, set_hermes_home_override
     launch, routed = tmp_path / "launch", tmp_path / "routed"
     for home, enabled in ((launch, "false"), (routed, "true")):
         home.mkdir()
@@ -355,7 +355,7 @@ async def test_a_gate_transcript_never_crosses_profiles(tmp_path):
     import re
     from hermes_agent.gateway.platforms.helpers import spoken_mention_clips
     from hermes_agent.gateway.run_inbound_transcription import GatewayInboundTranscriptionMixin
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
     clip = tmp_path / "gate.ogg"
     clip.write_bytes(OGG)
     (tmp_path / "a").mkdir()

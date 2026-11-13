@@ -4,7 +4,7 @@ import queue
 
 import pytest
 
-from hermes_constants import get_hermes_home, hermes_home_key
+from hermes_agent.hermes_constants import get_hermes_home, hermes_home_key
 from hermes_agent.tools import async_delegation as ad
 
 

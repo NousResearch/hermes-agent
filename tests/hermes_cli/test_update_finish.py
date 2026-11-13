@@ -44,7 +44,7 @@ def completion(tmp_path, monkeypatch):
     # in the working checkout is modified, even by import-time self-heals.
     for path in ROOT.glob("*.py"):
         shutil.copy2(path, source / path.name)
-    for name in ("hermes_cli", "hermes_platform", "hermes_agent", "pm", "agent", "gateway", "tools", "cron"):
+    for name in ("hermes_cli", "hermes_agent", "pm", "agent", "gateway", "tools", "cron"):
         shutil.copytree(ROOT / name, source / name,
                         ignore=shutil.ignore_patterns("__pycache__", "web_dist", "tui_dist"))
     shutil.copytree(ROOT / "scripts/build", source / "scripts/build",
@@ -437,7 +437,7 @@ def _pnpm_graph(source):
 def test_selected_child_builds_and_finalizes_under_parent_lock(completion):
     from hermes_agent.hermes_cli.config_defaults import DEFAULT_CONFIG
     from hermes_agent.hermes_cli.update_lock import UpdateLock
-    import hermes_yaml
+    from hermes_agent import hermes_yaml
 
     source, home, request, context, result, run = completion
     node = _pnpm_graph(source)
@@ -485,7 +485,7 @@ def test_real_compiler_failure_is_owed_build_and_completion_continues(completion
     and the fleet restart still run, the exit is 0, and the tail stays pending until it builds."""
     from hermes_agent.hermes_cli.config_defaults import DEFAULT_CONFIG
     from hermes_agent.hermes_cli.venv_sync import completion_pending_path
-    import hermes_yaml
+    from hermes_agent import hermes_yaml
 
     source, home, request, context, result, run = completion
     _pnpm_graph(source)

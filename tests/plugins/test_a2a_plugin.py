@@ -55,7 +55,7 @@ class TestConnectionGateScope:
         """A→B→A under multiplex: profile A (own A2A_PORT) connects, profile B (none) does not even though
         os.environ carries the launch value, then A again. The tools gate follows the same scope."""
         import hermes_agent.agent.secret_scope as ss
-        import hermes_constants
+        from hermes_agent import hermes_constants
         from plugins.platforms import a2a
 
         monkeypatch.setenv("A2A_PORT", "9902")  # the launch profile's value, bridged into os.environ

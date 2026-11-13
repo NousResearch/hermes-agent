@@ -11,7 +11,7 @@ import pytest
 
 from hermes_agent.agent.secret_scope import current_secret_scope, set_multiplex_active
 from hermes_agent.hermes_cli import env_loader
-from hermes_constants import (
+from hermes_agent.hermes_constants import (
     get_hermes_home,
     reset_hermes_home_override,
     set_hermes_home_override,

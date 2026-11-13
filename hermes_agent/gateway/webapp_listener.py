@@ -65,7 +65,7 @@ def _config_document(home: Path) -> dict:
     home, which is always the case in the gateway; otherwise that home's file as written, which only
     ``hermes webapp`` reads, about the gateway it targets, before asking that gateway itself."""
     from hermes_agent.hermes_cli.config import load_config_readonly, read_user_config_raw
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     try:
         own = home.resolve() == Path(get_hermes_home()).resolve()
     except OSError:
@@ -233,7 +233,7 @@ def browser_session_token(home, *, rotate: bool = False) -> str:
     cannot be read, is not text or is malformed, or that other users could read, is replaced the same
     way, and its folder is closed to them again (POSIX). Raises :class:`BrowserCredentialError` when
     no token can be written there."""
-    from utils import atomic_write_text
+    from hermes_agent.utils import atomic_write_text
 
     path = Path(home) / TOKEN_PATH
     _close_to_other_users(path.parent)
@@ -288,7 +288,7 @@ def _one_use_links_work(platform: str = sys.platform) -> bool:
     neither does WSL: the Windows browser reaches the port through WSL's localhost relay, whose end of
     the connection belongs to root, and so can any Windows account. There the link is printed for the
     user to open by hand and spends without that proof."""
-    from hermes_constants import is_wsl
+    from hermes_agent.hermes_constants import is_wsl
 
     return platform == "win32" or (platform == "linux" and not is_wsl())
 
@@ -372,7 +372,7 @@ def register_control_verbs(runner, home, server=None, *, links_checked: bool | N
 
         from hermes_agent.hermes_cli.web_routers.webapp import (
             LAUNCH_TICKET_TTL_SECONDS, mint_launch_ticket, mint_printed_launch_ticket)
-        from hermes_constants import PROFILE_ID_RE
+        from hermes_agent.hermes_constants import PROFILE_ID_RE
         profile = params.get("profile")
         if profile is not None and not (isinstance(profile, str) and PROFILE_ID_RE.match(profile)):
             raise ValueError("profile must be a profile name")

@@ -5,7 +5,7 @@ back; the failure must still reach the operator (one WARNING) and the goal-loop 
 """
 import logging
 
-import hermes_yaml as yaml
+import hermes_agent.hermes_yaml as yaml
 
 import hermes_agent.agent.auxiliary_unavailable as unavailable
 from hermes_agent.hermes_cli.auth_constants import AuthError

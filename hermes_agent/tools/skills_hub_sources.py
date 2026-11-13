@@ -422,7 +422,7 @@ class BrowseShSource(SkillSource):
         if isinstance(md_url, str) and md_url.startswith("http"):
             return md_url
         source_url = item.get("sourceUrl", "") if isinstance(item, dict) else ""
-        from utils import base_url_host_matches
+        from hermes_agent.utils import base_url_host_matches
         return source_url if source_url and base_url_host_matches(source_url, "raw.githubusercontent.com") else None
 
     def _slug_from_identifier(self, identifier: str) -> str:

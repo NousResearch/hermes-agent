@@ -113,7 +113,7 @@ def _members(*profiles):
 
 def test_desktop_group_of_served_bots_is_created_and_runs(tmp_path, monkeypatch):
     from hermes_agent.gateway import hosted_rooms, session_finite
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     ran = []
 

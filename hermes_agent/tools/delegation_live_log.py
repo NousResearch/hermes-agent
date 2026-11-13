@@ -47,7 +47,7 @@ def live_transcript_root(home: Optional[Path] = None) -> Path:
     whatever profile the process-wide ``HERMES_HOME`` names at that moment
     (#91996).
     """
-    from hermes_constants import get_hermes_dir
+    from hermes_agent.hermes_constants import get_hermes_dir
     return get_hermes_dir("cache/delegation", "delegation_cache", home=home) / "live"
 
 

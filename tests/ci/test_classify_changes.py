@@ -516,7 +516,7 @@ def test_every_slow_lane_path_matches_a_tracked_file():
 # tables of the updater audit's cli-update and desktop-update code maps). A
 # PR that edits only one of these must start the real-update suite that would
 # catch the regression; before, main.py / _early_recovery.py / relaunch.py /
-# gateway/ / hermes_bootstrap.py skipped both the Linux and Windows journeys.
+# gateway/ / hermes_agent/hermes_bootstrap.py skipped both the Linux and Windows journeys.
 _UPDATE_PATH_FILES = (
     "hermes_cli/main.py",
     "hermes_cli/main_dashboard.py",
@@ -581,7 +581,7 @@ _REPO = Path(__file__).resolve().parents[2]
 
 
 def _yaml(rel: str) -> dict:
-    yaml = pytest.importorskip("hermes_yaml")
+    yaml = pytest.importorskip("hermes_agent.hermes_yaml")
     return yaml.safe_load((_REPO / rel).read_text(encoding="utf-8-sig"))
 
 

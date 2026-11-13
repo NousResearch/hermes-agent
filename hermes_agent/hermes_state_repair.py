@@ -21,7 +21,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from hermes_constants import get_hermes_home
+from hermes_agent.hermes_constants import get_hermes_home
 from hermes_agent.hermes_startup_watchdog import report_startup_progress
 from hermes_agent.hermes_state_errors import is_disk_full_error
 from hermes_agent.hermes_state_holders import read_only_db_uri
@@ -396,7 +396,7 @@ def _persistent_repair_attempts_exhausted(db_path: Path) -> bool:
 def _persistent_repair_exhausted_error(db_path: Path) -> str:
     """The stable operator-facing diagnostic for an exhausted repair budget. The ``hermes`` commands
     carry the profile selector: a bare ``hermes`` follows ``active_profile`` (#105887)."""
-    from hermes_constants import profile_cli_selector
+    from hermes_agent.hermes_constants import profile_cli_selector
     profile_arg = profile_cli_selector()
     return (f"automatic repair has already failed {_MAX_PERSISTENT_REPAIR_ATTEMPTS} times on this exact file — the "
             f"corruption is beyond the schema/FTS repair strategies (likely b-tree page damage). Manual recovery "

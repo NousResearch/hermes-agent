@@ -6,7 +6,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import hermes_yaml as yaml
+import hermes_agent.hermes_yaml as yaml
 import pytest
 
 from hermes_agent.agent import i18n, i18n_layers

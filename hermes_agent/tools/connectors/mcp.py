@@ -9,7 +9,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from hermes_constants import hermes_home_key
+from hermes_agent.hermes_constants import hermes_home_key
 from hermes_agent.tools.connectors.contract import Actor, SettleReason, TargetState
 from hermes_agent.tools.connectors.gateway.config import operation_session_key
 from hermes_agent.tools.connectors.operation import ConnectionOperation, DetachedOperation, IllegalTransition, Target
@@ -636,7 +636,7 @@ def _install_now(runner: _Runner, operation: ConnectionOperation, target: Target
         _fail(operation, target, _detail(exc, runner, target))
         return
     if missing:
-        from hermes_constants import display_hermes_home
+        from hermes_agent.hermes_constants import display_hermes_home
 
         _fail(operation, target, f"set {', '.join(missing)} in the environment or "
                                  f"{display_hermes_home()}/.env, then install again")

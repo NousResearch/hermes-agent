@@ -6,7 +6,7 @@ Real plugin directories, real loader, real config files under a temp home.
 
 from __future__ import annotations
 
-import hermes_yaml as yaml
+import hermes_agent.hermes_yaml as yaml
 import pytest
 
 pytest.importorskip("fastapi")

@@ -31,7 +31,7 @@ def _mode(path) -> int:
 @pytest.fixture
 def host(tmp_path, monkeypatch):
     """Unmanaged, non-container host with the 022 umask the issue reproduces under."""
-    import hermes_constants
+    from hermes_agent import hermes_constants
 
     monkeypatch.delenv("HERMES_MANAGED", raising=False)
     monkeypatch.setattr(hermes_constants, "_container_or_chmod_skipped", lambda: False)
@@ -111,7 +111,7 @@ async def test_adopting_a_running_bridge_tightens_its_existing_log(host, tmp_pat
 
 
 def test_dashboard_pairing_tightens_an_existing_world_readable_session(host, tmp_path, monkeypatch):
-    import hermes_constants
+    from hermes_agent import hermes_constants
     from hermes_agent.gateway.platforms import whatsapp_common
     from hermes_agent.hermes_cli.web_routers import messaging
 
@@ -131,7 +131,7 @@ def test_cli_pairing_writes_the_session_owner_only(host, tmp_path, monkeypatch):
     """`hermes whatsapp` runs the pairing child itself, so its creds need the store's umask too."""
     from types import SimpleNamespace
 
-    import hermes_constants
+    from hermes_agent import hermes_constants
     from hermes_agent.gateway.platforms import whatsapp_common
     from hermes_agent.hermes_cli import main_platform_setup as setup
 
@@ -154,7 +154,7 @@ def test_cli_pairing_writes_the_session_owner_only(host, tmp_path, monkeypatch):
 def test_managed_install_keeps_its_group_share_modes(host, tmp_path, monkeypatch):
     """NixOS/systemd installs share HERMES_HOME with a group on purpose (#77579): the store and the
     child's files follow the service umask instead of being forced owner-only."""
-    import hermes_constants
+    from hermes_agent import hermes_constants
 
     monkeypatch.setenv("HERMES_MANAGED", "nixos")
     session = tmp_path / "session"

@@ -71,7 +71,7 @@ def test_managed_policy_keys_beat_the_routed_scope(monkeypatch):
 def test_background_commands_get_the_same_routed_base(monkeypatch, tmp_path):
     """``terminal(background=True)`` spawns through ProcessRegistry, not ``_make_run_env``: it must
     drop the launch profile's ``.env`` residue and see the served profile's own values too."""
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
     monkeypatch.setenv("MYAPP_AGENT_ID", "from-p1")
     monkeypatch.setenv("LAUNCH_DOTENV_NAME", "launch-residue")
     monkeypatch.setattr("hermes_agent.hermes_cli.env_loader.launch_dotenv_keys", lambda: ["LAUNCH_DOTENV_NAME"])

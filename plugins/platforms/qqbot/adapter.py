@@ -729,7 +729,7 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         """Atomically (tmp + rename) write the update-prompt answer to
         ``.update_response``, polled by the detached ``hermes update --gateway`` watcher."""
         try:
-            from hermes_constants import get_hermes_home
+            from hermes_agent.hermes_constants import get_hermes_home
             response_path = get_hermes_home() / ".update_response"
             tmp = response_path.with_suffix(".tmp")
             tmp.write_text(answer, encoding="utf-8")

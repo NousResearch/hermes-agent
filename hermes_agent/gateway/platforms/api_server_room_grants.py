@@ -53,7 +53,7 @@ def request_target_profile(_api_request_profile) -> str:
     """The served profile this request runs as: its ``/p/<profile>/`` prefix, else the listener's
     own profile (``default`` on a multiplexed host, the launch profile of a single-profile one)."""
     from hermes_agent.gateway.session_authorities import served_profile_name
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     return _api_request_profile.get() or served_profile_name(get_hermes_home())
 
 

@@ -372,7 +372,7 @@ def tool_image_path(tool_name: str, args: Any, result: Any, *, is_error: bool) -
     if is_error:
         return None
     if isinstance(result, str):
-        from utils import safe_json_loads
+        from hermes_agent.utils import safe_json_loads
 
         result = safe_json_loads(result)
     result = result if isinstance(result, dict) else {}

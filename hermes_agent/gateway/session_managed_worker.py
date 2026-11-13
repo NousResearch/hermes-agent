@@ -429,7 +429,7 @@ def _worker_env(authority):
         secrets = {**_launch_env_only_credentials(home, env), **secrets}
     env.update({k: v for k, v in secrets.items() if v is not None})
     env['HERMES_HOME'] = str(home)
-    from hermes_constants import apply_subprocess_home_env
+    from hermes_agent.hermes_constants import apply_subprocess_home_env
     apply_subprocess_home_env(env)
     return env
 

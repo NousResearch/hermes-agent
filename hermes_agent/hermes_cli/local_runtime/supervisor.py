@@ -227,7 +227,7 @@ class LlamaServerSupervisor:
         import os
         import psutil
         from hermes_agent.gateway.status import get_process_start_time
-        from utils import atomic_json_write
+        from hermes_agent.utils import atomic_json_write
 
         proc = psutil.Process(self.proc.pid)
         # create_time stays for runtimes that predate start_time.
@@ -238,7 +238,7 @@ class LlamaServerSupervisor:
                        "owner_create_time": psutil.Process().create_time(),
                        "owner_start_time": get_process_start_time(os.getpid())}
         path = state_path()
-        from hermes_constants import mkdir_under_hermes_home
+        from hermes_agent.hermes_constants import mkdir_under_hermes_home
         mkdir_under_hermes_home(path.parent)
         atomic_json_write(path, self._state, mode=0o600)
 

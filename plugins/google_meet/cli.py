@@ -21,8 +21,8 @@ from pathlib import Path
 from typing import Optional
 
 from hermes_agent.hermes_cli.browser_runtime import chromium_executable
-from hermes_constants import get_hermes_home
-from utils import atomic_json_write
+from hermes_agent.hermes_constants import get_hermes_home
+from hermes_agent.utils import atomic_json_write
 
 from plugins.google_meet import process_manager as pm
 from plugins.google_meet.meet_bot import _is_safe_meet_url

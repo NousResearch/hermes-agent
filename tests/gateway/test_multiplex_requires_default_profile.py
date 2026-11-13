@@ -18,7 +18,7 @@ def test_named_profile_launch_with_multiplex_is_a_config_verdict(tmp_path, monke
 
     root = _root(tmp_path)
     monkeypatch.setenv('HERMES_HOME', str(root / 'profiles' / 'foo'))
-    import hermes_constants
+    from hermes_agent import hermes_constants
     hermes_constants._default_hermes_root_memo = None
     written = []
     monkeypatch.setattr('hermes_agent.gateway.run._write_runtime_status_quiet', lambda **kw: written.append(kw))
@@ -33,7 +33,7 @@ def test_default_profile_launch_may_multiplex(tmp_path, monkeypatch):
 
     root = _root(tmp_path)
     monkeypatch.setenv('HERMES_HOME', str(root))
-    import hermes_constants
+    from hermes_agent import hermes_constants
     hermes_constants._default_hermes_root_memo = None
     assert run_bootstrap._launch_home_may_multiplex() is True
 
@@ -47,7 +47,7 @@ async def test_verdict_precedes_replacing_a_running_gateway(tmp_path, monkeypatc
 
     root = _root(tmp_path)
     monkeypatch.setenv('HERMES_HOME', str(root / 'profiles' / 'foo'))
-    import hermes_constants
+    from hermes_agent import hermes_constants
     hermes_constants._default_hermes_root_memo = None
     monkeypatch.setattr('hermes_agent.hermes_cli.resource_limits.apply_nofile_soft_limit', lambda: None)
     monkeypatch.setattr('hermes_agent.gateway.code_skew.record_boot_fingerprint', lambda: None)
@@ -69,7 +69,7 @@ async def test_verdict_precedes_replacing_a_running_gateway(tmp_path, monkeypatc
 
 
 def test_cloned_profile_does_not_inherit_the_multiplex_flag(tmp_path, monkeypatch):
-    import hermes_yaml as yaml
+    import hermes_agent.hermes_yaml as yaml
     from hermes_agent.hermes_cli.profiles import _strip_multiplex_flag
 
     nested = tmp_path / 'nested.yaml'

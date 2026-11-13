@@ -25,7 +25,7 @@ def default_home_process(tmp_path, monkeypatch):
     for var in ("HERMES_SUPERVISED_CHILD", "HERMES_S6_SUPERVISED_CHILD", "INVOCATION_ID",
                 "HERMES_GATEWAY_EXTERNAL_SUPERVISOR", "HERMES_UPDATE_POST_SWAP"):
         monkeypatch.delenv(var, raising=False)
-    import hermes_constants
+    from hermes_agent import hermes_constants
     monkeypatch.setattr(hermes_constants, "_default_hermes_root_memo", None)
     return root
 

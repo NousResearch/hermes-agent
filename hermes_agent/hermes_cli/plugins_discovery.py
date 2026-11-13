@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
-from hermes_constants import get_hermes_home
+from hermes_agent.hermes_constants import get_hermes_home
 from hermes_agent.hermes_cli.config import cfg_get
 from hermes_agent.hermes_cli.plugin_capabilities import VALID_CAPABILITY_IDS
 from hermes_agent.hermes_cli.plugin_capabilities import parse_declared_capabilities as _parse_declared_capabilities

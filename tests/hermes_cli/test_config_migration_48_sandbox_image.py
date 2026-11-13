@@ -9,7 +9,7 @@ themselves is never touched. Driven through ``run_migrations`` against a temp ho
 import os
 from unittest.mock import patch
 
-import hermes_yaml as yaml
+import hermes_agent.hermes_yaml as yaml
 
 
 def _run(tmp_path, config):

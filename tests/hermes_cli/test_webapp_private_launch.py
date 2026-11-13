@@ -112,7 +112,7 @@ def test_where_no_user_only_page_can_carry_it_the_link_is_printed_and_no_page_is
     if case == "no browser":
         monkeypatch.setattr(launcher, "_open", lambda url: private["calls"]["opened"].append(url) and False)
     if case == "wsl":
-        monkeypatch.setattr("hermes_constants.is_wsl", lambda: True)
+        monkeypatch.setattr("hermes_agent.hermes_constants.is_wsl", lambda: True)
     if case == "folder others can read":
         monkeypatch.setattr("hermes_agent.gateway.webapp_listener._readable_by_other_users", lambda path: True)
     assert launcher.cmd_webapp(_args(no_open=case == "no-open")) == 0

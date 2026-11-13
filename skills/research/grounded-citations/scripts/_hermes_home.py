@@ -14,7 +14,7 @@ import os
 from pathlib import Path
 
 try:
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 except (ModuleNotFoundError, ImportError):
 
     def get_hermes_home() -> Path:

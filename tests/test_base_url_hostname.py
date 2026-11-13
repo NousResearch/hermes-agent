@@ -8,7 +8,7 @@ tests/agent/test_direct_provider_url_detection.py.
 
 from __future__ import annotations
 
-from utils import base_url_hostname, base_url_host_matches
+from hermes_agent.utils import base_url_hostname, base_url_host_matches
 
 
 # ─── base_url_hostname ────────────────────────────────────────────────────

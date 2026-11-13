@@ -14,7 +14,7 @@ from collections import deque
 from pathlib import Path
 from typing import IO, Callable, Protocol
 
-from hermes_constants import get_hermes_home
+from hermes_agent.hermes_constants import get_hermes_home
 from hermes_agent.tools.environments.fd_wait import open_fd_waiter
 from hermes_agent.tools.tool_output_truncate import head_tail_split, truncation_notice
 from hermes_agent.hermes_cli._subprocess_compat import windows_hide_flags

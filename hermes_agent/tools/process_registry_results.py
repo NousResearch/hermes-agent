@@ -10,10 +10,10 @@ import logging
 import re
 import sqlite3
 import time
-from hermes_dir_acl import make_user_dir
+from hermes_agent.hermes_dir_acl import make_user_dir
 
-from hermes_constants import get_hermes_home
-from utils import atomic_json_write
+from hermes_agent.hermes_constants import get_hermes_home
+from hermes_agent.utils import atomic_json_write
 
 logger = logging.getLogger("hermes_agent.tools.process_registry")
 
@@ -62,7 +62,7 @@ def save_completed_result(session) -> None:
     record["command"] = redact_sensitive_text(record["command"], code_file=True, force=True)
     directory = get_hermes_home() / "logs" / "process-results"
     try:
-        from hermes_constants import assert_named_profile_home_live
+        from hermes_agent.hermes_constants import assert_named_profile_home_live
         assert_named_profile_home_live(directory)
         make_user_dir(directory, mode=0o700, parents=True, exist_ok=True)
         atomic_json_write(directory / f"{session.id}.json", record, mode=0o600)

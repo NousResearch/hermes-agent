@@ -4,8 +4,8 @@ import subprocess
 
 import pytest
 
-from hermes_platform.host import facts, products
-from hermes_platform.host.facts import NvidiaGpu
+from hermes_agent.hermes_platform.host import facts, products
+from hermes_agent.hermes_platform.host.facts import NvidiaGpu
 
 # Values measured on an NVIDIA N1X laptop: the registry CPU name and its display-class rows.
 _N1X_CPU = "NVIDIA RTX Spark N1X (5120-core GPU, 18-core CPU)"

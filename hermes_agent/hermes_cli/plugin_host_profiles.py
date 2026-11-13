@@ -66,7 +66,7 @@ def _fingerprint(plugin_dir: Path) -> str:
 
 
 def _cached_extraction(plugin_dir: Path, module_name: str) -> dict[str, Any]:
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     # Keyed by the full path too: a user and a project plugin may share a directory name.
     path_key = hashlib.sha256(str(plugin_dir.resolve()).encode("utf-8")).hexdigest()[:12]
     cache = get_hermes_home() / "cache" / "plugin_host" / "model-providers" / f"{plugin_dir.name}-{path_key}.json"
@@ -90,7 +90,7 @@ def _cached_extraction(plugin_dir: Path, module_name: str) -> dict[str, Any]:
 def _extract(plugin_dir: Path, module_name: str) -> dict[str, Any]:
     """Import the plugin in a throwaway host process with no credentials and read its profiles."""
     from hermes_agent.hermes_cli.plugin_isolation import HOST_PROCESS_ENV, host_launcher
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     repo_root = project_root_str()
     # Absolute: the child starts in the home, so a relative HERMES_HOME or plugin dir would resolve twice.
     home = str(get_hermes_home().resolve())

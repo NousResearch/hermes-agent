@@ -24,7 +24,7 @@ def _leftovers(directory: Path, keep: str) -> list[str]:
 
 @pytest.fixture
 def broken_replace(monkeypatch):
-    import utils
+    from hermes_agent import utils
 
     monkeypatch.setattr(utils, "atomic_replace", _failing_replace)
 
@@ -76,7 +76,7 @@ def test_surrogate_escaped_strings_round_trip_through_atomic_json_write(tmp_path
     guard only ``OSError``; a ``UnicodeEncodeError`` (a ValueError) escaping the canonical writer
     silently stopped those writes.
     """
-    from utils import atomic_json_write
+    from hermes_agent.utils import atomic_json_write
 
     payload = {"cwd": "a\udcffb", "plain": "caf\u00e9"}
     target = tmp_path / "crumbs" / "crumb.json"
@@ -91,7 +91,7 @@ def test_new_non_secret_file_follows_umask_while_secret_and_existing_modes_hold(
     import os
     import stat
 
-    from utils import atomic_json_write
+    from hermes_agent.utils import atomic_json_write
 
     old_umask = os.umask(0o022)
     try:

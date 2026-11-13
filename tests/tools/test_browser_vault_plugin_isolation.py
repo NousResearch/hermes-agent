@@ -145,7 +145,7 @@ def vault_home(tmp_path, monkeypatch):
     """Temp HERMES_HOME with one real local-vault login; yields a loader for plugins written into it."""
     from hermes_agent.agent.vault_store import get_vault_store
     from hermes_agent.hermes_cli.plugins import PluginManager
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
     home = tmp_path / "home"
     home.mkdir()

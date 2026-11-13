@@ -81,7 +81,7 @@ def _admitted(source: Path, *, new: bool) -> bool:
 
 class PluginSelection:
     def __init__(self, selection: dict):
-        from hermes_yaml import roundtrip_yaml
+        from hermes_agent.hermes_yaml import roundtrip_yaml
         from pm.plugin_eviction import settle_record
 
         self.configs = selection_snapshot()

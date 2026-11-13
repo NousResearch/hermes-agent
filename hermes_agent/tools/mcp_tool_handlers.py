@@ -12,7 +12,7 @@ from functools import partial
 from types import SimpleNamespace
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from hermes_platform import declaration
+from hermes_agent.hermes_platform import declaration
 from hermes_agent.tools.registry import invalidate_check_fn_cache, tool_error
 from hermes_agent.tools.ansi_strip import strip_unicode_tags, strip_unicode_tags_deep
 from hermes_agent.tools.mcp_tool_common import _exc_str, _sanitize_error, exact_mcp_identifier, mcp_field, _core
@@ -878,8 +878,8 @@ def _make_check_fn(server_name: str):
 def _declared_app_offerable(server_name: str) -> bool:
     """True unless the registered declaration is unavailable on this host. Called only for a
     connected server, so a reachable loopback port outranks the interactive-session rule."""
-    from hermes_platform import declaration
-    from hermes_platform.resolver.availability import availability
+    from hermes_agent.hermes_platform import declaration
+    from hermes_agent.hermes_platform.resolver.availability import availability
 
     decl = declaration.lookup(server_name)
     if decl is None:

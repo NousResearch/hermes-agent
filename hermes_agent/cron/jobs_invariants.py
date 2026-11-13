@@ -5,7 +5,7 @@ bypass a rule the create door enforces.
 """
 from typing import Optional
 
-from hermes_constants import display_hermes_home
+from hermes_agent.hermes_constants import display_hermes_home
 
 NO_AGENT_WITHOUT_SCRIPT_ERROR = (
     "no_agent=True requires a script — with no agent and no script "

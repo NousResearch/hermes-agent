@@ -113,7 +113,7 @@ def run(scenario: str, fake: FakeOpenRouter, home: str) -> dict:
     os.environ["HERMES_HOME"] = home
     for k in ("OPENROUTER_API_KEY", "OPENAI_API_KEY", "SSH_CLIENT", "SSH_TTY"):
         os.environ.pop(k, None)
-    for m in [m for m in sys.modules if m.startswith(("hermes_agent.hermes_cli", "hermes_agent.agent", "hermes_constants"))]:
+    for m in [m for m in sys.modules if m.startswith(("hermes_agent.hermes_cli", "hermes_agent.agent", "hermes_agent.hermes_constants"))]:
         del sys.modules[m]
     fake.mode = "malformed" if scenario == "malformed" else "ok"
     browser = scripted_browser(fake, tamper_path=(scenario == "wrong_state"), pre_consume=(scenario == "replayed_code"))

@@ -68,7 +68,7 @@ def clone_memory_provider_config(source_dir: Path, profile_dir: Path, provider: 
 
 def _load_config_dict(profile_dir: Path) -> Optional[dict]:
     """A profile's config.yaml mapping read through the config backend; None when absent or unreadable."""
-    from hermes_yaml import YAMLError
+    from hermes_agent.hermes_yaml import YAMLError
     from hermes_agent.hermes_cli.config_backend import read_config_doc
     try:
         data = read_config_doc(profile_dir / "config.yaml") or {}
@@ -102,7 +102,7 @@ def notify_memory_provider(profile_dir: Path, call: Callable[[MemoryProvider], N
     provider, or an unreadable config, is logged and never fails the create/rename that called it
     (the directory is already published). A plugin host the hook started for that profile is
     stopped afterwards (``plugins.isolation: host``), so a long-lived dashboard keeps none behind."""
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
     name = None
     home_token = set_hermes_home_override(str(profile_dir))

@@ -24,7 +24,7 @@ from hermes_agent.gateway.hosted_room_peer import (
     local_room_link_endpoint,
     verify_room_grant,
 )
-from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
 
 SECRET = b"s" * 32

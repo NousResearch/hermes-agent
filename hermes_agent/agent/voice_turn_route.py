@@ -138,7 +138,7 @@ def begin_voice_turn_route(agent: Any, messages: list[dict[str, Any]], system_pr
         return system_prompt
     agent._voice_turn_pending = False
     from hermes_agent.agent.auxiliary_task_config import _get_auxiliary_task_config
-    from hermes_constants import parse_reasoning_effort
+    from hermes_agent.hermes_constants import parse_reasoning_effort
     cfg = _get_auxiliary_task_config(TASK)
     effort = parse_reasoning_effort(cfg.get("reasoning_effort"))
     target = _route_target(agent, cfg)

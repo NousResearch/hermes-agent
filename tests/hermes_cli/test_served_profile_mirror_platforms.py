@@ -30,7 +30,7 @@ def served_root(tmp_path, monkeypatch):
         }}), encoding="utf-8")
     monkeypatch.setenv("HERMES_HOME", str(root))
     monkeypatch.delenv("GATEWAY_MULTIPLEX_PROFILES", raising=False)
-    import hermes_constants
+    from hermes_agent import hermes_constants
     from hermes_agent.gateway import status
     # Liveness is a verified identity; this pytest process passes as the default gateway only by
     # wearing a gateway command line.
@@ -111,7 +111,7 @@ def test_messaging_card_for_the_default_home_rekeys_by_the_profile_not_the_dirna
         "platforms": {"telegram": {"state": "connected"}},
     }
     monkeypatch.setenv("HERMES_HOME", str(root))
-    import hermes_constants
+    from hermes_agent import hermes_constants
     monkeypatch.setattr(hermes_constants, "_default_hermes_root_memo", None)
     # A launch-service gateway's record fails the own-rung argv check (inline ``-c``), so the card
     # falls through to the multiplexer rung — mirrored here by an absent own record.

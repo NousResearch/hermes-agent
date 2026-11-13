@@ -158,7 +158,7 @@ def run_worker(
     so the configuration can reference them before anything is saved. ``reuse_saved`` is the
     card's rule: a server whose saved tokens still work connects with no consent step. The RPC
     session surface keeps it off, because its caller waits for an authorization URL."""
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
     try:
         from hermes_agent.agent.secret_scope import (
             build_profile_secret_scope, reset_secret_scope, set_secret_scope)
@@ -310,7 +310,7 @@ def start(
 
     ``cfg`` is an install's in-memory configuration; without it the saved one is authorized."""
     from hermes_agent.hermes_cli.mcp_config import _get_mcp_servers
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from hermes_agent.tools.mcp_dashboard_oauth import DashboardOAuthFlow
     from hermes_agent.tui_gateway import mcp_oauth_sessions
 

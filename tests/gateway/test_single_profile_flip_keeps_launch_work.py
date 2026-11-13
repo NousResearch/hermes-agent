@@ -7,7 +7,7 @@ import types
 
 import pytest
 
-import hermes_constants
+from hermes_agent import hermes_constants
 from hermes_agent.gateway.config import GatewayConfig
 from hermes_agent.gateway.run import GatewayRunner
 from hermes_agent.gateway.status import flush_runtime_status, write_runtime_status
@@ -261,7 +261,7 @@ async def test_default_profiles_mcp_server_is_still_owned_after_the_flip(standal
     from hermes_agent.tools.mcp_tool_registration import _register_server_tools
     from hermes_agent.tools.registry import registry
     from hermes_agent.gateway.run import _profile_runtime_scope
-    from hermes_constants import hermes_home_key
+    from hermes_agent.hermes_constants import hermes_home_key
     runner, home = standalone_host
     cfg = {"url": "https://mcp.example/gh"}
     closed = []

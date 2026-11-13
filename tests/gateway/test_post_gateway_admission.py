@@ -13,7 +13,7 @@ from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
 from hermes_agent.gateway.platforms.event import MessageEvent
 from hermes_agent.gateway.run import _profile_runtime_scope
 from hermes_agent.gateway.session import SessionSource
-from hermes_constants import get_hermes_home
+from hermes_agent.hermes_constants import get_hermes_home
 
 HOOK = "post_gateway_admission"
 

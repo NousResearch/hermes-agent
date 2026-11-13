@@ -11,7 +11,7 @@ import threading
 import pytest
 
 from hermes_agent.agent import learning_mutations as lm
-from hermes_constants import get_hermes_home
+from hermes_agent.hermes_constants import get_hermes_home
 
 _SKILL = """---
 name: my-skill

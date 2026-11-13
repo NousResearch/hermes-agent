@@ -166,7 +166,7 @@ class TestBuildSessionContextPrompt:
         )
         ctx = build_session_context(source, config)
 
-        with patch("hermes_constants.display_hermes_home", return_value="~/.hermes/profiles/coder"):
+        with patch("hermes_agent.hermes_constants.display_hermes_home", return_value="~/.hermes/profiles/coder"):
             prompt = build_session_context_prompt(ctx)
 
         assert "~/.hermes/profiles/coder/cron/output/" in prompt
@@ -1448,7 +1448,7 @@ class TestGatewaySessionDbRecovery:
         to disk (long before the 200-message cap) and replayed in order on recovery."""
         import threading
         from types import SimpleNamespace
-        import hermes_constants
+        from hermes_agent import hermes_constants
 
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: tmp_path)

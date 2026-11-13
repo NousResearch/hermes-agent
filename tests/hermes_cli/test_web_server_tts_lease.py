@@ -12,7 +12,7 @@ import pytest
 
 @pytest.fixture
 def isolated_profiles(tmp_path, monkeypatch, _isolate_hermes_home):
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from hermes_agent.hermes_cli import profiles
 
     default_home = get_hermes_home()
@@ -36,7 +36,7 @@ def client(monkeypatch, isolated_profiles):
         pytest.skip("fastapi/starlette not installed")
 
     from hermes_agent import hermes_state
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from hermes_agent.hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
 
     monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", get_hermes_home() / "state.db")
@@ -194,7 +194,7 @@ def test_active_default_true(client, monkeypatch):
 
 def test_acquire_resolves_provider_inside_target_profile(client, isolated_profiles, monkeypatch):
     """Warm-up must read the REQUESTING profile's tts config, like /api/audio/speak."""
-    import hermes_yaml as yaml
+    import hermes_agent.hermes_yaml as yaml
     from hermes_agent.tools import tts_tool, tts_tool_lifecycle
 
     (isolated_profiles["worker_beta"] / "config.yaml").write_text(
@@ -203,7 +203,7 @@ def test_acquire_resolves_provider_inside_target_profile(client, isolated_profil
     seen = {}
 
     def _fake_warm(cfg=None, provider=None):
-        from hermes_constants import get_hermes_home
+        from hermes_agent.hermes_constants import get_hermes_home
 
         seen["home"] = str(get_hermes_home())
         seen["provider"] = tts_tool._get_provider(tts_tool._load_tts_config())

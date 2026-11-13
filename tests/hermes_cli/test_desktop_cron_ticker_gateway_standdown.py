@@ -16,7 +16,7 @@ import pytest
 @pytest.fixture()
 def ticker_env(tmp_path, monkeypatch):
     """Isolated HERMES_HOME plus a seam recording whether the provider started."""
-    import hermes_constants
+    from hermes_agent import hermes_constants
 
     monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: tmp_path)
     started = {}
@@ -123,7 +123,7 @@ def test_gated_ticker_resumes_after_the_gateway_stops(ticker_env, gateway, monke
     ticker still starts, and its per-tick gate stands down only while that gateway runs."""
     import hermes_agent.cron.scheduler_provider as sp
     from hermes_agent.hermes_cli import profiles
-    import hermes_logging
+    from hermes_agent import hermes_logging
     from hermes_agent.hermes_cli import web_server
 
     home, started = ticker_env
@@ -180,7 +180,7 @@ def test_fail_open_ticker_yields_to_the_multiplexer_serving_this_profile(tmp_pat
     fail-open gate must still stand down for it, as the multiplex gate does."""
     import hermes_agent.cron.scheduler_provider as sp
     from hermes_agent.hermes_cli import profiles
-    import hermes_constants
+    from hermes_agent import hermes_constants
     from hermes_agent.hermes_cli import web_server
 
     satellite = tmp_path / "profiles" / "worker"
@@ -216,7 +216,7 @@ def test_gated_out_fail_open_tick_leaves_the_gateway_store_status_alone(tmp_path
     (#32612, #32895)."""
     from hermes_agent.cron import jobs
     from hermes_agent.hermes_cli import profiles
-    import hermes_constants
+    from hermes_agent import hermes_constants
     from hermes_agent.cron.scheduler_provider import InProcessCronScheduler
     from hermes_agent.hermes_cli import web_server
 

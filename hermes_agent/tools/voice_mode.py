@@ -24,8 +24,8 @@ from typing import Any, Callable, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-from hermes_constants import is_termux as _is_termux_environment
-from hermes_platform.host.runtime import is_wsl
+from hermes_agent.hermes_constants import is_termux as _is_termux_environment
+from hermes_agent.hermes_platform.host.runtime import is_wsl
 from hermes_agent.tools.voice_mode_transcript import _voice_config, is_voice_stop_phrase, is_whisper_hallucination
 
 # ── Recording parameters ──
@@ -315,7 +315,7 @@ def detect_audio_environment() -> dict:
     # Docker/Podman container detection — honor host audio forwarding. When the user mounts a
     # PulseAudio/PipeWire socket into the container and points PULSE_SERVER / PIPEWIRE_REMOTE at it, audio
     # works fine (issue #21203). Only block when no forwarding is configured.
-    from hermes_constants import is_container
+    from hermes_agent.hermes_constants import is_container
     if is_container():
         report("Running inside container (Docker/Podman/LXC) with host audio forwarding",
                "Running inside container (Docker/Podman/LXC) -- no audio devices.\n"
@@ -442,7 +442,7 @@ _thinking_stop: Optional[threading.Event] = None
 def thinking_sound_enabled() -> bool:
     """Config gate: ``voice.thinking_sound`` (default True)."""
     try:
-        from utils import is_truthy_value
+        from hermes_agent.utils import is_truthy_value
         return is_truthy_value(_voice_config().get("thinking_sound", True), default=True)
     except Exception:
         return True
@@ -1541,7 +1541,7 @@ def check_voice_requirements() -> dict[str, Any]:
 # ── Temp file cleanup ──
 def cleanup_temp_recordings(max_age_seconds: int = 3600) -> int:
     """Remove ``recording_*.wav`` temp files older than *max_age_seconds*; returns the count."""
-    from utils import unlink_files_older_than
+    from hermes_agent.utils import unlink_files_older_than
 
     deleted = unlink_files_older_than(_TEMP_DIR, "recording_*.wav", max_age_seconds)
     if deleted:

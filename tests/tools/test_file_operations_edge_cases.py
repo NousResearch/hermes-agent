@@ -117,7 +117,7 @@ class TestCheckLintBracePaths:
 def test_local_js_lint_runs_pm_node_never_the_users(tmp_path, monkeypatch):
     """Hermes's own post-write lint uses PM's Node even when the user's node sorts first on
     PATH, and skips (never falls back to the user's) when PM has no Node."""
-    import hermes_constants
+    from hermes_agent import hermes_constants
     from hermes_agent.tools.environments.local import LocalEnvironment
 
     def node_stand_in(directory, label):

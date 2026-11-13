@@ -29,8 +29,8 @@ try:
 except ImportError:  # pragma: no cover
     fcntl = None  # type: ignore[assignment]
 
-from hermes_constants import get_hermes_home
-from utils import atomic_json_write
+from hermes_agent.hermes_constants import get_hermes_home
+from hermes_agent.utils import atomic_json_write
 
 logger = logging.getLogger(__name__)
 
@@ -277,7 +277,7 @@ def _hook_specs(cfg: Optional[dict[str, Any]]) -> tuple[Optional[list[ShellHookS
     (safe worker, safe mode, no config) — the one guard every registrar and the consent path share;
     ``complete`` is False when a configured entry was dropped as malformed."""
     from hermes_agent.agent.safe_worker_policy import safe_worker_enabled
-    from utils import env_var_enabled
+    from hermes_agent.utils import env_var_enabled
     if safe_worker_enabled() or not isinstance(cfg, dict):
         return None, True
     if env_var_enabled("HERMES_SAFE_MODE"):  # hooks are user customizations too — fire zero user-configured code
@@ -821,7 +821,7 @@ def _command_script_path(command: str) -> str:
 def _resolve_effective_accept(cfg: dict[str, Any], accept_hooks_arg: bool) -> bool:
     """Any truthy opt-in channel wins: explicit arg, this process's --accept-hooks, HERMES_ACCEPT_HOOKS,
     hooks_auto_accept."""
-    from utils import env_var_enabled
+    from hermes_agent.utils import env_var_enabled
     if accept_hooks_arg or _process_accept or env_var_enabled("HERMES_ACCEPT_HOOKS"):
         return True
     cfg_val = cfg.get("hooks_auto_accept", False)

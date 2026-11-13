@@ -59,7 +59,7 @@ def _write_update_planned_stop_marker(profile_path: Path, pid: int) -> bool:
     """Write a planned-stop marker into a specific profile home."""
     try:
         from hermes_agent.gateway.status import _get_process_start_time
-        from utils import atomic_json_write
+        from hermes_agent.utils import atomic_json_write
         atomic_json_write(
             _planned_stop_marker_path(profile_path),
             {"target_pid": pid, "target_start_time": _get_process_start_time(pid), "stopper_pid": os.getpid(),
@@ -161,7 +161,7 @@ def _detect_venv_python_processes(*, exclude_pids: set[int] | None = None) -> li
     psutil = _psutil()
     if not _m()._is_windows() or psutil is None:
         return []
-    from hermes_constants import project_venv_dir
+    from hermes_agent.hermes_constants import project_venv_dir
     venv_dir = project_venv_dir(_m().PROJECT_ROOT) or _m().PROJECT_ROOT / "venv"
     venv_prefix = _lower_dir_prefix(venv_dir)
     root_prefix = _lower_dir_prefix(_m().PROJECT_ROOT)
@@ -296,7 +296,7 @@ def _venv_launcher_ancestors(pids: list[int]) -> list[int]:
     psutil = _psutil()
     if not _m()._is_windows() or not pids or psutil is None:
         return []
-    from hermes_constants import project_venv_dir
+    from hermes_agent.hermes_constants import project_venv_dir
     venv_dir = project_venv_dir(_m().PROJECT_ROOT) or _m().PROJECT_ROOT / "venv"
     venv_prefix = _lower_dir_prefix(venv_dir)
     skip = _self_and_non_gateway_ancestor_pids(psutil) | set(pids)

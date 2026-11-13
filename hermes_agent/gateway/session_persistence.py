@@ -10,7 +10,7 @@ import json
 import threading
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, Optional
-from utils import atomic_json_write
+from hermes_agent.utils import atomic_json_write
 
 if TYPE_CHECKING:
     from hermes_agent.gateway.session import SessionEntry, SessionSource

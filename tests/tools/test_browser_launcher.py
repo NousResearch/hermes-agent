@@ -65,7 +65,7 @@ def fake_chromium(tmp_path, monkeypatch):
 
 def _records() -> Path:
     """The test profile's launch records dir (created private, as the launcher creates it)."""
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     path = Path(get_hermes_home()) / "cache" / "browser" / "chromium-records"
     path.mkdir(mode=0o700, parents=True, exist_ok=True)
     return path
@@ -83,7 +83,7 @@ def test_launch_reads_devtools_port_and_runs_headless_on_an_ephemeral_home_profi
     assert browser.cdp_url == "ws://127.0.0.1:45678/devtools/browser/fake-id"
     assert browser.http_url == "http://127.0.0.1:45678"
     assert browser.owned and browser.ephemeral
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     assert Path(browser.user_data_dir).parent == Path(get_hermes_home()) / "cache" / "browser" / "chromium"
     argv = _argv(browser)
     assert "--remote-debugging-port=0" in argv
@@ -97,7 +97,7 @@ def test_launch_reads_devtools_port_and_runs_headless_on_an_ephemeral_home_profi
 def test_launch_record_lives_in_the_profiles_private_state_dir(fake_chromium):
     """Launcher state lives in a private per-profile dir: the record under ``<HERMES_HOME>/cache/browser/
     chromium-records`` (0700) and the throwaway profile under the 0700 ephemeral root beside it."""
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     browser, err = launcher.launch_chromium("recorded", env=dict(os.environ))
     assert err is None
     state = Path(get_hermes_home()) / "cache" / "browser"
@@ -125,7 +125,7 @@ def test_one_browser_per_key_and_separate_browsers_for_separate_keys(fake_chromi
 def test_two_processes_on_one_profile_never_share_an_ephemeral_profile(fake_chromium):
     """CLI + gateway on one profile launch the same key (``browser-exec-default``, a named session): each
     process gets its own throwaway profile, and a launch never wipes the other process's live one."""
-    from hermes_constants import hermes_home_key
+    from hermes_agent.hermes_constants import hermes_home_key
     code = ("import sys; from hermes_agent.tools.browser_launcher import _default_user_data_dir; "
             "print(_default_user_data_dir(sys.argv[1], sys.argv[2]))")
     other = Path(subprocess.run([sys.executable, "-c", code, "browser-exec-default", hermes_home_key()],
@@ -398,7 +398,7 @@ def test_a_throwaway_profile_left_by_a_process_that_died_mid_launch_is_reclaimed
     """A process that dies between creating its throwaway profile and writing the launch record (a first
     launch can wait 120 s) leaves no record behind. The next reap reclaims the dir by its owner's pid and
     start time; the dir of a live process is never touched."""
-    from hermes_constants import hermes_home_key
+    from hermes_agent.hermes_constants import hermes_home_key
     code = ("import sys\n"
             "from hermes_agent.tools.browser_launcher import _default_user_data_dir, _prepare_dir\n"
             "udd = _default_user_data_dir('browser-exec-default', sys.argv[1])\n"

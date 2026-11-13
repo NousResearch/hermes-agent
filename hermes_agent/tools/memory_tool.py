@@ -9,10 +9,10 @@ import json
 import logging
 from contextvars import ContextVar
 from pathlib import Path
-from hermes_constants import get_hermes_home
+from hermes_agent.hermes_constants import get_hermes_home
 from typing import Dict, Any, List, Optional, Tuple
 
-from utils import is_truthy_value
+from hermes_agent.utils import is_truthy_value
 from hermes_agent.tools.registry import no_cache_check_fn
 
 # fcntl is Unix-only; Windows uses msvcrt. MemoryStore reads both lazily from

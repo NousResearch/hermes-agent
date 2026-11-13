@@ -23,6 +23,10 @@ MARKER_TABLE = "hosted_room_legacy_imports"
 # Liveness state, never copied: a lease is a ~15s heartbeat plus a process generation, so a copied
 # lease names a process that is gone. The driver claims a fresh one instead.
 _SKIP_TABLES = frozenset({"hosted_room_driver_leases", "hosted_room_router_claims"})
+# The configured replay capacity is policy, not liveness: it survives the move to a store that
+# seeds its own default, and it is merged rather than inserted because the target already holds a
+# ``singleton=1`` row (#149447). Handled separately in ``_copy_rows``.
+_CAPACITY_TABLE = "hosted_room_policy_capacity"
 # Sources this process could not import (unreadable file, rows the target refused). Every store open
 # re-checks readiness, so without this a broken legacy file would re-run the copy and re-warn on
 # every poll; the retry happens on the next process start instead.
@@ -102,6 +106,19 @@ def _copy_rows(target: sqlite3.Connection, source: Path, *, only: frozenset[str]
                         and (only is None or str(row[room_index]) in only))
                 verb = "INSERT"
             elif only is not None:
+                continue
+            elif name == _CAPACITY_TABLE:
+                # Policy, not liveness: the target seeds ``singleton=1`` with the default capacity,
+                # so a plain INSERT died on ``UNIQUE constraint failed`` (#149447) and skipping the
+                # table reset an operator's configured replay capacity back to that default. Take
+                # the larger of the two, the same MAX the checkpoint applies on its own restart.
+                rows = (row for row in rows if str(row[0]) == "1")
+                statement = f"INSERT INTO {name} ({', '.join(columns)}) VALUES ({', '.join('?' * len(columns))})"
+                statement += (
+                    " ON CONFLICT(singleton) DO UPDATE SET"
+                    " max_active_events=MAX(max_active_events, excluded.max_active_events)"
+                )
+                target.executemany(statement, rows)
                 continue
             else:
                 verb = "INSERT OR IGNORE"

@@ -109,8 +109,8 @@ def handed_room_ids(source: Path) -> set[str]:
 def _claim(conn, room_id: str, local_id: str, handoff_id: str, owner: str, now: float) -> None:
     from gateway.hosted_room_replicas import _append_control_event, _control_event
     row = conn.execute("SELECT authority_epoch, next_seq FROM hosted_rooms WHERE room_id=?", (room_id,)).fetchone()
-    epoch = int(row["authority_epoch"]) + 1
-    _append_control_event(conn, room_id, int(row["next_seq"]), epoch, _control_event("claimed", epoch, {
+    epoch = int(row[0]) + 1
+    _append_control_event(conn, room_id, int(row[1]), epoch, _control_event("claimed", epoch, {
         "previous_gateway_id": handoff_id, "authority_gateway_id": local_id, "authority_epoch": epoch}), now)
     conn.execute("""UPDATE hosted_rooms SET authority_gateway_id=?, authority_epoch=?, next_seq=next_seq+1,
                  revision=revision+1, updated_at=? WHERE room_id=?""", (local_id, epoch, now, room_id))

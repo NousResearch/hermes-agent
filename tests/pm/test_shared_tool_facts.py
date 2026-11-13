@@ -54,8 +54,9 @@ def test_two_installs_keep_independent_tool_pins_and_gc_roots(tmp_path, monkeypa
         assert tuple(path.resolve() for path in toolchain) == tuple(
             binaries[(version, name)].resolve() for name in ("uv", "python"))
 
-    # Both checkouts still exist, so gc keeps both installs' entries.
-    monkeypatch.setattr(cli, "_install_alive", lambda store: ("A", "B").__contains__)
+    # Both checkouts' dependency state still exists, so gc keeps both installs' entries.
+    for owner in ("A", "B"):
+        (tmp_path / "installs" / owner).mkdir(parents=True)
     assert cli._gc_store(Store(root), Facts(root / "facts.json")) == (0, len(entries))
 
     # An identical version with a different artifact hash cannot borrow either fact,
@@ -66,26 +67,29 @@ def test_two_installs_keep_independent_tool_pins_and_gc_roots(tmp_path, monkeypa
     assert fallback is not None and fallback[0].get("uv")["version"] == "1.0"
 
 
-def test_upgrade_releases_the_old_entry_and_a_deleted_install_releases_its_pins(tmp_path, monkeypatch):
+def test_gc_reclaims_pins_no_live_checkout_holds(tmp_path, monkeypatch):
     root = tmp_path / "tools"
     root.mkdir()
     target = current_target()
     store = Store(root)
-    alive = {"A", "B"}
-    monkeypatch.setattr(cli, "_install_alive", lambda store: alive.__contains__)
+    for owner in ("A", "B"):
+        (tmp_path / "installs" / owner).mkdir(parents=True)
 
     monkeypatch.setattr(pm_lock, "install_owner", lambda: "A")
     old, _ = _publish(root, "uv", "1.0", "1" * 64, target)
     new, _ = _publish(root, "uv", "1.1", "2" * 64, target)
     monkeypatch.setattr(pm_lock, "install_owner", lambda: "B")
     other, _ = _publish(root, "uv", "2.0", "3" * 64, target)
+    solo, _ = _publish(root, "python", "3.0", "4" * 64, target)
 
     # A's own upgrade superseded 1.0: nothing pins it any more, so gc reclaims it.
     cli._gc_store(store, Facts(root / "facts.json"))
-    assert not old.exists() and new.is_dir() and other.is_dir()
+    assert not old.exists() and new.is_dir() and other.is_dir() and solo.is_dir()
 
-    # Once B's checkout is gone, its pin no longer holds 2.0, though B recorded last.
-    alive.discard("B")
+    # Once B's checkout is gone, its pins no longer hold 2.0 (though B recorded last)
+    # nor the python entry B alone recorded.
+    (tmp_path / "installs" / "B").rmdir()
     cli._gc_store(store, Facts(root / "facts.json"))
-    assert not other.exists() and new.is_dir()
-    assert Facts(root / "facts.json").get("uv")["version"] == "1.1"
+    assert not other.exists() and not solo.exists() and new.is_dir()
+    facts = Facts(root / "facts.json")
+    assert facts.get("uv")["version"] == "1.1" and facts.get("python") is None

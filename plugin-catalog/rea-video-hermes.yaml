@@ -1,6 +1,6 @@
 name: rea-video-hermes
 repo: https://github.com/wusanjay/hermes-plugin-rea-video
-sha: 8ef488f2347460d56eb8ecbff5df0de426375752
+sha: dda5e7d6746620584aff3b428caf2502362a1498
 description: >-
   Reverse-engineer any video shot by shot: production-method classification per shot
   (live action / AI video / 3D / screen capture / code-template render), caption and

@@ -274,13 +274,16 @@ class GatewayAuthorizationMixin:
             return False
         origin_thread = get_session_env("HERMES_SESSION_THREAD_ID") or None
         target_thread = str(thread_id) if thread_id else None
-        # Where a thread id is scoped to its chat, match exactly what the send reaches: no thread is
-        # the chat's top level (Telegram's General topic), not the origin's topic. Elsewhere (Discord,
-        # Feishu) the thread id alone is the destination, carrying none of the origin's guild or
-        # parent, so only the origin's own thread qualifies.
+        # Match the thread the send actually reaches. Where thread ids are global (not chat-scoped),
+        # a thread id carries none of the origin's guild or parent, so only the origin's own thread
+        # qualifies. A thread-less target is the origin thread only where the thread IS the chat
+        # (Discord: chat_id == thread_id); everywhere else (Feishu, Google Chat, Buzz, and the
+        # chat-scoped platforms) it is the chat's top level, which a thread-pinned route never
+        # dispatches to the profile.
         if platform.value not in _CHAT_SCOPED_THREAD_PLATFORMS:
             if target_thread is not None and target_thread != origin_thread:
                 return False
+        if target_thread is None and origin_thread == origin_chat:
             target_thread = origin_thread
         target = SessionSource(
             platform=platform, chat_id=origin_chat, thread_id=target_thread,

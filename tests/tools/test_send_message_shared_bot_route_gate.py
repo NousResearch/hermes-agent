@@ -216,3 +216,51 @@ def test_shared_channel_origin_matches_on_the_turn_sender(satellite):
     finally:
         clear_session_vars(tokens)
     assert slack.reactions == ["C0SHARED"]
+
+
+# Platforms whose thread is a sub-conversation of a chat that keeps its own id: a thread-less target
+# is that chat's top level, not the origin thread (unlike Discord, where the thread's chat id IS it).
+_GROUP_PLUS_THREAD = {
+    "feishu": ("oc_1", "omt_7"),
+    "google_chat": ("spaces/AAA", "spaces/AAA/threads/T7"),
+}
+
+
+@pytest.mark.parametrize("platform_name", sorted(_GROUP_PLUS_THREAD))
+def test_thread_pinned_origin_does_not_admit_its_groups_top_level(satellite, platform_name):
+    """A route pinned to one Feishu/Google Chat thread dispatches only that thread to ``sec``; its
+    group's top level (a thread-less send/react) is not ``sec``'s conversation."""
+    from gateway.profile_routing import match_profile_route
+    from gateway.session_context import clear_session_vars, set_session_vars
+
+    platform = Platform(platform_name)
+    chat, thread = _GROUP_PLUS_THREAD[platform_name]
+    satellite.runner.config.profile_routes = parse_profile_routes([
+        {"name": "t", "platform": platform.value, "chat_id": chat, "thread_id": thread, "profile": "sec"}])
+    assert match_profile_route(satellite.runner.config.profile_routes, platform.value,
+                               chat_id=chat, thread_id=None) is None  # dispatch premise
+    allowed = satellite.runner._shared_bot_target_allowed
+    tokens = set_session_vars(profile="sec", platform=platform.value, chat_id=chat, thread_id=thread)
+    try:
+        assert allowed(platform, "sec", chat, None) is False
+        assert allowed(platform, "sec", chat, thread) is True
+        assert allowed(platform, "sec", chat, thread + "x") is False
+    finally:
+        clear_session_vars(tokens)
+
+
+def test_discord_thread_origin_still_admits_itself_without_a_thread_id(satellite):
+    """A Discord thread's chat id is the thread id, so a thread-less target there IS the thread."""
+    from gateway.session_context import clear_session_vars, set_session_vars
+
+    satellite.runner.config.profile_routes = parse_profile_routes([
+        {"name": "t", "platform": "discord", "chat_id": "111", "thread_id": "555", "profile": "sec"}])
+    allowed = satellite.runner._shared_bot_target_allowed
+    tokens = set_session_vars(profile="sec", platform="discord", chat_id="555", thread_id="555",
+                              parent_chat_id="111")
+    try:
+        assert allowed(Platform.DISCORD, "sec", "555", None) is True
+        assert allowed(Platform.DISCORD, "sec", "555", "555") is True
+        assert allowed(Platform.DISCORD, "sec", "555", "999") is False
+    finally:
+        clear_session_vars(tokens)

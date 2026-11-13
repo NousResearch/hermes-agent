@@ -883,11 +883,14 @@ A routed profile's `send_message` sends and reactions, and plugin
 `ctx.platform_actions`, follow the same target rule, with one addition: during a
 turn, the conversation that turn came from also qualifies whenever the inbound
 route matcher would hand it to that profile. That covers guild-only routes, a
-thread under a routed channel, and `user_id` routes. Where thread ids are scoped
-to a chat (Telegram, Slack, Matrix, Mattermost), the target without a thread is the
-chat's top level, so a route pinned to one topic does not cover the rest of
-the chat. Webhook deliveries never qualify this way, because they have no
-inbound conversation.
+thread under a routed channel, and `user_id` routes. The target is matched on
+the thread the send actually reaches. A target without a thread is the chat's
+top level (Telegram's General topic, a Slack/Matrix/Mattermost channel, a Feishu
+or Google Chat group), so a route pinned to one topic or thread does not cover
+the rest of the chat. On Discord, where a thread is its own channel, the thread's
+channel id is that thread. A thread other than the turn's own qualifies only if a
+route dispatches it to the profile. Webhook deliveries never qualify this way,
+because they have no inbound conversation.
 
 ## Start, stop, or restart all gateways at once
 

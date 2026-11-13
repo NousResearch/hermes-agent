@@ -457,6 +457,15 @@ const sidebars: SidebarsConfig = {
                 },
                 {
                   type: 'category',
+                  label: 'hardware',
+                  key: 'skills-optional-hardware',
+                  collapsed: true,
+                  items: [
+                    'user-guide/skills/optional/hardware/hardware-black-wire-reference',
+                  ],
+                },
+                {
+                  type: 'category',
                   label: 'health',
                   key: 'skills-optional-health',
                   collapsed: true,

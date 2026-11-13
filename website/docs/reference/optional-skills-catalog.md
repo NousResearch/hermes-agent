@@ -140,6 +140,12 @@ hermes skills uninstall <skill-name>
 | [**minecraft-modpack-server**](../user-guide/skills/optional/gaming/gaming-minecraft-modpack-server.md) | Host modded Minecraft servers (CurseForge, Modrinth). |
 | [**pokemon-player**](../user-guide/skills/optional/gaming/gaming-pokemon-player.md) | Play Pokemon via headless emulator + RAM reads. |
 
+## hardware
+
+| Skill | Description |
+|-------|-------------|
+| [**black-wire-reference**](../user-guide/skills/optional/hardware/hardware-black-wire-reference.md) | Find board pinouts and GPIO maps in the Black Wire guide. |
+
 ## health
 
 | Skill | Description |

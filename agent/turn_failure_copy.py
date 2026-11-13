@@ -390,6 +390,15 @@ _ONE_OFF_COPY: dict[str, str] = {
         "reporting an error, so nothing was run. This is usually the provider or a proxy in front "
         "of it cutting long replies short. Send /retry; asking for the work in smaller steps also helps."
     ),
+    # Rides failure_reason="truncated": clean EOF (no transport error, no finish_reason) that
+    # delivered no visible text across every continuation attempt. States what Hermes observed
+    # instead of asserting what the upstream did — the close is reported, not explained (#144116).
+    "stream_closed_no_text": (
+        "{label} ended the stream before any answer text arrived and never reported a finish "
+        "reason, so no answer was produced. Hermes has no sign the output budget was reached — "
+        "this is usually the provider or a proxy in front of it cutting long replies short. "
+        "Send /retry; asking for the work in smaller steps also helps."
+    ),
     # Rides failure_reason="loop_error" (advisory; the turn is incomplete, not failed).
     "local_processing_error": (
         "Hermes hit an internal error while handling the model's reply and stopped this turn. "

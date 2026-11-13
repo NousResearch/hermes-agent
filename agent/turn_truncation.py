@@ -322,6 +322,10 @@ def _continue_text(st: _Trunc, _retry: TurnRetryState, assistant_message: Any) -
     st.length_continue_retries += 1
     n = st.length_continue_retries
     _interim_content = getattr(assistant_message, "content", None)
+    # A clean close (no transport exception, no finish_reason) is not a budget problem, so the
+    # retry ladder must not describe itself as one (#144116). Only the stub builder tags this;
+    # a transport drop keeps the network wording, which is true for it.
+    _clean_eof = st.is_stub and bool(getattr(st.response, "_clean_eof", False))
     if not _interim_content and not st.is_stub:
         # Thinking-only truncation: continuing with thinking ON re-burns the budget.
         agent._ephemeral_reasoning_off = True
@@ -334,19 +338,32 @@ def _continue_text(st: _Trunc, _retry: TurnRetryState, assistant_message: Any) -
     filled = st.window_filled
     if n < 4 and filled is None:
         _dropped_tools = getattr(st.response, "_dropped_tool_names", None)
+        # Nothing visible was delivered this turn, so there is nothing to continue from: re-issue
+        # the same request (a clean close is per-connection and often transient) instead of
+        # appending a continuation nudge. That nudge would be a user row with no assistant row
+        # before it, and the pre-request alternation repair fuses it into the user's own message —
+        # where it is replayed on every later turn of the session (#144116).
+        _bare_retry = _clean_eof and not _interim_content and not st.truncated_response_parts
         if st.is_stub and _dropped_tools:
             agent._vprint(
                 f"{agent.log_prefix}↻ Stream interrupted mid "
                 f"tool-call ({', '.join(_dropped_tools[:3])}) — requesting chunked retry ({n}/4)...", diagnostic=True,
             )
+        elif _bare_retry:
+            agent._vprint(
+                f"{agent.log_prefix}↻ Stream closed upstream before any answer text — "
+                f"retrying ({n}/4)...", diagnostic=True,
+            )
         elif st.is_stub:
             agent._vprint(f"{agent.log_prefix}↻ Stream interrupted — requesting continuation ({n}/4)...", diagnostic=True)
         else:
             agent._vprint(f"{agent.log_prefix}↻ Requesting continuation ({n}/4)...", diagnostic=True)
-        append_message(messages, {
-            "role": "user", "content": _get_continuation_prompt(st.is_stub, _dropped_tools),
-            "_length_continuation_nudge": True,
-        })
+        if not _bare_retry:
+            append_message(messages, {
+                "role": "user",
+                "content": _get_continuation_prompt(st.is_stub, _dropped_tools, clean_eof=_clean_eof),
+                "_length_continuation_nudge": True,
+            })
         agent._session_messages = messages
         _retry.restart_with_length_continuation = True
         return st.done("break")
@@ -373,7 +390,12 @@ def _continue_text(st: _Trunc, _retry: TurnRetryState, assistant_message: Any) -
             f"Prompt used {filled[0]} of {filled[1]} context tokens; no room to answer",
         )
     return st.end_turn(
-        partial_response or _CEILING_NO_TEXT,
+        partial_response or (
+            # The stream was closed upstream and nothing was delivered: explain that, not a
+            # budget the model never reached (#144116).
+            site_copy("stream_closed_no_text", label=provider_label_for(agent.provider))
+            if _clean_eof else _CEILING_NO_TEXT
+        ),
         "Response remained truncated after 4 continuation attempts",
     )
 

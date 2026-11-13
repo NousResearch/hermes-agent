@@ -996,6 +996,15 @@ _LENGTH_CONTINUATION_OUTPUT_LIMIT = (
     "[System: Your previous response was truncated by the output length limit. Continue exactly "
     "where you left off. Do not restart or repeat prior text. Finish the answer directly.]"
 )
+# Clean EOF: no transport exception and no finish_reason — the server (or a proxy in front of it)
+# closed the stream. Naming a network error would contradict the user-facing copy for the same
+# turn, which already knows no exception occurred. It states what was observed, not why (#144116).
+_LENGTH_CONTINUATION_STREAM_CLOSED = (
+    "[System: The previous response ended early — the stream was closed before the answer was "
+    "finished and no finish reason was reported. No transport error arrived and no output-length "
+    "stop was reported. Continue the task from where you left off. Do not restart or repeat "
+    "prior text.]"
+)
 # Pre-#74990 wording; kept so crash-persisted nudges from older sessions are still recognized.
 _LEGACY_LENGTH_CONTINUATION_NETWORK_STUB = (
     "[System: The previous response was cut off by a network error mid-stream. Continue exactly "
@@ -1005,7 +1014,8 @@ _LEGACY_LENGTH_CONTINUATION_NETWORK_STUB = (
 _LENGTH_CONTINUATION_DROPPED_TOOLS_PREFIX = "[System: Your previous tool call "
 
 
-def _get_continuation_prompt(is_partial_stub: bool, dropped_tools: Optional[list[str]] = None) -> str:
+def _get_continuation_prompt(is_partial_stub: bool, dropped_tools: Optional[list[str]] = None,
+                             clean_eof: bool = False) -> str:
     if is_partial_stub and dropped_tools:
         tool_list = ", ".join(dropped_tools[:3])
         return (
@@ -1016,6 +1026,8 @@ def _get_continuation_prompt(is_partial_stub: bool, dropped_tools: Optional[list
             "arguments must be under ~8K tokens to avoid stream timeouts. The cut was a transport "
             "interruption, not a capability change — your tools remain fully available.]"
         )
+    if is_partial_stub and clean_eof:
+        return _LENGTH_CONTINUATION_STREAM_CLOSED
     return _LENGTH_CONTINUATION_NETWORK_STUB if is_partial_stub else _LENGTH_CONTINUATION_OUTPUT_LIMIT
 
 

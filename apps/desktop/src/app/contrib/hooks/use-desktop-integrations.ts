@@ -1,5 +1,6 @@
 import { useStore } from '@nanostores/react'
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import type { MutableRefObject } from 'react'
 
 import { resumeAccountConnect } from '@/app/capabilities/connectors/data/deep-link'
 import { closeActiveTab } from '@/app/chat/close-tab'
@@ -12,6 +13,7 @@ import { getSession } from '@/hermes'
 import { resolveDeepLinkAction } from '@/lib/deeplink-routes'
 import { pathFromHermesDeepLink, resolveHermesOpenPath } from '@/lib/hermes-open-target'
 import { storedSessionIdForNotification } from '@/lib/session-ids'
+import { browserTabNavigationRole, webappTabReplaysRememberedNavigation } from '@/lib/webapp-tab-role'
 import { announceNewSessionDraftKey } from '@/store/composer'
 import { recordAction } from '@/store/desktop-metrics'
 import { onKeptRouteOpened } from '@/store/gateway-kept-routes'
@@ -55,6 +57,50 @@ import { resolveRememberedSessionId } from './remembered-session'
 const KEPT_ROUTE_REFRESH_COALESCE_MS = 400
 
 type RememberedSession = Pick<SessionInfo, '_lineage_root_id' | 'id' | 'parent_session_id' | 'profile' | 'source'>
+
+type RememberedNavigation = { profile: string; route: null | string; sessionId: null | string }
+
+/**
+ * The destination this window opened with. A restore can be held for a long
+ * time (a busy backend delays the first session list) while the remembered
+ * navigation is SHARED with every other window and tab: read it once, per
+ * profile, at boot, so a held restore replays this window's chat — never the
+ * one another window selected in the meantime.
+ */
+function rememberBootNavigation(
+  ref: MutableRefObject<null | RememberedNavigation>,
+  profile: string
+): RememberedNavigation {
+  if (ref.current?.profile !== profile) {
+    ref.current = { profile, route: getRememberedRoute(profile), sessionId: getRememberedSessionId(profile) }
+  }
+
+  return ref.current
+}
+
+/** A remembered PAGE route (skills, cron, artifacts) restores as-is; an overlay never does. */
+function isRestorableNonSessionRoute(route: null | string, routeSession: null | string): boolean {
+  return !!route && route !== NEW_CHAT_ROUTE && !routeSession && !isOverlayView(appViewForPath(route))
+}
+
+/**
+ * A remembered CHAT route restores only when its session belongs to the profile
+ * this window booted as; a page route restores as-is and an overlay never does.
+ * True also narrows `route` to the route that may now be navigated to.
+ */
+function rememberedRouteRestorable(
+  route: null | string,
+  routeSession: null | string,
+  restorableRouteSession: null | string,
+  sessions: readonly RememberedSession[],
+  profile: string
+): route is string {
+  if (!route || route === NEW_CHAT_ROUTE || isOverlayView(appViewForPath(route))) {
+    return false
+  }
+
+  return !routeSession || (!!restorableRouteSession && sessionBelongsToProfile(sessions, routeSession, profile))
+}
 
 interface DesktopIntegrationsParams {
   activeProfile: string
@@ -123,6 +169,41 @@ export function useDesktopIntegrations({
   const restoredRef = useRef(false)
   const diskPluginsScanPending = useStore($diskPluginsScanPending)
 
+  // Whether THIS window replays the remembered chat. A browser tab has no
+  // `?peer=1` mark to inherit (every tab is the same URL on one origin), so the
+  // Webapp elects one owner with a Web Lock: the first tab restores, later tabs
+  // boot like the Desktop's peer windows (#74948). `null` = the election has not
+  // settled; hold the latch rather than replay a destination that another tab
+  // may be about to change.
+  const [replaysRememberedNavigation, setReplaysRememberedNavigation] = useState<boolean | null>(() =>
+    browserTabNavigationRole()
+  )
+
+  useEffect(() => {
+    if (replaysRememberedNavigation !== null) {
+      return
+    }
+
+    let live = true
+
+    void webappTabReplaysRememberedNavigation().then(replays => {
+      if (live) {
+        setReplaysRememberedNavigation(replays)
+      }
+    })
+
+    return () => {
+      live = false
+    }
+  }, [replaysRememberedNavigation])
+
+  // The destination this window opened with. The restore can be held for a long
+  // time (a busy backend delays the first session list), while the remembered
+  // navigation is SHARED with every other window and tab. Read it once, at boot,
+  // so a held restore replays this window's chat — never the one another tab
+  // selected in the meantime.
+  const bootNavigationRef = useRef<{ profile: string; route: string | null; sessionId: string | null } | null>(null)
+
   // Wait until boot has adopted the primary profile, then restore that profile's
   // navigation exactly once. The same effect owns subsequent writes so the
   // initial `/` cannot overwrite remembered history before it is read.
@@ -134,9 +215,28 @@ export function useDesktopIntegrations({
     // remembered-route/remembered-session restore, which lands it back on the
     // very session Window 1 has open (#74948). Connections' source
     // restoration already skips peers for the same reason.
-    if (!profileReady || isHudWindow() || isBrowserWindow() || isPeerInstanceWindow()) {
+    //
+    // The Webapp's tab election being unsettled holds the same latch: deciding
+    // now would either skip a real restore or replay a destination that another
+    // tab of the origin owns.
+    if (
+      !profileReady ||
+      isHudWindow() ||
+      isBrowserWindow() ||
+      isPeerInstanceWindow() ||
+      replaysRememberedNavigation === null
+    ) {
       return
     }
+
+    if (!replaysRememberedNavigation) {
+      // A later tab of the serving origin boots like a peer window: it never
+      // replays the chat another tab has open, and its own fresh-draft boot
+      // leaves the origin's remembered page alone (see the write guard below).
+      restoredRef.current = true
+    }
+
+    const bootNavigation = rememberBootNavigation(bootNavigationRef, activeProfile)
 
     if (!restoredRef.current) {
       // Only cold-start navigation at the default route is replaceable; a deep
@@ -156,12 +256,11 @@ export function useDesktopIntegrations({
           return
         }
 
-        const route = getRememberedRoute(activeProfile)
+        const route = bootNavigation.route
         const routeSession = route ? routeSessionId(route) : null
-        const last = getRememberedSessionId(activeProfile)
+        const last = bootNavigation.sessionId
 
-        const restorableNonSessionRoute =
-          !!route && route !== NEW_CHAT_ROUTE && !routeSession && !isOverlayView(appViewForPath(route))
+        const restorableNonSessionRoute = isRestorableNonSessionRoute(route, routeSession)
 
         // Boot adoption can publish renderer.ready before its async session
         // refresh completes. Keep the restore latch open until ownership can be
@@ -215,12 +314,7 @@ export function useDesktopIntegrations({
 
         const restorableRouteSession = routeSession && rowFor(routeSession)?.source !== 'subagent' ? routeSession : null
 
-        if (
-          route &&
-          route !== NEW_CHAT_ROUTE &&
-          !isOverlayView(appViewForPath(route)) &&
-          (!routeSession || (restorableRouteSession && sessionBelongsToProfile(sessions, routeSession, activeProfile)))
-        ) {
+        if (rememberedRouteRestorable(route, routeSession, restorableRouteSession, sessions, activeProfile)) {
           // The user may have started typing on the fresh chat while the
           // backend was still coming up; the composer moves that draft onto
           // the restored session when its scope swaps (#114122).
@@ -307,7 +401,13 @@ export function useDesktopIntegrations({
           activeProfile
         )
       }
-    } else if (!routedSessionId && !isOverlayView(appViewForPath(locationPathname))) {
+    } else if (
+      !routedSessionId &&
+      !isOverlayView(appViewForPath(locationPathname)) &&
+      // A peer window's initial fresh draft must not erase the origin's
+      // remembered page: that record belongs to the tab that owns navigation.
+      (replaysRememberedNavigation || locationPathname !== NEW_CHAT_ROUTE)
+    ) {
       setRememberedRoute(locationPathname, activeProfile)
     }
   }, [
@@ -316,6 +416,7 @@ export function useDesktopIntegrations({
     locationPathname,
     navigate,
     profileReady,
+    replaysRememberedNavigation,
     resumeExhaustedSessionId,
     resumeLastSession,
     routedSessionId,

@@ -423,12 +423,14 @@ def _refresh_found_env(package, location, target, operation) -> None:
             or store.root != Store(paths.writable_store_root()).root):
         return
     with nullcontext() if operation is not None else store.install_lock():
-        facts.reload()
-        previous = next((row for row in facts.variants(package.name)
+        # A fresh read: ``facts`` is the caller's per-checkout view, and reloading it would hand
+        # the caller whatever another checkout selected last.
+        shared = Facts(facts.path)
+        previous = next((row for row in shared.variants(package.name)
                          if row["entry"] == entry.name), None)
         if previous is None:
             return
-        _refresh_recorded_env(package, facts.selected(package.name, previous), store, entry,
+        _refresh_recorded_env(package, shared.selected(package.name, previous), store, entry,
                               previous, target)
 
 

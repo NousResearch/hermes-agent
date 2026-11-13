@@ -166,3 +166,26 @@ def test_cache_hit_on_another_checkouts_install_of_the_same_pin_claims_it(tmp_pa
     _publish(root, "python", "2.0", "2" * 64, target, digest=True)
     cli._gc_store(Store(root), Facts(root / "facts.json"))
     assert entry.is_dir()
+
+
+def test_claiming_a_found_pin_keeps_the_callers_view_on_its_own_pin(tmp_path, monkeypatch):
+    """A reuses its pin while another checkout's newer pin is the store's selection: claiming the
+    pin must not turn the view A runs from into the other checkout's selection."""
+    root = tmp_path / "tools"
+    root.mkdir()
+    target = current_target()
+    package = get_package("python")
+    monkeypatch.setattr(paths, "store_root", lambda: root)
+    monkeypatch.setattr(paths, "writable_store_root", lambda: root)
+    for owner, version, sha in (("C", "1.0", "1"), ("B", "2.0", "2")):
+        monkeypatch.setattr(pm_lock, "install_owner", lambda owner=owner: owner)
+        _publish(root, "python", version, sha * 64, target, digest=True)
+
+    monkeypatch.setattr(pm_lock, "install_owner", lambda: "A")
+    lock = _pin(tmp_path / "A.json", "python", "1.0", "1" * 64, target)
+    location = install._installed_location(package, lock, target)
+    install._refresh_found_env(package, location, target, None)
+    assert location[0].get("python")["version"] == "1.0"
+    claimed = [row["version"] for row in Facts(root / "facts.json").variants("python")
+               if "A" in (row.get("owners") or ())]
+    assert claimed == ["1.0"]

@@ -172,6 +172,25 @@ search_files("function_name(", path="src/", file_glob="*.py")
 search_files("variable_name\\s*=", path="src/", file_glob="*.py")
 ```
 
+### 6. Attach a Real Debugger Before Print Statements
+
+**WHEN the crash is in Python and the cause is not obvious from the message:**
+
+- Run the failing entry point under `scripts/debug_trace.py` with the `terminal` tool instead of
+  adding print statements. It reports every frame with source line and truncated locals.
+- Read the innermost frame's locals first, then walk outward to find where the bad value originates.
+- Remove no instrumentation afterwards: the tracer runs out-of-process, so the codebase stays clean.
+
+**Action:** Use the `terminal` tool to run the tracer:
+
+```bash
+# Structured crash frames for a repro script
+python skills/software-development/systematic-debugging/scripts/debug_trace.py scripts/repro_bug.py
+
+# Pass target argv after the path, add --json for the machine-readable report
+python skills/software-development/systematic-debugging/scripts/debug_trace.py run_server.py --port 0 --json
+```
+
 ### Phase 1 Completion Checklist
 
 - [ ] Error messages fully read and understood
@@ -179,7 +198,7 @@ search_files("variable_name\\s*=", path="src/", file_glob="*.py")
 - [ ] Loop is red-capable: it asserts the user's exact symptom, not a nearby failure
 - [ ] Loop is deterministic, or a flaky bug has a high enough reproduction rate to debug
 - [ ] Recent changes identified and reviewed
-- [ ] Evidence gathered (logs, state, data flow)
+- [ ] Evidence gathered (logs, state, data flow; crash frames via `scripts/debug_trace.py` for Python)
 - [ ] Problem isolated to specific component/code
 - [ ] Root cause hypotheses can be stated and tested
 

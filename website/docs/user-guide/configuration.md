@@ -919,6 +919,8 @@ skills:
 
 When on, any flagged `skill_manage` write surfaces as an approval prompt with the scanner's rationale. Accepted writes land; denied writes return an explanatory error to the agent.
 
+Writes from the background self-improvement review are always scanned, whatever this setting says: that fork has no `terminal()`, so `skill_manage` is its only way to write a skill. A scan that flags the content, or cannot finish, blocks the write. Approving a staged review write with `/skills approve` runs the same scan.
+
 ### Write approval for skill writes
 
 Independent of the content scanner above, `skills.write_approval` gates **every** agent skill write (create / edit / patch / delete / supporting files) behind your explicit approval — the same approve/deny mechanism as dangerous commands:

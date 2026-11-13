@@ -47,10 +47,22 @@ def _guard_agent_created_enabled() -> bool:
         return False
 
 
+# Set while replaying an approved write that the background-review fork staged.
+_replaying_background_write: _ctxvars.ContextVar[bool] = _ctxvars.ContextVar(
+    "replaying_background_write", default=False)
+
+
+def _scan_required() -> bool:
+    """Opt-in for foreground writes, always on for the background-review fork: the fork's whitelist
+    is memory+skills, so the terminal() rationale for the opt-in does not apply to it."""
+    return (_guard_agent_created_enabled() or _is_background_review()
+            or _replaying_background_write.get())
+
+
 def _security_scan_skill(skill_dir: Path) -> Optional[str]:
-    """Post-write scan (opt-in); error string if blocked, else None. An "ask" verdict
+    """Post-write scan; error string if blocked, else None. An "ask" verdict
     (dangerous findings) is surfaced as an error so the agent can retry without them."""
-    if not _guard_agent_created_enabled():
+    if not _scan_required():
         return None
     try:
         result = scan_skill(skill_dir, source="agent-created")
@@ -59,7 +71,7 @@ def _security_scan_skill(skill_dir: Path) -> Optional[str]:
             logger.warning("Agent-created skill blocked (dangerous findings): %s", reason)
         if allowed is not True:
             return f"Security scan blocked this skill ({reason}):\n{format_scan_report(result)}"
-    except Exception as e:  # the guard is on: a scan that cannot finish must not allow the write
+    except Exception as e:  # a required scan that cannot finish must not allow the write
         logger.warning("Security scan failed for %s: %s", skill_dir, e, exc_info=True)
         return f"Security scan could not complete, so this skill was blocked: {e}"
     return None
@@ -714,12 +726,17 @@ def _skill_manage_from(payload: dict[str, Any], **extra) -> str:
         **{k: payload.get(k) for k in _FLAT_OP_KEYS}, **extra)
 
 
-def apply_skill_pending(payload: dict[str, Any]) -> str:
-    """Replay a staged skill write, bypassing the gate (the /skills approve handler)."""
+def apply_skill_pending(payload: dict[str, Any], origin: str = "foreground") -> str:
+    """Replay a staged skill write, bypassing the gate (the /skills approve handler). A write the
+    background-review fork staged keeps its mandatory scan; only the scan, not the fork's other
+    guards, follows it, since the approving user has not skill_view'd the target."""
+    from tools.skill_provenance import BACKGROUND_REVIEW
     token = _skill_gate_bypass.set(True)
+    bg_token = _replaying_background_write.set(origin == BACKGROUND_REVIEW)
     try:
         return _skill_manage_from(payload)
     finally:
+        _replaying_background_write.reset(bg_token)
         _skill_gate_bypass.reset(token)
 
 

@@ -786,13 +786,11 @@ def test_projects_tree_leaves_messaging_sessions_to_their_own_section(monkeypatc
 def test_project_tree_messaging_sources_match_the_desktop_messaging_section():
     """The tree may only drop sources the desktop renders in its Messaging section,
     or a dropped row would vanish from the sidebar entirely."""
-    import re
+    import json
 
     from tui_gateway import methods_projects
 
-    ts = Path(__file__).resolve().parents[2] / "apps" / "desktop" / "src" / "lib" / "session-source.ts"
-    block = re.search(r"MESSAGING_SESSION_SOURCE_IDS = \[(.*?)\]", ts.read_text(encoding="utf-8"), re.DOTALL)
-    assert block, "MESSAGING_SESSION_SOURCE_IDS not found in session-source.ts"
-    desktop = set(re.findall(r"'([^']+)'", block.group(1)))
+    shared = Path(__file__).resolve().parents[2] / "apps" / "desktop" / "src" / "lib" / "messaging-session-sources.json"
+    desktop = set(json.loads(shared.read_text(encoding="utf-8")))
 
     assert set(methods_projects._MESSAGING_SESSION_SOURCES) == desktop

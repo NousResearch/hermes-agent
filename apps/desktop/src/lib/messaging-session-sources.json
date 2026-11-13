@@ -1,0 +1,22 @@
+[
+  "telegram",
+  "discord",
+  "slack",
+  "mattermost",
+  "matrix",
+  "signal",
+  "whatsapp",
+  "bluebubbles",
+  "photon",
+  "homeassistant",
+  "email",
+  "sms",
+  "webhook",
+  "api_server",
+  "weixin",
+  "wecom",
+  "qqbot",
+  "yuanbao",
+  "dingtalk",
+  "feishu"
+]

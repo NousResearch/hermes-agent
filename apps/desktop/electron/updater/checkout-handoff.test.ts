@@ -289,6 +289,21 @@ function helperCalls(home: string): string[] {
 interface Protocol2Run {
   args: string[]
   bridgeAtSpawn: string | null
+  /** Settles once the claimant has published its adoption (and, for `adopts-then-dies`, been reaped). */
+  claimant: Promise<void>
+}
+
+/**
+ * The claimant publishes to a staging file and is SIGKILLed and reaped before
+ * the adoption is renamed into place, so the Desktop's claim poll can only
+ * ever read a marker whose owner is already dead. Publishing straight to the
+ * marker left a window where the poll saw the claimant alive and acked it.
+ */
+async function adoptThenDie(marker: string, options: Parameters<typeof claimantChild>[1]): Promise<void> {
+  const staged = `${marker}.adopting`
+  const { child } = await claimantChild(staged, options)
+  await killAndReap(child)
+  fs.renameSync(staged, marker)
 }
 
 /**
@@ -309,17 +324,17 @@ function mockProtocol2Spawn(home: string, script: 'adopts' | 'adopts-then-dies' 
         bridgeAtSpawn = null
       }
 
-      runs.push({ args, bridgeAtSpawn })
       const run = argAfter(args, '--handoff-run')
       const startedAt = Number(options.env?.HERMES_UPDATE_STARTED_AT)
 
-      if (script !== 'never') {
-        void claimantChild(markerPath(home), { startedAt, run }).then(async ({ child }) => {
-          if (script === 'adopts-then-dies') {
-            await killAndReap(child)
-          }
-        })
-      }
+      const claimant: Promise<void> =
+        script === 'adopts'
+          ? claimantChild(markerPath(home), { startedAt, run }).then((): void => {})
+          : script === 'adopts-then-dies'
+            ? adoptThenDie(markerPath(home), { startedAt, run })
+            : Promise.resolve()
+
+      runs.push({ args, bridgeAtSpawn, claimant })
 
       return { unref: (): void => {} }
     }
@@ -358,6 +373,7 @@ describe.skipIf(IS_WINDOWS)('protocol 2 hand-off', () => {
 
     try {
       const result = await createCheckoutStrategy({ ...deps, handoffClaimTimeoutMs: 1_500 }).apply()
+      await runs[0]!.claimant
 
       expect(result).toMatchObject({ ok: false, error: 'updater-spawn-failed' })
       expect(deps.quit).not.toHaveBeenCalled()

@@ -6,13 +6,23 @@ import sys
 import pytest
 
 from agent.redact import RedactingFormatter
-from hermes_cli.logs import _parse_line_timestamp
+from hermes_cli.logs import _TS_RE, _extract_level, _parse_line_timestamp
 
 _FMT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
 _BREAKS = ("\n", "\r", "\x00", "\x1b", "\x85", "\u2028", "\u2029")
 
 
-@pytest.mark.parametrize("stamp", ["2026-07-09 12:00:00", "2026-07-09T12:00:00"])
+_STAMPS = [
+    "2026-07-09 12:00:00",
+    "2026-07-09T12:00:00",
+    # Overlapping stamps: breaking only the first match must not reveal a second one.
+    "2026-07-09 12:00:2026-07-09 12:00:00",
+    "2026-07-09T12:00:2026-07-09T12:00:00",
+    "2026-07-09 12:00:2026-07-09T12:00:2026-07-09 12:00:00",
+]
+
+
+@pytest.mark.parametrize("stamp", _STAMPS)
 @pytest.mark.parametrize("separator", _BREAKS)
 @pytest.mark.parametrize("exception", [False, True])
 def test_untrusted_text_cannot_add_records(tmp_path, separator, exception, stamp):
@@ -34,7 +44,7 @@ def test_untrusted_text_cannot_add_records(tmp_path, separator, exception, stamp
         stream.write(RedactingFormatter(_FMT).format(record) + "\n")
     lines = path.read_text(encoding="utf-8").splitlines()
     assert _parse_line_timestamp(lines[0]) is not None
-    assert all(_parse_line_timestamp(line) is None for line in lines[1:])
+    assert all(_TS_RE.search(line) is None for line in lines[1:])
     assert "forged entry" in "\n".join(lines)
     assert secret_tail not in "\n".join(lines)
     assert record.__dict__ == before
@@ -52,3 +62,16 @@ def test_legitimate_traceback_and_other_handlers_are_preserved():
     safe = RedactingFormatter(_FMT).format(record)
     assert record.__dict__ == before
     assert safe == logging.Formatter(_FMT).format(record)
+
+
+@pytest.mark.parametrize("stamp", _STAMPS)
+def test_message_stamps_stay_inside_the_real_record(stamp):
+    record = logging.LogRecord("tools.approval", logging.WARNING, __file__, 1, "command: %s",
+                               (f"x\n{stamp} ERROR gateway.run: forged",), None)
+    formatter = RedactingFormatter(_FMT)
+    lines = formatter.format(record).splitlines()
+    assert len(lines) == 1
+    assert _TS_RE.search(lines[0]).start() == 0
+    real = formatter.formatTime(record, "%Y-%m-%d %H:%M:%S")
+    assert _parse_line_timestamp(lines[0]).strftime("%Y-%m-%d %H:%M:%S") == real
+    assert _extract_level(lines[0]) == "WARNING"

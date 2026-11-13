@@ -533,6 +533,8 @@ oauth:
       - https://www.googleapis.com/auth/calendar.events.owned
       - https://www.googleapis.com/auth/documents
     client_id_env: GEMINI_VOICE_CLIENT_ID
+    # Optional public identifier (never a secret); the profile's variable overrides it.
+    # client_id_default: https://example.com/oauth/clients/public.json
     client_secret_env: GEMINI_VOICE_CLIENT_SECRET  # optional: a public PKCE client has none
     hosts: [www.googleapis.com, docs.googleapis.com]
     authorize_params: {access_type: offline, prompt: consent}  # Google issues a refresh token only with these
@@ -577,6 +579,12 @@ The Codex rules above apply, plus:
 - **Your own client variables.** `client_id_env` and `client_secret_env` name
   the plugin's own variables; a variable Hermes itself uses (a provider API key,
   a platform token) is refused, since Hermes sends these to `token_url`.
+  An optional `client_id_default` supplies a **public client identifier** (such as
+  a CIMD URL) when that profile's client-ID variable is unset. It never defaults
+  a client secret, bypasses no ownership check, and does not execute plugin code
+  or write environment/config files during sign-in. A nonempty profile variable
+  overrides it. Changing the default changes the grant fingerprint; declarations
+  without a default keep their existing fingerprints.
 - **The plugin's own grant.** The grant is stored under the calling plugin's
   key, so another plugin declaring the same `id` cannot use it, and the plugin's
   own entry wins over a Hermes sign-in of the same name.

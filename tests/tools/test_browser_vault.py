@@ -869,3 +869,65 @@ class TestFillLandedFidelity:
         )
         tokens = sorted(f["token"] for f in fills)
         assert tokens == ["cc-csc", "cc-exp-month", "cc-exp-year", "cc-name", "cc-number"]
+
+
+    def test_payment_fill_refuses_truncated_cvc_but_allows_card_spacing(self, store):
+        """A nonempty CVC shortened by a page mask cannot count as a successful fill.
+
+        The browser script returns lengths and tokens only; the tool must reject
+        the partial write while accepting harmless added card-number spacing.
+        """
+        from agent import redact
+        from tools import browser_vault_tool
+
+        meta = store.add_item(kind="payment", label="Visa", origin="https://shop.test", secret=_CARD)
+        controls = [
+            {"autocomplete": "cc-number", "index": 0, "type": "text"},
+            {"autocomplete": "cc-csc", "index": 1, "type": "text"},
+        ]
+
+        def fake_eval(task_id, expression):
+            if "location.href" in expression:
+                return {"success": True, "result": "https://shop.test/checkout"}
+            return {"success": True, "result": json.dumps(controls)}
+
+        # The on-page input event kept two CVC characters, while formatting
+        # expanded the card number. Both fields still have nonempty values.
+        landed = {
+            "filled": 2,
+            "fidelity": {"cc-number": 19, "cc-csc": 2},
+            "fidelity_errors": ["cc-csc"],
+        }
+
+        def fake_eval_secret(task_id, expression):
+            return {"success": True, "result": json.dumps(landed)}
+
+        try:
+            with (
+                patch("agent.vault_store.get_vault_store", return_value=store),
+                patch.object(browser_vault_tool, "_eval_js", side_effect=fake_eval),
+                patch.object(browser_vault_tool, "_eval_js_secret", side_effect=fake_eval_secret),
+                patch("tools.approval_prompt.request_elicitation_consent", return_value="accept"),
+            ):
+                refused = json.loads(browser_vault_tool.browser_vault_fill(meta.id))
+                assert refused["success"] is False
+                assert refused["error_type"] == "fill_truncated"
+                assert refused["truncated_fields"] == ["cc-csc"]
+                assert refused["fidelity"] == {"cc-number": 19, "cc-csc": 2}
+                assert "filled_fields" not in refused
+
+                # Formatting that adds spaces is not truncation.
+                landed["fidelity"]["cc-csc"] = 3
+                landed["fidelity_errors"] = []
+                accepted = json.loads(browser_vault_tool.browser_vault_fill(meta.id))
+                assert accepted["success"] is True
+                assert accepted["filled_fields"] == 2
+                assert accepted["fidelity"] == {"cc-number": 19, "cc-csc": 3}
+                assert accepted["fields"] == ["cc-csc", "cc-number"]
+
+                for output in (refused, accepted):
+                    rendered = json.dumps(output)
+                    assert _CARD["card_number"] not in rendered
+                    assert _CARD["cvc"] not in rendered
+        finally:
+            redact.clear_vault_redaction_values()

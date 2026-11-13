@@ -16,9 +16,18 @@ from pathlib import Path
 import queue
 import sys
 import threading
+import time
 from hermes_dir_acl import make_user_dir
 
 logger = logging.getLogger(__name__)
+
+# One call's wait for the owner's reply, and how long a journal entry keeps being resent after the
+# owner stops answering. The second matches ``OWNER_WAIT_S`` in ``hermes_cli.kanban_worker_client``
+# (the longest the submitter waits on a silent owner); it is repeated here because that module is a
+# bootstrap entry point the agent package must not import.
+RECEIPT_WAIT_S = 20.0
+RECEIPT_RECOVERY_S = 180.0
+_RECOVERY_REDIAL_PAUSE_S = 1.0
 
 _worker_process = False
 
@@ -45,6 +54,14 @@ def apply_row_annotations(messages, annotations):
 
 class WorkerPersistenceError(RuntimeError):
     pass
+
+
+class WorkerReceiptTimeout(TimeoutError):
+    """The owner did not answer a sent request within ``RECEIPT_WAIT_S``: its outcome is unknown.
+
+    Typically the owner's event loop stalled (memory pressure). Journal entries are idempotent per
+    (execution, sequence, digest), so ``RuntimeSessionStore`` resends the same entry on a new connection.
+    """
 
 
 def _caller_summary(limit=8):
@@ -109,7 +126,7 @@ class _OwnerLink:
         try:
             reply = self.replies.get(timeout=timeout)
         except queue.Empty:
-            raise TimeoutError('worker_receipt_timeout') from None
+            raise WorkerReceiptTimeout('worker_receipt_timeout') from None
         if isinstance(reply, BaseException):
             raise reply
         return reply
@@ -194,9 +211,10 @@ class WorkerRPC:
                     self._drop()
                     link = self._connection()
                     link.send(request_id, message)
-                response = link.receive(20)
+                response = link.receive(RECEIPT_WAIT_S)
             except BaseException:
-                # Outcome unknown once sent: surface the error and never resend; the next call redials.
+                # Outcome unknown once sent: surface the error and never resend here; the next call
+                # redials. Only the store resends, and only a journal entry (an exact-retry receipt).
                 self._drop()
                 raise
             if 'error' in response:
@@ -223,8 +241,12 @@ class RuntimeSessionStore(RuntimeSessionCompressionMixin, RuntimeSessionLifecycl
     # The process's async-delegation ledger belongs to the adopted execution, never a reserved child.
     binds_delegation_ledger = True
 
-    def __init__(self, rpc, scope, outbox_dir, adopted=None, *, max_bytes=4 * 1024 * 1024):
+    def __init__(self, rpc, scope, outbox_dir, adopted=None, *, max_bytes=4 * 1024 * 1024,
+                 receipt_recovery_s=RECEIPT_RECOVERY_S, clock=time.monotonic, sleep=time.sleep):
         self.rpc = rpc
+        self.receipt_recovery_s = receipt_recovery_s
+        self._clock = clock
+        self._sleep = sleep
         self.scope = dict(scope)
         self.max_bytes = max_bytes
         self.lock = threading.RLock()
@@ -336,7 +358,7 @@ class RuntimeSessionStore(RuntimeSessionCompressionMixin, RuntimeSessionLifecycl
             try:
                 while self.journal['pending']:
                     entry = self.journal['pending'][0]
-                    result = self.rpc('worker.persist', **self.scope, **entry)
+                    result = self._send_entry(entry)
                     candidate = dict(self.journal, pending=self.journal['pending'][1:])
                     candidate = self._compression_receipt_journal(candidate, result)
                     self._save(candidate)
@@ -348,6 +370,41 @@ class RuntimeSessionStore(RuntimeSessionCompressionMixin, RuntimeSessionLifecycl
                 raise
             self.failure = None
             return results
+
+    def _send_entry(self, entry):
+        """``worker.persist`` for one journal entry, resent while the owner stays silent.
+
+        A receipt timeout leaves the outcome unknown (the owner may have committed it), which is
+        exactly what the owner's exact-retry receipt resolves: the same scope, sequence and payload
+        return the stored result instead of writing twice. So a stalled owner is redialled and sent the
+        same entry until ``receipt_recovery_s`` has passed since the first send; only then does the
+        failure stand (and stick). Once the owner has gone silent, a failed redial (its handshake
+        stalls too) or a closed connection is part of the same stall and is retried inside the same
+        window; an owner refusal or any other error is final at once.
+        """
+        started, silent = self._clock(), False
+        while True:
+            try:
+                return self.rpc('worker.persist', **self.scope, **entry)
+            except Exception as exc:  # health: allow BLE001 -- re-raised unless it is the owner's silence
+                if isinstance(exc, WorkerReceiptTimeout):
+                    silent = True
+                elif not (silent and self._owner_unreachable(exc)):
+                    raise
+                remaining = self.receipt_recovery_s - (self._clock() - started)
+                if remaining <= 0:
+                    raise
+                logger.warning('worker.persist seq %s: %s; resending on a new connection (%.0fs left)',
+                               entry['sequence'], exc, remaining)
+                if not isinstance(exc, WorkerReceiptTimeout):
+                    # A receipt timeout already spent its wait; a refused dial returns at once.
+                    self._sleep(min(_RECOVERY_REDIAL_PAUSE_S, remaining))
+
+    @staticmethod
+    def _owner_unreachable(exc):
+        from websockets.exceptions import ConnectionClosed
+        return (isinstance(exc, (TimeoutError, OSError, ConnectionClosed))
+                or (isinstance(exc, WorkerPersistenceError) and str(exc) == 'owner_unavailable'))
 
     def adopt(self, epoch):
         """Install only a separately verified worker.adopt result; never self-adopt."""

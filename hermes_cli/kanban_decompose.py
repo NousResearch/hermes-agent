@@ -217,36 +217,6 @@ def _load_routing(*, root_assignee: Optional[str] = None) -> _Routing:
         valid_names=valid_names,
     )
 
-    # Resolve effective timeout: explicit arg > auxiliary.kanban_decomposer.timeout config > 180s legacy default
-    _aux_cfg = cfg.get("auxiliary", {}) if isinstance(cfg, dict) else {}
-    _decomp_cfg = _aux_cfg.get("kanban_decomposer", {}) if isinstance(_aux_cfg, dict) else {}
-    try:
-        _cfg_timeout = int(_decomp_cfg.get("timeout") or 0)
-    except (TypeError, ValueError):
-        _cfg_timeout = 0
-    effective_timeout = timeout or (_cfg_timeout if _cfg_timeout > 0 else 180)
-
-    try:
-        # Route through call_llm so auxiliary.kanban_decomposer.* config
-        # (provider/model/base_url, extra_body, reasoning_effort, retries)
-        # all apply — the previous direct client.chat.completions.create() path
-        # dropped auxiliary.<task>.extra_body entirely (#35566).
-        resp = call_llm(
-            task="kanban_decomposer",
-            messages=[
-                {"role": "system", "content": _SYSTEM_PROMPT},
-                {"role": "user", "content": user_msg},
-            ],
-            temperature=0.3,
-            max_tokens=4000,
-            timeout=effective_timeout,
-        )
-    except Exception as exc:
-        logger.info(
-            "decompose: API call failed for %s (%s)", task_id, exc,
-        )
-        return DecomposeOutcome(task_id, False, f"LLM error: {type(exc).__name__}")
-
 def _apply_single(task: kb.Task, parsed: dict, routing: _Routing, author: str) -> DecomposeOutcome:
     """``fanout=false``: single-task spec promotion (same effect as specify)."""
     title_val, body_val = _title_body(parsed)
@@ -350,7 +320,7 @@ def decompose_task(
             roster=_format_roster(routing.roster),
             default_assignee=routing.default_assignee,
         ),
-        max_tokens=4000, timeout=timeout or 180, log=logger,
+        max_tokens=4000, timeout=timeout, log=logger,
     )
     if raw is None:
         return DecomposeOutcome(task_id, False, reason)

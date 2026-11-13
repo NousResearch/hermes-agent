@@ -25,12 +25,22 @@ from hermes_cli import kanban_db_connect as kbc
 from utils import env_int
 
 
-def _load_config() -> dict:
+def _auxiliary_timeout(task: str, timeout: Optional[int], legacy_default: int) -> int:
+    """Use an explicit timeout, then task config, then preserve the legacy default."""
+    if timeout is not None:
+        return timeout
     try:
-        from hermes_cli.config import load_config
-        return load_config() or {}
+        from hermes_cli.config import load_config_readonly
+        config = load_config_readonly() or {}
     except Exception:
-        return {}
+        config = {}
+    auxiliary = config.get("auxiliary", {}) if isinstance(config, dict) else {}
+    task_config = auxiliary.get(task, {}) if isinstance(auxiliary, dict) else {}
+    try:
+        configured = int(task_config.get("timeout") or 0)
+    except (AttributeError, TypeError, ValueError):
+        configured = 0
+    return configured if configured > 0 else legacy_default
 
 
 HERMES_KANBAN_SPECIFY_MAX_TOKENS = max(
@@ -156,7 +166,7 @@ def _task_prompt_fields(task: kb.Task) -> dict[str, str]:
 
 
 def _call_aux(verb: str, task_id: str, *, aux_task: str, system: str, user: str,
-              max_tokens: int, timeout: int, log: logging.Logger = logger) -> tuple[Optional[str], str]:
+              max_tokens: int, timeout: Optional[int], log: logging.Logger = logger) -> tuple[Optional[str], str]:
     """One auxiliary LLM call; ``(reply_text, "")`` or ``(None, reason)``.
 
     ``call_llm`` applies all ``auxiliary.<aux_task>.*`` config (provider/model/
@@ -166,24 +176,17 @@ def _call_aux(verb: str, task_id: str, *, aux_task: str, system: str, user: str,
     try:
         from agent.auxiliary_client import call_llm
     except Exception as exc:  # pragma: no cover — import smoke test
-        logger.debug("specify: auxiliary client import failed: %s", exc)
-        return SpecifyOutcome(task_id, False, "auxiliary client unavailable")
-
-    user_msg = _USER_TEMPLATE.format(
-        task_id=task.id,
-        title=_truncate(task.title or "", 400),
-        body=_truncate(task.body or "(no body)", 4000),
-    )
-
-    # Resolve effective timeout: explicit arg > auxiliary.triage_specifier.timeout config > 120s legacy default
-    cfg = _load_config()
-    _aux_cfg = cfg.get("auxiliary", {}) if isinstance(cfg, dict) else {}
-    _spec_cfg = _aux_cfg.get("triage_specifier", {}) if isinstance(_aux_cfg, dict) else {}
-    try:
-        _cfg_timeout = int(_spec_cfg.get("timeout") or 0)
-    except (TypeError, ValueError):
-        _cfg_timeout = 0
-    effective_timeout = timeout or (_cfg_timeout if _cfg_timeout > 0 else 120)
+        log.debug("%s: auxiliary client import failed: %s", verb, exc)
+        return None, "auxiliary client unavailable"
+    # Specify/decompose run outside any agent turn (CLI, dashboard route, gateway watcher), so no
+    # conversation affinity scope is bound and the relay-affinity headers (x-opencode-session, the
+    # OpenRouter/Portal sticky key) are omitted — the OpenCode Go relay rejects that with 400
+    # MissingSessionID (#112043). Declare a per-task scope, but only when none is already bound so an
+    # in-turn caller keeps its conversation's key.
+    from agent.portal_tags import get_affinity_scope, reset_affinity_scope, set_affinity_scope
+    affinity_token = None if get_affinity_scope() else set_affinity_scope(f"kanban:{task_id}")
+    legacy_timeout = 180 if aux_task == "kanban_decomposer" else 120
+    effective_timeout = _auxiliary_timeout(aux_task, timeout, legacy_timeout)
 
     try:
         # Route through call_llm so auxiliary.triage_specifier.* config (provider/model/base_url,
@@ -193,7 +196,7 @@ def _call_aux(verb: str, task_id: str, *, aux_task: str, system: str, user: str,
             task=aux_task,
             messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
             temperature=0.3,
-            max_tokens=HERMES_KANBAN_SPECIFY_MAX_TOKENS,
+            max_tokens=max_tokens,
             timeout=effective_timeout,
         )
     except Exception as exc:
@@ -225,7 +228,7 @@ def specify_task(
     raw, reason = _call_aux(
         "specify", task_id, aux_task="triage_specifier", system=_SYSTEM_PROMPT,
         user=_USER_TEMPLATE.format(**_task_prompt_fields(task)),
-        max_tokens=HERMES_KANBAN_SPECIFY_MAX_TOKENS, timeout=timeout or 120,
+        max_tokens=HERMES_KANBAN_SPECIFY_MAX_TOKENS, timeout=timeout,
     )
     if raw is None:
         return SpecifyOutcome(task_id, False, reason)

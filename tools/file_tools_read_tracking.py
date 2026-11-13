@@ -330,8 +330,16 @@ def _file_metadata(resolved: str) -> tuple | None:
     if not _on_host(resolved):
         return None
     try:
-        st = os.stat(resolved)
-        return st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns
+        # Match FileOperations' descriptor snapshot. On Windows, path stat and
+        # fstat can expose different ctime semantics for the same unchanged file.
+        if not stat.S_ISREG(os.stat(resolved).st_mode):
+            return None
+        fd = os.open(resolved, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_BINARY", 0))
+        with os.fdopen(fd, "rb") as stream:
+            st = os.fstat(stream.fileno())
+            if not stat.S_ISREG(st.st_mode):
+                return None
+            return st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns
     except OSError:
         return None
 
@@ -349,10 +357,12 @@ def _file_version(resolved: str) -> tuple | None:
             if not stat.S_ISREG(before.st_mode):
                 return None
             digest = hashlib.file_digest(stream, "sha256").digest()
-            after = os.stat(resolved)
+            # Reopen the pathname: a replacement during hashing must not validate
+            # against the old descriptor, even if that old descriptor is stable.
+            after = _file_metadata(resolved)
         fields = ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns")
         version = tuple(getattr(before, name) for name in fields)
-        if version == tuple(getattr(after, name) for name in fields):
+        if version == after:
             return (*version, digest)
         return None
     except OSError:

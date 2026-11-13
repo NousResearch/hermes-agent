@@ -107,6 +107,19 @@ class TestStalenessCheck(unittest.TestCase):
         self.assertNotIn("_warning", result)
         self.assertNotIn("error", result)
 
+    def test_complete_read_matches_descriptor_snapshot_before_overwrite(self):
+        """Path and descriptor metadata must describe the same unchanged bytes."""
+        from tools.file_tools_read_tracking import _file_metadata, _file_version
+
+        read = json.loads(read_file_tool(self._tmpfile, task_id="descriptor-read"))
+        self.assertNotIn("error", read)
+        version = _file_version(self._tmpfile)
+        assert version is not None, "unchanged real file needs a byte snapshot"
+        self.assertEqual(_file_metadata(self._tmpfile), version[:-1])
+        written = json.loads(write_file_tool(
+            self._tmpfile, "merged content\n", task_id="descriptor-read"))
+        self.assertNotIn("error", written, written)
+
     def test_write_file_refuses_before_mutation_when_modified_externally(self):
         """read → external edit → write_file: refused, external edit preserved;
         a full re-read heals the baseline and the next write lands."""

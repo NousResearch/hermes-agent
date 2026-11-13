@@ -140,13 +140,21 @@ def _kanban_placement(repo_root: str, kanban_dir: str) -> dict:
     return _placement(repo_root, _kanban_lane_id(repo_root), "kanban", kanban_dir, False, True)
 
 
-def _probe_sibling_worktree(cwd: str, resolve: Resolve) -> str:
+def _probe_sibling_worktree(cwd: str, resolve: Resolve, exists: Optional[Exists] = None) -> str:
     """The parent repo root of a deleted ``<repo>-<suffix>`` worktree, else ``""``: trim one
     ``-<segment>`` at a time off each ancestor's name (the cwd is often a SUBDIR of the dead
-    worktree), deepest first, returning the first sibling that resolves; probes are bounded."""
+    worktree), deepest first, returning the first sibling that resolves; probes are bounded.
+
+    Only a folder that is GONE can be a deleted worktree. With ``exists`` (a local backend)
+    the walk stops at the first ancestor still on disk, so a live folder that simply is not
+    a repo is never renamed into a guess: ``work-scratch/notes`` must not become the repo
+    ``work`` because ``work-scratch`` minus ``-scratch`` happens to name one. Without
+    ``exists`` (remote backends, which cannot stat) every ancestor is tried, as before."""
     probes = 0
     path = (cwd or "").rstrip("/\\")
     while path and probes < _MAX_SIBLING_PROBES:
+        if exists is not None and exists(path):
+            break
         parts = base_name(path).split("-")
         for i in range(len(parts) - 1, 0, -1):
             if probes >= _MAX_SIBLING_PROBES:
@@ -176,7 +184,8 @@ def _place_by_heuristic(path: str) -> Optional[dict]:
 
 
 def _place(
-        cwd: str, branch: str, resolve: Optional[Resolve], persisted_root: str) -> Optional[dict]:
+        cwd: str, branch: str, resolve: Optional[Resolve], persisted_root: str,
+        exists: Optional[Exists] = None) -> Optional[dict]:
     info = resolve(cwd) if resolve else None
     if info and info.get("repo_root") and info.get("worktree_root"):
         repo_root, worktree_root = info["repo_root"], info["worktree_root"]
@@ -196,20 +205,21 @@ def _place(
         return _trunk_placement(persisted_root, branch)
 
     # Unresolvable cwd: a deleted ``<repo>-<suffix>`` worktree still belongs to its parent.
-    sibling_root = _probe_sibling_worktree(cwd, resolve) if resolve else ""
+    sibling_root = _probe_sibling_worktree(cwd, resolve, exists) if resolve else ""
     if sibling_root:
         return _trunk_placement(sibling_root, branch)
     return _place_by_heuristic(cwd)
 
 
-def _place_session(session: dict, resolve: Optional[Resolve]) -> Optional[dict]:
+def _place_session(
+        session: dict, resolve: Optional[Resolve], exists: Optional[Exists] = None) -> Optional[dict]:
     """``_place`` for a session row, anchored on its cwd or else its persisted repo root;
     ``None`` only when it has neither (the renderer's ``isDetachedSession``)."""
     root = _field(session, "git_repo_root")
     anchor = _field(session, "cwd") or root
     if not anchor:
         return None
-    return _place(anchor, _field(session, "git_branch"), resolve, root)
+    return _place(anchor, _field(session, "git_branch"), resolve, root, exists)
 
 
 def _session_repo_root(session: dict, resolve: Optional[Resolve]) -> str:
@@ -257,11 +267,13 @@ def _repo_node(root: str, label: str) -> dict:
     return {"id": root, "label": label, "path": root, "groups": [], "sessionCount": 0}
 
 
-def _build_repos(sessions: list[dict], resolve: Optional[Resolve], hydrate: bool) -> list[dict]:
+def _build_repos(
+        sessions: list[dict], resolve: Optional[Resolve], hydrate: bool,
+        exists: Optional[Exists] = None) -> list[dict]:
     """Build the ``repo -> lane -> sessions`` subtree for a set of sessions."""
     lanes: dict[str, tuple[dict, dict]] = {}  # lane identity -> (group, placement)
     for session in sessions:
-        placement = _place_session(session, resolve)
+        placement = _place_session(session, resolve, exists)
         if not placement:
             continue
         lane_identity = _lane_key(placement["lane_key"])
@@ -371,7 +383,7 @@ def _project_node(
 
 def _auto_buckets(
     unowned: list[dict], resolve: Optional[Resolve], junk: Callable, junk_cwd: Callable,
-    exists: Callable) -> tuple[dict[str, dict], list[dict]]:
+    exists: Callable, stat: Optional[Exists] = None) -> tuple[dict[str, dict], list[dict]]:
     """Group leftover sessions by auto-project root (common git root, else the session cwd
     for non-git workspaces); the rest go to the Home bucket."""
     by_auto_root: dict[str, dict] = {}
@@ -386,7 +398,9 @@ def _auto_buckets(
         elif (cwd := _field(session, "cwd")) and not junk_cwd(cwd):
             # A path-only heuristic placement whose dir is gone from disk would mint a phantom
             # project that can only be dismissed by hand -> Home.
-            placement = _place_session(session, resolve)
+            # ``stat`` is the caller's own ``exists`` (None when it cannot stat), not the
+            # keep-everything default: the sibling-worktree guess must know which it is.
+            placement = _place_session(session, resolve, stat)
             if placement and exists(placement["repo_key"]):
                 root = placement["repo_key"]
         key = _path_key(root) if root else ""
@@ -447,7 +461,7 @@ def build_tree(
     for project in active_projects:
         psessions = by_project.get(project["id"], [])
         _scope(psessions)
-        repos = _build_repos(psessions, resolve, hydrate)
+        repos = _build_repos(psessions, resolve, hydrate, exists)
         repos = _seed_folder_repos(repos, project.get("folders") or [], resolve)
         result.append(_project_node(
             project["id"], project.get("name") or project["id"], project.get("primary_path"), repos,
@@ -455,12 +469,12 @@ def build_tree(
             color=project.get("color"), icon=project.get("icon")))
 
     # Tier 2: auto projects from leftover sessions.
-    by_auto_root, homeless = _auto_buckets(unowned, resolve, _junk, _junk_cwd, _exists)
+    by_auto_root, homeless = _auto_buckets(unowned, resolve, _junk, _junk_cwd, _exists, exists)
     seen: set[str] = set()
     for bucket in by_auto_root.values():
         auto_root, auto_sessions = bucket["root"], bucket["sessions"]
         auto_key = _path_key(auto_root)
-        repos = _build_repos(auto_sessions, resolve, hydrate)
+        repos = _build_repos(auto_sessions, resolve, hydrate, exists)
         repo_node = next(
             (r for r in repos if _path_key(r.get("id") or r.get("path") or "") == auto_key), None)
         if repo_node is None:

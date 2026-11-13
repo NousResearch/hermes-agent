@@ -1768,12 +1768,37 @@ def _update_run_channel(args) -> str:
         raise
 
 
+def _run_pre_update_hook(args, gateway_mode: bool) -> None:
+    """Fire the ``pre_update`` lifecycle hook and honor a veto directive.
+
+    Runs once per update, BEFORE any state mutation (receipt, backup, git lock sweep,
+    fetch, checkout). A plugin returns ``{"action": "block", "message"}`` to abort the
+    update cleanly; any other (or no) return proceeds. ``has_hook`` short-circuits so
+    the common no-subscriber path costs nothing.
+    """
+    from hermes_cli.lifecycle import has_hook, invoke_hook
+
+    if not has_hook("pre_update"):
+        return
+    for result in invoke_hook("pre_update", gateway_mode=gateway_mode, args=args):
+        if not isinstance(result, dict) or result.get("action") != "block":
+            continue
+        message = result.get("message")
+        if isinstance(message, str) and message.strip():
+            print(f"✗ Update vetoed by a pre_update hook: {message}")
+        else:
+            print("✗ Update vetoed by a pre_update hook.")
+        _record_stop("pre_update_blocked", without_receipt="failed")
+        sys.exit(1)
+
+
 def _cmd_update_impl(args, gateway_mode: bool):
     """Apply the update; the command boundary owns errors, receipts and stdio."""
     # Marks this frame as the CURRENT updater for
     # _old_updater.in_historical_update(); historical on-disk updaters do not
     # declare this local, so only they hand off through retired shims.
     _hermes_current_updater_frame = True
+    _run_pre_update_hook(args, gateway_mode)  # directive hook: may veto before any mutation
     _commit.begin_update_attempt()  # nothing an earlier update in this process armed is ours (O5)
     from hermes_cli.update_proxy_env import prefer_dotenv_proxy_env
     prefer_dotenv_proxy_env()  # the .env loaded at import beats a system proxy the Desktop injected

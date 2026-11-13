@@ -9,6 +9,7 @@ import logging
 from typing import Any, Callable, Optional
 
 from gateway.platforms.base import BasePlatformAdapter as _BasePlatformAdapter
+from gateway.platforms.helpers import reply_file_off
 from gateway.stream_consumer_fences import ensure_closed_code_fences, open_code_fence_span
 
 logger = logging.getLogger("gateway.stream_consumer")
@@ -473,9 +474,10 @@ class StreamFallbackMixin:
             _plat = getattr(getattr(self.adapter, "platform", None), "value", None)
             _platform_name = str(_plat or getattr(self.adapter, "name", "")).lower()
             _needs_reply_anchor = _platform_name in ("buzz", "slack", "mattermost", "feishu")
-            result = await self.adapter.send(
-                chat_id=self.chat_id, content=text,
-                reply_to=self._initial_reply_to_id if _needs_reply_anchor else None, metadata=_md)
+            with reply_file_off(False):  # a complete message: past the cap it goes out as one file (#152012)
+                result = await self.adapter.send(
+                    chat_id=self.chat_id, content=text,
+                    reply_to=self._initial_reply_to_id if _needs_reply_anchor else None, metadata=_md)
             # Do NOT set _already_sent: commentary is interim, and the flag would
             # suppress the real final after multiple tool calls.
             if result.success:

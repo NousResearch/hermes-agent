@@ -4,6 +4,7 @@ compilation, and fence-aware markdown chunking."""
 
 import asyncio
 import contextlib
+import contextvars
 import itertools
 import json
 import logging
@@ -1035,8 +1036,21 @@ async def send_long_reply_as_file(adapter: Any, chat_id: str, content: str, *, r
     """A whole reply that needs more than the adapter's ``MAX_SPLIT_MESSAGES`` messages goes out as
     one file instead: the ``SendResult`` of that upload, or ``None`` to send it as messages as usual
     (under the cap, no upload support, or the upload failed: nothing is lost either way)."""
-    if not _over_reply_cap(adapter, content, metadata):
-        return None
+    return (await try_reply_file(adapter, chat_id, content, reply_to=reply_to, metadata=metadata))[1]
+
+
+async def try_reply_file(adapter: Any, chat_id: str, content: str, *, reply_to: Optional[str] = None,
+                         metadata: Optional[dict] = None) -> tuple[bool, Any]:
+    """``(tried, result)`` for :func:`send_long_reply_as_file`: ``tried`` says an upload was attempted,
+    so a caller that recounts later (``hand_off_split``) never uploads the same reply twice. A piece
+    of a streamed reply (``reply_file_off``) is never filed on its own."""
+    if _REPLY_FILE_OFF.get() or not _over_reply_cap(adapter, content, metadata):
+        return False, None
+    return True, await _file_result(adapter, chat_id, content, reply_to, metadata)
+
+
+async def _file_result(adapter: Any, chat_id: str, content: str, reply_to: Optional[str],
+                       metadata: Optional[dict]) -> Any:
     ids = await send_reply_as_file(adapter, chat_id, content, reply_to=reply_to, metadata=metadata)
     if ids is None:
         logger.warning("Long reply could not be sent as a file; sending it as messages")
@@ -1044,3 +1058,42 @@ async def send_long_reply_as_file(adapter: Any, chat_id: str, content: str, *, r
     from gateway.platforms.base import SendResult
     return SendResult(success=True, message_id=ids[0] if ids else None,
                       raw_response={"message_ids": ids, "sent_as_file": True})
+
+
+# Sends that must not become a reply file: the stream consumer sends one reply as many pieces
+# (``adapter.send`` per preview, seal and tail) and counts them itself, so no piece is filed on its own;
+# and once a reply's upload failed, its message fallback must not try the upload again. A complete
+# message the consumer sends (commentary) opts back in with ``reply_file_off(False)``.
+_REPLY_FILE_OFF: contextvars.ContextVar[bool] = contextvars.ContextVar("hermes_reply_file_off", default=False)
+
+
+@contextlib.contextmanager
+def reply_file_off(on: bool = True) -> Iterator[None]:
+    token = _REPLY_FILE_OFF.set(on)
+    try:
+        yield
+    finally:
+        _REPLY_FILE_OFF.reset(token)
+
+
+async def hand_off_split(adapter: Any, chat_id: str, content: str, messages: Any, landed: tuple = (), *,
+                         reply_to: Optional[str] = None, metadata: Optional[dict] = None) -> Any:
+    """An adapter's send is about to post ``messages`` (a count, or a callable computing it) for
+    ``content`` after the ``landed`` message ids it already posted for it, a count its preflight did
+    not predict (a refused rich send going out as MarkdownV2 chunks). Past ``MAX_SPLIT_MESSAGES`` the
+    whole reply goes out as one file and ``landed`` is deleted once the upload is confirmed: the
+    file's ``SendResult``. ``None`` sends the messages as planned (under the cap, a stream piece, or
+    the upload failed: nothing deleted)."""
+    cap = reply_message_cap(adapter)
+    if cap is None or _REPLY_FILE_OFF.get() or not content:
+        return None
+    if len(content) * 8 <= (cap - len(landed)) * int(getattr(adapter, "MAX_MESSAGE_LENGTH", 0) or 0):
+        return None  # same fast path as ``_over_reply_cap``: this short a text always fits
+    if len(landed) + (messages() if callable(messages) else messages) <= cap:
+        return None
+    result = await _file_result(adapter, chat_id, content, reply_to, metadata)
+    if result is not None:
+        for message_id in landed:
+            if not await adapter.delete_message(chat_id, str(message_id)):
+                logger.warning("Long reply: could not delete earlier part %s", message_id)
+    return result

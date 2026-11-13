@@ -7,6 +7,7 @@ import it at module top level without cycles.
 from __future__ import annotations
 
 import contextlib
+import contextvars
 import json
 import logging
 import os
@@ -133,12 +134,12 @@ def extra_or_secret(extra: Optional[dict], key: str, env: str, default: Any = ""
 
 
 def profile_scoped() -> bool:
-    """True when running inside a multiplexed secondary profile's scope.
+    """True when running inside a profile's bound scope under multiplexing.
 
     Secondary-profile adapters are constructed/connected inside
-    ``_profile_runtime_scope`` (secret scope installed + multiplex active).
-    The DEFAULT profile under multiplexing runs unscoped and keeps the legacy
-    ``os.environ`` precedence, so YAML->env bridges must skip only when True.
+    ``_profile_runtime_scope`` (secret scope installed + multiplex active). The launch profile's
+    own bodies are bound too once the process multiplexes (``launch_profile_scope_if_multiplexed``);
+    its YAML->env bridge then runs only for the live allowlist reload (``bridge_env_skipped``).
     """
     try:
         from agent.secret_scope import current_secret_scope, is_multiplex_active
@@ -169,6 +170,19 @@ def _is_bridge_leftover(name: str, marker_value: Optional[str]) -> bool:
     return marker_value is not None and bridged_env_digest(os.getenv(name)) == marker_value
 
 
+# Set while ``refresh_live_gate_extra`` reloads the LAUNCH profile's own config: its bridged lists live
+# in ``os.environ``, so that load must refresh them even under the launch profile's bound scope.
+_LAUNCH_GATE_RELOAD: contextvars.ContextVar[bool] = contextvars.ContextVar("_LAUNCH_GATE_RELOAD", default=False)
+
+
+def _foreign_home_load() -> bool:
+    from agent.secret_scope import current_secret_scope_home
+    from hermes_constants import get_hermes_home_override, get_routing_process_hermes_home, hermes_home_key
+    own = hermes_home_key(get_routing_process_hermes_home())
+    return any(home and hermes_home_key(home) != own
+               for home in (get_hermes_home_override(), current_secret_scope_home()))
+
+
 def bridge_env_skipped() -> bool:
     """True when this load must not touch the launch profile's ``os.environ`` bridge values.
 
@@ -176,15 +190,12 @@ def bridge_env_skipped() -> bool:
     process's own: a HERMES_HOME override or a secret scope stamped with another home. Without the
     second half a cross-home load with no bound secret scope would refresh or retract the launch
     profile's allowlist with another profile's YAML. The default profile's own unscoped loads under
-    multiplex still bridge, as on main.
+    multiplex still bridge, as on main, and so does the live allowlist reload of the launch profile's
+    own config under its bound scope (``_LAUNCH_GATE_RELOAD``).
     """
-    if profile_scoped():
-        return True
-    from agent.secret_scope import current_secret_scope_home
-    from hermes_constants import get_hermes_home_override, get_routing_process_hermes_home, hermes_home_key
-    own = hermes_home_key(get_routing_process_hermes_home())
-    return any(home and hermes_home_key(home) != own
-               for home in (get_hermes_home_override(), current_secret_scope_home()))
+    if _LAUNCH_GATE_RELOAD.get():
+        return _foreign_home_load()
+    return profile_scoped() or _foreign_home_load()
 
 
 def _supplied_by_operator(name: str) -> bool:
@@ -328,6 +339,38 @@ def yaml_env_setter(*, fallback: bool = False) -> Callable[[str, Any], None]:
     return set_env
 
 
+def follow_bridged_env(scope: dict) -> None:
+    """Bring a launch-profile secret mapping's YAML-bridged values up to the bridge's current ones.
+
+    The mapping starts from the env frozen at activation, which holds the bridged lists of THAT moment;
+    the bridge keeps refreshing ``os.environ`` from the launch profile's config.yaml afterwards. Only a
+    value the bridge owns in the mapping (its marker's digest matches) or a name the mapping lacks
+    follows: it takes the live bridge-owned value, or is dropped when the bridge retracted it (name
+    and marker both gone). Any other live state (a value another writer put there) keeps the frozen
+    value, and a frozen operator value (systemd, ``op run``) is never replaced from the live env; the
+    caller applies ``.env`` and secret sources over this.
+    ``allow_all_users`` is bridged without a marker: a frozen grant the live env no longer holds was
+    revoked (only the bridge clears it); a live one reaches the mapping via ``build_profile_secret_scope``."""
+    from gateway.config_loader import bridged_allow_all_users
+
+    with _YAML_ENV_LOCK:  # a load in progress is published all-or-nothing: never read its partial writes
+        live = dict(os.environ)
+        grant = bridged_allow_all_users()
+    prefix = BRIDGED_ENV_MARKER_PREFIX
+    names = {key[len(prefix):] for key in (*scope, *live) if key.startswith(prefix) and key != prefix}
+    for name in names:
+        marker = bridged_env_marker(name)
+        if name in scope and bridged_env_digest(scope[name]) != scope.get(marker):
+            continue
+        if live.get(marker) is not None and bridged_env_digest(live.get(name)) == live[marker]:
+            scope[name], scope[marker] = live[name], live[marker]
+        elif name not in live and marker not in live:  # retracted: only the bridge removes both
+            scope.pop(name, None)
+            scope.pop(marker, None)
+    if grant is None and "GATEWAY_ALLOW_ALL_USERS" not in live:
+        scope.pop("GATEWAY_ALLOW_ALL_USERS", None)
+
+
 def bridge_owns_env(name: str) -> bool:
     """True when ``os.environ[name]`` is this bridge's own value (YAML-derived, maybe canonicalized
     by :func:`replace_bridged_env`), not an operator's."""
@@ -394,13 +437,13 @@ def _owner_scope(home: str):
     from hermes_constants import get_hermes_home
 
     if str(get_hermes_home()) == home:
-        yield True
+        yield
         return
     from pathlib import Path
 
     from gateway.run import _profile_runtime_scope
     with _profile_runtime_scope(Path(home)):
-        yield False
+        yield
 
 
 def refresh_live_gate_extra(adapter: Any, keys: Iterable[str], on_reload: Optional[Callable[[], None]] = None) -> bool:
@@ -422,17 +465,22 @@ def refresh_live_gate_extra(adapter: Any, keys: Iterable[str], on_reload: Option
     with _LIVE_GATE_LOCK:
         if version == adapter._live_gate_version:
             return False
-        with _owner_scope(home) as own_scope:
-            # Provisional only for the LAUNCH profile bound from another scope: its YAML lists live in the
-            # process env, which a bound scope's bridge skips. A secondary owner's load is complete.
-            from hermes_constants import get_routing_process_hermes_home
-            final = own_scope or str(get_routing_process_hermes_home()) != home
-            return _reload_live_gate_extra(adapter, keys, version, on_reload, acknowledge=final)
+        from hermes_constants import get_routing_process_hermes_home, hermes_home_key
+        launch = hermes_home_key(home) == hermes_home_key(get_routing_process_hermes_home())
+        with _owner_scope(home):
+            return _reload_live_gate_extra(adapter, keys, version, on_reload, launch=launch)
 
 
 def _reload_live_gate_extra(adapter: Any, keys: Iterable[str], version: tuple,
-                            on_reload: Optional[Callable[[], None]], acknowledge: bool = True) -> bool:
+                            on_reload: Optional[Callable[[], None]], launch: bool = False) -> bool:
     from gateway.config import PlatformConfig, load_gateway_config
+    # The launch profile's YAML lists live in the process env: its load bridges them even under its
+    # bound scope, and the installed launch mapping (frozen env + .env) then takes them, so the gate
+    # below and the runner's env check both read the edited lists (multiplexed: launch_secret_scope).
+    token = _LAUNCH_GATE_RELOAD.set(launch)
+    # A launch reload whose bridge still cannot run (a foreign home bound) left the env lists as they
+    # were: provisional, so the owner's own next event redoes it rather than finding it acknowledged.
+    provisional = launch and bridge_env_skipped()
     try:  # ONE checked load: the fallback env-only config would drop the YAML-held lists
         loaded = load_gateway_config(strict=True)
     except Exception:
@@ -441,6 +489,11 @@ def _reload_live_gate_extra(adapter: Any, keys: Iterable[str], version: tuple,
             logger.warning("[%s] config.yaml changed but cannot be loaded; keeping the current allowlists",
                            getattr(adapter, "name", "?"), exc_info=True)
         return False
+    finally:
+        _LAUNCH_GATE_RELOAD.reset(token)
+    if launch and not provisional:
+        from tui_gateway.launch_profile_policy import follow_launch_bridged_env
+        follow_launch_bridged_env()
     current = loaded.platforms.get(adapter.platform) or PlatformConfig()
     extra = adapter.config.extra
     for key in keys:
@@ -450,10 +503,8 @@ def _reload_live_gate_extra(adapter: Any, keys: Iterable[str], version: tuple,
             extra.pop(key, None)
     if on_reload is not None:
         on_reload()
-    # Retry this same edit after a transient read failure, without requiring a second write. A reload under
-    # a bound scope is provisional: the launch profile's bound scope skips its YAML env bridge, so the
-    # snapshot can still hold the pre-edit values; the owner's own next event redoes it.
-    if acknowledge:
+    # Retry this same edit after a transient read failure, without requiring a second write.
+    if not provisional:
         adapter._live_gate_version = version
     return True
 

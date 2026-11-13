@@ -335,11 +335,18 @@ _NUMBERED_SIBLING_RE = re.compile(r"_\d+$")
 def _is_hermes_internal_secret(key: str) -> bool:
     """True for Hermes-internal secrets injected under *dynamic* names the static
     blocklist cannot enumerate: ``AUXILIARY_<TASK>_API_KEY``/``_BASE_URL`` (per-task
-    side-LLM credentials) and ``GATEWAY_RELAY_*_SECRET``/``_KEY``/``_TOKEN`` (relay
-    auth; non-secret routing hints stay visible). Stripped on every spawn path
-    regardless of env_passthrough registration or ``inherit_credentials``."""
+    side-LLM credentials), the ``.env`` names config writers store model / delegation /
+    custom-endpoint keys under (``HERMES_MODEL_API_KEY``, ``HERMES_DELEGATION_API_KEY``,
+    ``HERMES_CUSTOM_<ID>_API_KEY``, ``HERMES_PROVIDER_<NAME>_API_KEY``;
+    ``hermes_cli.config_secret_refs``) and
+    ``GATEWAY_RELAY_*_SECRET``/``_KEY``/``_TOKEN`` (relay auth; non-secret routing hints stay
+    visible). Stripped on every spawn path regardless of env_passthrough registration or
+    ``inherit_credentials``."""
     upper = key.upper()
     if upper.startswith("AUXILIARY_") and upper.endswith(("_API_KEY", "_BASE_URL")):
+        return True
+    if upper in {"HERMES_MODEL_API_KEY", "HERMES_DELEGATION_API_KEY"} or (
+            upper.startswith(("HERMES_CUSTOM_", "HERMES_PROVIDER_")) and upper.endswith("_API_KEY")):
         return True
     return upper.startswith("GATEWAY_RELAY_") and upper.endswith(("_SECRET", "_KEY", "_TOKEN"))
 

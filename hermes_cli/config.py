@@ -3286,6 +3286,8 @@ def set_config_value(key: str, value: str, force: bool = False):
     from hermes_cli.config_section_guard import _guard_section_overwrite
     key = _guard_section_overwrite(key, value, user_config, force)
     value = _refuse_container_type_mismatch(key, value, user_config, force)
+    from hermes_cli.config_secret_refs import config_set_secret_value, masked_display_value
+    value = config_set_secret_value(key, value, user_config)
     _old_provider = _model_val.get("provider") if isinstance(_model_val, dict) else None
     try:
         _set_nested(user_config, key, value)
@@ -3336,13 +3338,7 @@ def set_config_value(key: str, value: str, force: bool = False):
         from agent.i18n import reset_language_cache
         reset_language_cache()
 
-    # Mask the echoed value when the (possibly nested) key is credential-shaped, e.g.
-    # ``model.api_key`` (lowercase, so it misses the .env routing above).
-    _display_value = value
-    if _is_secret_config_key(key) and isinstance(value, str) and value:
-        from agent.redact import mask_secret
-        _display_value = mask_secret(value)
-    print(f"✓ Set {key} = {_display_value} in {config_destination(config_path)}")
+    print(f"✓ Set {key} = {masked_display_value(key, value)} in {config_destination(config_path)}")
     if _route_notice:
         print(_route_notice)
 

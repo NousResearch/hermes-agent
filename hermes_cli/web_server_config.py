@@ -587,12 +587,16 @@ def _register_custom_endpoint(base_url: str, api_key: str, model: str) -> None:
     writes ``provider: custom`` with an inline ``base_url`` + ``api_mode``, and re-registering
     that same endpoint as a named ``custom:<slug>`` row on every dashboard re-save is what let
     the picker rewrite the CLI's shape into ``custom:<slug>`` + ``base_url: ''``. Only a
-    GENUINELY new endpoint gets a named row.
+    GENUINELY new endpoint gets a named row. A ``${VAR}`` ``api_key`` (the main slot already
+    saved the secret to ``.env``) becomes the row's ``key_env`` (#77471).
     """
     try:
         from hermes_cli.main_provider_setup import _auto_provider_name, _save_custom_provider
 
-        _save_custom_provider(base_url, api_key, model, name=_auto_provider_name(base_url))
+        from hermes_cli.config_secret_refs import is_env_reference
+        key_env = api_key.strip()[2:-1] if is_env_reference(api_key) else ""
+        _save_custom_provider(base_url, "" if key_env else api_key, model, name=_auto_provider_name(base_url),
+                              key_env=key_env)
     except Exception:
         _log.debug("custom_providers registration skipped", exc_info=True)
 
@@ -672,7 +676,18 @@ def _apply_main_assignment_sync(cfg: dict, provider: str, model: str, base_url: 
     provider_lc = provider.strip().lower()
     endpoint_already_known = (
         provider_lc in BARE_CUSTOM_SELECTORS and bool(base_url) and _endpoint_known_to_config(cfg, base_url))
-    model_cfg = apply_main_model_assignment(cfg.get("model", {}), result, api_key)
+    # The submitted key goes to .env; model.api_key and the registered row hold only its reference.
+    stored_key = api_key
+    if api_key.strip():
+        from hermes_cli.config_secret_refs import endpoint_api_key_env, known_endpoint_key_env, secret_ref_for
+        # A row already registered for this endpoint keeps its variable, so model.api_key and the
+        # row read the same key instead of two copies drifting apart.
+        env_name = known_endpoint_key_env(cfg, result.base_url) or endpoint_api_key_env(result.base_url)
+        try:
+            stored_key = secret_ref_for(env_name, api_key.strip(), result.base_url)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+    model_cfg = apply_main_model_assignment(cfg.get("model", {}), result, stored_key)
     if not (explicit_endpoint and entry_points_elsewhere(provider_entry, base_url)):
         # A submitted endpoint carries its own key (or none); a ``providers.custom`` block for
         # ANOTHER host shares the selector's name, and hydrating from it would pair the new URL with
@@ -687,7 +702,7 @@ def _apply_main_assignment_sync(cfg: dict, provider: str, model: str, base_url: 
     with refusing_locked_omissions("model"):
         save_config(cfg)
     if new_provider in BARE_CUSTOM_SELECTORS and base_url and not endpoint_already_known:
-        _register_custom_endpoint(base_url, api_key, model)
+        _register_custom_endpoint(base_url, stored_key, model)
     # The serve process's boot record may still say "nothing configured"; the chat gates on it.
     reconcile_record()
 
@@ -778,7 +793,8 @@ def _apply_aux_assignment_sync(cfg: dict, provider: str, model: str, task: str, 
             # in. See #65254.
             slot_cfg["base_url"] = base_url
             if api_key:
-                slot_cfg["api_key"] = api_key
+                from hermes_cli.config_secret_refs import aux_api_key_env, secret_ref_for
+                slot_cfg["api_key"] = secret_ref_for(aux_api_key_env(slot), api_key)
         elif new_provider != prev_provider and new_provider != "custom":
             slot_cfg.pop("base_url", None)
             clear_model_endpoint_credentials(slot_cfg)

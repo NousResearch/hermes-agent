@@ -123,7 +123,7 @@ def test_worktree_liveness_reads_are_tracked(state_db, tracked, tmp_path):
 
 
 def test_backup_integrity_query_is_tracked(state_db, tracked):
-    from hermes_cli.backup import _query_ro_sqlite
+    from hermes_cli.backup_integrity import _query_ro_sqlite
     value, exc = _query_ro_sqlite(state_db, lambda c: c.execute("SELECT count(*) FROM sessions").fetchone()[0])
     assert (value, exc) == (1, None)
     assert _key(state_db) in tracked

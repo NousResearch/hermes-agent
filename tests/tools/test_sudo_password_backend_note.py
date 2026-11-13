@@ -87,6 +87,27 @@ def test_non_local_backend_logs_one_warning_across_two_commands(caplog):
     assert [stdin for _cmd, stdin in env.calls] == [PW + "\n", PW + "\n"]
 
 
+def test_plugin_backend_note_uses_its_registered_name(caplog):
+    """A plugin backend is named as registered, not after its Python class."""
+    import types
+
+    from tools.terminal_tool_backends import _stamp_plugin_env
+
+    terminal_tool_sudo._set_cached_sudo_password(PW)
+    env = _RecordingSandboxEnv()
+    env._sudo_askpass_ok = False
+    provider = types.SimpleNamespace(name="Acme-Box", default_cwd=None)
+    assert _stamp_plugin_env(env, provider, "/") is env
+    with caplog.at_level(logging.WARNING, logger=NOTE_LOGGER):
+        env.execute("sudo true")
+
+    messages = [r.getMessage() for r in _notes(caplog)]
+    assert len(messages) == 1
+    assert "the acme-box terminal backend" in messages[0]
+    assert "_recording_sandbox_env" not in messages[0]
+    assert PW not in messages[0]
+
+
 def test_each_backend_type_logs_its_own_note_once(caplog):
     terminal_tool_sudo._set_cached_sudo_password(PW)
     docker, ssh = _bare(DockerEnvironment), _bare(SSHEnvironment)

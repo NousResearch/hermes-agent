@@ -22,8 +22,13 @@ _CAMEL_BOUNDARY = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
 
 
 def backend_label(env: object) -> str:
-    """Short backend name from the environment class: ``DockerEnvironment`` -> ``docker``,
-    ``VercelSandboxEnvironment`` -> ``vercel_sandbox``, ``SSHEnvironment`` -> ``ssh``."""
+    """The backend name the user configured: a plugin backend's registered name (stamped as
+    ``_hermes_backend_name`` when it is created), else one built from the environment class:
+    ``DockerEnvironment`` -> ``docker``, ``VercelSandboxEnvironment`` -> ``vercel_sandbox``,
+    ``SSHEnvironment`` -> ``ssh``."""
+    stamped = getattr(env, "_hermes_backend_name", None)
+    if isinstance(stamped, str) and stamped.strip():
+        return stamped.strip()
     name = type(env).__name__
     if name.endswith("Environment") and name != "Environment":
         name = name[: -len("Environment")]

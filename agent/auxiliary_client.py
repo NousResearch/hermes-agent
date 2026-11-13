@@ -34,7 +34,7 @@ from agent.error_classifier import (
     is_reasoning_required_rejection,
 )
 from agent.auxiliary_custom_credentials import (
-    _normalize_api_key, declared_custom_credential_identity, declared_custom_key_for_base_url)
+    _normalize_api_key, declared_custom_credential_identity, declared_custom_key_for_base_url, fast_catalog_provider)
 from agent.errors import InvalidProviderResponseError
 from agent.auxiliary_fallback_recovery import reapply_repairs
 from agent.auxiliary_managed_local import _is_managed_local_endpoint
@@ -4398,7 +4398,7 @@ def _main_route_target(runtime: dict[str, Any], task: Optional[str]) -> tuple[st
     # Latency-critical tasks (titling only) opt in to the provider's fast model. Opt-in only:
     # every settings surface defines "auto" as the main model.
     if _task_prefers_fast_model(task) and main_provider and main_provider not in {"auto", ""}:
-        fast_model = _get_aux_model_for_provider(main_provider, prefer_fast=True)
+        fast_model = _get_aux_model_for_provider(fast_catalog_provider(runtime, main_provider), prefer_fast=True)
         if fast_model and fast_model != main_model:
             logger.debug("Auxiliary task %s: preferring fast model %s over main model %s",
                          task, fast_model, main_model)

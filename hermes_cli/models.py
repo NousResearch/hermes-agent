@@ -1473,12 +1473,8 @@ def _custom_catalog(normalized: str, force_refresh: bool) -> Optional[list[str]]
     if not base_url:
         return None
     model_cfg = _get_model_config_dict()
-    # Try common API key env vars for custom endpoints.
-    api_key = (
-        str(model_cfg.get("api_key", "") or "").strip()
-        or os.getenv("CUSTOM_API_KEY", "")
-        or os.getenv("OPENAI_API_KEY", "")
-        or os.getenv("OPENROUTER_API_KEY", ""))
+    from hermes_cli.auth_declared_providers import custom_catalog_probe_api_key
+    api_key = custom_catalog_probe_api_key(model_cfg, base_url)
     api_mode = "anthropic_messages" if _base_url_looks_like_anthropic_messages(base_url) else None
     return fetch_api_models(api_key, base_url, api_mode=api_mode) or None
 

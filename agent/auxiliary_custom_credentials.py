@@ -66,3 +66,14 @@ def declared_custom_credential_identity(base_url: str, provider: str) -> str:
     return "\0".join((str(entry.get("api_key") or "").strip(), _scoped_key_env(key_env) if key_env else "",
                       f"cmd:{str(entry.get('key_cmd') or '').strip()}"))
 
+
+def fast_catalog_provider(runtime: dict[str, Any], main_provider: str) -> str:
+    """Provider whose catalog supplies the fast model: a ``custom`` runtime resolved from a
+    ``providers.<id>`` entry that owns its URL reads that entry's catalog with its own key (#145452)."""
+    requested = str(runtime.get("requested_provider") or "").strip()
+    if main_provider != "custom" or not requested or requested == "custom":
+        return main_provider
+    from agent.custom_entry_pool import custom_entry_for_endpoint, named_custom_entry
+    found = named_custom_entry(requested)
+    owns = found is not None and custom_entry_for_endpoint(str(runtime.get("base_url") or ""), requested) == found
+    return requested if owns else main_provider

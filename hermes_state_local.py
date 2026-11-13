@@ -65,11 +65,13 @@ def commit_local_session(db, *, epoch, receipt):
         # and is not that writer. gui's in-process agent is desktop; a managed worker
         # creates with the policy label gui.
         from gateway.session_policy import created_surface
+        from gateway.session_source_label import requested_source_label
         created = created_surface(policy['source'])
+        stored = requested_source_label(policy.get('request_json')) or policy['source']
         conn.execute('''INSERT INTO sessions(id,source,created_source,user_id,session_key,chat_id,chat_type,
             model,cwd,profile_name,origin_json,started_at) VALUES(?,?,?,?,?,?,'dm',?,?,?,?,?)
             ON CONFLICT(id) DO NOTHING''',
-            (sid, policy['source'], created, receipt['principal_id'], route,
+            (sid, stored, created, receipt['principal_id'], route,
              entry['origin']['chat_id'], policy['model'], _row_cwd(policy), db._own_profile_name(),
              _json(entry['origin']), started))
         conn.execute("INSERT INTO gateway_routing(scope,session_key,entry_json,updated_at) VALUES('',?,?,?)",

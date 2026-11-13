@@ -26,7 +26,8 @@ from hermes_cli.config_read_errors import _warn_config_parse_failure
 # path -> raw user mapping from the last successful parse in this process; served (through the
 # normal pipeline) when the file is later found mid-edit as broken YAML.
 _LAST_GOOD_USER_RAW: dict[str, dict[str, Any]] = {}
-# path -> (*user_signature, *managed_signature, effective, env_snapshot); see utils.file_signature.
+# path -> (*user_signature, *managed_signature, effective, env_snapshot, root_is_mapping);
+# see utils.file_signature.
 _EFFECTIVE_CACHE: dict[str, tuple[Any, ...]] = {}
 
 
@@ -55,9 +56,9 @@ def load_user_config_effective(config_path: Optional[Path] = None, *, fail_close
     here, so ``{}`` sentinels and presence-sensitive bridges keep working. An absent file is an
     empty user layer (the managed layer still applies). Returns a fresh deepcopy.
 
-    Broken YAML: ``fail_closed=True`` raises the parse error, including a non-mapping
-    YAML root (for callers that keep their own
-    last-good state); otherwise the last successfully parsed user file — in-process first, then
+    Broken YAML: ``fail_closed=True`` raises the parse error, including a non-mapping YAML root
+    (for callers that keep their own last-good state); otherwise the last successfully parsed
+    user file — in-process first, then
     the newest ``backups/config/*.good.*`` copy — is served through the same pipeline, so a
     mid-edit torn write never silently drops user overrides (same contract as ``load_config``).
     Cached on the user + managed file signatures and the values of every referenced env var."""

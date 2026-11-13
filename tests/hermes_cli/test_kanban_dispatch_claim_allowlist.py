@@ -115,17 +115,23 @@ def test_allowlist_config_read_failure_skips_all_cards(
     assert res.skipped_nonspawnable == [tid]
 
 
-@pytest.mark.parametrize("warm_cache", [False, True], ids=["cold", "cached"])
+@pytest.mark.parametrize("root, warm", [
+    ("[1, 2]\n", None),
+    ("[1, 2]\n", "effective"),
+    ("[]\n", "raw"),
+], ids=["cold", "cached", "raw_cache"])
 def test_non_mapping_config_root_does_not_widen_claims(
-    kanban_home, all_assignees_spawnable, warm_cache, caplog,
+    kanban_home, all_assignees_spawnable, root, warm, caplog,
 ):
-    """A valid YAML sequence at the config root must not become an absent
-    dispatch allowlist, even if a normal config read cached the empty mapping."""
+    """A valid non-mapping YAML root must not become an absent dispatch
+    allowlist, even if a non-strict read cached it as an empty mapping
+    (``read_raw_config`` stores a falsy root such as ``[]`` as ``{}``)."""
+    from hermes_cli.config import read_raw_config
     from hermes_cli.config_effective import load_user_config_effective
 
-    (kanban_home / "config.yaml").write_text("[1, 2]\n", encoding="utf-8")
-    if warm_cache:
-        load_user_config_effective()
+    (kanban_home / "config.yaml").write_text(root, encoding="utf-8")
+    if warm:
+        {"effective": load_user_config_effective, "raw": read_raw_config}[warm]()
     with kbc.connect() as conn, caplog.at_level("WARNING", logger="hermes_cli.kanban_db"):
         tid = kb.create_task(conn, title="foreign card", assignee="default")
         assert kbd.has_spawnable_ready(conn) is False

@@ -20,6 +20,7 @@ vi.mock('@/i18n', () => ({
   useI18n: () => ({
     t: {
       common: { cancel: 'Cancel', close: 'Close', delete: 'Delete', save: 'Save' },
+      fileMenu: { copyPath: 'Copy path', revealFileManager: 'Open containing folder' },
       assistant: {
         thread: {
           today: (time: string) => `Today, ${time}`,

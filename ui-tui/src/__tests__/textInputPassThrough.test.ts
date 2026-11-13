@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { shouldPassThroughToGlobalHandler, shouldPreserveCtrlJNewline } from '../components/textInput.js'
+import { shouldInsertNewlineOnReturn, shouldPassThroughToGlobalHandler, shouldPreserveCtrlJNewline } from '../components/textInput.js'
 import { DEFAULT_VOICE_RECORD_KEY, parseVoiceRecordKey } from '../lib/platform.js'
 
 const key = (overrides: Record<string, unknown> = {}) => ({ ctrl: false, meta: false, ...overrides }) as any
@@ -17,7 +17,27 @@ describe('shouldPreserveCtrlJNewline', () => {
   })
 
   it('keeps bare local POSIX LF-compatible prompts submitting on Ctrl+J', () => {
-    expect(shouldPreserveCtrlJNewline({ TERM: 'xterm-256color' })).toBe(false)
+    expect(shouldPreserveCtrlJNewline({ TERM: 'xterm-256color' }, () => false)).toBe(false)
+  })
+
+  it('preserves Ctrl+J on a normal WSL install — the distro name is not a Windows string (#77283)', () => {
+    expect(shouldPreserveCtrlJNewline({ WSL_DISTRO_NAME: 'Ubuntu' }, () => false)).toBe(true)
+    expect(shouldPreserveCtrlJNewline({ WSL_INTEROP: '/run/WSL/1_interop' }, () => false)).toBe(true)
+  })
+
+  it('detects WSL from the kernel when the WSL env vars are scrubbed', () => {
+    expect(shouldPreserveCtrlJNewline({ TERM: 'xterm-256color' }, () => true)).toBe(true)
+  })
+
+  it('turns a bare LF into a newline instead of a submit on WSL (#77283)', () => {
+    const saved = { ...process.env }
+    process.env.WSL_DISTRO_NAME = 'Ubuntu'
+
+    try {
+      expect(shouldInsertNewlineOnReturn(key({ return: true }), '\n')).toBe(true)
+    } finally {
+      process.env = saved
+    }
   })
 })
 

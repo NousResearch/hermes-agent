@@ -1709,7 +1709,7 @@ slash:
   version:
     description: "Mostrar la versión de Hermes Agent"
   debug:
-    description: "Informe de depuración (info del sistema + registros): muestra primero el aviso de privacidad; /debug upload comparte enlaces"
+    description: "Informe de depuración (versiones, claves de configuración, recuentos de errores; sin texto de registros): muestra primero el aviso de privacidad; /debug upload comparte enlaces"
   quit:
     description: "Salir de la CLI (usa --delete para eliminar también el historial de la sesión)"
 cli:
@@ -3920,7 +3920,7 @@ tips:
   t343: "/voice tts activa o desactiva el modo solo TTS — el agente responde en voz alta, pero tú sigues escribiendo tus prompts."
   t344: "/reload-skills vuelve a escanear ~/.hermes/skills/ para que las skills copiadas a mano aparezcan sin reiniciar la sesión."
   t345: "/indicator kaomoji|emoji|unicode|ascii elige el estilo del indicador de actividad de la TUI que se muestra mientras el agente trabaja."
-  t346: "/debug sube un paquete de soporte (información del sistema + logs) y devuelve enlaces para compartir — también funciona en el chat."
+  t346: "/debug sube un resumen (versiones, claves de configuración, recuentos de errores; sin texto de registros) y devuelve un enlace para compartir — también funciona en el chat."
   t347: "hermes -z \"<prompt>\" es el modo de una sola pasada más puro: la respuesta final en stdout y nada más — ideal para encadenar en scripts."
   t348: "hermes chat --pass-session-id inyecta el ID de sesión en el prompt del sistema para que el agente pueda referirse a él."
   t349: "hermes chat --image path/to/pic.png adjunta una imagen local a una sola consulta -q sin un paso de subida aparte."

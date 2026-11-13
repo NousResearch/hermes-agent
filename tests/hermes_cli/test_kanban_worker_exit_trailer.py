@@ -17,7 +17,11 @@ import pytest
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_db_dispatch as kbd
-from hermes_cli.quiet_single_query import KANBAN_WORKER_EXIT_TRAILER, exit_single_query
+from hermes_cli.quiet_single_query import (
+    KANBAN_WORKER_EXIT_TRAILER,
+    KANBAN_WORKER_RECLAIMED_EXIT_TRAILER,
+    exit_single_query,
+)
 
 
 @pytest.fixture
@@ -130,6 +134,80 @@ def test_plain_budget_trip_still_auto_recovers(kanban_home):
         kb.assign_task(conn, tids[1], "other-profile")
         assert kb.recompute_ready(conn, failure_limit=2) == 1
         assert kb.get_task(conn, tids[1]).status == "ready"
+
+
+def _dead_worker_with_reclaimed_marker(conn, tid: str, pid: int, marker_pid: int | None = None) -> None:
+    """Claim ``tid`` for a worker that died with the registration guard's reclaimed marker in its
+    log — the self-exit cli_single_query performs when its run was already replaced."""
+    host = kb._claimer_id().split(":", 1)[0]
+    kb.claim_task(conn, tid, claimer=f"{host}:w{pid}")
+    conn.execute(
+        "UPDATE tasks SET worker_pid=?, worker_started_at=NULL, started_at=? WHERE id=?",
+        (pid, int(time.time()) - 120, tid),
+    )
+    conn.commit()
+    log = kb.worker_log_path(tid)
+    log.parent.mkdir(parents=True, exist_ok=True)
+    with open(log, "a", encoding="utf-8") as f:
+        f.write(
+            "kanban run was reclaimed before this worker could register\n"
+            f"{KANBAN_WORKER_RECLAIMED_EXIT_TRAILER} pid={marker_pid if marker_pid is not None else pid}\n"
+        )
+
+
+def test_registration_guard_self_exit_is_requeued_without_a_failure(kanban_home):
+    """t_8ebbdbcf run 1952: a stale spawn whose run was reclaimed before registration exits 0
+    with NO rc trailer (the log belongs to the successor run). The pid-scoped marker books it
+    as reclaimed_before_start — the card goes back to ready, and nothing counts a failure,
+    feeds gave_up, or shows a phantom crash."""
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="t", assignee="a")
+        _dead_worker_with_reclaimed_marker(conn, tid, 72001)
+
+        crashed = kbd.detect_crashed_workers(conn)
+
+        assert crashed == []
+        assert kbd.detect_crashed_workers._last_reclaimed_before_start == [tid]  # type: ignore[attr-defined]
+        assert kbd.detect_crashed_workers._last_auto_blocked == []  # type: ignore[attr-defined]
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        assert task.status == "ready" and task.worker_pid is None
+        assert task.consecutive_failures == 0
+        run = conn.execute(
+            "SELECT outcome, error, metadata FROM task_runs WHERE task_id=? ORDER BY id DESC LIMIT 1",
+            (tid,)).fetchone()
+        assert run["outcome"] == "reclaimed_before_start"
+        assert "not alive" not in (run["error"] or "")
+        assert "reclaimed before worker registration" in (run["error"] or "")
+        meta = kb._json_dict(run["metadata"])
+        assert meta.get("reclaimed_before_start") is True and meta.get("exit_code") == 0
+        ev = conn.execute(
+            "SELECT kind FROM task_events WHERE task_id=? ORDER BY id DESC LIMIT 1", (tid,)).fetchone()
+        assert ev["kind"] == "reclaimed_before_start"
+        kinds = [r["kind"] for r in conn.execute("SELECT kind FROM task_events WHERE task_id=?", (tid,))]
+        assert "gave_up" not in kinds and "crashed" not in kinds
+        # Neutral for the protocol-violation streak, like a rate-limited requeue.
+        assert kbd._protocol_violation_streak(conn, tid) == 0
+
+
+def test_reclaimed_marker_of_another_pid_is_not_honoured(kanban_home):
+    """A stale spawn's marker must never book the pid that replaced it: the log's marker names
+    72002 while the dead pid is 72003, so no marker is honourable and the death stays a plain
+    crash exactly as before the fix."""
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="t", assignee="a")
+        _dead_worker_with_reclaimed_marker(conn, tid, 72003, marker_pid=72002)
+
+        crashed = kbd.detect_crashed_workers(conn)
+
+        assert crashed == [tid]
+        run = conn.execute(
+            "SELECT outcome, error FROM task_runs WHERE task_id=? ORDER BY id DESC LIMIT 1",
+            (tid,)).fetchone()
+        assert run["outcome"] == "crashed"
+        assert "not alive" in (run["error"] or "")
+        task = kb.get_task(conn, tid)
+        assert task is not None and task.consecutive_failures == 1
 
 
 def test_exit_single_query_writes_trailer_only_for_kanban_workers(monkeypatch, capsys):

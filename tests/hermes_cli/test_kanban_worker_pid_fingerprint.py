@@ -110,6 +110,49 @@ def test_same_pid_and_start_tick_on_another_boot_is_foreign(board, monkeypatch):
     assert kbd._process_fingerprint(os.getpid()) == live_fingerprint
 
 
+def test_transient_fingerprint_read_failure_retries_before_fail_closed(board, monkeypatch):
+    """t_8ebbdbcf run 1953: one unreadable fingerprint probe on a LIVE worker (psutil hiccup)
+    must not decide a reclaim. The first read returns None, the retry recovers the real
+    fingerprint, and the worker is held."""
+    from gateway.status import get_process_start_time
+
+    real = kbd._process_fingerprint
+    calls: list[int] = []
+
+    def flaky(pid):
+        calls.append(pid)
+        return real(pid) if len(calls) > 1 else None
+
+    monkeypatch.setattr(kbd, "_process_fingerprint", flaky)
+    fp = real(os.getpid())
+    assert fp is not None
+    assert kbd._worker_alive(os.getpid(), fp) is True
+    assert len(calls) == 2
+    assert get_process_start_time(os.getpid()) is not None
+
+
+def test_persistent_fingerprint_read_failure_stays_fail_closed(board, monkeypatch):
+    """A fingerprint that stays unreadable after the retry is still foreign (fail-closed is
+    preserved): the claim is released rather than trusted beside an unidentified process."""
+    monkeypatch.setattr(kbd, "_process_fingerprint", lambda pid: None)
+    assert kbd._worker_alive(os.getpid(), "some-epoch|12345") is False
+
+
+def test_drifted_start_time_reading_keeps_the_live_worker(board):
+    """macOS start-time readings can drift ~1 s between the spawn-time capture and a later
+    probe (#117505): the '|' fingerprint compares start-time halves with the drift tolerance
+    instead of exact strings, while a start time far outside it is still a recycle."""
+    from gateway.status import START_TIME_DRIFT_TOLERANCE
+
+    fp = kbd._process_fingerprint(os.getpid())
+    assert fp is not None
+    epoch, _, start = fp.rpartition("|")
+    within_drift = f"{epoch}|{int(start) + START_TIME_DRIFT_TOLERANCE}"        # ~2 s: same process
+    assert kbd._worker_alive(os.getpid(), within_drift) is True
+    beyond_drift = f"{epoch}|{int(start) + 10 * START_TIME_DRIFT_TOLERANCE}"   # ~20 s: a stranger
+    assert kbd._worker_alive(os.getpid(), beyond_drift) is False
+
+
 def test_unverified_fingerprint_capture_never_authorizes_a_signal(board, monkeypatch):
     """Fingerprint capture fails for a new spawn: the row is NOT a legacy NULL row. A live PID under
     it is never SIGTERM/SIGKILLed by any reclaim/timeout path, and the claim is held (not released

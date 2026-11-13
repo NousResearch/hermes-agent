@@ -64,9 +64,24 @@ def test_resolver_that_ignores_base_url_is_refused(monkeypatch):
     from hermes_cli import runtime_provider
     monkeypatch.setattr(runtime_provider, "resolve_runtime_provider", lambda **_: {
         "provider": "minimax-oauth", "base_url": "https://api.minimax.io/anthropic", "api_key": "oauth-token"})
-    config = {"provider": "minimax-oauth", "model": "MiniMax-M2", "base_url": "https://llm-proxy.example/anthropic"}
-    with pytest.raises(ValueError, match="does not accept delegation.base_url"):
-        _resolve_delegation_credentials(config, _parent())
+    for base_url in ("https://llm-proxy.example/anthropic", "https://api.minimax.io/v1"):
+        config = {"provider": "minimax-oauth", "model": "MiniMax-M2", "base_url": base_url}
+        with pytest.raises(ValueError, match="does not accept delegation.base_url"):
+            _resolve_delegation_credentials(config, _parent())
+
+
+def test_resolver_path_normalisation_is_not_a_reroute(monkeypatch):
+    """LM Studio's resolver rewrites /api/v1 to /v1, and Messages-mode resolvers (Azure Foundry, OpenCode-hosted
+    providers: entries) strip /v1: that is the configured endpoint, not a reroute."""
+    config = {"provider": "lmstudio", "model": "m", "base_url": "http://localhost:1234/api/v1"}
+    assert _resolve_delegation_credentials(config, _parent())["base_url"] == "http://localhost:1234/v1"
+
+    from hermes_cli import runtime_provider
+    monkeypatch.setattr(runtime_provider, "resolve_runtime_provider", lambda **_: {
+        "provider": "azure-foundry", "base_url": "https://res.services.ai.azure.com/anthropic",
+        "api_key": "foundry-key", "api_mode": "anthropic_messages"})
+    config = {"provider": "azure-foundry", "model": "claude", "base_url": "https://res.services.ai.azure.com/anthropic/v1"}
+    assert _resolve_delegation_credentials(config, _parent())["api_key"] == "foundry-key"
 
 
 @pytest.mark.parametrize("provider", ["", "custom", "auto"])

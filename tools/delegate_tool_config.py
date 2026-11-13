@@ -476,6 +476,16 @@ def _runtime_provider_credentials(v: dict, explicit_request_overrides, explicit_
         command=pinned_command, args=list(runtime.get("args") or []),
     )
 
+def _resolver_kept_endpoint(named: dict, configured_url: str) -> bool:
+    """Whether the runtime resolver used ``configured_url``, allowing for its own path normalisation (OpenCode
+    relay path, LM Studio, Actual, and the ``/v1`` that Messages-mode resolvers strip): a resolver without a base_url
+    knob returns its default endpoint, often on the same host."""
+    from hermes_cli.runtime_provider import _finalize_base_url
+    expected = _finalize_base_url(named["provider"] or "", named["api_mode"] or "", configured_url)
+    def sans_version(url: str) -> str:
+        return (url or "").rstrip("/").removesuffix("/v1")
+    return sans_version(named["base_url"]) == sans_version(expected)
+
 def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     """Child credential bundle from the ``delegation`` config section. Three branches: ``base_url`` set → direct
     endpoint (``api_key`` None means inherit the parent's key, so providers keyed outside OPENAI_API_KEY work; a
@@ -492,7 +502,7 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
         if (values["provider"] or "").lower() not in ("", "custom", "auto") and not values["api_key"]:
             # The parent's key belongs to the parent's provider: a named provider resolves its own key for this URL.
             named = _runtime_provider_credentials(values, explicit_request_overrides, values["base_url"])
-            if base_url_hostname(named["base_url"]) != base_url_hostname(values["base_url"]):
+            if not _resolver_kept_endpoint(named, values["base_url"]):
                 # The resolver ignored the override (provider without a base_url knob): don't silently reroute.
                 raise ValueError(
                     f"Delegation provider '{values['provider']}' does not accept delegation.base_url "

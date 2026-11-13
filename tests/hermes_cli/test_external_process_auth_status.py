@@ -294,7 +294,7 @@ def test_cli_command_never_swaps_cli_into_hermes_template(monkeypatch):
 
 def test_cli_command_for_handlerless_plugin_is_runnable(monkeypatch):
     """The dialog shows the command with a ``$`` and a Copy button, so it must be one a shell runs:
-    the same re-login every other surface gives for these plugins, not a comment line."""
+    with no login command from the plugin, the same re-login every other surface gives, not a comment line."""
     from agent.turn_failure_copy import oauth_relogin_command
     from hermes_cli.web_server_oauth import _external_process_cli_command
 
@@ -304,6 +304,25 @@ def test_cli_command_for_handlerless_plugin_is_runnable(monkeypatch):
 
     assert not rendered.startswith("#")
     assert rendered == oauth_relogin_command(provider_id)
+
+
+def test_cli_command_is_the_plugins_own_login_when_it_declares_one(monkeypatch):
+    """A plugin whose ``setup_status()`` names its CLI's login gets exactly that command: signing in
+    must not run ``hermes model``, which also makes the provider the default."""
+    from hermes_cli.web_server_oauth import _external_process_cli_command
+
+    provider_id = _fake_external_process_plugin(monkeypatch)
+    from hermes_cli import auth_plugin_providers as ap
+
+    class _Declares(ProviderProfile):
+        def setup_status(self, **kwargs):
+            return {"available": True, "logged_in": False, "login_command": ["/opt/agy tools/agy", "auth", "login"]}
+
+    profile = _Declares(name=provider_id, auth_type="external_process", process_command="agy")
+    monkeypatch.setattr(ap, "plugin_profile", lambda provider: profile if provider == provider_id else None)
+
+    assert _external_process_cli_command(provider_id, f"hermes auth add {provider_id}") == \
+        "'/opt/agy tools/agy' auth login"
 
 
 def test_cli_command_keeps_hermes_template_when_plugin_owns_auth(monkeypatch):

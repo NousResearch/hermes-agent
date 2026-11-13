@@ -78,7 +78,9 @@ Override with --force if you accept the risk.
 
 `--dry-run` previews are never blocked. `--force` runs anyway — use it only when you know
 the listed processes are idle (a reader you started yourself, for example). The same check
-runs when you type `sessions optimize` in the Desktop console.
+runs when you type `sessions optimize` in the Desktop console. `optimize-storage` keeps watching
+while it runs: whenever another process holds the database (under `--force`, or one that opens it
+mid-run) it pauses between chunks so that process's writes get through, which makes it much slower.
 
 `hermes sessions prune` is the exception while the gateway is running: the gateway owns
 `state.db`, so prune shows its preview from a read-only view and the gateway itself deletes

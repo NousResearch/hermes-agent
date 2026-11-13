@@ -22,4 +22,5 @@ AUTHZ = {
     "allowed_users_env": "FEISHU_ALLOWED_USERS",
     "allow_all_env": "FEISHU_ALLOW_ALL_USERS",
     "allow_bots_env": "FEISHU_ALLOW_BOTS",
+    "allowlist_suppresses_pairing": True,
 }

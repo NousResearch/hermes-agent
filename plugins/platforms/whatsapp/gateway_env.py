@@ -27,4 +27,5 @@ AUTHZ = {
     "allowed_users_env": "WHATSAPP_ALLOWED_USERS",
     "allow_all_env": "WHATSAPP_ALLOW_ALL_USERS",
     "own_policy_env": ("WHATSAPP_DM_POLICY", "WHATSAPP_GROUP_POLICY"),
+    "allowlist_suppresses_pairing": True,
 }

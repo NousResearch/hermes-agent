@@ -1,0 +1,25 @@
+name: explainer
+title: Explainer Studio
+repo: https://github.com/suhas-svg/hermes_explainer
+sha: 4aea2971ae4af44463473ad2a93051f7cb2b26a0
+version: "1.0.1"
+description: "Turn any link, PDF, notes or topic into a narrated explainer video (MP4): themed slides, a neural voice, bullets revealed the moment they are spoken, word-by-word highlighted captions, title card and progress bar, in 16:9 or 9:16 for Shorts/Reels, plus SRT captions, transcript and thumbnail. Includes an explainer-video skill and a weekly recap-video blueprint. Narration text is sent to Microsoft's online Edge text-to-speech service via edge-tts (no account or key); scene images given as https URLs are downloaded only from public addresses (redirects checked) and local images only from allowed folders; ffmpeg runs locally to encode. Videos stay local. No telemetry. Disclosure — narration text is sent to Microsoft's online Edge text-to-speech service (edge-tts, no account); scene images given as https URLs are downloaded from public addresses only (every redirect re-checked), and local scene images are read from the Hermes working directory, the plugin's data folder or folders you add in `image_dirs`."
+maintainer: suhas-svg
+tier: community
+category: tools
+requires_hermes: ">=0.22.5"
+docs_url: https://github.com/suhas-svg/hermes_explainer#readme
+readme: true
+platforms: []
+known_issues:
+  - "Needs an internet connection: narration is synthesized by Microsoft's online Edge text-to-speech service."
+  - "Needs ffmpeg to encode the video (Hermes ships one; otherwise any ffmpeg on PATH, or set ffmpeg_path)."
+  - "The model must include the returned MEDIA: line in its reply for the MP4 to be attached on messaging platforms."
+capabilities:
+  provides_tools:
+    - explainer_render
+    - explainer_voices
+    - explainer_videos
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

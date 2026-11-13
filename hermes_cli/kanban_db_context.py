@@ -27,6 +27,26 @@ _CTX_MAX_BODY_BYTES     = 8 * 1024   # per task.body (opening post)
 _CTX_MAX_COMMENT_BYTES  = 2 * 1024   # per comment
 
 
+def _relative_age(ts: Optional[int], now: Optional[int] = None) -> str:
+    """``just now`` / ``18h ago`` / ``3d ago``; "" for a missing/invalid ts. An LLM
+    reads a bare absolute timestamp as current fact — the relative age is what
+    prompts a worker to re-verify stale sibling work."""
+    try:
+        ts = int(ts)
+    except (TypeError, ValueError):
+        return ""
+    if now is None:
+        now = int(time.time())
+    delta = now - ts
+    if delta < 60:  # includes negative = clock skew across machines; never claim "in the future"
+        return "just now"
+    if delta < 3600:
+        return f"{delta // 60}m ago"
+    if delta < 86400:
+        return f"{delta // 3600}h ago"
+    return f"{delta // 86400}d ago"
+
+
 def _ctx_cap(s: Optional[str], limit: int = _CTX_MAX_FIELD_BYTES) -> str:
     """Truncate to ``limit`` chars with a visible ellipsis."""
     if not s:
@@ -40,7 +60,7 @@ def _ctx_cap(s: Optional[str], limit: int = _CTX_MAX_FIELD_BYTES) -> str:
 def _ctx_stamp(ts: int, now: int) -> str:
     """``YYYY-MM-DD HH:MM`` plus a relative age when one is available."""
     disp = time.strftime("%Y-%m-%d %H:%M", time.localtime(ts))
-    age = _kb._relative_age(ts, now)
+    age = _relative_age(ts, now)
     return f"{disp}, {age}" if age else disp
 
 
@@ -160,7 +180,7 @@ def _ctx_parent_results(lines: list[str], conn: sqlite3.Connection, task_id: str
             )
             wrote_header = True
         done_ts = run.ended_at if run is not None and run.ended_at else (pt.completed_at or None)
-        age = _kb._relative_age(done_ts, now)
+        age = _relative_age(done_ts, now)
         lines.append(f"### {pid}" + (f" (completed {age})" if age else ""))
         if run is not None and run.summary and run.summary.strip():
             lines.append(_ctx_cap(run.summary))

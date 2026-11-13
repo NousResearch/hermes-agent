@@ -277,47 +277,27 @@ _SKIP_TOKENS = frozenset({"skip", "cancel", "s", "n", "no", "q", "quit"})
 _USER_SKIPPED_SENTINEL = "__hermes_user_skipped__"
 
 
-# config.yaml path -> (exact file bytes, parsed mapping). Metadata alone cannot prove authority:
-# Windows creation time and inode can stay unchanged across a same-size, restored-mtime edit.
-# Read on every authority check, but only parse when the content changes.
-_CONFIG_CACHE: dict[str, tuple[bytes, dict[str, Any]]] = {}
-_CONFIG_CACHE_LOCK = threading.Lock()
-
-
 _CONFIG_UNREADABLE = object()
 
 
 def _read_config_as_written(home: Path) -> Any:
-    """*home*'s ``config.yaml`` exactly as written: a dict, None when there is no file, or
-    ``_CONFIG_UNREADABLE``. Cache by content, not filesystem metadata, and parse exactly the bytes
-    used as the key. A concurrent replacement cannot cache one document under another's key.
+    """Read the as-written user layer afresh for credential authority, without overlays.
 
-    Uses the as-written primitive, not the profile-aware loaders: the export contract compares the
-    entries verbatim, and an overlay, inherited value or ``${VAR}`` expansion would change what two
-    profiles appear to agree on. This read decides credential sharing, not runtime behavior."""
+    Do not use the metadata-cached readonly reader: same-size/restored-mtime edits can
+    leave that signature unchanged on Windows. The backend owns config access, including
+    non-file stores; its uncached reader returns the raw document without interpolation.
+    """
     import hermes_yaml as yaml
 
-    from utils import fast_safe_load
+    from hermes_cli.config_backend import read_config_doc
 
-    path = home / "config.yaml"
     try:
-        content = path.read_bytes()
+        data = read_config_doc(home / "config.yaml")
     except FileNotFoundError:
         return None
-    except OSError:
-        return _CONFIG_UNREADABLE
-    with _CONFIG_CACHE_LOCK:
-        cached = _CONFIG_CACHE.get(str(path))
-    if cached is not None and cached[0] == content:
-        return cached[1]
-    try:
-        data = fast_safe_load(content.decode("utf-8-sig"))
-        data = data if isinstance(data, dict) else {}
     except (OSError, TypeError, ValueError, yaml.YAMLError):
         return _CONFIG_UNREADABLE
-    with _CONFIG_CACHE_LOCK:
-        _CONFIG_CACHE[str(path)] = (content, data)
-    return data
+    return data if isinstance(data, dict) else {}
 
 
 def _load_mcp_server_config(home: Path, server_name: str) -> dict[str, Any] | None:

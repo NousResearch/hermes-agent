@@ -25,7 +25,7 @@ except ImportError:
     httpx = None  # type: ignore[assignment]
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import BasePlatformAdapter, SendResult
+from gateway.platforms.base import BasePlatformAdapter, SendResult, describe_proxy_error, env_proxy_for_redaction
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret, send_error
 from gateway.platforms.helpers import MessageDeduplicator
@@ -119,6 +119,7 @@ class NtfyAdapter(BasePlatformAdapter):
     """ntfy adapter: HTTP-streaming subscription in, HTTP POST publish out."""
 
     MAX_MESSAGE_LENGTH = MAX_MESSAGE_LENGTH
+    serial_receive_loop = True  # the stream loop awaits each message before reading the next line
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config=config, platform=Platform("ntfy"))
@@ -352,7 +353,7 @@ async def _standalone_send(
             return send_error(f"ntfy HTTP {resp.status_code}: {resp.text[:200]}")
         return {"success": True, "platform": "ntfy", "chat_id": publish_topic, "message_id": _response_message_id(resp)}
     except Exception as e:
-        return send_error(f"ntfy standalone send failed: {e}")
+        return send_error(f"ntfy standalone send failed: {describe_proxy_error(e, env_proxy_for_redaction(server)) or e}")  # httpx reads HTTPS_PROXY
 
 
 def register(ctx) -> None:

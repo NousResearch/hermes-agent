@@ -29,11 +29,10 @@ except ImportError:  # pragma: no cover — SDK required in CI; module must stil
 
 @dataclass
 class _ProviderEntry:
-    """Per-server OAuth state. ``last_mtime_ns``: last-seen tokens-file mtime (0 = never read)
-    for external-refresh detection; ``lock`` binds to the first asyncio loop awaiting it (the MCP
-    loop); ``pending_401`` dedupes thundering-herd 401s by failed access_token. ``pool_path`` is
-    the tokens file the provider was built against — its storage identity, distinct from the
-    ``(home, name)`` provider identity, since a named profile may be reading a root-exported pool."""
+    """Per-server OAuth state. ``last_mtime_ns`` and ``last_version`` track the tokens
+    file for external-refresh detection; ``lock`` binds to the first awaiting asyncio loop.
+    ``pending_401`` dedupes by failed access token. ``pool_path`` pins storage identity,
+    distinct from ``(home, name)`` because named profiles can share a root-exported pool."""
 
     server_url: str
     oauth_config: Optional[dict]
@@ -41,6 +40,7 @@ class _ProviderEntry:
     transport: Optional[str] = None
     provider: Optional[Any] = None
     last_mtime_ns: int = 0
+    last_version: tuple = ()
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     pending_401: dict[str, asyncio.Future[bool]] = field(default_factory=dict)
 
@@ -564,11 +564,12 @@ class MCPOAuthManager:
             return self._entries.pop(self._key(server_name, hermes_home), None)
 
     async def invalidate_if_disk_changed(self, server_name: str, *, hermes_home: str | Path | None = None) -> bool:
-        """Force the SDK provider to reload when the tokens file mtime changed (e.g. a cron refresh, or a
+        """Force the SDK provider to reload when the tokens file version changed (e.g. a cron refresh, or a
         sibling profile re-authorizing a shared pool); True if so. A tokens file that is momentarily
         ABSENT (a re-authorization in flight) is not a change: the provider keeps its in-memory grant
         until the new one lands, rather than starting a second OAuth flow from a live session."""
         from tools.mcp_oauth import HermesTokenStorage
+        from utils import file_cache_version
         entry = self._entries.get(self._key(server_name, hermes_home))
         if entry is None or entry.provider is None:
             return False
@@ -576,11 +577,13 @@ class MCPOAuthManager:
             pool = self._entry_pool(entry)
             tokens_path = Path(pool) if pool else HermesTokenStorage(server_name, hermes_home=hermes_home)._tokens_path()
             try:
-                mtime_ns = tokens_path.stat().st_mtime_ns
+                # Hash the pinned pool, including same-tick refreshes from sibling profiles.
+                version = file_cache_version(tokens_path, always_digest=True)
             except OSError:
                 return False
-            if mtime_ns == entry.last_mtime_ns:
+            if version == entry.last_version:
                 return False
+            mtime_ns, entry.last_version = version[0], version
             old, entry.last_mtime_ns = entry.last_mtime_ns, mtime_ns
             if old == 0 and getattr(getattr(entry.provider, "context", None), "current_tokens", None) is not None:
                 # First observation with tokens already in memory only seeds the

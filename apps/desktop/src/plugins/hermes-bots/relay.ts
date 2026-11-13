@@ -334,12 +334,17 @@ async function relayAgentsOn(
     )
 
     const profiles = Array.isArray(res?.profiles) ? res.profiles : []
+    // This connection's default is @hermes only while it has no real 'hermes' profile.
+    const hermesTaken = profiles.some(profile => profile?.name === 'hermes')
     const label = labels.get(connection.id) || connection.id
 
     const rows = profiles
       .map(profile => ({
         profile: String(profile?.name || ''),
-        handle: botHandle(profile?.name, profile),
+        handle: botHandle(
+          profile?.name,
+          hermesTaken && profile?.name === 'default' ? { ...profile, hermesHandleTaken: true } : profile
+        ),
         connection_id: connection.id,
         connection_label: label,
         title: String(profile?.ui_meta?.['hermes-bots']?.title || profile?.display_name || ''),

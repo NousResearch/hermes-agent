@@ -1,0 +1,120 @@
+{
+  "fixtureVersion": 1,
+  "name": "section-lock-covers-later-sub-keys",
+  "description": "Proves rule-3: A lock on a section covers every sub-key under it, including keys no level had set when the lock was added.",
+  "levels": [
+    {
+      "kind": "global",
+      "values": {},
+      "locks": []
+    },
+    {
+      "kind": "tenant",
+      "values": {
+        "tools": {
+          "disabled": [
+            "web"
+          ]
+        }
+      },
+      "locks": [
+        "tools"
+      ]
+    },
+    {
+      "kind": "principal",
+      "values": {
+        "tools": {
+          "enabled_toolsets": [
+            "x"
+          ]
+        }
+      },
+      "locks": []
+    },
+    {
+      "kind": "agent",
+      "values": {},
+      "locks": []
+    },
+    {
+      "kind": "profile",
+      "values": {
+        "tools": {
+          "new_key": {
+            "deep": true
+          }
+        }
+      },
+      "locks": []
+    }
+  ],
+  "expect": {
+    "effective": {
+      "tools": {
+        "disabled": [
+          "web"
+        ]
+      }
+    },
+    "provenance": {
+      "tools.disabled": "tenant"
+    },
+    "locks": [
+      {
+        "path": "tools",
+        "level": "tenant"
+      }
+    ]
+  },
+  "writes": [
+    {
+      "by": "profile",
+      "op": "set",
+      "path": "tools.new_key.deep",
+      "value": false,
+      "expect": {
+        "result": "reject",
+        "error": "config_key_locked",
+        "path": "tools",
+        "lockedBy": "tenant"
+      }
+    },
+    {
+      "by": "profile",
+      "op": "set",
+      "path": "tools.enabled_toolsets",
+      "value": [
+        "y"
+      ],
+      "expect": {
+        "result": "reject",
+        "error": "config_key_locked",
+        "path": "tools",
+        "lockedBy": "tenant"
+      }
+    },
+    {
+      "by": "profile",
+      "op": "unset",
+      "path": "tools.disabled",
+      "expect": {
+        "result": "reject",
+        "error": "config_key_locked",
+        "path": "tools",
+        "lockedBy": "tenant"
+      }
+    },
+    {
+      "by": "agent",
+      "op": "lock",
+      "path": "tools.x",
+      "expect": {
+        "result": "reject",
+        "error": "config_key_locked",
+        "path": "tools",
+        "lockedBy": "tenant"
+      }
+    }
+  ]
+}

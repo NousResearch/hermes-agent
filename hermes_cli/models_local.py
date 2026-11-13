@@ -227,7 +227,8 @@ def probe_ollama_local_models(
     """Probe local Ollama-compatible models from native ``/api/tags`` (Ollama's authoritative local
     catalog; ``/v1/models`` is not required for local servers). ``None`` when the endpoint cannot be
     reached or returns malformed data; a list (possibly empty) when it was reachable."""
-    from hermes_cli.models import _HERMES_USER_AGENT, _get_ollama_base_url, _urlopen_model_catalog_request
+    from hermes_cli.models import _get_ollama_base_url, _urlopen_model_catalog_request
+    from hermes_cli.version_info import hermes_user_agent
     root = _root_for_ollama_native_api(base_url or _get_ollama_base_url())
     if not root:
         return None
@@ -242,7 +243,7 @@ def probe_ollama_local_models(
             return None
         _OLLAMA_LOCAL_PROBE_FAILURE_CACHE.pop(failure_key, None)
     try:
-        request_headers = {"User-Agent": _HERMES_USER_AGENT, **(headers or {})}
+        request_headers = {"User-Agent": hermes_user_agent(), **(headers or {})}
         req = urllib.request.Request(root.rstrip("/") + "/api/tags", headers=request_headers)
         with _urlopen_model_catalog_request(req, timeout=timeout) as resp:
             models = _parse_ollama_tags(json.loads(resp.read().decode()))
@@ -372,10 +373,10 @@ def _lmstudio_server_root(base_url: Optional[str]) -> Optional[str]:
 
 def _lmstudio_request_headers(api_key: Optional[str] = None) -> dict:
     """HTTP headers for LM Studio native API requests."""
-    from hermes_cli.models import _HERMES_USER_AGENT
+    from hermes_cli.version_info import hermes_user_agent
     from agent.command_token_source import materialize_probe_api_key
     token = materialize_probe_api_key(api_key)
-    return {"User-Agent": _HERMES_USER_AGENT, **({"Authorization": f"Bearer {token}"} if token else {})}
+    return {"User-Agent": hermes_user_agent(), **({"Authorization": f"Bearer {token}"} if token else {})}
 
 
 def _lmstudio_fetch_raw_models(

@@ -120,6 +120,7 @@ _DEFAULT_PAYLOADS = {
         "changed_paths": ["src/app.tsx"],
     },
     "on_session_start": {"session_id": "test-session"},
+    "on_session_open": {"session_id": "test-session", "platform": "cli", "reason": "create"},
     "on_session_end": {
         "session_id": "test-session", "task_id": "test-task", "turn_id": "test-turn",
         "completed": True, "failed": False, "interrupted": False,
@@ -127,6 +128,7 @@ _DEFAULT_PAYLOADS = {
     },
     "on_session_finalize": {"session_id": "test-session"},
     "on_session_reset": {"session_id": "test-session"},
+    "on_session_delete": {"session_id": "test-session", "reason": "delete", "profile": "default"},
     "pre_api_request": {
         "session_id": "test-session", "task_id": "test-task", "platform": "cli",
         "model": "claude-sonnet-4-6", "provider": "anthropic",
@@ -164,6 +166,12 @@ _DEFAULT_PAYLOADS = {
         "started_at": 1756000000.0, "ended_at": 1756000000.42, "finish_reason": "stop",
         "response_model": "claude-haiku-4-5", "usage": {"input_tokens": 256, "output_tokens": 12},
         "assistant_content_chars": 40, "assistant_tool_call_count": 0, "error": None, "error_type": None,
+    },
+    "post_curator_run": {
+        "run_dir": "/home/user/.hermes/logs/curator/20260101-000000",
+        "run_json_path": "/home/user/.hermes/logs/curator/20260101-000000/run.json",
+        "report_md_path": "/home/user/.hermes/logs/curator/20260101-000000/REPORT.md",
+        "dry_run": False,
     },
     "subagent_stop": {
         "parent_session_id": "parent-sess", "child_role": None,
@@ -259,7 +267,7 @@ def _cmd_revoke(args) -> None:
         return
     print(f"Removed {removed} allowlist entry/entries for: {args.command}")
     print(
-        "Note: a running gateway stops running it when the next local session opens (unless "
+        "Note: a running gateway stops running it within about 30 seconds (unless "
         "--accept-hooks / HERMES_ACCEPT_HOOKS / hooks_auto_accept approves every hook there); "
         "other running processes keep it until they restart."
     )

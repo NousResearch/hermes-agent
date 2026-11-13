@@ -15,6 +15,7 @@ import {
   $messagingPlatformTotals,
   $messagingSessions,
   $messagingTruncated,
+  $sessionProfilesFailed,
   $sessionProfilesTruncated,
   $sessionProfilesUsage,
   $sessions,
@@ -24,6 +25,7 @@ import {
   setMessagingPlatformTotals,
   setMessagingSessions,
   setMessagingTruncated,
+  setSessionProfilesFailed,
   setSessionProfilesTruncated,
   setSessionProfilesUsage,
   setSessions,
@@ -131,6 +133,7 @@ beforeEach(() => {
   setMessagingTruncated(false)
   setSessionProfilesTruncated({})
   setSessionProfilesUsage({})
+  setSessionProfilesFailed([])
   setSessionsLoading(false)
   setSessionsLoadError(false)
 })
@@ -259,6 +262,28 @@ describe('refreshSessions cold-start load error', () => {
 
     expect($sessionsLoadError.get()).toBe(false)
     expect($sessions.get().map(s => s.id)).toEqual(['a'])
+  })
+
+  it('names a profile whose scan failed beside rows that loaded, until a scan reads it', async () => {
+    listSidebarSessions.mockResolvedValueOnce({
+      ...sidebar({ sessions: [row('a')] }),
+      errors: [{ error: 'database is locked', profile: 'work' }]
+    })
+    const { result } = renderHook(() => useSessionListActions({ profileScope: 'all' }))
+
+    await act(async () => {
+      await result.current.refreshSessions()
+    })
+
+    expect($sessionsLoadError.get()).toBe(false)
+    expect($sessionProfilesFailed.get()).toEqual(['work'])
+
+    listSidebarSessions.mockResolvedValueOnce(sidebar({ sessions: [row('a')] }))
+    await act(async () => {
+      await result.current.refreshSessions()
+    })
+
+    expect($sessionProfilesFailed.get()).toEqual([])
   })
 })
 

@@ -88,8 +88,6 @@ def _make_runner():
     )
     runner.adapters = {}
     runner._running_agents = {}
-    runner._running_agents_ts = {}
-    runner._session_run_generation = {}
     runner._pending_messages = {}
     runner._draining = False
     runner._update_runtime_status = MagicMock()
@@ -252,14 +250,14 @@ class TestRunnerSessionGenerationGuard:
         runner._invalidate_session_run_generation(sk, reason="stop")
         # The fresh run lands next; imagine it has its own state installed.
         runner._running_agents[sk] = "fresh_agent"
-        runner._running_agents_ts[sk] = 2.0
+        runner._session_state(sk).turn.started_ts = 2.0
 
         # Stale run's unwind MUST NOT clobber the fresh run's state.
         released = runner._release_running_agent_state(sk, run_generation=stale_gen)
 
         assert released is False
         assert runner._running_agents[sk] == "fresh_agent"
-        assert runner._running_agents_ts[sk] == 2.0
+        assert runner._session_state(sk).turn.started_ts == 2.0
 
 
 # ===========================================================================

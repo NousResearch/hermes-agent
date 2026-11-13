@@ -18,7 +18,7 @@ export interface CronMutationRefreshResult<T> extends CronTriggerRefreshResult {
   value: T | null
 }
 
-function cronRequestScope(profile: string): string {
+export function cronRequestScope(profile: string): string {
   return `${getApiRequestConnection() ?? ''}\u0000${profile}`
 }
 

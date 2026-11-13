@@ -5,7 +5,7 @@ Runs at gateway start + the periodic tick when
 due, writes a plugin-check receipt (pm.receipt, kind 'plugin-check'),
 and logs ONE actionable line when updates exist. Applying updates
 stays explicit — ``plugins.auto_apply: true`` (default false) opts into
-unattended apply for git-row plugins ONLY, scan-gated like cmd_update.
+unattended apply for catalog and tracked git plugins, scan-gated like cmd_update.
 
 Pure, injectable clock/check/update seams for hermetic tests.
 """
@@ -28,6 +28,66 @@ def _marker_path() -> Path:
     from hermes_constants import get_hermes_home
 
     return get_hermes_home() / _MARKERS_DIR / "last-run"
+
+
+def _results_path() -> Path:
+    """The last check's per-plugin results, next to the marker (derivation only)."""
+    return _marker_path().parent / "results.json"
+
+
+def snapshot_installs(plugins_dir: Path) -> dict:
+    """The install records an update check is about to compare against. Take it BEFORE the check runs:
+    a record read afterwards may already include an update that finished during the check."""
+    from hermes_cli.plugins_provenance import read_sidecar_rows
+
+    return read_sidecar_rows(plugins_dir)
+
+
+def record_check_results(results: list, checked_installs: dict) -> None:
+    """Persist a completed check so surfaces that list plugins (the Desktop Plugins tab) can show an
+    update without a network call per listing. Each row carries the install record it was checked
+    against (*checked_installs*, from :func:`snapshot_installs` before the check), so a later reader
+    can tell whether the result still applies. Never raises."""
+    import json
+
+    from utils import atomic_write_text
+
+    try:
+        rows = []
+        for r in results:
+            row = r.to_json() if hasattr(r, "to_json") else dict(r)
+            rows.append({**row, "checked_install": _install_fingerprint(checked_installs.get(row.get("name")))})
+        atomic_write_text(_markers_dir() / "results.json", json.dumps(rows, indent=2) + "\n")
+    except (OSError, TypeError, ValueError):
+        pass
+
+
+def _install_fingerprint(record) -> dict | None:
+    """The parts of an install record an update check depends on."""
+    if not isinstance(record, dict):
+        return None
+    return {"source": record.get("source"), "revision": record.get("revision"), "pinned": record.get("pinned") is True}
+
+
+def cached_git_updates(install_metadata: dict) -> dict[str, str]:
+    """``{plugin name: what the update moves to}`` (a commit or a feed version) for git installs the last
+    check found behind. A result is dropped once the install it was checked against changed (updated,
+    reinstalled from another source, or pinned with ``--ref``), so Desktop never offers an update that
+    already landed or one ``update`` would refuse."""
+    import json
+
+    try:
+        rows = json.loads(_results_path().read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        return {}
+    out: dict[str, str] = {}
+    for row in rows if isinstance(rows, list) else ():
+        if not isinstance(row, dict) or row.get("class") != "git" or row.get("update_available") is not True:
+            continue
+        current = _install_fingerprint(install_metadata.get(row.get("name")))
+        if current and not current["pinned"] and current == row.get("checked_install") and row.get("latest"):
+            out[str(row["name"])] = str(row["latest"])
+    return out
 
 
 def _markers_dir() -> Path:
@@ -130,6 +190,33 @@ def run_scheduled_check(
         _tick_lock.release()
 
 
+def _auto_apply(updates: list, checked_installs: dict, apply_updates_fn: Callable[[str], None], log) -> None:
+    """Apply each update row the opt-in tick may move. A catalog install held with ``--ref`` is left
+    where the user put it. A widened catalog pin is a pending review, not a failure: one line naming
+    the command that walks it, no traceback every tick; other refusals are one line too."""
+    from hermes_cli.plugins_auto_update import HELD_WITH_REF, HeldWithRef, held_with_ref
+    from hermes_cli.plugins_cmd import PluginOperationError
+    from hermes_cli.plugins_cmd_catalog import RepinConsentRequired
+
+    for r in updates:
+        if getattr(r, "klass", "") not in ("git", "catalog"):
+            continue
+        if held_with_ref(checked_installs.get(r.name)):
+            log.info("plugin %s not auto-updated: %s", r.name, HELD_WITH_REF.format(name=r.name))
+            continue
+        try:
+            apply_updates_fn(r.name)
+        except HeldWithRef as exc:  # held with --ref while the check ran
+            log.info("plugin %s not auto-updated: %s", r.name, exc)
+        except RepinConsentRequired:
+            log.info("plugin %s has an update that needs your review: run `hermes plugins update %s`",
+                     r.name, r.name)
+        except PluginOperationError as exc:
+            log.warning("auto-apply of %s not applied: %s", r.name, exc)
+        except (Exception, SystemExit):
+            log.warning("auto-apply of %s failed", r.name, exc_info=True)
+
+
 def _run_check_locked(
     *,
     run_checks_fn: Callable[..., list],
@@ -140,13 +227,18 @@ def _run_check_locked(
 ) -> list:
     check_ok = True
     warning = ""
+    checked_installs: dict = {}
     try:
+        checked_installs = snapshot_installs(plugins_dir)
         results = run_checks_fn(plugins_dir)
     except Exception:
         warning = "plugin update check failed"
         log.warning(warning, exc_info=True)
         results = []
         check_ok = False
+
+    if check_ok:
+        record_check_results(results, checked_installs)
 
     try:
         from pm import receipt
@@ -178,16 +270,12 @@ def _run_check_locked(
             names,
         )
 
-    # Opt-in unattended apply: git rows ONLY, scan-gated by the update
-    # path itself. Pinned/manual/drift/pip are never auto-applied
-    # (their update_available is False/None or their class excludes it).
+    # Opt-in unattended apply: the classes `hermes plugins update` can move (catalog re-pins to the
+    # reviewed sha, tracked git pulls), scan-gated by the update path itself, which also refuses a
+    # widened catalog pin or a too-new requires_hermes without a terminal. Pinned/manual/drift/pip
+    # are never auto-applied (their update_available is False/None or their class excludes it).
     if apply_updates_fn and updates and auto_apply_enabled(config_get):
-        for r in updates:
-            if getattr(r, "klass", "") == "git":
-                try:
-                    apply_updates_fn(r.name)
-                except (Exception, SystemExit):
-                    log.warning("auto-apply of %s failed", r.name, exc_info=True)
+        _auto_apply(updates, checked_installs, apply_updates_fn, log)
 
     # stamp the marker AFTER a completed run (even a failed one — a
     # failing check retrying every tick would hammer the network)
@@ -237,10 +325,10 @@ def maybe_run_gateway_check(
 
         run_checks_fn = run_checks
     if apply_updates_fn is None:
-        from hermes_cli import plugins_cmd
+        # update_one with no terminal, refusals raised (cmd_update would turn them into an exit)
+        from hermes_cli import plugins_auto_update
 
-        from functools import partial
-        apply_updates_fn = partial(plugins_cmd.cmd_update, interactive=False)
+        apply_updates_fn = plugins_auto_update.apply_unattended
     return run_scheduled_check(
         run_checks_fn=run_checks_fn,
         plugins_dir=plugins_dir,

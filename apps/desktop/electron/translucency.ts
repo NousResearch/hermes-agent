@@ -11,6 +11,8 @@
  * then fail to bundle.
  */
 
+import type { BrowserWindow } from 'electron'
+
 import {
   backgroundMaterialFor,
   glassActive,
@@ -18,6 +20,26 @@ import {
   windowOpacityFor,
   type WindowsBackgroundMaterial
 } from '../../shared/src/translucency'
+
+/**
+ * Electron 40.10.2's material setter also replaces the backing colour: white
+ * for 'none', transparent for glass. Restore our backing after every material
+ * write, even when the glass-active state did not change.
+ */
+export function applyWindowsBackdrop(
+  win: Pick<BrowserWindow, 'setBackgroundColor' | 'setBackgroundMaterial'>,
+  state: TranslucencyState,
+  changed: { backing: boolean; material: boolean },
+  themedColor: string
+): void {
+  if (changed.material) {
+    win.setBackgroundMaterial(backgroundMaterialFor(state))
+  }
+
+  if (changed.backing || changed.material) {
+    win.setBackgroundColor(glassActive(state) ? '#00000000' : themedColor)
+  }
+}
 
 export {
   backgroundMaterialFor,
@@ -81,8 +103,8 @@ export function windowBackingOptions(state: TranslucencyState, themedColor: stri
 
 /**
  * Return the native Windows backdrop only when glass is actually active.
- * Electron treats even the `none` backdrop as a translucent-window opt-in,
- * which disables native maximize and resize commands on Windows.
+ * Opaque windows keep their constructor backing. Live material resets go
+ * through applyWindowsBackdrop so Electron cannot replace the theme colour.
  */
 export function windowBackgroundMaterialOptions(
   state: TranslucencyState,
@@ -120,11 +142,28 @@ export function opacityNeedsSetting(next: number, current = 1): boolean {
 }
 
 /**
+ * The native opacity a window should carry, given whether this platform can do
+ * translucency at all.
+ *
+ * `translucencySupportedOn` drops the Settings row on everything but macOS and
+ * Windows, on the strength of Electron documenting `setOpacity` as a no-op
+ * elsewhere. On Linux it is not one: the X11 window carries the value as
+ * `_NET_WM_WINDOW_OPACITY`, and a native Wayland surface composites the same
+ * fade into the frame, so a Linux window really does render faded when handed
+ * the value. The gate therefore belongs where the value reaches the window, not
+ * only where the row is drawn, because a state persisted or imported from
+ * another platform reaches this path without ever passing the Settings check.
+ */
+export function nativeOpacityFor(state: TranslucencyState, supported: boolean): number {
+  return supported ? windowOpacityFor(state) : 1
+}
+
+/**
  * BrowserWindow constructor options for a chat window's native opacity. Empty
  * unless the state actually asks the window to fade — see opacityNeedsSetting.
  */
-export function windowOpacityOptions(state: TranslucencyState): { opacity?: number } {
-  const opacity = windowOpacityFor(state)
+export function windowOpacityOptions(state: TranslucencyState, supported = true): { opacity?: number } {
+  const opacity = nativeOpacityFor(state, supported)
 
   return opacityNeedsSetting(opacity) ? { opacity } : {}
 }

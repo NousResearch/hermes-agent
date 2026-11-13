@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 # kitty CSI-u ORs lock-key state into the modifier parameter of every key event while a lock is
 # on: CapsLock=64, NumLock=128, both=192. Every fixed-modifier CSI-u (and legacy CSI-tilde /
 # CSI-letter) registration therefore needs lock-offset twins, or those events leak into the prompt
@@ -316,10 +318,46 @@ def _modify_other_keys_aliases(ANSI_SEQUENCES: dict, Keys) -> dict[str, object]:
     return aliases
 
 
+# Replies to the startup image probe (``agent.terminal_image.probe_vscode_images``): XTSMGRAPHICS
+# ``ESC[?1;<status>;<value>S`` and DA1 ``ESC[?<params>c``. No key sends either. One that lands
+# after the probe stopped reading would otherwise be typed into the prompt.
+_PROBE_REPLY_RE = re.compile(r"\x1b\[\?[\d;]*[Sc]\Z")
+_PROBE_REPLY_PREFIX_RE = re.compile(r"\x1b\[\?[\d;]*\Z")
+
+
+def _install_probe_reply_filter() -> int:
+    """Parse a probe reply as one ``Keys.Ignore``, whenever it arrives. ``ANSI_SEQUENCES`` holds
+    fixed strings only, so this wraps the parser's matcher the way prompt_toolkit special-cases CPR."""
+    import prompt_toolkit.input.vt100_parser as vt100
+    from prompt_toolkit.keys import Keys
+
+    get_match = vt100.Vt100Parser._get_match
+    if getattr(get_match, "_hermes_probe_replies", False):
+        return 0
+    is_prefix = vt100._IsPrefixOfLongerMatchCache.__missing__
+
+    def _get_match(self, prefix):
+        return Keys.Ignore if _PROBE_REPLY_RE.match(prefix) else get_match(self, prefix)
+
+    def _missing(self, prefix):
+        if _PROBE_REPLY_PREFIX_RE.match(prefix):
+            self[prefix] = True
+            return True
+        return is_prefix(self, prefix)
+
+    _get_match._hermes_probe_replies = True
+    vt100.Vt100Parser._get_match = _get_match
+    vt100._IsPrefixOfLongerMatchCache.__missing__ = _missing
+    _clear_vt100_prefix_cache()
+    return 1
+
+
 def install_ignored_terminal_sequences() -> int:
-    """Map focus reports ``ESC[I`` / ``ESC[O`` (Ghostty, iTerm2, some xterms) to ``Keys.Ignore``.
+    """Parse terminal reports nobody typed as ``Keys.Ignore``: focus reports ``ESC[I`` / ``ESC[O``
+    (Ghostty, iTerm2, some xterms) and the image probe's replies.
 
     Parser-level handling beats post-hoc regex stripping because the bytes never reach the buffer.
     ``setdefault`` lets user/downstream registrations win.
     """
-    return _install(lambda _seqs, keys: {"\x1b[I": keys.Ignore, "\x1b[O": keys.Ignore}, overwrite=False)
+    focus = _install(lambda _seqs, keys: {"\x1b[I": keys.Ignore, "\x1b[O": keys.Ignore}, overwrite=False)
+    return focus + _install_probe_reply_filter()

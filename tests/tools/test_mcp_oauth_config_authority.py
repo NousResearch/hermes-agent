@@ -2,7 +2,6 @@
 
 import json
 import os
-from pathlib import Path
 
 import pytest
 
@@ -71,7 +70,7 @@ async def test_endpoint_edit_revokes_authority_even_when_metadata_collides(tmp_p
 
 
 @pytest.mark.platforms("any")
-def test_content_cache_parses_its_own_snapshot_and_never_hides_read_errors(tmp_path, monkeypatch):
+def test_authority_reads_fresh_documents_and_never_hides_read_errors(tmp_path, monkeypatch):
     import tools.mcp_oauth as oauth
     import utils
 
@@ -84,16 +83,18 @@ def test_content_cache_parses_its_own_snapshot_and_never_hides_read_errors(tmp_p
 
     def parse_then_replace(document):
         parsed.append(document)
+        data = real_parse(document)
         config.write_bytes(second)
-        return real_parse(document)
+        return data
 
     monkeypatch.setattr(utils, "fast_safe_load", parse_then_replace)
     assert oauth._load_mcp_server_config(tmp_path, "team")["url"] == "https://a.example/mcp"
     assert oauth._load_mcp_server_config(tmp_path, "team")["url"] == "https://b.example/mcp"
     assert oauth._load_mcp_server_config(tmp_path, "team")["url"] == "https://b.example/mcp"
-    assert len(parsed) == 2, "unchanged bytes should reuse the parsed mapping"
+    assert len(parsed) == 3, "authority must re-read rather than trust metadata"
 
-    real_read = Path.read_bytes
+    from hermes_cli import config_backend
+    real_read = config_backend.read_config_doc
 
     def deny_config_read(path):
         if path == config:
@@ -101,7 +102,7 @@ def test_content_cache_parses_its_own_snapshot_and_never_hides_read_errors(tmp_p
         return real_read(path)
 
     with monkeypatch.context() as patch:
-        patch.setattr(Path, "read_bytes", deny_config_read)
+        patch.setattr(config_backend, "read_config_doc", deny_config_read)
         assert oauth._read_config_as_written(tmp_path) is oauth._CONFIG_UNREADABLE
     config.write_bytes(b"\xff")
     assert oauth._read_config_as_written(tmp_path) is oauth._CONFIG_UNREADABLE
@@ -109,3 +110,22 @@ def test_content_cache_parses_its_own_snapshot_and_never_hides_read_errors(tmp_p
     assert oauth._read_config_as_written(tmp_path) is None
     config.write_bytes(second)
     assert oauth._load_mcp_server_config(tmp_path, "team")["url"] == "https://b.example/mcp"
+
+
+def test_authority_uses_selected_backend_without_a_local_file(tmp_path, monkeypatch):
+    from hermes_cli import config_backend
+    from tools.mcp_oauth import _load_mcp_server_config
+
+    class Backend:
+        url = "https://a.example/mcp"
+
+        def read_user_doc(self, home):
+            assert home == tmp_path
+            return {"mcp_servers": {"team": {"url": self.url}}}
+
+    backend = Backend()
+    monkeypatch.setattr(config_backend, "get_config_backend", lambda: backend)
+    assert _load_mcp_server_config(tmp_path, "team")["url"] == "https://a.example/mcp"
+    backend.url = "https://b.example/mcp"
+    assert _load_mcp_server_config(tmp_path, "team")["url"] == "https://b.example/mcp"
+    assert not (tmp_path / "config.yaml").exists()

@@ -1,0 +1,44 @@
+name: on-air
+repo: https://github.com/HomunculusLabs/hermes-on-air
+sha: d40b6ef97e34cd5bd89e8434cad2538a3c1080c3
+description: "AI stream co-host with guarded chat, captions, optional voice, private rehearsal, and operator controls. Disclosure — Runs loopback-only servers (OBS overlay, token-protected operator desk, private-show API) and, when you start a stage, a separate `hermes gateway run` process in a dedicated stage Hermes home it creates; reads public Twitch chat anonymously from irc.chat.twitch.tv; `hermes onair scene` downloads three.js and three-vrm from registry.npmjs.org (sha256-pinned); optional semantic assist (off by default) sends each queued draft, recent public chat and your show policy to api.typesafe.ai when set to `jev`."
+maintainer: HomunculusLabs
+tier: community
+category: platform
+requires_hermes: '>=0.22.7'
+docs_url: https://github.com/HomunculusLabs/hermes-on-air#readme
+version: "0.1.0"
+title: On Air
+capabilities:
+  provides_tools:
+  - onair_setup_schema
+  - onair_setup_status
+  - onair_setup_plan
+  - onair_setup_progress
+  - onair_setup_cancel
+  - onair_preview_safety
+  - onair_stage_status
+  - onair_stage_plan
+  - onair_stage_control
+  - onair_stage_host_turn
+  - onair_stage_safety
+  - onair_show_plan
+  - onair_show_status
+  - onair_show_chat
+  - onair_show_safety
+  - onair_work_share
+  - onair_present_status
+  - onair_present_publish
+  - onair_present_control
+  - onair_obs_setup
+  - onair_obs_scene
+  - onair_window_share
+  - onair_broadcast
+  - onair_layout
+  provides_hooks:
+  - pre_llm_call
+  - post_llm_call
+  - on_session_end
+  provides_middleware:
+  - llm_execution
+  requires_env: []

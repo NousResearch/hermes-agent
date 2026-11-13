@@ -1,0 +1,17 @@
+name: abstract-provider
+title: Abstract
+repo: https://github.com/abstractpbc/hermes-abstract-provider
+sha: e322e42578586af1c376b7e836dfce437308682a
+description: "Abstract model provider (GLM-5.3, DeepSeek-V4-Flash, Kimi-K3) over the OpenAI Responses API with a bundled model catalog. Disclosure — registers one model provider at import and nothing else (no tools, hooks, commands or threads); requests go to https://api.abstract.inc/v1 through Hermes' own client with ABSTRACT_API_KEY, which Hermes reads; the plugin itself opens no connections, reads and writes no files and starts no processes."
+maintainer: abstractpbc
+tier: community
+category: models
+requires_hermes: ">=0.22.2"
+version: "1.0.0"
+docs_url: https://github.com/abstractpbc/hermes-abstract-provider#readme
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - ABSTRACT_API_KEY

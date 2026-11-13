@@ -68,20 +68,20 @@ class TestFindBinary:
     def test_prefers_path(self, tmp_path, monkeypatch):
         exe = _exe(tmp_path / "bin" / "lightpanda")
         monkeypatch.setenv("PATH", str(tmp_path / "bin"))
-        monkeypatch.setattr("tools.browser_tool_install._merge_browser_path", lambda p: p)
+        monkeypatch.setattr(lp, "merge_sane_path", lambda p: p)
         assert lp.find_lightpanda_binary() == str(exe)
 
     @pytest.mark.platforms("posix")
     def test_falls_back_to_home_candidates(self, tmp_path, monkeypatch):
         monkeypatch.setenv("PATH", str(tmp_path / "empty"))
-        monkeypatch.setattr("tools.browser_tool_install._merge_browser_path", lambda p: p)
+        monkeypatch.setattr(lp, "merge_sane_path", lambda p: p)
         exe = _exe(tmp_path / ".lightpanda" / "lightpanda")
         monkeypatch.setattr(lp, "_home_candidates", lambda: [exe])
         assert lp.find_lightpanda_binary() == str(exe)
 
     def test_none_when_absent(self, tmp_path, monkeypatch):
         monkeypatch.setenv("PATH", str(tmp_path / "empty"))
-        monkeypatch.setattr("tools.browser_tool_install._merge_browser_path", lambda p: p)
+        monkeypatch.setattr(lp, "merge_sane_path", lambda p: p)
         assert lp.find_lightpanda_binary() is None
 
     @pytest.mark.platforms("windows")

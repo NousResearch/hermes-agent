@@ -9,7 +9,6 @@ from gateway.session_bot import _migrate, recover_bot_deliveries
 from gateway.session_results import retain_result
 from hermes_state import SessionDB
 from hermes_state_runtime import (
-    RuntimeStoreError,
     admit_session_input,
     begin_runtime_epoch,
     claim_session_input,
@@ -87,7 +86,9 @@ async def test_recovery_skips_structurally_corrupt_canonical_neighbor(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_recovery_does_not_hide_real_admission_lookup_failure(tmp_path):
+async def test_recovery_does_not_hide_real_admission_lookup_failure(tmp_path, caplog):
+    """A live session missing a receipt's admission is a storage fault: recovery logs it by
+    delivery and reason and leaves the receipt as it was, but never stops the owner's start."""
     db = SessionDB(tmp_path / "state.db")
     try:
         db.create_session("bot", source="gui")
@@ -107,9 +108,10 @@ async def test_recovery_does_not_hide_real_admission_lookup_failure(tmp_path):
                 },
             )
 
-        with pytest.raises(RuntimeStoreError) as caught:
-            await recover_bot_deliveries(SimpleNamespace(db=db, waiters={}))
-        assert caught.value.reason == "storage_unavailable"
+        await recover_bot_deliveries(SimpleNamespace(db=db, waiters={}))
+        assert f"Bot delivery {key} not recovered: storage_unavailable" in caplog.text
+        with _locked(tmp_path) as root:
+            assert _read(root / f"{key}.json")["status"] == "canonical"
     finally:
         db.close()
 

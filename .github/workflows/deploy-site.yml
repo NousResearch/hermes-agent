@@ -74,6 +74,7 @@ jobs:
         with:
           toolchain: all
           extras: '[]'
+          node-package-manager: npm
           node-cache-dependency-path: website/package-lock.json
 
       - name: Install ruamel.yaml for skill extraction
@@ -159,8 +160,9 @@ jobs:
           python3 scripts/build_skills_index.py
           validate_index
 
-      - name: Extract skill metadata for dashboard
-        run: python3 website/scripts/extract-skills.py
+      # generate-skill-docs.py reads neither plugin output below, so it runs first with extract-skills.
+      - name: Extract skill metadata and regenerate per-skill docs pages + catalogs
+        run: just docs-generate
 
       # Star counts drive the catalog ranking. Same rule as the skills index: GitHub is only
       # probed by the scheduled skills-index run; deploys reuse its artifact (downloaded above
@@ -172,14 +174,10 @@ jobs:
       - name: Extract plugin catalog for the Plugins page
         run: python3 website/scripts/extract-plugins.py
 
-      - name: Regenerate per-skill docs pages + catalogs
-        run: python3 website/scripts/generate-skill-docs.py
-
       - name: Install dependencies
         uses: ./.github/actions/retry
         with:
-          command: npm ci
-          working-directory: website
+          command: just docs-install
 
       - name: Build Docusaurus
         run: npm run build
@@ -236,9 +234,12 @@ jobs:
               cp -a "_site/docs/$d/." "_asset_retention/$d/"
             fi
           done
-          # 2) Drop pool entries no build has produced for 14 days — far
-          #    beyond any edge-cache or open-tab horizon.
-          find _asset_retention -type f -mtime +14 -delete
+          # 2) Drop pool entries no build has produced for 3 hours: about 3x
+          #    the ~65-minute edge-cache horizon above. Deploys land every
+          #    15-30 minutes, so day-scale windows kept 100+ builds of both
+          #    locales: 14 days grew the pool to 11 GB, and 2 days still pushed
+          #    the compressed artifact past the 1 GB Pages limit.
+          find _asset_retention -type f -mmin +180 -delete
           find _asset_retention -type d -empty -delete
           # 3) Union-merge the pool into the artifact; --update=none keeps the
           #    current build authoritative for any path it produced.
@@ -258,6 +259,19 @@ jobs:
         with:
           path: _asset_retention
           key: docs-asset-retention-${{ github.run_id }}
+
+      # Pages rejects or stalls on artifacts over 1 GB compressed, surfacing as a
+      # deploy timeout rather than an error. Fail here with the real size instead.
+      - name: Check artifact size
+        run: |
+          set -euo pipefail
+          limit=$((900 * 1024 * 1024))
+          size=$(tar -cf - -C _site . | gzip -6 | wc -c)
+          echo "compressed artifact: $((size / 1024 / 1024)) MiB (limit $((limit / 1024 / 1024)) MiB)"
+          if [ "$size" -gt "$limit" ]; then
+            echo "::error::Pages artifact is $((size / 1024 / 1024)) MiB compressed, over the $((limit / 1024 / 1024)) MiB budget (Pages caps at 1 GB). Check the asset retention pool size above."
+            exit 1
+          fi
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9  # v5.0.0

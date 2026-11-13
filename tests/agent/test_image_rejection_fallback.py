@@ -397,6 +397,29 @@ class TestRejectionNeverReachesPersistedHistory:
         assert strip_images_for_rejecting_model(agent, api_messages) is False
         assert str(api_messages).count("data:image/png") == 2
 
+    def test_a_request_without_images_never_marks_the_model(self):
+        """A 4xx body can quote the user's own text back (pydantic ``input_value=...``, proxy
+        echoes). When the user wrote "X is not a multimodal model" and the request carried no
+        image, the phrase match must not mark the model, or every later image is stripped
+        from a vision model until /new."""
+        from agent.turn_recovery import recover_before_classification
+
+        class _EchoErr(Exception):
+            status_code = 400
+            body = "1 validation error: messages.0 input_value='I read llama-3 is not a multimodal model.'"
+
+        agent = self._agent()
+        text_only = [{"role": "user", "content": "I read llama-3 is not a multimodal model."}]
+        # History keeps images the per-call request no longer carries: the guard must read what was sent.
+        retry, _ = recover_before_classification(
+            agent, _EchoErr(), messages=self._history() + text_only, api_messages=list(text_only),
+            api_kwargs={}, active_system_prompt="sys",
+        )
+
+        assert retry is False
+        assert agent._image_rejecting_models == set()
+        assert strip_images_for_rejecting_model(agent, self._history()) is False
+
     def test_a_corrupt_image_does_not_mark_the_model_image_rejecting(self):
         """'failed to decode image' says the PAYLOAD is bad, not that the model is text-only.
         The attempt is stripped and retried, but the model stays unmarked so a later request

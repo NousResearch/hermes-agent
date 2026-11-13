@@ -20,6 +20,8 @@ export interface PluginRecord {
   status: PluginStatus
   /** One-liner from the plugin's own metadata (what it adds). */
   description?: string
+  /** Sensitive doors the plugin declared (`HermesPlugin.capabilities`). */
+  capabilities?: string[]
   /** Load/registration failure message (status 'error'). */
   error?: string
   /** Absolute plugin.js path (disk plugins) — powers "Reveal in Finder". */
@@ -27,7 +29,16 @@ export interface PluginRecord {
   /** Agent package this is the desktop half of (unified agent+desktop packages). */
   packageName?: string
   /** Where that package came from (catalog sidecar or git remote), when known. */
-  packageOrigin?: { catalogName?: string; repo?: string; sha?: string }
+  packageOrigin?: PackageOrigin
+}
+
+/** Where a disk plugin came from: a package half's marker origin, or the catalog entry a standalone plugin's
+ *  installer recorded (`pin` is the tag object a tag pin names, beside the commit `sha` checked out). */
+export interface PackageOrigin {
+  catalogName?: string
+  pin?: string
+  repo?: string
+  sha?: string
 }
 
 // Explicit user enable/disable choices, id -> boolean. ABSENCE means "no
@@ -117,10 +128,41 @@ export function dropPlugin(id: string): void {
  *  half on too instead of leaving a second switch to find. *keepUserChoice*
  *  leaves a half the user explicitly switched off alone. */
 export async function enablePackageDesktopHalf(packageName: string, { keepUserChoice = false } = {}): Promise<void> {
+  await enableDesktopPlugins(record => record.packageName === packageName, keepUserChoice)
+}
+
+/** The catalog entry a STANDALONE plugin was installed from; a package's half answers for no entry here. */
+const standaloneCatalogName = (record: PluginRecord) =>
+  record.packageName ? undefined : record.packageOrigin?.catalogName
+
+/** The catalog entries the STANDALONE desktop plugins on disk were installed from, each with the commits
+ *  that count as current for it (the one checked out, and the tag object a tag pin names). A desktop-only
+ *  entry has no agent row to carry its `catalog_name`, so a surface asking "is this entry installed?" reads
+ *  these too. A package's desktop half is left out: desktop plugins are app-wide, but whether a package is
+ *  installed is the selected profile's agent inventory. */
+export function installedDesktopCatalogEntries(records: Record<string, PluginRecord>): Map<string, string[]> {
+  return new Map(
+    Object.values(records).flatMap(record => {
+      const name = standaloneCatalogName(record)
+      const { pin, sha } = record.packageOrigin ?? {}
+
+      return name ? [[name, [sha, pin].filter((value): value is string => Boolean(value))] as const] : []
+    })
+  )
+}
+
+/** Turn on the standalone desktop plugin installed from catalog entry *catalogName*. A plugin can
+ *  ship off by default (`defaultEnabled: false`); a dialog that said "turns on right away" must not
+ *  leave it off for the user to find. Ticking that is the user's choice, so an older "off" yields. */
+export async function enableCatalogDesktopPlugin(catalogName: string): Promise<void> {
+  await enableDesktopPlugins(record => standaloneCatalogName(record) === catalogName, false)
+}
+
+async function enableDesktopPlugins(matches: (record: PluginRecord) => boolean, keepUserChoice: boolean) {
   const decisions = $pluginDecisions.get()
 
   for (const record of Object.values($pluginRecords.get())) {
-    if (record.packageName !== packageName || record.status !== 'disabled') {
+    if (!matches(record) || record.status !== 'disabled') {
       continue
     }
 

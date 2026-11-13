@@ -8,6 +8,7 @@ import json
 import os
 import re
 import sys
+import uuid
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -228,10 +229,13 @@ def _list_sessions(source: str, root: Optional[Path]) -> list[ForeignSession]:
     return results
 
 
-def import_foreign_session(source: str, path, db=None) -> str:
-    """Import one foreign session into the Hermes SessionDB; returns the new Hermes session id.
+def import_foreign_session(source: str, path) -> str:
+    """Import one foreign session through the gateway's ``session.mutate import`` (the gateway is the
+    only state.db writer, #106742); returns the new Hermes session id. The row lands as an ordinary
+    ``cli`` session bound to this importer, so ``hermes --resume`` continues it writable.
 
-    Raises ``ValueError`` on unknown source or a session with no usable conversation turns."""
+    Raises ``ValueError`` on unknown source or a session with no usable conversation turns, and
+    ``GatewayClientError`` (a ``ValueError``) when the gateway refuses the import."""
     source = (source or "").strip().lower().lstrip("@")
     if source not in _SOURCE_LABELS:
         raise ValueError(f"Unknown foreign session source: {source!r}")
@@ -245,24 +249,21 @@ def import_foreign_session(source: str, path, db=None) -> str:
     first_user = _first_user_line([(t["role"], t["content"]) for t in turns]) or path.stem
     if len(first_user) > _TITLE_MAX:
         first_user = first_user[: _TITLE_MAX - 1] + "…"
-    tool = _SOURCE_DB_NAMES[source]
-    owns_db = db is None
-    if owns_db:
-        from hermes_state_registry import acquire
-        db = acquire()  # the CLI resume that follows acquires this same handle
-    try:
-        session_id = new_session_id()
-        origin = {"imported_from": {"tool": tool, "path": str(path), "foreign_session_id": parsed.get("session_id")}}
-        db.create_session(session_id, source=tool, cwd=parsed.get("cwd"), origin_json=json.dumps(origin))
-        for turn in turns:
-            db.append_message(session_id, turn["role"], turn["content"])
-        with contextlib.suppress(Exception):  # title is cosmetic; the import itself succeeded
-            db.set_session_title(session_id, f"Imported from {_SOURCE_LABELS[source]}: {first_user}")
-        return session_id
-    finally:
-        if owns_db:
-            with contextlib.suppress(Exception):
-                db.close()
+    from hermes_cli.gateway_client import GatewayClientError
+    from hermes_cli.gateway_session_store import session_store
+    store = session_store()
+    session_id = new_session_id()
+    cwd = parsed.get("cwd")
+    # Resume refuses a folder missing here (another machine's, or deleted), as the Desktop import does.
+    row = {"id": session_id, "source": "cli", "cwd": cwd if cwd and Path(cwd).is_dir() else None, "messages": turns}
+    receipt = store.call("session.mutate", session_id=session_id, request_id=uuid.uuid4().hex, expected_revision=0,
+                         operation="import", payload={"sessions": [row]})
+    # Titles are UNIQUE (a re-import's is taken), so the title is a separate, cosmetic rename.
+    with contextlib.suppress(GatewayClientError):
+        store.call("session.mutate", session_id=session_id, request_id=uuid.uuid4().hex,
+                   expected_revision=receipt["revision"], operation="rename",
+                   payload={"title": f"Imported from {_SOURCE_LABELS[source]}: {first_user}"})
+    return session_id
 
 
 def gather_foreign_sessions(source: Optional[str] = None, *, claude_root: Optional[Path] = None,
@@ -304,7 +305,7 @@ def pick_foreign_session(source: Optional[str] = None, *, limit: int = 25) -> Op
     return None
 
 
-def run_sessions_import(args, db=None) -> Optional[str]:
+def run_sessions_import(args) -> Optional[str]:
     """`hermes sessions import` entry point. Returns new session id or None."""
     source = getattr(args, "from_source", None)
     path = getattr(args, "path", None)
@@ -328,7 +329,7 @@ def run_sessions_import(args, db=None) -> Optional[str]:
             return None
         source, chosen_path = picked.source, picked.path
     try:
-        session_id = import_foreign_session(source, chosen_path, db=db)
+        session_id = import_foreign_session(source, chosen_path)
     except ValueError as e:
         print(f"Error: {e}")
         return None

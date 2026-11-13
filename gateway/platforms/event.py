@@ -5,6 +5,7 @@ gateway.platforms.*.
 """
 
 import re
+import unicodedata
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
@@ -19,6 +20,27 @@ from gateway.session import SessionSource
 # The pattern matches to end-of-line (not just whitespace-bounded) to handle
 # Windows paths that may contain spaces (e.g. "C:\Users\John Doe\image.png").
 _ATTACHMENT_REF_RE = re.compile(r"^(?:@(?:image|file|url):[^\n]+\n?)+", re.IGNORECASE)
+
+_MAX_FILENAME_CHARS = 255
+
+
+def clean_attachment_filename(name: object) -> str:
+    """An untrusted attachment filename reduced to a display-safe basename; ``""`` when unusable.
+
+    Directory parts (either separator), control and format characters (CR/LF, NUL, bidi
+    overrides) are dropped and the length is capped with the extension kept. Never a storage
+    path: callers keep their own random cache names."""
+    if not isinstance(name, str):
+        return ""
+    base = name.replace("\\", "/").rsplit("/", 1)[-1]
+    base = "".join(ch for ch in base if unicodedata.category(ch) not in {"Cc", "Cf"}).strip()
+    if base in {"", ".", ".."}:
+        return ""
+    if len(base) > _MAX_FILENAME_CHARS:
+        stem, dot, ext = base.rpartition(".")
+        keep = f"{dot}{ext}" if stem and len(ext) <= 16 else ""
+        base = base[: _MAX_FILENAME_CHARS - len(keep)] + keep
+    return base
 
 
 class MessageType(Enum):
@@ -107,16 +129,61 @@ class MessageEvent:
     # of ``internal``: these events still go through user authorization. Appended after
     # ``reply_expected`` for positional compat (see the field-order rule above).
     inherit_channel_pin: bool = False
+    # Identity of one edit of a message (Telegram: its ``update_id``). An edit re-sends its message's own
+    # ``message_id`` with new text, so native admission keys it apart from the original send.
+    # Appended for positional compat (see the field-order rule above).
+    edit_revision: Optional[str] = None
+    # Original filename per attachment, parallel to ``media_urls`` like ``media_types`` ("" =
+    # unknown). For adapters whose ``media_urls`` are random cache names (relay); the name is
+    # display data only, never a path. Appended for positional compat.
+    media_filenames: list[str] = field(default_factory=list)
 
     # Process-local admission receipt, never routing metadata or execution acknowledgement.
     _gateway_accepted: bool = field(default=False, init=False, repr=False, compare=False)
+    # Set when ``admit_internal_event`` hands its producer a receipt before any drain began. The
+    # producer will not retry, so a restart drain runs this event instead of refusing it at the
+    # drain gate or discarding it as a queued follow-up (#138123).
+    _admitted_before_drain: bool = field(default=False, init=False, repr=False, compare=False)
     # Run-owned final presentation snapshot; never deserialized from ingress metadata.
     _notification_reply_muted: Optional[bool] = field(default=None, init=False, repr=False, compare=False)
+
+    def accept_interrupt(self) -> None:
+        """The runner's stop/reset handler ran (past admission and slash access): the receiving adapter
+        may cancel the session's turn. Marks every event this one was rewritten from, since the adapter
+        checks the event it dispatched, not a ``pre_gateway_dispatch`` rewrite's copy."""
+        event: Optional[MessageEvent] = self
+        while event is not None:
+            event._interrupt_accepted = True
+            event = getattr(event, "_rewritten_from", None)
 
     def absorb_reply_expected(self, other: "MessageEvent") -> None:
         """One turn now answers *other* too: an addressed message wins, then an unknown one."""
         if self.reply_expected is not True and other.reply_expected is not False:
             self.reply_expected = other.reply_expected
+
+    def absorb_turn_input(self, other: "MessageEvent") -> None:
+        """One turn now carries *other*'s input too. A turn merged from two senders has no single
+        actor: ``user_id`` "" exports none, so a narrowed approval binds to approvers and admins only
+        instead of to the first sender while it carries the second sender's text."""
+        self.absorb_reply_expected(other)
+        if self.sender_id() != other.sender_id():
+            self.user_id = self.user_name = ""
+
+    def sender_id(self) -> Optional[str]:
+        """Who sent this input: ``user_id``, else the source's (a shared observed-group source has
+        no user, so its author rides only on the event)."""
+        return self.user_id if self.user_id is not None else getattr(self.source, "user_id", None)
+
+    def extend_media(self, other: "MessageEvent") -> None:
+        """Append *other*'s attachments (urls, types and original names) to this event's. Names are
+        padded with ``""`` on either side so each stays on its own attachment; events without names
+        (native adapters keep the name in the cache path) leave ``media_filenames`` untouched."""
+        if self.media_filenames or other.media_filenames:
+            def pad(msg: "MessageEvent") -> list[str]:
+                return (list(msg.media_filenames) + [""] * len(msg.media_urls))[: len(msg.media_urls)]
+            self.media_filenames = pad(self) + pad(other)
+        self.media_urls.extend(other.media_urls)
+        self.media_types.extend(other.media_types)
 
     def _command_text(self) -> str:
         """Return the message text with leading Desktop attachment refs stripped.

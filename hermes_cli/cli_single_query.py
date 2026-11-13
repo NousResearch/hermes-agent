@@ -443,6 +443,9 @@ def _install_single_query_signal_handlers(cli):
                 # store here or the worker's turn (and its usage deltas) never become durable (#88583 /
                 # #50881 class). Best-effort under the SIGALRM deadman above.
                 _flush_one_shot_session_store(cli)
+            # The one-shot exit's shared_metrics shutdown_runtimes is skipped too: bounded inside the deadman.
+            from hermes_cli.observability.shared_metrics_process import flush_before_hard_exit
+            flush_before_hard_exit()
             _flush_logging_and_stdio()
             _kill_foreground_and_exit()
         raise KeyboardInterrupt()
@@ -543,6 +546,11 @@ def _run_single_query_mode(cli, query, image, quiet, oneshot, stream_json: bool 
         if _query_label:
             cli.console.print(f"[bold blue]{t('cli.single_query.query_label')}[/] {_query_label}")
         cli._show_security_advisories()
+        # Same author contract as `-Q`: a spawner that sets HERMES_TURN_AUTHOR names who wrote this run's
+        # prompts. Consumed before the first turn so tool subprocesses never inherit it; every turn of
+        # the run (recovery and goal follow-ups included) carries it to memory providers.
+        from agent.turn_author import take_turn_author_from_env
+        cli._single_query_turn_author = take_turn_author_from_env()
         response = cli.chat(query, images=single_query_images or None)
         # Kanban worker: a failed-silently turn used to end the run as rc=0 with no
         # terminal kanban call, so the dispatcher booked a protocol violation and

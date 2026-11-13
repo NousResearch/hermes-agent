@@ -128,8 +128,8 @@ def get_available_skills() -> dict[str, list[str]]:
     ``prefetch_banner_data()`` pays it off-thread. A failed scan yields ``{}`` and is not cached.
     """
     def _scan():
-        from tools.skills_tool import _find_all_skills
-        return _find_all_skills()  # already filtered
+        from tools.skills_tool import find_all_skills
+        return find_all_skills()  # already filtered
 
     def _compute():
         all_skills = _quiet(_scan)
@@ -597,13 +597,15 @@ def _active_profile_name() -> Optional[str]:
 
 
 def _banner_left_lines(model: str, cwd: str, session_id, context_length, provider, *, accent: str, dim: str,
-                       context_pinned: bool = False) -> list:
+                       context_pinned: bool = False, context_marker: str = "") -> list:
     """Model / cwd / session lines under the hero art. ``context_pinned`` marks a
-    ``model.context_length`` pin so the user can tell it apart from provider metadata (#66168)."""
+    ``model.context_length`` pin so the user can tell it apart from provider metadata (#66168);
+    ``context_marker`` (``"pinned"`` / ``"fallback"``, agent.context_pin) also marks a defaulted window."""
     def _dim_sep(label: str) -> str:
         return f" [dim {dim}]·[/] [dim {dim}]{label}[/]"
     lines = []
-    pin = " (pinned)" if context_pinned else ""
+    marker = context_marker or ("pinned" if context_pinned else "")
+    pin = f" ({marker})" if marker else ""
     ctx_str = _dim_sep(f"{_format_context_length(context_length)} context{pin}") if context_length else ""
     nous_str = _dim_sep("Nous Research")
     if (provider or "").strip().lower() == "moa":
@@ -674,7 +676,7 @@ def build_welcome_banner(
     console: "Console", model: str, cwd: str, tools: list[dict] | None = None, enabled_toolsets: list[str] | None = None,
     session_id: str | None = None, get_toolset_for_tool=None, context_length: int | None = None, provider: str | None = None,
     availability: dict[str, Any] | None = None, skills_by_category: dict[str, list[str]] | None = None,
-    context_pinned: bool = False,
+    context_pinned: bool = False, context_marker: str = "",
 ):
     """Build and print a welcome banner with caduceus on left and info on right.
 
@@ -699,7 +701,7 @@ def build_welcome_banner(
     _bskin = _quiet(_active_skin)
     left_lines = ["", getattr(_bskin, "banner_hero", None) or HERMES_CADUCEUS, ""]
     left_lines += _banner_left_lines(model, cwd, session_id, context_length, provider, accent=accent, dim=dim,
-                                     context_pinned=context_pinned)
+                                     context_pinned=context_pinned, context_marker=context_marker)
     right_lines = _banner_tool_lines(
         tools, availability.get("unavailable_toolsets", []), get_toolset_for_tool,
         lazy_tools=set(availability.get("lazy_tools", [])), disabled_tools=set(availability.get("disabled_tools", [])),

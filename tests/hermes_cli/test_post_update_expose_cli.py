@@ -13,9 +13,12 @@ gate gets its own test.
 
 from __future__ import annotations
 
+import io
 import json
 import os
+import shutil
 import sys
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -179,6 +182,111 @@ def test_environment_block_reader_counts_utf16_units():
 
     assert _launchers._read_environment_block(ctypes.addressof(block)) == {
         "A": "1", "MOOD": "\U0001F600", "HERMES_HOME": "C:\\h"}
+
+
+def _windows_home(tmp_path, monkeypatch) -> Path:
+    """The default data root under a temp LOCALAPPDATA, with a store interpreter; new consoles use it.
+
+    distlib is switched off, so publication writes the ``.cmd`` form on every test host."""
+    local = tmp_path / "local"
+    monkeypatch.setenv("LOCALAPPDATA", str(local))
+    monkeypatch.delenv("HERMES_HOME", raising=False)
+    monkeypatch.delenv("HERMES_RUNTIME_DIR", raising=False)
+    monkeypatch.setattr(_launchers, "_new_console_environment", lambda: {"LOCALAPPDATA": str(local)})
+    monkeypatch.setattr(_launchers, "_load_script_maker", lambda: None)
+    monkeypatch.setattr(_launchers, "_store_script_maker", lambda python_exe: None)
+    home = local / "hermes"
+    _store_python(home).parent.mkdir(parents=True)
+    _store_python(home).touch()
+    (home / "tools" / "facts.json").write_text(
+        json.dumps({"schema": 1, "packages": {"python": {"entry": _store_python(home).parent.name}}}),
+        encoding="utf-8")
+    return home
+
+
+def _store_python(home: Path) -> Path:
+    return home / "tools" / "python-fixture" / "python.exe"
+
+
+def _checkout(path: Path) -> Path:
+    (path / ".git").mkdir(parents=True)
+    (path / "install-stamp.json").write_text(json.dumps({"updateMechanism": "self"}), encoding="utf-8")
+    return path.resolve()
+
+
+def _write_exe_launcher(target: Path, python: Path, root: Path) -> None:
+    """distlib's shape: loader stub, '#!<python> -I' shebang, then a zip holding the launcher script."""
+    payload = io.BytesIO()
+    with zipfile.ZipFile(payload, "w") as archive:
+        archive.writestr("__main__.py", _launchers._launcher_script(target.stem, root, None))
+    target.write_bytes(b"MZ" + b"\x00" * 64 + b"#!" + str(python).encode() + b" -I\r\n" + payload.getvalue())
+
+
+def _command(home: Path) -> Path:
+    """The ``hermes`` a console runs: PATHEXT resolves .exe before .cmd."""
+    exe = home / "bin" / "hermes.exe"
+    return exe if exe.exists() else home / "bin" / "hermes.cmd"
+
+
+@pytest.fixture
+def path_registrations(monkeypatch):
+    registered = []
+    monkeypatch.setattr(_launchers, "_register_windows_user_path",
+                        lambda entry: registered.append(Path(entry)) or "added")
+    return registered
+
+
+@pytest.mark.platforms("windows")
+@pytest.mark.parametrize("form", ["exe", "cmd"])
+def test_review_tree_leaves_the_installed_commands_alone(form, path_registrations, tmp_path, monkeypatch):
+    """A review tree started against the real home keeps the installed checkout's commands in its bin.
+
+    Its boot bootstrap runs expose_cli too; republishing there would point every
+    console's ``hermes`` at the review tree."""
+    home = _windows_home(tmp_path, monkeypatch)
+    installed = _checkout(home / "hermes-agent")
+    review = _checkout(home / "reviews" / "pr-1" / "rebuild-wt")
+    if form == "exe":
+        (home / "bin").mkdir()
+        for name in _launchers.WINDOWS_BIN_LAUNCHERS:
+            _write_exe_launcher(home / "bin" / f"{name}.exe", _store_python(home), installed)
+    else:
+        assert _launchers._expose_windows_user_bin(installed, create=True)["path"] == "added"
+    before = {path.name: path.read_bytes() for path in (home / "bin").iterdir()}
+
+    result = _launchers._expose_windows_user_bin(review, create=True)
+
+    assert {path.name: path.read_bytes() for path in (home / "bin").iterdir()} == before
+    assert result == {"ok": True, "skipped": f"{home / 'bin' / f'hermes.{form}'} starts another checkout"}
+    assert _launchers._launcher_checkout(_command(home)) == installed
+    assert path_registrations == ([] if form == "exe" else [home / "bin"])
+
+
+@pytest.mark.platforms("windows")
+def test_review_tree_publishes_where_no_working_command_exists(path_registrations, tmp_path, monkeypatch):
+    home = _windows_home(tmp_path, monkeypatch)
+    first = _checkout(home / "reviews" / "pr-1" / "rebuild-wt")
+    second = _checkout(home / "reviews" / "pr-2" / "rebuild-wt")
+
+    assert "skipped" not in _launchers._expose_windows_user_bin(first, create=True)
+    assert _launchers._launcher_checkout(_command(home)) == first
+
+    # A command whose checkout is gone starts nothing, so it is replaced.
+    shutil.rmtree(first)
+    assert "skipped" not in _launchers._expose_windows_user_bin(second, create=True)
+    assert _launchers._launcher_checkout(_command(home)) == second
+
+
+@pytest.mark.platforms("windows")
+def test_installed_checkout_takes_its_commands_back(path_registrations, tmp_path, monkeypatch):
+    home = _windows_home(tmp_path, monkeypatch)
+    installed = _checkout(home / "hermes-agent")
+    review = _checkout(home / "reviews" / "pr-1" / "rebuild-wt")
+    _launchers._expose_windows_user_bin(review, create=True)
+    assert _launchers._launcher_checkout(_command(home)) == review
+
+    assert "skipped" not in _launchers._expose_windows_user_bin(installed, create=True)
+    assert _launchers._launcher_checkout(_command(home)) == installed
 
 
 def test_registered_as_a_home_step():

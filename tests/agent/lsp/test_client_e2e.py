@@ -75,6 +75,41 @@ async def test_client_receives_published_errors(tmp_path: Path):
 
 
 @pytest.mark.asyncio
+async def test_abandoned_request_is_cancelled_and_its_late_answer_is_dropped(tmp_path: Path):
+    """A timed-out request sends ``$/cancelRequest`` for its id; the server's late answer to
+    that id must not crash the reader or resolve the next request.  An abandoned ``shutdown``
+    sends no cancel."""
+    f = tmp_path / "x.py"
+    f.write_text("print('hi')\n", encoding="utf-8")
+    trace = tmp_path / "cancel-trace.txt"
+    client = _client(tmp_path, "late_pull", MOCK_LSP_TRACE=str(trace))
+    await client.start()
+    try:
+        await client.open_file(str(f), language_id="python")
+        params = {"textDocument": {"uri": f.as_uri()}}
+        abandoned_id = client._next_id
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(client._send_request("textDocument/diagnostic", params), timeout=0.5)
+
+        # The mock answers requests in order, so by the time this one returns the cancel was
+        # recorded and the late answer for the abandoned id was already read and dropped.
+        with pytest.raises(LSPRequestError) as excinfo:
+            await asyncio.wait_for(client._send_request("workspace/unknownProbe", {}), timeout=10)
+
+        assert excinfo.value.code == -32601
+        assert trace.read_text(encoding="utf-8").split() == [str(abandoned_id)]
+        assert client.state != "error"
+        assert client._pending == {}
+
+        # The mock never answers ``shutdown``: after it the spec allows only ``exit``, so the
+        # abandoned shutdown request must not be cancelled.
+        await client.shutdown()
+        assert trace.read_text(encoding="utf-8").split() == [str(abandoned_id)]
+    finally:
+        await client.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_aborted_start_reports_exit_status_and_stderr_tail(tmp_path: Path):
     """A server that dies mid-initialize must not fail as an opaque protocol error.
 

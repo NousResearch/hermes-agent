@@ -8,7 +8,7 @@ import { $terminalFontFamily, applyTerminalFontFamily, resolveTerminalFontFamily
 import { redrawAllTerminals } from './terminals'
 
 interface TerminalFontControllerOptions {
-  fitRef: RefObject<((visible: boolean) => void) | null>
+  fitRef: RefObject<(() => void) | null>
   termRef: RefObject<Terminal | null>
   webglRef: RefObject<WebglAddon | null>
 }
@@ -39,7 +39,7 @@ export function useTerminalFontController({ fitRef, termRef, webglRef }: Termina
 
     void applyTerminalFontFamily({
       clearTextureAtlas: () => webglRef.current?.clearTextureAtlas(),
-      fit: () => fitRef.current?.(true),
+      fit: () => fitRef.current?.(),
       fontFamily,
       isCurrent: () => !cancelled && generationRef.current === generation,
       term

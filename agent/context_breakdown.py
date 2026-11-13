@@ -140,9 +140,40 @@ def context_usage_fields(compressor: Any) -> dict[str, Any]:
             "context_source": source, "context_estimated": source != "provider_usage"}
 
 
+def _categories(system_prompt: str, skills: str, tools: Sequence[dict], messages: list[dict],
+                rules: str = "", memory: str = "") -> dict[str, Any]:
+    """The category list in display order and its estimated total."""
+    from agent.model_metadata import estimate_messages_tokens_rough
+    builtin_tools, mcp_tools, subagent_tools = _split_tools(tools)
+    tokens_by_id = {
+        "system_prompt": _chars_to_tokens(system_prompt),
+        "tool_definitions": _json_tokens(builtin_tools),
+        "rules": _chars_to_tokens(rules),
+        "skills": _chars_to_tokens(skills),
+        "mcp": _json_tokens(mcp_tools),
+        "subagent_definitions": _json_tokens(subagent_tools),
+        "memory": _chars_to_tokens(memory),
+        "conversation": estimate_messages_tokens_rough(messages),
+    }
+    return {
+        "categories": [
+            {"color": color, "id": category_id, "label": _category_label(category_id), "tokens": tokens_by_id[category_id]}
+            for category_id, (color, _glyph_) in _CATEGORIES.items()
+            if tokens_by_id[category_id] > 0 or category_id in _ALWAYS_REPORTED
+        ],
+        "estimated_total": sum(tokens_by_id.values()),
+    }
+
+
+def stored_context_breakdown(system_prompt: str, tools: Sequence[dict], messages: list[dict]) -> dict[str, Any]:
+    """Categories and estimated total from a frozen system prompt and tool schemas, without an agent. Only an
+    agent re-renders the prompt's tiers apart, so ``rules`` and ``memory`` count inside ``system_prompt``."""
+    skills_index = _skills_block(system_prompt)
+    return _categories(_strip_blocks(system_prompt, skills_index), skills_index, tools, messages)
+
+
 def compute_session_context_breakdown(agent: Any, messages: Optional[list[dict]] = None) -> dict[str, Any]:
     """Return a Cursor-style context usage breakdown for one live agent."""
-    from agent.model_metadata import estimate_messages_tokens_rough
     from agent.usage_anchor import anchored_context_tokens
     from agent.system_prompt import build_system_prompt_parts
 
@@ -154,18 +185,9 @@ def compute_session_context_breakdown(agent: Any, messages: Optional[list[dict]]
     system_prompt_text = _join(
         _strip_blocks(stable, skills_index), _strip_blocks(parts.get("volatile", "") or "", memory_block, user_block)
     )
-    builtin_tools, mcp_tools, subagent_tools = _split_tools(list(getattr(agent, "tools", None) or []))
-    tokens_by_id = {
-        "system_prompt": _chars_to_tokens(system_prompt_text),
-        "tool_definitions": _json_tokens(builtin_tools),
-        "rules": _chars_to_tokens(parts.get("context", "") or ""),
-        "skills": _chars_to_tokens(skills_index),
-        "mcp": _json_tokens(mcp_tools),
-        "subagent_definitions": _json_tokens(subagent_tools),
-        "memory": _chars_to_tokens(_join(memory_block, user_block)),
-        "conversation": estimate_messages_tokens_rough(messages),
-    }
-    estimated_total = sum(tokens_by_id.values())
+    breakdown = _categories(system_prompt_text, skills_index, list(getattr(agent, "tools", None) or []), messages,
+                            rules=parts.get("context", "") or "", memory=_join(memory_block, user_block))
+    estimated_total = breakdown["estimated_total"]
 
     comp = getattr(agent, "context_compressor", None)
     context_max = int(getattr(comp, "context_length", 0) or 0) if comp else 0
@@ -194,17 +216,12 @@ def compute_session_context_breakdown(agent: Any, messages: Optional[list[dict]]
         context_used = min(context_used, context_max)
 
     return {
-        "categories": [
-            {"color": color, "id": category_id, "label": _category_label(category_id), "tokens": tokens_by_id[category_id]}
-            for category_id, (color, _glyph_) in _CATEGORIES.items()
-            if tokens_by_id[category_id] > 0 or category_id in _ALWAYS_REPORTED
-        ],
+        **breakdown,
         "context_max": context_max,
         "context_percent": max(0, min(100, round(context_used / context_max * 100))) if context_max else 0,
         "context_used": context_used,
         "context_source": source,
         "context_estimated": source != "provider_usage",
-        "estimated_total": estimated_total,
         "model": getattr(agent, "model", "") or "",
     }
 

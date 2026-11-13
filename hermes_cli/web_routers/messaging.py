@@ -421,21 +421,21 @@ def _ensure_whatsapp_bridge_dependencies(bridge_dir: Path) -> None:
     from utils import env_int
     import pm
 
-    npm = find_node_executable("npm")
+    pnpm = find_node_executable("pnpm")
 
     try:
         env = with_hermes_node_path()
-        if npm is None:
-            env = pm.ensure("npm", explicit=True).env
-            installed = pm.installed_package("npm")
+        if pnpm is None:
+            env = pm.ensure("pnpm", explicit=True).env
+            installed = pm.installed_package("pnpm")
             if installed is None or installed.binary is None:
-                raise pm.InstallError("npm", "npm binary is missing after preparation")
-            npm = str(installed.binary)
-        # npm output is UTF-8; encoding= guards the Windows ANSI-code-page
+                raise pm.InstallError("pnpm", "pnpm binary is missing after preparation")
+            pnpm = str(installed.binary)
+        # pnpm output is UTF-8; encoding= guards the Windows ANSI-code-page
         # default against undefined bytes crashing the reader thread.
         result = subprocess.run(
-            [npm, "install", "--silent"], cwd=str(bridge_dir), capture_output=True, text=True,
-            encoding="utf-8", errors="replace", timeout=env_int("WHATSAPP_NPM_INSTALL_TIMEOUT", 300),
+            [pnpm, "install", "--frozen-lockfile", "--silent"], cwd=str(bridge_dir), capture_output=True, text=True,
+            encoding="utf-8", errors="replace", timeout=env_int("WHATSAPP_PNPM_INSTALL_TIMEOUT", 300),
             env=env, creationflags=windows_hide_flags(),
             check=False,
         )
@@ -446,7 +446,7 @@ def _ensure_whatsapp_bridge_dependencies(bridge_dir: Path) -> None:
 
     if result.returncode != 0:
         detail = "\n".join((result.stderr or result.stdout or "").strip().splitlines()[-10:])
-        raise HTTPException(status_code=500, detail=f"npm install failed for WhatsApp bridge: {detail or 'no output'}")
+        raise HTTPException(status_code=500, detail=f"pnpm install failed for WhatsApp bridge: {detail or 'no output'}")
 
 
 def _spawn_whatsapp_pairing_process(session_path: Path, mode: str) -> subprocess.Popen:

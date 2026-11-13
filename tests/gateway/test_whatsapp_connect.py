@@ -164,7 +164,7 @@ class TestConnectCleanup:
     """Verify failure paths release the scoped session lock."""
 
     @pytest.mark.asyncio
-    async def test_releases_lock_when_npm_install_fails(self):
+    async def test_releases_lock_when_pnpm_install_fails(self):
         adapter = _make_adapter()
 
         def _path_exists(path_obj):
@@ -180,7 +180,7 @@ class TestConnectCleanup:
             result = await adapter.connect()
 
         assert result is False
-        assert adapter.fatal_error_code == "whatsapp_npm_install_failed"
+        assert adapter.fatal_error_code == "whatsapp_pnpm_install_failed"
         assert adapter.fatal_error_retryable is False
         mock_release.assert_called_once_with("whatsapp-session", str(adapter._session_path))
         assert adapter._platform_lock_identity is None

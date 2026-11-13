@@ -150,16 +150,17 @@ def _mock_health_refused():
 
 
 def _setup_bridge_dir(tmp_path: Path) -> Path:
-    """Real bridge dir with bridge.js + package.json + a fresh node_modules dep stamp + creds."""
-    from plugins.platforms.whatsapp.adapter import _file_content_hash
+    """Real bridge dir with bridge.js + package.json + pnpm-lock.yaml + a fresh node_modules dep stamp + creds."""
+    from gateway.platforms.whatsapp_common import bridge_manifest_hash
 
     bridge_dir = tmp_path / "whatsapp-bridge"
     bridge_dir.mkdir()
     (bridge_dir / "bridge.js").write_text("// current bridge code\n", encoding="utf-8")
     (bridge_dir / "package.json").write_text('{"name": "bridge"}\n', encoding="utf-8")
+    (bridge_dir / "pnpm-lock.yaml").write_text("lockfileVersion: '9.0'\n", encoding="utf-8")
     nm = bridge_dir / "node_modules"
     nm.mkdir()
-    (nm / ".hermes-pkg-hash").write_text(_file_content_hash(bridge_dir / "package.json"))
+    (nm / ".hermes-pkg-hash").write_text(bridge_manifest_hash(bridge_dir))
     session_path = tmp_path / "session"
     session_path.mkdir()
     (session_path / "creds.json").write_text("{}", encoding="utf-8")

@@ -96,27 +96,19 @@ def _whatsapp_allowed_users(wa_mode: str, get_env_value, save_env_value) -> None
 
 def _whatsapp_bridge_dependencies_current(bridge_dir) -> bool:
     """An existing node_modules directory can still contain the previous bridge build."""
+    from gateway.platforms.whatsapp_common import bridge_manifest_hash
+
     try:
-        desired = json.loads((bridge_dir / "package-lock.json").read_text(encoding="utf-8-sig"))
-        installed = json.loads((bridge_dir / "node_modules" / ".package-lock.json").read_text(encoding="utf-8-sig"))
-        packages = desired["packages"]
-        actual = installed["packages"]
-        dependencies = packages[""]["dependencies"]
-        for name in dependencies:
-            key = "node_modules/" + name
-            expected = packages[key]
-            present = actual.get(key, {})
-            if any(present.get(field) != expected.get(field) for field in ("version", "integrity")):
-                return False
-            if not (bridge_dir / key / "package.json").is_file():
-                return False
-    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        stamp = (bridge_dir / "node_modules" / ".hermes-pkg-hash").read_text(encoding="utf-8-sig").strip()
+    except OSError:
         return False
-    return True
+    wanted = bridge_manifest_hash(bridge_dir)
+    return bool(wanted) and stamp == wanted
 
 
 def _whatsapp_install_bridge(bridge_dir) -> bool:
-    """Step 4 of ``hermes whatsapp``: ``npm install`` the bridge when needed. False = stop."""
+    """Step 4 of ``hermes whatsapp``: ``pnpm install`` the bridge when needed. False = stop."""
+    from gateway.platforms.whatsapp_common import bridge_manifest_hash
     from hermes_constants import find_node_executable, with_hermes_node_path
     from utils import env_int
     if _whatsapp_bridge_dependencies_current(bridge_dir):
@@ -125,19 +117,19 @@ def _whatsapp_install_bridge(bridge_dir) -> bool:
     print("\n→ Installing WhatsApp bridge dependencies (this can take a few minutes)...")
     import pm
 
-    npm = find_node_executable("npm")
+    pnpm = find_node_executable("pnpm")
     try:
         env = with_hermes_node_path()
-        if npm is None:
-            env = pm.ensure("npm", explicit=True).env
-            installed = pm.installed_package("npm")
+        if pnpm is None:
+            env = pm.ensure("pnpm", explicit=True).env
+            installed = pm.installed_package("pnpm")
             if installed is None or installed.binary is None:
-                raise pm.InstallError("npm", "npm binary is missing after preparation")
-            npm = str(installed.binary)
+                raise pm.InstallError("pnpm", "pnpm binary is missing after preparation")
+            pnpm = str(installed.binary)
         result = subprocess.run(
-            [npm, "install", "--no-fund", "--no-audit", "--progress=false"],
+            [pnpm, "install", "--frozen-lockfile"],
             cwd=str(bridge_dir), stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
-            timeout=env_int("WHATSAPP_NPM_INSTALL_TIMEOUT", 300),
+            timeout=env_int("WHATSAPP_PNPM_INSTALL_TIMEOUT", 300),
             encoding="utf-8", errors="replace", env=env, check=False)
     except (pm.InstallError, OSError, subprocess.TimeoutExpired) as exc:
         print(f"  ✗ Bridge dependency preparation failed: {exc}")
@@ -148,9 +140,13 @@ def _whatsapp_install_bridge(bridge_dir) -> bool:
     if result.returncode != 0:
         err = (result.stderr or "").strip()
         preview = "\n".join(err.splitlines()[-30:]) if err else "(no output)"
-        _say("  ✗ npm install failed:", preview)
+        _say("  ✗ pnpm install failed:", preview)
         return False
     print("  ✓ Dependencies installed")
+    with contextlib.suppress(OSError):  # Stamp is an optimization; install still succeeded
+        wanted = bridge_manifest_hash(bridge_dir)
+        if wanted:
+            (bridge_dir / "node_modules" / ".hermes-pkg-hash").write_text(wanted, encoding="utf-8")
     return True
 
 

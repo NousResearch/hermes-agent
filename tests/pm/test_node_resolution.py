@@ -216,7 +216,39 @@ def npm_probe(node_store, monkeypatch):
 
 
 @pytest.fixture
-def npm_consumers(npm_probe, tmp_path, monkeypatch):
+def pnpm_probe(npm_probe, monkeypatch):
+    """Add PM's pnpm beside npm: the WhatsApp bridge has installed with pnpm since the migration."""
+    home, node, npm_binary, publish_npm = npm_probe
+    store = paths.store_root()
+    package = get_package("pnpm")
+    target = current_target()
+    entry = store / package.store_entry("1.0.0", target)
+    binary = package.binary(entry, target)
+    assert binary is not None
+    binary.parent.mkdir(parents=True, exist_ok=True)
+    binary.write_text(
+        '#!/usr/bin/env node\n'
+        'const fs = require("fs"); const path = require("path");\n'
+        'const root = process.cwd();\n'
+        'fs.mkdirSync(path.join(root, "node_modules"), {recursive:true});\n'
+        'fs.writeFileSync(path.join(root, "called.json"), JSON.stringify({argv: process.argv, env: process.env}));\n',
+        encoding="utf-8",
+    )
+    binary.chmod(0o755)
+    lock = Lockfile(paths.lockfile_path())
+    lock.set_pin("pnpm", "1.0.0", {})
+    lock.save()
+
+    def publish():
+        Facts(paths.facts_path()).record(
+            "pnpm", "1.0.0", entry.name, package.env(entry, target), store,
+        )
+        return Runner("pnpm", pm.env_for("pnpm"))
+    return home, node, npm_binary, publish_npm, binary, publish
+
+
+@pytest.fixture
+def npm_consumers(pnpm_probe, tmp_path, monkeypatch):
     from agent.lsp.install import _install_npm
     from gateway.config import PlatformConfig
     from hermes_cli.main_platform_setup import _whatsapp_install_bridge
@@ -224,10 +256,11 @@ def npm_consumers(npm_probe, tmp_path, monkeypatch):
     from plugins.platforms.photon import adapter as photon, cli
     from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
 
-    home, _node, _binary, _publish = npm_probe
+    home, _node, _npm_binary, _publish_npm, _pnpm_binary, _publish_pnpm = pnpm_probe
     bridge = tmp_path / "bridge"
     bridge.mkdir()
     (bridge / "package.json").write_text('{"name":"test-bridge"}', encoding="utf-8")
+    (bridge / "pnpm-lock.yaml").write_text("lockfileVersion: '9.0'\n", encoding="utf-8")
     adapter = WhatsAppAdapter(PlatformConfig(extra={"bridge_script": str(bridge / "bridge.js")}))
     monkeypatch.setattr(photon, "_sidecar_dir", lambda: bridge)
     monkeypatch.setattr(cli, "_sidecar_dir", lambda: bridge)
@@ -243,13 +276,17 @@ def npm_consumers(npm_probe, tmp_path, monkeypatch):
 
 @pytest.mark.platforms("posix")
 @pytest.mark.parametrize("consumer", ["lsp", "whatsapp", "photon", "photon-cli", "cli", "dashboard"])
-def test_npm_consumers_execute_with_pm_node(npm_probe, npm_consumers, consumer):
-    _home, node, binary, publish = npm_probe
-    publish()
+def test_npm_consumers_execute_with_pm_node(pnpm_probe, npm_consumers, monkeypatch, consumer):
+    _home, node, npm_binary, publish_npm, pnpm_binary, publish_pnpm = pnpm_probe
+    publish_npm()
+    publish_pnpm()
+    # pnpm resolves from PATH (an explicit user choice), so put the probe's copy on it.
+    monkeypatch.setenv("PATH", str(pnpm_binary.parent))
     call, output_dir = npm_consumers[consumer]
     call()
     result = json.loads((output_dir / "called.json").read_text())
-    assert Path(result["argv"][1]) == binary
+    expected_binary = pnpm_binary if consumer in {"whatsapp", "cli", "dashboard"} else npm_binary
+    assert Path(result["argv"][1]) == expected_binary
     assert shutil.which("node", path=result["env"]["PATH"]) == str(node)
     if consumer == "lsp":
         assert result["argv"][2:] == [
@@ -259,27 +296,28 @@ def test_npm_consumers_execute_with_pm_node(npm_probe, npm_consumers, consumer):
 
 @pytest.mark.platforms("posix")
 @pytest.mark.parametrize("surface", ["cli", "dashboard", "whatsapp", "photon", "photon-cli"])
-def test_missing_npm_acquires_npm_closure_at_install_boundary(npm_probe, npm_consumers, monkeypatch, surface):
-    _home, node, binary, publish = npm_probe
+def test_missing_npm_acquires_npm_closure_at_install_boundary(pnpm_probe, npm_consumers, monkeypatch, surface):
+    _home, node, binary, publish_npm, pnpm_binary, publish_pnpm = pnpm_probe
     calls = []
 
     def ensure(name, **kwargs):
         calls.append((name, kwargs.get("explicit", False)))
-        assert name == "npm"
-        return publish()
+        return publish_npm() if name == "npm" else publish_pnpm()
 
     monkeypatch.setattr(pm, "ensure", ensure)
     call, bridge = npm_consumers[surface]
     call()
-    assert calls == [("npm", surface in {"cli", "dashboard", "photon-cli"})]
+    manager = "pnpm" if surface in {"cli", "dashboard", "whatsapp"} else "npm"
+    assert calls == [(manager, surface in {"cli", "dashboard", "photon-cli"})]
     result = json.loads((bridge / "called.json").read_text())
-    assert Path(result["argv"][1]) == binary
+    expected_binary = pnpm_binary if manager == "pnpm" else binary
+    assert Path(result["argv"][1]) == expected_binary
     assert shutil.which("node", path=result["env"]["PATH"]) == str(node)
 
 
 @pytest.mark.platforms("posix")
 @pytest.mark.parametrize("surface", ["whatsapp", "photon"])
-def test_runtime_npm_refusal_never_falls_back_to_literal_npm(npm_probe, npm_consumers, monkeypatch, surface):
+def test_runtime_npm_refusal_never_falls_back_to_literal_npm(pnpm_probe, npm_consumers, monkeypatch, surface):
     call, bridge = npm_consumers[surface]
     spawns = []
     run = subprocess.run
@@ -323,11 +361,11 @@ def test_adapter_availability_never_provisions_missing_node(tmp_path, monkeypatc
 
 
 @pytest.mark.platforms("posix")
-def test_dashboard_pairing_prepares_npm_before_node_lookup(npm_probe, tmp_path, monkeypatch):
+def test_dashboard_pairing_prepares_npm_before_node_lookup(pnpm_probe, tmp_path, monkeypatch):
     from gateway.platforms import whatsapp_common
     from hermes_cli.web_routers.messaging import _spawn_whatsapp_pairing_process
 
-    _home, node, _npm, publish = npm_probe
+    _home, node, _npm, _publish_npm, _pnpm, publish_pnpm = pnpm_probe
     node_facts = paths.facts_path().read_bytes()
     paths.facts_path().unlink()
     bridge = tmp_path / "bridge"
@@ -339,7 +377,7 @@ def test_dashboard_pairing_prepares_npm_before_node_lookup(npm_probe, tmp_path, 
     def ensure(name, **kwargs):
         installs.append((name, kwargs.get("explicit", False)))
         paths.facts_path().write_bytes(node_facts)
-        return publish()
+        return publish_pnpm()
 
     monkeypatch.setattr(pm, "ensure", ensure)
     child = _spawn_whatsapp_pairing_process(tmp_path / "session", "bot")
@@ -350,7 +388,7 @@ def test_dashboard_pairing_prepares_npm_before_node_lookup(npm_probe, tmp_path, 
         if child.poll() is None:
             child.kill()
             child.wait(timeout=10)
-    assert installs == [("npm", True)]
+    assert installs == [("pnpm", True)]
     result = json.loads(output)
     assert "--pair-json" in result["argv"]
     assert shutil.which("node", path=result["path"]) == str(node)

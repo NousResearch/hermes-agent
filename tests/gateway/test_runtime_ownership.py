@@ -173,3 +173,23 @@ def test_unusable_gateway_lock_held_or_linked_is_never_unlinked(tmp_path):
     finally:
         holder.stdin.close()
         holder.wait(timeout=10)
+
+
+@pytest.mark.platforms("linux")
+def test_foreign_owned_gateway_lock_is_refused_with_the_uid_remedy(tmp_path, monkeypatch):
+    """A bind mount that reports every file as the host user (sshfs/colima) must still be refused,
+    but the error names both uids and the HERMES_UID/HERMES_GID remedy instead of a bare "owner or type"."""
+    from gateway import runtime_ownership
+    lock = tmp_path / 'gateway.lock'
+    lock.write_text('', encoding='utf-8')
+    foreign = os.getuid() + 1
+    monkeypatch.setattr(os, 'getuid', lambda: foreign)
+    fd = os.open(lock, os.O_RDWR)
+    try:
+        with pytest.raises(PermissionError) as refused:
+            runtime_ownership.tighten_lock_mode(fd)
+    finally:
+        os.close(fd)
+    message = str(refused.value)
+    assert f'uid {os.stat(lock).st_uid}' in message and f'uid {foreign}' in message
+    assert 'HERMES_UID' in message and 'HERMES_GID' in message

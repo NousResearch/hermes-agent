@@ -319,7 +319,7 @@ Subcommands:
 | `run` | Run the gateway in the foreground. Recommended for WSL, Docker, and Termux. |
 | `ensure` | Discover or request a local session runtime without installing a service or replacing an existing owner. Emits JSON; see below. |
 | `attach` | Give a local client the gateway's WebSocket URL and one single-use session ticket for this profile. Emits JSON; see below. |
-| `tickets` | Mint single-use HTTP tickets for a client that reaches the gateway over SSH. Emits JSON; see below. |
+| `tickets` | Mint single-use HTTP and WebSocket tickets for a client that reaches the gateway over SSH. Emits JSON; see below. |
 | `start` | Start the installed systemd/launchd background service. |
 | `stop` | Stop the service (or foreground process). |
 | `restart` | Restart the service. |
@@ -390,7 +390,8 @@ one JSON line (`protocol`, the ticket `purposes` it mints, `windows_service_sess
 no gateway. `--serve` prints a hello line with the running gateway's endpoint, then answers each
 stdin line `{"id": ..., "purpose": "native-http"}` with one stdout line holding a single-use
 ticket, until stdin closes. A line may add `"profile": "<name>"` for another profile the same
-gateway serves. It never starts a gateway, and tickets go to stdout only, never to a log. The line
+gateway serves. `{"id": ..., "purpose": "interactive"}` gets the WebSocket's ticket for a socket
+that reaches every profile the gateway serves. It never starts a gateway, and tickets go to stdout only, never to a log. The line
 protocol and the client rules:
 [Gateway over SSH: client contract](../developer-guide/gateway-ssh-clients.md).
 

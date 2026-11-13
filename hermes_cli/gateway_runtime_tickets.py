@@ -1,4 +1,4 @@
-"""``hermes gateway tickets``: REST tickets for a client that reaches the gateway over SSH.
+"""``hermes gateway tickets``: tickets for a client that reaches the gateway over SSH.
 
 ``--probe`` says what this host can mint and touches nothing. ``--serve`` stays open on one channel:
 a hello line, then one reply line per request line, so a client does not pay an SSH exec per HTTP
@@ -17,11 +17,13 @@ from dataclasses import replace
 from pathlib import Path
 
 TICKETS_PROTOCOL = 1
-# What ``--serve`` mints. The WebSocket's ``interactive`` ticket stays with ``hermes gateway attach``.
-# The two profile purposes are the grants Desktop's Profiles screen uses: ``native-profile-create``
+# What ``--serve`` mints. The two profile purposes are the grants Desktop's Profiles screen uses: ``native-profile-create``
 # for ``POST /api/profiles``, ``native-profile-registry`` for ``PATCH``/``DELETE /api/profiles/<name>``
 # (hermes_cli/dashboard_auth/native_http.py decides what each one may do).
-TICKET_PURPOSES = ("native-http", "native-profile-create", "native-profile-registry")
+# ``interactive`` is the WebSocket's ticket as Desktop's local connection asks for it
+# (apps/desktop/electron/local-gateway.ts ``ticketScope``): scope ``host``, so the one socket selects
+# every profile the gateway serves. ``hermes gateway attach`` still returns its own, bound to one profile.
+TICKET_PURPOSES = ("native-http", "native-profile-create", "native-profile-registry", "interactive")
 # Longest request line ``--serve`` reads, its LF or CRLF excluded. A longer one is refused unread.
 MAX_REQUEST_LINE_BYTES = 64 * 1024
 PROFILE_NOT_SERVED = "profile_not_served"
@@ -96,6 +98,8 @@ def _reply(line: bytes | None, mint) -> dict:
     if not isinstance(purpose, str) or purpose not in TICKET_PURPOSES:
         return refuse(request_id, "unsupported_purpose", "purpose must be one of: " + ", ".join(TICKET_PURPOSES))
     profile_home = None
+    if purpose == "interactive" and "profile" in request:
+        return refuse(request_id, "invalid_request", "an interactive ticket takes no profile: it serves every one")
     if "profile" in request:  # present, even as null, is a request for that profile
         try:
             if not isinstance(request["profile"], str):
@@ -138,6 +142,8 @@ def cmd_gateway_tickets(args) -> None:
         endpoint = receipt.endpoint
 
         def mint(purpose, profile_home):
+            if purpose == "interactive":
+                return mint_ticket(home, endpoint, scope="host")
             if profile_home is None or str(profile_home) == endpoint.profile_id:
                 return mint_ticket(home, endpoint, purpose=purpose)
             # Same gateway, the sibling's home: its control socket mints for every home it serves.

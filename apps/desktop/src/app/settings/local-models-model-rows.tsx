@@ -61,7 +61,7 @@ function ResidencyPills({ residency }: ResidencyPillsProps): ReactElement {
       {isLoaded && livePlacement && (
         <Tip label={livePlacement.spilled ? copy.placementSpilledTip : copy.placementResidentTip}>
           <Pill tone={livePlacement.spilled ? 'warn' : 'success'}>
-            <Cpu className="mr-1 size-3" />
+            <Cpu className="me-1 size-3" />
             {livePlacement.granted_window_label ?? livePlacement.window_label ?? ''}
             {' · '}
             {livePlacement.spilled ? copy.placementSpilled : copy.placementResident}
@@ -72,7 +72,7 @@ function ResidencyPills({ residency }: ResidencyPillsProps): ReactElement {
 
       {isLoadingNow && (
         <Pill>
-          <Loader2 className="mr-1 size-3 animate-spin" />
+          <Loader2 className="me-1 size-3 animate-spin" />
           {copy.loadingPill}
         </Pill>
       )}
@@ -157,7 +157,7 @@ export function CatalogModelRow({ model, status, jobs }: CatalogModelRowProps): 
             {isActive ? (
               <Tip label={copy.activeDetail}>
                 <Pill tone="primary">
-                  <Check className="mr-1 size-3" />
+                  <Check className="me-1 size-3" />
                   {copy.activePill}
                 </Pill>
               </Tip>
@@ -212,21 +212,21 @@ export function CatalogModelRow({ model, status, jobs }: CatalogModelRowProps): 
             {!model.fits ? (
               <Tip label={model.fit_detail ?? model.fit_summary}>
                 <Pill tone="destructive">
-                  <Cpu className="mr-1 size-3" />
+                  <Cpu className="me-1 size-3" />
                   {copy.pillTooBig}
                 </Pill>
               </Tip>
             ) : model.spilled ? (
               <Tip label={model.quant_reason ?? model.fit_summary}>
                 <Pill tone="warn">
-                  <Cpu className="mr-1 size-3" />
+                  <Cpu className="me-1 size-3" />
                   {copy.pillUsesRam}
                 </Pill>
               </Tip>
             ) : (
               <Tip label={model.quant_reason ?? model.fit_summary}>
                 <Pill tone="success">
-                  <Cpu className="mr-1 size-3" />
+                  <Cpu className="me-1 size-3" />
                   {copy.pillFitsGpu}
                 </Pill>
               </Tip>
@@ -305,7 +305,7 @@ export function SideloadedModelRow({ model: m, status, jobs }: SideloadedModelRo
 
           {isActive ? (
             <Pill tone="primary">
-              <CheckCircle2 className="mr-1 size-3" />
+              <CheckCircle2 className="me-1 size-3" />
               {copy.activePill}
             </Pill>
           ) : (

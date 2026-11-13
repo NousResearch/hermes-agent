@@ -20,12 +20,12 @@ const switchVariants = cva(
 )
 
 const switchThumbVariants = cva(
-  'pointer-events-none block rounded-full bg-foreground shadow-[0_0.0625rem_0.1875rem_color-mix(in_srgb,var(--dt-background)_50%,transparent)] ring-0 transition-transform data-[state=unchecked]:translate-x-0 data-[state=checked]:bg-background',
+  'pointer-events-none ms-0 block shrink-0 rounded-full bg-foreground shadow-[0_0.0625rem_0.1875rem_color-mix(in_srgb,var(--dt-background)_50%,transparent)] ring-0 transition-[margin-inline-start] data-[state=checked]:bg-background',
   {
     variants: {
       size: {
-        default: 'size-4 data-[state=checked]:translate-x-4',
-        xs: 'size-3 data-[state=checked]:translate-x-3.5'
+        default: 'size-4 data-[state=checked]:ms-[calc(100%-1rem)]',
+        xs: 'size-3 data-[state=checked]:ms-[calc(100%-0.75rem)]'
       }
     },
     defaultVariants: {

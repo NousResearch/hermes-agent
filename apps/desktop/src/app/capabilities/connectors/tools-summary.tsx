@@ -100,7 +100,7 @@ export function ToolsSummary({
 
               {preview ? null : (
                 <>
-                  <span className="w-24 shrink-0 text-right text-[0.7rem] text-(--ui-text-tertiary)">
+                  <span className="w-24 shrink-0 text-end text-[0.7rem] text-(--ui-text-tertiary)">
                     {onLabel(copy, row)}
                   </span>
                   <Switch

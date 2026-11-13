@@ -5,6 +5,8 @@ import { StableText } from '@/components/chat/stable-text'
 import { useViewedInterval } from '@/hooks/use-viewed-interval'
 import type { UsageStats } from '@/types/hermes'
 
+import { formatPercent } from './usage-percent'
+
 export function formatDuration(elapsedMs: number): string {
   const totalSeconds = Math.max(0, Math.floor(elapsedMs / 1000))
   const seconds = totalSeconds % 60
@@ -49,14 +51,14 @@ export function usageContextLabel(usage: UsageStats): string {
   return usage.total > 0 ? `${compactNumber(usage.total)} tok` : ''
 }
 
-export function contextBarLabel(usage: UsageStats): string {
+export function contextBarLabel(usage: UsageStats, locale?: string): string {
   if (!usage.context_max) {
     return ''
   }
 
   const pct = Math.max(0, Math.min(100, Math.round(usage.context_percent ?? 0)))
 
-  return `[${contextBar(usage.context_percent)}] ${usage.context_estimated ? '~' : ''}${pct}%`
+  return `[${contextBar(usage.context_percent)}] ${usage.context_estimated ? '~' : ''}${formatPercent(pct / 100, locale)}`
 }
 
 /** `87%` for a reported hit rate; '' when the backend omitted it (no cache
@@ -65,7 +67,7 @@ export function contextBarLabel(usage: UsageStats): string {
 export function cacheHitLabel(usage: UsageStats): string {
   const pct = usage.cache_hit_pct
 
-  return typeof pct === 'number' && Number.isFinite(pct) ? `${Math.round(pct)}%` : ''
+  return typeof pct === 'number' && Number.isFinite(pct) ? formatPercent(pct / 100) : ''
 }
 
 /** `42 t/s` for the rolling throughput; '' before the first completed call. */

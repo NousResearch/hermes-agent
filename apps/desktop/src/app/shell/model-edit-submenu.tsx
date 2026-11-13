@@ -176,7 +176,7 @@ export function ModelOptionsContent({
           {copy.thinking}
           <Switch
             checked={thinkingOn}
-            className="ml-auto"
+            className="ms-auto"
             onCheckedChange={checked => onSetOptions({ effort: checked ? effortValue || defaultEffort : 'none' })}
             size="xs"
           />
@@ -195,7 +195,7 @@ export function ModelOptionsContent({
       ) : hasFast ? (
         <DropdownMenuItem className={dropdownMenuRow} onSelect={event => event.preventDefault()}>
           {copy.fast}
-          <Switch aria-label={copy.fast} checked={fastOn} className="ml-auto" onCheckedChange={setFast} size="xs" />
+          <Switch aria-label={copy.fast} checked={fastOn} className="ms-auto" onCheckedChange={setFast} size="xs" />
         </DropdownMenuItem>
       ) : null}
       {ultrafastSupported ? (
@@ -204,7 +204,7 @@ export function ModelOptionsContent({
           <Switch
             aria-label={copy.ultrafast}
             checked={ultrafastOn}
-            className="ml-auto"
+            className="ms-auto"
             onCheckedChange={checked => onSetOptions({ serviceTier: checked ? 'ultrafast' : 'normal' })}
             size="xs"
           />
@@ -216,7 +216,7 @@ export function ModelOptionsContent({
           <Switch
             aria-label={copy.daybreak}
             checked={daybreak.on}
-            className="ml-auto"
+            className="ms-auto"
             onCheckedChange={daybreak.set}
             size="xs"
           />

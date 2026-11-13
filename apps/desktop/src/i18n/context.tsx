@@ -1,5 +1,6 @@
 import { applyDocumentLocale, isRecord } from '@hermes/shared/i18n'
 import { useStore } from '@nanostores/react'
+import { Direction } from 'radix-ui'
 import { createContext, type ReactNode, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 
 import { getHermesConfigRecord, type HermesConfigRecord, retainConfigReadOrigin, saveHermesConfig } from '@/hermes'
@@ -296,7 +297,11 @@ export function I18nProvider({
     [configLoadError, isLoadingConfig, isSavingLocale, locale, registryVersion, saveError, setLocale]
   )
 
-  return <I18nContext.Provider value={value}>{children}</I18nContext.Provider>
+  return (
+    <I18nContext.Provider value={value}>
+      <Direction.Provider dir={isRtlLocale(locale) ? 'rtl' : 'ltr'}>{children}</Direction.Provider>
+    </I18nContext.Provider>
+  )
 }
 
 export function useI18n(): I18nContextValue {

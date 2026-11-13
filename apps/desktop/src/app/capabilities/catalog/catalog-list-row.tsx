@@ -33,7 +33,7 @@ export function CatalogListRow({
   return (
     <div
       className={cn(
-        'row-hover relative flex w-full min-w-0 items-start gap-3 rounded-md px-2 py-2 text-left',
+        'row-hover relative flex w-full min-w-0 items-start gap-3 rounded-md px-2 py-2 text-start',
         selected && 'bg-(--ui-row-active-background)'
       )}
       data-entry-id={entry.id}

@@ -71,7 +71,7 @@ export function McpLogPane({ server }: McpLogPaneProps) {
       actions={
         <span className="flex items-center gap-1.5">
           <LogSearchField
-            containerClassName="mr-1 w-36"
+            containerClassName="me-1 w-36"
             onChange={setQuery}
             placeholder={t.ui.logs.search}
             search={search}

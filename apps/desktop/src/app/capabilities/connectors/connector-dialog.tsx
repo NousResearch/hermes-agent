@@ -4,11 +4,10 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { ConnectorLogo } from '@/components/ui/connector-logo'
-import { Dialog, DialogClose, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog'
+import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog'
 import { Switch } from '@/components/ui/switch'
 import { useI18n } from '@/i18n'
 import { connectorIconUrl } from '@/lib/connector-tools'
-import { X } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 
 import { CatalogMark } from './catalog-mark'
@@ -102,7 +101,6 @@ export function ConnectorDialog({
           event.preventDefault()
           titleRef.current?.focus()
         }}
-        showCloseButton={false}
       >
         <Header card={card} titleRef={titleRef} {...rest} />
 
@@ -216,12 +214,6 @@ function HeaderActions({
       ) : null}
 
       {menu}
-
-      <DialogClose asChild>
-        <Button aria-label={t.common.close} size="icon-xs" variant="ghost">
-          <X className="size-3" />
-        </Button>
-      </DialogClose>
     </div>
   )
 }
@@ -394,7 +386,9 @@ function LocalFoot({ advanced, cost }: PartProps) {
         <details className="group grid gap-2">
           <summary className="flex cursor-pointer list-none items-center gap-1.5 text-xs font-medium text-(--ui-text-primary)">
             <Codicon
-              className={cn('shrink-0 transition-transform duration-100 group-open:rotate-90')}
+              className={cn(
+                'shrink-0 transition-transform duration-100 group-open:rotate-90 rtl:-scale-x-100 rtl:group-open:scale-x-100'
+              )}
               name="chevron-right"
               size="0.75rem"
             />

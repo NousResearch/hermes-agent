@@ -1561,7 +1561,7 @@ export function ChatSidebar({
         // the narrow overlay renders the live instance) — the sidebar always
         // paints itself fully.
         'relative h-full min-w-0 overflow-hidden border-t-0 border-b-0 text-foreground transition-none',
-        panesFlipped ? 'border-l border-r-0' : 'border-r border-l-0',
+        panesFlipped ? 'border-s border-e-0' : 'border-e border-s-0',
         'border-(--sidebar-edge-border) bg-(--ui-sidebar-surface-background) opacity-100'
       )}
       collapsible="none"
@@ -1596,7 +1596,7 @@ export function ChatSidebar({
                       // resolved region has been observed to swallow clicks on the
                       // top rows. Same carve-out as USER_BUBBLE_BASE_CLASS in
                       // thread.tsx.
-                      'flex h-7 w-full justify-start gap-2 rounded-md border border-transparent px-2 text-left text-[0.8125rem] font-medium text-(--ui-text-secondary) transition-colors duration-100 ease-out [-webkit-app-region:no-drag] hover:bg-(--ui-control-hover-background) hover:text-foreground hover:transition-none',
+                      'flex h-7 w-full justify-start gap-2 rounded-md border border-transparent px-2 text-start text-[0.8125rem] font-medium text-(--ui-text-secondary) transition-colors duration-100 ease-out [-webkit-app-region:no-drag] hover:bg-(--ui-control-hover-background) hover:text-foreground hover:transition-none',
                       active &&
                         'border-(--ui-stroke-tertiary) bg-(--ui-control-active-background) text-foreground shadow-none hover:border-(--ui-stroke-tertiary)!',
                       !isInteractive &&
@@ -1656,7 +1656,7 @@ export function ChatSidebar({
                         land at the end of the WORD, not out at the sidebar's
                         edge. Still truncates — `min-w-0` lets it shrink past
                         its content when the rail is narrow — and the trailing
-                        chip's `ml-auto` was already doing the pushing that
+                        chip's `ms-auto` was already doing the pushing that
                         `flex-1` looked like it was for.
                         Its own `sidebar-nav-` namespace: the overlay nav owns
                         `nav-<id>`, and both are on screen with Settings open. */}
@@ -1665,7 +1665,7 @@ export function ChatSidebar({
                     </span>
                     {isNewSession && (
                       <KbdGroup
-                        className={cn('ml-auto opacity-55', newSessionKbdFlash && 'opacity-100!')}
+                        className={cn('ms-auto opacity-55', newSessionKbdFlash && 'opacity-100!')}
                         keys={newSessionKbd}
                         size="sm"
                       />

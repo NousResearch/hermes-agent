@@ -1,5 +1,14 @@
+[data-slot='thread'] {
+  --thread-timeline-width: 3rem;
+}
+
+/* Reserve the rail's hit targets as well as its painted ticks, only while visible. */
+[data-slot='thread']:has(> [data-slot='thread-timeline']) [data-slot='aui_thread-content'] {
+  padding-inline-end: var(--thread-timeline-width);
+}
+
 .thread-timeline-ticks {
-  width: 3rem;
+  width: var(--thread-timeline-width, 3rem);
   height: 100%;
   overflow-x: hidden;
   overflow-y: auto;
@@ -18,14 +27,15 @@
 
 .thread-timeline-tick {
   position: absolute;
-  left: 0;
+  inset-inline-start: 0;
   display: flex;
   align-items: center;
   justify-content: flex-end;
 
   height: 0.4375rem;
   width: 100%;
-  padding: 0 0.375rem 0 0;
+  padding: 0;
+  padding-inline-end: 0.375rem;
   cursor: pointer;
   outline: none;
 }
@@ -61,6 +71,21 @@
   to {
     opacity: 0.3;
   }
+}
+
+/* Preview content is chat context, so follow the active surface palette rather
+   than the generic inverted tooltip. */
+.tooltip-bubble.timeline-preview-tooltip {
+  border: 1px solid var(--ui-stroke-secondary);
+  background: var(--dt-popover);
+  color: var(--dt-popover-foreground);
+  box-shadow: var(--shadow-md);
+}
+
+.tooltip-bubble.timeline-preview-tooltip [data-slot='tooltip-arrow'] {
+  fill: var(--dt-popover);
+  stroke: var(--ui-stroke-secondary);
+  stroke-width: 1px;
 }
 
 @media (prefers-reduced-motion: reduce) {

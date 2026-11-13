@@ -594,6 +594,7 @@ _BRIDGE_PASSTHROUGH_ENV = (
     "WHATSAPP_MENTION_PATTERNS", "WHATSAPP_FREE_RESPONSE_CHATS", "WHATSAPP_DEBUG",
     "WHATSAPP_FORWARD_OWNER_MESSAGES", "WHATSAPP_MAX_MESSAGE_LENGTH",
     "WHATSAPP_CHUNK_DELAY_MS", "WHATSAPP_SEND_TIMEOUT_MS",
+    "WHATSAPP_HOME_CHANNEL", "WHATSAPP_OUTBOUND_ALLOWED", "WHATSAPP_OUTBOUND_ALLOW_ALL",
 )
 # Everything a bridge bakes in at startup and never re-reads: the passthrough env plus the keys
 # _bridge_env() resolves itself (mode mirrors the --mode argv). Adoption must verify all of it,

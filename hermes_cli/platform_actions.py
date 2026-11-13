@@ -27,6 +27,19 @@ def _ok(**fields: Any) -> dict[str, Any]:
     return {"ok": True, **fields}
 
 
+def _turn_message_thread(platform: str, required: dict[str, Any]) -> str:
+    """The bound turn's thread when *required* names that turn's own message. A reaction carries no
+    thread, so without this a topic-pinned satellite could not react to the message it is answering:
+    the thread-less chat is the chat's top level, which its route does not cover (#147602)."""
+    from gateway.session_context import get_session_env
+
+    if (required.get("message_id") != get_session_env("HERMES_SESSION_MESSAGE_ID")
+            or required.get("chat_id") != get_session_env("HERMES_SESSION_CHAT_ID")
+            or str(platform).strip().lower() != get_session_env("HERMES_SESSION_PLATFORM")):
+        return ""
+    return get_session_env("HERMES_SESSION_THREAD_ID")
+
+
 # -- per-platform verb implementations (adapter, *args) -> result ------------
 
 
@@ -162,7 +175,8 @@ class PlatformActions:
         for name, value in required.items():
             if not isinstance(value, str) or not value.strip():
                 return None, _err("invalid_argument", f"{name} must be a non-empty string")
-        return self._resolve_adapter(platform, required.get("chat_id", ""), required.get("thread_id", ""))
+        return self._resolve_adapter(platform, required.get("chat_id", ""),
+                                     required.get("thread_id") or _turn_message_thread(platform, required))
 
     async def _run(self, verb: str, platform: str, *args: str, **required: Any) -> dict[str, Any]:
         """Gate, dispatch *verb* to the adapter's platform implementation, audit, return."""

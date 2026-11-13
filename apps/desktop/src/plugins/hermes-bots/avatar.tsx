@@ -1174,11 +1174,9 @@ export function BotBadge(props: BotFaceProps) {
     return face
   }
 
-  // The tile carries the bot's marker as the faces do, on a box-less wrapper: a row is still found by
-  // its bot, and the PNG backfill (which wants an `svg`) leaves a tile alone.
+  // The tile carries the bot's marker as the faces do, so a row is still found by its bot. Only the
+  // tile gets it: the face already has its own, and a second one in classic matched every row twice.
   return (
-    <span data-bot-face={name} style={{ display: 'contents' }}>
-      <AgentMark fallback={face} profile={name} size={props.size ?? 36} />
-    </span>
+    <AgentMark fallback={face} profile={name} size={props.size ?? 36} tileAttributes={{ 'data-bot-face': name }} />
   )
 }

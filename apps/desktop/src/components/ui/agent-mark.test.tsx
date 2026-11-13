@@ -36,4 +36,6 @@ it('keeps the bot’s own face in classic', () => {
 
   expect(screen.getByTestId('badge').querySelector('svg')).not.toBeNull()
   expect(screen.getByTestId('badge').querySelector('img')).toBeNull()
+  // One marker per bot: a row is looked up by it.
+  expect(screen.getByTestId('badge').querySelectorAll('[data-bot-face="research"]')).toHaveLength(1)
 })

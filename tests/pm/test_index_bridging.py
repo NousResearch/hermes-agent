@@ -2,8 +2,11 @@
 exactly that into uv while still refusing every other ambient uv setting."""
 from __future__ import annotations
 
+import json
 import os
+from pathlib import Path
 import subprocess
+import sys
 
 import pytest
 
@@ -36,6 +39,30 @@ def test_pip_index_reaches_uv_but_ambient_uv_selection_does_not(clean_index_env,
     assert env["UV_HTTP_TIMEOUT"] == "300"
     assert env["UV_INDEX_CORP_PASSWORD"] == "s3cret"
     assert not {"UV_PYTHON", "UV_CACHE_DIR", "UV_PROJECT_ENVIRONMENT"} & env.keys()
+
+
+@pytest.mark.parametrize("mode", ["copy", "hardlink", "clone", "symlink"])
+def test_link_mode_survives_both_environment_filters(clean_index_env, monkeypatch, mode):
+    monkeypatch.setenv("UV_LINK_MODE", mode)
+    monkeypatch.setenv("UV_PYTHON", "/poison/python")
+    monkeypatch.setenv("UV_CACHE_DIR", "/poison/cache")
+    monkeypatch.setenv("UV_PROJECT_ENVIRONMENT", "/poison/venv")
+    env = _base_environment()
+    assert env["UV_LINK_MODE"] == mode
+    assert not {"UV_PYTHON", "UV_CACHE_DIR", "UV_PROJECT_ENVIRONMENT"} & env.keys()
+    root = clean_index_env
+    # A real child observes the final environment, not just a mocked run call.
+    result = PythonEnvironment(
+        uv=Path(sys.executable), python=root / "python", destination=root / "venv",
+        cache=root / "cache", env=env,
+    )._run(["-c", "import json, os; print(json.dumps(dict(os.environ)))"],
+           cwd=root, timeout=10)
+    assert result.returncode == 0, result.stderr
+    seen = json.loads(result.stdout)
+    assert seen["UV_LINK_MODE"] == mode
+    assert seen["UV_PYTHON"] == str(root / "python")
+    assert seen["UV_CACHE_DIR"] == str(root / "cache")
+    assert seen["UV_PROJECT_ENVIRONMENT"] == str(root / "venv")
 
 
 def test_pip_conf_is_bridged_only_when_uv_has_no_index(clean_index_env, monkeypatch):

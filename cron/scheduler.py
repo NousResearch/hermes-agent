@@ -1558,11 +1558,11 @@ def _run_no_agent_job(
 
 def _apply_monitor_gate(
     job: dict, job_id: str, job_name: str, extra_prompt: Optional[str],
-) -> tuple[Optional[tuple], Optional[str], Optional[str]]:
+) -> tuple[Optional[tuple], Optional[str], Any]:
     """Monitor gate (hash-suppressed change detection). Must run BEFORE any agent machinery so an
-    unchanged tick costs no LLM/delivery. Returns ``(early_result | None, extra_prompt,
-    monitor_context)``. Monitor context is runtime data and must remain distinct from a
-    user-authored ``extra_prompt`` so the prompt scanner keeps its strict user-input boundary.
+    unchanged tick costs no LLM/delivery. Returns ``(early_result | None, extra_prompt, monitor)``;
+    the caller commits ``monitor`` once the agent will run. Its ``context_block`` is runtime data,
+    kept apart from a user-authored ``extra_prompt`` so the scanner keeps its user-input boundary.
     """
     from cron.monitor import check_monitor, job_has_monitor
 
@@ -1591,7 +1591,7 @@ def _apply_monitor_gate(
         ), extra_prompt, None
     # Changed (or first run): pass monitor output through the runtime-data seam. Keep any manual
     # per-run prompt separate: it remains user input and is therefore still strict-scanned.
-    return None, extra_prompt, _mon.context_block
+    return None, extra_prompt, _mon
 
 
 @dataclass
@@ -2254,7 +2254,7 @@ def _prepare_job_prompt(
     if job_payload_is_empty(job):
         return _block_and_pause_job(job_id, job_name, EMPTY_PAYLOAD_ERROR), None
 
-    _early, extra_prompt, monitor_context = _apply_monitor_gate(job, job_id, job_name, extra_prompt)
+    _early, extra_prompt, monitor = _apply_monitor_gate(job, job_id, job_name, extra_prompt)
     if _early is not None:
         return _early, None
 
@@ -2289,7 +2289,7 @@ def _prepare_job_prompt(
     try:
         prompt = _build_job_prompt(
             job, prerun_script=prerun_script, extra_prompt=extra_prompt,
-            runtime_data_prompt=monitor_context,
+            runtime_data_prompt=monitor and monitor.context_block,
         )
     except CronPromptInjectionBlocked as block_exc:
         # Injection scanner tripped: refuse this tick and tell the operator WHY.
@@ -2314,6 +2314,8 @@ def _prepare_job_prompt(
         logger.info("Job '%s': script produced no output, skipping AI call.", job_name)
         note_cron_skipped(job)
         return (True, "", SILENT_MARKER, None), None
+    if monitor is not None:  # past every script-gate skip: the change is now seen (#154959)
+        monitor.commit(job_id)
     return None, prompt
 
 

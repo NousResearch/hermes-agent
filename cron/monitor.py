@@ -40,6 +40,13 @@ class MonitorOutcome:
     first_run: bool = False
     context_block: Optional[str] = None
     error: Optional[str] = None
+    pending: Optional[tuple[str, str]] = None  # (hash, output) that commit() records as seen
+
+    def commit(self, job_id: str) -> None:
+        """Record a detected change as seen. Called once the agent will run, so a tick the script
+        gate skips (``wakeAgent: false``, empty output) leaves the change for the next tick."""
+        if self.pending is not None:
+            _persist_monitor_state(job_id, *self.pending)
 
 
 def hash_monitor_output(output: str) -> str:
@@ -155,9 +162,10 @@ def job_has_monitor(job: dict) -> bool:
 def check_monitor(job: dict) -> MonitorOutcome:
     """Run the monitor source and decide whether the agent should run.
 
-    On change (or first run) the new hash + snapshot are persisted BEFORE the agent runs — detection
-    time is the state boundary, so a failed agent run doesn't re-alert on the same content forever.
-    On failure nothing is persisted.
+    On change (or first run) the new hash + snapshot are returned as ``pending``; the caller commits
+    them BEFORE the agent runs, so a failed agent run doesn't re-alert on the same content forever,
+    but only after the script gate, so a deliberately skipped tick doesn't consume the change
+    (#154959). On failure nothing is persisted.
     """
     job_id = str(job.get("id") or "")
     ok, output = _run_monitor_source(job)
@@ -193,8 +201,8 @@ def check_monitor(job: dict) -> MonitorOutcome:
             f"### Diff (previous → current)\n\n```diff\n{diff}\n```\n\n" + current
         )
 
-    _persist_monitor_state(job_id, new_hash, output)
-    return MonitorOutcome(ok=True, changed=True, first_run=first_run, context_block=context_block)
+    return MonitorOutcome(ok=True, changed=True, first_run=first_run, context_block=context_block,
+                          pending=(new_hash, output))
 
 
 def _persist_monitor_state(job_id: str, new_hash: str, output: str) -> None:

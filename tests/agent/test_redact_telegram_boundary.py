@@ -107,6 +107,7 @@ def test_cron_stdout_preserves_identity_and_masks_adjacent_token(tmp_path, monke
     outcome = check_monitor({"id": "synthetic-monitor", "monitor_script": script.name, "interpreter": sys.executable})
     assert outcome.ok, outcome.error
     assert outcome.changed
+    outcome.commit("synthetic-monitor")
     result = json.loads(snapshots[0][2])
     assert result["key"] == identity
     # The JSON key-name pass may mask "credential" first; either way the token body is gone.

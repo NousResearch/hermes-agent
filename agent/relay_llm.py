@@ -52,6 +52,16 @@ def _relay_metadata(provider_name: str, metadata: dict[str, Any] | None) -> dict
     return relay_metadata
 
 
+def _is_process_transport(provider_name: str) -> bool:
+    """True for ``external_process`` providers: a CLI subprocess with no HTTP hop to carry headers."""
+    try:
+        from hermes_cli.runtime_provider_backends import _is_external_process_provider
+
+        return bool(_is_external_process_provider(provider_name))
+    except Exception:
+        return False
+
+
 class _ManagedAttempt:
     """Relay request state shared by the sync, async, and streaming adapters."""
 
@@ -75,6 +85,7 @@ class _ManagedAttempt:
         request: dict[str, Any], metadata: dict[str, Any] | None, *, name: str, model_name: str,
     ) -> None:
         self.runtime, self.session, self.request, self.metadata = runtime, session, request, metadata
+        self.process_transport = _is_process_transport(name)
         self.logical = _logical_parent(runtime, session, parent, metadata)
         self.parent = self.logical[1] if self.logical is not None else parent
         self.body = _relay_request_body(request, metadata)
@@ -95,6 +106,7 @@ class _ManagedAttempt:
         return _provider_request(
             self.request, next_request, relay_request_body=self.body,
             codec_baseline_body=self.codec_baseline, metadata=self.metadata,
+            process_transport=self.process_transport,
         )
 
     def run_callback(self, callback: Callable[..., Any], *args: Any) -> Any:
@@ -785,6 +797,7 @@ def _response_model_name(response: Any) -> str | None:
 def _provider_request(
     original: dict[str, Any], request: Any, *, relay_request_body: dict[str, Any],
     codec_baseline_body: dict[str, Any] | None, metadata: dict[str, Any] | None,
+    process_transport: bool = False,
 ) -> dict[str, Any]:
     content = getattr(request, "content", request)
     if not isinstance(content, dict):
@@ -807,7 +820,10 @@ def _provider_request(
     # Relay's managed-call trace header maps to ``extra_headers`` for known SDK adapters and custom
     # requests that already use that container; other native transports take protocol kwargs directly
     # and may reject an SDK-only argument. Non-trace middleware headers are preserved as before.
-    supports_extra_headers = _RELAY_PROTOCOL_BY_API_MODE.get(_api_mode(metadata)) is not None or "extra_headers" in original
+    # An ``external_process`` provider keeps an SDK-shaped api_mode (e.g. chat_completions) but is a CLI
+    # subprocess: there is no HTTP request for a trace header to ride on, and its client rejects the kwarg.
+    sdk_mode = _RELAY_PROTOCOL_BY_API_MODE.get(_api_mode(metadata)) is not None and not process_transport
+    supports_extra_headers = sdk_mode or "extra_headers" in original
     if headers and not supports_extra_headers:
         headers = {k: v for k, v in headers.items() if str(k).lower() != "traceparent"}
     if headers:

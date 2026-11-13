@@ -6,6 +6,7 @@ without its per-author check, and reach the runner as typed commands, possibly r
 ``/steer``), rewritten by a plugin or merged. The runner's typed-answer checks judge the sender, not
 the event: a relayed Discord sender whose messages never reached this gateway is not admitted, so
 under ``approvals.approvers: ["*"]`` only the requester, a listed approver or an admin answers.
+Any other interaction from such a sender is dropped at the relay intake unless they are an admin.
 
 Real path: authenticated WS reader -> relay adapter -> GatewayRunner with its SQLite authority.
 """
@@ -227,13 +228,15 @@ def test_admission_follows_the_sender_through_rebuilds_and_merges():
 @pytest.mark.asyncio
 @pytest.mark.parametrize("command", ["/queue /approve", "/steer /approve"])
 async def test_a_follow_up_rebuilt_from_a_discord_interaction_does_not_approve(gateway, monkeypatch, command):
-    """A busy session turns ``/queue`` / a fallback ``/steer`` into a rebuilt follow-up event."""
+    """A busy session turns ``/queue`` / a fallback ``/steer`` into a rebuilt follow-up event. The relay
+    intake drops these from an unadmitted sender; past it, the runner's answer check still refuses."""
     from tests.waiting import async_wait_until
 
     runner, transport, adapter = gateway
     key = _thread_session_key(runner)
     entry = _alice_approval(key)
     monkeypatch.setattr(runner, "_is_session_running", lambda _session_key: True)
+    monkeypatch.setattr(adapter, "_interaction_admitted", lambda _event: True)
     replies = adapter.send.await_count
 
     await transport._handle_frame(json.dumps(_frame(3, "mallory", {"custom_id": command})))
@@ -241,3 +244,77 @@ async def test_a_follow_up_rebuilt_from_a_discord_interaction_does_not_approve(g
     # The queued acknowledgement, then the rebuilt /approve's own answer.
     await async_wait_until(lambda: adapter.send.await_count >= replies + 2 or entry.event.is_set(), timeout=15)
     assert entry.result is None
+
+
+def _spy_dispatch(adapter, monkeypatch):
+    calls = []
+    original = adapter.handle_message
+
+    async def spy(event):
+        calls.append(event.text)
+        return await original(event)
+
+    monkeypatch.setattr(adapter, "handle_message", spy)
+    return calls
+
+
+UNADMITTED_INTERACTIONS = [
+    (2, {"name": "status"}),
+    (2, {"name": "title", "options": [{"type": 3, "name": "name", "value": "renamed-by-mallory"}]}),
+    (2, {"name": "queue", "options": [{"type": 3, "name": "prompt", "value": "/approve"}]}),
+    (3, {"custom_id": "/status"}),
+    (5, {"custom_id": "form", "components": [{"type": 1, "components": [
+        {"type": 4, "custom_id": "q", "value": "summarize the thread"}]}]}),
+]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("interaction_type", "data"), UNADMITTED_INTERACTIONS)
+async def test_an_unadmitted_discord_interaction_reaches_no_command(gateway, monkeypatch, interaction_type, data):
+    """The connector forwards every interaction to every gateway of the tenant: one from a sender it never
+    delivered a message from here is dropped before the runner, without a reply."""
+    _runner, transport, adapter = gateway
+    dispatched = _spy_dispatch(adapter, monkeypatch)
+    replies = adapter.send.await_count
+
+    await transport._handle_frame(json.dumps(_frame(interaction_type, "mallory", data)))
+
+    assert dispatched == []
+    assert adapter.send.await_count == replies
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("sender", ["alice", "owner-admin"])
+async def test_a_discord_interaction_from_an_admitted_sender_or_an_admin_runs(gateway, monkeypatch, sender):
+    """A member whose message the connector delivered here, or an admin of the scope, still runs commands."""
+    import gateway.run as gr
+    from gateway.config import Platform, PlatformConfig
+    from gateway.relay.admitted_authors import note_delivered
+    from gateway.session import SessionSource
+    from tests.waiting import async_wait_until
+
+    runner, transport, adapter = gateway
+    runner.config.platforms[Platform.DISCORD] = PlatformConfig(
+        enabled=True, extra={"group_allow_admin_from": ["owner-admin"], "user_allowed_commands": ["status"]})
+    monkeypatch.setattr(gr, "_gateway_runner_ref", lambda: runner)
+    note_delivered(SessionSource(platform=Platform.DISCORD, chat_id=THREAD, user_id="alice",
+                                 delivered_via_upstream_relay=True))
+    dispatched = _spy_dispatch(adapter, monkeypatch)
+    replies = adapter.send.await_count
+
+    await transport._handle_frame(json.dumps(_frame(2, sender, {"name": "status"})))
+
+    assert dispatched == ["/status"]
+    await async_wait_until(lambda: adapter.send.await_count > replies, timeout=10)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("data", [{"name": "approve"}, {"name": "deny"}])
+async def test_an_unadmitted_discord_prompt_answer_still_reaches_the_runner(gateway, monkeypatch, data):
+    """``/approve`` and ``/deny`` pass the intake: the runner answers them as the unadmitted sender."""
+    _runner, transport, adapter = gateway
+    dispatched = _spy_dispatch(adapter, monkeypatch)
+
+    await transport._handle_frame(json.dumps(_frame(2, "mallory", data)))
+
+    assert dispatched == [f"/{data['name']}"]

@@ -23,6 +23,10 @@ const MAX_VSIX_BYTES = 40 * 1024 * 1024 // 40 MB — themes are tiny; this is pa
 // decompression bomb) in the Electron main process. Themes are JSON and tiny;
 // 16 MB inflated per entry is already generous.
 const MAX_ENTRY_BYTES = 16 * 1024 * 1024 // 16 MB inflated per entry.
+// The per-entry cap alone still lets a manifest list thousands of themes (or
+// the same entry repeatedly), so also bound the count and the total inflated.
+const MAX_THEMES = 64
+const MAX_TOTAL_EXTRACT_BYTES = 64 * 1024 * 1024
 const MAX_REDIRECTS = 5
 const REQUEST_TIMEOUT_MS = 20_000
 
@@ -252,8 +256,8 @@ function readCentralDirectory(buf) {
   return records
 }
 
-/** Inflate a single entry to a string, bounding the inflated output. */
-function extractEntry(buf, record, maxBytes = MAX_ENTRY_BYTES) {
+/** Inflate a single entry, bounding the inflated output. */
+function extractEntryBytes(buf, record, maxBytes) {
   // The local header's name/extra lengths can differ from the central record,
   // so re-read them here to locate the compressed payload.
   if (buf.readUInt32LE(record.localOffset) !== 0x04034b50) {
@@ -273,12 +277,16 @@ function extractEntry(buf, record, maxBytes = MAX_ENTRY_BYTES) {
       throw new Error('Zip entry exceeds the extraction size limit.')
     }
 
-    return data.toString('utf8')
+    return data
+  }
+
+  if (record.method !== 8) {
+    throw new Error(`Unsupported zip compression method ${record.method}.`)
   }
 
   // maxOutputLength makes zlib throw ERR_BUFFER_TOO_LARGE once the inflated
   // output would exceed the cap, instead of allocating unbounded memory.
-  return zlib.inflateRawSync(data, { maxOutputLength: maxBytes }).toString('utf8')
+  return zlib.inflateRawSync(data, { maxOutputLength: maxBytes })
 }
 
 /** Normalize a package.json theme path to its zip entry name. */
@@ -297,7 +305,9 @@ function extractThemes(vsixBuffer) {
     throw new Error('Package manifest missing from the extension.')
   }
 
-  const pkg = JSON.parse(extractEntry(vsixBuffer, pkgRecord))
+  const pkgBytes = extractEntryBytes(vsixBuffer, pkgRecord, MAX_ENTRY_BYTES)
+  let remaining = MAX_TOTAL_EXTRACT_BYTES - pkgBytes.length
+  const pkg = JSON.parse(pkgBytes.toString('utf8'))
   const contributed = pkg?.contributes?.themes
 
   if (!Array.isArray(contributed) || contributed.length === 0) {
@@ -307,6 +317,10 @@ function extractThemes(vsixBuffer) {
   const themes = []
 
   for (const entry of contributed) {
+    if (themes.length >= MAX_THEMES || remaining <= 0) {
+      break
+    }
+
     if (!entry?.path) {
       continue
     }
@@ -318,10 +332,12 @@ function extractThemes(vsixBuffer) {
     }
 
     try {
+      const bytes = extractEntryBytes(vsixBuffer, record, Math.min(MAX_ENTRY_BYTES, remaining))
+      remaining -= bytes.length
       themes.push({
         label: entry.label || entry.id || pkg.displayName || pkg.name || 'VS Code Theme',
         uiTheme: entry.uiTheme,
-        contents: extractEntry(vsixBuffer, record)
+        contents: bytes.toString('utf8')
       })
     } catch {
       // Skip an entry we can't inflate rather than failing the whole install.

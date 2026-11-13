@@ -827,6 +827,8 @@ app.include_router(_desktop_plugin_routes.router, dependencies=[_Depends(_route_
 app.include_router(_git_routes.router)
 app.include_router(_local_models_routes.router)
 app.include_router(_status_routes.router)
+import hermes_cli.web_routers.session_attach as _session_attach_routes
+app.include_router(_session_attach_routes.router)
 app.include_router(_actions_routes.router)
 app.include_router(_audio_routes.router)
 app.include_router(_display_routes.router)
@@ -1265,6 +1267,15 @@ def _on_server_started(
 
     actual_port = _read_bound_port(server, fallback=port)
     app.state.bound_port = actual_port
+    # Cooperative attach: a local `hermes --tui --resume` of a session this process owns joins it
+    # through GET /api/session-attach instead of being refused. Advertised on every lease we write;
+    # only when the client-facing host is loopback (a LAN bind must not hand its credential out).
+    from hermes_cli.web_server_chat import _resolve_client_ws_host
+    from tui_gateway.shared_runtime import advertise_shared_runtime
+    try:
+        advertise_shared_runtime(f"http://{_resolve_client_ws_host()}:{actual_port}")
+    except ValueError:
+        _log.debug("shared runtime attach not advertised: bind is not loopback-reachable")
     # Published by /api/host/identity: an attaching `hermes dashboard` must never be routed to a
     # headless backend (a URL with no UI behind it).
     app.state.serves_spa = not headless

@@ -262,3 +262,35 @@ def test_emphasis_wrapping_a_url_that_ends_in_slash_still_renders(adapter, wrapp
     out = adapter.format_message(f"see {wrapped} ok")
     assert mdv2_error(out) is None
     assert out == f"see {rendered} ok"
+
+
+@pytest.mark.parametrize("wrapped, rendered", [
+    ("**See\nhttps://example.com/**", "*See\nhttps://example\\.com/*"),
+    ("*outer **https://example.com/** end*", "_outer *https://example\\.com/* end_"),
+    ("**https://example.com**—next", "*https://example\\.com*—next"),
+    ("[**https://x.example/**]", "\\[*https://x\\.example/*\\]"),
+    ("~~https://x.example/a~~,next", "~https://x\\.example/a~,next"),
+])
+def test_emphasis_around_a_url_pairs_as_around_any_word(adapter, wrapped, rendered):
+    """Bold across a newline, nested emphasis and a closer with prose right after it pair as they
+    would around plain text: the URL stash never turns a real delimiter into URL text."""
+    out = adapter.format_message(wrapped)
+    assert mdv2_error(out) is None
+    assert out == rendered
+
+
+@pytest.mark.parametrize("unit", ["https://example.com/a ", "**see https://x.example/web/** ok "])
+def test_many_bare_urls_format_in_linear_time(unit):
+    """Placeholder restoration is one pass, not one whole-message scan per URL, and deciding
+    ``/``-ended mark runs is budgeted: 10x the URLs costs about 10x the time (a per-URL scan ~100x)."""
+    def best(n: int) -> float:
+        text = unit * n
+        runs = []
+        for _ in range(3):
+            start = time.perf_counter()
+            telegram_markdown.to_markdown_v2(text)
+            runs.append(time.perf_counter() - start)
+        return min(runs)
+
+    small, large = best(2_000), best(20_000)
+    assert large < 40 * small + 0.5

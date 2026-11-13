@@ -1,6 +1,7 @@
 """Markdown -> Telegram MarkdownV2 conversion (the legacy, non-rich send path)."""
 
 import bisect
+import itertools
 import re
 
 from gateway.platforms.helpers import convert_table_to_bullets as _wrap_markdown_tables
@@ -71,7 +72,11 @@ def _resolve_emphasis(text: str, stash, escape) -> str:
     inner markers (***x*** → _*x*_, **a *i* b** → *a _i_ b*) instead of the bold pass swallowing
     them. Bold may span a single newline within a paragraph; italic stays single-line; unmatched
     markers survive as literal text."""
+    return _render_emphasis(_pair_emphasis(text), stash, escape)
 
+
+def _pair_emphasis(text: str) -> list:
+    """The tokens of *text*, each ``*`` delimiter run carrying its pairings and unpaired remainder."""
     tokens = []  # ("t", s) literal | ["d", start, end, can_open, can_close, remaining, opens, closes]
     pos = 0
     for m in re.finditer(r"\*+", text):
@@ -131,8 +136,7 @@ def _resolve_emphasis(text: str, stash, escape) -> str:
         if remaining > 0 and can_open:
             stack.append(idx)
             near2.append(len(stack) - 1 if remaining >= 2 else (near2[-1] if near2 else -1))
-
-    return _render_emphasis(tokens, stash, escape)
+    return tokens
 
 
 def _rule_of_three_refuses(opener: list, closer: list) -> bool:
@@ -377,9 +381,12 @@ def to_markdown_v2(content: str) -> str:
     text = text.replace(_EXPANDABLE_QUOTE, '**')
     # 10) Escape remaining special characters in plain text
     text = _escape_mdv2(text)
-    # 11) Restore placeholders in reverse insertion order so nested placeholders resolve.
-    for key in reversed(list(placeholders.keys())):
-        text = text.replace(key, placeholders[key])
+    # 11) Restore placeholders in one pass: a value only nests keys stashed before it, so expanding
+    #     values in insertion order resolves every nesting without one whole-text scan per key.
+    expanded: dict = {}
+    for key, value in placeholders.items():
+        expanded[key] = _expand_placeholders(value, expanded)
+    text = _expand_placeholders(text, expanded)
     # 12) Safety net: escape bare ( ) { } that slipped through, but never inside ``` or ` spans.
     _safe_parts = []
     for _idx, _seg in enumerate(re.split(r'(```[\s\S]*?```|`[^`\r\n]+`)', text)):
@@ -390,22 +397,34 @@ def to_markdown_v2(content: str) -> str:
     return ''.join(_safe_parts)
 
 
-# A bare scheme URL; trailing punctuation and emphasis/spoiler marks are prose, not URL.
+_PLACEHOLDER_RE = re.compile('\x00PH\\d+\x00')
+
+
+def _expand_placeholders(text: str, expanded: dict) -> str:
+    if '\x00' not in text:
+        return text
+    return _PLACEHOLDER_RE.sub(lambda m: expanded.get(m.group(0), m.group(0)), text)
+
+
+# A bare scheme URL; trailing punctuation is prose, not URL.
 _BARE_URL_RE = re.compile(r'(?i)\b[a-z][a-z0-9+.-]*://[^\s<>\x00]+')
-_URL_TAIL_CHARS = '.,;:!?\'"*_~|'
-_URL_PATH_MARKS = '*_~'  # inside a URL path a trailing wildcard is URL text, never an emphasis closer
+_URL_TAIL_CHARS = '.,;:!?\'"'
+# A run of emphasis/strike/spoiler marks with prose after it (the end, punctuation, non-ASCII) ends a
+# URL: ``**https://x.com**—next``. Followed by more URL text (``a*b*c``, ``x||y``) it is URL text.
+_URL_MARK_RUN_RE = re.compile(r'[*~|]+')
+_URL_PROSE_AFTER = frozenset('.,;:!?\'")]}')
+_SPAN_MARKS = {'~~': re.compile(r'~~(.+?)~~'), '||': re.compile(r'\|\|(.+?)\|\|')}  # steps 6/7
+# Characters re-paired while deciding ``/``-ended mark runs (two passes over the paragraph each); past
+# it the rest read as delimiters, as on a URL-free text, so a huge reply stays linear.
+_SLASH_RUN_BUDGET = 200_000
 
 
-def _url_end(url: str, closers: str = '') -> int:
-    """Length of *url* without trailing prose punctuation; a ``)`` stays only while it closes a ``(``,
-    and a ``*``/``_``/``~`` right after a ``/`` stays (``/web/*``) unless it is in *closers*, the marks
-    that close emphasis opened before the URL (``**bold https://x.com/**``).
+def _url_end(url: str) -> int:
+    """Length of *url* without trailing prose punctuation; a ``)`` stays only while it closes a ``(``.
     One pass: the paren balance is counted once and updated while trimming."""
     end, unclosed = len(url), url.count(')') - url.count('(')
     while end:
         ch = url[end - 1]
-        if ch in _URL_PATH_MARKS and end >= 2 and url[end - 2] == '/' and ch not in closers:
-            break
         if ch == ')' and unclosed > 0:
             unclosed -= 1
         elif ch == '(':
@@ -417,67 +436,87 @@ def _url_end(url: str, closers: str = '') -> int:
     return end
 
 
-class _MarkRuns:
-    """Emphasis-mark runs outside URLs and the newline offsets of *text*, found once; URLs are then
-    judged left to right with a few bisects each instead of a rescan of their line."""
+class _BareUrl:
+    """One bare URL: ``text[start:core]`` is URL text; ``text[core:run_end]`` is the mark run prose
+    follows, which closes emphasis (main's reading) unless it is a ``/web/*`` wildcard."""
 
-    def __init__(self, text: str, urls: list[tuple[int, int]]):
-        self.newlines = [m.start() for m in re.finditer('\n', text)]
-        starts = [a for a, _ in urls]
+    __slots__ = ("core", "keep_run", "run_end", "slash_run", "start")
 
-        def _in_url(pos: int) -> bool:  # ``/web/*/`` inside a URL is URL text, never prose emphasis
-            k = bisect.bisect_right(starts, pos) - 1
-            return k >= 0 and pos < urls[k][1]
+    def __init__(self, text: str, m):
+        self.start = m.start()
+        url = m.group(0)
+        run = next((r for r in _URL_MARK_RUN_RE.finditer(url) if _prose_follows(url, r.end())), None)
+        if run is None:
+            self.core = self.run_end = self.start + _url_end(url)
+        else:
+            self.core = self.start + _url_end(url[:run.start()])
+            self.run_end = self.start + run.end()
+        self.slash_run = run is not None and self.core == self.start + run.start() and text[self.core - 1] == '/'
+        self.keep_run = False
 
-        def _closes_only(a: int, b: int) -> bool:  # ``now*``: a run that can only close emphasis
-            before, after = text[a - 1:a] or ' ', text[b:b + 1] or ' '
-            return not before.isspace() and (after.isspace() or after in '.,;:!?)')
+    @property
+    def stop(self) -> int:
+        return self.run_end if self.keep_run else self.core
 
-        self.runs: dict[str, list[int]] = {}
-        self.closes_only: dict[str, list[bool]] = {}
-        for ch in _URL_PATH_MARKS:
-            found = [m.span() for m in re.finditer(re.escape(ch) + '+', text) if not _in_url(m.start())]
-            self.runs[ch] = [a for a, _ in found]
-            self.closes_only[ch] = [_closes_only(a, b) for a, b in found]
-        self.size = len(text)
-        self.text = text
-        self._tail_closers: dict[tuple[int, str], int] = {}  # (line, mark) -> URL tails already closing
 
-    def closers(self, start: int, end: int) -> str:
-        """Marks that close emphasis at the URL spanning *start*:*end* (URLs come left to right): one of
-        that mark is open before it on its line, and the next prose run of it is not itself a closer."""
-        i = bisect.bisect_left(self.newlines, start)
-        line_start = self.newlines[i - 1] + 1 if i else 0
-        j = bisect.bisect_left(self.newlines, end)
-        line_end = self.newlines[j] if j < len(self.newlines) else self.size
-        out = ''
-        tail = self.text[start:end]
-        tail = tail[len(tail.rstrip(_URL_TAIL_CHARS + ')')):]  # what _url_end may trim, marks included
-        for ch, runs in self.runs.items():
-            if ch not in tail:  # ``https://a.example/x``: no mark of its own to release, nothing closes
-                continue
-            before = bisect.bisect_left(runs, start) - bisect.bisect_left(runs, line_start)
-            if not (before + self._tail_closers.get((i, ch), 0)) % 2:
-                continue
-            nxt = bisect.bisect_left(runs, end)
-            if nxt < len(runs) and runs[nxt] < line_end and self.closes_only[ch][nxt]:
-                continue
-            out += ch
-            self._tail_closers[(i, ch)] = self._tail_closers.get((i, ch), 0) + 1
-        return out
+def _prose_follows(url: str, end: int) -> bool:
+    nxt = url[end:end + 1]
+    return not nxt or nxt in _URL_PROSE_AFTER or not nxt.isascii()
+
+
+def _unpaired_marks(text: str) -> int:
+    """Delimiter marks of *text* that pair with nothing and so would show as literal characters."""
+    count = sum(tok[5] for tok in _pair_emphasis(text) if tok[0] == 'd')
+    for mark, pat in _SPAN_MARKS.items():
+        count += pat.sub('', text).count(mark)
+    return count
+
+
+def _dry_paragraph(text: str, start: int, end: int, urls: list) -> str:
+    """``text[start:end]`` with each URL as one opaque word, its mark run kept only as a delimiter."""
+    parts, pos = [], start
+    for url in urls:
+        parts += [text[pos:url.start], 'u']
+        pos = url.stop
+    return ''.join(parts) + text[pos:end]
+
+
+def _decide_slash_runs(text: str, urls: list) -> None:
+    """A mark run right after a URL's ``/`` is ambiguous: ``**see https://x.com/**`` closes bold,
+    ``https://web.archive.org/web/*`` is a wildcard. Left to right, keep it as URL text only when that
+    leaves fewer marks unpaired in its paragraph than reading it as a delimiter; the real pairing
+    decides, so nested and multi-line emphasis pair exactly as they do around any other word."""
+    if not any(u.slash_run for u in urls):
+        return
+    bounds = [0] + [m.end() for m in re.finditer(r'\n\n', text)] + [len(text) + 1]
+    budget = _SLASH_RUN_BUDGET
+    for a, b in itertools.pairwise(bounds):
+        lo, hi = bisect.bisect_left(urls, a, key=lambda u: u.start), bisect.bisect_left(urls, b, key=lambda u: u.start)
+        para = urls[lo:hi]
+        runs = [u for u in para if u.slash_run]
+        budget -= 2 * len(runs) * (b - a)
+        if not runs or budget < 0:
+            continue
+        for url in runs:
+            closing = _unpaired_marks(_dry_paragraph(text, a, b, para))
+            url.keep_run = True
+            if _unpaired_marks(_dry_paragraph(text, a, b, para)) >= closing:
+                url.keep_run = False
 
 
 def _stash_bare_urls(text: str, stash) -> str:
     """Stash bare URLs escaped whole, so a ``*``, ``~~`` or ``||`` inside one stays literal URL text
     instead of pairing into italic/strike/spoiler marks that drop characters or hide the URL."""
-    marks = _MarkRuns(text, [m.span() for m in _BARE_URL_RE.finditer(text)])
-
-    def _one(m) -> str:
-        url = m.group(0)
-        end = _url_end(url, marks.closers(m.start(), m.end()))
-        return stash(_escape_mdv2(url[:end])) + url[end:]
-
-    return _BARE_URL_RE.sub(_one, text)
+    urls, pos = [], 0
+    while (m := _BARE_URL_RE.search(text, pos)) is not None:
+        urls.append(_BareUrl(text, m))
+        pos = max(urls[-1].run_end, m.start() + 1)
+    _decide_slash_runs(text, urls)
+    out, pos = [], 0
+    for url in urls:
+        out += [text[pos:url.start], stash(_escape_mdv2(text[url.start:url.stop]))]
+        pos = url.stop
+    return ''.join(out) + text[pos:]
 
 
 def _stash_inline_code(text: str, stash) -> str:

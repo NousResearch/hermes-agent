@@ -26,6 +26,26 @@ def discard_unpublished_vault_key(ref: Optional[dict]) -> None:
         delete_key(ref)
 
 
+def prepare_imported_tree(staged: Path) -> None:
+    """Make an extracted ``hermes profile import`` tree safe to publish; runs on the staging tree."""
+    from hermes_cli.config_backend import drop_other_access
+    from hermes_cli.home_data_layout import PM_RUNTIME_ROOT_DIRS
+    # Remove foreign runtime state before publishing, including file-shaped roots.
+    # A failed removal must abort import rather than install a stale PM selection.
+    for child in staged.iterdir():
+        if child.name in PM_RUNTIME_ROOT_DIRS:
+            if child.is_dir():
+                shutil.rmtree(child)
+            else:
+                child.unlink()
+    # Extraction applied each archive member's mode: drop world access on config.yaml and make
+    # .env owner-only, as a clone and `hermes import` do (#59726).
+    drop_other_access(staged / "config.yaml")
+    env = staged / ".env"
+    if env.is_file() and not env.is_symlink():
+        os.chmod(env, 0o600)
+
+
 def finish_profile_layout(profile_dir: Path, *, no_skills: bool, clone_all: bool,
                            description: Optional[str], soul: Optional[str] = None) -> None:
     """Seed files a fresh profile owns from day one; runs on the staging tree before publish."""

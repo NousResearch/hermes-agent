@@ -2187,14 +2187,8 @@ def import_profile(archive_path: str, name: Optional[str] = None) -> Path:
         if archive_root != canon:
             final_source = staging_root / canon
             extracted.rename(final_source)
-        # Remove foreign runtime state before publishing, including file-shaped roots.
-        # A failed removal must abort import rather than install a stale PM selection.
-        for child in final_source.iterdir():
-            if child.name in PM_RUNTIME_ROOT_DIRS:
-                if child.is_dir():
-                    shutil.rmtree(child)
-                else:
-                    child.unlink()
+        from hermes_cli.profiles_initialization import prepare_imported_tree
+        prepare_imported_tree(final_source)
         shutil.move(str(final_source), str(profile_dir))
     clear_named_profile_deleted(profile_dir)
     return profile_dir

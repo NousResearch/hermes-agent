@@ -5,6 +5,8 @@ import types
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
+
 import gateway.run as gateway_run
 from gateway.config import Platform
 from gateway.session import SessionSource
@@ -315,14 +317,22 @@ def test_session_change_that_is_not_compression_keeps_the_route(monkeypatch):
                     chain=["session-before-compression"])
     session_store = _ProfileSessionStore(db)
     runner = _runner(session_store)
+    runner._evict_cached_agent = MagicMock()
     source = SessionSource(platform=Platform.TELEGRAM, chat_id="12345", chat_type="dm", user_id="user-1")
 
-    _run_compression_failure_turn(runner, source)
+    result = _run_compression_failure_turn(runner, source)
 
     assert session_store.entry.session_id == "session-before-compression"
     assert session_store.save_calls == 0
     assert session_store.peer_records == []
     runner._sync_telegram_topic_binding.assert_not_called()
+    # The result reports the route's session, or the agent-result sync after the turn would move
+    # the route anyway; the cached agent (now on the other session) is dropped for the next turn.
+    assert result["session_id"] == "session-before-compression"
+    assert "_compressed" not in result
+    # None of the other session's messages are this route's new turn.
+    assert result["history_offset"] == len(result["messages"])
+    runner._evict_cached_agent.assert_called_once_with(SESSION_KEY, release_after_turn=True)
 
 
 def test_real_compression_split_still_syncs_with_the_guard(monkeypatch):
@@ -345,6 +355,7 @@ class _RefusingPeerStore(_SessionStore):
     def __init__(self):
         super().__init__()
         self.saved_ids = []
+        self._lock = threading.Lock()
 
     def _save(self):
         super()._save()
@@ -360,13 +371,14 @@ def test_failed_split_publication_rolls_the_route_back(monkeypatch):
     _install_compression_failure_agent(monkeypatch)
     session_store = _RefusingPeerStore()
     runner = _runner(session_store)
+    runner._evict_cached_agent = MagicMock()
     source = SessionSource(platform=Platform.TELEGRAM, chat_id="12345", chat_type="dm", user_id="user-1")
 
-    try:
+    from hermes_state_runtime import RuntimeStoreError
+    with pytest.raises(RuntimeStoreError, match="admission_conflict"):  # still the turn's error
         _run_compression_failure_turn(runner, source)
-    except Exception as exc:  # the refusal still surfaces as the turn's error
-        assert "admission_conflict" in str(exc)
 
     assert session_store.entry.session_id == "session-before-compression"
     assert session_store.saved_ids == ["session-after-compression", "session-before-compression"]
     runner._sync_telegram_topic_binding.assert_not_called()
+    runner._evict_cached_agent.assert_called_once_with(SESSION_KEY, release_after_turn=True)

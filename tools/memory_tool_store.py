@@ -138,6 +138,17 @@ def _is_drifted_whole_entry_paste(entry: str, old_text: str) -> bool:
     return SequenceMatcher(None, old_text, entry).ratio() >= _FUZZY_MIN_SCORE
 
 
+def _display_entry_candidates(old_text: str) -> tuple[str, ...]:
+    """Only strip MEMORY.md display prefixes when identifying a COMPLETE entry.
+
+    The rendered '§' delimiter and '##' header are not stored entry content.
+    Do not strip interior delimiters or fuzzy-match a partial span into a write.
+    """
+    if old_text.startswith("§\n"):
+        bare = old_text[2:]
+        return (bare, bare[3:]) if bare.startswith("## ") else (bare,)
+    return (old_text[3:],) if old_text.startswith("## ") else ()
+
 def _find_unique_match(entries: list[str], old_text: str) -> tuple[Optional[int], bool]:
     """``(index, ambiguous)`` for entries matching *old_text*. A whole-entry
     EXACT match (``old_text == entry``) takes absolute priority — substring
@@ -151,6 +162,10 @@ def _find_unique_match(entries: list[str], old_text: str) -> tuple[Optional[int]
     matches = exact or _substring_matches(entries, old_text)
     if len({entries[i] for i in matches}) > 1:
         return None, True
+    if not matches:
+        for candidate in _display_entry_candidates(old_text):
+            if candidate in entries:
+                return entries.index(candidate), False
     if not matches and len(old_text) > _FUZZY_GATE_CHARS:
         # Drifted whole-entry paste: one fuzzy best-match before declaring no match.
         if (fi := _fuzzy_entry_match(entries, old_text)) is not None:
@@ -202,7 +217,9 @@ def _patch_entry(entry: str, old_text: str, new_text: str) -> tuple[Optional[str
     entry — the same outcome an exact whole-entry patch produces."""
     if (count := _span_occurrences(entry, old_text)) > 1:
         return None, _repeated_span_message(old_text, count), "ambiguous"
-    if count == 0 and _is_drifted_whole_entry_paste(entry, old_text):
+    if count == 0 and entry in _display_entry_candidates(old_text):
+        patched = new_text
+    elif count == 0 and _is_drifted_whole_entry_paste(entry, old_text):
         patched = new_text.strip()
     else:
         patched = entry.replace(old_text, new_text, 1)

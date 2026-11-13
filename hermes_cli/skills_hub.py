@@ -737,6 +737,12 @@ _INSTALL_PANELS = {
         "It ships with hermes-agent but is not activated by default.\n"
         "Installing will copy it to your skills directory where the agent can use it.\n\n",
         "Official Skill", "bright_cyan"),
+    "upstream": (
+        "[bold yellow]This catalog entry installs third-party content from "
+        "[cyan]https://github.com/{repo}[/] (live default branch).[/]\n\n"
+        "It is listed in the Hermes optional-skills catalog but is not maintained by Nous Research.\n"
+        "Review the installed files before use.\n\n",
+        "Third-Party Skill", "yellow"),
     "external": (
         "[bold yellow]You are installing a third-party skill at your own risk.[/]\n\n"
         "External skills can contain instructions that influence agent behavior,\n"
@@ -745,10 +751,18 @@ _INSTALL_PANELS = {
         "Disclaimer", "yellow")}
 
 
+def _upstream_repo(bundle) -> Optional[str]:
+    """The live third-party repo an official catalog stub installs from, or None for vendored content."""
+    return (getattr(bundle, "metadata", None) or {}).get("upstream_repo") if bundle.source == "official" else None
+
+
 def _confirm_install(c: Console, bundle, category: str, official: bool) -> bool:
     """Source-appropriate disclaimer panel + `Install '<name>'?` prompt."""
     files_at = f"Files will be at: [cyan]{display_hermes_home()}/skills/{category + '/' if category else ''}{bundle.name}/[/]"
-    body, title, style = _INSTALL_PANELS["official" if official else "external"]
+    upstream_repo = _upstream_repo(bundle) if official else None
+    kind = "upstream" if upstream_repo else "official" if official else "external"
+    body, title, style = _INSTALL_PANELS[kind]
+    body = body.replace("{repo}", str(upstream_repo or ""))
     c.print()
     c.print(Panel(body + files_at, title=title, border_style=style))
     return _confirm_or_cancel(c, f"[bold]Install '{bundle.name}'?[/]",
@@ -959,6 +973,9 @@ def _install_skill(identifier: str, category: str, force: bool, c: Console, skip
         # Advisory second opinion — warn-and-continue by design (PII-class findings are
         # informational); the install confirmation below is where the user decides.
         _print_tier1_advisory(q_path, c)
+        if official and (upstream_repo := _upstream_repo(bundle)) and (force or skip_confirm):
+            c.print(f"[yellow]Third-party content:[/] '{bundle.name}' installs the live default branch of "
+                    f"[cyan]https://github.com/{upstream_repo}[/] (not maintained by Nous Research).")
         metadata_lines = _format_extra_metadata_lines(extra_metadata)
         if metadata_lines:
             c.print(Panel("\n".join(metadata_lines), title="Upstream Metadata", border_style="blue"))

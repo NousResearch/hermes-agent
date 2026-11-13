@@ -214,7 +214,9 @@ def overlay_dir(home: Path | str) -> Path:
 
 
 def overlay_layer(home: Path | str, lang: str, surface: str = CORE_SURFACE) -> dict[str, str]:
-    """``<home>/locales/<lang>[.<surface>].yaml`` flattened; ``{}`` (logged) when missing or broken. Cached
+    """``<home>/locales/<lang>[.<surface>].{yaml,yml}`` flattened (``yaml`` takes precedence).
+
+    ``{}`` (logged) when missing or broken. Cached
     per home so a multiplexed process serving profile A then B then A never mixes overlays."""
     key = (str(home), lang, surface)
     with _lock:
@@ -223,6 +225,8 @@ def overlay_layer(home: Path | str, lang: str, surface: str = CORE_SURFACE) -> d
             return cached
     name = f"{lang}.yaml" if surface == CORE_SURFACE else f"{lang}.{surface}.yaml"
     path = overlay_dir(home) / name
+    if not path.is_file():
+        path = path.with_suffix(".yml")
     flat: dict[str, str] = {}
     if path.is_file():
         try:

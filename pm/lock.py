@@ -181,7 +181,7 @@ class Facts:
             previous = []
         return (fact, *(row for row in previous if isinstance(row, dict) and "entry" in row))
 
-    def selected(self, name: str, fact: dict) -> "Facts":
+    def selected(self, name: str, fact: dict) -> Facts:
         """Return a per-install view without changing the shared selection."""
         view = Facts.__new__(Facts)
         view.path = self.path

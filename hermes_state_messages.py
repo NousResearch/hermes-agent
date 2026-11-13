@@ -21,7 +21,7 @@ from agent.message_sanitization import _sanitize_surrogates, coalesce_tool_call_
 from hermes_cli.timefmt import coerce_epoch
 from hermes_state_common import (
     _COMPRESSION_LOCK_ROW_SQL, _ENDED_ROW_SQL, _RESET_END_REASONS, _RESET_END_REASONS_SQL, _ended_by_compression,
-    _MERGE_DISPLAY_META, _json_or, _legacy_reset_child_sql, _placeholders, _sql_json_extract)
+    _MERGE_DISPLAY_META, _json_or, _legacy_reset_child_sql, _placeholders, _sql_json_extract, _sql_model_only_truthy)
 from hermes_state_compaction_display import later_tool_copy_ids, not_a_later_tool_copy_sql
 from hermes_state_detached_results import SessionDetachedResultsMixin
 from hermes_state_todo import SessionTodoResultMixin
@@ -38,7 +38,7 @@ _INSERT_MESSAGE_SQL = """INSERT INTO messages (session_id, role, content, tool_c
                    codex_message_items, platform_message_id, observed, _compressed_summary, active, api_content, display_kind,
                    display_metadata, display_identity, message_uid, absorbed_message_uids, tool_call_uids,
                    tool_call_uid)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"""
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id"""
 # Every column this module knows how to read: the ones it writes plus the three SQLite/compaction
 # owns. `_row_to_message_dict` drops raw bytes ONLY outside this set — a schema column keeps its
 # key (and its typed decoder) even when a row holds a BLOB, so no reader ever loses msg["content"].
@@ -57,9 +57,11 @@ _TURN_LEASE_ROW_SQL = "SELECT holder, expires_at FROM session_turn_leases WHERE 
 _DELETE_COMPRESSION_LOCK_SQL = "DELETE FROM compression_locks WHERE session_id = ? AND holder = ?"
 _DISPLAY_ACTIVE_CLAUSE = " AND (active = 1 OR compacted = 1)"
 # Model-only rows (see MODEL_ONLY_DISPLAY_METADATA_KEY) never enter a display projection. Unqualified on
-# purpose: inside a correlated subquery it binds to the innermost ``messages`` alias.
+# purpose: inside a correlated subquery it binds to the innermost ``messages`` alias. The marker test is
+# type-aware (``_sql_model_only_truthy``) so the SQL and the Python twin agree on every value shape,
+# on both dialects.
 DISPLAY_VISIBLE_SQL = (
-    f" AND COALESCE({_sql_json_extract('display_metadata', '$.' + MODEL_ONLY_DISPLAY_METADATA_KEY)}, 0) = 0")
+    f" AND {_sql_model_only_truthy('display_metadata', MODEL_ONLY_DISPLAY_METADATA_KEY)} = 0")
 _DISPLAY_META_ROW_SQL = "SELECT display_metadata FROM messages WHERE id = ? AND session_id IN ({ids})" + _DISPLAY_ACTIVE_CLAUSE
 # A display row is indexed only when both halves are set; the read path backfills before projecting, so
 # the in-transaction delete fence must refuse (not project) any session this probe still matches.
@@ -115,14 +117,15 @@ def _scrub_surrogates(value: Any) -> Any:
     return _sanitize_surrogates(value) if isinstance(value, str) else value
 
 
-def _stale_holder(row, now: float) -> bool:
-    """A lock/lease row whose holder is expired or a provably dead local process."""
-    from hermes_state import _compression_lock_holder_process_is_dead
-    return float(row["expires_at"]) <= now or _compression_lock_holder_process_is_dead(row["holder"])
-
-
 class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin, SessionStoredReadsMixin):
     """Message append/replace/rewind, reactions, resume conversations, replay dedupe (detached results: the base)."""
+
+    def _holder_process_is_dead(self, holder: str) -> bool:
+        from hermes_state import _compression_lock_holder_process_is_dead
+        return _compression_lock_holder_process_is_dead(holder)
+
+    def _stale_holder(self, row, now: float) -> bool:
+        return float(row["expires_at"]) <= now or self._holder_process_is_dead(row["holder"])
 
     def _bump_conversation_generation(self, conn, session_id: str, end_reason: str) -> None:
         """Advance the peer's conversation generation past a boundary, in the txn that writes it. Only
@@ -239,7 +242,7 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin, 
         if reject_active_compression_lock:
             active_lock = conn.execute(_COMPRESSION_LOCK_ROW_SQL, (session_id,)).fetchone()
             if active_lock is not None:
-                if _stale_holder(active_lock, time.time()):
+                if self._stale_holder(active_lock, time.time()):
                     conn.execute(_DELETE_COMPRESSION_LOCK_SQL, (session_id, active_lock["holder"]))
                 elif active_lock["holder"] != compression_lock_holder:
                     raise SessionCompressionInProgressError(
@@ -259,7 +262,7 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin, 
                         "WHERE conversation_id = ? AND holder = ?",
                         (now + max(0.1, float(turn_lease_ttl_seconds)), conversation_id, turn_lease_holder))
             elif lease is not None:
-                if not _stale_holder(lease, now):
+                if not self._stale_holder(lease, now):
                     raise SessionTurnLeaseLostError(
                         f"Session has an active turn lease; refusing transcript mutation for {session_id!r}")
                 # Same reclaim rule as acquisition; deleting also fences a stale late flush after the mutation.
@@ -421,7 +424,7 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin, 
         def _do(conn):
             self._check_transcript_write_guards(conn, session_id, compression_lock_holder,
                 turn_lease_holder=turn_lease_holder, turn_lease_ttl_seconds=turn_lease_ttl_seconds)
-            msg_id = conn.execute(_INSERT_MESSAGE_SQL, params).lastrowid
+            msg_id = conn.execute(_INSERT_MESSAGE_SQL, params).fetchone()[0]
             self._bump_session_counters(conn, session_id, 1, _tool_calls_count(tool_calls), unit=True)
             return msg_id
         # THE critical write (failure aborts the turn): long patience so a sibling legitimately
@@ -682,8 +685,7 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin, 
             # the generated timestamp exists only in SQLite, every copy receives a new identity and renders
             # as another logical message.
             msg["timestamp"] = message_timestamp
-            if cur.lastrowid is not None:
-                msg["_row_id"] = cur.lastrowid
+            msg["_row_id"] = cur.fetchone()[0]
             inserted += 1
             tool_calls_total += _tool_calls_count(tool_calls)
             now_ts = max(now_ts, message_timestamp) + 1e-6
@@ -1118,7 +1120,13 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin, 
             row["role"], dedupe_content, row["timestamp"], row["tool_call_id"], row["tool_calls"], row["tool_name"])
 
     def _is_model_only_row(self, row) -> bool:
-        """Python twin of :data:`DISPLAY_VISIBLE_SQL`."""
+        """Python twin of :data:`DISPLAY_VISIBLE_SQL`.
+
+        Truthy marker semantics (the SQL twin encodes the same rule via
+        ``json_type`` + the extracted scalar's text, on both dialects): JSON ``true``,
+        any non-empty string, any non-zero number, and a non-empty object/array value
+        hide the row; ``false``, ``0`` / ``0.0``, JSON ``null``, a missing key, and
+        invalid JSON all read as absent."""
         return bool((self._decode_display_metadata(row["display_metadata"]) or {}).get(MODEL_ONLY_DISPLAY_METADATA_KEY))
 
     @staticmethod
@@ -1219,11 +1227,11 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin, 
         last_id = 0
         while True:
             rows = conn.execute(
-                "SELECT id, role, content, timestamp, tool_call_id, tool_calls, tool_name, "
-                "display_kind, display_metadata, display_order, display_identity, message_uid, _compressed_summary "
-                "FROM messages INDEXED BY idx_messages_session_id "
-                "WHERE session_id = ? AND id > ? AND (active = 1 OR compacted = 1) "
-                "ORDER BY id LIMIT 1000",
+                f"SELECT id, role, content, timestamp, tool_call_id, tool_calls, tool_name, "
+                f"display_kind, display_metadata, display_order, display_identity, message_uid, _compressed_summary "
+                f"FROM messages {self._messages_session_index_hint} "
+                f"WHERE session_id = ? AND id > ? AND (active = 1 OR compacted = 1) "
+                f"ORDER BY id LIMIT 1000",
                 (session_id, last_id))
             batch_start = last_id
             updates = []
@@ -1329,8 +1337,7 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin, 
                 msg.pop(key)
         return msg
 
-    @staticmethod
-    def _display_rows_from_conn(conn, session_id: str, *, limit: Optional[int] = None,
+    def _display_rows_from_conn(self, conn, session_id: str, *, limit: Optional[int] = None,
                                 offset: int = 0, latest: bool = False, after: Optional[int] = None):
         """One display-history projection for normal reads and transactional verification. *after*: keyset
         paging past that ``display_order`` (before it when *latest*).
@@ -1354,7 +1361,7 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin, 
                    ORDER BY candidate.active DESC, candidate.id DESC LIMIT 1
                )
                ORDER BY page.display_order ASC""",
-            (session_id, -1 if limit is None else limit, offset, session_id),
+            (session_id, self._unlimited_sql_limit if limit is None else limit, offset, session_id),
         ).fetchall()
 
     def display_message_count(self, session_id: str) -> int:
@@ -1429,7 +1436,7 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin, 
             if limit is not None or offset:
                 # SQLite's OFFSET requires LIMIT; -1 means "no limit".
                 sql += " LIMIT ? OFFSET ?"
-                params.extend([-1 if limit is None else limit, offset])
+                params.extend([self._unlimited_sql_limit if limit is None else limit, offset])
             rows = self._read_all(sql, params)
             if latest:
                 rows.reverse()
@@ -1891,7 +1898,7 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin, 
         return self._read_one(
             "SELECT 1 FROM messages WHERE session_id = ? AND role = 'user' "
             "AND observed = 0 AND (active = 1 OR compacted = 1) "
-            "AND CASE WHEN json_valid(display_metadata) "
+            "AND CASE WHEN json_valid(display_metadata) <> 0 "
             "THEN json_extract(display_metadata, '$.gateway_input_owner') END = ? LIMIT 1",
             (session_id, owner)) is not None
 

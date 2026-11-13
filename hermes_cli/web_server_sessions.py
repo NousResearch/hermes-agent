@@ -49,7 +49,10 @@ def _session_latest_descendant(session_id: str, db):
         return None, []
 
     conn = getattr(db, "_conn", None)
-    if conn is not None:
+    if getattr(db, "backend", None) == "postgres":
+        with db._read_ctx() as conn:
+            rows = [dict(row) for row in conn.execute(_DESCENDANTS_SQL, (sid,)).fetchall()]
+    elif conn is not None:
         keys = ("id", "parent_session_id", "started_at")
         rows = [dict(zip(keys, row)) for row in conn.execute(_DESCENDANTS_SQL, (sid,)).fetchall()]
     else:
@@ -351,16 +354,21 @@ def _open_session_db_at_path(db_path: Path, *, read_only: bool):
     missing declared tables/columns once, in one short locked transaction (#140315); an
     owned store is refused by name instead. Explicit mutation APIs retain their writable
     acquisition until their separate owner-RPC migration.
+    PostgreSQL read-only opens never initialize or reconcile schema.
     """
     import sqlite3
 
     from fastapi import HTTPException
     from hermes_state import SessionDB
+    from hermes_state_backend import resolve_database_settings
     from hermes_state_errors import is_transient_sqlite_error
     from hermes_state_registry import acquire
 
     if not read_only:
         return acquire(db_path)
+    settings = resolve_database_settings(db_path)
+    if settings.backend == "postgres":
+        return SessionDB(db_path=db_path, read_only=True, database_settings=settings)
 
     try:
         initialized = db_path.stat().st_size > 0

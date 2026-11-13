@@ -992,6 +992,8 @@ def _cmd_block(args: argparse.Namespace) -> int:
             where = landed.status if landed else "blocked"
             if where == "todo":
                 return f"{tid} → todo (dependency wait){suffix}"
+            if (landed.block_kind if landed else kind) == "hold":
+                return f"Blocked {tid} — held, condition named{suffix}"
             if kind == "dependency" and where == "blocked":
                 return f"Blocked {tid} as needs_input (no open parent to wait on){suffix}"
             if where == "triage":
@@ -1001,9 +1003,33 @@ def _cmd_block(args: argparse.Namespace) -> int:
                 return f"{tid} → triage (unblock loop detected — {verdict}){suffix}"
             return f"Blocked {tid}{suffix}"
 
-        op = _commented(conn, reason, author, "BLOCKED", lambda tid: kb.block_task(
-            conn, tid, reason=reason, kind=kind, expected_run_id=_worker_run_id_for(tid)))
-        return _bulk_apply(ids, op, ok_msg, lambda tid: f"cannot block {tid}")
+        def op(tid):
+            blocked = kb.block_task(
+                conn, tid, reason=reason, kind=kind, expected_run_id=_worker_run_id_for(tid))
+            # Comment only after the transition landed: a refused block used to
+            # leave "BLOCKED: <reason>" on a card that never moved, so the thread
+            # read as a block that happened. The block event is the record; the
+            # comment is its human-facing copy.
+            if blocked and reason:
+                kb.add_comment(conn, tid, author, f"BLOCKED: {reason}")
+            return blocked
+
+        def fail_msg(tid):
+            # Name the cause: a run mismatch is not a status problem, and a bare
+            # "cannot block" reads like a card problem when it is a lane
+            # problem (triage/done are not sources).
+            row = kb.get_task(conn, tid)
+            if row is None:
+                return f"cannot block {tid} (unknown id)"
+            expected = _worker_run_id_for(tid)
+            if (expected is not None and row.current_run_id is not None
+                    and int(row.current_run_id) != int(expected)):
+                return (f"cannot block {tid} (run mismatch: this worker asserts run {expected}, "
+                        f"the card is held by run {row.current_run_id})")
+            return (f"cannot block {tid} (status {row.status} is not a blockable source: "
+                    f"running/ready/review)")
+
+        return _bulk_apply(ids, op, ok_msg, fail_msg)
 
 
 def _cmd_schedule(args: argparse.Namespace) -> int:

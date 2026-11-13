@@ -1898,8 +1898,8 @@ DEFAULT_CONFIG = {
         # dispatch lanes (workers are OS processes sharing one machine's memory, so the cap bounds the
         # machine, not each board; OOF-30). Unset (None) means "derive from system memory" (OOF-30/OOF-77):
         # the dispatcher caps concurrency at roughly MemTotal / 512 MiB, clamped to [2, 8] — e.g. 2 workers
-        # on a 1 GiB VM. On hosts where total memory can't be read (macOS/Windows), unset falls back to no
-        # cap. Set an explicit value to override the derived default in either direction.
+        # on a 1 GiB VM. On hosts where total memory can't be read (macOS/Windows), unset falls back to the
+        # floor (2), never to "no cap". Set an explicit value to override the derived default either way.
         "max_in_progress": None,
         # Per-profile cap: positive int = no single profile runs more than N workers even if the
         # global caps allow; blocked tasks defer to the next tick. None = no per-profile cap. Useful

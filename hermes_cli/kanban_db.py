@@ -108,7 +108,10 @@ def _git_out(cwd: Path, *args: str, timeout: int = 30) -> Optional[str]:
 VALID_INITIAL_STATUSES = {"running", "blocked"}
 
 # Typed block reasons (routing in ``_route_block``); ``None`` = legacy un-typed.
-VALID_BLOCK_KINDS = {"dependency", "needs_input", "capability", "transient"}
+# ``hold`` is a judged decision — owner + release condition named — that parks
+# in the human ``blocked`` bucket and never counts toward the recurrence
+# breaker; see ``_route_block``.
+VALID_BLOCK_KINDS = {"dependency", "hold", "needs_input", "capability", "transient"}
 
 # Same-reason block -> unblock -> re-block cycles before routing to ``triage``.
 # Counts unblock recurrences, NOT dispatcher failures (``DEFAULT_FAILURE_LIMIT``).
@@ -2642,8 +2645,15 @@ def complete_task(
     summary: Optional[str] = None, metadata: Optional[dict] = None,
     created_cards: Optional[Iterable[str]] = None, expected_run_id: Optional[int] = None,
     fire_lifecycle_hook: bool = True, force: bool = False,
+    closer: Optional[str] = None,
 ) -> bool:
     """``running|ready|blocked|review -> done``; records ``result``.
+
+    ``closer`` is the profile making the call; omitted it is resolved from the
+    process identity (:func:`_closer_identity`). It lands on the ``completed``
+    event as ``closer_profile`` beside ``run_profile`` — two facts, two fields.
+    The run's own ``profile`` column is left untouched: it still records who
+    executed the run.
 
     ``ready`` is accepted for manual CLI completion, ``review`` for human
     approval. A ``running`` task under a live claim is only completed with
@@ -2730,7 +2740,11 @@ def complete_task(
             event_summary = _REVIEW_APPROVED_NOTE
         _append_event(
             conn, task_id, "completed",
-            _completed_event_payload(result, event_summary, verified_cards, metadata),
+            _completed_event_payload(
+                result, event_summary, verified_cards, metadata,
+                closer_profile=(closer or "").strip() or _closer_identity(),
+                run_profile=_run_profile(conn, run_id, task_id),
+            ),
             run_id=run_id,
         )
     _flag_phantom_prose_refs(conn, task_id, run_id, summary, result, verified_cards)
@@ -2835,13 +2849,52 @@ def _cleaned_artifact_paths(metadata: Any) -> list[str]:
     return [str(p).strip() for p in raw if isinstance(p, str) and str(p).strip()]
 
 
+def _closer_identity() -> Optional[str]:
+    """The profile that made this call — the caller, not the run's owner.
+
+    ``hermes_cli.profiles.current_profile_name`` resolves it the same way the
+    decider guard does at call time: the bound home override (a multiplexed
+    tick/turn), else the launcher pin (``HERMES_PROFILE_NAME``/``HERMES_PROFILE``
+    — the kanban dispatcher sets it on every worker), else the process home.
+    ``None`` when nothing names a profile: an unnamed caller is recorded as
+    unnamed, never guessed from the card.
+    """
+    from hermes_cli.profiles import current_profile_name
+
+    return current_profile_name()
+
+
+def _run_profile(conn: sqlite3.Connection, run_id: Optional[int], task_id: str) -> Optional[str]:
+    """Profile that owns the closing run; the card's assignee when no run exists.
+
+    Read-only: the run row keeps its own ``profile`` column, which is the record
+    of who executed. This is the other half of the pair the ``completed`` event
+    carries, so a decider's close no longer reads as the worker's own.
+    """
+    if run_id is not None:
+        row = conn.execute("SELECT profile FROM task_runs WHERE id = ?", (run_id,)).fetchone()
+        return row["profile"] if row else None
+    row = conn.execute("SELECT assignee FROM tasks WHERE id = ?", (task_id,)).fetchone()
+    return row["assignee"] if row else None
+
+
 def _completed_event_payload(
     result: Optional[str], event_summary: Optional[str], verified_cards: list[str], metadata: Any,
+    *, closer_profile: Optional[str] = None, run_profile: Optional[str] = None,
 ) -> dict:
     """``completed`` event payload: first summary line (400 chars) so gateway
     notifiers / dashboard WS render without a second round-trip; verified
     cards; and ``metadata["artifacts"]`` promoted so the notifier can upload
-    them as native attachments without fetching the run row."""
+    them as native attachments without fetching the run row.
+
+    Two identity fields, deliberately: ``closer_profile`` is the caller of the
+    completion and ``run_profile`` the owner of the closed run (the card's
+    assignee). One field was the bug — the event carried only the run's, so a
+    decider closing a worker's card was recorded as the worker closing its own.
+    Events written before this field existed carry neither key: nothing was
+    backfilled, so an absent ``closer_profile`` means "predates the field",
+    not "no closer".
+    """
     # Mirror CLI's _show_voice_status: include STT/TTS provider availability so the user can tell at a
     # glance *why* voice mode isn't working ("STT provider: MISSING ..." is the common case). ``record_key``
     # mirrors the configured ``voice.record_key`` so the TUI can both bind it (frontend
@@ -2850,6 +2903,8 @@ def _completed_event_payload(
     payload: dict = {
         "result_len": len(result) if result else 0,
         "summary": _first_line(event_summary, 400) or None,
+        "closer_profile": closer_profile,
+        "run_profile": run_profile,
     }
     if verified_cards:
         payload["verified_cards"] = verified_cards
@@ -3126,12 +3181,22 @@ def block_task(
     conn: sqlite3.Connection, task_id: str, *, reason: Optional[str] = None,
     kind: Optional[str] = None, expected_run_id: Optional[int] = None,
 ) -> bool:
-    """``running``/``ready`` -> ``blocked`` (or ``todo`` / ``triage``, see
-    :func:`_route_block`). ``kind='dependency'`` with no incomplete parent is
+    """``running``/``ready``/``review`` -> ``blocked`` (or ``todo`` / ``triage``,
+    see :func:`_route_block`; ``triage`` is a legal source only for ``hold``).
+    ``review`` is a source for every kind except ``hold``: a card waiting for a
+    decider that needs a human fact or another lane's work must be blockable,
+    or closing it is the only exit the board offers its holder. The payload
+    carries ``source_status='review'``, which :func:`unblock_task` /
+    :func:`recompute_ready` read back out of ``_resume_status_from_events``,
+    so release returns the card to ``review``, not to a fresh implementation run.
+    ``kind='dependency'`` with no incomplete parent is
     re-kinded to ``needs_input`` (sticky) so ``recompute_ready`` cannot
-    promote it into a context-free respawn. ``transient`` still counts
-    toward the loop breaker so a forever-flaky task escalates. True on any
-    transition.
+    promote it into a context-free respawn. ``kind='hold'`` is a judged
+    decision — owner (``assignee``) and condition (``reason``, also in the
+    event payload) named — that lands ``blocked`` and is exempt from the
+    recurrence breaker, so re-holding a card never walks it into ``triage``.
+    ``transient`` still counts toward the loop breaker so a forever-flaky
+    task escalates. True on any transition.
 
     An already-``blocked`` card that the failure breaker parked UNTYPED
     (``block_kind IS NULL``, no live run) is classified in place when *kind*
@@ -3144,7 +3209,8 @@ def block_task(
         raise ValueError(f"block kind must be one of {sorted(VALID_BLOCK_KINDS)} or None")
     with write_txn(conn):
         cur_row = conn.execute(
-            "SELECT status, block_kind, block_recurrences FROM tasks WHERE id = ?", (task_id,),
+            "SELECT status, block_kind, block_recurrences, current_run_id "
+            "FROM tasks WHERE id = ?", (task_id,),
         ).fetchone()
         if cur_row is None:
             return False
@@ -3166,11 +3232,16 @@ def block_task(
             ).rowcount
             if classified != 1:
                 return False
+            hold_extra = {"condition": reason, "judged": True} if kind == "hold" else {}
             _append_event(conn, task_id, "blocked", {
                 "kind": kind, "reason": reason, "classified_in_place": True,
+                **hold_extra,
             })
             return True
-        source_status = _retry_status_for_run(conn, task_id) if cur_row["status"] == "running" else "ready"
+        source_status = (
+            _retry_status_for_run(conn, task_id) if cur_row["status"] == "running"
+            else (cur_row["status"] if cur_row["status"] in ("triage", "review") else "ready")
+        )
         requested_kind = kind
         rekind_reason = None
         # ``dependency`` only waits on incomplete parents. A worker filing that
@@ -3187,6 +3258,21 @@ def block_task(
         if rekind_reason:
             payload["requested_kind"] = requested_kind
             payload["rekind_reason"] = rekind_reason
+        # A judged hold is the one transition that may leave ``triage`` for a
+        # human bucket: a lane owner judges a signal into "held with this
+        # condition", and that verdict must never be parked back in ``triage``.
+        # ``review`` is a source for every other kind: the review
+        # column is where a finished card waits for a decider, so its holder
+        # must be able to park it on a human fact or another lane's work
+        # instead of closing it as its only exit. ``hold`` stays what it is --
+        # a judged lane verdict that parks a parent-free card and is exempt
+        # from the loop breaker -- not a worker parking the card it just
+        # handed off. An unjudged triage card must be specified or archived,
+        # never blocked.
+        from_statuses = (
+            "'running', 'ready', 'triage'" if kind == "hold"
+            else "'running', 'ready', 'review'"
+        )
         sql = f"""
                 UPDATE tasks
                    SET status        = '{new_status}',
@@ -3195,10 +3281,15 @@ def block_task(
                        worker_pid    = NULL,
                        {set_sql}
                  WHERE id = ?
-                   AND status IN ('running', 'ready')
+                   AND status IN ({from_statuses})
                 """
         params = (*params, task_id)
-        if expected_run_id is not None:
+        # The guard stops one run from blocking another run's card. A card
+        # handed off to review has no live run (``request_review`` ->
+        # ``_end_run`` clears ``current_run_id``) while the handing worker's
+        # env still asserts its old run id, so the guard is scoped to a live
+        # run: no ``current_run_id`` means the status alone decides.
+        if expected_run_id is not None and cur_row["current_run_id"] is not None:
             sql += " AND current_run_id = ?"
             params = (*params, int(expected_run_id))
         if conn.execute(sql, params).rowcount != 1:
@@ -3222,16 +3313,33 @@ def _route_block(
     ``todo`` for ``recompute_ready``, so a cron never sees a dependency-wait
     as something to "unblock". Callers that pass ``dependency`` with no
     incomplete parent are re-kinded to ``needs_input`` before this runs
-    (see :func:`block_task`). Every other kind counts unblock-loop
-    recurrences: block_task only fires from running/ready (AFTER an unblock
-    returned the task to the pool), so a stored ``block_kind`` equal to the
-    incoming one means blocked -> unblocked -> re-block for the same cause
+    (see :func:`block_task`). ``hold`` is the opposite case — a card no
+    parent can release, parked in ``blocked`` as a judged decision with its
+    condition on the event — so it is exempt from the recurrence breaker
+    below: holding the same card twice after a release is a re-judgement, not
+    a loop. Every other kind counts unblock-loop
+    recurrences: block_task only fires from running/ready, or from review for
+    every kind but ``hold`` (AFTER an unblock returned the task to the pool),
+    so a stored ``block_kind`` equal to the incoming one means
+    blocked -> unblocked -> re-block for the same cause
     (un-typed None compares equal to a prior un-typed block). At
     ``BLOCK_RECURRENCE_LIMIT`` the task routes to ``triage`` for a human.
     """
     payload = {"reason": reason, "kind": kind, "source_status": source_status}
     if kind == "dependency":
         return "todo", "dependency_wait", "block_kind    = ?", (kind,), payload
+    if kind == "hold":
+        # A judged hold is a decision, not a failure loop. It parks in the
+        # human ``blocked`` bucket — status readable as held, assignee as
+        # owner, ``reason`` as the release condition, counted by blocked-hours
+        # — and never advances ``block_recurrences``, so releasing and
+        # re-holding the same card can never route it to ``triage``.
+        payload = {
+            "reason": reason, "kind": kind, "source_status": source_status,
+            "condition": reason, "judged": True,
+        }
+        set_sql = "block_kind    = ?,\n                       block_recurrences = 1"
+        return "blocked", "blocked", set_sql, (kind,), payload
     recurrences = prev_recurrences + 1 if prev_kind == kind else 1
     set_sql = "block_kind    = ?,\n                       block_recurrences = ?"
     payload = {"reason": reason, "kind": kind, "recurrences": recurrences, "source_status": source_status}

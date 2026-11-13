@@ -835,9 +835,25 @@ def _handle_block(args: dict, **kw) -> str:
                f"finished or cannot proceed for another reason, call kanban_complete instead — "
                f"the completion judge will evaluate it.")
         ok = kb.block_task(conn, tid, reason=reason, kind=kind, expected_run_id=_worker_run_id(tid))
-        _check(ok, f"could not block {tid} (unknown id or not in running/ready)")
+        if not ok:
+            # A run mismatch is not a status problem; name it instead of saying
+            # the card is in a state it is not in.
+            row = kb.get_task(conn, tid)
+            expected = _worker_run_id(tid)
+            if (row is not None and expected is not None and row.current_run_id is not None
+                    and int(row.current_run_id) != int(expected)):
+                _check(False, f"could not block {tid} (run mismatch: this worker asserts run "
+                              f"{expected}, the card is held by run {row.current_run_id})")
+        _check(ok, f"could not block {tid} (unknown id, or not in a blockable state: running/ready/review)")
         landed_kind = kb.get_task(conn, tid).block_kind
         extra: dict = {"block_kind": landed_kind}
+        if landed_kind == "hold":
+            extra["note"] = (
+                "held as blocked: the assignee is the owner and `reason` is the "
+                "release condition (mirrored on the blocked event as `condition`). "
+                "One kanban_unblock / `hermes kanban unblock` releases it; a "
+                "re-hold never trips the triage breaker."
+            )
         if kind == "dependency" and landed_kind != kind:
             # block_task re-kinds a dependency wait that no open parent can satisfy.
             extra["requested_kind"] = kind

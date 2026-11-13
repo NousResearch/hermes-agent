@@ -110,6 +110,7 @@ if ($pids.Count -eq 0) { throw "no $ProcessName process is running - the install
 
 $deadline = (Get-Date).AddSeconds($ButtonTimeoutSec)
 $clicked = $null
+$lastNavigation = ''
 while ((Get-Date) -lt $deadline -and -not $clicked) {
     $pids = Get-AppPids
     $win = Find-AppWindow -Pids $pids
@@ -126,7 +127,11 @@ while ((Get-Date) -lt $deadline -and -not $clicked) {
         } else {
             # Use the visible settings flow; never call the updater bridge.
             $navigation = Find-InvokableButton -Root $win -Patterns @('^Check now$', '^Open settings$', '^About$', 'choose a provider later')
-            if ($navigation) { [void](Invoke-Button $navigation.Element) }
+            if ($navigation) {
+                if ($navigation.Name -cne $lastNavigation) { Write-Host "  [uia] navigating: '$($navigation.Name)'" }
+                $lastNavigation = $navigation.Name
+                [void](Invoke-Button $navigation.Element)
+            }
         }
     }
     if (-not $clicked) { Start-Sleep -Seconds 3 }

@@ -10,10 +10,11 @@ def validate_action(operation, payload):
         raise RuntimeStoreError('invalid_params')
     # ``confirm``: the owner's selection-guard token for this exact resolved target (session_mutation_model).
     # ``reasoning``: a level picked with the model, committed in the same selection.
-    if (operation == 'model' and 'model' in payload and not set(payload) - {'model', 'provider', 'confirm', 'reasoning'}
+    if (operation == 'model' and 'model' in payload and not set(payload) - {'model', 'provider', 'confirm', 'reasoning', 'scope'}
             and all(isinstance(v, str) and v.strip() for v in payload.values())):
         from hermes_constants import parse_reasoning_effort
-        if 'reasoning' not in payload or parse_reasoning_effort(payload['reasoning']) is not None:
+        if (payload.get('scope', 'global') == 'global'
+                and ('reasoning' not in payload or parse_reasoning_effort(payload['reasoning']) is not None)):
             return
     if operation == 'branch' and _valid_branch_payload(payload):
         return

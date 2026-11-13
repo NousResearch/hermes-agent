@@ -30,6 +30,12 @@ function modelPayload(arg: string) {
   while (parts.length) {
     const flag = parts.shift()!
 
+    if (flag === '--global') {
+      payload.scope = 'global'
+
+      continue
+    }
+
     if (flag === '--session' || flag === TUI_SESSION_MODEL_FLAG) {
       continue
     }

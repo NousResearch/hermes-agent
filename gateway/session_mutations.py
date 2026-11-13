@@ -200,6 +200,21 @@ def _runtime_owns_authority(authority) -> bool:
 
 async def write_mutation(authority, ref, params, editor_servers, *, principal_id, authorize_write=None,
                          commit_lock=None):
+    if (params['operation'] == 'model' and isinstance(params['payload'], dict)
+            and params['payload'].get('scope') == 'global'):
+        # Different sessions share one profile default; serialize commit and config publication.
+        lock = getattr(authority, '_global_model_selection_lock', None)
+        if lock is None:
+            lock = authority._global_model_selection_lock = asyncio.Lock()
+    else:
+        lock = nullcontext()
+    async with lock:
+        return await _write_mutation(authority, ref, params, editor_servers, principal_id=principal_id,
+                                     authorize_write=authorize_write, commit_lock=commit_lock)
+
+
+async def _write_mutation(authority, ref, params, editor_servers, *, principal_id, authorize_write=None,
+                          commit_lock=None):
     """The writer phase of ``session.mutate``, and of the admission-start editor MCP re-freeze
     (``refreeze_editor_mcp``): fenced prepare, the receipt commit, then its runtime projections.
     The caller authorized the change and holds the session's locks; this takes neither."""
@@ -300,6 +315,9 @@ async def _project_result(authority, ref, live, params, result, editor_servers, 
     current = authority.db.get_session(ref.session_id)
     owns_projection = current is not None and (
         current['runtime_generation'] == result.get('execution_generation', params.get('expected_generation')))
+    if operation == 'model' and owns_projection and 'global_selection' in result:
+        from gateway.session_mutation_model import persist_global_selection
+        await asyncio.to_thread(persist_global_selection, authority, ref, result)
     if operation == 'compress' and applied and owns_projection and live is not None:
         # Before the boundary evicts the agent whose compressor holds the running count.
         from gateway.session_usage import note_compression

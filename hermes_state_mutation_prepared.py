@@ -62,7 +62,13 @@ def model_in_transaction(db, conn, session_id, payload, prepared):
         conn.execute('DELETE FROM state_meta WHERE key=?', (key,))
     else:
         conn.execute('UPDATE state_meta SET value=? WHERE key=?', (_json({'reasoning': level}), key))
+    if payload.get('scope') == 'global':
+        conn.execute('INSERT OR REPLACE INTO state_meta (key,value) VALUES (?,?)',
+                     ('gateway.global_model_selection.v1', json.dumps([session_id, generation])))
     return {session_id, target}, {'model': model, 'provider': config['provider'], 'execution_generation': generation,
+                                  **({'global_selection': {key: config.get(key) for key in
+                                      ('default', 'provider', 'base_url', 'api_mode')}}
+                                     if payload.get('scope') == 'global' else {}),
                                   **({'effort': payload['reasoning']} if 'reasoning' in payload else {})}
 
 

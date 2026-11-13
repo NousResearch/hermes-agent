@@ -125,6 +125,12 @@ class OpenRouterProfile(ProviderProfile):
 
     def build_extra_body(self, *, session_id: str | None = None, **context: Any) -> dict[str, Any]:
         body: dict[str, Any] = {}
+        # Ask OpenRouter to report the per-request cost it actually billed
+        # (``usage.cost`` / ``usage.cost_details`` in the response). The
+        # endpoint that serves a request prices it by its own per-endpoint
+        # rate, which can differ from the model-level headline price by up to
+        # ~13x, so the reported figure is the only reliable cost.
+        body["usage"] = {"include": True}
         # Top-level session_id is OpenRouter's sticky routing key (used directly,
         # not hashed from the opening messages; active from the first request).
         sticky_key = _sticky_key(session_id)
@@ -202,6 +208,44 @@ class OpenRouterProfile(ProviderProfile):
         if grok_conv_id and model and model.startswith(GROK_AGGREGATOR_MODEL_PREFIXES):
             top_level["extra_headers"] = {"x-grok-conv-id": grok_conv_id}
         return extra_body, top_level
+
+    def get_usage_cost(self, model: str, usage: Any) -> Any | None:
+        """Provider-reported request cost (``usage.cost``), when present.
+
+        OpenRouter bills the *endpoint* that served the request, not the
+        model-level headline price (per-endpoint rates differ by up to ~13x),
+        so a reported cost is the actual bill for the request. It is returned
+        with ``status="actual"`` so accounting records it as real spend rather
+        than an estimate. Returns ``None`` when the response carries no cost
+        (servers that predate the ``usage.include`` flag, routes that omit it)
+        so the model-level estimate path still applies.
+        """
+        from decimal import Decimal, InvalidOperation
+
+        from agent.usage_pricing import CostResult, format_cost_label
+
+        raw = getattr(usage, "raw_usage", None)
+        if not isinstance(raw, dict):
+            return None
+        try:
+            amount = Decimal(str(raw.get("cost")))
+        except InvalidOperation:
+            return None
+        if not amount.is_finite() or amount < 0:
+            return None
+        notes: tuple[str, ...] = ()
+        details = raw.get("cost_details")
+        if isinstance(details, dict):
+            parts = [f"{key}={value}" for key, value in sorted(details.items()) if value is not None]
+            if parts:
+                notes = (f"OpenRouter reported cost: {', '.join(parts)}",)
+        return CostResult(
+            amount_usd=amount,
+            status="actual",
+            source="provider_generation_api",
+            label=format_cost_label(amount),
+            notes=notes,
+        )
 
 
 openrouter = OpenRouterProfile(

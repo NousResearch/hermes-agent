@@ -935,6 +935,7 @@ class CLIAgentSetupMixin:
         """
         import json
 
+        from agent.message_metadata import withheld_prompt_text
         from cli import _DIM, _RST, _cprint
 
         for msg in display_history:
@@ -951,7 +952,9 @@ class CLIAgentSetupMixin:
                 _cprint(f"  {_DIM}◈ {_escape(sanitize(label or t(_RESUME_EVENT_KEYS[display_kind])))}{_RST}")
                 continue
             if role == "user":
-                text = sanitize(_user_display_text(content))
+                # A pre_llm_call veto stores the model-facing placeholder in content and the
+                # text the human typed in display_metadata: the transcript shows the typed ask.
+                text = sanitize(withheld_prompt_text(msg) or _user_display_text(content))
                 if text.strip():
                     self._print_user_message_preview(text)
                 continue

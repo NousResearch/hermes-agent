@@ -510,3 +510,20 @@ class TestTranscriptResumeDisplay:
         assert "\x1b]0;pwned" not in output
         assert "hi" in output and "there" in output
         assert "fine" in output
+
+    def test_withheld_prompt_replays_original_typed_ask(self, monkeypatch):
+        """Transcript mode must show the typed ask, not the model-facing policy placeholder."""
+        from agent.message_metadata import PRE_LLM_BLOCK_WITHHELD_PROMPT, WITHHELD_PROMPT
+
+        cli = _make_cli(config_overrides={"display": {"resume_display": "transcript"}})
+        cli.conversation_history = [{
+            "role": "user",
+            "content": PRE_LLM_BLOCK_WITHHELD_PROMPT,
+            "display_metadata": {WITHHELD_PROMPT: "My original typed question"},
+        }]
+        previewed = []
+        monkeypatch.setattr(cli, "_print_user_message_preview", previewed.append)
+
+        cli._display_resumed_history()
+
+        assert previewed == ["My original typed question"]

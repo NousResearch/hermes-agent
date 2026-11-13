@@ -24,9 +24,9 @@ _CSI_SEQ_RE = re.compile(
     r"|\x1b(?:[\x20-\x2f]+[\x30-\x7e]|[NO][^\x00-\x1f\x7f]|[78=>M])"
 )
 
-# Union of every _PREFIX_PATTERNS body class: a shadow match may only span token-body chars or
-# stripped noise. ``=`` is excluded so a KEY=value separator never lets a match span unrelated text;
-# only trailing base64 padding (``glc_…==``) may hold it.
+# Union of every _PREFIX_PATTERNS body class (incl. the ``/`` of Google's ``1//0``): a shadow match
+# may only span token-body chars or stripped noise. ``=`` is excluded so a KEY=value separator never
+# lets a match span unrelated text; only trailing base64 padding (``glc_…==``) may hold it.
 _TOKEN_BODY_CHARS = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-.+/")
 
 

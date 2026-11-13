@@ -49,7 +49,7 @@ class StreamThinkFilterMixin:
                 search_start = idx + 1
         return best_idx, best_len
 
-    def _filter_and_accumulate(self, text: str) -> None:
+    def _filter_and_accumulate(self, text: str, keep_think_tags: bool = False) -> None:
         """Append a delta to the buffer, discarding think blocks.
 
         Partial tags at buffer boundaries are held in ``_think_buffer`` until
@@ -57,6 +57,10 @@ class StreamThinkFilterMixin:
         """
         buf = self._think_buffer + text
         self._think_buffer = ""
+        if keep_think_tags:
+            # The producing response kept its think tags as answer text (``literal_think_tags``).
+            self._append_accumulated(buf)
+            return
 
         while buf:
             # Case-insensitive: models emit <Think>, <THINKING>, …

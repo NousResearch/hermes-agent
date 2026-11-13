@@ -1,6 +1,7 @@
 import { act, renderHook, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { startChatFromDeepLink } from '@/app/chat/start-chat-from-deep-link'
 import { registerTerminalContextMenu } from '@/app/right-sidebar/terminal/terminal-context-menu'
 import { setApiRequestConnection, setApiRequestProfile } from '@/hermes'
 import { createClientSessionState } from '@/lib/chat-runtime'
@@ -50,6 +51,14 @@ vi.mock('@/store/plugin-install-request', () => ({
   openPluginInstallRequest: vi.fn()
 }))
 
+// Mocked to keep this hook test about ROUTING: the real module bumps the
+// fresh-session atom and clears the new-chat profile (verified separately in
+// start-chat-from-deep-link.test.ts), and asserting the exact seed it was
+// handed is the contract this file owns.
+vi.mock('@/app/chat/start-chat-from-deep-link', () => ({
+  startChatFromDeepLink: vi.fn()
+}))
+
 vi.mock('@/store/windows', async importOriginal => {
   const actual = await importOriginal<typeof WindowsStore>()
 
@@ -81,6 +90,7 @@ describe('useDesktopIntegrations', () => {
     vi.mocked(requestMcpInstallFromDeepLink).mockClear()
     vi.mocked(requestPluginCatalogInstallFromDeepLink).mockClear()
     vi.mocked(openPluginInstallRequest).mockClear()
+    vi.mocked(startChatFromDeepLink).mockClear()
     navigate = vi.fn()
     // Every test starts as a main window; only the HUD describe flips this.
     hudWindowMock.mockReturnValue(false)
@@ -884,6 +894,67 @@ describe('useDesktopIntegrations', () => {
       expect(requestPluginCatalogInstallFromDeepLink).toHaveBeenCalledWith('weather')
       expect(openPluginInstallRequest).not.toHaveBeenCalled()
       expect(navigate).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('hermes://chat/new (website "Run in Hermes")', () => {
+    function listen() {
+      render({ profileReady: true, resumeLastSession: false })
+
+      return vi.mocked(window.hermesDesktop.onDeepLink!).mock.calls[0]![0]
+    }
+
+    it('opens a fresh chat and seeds the composer without sending', () => {
+      const deepLink = listen()
+      deepLink({ kind: 'chat', name: 'new', params: { prompt: '  hermes migrate grok-bot  ' } })
+
+      expect(startChatFromDeepLink).toHaveBeenCalledExactlyOnceWith('hermes migrate grok-bot')
+      // A web page must never be able to start a turn: no submit, no navigation
+      // away from wherever the fresh-session request lands the user.
+      expect(navigate).not.toHaveBeenCalled()
+      expect(requestMcpInstallFromDeepLink).not.toHaveBeenCalled()
+      expect(openPluginInstallRequest).not.toHaveBeenCalled()
+    })
+
+    it('opens a fresh chat with an empty seed when the link carries no prompt', () => {
+      const deepLink = listen()
+      deepLink({ kind: 'chat', name: 'new', params: {} })
+
+      expect(startChatFromDeepLink).toHaveBeenCalledExactlyOnceWith('')
+    })
+
+    it('ignores a chat path it does not own instead of navigating to it', () => {
+      const deepLink = listen()
+      deepLink({ kind: 'chat', name: 'some-session-id', params: {} })
+
+      expect(startChatFromDeepLink).not.toHaveBeenCalled()
+      // `chat` is a reserved deep-link kind, so it must not fall through to the
+      // plugin-route resolver and navigate to /chat/some-session-id.
+      expect(navigate).not.toHaveBeenCalled()
+    })
+
+    it('keeps a link that cold-started the app from being replaced by the last-chat restore', () => {
+      window.localStorage.setItem('hermes.desktop.lastRoute.profile.default', '/remembered-session')
+      const sessions = [session({ id: 'remembered-session', profile: 'default' })]
+
+      // The renderer listens for links from mount, before boot adopts a
+      // profile, so the link lands while the restore is still pending.
+      const result = render({ profileReady: false, sessions })
+      const deepLink = vi.mocked(window.hermesDesktop.onDeepLink!).mock.calls[0]![0]
+      deepLink({ kind: 'chat', name: 'new', params: { prompt: 'hermes migrate grok-bot' } })
+
+      result.rerender({
+        activeProfile: 'default',
+        locationPathname: '/',
+        profileReady: true,
+        resumeExhaustedSessionId: null,
+        resumeLastSession: true,
+        routedSessionId: null,
+        sessions
+      })
+
+      expect(startChatFromDeepLink).toHaveBeenCalledExactlyOnceWith('hermes migrate grok-bot')
+      expect(navigate).not.toHaveBeenCalledWith('/remembered-session', { replace: true })
     })
   })
 

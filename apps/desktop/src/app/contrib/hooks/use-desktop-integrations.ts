@@ -4,6 +4,7 @@ import { useEffect, useRef } from 'react'
 import { resumeAccountConnect } from '@/app/capabilities/connectors/data/deep-link'
 import { closeActiveTab } from '@/app/chat/close-tab'
 import { commandFocusedPreview } from '@/app/chat/right-rail/preview-nav'
+import { startChatFromDeepLink } from '@/app/chat/start-chat-from-deep-link'
 import { openSession } from '@/app/open-session'
 import { commandFocusedTerminal, wordEraseFocusedTerminal } from '@/app/right-sidebar/terminal/terminal-context-menu'
 import { openConnectionDoneLink } from '@/components/assistant-ui/connector-tool'
@@ -417,8 +418,13 @@ export function useDesktopIntegrations({
   //    modal awaiting explicit confirmation. Never auto-installs.
   //  - skill/install?identifier=… → confirmation, then the existing hub pipeline
   //  - blueprint/<name>?… → reviewable /blueprint command in the composer
+  //  - chat/new?prompt=… → fresh chat with the prompt seeded in the composer,
+  //    never sent (the website's "Run in Hermes" buttons)
   //  - <plugin>/<path>?… → in-app navigate (e.g. index-network/intent/1)
   //  - open/<path>?… → in-app navigate (generic)
+  // The chat/new branch closes the cold-start restore latch, a one-time
+  // lifecycle flag rather than a mirrored atom, hence the rule exemption.
+  // eslint-disable-next-line no-restricted-syntax
   useEffect(() => {
     const unsubscribe = window.hermesDesktop?.onDeepLink?.(payload => {
       if (!payload?.kind) {
@@ -463,6 +469,17 @@ export function useDesktopIntegrations({
         const command = `/blueprint ${action.name}${slots ? ' ' + slots : ''}`
         requestComposerInsert(command, { mode: 'block', target: 'main' })
         requestComposerFocus('main')
+
+        return
+      }
+
+      if (action.type === 'chat-new') {
+        // A link that launched the app arrives before the cold-start restore
+        // has run (the restore waits for the profile and the session list), so
+        // close the restore latch first: otherwise the fresh chat opens and the
+        // restore then navigates away to the last chat, prompt and all.
+        restoredRef.current = true
+        startChatFromDeepLink(action.prompt)
 
         return
       }

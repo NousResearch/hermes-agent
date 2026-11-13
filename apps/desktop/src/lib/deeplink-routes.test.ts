@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { resolveDeepLinkAction } from './deeplink-routes'
+import { CHAT_NEW_PROMPT_MAX_CHARS, normalizeChatNewPrompt, resolveDeepLinkAction } from './deeplink-routes'
 
 describe('resolveDeepLinkAction', () => {
   it('routes unified plugin install deeplinks', () => {
@@ -129,6 +129,77 @@ describe('resolveDeepLinkAction', () => {
       type: 'composer-blueprint',
       name: 'morning-brief',
       params: { time: '08:00' }
+    })
+  })
+
+  describe('chat/new', () => {
+    it('routes a prompt to a seeded fresh chat', () => {
+      expect(
+        resolveDeepLinkAction({
+          kind: 'chat',
+          name: 'new',
+          params: { prompt: '  Import my Grok Bots into Hermes  ' }
+        })
+      ).toEqual({ type: 'chat-new', prompt: 'Import my Grok Bots into Hermes' })
+    })
+
+    it('opens a fresh chat with no seed when the prompt is absent or empty', () => {
+      expect(resolveDeepLinkAction({ kind: 'chat', name: 'new', params: {} })).toEqual({ type: 'chat-new', prompt: '' })
+      expect(resolveDeepLinkAction({ kind: 'chat', name: 'new', params: { prompt: '   ' } })).toEqual({
+        type: 'chat-new',
+        prompt: ''
+      })
+    })
+
+    it('claims only chat/new, so other chat paths stay free to design', () => {
+      expect(resolveDeepLinkAction({ kind: 'chat', name: '', params: {} })).toEqual({ type: 'ignore' })
+      expect(resolveDeepLinkAction({ kind: 'chat', name: 'abc123', params: {} })).toEqual({ type: 'ignore' })
+      expect(resolveDeepLinkAction({ kind: 'chat', name: 'new/extra', params: {} })).toEqual({ type: 'ignore' })
+    })
+
+    it('survives the URL round trip a browser click actually produces', () => {
+      const prompt = 'Audit my repo & tell me what breaks first?\nStart with CI.'
+      const url = new URL(`hermes://chat/new?${new URLSearchParams({ prompt })}`)
+
+      expect(
+        resolveDeepLinkAction({
+          kind: url.hostname,
+          name: url.pathname.replace(/^\//, ''),
+          params: Object.fromEntries(url.searchParams)
+        })
+      ).toEqual({ type: 'chat-new', prompt })
+    })
+  })
+
+  describe('normalizeChatNewPrompt', () => {
+    it('strips control characters an editor cannot show or type', () => {
+      // U+001B matters most: the composer's downstream sanitizer reads escape
+      // sequences, and terminal context blocks ride the same text.
+      expect(normalizeChatNewPrompt('run \u001b[200~evil\u001b[201~ this')).toBe('run [200~evil[201~ this')
+      expect(normalizeChatNewPrompt('a\u0000b\u0007c\u009Bd')).toBe('abcd')
+    })
+
+    it('folds every line-break form to \\n', () => {
+      expect(normalizeChatNewPrompt('one\r\ntwo\rthree\u2028four\u2029five')).toBe('one\ntwo\nthree\nfour\nfive')
+    })
+
+    it('keeps legitimate prose, emoji and non-Latin text intact', () => {
+      const prompt = 'Résumé l’audit 🚀 — بالعربية, 中文, and a tab\tbetween words'
+
+      expect(normalizeChatNewPrompt(prompt)).toBe(prompt)
+    })
+
+    it('caps the seed and leaves no trailing whitespace from the cut', () => {
+      const long = `${'x'.repeat(CHAT_NEW_PROMPT_MAX_CHARS - 1)} ${'y'.repeat(500)}`
+      const capped = normalizeChatNewPrompt(long)
+
+      expect(capped).toHaveLength(CHAT_NEW_PROMPT_MAX_CHARS - 1)
+      expect(capped).toBe('x'.repeat(CHAT_NEW_PROMPT_MAX_CHARS - 1))
+    })
+
+    it('treats a missing value as no seed', () => {
+      expect(normalizeChatNewPrompt(undefined)).toBe('')
+      expect(normalizeChatNewPrompt('')).toBe('')
     })
   })
 })

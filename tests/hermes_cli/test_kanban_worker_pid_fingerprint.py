@@ -118,13 +118,18 @@ def test_unverified_fingerprint_capture_never_authorizes_a_signal(board, monkeyp
 
     conn = board
     killed = []
+    real_get_process_start_time = status._get_process_start_time
     monkeypatch.setattr(status, "_get_process_start_time", lambda pid: None)
     tid = kb.create_task(conn, title="job", assignee="worker", max_runtime_seconds=1)
     kb.claim_task(conn, tid)
     kbd._set_worker_pid(conn, tid, os.getpid())
     row = conn.execute("SELECT worker_started_at FROM tasks WHERE id = ?", (tid,)).fetchone()
     assert row["worker_started_at"] == kbd.UNVERIFIED_WORKER_FINGERPRINT
-    monkeypatch.undo()
+    # Restore only the fingerprint stub. A bare monkeypatch.undo() here would also
+    # revert the hermetic env isolation (HERMES_HOME + the board-gates off-pin), so a
+    # body-less card below would read the production board-gates config and land in
+    # triage instead of "ready".
+    monkeypatch.setattr(status, "_get_process_start_time", real_get_process_start_time)
     old = int(time.time()) - 3600
     with kb.write_txn(conn):
         conn.execute("UPDATE tasks SET started_at = ?, claim_expires = ? WHERE id = ?", (old, old, tid))

@@ -1154,6 +1154,59 @@ def _normalize_task_skills(skills: Optional[Iterable[str]]) -> Optional[list[str
     return cleaned
 
 
+_CARD_REQUIRED_FIELDS = ("Intent", "End state")
+
+
+def _board_gates_enabled() -> bool:
+    """Whether the board gates (five-field cards + debrief-before-done) are on.
+
+    Opt-in so stock installs and the test suite keep the permissive behaviour.
+    ``HERMES_KANBAN_BOARD_GATES`` is authoritative when set: a truthy value
+    ("1"/"true"/"yes"/"on") enables, anything else ("0"/"false"/"off"/"no")
+    disables — an explicit off must win so the test suite can pin the gate off.
+    When unset the flag is read from the SHARED install config
+    (``get_default_hermes_root()/config.yaml`` — the same root the shared board
+    DB lives under), never the calling profile's config: a board is shared across
+    profiles, so the gate must not vary by which profile creates/completes a card.
+    Absent/error → False (fail open: a config read failure must never block card
+    creation or completion).
+    """
+    raw = os.environ.get("HERMES_KANBAN_BOARD_GATES")
+    if raw is not None:
+        return raw.strip().lower() in {"1", "true", "yes", "on"}
+    try:
+        from hermes_cli.config_backend import read_config_doc_readonly
+        from hermes_constants import get_default_hermes_root
+
+        doc = read_config_doc_readonly(get_default_hermes_root() / "config.yaml") or {}
+        kanban = doc.get("kanban") or {}
+        gates = kanban.get("board_gates") or {}
+        return bool(gates.get("enabled"))
+    except Exception:  # pragma: no cover - defensive
+        return False
+
+
+def _missing_card_fields(body: Optional[str]) -> list[str]:
+    """Required card fields absent from ``body`` (Intent / End state).
+
+    Matches each field name as a markdown heading or label — ``**Intent:**``,
+    ``Intent:``, ``# End state`` — anchored to a line start so prose mentions
+    (``...with intent: ...``) don't false-positive. An empty/absent body is
+    missing every field.
+    """
+    if not body:
+        return list(_CARD_REQUIRED_FIELDS)
+    text = str(body)
+    missing: list[str] = []
+    for field in _CARD_REQUIRED_FIELDS:
+        if not re.search(
+            rf"(?im)^[ \t]*(?:[*#]{{1,3}}[ \t]*)?{re.escape(field)}\b[ \t]*(?:\*){{0,2}}[ \t]*:",
+            text,
+        ):
+            missing.append(field)
+    return missing
+
+
 def create_task(
     conn: sqlite3.Connection, *, title: str, body: Optional[str] = None,
     assignee: Optional[str] = None, created_by: Optional[str] = None,
@@ -1250,6 +1303,17 @@ def create_task(
             # commit so the dispatcher never sees a half-built graph.
             with write_txn(conn, allow_nested=True):
                 task_status, tenant = initial_task_state(conn, parents, initial_status, triage, tenant)
+                # Five-field gate: a card that would be dispatched immediately
+                # ("ready") must carry Intent + End state. Missing either sends
+                # it back to triage (the specifier's column) with a comment, so a
+                # malformed card never reaches a worker. Cards explicitly parked
+                # (triage/blocked) or gated behind open parents (todo) are not
+                # immediately dispatchable and are left to their own flows.
+                send_back_missing: Optional[list[str]] = None
+                if _board_gates_enabled() and task_status == "ready":
+                    send_back_missing = _missing_card_fields(body)
+                    if send_back_missing:
+                        task_status = "triage"
                 # Project worktree: fresh dir under the repo + deterministic
                 # branch, instead of the random ``wt/<id>`` worker fallback.
                 if project_obj is not None and workspace_kind == "worktree":
@@ -1323,6 +1387,22 @@ def create_task(
                 # ACK-edge: the originating channel hears a child BLOCK, not just the fan-in.
                 inherit_creator_origin(conn, task_id, creator_task_id, created_at=now)
                 _inherit_notify_subs(conn, task_id, parents, created_at=now)
+                if send_back_missing:
+                    _insert_comment(
+                        conn,
+                        task_id,
+                        "board-gate",
+                        "Card sent back to triage: missing required field(s) "
+                        + ", ".join(send_back_missing)
+                        + ". Every card must carry Intent and End state before it can be dispatched.",
+                        now,
+                    )
+                    _append_event(
+                        conn,
+                        task_id,
+                        "card_sent_back_missing_fields",
+                        {"missing_fields": send_back_missing, "creator": created_by},
+                    )
             return task_id
         except sqlite3.IntegrityError:
             if attempt == 1:
@@ -2604,6 +2684,26 @@ class EmptyCompletionError(ValueError):
         )
 
 
+class MissingDebriefError(ValueError):
+    """``complete_task`` refused: the completion carries no debrief.
+
+    A debrief answers (1) what was supposed to happen, (2) what actually
+    happened with evidence, (3) why the difference — split instruction /
+    execution / situation changed, (4) keep / improve / undo (undo records any
+    rollback actually run). A ``ValueError`` so tool error handlers treat it as
+    recoverable. Review approvals are exempt (the human is the record).
+    """
+
+    def __init__(self, task_id: str):
+        self.task_id = task_id
+        super().__init__(
+            f"completion blocked: {task_id} has no debrief — include a debrief in the "
+            "summary covering (1) what was supposed to happen, (2) what actually "
+            "happened with evidence, (3) why the difference (instruction / execution / "
+            "situation changed), and (4) keep / improve / undo (undo records any rollback)"
+        )
+
+
 class ArtifactPreservationError(RuntimeError):
     """Raised when a declared scratch deliverable cannot be preserved."""
 
@@ -2658,7 +2758,9 @@ def complete_task(
     Completions from non-review statuses need evidence: a stripped ``result``
     or ``summary``, or a stripped result already stored on the card. Empty or
     whitespace-only evidence raises :class:`EmptyCompletionError` after an
-    auditable event. Approving a card out of ``review`` stays exempt.
+    auditable event. Evidence without a debrief (keep / improve / undo) raises
+    :class:`MissingDebriefError` after an auditable event. Approving a card out
+    of ``review`` stays exempt.
     """
     now = int(time.time())
     # Cheap pre-check; re-checked inside the txn to close the parent-reopen race.
@@ -2667,6 +2769,8 @@ def complete_task(
     from hermes_cli.kanban_pr_acceptance_store import prepare_acceptance, record_acceptance
     verified_cards = _gate_created_cards(conn, task_id, created_cards, summary or result)
     _gate_empty_completion(conn, task_id, result=result, summary=summary)
+    if _board_gates_enabled():
+        _gate_missing_debrief(conn, task_id, result=result, summary=summary)
     metadata = _merge_completion_prose_artifacts(
         conn, task_id, metadata, summary=summary, result=result,
     )
@@ -2772,6 +2876,59 @@ def _gate_created_cards(
 
 def _substantive_text(value: Optional[str]) -> bool:
     return bool(value is not None and str(value).strip())
+
+
+_DEBRIEF_MARKERS = ("keep", "improve", "undo")
+
+
+def _has_debrief(text: Optional[str]) -> bool:
+    """True when ``text`` carries a debrief.
+
+    The debrief's answer #4 — keep / improve / undo — is the minimal detectable
+    signature: the "undo" part records any rollback actually run, so a real
+    debrief must name all three. Case-insensitive; answers #1-#3 (supposed /
+    actually happened / why the difference) are spelled out in the refusal
+    message so a worker writes the full four-part debrief.
+    """
+    if not text:
+        return False
+    lowered = str(text).lower()
+    return all(marker in lowered for marker in _DEBRIEF_MARKERS)
+
+
+def _gate_missing_debrief(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    result: Optional[str],
+    summary: Optional[str],
+) -> None:
+    """Refuse a completion whose evidence carries no debrief (keep/improve/undo).
+
+    Mirrors ``_gate_empty_completion``: review approvals are exempt (the human
+    vouches for the card); the audit event lands before the raise so the refusal
+    is counted.
+    """
+    row = conn.execute(
+        "SELECT status FROM tasks WHERE id = ?",
+        (task_id,),
+    ).fetchone()
+    if row is None:
+        return
+    if row["status"] == "review":
+        return
+    evidence = "\n".join(part for part in (result, summary) if part)
+    if _has_debrief(evidence):
+        return
+    with write_txn(conn):
+        _append_event(
+            conn, task_id, "completion_blocked_missing_debrief",
+            {
+                "result_preview": _first_line(result, 200) or None,
+                "summary_preview": _first_line(summary, 200) or None,
+            },
+        )
+    raise MissingDebriefError(task_id)
 
 
 def _gate_empty_completion(
@@ -3919,8 +4076,23 @@ def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
 
 # --- Stats + SLA helpers ---
 
+def gate_counters(conn: sqlite3.Connection) -> dict[str, int]:
+    """Board-gate counters for the digest: cards sent back for missing required
+    fields, and completions refused for a missing debrief. Derived from the
+    audit event kinds, so the raw SQL is the same query over ``task_events``."""
+    counters: dict[str, int] = {}
+    for kind, key in (
+        ("card_sent_back_missing_fields", "cards_sent_back_missing_fields"),
+        ("completion_blocked_missing_debrief", "completions_refused_missing_debrief"),
+    ):
+        counters[key] = int(conn.execute(
+            "SELECT COUNT(*) FROM task_events WHERE kind = ?", (kind,),
+        ).fetchone()[0])
+    return counters
+
+
 def board_stats(conn: sqlite3.Connection) -> dict:
-    """Per-status + per-assignee counts and the oldest ``ready`` age (staleness signal)."""
+    """Per-status + per-assignee counts, board-gate counters and the oldest ``ready`` age (staleness signal)."""
     by_status: dict[str, int] = {}
     for row in conn.execute(
         "SELECT status, COUNT(*) AS n FROM tasks "
@@ -3942,6 +4114,7 @@ def board_stats(conn: sqlite3.Connection) -> dict:
     return {
         "by_status": by_status,
         "by_assignee": by_assignee,
+        "gate_counters": gate_counters(conn),
         "oldest_ready_age_seconds": oldest_ready_age,
         "now": now,
     }

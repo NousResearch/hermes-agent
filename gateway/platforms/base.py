@@ -1245,8 +1245,8 @@ MEDIA_TAG_CLEANUP_RE = re.compile(
 MEDIA_EXTENSIONLESS_TAG_RE = re.compile(
     r'''[`"'*_]{0,3}MEDIA:\s*'''
     r'''(?P<path>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|'''
-    r'''(?:~/|/|[A-Za-z]:[/\\])[^\s\n`"']+?)'''
-    r'''(?=[`"'\s,;:)\]}''' + _MEDIA_CJK_TERMINATORS + r''']|MEDIA:|$)'''
+    r'''(?:~/|/|[A-Za-z]:[/\\])[^\s\n`"'*]+?)'''
+    r'''(?=[`"'*\s,;:)\]}''' + _MEDIA_CJK_TERMINATORS + r''']|MEDIA:|$)'''
     r'''[`"'*_]{0,3}\s*''',
     re.IGNORECASE)
 
@@ -1363,10 +1363,27 @@ def _extensionless_media_matches(masked: str):
 
 def _real_media_tag_spans(masked: str) -> list:
     """(start, end) spans of deliverable MEDIA tags on a masked copy: known-extension tags
-    unconditionally, extension-less / unknown ones only if validate_media_delivery_path accepts."""
+    unconditionally, extension-less / unknown ones only if validate_media_delivery_path accepts.
+    Extensionless spans extend past closing emphasis/quote markers so display cleanup and
+    delivery agree — a delivered ``**MEDIA:script.lua**`` must not leave a ``**`` residue
+    (the known-ext pattern consumes its own closers; the extensionless span stops at
+    ``match.end("path")``)."""
     spans: list = [m.span() for m in MEDIA_TAG_CLEANUP_RE.finditer(masked)]
-    spans.extend((match.start(), end) for match, _, end in _extensionless_media_matches(masked))
+    spans.extend(
+        (match.start(), _skip_closing_media_markers(masked, end))
+        for match, _, end in _extensionless_media_matches(masked)
+    )
     return spans
+
+
+_MEDIA_CLOSING_MARKER_RE = re.compile(r'''[`"*_]{0,3}\s*''')
+
+
+def _skip_closing_media_markers(text: str, end: int) -> int:
+    """Advance ``end`` past a short run of closing emphasis/quote markers (and trailing
+    whitespace) that the extensionless tag regex captured outside its path group."""
+    m = _MEDIA_CLOSING_MARKER_RE.match(text, end)
+    return m.end() if m else end
 
 
 _FENCED_CODE_RE = re.compile(r'```[^\n]*\n.*?```', re.DOTALL)

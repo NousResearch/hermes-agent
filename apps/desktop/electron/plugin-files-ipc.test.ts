@@ -53,6 +53,38 @@ describe('hermes:pluginFiles:request', () => {
     expect(await call('hermes:pluginFiles:grants', 'plexus')).toEqual([])
   })
 
+  it('uses the requested title and starting folder without changing grant checks', async () => {
+    showOpenDialog.mockResolvedValueOnce({ canceled: false, filePaths: [vault] })
+
+    const granted = (await call('hermes:pluginFiles:request', 'plexus', {
+      buttonLabel: 'Grant access',
+      title: 'Choose a media folder',
+      defaultPath: vault
+    })) as { folder: { path: string } }
+
+    expect(showOpenDialog).toHaveBeenLastCalledWith(
+      window,
+      expect.objectContaining({
+        buttonLabel: 'Grant access',
+        defaultPath: vault,
+        properties: ['openDirectory', 'createDirectory'],
+        title: 'Choose a media folder'
+      })
+    )
+    expect(granted.folder.path).toBe(vault)
+  })
+
+  it('ignores an invalid starting folder instead of failing the picker', async () => {
+    showOpenDialog.mockResolvedValueOnce({ canceled: true, filePaths: [] })
+
+    await call('hermes:pluginFiles:request', 'plexus', { defaultPath: '   ' })
+
+    expect(showOpenDialog).toHaveBeenLastCalledWith(
+      window,
+      expect.not.objectContaining({ defaultPath: '   ' })
+    )
+  })
+
   it('the Hermes home is refused even when the user picks it', async () => {
     showOpenDialog.mockResolvedValueOnce({ canceled: false, filePaths: [hermesHome] })
 

@@ -557,7 +557,7 @@ declare global {
       pluginFiles?: {
         request: (
           pluginId: string,
-          labels: { buttonLabel: string; title: string }
+          labels: { buttonLabel: string; title: string; defaultPath?: string }
         ) => Promise<HermesPluginFilesResult<{ folder: HermesPluginFolderGrant | null }>>
         grants: (pluginId: string) => Promise<HermesPluginFolderGrant[]>
         revoke: (pluginId: string, folderId?: string) => Promise<{ ok: true; removed: number }>

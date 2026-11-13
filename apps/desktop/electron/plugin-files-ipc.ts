@@ -14,6 +14,7 @@ const LABEL_MAX = 200
 
 interface PickerLabels {
   buttonLabel?: unknown
+  defaultPath?: unknown
   title?: unknown
 }
 
@@ -38,8 +39,13 @@ export function registerPluginFilesIpc(deps: PluginFilesIpcDeps): PluginFiles {
     async (event: IpcMainInvokeEvent, pluginId: unknown, labels: PickerLabels = {}) => {
       const window = deps.windowFor(event)
 
+      const defaultPath =
+        typeof labels?.defaultPath === 'string' && labels.defaultPath.trim() && !labels.defaultPath.includes('\\0')
+          ? labels.defaultPath
+          : undefined
       const options = {
         buttonLabel: label(labels?.buttonLabel, 'Allow access'),
+        ...(defaultPath ? { defaultPath } : {}),
         properties: ['openDirectory', 'createDirectory'] as Array<'createDirectory' | 'openDirectory'>,
         title: label(labels?.title, 'Choose a folder')
       }

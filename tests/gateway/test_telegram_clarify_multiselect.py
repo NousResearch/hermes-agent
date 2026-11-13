@@ -119,10 +119,28 @@ class TestMultiSelectCallbacks:
 
         with cm._lock:
             entry = cm._entries["cidM"]
-        assert entry.response == "red, blue"
+        # The tool decodes a JSON array into one answer per pick; "red, blue" would read as one
+        # typed answer (#154195).
+        from tools.clarify_tool import _clean_answer
+        assert _clean_answer(entry.response, True) == ["red", "blue"]
         assert entry.event.is_set()
         assert "cidM" not in adapter._clarify_state
         assert "cidM" not in adapter._clarify_multi
+
+    @pytest.mark.asyncio
+    async def test_send_strips_the_recommended_label(self):
+        from tools import clarify_gateway as cm
+        from tools.clarify_tool import _clean_answer, mark_recommended
+        adapter = _make_adapter()
+        msg = _prompt(adapter, "cidR")
+        cm.register("cidR", "sk-multi", "Pick", mark_recommended(["red", "green"]), multi_select=True)
+
+        await _tap(adapter, msg, "cl:cidR:t0")
+        await _tap(adapter, msg, "cl:cidR:t1")
+        await _tap(adapter, msg, "cl:cidR:go")
+
+        with cm._lock:
+            assert _clean_answer(cm._entries["cidR"].response, True) == ["red", "green"]
 
     @pytest.mark.asyncio
     async def test_toggle_off_before_send(self):

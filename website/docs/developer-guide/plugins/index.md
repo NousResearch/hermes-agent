@@ -1178,6 +1178,22 @@ One directory per plugin means every plugin's data is inspectable in one
 predictable place. Secrets don't belong here — credential reads go through
 the standard `.env` / secret-scope path like everywhere else.
 
+### Redact secrets before storing or sending text
+
+Text your plugin saves or uploads (a transcript, a diff, a log) can carry API keys
+the user pasted. Run it through `ctx.redact_text()` first instead of importing
+Hermes internals:
+
+```python
+safe = ctx.redact_text(transcript, force=True)  # force: this text leaves the machine
+```
+
+It uses the same scrubber as Hermes's own output, at its strongest setting:
+prefixed keys become a sentinel such as `«redacted:sk-…»` with no key characters
+left, and assignments like `API_KEY=…` are masked. Patterns registered with
+`ctx.register_redaction_patterns()` apply too. Without `force`, a user who set
+`security.redact_secrets: false` gets the text back unchanged.
+
 ### Bundle skills
 
 Plugins can ship skill files that the agent loads via `skill_view("plugin:skill")`. Register them in your `__init__.py`:

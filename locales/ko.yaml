@@ -167,7 +167,10 @@ gateway:
     full_logs_hint: "전체 로그 업로드는 CLI에서 `hermes debug share`를 사용하세요."
     share_hint: "지원을 받으려면 이 링크를 Hermes 팀과 공유하세요."
     report_label: "리포트"
-    local_refused: "`/debug local`은 보고서를 Hermes가 실행 중인 컴퓨터에만 보관하므로 채팅에서는 사용할 수 없습니다. 요약 보고서를 업로드하려면 `/debug`를 보내세요."
+    local_refused: "`/debug local`은 보고서를 Hermes가 실행 중인 컴퓨터에만 보관하므로 채팅에서는 사용할 수 없습니다. 요약 보고서를 업로드하려면 `/debug upload`를 보내세요."
+    upload_hint: "아무것도 업로드되지 않았습니다. 요약 보고서를 업로드하려면 `/debug upload`를 보내세요."
+    upload_hint_local: "아무것도 업로드되지 않았습니다. 요약 보고서를 업로드하려면 `/debug upload`를, 여기에서 보려면 `/debug local`을 보내세요."
+    nous_refused: "아무것도 업로드되지 않았습니다. 여기에서는 Nous 비공개 업로드를 사용할 수 없습니다. 터미널에서 `hermes debug share --nous`를 실행하거나 데스크톱 앱의 Send diagnostics를 사용하세요. `/debug upload`는 대신 요약을 공개 paste에 업로드합니다."
   deny:
     stale: "❌ 명령이 거부되었습니다 (승인이 만료됨)."
     no_pending: "거부 대기 중인 명령이 없습니다."
@@ -1706,7 +1709,7 @@ slash:
   version:
     description: "Hermes Agent 버전 표시"
   debug:
-    description: "디버그 보고서(시스템 정보 + 로그) 업로드 및 공유 링크 받기"
+    description: "디버그 보고서(시스템 정보 + 로그): 먼저 개인정보 안내를 표시하며 /debug upload로 링크 공유"
   quit:
     description: "CLI 종료 (--delete를 붙이면 세션 기록도 삭제)"
 cli:

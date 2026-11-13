@@ -303,7 +303,7 @@ from gateway.approval_actor import clarify_refusal, refusal_text, slash_confirm_
 
 from gateway.platforms.helpers import (
     MessageDeduplicator, ThreadParticipationTracker, convert_table_to_bullets, is_discord_channel_obfuscated,
-    numbered_clarify_choices,
+    numbered_clarify_choices, tag_safe_display_name,
 )
 from gateway.platforms.helpers import cancel_task, inline_document_text
 from utils import atomic_json_write, env_float
@@ -5145,9 +5145,12 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                     content = "(attachment)"
                 if not content:
                     return None
+                # Display names are sender-set: one line without the tag's own delimiters, so "Ann] Smith"
+                # cannot end the [name] tag early; a name made only of delimiters falls back to the id.
                 name = (
-                    getattr(msg.author, "display_name", None)
-                    or getattr(msg.author, "name", None)
+                    tag_safe_display_name(getattr(msg.author, "display_name", None) or "")
+                    or tag_safe_display_name(getattr(msg.author, "name", None) or "")
+                    or str(getattr(msg.author, "id", "") or "")
                     or "unknown"
                 )
                 if is_bot_author:

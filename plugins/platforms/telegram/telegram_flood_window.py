@@ -38,9 +38,12 @@ def skipped_draft(adapter: Any, chat_id: Any) -> Optional[SendResult]:
     return SendResult(success=True, message_id=None, raw_response={"skipped": True}, retry_after=remaining)
 
 
-async def _after_window(adapter: Any, chat_id: Any, delete: Callable[[], Awaitable[bool]], *, inline: bool) -> bool:
+async def _after_window(adapter: Any, chat_id: Any, delete: Callable[[], Awaitable[bool]], *, inline: bool,
+                        confirmed: bool = False) -> bool:
     """``inline`` (the caller awaits it): every wake re-checks the cap, so a window another request
-    extended meanwhile is handed to the background task instead of being slept on the caller's turn."""
+    extended meanwhile is handed to the background task instead of being slept on the caller's turn.
+    ``confirmed``: a window past the cap returns False and queues nothing (the caller then keeps the
+    message, so a later background delete must not remove it)."""
     from plugins.platforms.telegram.adapter import _FLOOD_INLINE_WAIT_CAP_SECS
     for waits in range(_MAX_WINDOW_WAITS + 2):  # re-check after the last allowed wait
         remaining = adapter._send_flood_cooldown_remaining(chat_id)
@@ -49,7 +52,7 @@ async def _after_window(adapter: Any, chat_id: Any, delete: Callable[[], Awaitab
         if waits > _MAX_WINDOW_WAITS:
             break
         if inline and remaining > _FLOOD_INLINE_WAIT_CAP_SECS:
-            return _defer(adapter, chat_id, delete, remaining)
+            return False if confirmed else _defer(adapter, chat_id, delete, remaining)
         await asyncio.sleep(remaining)
     logger.warning("[%s] message delete in chat %s dropped: flood window kept re-arming", adapter.name, chat_id)
     return False
@@ -72,12 +75,15 @@ def _defer(adapter: Any, chat_id: Any, delete: Callable[[], Awaitable[bool]], re
     return True
 
 
-async def delete_message(adapter: Any, chat_id: str, message_id: str) -> bool:
-    """``TelegramAdapter.delete_message`` body: ``deleteMessage`` once the chat's flood window is closed."""
+async def delete_message(adapter: Any, chat_id: str, message_id: str, *, confirmed: bool = False) -> bool:
+    """``TelegramAdapter.delete_message`` body: ``deleteMessage`` once the chat's flood window is closed.
+    ``confirmed`` (``delete_message_confirmed``): True only once the message is gone, never for a queued delete."""
     from plugins.platforms.telegram.adapter import _redact_telegram_error_text, normalize_telegram_chat_id
     if not adapter._bot:
         live = adapter._replacement_telegram_adapter()
-        return await live.delete_message(chat_id, message_id) if live is not None else False
+        if live is None:
+            return False
+        return await (live.delete_message_confirmed if confirmed else live.delete_message)(chat_id, message_id)
 
     async def _delete() -> bool:
         try:
@@ -87,7 +93,13 @@ async def delete_message(adapter: Any, chat_id: str, message_id: str) -> bool:
             note_flood(adapter, chat_id, e)
             logger.debug("[%s] Failed to delete Telegram message %s: %s", adapter.name, message_id, _redact_telegram_error_text(e))
             return False
-    return await delete_outside_flood_window(adapter, chat_id, _delete)
+    return await _after_window(adapter, chat_id, _delete, inline=True, confirmed=confirmed)
+
+
+async def delete_message_confirmed(adapter: Any, chat_id: str, message_id: str) -> bool:
+    """``TelegramAdapter.delete_message_confirmed``: True only once the message is gone. Fragment
+    replacement (stream consumer) needs that; a window past the inline cap gives False, nothing queued."""
+    return await delete_message(adapter, chat_id, message_id, confirmed=True)
 
 
 def _over_budget(adapter: Any, chat_id: Any) -> Optional[SendResult]:

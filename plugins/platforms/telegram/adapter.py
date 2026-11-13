@@ -211,6 +211,7 @@ from plugins.platforms.telegram.telegram_send_path_recovery import TelegramSendP
 from plugins.platforms.telegram.telegram_send_errors import LOST, is_entity_parse_error, maybe_delivered_result as _maybe_delivered_result, send_error_kind, FLOOD, UNSENT, rich_failure_result
 from plugins.platforms.telegram.telegram_split import REPLY_FILE_MAX_BYTES, reply_message_count, send_reply_document
 from plugins.platforms.telegram.telegram_typing_gate import claim_ai_action, typing_may_fire
+from plugins.platforms.telegram.telegram_voice_mention import admit_media, cache_inbound_voice
 from plugins.platforms.telegram.telegram_group_observe import apply_group_observe_attribution, observed_media_note, shared_sender_suffix
 from plugins.platforms.telegram.telegram_picker_labels import model_button_labels
 from plugins.platforms.telegram.telegram_topic_routing import TelegramTopicRoutingMixin
@@ -304,7 +305,8 @@ from plugins.platforms.telegram.telegram_split import _strip_mdv2
 
 # MarkdownV2 has no table syntax, so pipe tables become bullet groups via convert_table_to_bullets().
 from gateway.platforms.helpers import (
-    TABLE_SEPARATOR_RE as _TABLE_SEPARATOR_RE, caption_is_command, compile_mention_patterns, hand_off_split, prompt_id_counter)
+    TABLE_SEPARATOR_RE as _TABLE_SEPARATOR_RE, caption_is_command, compile_mention_patterns, hand_off_split, prompt_id_counter,
+    tag_safe_display_name)
 
 # Internal safety bounds (not user knobs): no reconnect/teardown path may hang on a dead CLOSE-WAIT
 # socket PTB's polling task is blocked on in epoll.
@@ -3005,19 +3007,9 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
             return False
 
     async def _set_status_indicator(self, online: bool) -> None:
-        """Set the bot's short description to the online/offline text (closest Bot API surface to
-        presence). No-op unless ``extra.status_indicator``; failures are debug-logged."""
-        if not getattr(self, "_status_indicator_enabled", False):
-            return
-        bot = self._bot
-        if bot is None:
-            return
-        text = (self._status_online_text if online else self._status_offline_text)[:120]  # Telegram cap
-        try:
-            await bot.set_my_short_description(short_description=text)
-            logger.info("[%s] Set bot status indicator to %r", self.name, text)
-        except Exception as e:
-            logger.debug("[%s] Failed to set bot status indicator to %r: %s", self.name, text, _redact_telegram_error_text(e))
+        """Bot short description as the opt-in online/offline indicator (telegram_status_indicator)."""
+        from plugins.platforms.telegram.telegram_status_indicator import set_status_indicator
+        await set_status_indicator(self, online)
 
     @staticmethod
     def _collect_live_tasks(candidates, current_task) -> list:
@@ -3776,6 +3768,8 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         """Delete a bot-posted message (Bot API allows it within 48h); failures are non-fatal (False).
         Used by the stream consumer's fresh-final cleanup (openclaw/openclaw#72038); waits out the chat's flood window."""
         return await _flood_window.delete_message(self, chat_id, message_id)
+
+    delete_message_confirmed = _flood_window.delete_message_confirmed
 
     def supports_draft_streaming(self, chat_type: Optional[str] = None, metadata: Optional[dict[str, Any]] = None) -> bool:
         """sendMessageDraft works for private chats only (Bot API 9.5) and needs PTB >= 22.6; groups and
@@ -5660,7 +5654,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
 
     def _telegram_group_observe_attributed_text(self, event: MessageEvent) -> str:
         user_id = event.source.user_id or "unknown"
-        return f"[{event.source.user_name or user_id}|{user_id}]\n{event.text or ''}"
+        return f"[{tag_safe_display_name(event.source.user_name or user_id)}|{user_id}]\n{event.text or ''}"
 
     def _telegram_group_observe_channel_prompt(self) -> str:
         username = self._current_bot_username() or "unknown"
@@ -5840,7 +5834,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         sender_id = getattr(sender, "id", None)
         return bot_id is None or sender_id is None or sender_id != bot_id
 
-    def _should_process_message(self, message: Message, *, is_command: bool = False) -> bool:
+    def _should_process_message(self, message: Message, *, is_command: bool = False, spoken_mention: bool = False) -> bool:
         """Apply Telegram group trigger rules: DMs unrestricted; group messages pass ``allowed_chats`` (hard gate; only
         the ``guest_mode`` @mention bypass crosses it) and then any of free_response chat/topic, ``require_mention``
         off, reply to the bot, @mention (incl. ``/cmd@botname``), or a wake-word match."""
@@ -5877,7 +5871,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
             return True
         if self._message_mentions_bot(message):  # guest-mode group mentions already returned above
             return True
-        return self._message_matches_mention_patterns(message)
+        return spoken_mention or self._message_matches_mention_patterns(message)  # spoken: a transcript matched
 
     async def _ensure_forum_commands(self, message) -> None:
         """Lazy-register bot commands for forum supergroups (topics don't inherit AllGroupChats scope;
@@ -6254,7 +6248,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         if not self._is_user_authorized_from_message(msg):
             self._log_blocked_user(msg, level=logging.INFO, what="media from unauthorized user")
             return
-        if not self._should_process_message(msg):
+        if (clips := await admit_media(self, msg)) is None:  # {} = admitted as usual, else spoken-wake-word clips
             if self._should_observe_unmentioned_group_message(msg):
                 _event = self._build_message_event(msg, self._media_message_type(msg), update_id=update.update_id)
                 if msg.caption:
@@ -6286,9 +6280,8 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
             except Exception as e:
                 logger.warning("[Telegram] Failed to cache photo: %s", _redact_telegram_error_text(e), exc_info=True)
                 await self._surface_media_cache_failure(msg, event, "photo", e)
-        # Voice/audio cached for STT transcription; video for vision.
-        if msg.voice:
-            await self._cache_inbound_av(msg, event, msg.voice, "voice message", "voice", ".ogg", "audio/ogg")
+        if msg.voice:  # voice/audio cached for STT transcription; video for vision
+            await cache_inbound_voice(self, msg, event, clips)
         elif msg.audio:
             await self._cache_inbound_av(msg, event, msg.audio, "audio file", "audio", ".mp3", "audio/mp3")
         elif video := msg.video or getattr(msg, "video_note", None):

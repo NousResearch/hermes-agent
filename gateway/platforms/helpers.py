@@ -114,6 +114,17 @@ async def cancel_task(task: Optional[asyncio.Task]) -> None:
             await task
 
 
+def tag_safe_display_name(value: Any) -> str:
+    """A sender display name made safe to sit inside a gateway-built ``[name]`` / ``[name|id]`` tag.
+
+    Display names are set by the sender. On top of the one-line neutralization, the tag's own
+    delimiters (``[``, ``]`` and the ``|`` that precedes a trusted id) are dropped, so a name can
+    neither end the tag early nor forge a second id or mention span inside it."""
+    from gateway.session import neutralize_untrusted_inline_text
+    text = neutralize_untrusted_inline_text(value)
+    return " ".join("".join(ch for ch in text if ch not in "[]|").split())
+
+
 def display_width(text: str) -> int:
     """Terminal-style display columns: East-Asian wide/full-width characters count as two.
     Chat clients clip button labels by rendered width, not by codepoints, so a 25-character
@@ -484,6 +495,123 @@ def convert_table_to_bullets(text: str) -> str:
             out.append(line)
             i += 1
     return '\n'.join(out)
+
+
+def voice_mention_gate_enabled(extra: Optional[dict]) -> bool:
+    """``voice_mention_patterns``: opt-in, because it sends unaddressed members' voice notes to STT."""
+    from utils import is_truthy_value
+    return is_truthy_value((extra or {}).get("voice_mention_patterns"), default=False)
+
+
+def _gate_stt_scope(adapter: Any, source: Any) -> Any:
+    """The routed profile's runtime scope for *source*, as the turn will enter it, so the gate's STT
+    reads that profile's ``stt`` config and secrets; a no-op outside a runner."""
+    runner = getattr(adapter, "gateway_runner", None)
+    enter = getattr(runner, "_async_profile_scope_for_source", None)
+    if source is None or not callable(enter):
+        return contextlib.nullcontext()
+    adapter._canonicalize(source)
+    return enter(source)
+
+
+def _sender_may_use_bot(adapter: Any, source: Any) -> bool:
+    """The runner's own allowlist verdict for *source*, checked BEFORE gate STT: a sender the turn
+    would refuse must not spend the operator's STT provider. True outside a runner."""
+    authorize = getattr(getattr(adapter, "gateway_runner", None), "_is_user_authorized_for_source", None)
+    if source is None or not callable(authorize):
+        return True
+    adapter._canonicalize(source)
+    return bool(authorize(source))
+
+
+def bypasses_chat_order(text: Any) -> bool:
+    """A running-agent escape hatch (``/stop``, ``/approve``, ``/deny``): it acts on work already in
+    flight, so it skips :class:`ChatOrderedWork`'s per-chat wait and never waits on an earlier voice
+    note's gate STT. Every other command (``/new``, ``/undo``, ``/status``) keeps its place behind it."""
+    from gateway.session_commands import _ESCAPE_HATCHES
+    from hermes_cli.commands import resolve_command
+    head = str(text or "").lstrip().split(maxsplit=1)
+    if not head or not head[0].startswith("/"):
+        return False
+    cmd = resolve_command(head[0][1:].split("@", 1)[0])
+    return cmd is not None and cmd.name in _ESCAPE_HATCHES
+
+
+async def spoken_mention_clips(paths: list[str], patterns, *, adapter: Any = None, source: Any = None,
+                               keep: frozenset = frozenset()) -> list[str]:
+    """Transcribe a group voice note that only a spoken wake word could admit and match ``patterns``
+    against the transcript (the text gate runs before STT, so it never sees one: #102330). STT runs
+    in the profile *source* routes to (``adapter.gateway_runner``) and never when that profile
+    disables it. On a match, the clips to attach; the turn reuses their transcripts, one STT call
+    per clip. Otherwise ``[]``, and the clips fetched only for this check are deleted (never those
+    in *keep*, which another owner still references)."""
+    from gateway.run_inbound_transcription import (remember_gate_transcript, stt_enabled_for_turn,
+                                                   transcribe_one_clip)
+    results: dict = {}
+    try:
+        async with _gate_stt_scope(adapter, source):
+            from tools.transcription_tools import is_stt_enabled
+            enabled = stt_enabled_for_turn(getattr(adapter, "gateway_runner", None)) \
+                and _sender_may_use_bot(adapter, source) and await asyncio.to_thread(is_stt_enabled)
+            for path in paths if enabled else ():
+                try:
+                    results[path] = await transcribe_one_clip(path)
+                except Exception as exc:  # health: allow BLE001 -- an STT failure is a non-match, never a crash
+                    logger.warning("Spoken mention check could not transcribe %s: %s", path, exc)
+            if any(text and any(p.search(text) for p in patterns) for text, _note in results.values()):
+                for path, (text, _note) in results.items():
+                    if text is not None:
+                        remember_gate_transcript(path, text)
+                return list(paths)
+    except Exception as exc:  # health: allow BLE001 -- an unroutable source is dropped by ingress anyway
+        logger.warning("Spoken mention check could not enter the routed profile: %s", exc)
+    for path in paths:
+        if path not in keep:
+            with contextlib.suppress(OSError):
+                os.remove(path)
+    return []
+
+
+class ChatOrderedWork:
+    """Inbound work that may wait on gate-time STT runs off the platform's single reader, FIFO per
+    chat: a slow voice note delays only its own chat, and a message sent after it in that chat
+    still arrives after it. At most ``limit`` gate transcriptions run at once."""
+
+    def __init__(self, adapter: Any, limit: int = 4):
+        self._adapter, self._tails, self._slots = adapter, {}, asyncio.Semaphore(limit)
+
+    def busy(self, chat: str) -> bool:
+        tail = self._tails.get(chat)
+        return tail is not None and not tail.done()
+
+    def submit(self, chat: str, work, *, transcribes: bool) -> asyncio.Task:
+        prev = self._tails.get(chat)
+
+        async def run():
+            if prev is not None and not prev.done():
+                await asyncio.wait([prev])
+            try:
+                if transcribes:
+                    async with self._slots:
+                        await work()
+                else:
+                    await work()
+            except Exception:  # health: allow BLE001 -- one message's failure must not stall its chat
+                logger.exception("[%s] inbound work for chat %s failed", getattr(self._adapter, "name", "?"), chat)
+
+        task = asyncio.create_task(run())
+        self._tails[chat] = task
+        task.add_done_callback(lambda t: self._tails.pop(chat, None) if self._tails.get(chat) is t else None)
+        tasks = getattr(self._adapter, "_background_tasks", None)
+        if isinstance(tasks, set):
+            tasks.add(task)
+            task.add_done_callback(tasks.discard)
+        return task
+
+
+def chat_ordered_work(adapter: Any) -> ChatOrderedWork:
+    """The adapter's :class:`ChatOrderedWork`, created on first use."""
+    return adapter.__dict__.setdefault("_chat_ordered_work", ChatOrderedWork(adapter))
 
 
 def compile_mention_patterns(raw, *, log_prefix: str, platform_label: str | None = None,

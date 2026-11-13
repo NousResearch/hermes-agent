@@ -167,7 +167,10 @@ gateway:
     full_logs_hint: "Per il caricamento dei log completi, usa `hermes debug share` dalla CLI."
     share_hint: "Condividi questi link con il team Hermes per ricevere supporto."
     report_label: "Report"
-    local_refused: "`/debug local` mantiene il report sulla macchina che esegue Hermes, quindi non è disponibile da una chat. Invia `/debug` per caricare il report riepilogativo."
+    local_refused: "`/debug local` mantiene il report sulla macchina che esegue Hermes, quindi non è disponibile da una chat. Invia `/debug upload` per caricare il report riepilogativo."
+    upload_hint: "Non è stato caricato nulla. Invia `/debug upload` per caricare il report riepilogativo."
+    upload_hint_local: "Non è stato caricato nulla. Invia `/debug upload` per caricare il report riepilogativo, oppure `/debug local` per vederlo qui."
+    nous_refused: "Non è stato caricato nulla. I caricamenti privati su Nous non sono disponibili da qui: esegui `hermes debug share --nous` in un terminale, oppure usa Send diagnostics nell'app desktop. `/debug upload` carica invece il riepilogo su un paste pubblico."
   deny:
     stale: "❌ Comando negato (l'approvazione era obsoleta)."
     no_pending: "Nessun comando in attesa da negare."
@@ -1706,7 +1709,7 @@ slash:
   version:
     description: "Mostra la versione di Hermes Agent"
   debug:
-    description: "Carica un report di debug (info di sistema + log) e ottieni link condivisibili"
+    description: "Report di debug (info di sistema + log): mostra prima l'informativa sulla privacy; /debug upload condivide i link"
   quit:
     description: "Esci dalla CLI (usa --delete per eliminare anche la cronologia della sessione)"
 cli:

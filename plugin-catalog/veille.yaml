@@ -1,9 +1,9 @@
 name: veille
 title: Veille
 repo: https://github.com/veilleio/hermes-plugin-veille
-sha: cac7ce677087070bd2942cdc5a2e2b594ea6a0b8
-version: "1.0.0"
-description: "Tools to check emails, domains, IPs, phone numbers, VAT numbers and IBANs for fraud and validity, through the Veille API. Disclosure — sends the tool arguments to api.veille.io with your VEILLE_API_KEY, and calls can use Veille credits. Reads the key only through Hermes's secret scope. Registers 6 tools, no hooks or middleware, writes no files, starts no processes, has no telemetry or self-updater, and uses only the Python standard library."
+sha: d14dbf9ac39c0fb5023205dbff38d073c38933d6
+version: "1.1.0"
+description: "Fraud and validity checks for Hermes through the Veille API: emails (with an SMTP inbox check), domains, IPs (VPN, proxy, Tor, data center), phone numbers, EU VAT numbers and IBANs, plus ECB exchange rates. Disclosure — sends the values you check to api.veille.io with your VEILLE_API_KEY, and calls use Veille credits (1 to 5 per call, stated in each tool description). veille_qualify_email has Veille contact the address's mail server. Reads the key only through Hermes's secret scope. Registers 9 tools, no hooks or middleware, writes no files, starts no processes, has no telemetry or self-updater, and uses only the Python standard library."
 maintainer: veilleio
 tier: community
 category: tools
@@ -14,11 +14,14 @@ platforms: []
 capabilities:
   provides_tools:
     - veille_check_email
+    - veille_qualify_email
     - veille_check_domain
     - veille_check_ip
     - veille_check_phone
     - veille_check_vat
     - veille_check_iban
+    - veille_exchange_rates
+    - veille_usage
   provides_hooks: []
   provides_middleware: []
   requires_env:

@@ -116,6 +116,9 @@ def _reserve_manager_for_home(plugins, home_key: Path, thread_id: int):
                 retry = True
             else:
                 manager._retired = True
+                for listener in plugins._scoped_plugin_listeners.get(home_key, ()):
+                    listener[1]()
+                    listener[1] = lambda: None
                 plugins._plugin_manager_teardown_owners[home_key] = (thread_id, manager)
                 if plugins._plugin_managers_by_home.get(home_key) is manager:
                     plugins._plugin_managers_by_home.pop(home_key, None)

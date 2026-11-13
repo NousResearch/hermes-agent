@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
 logger = logging.getLogger(__name__)
+_subscription_lock = threading.RLock()
 
 
 class GatewayPluginRewireMixin:
@@ -28,28 +29,44 @@ class GatewayPluginRewireMixin:
     _plugin_rewire_unsubscribe: Optional[dict[str, Callable[[], None]]] = None
 
     def _subscribe_plugin_rewire(self, manager: Any, profile_name: Optional[str] = None,
-                                 profile_home: Optional[Path] = None) -> None:
-        """Idempotent per manager scope: a served-profile rescan re-enters ``_load_secondary_profile_config``
-        and must not stack a second listener (two listeners = two re-wire passes, still deduped, but noise)."""
-        subs = self._plugin_rewire_unsubscribe
-        if subs is None:
-            subs = self._plugin_rewire_unsubscribe = {}
-        scope = str(getattr(manager, "scope_key", "") or id(manager))
-        if scope in subs:
-            return
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            loop = None
-
-        def _on_loaded(_names) -> None:
-            # Fires on the discovering thread (tool worker, control-socket executor, or the loop itself):
-            # adapters own PTB/Bolt handler tables, so always hop onto the gateway loop.
-            if loop is None or loop.is_closed():
+                                 profile_home: Optional[Path] = None,
+                                 loop: Optional[asyncio.AbstractEventLoop] = None) -> None:
+        from hermes_cli.plugins import subscribe_plugin_loaded_for_home
+        if loop is None:
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
                 return
-            loop.call_soon_threadsafe(self._rewire_plugin_handlers, profile_name, profile_home)
+        scope = str(getattr(manager, "scope_key", "") or id(manager))
+        with _subscription_lock:
+            subs = self._plugin_rewire_unsubscribe
+            if subs is None:
+                subs = self._plugin_rewire_unsubscribe = {}
+            if scope in subs:
+                return
+        active = [True]
 
-        subs[scope] = manager.on_plugin_loaded(_on_loaded)
+        def _on_loaded(source, _names) -> None:
+            if loop.is_closed():
+                return
+            def rewire():
+                if active[0] and not source._retired:
+                    self._rewire_plugin_handlers(profile_name, profile_home)
+            loop.call_soon_threadsafe(rewire)
+
+        cancel = subscribe_plugin_loaded_for_home(manager, _on_loaded)
+
+        def unsubscribe():
+            active[0] = False
+            cancel()
+            with _subscription_lock:
+                if subs.get(scope) is unsubscribe:
+                    subs.pop(scope)
+
+        with _subscription_lock:
+            existing = subs.setdefault(scope, unsubscribe)
+        if existing is not unsubscribe:
+            unsubscribe()
 
     def _rewire_plugin_handlers(self, profile_name: Optional[str] = None,
                                 profile_home: Optional[Path] = None) -> int:
@@ -107,6 +124,8 @@ def reload_plugins_verb(runner: Any, loop: asyncio.AbstractEventLoop) -> Callabl
         scope = (_profile_runtime_scope(requested, hydrate_secrets=False) if profile_name
                  else contextlib.nullcontext())
         with scope:
+            runner._subscribe_plugin_rewire(get_plugin_manager(), profile_name,
+                                            requested if profile_name else None, loop=loop)
             discover_plugins(force=True)
             manager = get_plugin_manager()
             # A plugin that failed on a dependency this gateway booted without rides along, so the

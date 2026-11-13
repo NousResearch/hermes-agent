@@ -22,6 +22,8 @@ from typing import Any, Optional
 
 from hermes_cli._subprocess_compat import bounded_git_probe
 
+from agent.git_root import is_valid_git_root as _is_valid_git_root
+
 logger = logging.getLogger("hermes.coding_context")
 
 CODING_TOOLSET = "coding"
@@ -207,7 +209,7 @@ def _resolve_cwd(cwd: Optional[str | Path]) -> Path:
 
 def _git_root(cwd: Path) -> Optional[Path]:
     current = cwd.resolve()
-    return next((p for p in (current, *current.parents) if (p / ".git").exists()), None)
+    return next((p for p in (current, *current.parents) if _is_valid_git_root(p)), None)
 
 
 def _home() -> Optional[Path]:

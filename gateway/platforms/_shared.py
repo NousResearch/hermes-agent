@@ -237,6 +237,18 @@ def cancel_yaml_env_refresh() -> None:
         load.failed = True
 
 
+def abort_yaml_env_refresh() -> None:
+    """Undo this load's bridged writes now: its caller caught a failure and continues on a fallback
+    config, so neither the writes nor a retraction of missing settings may be published."""
+    with _YAML_ENV_LOCK:
+        load = getattr(_YAML_ENV_LOAD, "current", None)
+        if load is not None:
+            load.restore()
+            load.prior.clear()
+            load.undo.clear()
+            load.failed = True
+
+
 @contextlib.contextmanager
 def yaml_env_refresh():
     """Retract only unchanged bridge-owned leftovers after one complete, successful YAML load."""
@@ -364,10 +376,14 @@ def gate_config_version(home: Any = None) -> tuple:
 def mark_live_gate_baseline(adapter: Any) -> None:
     """Record, on the adapter's first connect, which config the connect-time gate copy came from.
     A reconnect keeps the first baseline so an edit made before it is still picked up. The
-    baseline's home is the adapter's OWNING profile: every later refresh reads that home."""
+    baseline's home is the adapter's OWNING profile: every later refresh reads that home.
+
+    Only a config ``load_gateway_config()`` stamped has a known source. Any other (``gateway
+    --config <file>``, a programmatic config) keeps its loaded gates: refreshing it from a home
+    config.yaml would replace the operator's chosen policy with a file it never came from."""
     if getattr(adapter, "_live_gate_version", None) is None:
         loaded = getattr(getattr(adapter, "config", None), "loaded_version", None)
-        adapter._live_gate_version = loaded if loaded is not None else gate_config_version()
+        adapter._live_gate_version = loaded if loaded is not None else ()
 
 
 @contextlib.contextmanager

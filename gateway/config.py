@@ -856,16 +856,29 @@ def load_gateway_config(*, strict: bool = False) -> GatewayConfig:
     ``strict=True`` raises a config.yaml failure instead of falling back to env + gateway.json: a live
     allowlist refresh keeps its last good lists rather than apply an env-only config."""
     from gateway import config_loader
-    from gateway.platforms._shared import gate_config_version
+    from gateway.platforms._shared import gate_config_version, yaml_env_refresh
 
     _home = get_hermes_home()
     version = gate_config_version()
     gw_data = config_loader.load_legacy_gateway_json(_home)
+    # One transaction through typed construction, overrides and validation: the runner's authorization
+    # reads the bridged env, so a load that fails after the YAML overlay must not leave its writes.
+    with yaml_env_refresh():
+        config = _load_gateway_config_layers(_home, gw_data, strict)
+    for platform_config in config.platforms.values():
+        platform_config.loaded_version = version
+    return config
+
+
+def _load_gateway_config_layers(_home: Path, gw_data: dict, strict: bool) -> GatewayConfig:
+    from gateway import config_loader
+    from gateway.platforms._shared import abort_yaml_env_refresh
     try:
         config_loader.load_yaml_layer(_home, gw_data)
     except Exception as e:
         if strict:
             raise
+        abort_yaml_env_refresh()
         logger.warning(
             # DingTalk settings → env vars: migrated to the dingtalk plugin's apply_yaml_config_fn hook
             # (plugins/platforms/dingtalk/adapter.py). #41112 / #3823.
@@ -883,8 +896,6 @@ def load_gateway_config(*, strict: bool = False) -> GatewayConfig:
     config = GatewayConfig.from_dict(gw_data)
     _apply_env_overrides(config)
     _validate_gateway_config(config)
-    for platform_config in config.platforms.values():
-        platform_config.loaded_version = version
     return config
 
 

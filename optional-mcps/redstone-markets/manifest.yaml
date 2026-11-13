@@ -1,0 +1,29 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: redstone-markets
+description: Performance, risk, comparisons, backtests and screening for US stocks and ETFs, with charts.
+source: https://github.com/mihaitv/redstone-mcp
+
+# Official vendor-hosted remote MCP (URL-only). No authentication required.
+
+transport:
+  type: http
+  url: https://redstonemarkets.com/api/mcp
+
+auth:
+  type: none
+
+suggest:
+  keywords:
+    - redstone
+    - stocks
+    - ETFs
+    - sharpe
+    - backtest
+  hosts:
+    - redstonemarkets.com
+
+post_install: |
+  No account or API key needed. Docs: https://redstonemarkets.com/about#ai-assistants

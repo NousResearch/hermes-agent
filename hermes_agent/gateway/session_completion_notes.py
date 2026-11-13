@@ -57,7 +57,7 @@ def _closed_by_user(authority, session_id):
     outlives a restart). An orphan reap (the last viewer vanished) and an agent close are not the user's.
     A wake in a closed chat would also run its re-dispatched child inside the wake turn, refused the
     background."""
-    from tools.async_delegation import refused_for_session
+    from hermes_agent.tools.async_delegation import refused_for_session
     from hermes_agent.gateway.session_viewer_close import ORPHAN_REASONS, _physical_target
     # A close still pending (its FIFO was busy) outlives a restart in ``pending_closes``; the refusal does not.
     pending = authority.pending_closes.get(session_id)

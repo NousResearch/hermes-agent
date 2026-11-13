@@ -4,7 +4,7 @@ Covers:
   - jobs.create_job: param plumbing, validation, default-None preserved
   - jobs._normalize_workdir: absolute / relative / missing / file-not-dir
   - jobs.update_job: set, clear, re-validate
-  - tools.cronjob_tools.cronjob: create + update JSON round-trip, schema
+  - hermes_agent.tools.cronjob_tools.cronjob: create + update JSON round-trip, schema
     includes workdir, _format_job exposes it when set
   - scheduler.tick(): partitions workdir jobs off the thread pool, restores
     TERMINAL_CWD in finally, honours the env override during run_job
@@ -167,7 +167,7 @@ class TestUpdateJobWorkdir:
 
 
 # ---------------------------------------------------------------------------
-# tools.cronjob_tools: end-to-end JSON round-trip
+# hermes_agent.tools.cronjob_tools: end-to-end JSON round-trip
 # ---------------------------------------------------------------------------
 
 
@@ -243,7 +243,7 @@ class TestRunJobTerminalCwd:
                 )
 
             def run_conversation(self, *_a, task_id=None, **_kw):
-                from tools.terminal_tool import get_session_cwd
+                from hermes_agent.tools.terminal_tool import get_session_cwd
 
                 observed["task_id"] = task_id
                 observed["task_cwd_during_run"] = get_session_cwd(task_id)
@@ -331,7 +331,7 @@ class TestRunJobTerminalCwd:
     ):
         import os
         import hermes_agent.cron.scheduler as sched
-        from tools.terminal_tool import get_session_cwd
+        from hermes_agent.tools.terminal_tool import get_session_cwd
 
         baseline = str(tmp_path / "baseline")
         workdir = tmp_path / "project"

@@ -36,7 +36,7 @@ def test_schema_current_shape_is_exactly_the_contract_and_the_pre_split_shape_st
 
 
 def test_registry_ids_are_exactly_the_hub_router_adapters():
-    from tools.skills_hub_search import create_source_router
+    from hermes_agent.tools.skills_hub_search import create_source_router
 
     assert {src.source_id() for src in create_source_router()} == contract.EXTENSION_REGISTRY_IDS
     assert contract.EXTENSION_REGISTRIES == contract.EXTENSION_REGISTRY_IDS | {"none", "other", "unresolved"}
@@ -234,7 +234,7 @@ def test_an_unserved_identifier_names_the_registry_its_adapter_accepts(identifie
 def test_an_oauth_card_install_that_fails_before_authorization_keeps_its_class(monkeypatch, url, expected):
     """Invariant: the card/agent OAuth install (``mcp_oauth.start``) rebuilds the worker's error from
     its text, so it must carry the worker's closed class; the row is never the bare ``exception``."""
-    from tools.connectors import mcp_oauth
+    from hermes_agent.tools.connectors import mcp_oauth
 
     monkeypatch.delenv("HERMES_TEST_UNSET_MCP_URL", raising=False)
     with pytest.raises(Exception) as raised:

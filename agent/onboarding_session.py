@@ -20,7 +20,7 @@ def with_onboarding(enabled) -> list[str]:
     """*enabled* plus onboarding. None (every toolset outside the session-gated ones, which onboarding
     is) is spelled out by name: the agent's other toolset gates read the names, as they read None."""
     if enabled is None:
-        from toolsets import TOOLSET_SESSION_PLATFORMS, get_all_toolsets
+        from hermes_agent.toolsets import TOOLSET_SESSION_PLATFORMS, get_all_toolsets
         enabled = [name for name in get_all_toolsets() if name not in TOOLSET_SESSION_PLATFORMS]
     return [*enabled, "onboarding"]
 

@@ -52,7 +52,7 @@ def test_a_failed_connector_entry_is_classed_by_its_gateway_code(code, family, e
 
 
 def test_every_classed_code_is_a_known_product_code():
-    from tools.connectors.gateway.wire import EXECUTE_ERROR_CODES, FILE_ERROR_FAMILIES
+    from hermes_agent.tools.connectors.gateway.wire import EXECUTE_ERROR_CODES, FILE_ERROR_FAMILIES
 
     families = {**{code: family for code, (family, _status) in EXECUTE_ERROR_CODES.items()}, **FILE_ERROR_FAMILIES}
     assert set(contract._CONNECTOR_CODE_CLASSES) <= set(families)
@@ -217,10 +217,10 @@ def test_the_chain_survives_a_compression_rotation(fake_relay):
 def test_entries_report_their_own_post_even_under_the_executor_suppression(monkeypatch):
     """The sequential executor suppresses the inner post_tool_call for the call it owns; connector
     entries are their own calls and must still report, or each entry's lifecycle never closes."""
-    import model_tools
+    from hermes_agent import model_tools
     from hermes_cli import lifecycle as lc
-    from tools.connectors.gateway import bridge, config
-    from tools.registry import invalidate_check_fn_cache
+    from hermes_agent.tools.connectors.gateway import bridge, config
+    from hermes_agent.tools.registry import invalidate_check_fn_cache
 
     monkeypatch.setattr(config, "connectors_available", lambda: True)
     monkeypatch.setattr(bridge, "connectors_available", lambda: True)

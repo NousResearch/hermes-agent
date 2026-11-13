@@ -1,7 +1,7 @@
 """Lint guard: no new raw ``os.environ.copy()`` / ``**os.environ`` spawn-env sites.
 
 Every child-process env in the codebase must be built through
-``tools.environments.local.build_subprocess_env`` (or its sibling
+``hermes_agent.tools.environments.local.build_subprocess_env`` (or its sibling
 ``hermes_subprocess_env`` / ``_sanitize_subprocess_env``, which the factory
 wraps) so profile-home propagation and secret-scrubbing have a single owner.
 History: ~11 commits over 6 months each fixed one more spawn site that missed

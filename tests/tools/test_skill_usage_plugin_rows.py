@@ -13,7 +13,7 @@ def usage_mod(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     monkeypatch.setenv("HERMES_HOME", str(home))
     import importlib
-    import tools.skill_usage as mod
+    import hermes_agent.tools.skill_usage as mod
     importlib.reload(mod)
     return mod
 

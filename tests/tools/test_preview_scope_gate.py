@@ -10,7 +10,7 @@ working (the call reaches the tool).
 
 import json
 
-import model_tools
+from hermes_agent import model_tools
 from agent.tool_executor import _unwrap_tool_search_call
 
 TUI_SCOPE = ["coding", "project"]

@@ -29,8 +29,8 @@ CFG = {"agent": {}}
 
 def _build_agent(model, base_url, provider="", max_tokens=None, window=131072):
     with (
-        patch("model_tools.get_tool_definitions", return_value=[]),
-        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]),
+        patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
         patch("agent.process_bootstrap.OpenAI"),
         patch("hermes_cli.config.load_config", return_value=CFG),
         patch("hermes_cli.config.load_config_readonly", return_value=CFG),

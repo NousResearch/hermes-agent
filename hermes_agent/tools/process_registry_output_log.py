@@ -18,7 +18,7 @@ from hermes_dir_acl import make_user_dir
 
 from hermes_constants import get_hermes_home
 
-logger = logging.getLogger("tools.process_registry")
+logger = logging.getLogger("hermes_agent.tools.process_registry")
 
 _TAIL_SECONDS = 0.2
 # After the process ended: an orphaned grandchild may keep appending; stop draining after this.
@@ -36,7 +36,7 @@ def worker_output_log(session_id: str) -> Optional[Path]:
         return None
     directory = output_dir()
     make_user_dir(directory, mode=0o700, parents=True, exist_ok=True)
-    from tools.process_registry_results import RESULT_RETENTION_SECONDS
+    from hermes_agent.tools.process_registry_results import RESULT_RETENTION_SECONDS
     # Only a recorded exit retires a log: a quiet process can run longer than the retention.
     cutoff = time.time() - RESULT_RETENTION_SECONDS
     for exited in directory.glob("proc_*.exit"):

@@ -13,8 +13,8 @@ from typing import Any, cast
 
 import pytest
 
-import tools.process_registry as module
-from tools.process_registry import ProcessRegistry, ProcessSession
+import hermes_agent.tools.process_registry as module
+from hermes_agent.tools.process_registry import ProcessRegistry, ProcessSession
 
 
 def _session(sid: str, **fields) -> ProcessSession:

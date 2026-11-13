@@ -3,7 +3,7 @@ peer set: the Desktop owns every gateway socket and relays between them via four
 gateway: ``roster.sync`` (push OTHER connections' agents so ``message_agent`` resolves them),
 ``outbox.drain`` (collect envelopes queued here for other connections), ``deliver`` (one-turn Bot
 Chat delivery on the TARGET gateway, returns the reply), ``reply`` (write the reply/error back on
-the SENDER gateway for its waiter). Plumbing: ``tools/bot_relay.py``; handlers are rebound onto
+the SENDER gateway for its waiter). Plumbing: ``hermes_agent/tools/bot_relay.py``; handlers are rebound onto
 server.py's globals (method_ctx.py) and reference ``_ok``/``_err`` bare."""
 
 import logging
@@ -17,9 +17,9 @@ method = _registry.method
 
 def _relay_root() -> Path:
     """Install root shared by every profile (relay state is install-wide). Same formula as the
-    writers (``tools/bot_relay``, ``tools/bot_mode_dm``): both ends of the mailbox must agree for
+    writers (``hermes_agent/tools/bot_relay``, ``hermes_agent/tools/bot_mode_dm``): both ends of the mailbox must agree for
     every HERMES_HOME, including non-``profiles/`` subdirs of ``~/.hermes``."""
-    from tools.bot_mode_probe import _default_home, _hermes_root
+    from hermes_agent.tools.bot_mode_probe import _default_home, _hermes_root
     return _hermes_root(Path(_default_home()))
 
 
@@ -36,7 +36,7 @@ def _(rid, params: dict, _root=_relay_root) -> dict:
     own profiles, or two publishers alternating, shows up as a flapping line (the pushing window
     is in the Desktop's desktop.log ``[bot-relay win=…]`` lines at the same time)."""
     try:
-        from tools.bot_relay import read_remote_roster, write_remote_roster
+        from hermes_agent.tools.bot_relay import read_remote_roster, write_remote_roster
 
         def trace() -> str:
             rows = read_remote_roster(_root())
@@ -58,7 +58,7 @@ def _(rid, params: dict, _root=_relay_root) -> dict:
     """Claim every pending cross-connection envelope queued here → ``{envelopes}``; claimed
     envelopes move to ``claimed/`` atomically so concurrent drains can't double-deliver."""
     try:
-        from tools.bot_relay import claim_pending_envelopes
+        from hermes_agent.tools.bot_relay import claim_pending_envelopes
         return _ok(rid, {"envelopes": claim_pending_envelopes(_root())})
     except Exception as e:
         return _err(rid, 5091, str(e))
@@ -67,8 +67,8 @@ def _(rid, params: dict, _root=_relay_root) -> dict:
 @method("bot_relay.deliver")
 def _(rid, params: dict, _root=_relay_root) -> dict:
     """Legacy transport bridge only: canonical admission or an explicit refusal."""
-    from tools.bot_live_delivery import _delivery_id, authority_delivery
-    from tools.bot_relay import _HANDLE_RE
+    from hermes_agent.tools.bot_live_delivery import _delivery_id, authority_delivery
+    from hermes_agent.tools.bot_relay import _HANDLE_RE
     try:
         _delivery_id(params.get('id'))
         profile = params.get('profile')
@@ -76,7 +76,7 @@ def _(rid, params: dict, _root=_relay_root) -> dict:
             raise ValueError('invalid profile')
     except ValueError:
         return _err(rid, 4090, 'invalid_params', data={'reason': 'invalid_params'})
-    from tools.bot_relay import delivery_turn_author, relaying_principal_author
+    from hermes_agent.tools.bot_relay import delivery_turn_author, relaying_principal_author
     from hermes_agent.gateway.session_identity import authenticated_principal_digest, is_authenticated_identity
     sender_fields = ("from_profile", "from_handle", "from_connection")
     identity = getattr(current_transport(), "auth_identity", None)
@@ -99,7 +99,7 @@ def _(rid, params: dict, _root=_relay_root) -> dict:
     root = _root()
     # Same identity predicate as `profile list`: infra dirs and tombstones under profiles/ are
     # not teammates (#99392), so a DM never targets one.
-    from tools.bot_mode_probe import _profile_for_handle, _roster
+    from hermes_agent.tools.bot_mode_probe import _profile_for_handle, _roster
     roster = dict(_roster(root))
     resolved = _profile_for_handle('hermes', roster) if profile.lower() == 'hermes' else profile
     home = roster.get(resolved)
@@ -108,8 +108,8 @@ def _(rid, params: dict, _root=_relay_root) -> dict:
     if isinstance(forwarded.get("message"), str):
         # The sender stamped itself with its bare @handle; a relayed "@hermes" is ANOTHER machine's
         # default, so re-stamp it with the form this gateway can reply to (#103731).
-        from tools.bot_mode_probe import local_taken_forms
-        from tools.bot_relay import qualify_sender_stamp, read_remote_roster
+        from hermes_agent.tools.bot_mode_probe import local_taken_forms
+        from hermes_agent.tools.bot_relay import qualify_sender_stamp, read_remote_roster
         forwarded["message"] = qualify_sender_stamp(
             forwarded["message"], params.get("from_handle"), params.get("from_connection"),
             read_remote_roster(root), local_taken_forms(root))
@@ -125,12 +125,12 @@ def _(rid, params: dict, _root=_relay_root) -> dict:
 @method("bot_relay.reply")
 def _(rid, params: dict, _root=_relay_root) -> dict:
     """Write a relayed ``reply`` and/or ``error`` (+ optional typed ``reason``, see
-    ``tools.bot_failure_reasons``) for envelope ``id`` so the sender-side waiter picks it up."""
+    ``hermes_agent.tools.bot_failure_reasons``) for envelope ``id`` so the sender-side waiter picks it up."""
     envelope_id = str(params.get("id") or "").strip()
     if not envelope_id:
         return _err(rid, 4093, "id required")
     try:
-        from tools.bot_relay import write_reply
+        from hermes_agent.tools.bot_relay import write_reply
         write_reply(_root(), envelope_id, reply=str(params.get("reply") or ""),
                     error=str(params.get("error") or ""), reason=str(params.get("reason") or ""))
         return _ok(rid, {"ok": True})

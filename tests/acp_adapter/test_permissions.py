@@ -14,7 +14,7 @@ from acp.schema import (
 )
 
 from hermes_agent.acp_adapter.permissions import make_approval_callback
-from tools.approval import prompt_dangerous_approval
+from hermes_agent.tools.approval import prompt_dangerous_approval
 
 
 def _make_response(outcome):
@@ -267,7 +267,7 @@ def test_default_permission_timeout_follows_approvals_config(monkeypatch):
     """No explicit timeout → the ACP bridge waits ``approvals.timeout`` like every other
     surface, instead of a hardcoded 60 s the host cannot raise (#73403)."""
     from hermes_agent.acp_adapter import permissions
-    from tools import approval_context
+    from hermes_agent.tools import approval_context
 
     monkeypatch.setattr(approval_context, "_get_approval_config", lambda: {"timeout": 900})
     assert permissions.resolve_permission_timeout(None) == 900.0

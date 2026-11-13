@@ -22,7 +22,7 @@ def _under_secondary(home, fn):
 
 
 def test_env_passthrough_allowlist_follows_the_active_profile(tmp_path, monkeypatch):
-    import tools.env_passthrough as ep
+    import hermes_agent.tools.env_passthrough as ep
 
     default_home = tmp_path / "hermes"
     secondary = default_home / "profiles" / "b2"

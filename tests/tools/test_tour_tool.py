@@ -2,8 +2,8 @@
 
 import json
 
-from tools import tour_tool as tt
-from tools.registry import registry
+from hermes_agent.tools import tour_tool as tt
+from hermes_agent.tools.registry import registry
 
 
 def _run(**kwargs):

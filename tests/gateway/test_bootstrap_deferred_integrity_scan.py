@@ -86,7 +86,7 @@ def _startup(monkeypatch, tmp_path):
 
     monkeypatch.setattr("hermes_agent.gateway.run._host_attach_or_none", AsyncMock(return_value=None))
     monkeypatch.setattr("hermes_agent.gateway.status.get_running_pid", lambda: None)
-    monkeypatch.setattr("tools.skills_sync.sync_skills", lambda quiet=True: None)
+    monkeypatch.setattr("hermes_agent.tools.skills_sync.sync_skills", lambda quiet=True: None)
     monkeypatch.setattr("hermes_logging.setup_logging", lambda hermes_home, mode: tmp_path)
     monkeypatch.setattr("hermes_logging._add_rotating_handler", lambda *args, **kwargs: None)
     monkeypatch.setattr("hermes_agent.gateway.run.GatewayRunner", _LiveRunner)

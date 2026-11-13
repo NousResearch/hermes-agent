@@ -232,7 +232,7 @@ class TestTelegramApprovalCallback:
         context = MagicMock()
 
         with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "*"}, clear=False):
-            with patch("tools.approval.resolve_gateway_approval", return_value=1):
+            with patch("hermes_agent.tools.approval.resolve_gateway_approval", return_value=1):
                 await adapter._handle_callback_query(update, context)
 
         assert "12345" not in adapter._typing_paused
@@ -259,7 +259,7 @@ class TestTelegramApprovalCallback:
         query.from_user.id = "12345"
 
         with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "*"}, clear=False):
-            with patch("tools.approval.resolve_gateway_approval", return_value=1):
+            with patch("hermes_agent.tools.approval.resolve_gateway_approval", return_value=1):
                 await adapter._handle_callback_query(update, context)
 
         edit_kwargs = query.edit_message_text.call_args[1]
@@ -285,7 +285,7 @@ class TestTelegramApprovalCallback:
         update.callback_query = query
         context = MagicMock()
 
-        with patch("tools.approval.resolve_gateway_approval") as mock_resolve:
+        with patch("hermes_agent.tools.approval.resolve_gateway_approval") as mock_resolve:
             with patch("hermes_constants.get_hermes_home", return_value=tmp_path):
                 # Allow the caller — the new fail-closed allowlist gate
                 # (#24457) rejects empty TELEGRAM_ALLOWED_USERS, but this
@@ -379,7 +379,7 @@ async def test_resolved_approval_keeps_the_request_and_appends_the_decision():
         query.from_user = MagicMock(first_name="Ana & Bo", id="12345")
         query.edit_message_text = AsyncMock(side_effect=[BadRequest("Message is too long"), None] if edit_fails else None)
         with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "*"}, clear=False), \
-                patch("tools.approval.resolve_gateway_approval", return_value=1):
+                patch("hermes_agent.tools.approval.resolve_gateway_approval", return_value=1):
             await adapter._handle_callback_query(MagicMock(callback_query=query), MagicMock())
         final = query.edit_message_text.call_args.kwargs
         assert final["reply_markup"] is None
@@ -405,6 +405,6 @@ async def test_resolved_approval_network_error_does_not_overwrite_the_prompt():
     query.from_user = MagicMock(first_name="Ana", id="12345")
     query.edit_message_text = AsyncMock(side_effect=[TimedOut("timed out"), None])
     with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "*"}, clear=False), \
-            patch("tools.approval.resolve_gateway_approval", return_value=1):
+            patch("hermes_agent.tools.approval.resolve_gateway_approval", return_value=1):
         await adapter._handle_callback_query(MagicMock(callback_query=query), MagicMock())
     assert query.edit_message_text.await_count == 1

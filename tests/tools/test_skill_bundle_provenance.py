@@ -13,9 +13,9 @@ from pathlib import Path
 import pytest
 from rich.console import Console
 
-from tools.skills_hub_github import GitHubAuth, GitHubSource
-from tools.skills_hub_models import SkillBundle
-from tools.skills_hub_sources import UrlSource
+from hermes_agent.tools.skills_hub_github import GitHubAuth, GitHubSource
+from hermes_agent.tools.skills_hub_models import SkillBundle
+from hermes_agent.tools.skills_hub_sources import UrlSource
 
 
 SKILL_MD = """---
@@ -39,7 +39,7 @@ class _QuietHandler(SimpleHTTPRequestHandler):
 def served_repo(tmp_path, monkeypatch):
     # The fixture intentionally serves over loopback. Keep exercising the real
     # HTTP transport while opting this test server into private-address access.
-    monkeypatch.setattr("tools.url_safety._global_allow_private_urls", lambda: True)
+    monkeypatch.setattr("hermes_agent.tools.url_safety._global_allow_private_urls", lambda: True)
 
     repo = tmp_path / "upstream"
     repo.mkdir()
@@ -83,8 +83,8 @@ def served_repo(tmp_path, monkeypatch):
 
 def test_url_source_fetches_only_referenced_allowed_support_directories(served_repo, monkeypatch):
     _repo, url = served_repo
-    monkeypatch.setattr("tools.skills_hub.is_safe_url", lambda _url: True)
-    monkeypatch.setattr("tools.skills_hub.check_website_access", lambda _url: None)
+    monkeypatch.setattr("hermes_agent.tools.skills_hub.is_safe_url", lambda _url: True)
+    monkeypatch.setattr("hermes_agent.tools.skills_hub.check_website_access", lambda _url: None)
 
     bundle = UrlSource().fetch(url)
 
@@ -121,8 +121,8 @@ def test_same_dir_linked_siblings_are_fetched(served_repo, monkeypatch):
     (repo / "CONTEXT-FORMAT.md").write_text("format\n", newline="\n")
     (repo / "DEEPENING.md").write_text("deepening\n", newline="\n")
     (repo / "SKILL.md").write_text(SKILL_MD + "See [the format](./CONTEXT-FORMAT.md) and [deepening](DEEPENING.md).\n")
-    monkeypatch.setattr("tools.skills_hub.is_safe_url", lambda _url: True)
-    monkeypatch.setattr("tools.skills_hub.check_website_access", lambda _url: None)
+    monkeypatch.setattr("hermes_agent.tools.skills_hub.is_safe_url", lambda _url: True)
+    monkeypatch.setattr("hermes_agent.tools.skills_hub.check_website_access", lambda _url: None)
 
     bundle = UrlSource().fetch(url)
 
@@ -142,8 +142,8 @@ def test_same_dir_link_outside_skill_dir_is_skipped_not_fatal(served_repo, monke
     repo, url = served_repo
     (repo / "DEFS.md").write_text("defs\n")
     (repo / "SKILL.md").write_text(SKILL_MD + "[registry](../../tools/REGISTRY.md) and [defs](./DEFS.md)\n")
-    monkeypatch.setattr("tools.skills_hub.is_safe_url", lambda _url: True)
-    monkeypatch.setattr("tools.skills_hub.check_website_access", lambda _url: None)
+    monkeypatch.setattr("hermes_agent.tools.skills_hub.is_safe_url", lambda _url: True)
+    monkeypatch.setattr("hermes_agent.tools.skills_hub.check_website_access", lambda _url: None)
 
     bundle = UrlSource().fetch(url)
 
@@ -154,7 +154,7 @@ def test_same_dir_link_outside_skill_dir_is_skipped_not_fatal(served_repo, monke
 
 def test_same_dir_link_without_extension_is_ignored(monkeypatch):
     """Prose targets that aren't file links (no extension) never fetch."""
-    from tools.skills_hub_models import _referenced_support_paths
+    from hermes_agent.tools.skills_hub_models import _referenced_support_paths
 
     skill = "---\nname: x\ndescription: x\n---\nsee [notes](NOTES) and `README`\n"
     assert _referenced_support_paths(skill) == set()
@@ -162,7 +162,7 @@ def test_same_dir_link_without_extension_is_ignored(monkeypatch):
 
 def test_same_dir_link_query_and_fragment_are_stripped():
     """?query and #fragment never leak into the fetched bundle path."""
-    from tools.skills_hub_models import _referenced_support_paths
+    from hermes_agent.tools.skills_hub_models import _referenced_support_paths
 
     skill = (
         "---\nname: x\ndescription: x\n---\n"
@@ -173,7 +173,7 @@ def test_same_dir_link_query_and_fragment_are_stripped():
 
 def test_case_variant_of_skill_md_is_never_a_sibling_entry():
     """skill.md must not ship as a bundle file (case-insensitive FS collision)."""
-    from tools.skills_hub_models import _referenced_support_paths
+    from hermes_agent.tools.skills_hub_models import _referenced_support_paths
 
     skill = "---\nname: x\ndescription: x\n---\n[home](skill.md)\n"
     assert _referenced_support_paths(skill) == set()
@@ -181,7 +181,7 @@ def test_case_variant_of_skill_md_is_never_a_sibling_entry():
 
 def test_case_folded_sibling_collision_drops_the_pair():
     """A.md + a.md would collide on install — neither ships."""
-    from tools.skills_hub_models import _referenced_support_paths
+    from hermes_agent.tools.skills_hub_models import _referenced_support_paths
 
     skill = "---\nname: x\ndescription: x\n---\n[a](A.md) [a2](a.md)\n"
     assert _referenced_support_paths(skill) == set()
@@ -323,9 +323,9 @@ def test_real_temp_repo_and_home_install_e2e(served_repo, monkeypatch, tmp_path)
     _repo, url = served_repo
     home = tmp_path / "home"
     monkeypatch.setenv("HERMES_HOME", str(home))
-    monkeypatch.setattr("tools.skills_hub.is_safe_url", lambda _url: True)
-    monkeypatch.setattr("tools.skills_hub.check_website_access", lambda _url: None)
-    monkeypatch.setattr("tools.skills_hub_search.create_source_router", lambda auth=None: [UrlSource()])
+    monkeypatch.setattr("hermes_agent.tools.skills_hub.is_safe_url", lambda _url: True)
+    monkeypatch.setattr("hermes_agent.tools.skills_hub.check_website_access", lambda _url: None)
+    monkeypatch.setattr("hermes_agent.tools.skills_hub_search.create_source_router", lambda auth=None: [UrlSource()])
 
     sink = StringIO()
     do_install(url, console=Console(file=sink, force_terminal=False), skip_confirm=True)
@@ -385,9 +385,9 @@ def test_install_with_junctioned_skills_dir(served_repo, monkeypatch, tmp_path):
         pytest.skip("Cannot create a junction/symlink in this environment")
 
     monkeypatch.setenv("HERMES_HOME", str(home))
-    monkeypatch.setattr("tools.skills_hub.is_safe_url", lambda _url: True)
-    monkeypatch.setattr("tools.skills_hub.check_website_access", lambda _url: None)
-    monkeypatch.setattr("tools.skills_hub_search.create_source_router", lambda auth=None: [UrlSource()])
+    monkeypatch.setattr("hermes_agent.tools.skills_hub.is_safe_url", lambda _url: True)
+    monkeypatch.setattr("hermes_agent.tools.skills_hub.check_website_access", lambda _url: None)
+    monkeypatch.setattr("hermes_agent.tools.skills_hub_search.create_source_router", lambda auth=None: [UrlSource()])
 
     sink = StringIO()
     do_install(url, console=Console(file=sink, force_terminal=False), skip_confirm=True)
@@ -423,7 +423,7 @@ def served_repo_missing_support(tmp_path, monkeypatch):
     # Serve over loopback while opting this test server into private-address
     # access, so the SSRF-safe HTTP client is exercised for real (see
     # ``served_repo``).
-    monkeypatch.setattr("tools.url_safety._global_allow_private_urls", lambda: True)
+    monkeypatch.setattr("hermes_agent.tools.url_safety._global_allow_private_urls", lambda: True)
 
     repo = tmp_path / "upstream-missing"
     repo.mkdir()
@@ -459,9 +459,9 @@ def test_install_skips_unreachable_support_file_e2e(served_repo_missing_support,
     _repo, url = served_repo_missing_support
     home = tmp_path / "home"
     monkeypatch.setenv("HERMES_HOME", str(home))
-    monkeypatch.setattr("tools.skills_hub.is_safe_url", lambda _url: True)
-    monkeypatch.setattr("tools.skills_hub.check_website_access", lambda _url: None)
-    monkeypatch.setattr("tools.skills_hub_search.create_source_router", lambda auth=None: [UrlSource()])
+    monkeypatch.setattr("hermes_agent.tools.skills_hub.is_safe_url", lambda _url: True)
+    monkeypatch.setattr("hermes_agent.tools.skills_hub.check_website_access", lambda _url: None)
+    monkeypatch.setattr("hermes_agent.tools.skills_hub_search.create_source_router", lambda auth=None: [UrlSource()])
 
     sink = StringIO()
     do_install(url, console=Console(file=sink, force_terminal=False), skip_confirm=True)
@@ -480,7 +480,7 @@ def test_install_skips_unreachable_support_file_e2e(served_repo_missing_support,
 
 
 def test_bundled_optional_source_still_includes_support_files(tmp_path, monkeypatch):
-    from tools.skills_hub_official import OptionalSkillSource
+    from hermes_agent.tools.skills_hub_official import OptionalSkillSource
 
     root = tmp_path / "optional-skills"
     skill = root / "category" / "official-demo"
@@ -511,7 +511,7 @@ metadata:
 def test_optional_source_upstream_stub_fetches_from_external_repo(tmp_path, monkeypatch):
     """A catalog stub with metadata.hermes.upstream installs the upstream repo's
     content (relabelled official/trusted), not the stub itself."""
-    from tools.skills_hub_official import OptionalSkillSource
+    from hermes_agent.tools.skills_hub_official import OptionalSkillSource
 
     root = tmp_path / "optional-skills"
     skill = root / "creative" / "upstream-demo"
@@ -550,7 +550,7 @@ def test_optional_source_upstream_stub_fetches_from_external_repo(tmp_path, monk
 
 
 def test_optional_source_upstream_pointer_rejects_malformed(tmp_path):
-    from tools.skills_hub_official import OptionalSkillSource
+    from hermes_agent.tools.skills_hub_official import OptionalSkillSource
 
     source = OptionalSkillSource()
     bad = [
@@ -568,8 +568,8 @@ def test_unified_search_trust_rank_survives_limit_cut():
     """Official/builtin results must survive the limit truncation even when a
     high-volume community source floods the merged list first."""
     from unittest.mock import patch as _patch
-    from tools.skills_hub_models import SkillMeta
-    from tools.skills_hub_search import unified_search
+    from hermes_agent.tools.skills_hub_models import SkillMeta
+    from hermes_agent.tools.skills_hub_search import unified_search
 
     community = [
         SkillMeta(name=f"s{i}", description="", source="skills.sh",
@@ -579,7 +579,7 @@ def test_unified_search_trust_rank_survives_limit_cut():
     official = [SkillMeta(name="s-official", description="", source="official",
                           identifier="official/cat/s-official", trust_level="builtin")]
 
-    with _patch("tools.skills_hub_search.parallel_search_sources",
+    with _patch("hermes_agent.tools.skills_hub_search.parallel_search_sources",
                 return_value=(community + official, {}, [])):
         results = unified_search("s", [], source_filter="all", limit=10)
 

@@ -10,7 +10,7 @@ import re
 from typing import Any, Dict, List, Optional, Tuple
 
 from agent.image_eviction_policy import image_dimensions_from_bytes
-from tools.computer_use.backend import ActionResult, UIElement
+from hermes_agent.tools.computer_use.backend import ActionResult, UIElement
 
 # Linux/X11 surfaces GNOME Shell / desktop backdrop windows ahead of real app windows with no useful z-order; they
 # are targetable but capture as empty, so default capture skips them.
@@ -33,7 +33,7 @@ index, not a label, and is excluded so the id= label wins. Group 1 index, group 
 def _mcp_field(obj, snake: str, camel: str, default=None):
     """Read an MCP model field across the 1.x -> 2.x rename: mcp 2.0 exposes snake_case attributes and keeps
     camelCase only as a serialization alias, so ``getattr(result, "isError", False)`` is False for every 2.x result
-    and a denied call looks like success. Deliberately duplicated from ``tools.mcp_tool.mcp_field`` so computer_use
+    and a denied call looks like success. Deliberately duplicated from ``hermes_agent.tools.mcp_tool.mcp_field`` so computer_use
     never loads the much larger config-driven MCP client module."""
     return getattr(obj, snake, getattr(obj, camel, default))
 

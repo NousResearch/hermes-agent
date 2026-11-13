@@ -9,7 +9,7 @@ backend off its port.
 
 import pytest
 
-from tools import transcription_tools
+from hermes_agent.tools import transcription_tools
 
 
 @pytest.fixture

@@ -3,7 +3,7 @@
 One algorithm and one notice wording: 40% head (errors surface early) / 60% tail (the most
 recent lines matter most) around a single ``... [<LABEL> TRUNCATED - N <unit> omitted out of
 T total] ...`` marker, so downstream code that recognises the marker sees one shape. Limits
-live in ``tools/tool_output_limits.py``; line-snapped, path-bearing footers (web/browser,
+live in ``hermes_agent/tools/tool_output_limits.py``; line-snapped, path-bearing footers (web/browser,
 read_file pagination) are different products and stay separate.
 """
 

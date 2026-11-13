@@ -220,8 +220,8 @@ def test_async_delegation_ledger_writes_inside_relay_tool_persist_off_relay_loop
         relay_turn, worker_agent, caplog, monkeypatch):
     """Reviewer probe: ``_persist_dispatch`` -> ``WorkerDelegationLedger.dispatch`` (and the
     ``unscheduled`` mark) run inside the tool callback, on Relay's loop."""
-    from tools import async_delegation
-    from tools.async_delegation_worker import WorkerDelegationLedger
+    from hermes_agent.tools import async_delegation
+    from hermes_agent.tools.async_delegation_worker import WorkerDelegationLedger
 
     _agent, store, owner = worker_agent
     caplog.set_level(logging.WARNING, logger="agent.runtime_session_store")

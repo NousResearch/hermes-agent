@@ -35,7 +35,7 @@ class _FakeResponse:
 # ---------------------------------------------------------------------------
 
 def test_x_search_posts_responses_request(monkeypatch):
-    from tools.x_search_tool import x_search_tool
+    from hermes_agent.tools.x_search_tool import x_search_tool
     from hermes_cli.version_info import get_version_info
 
     captured = {}
@@ -80,7 +80,7 @@ def test_x_search_posts_responses_request(monkeypatch):
     assert result["answer"] == "People on X are discussing xAI's latest launch."
 
 def test_x_search_rejects_conflicting_handle_filters(monkeypatch):
-    from tools.x_search_tool import x_search_tool
+    from hermes_agent.tools.x_search_tool import x_search_tool
 
     monkeypatch.setenv("XAI_API_KEY", "xai-test-key")
 
@@ -96,7 +96,7 @@ def test_x_search_rejects_conflicting_handle_filters(monkeypatch):
     assert not result.get("success")
 
 def test_x_search_extracts_inline_url_citations(monkeypatch):
-    from tools.x_search_tool import x_search_tool
+    from hermes_agent.tools.x_search_tool import x_search_tool
 
     def _fake_post(url, headers=None, json=None, timeout=None):
         return _FakeResponse(
@@ -141,7 +141,7 @@ def test_x_search_extracts_inline_url_citations(monkeypatch):
     ]
 
 def test_x_search_returns_structured_http_error(monkeypatch):
-    from tools.x_search_tool import x_search_tool
+    from hermes_agent.tools.x_search_tool import x_search_tool
 
     class _FailingResponse:
         status_code = 403
@@ -180,8 +180,8 @@ def _no_xai_env(monkeypatch):
 
 def test_x_search_uses_xai_oauth_when_only_oauth_available(monkeypatch):
     """OAuth-only user: credential_source should be ``xai-oauth``."""
-    from tools.registry import invalidate_check_fn_cache
-    from tools.x_search_tool import check_x_search_requirements, x_search_tool
+    from hermes_agent.tools.registry import invalidate_check_fn_cache
+    from hermes_agent.tools.x_search_tool import check_x_search_requirements, x_search_tool
 
     _no_xai_env(monkeypatch)
 
@@ -193,7 +193,7 @@ def test_x_search_uses_xai_oauth_when_only_oauth_available(monkeypatch):
         }
 
     monkeypatch.setattr(
-        "tools.x_search_tool.resolve_xai_http_credentials", _fake_resolve
+        "hermes_agent.tools.x_search_tool.resolve_xai_http_credentials", _fake_resolve
     )
     invalidate_check_fn_cache()
 
@@ -215,8 +215,8 @@ def test_x_search_uses_xai_oauth_when_only_oauth_available(monkeypatch):
 
 def test_x_search_returns_tool_error_when_no_credentials(monkeypatch):
     """No credentials anywhere: tool returns a clear error, not a 401 from xAI."""
-    from tools.registry import invalidate_check_fn_cache
-    from tools.x_search_tool import check_x_search_requirements, x_search_tool
+    from hermes_agent.tools.registry import invalidate_check_fn_cache
+    from hermes_agent.tools.x_search_tool import check_x_search_requirements, x_search_tool
 
     _no_xai_env(monkeypatch)
 
@@ -228,7 +228,7 @@ def test_x_search_returns_tool_error_when_no_credentials(monkeypatch):
         }
 
     monkeypatch.setattr(
-        "tools.x_search_tool.resolve_xai_http_credentials", _fake_resolve
+        "hermes_agent.tools.x_search_tool.resolve_xai_http_credentials", _fake_resolve
     )
     invalidate_check_fn_cache()
 
@@ -251,7 +251,7 @@ def test_x_search_not_degraded_when_no_filters_active(monkeypatch):
     unsourced answer, not a "filter miss". The caller can already tell from
     ``inline_citations == []`` if they care.
     """
-    from tools.x_search_tool import x_search_tool
+    from hermes_agent.tools.x_search_tool import x_search_tool
 
     monkeypatch.setenv("XAI_API_KEY", "xai-test-key")
     monkeypatch.setattr(
@@ -307,8 +307,8 @@ def test_x_search_prefers_explicit_api_key_over_oauth(monkeypatch):
     answers /v1/responses in a degraded Grok explanatory mode with no
     citations. Same prefer-API-key root cause as the TTS fix (#87045/#87081);
     the precedence lives in the shared resolver behind ``prefer_api_key``."""
-    from tools.registry import invalidate_check_fn_cache
-    from tools.x_search_tool import x_search_tool
+    from hermes_agent.tools.registry import invalidate_check_fn_cache
+    from hermes_agent.tools.x_search_tool import x_search_tool
 
     paid_key = _xcred("paid")
     oauth_token = _xcred("oauth")
@@ -339,7 +339,7 @@ def test_x_search_prefers_explicit_api_key_over_oauth(monkeypatch):
 
 def test_x_search_bearer_helper_falls_back_to_oauth_without_api_key(monkeypatch):
     """No explicit XAI_API_KEY: the OAuth resolver path is unchanged."""
-    from tools.x_search_tool import _resolve_xai_bearer
+    from hermes_agent.tools.x_search_tool import _resolve_xai_bearer
 
     oauth_token = _xcred("oauth")
 

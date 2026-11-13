@@ -41,7 +41,7 @@ def _agent(provider="openrouter", model="anthropic/claude-sonnet", **extra):
 # ---- file edits ------------------------------------------------------------------------------
 
 def test_patch_and_write_file_count_outcome_and_the_strategy_that_landed(direct_runtime, tmp_path):
-    from tools.file_tools import _handle_patch, _handle_write_file
+    from hermes_agent.tools.file_tools import _handle_patch, _handle_write_file
 
     target = tmp_path / "work" / "a.py"
     _handle_write_file({"path": str(target), "content": "def f():\n    return 1\n\nx = 1\nx = 1\n"}, task_id="t")
@@ -69,7 +69,7 @@ def test_patch_and_write_file_count_outcome_and_the_strategy_that_landed(direct_
 
 
 def test_matcher_calls_outside_an_edit_tool_call_are_not_counted(direct_runtime, tmp_path):
-    from tools.fuzzy_match import fuzzy_find_and_replace
+    from hermes_agent.tools.fuzzy_match import fuzzy_find_and_replace
 
     fuzzy_find_and_replace("a = 1\n", "a = 1", "a = 2")  # e.g. a skill patch, internal callers
     assert _rows(tmp_path, contract.FILE_EDIT_METRIC, "outcome") == []
@@ -109,7 +109,7 @@ def test_terminal_outcome_trusts_hermes_flags_not_exit_124():
 
 
 def test_foreground_terminal_commands_count_by_kind_and_outcome(direct_runtime, tmp_path, monkeypatch):
-    from tools.terminal_tool import terminal_tool
+    from hermes_agent.tools.terminal_tool import terminal_tool
 
     monkeypatch.setenv("TERMINAL_ENV", "local")
     results = [json.loads(terminal_tool(command, task_id="harness", timeout=timeout)) for command, timeout in (
@@ -126,8 +126,8 @@ def test_foreground_terminal_commands_count_by_kind_and_outcome(direct_runtime, 
 
 
 def test_backend_exception_mentioning_timeout_is_not_a_terminal_timeout(direct_runtime, tmp_path, monkeypatch):
-    from tools.environments.base import BaseEnvironment
-    from tools.terminal_tool import terminal_tool
+    from hermes_agent.tools.environments.base import BaseEnvironment
+    from hermes_agent.tools.terminal_tool import terminal_tool
 
     def connect_timeout(self, *a, **k):
         raise RuntimeError("ssh: connect to host example port 22: Connection timeout")

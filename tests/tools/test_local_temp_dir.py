@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from tools.environments.local import LocalEnvironment
+from hermes_agent.tools.environments.local import LocalEnvironment
 
 
 def _make_local_env(env: dict) -> LocalEnvironment:
@@ -83,7 +83,7 @@ def test_cleanup_terminal_temp_cache(tmp_path, monkeypatch):
     """Old artifacts are pruned; fresh ones and live bg groups survive."""
     import time
 
-    from tools.environments import local as local_mod
+    from hermes_agent.tools.environments import local as local_mod
 
     root = tmp_path / "cache" / "terminal"
     root.mkdir(parents=True)
@@ -129,7 +129,7 @@ def test_cleanup_terminal_temp_cache_revalidates_before_each_delete(tmp_path, mo
     import pathlib
     import time
 
-    from tools.environments import local as local_mod
+    from hermes_agent.tools.environments import local as local_mod
 
     root = tmp_path / "cache" / "terminal"
     root.mkdir(parents=True)
@@ -170,7 +170,7 @@ def test_cleanup_terminal_temp_cache_uninspectable_residue_is_not_counted(tmp_pa
     import pathlib
     import time
 
-    from tools.environments import local as local_mod
+    from hermes_agent.tools.environments import local as local_mod
 
     root = tmp_path / "cache" / "terminal"
     root.mkdir(parents=True)

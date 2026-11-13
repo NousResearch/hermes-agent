@@ -3,7 +3,7 @@
 Two Hermes processes starting one profile at once must end with ONE Chromium both drive: the later one waits,
 then attaches (a second launch would wipe the first's ``DevToolsActivePort`` and lose Chromium's singleton). An
 attach probes and leases under the same lock, so the owner's stop cannot fall between the live probe and the
-lease and hand out a dead endpoint (``tools/browser_launcher.py``). Runs the real launcher against a fake Chromium
+lease and hand out a dead endpoint (``hermes_agent/tools/browser_launcher.py``). Runs the real launcher against a fake Chromium
 that takes the profile singleton and serves ``/json/version`` like the real one.
 """
 
@@ -19,7 +19,7 @@ import pytest
 
 from tests.tools.browser_launcher_fakes import kill_fake, pids, write_fake_chromium
 from tests.waiting import wait_until
-from tools import browser_launcher as launcher
+from hermes_agent.tools import browser_launcher as launcher
 
 pytestmark = [pytest.mark.platforms("linux"),
               pytest.mark.live_system_guard_bypass]  # the fake browsers are ours to stop if a leg failed

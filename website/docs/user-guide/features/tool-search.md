@@ -328,7 +328,7 @@ to any progressive-disclosure design, not specific to this implementation:
 
 ## See also
 
-- `tools/tool_search.py` — the implementation
+- `hermes_agent/tools/tool_search.py` — the implementation
 - `tests/tools/test_tool_search.py` — the regression suite
 - The `openclaw-tool-search-report` PDF in the original implementation
   PR for the research that shaped the design

@@ -31,7 +31,7 @@ def _fork_site(site):
     batch_runner binds AIAgent at import, so its patch lands on its own global."""
     if site == "delegate":
         import run_agent
-        from tools import delegate_tool
+        from hermes_agent.tools import delegate_tool
 
         parent = SimpleNamespace(
             model="m", provider="openrouter", api_key="k", base_url="https://openrouter.ai/api/v1",
@@ -158,8 +158,8 @@ def _build_agent_with_recording_provider(seen, builtin_memory=False, **extra):
         patch("hermes_cli.config.load_config_readonly", return_value=cfg),
         patch("plugins.memory.load_memory_provider", return_value=_RecordingProvider(seen)),
         patch("agent.model_metadata.get_model_context_length", return_value=204_800),
-        patch("model_tools.get_tool_definitions", return_value=[]),
-        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]),
+        patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
         patch("agent.process_bootstrap.OpenAI"),
     ):
         from run_agent import AIAgent

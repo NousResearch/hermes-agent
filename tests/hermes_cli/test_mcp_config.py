@@ -10,7 +10,7 @@ import os
 from pathlib import Path
 
 import pytest
-from tools import mcp_tool_config as _mcp_config
+from hermes_agent.tools import mcp_tool_config as _mcp_config
 
 
 def _set_interactive_stdin(monkeypatch, *, is_tty: bool = True) -> None:
@@ -18,7 +18,7 @@ def _set_interactive_stdin(monkeypatch, *, is_tty: bool = True) -> None:
 
     mock_stdin = MagicMock()
     mock_stdin.isatty.return_value = is_tty
-    monkeypatch.setattr("tools.mcp_oauth.sys.stdin", mock_stdin)
+    monkeypatch.setattr("hermes_agent.tools.mcp_oauth.sys.stdin", mock_stdin)
 
 
 # ---------------------------------------------------------------------------
@@ -313,9 +313,9 @@ class TestMcpTest:
         """OAuth-capable probes must not hard-code a short 30s timeout."""
         import asyncio
         from hermes_cli import mcp_config
-        from tools import mcp_tool_discovery as _mcp_discovery
-        from tools import mcp_tool_lifecycle as _mcp_lifecycle
-        from tools import mcp_tool_loop as _mcp_loop
+        from hermes_agent.tools import mcp_tool_discovery as _mcp_discovery
+        from hermes_agent.tools import mcp_tool_lifecycle as _mcp_lifecycle
+        from hermes_agent.tools import mcp_tool_loop as _mcp_loop
 
         captured = {}
 
@@ -360,13 +360,13 @@ class TestEnvVarInterpolation:
     def test_interpolate_cursor_env_prefix(self, monkeypatch):
         """Cursor-style ${env:VAR} resolves the same secret as ${VAR}."""
         monkeypatch.setenv("MY_KEY", "secret123")
-        from tools.mcp_tool_config import _interpolate_env_vars
+        from hermes_agent.tools.mcp_tool_config import _interpolate_env_vars
 
         assert _interpolate_env_vars("Bearer ${env:MY_KEY}") == "Bearer secret123"
 
 
     def test_env_ref_name_strips_prefix(self):
-        from tools.mcp_tool_common import _env_ref_name
+        from hermes_agent.tools.mcp_tool_common import _env_ref_name
 
         assert _env_ref_name("env:API_KEY") == "API_KEY"
         assert _env_ref_name("API_KEY") == "API_KEY"
@@ -380,14 +380,14 @@ class TestContextVarInterpolation:
     def test_user_home(self):
         import os
 
-        from tools.mcp_tool_config import _interpolate_env_vars
+        from hermes_agent.tools.mcp_tool_config import _interpolate_env_vars
 
         assert _interpolate_env_vars("${userHome}") == os.path.expanduser("~")
 
     def test_path_separator_and_slash_shorthand(self):
         import os
 
-        from tools.mcp_tool_config import _interpolate_env_vars
+        from hermes_agent.tools.mcp_tool_config import _interpolate_env_vars
 
         assert _interpolate_env_vars("${pathSeparator}") == os.sep
         assert _interpolate_env_vars("${/}") == os.sep
@@ -407,8 +407,8 @@ class TestContextVarInterpolation:
     def test_workspace_folder_falls_back_to_cwd(self, monkeypatch):
         import os
 
-        from tools import file_tools_paths
-        from tools.mcp_tool_config import _workspace_folder
+        from hermes_agent.tools import file_tools_paths
+        from hermes_agent.tools.mcp_tool_config import _workspace_folder
 
         monkeypatch.setattr(
             file_tools_paths, "_authoritative_workspace_root", lambda task_id="default": None
@@ -431,13 +431,13 @@ class TestContextVarInterpolation:
         """${USERHOME} is NOT a context var — it keeps env-var semantics
         (literal placeholder when unset)."""
         monkeypatch.delenv("USERHOME", raising=False)
-        from tools.mcp_tool_config import _interpolate_env_vars
+        from hermes_agent.tools.mcp_tool_config import _interpolate_env_vars
 
         assert _interpolate_env_vars("${USERHOME}") == "${USERHOME}"
 
     def test_unknown_ref_keeps_literal_placeholder(self, monkeypatch):
         monkeypatch.delenv("NOT_A_REAL_VAR_XYZ", raising=False)
-        from tools.mcp_tool_config import _interpolate_env_vars
+        from hermes_agent.tools.mcp_tool_config import _interpolate_env_vars
 
         assert _interpolate_env_vars("${NOT_A_REAL_VAR_XYZ}") == (
             "${NOT_A_REAL_VAR_XYZ}"
@@ -446,7 +446,7 @@ class TestContextVarInterpolation:
     def test_context_vars_in_nested_config(self, monkeypatch):
         import os
 
-        from tools import mcp_tool_config as _mcp_config
+        from hermes_agent.tools import mcp_tool_config as _mcp_config
 
         monkeypatch.setattr(_mcp_config, "_workspace_folder", lambda: "/ws/app")
         cfg = {
@@ -525,7 +525,7 @@ class TestProbeEnvResolution:
             seen["config"] = config
             return _FakeServer()
 
-        monkeypatch.setattr("tools.mcp_tool_discovery._connect_server", _fake_connect)
+        monkeypatch.setattr("hermes_agent.tools.mcp_tool_discovery._connect_server", _fake_connect)
 
         tools = mc._probe_single_server("n8n", {
             "url": "http://localhost:5678/mcp-server/http",
@@ -538,7 +538,7 @@ class TestProbeEnvResolution:
     def test_probe_propagates_explicit_connect_timeout_to_config(self, monkeypatch):
         """An explicit `connect_timeout=` override (e.g. `hermes mcp login`'s 315s, extended so a
         user has time to finish an OAuth browser flow) must reach `config["connect_timeout"]` —
-        that's what tools/mcp_tool_transport.py::_negotiate_session bounds session.initialize()
+        that's what hermes_agent/tools/mcp_tool_transport.py::_negotiate_session bounds session.initialize()
         with. Left stale at its unrelated 60s default, the still-pending OAuth callback wait gets
         cancelled mid-flow well before the caller's intended deadline."""
         import hermes_cli.mcp_config as mc
@@ -555,7 +555,7 @@ class TestProbeEnvResolution:
             seen["config"] = config
             return _FakeServer()
 
-        monkeypatch.setattr("tools.mcp_tool_discovery._connect_server", _fake_connect)
+        monkeypatch.setattr("hermes_agent.tools.mcp_tool_discovery._connect_server", _fake_connect)
 
         mc._probe_single_server(
             "travelermd", {"url": "https://mcp.traveler.md/mcp", "auth": "oauth"}, connect_timeout=315.0
@@ -626,7 +626,7 @@ class TestProbeCapabilityGating:
         async def _fake_connect(name, cfg):
             return self._make_server(called, caps)
 
-        monkeypatch.setattr("tools.mcp_tool_discovery._connect_server", _fake_connect)
+        monkeypatch.setattr("hermes_agent.tools.mcp_tool_discovery._connect_server", _fake_connect)
         details: dict = {}
         mc._probe_single_server("srv", config, details=details)
         return called, details
@@ -732,7 +732,7 @@ class TestMcpRemoveEvictsManager:
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         _set_interactive_stdin(monkeypatch)
 
-        from tools.mcp_oauth_manager import get_manager, reset_manager_for_tests
+        from hermes_agent.tools.mcp_oauth_manager import get_manager, reset_manager_for_tests
         reset_manager_for_tests()
 
         mgr = get_manager()

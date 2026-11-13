@@ -20,7 +20,7 @@ def _other_process(home: Path, stmt: str) -> None:
     env = {**os.environ, "HERMES_HOME": str(home)}
     subprocess.run(
         [sys.executable, "-c", f"import sys; sys.path.insert(0, {str(REPO)!r}); "
-         f"from tools.bot_desktop import lease; {stmt}"],
+         f"from hermes_agent.tools.bot_desktop import lease; {stmt}"],
         cwd=str(REPO), env=env, check=True, timeout=60, stdin=subprocess.DEVNULL)
 
 
@@ -79,7 +79,7 @@ def test_takeover_in_another_process_is_broadcast(tmp_path, monkeypatch):
 
 def test_release_in_another_process_is_broadcast_and_local_transition_not_duplicated(tmp_path, monkeypatch):
     from hermes_agent.tui_gateway import server
-    from tools.bot_desktop import lease
+    from hermes_agent.tools.bot_desktop import lease
     home = tmp_path / "home"
     home.mkdir()
     events = _watching(server, home, monkeypatch)

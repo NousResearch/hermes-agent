@@ -84,7 +84,7 @@ def http_server(tmp_path, monkeypatch):
     """
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
     monkeypatch.setenv("HERMES_ALLOW_PRIVATE_URLS", "1")
-    from tools import url_safety
+    from hermes_agent.tools import url_safety
     url_safety._reset_allow_private_cache()
     (tmp_path / ".hermes").mkdir()
 

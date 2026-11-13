@@ -157,8 +157,8 @@ def _resolve_data_url(s: str) -> tuple[bytes, str]:
 def _http_block_reason(url: str) -> Optional[str]:
     """Block reason, or None when allowed. Refuses policy-blocked URLs BEFORE any network I/O;
     ``_download_image`` re-checks per attempt and against the final redirect target (intentional)."""
-    from tools.url_safety import is_safe_url
-    from tools.website_policy import check_website_access
+    from hermes_agent.tools.url_safety import is_safe_url
+    from hermes_agent.tools.website_policy import check_website_access
     if not is_safe_url(url):
         return "blocked: unsafe or private URL"
     if blocked := check_website_access(url):
@@ -168,7 +168,7 @@ def _http_block_reason(url: str) -> Optional[str]:
 
 async def _download_to_bytes(url: str) -> bytes:
     import tempfile
-    from tools.vision_tools import _download_image
+    from hermes_agent.tools.vision_tools import _download_image
     with tempfile.NamedTemporaryFile(suffix=".img", delete=False) as tf:
         tmp = Path(tf.name)
     try:
@@ -189,7 +189,7 @@ def _on_disk_spelling(p: Path) -> Optional[Path]:
     ``None`` when there is no such file or several (guessing between twins would read the wrong
     one). The caller still applies its confinement and credential-read guard to the result.
     """
-    from tools.file_operations_common import filename_match_key
+    from hermes_agent.tools.file_operations_common import filename_match_key
     target = filename_match_key(p.name)
     try:
         matches = [c for c in p.parent.iterdir()
@@ -217,10 +217,10 @@ def _is_local_terminal_backend() -> bool:
     """True when the terminal backend runs directly on the host (keys off ``TERMINAL_ENV``, read
     through the per-turn terminal scope so a routed multiplex profile sees ITS backend). Never in a
     hosted scope: a hosted agent's media lives in its sandbox whatever backend is configured."""
-    from tools.environments.sandbox_scope import hosted_scope
+    from hermes_agent.tools.environments.sandbox_scope import hosted_scope
     if hosted_scope() is not None:
         return False
-    from tools.terminal_scope import terminal_env
+    from hermes_agent.tools.terminal_scope import terminal_env
     return terminal_env("TERMINAL_ENV", "local").strip().lower() in ("local", "")
 
 
@@ -245,7 +245,7 @@ def _permitted_host_read_target(p: Path, ctx: ResolveContext) -> Optional[Path]:
     container-visible cache path is first translated back to its host mount). Hosted scope: none —
     the profile's media caches are not the agent's, so every path is read inside its sandbox.
     """
-    from tools.environments.sandbox_scope import hosted_scope
+    from hermes_agent.tools.environments.sandbox_scope import hosted_scope
     if hosted_scope() is not None:
         return None
     if _is_local_terminal_backend():
@@ -253,7 +253,7 @@ def _permitted_host_read_target(p: Path, ctx: ResolveContext) -> Optional[Path]:
             return p.resolve()
         except Exception:
             return p
-    from tools.credential_files import from_agent_visible_cache_path
+    from hermes_agent.tools.credential_files import from_agent_visible_cache_path
     try:
         real = Path(from_agent_visible_cache_path(str(p))).resolve()
     except Exception:
@@ -267,7 +267,7 @@ def _get_active_env(task_id: Optional[str]):
     if not task_id:
         return None
     try:
-        from tools.terminal_tool_lifecycle import get_active_env
+        from hermes_agent.tools.terminal_tool_lifecycle import get_active_env
         return get_active_env(task_id)
     except Exception:
         return None
@@ -284,7 +284,7 @@ def _ensure_container_env(task_id: Optional[str]) -> None:
     if not task_id:
         return
     try:
-        from tools.terminal_tool import ensure_task_env
+        from hermes_agent.tools.terminal_tool import ensure_task_env
         ensure_task_env(task_id)
     except Exception:
         pass
@@ -312,7 +312,7 @@ async def _resolve_container_fallback(
             f"'{p}' is not reachable inside the sandbox and no active sandbox "
             f"session is available to read it",
             src=src, origin="container")
-    from tools.terminal_tool_config import translate_mounted_host_path
+    from hermes_agent.tools.terminal_tool_config import translate_mounted_host_path
     translated = translate_mounted_host_path(
         str(p),
         getattr(env, "host_cwd", None) or "",
@@ -351,7 +351,7 @@ def _finalize(
     """Chokepoint: size ceiling + type check. Images by magic bytes; video (opt-in) by
     extension + mp4 sniff — enough because every downstream consumer re-validates. Each
     reader enforces its own tighter cap first; this is the ceiling for all of them."""
-    from tools.vision_tools_image_prep import _detect_image_mime_type_from_bytes
+    from hermes_agent.tools.vision_tools_image_prep import _detect_image_mime_type_from_bytes
     if len(data) > _MAX_HOST_READ_BYTES:
         raise SourceTooLarge("media exceeds size limit", src=src, origin=origin)
     sniffed = _detect_image_mime_type_from_bytes(data)
@@ -374,7 +374,7 @@ def _detect_video_mime(data: bytes, src: str) -> Optional[str]:
     """Video MIME from the extension table, else the ISO base-media ``ftyp`` magic at
     offset 4 (covers extensionless data: URLs / query-string URLs)."""
     from urllib.parse import urlsplit
-    from tools.vision_tools import _detect_video_mime_type
+    from hermes_agent.tools.vision_tools import _detect_video_mime_type
     path_part = urlsplit(src).path if _SCHEME_RE.match(src) else src
     by_extension = _detect_video_mime_type(Path(path_part))
     if by_extension is not None:

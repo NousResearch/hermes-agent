@@ -49,7 +49,7 @@ def test_cancelled_queued_admission_is_a_terminal_cancelled_receipt_not_ambiguou
     never ``ambiguous``; a rejected admission without a result blob is ``failed``."""
     import asyncio
     from hermes_agent.hermes_state_runtime import cancel_session_input, settle_session_input
-    from tools.bot_live_delivery import _locked, _read, _write
+    from hermes_agent.tools.bot_live_delivery import _locked, _read, _write
     from hermes_agent.gateway.session_bot import recover_bot_deliveries
     path = tmp_path / 'state.db'
     db = SessionDB(path)
@@ -144,7 +144,7 @@ def test_owner_startup_recovery_survives_a_denied_mailbox_chmod(tmp_path, monkey
     ``chmod`` raises WinError 5. Owner startup recovery must still run and settle the receipts."""
     import asyncio
     from pathlib import Path
-    from tools.bot_live_delivery import DELIVERY_DIR_NAME, _locked, _read, _write
+    from hermes_agent.tools.bot_live_delivery import DELIVERY_DIR_NAME, _locked, _read, _write
     from hermes_agent.gateway.session_bot import recover_bot_deliveries
     path = tmp_path / 'state.db'
     db = SessionDB(path)
@@ -194,7 +194,7 @@ def _deny_mailbox_lock(monkeypatch, home):
     """The reporters' ACL (#139485, #138872) as this token sees it: the mailbox dir exists, but
     ``.lock`` inside it cannot be opened (Windows: no ACE for the user on an Administrators-owned dir)."""
     import os
-    from tools.bot_live_delivery import DELIVERY_DIR_NAME
+    from hermes_agent.tools.bot_live_delivery import DELIVERY_DIR_NAME
     lock = home.resolve() / 'runtime' / DELIVERY_DIR_NAME / '.lock'
     lock.parent.mkdir(parents=True)
     real_open = os.open
@@ -240,7 +240,7 @@ def test_unusable_mailbox_warns_once_per_dir_for_the_live_readers(tmp_path, monk
     ``PermissionError`` the callers already handle (never a new exception type)."""
     import logging
     import pytest
-    from tools import bot_live_delivery as mailbox
+    from hermes_agent.tools import bot_live_delivery as mailbox
     root = _deny_mailbox_lock(monkeypatch, tmp_path)
     with caplog.at_level(logging.DEBUG, logger=mailbox.log.name):
         for _ in range(3):

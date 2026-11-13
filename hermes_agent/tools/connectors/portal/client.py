@@ -9,22 +9,22 @@ import requests
 from pydantic import ValidationError
 
 from hermes_cli.nous_account import resolve_nous_portal_base_url
-from tools.connectors.gateway.errors import (
+from hermes_agent.tools.connectors.gateway.errors import (
     GatewayAuthError,
     GatewayUnavailable,
     ToolGatewayError,
     parse_gateway_error,
 )
-from tools.connectors.gateway.wire import ConnectorAccount, ConnectorAccountsResponse, RemovedConnectorAccount
-from tools.connectors.portal.errors import InvalidConnectorSlug, PortalConnectorUnavailable, PortalToolsUnavailable
-from tools.connectors.portal.wire import (
+from hermes_agent.tools.connectors.gateway.wire import ConnectorAccount, ConnectorAccountsResponse, RemovedConnectorAccount
+from hermes_agent.tools.connectors.portal.errors import InvalidConnectorSlug, PortalConnectorUnavailable, PortalToolsUnavailable
+from hermes_agent.tools.connectors.portal.wire import (
     ConnectorCatalogResponse,
     ConnectorPolicyResponse,
     ConnectorPolicyWriteResponse,
     ConnectorToolsListing,
 )
-from tools.managed_gateway_auth import read_nous_access_token
-from tools.managed_gateway_identity import connector_headers, log_connector_outcome, response_request_id
+from hermes_agent.tools.managed_gateway_auth import read_nous_access_token
+from hermes_agent.tools.managed_gateway_identity import connector_headers, log_connector_outcome, response_request_id
 
 
 DEFAULT_TIMEOUT_SECONDS = 30.0

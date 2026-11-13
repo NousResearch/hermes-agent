@@ -12,7 +12,7 @@ import pytest
 
 from tests.tools.test_sandbox_scope_conformance import A, host_dir as _conformance_host_dir
 from tests.tools.test_sandbox_scope_conformance import provider as _conformance_provider
-from tools.environments import sandbox_conformance as c
+from hermes_agent.tools.environments import sandbox_conformance as c
 
 provider = _conformance_provider  # the recording-sandbox fixture, by its name
 host_dir = _conformance_host_dir
@@ -56,7 +56,7 @@ def test_hosted_write_then_read_of_a_tilde_path_address_the_sandbox_home(provide
 
 
 def test_hosted_patch_of_a_tilde_path_addresses_the_sandbox_home(provider, host_home, declared_home):
-    from tools.hosted_tool_policy import HOSTED_TOOL_ALLOWLIST
+    from hermes_agent.tools.hosted_tool_policy import HOSTED_TOOL_ALLOWLIST
     assert "patch" in HOSTED_TOOL_ALLOWLIST
     with c._bind(A):
         patched = c.call_tool("patch", {"path": "~/x", "old_string": "a", "new_string": "b"}, task_id="t")
@@ -109,7 +109,7 @@ def test_hosted_tilde_user_never_consults_the_host_passwd_database(provider, mon
 
 def _record_v4a(monkeypatch) -> list[str]:
     """The V4A text each hosted patch hands the sandbox's file operations."""
-    from tools.file_operations import ShellFileOperations
+    from hermes_agent.tools.file_operations import ShellFileOperations
     sent: list[str] = []
     original = ShellFileOperations.patch_v4a
     monkeypatch.setattr(ShellFileOperations, "patch_v4a", lambda self, text: sent.append(text) or original(self, text))
@@ -176,7 +176,7 @@ def test_hosted_v4a_tilde_headers_with_no_home_or_a_user_are_refused(provider, h
 def _tilde_cwd(monkeypatch, anchor: str) -> None:
     """A ``~`` working directory from *anchor*; a task override goes through the real registration, which
     also records it as the session's cwd."""
-    from tools import terminal_tool
+    from hermes_agent.tools import terminal_tool
     monkeypatch.setattr(terminal_tool, "_task_env_overrides", {})
     monkeypatch.setattr(terminal_tool, "_session_cwd", {})
     if anchor == "terminal_cwd":
@@ -239,7 +239,7 @@ def test_local_recorded_tilde_cwd_still_anchors_at_the_profile_home(monkeypatch,
     """Outside a hosted scope a recorded ``~`` session cwd is returned as recorded and expands to this host's
     profile home, as it always did."""
     from pathlib import Path
-    from tools import file_tools_paths, terminal_tool
+    from hermes_agent.tools import file_tools_paths, terminal_tool
 
     monkeypatch.setenv("TERMINAL_ENV", "local")
     monkeypatch.delenv("TERMINAL_CWD", raising=False)
@@ -251,7 +251,7 @@ def test_local_recorded_tilde_cwd_still_anchors_at_the_profile_home(monkeypatch,
 
 
 def test_protected_instruction_check_never_resolves_a_hosted_path_on_the_host(provider, monkeypatch, host_dir):
-    from tools import file_tools_write_guards as guards
+    from hermes_agent.tools import file_tools_write_guards as guards
     (host_dir / "workspace-link").symlink_to(host_dir.parent, target_is_directory=True)
 
     def unresolvable(*_args, **_kwargs):
@@ -270,7 +270,7 @@ def test_protected_instruction_check_never_resolves_a_hosted_path_on_the_host(pr
 def test_hosted_tilde_starts_the_sandbox_under_the_callers_task(provider, monkeypatch, declared_home):
     """Learning the sandbox's home brings up the CALLER's sandbox, with that task's overrides, and only for a
     path that starts with ``~``."""
-    from tools import terminal_tool
+    from hermes_agent.tools import terminal_tool
     created = []
     original = c.RecordingSandboxProvider.create_environment
     monkeypatch.setattr(c.RecordingSandboxProvider, "create_environment",
@@ -294,7 +294,7 @@ def test_local_scope_tilde_still_expands_to_the_profile_home(monkeypatch, host_h
     from agent.runtime_scope import bind_state
     from hermes_constants import get_hermes_home
     from hermes_scope import Principal, Scope
-    from tools.file_tools_paths import _expand_tilde
+    from hermes_agent.tools.file_tools_paths import _expand_tilde
 
     monkeypatch.setattr("hermes_constants.get_subprocess_home", lambda: host_home)
     for scope in (None, Scope("local", str(get_hermes_home()), Principal("local"))):

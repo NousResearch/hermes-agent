@@ -18,9 +18,9 @@ import time
 from pathlib import Path
 from typing import Any, Iterator, Optional
 
-from tools.registry import tool_error
+from hermes_agent.tools.registry import tool_error
 
-logger = logging.getLogger("tools.delegate_tool")  # log-record parity with the origin module
+logger = logging.getLogger("hermes_agent.tools.delegate_tool")  # log-record parity with the origin module
 
 _NOT_FOUND = (
     "No finished subagent '{sid}' in this conversation's spawn tree can be continued (unknown id, not yours, or no "
@@ -31,7 +31,7 @@ _NOT_FOUND = (
 def _claim_resume(sid: str, parent_agent: Any) -> tuple[Optional[dict[str, Any]], Optional[str]]:
     """Take the finished child's resume spec out of its record, so a second continue can never run the same
     conversation twice at once (the attribution stub stays). ``(spec, None)`` or ``(None, error)``."""
-    from tools.delegate_tool_registry import (
+    from hermes_agent.tools.delegate_tool_registry import (
         _active_subagents, _active_subagents_lock, _owns_subagent_record, _recent_subagents,
     )
     with _active_subagents_lock:
@@ -52,7 +52,7 @@ def _claim_resume(sid: str, parent_agent: Any) -> tuple[Optional[dict[str, Any]]
 
 def _release_resume(sid: str, spec: dict[str, Any]) -> None:
     """Hand an unused spec back (the continue was refused before anything ran)."""
-    from tools.delegate_tool_registry import _active_subagents_lock, _recent_subagents
+    from hermes_agent.tools.delegate_tool_registry import _active_subagents_lock, _recent_subagents
     with _active_subagents_lock:
         record = _recent_subagents.get(sid)
         if record is not None:
@@ -78,7 +78,7 @@ def _transcript_store(parent_agent: Any) -> Iterator[Any]:
 def _refusal(parent_agent: Any) -> Optional[str]:
     from agent.oneshot_footprint import agent_is_oneshot
     from agent.runtime_session_store import RuntimeSessionStore, is_worker_process
-    from tools.delegate_tool_registry import is_spawn_paused
+    from hermes_agent.tools.delegate_tool_registry import is_spawn_paused
     if agent_is_oneshot(parent_agent):
         # The same frozen fact that strips live control from its schema: its children are joined inside the call.
         return "action='continue' is unavailable in one-shot sessions. Spawn a new task instead."
@@ -88,7 +88,7 @@ def _refusal(parent_agent: Any) -> Optional[str]:
     if is_spawn_paused():
         return ("Delegation spawning is paused. Clear the pause via the TUI (`p` in /agents) or the "
                 "`delegation.pause` RPC before retrying.")
-    from tools.delegate_tool import _get_max_spawn_depth
+    from hermes_agent.tools.delegate_tool import _get_max_spawn_depth
     depth, max_spawn = getattr(parent_agent, "_delegate_depth", 0), _get_max_spawn_depth()
     if isinstance(depth, int) and depth >= max_spawn:  # the same limit a spawn from here hits
         return f"Delegation depth limit reached (depth={depth}, max_spawn_depth={max_spawn})."
@@ -97,8 +97,8 @@ def _refusal(parent_agent: Any) -> Optional[str]:
 
 def _durable_spec(sid: str, record: dict[str, Any], parent_agent: Any) -> tuple[Optional[dict[str, Any]], Optional[str]]:
     """A resume spec from the durable record: its route re-resolved from the task's own routing request."""
-    from tools.delegate_tool import _load_config
-    from tools.delegate_tool_routes import resolve_task_routes
+    from hermes_agent.tools.delegate_tool import _load_config
+    from hermes_agent.tools.delegate_tool_routes import resolve_task_routes
     request = record.get("route_request")
     if not isinstance(request, dict) or not record.get("session_id"):
         return None, (f"Subagent '{sid}' ran on a route that cannot be rebuilt after a restart. "
@@ -115,13 +115,13 @@ def _claim(sid: str, parent_agent: Any, auto: bool = False,
     durable claim is the single gate for both: a refusal there refuses the continue even when this caller holds the
     in-process spec (a second continue that fell through to the row, or one from another process, owns it). *auto*:
     the scheduler already claimed the row (``delegate_tool_auto_resume._claim``); this takes that claim over."""
-    from tools.delegate_tool_resumable import claim as claim_durable
+    from hermes_agent.tools.delegate_tool_resumable import claim as claim_durable
     spec, err = _claim_resume(sid, parent_agent)
     if spec is None and err != _NOT_FOUND.format(sid=sid):
         return None, None, err
     if auto:
-        from tools.delegate_tool_auto_resume import CANCELLED, take_claim
-        from tools.delegate_tool_resumable import _db_path_for
+        from hermes_agent.tools.delegate_tool_auto_resume import CANCELLED, take_claim
+        from hermes_agent.tools.delegate_tool_resumable import _db_path_for
         record = take_claim(_db_path_for(parent_agent), sid)
         durable_err = None if record is not None else CANCELLED
     else:
@@ -133,7 +133,7 @@ def _claim(sid: str, parent_agent: Any, auto: bool = False,
     if spec is None and record is not None:
         spec, err = _durable_spec(sid, record, parent_agent)
         if spec is None:
-            from tools.delegate_tool_resumable import release
+            from hermes_agent.tools.delegate_tool_resumable import release
             release(parent_agent, sid, record)
             return None, None, err
     return (spec, record, None) if spec else (None, None, err)
@@ -144,7 +144,7 @@ def _segment_tip(db: Any, sid: str, session_id: str) -> str:
     record was written moved the child on from *session_id* (``get_compression_tip`` skips delegate children)."""
     if db is None:
         return session_id
-    from tools.delegate_tool_sessions import stored_child_session
+    from hermes_agent.tools.delegate_tool_sessions import stored_child_session
     return stored_child_session(db, sid, [session_id]) or session_id
 
 
@@ -154,16 +154,16 @@ def _start(
 ) -> tuple[Optional[str], Optional[str]]:
     """Rebuild, hydrate and dispatch the continued child: ``(tool result JSON, None)`` or ``(None, error)`` when
     it was refused before anything ran."""
-    from tools.delegate_tool import (
+    from hermes_agent.tools.delegate_tool import (
         DEFAULT_MAX_ITERATIONS, _build_children, _get_max_concurrent_children, _load_config, _oneshot_spawn_budget,
         _parent_live_home,
     )
-    from tools.delegate_tool_dispatch import _Batch, _capture_origin, _run_batch
-    from tools.delegation_live_log import create_live_transcripts
+    from hermes_agent.tools.delegate_tool_dispatch import _Batch, _capture_origin, _run_batch
+    from hermes_agent.tools.delegation_live_log import create_live_transcripts
 
     route = spec["route"]
     if run_origin == "auto":  # the scheduler has no turn to join a result into: it only ever detaches
-        from tools.delegate_tool_dispatch import _resolve_async_wake_sid
+        from hermes_agent.tools.delegate_tool_dispatch import _resolve_async_wake_sid
         origin = _capture_origin()
         if _resolve_async_wake_sid(origin[0], origin[4]) is None:
             return None, "Not continued: this session cannot receive a detached result."
@@ -193,15 +193,15 @@ def _start(
         db.reopen_session(session_id)  # its close() ended it; the continued child's close() ends it again
         children[0][2]._delegate_continue_history = history
         children[0][2]._delegate_run_origin = run_origin  # a parent's own continue ends automatic resumes of it
-        from tools.delegate_tool_resumable import hold_claim, last_workspace
+        from hermes_agent.tools.delegate_tool_resumable import hold_claim, last_workspace
         children[0][2]._delegate_continue_workspace = last_workspace(parent_agent, sid)
         if record is not None:  # a run that fails before it records itself hands the claim back
             hold_claim(children[0][2], parent_agent, sid, record)
         if run_origin == "auto":  # the last word is the parent's: a stop, /stop, /new or replacement since the claim
-            from tools.delegate_tool_auto_resume import confirm_start
-            from tools.delegate_tool_resumable import _db_path_for
+            from hermes_agent.tools.delegate_tool_auto_resume import confirm_start
+            from hermes_agent.tools.delegate_tool_resumable import _db_path_for
             if cancelled := confirm_start(_db_path_for(parent_agent), sid):
-                from tools.delegate_tool_child_run import _close_child, _detach_child
+                from hermes_agent.tools.delegate_tool_child_run import _close_child, _detach_child
                 children[0][2]._delegate_claim = None
                 _detach_child(parent_agent, children[0][2])
                 _close_child(children[0][2], "Failed to close a cancelled continue's child")
@@ -238,7 +238,7 @@ def continue_subagent(subagent_id: Optional[str], message: Optional[str], parent
     if result is None:
         _release_resume(sid, spec)
         if record is not None:
-            from tools.delegate_tool_resumable import release
+            from hermes_agent.tools.delegate_tool_resumable import release
             release(parent_agent, sid, record)
         return tool_error(err)
     return result

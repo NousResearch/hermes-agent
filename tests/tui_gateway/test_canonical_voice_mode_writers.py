@@ -167,7 +167,7 @@ def test_another_session_may_start_once_the_capture_ended(owner):
 def stop_phrase(monkeypatch):
     import types
 
-    monkeypatch.setitem(sys.modules, "tools.voice_mode_transcript",
+    monkeypatch.setitem(sys.modules, "hermes_agent.tools.voice_mode_transcript",
                         types.SimpleNamespace(is_voice_stop_phrase=lambda t: t.strip().lower() == "stop"))
     monkeypatch.setattr(server, "_tts_stream_stop", lambda user_barge=False: None)
 

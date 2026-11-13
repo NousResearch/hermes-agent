@@ -75,5 +75,12 @@ docker/entrypoint.sh text eol=lf
 /gateway/status.py linguist-generated=true
 /gateway/status_pid_records.py linguist-generated=true
 /hermes_state_common.py linguist-generated=true
+/model_tools.py linguist-generated=true
+/tools/__init__.py linguist-generated=true
+/tools/env_passthrough.py linguist-generated=true
+/tools/environments/__init__.py linguist-generated=true
+/tools/environments/local.py linguist-generated=true
+/tools/skills_sync.py linguist-generated=true
+/toolsets.py linguist-generated=true
 /tui_gateway/__init__.py linguist-generated=true
 # END shims

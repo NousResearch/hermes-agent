@@ -10,7 +10,7 @@ from typing import Any, Dict, Iterator, List, NamedTuple, Optional
 from utils import base_url_hostname, is_truthy_value
 from hermes_cli.fallback_config import scoped_fallback_chain
 
-logger = logging.getLogger("tools.delegate_tool")  # log-record parity with the origin module
+logger = logging.getLogger("hermes_agent.tools.delegate_tool")  # log-record parity with the origin module
 
 # Runtime-provider sentinel for providers that are not natively known; must
 # match hermes_cli.runtime_provider.RUNTIME_PROVIDER_TYPE_CUSTOM.
@@ -30,7 +30,7 @@ DEFAULT_CHILD_TIMEOUT: Optional[float] = None
 
 def _cfg() -> dict:
     """The ``delegation`` section, read through the origin so tests can patch it."""
-    from tools.delegate_tool import _load_config
+    from hermes_agent.tools.delegate_tool import _load_config
     return _load_config()
 
 
@@ -40,7 +40,7 @@ def _cfg() -> dict:
 # deadlock the parent's prompt_toolkit TUI. Every worker gets a non-interactive
 # callback via ThreadPoolExecutor(initializer=...): deny by default, approve when
 # delegation.subagent_auto_approve is true. Both warn for audit. Gateway sessions
-# are unaffected (they resolve approvals via tools/approval.py's per-session queue).
+# are unaffected (they resolve approvals via hermes_agent/tools/approval.py's per-session queue).
 def _subagent_auto_deny(command: str, description: str, **kwargs) -> str:
     """Auto-deny (safe default): returns 'deny' so the child sees a recoverable refusal."""
     logger.warning(
@@ -94,7 +94,7 @@ def _get_oneshot_max_children() -> int:
 
 def _get_prefix_stagger_seconds() -> float:
     """delegation.prefix_stagger_seconds: longest a batch sibling waits for the first child's response to start so
-    its request reads the shared prompt cache (0 = off, the default). See tools/delegate_tool_prefix_gate.py."""
+    its request reads the shared prompt cache (0 = off, the default). See hermes_agent/tools/delegate_tool_prefix_gate.py."""
     return _knob(
         "prefix_stagger_seconds", None, lambda v: min(60.0, max(0.0, float(v))), 0.0,
         "delegation.prefix_stagger_seconds=%r is not a number; the prompt-cache warm-up wait is off",
@@ -156,9 +156,9 @@ def gateway_delegation_inline_scope(inline: bool) -> Iterator[None]:
 
 def agent_joins_delegation(agent: Any) -> bool:
     """The gateway's inline decision, frozen on *agent* at its first tool build (like ``agent_is_oneshot``) and
-    re-frozen from a restored tools[] pin (``tools.delegate_tool.adopt_session_delegation_mode``), so later rebuilds
+    re-frozen from a restored tools[] pin (``hermes_agent.tools.delegate_tool.adopt_session_delegation_mode``), so later rebuilds
     outside the build scope keep the session's ``delegate_task`` bytes. Dispatch does not read this: it follows the
-    schema the session carries (``tools.delegate_tool.session_joins_delegation``)."""
+    schema the session carries (``hermes_agent.tools.delegate_tool.session_joins_delegation``)."""
     cached = getattr(agent, "_delegation_inline", None)
     if not isinstance(cached, bool):
         cached = _GATEWAY_DELEGATION_INLINE.get()
@@ -175,7 +175,7 @@ def _get_max_async_children() -> int:
     """Concurrency cap for background delegations == delegation.max_concurrent_children. At capacity a new async
     dispatch is REJECTED (not queued) so a runaway model can't pile up unbounded background work; the caller then
     runs synchronously. A leftover ``delegation.max_async_children`` key is ignored with a one-time warning."""
-    from tools.delegate_tool import _get_max_concurrent_children
+    from hermes_agent.tools.delegate_tool import _get_max_concurrent_children
     if _cfg().get("max_async_children") is not None:
         _warn_once(
             "_LEGACY_MAX_ASYNC_WARNED", "delegation.max_async_children is deprecated and ignored; "

@@ -1,8 +1,8 @@
 """Central registry for all hermes-agent tools: each tool file calls ``registry.register()``
 at import to declare schema, handler, toolset membership and availability check;
-``model_tools.py`` queries the registry instead of keeping parallel data structures.
+``hermes_agent/model_tools.py`` queries the registry instead of keeping parallel data structures.
 Cycle-safe import chain: this module imports nothing from model_tools or tool files;
-tools/*.py import it at module level; model_tools.py imports both; run_agent/cli import
+hermes_agent/tools/*.py import it at module level; hermes_agent/model_tools.py imports both; run_agent/cli import
 model_tools."""
 
 import ast
@@ -110,7 +110,7 @@ def _module_registers_tools(module_path: Path) -> bool:
 
 
 def _tool_module_candidates(tools_path: Path) -> list[Path]:
-    """Flat ``tools/*.py`` modules plus the package entry point ``tools/<pkg>/tool.py``, in one
+    """Flat ``hermes_agent/tools/*.py`` modules plus the package entry point ``tools/<pkg>/tool.py``, in one
     sorted list. Only ``tool.py`` is scanned in a package, so every other file in it is a library
     by construction. Sorted after merging: ``register()`` lets a same-name, same-toolset duplicate
     overwrite silently, so the import order must not depend on file depth."""
@@ -178,7 +178,7 @@ def discover_builtin_tools(tools_dir: Optional[Path] = None) -> list[str]:
 def _discovery_cache_path() -> Optional[Path]:
     """Path of the tool-discovery verdict cache, or None if unresolvable."""
     try:
-        # Deferred import keeps tools/registry.py a no-deps leaf at import time.
+        # Deferred import keeps hermes_agent/tools/registry.py a no-deps leaf at import time.
         from hermes_constants import get_hermes_home
         return Path(get_hermes_home()) / "cache" / "tool_discovery_cache.json"
     except Exception:
@@ -231,7 +231,7 @@ class ToolEntry:
     dynamic_schema_overrides: Optional[Callable] = None
     execution_timeout: float | None = None
     # Argument names the handler accepts that the schema does not advertise (legacy call
-    # shapes, wrong-tool guards). tools/arg_validation.py never flags them, and a call that
+    # shapes, wrong-tool guards). hermes_agent/tools/arg_validation.py never flags them, and a call that
     # carries one is left for the handler to judge instead of the required-argument check.
     compat_args: frozenset = frozenset()
     # Required arguments whose absence the handler answers with its own guidance; the generic
@@ -551,7 +551,7 @@ def _check_fn_cached(fn: Callable) -> bool:
 def _core_tools_gated_by(fn: Callable) -> set[str]:
     """Names of ``_HERMES_CORE_TOOLS`` members whose registered ``check_fn`` is *fn*."""
     try:
-        from toolsets import _HERMES_CORE_TOOLS
+        from hermes_agent.toolsets import _HERMES_CORE_TOOLS
         core = frozenset(_HERMES_CORE_TOOLS)
     except Exception:
         return set()
@@ -1085,13 +1085,13 @@ class ToolRegistry:
         self, name: str, args: dict, *, scope: Optional[str] = None, **kwargs) -> str | dict:
         """Execute a tool handler by name: async handlers bridged via ``_run_async()``,
         results normalized, every exception returned as ``{"error": ...}``."""
-        from tools.hosted_tool_policy import hosted_tool_refusal
+        from hermes_agent.tools.hosted_tool_policy import hosted_tool_refusal
         if refusal := hosted_tool_refusal(name):  # deny-by-default in a hosted scope, before any handler
             return tool_error(refusal)
         entry = self.get_entry(name, scope=scope)
         if not entry:
             return tool_error(f"Unknown tool: {name}")
-        from tools.arg_validation import check_tool_args, flag_unknown_args
+        from hermes_agent.tools.arg_validation import check_tool_args, flag_unknown_args
         refusal, unknown, valid = check_tool_args(entry, args)
         if refusal is not None:
             return refusal
@@ -1101,7 +1101,7 @@ class ToolRegistry:
             # plugin handler is not broken by every field the dispatcher injects (#68318).
             kwargs = _kwargs_accepted_by(entry.handler, kwargs)
             if entry.is_async:
-                from model_tools import _run_async
+                from hermes_agent.model_tools import _run_async
                 result = _run_async(entry.handler(args, **kwargs))
             else:
                 result = entry.handler(args, **kwargs)
@@ -1112,7 +1112,7 @@ class ToolRegistry:
             # Sanitize so framing tokens/CDATA/fences in exception text aren't structural noise.
             raw = f"Tool execution failed: {type(e).__name__}: {e}"
             try:
-                from model_tools import _sanitize_tool_error
+                from hermes_agent.model_tools import _sanitize_tool_error
                 sanitized = _sanitize_tool_error(raw)
             except Exception:
                 sanitized = raw  # defensive: never let the sanitizer block error propagation
@@ -1130,7 +1130,7 @@ class ToolRegistry:
             return size
         if default is not None:
             return default
-        from tools.budget_config import DEFAULT_RESULT_SIZE_CHARS
+        from hermes_agent.tools.budget_config import DEFAULT_RESULT_SIZE_CHARS
         return DEFAULT_RESULT_SIZE_CHARS
 
     def get_all_tool_names(self) -> list[str]:

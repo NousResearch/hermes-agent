@@ -2,8 +2,8 @@
 container-cwd sanity checks, plugin-backend classification, and the ``_quiet``
 best-effort block shared by the terminal_tool_* modules.
 
-Split out of ``tools/terminal_tool.py``; every public/patched name is re-imported there,
-so ``tools.terminal_tool.<name>`` keeps resolving (and monkeypatching) as before.
+Split out of ``hermes_agent/tools/terminal_tool.py``; every public/patched name is re-imported there,
+so ``hermes_agent.tools.terminal_tool.<name>`` keeps resolving (and monkeypatching) as before.
 """
 
 import functools
@@ -16,7 +16,7 @@ from contextlib import contextmanager
 from typing import Any, overload
 
 # Log-record parity with the origin module.
-logger = logging.getLogger("tools.terminal_tool")
+logger = logging.getLogger("hermes_agent.tools.terminal_tool")
 
 
 @contextmanager
@@ -307,7 +307,7 @@ def _tenv(name: str, default: str = "") -> str:
     must go through this: under gateway multiplexing the active profile's
     config arrives via a per-turn scope, and a raw ``os.getenv`` would read
     whatever a previous turn pinned into the process env (cross-profile leak)."""
-    from tools.terminal_scope import terminal_env
+    from hermes_agent.tools.terminal_scope import terminal_env
 
     return terminal_env(name, default)
 

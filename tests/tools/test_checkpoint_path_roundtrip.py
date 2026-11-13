@@ -4,7 +4,7 @@ import os
 
 import pytest
 
-from tools import checkpoint_manager as checkpoints
+from hermes_agent.tools import checkpoint_manager as checkpoints
 
 
 def test_safe_restore_preserves_exact_paths_and_user_edits(tmp_path, monkeypatch):

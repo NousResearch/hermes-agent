@@ -2,7 +2,7 @@
 
 Hermes runs shell commands through a pluggable set of **terminal backends**.
 The built-in backends (local, Docker, Modal, Daytona, Vercel Sandbox, SSH)
-live in the core repo under `tools/environments/`. The official
+live in the core repo under `hermes_agent/tools/environments/`. The official
 [Singularity/Apptainer plugin](https://github.com/NousResearch/hermes-official-plugins/tree/main/singularity)
 is a complete worked example of this page. Third-party
 sandbox vendors integrate as **plugins** instead — a standalone plugin repo
@@ -125,7 +125,7 @@ hermes config set terminal.backend acmebox
 ## Environment object contract
 
 `create_environment()` returns an object satisfying the same duck-typed
-interface as `tools.environments.base.BaseEnvironment`:
+interface as `hermes_agent.tools.environments.base.BaseEnvironment`:
 
 - `execute(command, timeout=None, ...)` → `{"output": str, "exit_code": int}`
 - `cleanup()` — release resources; called on session teardown / idle reaping
@@ -176,7 +176,7 @@ gives commands their own `$TMPDIR`) inherits `True` and must turn it off, or
 the file tools bypass the sandbox:
 
 ```python
-from tools.environments.local import LocalEnvironment
+from hermes_agent.tools.environments.local import LocalEnvironment
 
 
 class AcmeJailEnvironment(LocalEnvironment):
@@ -288,7 +288,7 @@ built-ins included, so nothing a hosted agent runs ever runs on the Hermes host.
 
 **Identity.** The sandbox is the agent's, not the task's or the session's:
 `SandboxIdentity(scope.tenant, scope.agent)` from
-`tools/environments/sandbox_scope.py`, never a tool argument, task id or
+`hermes_agent/tools/environments/sandbox_scope.py`, never a tool argument, task id or
 profile path. All of an agent's sessions share one sandbox; two agents never
 do, even with the same agent name in different tenants. `create_environment`
 additionally receives `scope=` (the bound scope) and `sandbox=` (the
@@ -323,7 +323,7 @@ the agent's sandbox key; another agent's process is indistinguishable from a
 missing one and its events stay queued for it.
 
 **Refused in a hosted scope.** Tools with no sandbox route yet fail closed
-before any setup, file or process (`tools/hosted_tool_policy.py`): the
+before any setup, file or process (`hermes_agent/tools/hosted_tool_policy.py`): the
 browser tools, computer use and desktop UI, image/video generation, text to
 speech, skills, cron jobs and their scripts, delegation, kanban, catalog and
 connection management, onboarding, and every MCP server from the profile's
@@ -346,7 +346,7 @@ back wraps yours: every pipe operation and `poll()` checks the bound scope, so
 a stream acquired by one agent is refused to any other holder. A later call in the same
 session attaches with the `ProcessRef` from the first stream; a reference that
 names another agent's sandbox is refused before your method runs. The built-in
-backends implement these too (`tools/environments/base_processes.py`: the
+backends implement these too (`hermes_agent/tools/environments/base_processes.py`: the
 local backend on this host, docker/ssh and `supports_streams` plugins through
 their exec prefix). Suspending a sandbox once its processes are idle-stopped,
 and network isolation between sandboxes, are yours.
@@ -355,7 +355,7 @@ and network isolation between sandboxes, are yours.
 (`sandbox_scope.CredentialRef`), never as values from the secret store. No
 broker exists yet, so Hermes passes none.
 
-**Conformance.** `tools/environments/sandbox_conformance.py` holds the
+**Conformance.** `hermes_agent/tools/environments/sandbox_conformance.py` holds the
 isolation checks Hermes runs against its recording stub backend
 (`tests/tools/test_sandbox_scope_conformance.py`): A's tools only address A's
 sandbox; a handle naming another agent is refused; no file tool or media read

@@ -13,8 +13,8 @@ from agent.relay_runtime import (
     RUNTIME_SCHEMA_VERSION,
 )
 from hermes_cli.platforms import PLATFORMS
-from tools.connectors.gateway.names import CONNECTOR_NAME_PREFIX
-from toolsets import BUILTIN_TOOL_NAMES, BUILTIN_TOOLSET_NAMES
+from hermes_agent.tools.connectors.gateway.names import CONNECTOR_NAME_PREFIX
+from hermes_agent.toolsets import BUILTIN_TOOL_NAMES, BUILTIN_TOOLSET_NAMES
 
 from .shared_metrics_prepared_compaction import (
     PREPARED_COMPACTION_DIMENSIONS, PREPARED_COMPACTION_MARK, PREPARED_COMPACTION_METRIC,
@@ -255,7 +255,7 @@ CONTEXT_FILL_BUCKETS = frozenset({"lt_50", "50_to_75", "75_to_90", "90_to_100", 
 EXTENSION_KINDS = frozenset({"mcp_server", "plugin", "skill"})
 EXTENSION_SOURCES = frozenset({"bundled", "catalog", "hub", "local", "other", "url"})
 EXTENSION_OUTCOMES = frozenset({"failed", "success"})
-# Every built-in backend in tools/terminal_tool_config.py::_BUILTIN_BACKENDS.
+# Every built-in backend in hermes_agent/tools/terminal_tool_config.py::_BUILTIN_BACKENDS.
 TERMINAL_BACKENDS = frozenset({
     "daytona", "docker", "local", "managed_modal", "modal", "other", "singularity", "ssh", "vercel_sandbox",
 })
@@ -283,7 +283,7 @@ MEMORY_OP_OUTCOMES = frozenset({"failed", "rejected", "success"})
 # Who asked: the user's turn, or the unattended self-improvement review fork.
 MEMORY_OP_ORIGINS = frozenset({"background_review", "foreground"})
 # Why a memory op was refused or failed. Built-in classes name each refusal/failure return of
-# tools/memory_tool.py and tools/memory_tool_store.py; plugin providers report ``provider_error`` (the
+# hermes_agent/tools/memory_tool.py and hermes_agent/tools/memory_tool_store.py; plugin providers report ``provider_error`` (the
 # tool returned an error) or ``exception`` (it raised). Successes are ``none``.
 MEMORY_OP_FAILURE_CLASSES = frozenset({
     "ambiguous", "disabled", "drift", "exception", "gate_refused", "invalid_args", "missing_content",
@@ -483,7 +483,7 @@ EXTENSION_FAILURE_CLASSES = (
     EXTENSION_SKILL_FAILURE_CLASSES | EXTENSION_PLUGIN_FAILURE_CLASSES | EXTENSION_MCP_FAILURE_CLASSES
 )
 # The skills-hub adapter that resolved or served a skill: every ``SOURCE_ID`` the router in
-# tools/skills_hub_search.py::create_source_router builds. ``none`` = no adapter was involved
+# hermes_agent/tools/skills_hub_search.py::create_source_router builds. ``none`` = no adapter was involved
 # (bundled restores, plugin and MCP rows), ``unresolved`` = a hub lookup no adapter answered,
 # ``other`` = an adapter id this list does not name.
 EXTENSION_REGISTRY_IDS = frozenset({
@@ -600,7 +600,7 @@ FILE_EDIT_OUTCOMES = frozenset({"already_applied", "ambiguous", "applied", "fail
 
 def _fuzzy_match_strategies() -> frozenset[str]:
     # The patch tool's own strategy chain, so a new strategy is a new bucket, never "none".
-    from tools.fuzzy_match import STRATEGIES
+    from hermes_agent.tools.fuzzy_match import STRATEGIES
 
     return frozenset(name for name, _fn in STRATEGIES)
 
@@ -1869,7 +1869,7 @@ def connector_error_class(kwargs: dict[str, Any]) -> str | None:
     if not code:
         return None
     # Late import: the wire module pulls pydantic, which the contract does not need at import.
-    from tools.connectors.gateway.wire import execute_error_family
+    from hermes_agent.tools.connectors.gateway.wire import execute_error_family
 
     family = execute_error_family(code, error.get("family") if isinstance(error.get("family"), str) else None)
     return _CONNECTOR_FAMILY_CLASSES.get(family or "") or _CONNECTOR_CODE_CLASSES.get(code)

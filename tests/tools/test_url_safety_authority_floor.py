@@ -11,8 +11,8 @@ from unittest.mock import patch
 
 import pytest
 
-from tools import browser_session_cloud, browser_url_policy, browser_use_cli
-from tools.url_safety import is_always_blocked_url, is_safe_url
+from hermes_agent.tools import browser_session_cloud, browser_url_policy, browser_use_cli
+from hermes_agent.tools.url_safety import is_always_blocked_url, is_safe_url
 
 _LOCALHOST = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 0))]
 

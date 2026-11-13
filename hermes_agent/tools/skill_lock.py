@@ -49,7 +49,7 @@ _SEPARATORS = frozenset({";", "&", "&&", "|", "||", "(", ")", "|&", ";;"})
 
 
 def _skill_usage():
-    from tools import skill_usage
+    from hermes_agent.tools import skill_usage
     return skill_usage
 
 
@@ -79,7 +79,7 @@ def is_locked_skill(name: str, locked_names: Iterable[str] | None = None) -> boo
         return False
     if name in names or os.path.basename(name) in names:
         return True
-    from tools.skill_manager_tool import _find_skill
+    from hermes_agent.tools.skill_manager_tool import _find_skill
     found = _find_skill(name)
     return bool(found) and found["path"].name in names
 
@@ -217,7 +217,7 @@ _XARGS_OPTIONS_WITH_ARG = frozenset({"-n", "-I", "-L", "-P", "-d", "-E", "-s", "
 
 
 def _strip_wrappers(argv: list[str]) -> list[str]:
-    from tools.self_repo_guard import _WRAPPER_OPTIONS_WITH_ARG
+    from hermes_agent.tools.self_repo_guard import _WRAPPER_OPTIONS_WITH_ARG
     while argv:
         if re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", argv[0]):
             argv = argv[1:]

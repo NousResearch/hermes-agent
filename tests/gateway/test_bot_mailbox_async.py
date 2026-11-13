@@ -9,7 +9,7 @@ pytest_plugins = ('tests.gateway.test_session_bot_retry',)
 
 
 def test_canonical_poll_reads_owner_projection_without_handshake(tmp_path, monkeypatch):
-    from tools import bot_live_delivery as mailbox
+    from hermes_agent.tools import bot_live_delivery as mailbox
     key = 'a' * 32
     record = dict(delivery_id=key, admission_id='admitted', status='queued', message='hello',
                   profile_home=str(tmp_path), session_id='s', principal_id='p', reply='')
@@ -25,7 +25,7 @@ def test_canonical_poll_reads_owner_projection_without_handshake(tmp_path, monke
 @pytest.mark.asyncio
 async def test_admission_wait_releases_file_lock_and_concurrent_deliver_keeps_loop_live(bot, monkeypatch):
     from hermes_agent.gateway.session_bot import deliver
-    from tools.bot_live_delivery import _locked
+    from hermes_agent.tools.bot_live_delivery import _locked
     entered, release, ticked = asyncio.Event(), asyncio.Event(), asyncio.Event()
     original = bot.authority.admit_automation
     async def held(*args, **kwargs):
@@ -61,7 +61,7 @@ async def test_admission_wait_releases_file_lock_and_concurrent_deliver_keeps_lo
 async def test_paused_receipt_rearms_on_resume_without_polling_rpc(bot, monkeypatch):
     from hermes_agent.gateway.session_bot import deliver
     from hermes_agent.gateway.session_contract import SessionRef
-    from tools.bot_live_delivery import read_delivery_result
+    from hermes_agent.tools.bot_live_delivery import read_delivery_result
     schedule = bot.authority._schedule
     monkeypatch.setattr(bot.authority, '_schedule', lambda ref: None)
     key = 'c' * 32
@@ -88,7 +88,7 @@ async def test_receipt_read_straddling_the_settlement_commit_projects_the_reply(
     from hermes_agent.gateway import session_bot, session_results
     from hermes_agent.gateway.session_contract import SessionRef
     from hermes_agent.hermes_state_runtime import claim_session_input, settle_session_input
-    from tools.bot_live_delivery import read_delivery_result
+    from hermes_agent.tools.bot_live_delivery import read_delivery_result
     monkeypatch.setattr(bot.authority, '_schedule', lambda ref: None)
     key = 'f' * 32
     receipt = await session_bot.deliver(bot.connection, dict(id=key, profile='default', message='straddle'))
@@ -116,7 +116,7 @@ async def test_adopted_result_during_unknown_projection_is_not_lost(bot, monkeyp
     from hermes_agent.gateway.session_contract import SessionRef
     from hermes_agent.hermes_state_runtime import (begin_runtime_epoch, claim_session_input, recover_session_inputs,
         register_worker_execution, adopt_worker_execution, settle_session_input)
-    from tools.bot_live_delivery import read_delivery_result
+    from hermes_agent.tools.bot_live_delivery import read_delivery_result
     monkeypatch.setattr(bot.authority, '_schedule', lambda ref: None)
     key = 'd' * 32
     receipt = await session_bot.deliver(bot.connection, dict(id=key, profile='default', message='unknown'))
@@ -160,7 +160,7 @@ async def test_adopted_result_during_unknown_projection_is_not_lost(bot, monkeyp
 @pytest.mark.asyncio
 async def test_drain_defers_retry_without_publishing_interim_failure(bot, monkeypatch):
     from hermes_agent.gateway.session_bot import deliver, recover_bot_deliveries
-    from tools.bot_live_delivery import read_delivery_result
+    from hermes_agent.tools.bot_live_delivery import read_delivery_result
     import hermes_agent.gateway.session_finite as finite
     execute = finite.execute_finite_admission
     async def drain_after_failure(authority, ref, row):

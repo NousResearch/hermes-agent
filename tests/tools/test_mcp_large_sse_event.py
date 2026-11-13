@@ -67,7 +67,7 @@ def catalog_server(tmp_path):
         return f"http://127.0.0.1:{port_file.read_text(encoding='utf-8')}{path}"
 
     yield start
-    from tools.mcp_tool_lifecycle import shutdown_mcp_servers
+    from hermes_agent.tools.mcp_tool_lifecycle import shutdown_mcp_servers
     shutdown_mcp_servers()
     for proc in procs:
         proc.terminate()

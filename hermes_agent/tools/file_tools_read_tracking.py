@@ -27,10 +27,10 @@ import stat
 import threading
 import time
 
-from tools.file_state import _evict_oldest
-from tools.file_tools_paths import _authoritative_workspace_root, _resolve_path_for_task
+from hermes_agent.tools.file_state import _evict_oldest
+from hermes_agent.tools.file_tools_paths import _authoritative_workspace_root, _resolve_path_for_task
 
-logger = logging.getLogger("tools.file_tools")
+logger = logging.getLogger("hermes_agent.tools.file_tools")
 
 
 class _PerAgentTracker(dict):
@@ -40,7 +40,7 @@ class _PerAgentTracker(dict):
 
     @staticmethod
     def _key(task_id):
-        from tools.environments.sandbox_scope import current_sandbox_key
+        from hermes_agent.tools.environments.sandbox_scope import current_sandbox_key
         sandbox = current_sandbox_key()
         return f"{sandbox}:{task_id}" if sandbox else task_id
 
@@ -322,7 +322,7 @@ def _update_read_timestamp(filepath: str, task_id: str) -> None:
 def _on_host(resolved: str) -> bool:
     """Whether *resolved* names a file on this host. A hosted agent's paths name its sandbox: the
     bookkeeping below (dedup, staleness, baselines) never stats or opens them here."""
-    from tools.environments.sandbox_scope import hosted_scope
+    from hermes_agent.tools.environments.sandbox_scope import hosted_scope
     return hosted_scope() is None
 
 

@@ -6,7 +6,7 @@ from __future__ import annotations
 import threading
 from types import SimpleNamespace
 
-from tools import delegate_tool
+from hermes_agent.tools import delegate_tool
 
 
 class _WedgedAfterFinalAnswer:

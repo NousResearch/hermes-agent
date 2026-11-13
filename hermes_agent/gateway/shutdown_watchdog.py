@@ -151,7 +151,7 @@ def _hard_exit(exit_code: int) -> None:
     """``os._exit`` skips every cleanup: SIGKILL in-flight foreground commands first, they run in their
     own process group and would outlive the gateway, reparented to init."""
     with contextlib.suppress(Exception):
-        from tools.environments.base import kill_live_foreground_processes
+        from hermes_agent.tools.environments.base import kill_live_foreground_processes
         kill_live_foreground_processes(now=True)
     os._exit(exit_code)
 

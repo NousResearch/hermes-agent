@@ -18,7 +18,7 @@ def _box(title: str, width: int) -> list[str]:
 
 def toolsets_lines(enabled) -> list[str]:
     """``/toolsets``: every toolset, ``(*)`` on the ones *enabled* names."""
-    from toolsets import get_all_toolsets, get_toolset_info
+    from hermes_agent.toolsets import get_all_toolsets, get_toolset_info
     out = ["", *_box(t("cli.toolsets.header"), 58), ""]
     for name in sorted(get_all_toolsets()):
         info = get_toolset_info(name)

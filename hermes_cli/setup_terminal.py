@@ -6,7 +6,7 @@ import json
 import logging
 import os
 from pathlib import Path
-from tools import tool_backend_helpers
+from hermes_agent.tools import tool_backend_helpers
 
 logger = logging.getLogger("hermes_cli.setup")
 
@@ -128,13 +128,13 @@ def _setup_backend_local(config: dict) -> None:
 
 
 def find_docker() -> str | None:
-    # Deferred: tools.environments.docker is heavy and this module loads on every hermes_cli.setup import.
-    from tools.environments.docker import find_docker as _find_docker
+    # Deferred: hermes_agent.tools.environments.docker is heavy and this module loads on every hermes_cli.setup import.
+    from hermes_agent.tools.environments.docker import find_docker as _find_docker
     return _find_docker()
 
 
 def _setup_backend_docker(config: dict) -> None:
-    from tools.environments.docker import docker_runtime_name
+    from hermes_agent.tools.environments.docker import docker_runtime_name
     _setup.print_success("Terminal backend: Docker / Podman")
     docker_exe = find_docker()
     _report_binary(docker_exe, "Docker or Podman not found in PATH!",
@@ -161,8 +161,8 @@ def _setup_backend_docker(config: dict) -> None:
 def _setup_backend_modal(config: dict) -> None:
     _setup.print_success("Terminal backend: Modal")
     _setup.print_info("Serverless cloud sandboxes. Each session gets its own container.")
-    from tools.managed_tool_gateway import is_managed_tool_gateway_ready
-    from tools.tool_backend_helpers import normalize_modal_mode
+    from hermes_agent.tools.managed_tool_gateway import is_managed_tool_gateway_ready
+    from hermes_agent.tools.tool_backend_helpers import normalize_modal_mode
     from hermes_cli import nous_subscription
     managed_modal_available = bool(
         tool_backend_helpers.managed_nous_tools_enabled()

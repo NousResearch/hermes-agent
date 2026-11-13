@@ -20,17 +20,17 @@ from pathlib import Path
 from typing import Callable, Iterable
 
 from hermes_constants import get_hermes_home
-from tools.interrupt import consume_yield, is_interrupted, is_thread_interrupted
-from tools.environments.base_output import (
+from hermes_agent.tools.interrupt import consume_yield, is_interrupted, is_thread_interrupted
+from hermes_agent.tools.environments.base_output import (
     ProcessHandle, _finalize_wait_result, _new_output_collector, _start_drain_thread,
 )
-from tools.environments.base_session_env import (
+from hermes_agent.tools.environments.base_session_env import (
     _SHELL_ENV_NAME_RE, _SNAP_TMP_SUFFIX, _cwd_marker, _pipe_marker, _snapshot_bootstrap_script, _split_cwd_marker,
     _wrap_command_script,
 )
-from tools.environments.base_processes import LongLivedProcessMixin
-from tools.environments.base_wait import _WaitTrace
-from tools.terminal_tool_sudo_askpass import fill_timeout_token, sudo_askpass_supported_once
+from hermes_agent.tools.environments.base_processes import LongLivedProcessMixin
+from hermes_agent.tools.environments.base_wait import _WaitTrace
+from hermes_agent.tools.terminal_tool_sudo_askpass import fill_timeout_token, sudo_askpass_supported_once
 from utils import atomic_json_write, env_var_enabled, file_signature
 
 logger = logging.getLogger(__name__)
@@ -361,7 +361,7 @@ class BaseEnvironment(LongLivedProcessMixin, ABC):
 
         One transport for every backend: base64 over the exec channel, bounded INSIDE the sandbox
         (``head -c max+1`` so /dev/zero can't stream unbounded data into host memory — the same
-        shape ``tools.image_source`` uses to read sandbox images). The payload is fenced between
+        shape ``hermes_agent.tools.image_source`` uses to read sandbox images). The payload is fenced between
         unique markers so login-shell noise in the merged stdout/stderr can't corrupt the decode.
         Raises :class:`FileFetchError` on a missing/unreadable/oversized file.
         """
@@ -407,7 +407,7 @@ class BaseEnvironment(LongLivedProcessMixin, ABC):
         try:
             from agent.secret_scope import is_multiplex_active
             if is_multiplex_active():
-                from tools.env_passthrough import get_all_passthrough
+                from hermes_agent.tools.env_passthrough import get_all_passthrough
                 names = (*get_all_passthrough(), *self._additional_profile_scoped_passthrough_names())
                 self._snapshot_passthrough_names.update(
                     name for name in names if isinstance(name, str) and _SHELL_ENV_NAME_RE.fullmatch(name))
@@ -525,7 +525,7 @@ class BaseEnvironment(LongLivedProcessMixin, ABC):
         output=None, yield_handler: Callable[[ProcessHandle, str], dict] | None = None) -> dict:
         """Poll-based wait with interrupt checking and stdout draining (shared, not overridden).
         ``yield_handler(proc, output_so_far)``: when the tool thread is asked to yield
-        (``tools.interrupt.request_yield`` — a user message arrived mid-command), the drain
+        (``hermes_agent.tools.interrupt.request_yield`` — a user message arrived mid-command), the drain
         thread is stopped, the still-running process is handed to the handler and its dict
         is returned as the result; the process is NOT killed.
         ``bounded_capture=True`` (foreground terminal-tool path only) retains at most
@@ -707,7 +707,7 @@ class BaseEnvironment(LongLivedProcessMixin, ABC):
         # Guard against the `A && B &` subshell-wait trap by default; callers
         # that already produce shell-safe wrappers (spawn_via_env) pass False.
         if rewrite_compound_background:
-            from tools.terminal_tool_sudo import _rewrite_compound_background
+            from hermes_agent.tools.terminal_tool_sudo import _rewrite_compound_background
             exec_command = _rewrite_compound_background(exec_command)
         effective_timeout = timeout or self.timeout
         exec_command = fill_timeout_token(exec_command, effective_timeout)
@@ -822,9 +822,9 @@ class BaseEnvironment(LongLivedProcessMixin, ABC):
     def _prepare_command(self, command: str) -> tuple[str, str | None]:
         """Rewrite sudo for an askpass helper or a piped password (untouched under NOPASSWD) and
         apply the macOS ``open`` raise-ladder (no-op off Darwin) so opened files come to the front."""
-        from tools.environments.sudo_password_note import note_sudo_password_sent
-        from tools.terminal_tool_macos_open import _transform_macos_open_command
-        from tools.terminal_tool_sudo import _transform_sudo_command
+        from hermes_agent.tools.environments.sudo_password_note import note_sudo_password_sent
+        from hermes_agent.tools.terminal_tool_macos_open import _transform_macos_open_command
+        from hermes_agent.tools.terminal_tool_sudo import _transform_sudo_command
         prepared = _transform_sudo_command(
             _transform_macos_open_command(command),
             sudo_nopasswd_check=self._sudo_nopasswd_works,

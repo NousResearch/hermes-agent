@@ -24,7 +24,7 @@ from hermes_agent.gateway.platforms.base import SendResult
 from hermes_agent.gateway.run_turn_runner import TurnRunner
 from hermes_agent.gateway.session import SessionSource
 from hermes_agent.gateway.turn_context import TurnContext
-from tools import approval, async_delegation as ad
+from hermes_agent.tools import approval, async_delegation as ad
 
 SESSION = "agent:main:telegram:dm:111"
 
@@ -168,7 +168,7 @@ def test_child_approval_after_the_parent_turn_reaches_the_chat_and_resolves(gate
 def test_child_protected_file_write_after_the_parent_turn_is_asked_not_refused(gate):
     """The AGENTS.md/SOUL.md write gate asks through the same lease as the command gates: a child
     writing one after the parent replied gets a card, and the tap decides the write."""
-    from tools.file_tools_write_guards import _request_protected_instruction_approval
+    from hermes_agent.tools.file_tools_write_guards import _request_protected_instruction_approval
 
     loop, thread = _loop_thread()
     adapter = _Adapter("live")

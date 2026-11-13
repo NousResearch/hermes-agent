@@ -14,7 +14,7 @@ from unittest.mock import patch
 
 import pytest
 
-from tools.tool_backend_helpers import resolve_provider_secret
+from hermes_agent.tools.tool_backend_helpers import resolve_provider_secret
 
 
 def _fake_pool(key: str = "", *, has: bool = True):
@@ -175,7 +175,7 @@ class TestToolWiring:
     """The tools' module-level helpers delegate to the shared resolver."""
 
     def test_transcription_tools_delegates(self):
-        from tools import transcription_tools as tt
+        from hermes_agent.tools import transcription_tools as tt
 
         def fake_load_pool(pid):
             return _fake_pool("stt-pool-key" if pid == "groq" else "")
@@ -185,7 +185,7 @@ class TestToolWiring:
 
 
     def test_openai_audio_key_falls_back_to_pool(self):
-        from tools.tool_backend_helpers import resolve_openai_audio_api_key
+        from hermes_agent.tools.tool_backend_helpers import resolve_openai_audio_api_key
 
         def fake_load_pool(pid):
             return _fake_pool("oai-pool-key" if pid == "openai-api" else "")

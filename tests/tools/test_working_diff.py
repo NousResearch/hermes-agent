@@ -1,4 +1,4 @@
-"""Tests for tools.working_diff.collect_working_diff — the git collection
+"""Tests for hermes_agent.tools.working_diff.collect_working_diff — the git collection
 layer shared by the CLI and gateway ``/diff`` command.
 
 Runs against real temporary git repositories (no mocks) so the staged /
@@ -10,7 +10,7 @@ import subprocess
 
 import pytest
 
-from tools.working_diff import collect_working_diff
+from hermes_agent.tools.working_diff import collect_working_diff
 
 pytestmark = pytest.mark.skipif(
     shutil.which("git") is None, reason="git required for working-diff tests"

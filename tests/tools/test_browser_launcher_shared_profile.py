@@ -2,8 +2,8 @@
 
 Two homes (profiles) pinning the same ``browser.user_data_dir``, or one process reaching one dir under two keys
 (a symlinked path), drive one browser: they share its launch record, leases and lock, so the LAST holder stops
-it and a crashed owner's browser is reaped from any home (``tools/browser_launcher.py``,
-``tools/browser_launcher_holders.py``). Runs the real launcher against a fake Chromium that takes the profile
+it and a crashed owner's browser is reaped from any home (``hermes_agent/tools/browser_launcher.py``,
+``hermes_agent/tools/browser_launcher_holders.py``). Runs the real launcher against a fake Chromium that takes the profile
 singleton and serves ``/json/version`` like the real one.
 """
 
@@ -20,7 +20,7 @@ import pytest
 
 from tests.tools.browser_launcher_fakes import kill_fake, pids, write_fake_chromium
 from tests.waiting import wait_until
-from tools import browser_launcher as launcher
+from hermes_agent.tools import browser_launcher as launcher
 
 pytestmark = [pytest.mark.platforms("linux"),
               pytest.mark.live_system_guard_bypass]  # the fake browsers are ours to stop if a leg failed

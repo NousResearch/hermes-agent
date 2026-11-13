@@ -14,8 +14,8 @@ import pytest
 from agent.prompt_refresh import stamp_prompt_epoch
 from hermes_agent.hermes_state import SessionDB
 from tests.tools import test_delegate_transcript_readiness as transcript_readiness
-from tools.delegate_tool import _build_child_agent
-from tools.process_registry_notifications import format_process_notification
+from hermes_agent.tools.delegate_tool import _build_child_agent
+from hermes_agent.tools.process_registry_notifications import format_process_notification
 from hermes_agent.tui_gateway import server
 
 
@@ -63,8 +63,8 @@ def test_parent_completion_never_delivered_to_delegate_child(
         emit = Mock()
         monkeypatch.setattr(server, "_run_prompt_submit", submit)
         monkeypatch.setattr(server, "_emit", emit)
-        monkeypatch.setattr("tools.async_delegation.claim_event_delivery", lambda *a: "claim")
-        monkeypatch.setattr("tools.async_delegation.complete_event_delivery", lambda *a: None)
+        monkeypatch.setattr("hermes_agent.tools.async_delegation.claim_event_delivery", lambda *a: "claim")
+        monkeypatch.setattr("hermes_agent.tools.async_delegation.complete_event_delivery", lambda *a: None)
         registry = SimpleNamespace(completion_queue=queue.Queue(), is_completion_consumed=lambda _sid: False)
         event = {"type": event_type, "session_key": "parent"}
         if event_type == "async_delegation":

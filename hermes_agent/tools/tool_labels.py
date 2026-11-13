@@ -4,10 +4,10 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
-from tools.connectors.gateway.names import parse_connector_name
-from tools.mcp_tool_schema import MCP_TOOL_NAME_PREFIX
+from hermes_agent.tools.connectors.gateway.names import parse_connector_name
+from hermes_agent.tools.mcp_tool_schema import MCP_TOOL_NAME_PREFIX
 
-logger = logging.getLogger("tools.tool_labels")
+logger = logging.getLogger("hermes_agent.tools.tool_labels")
 
 CONNECTOR_EMOJI = "🔗"
 MCP_EMOJI = "🔌"
@@ -78,7 +78,7 @@ def _action_phrase(tool: str, app_slug: str = "") -> str:
 
 def _registry_emoji(name: str) -> str:
     try:
-        from tools.registry import registry
+        from hermes_agent.tools.registry import registry
         return registry.get_emoji(name, default="") or DEFAULT_TOOL_EMOJI
     except Exception:
         return DEFAULT_TOOL_EMOJI

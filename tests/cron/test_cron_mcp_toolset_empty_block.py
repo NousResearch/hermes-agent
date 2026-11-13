@@ -74,7 +74,7 @@ def _run(job, tmp_path):
          patch("hermes_agent.cron.scheduler_delivery._resolve_origin", return_value=None), \
          patch("hermes_cli.env_loader.load_hermes_dotenv"), \
          patch("hermes_cli.env_loader.reset_secret_source_cache"), \
-         patch("tools.mcp_tool_discovery.discover_mcp_tools", return_value=[]), \
+         patch("hermes_agent.tools.mcp_tool_discovery.discover_mcp_tools", return_value=[]), \
          patch("hermes_cli.runtime_provider.resolve_runtime_provider", return_value=dict(_RUNTIME)):
         agent_cls.return_value.run_conversation.return_value = {"final_response": "ok"}
         with cron_jobs.use_cron_store(tmp_path):
@@ -83,7 +83,7 @@ def _run(job, tmp_path):
         return result, agent_cls.called
 
 def _register_notion_in_scope(scope):
-    from tools.registry import registry
+    from hermes_agent.tools.registry import registry
     registry.register(
         name="mcp__notion__search", toolset="mcp-notion",
         schema={"name": "mcp__notion__search", "description": "x",
@@ -132,9 +132,9 @@ def _park_notion(home, *, ever_connected: bool, park_reason=None):
     ``park_reason`` is what ``_park`` recorded (permanent-error parks are not recovering).
     The connection is keyed the way the owner bridge resolves it: cron turns run inside
     ``_profile_runtime_scope(home)``, so the served profile's overlay owns the key."""
-    import tools.mcp_tool as core
-    from tools.mcp_tool_scope import _resolve_server_key
-    from tools.registry import registry
+    import hermes_agent.tools.mcp_tool as core
+    from hermes_agent.tools.mcp_tool_scope import _resolve_server_key
+    from hermes_agent.tools.registry import registry
     from hermes_agent.gateway.run import _profile_runtime_scope
 
     server = core.MCPServerTask("notion")

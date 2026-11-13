@@ -26,7 +26,7 @@ def cua_home(tmp_path, monkeypatch):
 def test_pm_selection_ignores_vendor_tree_and_is_passive(cua_home, monkeypatch):
     import pm
     from pm import paths
-    from tools.computer_use.cua_backend_driver import resolve_cua_driver_cmd
+    from hermes_agent.tools.computer_use.cua_backend_driver import resolve_cua_driver_cmd
 
     def no_install(*args, **kwargs):
         pytest.fail("passive CUA lookup attempted acquisition")
@@ -50,7 +50,7 @@ def test_pm_selection_ignores_vendor_tree_and_is_passive(cua_home, monkeypatch):
 def test_setup_acquires_through_pm_and_validates_real_manifest(cua_home, monkeypatch):
     import pm
     from hermes_cli.tools_config_cua import install_cua_driver
-    from tools.computer_use.cua_backend_driver import cua_driver_runtime_contract_status
+    from hermes_agent.tools.computer_use.cua_backend_driver import cua_driver_runtime_contract_status
 
     monkeypatch.setenv("PATH", "")
     calls = []
@@ -79,7 +79,7 @@ def test_private_start_uses_post_ensure_binary(cua_home, monkeypatch, permission
     from types import SimpleNamespace
 
     import pm
-    from tools.computer_use import cua_backend as backend_module
+    from hermes_agent.tools.computer_use import cua_backend as backend_module
 
     monkeypatch.setenv("PATH", "")
     manifest_path = cua_home / "capabilities.yaml"
@@ -139,7 +139,7 @@ def test_private_start_uses_post_ensure_binary(cua_home, monkeypatch, permission
 
 def test_runtime_cannot_bypass_pm_lazy_install_refusal(cua_home, monkeypatch):
     from pm import InstallError
-    from tools.computer_use.cua_backend import CuaDriverBackend
+    from hermes_agent.tools.computer_use.cua_backend import CuaDriverBackend
 
     monkeypatch.setenv("PATH", "")
     backend = CuaDriverBackend()

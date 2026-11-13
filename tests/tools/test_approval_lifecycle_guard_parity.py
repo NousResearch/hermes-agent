@@ -1,6 +1,6 @@
 """Parity between the approval layer and the in-gateway lifecycle hard block (launchctl verbs)."""
 
-from tools.approval import detect_dangerous_command
+from hermes_agent.tools.approval import detect_dangerous_command
 
 
 # launchd verbs that stop, unload or deregister a running gateway. `disable`
@@ -22,7 +22,7 @@ class TestLifecycleGuardLaunchctlParity:
     """The in-gateway hard block must cover every launchd verb the approval
     layer already treats as gateway lifecycle.
 
-    These two layers are not interchangeable. In ``tools/terminal_tool.py``
+    These two layers are not interchangeable. In ``hermes_agent/tools/terminal_tool.py``
     under ``_HERMES_GATEWAY == "1"``, the ``hermes_agent.cron.lifecycle_guard`` block is
     documented as applying unconditionally ("force=True cannot help here"),
     while ``detect_dangerous_command`` below it is explicitly skipped when

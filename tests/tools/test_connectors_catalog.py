@@ -18,10 +18,10 @@ from unittest.mock import patch
 
 import pytest
 
-from tools.connectors import live
-from tools.connectors.catalog_tool import NOT_HERE, manage_catalog
-from tools.connectors.contract import SettleReason, TargetState
-from tools.connectors.run import apply_answer
+from hermes_agent.tools.connectors import live
+from hermes_agent.tools.connectors.catalog_tool import NOT_HERE, manage_catalog
+from hermes_agent.tools.connectors.contract import SettleReason, TargetState
+from hermes_agent.tools.connectors.run import apply_answer
 from tests.waiting import wait_until
 
 
@@ -94,7 +94,7 @@ def _card(answer, *, session_id="s1", profile_home=None):
 
 
 def _install(items, installer, card):
-    with patch("tools.connectors.run.WATCH_INTERVAL_SECONDS", 0.01):
+    with patch("hermes_agent.tools.connectors.run.WATCH_INTERVAL_SECONDS", 0.01):
         return json.loads(manage_catalog({"action": "install", "items": items}, session_id="s1",
                                          connection_callback=card, card_surface=True, installer=installer))
 
@@ -105,10 +105,10 @@ def _approve(env=None):
 
 
 def test_only_a_desktop_session_carries_the_tool():
-    import model_tools
-    import toolsets
+    from hermes_agent import model_tools
+    from hermes_agent import toolsets
     from hermes_cli.config_defaults import DEFAULT_CONFIG
-    from tools.tool_search import is_deferrable_tool_name
+    from hermes_agent.tools.tool_search import is_deferrable_tool_name
 
     # A config may name the toolset; `all` never brings it in.
     assert "manage_catalog" in model_tools._select_tool_names(["catalog", "web"], None, quiet_mode=True)
@@ -123,7 +123,7 @@ def test_only_a_desktop_session_carries_the_tool():
 
 
 def _desktop_child_toolsets():
-    from tools.delegate_tool_toolsets import _resolve_child_toolsets
+    from hermes_agent.tools.delegate_tool_toolsets import _resolve_child_toolsets
     parent = SimpleNamespace(enabled_toolsets=["catalog", "web"], disabled_toolsets=None)
     return _resolve_child_toolsets(parent, None, "leaf")
 
@@ -132,7 +132,7 @@ def _desktop_child_toolsets():
 def test_a_session_off_the_desktop_never_hears_of_the_tool_even_through_tool_search(monkeypatch, platform):
     """A CLI config naming ``catalog``, and a delegate child of a desktop chat, lose manage_catalog from
     the direct tools, the tool_search listing and the bridge's search, not just from the direct tools."""
-    import model_tools
+    from hermes_agent import model_tools
     from agent.agent_init import _load_tools
 
     monkeypatch.setattr("hermes_cli.plugins.discover_plugins", lambda: None)
@@ -238,7 +238,7 @@ def test_a_failed_row_keeps_its_reason_and_try_again_works_while_the_card_is_ope
             threading.Event().wait(0.01)
         raise AssertionError(f"blender never reached {state}")
 
-    with patch("tools.connectors.run.WATCH_INTERVAL_SECONDS", 0.01):
+    with patch("hermes_agent.tools.connectors.run.WATCH_INTERVAL_SECONDS", 0.01):
         result = {}
         thread = threading.Thread(target=lambda: result.setdefault("out", json.loads(manage_catalog(
             {"action": "install", "items": [{"kind": "plugin", "id": "blender"}, {"kind": "plugin", "id": "krita"}]},
@@ -303,8 +303,8 @@ def test_a_skill_row_installs_with_the_source_that_resolved_it():
 def test_a_clawhub_install_is_read_back_through_its_card_id(monkeypatch):
     # The lock records @owner/slug. Matching the bare slug exactly, a finished install raised its
     # last printed line ("Files: ...") and a second one raised "Use --force to reinstall."
-    from tools.connectors.catalog import HostInstaller
-    from tools.skills_hub import HubLockFile
+    from hermes_agent.tools.connectors.catalog import HostInstaller
+    from hermes_agent.tools.skills_hub import HubLockFile
 
     installs = []
 
@@ -327,9 +327,9 @@ def test_a_clawhub_install_is_read_back_through_its_card_id(monkeypatch):
 
 
 def test_search_rows_mark_an_installed_clawhub_hit_but_not_another_sources_bare_id(monkeypatch):
-    from tools.connectors.catalog_tool import _skill_rows
-    from tools.skills_hub import HubLockFile
-    from tools.skills_hub_models import SkillMeta
+    from hermes_agent.tools.connectors.catalog_tool import _skill_rows
+    from hermes_agent.tools.skills_hub import HubLockFile
+    from hermes_agent.tools.skills_hub_models import SkillMeta
 
     HubLockFile().save({"version": 1, "installed": {"agent-git-oracle": {
         "source": "clawhub", "identifier": "@tmstudio667-commits/agent-git-oracle",
@@ -337,8 +337,8 @@ def test_search_rows_mark_an_installed_clawhub_hit_but_not_another_sources_bare_
     hits = [SkillMeta(name=name, description="", source=source, identifier="agent-git-oracle",
                       trust_level="community")
             for name, source in (("Agent Git Oracle", "clawhub"), ("agent-git-oracle", "skills-sh"))]
-    monkeypatch.setattr("tools.skills_hub_github.GitHubAuth", lambda: None)
-    monkeypatch.setattr("tools.skills_hub_search.create_source_router", lambda auth: [])
-    monkeypatch.setattr("tools.skills_hub_search.unified_search", lambda query, sources, limit: hits)
+    monkeypatch.setattr("hermes_agent.tools.skills_hub_github.GitHubAuth", lambda: None)
+    monkeypatch.setattr("hermes_agent.tools.skills_hub_search.create_source_router", lambda auth: [])
+    monkeypatch.setattr("hermes_agent.tools.skills_hub_search.unified_search", lambda query, sources, limit: hits)
 
     assert [row["installed"] for row in _skill_rows("agent git oracle")] == [True, False]

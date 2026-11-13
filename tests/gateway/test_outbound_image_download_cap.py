@@ -58,7 +58,7 @@ class _ChunkedImage(BaseHTTPRequestHandler):
 @pytest.fixture
 def image_host():
     from hermes_constants import get_hermes_home
-    from tools import url_safety
+    from hermes_agent.tools import url_safety
 
     (get_hermes_home() / "config.yaml").write_text(
         f"gateway:\n  max_inbound_media_bytes: {CAP}\nsecurity:\n  allow_private_urls: true\n")

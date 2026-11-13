@@ -21,7 +21,7 @@ SESSION = "agent:main:telegram:group:-100:9"
 def _raise_as_alice(kind):
     """Register the prompt inside Alice's turn, as the gateway does; returns a 'was it answered' probe."""
     from hermes_agent.gateway.session_context import clear_session_vars, set_session_vars
-    from tools import clarify_gateway, slash_confirm
+    from hermes_agent.tools import clarify_gateway, slash_confirm
 
     ran = []
 
@@ -43,7 +43,7 @@ def _raise_as_alice(kind):
 
 @pytest.fixture(autouse=True)
 def _clean():
-    from tools import clarify_gateway, slash_confirm
+    from hermes_agent.tools import clarify_gateway, slash_confirm
 
     write_approvers([])
     yield
@@ -110,7 +110,7 @@ async def test_voice_reply_settles_only_the_clarify_it_was_checked_against():
     from hermes_agent.gateway.config import GatewayConfig
     from hermes_agent.gateway.run import GatewayRunner
     from hermes_agent.gateway.session_context import clear_session_vars, set_session_vars
-    from tools import clarify_gateway
+    from hermes_agent.tools import clarify_gateway
 
     _raise_as_alice("clarify")
     asked = []

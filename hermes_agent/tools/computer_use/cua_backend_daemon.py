@@ -16,11 +16,11 @@ import uuid
 from collections import deque
 from typing import Any, Dict, List, Optional, Tuple
 
-from tools.computer_use import cua_backend_driver as _driver
-from tools.computer_use.permissions import CUA_DRIVER_BUNDLE_ID
+from hermes_agent.tools.computer_use import cua_backend_driver as _driver
+from hermes_agent.tools.computer_use.permissions import CUA_DRIVER_BUNDLE_ID
 from hermes_cli.process_identity import release_process_group_once_empty, spawn_owned
 
-logger = logging.getLogger("tools.computer_use.cua_backend")
+logger = logging.getLogger("hermes_agent.tools.computer_use.cua_backend")
 
 # The only bundle identity the private daemon may launch through, and the teams that sign official
 # releases. Exact matches only: a suffixed identifier or other team is an impostor.
@@ -30,7 +30,7 @@ _QUIET_ERRORS = (OSError, subprocess.SubprocessError)
 
 def _cb():
     """Facade module (config/policy helpers), looked up lazily to avoid the import cycle."""
-    from tools.computer_use import cua_backend
+    from hermes_agent.tools.computer_use import cua_backend
     return cua_backend
 
 def _resolve_cua_driver_app_path(driver_cmd: str) -> Optional[str]:
@@ -137,7 +137,7 @@ class _EmbeddedCuaDaemon:
         return env
 
     def _sanitized_env(self) -> dict[str, str]:
-        from tools.environments.local import _sanitize_subprocess_env
+        from hermes_agent.tools.environments.local import _sanitize_subprocess_env
         return _sanitize_subprocess_env(self.child_env())
 
     def _drain_stderr(self, process: Any) -> None:

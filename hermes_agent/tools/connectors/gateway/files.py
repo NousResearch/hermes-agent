@@ -19,10 +19,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Iterator, Mapping, Optional, Sequence
 
-from tools.connectors.gateway.errors import ToolGatewayError
-from tools.connectors.gateway.merge import PlannedCall
-from tools.connectors.gateway.names import parse_connector_name, vendor_slug_candidates
-from tools.connectors.gateway.wire import CONNECTOR_FILE_MAX_BYTES, execute_error_family
+from hermes_agent.tools.connectors.gateway.errors import ToolGatewayError
+from hermes_agent.tools.connectors.gateway.merge import PlannedCall
+from hermes_agent.tools.connectors.gateway.names import parse_connector_name, vendor_slug_candidates
+from hermes_agent.tools.connectors.gateway.wire import CONNECTOR_FILE_MAX_BYTES, execute_error_family
 
 logger = logging.getLogger(__name__)
 
@@ -97,7 +97,7 @@ def _as_model_schema(node: Any) -> Any:
 
 def _file_paths(node: Any, root: dict[str, Any], path: Path_, depth: int) -> Iterator[Path_]:
     """Argument paths of every ``file_uploadable`` subschema: properties, items, combinators, local refs."""
-    from tools.schema_sanitizer import resolve_local_schema_ref
+    from hermes_agent.tools.schema_sanitizer import resolve_local_schema_ref
 
     if not isinstance(node, dict) or depth > _MAX_SCHEMA_DEPTH:
         return
@@ -222,7 +222,7 @@ def _readable_file(raw: str, task_id: Optional[str]) -> str:
 def _backend_path(raw: str, task_id: Optional[str]) -> str:
     """``raw`` as an absolute path in the terminal backend's namespace, resolved the way the file
     tools resolve it. Backends whose files live on another machine are refused, as ``MEDIA:`` is."""
-    from tools.file_tools_paths import _resolve_path_for_task, _terminal_env_type_for_task
+    from hermes_agent.tools.file_tools_paths import _resolve_path_for_task, _terminal_env_type_for_task
 
     task = task_id or "default"
     backend = _terminal_env_type_for_task(task)

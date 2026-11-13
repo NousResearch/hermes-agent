@@ -1,4 +1,4 @@
-"""Tests for tools/tool_search.py — progressive tool disclosure.
+"""Tests for hermes_agent/tools/tool_search.py — progressive tool disclosure.
 
 Coverage targets — these mirror the issues called out in the OpenClaw tool
 search report. Every test that names an OpenClaw issue is the regression
@@ -46,7 +46,7 @@ class TestConfigParsing:
         recognizes the key); a user list replaces it wholesale, [] keeps every tool eager, and a
         scalar is warned about (naming the expected shape) before falling back to the default."""
         from hermes_cli.config_defaults import DEFAULT_CONFIG
-        from tools.tool_search import ToolSearchConfig, _DEFAULT_DEFERRED_TOOLS
+        from hermes_agent.tools.tool_search import ToolSearchConfig, _DEFAULT_DEFERRED_TOOLS
 
         configured = frozenset(DEFAULT_CONFIG["tools"]["tool_search"]["defer"])
         assert isinstance(DEFAULT_CONFIG["tools"]["tool_search"]["defer"], list) and configured
@@ -55,18 +55,18 @@ class TestConfigParsing:
         assert ToolSearchConfig.from_raw({"defer": ["terminal"]}).effective_defer_tools == {"terminal"}
         assert ToolSearchConfig.from_raw({"defer": []}).effective_defer_tools == set()
 
-        with caplog.at_level("WARNING", logger="tools.tool_search"):
+        with caplog.at_level("WARNING", logger="hermes_agent.tools.tool_search"):
             assert ToolSearchConfig.from_raw({"defer": "todo_list"}).effective_defer_tools == configured
         assert any(r.levelname == "WARNING" for r in caplog.records)
 
     def test_bool_true_maps_to_auto(self):
-        from tools.tool_search import ToolSearchConfig
+        from hermes_agent.tools.tool_search import ToolSearchConfig
         cfg = ToolSearchConfig.from_raw(True)
         assert cfg.enabled == "auto"
 
 
     def test_search_limits_clamped(self):
-        from tools.tool_search import ToolSearchConfig
+        from hermes_agent.tools.tool_search import ToolSearchConfig
         cfg = ToolSearchConfig.from_raw({
             "search_default_limit": 999,
             "max_search_limit": 999,
@@ -83,8 +83,8 @@ class TestConfigParsing:
 class TestClassification:
     def test_core_tools_never_defer(self):
         """The critical invariant from the OpenClaw report."""
-        from tools.tool_search import is_deferrable_tool_name
-        from toolsets import _HERMES_CORE_TOOLS
+        from hermes_agent.tools.tool_search import is_deferrable_tool_name
+        from hermes_agent.toolsets import _HERMES_CORE_TOOLS
         assert _HERMES_CORE_TOOLS
         for core_name in _HERMES_CORE_TOOLS:
             assert not is_deferrable_tool_name(core_name), (
@@ -92,15 +92,15 @@ class TestClassification:
             )
 
     def test_bridge_tools_never_defer(self):
-        from tools.tool_search import is_deferrable_tool_name, BRIDGE_TOOL_NAMES
+        from hermes_agent.tools.tool_search import is_deferrable_tool_name, BRIDGE_TOOL_NAMES
         for name in BRIDGE_TOOL_NAMES:
             assert not is_deferrable_tool_name(name)
 
     def test_gui_surface_tools_never_defer(self):
         """Session-gated GUI tools stay direct and stay off the global core list."""
-        from tools.registry import discover_builtin_tools, registry
-        from tools.tool_search import _DIRECT_SURFACE_TOOLSETS, is_deferrable_tool_name
-        from toolsets import _HERMES_CORE_TOOLS
+        from hermes_agent.tools.registry import discover_builtin_tools, registry
+        from hermes_agent.tools.tool_search import _DIRECT_SURFACE_TOOLSETS, is_deferrable_tool_name
+        from hermes_agent.toolsets import _HERMES_CORE_TOOLS
 
         discover_builtin_tools()
         surface = [n for n, ts in registry.get_tool_to_toolset_map().items()
@@ -114,8 +114,8 @@ class TestClassification:
     def test_defer_override_restores_legacy_direct_gui(self):
         """tools.tool_search.defer: [] restores the everything-eager legacy:
         GUI tools alone no longer activate the bridge."""
-        from tools.registry import discover_builtin_tools
-        from tools.tool_search import ToolSearchConfig, assemble_tool_defs
+        from hermes_agent.tools.registry import discover_builtin_tools
+        from hermes_agent.tools.tool_search import ToolSearchConfig, assemble_tool_defs
 
         discover_builtin_tools()
         names = {"read_window_below", "set_theme", "project_list"}
@@ -131,8 +131,8 @@ class TestClassification:
         """The bridge activates for MCP, but working-set core tools (terminal,
         files, memory...) stay direct — the deferral set is the CURATED list,
         not all of core."""
-        from tools.registry import discover_builtin_tools, registry
-        from tools.tool_search import (
+        from hermes_agent.tools.registry import discover_builtin_tools, registry
+        from hermes_agent.tools.tool_search import (
             BRIDGE_TOOL_NAMES,
             ToolSearchConfig,
             assemble_tool_defs,
@@ -174,7 +174,7 @@ class TestClassification:
         This is the OpenClaw #84141 regression guard (cron lost ``exec``
         because it wasn't in the catalog).
         """
-        from tools.tool_search import classify_tools
+        from hermes_agent.tools.tool_search import classify_tools
         # Build a tool def for something we don't have a registry entry for.
         defs = [_td("xx_unknown_tool", "Unknown tool")]
         visible, deferrable = classify_tools(defs)
@@ -190,13 +190,13 @@ class TestClassification:
 
 class TestThresholdGate:
     def test_off_never_activates(self):
-        from tools.tool_search import ToolSearchConfig, should_activate
+        from hermes_agent.tools.tool_search import ToolSearchConfig, should_activate
         cfg = ToolSearchConfig.from_raw({"enabled": "off"})
         assert not should_activate(cfg, deferrable_tokens=1_000_000, context_length=200_000)
 
 
     def test_token_estimate_proportional_to_schema_size(self):
-        from tools.tool_search import estimate_tokens_from_schemas
+        from hermes_agent.tools.tool_search import estimate_tokens_from_schemas
         small = [_td("a", "x")]
         big = [_td(f"name_{i}", f"description for tool {i} " * 20,
                    {"q": {"type": "string", "description": "search query " * 10}})
@@ -214,8 +214,8 @@ class TestThresholdGate:
 class TestRetrieval:
     def _fake_catalog(self):
         """Build a catalog directly without touching the registry."""
-        from tools.tool_search import CatalogEntry
-        from tools.tool_search_catalog import _tokenize, _entry_search_text
+        from hermes_agent.tools.tool_search import CatalogEntry
+        from hermes_agent.tools.tool_search_catalog import _tokenize, _entry_search_text
         defs = [
             _td("github_create_issue", "Open a new issue in a GitHub repository",
                 {"title": {"type": "string"}, "body": {"type": "string"}}),
@@ -238,14 +238,14 @@ class TestRetrieval:
         return catalog
 
     def test_search_finds_relevant_tool(self):
-        from tools.tool_search import search_catalog
+        from hermes_agent.tools.tool_search import search_catalog
         hits = search_catalog(self._fake_catalog(), "create a github issue", limit=3)
         names = [h.name for h in hits]
         assert names[0] == "github_create_issue"
 
 
     def test_search_respects_limit(self):
-        from tools.tool_search import search_catalog
+        from hermes_agent.tools.tool_search import search_catalog
         hits = search_catalog(self._fake_catalog(), "github", limit=1)
         assert len(hits) <= 1
 
@@ -260,7 +260,7 @@ class TestRelevanceFloor:
     """
 
     def _catalog(self):
-        from tools.tool_search import build_catalog
+        from hermes_agent.tools.tool_search import build_catalog
         defs = [
             _td("github_rerun_failed_workflow_run_jobs",
                 "Re-run failed jobs in a workflow run",
@@ -283,27 +283,27 @@ class TestRelevanceFloor:
     def test_incidental_single_term_match_is_filtered(self):
         # Every term answerable (each in exactly one document), so the rarest-token
         # gate admits the tool sharing that one word; the floor must not.
-        from tools.tool_search import search_catalog
+        from hermes_agent.tools.tool_search import search_catalog
         hits = search_catalog(self._catalog(), "run shell command execute code", limit=5)
         assert hits == []
 
     def test_short_queries_are_untouched(self):
         # Below 4 answerable terms wording legitimately differs by a word.
-        from tools.tool_search import search_catalog
+        from hermes_agent.tools.tool_search import search_catalog
         hits = search_catalog(self._catalog(), "list issues", limit=5)
         assert any(h.name == "github_list_issues" for h in hits)
         hits = search_catalog(self._catalog(), "send message", limit=5)
         assert any(h.name == "slack_send_message" for h in hits)
 
     def test_long_query_with_real_coverage_still_matches(self):
-        from tools.tool_search import search_catalog
+        from hermes_agent.tools.tool_search import search_catalog
         hits = search_catalog(
             self._catalog(), "create issue github repository title", limit=5)
         assert hits and hits[0].name == "github_create_issue"
         assert all(h.name != "github_rerun_failed_workflow_run_jobs" for h in hits)
 
     def test_exact_name_match_bypasses_coverage(self):
-        from tools.tool_search import search_catalog
+        from hermes_agent.tools.tool_search import search_catalog
         hits = search_catalog(self._catalog(), "github_create_issue", limit=5)
         assert hits and hits[0].name == "github_create_issue"
 
@@ -316,7 +316,7 @@ class TestRelevanceFloor:
 class TestAssembly:
     def test_no_deferrable_returns_unchanged(self):
         """Pure-core toolset: pass-through, no bridge tools added."""
-        from tools.tool_search import assemble_tool_defs, ToolSearchConfig
+        from hermes_agent.tools.tool_search import assemble_tool_defs, ToolSearchConfig
         defs = [_td("terminal", "Run shell"), _td("read_file", "Read a file")]
         result = assemble_tool_defs(
             defs,
@@ -327,7 +327,7 @@ class TestAssembly:
         assert {t["function"]["name"] for t in result.tool_defs} == {"terminal", "read_file"}
 
     def test_idempotent_when_bridge_already_present(self):
-        from tools.tool_search import assemble_tool_defs, ToolSearchConfig
+        from hermes_agent.tools.tool_search import assemble_tool_defs, ToolSearchConfig
         defs = [_td("terminal", "Run shell"), _td("tool_search", "old")]
         result = assemble_tool_defs(
             defs,
@@ -347,12 +347,12 @@ class TestAssembly:
 
 class TestBridgeDispatch:
     def test_tool_search_requires_queries(self):
-        from tools.tool_search import dispatch_tool_search
+        from hermes_agent.tools.tool_search import dispatch_tool_search
         result = dispatch_tool_search({}, current_tool_defs=[])
         assert "error" in json.loads(result)
 
     def test_tool_search_rejects_empty_and_overcap_queries(self):
-        from tools import tool_search
+        from hermes_agent.tools import tool_search
 
         cfg = tool_search.ToolSearchConfig.from_raw({})
         assert "error" in json.loads(tool_search.dispatch_tool_search(
@@ -365,8 +365,8 @@ class TestBridgeDispatch:
         assert "error" in parsed
 
     def test_empty_search_keeps_connected_sources_discoverable(self):
-        from tools.registry import registry
-        from tools.tool_search import dispatch_tool_search
+        from hermes_agent.tools.registry import registry
+        from hermes_agent.tools.tool_search import dispatch_tool_search
 
         name = "recovery_catalog_create_record"
         tool_def = _td(name, "Create a record in the connected catalog service.")
@@ -395,7 +395,7 @@ class TestBridgeDispatch:
 
 
     def test_resolve_underlying_call_parses_object_args(self):
-        from tools.tool_search import resolve_underlying_call
+        from hermes_agent.tools.tool_search import resolve_underlying_call
         _name, _args, err = resolve_underlying_call({
             "name": "unknown_xxx",
             "arguments": {"foo": "bar"},
@@ -406,7 +406,7 @@ class TestBridgeDispatch:
 
     def test_resolve_underlying_call_rejects_recursion(self):
         """tool_call cannot invoke tool_call itself."""
-        from tools.tool_search import resolve_underlying_call, TOOL_CALL_NAME
+        from hermes_agent.tools.tool_search import resolve_underlying_call, TOOL_CALL_NAME
         _name, _args, err = resolve_underlying_call({
             "name": TOOL_CALL_NAME,
             "arguments": {},
@@ -418,7 +418,7 @@ class TestBridgeDispatch:
         """An OpenAI-compatible gateway emitting ``arguments: ""`` for a parameterless deferred tool
         must execute with {} instead of looping on a JSON parse error (#83937); malformed
         non-blank arguments still fail closed."""
-        from tools.tool_search import resolve_underlying_call
+        from hermes_agent.tools.tool_search import resolve_underlying_call
         name, args, err = resolve_underlying_call({"calls": [{"name": "todo_list", "arguments": raw_args}]})
         assert (name, args, err) == ("todo_list", {}, None)
         _, _, err = resolve_underlying_call({"calls": [{"name": "todo_list", "arguments": '{"todos": ['}]})
@@ -434,9 +434,9 @@ class TestHandleFunctionCallIntegration:
 
     def test_tool_search_emits_one_terminal_hook(self, monkeypatch):
         """Inline bridge results still complete the tool lifecycle."""
-        import model_tools
+        from hermes_agent import model_tools
         from hermes_cli import lifecycle
-        from tools import tool_search
+        from hermes_agent.tools import tool_search
 
         events = []
         monkeypatch.setattr(
@@ -491,7 +491,7 @@ class TestRegression_OpenClawCron84141:
     def test_unwrap_rejects_core_tool_attempt(self):
         """Even if the model tries to invoke a core tool through tool_call,
         we reject the call and tell the model to use it directly."""
-        from tools.tool_search import resolve_underlying_call
+        from hermes_agent.tools.tool_search import resolve_underlying_call
         _, _, err = resolve_underlying_call({
             "name": "terminal",
             "arguments": {"command": "echo hi"},
@@ -511,14 +511,14 @@ class TestRegression_ToolsetScoping:
     actually ran.
 
     The fix threads the session's enabled/disabled toolsets into the bridge
-    dispatch (model_tools.handle_function_call) and the executor unwrap
+    dispatch (hermes_agent.model_tools.handle_function_call) and the executor unwrap
     (agent.tool_executor), scoping both the searchable catalog and the
     invocable set to the session's own toolsets.
     """
 
     @staticmethod
     def _register(name, toolset):
-        from tools.registry import registry
+        from hermes_agent.tools.registry import registry
 
         def _handler(args, task_id=None, **kw):
             return json.dumps({"ok": True, "tool": name})
@@ -531,7 +531,7 @@ class TestRegression_ToolsetScoping:
         )
 
     def test_search_catalog_is_scoped_to_session_toolsets(self):
-        import model_tools
+        from hermes_agent import model_tools
 
         for i in range(12):
             self._register(f"mcp_scoped_gh_{i}", "mcp-scoped-gh")
@@ -555,10 +555,10 @@ class TestRegression_ToolsetScoping:
 
 
     def test_scoped_deferrable_names_helper(self):
-        from tools.tool_search import scoped_deferrable_names
+        from hermes_agent.tools.tool_search import scoped_deferrable_names
 
         self._register("mcp_helper_op", "mcp-helper")
-        import model_tools
+        from hermes_agent import model_tools
         defs = model_tools.get_tool_definitions(
             enabled_toolsets=["mcp-helper"],
             quiet_mode=True,
@@ -580,8 +580,8 @@ class TestCatalogListing:
 
     def test_default_listing_cap_bounds_fixed_catalog_overhead(self):
         """The default manifest must not grow back to the old 20K-token cap."""
-        from tools.registry import registry
-        from tools.tool_search import (
+        from hermes_agent.tools.registry import registry
+        from hermes_agent.tools.tool_search import (
             ToolSearchConfig,
             assemble_tool_defs,
             estimate_tokens_from_schemas,
@@ -612,8 +612,8 @@ class TestCatalogListing:
 
     def test_builtin_catalog_lines_are_whole_first_sentences(self):
         """A catalog line is the first sentence; a clipped one hides what the tool does."""
-        from tools.registry import discover_builtin_tools, registry
-        from tools.tool_search_catalog import _short_desc
+        from hermes_agent.tools.registry import discover_builtin_tools, registry
+        from hermes_agent.tools.tool_search_catalog import _short_desc
 
         discover_builtin_tools()
         clipped = {}
@@ -633,8 +633,8 @@ class TestCatalogListing:
         configured model, or agents bypass it with direct provider scripts."""
         from unittest.mock import patch
 
-        import tools.image_generation_tool as ig
-        from tools.tool_search_catalog import _short_desc
+        import hermes_agent.tools.image_generation_tool as ig
+        from hermes_agent.tools.tool_search_catalog import _short_desc
 
         model = next(m for m, meta in ig.FAL_MODELS.items()
                      if meta.get("edit_endpoint") and int(meta.get("max_reference_images") or 0) > 1)
@@ -649,7 +649,7 @@ class TestCatalogListing:
 
     @staticmethod
     def _register(name):
-        from tools.registry import registry
+        from hermes_agent.tools.registry import registry
 
         def _handler(args, task_id=None, **kw):
             return json.dumps({"ok": True})
@@ -663,7 +663,7 @@ class TestCatalogListing:
 
 
     def test_assembly_listing_off_keeps_legacy_description(self):
-        from tools.tool_search import assemble_tool_defs, ToolSearchConfig
+        from hermes_agent.tools.tool_search import assemble_tool_defs, ToolSearchConfig
         for i in range(30):
             self._register(f"mcp_x_{i}")
         defs = [_td(f"mcp_x_{i}", "Deferred.") for i in range(30)]
@@ -690,7 +690,7 @@ class TestDeferredCallSchemaProbe:
 
     @staticmethod
     def _register(name, toolset, required=("document_id",)):
-        from tools.registry import registry
+        from hermes_agent.tools.registry import registry
 
         def _handler(args, task_id=None, **kw):
             # Simulates a tool that crashes opaquely on a missing required arg.
@@ -714,7 +714,7 @@ class TestDeferredCallSchemaProbe:
 
     @staticmethod
     def _register_schema(name, toolset, params, calls):
-        from tools.registry import registry
+        from hermes_agent.tools.registry import registry
 
         def _handler(args, task_id=None, **kw):
             calls.append(args)
@@ -729,7 +729,7 @@ class TestDeferredCallSchemaProbe:
         )
 
     def test_validator_returns_schema_for_missing_required(self):
-        from tools.tool_search import validate_deferred_call_args
+        from hermes_agent.tools.tool_search import validate_deferred_call_args
 
         self._register("mcp_probe_docs_get", "mcp-probe")
         err = validate_deferred_call_args("mcp_probe_docs_get", {})
@@ -741,14 +741,14 @@ class TestDeferredCallSchemaProbe:
 
 
     def test_validator_never_blocks_unvalidatable_tools(self):
-        from tools.tool_search import validate_deferred_call_args
+        from hermes_agent.tools.tool_search import validate_deferred_call_args
 
         # Unknown tool → no schema → dispatch (downstream scope gate handles it).
         assert validate_deferred_call_args("mcp_no_such_tool_xyz", {}) is None
 
 
     def test_valid_tool_call_still_dispatches(self):
-        import model_tools
+        from hermes_agent import model_tools
 
         self._register("mcp_probe_valid_op", "mcp-probe-valid")
         result = json.loads(model_tools.handle_function_call(
@@ -761,7 +761,7 @@ class TestDeferredCallSchemaProbe:
         assert result.get("doc") == "abc"
 
     def test_invalid_enum_is_blocked_before_dispatch(self):
-        import model_tools
+        from hermes_agent import model_tools
 
         calls = []
         name = "mcp_probe_enum_validation"
@@ -810,7 +810,7 @@ class TestDeferredCallSchemaProbe:
     def test_validator_reports_nested_constraint_path(
         self, suffix, arguments, expected_path, expected_constraint,
     ):
-        from tools.tool_search import validate_deferred_call_args
+        from hermes_agent.tools.tool_search import validate_deferred_call_args
 
         calls = []
         name = f"mcp_probe_{suffix}"
@@ -833,7 +833,7 @@ class TestDeferredCallSchemaProbe:
         assert result["constraint"] == expected_constraint
 
     def test_coercible_arguments_validate_then_dispatch_repaired(self):
-        import model_tools
+        from hermes_agent import model_tools
 
         calls = []
         name = "mcp_probe_coercion_validation"
@@ -854,7 +854,7 @@ class TestDeferredCallSchemaProbe:
         assert calls == [{"count": 42}]
 
     def test_nullable_extension_remains_accepted(self):
-        import model_tools
+        from hermes_agent import model_tools
 
         calls = []
         name = "mcp_probe_nullable_validation"
@@ -875,7 +875,7 @@ class TestDeferredCallSchemaProbe:
         assert calls == [{"value": None}]
 
     def test_schema_normalization_preserves_literal_enum_objects(self):
-        from tools.tool_search import validate_deferred_call_args
+        from hermes_agent.tools.tool_search import validate_deferred_call_args
 
         calls = []
         name = "mcp_probe_literal_enum_validation"
@@ -889,7 +889,7 @@ class TestDeferredCallSchemaProbe:
         assert validate_deferred_call_args(name, {"value": enum_value}) is None
 
     def test_malformed_schema_fails_open(self):
-        import model_tools
+        from hermes_agent import model_tools
 
         calls = []
         name = "mcp_probe_malformed_validation"
@@ -909,7 +909,7 @@ class TestDeferredCallSchemaProbe:
         assert calls == [{"value": "kept"}]
 
     def test_external_ref_fails_open_without_resolution(self):
-        from tools.tool_search import validate_deferred_call_args
+        from hermes_agent.tools.tool_search import validate_deferred_call_args
 
         calls = []
         name = "mcp_probe_external_ref_validation"

@@ -275,8 +275,8 @@ def test_cold_estimate_resolves_a_legacy_name_list_pin_like_the_restored_agent()
     cold estimate must price those definitions too, not the prompt alone (260 vs 1,714)."""
     import json
     from hermes_agent.gateway.session_mutation_compress import _request_tokens
-    from tools.mcp_tool_agent import restore_agent_tool_prefix
-    from tools.registry import registry
+    from hermes_agent.tools.mcp_tool_agent import restore_agent_tool_prefix
+    from hermes_agent.tools.registry import registry
 
     schema = {'name': 'review_pin_probe', 'description': 'Read a local document. ' * 250,
               'parameters': {'type': 'object', 'properties': {'path': {'type': 'string'}}}}

@@ -1,7 +1,7 @@
 """Wake-word ("Hey Hermes") detection — hands-free session trigger.
 
 One always-on hotword listener shared by CLI, TUI and desktop GUI (a single owner,
-gated by ``wake_surface_enabled``). Engines live in :mod:`tools.wake_word_engines`;
+gated by ``wake_surface_enabled``). Engines live in :mod:`hermes_agent.tools.wake_word_engines`;
 this module owns config, the capture loop and the process-wide listener singleton.
 Capture reuses voice mode's 16 kHz mono int16 ``sounddevice`` path on a daemon
 thread; callers ``pause()`` while a voice turn holds the mic and ``resume()`` once
@@ -24,7 +24,7 @@ from typing import Any, Callable, Dict, Optional
 
 # The engine classes are re-exported on purpose: _build_engine resolves the
 # _PROVIDERS names on THIS module so a test (or plugin) can swap one engine.
-from tools.wake_word_engines import (
+from hermes_agent.tools.wake_word_engines import (
     _Engine,
     _OpenWakeWordEngine,
     _PorcupineEngine,
@@ -81,7 +81,7 @@ _DEFAULTS: dict[str, Any] = {
     "confirmation_frames": _DEFAULT_CONFIRMATION_FRAMES, "start_new_session": True,
 }
 
-# Bundled "hey hermes" model (tools/wakewords/) — the default; alias names resolve
+# Bundled "hey hermes" model (hermes_agent/tools/wakewords/) — the default; alias names resolve
 # to it, not to an openWakeWord built-in.
 _BUNDLED_MODEL_NAME = "hey_hermes"
 _BUNDLED_MODEL_ALIASES = frozenset({"", "hey_hermes", "hey hermes", "hermes"})
@@ -303,7 +303,7 @@ def _stt_ready() -> bool:
     """Is a speech-to-text provider configured and enabled? (A wake without STT arms the
     mic but every utterance dies at transcription — same bar as ``check_voice_requirements``.)"""
     with suppress(Exception):
-        from tools.transcription_tools import _get_provider, _load_stt_config, is_stt_enabled
+        from hermes_agent.tools.transcription_tools import _get_provider, _load_stt_config, is_stt_enabled
         stt_config = _load_stt_config()
         return is_stt_enabled(stt_config) and _get_provider(stt_config) != "none"
     return False
@@ -323,7 +323,7 @@ def _tts_ready() -> bool:
     use" counts as ready and we never touch pip from here.
     """
     try:
-        from tools.tts_tool import _get_provider, _load_tts_config, check_tts_requirements
+        from hermes_agent.tools.tts_tool import _get_provider, _load_tts_config, check_tts_requirements
         provider = _get_provider(_load_tts_config())
     except Exception:
         return False
@@ -346,7 +346,7 @@ def _tts_ready() -> bool:
             return False
 
     try:
-        from tools.tts_tool import check_tts_requirements
+        from hermes_agent.tools.tts_tool import check_tts_requirements
 
         return bool(check_tts_requirements())
     except Exception:

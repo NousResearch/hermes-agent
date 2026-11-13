@@ -1,5 +1,5 @@
 """Execution-environment backends for the terminal tool: per-backend builders, config-to-kwargs
-shapers, and requirement checkers, routed by dispatch/spec tables. Split out of ``tools/terminal_tool.py``;
+shapers, and requirement checkers, routed by dispatch/spec tables. Split out of ``hermes_agent/tools/terminal_tool.py``;
 the terminal tool imports the builders/checkers it uses from here."""
 
 import functools
@@ -9,18 +9,18 @@ import logging
 import subprocess
 from typing import Any, Dict, Optional
 
-from tools.environments.docker import DockerEnvironment as _DockerEnvironment
-from tools.environments.local import LocalEnvironment as _LocalEnvironment
-from tools.environments.managed_modal import ManagedModalEnvironment as _ManagedModalEnvironment
-from tools.environments.modal import ModalEnvironment as _ModalEnvironment
-from tools.environments.ssh import SSHEnvironment as _SSHEnvironment
-from tools.managed_tool_gateway import is_managed_tool_gateway_ready
-from tools.terminal_tool_config import _get_plugin_env_provider
-from tools.tool_backend_helpers import (has_direct_modal_credentials, managed_nous_tools_enabled,
+from hermes_agent.tools.environments.docker import DockerEnvironment as _DockerEnvironment
+from hermes_agent.tools.environments.local import LocalEnvironment as _LocalEnvironment
+from hermes_agent.tools.environments.managed_modal import ManagedModalEnvironment as _ManagedModalEnvironment
+from hermes_agent.tools.environments.modal import ModalEnvironment as _ModalEnvironment
+from hermes_agent.tools.environments.ssh import SSHEnvironment as _SSHEnvironment
+from hermes_agent.tools.managed_tool_gateway import is_managed_tool_gateway_ready
+from hermes_agent.tools.terminal_tool_config import _get_plugin_env_provider
+from hermes_agent.tools.tool_backend_helpers import (has_direct_modal_credentials, managed_nous_tools_enabled,
                                         nous_tool_gateway_unavailable_message, resolve_modal_backend_state)
 
 # Log-record parity with the origin module.
-logger = logging.getLogger("tools.terminal_tool")
+logger = logging.getLogger("hermes_agent.tools.terminal_tool")
 
 # Human reason for the most recent failed requirements check (None after a passing one). The CLI
 # startup notice and `hermes doctor` read it through terminal_backend_unavailable_reason() so the user
@@ -52,7 +52,7 @@ _SUPPORTED_VERCEL_RUNTIMES = ("node24", "node22", "python3.13")
 _BUILTIN_BACKENDS = "local, docker, modal, daytona, vercel_sandbox, ssh"
 
 # Config -> kwargs shapers, driven by (out_key, config_key, default) tables. The container table's
-# (key, default) literal is intentionally greppable; tools/terminal_tool.py keeps its own for the AST test.
+# (key, default) literal is intentionally greppable; hermes_agent/tools/terminal_tool.py keeps its own for the AST test.
 _SSH_KEYS = (("host", "ssh_host", ""), ("user", "ssh_user", ""), ("port", "ssh_port", 22),
              ("key", "ssh_key", ""), ("persistent", "ssh_persistent", True))
 _RESOURCE_KEYS = (("cpu", "container_cpu", 1), ("memory", "container_memory", 5120),
@@ -135,7 +135,7 @@ def _build_local_env(*, cwd, timeout, local_config=None, **_):
 
 
 def _build_docker_env(*, image, cwd, timeout, cc, task_id, host_cwd, **_):
-    from tools.terminal_tool import (_docker_session_isolation_enabled, _has_isolation_overrides,
+    from hermes_agent.tools.terminal_tool import (_docker_session_isolation_enabled, _has_isolation_overrides,
                                      _maybe_reap_docker_orphans)
     # One-shot reaper for labeled containers orphaned by prior Hermes processes that died before
     # atexit (SIGKILL / OOM / closed terminal); ``terminal.docker_orphan_reaper: false`` disables it.
@@ -182,9 +182,9 @@ def _build_modal_env(*, image, cwd, timeout, cc, task_id, **_):
 # env_type -> (class getter, takes image, extra kwargs from (cc, resource kwargs)). SDK-backed modules
 # (daytona/vercel) are imported lazily so they are only required when that backend is selected.
 _SANDBOX_ROWS = {
-    "daytona": (lambda: importlib.import_module("tools.environments.daytona").DaytonaEnvironment, True,
+    "daytona": (lambda: importlib.import_module("hermes_agent.tools.environments.daytona").DaytonaEnvironment, True,
                 lambda cc, kw: {"cpu": int(kw["cpu"])}),
-    "vercel_sandbox": (lambda: importlib.import_module("tools.environments.vercel_sandbox").VercelSandboxEnvironment,
+    "vercel_sandbox": (lambda: importlib.import_module("hermes_agent.tools.environments.vercel_sandbox").VercelSandboxEnvironment,
                        False, lambda cc, kw: {"runtime": cc.get("vercel_runtime") or None,
                                        "image": cc.get("vercel_image") or None}),
 }
@@ -283,7 +283,7 @@ def _build_hosted_env(*, env_type, image, cwd, timeout, cc, **_):
     """The bound hosted agent's sandbox. Only a plugin backend declaring ``serves_hosted_scopes`` can
     serve it; a built-in backend runs on this host or on a sandbox keyed by task, so it is refused.
     The caller's task id is not passed on: the sandbox is the scope's (``sandbox_scope``)."""
-    from tools.environments.sandbox_scope import create_hosted_environment
+    from hermes_agent.tools.environments.sandbox_scope import create_hosted_environment
     provider = None if env_type in _ENV_BUILDERS else _get_plugin_env_provider(env_type)
     if provider is not None:
         _refuse_plugin_host_provider(provider, env_type)
@@ -301,7 +301,7 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
     the host dir bound into Docker when cwd mounting is enabled. ``probe_only`` asks ssh for a throwaway
     connection with no remote setup/sync (the prompt-time probe). Unknown types fall through to plugin backends.
     Inside a hosted scope the environment is always the bound agent's sandbox (:func:`_build_hosted_env`)."""
-    from tools.environments.sandbox_scope import hosted_scope
+    from hermes_agent.tools.environments.sandbox_scope import hosted_scope
     builder = _ENV_BUILDERS.get(env_type)
     kwargs = dict(image=image, cwd=cwd, timeout=timeout, cc=container_config or {}, task_id=task_id,
                   ssh_config=ssh_config, local_config=local_config, host_cwd=host_cwd, probe_only=probe_only)
@@ -374,7 +374,7 @@ def _daytona_post(config: dict[str, Any]) -> bool:
 
 _BACKEND_SPECS: dict[str, dict[str, Any]] = {
     "local": {},
-    "docker": {"binary": (lambda: importlib.import_module("tools.environments.docker").find_docker(), "version",
+    "docker": {"binary": (lambda: importlib.import_module("hermes_agent.tools.environments.docker").find_docker(), "version",
                           "Docker is not installed — no docker executable in PATH or the usual install locations")},
     "ssh": {"pre": _ssh_pre},
     "modal": {"pre": _modal_pre,

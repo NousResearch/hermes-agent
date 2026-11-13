@@ -11,7 +11,7 @@ answered, so the gate resolves from ``approvals.unattended_mode`` instead (#1005
 
 import pytest
 
-from tools import approval as approval_mod
+from hermes_agent.tools import approval as approval_mod
 
 
 @pytest.fixture

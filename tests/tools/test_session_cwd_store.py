@@ -9,7 +9,7 @@ read-side flip will rely on.
 
 import pytest
 
-import tools.terminal_tool as tt
+import hermes_agent.tools.terminal_tool as tt
 
 
 @pytest.fixture(autouse=True)
@@ -99,8 +99,8 @@ class TestFileToolsReadTheRecord:
     """Step 2: file-tool path resolution prefers the session's own record."""
 
     def test_two_sessions_resolve_into_their_own_recorded_cwds(self, tmp_path, monkeypatch):
-        import tools.file_tools as ft
-        import tools.file_tools_paths as ftp
+        import hermes_agent.tools.file_tools as ft
+        import hermes_agent.tools.file_tools_paths as ftp
 
         wt_a = tmp_path / "wt_a"
         wt_b = tmp_path / "wt_b"
@@ -122,8 +122,8 @@ class TestFileToolsReadTheRecord:
     def test_record_beats_foreign_env_cwd_without_ownership_metadata(self, tmp_path, monkeypatch):
         """The leak-A scenario, solved structurally: the shared env's cwd is
         never consulted for path resolution — only the session's own record."""
-        import tools.file_tools as ft
-        import tools.file_tools_paths as ftp
+        import hermes_agent.tools.file_tools as ft
+        import hermes_agent.tools.file_tools_paths as ftp
 
         wt_a = tmp_path / "wt_a"
         wt_b = tmp_path / "wt_b"
@@ -154,7 +154,7 @@ class TestReapedEnvFallbackIsFillOnly:
     """
 
     def _reap(self, monkeypatch, tmp_path, task_id, stale_cwd):
-        import tools.file_tools as ft
+        import hermes_agent.tools.file_tools as ft
 
         class _StaleFileOps:
             cwd = stale_cwd

@@ -559,7 +559,7 @@ class TestDisconnectedAgentReap:
 
     def test_reaps_baseline_diff_for_owned_turn(self, monkeypatch):
         from hermes_agent.gateway.platforms.api_server import _reap_disconnected_agent_processes
-        from tools.process_registry import process_registry
+        from hermes_agent.tools.process_registry import process_registry
 
         calls = []
         monkeypatch.setattr(
@@ -586,7 +586,7 @@ class TestDisconnectedAgentReap:
 
     def test_noop_when_agent_has_no_ownership_markers(self, monkeypatch):
         from hermes_agent.gateway.platforms.api_server import _reap_disconnected_agent_processes
-        from tools.process_registry import process_registry
+        from hermes_agent.tools.process_registry import process_registry
 
         calls = []
         monkeypatch.setattr(
@@ -613,7 +613,7 @@ class TestDisconnectedAgentReap:
             _publish_turn_process_ownership,
             _reap_disconnected_agent_processes,
         )
-        from tools.process_registry import process_registry
+        from hermes_agent.tools.process_registry import process_registry
 
         calls = []
         monkeypatch.setattr(
@@ -652,7 +652,7 @@ class TestDisconnectedAgentReap:
             _publish_turn_process_ownership,
             _reap_disconnected_agent_processes,
         )
-        from tools.process_registry import process_registry
+        from hermes_agent.tools.process_registry import process_registry
 
         calls = []
         monkeypatch.setattr(
@@ -687,7 +687,7 @@ class TestDisconnectedAgentReap:
             _clear_turn_process_ownership,
             _publish_turn_process_ownership,
         )
-        from tools.process_registry import process_registry
+        from hermes_agent.tools.process_registry import process_registry
 
         monkeypatch.setattr(
             process_registry,
@@ -714,7 +714,7 @@ class TestDisconnectedAgentReap:
         """POST /v1/runs/{id}/stop abandons the run — it must reap the
         background processes that run created (#76115 sibling surface)."""
         from hermes_agent.gateway.platforms.api_server import _publish_turn_process_ownership
-        from tools.process_registry import process_registry
+        from hermes_agent.tools.process_registry import process_registry
 
         calls = []
         monkeypatch.setattr(
@@ -888,8 +888,8 @@ class TestHealthDetailedEndpoint:
             "cancelled": {"status": "cancelled"},
         }
 
-        with patch("tools.process_registry.process_registry.completion_queue.qsize", return_value=0), \
-             patch("tools.async_delegation.active_count", return_value=0):
+        with patch("hermes_agent.tools.process_registry.process_registry.completion_queue.qsize", return_value=0), \
+             patch("hermes_agent.tools.async_delegation.active_count", return_value=0):
             assert adapter._readiness_work_counts() == (4, 0, 0)
 
 
@@ -985,7 +985,7 @@ class TestSkillsEndpoint:
             {"name": "ascii-art", "description": "ASCII art generation", "category": "creative"},
         ]
         with patch(
-            "tools.skills_tool.find_all_skills",
+            "hermes_agent.tools.skills_tool.find_all_skills",
             return_value=list(fake_skills),
         ):
             app = _create_app(adapter)
@@ -1021,7 +1021,7 @@ class TestToolsetsEndpoint:
             "hermes_cli.tools_config._toolset_has_keys",
             return_value=True,
         ) as has_keys, patch(
-            "toolsets.resolve_toolset",
+            "hermes_agent.toolsets.resolve_toolset",
             side_effect=lambda name: {
                 "default": ["terminal", "read_file"],
                 "web": ["web_search"],
@@ -2852,7 +2852,7 @@ class TestApiKeyStartupGuardFailsClosed:
     key is remote code execution".
 
     So "the strength check could not be run" must never resolve to "start
-    anyway" — the same posture ``tools/credential_files.py`` takes when its
+    anyway" — the same posture ``hermes_agent/tools/credential_files.py`` takes when its
     deny-list cannot be consulted.
     """
 

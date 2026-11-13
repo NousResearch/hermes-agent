@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Vision tools: ``vision_analyze`` (image) and ``video_analyze``.
 
-Images resolve through :mod:`tools.image_source`, are normalized to a provider-supported format
-(:mod:`tools.vision_tools_image_prep`), then either attach natively to a vision-capable main
+Images resolve through :mod:`hermes_agent.tools.image_source`, are normalized to a provider-supported format
+(:mod:`hermes_agent.tools.vision_tools_image_prep`), then either attach natively to a vision-capable main
 model (multimodal tool-result envelope) or are described by the auxiliary vision LLM router.
 """
 
@@ -21,7 +21,7 @@ import httpx
 from hermes_dir_acl import make_user_dir
 
 # ``agent.auxiliary_client`` costs ~50 ms cold; only the handlers need it. Both names stay
-# module attributes so tests can patch ``tools.vision_tools.async_call_llm`` (truthy-skip: mocks win).
+# module attributes so tests can patch ``hermes_agent.tools.vision_tools.async_call_llm`` (truthy-skip: mocks win).
 async_call_llm: Any = None
 extract_content_or_reasoning: Any = None
 
@@ -35,9 +35,9 @@ def _load_auxiliary_client() -> None:
 
 
 from hermes_constants import get_hermes_dir
-from tools.debug_helpers import DebugSession
-from tools.website_policy import check_website_access
-from tools.vision_tools_history_budget import (
+from hermes_agent.tools.debug_helpers import DebugSession
+from hermes_agent.tools.website_policy import check_website_access
+from hermes_agent.tools.vision_tools_history_budget import (
     native_turn_duplicate as _native_turn_duplicate,
     record_embed as _record_embed,
     release_embed as _release_embed,
@@ -45,7 +45,7 @@ from tools.vision_tools_history_budget import (
     resolve_repeat_cap as _resolve_repeat_cap,
     resolve_embed_target_bytes as _resolve_embed_target_bytes,
 )
-from tools.vision_tools_image_prep import (
+from hermes_agent.tools.vision_tools_image_prep import (
     _VISION_MAX_VALIDATED_AGGREGATE_PIXELS,
     _VISION_MAX_VALIDATED_FRAME_COUNT,
     _crop_image_region,
@@ -93,7 +93,7 @@ _VISION_MAX_DOWNLOAD_BYTES = 50 * 1024 * 1024
 # CPU-burst cap: a turn can fan out dozens of vision_analyze calls (base64 encode + Pillow
 # resize each) that would saturate every core and starve the shared event loop. Only the CPU
 # burst is capped (LLM calls stay concurrent), on a dedicated executor sized to usable cores.
-# Must be a threading primitive — each call runs via model_tools._run_async on a PER-THREAD
+# Must be a threading primitive — each call runs via hermes_agent.model_tools._run_async on a PER-THREAD
 # loop, so an asyncio semaphore cannot coordinate; the default executor is shared with the
 # gateway/web server and is deliberately NOT used.
 def _detect_host_cpus() -> int:
@@ -130,7 +130,7 @@ async def _validate_image_url_async(url: str) -> bool:
     off the event loop."""
     if not (isinstance(url, str) and url.startswith(("http://", "https://")) and urlparse(url).netloc):
         return False
-    from tools.url_safety import async_is_safe_url
+    from hermes_agent.tools.url_safety import async_is_safe_url
     return await async_is_safe_url(url)
 
 
@@ -232,7 +232,7 @@ def _write_private_bytes(path: Path, data: bytes) -> None:
 
     ``Path.write_bytes`` lands 0644 under a default umask. The enclosing cache
     dir is 0700, so this matters only under ``HERMES_HOME_MODE=0701`` — but
-    ``tools.computer_use.tool`` already writes private captures into this
+    ``hermes_agent.tools.computer_use.tool`` already writes private captures into this
     very directory, and one directory with two file-mode conventions is the
     kind of inconsistency that rots. POSIX mode bits are advisory on Windows
     (``os.chmod`` there only toggles the read-only flag), so on an ``os.open``
@@ -251,7 +251,7 @@ def _write_private_bytes(path: Path, data: bytes) -> None:
 async def _ssrf_redirect_guard(response):
     """Re-validate each redirect target (a public URL 302ing to 169.254.169.254 would otherwise
     bypass the pre-flight check). Async because httpx.AsyncClient awaits hooks."""
-    from tools.url_safety import async_is_safe_url, redirect_target_from_response
+    from hermes_agent.tools.url_safety import async_is_safe_url, redirect_target_from_response
     redirect_url = redirect_target_from_response(response)
     if redirect_url and not await async_is_safe_url(redirect_url):
         raise ValueError(f"Blocked redirect to private/internal address: {redirect_url}")
@@ -263,7 +263,7 @@ async def _download_media(
     """SSRF-safe streaming download with exponential backoff (2s/4s/8s). ``retry_all=False`` (images)
     retries only :func:`_is_retryable_download_error` errors — a 404/403 never succeeds on retry."""
     from utils import atomic_replace
-    from tools.url_safety import create_ssrf_safe_async_client
+    from hermes_agent.tools.url_safety import create_ssrf_safe_async_client
     destination.parent.mkdir(parents=True, exist_ok=True)
     last_error = None
     for attempt in range(max_retries):
@@ -643,8 +643,8 @@ async def _prepare_image(
     Unsupported formats (SVG, BMP) become PNG BEFORE encoding — an unsupported media_type baked
     into immutable history would 400 on every resume. The crop runs BEFORE any downscale so the
     region keeps the full resolution budget. On error no temp file is left."""
-    from tools.image_source import ImageResolutionError, ResolveContext, resolve_image_source
-    from tools.hosted_tool_policy import host_feature_enabled
+    from hermes_agent.tools.image_source import ImageResolutionError, ResolveContext, resolve_image_source
+    from hermes_agent.tools.hosted_tool_policy import host_feature_enabled
     if not host_feature_enabled("media_processing"):
         # Hosted: decoding, conversion and the temp file would all happen on this host.
         raise _ImagePrepError("Image processing is not available to a hosted agent.")
@@ -715,7 +715,7 @@ async def _vision_analyze_native(
     prepared: Optional[_PreparedImage] = None
     embedded = False
     try:
-        from tools.interrupt import is_interrupted
+        from hermes_agent.tools.interrupt import is_interrupted
         if is_interrupted():
             return tool_error("Interrupted", success=False)
         try:
@@ -856,7 +856,7 @@ async def _run_analysis(
         return json.dumps(result, indent=2, ensure_ascii=False)
 
     try:
-        from tools.interrupt import is_interrupted
+        from hermes_agent.tools.interrupt import is_interrupted
         if is_interrupted():
             return tool_error("Interrupted", success=False)
         logger.info("Analyzing %s: %s", kind, source[:60])
@@ -958,7 +958,7 @@ def check_vision_requirements() -> bool:
     return _should_use_native_vision_fast_path() or check_video_requirements()
 
 
-from tools.registry import registry, tool_error
+from hermes_agent.tools.registry import registry, tool_error
 
 VISION_ANALYZE_SCHEMA = {
     "name": "vision_analyze",
@@ -1078,11 +1078,11 @@ async def _materialize_video(video_url: str, task_id: Optional[str], temp_paths:
     here are appended to ``temp_paths`` — never user-provided paths. Terminal-backend reads use the
     shared media resolver with ``permitted=("video",)`` — the exact pipeline vision_analyze uses
     (media-cache host reads, bounded in-sandbox exec-read, credential-read guard, ingest cap)."""
-    from tools.image_source import (
+    from hermes_agent.tools.image_source import (
         ImageResolutionError, ResolveContext, _is_local_terminal_backend, local_source_spelling,
         resolve_image_source,
     )
-    from tools.hosted_tool_policy import host_feature_enabled
+    from hermes_agent.tools.hosted_tool_policy import host_feature_enabled
     if not host_feature_enabled("media_processing"):
         raise ValueError("Video processing is not available to a hosted agent.")  # it would cache here
     source = video_url.removeprefix("file://")
@@ -1116,7 +1116,7 @@ async def _materialize_video(video_url: str, task_id: Optional[str], temp_paths:
         if blocked:
             raise PermissionError(blocked["message"])
         # Hardened here rather than inside _download_media: that helper takes
-        # a caller-supplied destination (tools/image_source.py hands its
+        # a caller-supplied destination (hermes_agent/tools/image_source.py hands its
         # sibling a /tmp NamedTemporaryFile it owns the mode of), and
         # chmod-ing an arbitrary caller's parent to 0700 would be a
         # destructive side effect on a path Hermes does not own.

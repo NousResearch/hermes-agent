@@ -43,7 +43,7 @@ def register(ctx):
 def test_hosted_delegation_provider_extends_schema_and_routes_from_the_host(tmp_path, monkeypatch):
     from agent.delegation_provider import DelegationProvider
     from agent.delegation_registry import get_active_provider
-    from tools.delegate_tool_routes import resolve_task_routes, schema_extension
+    from hermes_agent.tools.delegate_tool_routes import resolve_task_routes, schema_extension
 
     home = tmp_path / ".hermes"
     plugin_dir = home / "plugins" / "hosted-map"

@@ -11,15 +11,15 @@ from agent.secret_scope import get_secret
 
 logger = logging.getLogger(__name__)
 
-from tools.send_message_targets import (
+from hermes_agent.tools.send_message_targets import (
     _HOME_CHANNEL_ENV_OVERRIDES, resolve_send_target, unknown_platform_error,
 )
-from tools.send_message_senders import (
+from hermes_agent.tools.send_message_senders import (
     _AUDIO_EXTS, _DEFAULT_CAPTION_LIMIT, _IMAGE_EXTS, _NO_DELIVERABLE, _VIDEO_EXTS, _VOICE_EXTS,
     _adapter_media_method, _error, _live_adapter, _media_caption_split, _optional_sender_kwargs,
     _plugin_standalone_sender, _registry_standalone_send, _resolve_slack_user_target, _sanitize_error_text,
     _send_matrix_via_adapter)
-from tools.registry import tool_error
+from hermes_agent.tools.registry import tool_error
 
 # A bare Slack user id (session metadata / home-channel config) is opened as a DM; same shape the
 # slack plugin's target parser turns into ``user:U...``.
@@ -195,7 +195,7 @@ def _handle_react(args, remove=False):
     if not callable(react_fn):
         return tool_error(f"Platform '{platform_name}' does not support message reactions.")
     try:
-        from model_tools import _run_async
+        from hermes_agent.model_tools import _run_async
         result = _run_async(react_fn(chat_id=chat_id, message_id=message_id, **({} if remove else {"emoji": emoji})))
     except Exception as e:
         return json.dumps(_error(f"Reaction failed: {e}"))
@@ -218,7 +218,7 @@ def _handle_send(args):
     platform_name, chat_id, thread_id, resolution_error = _resolve_tool_target(target)
     if resolution_error:
         return tool_error(resolution_error)
-    from tools.interrupt import is_interrupted
+    from hermes_agent.tools.interrupt import is_interrupted
     if is_interrupted():
         return tool_error("Interrupted")
     try:
@@ -267,7 +267,7 @@ def _handle_send(args):
         return tool_error(_relay_denial)
 
     try:
-        from model_tools import _run_async
+        from hermes_agent.model_tools import _run_async
         # Only custom plugin handlers receive the complete typed request. ``mentions`` is only for platforms
         # whose StandaloneSendPolicy declares it (WhatsApp; the CLI rejects it elsewhere); other platforms'
         # standalone senders don't accept the kwarg.
@@ -419,7 +419,7 @@ def _slack_dm_chat_id(pconfig, chat_id):
     dm_target = f"user:{chat_id}" if chat_id.startswith("U") and _SLACK_USER_ID_RE.fullmatch(chat_id) else chat_id
     if not dm_target.startswith(("user:", "user_name:")):
         return chat_id, None
-    from model_tools import _run_async
+    from hermes_agent.model_tools import _run_async
     return _run_async(_resolve_slack_user_target(pconfig.token, dm_target))
 
 

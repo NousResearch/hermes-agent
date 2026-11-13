@@ -6,7 +6,7 @@ import time
 
 import pytest
 
-from tools.skills_tool import (
+from hermes_agent.tools.skills_tool import (
     _skill_view_with_bump,
     reset_skill_view_dedup,
 )
@@ -34,7 +34,7 @@ def skills_home(tmp_path, monkeypatch):
     (refs / "guide.md").write_text("# Guide\n\nDetailed reference content here.\n", encoding="utf-8")
     monkeypatch.setenv("HERMES_HOME", str(home))
     reset_skill_view_dedup()
-    from tools.skill_manager_guards import _reset_background_review_read_marks
+    from hermes_agent.tools.skill_manager_guards import _reset_background_review_read_marks
     _reset_background_review_read_marks()
     return home
 
@@ -94,7 +94,7 @@ class TestSkillViewDedup:
         assert "Step one" in r2.get("content", "")
 
     def test_background_review_skips_dedup_and_marks_read(self, skills_home):
-        from tools.skill_provenance import (
+        from hermes_agent.tools.skill_provenance import (
             reset_current_write_origin,
             set_current_write_origin,
         )
@@ -112,11 +112,11 @@ class TestSkillViewDedup:
         assert review.get("dedup") is None
         assert review.get("content_returned") is None
         # The real read marks the file, so the fork's read-before-write guard now admits the patch.
-        from tools.skill_manager_guards import _background_review_has_read
+        from hermes_agent.tools.skill_manager_guards import _background_review_has_read
         assert _background_review_has_read(skills_home / "skills" / "demo-dedup-skill" / "SKILL.md")
 
     def test_background_review_does_not_pollute_foreground_cache(self, skills_home):
-        from tools.skill_provenance import (
+        from hermes_agent.tools.skill_provenance import (
             reset_current_write_origin,
             set_current_write_origin,
         )
@@ -142,7 +142,7 @@ class TestSkillViewDedupRaces:
         return skills_home / "skills" / "demo-dedup-skill" / "SKILL.md"
 
     def test_write_while_serving_is_not_deduped(self, skills_home, monkeypatch):
-        import tools.skills_tool as st
+        import hermes_agent.tools.skills_tool as st
 
         md = self._md(skills_home)
         real = st._log_security_warnings

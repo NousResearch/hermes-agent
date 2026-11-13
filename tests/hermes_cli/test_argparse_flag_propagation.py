@@ -48,12 +48,12 @@ class TestChatVerboseArg:
         fake_cli.main = fake_main
         fake_banner = types.ModuleType("hermes_cli.banner")
         fake_banner.prefetch_update_check = lambda: None
-        fake_skills_sync = types.ModuleType("tools.skills_sync")
+        fake_skills_sync = types.ModuleType("hermes_agent.tools.skills_sync")
         fake_skills_sync.sync_skills = lambda quiet=True: None
 
         monkeypatch.setitem(sys.modules, "cli", fake_cli)
         monkeypatch.setitem(sys.modules, "hermes_cli.banner", fake_banner)
-        monkeypatch.setitem(sys.modules, "tools.skills_sync", fake_skills_sync)
+        monkeypatch.setitem(sys.modules, "hermes_agent.tools.skills_sync", fake_skills_sync)
         monkeypatch.setattr(main_mod, "_has_any_provider_configured", lambda: True)
         monkeypatch.setattr(main_mod, "_pin_kanban_board_env", lambda: None)
 
@@ -83,12 +83,12 @@ class TestChatVerboseArg:
         fake_cli.main = lambda **kwargs: captured.update(kwargs)
         fake_banner = types.ModuleType("hermes_cli.banner")
         fake_banner.prefetch_update_check = lambda: None
-        fake_skills_sync = types.ModuleType("tools.skills_sync")
+        fake_skills_sync = types.ModuleType("hermes_agent.tools.skills_sync")
         fake_skills_sync.sync_skills = lambda quiet=True: None
 
         monkeypatch.setitem(sys.modules, "cli", fake_cli)
         monkeypatch.setitem(sys.modules, "hermes_cli.banner", fake_banner)
-        monkeypatch.setitem(sys.modules, "tools.skills_sync", fake_skills_sync)
+        monkeypatch.setitem(sys.modules, "hermes_agent.tools.skills_sync", fake_skills_sync)
         monkeypatch.setattr(main_mod, "_has_any_provider_configured", lambda: True)
         monkeypatch.setattr(main_mod, "_pin_kanban_board_env", lambda: None)
 

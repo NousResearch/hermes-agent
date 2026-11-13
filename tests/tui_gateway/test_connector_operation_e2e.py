@@ -9,10 +9,10 @@ from contextlib import ExitStack, suppress
 import pytest
 
 from hermes_agent.gateway.session_context import clear_session_vars, reset_session_vars, set_session_vars
-from tools.connectors import live
-from tools.connectors.contract import Actor, TargetState
-from tools.connectors.operation import ConnectionOperation, Target
-from tools.connectors.tool import manage_connections
+from hermes_agent.tools.connectors import live
+from hermes_agent.tools.connectors.contract import Actor, TargetState
+from hermes_agent.tools.connectors.operation import ConnectionOperation, Target
+from hermes_agent.tools.connectors.tool import manage_connections
 from hermes_agent.tui_gateway import server
 from hermes_agent.tui_gateway.transport import StdioTransport
 
@@ -175,7 +175,7 @@ def test_desktop_connect_settles_through_callback_response(owned_session, monkey
     """The actual tool thread waits for the gateway card outcome, not a fake callback."""
     owner, _ = owned_session
     client = FakeConnectorClient()
-    monkeypatch.setattr("tools.connectors.managed.WATCH_TICK_SECONDS", 0.05)
+    monkeypatch.setattr("hermes_agent.tools.connectors.managed.WATCH_TICK_SECONDS", 0.05)
     result = {}
     finished = threading.Event()
 

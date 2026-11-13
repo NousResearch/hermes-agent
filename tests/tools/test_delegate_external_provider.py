@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from providers.base import ProviderProfile
-from tools.delegate_tool_config import _resolve_child_runtime
+from hermes_agent.tools.delegate_tool_config import _resolve_child_runtime
 
 
 @pytest.fixture

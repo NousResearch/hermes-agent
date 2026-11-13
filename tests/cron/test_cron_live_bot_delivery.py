@@ -4,7 +4,7 @@ import subprocess
 from unittest.mock import Mock
 
 from hermes_agent.cron import scheduler_delivery as delivery
-from tools import bot_live_delivery as mailbox
+from hermes_agent.tools import bot_live_delivery as mailbox
 
 
 class _FakeAuthority:

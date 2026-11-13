@@ -1,6 +1,6 @@
 """The bot's browser on its Bot Desktop: one executable, one persistent user-data-dir per profile.
 
-The agent's Chromium (``tools.browser_session`` → ``tools.browser_launcher``) and the dock's Browser icon a
+The agent's Chromium (``hermes_agent.tools.browser_session`` → ``hermes_agent.tools.browser_launcher``) and the dock's Browser icon a
 human clicks must be THE SAME browser — same binary, same ``--user-data-dir`` — or the human logs in to a
 jar the bot never sees. Chromium's singleton makes a second launch on the same user-data-dir open a window
 in the running instance, which is the hand-over we want in ONE direction. When the human's dock instance is
@@ -15,7 +15,7 @@ import shutil
 from pathlib import Path
 from typing import Optional
 
-from tools.bot_desktop import runtime
+from hermes_agent.tools.bot_desktop import runtime
 
 DISK_CACHE_BYTES = 256 * 1024 * 1024
 
@@ -26,7 +26,7 @@ def profile_dir() -> Path:
     """User-data-dir the bot's browser uses on this profile's screen. ``browser.user_data_dir`` pins your own:
     ``~`` expands, and a relative path is anchored at this profile's HERMES_HOME (where the rest of the screen's
     state lives), so ``pin`` means ``<HERMES_HOME>/pin`` and two profiles never share one jar by accident."""
-    from tools.browser_session_cloud import user_data_dir
+    from hermes_agent.tools.browser_session_cloud import user_data_dir
     override = user_data_dir()
     return Path(override) if override else runtime.state_dir() / "browser-profile"
 
@@ -40,7 +40,7 @@ def executable() -> Optional[str]:
     a distro chromium ships the helper. The bundle stays the answer when it is the only browser — a dock
     icon that fails loudly beats a non-root ``--no-sandbox``.
     """
-    from tools.browser_session_cloud import executable_path
+    from hermes_agent.tools.browser_session_cloud import executable_path
     explicit = executable_path()
     if explicit and os.access(explicit, os.X_OK) and not _is_headless_shell(explicit):
         return explicit
@@ -72,7 +72,7 @@ def _is_root() -> bool:
 
 
 def _userns_restricted() -> bool:
-    from tools.browser_launcher import apparmor_restricts_unprivileged_userns
+    from hermes_agent.tools.browser_launcher import apparmor_restricts_unprivileged_userns
     return apparmor_restricts_unprivileged_userns()
 
 
@@ -94,7 +94,7 @@ def dock_argv(exe: str, user_data_dir: str, *, sandbox_bypass: Optional[bool] = 
     instance attachable (Chromium writes the chosen port to ``<user-data-dir>/DevToolsActivePort``);
     first-run / default-browser dialogs would sit between the human and the bot's tabs. The sandbox policy
     is the launcher's (root, Docker, AppArmor userns): the human's Browser is the bot's browser."""
-    from tools.browser_launcher import CHROMIUM_SANDBOX_BYPASS_ARGS, needs_chromium_sandbox_bypass
+    from hermes_agent.tools.browser_launcher import CHROMIUM_SANDBOX_BYPASS_ARGS, needs_chromium_sandbox_bypass
     return [exe, f"--user-data-dir={user_data_dir}", "--remote-debugging-port=0", "--no-first-run",
             "--no-default-browser-check", *SHARED_PROFILE_ARGS,
             *(CHROMIUM_SANDBOX_BYPASS_ARGS if (needs_chromium_sandbox_bypass() if sandbox_bypass is None

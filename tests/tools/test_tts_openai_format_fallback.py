@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from tools import tts_tool, tts_tool_openai
+from hermes_agent.tools import tts_tool, tts_tool_openai
 
 
 class _RejectResponseFormat(Exception):
@@ -199,7 +199,7 @@ def test_generate_openai_tts_recovers_from_opus_rejection(tmp_path, monkeypatch)
     calls: list = []
     client = _FakeClient(calls)
     # ``_generate_openai_tts`` builds its client via ``_origin()._import_openai_client()``,
-    # and ``_origin()`` resolves to ``tools.tts_tool`` — patch the seam there.
+    # and ``_origin()`` resolves to ``hermes_agent.tools.tts_tool`` — patch the seam there.
     monkeypatch.setattr(tts_tool, "_import_openai_client", lambda: (lambda **kw: client))
 
     out = tmp_path / "reply.ogg"

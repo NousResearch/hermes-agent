@@ -1,4 +1,4 @@
-# tools/ + toolsets.py + model_tools.py — model tools
+# tools/ + hermes_agent/toolsets.py + hermes_agent/model_tools.py — model tools
 
 Applies on top of the root `AGENTS.md`: settle the **Footprint Ladder** before adding anything here.
 Most capabilities should NOT be core tools. Long-form: `website/docs/developer-guide/adding-tools.md`,
@@ -6,11 +6,11 @@ Most capabilities should NOT be core tools. Long-form: `website/docs/developer-g
 
 ## Registry and discovery
 
-`tools/registry.py` has no deps and is imported by every tool file; each `tools/*.py` calls
-`registry.register()` at import time; `model_tools.py` imports the registry and triggers discovery
+`hermes_agent/tools/registry.py` has no deps and is imported by every tool file; each `hermes_agent/tools/*.py` calls
+`registry.register()` at import time; `hermes_agent/model_tools.py` imports the registry and triggers discovery
 (`discover_builtin_tools()`), then `run_agent.py`, `cli.py`, `hermes_agent/batch_runner.py`, `environments/`
-consume it. Any `tools/*.py` with a top-level `registry.register()` is imported automatically — no
-manual import list. A tool that is a whole package (`tools/connectors/`) registers from
+consume it. Any `hermes_agent/tools/*.py` with a top-level `registry.register()` is imported automatically — no
+manual import list. A tool that is a whole package (`hermes_agent/tools/connectors/`) registers from
 `tools/<pkg>/tool.py`, the only file discovery scans inside a package; every sibling in the package
 is a library by construction, and the package needs an `__init__.py` or discovery skips it with a
 warning (setuptools would drop it from the wheel). The registry handles schema collection, dispatch (`handle_function_call()`),
@@ -24,12 +24,12 @@ private vision check.
 
 For custom/local-only tools do NOT edit core: create `~/.hermes/plugins/<name>/plugin.yaml` +
 `__init__.py` and call `ctx.register_tool(...)`; plugin toolsets are discovered automatically and
-toggled without touching `tools/` or `toolsets.py` (`plugins/AGENTS.md`).
+toggled without touching `tools/` or `hermes_agent/toolsets.py` (`plugins/AGENTS.md`).
 
 1. `tools/your_tool.py`:
    ```python
    from agent.secret_scope import get_secret
-   from tools.registry import registry
+   from hermes_agent.tools.registry import registry
    def check_requirements() -> bool: return bool(get_secret("EXAMPLE_API_KEY"))
    def example_tool(param: str, task_id: str = None) -> str: return json.dumps({"success": True, ...})
    registry.register(name="example_tool", toolset="example",
@@ -37,7 +37,7 @@ toggled without touching `tools/` or `toolsets.py` (`plugins/AGENTS.md`).
        handler=lambda args, **kw: example_tool(param=args.get("param", ""), task_id=kw.get("task_id")),
        check_fn=check_requirements, requires_env=["EXAMPLE_API_KEY"])
    ```
-2. `toolsets.py`: add the name to `_HERMES_CORE_TOOLS` (all platforms) or a new toolset. **Required**
+2. `hermes_agent/toolsets.py`: add the name to `_HERMES_CORE_TOOLS` (all platforms) or a new toolset. **Required**
    — discovery registers the schema, but a tool is only exposed if a toolset names it.
    `_HERMES_CORE_TOOLS` is the default bundle every platform's base toolset inherits, not dead code.
 
@@ -45,7 +45,7 @@ Rules for tool code:
 - **Schema descriptions must not name tools from other toolsets** (a browser tool saying "prefer
   web_search"). Those tools may be unavailable (missing key, disabled toolset) and the model
   hallucinates calls to them. Cross-references are added dynamically in `get_tool_definitions()` in
-  `model_tools.py` — see the `browser_cdp` / `execute_code` post-processing blocks.
+  `hermes_agent/model_tools.py` — see the `browser_cdp` / `execute_code` post-processing blocks.
 - **Paths in schema descriptions use `display_hermes_home()`** (schema is built at import; under
   multiplex it shows the launch home, which is display-only). **State files use `get_hermes_home()`**
   at call time, never `Path.home()/.hermes` and never a module constant, so each served profile gets
@@ -62,12 +62,12 @@ Rules for tool code:
   `_load_enabled_toolsets(platform)` (root: capability is a property of the SESSION).
 - **Agent-level tools** (`todo`, `memory`) are intercepted before `handle_function_call()` via the
   `INLINE_TOOL_EXECUTORS` table (`agent/inline_tool_executors.py`; `agent/AGENTS.md`).
-- **`_last_resolved_tool_names`** is a process-global in `model_tools.py`; `_run_single_child()` in
+- **`_last_resolved_tool_names`** is a process-global in `hermes_agent/model_tools.py`; `_run_single_child()` in
   `delegate_tool.py` saves/restores it around child runs — readers may see it stale mid-delegation.
 - New tools integrate with existing setup UX (`hermes tools`, `hermes setup`, auto-install) rather
   than a raw env var; secrets go in `OPTIONAL_ENV_VARS` (`hermes_cli/AGENTS.md`).
 
-## Toolsets (`toolsets.py`)
+## Toolsets (`hermes_agent/toolsets.py`)
 
 Single `TOOLSETS` dict. Keys today: `browser, clarify, code_execution, cronjob, debugging,
 delegation, discord, discord_admin, feishu_doc, feishu_drive, file, image_gen,
@@ -99,7 +99,7 @@ docstrings); never grow them.
 
 ## Backends and providers inside tools/
 
-Several tools front pluggable backends: terminal environments in `tools/environments/` (local,
+Several tools front pluggable backends: terminal environments in `hermes_agent/tools/environments/` (local,
 docker, ssh, modal, daytona; `terminal_tool_backends.py`, `tool_backend_helpers.py`),
 browser (`browser_launcher.py` + `browser_session*.py`: lifecycle, cloud, cdp, real_profile, sandbox), MCP
 client (`mcp_tool_*.py`: config, discovery, transport, registration, content, errors), TTS
@@ -143,7 +143,7 @@ teardown, kills the worker cgroup) runs only after that PID kill in `kill()`, or
 proven dead/recycled (`session.exited`, `_signal_kill` recycled-PID path, checkpoint recovery) —
 it is never the first signal a live parent receives.
 
-## Delegation (`tools/delegate_tool.py`)
+## Delegation (`hermes_agent/tools/delegate_tool.py`)
 
 Spawns a subagent with isolated context + terminal session; the parent waits for the summary unless
 `background=true`, which returns a delegation id and re-enters the result via the async-delegation
@@ -161,7 +161,7 @@ no `delegate_task`, `clarify`, `memory`, `send_message`, `cronjob`; keeps `execu
 `max_concurrent_children, independent_completions, gateway_mode, max_spawn_depth, child_timeout_seconds, orchestrator_enabled,
 subagent_auto_approve, inherit_mcp_toolsets, max_iterations, backend, backends`. **Routes:** `delegation.backend` picks a
 delegation provider (`agent/delegation_provider.py`, `ctx.register_delegation_provider`; its settings live in
-`delegation.backends.<name>`) that answers each task's route (`tools/delegate_tool_routes.py`: model/provider fields
+`delegation.backends.<name>`) that answers each task's route (`hermes_agent/tools/delegate_tool_routes.py`: model/provider fields
 resolved like the `delegation` section, `service_tier` checked like `/fast` in `delegate_tool_tuning.py`, or `profile` →
 the child is built, leases and converses inside that profile's scope) and may add enum-checked per-task schema params; it
 never owns lifecycle. The `default` strategy is the bundled `plugins/delegation/default` plugin (no core special case
@@ -203,7 +203,7 @@ is "inside the Hermes desktop app". The pattern:
   folds it in when the session's platform says GUI. One resolver, every topology.
 - **`check_fn` answers reachability or opt-in, not surface.** "Is the bridge wired?" — fine.
   "Was I spawned by Electron?" — not. `check_fn` results are TTL-cached process-wide
-  (`tools/registry.py`); a per-session answer does not belong there.
+  (`hermes_agent/tools/registry.py`); a per-session answer does not belong there.
 - **Ask which identity you mean.** `HERMES_DESKTOP=1` legitimately means "this backend was
   spawned by the app" (cron ticker, web-dist handling). It does NOT mean "a GUI is watching";
   the embedded terminal pane (`hermes --tui` against that backend) is the counterexample.

@@ -3,10 +3,10 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from tools import file_operations
-from tools.environments.local import LocalEnvironment
-from tools.file_operations import ExecuteResult, ShellFileOperations
-from tools.file_operations_search import _search_stdout_and_limit
+from hermes_agent.tools import file_operations
+from hermes_agent.tools.environments.local import LocalEnvironment
+from hermes_agent.tools.file_operations import ExecuteResult, ShellFileOperations
+from hermes_agent.tools.file_operations_search import _search_stdout_and_limit
 
 
 TIMEOUT = "[Command timed out after 60s]"

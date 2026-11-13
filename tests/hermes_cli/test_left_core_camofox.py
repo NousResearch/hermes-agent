@@ -352,6 +352,6 @@ def test_catalog_miss_names_the_install_command(tmp_path, _fresh):
 
 def test_camofox_env_stays_out_of_children():
     """With the plugin absent no manifest declares CAMOFOX_*: core keeps stripping them."""
-    from tools.environments import local_env_policy as policy
+    from hermes_agent.tools.environments import local_env_policy as policy
     assert "CAMOFOX_URL" in policy._build_provider_env_blocklist()
     assert "CAMOFOX_API_KEY" in policy._ALWAYS_STRIP_KEYS

@@ -1,8 +1,8 @@
-"""Tests for the MCP OAuth manager (tools/mcp_oauth_manager.py).
+"""Tests for the MCP OAuth manager (hermes_agent/tools/mcp_oauth_manager.py).
 
 The manager consolidates the eight scattered MCP-OAuth call sites into a
 single object with disk-mtime watch, dedup'd 401 handling, and a provider
-cache. See `tools/mcp_oauth_manager.py` for design rationale.
+cache. See `hermes_agent/tools/mcp_oauth_manager.py` for design rationale.
 """
 import json
 import time
@@ -18,8 +18,8 @@ pytest.importorskip(
 
 def test_manager_isolates_same_named_servers_by_profile_home(tmp_path, monkeypatch):
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
-    from tools.mcp_oauth import HermesTokenStorage
-    from tools.mcp_oauth_manager import MCPOAuthManager
+    from hermes_agent.tools.mcp_oauth import HermesTokenStorage
+    from hermes_agent.tools.mcp_oauth_manager import MCPOAuthManager
 
     profile_a = tmp_path / "profile-a"
     profile_b = tmp_path / "profile-b"
@@ -51,7 +51,7 @@ def test_manager_isolates_same_named_servers_by_profile_home(tmp_path, monkeypat
 
 
 def test_manager_restore_entry_preserves_newer_concurrent_entry(tmp_path, monkeypatch):
-    from tools.mcp_oauth_manager import MCPOAuthManager
+    from hermes_agent.tools.mcp_oauth_manager import MCPOAuthManager
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     _set_interactive_stdin(monkeypatch)
@@ -68,7 +68,7 @@ def test_manager_restore_entry_preserves_newer_concurrent_entry(tmp_path, monkey
 def _set_interactive_stdin(monkeypatch, *, is_tty: bool = True) -> None:
     mock_stdin = MagicMock()
     mock_stdin.isatty.return_value = is_tty
-    monkeypatch.setattr("tools.mcp_oauth.sys.stdin", mock_stdin)
+    monkeypatch.setattr("hermes_agent.tools.mcp_oauth.sys.stdin", mock_stdin)
 
 
 
@@ -78,7 +78,7 @@ async def test_first_observation_401_still_allows_in_place_refresh(tmp_path, mon
     """A 401 on the first disk observation seeds the baseline but must still
     report refreshable when the SDK can refresh in place (GH#39551)."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    from tools.mcp_oauth_manager import MCPOAuthManager, _ProviderEntry
+    from hermes_agent.tools.mcp_oauth_manager import MCPOAuthManager, _ProviderEntry
 
     token_dir = tmp_path / "mcp-tokens"
     token_dir.mkdir(parents=True)
@@ -110,7 +110,7 @@ async def test_external_login_after_absent_tokens_file_forces_reload(tmp_path, m
     """Provider built before login (no file, no in-memory tokens) must reload
     once another process writes the tokens file (GH#39551 review)."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    from tools.mcp_oauth_manager import MCPOAuthManager, _ProviderEntry
+    from hermes_agent.tools.mcp_oauth_manager import MCPOAuthManager, _ProviderEntry
 
     class _Ctx:
         current_tokens = None
@@ -146,7 +146,7 @@ async def test_handle_401_dedup_survives_even_if_task_reference_dropped(tmp_path
     import gc
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    from tools.mcp_oauth_manager import MCPOAuthManager, _ProviderEntry
+    from hermes_agent.tools.mcp_oauth_manager import MCPOAuthManager, _ProviderEntry
 
     mgr = MCPOAuthManager()
 
@@ -200,7 +200,7 @@ def _fake_response(status, url, body):
 
 
 def _provider_with_token_endpoint(tmp_path, oauth_config, token_endpoint, monkeypatch):
-    from tools.mcp_oauth_manager import MCPOAuthManager, reset_manager_for_tests
+    from hermes_agent.tools.mcp_oauth_manager import MCPOAuthManager, reset_manager_for_tests
     reset_manager_for_tests()
     # Provider construction fails fast in a non-interactive environment with no
     # cached tokens (mcp_oauth_manager.py guard). The hermetic test env has no
@@ -299,7 +299,7 @@ async def test_manager_provider_token_exchange_includes_dcr_secret(tmp_path, mon
     from urllib.parse import parse_qs
 
     from mcp.shared.auth import OAuthClientInformationFull
-    from tools.mcp_oauth_manager import MCPOAuthManager, reset_manager_for_tests
+    from hermes_agent.tools.mcp_oauth_manager import MCPOAuthManager, reset_manager_for_tests
 
     reset_manager_for_tests()
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -388,7 +388,7 @@ async def test_manager_malformed_201_refresh_response_clears_tokens(
         "https://idp.example.com/oauth/token",
         b'{"refresh_token": "refresh-secret"}',
     )
-    with caplog.at_level(logging.WARNING, logger="tools.mcp_oauth_manager"):
+    with caplog.at_level(logging.WARNING, logger="hermes_agent.tools.mcp_oauth_manager"):
         result = await provider._handle_refresh_response(response)
 
     assert result is False
@@ -723,7 +723,7 @@ async def test_refresh_fails_closed_while_a_peer_holds_the_fence(tmp_path, monke
     """A fence held elsewhere past the deadline aborts the refresh: no POST, tokens kept."""
     import functools
 
-    from tools import mcp_oauth
+    from hermes_agent.tools import mcp_oauth
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     endpoint = "https://idp.example.com/oauth/token"
@@ -810,7 +810,7 @@ async def test_refresh_restarts_flow_when_disk_pair_is_from_another_issuer(tmp_p
     (401 -> full auth) instead of building a POST from the foreign grant or
     raising OAuthTokenError, and it must not keep the fence.
     """
-    from tools.mcp_oauth_provider import _RefreshCompletedByPeer
+    from hermes_agent.tools.mcp_oauth_provider import _RefreshCompletedByPeer
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     endpoint = "https://idp.example.com/oauth/token"
@@ -832,7 +832,7 @@ async def test_refresh_fence_surfaces_non_contention_lock_errors_immediately(tmp
     """A lock syscall failing for a reason other than contention must not spin to the deadline."""
     import errno
 
-    from tools import mcp_oauth
+    from hermes_agent.tools import mcp_oauth
 
     if mcp_oauth.fcntl is None:
         pytest.skip("flock-based fence only")

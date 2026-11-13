@@ -1,6 +1,6 @@
 """Write/delete guards for ``skill_manage``. Every guard returns ``None`` when the
 operation may proceed, else a refusal (error dict or message). Origin-owned state
-(``_find_skill``, ``_skills_dir``) is reached lazily via ``tools.skill_manager_tool``
+(``_find_skill``, ``_skills_dir``) is reached lazily via ``hermes_agent.tools.skill_manager_tool``
 so test patches keep working."""
 
 import contextvars as _ctxvars
@@ -10,7 +10,7 @@ from contextlib import suppress
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-logger = logging.getLogger("tools.skill_manager_tool")
+logger = logging.getLogger("hermes_agent.tools.skill_manager_tool")
 
 
 def _refusal(message: str, **extra: Any) -> dict[str, Any]:
@@ -20,7 +20,7 @@ def _refusal(message: str, **extra: Any) -> dict[str, Any]:
 def _is_background_review() -> bool:
     """True inside the autonomous curator review fork; False on any lookup failure."""
     try:
-        from tools.skill_provenance import is_background_review
+        from hermes_agent.tools.skill_provenance import is_background_review
         return bool(is_background_review())
     except Exception:
         return False
@@ -89,7 +89,7 @@ def _resolved_roots(skill_path: Path):
 
 def _containing_skills_root(skill_path: Path) -> Path:
     """Skills root (local or external_dirs) containing ``skill_path``; local dir if none match."""
-    from tools import skill_manager_tool as _smt
+    from hermes_agent.tools import skill_manager_tool as _smt
     resolved, roots = _resolved_roots(skill_path)
     return next((root for root, r in roots if resolved.is_relative_to(r)), _smt._skills_dir())
 
@@ -133,7 +133,7 @@ def _validate_delete_target(skill_dir: Path) -> Optional[str]:
 def _is_pinned(name: str, what: str) -> Optional[bool]:
     """skill_usage pinned flag; None (logged at debug) when the record is unreadable."""
     try:
-        from tools import skill_usage
+        from hermes_agent.tools import skill_usage
         return bool(skill_usage.get_record(name).get("pinned"))
     except Exception:
         logger.debug("%s lookup failed for %s", what, name, exc_info=True)
@@ -182,7 +182,7 @@ def _background_review_delete_guard(name: str, skill_dir: Path) -> Optional[dict
     except Exception:
         logger.debug("external skill guard lookup failed for %s", name, exc_info=True)
     try:
-        from tools import skill_usage
+        from hermes_agent.tools import skill_usage
         for predicate, label in (
             (skill_usage.is_protected_builtin, "protected built-in"),
             (skill_usage.is_hub_installed, "hub-installed"),
@@ -232,8 +232,8 @@ def _locked_guard(name: str, action: str) -> Optional[dict[str, Any]]:
     if action == "create" or not name:
         return None
     try:
-        from tools import skill_manager_tool as _smt
-        from tools import skill_usage
+        from hermes_agent.tools import skill_manager_tool as _smt
+        from hermes_agent.tools import skill_usage
         candidates = {name, Path(name).name}
         if existing := _smt._find_skill(name):
             candidates.add(existing["path"].name)
@@ -247,7 +247,7 @@ def _locked_guard(name: str, action: str) -> Optional[dict[str, Any]]:
             f"skills/.usage.json sidecar is unreadable. Leave the skill alone and tell the user; they "
             f"can repair the sidecar or run `hermes curator unlock {name}`.", _locked=True)
     if locked:
-        from tools.skill_lock import skill_refusal
+        from hermes_agent.tools.skill_lock import skill_refusal
         return _refusal(f"Refusing {action}: {skill_refusal(locked)}", _locked=True)
     return None
 
@@ -258,7 +258,7 @@ def _background_review_preflight(action: str, name: str) -> Optional[dict[str, A
         return locked
     if action != "delete":
         return None
-    from tools import skill_manager_tool as _smt
+    from hermes_agent.tools import skill_manager_tool as _smt
     existing = _smt._find_skill(name)
     return _background_review_delete_guard(name, existing["path"]) if existing else None
 

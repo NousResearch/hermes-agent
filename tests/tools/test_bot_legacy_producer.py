@@ -1,6 +1,6 @@
 """A stale owner advertisement must never create another execution queue."""
 import pytest
-from tools.bot_live_delivery import deliver_to_live_owner
+from hermes_agent.tools.bot_live_delivery import deliver_to_live_owner
 
 
 def test_legacy_owner_requires_a_live_authority_before_admission(tmp_path):

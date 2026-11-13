@@ -1,7 +1,7 @@
 """TTS Provider Registry.
 
 Registered plugin TTS providers, populated at import-time via
-:meth:`PluginContext.register_tts_provider` and consulted by :mod:`tools.tts_tool`
+:meth:`PluginContext.register_tts_provider` and consulted by :mod:`hermes_agent.tools.tts_tool`
 only when ``tts.provider`` is neither a built-in nor a command-type provider.
 Built-ins always win: a colliding plugin name is rejected here with a warning
 (re-checked at dispatch). Command-providers-win-over-plugins is enforced by the
@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 
 # Names reserved for native built-in TTS handlers. **Kept in sync with
-# ``BUILTIN_TTS_PROVIDERS`` in :mod:`tools.tts_tool`** (``TestBuiltinSync`` in
+# ``BUILTIN_TTS_PROVIDERS`` in :mod:`hermes_agent.tools.tts_tool`** (``TestBuiltinSync`` in
 # ``tests/agent/test_tts_registry.py`` fails on drift); importing it directly
 # would be a circular import.
 _BUILTIN_NAMES = frozenset({
@@ -37,7 +37,7 @@ def _warn_builtin_collision(key: str) -> None:
 
 
 # Case-insensitive, whitespace-tolerant keys mirror how
-# ``tools.tts_tool._get_provider`` normalizes the configured ``tts.provider``.
+# ``hermes_agent.tools.tts_tool._get_provider`` normalizes the configured ``tts.provider``.
 _registry: ProviderRegistry[TTSProvider] = ProviderRegistry(
     label="TTS", provider_cls=TTSProvider, logger=logger, normalize=lower_key,
     builtin_names=_BUILTIN_NAMES, on_builtin_collision=_warn_builtin_collision,

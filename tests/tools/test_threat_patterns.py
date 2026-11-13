@@ -1,4 +1,4 @@
-"""Tests for tools/threat_patterns.py — shared threat-pattern library.
+"""Tests for hermes_agent/tools/threat_patterns.py — shared threat-pattern library.
 
 Covers the scope split (all/context/strict), the Brainworm payload as the
 gold standard, false-positive guards on borderline patterns, and the
@@ -9,7 +9,7 @@ import time
 
 import pytest
 
-from tools.threat_patterns import (
+from hermes_agent.tools.threat_patterns import (
     MAX_SCAN_CHARS,
     first_threat_message,
     scan_for_threats,

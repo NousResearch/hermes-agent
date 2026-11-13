@@ -7,7 +7,7 @@ pending stop onto the newcomer.
 """
 from types import SimpleNamespace
 
-from tools.delegate_tool_child_run import _attach_child
+from hermes_agent.tools.delegate_tool_child_run import _attach_child
 
 
 class _Child:
@@ -38,8 +38,8 @@ def test_real_spawn_path_child_starts_interrupted(tmp_path, monkeypatch):
     grandchild it builds carries the interrupt before its conversation ever starts."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     from run_agent import AIAgent
-    from tools import delegate_tool as dt
-    import tools.delegate_tool_config as dtc
+    from hermes_agent.tools import delegate_tool as dt
+    import hermes_agent.tools.delegate_tool_config as dtc
     cfg = {"max_spawn_depth": 3}
     monkeypatch.setattr(dt, "_load_config", lambda: cfg)
     monkeypatch.setattr(dtc, "_load_config", lambda: cfg)

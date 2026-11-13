@@ -14,7 +14,7 @@ from hermes_agent.gateway.session_context import (
     get_session_env,
     set_current_session_id,
 )
-from tools.environments.local import build_subprocess_env
+from hermes_agent.tools.environments.local import build_subprocess_env
 
 
 @pytest.fixture(autouse=True)

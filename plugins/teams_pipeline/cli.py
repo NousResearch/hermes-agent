@@ -16,7 +16,7 @@ from plugins.teams_pipeline.pipeline import TeamsMeetingPipeline
 from plugins.teams_pipeline.store import TeamsPipelineStore, resolve_teams_pipeline_store_path
 from plugins.teams_pipeline.subscriptions import (
     build_graph_client, maintain_graph_subscriptions, sync_graph_subscription_record, utc_timestamp)
-from tools.microsoft_graph_auth import MicrosoftGraphConfigError, MicrosoftGraphTokenProvider
+from hermes_agent.tools.microsoft_graph_auth import MicrosoftGraphConfigError, MicrosoftGraphTokenProvider
 
 
 def register_cli(subparser: argparse.ArgumentParser) -> None:

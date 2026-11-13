@@ -19,7 +19,7 @@ async def probe():
     from hermes_agent.gateway.session_context import get_session_env
     from hermes_agent.gateway.wake import persist_delegation_delivery
     from hermes_agent.hermes_state import SessionDB
-    from tools.delegate_tool_dispatch import _resolve_async_wake_sid
+    from hermes_agent.tools.delegate_tool_dispatch import _resolve_async_wake_sid
     import hermes_agent.gateway.session_context as sc
 
     db = SessionDB(db_path=Path(os.environ["HERMES_HOME"]) / "state.db")

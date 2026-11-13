@@ -257,7 +257,7 @@ async def test_retry_of_a_deferred_turn_follows_its_running_attempt_to_the_reply
 @pytest.mark.asyncio
 async def test_retry_of_deferred_task_does_not_steal_newer_turn_observation(tmp_path, monkeypatch):
     """Retry may resolve the older run while a retained transport still watches the newer one."""
-    from tools.bot_relay import TurnBusyError, acquire_turn_lock
+    from hermes_agent.tools.bot_relay import TurnBusyError, acquire_turn_lock
 
     target, server, home = await _linked_home(
         tmp_path, lease_ttl_seconds=1.0, poll_interval_seconds=0.05, active_poll_interval_seconds=0.05,

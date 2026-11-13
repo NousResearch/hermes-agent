@@ -48,7 +48,7 @@ def _record(mark_attr: str, data: dict[str, str]) -> None:
 
 def _background_tool_call() -> bool:
     try:
-        from tools.skill_provenance import is_background_review
+        from hermes_agent.tools.skill_provenance import is_background_review
 
         return is_background_review()
     except Exception:
@@ -94,7 +94,7 @@ def note_edit_match(strategy: str | None, miss: str | None = None) -> None:
 
 
 def _strategy_rank() -> dict[str, int]:
-    from tools.fuzzy_match import STRATEGIES
+    from hermes_agent.tools.fuzzy_match import STRATEGIES
 
     return {name: index for index, (name, _fn) in enumerate(STRATEGIES)}
 

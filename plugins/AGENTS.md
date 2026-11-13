@@ -92,8 +92,8 @@ bare names resolve through the catalog or error.
 | Platform adapters | `plugins/platforms/<name>/adapter.py` | gateway | Token-lock and scoped-secret rules in `hermes_agent/gateway/AGENTS.md` (`irc`, `feishu` are canonical) |
 
 **Discovery timing pitfall:** `discover_plugins()` runs only as a side effect of importing
-`model_tools.py`. Code that reads plugin state without importing `model_tools.py` first must call
-`discover_plugins()` explicitly (idempotent). Hooks are invoked from `model_tools.py` (pre/post
+`hermes_agent/model_tools.py`. Code that reads plugin state without importing `hermes_agent/model_tools.py` first must call
+`discover_plugins()` explicitly (idempotent). Hooks are invoked from `hermes_agent/model_tools.py` (pre/post
 tool) and `run_agent.py` (lifecycle). A non-forced `discover_plugins()` short-circuits on `_discovered`: every
 mid-run load path (install/enable/update on any surface, `reload-plugins` verb) runs
 `discover_plugins(force=True)`, and `PluginManager.on_plugin_loaded` fires from inside that sweep for the

@@ -16,9 +16,9 @@ from unittest.mock import patch
 
 import pytest
 
-import tools.mcp_tool as mcp_mod
-from tools import mcp_tool_discovery as _mcp_discovery
-from tools import mcp_tool_lifecycle as _mcp_lifecycle
+import hermes_agent.tools.mcp_tool as mcp_mod
+from hermes_agent.tools import mcp_tool_discovery as _mcp_discovery
+from hermes_agent.tools import mcp_tool_lifecycle as _mcp_lifecycle
 
 
 @pytest.fixture(autouse=True)
@@ -50,7 +50,7 @@ def _reset_mcp_state():
 class TestConnectCooldownHelpers:
     def test_failure_arms_exponential_backoff(self):
         now = 1000.0
-        with patch("tools.mcp_tool.time.monotonic", return_value=now):
+        with patch("hermes_agent.tools.mcp_tool.time.monotonic", return_value=now):
             _mcp_discovery._record_connect_failure("bad")
             d1 = mcp_mod._server_connect_retry_after["bad"]
             _mcp_discovery._record_connect_failure("bad")
@@ -74,7 +74,7 @@ class TestRegisterMcpServersIsolation:
             server._tools = []
             return server
 
-        return patch("tools.mcp_tool_discovery._connect_server", side_effect=fake_connect)
+        return patch("hermes_agent.tools.mcp_tool_discovery._connect_server", side_effect=fake_connect)
 
     def test_failing_server_skipped_on_second_pass(self):
         attempts = []
@@ -83,8 +83,8 @@ class TestRegisterMcpServersIsolation:
             "bad": {"command": "bad-cmd"},
         }
         with self._run_with_mocked_connect(attempts), \
-                patch("tools.mcp_tool_registration._register_server_tools", return_value=[]), \
-                patch("tools.mcp_tool_config._filter_suspicious_mcp_servers", side_effect=lambda x: x):
+                patch("hermes_agent.tools.mcp_tool_registration._register_server_tools", return_value=[]), \
+                patch("hermes_agent.tools.mcp_tool_config._filter_suspicious_mcp_servers", side_effect=lambda x: x):
             _mcp_discovery.register_mcp_servers(cfg)
             assert "good" in mcp_mod._servers
             assert "bad" not in mcp_mod._servers
@@ -102,8 +102,8 @@ class TestRegisterMcpServersIsolation:
         attempts = []
         cfg = {"bad": {"command": "bad-cmd"}}
         with self._run_with_mocked_connect(attempts), \
-                patch("tools.mcp_tool_registration._register_server_tools", return_value=[]), \
-                patch("tools.mcp_tool_config._filter_suspicious_mcp_servers", side_effect=lambda x: x):
+                patch("hermes_agent.tools.mcp_tool_registration._register_server_tools", return_value=[]), \
+                patch("hermes_agent.tools.mcp_tool_config._filter_suspicious_mcp_servers", side_effect=lambda x: x):
             _mcp_discovery.register_mcp_servers(cfg)
             assert _mcp_discovery._connect_cooldown_active("bad") is True
 
@@ -128,7 +128,7 @@ class TestShutdownClearsCooldownState:
         assert mcp_mod._server_connect_retry_after
         assert not mcp_mod._servers  # precondition: fast path taken
 
-        with patch("tools.mcp_tool_loop._stop_mcp_loop"):
+        with patch("hermes_agent.tools.mcp_tool_loop._stop_mcp_loop"):
             _mcp_lifecycle.shutdown_mcp_servers()
 
         assert mcp_mod._server_connect_retry_after == {}
@@ -146,7 +146,7 @@ class TestShutdownClearsCooldownState:
         mcp_mod._servers["dead"] = _DeadServer()  # type: ignore[assignment]
         # _mcp_loop is None in this test process, so the async _shutdown
         # coroutine is never scheduled; only the final sweep can clear.
-        with patch("tools.mcp_tool_loop._stop_mcp_loop"):
+        with patch("hermes_agent.tools.mcp_tool_loop._stop_mcp_loop"):
             _mcp_lifecycle.shutdown_mcp_servers()
 
         assert mcp_mod._server_connect_retry_after == {}

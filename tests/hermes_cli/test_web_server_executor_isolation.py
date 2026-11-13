@@ -85,7 +85,7 @@ def test_profiles_route_survives_default_executor_starvation(monkeypatch):
 
 def test_toolsets_route_survives_default_executor_starvation(monkeypatch):
     from hermes_cli import platforms, tools_config
-    import toolsets
+    from hermes_agent import toolsets
 
     monkeypatch.setattr(
         tools_config,

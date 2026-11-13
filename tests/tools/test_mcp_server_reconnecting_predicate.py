@@ -8,8 +8,8 @@ import asyncio
 
 import pytest
 
-import tools.mcp_tool as core
-from tools.mcp_tool_discovery import mcp_server_reconnecting
+import hermes_agent.tools.mcp_tool as core
+from hermes_agent.tools.mcp_tool_discovery import mcp_server_reconnecting
 
 
 @pytest.fixture

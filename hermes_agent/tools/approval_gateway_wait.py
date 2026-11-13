@@ -1,4 +1,4 @@
-"""Blocking gateway approval wait for :mod:`tools.approval`.
+"""Blocking gateway approval wait for :mod:`hermes_agent.tools.approval`.
 
 Mirrors the CLI's synchronous ``input()`` flow: the agent thread enqueues a
 pending approval, the gateway notifies the user, and the thread blocks until
@@ -6,7 +6,7 @@ pending approval, the gateway notifies the user, and the thread blocks until
 threads (parallel subagents, execute_code RPC handlers) can block concurrently
 — each gets its own ``threading.Event``; ``/approve`` resolves the oldest,
 ``/approve all`` every pending entry. Queue state (``_gateway_queues``,
-``_lock``) is owned by ``tools.approval`` and reached through that module at
+``_lock``) is owned by ``hermes_agent.tools.approval`` and reached through that module at
 call time.
 """
 
@@ -15,11 +15,11 @@ import threading
 import time
 import uuid
 
-from tools.interrupt import get_interrupt_reason, is_interrupted
-from tools import approval_context as _ctx
-from tools.approval_human_wait import activity_heartbeat, human_wait_window
+from hermes_agent.tools.interrupt import get_interrupt_reason, is_interrupted
+from hermes_agent.tools import approval_context as _ctx
+from hermes_agent.tools.approval_human_wait import activity_heartbeat, human_wait_window
 
-logger = logging.getLogger("tools.approval")
+logger = logging.getLogger("hermes_agent.tools.approval")
 
 
 class _ApprovalEntry:
@@ -166,7 +166,7 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict, *,
     the user must /approve N times while the agent sits wedged. Followers adopt
     the leader's ``session``/``always``/``deny``/timeout; a ``once`` covers only
     the leader, so the followers fall through to ONE fresh prompt they coalesce on."""
-    from tools import approval as _approval
+    from hermes_agent.tools import approval as _approval
     from agent.terminal_approval_batch import approval_published, preparing_terminal_approval, register_prepared_approval
 
     primary_key = approval_data.get("pattern_key", "")
@@ -179,7 +179,7 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict, *,
         "pattern_keys": list(approval_data.get("pattern_keys", [primary_key])),
         "session_key": session_key, "surface": surface,
     }
-    from tools.approval_notify_lease import current
+    from hermes_agent.tools.approval_notify_lease import current
     owner = current(session_key)
     keys = list(approval_data.get("pattern_keys") or [])
     # Born Deny-only: the mark exists before the entry is published, so no tap can approve it in the window
@@ -253,7 +253,7 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict, *,
                     logger.debug("approval settle hook failed", exc_info=True)
         return choice
 
-    from tools.human_input_hooks import human_input_request
+    from hermes_agent.tools.human_input_hooks import human_input_request
     with human_input_request("approval", prompt=payload["command"], session_key=session_key) as human:
         # Plugins hear about the request before the gateway does (real-time observers).
         _ctx._fire_approval_hook("pre_approval_request", **payload)

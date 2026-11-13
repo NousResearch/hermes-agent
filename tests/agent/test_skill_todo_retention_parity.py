@@ -36,7 +36,7 @@ from agent.conversation_compression import (
     _strip_stale_todo_snapshot,
 )
 from hermes_agent.hermes_state import SessionDB
-from tools.todo_tool import TODO_INJECTION_HEADER
+from hermes_agent.tools.todo_tool import TODO_INJECTION_HEADER
 
 
 def _build_agent_with_db(db: SessionDB, session_id: str, platform: str = "cli"):

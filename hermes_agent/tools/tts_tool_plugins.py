@@ -1,4 +1,4 @@
-"""Plugin-registered TTS providers for ``tools.tts_tool``: routes ``tts.provider: <name>`` values
+"""Plugin-registered TTS providers for ``hermes_agent.tools.tts_tool``: routes ``tts.provider: <name>`` values
 that are neither built-in nor ``type: command`` to a plugin :class:`agent.tts_provider.TTSProvider`.
 Discovery goes through ``hermes_cli.plugins._ensure_plugins_discovered`` (imported lazily so the
 tool module stays importable without the plugin machinery).
@@ -10,12 +10,12 @@ import logging
 import math
 from typing import Any, Dict, Optional, Tuple
 
-from tools.tts_command_provider import (
+from hermes_agent.tools.tts_command_provider import (
     BUILTIN_TTS_PROVIDERS, DEFAULT_COMMAND_TTS_OUTPUT_FORMAT, _get_named_provider_config,
     _is_command_provider_config)
-from tools.tool_backend_helpers import NOUS_MANAGED_PROVIDER
+from hermes_agent.tools.tool_backend_helpers import NOUS_MANAGED_PROVIDER
 
-logger = logging.getLogger("tools.tts_tool")
+logger = logging.getLogger("hermes_agent.tools.tts_tool")
 
 
 def _lookup_plugin_provider(key: str, *, discover: bool = True, retry: bool = False):

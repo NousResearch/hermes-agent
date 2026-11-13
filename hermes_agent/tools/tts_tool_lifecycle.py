@@ -1,4 +1,4 @@
-"""Local-engine lifecycle for ``tools.tts_tool``: warm-up / release leases.
+"""Local-engine lifecycle for ``hermes_agent.tools.tts_tool``: warm-up / release leases.
 
 Local engines load lazily on first synthesis (dead air on the first spoken reply) and then stay
 resident. Every surface that flips speech output on holds a *lease* here (warming the configured
@@ -17,17 +17,17 @@ import time
 from typing import Any, Callable, Dict, List, Optional
 
 from agent.memory_provider import ctx_bound
-from tools import tts_command_provider
-from tools.tts_command_provider import (
+from hermes_agent.tools import tts_command_provider
+from hermes_agent.tools.tts_command_provider import (
     BUILTIN_TTS_PROVIDERS, _get_command_tts_timeout, _get_named_provider_config,
     _is_command_provider_config, command_env_passthrough as _command_provider_env_passthrough,
     render_command_template as _render_command_tts_template)
-from tools.tts_tool_delivery import _origin
-from tools.tts_tool_local import (
+from hermes_agent.tools.tts_tool_delivery import _origin
+from hermes_agent.tools.tts_tool_local import (
     _LOCAL_TTS_MODEL_CACHES, _load_kittentts_model_for_config, _load_piper_voice_for_config)
-from tools.tts_tool_plugins import _lookup_plugin_provider
+from hermes_agent.tools.tts_tool_plugins import _lookup_plugin_provider
 
-logger = logging.getLogger("tools.tts_tool")
+logger = logging.getLogger("hermes_agent.tools.tts_tool")
 
 _tts_lease_lock = threading.Lock()
 _tts_leases: set = set()

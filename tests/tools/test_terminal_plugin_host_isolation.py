@@ -60,7 +60,7 @@ def _load(tmp_path, monkeypatch, isolation):
 
 
 def test_a_hosted_terminal_backend_refuses_with_the_isolation_setting(tmp_path, monkeypatch):
-    from tools.terminal_tool_backends import _create_environment
+    from hermes_agent.tools.terminal_tool_backends import _create_environment
 
     manager, marker = _load(tmp_path, monkeypatch, "host")
     try:
@@ -73,7 +73,7 @@ def test_a_hosted_terminal_backend_refuses_with_the_isolation_setting(tmp_path, 
 
 
 def test_the_same_backend_in_process_runs_commands(tmp_path, monkeypatch):
-    from tools.terminal_tool_backends import _create_environment
+    from hermes_agent.tools.terminal_tool_backends import _create_environment
 
     manager, marker = _load(tmp_path, monkeypatch, "in_process")
     try:

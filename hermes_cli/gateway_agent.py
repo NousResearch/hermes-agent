@@ -168,7 +168,7 @@ class GatewayAgent:
         self._reset_session_figures()
         # Main's store type, the one /new, /resume and /branch swap in: a read-only mirror of the gateway's
         # todo snapshot (``_set_todos``), read by the pet's done-plan beat.
-        from tools.todo_tool import TodoStore
+        from hermes_agent.tools.todo_tool import TodoStore
         self._todo_store = TodoStore()
         # Part of the _compress_context seam: it sets the owner's report here and compress_now reads it.
         self.compression_summary = None
@@ -1105,7 +1105,7 @@ class GatewayAgent:
         (self._print_fn or print)(text)
 
     def _on_approval(self, payload, stream_callback, starts):
-        from tools.terminal_tool import _get_approval_callback
+        from hermes_agent.tools.terminal_tool import _get_approval_callback
         callback = _get_approval_callback()
         choices = list(payload.get("choices") or [])
         choice = "deny"
@@ -1200,7 +1200,7 @@ class GatewayAgent:
         return clarify_reply(self.clarify_callback, params)
 
     def _ask_sudo(self, params):
-        from tools.terminal_tool import _get_sudo_password_callback
+        from hermes_agent.tools.terminal_tool import _get_sudo_password_callback
         callback = _get_sudo_password_callback()
         return (callback() or "") if callback is not None else ""
 
@@ -1208,7 +1208,7 @@ class GatewayAgent:
         """Main's masked "Skill Setup Required" panel (the CLI's registered secret-capture callback,
         ``hermes_cli.callbacks.prompt_for_secret``) collects the value and prints main's lines; the
         gateway, not this process, saves it in the profile ``.env``, so the panel's save is captured."""
-        from tools import skills_tool
+        from hermes_agent.tools import skills_tool
         callback = skills_tool._secret_capture_callback
         if callback is None:
             return ""

@@ -84,7 +84,7 @@ assert _loaded.startswith(_want), f"wrong tree: {run_agent.__file__}"
 
 if ARM == "prns":
     # Strip the helpers digest from the schema: header-only description.
-    import tools.browser_use_cli as bu
+    import hermes_agent.tools.browser_use_cli as bu
 
     bu._skill_text_fetched = True
     bu._skill_text_cache = None
@@ -131,7 +131,7 @@ agent = AIAgent(
 
 schema_desc_len = 0
 try:
-    from model_tools import get_tool_definitions
+    from hermes_agent.model_tools import get_tool_definitions
 
     for t in get_tool_definitions(agent.enabled_toolsets):
         if t["function"]["name"].startswith("browser"):

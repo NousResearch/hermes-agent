@@ -16,7 +16,7 @@ import os
 import sys
 from typing import Optional
 
-from tools.bot_desktop import runtime
+from hermes_agent.tools.bot_desktop import runtime
 
 logger = logging.getLogger(__name__)
 

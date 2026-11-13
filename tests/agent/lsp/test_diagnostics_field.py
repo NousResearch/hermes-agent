@@ -9,8 +9,8 @@ from __future__ import annotations
 from unittest.mock import MagicMock, patch
 
 
-from tools.environments.local import LocalEnvironment
-from tools.file_operations import (
+from hermes_agent.tools.environments.local import LocalEnvironment
+from hermes_agent.tools.file_operations import (
     ShellFileOperations,
 )
 

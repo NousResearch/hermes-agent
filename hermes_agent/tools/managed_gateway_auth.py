@@ -4,7 +4,7 @@ import logging
 from typing import Callable, Optional
 from urllib.parse import urlsplit
 
-from tools.managed_tool_gateway import build_vendor_gateway_url, read_nous_access_token
+from hermes_agent.tools.managed_tool_gateway import build_vendor_gateway_url, read_nous_access_token
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +75,6 @@ def managed_gateway_auth_headers(
     if not isinstance(token, str) or not token.strip():
         return {}
 
-    from tools.managed_gateway_identity import user_agent
+    from hermes_agent.tools.managed_gateway_identity import user_agent
 
     return {"Authorization": f"Bearer {token.strip()}", "User-Agent": user_agent()}

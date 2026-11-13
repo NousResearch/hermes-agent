@@ -17,12 +17,12 @@ import subprocess
 
 import pytest
 
-from tools.environments.base import EnvironmentConnectionError
+from hermes_agent.tools.environments.base import EnvironmentConnectionError
 
 @pytest.fixture
 def isolated_env(tmp_path, monkeypatch):
     """Isolated HERMES_HOME + a clean environment cache for terminal_tool."""
-    import tools.terminal_tool as tt
+    import hermes_agent.tools.terminal_tool as tt
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
     # The one-shot config bridge would overwrite our TERMINAL_* test vars
@@ -40,9 +40,9 @@ def isolated_env(tmp_path, monkeypatch):
 
 def _mock_ssh_unreachable(monkeypatch, stderr="ssh: connect to host unreachable.invalid port 22: Connection refused"):
     """Make every ssh subprocess in the ssh backend fail like a dead host."""
-    monkeypatch.setattr("tools.environments.ssh.shutil.which", lambda _x: "/usr/bin/ssh")
+    monkeypatch.setattr("hermes_agent.tools.environments.ssh.shutil.which", lambda _x: "/usr/bin/ssh")
     monkeypatch.setattr(
-        "tools.environments.ssh.subprocess.run",
+        "hermes_agent.tools.environments.ssh.subprocess.run",
         lambda *a, **k: subprocess.CompletedProcess([], 255, stdout="", stderr=stderr),
     )
 
@@ -57,26 +57,26 @@ class TestExceptionClassification:
     """Backends raise EnvironmentConnectionError for connection-class failures."""
 
     def test_ssh_connect_refused_raises_connection_error(self, monkeypatch):
-        from tools.environments.ssh import SSHEnvironment
+        from hermes_agent.tools.environments.ssh import SSHEnvironment
 
         _mock_ssh_unreachable(monkeypatch)
         with pytest.raises(EnvironmentConnectionError):
             SSHEnvironment(host="unreachable.invalid", user="nobody")
 
     def test_ssh_connect_timeout_raises_connection_error(self, monkeypatch):
-        from tools.environments.ssh import SSHEnvironment
+        from hermes_agent.tools.environments.ssh import SSHEnvironment
 
-        monkeypatch.setattr("tools.environments.ssh.shutil.which", lambda _x: "/usr/bin/ssh")
+        monkeypatch.setattr("hermes_agent.tools.environments.ssh.shutil.which", lambda _x: "/usr/bin/ssh")
 
         def _timeout(*a, **k):
             raise subprocess.TimeoutExpired(cmd="ssh", timeout=15)
 
-        monkeypatch.setattr("tools.environments.ssh.subprocess.run", _timeout)
+        monkeypatch.setattr("hermes_agent.tools.environments.ssh.subprocess.run", _timeout)
         with pytest.raises(EnvironmentConnectionError):
             SSHEnvironment(host="unreachable.invalid", user="nobody")
 
     def test_docker_daemon_timeout_raises_connection_error(self, monkeypatch):
-        from tools.environments import docker as docker_env
+        from hermes_agent.tools.environments import docker as docker_env
 
         monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
 
@@ -106,7 +106,7 @@ class TestDegradedToolResult:
         monkeypatch.setenv("TERMINAL_ENV", "docker")
         monkeypatch.delenv("TERMINAL_DEGRADED_MODE", raising=False)
         monkeypatch.setattr(isolated_env, "_maybe_reap_docker_orphans", lambda _cc: None)
-        monkeypatch.setattr("tools.environments.docker.find_docker", lambda: None)
+        monkeypatch.setattr("hermes_agent.tools.environments.docker.find_docker", lambda: None)
 
         r = json.loads(isolated_env.terminal_tool("echo hi", task_id="t-degraded-docker"))
         assert r["status"] == "degraded"

@@ -31,19 +31,19 @@ def _make_phase_runner(monkeypatch, events):
         events.append(("kill_all", threading.current_thread()))
         return 2
 
-    import tools.process_registry as _pr
+    import hermes_agent.tools.process_registry as _pr
 
     monkeypatch.setattr(_pr.process_registry, "kill_all", _fake_kill_all)
     monkeypatch.setattr(
         "hermes_agent.cron.scheduler.mark_running_jobs_interrupted", lambda *a, **k: []
     )
-    monkeypatch.setattr("tools.async_delegation.interrupt_all", lambda *a, **k: 0)
+    monkeypatch.setattr("hermes_agent.tools.async_delegation.interrupt_all", lambda *a, **k: 0)
     monkeypatch.setattr(
-        "tools.terminal_tool_lifecycle.cleanup_all_environments",
+        "hermes_agent.tools.terminal_tool_lifecycle.cleanup_all_environments",
         lambda: events.append(("cleanup_envs", threading.current_thread())),
     )
     monkeypatch.setattr(
-        "tools.browser_session_lifecycle.cleanup_all_browsers",
+        "hermes_agent.tools.browser_session_lifecycle.cleanup_all_browsers",
         lambda: events.append(("cleanup_browsers", threading.current_thread())),
     )
     return runner, loop_thread

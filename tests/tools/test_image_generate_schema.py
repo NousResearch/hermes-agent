@@ -14,8 +14,8 @@ from unittest.mock import patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
-import tools.image_generation_tool as ig
-from tools.image_generation_tool import (
+import hermes_agent.tools.image_generation_tool as ig
+from hermes_agent.tools.image_generation_tool import (
     FAL_MODELS,
     IMAGE_GENERATE_SCHEMA,
     _build_dynamic_image_schema,

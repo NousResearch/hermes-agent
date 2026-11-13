@@ -12,7 +12,7 @@ from agent import onboarding_record
 from agent.inline_tool_executors import INLINE_TOOL_EXECUTORS, InlineToolContext
 from agent.onboarding_flow import End, Facts
 from hermes_agent.hermes_state import SessionDB
-from tools.registry import registry
+from hermes_agent.tools.registry import registry
 
 SID = "onb-session"
 FACTS = Facts(os="macos", arch="arm64", machine_kind="Mac", plugins=("blender",))
@@ -32,11 +32,11 @@ def db(tmp_path, monkeypatch):
 def machine(monkeypatch):
     """What this machine has connected and installed right now, read when a card closes without its answer."""
     present = {"connected": ["slack"], "installed": ["blender"]}
-    monkeypatch.setattr("tools.setup_beat_tool._PRESENT", {
+    monkeypatch.setattr("hermes_agent.tools.setup_beat_tool._PRESENT", {
         "connectors": lambda: {"connected": present["connected"]},
         "plugins": lambda: {"installed": present["installed"]}})
     # No connector list unless a test gives one: suggestions are not checked.
-    monkeypatch.setattr("tools.setup_beat_tool._connector_slugs", lambda: None)
+    monkeypatch.setattr("hermes_agent.tools.setup_beat_tool._connector_slugs", lambda: None)
     return present
 
 
@@ -127,7 +127,7 @@ def test_suggest_pins_connectors_and_value_or_skip_records_without_a_card(db, de
 
 def test_the_offer_lists_the_real_connectors_and_an_unlisted_suggestion_shows_no_card(db, desktop, monkeypatch):
     # The model guessed GitHub from the gh CLI; this account cannot connect it, and the card showed nothing.
-    monkeypatch.setattr("tools.setup_beat_tool._connector_slugs", lambda: {"slack", "linear"})
+    monkeypatch.setattr("hermes_agent.tools.setup_beat_tool._connector_slugs", lambda: {"slack", "linear"})
     onboarding_record.start(db, SID, FACTS)
     for beat in ("name", "theme", "layout"):
         call(db, desktop, beat=beat, skip=True)

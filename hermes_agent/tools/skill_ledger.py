@@ -71,7 +71,7 @@ def derive_actor() -> str:
     if override in _VALID_ACTORS:
         return override
     with suppress(Exception):
-        from tools.skill_provenance import is_background_review
+        from hermes_agent.tools.skill_provenance import is_background_review
         if is_background_review():
             return "curator"
     return "agent"
@@ -95,7 +95,7 @@ def _ledger_lock():
     land on the inode ``compact_ledger``/``_trim_oldest`` are about to ``os.replace`` — the row is
     silently lost and ``gc_blobs`` then deletes its blobs. Same idiom as ``_skill_mutation_lock``:
     ``<skills>/.locks/ledger.lock``, thread-re-entrant, no-op where neither fcntl nor msvcrt exists."""
-    from tools.skill_usage import skill_file_lock
+    from hermes_agent.tools.skill_usage import skill_file_lock
     return skill_file_lock(_skills_dir() / ".locks" / "ledger.lock")
 
 

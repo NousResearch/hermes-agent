@@ -34,7 +34,7 @@ def _standalone_send(
     ``t.standalone_in_flight``: the dispatch shield keeps a timed-out send un-cancelled, so the
     payload may STILL be delivered and the caller must not queue it for redelivery (a replay
     would duplicate it)."""
-    from tools.send_message_tool import _send_to_platform
+    from hermes_agent.tools.send_message_tool import _send_to_platform
     job = t.job
     shutdown_msg = f"delivery to {t.where} skipped — interpreter is shutting down"
 

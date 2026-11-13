@@ -11,8 +11,8 @@ def test_registration_uses_the_target_profiles_mount_policy(
     tmp_path, monkeypatch, mount
 ):
     import hermes_constants as hc
-    from tools import terminal_tool
-    from tools.terminal_scope import (
+    from hermes_agent.tools import terminal_tool
+    from hermes_agent.tools.terminal_scope import (
         install_and_reset_profile_terminal_scope,
         terminal_env,
     )
@@ -67,8 +67,8 @@ def test_registration_uses_the_target_profiles_mount_policy(
 
 @pytest.mark.platforms("posix")
 def test_unmounted_registration_preserves_configured_container_cwd(tmp_path):
-    from tools import terminal_tool
-    from tools.terminal_scope import reset_terminal_scope, set_terminal_scope
+    from hermes_agent.tools import terminal_tool
+    from hermes_agent.tools.terminal_scope import reset_terminal_scope, set_terminal_scope
     from hermes_agent.tui_gateway import server
 
     token = set_terminal_scope(
@@ -105,8 +105,8 @@ def test_unmounted_registration_preserves_configured_container_cwd(tmp_path):
 def test_a_bad_unrelated_terminal_setting_does_not_drop_the_registration(tmp_path):
     """Only the backend and the mount flag decide; an unparsable ``TERMINAL_TIMEOUT`` (which the
     full terminal config would raise on, inside the caller's blanket suppress) changes nothing."""
-    from tools import terminal_tool
-    from tools.terminal_scope import reset_terminal_scope, set_terminal_scope
+    from hermes_agent.tools import terminal_tool
+    from hermes_agent.tools.terminal_scope import reset_terminal_scope, set_terminal_scope
     from hermes_agent.tui_gateway import server
 
     token = set_terminal_scope({
@@ -128,7 +128,7 @@ def test_an_unreadable_profile_keeps_the_desktop_cwd_record(tmp_path, monkeypatc
     """The routed profile's refusal scope raises on every terminal read; the host-side record
     (project tools read it) must still be written."""
     import hermes_constants as hc
-    from tools import terminal_tool
+    from hermes_agent.tools import terminal_tool
     from hermes_agent.tui_gateway import server
 
     home = tmp_path / "home"

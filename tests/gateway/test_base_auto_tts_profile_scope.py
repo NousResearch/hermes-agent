@@ -86,8 +86,8 @@ async def test_voice_note_auto_tts_reads_the_routed_profiles_settings(tmp_path, 
         Path(output_path).write_bytes(b"OggS")
         return json.dumps({"success": True, "file_path": output_path})
 
-    with patch("tools.tts_tool.check_tts_requirements", side_effect=provider_reads_its_setting), \
-            patch("tools.tts_tool.text_to_speech_tool", side_effect=fake_tts):
+    with patch("hermes_agent.tools.tts_tool.check_tts_requirements", side_effect=provider_reads_its_setting), \
+            patch("hermes_agent.tools.tts_tool.text_to_speech_tool", side_effect=fake_tts):
         await adapter._process_message_background(event, build_session_key(event.source))
 
     # Availability check and synthesis both read the ROUTED profile's value, never the launch env.

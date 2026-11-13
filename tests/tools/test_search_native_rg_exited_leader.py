@@ -47,8 +47,8 @@ def _exiting(proc) -> bool:
 
 
 def test_native_rg_lane_keeps_its_output_when_the_child_is_already_exiting(tmp_path, monkeypatch):
-    from tools.environments.local import LocalEnvironment
-    from tools.file_operations import ShellFileOperations
+    from hermes_agent.tools.environments.local import LocalEnvironment
+    from hermes_agent.tools.file_operations import ShellFileOperations
 
     ops = ShellFileOperations(LocalEnvironment(cwd=str(tmp_path)), cwd=str(tmp_path))
     master, slave = os.openpty()
@@ -69,7 +69,7 @@ def test_native_rg_lane_keeps_its_output_when_the_child_is_already_exiting(tmp_p
                 assert time.monotonic() < deadline, "child never entered the exiting state"
                 time.sleep(0.001)
 
-    import tools.environments.local as local_mod
+    import hermes_agent.tools.environments.local as local_mod
     real_kill = local_mod._kill_process_group_posix
     teardown_done = threading.Event()
 
@@ -111,8 +111,8 @@ def test_native_rg_lane_keeps_its_output_when_the_child_is_a_zombie_at_the_kill(
     then answers ``getpgid`` with ESRCH and ``killpg`` on the zombie-only group with EPERM
     (#116855, #104696); neither may replace the drained lines with a tool error."""
     psutil = pytest.importorskip("psutil")
-    from tools.environments.local import LocalEnvironment
-    from tools.file_operations import ShellFileOperations
+    from hermes_agent.tools.environments.local import LocalEnvironment
+    from hermes_agent.tools.file_operations import ShellFileOperations
 
     ops = ShellFileOperations(LocalEnvironment(cwd=str(tmp_path)), cwd=str(tmp_path))
     real_popen = subprocess.Popen

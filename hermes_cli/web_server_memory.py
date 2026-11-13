@@ -91,7 +91,7 @@ def _memory_provider_setup_info(name: str) -> dict[str, Any]:
 def _memory_provider_setup_env() -> dict[str, str]:
     # External package-manager child (npm/uv/pip): exact env preservation —
     # scrubbing or HOME rewriting could break user tool auth/config.
-    from tools.environments.local import build_subprocess_env
+    from hermes_agent.tools.environments.local import build_subprocess_env
     env = build_subprocess_env(scrub_secrets=False, inherit_profile_home=False)
     home = Path.home()
     extra_bins = [home / ".brv-cli" / "bin", home / ".local" / "bin", home / ".npm-global" / "bin", Path("/usr/local/bin")]

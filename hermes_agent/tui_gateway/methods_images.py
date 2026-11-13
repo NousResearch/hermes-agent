@@ -22,7 +22,7 @@ def _image_to_data_url(ref: str, cap: int):
         if ref.startswith(("http://", "https://")):
             # Provider-result URLs are remote-party-controlled — same SSRF guard as
             # agent/provider_media.save_url (which may have fallen back to the bare URL).
-            from tools.url_safety import create_ssrf_safe_client, is_safe_url
+            from hermes_agent.tools.url_safety import create_ssrf_safe_client, is_safe_url
             if not is_safe_url(ref):
                 return None
             with create_ssrf_safe_client(timeout=60, follow_redirects=True) as client, \
@@ -62,7 +62,7 @@ def _(rid, params: dict) -> dict:
     image_data, error}`` — ``image_data`` is omitted when the download fails, so
     callers fall back to ``image`` (the backend's URL/path)."""
     try:
-        from tools.image_generation_tool import check_image_generation_requirements
+        from hermes_agent.tools.image_generation_tool import check_image_generation_requirements
         available = bool(check_image_generation_requirements())
     except Exception:
         available = False
@@ -83,7 +83,7 @@ def _(rid, params: dict) -> dict:
     try:
         # Full provider dispatcher — same path as the model tool (source-image confinement,
         # plugin providers, managed routing, FAL fallback); the FAL leaf bypassed providers.
-        from tools.image_generation_tool import _handle_image_generate
+        from hermes_agent.tools.image_generation_tool import _handle_image_generate
         result = json.loads(_handle_image_generate({"prompt": prompt, "aspect_ratio": aspect}))
     except Exception as e:
         return _err(rid, 5071, str(e))

@@ -14,7 +14,7 @@ from unittest.mock import patch
 
 import pytest
 
-from tools import web_tools
+from hermes_agent.tools import web_tools
 from agent import web_search_registry as registry
 from plugins.web import keyless_mcp
 from plugins.web.exa.provider import ExaWebSearchProvider

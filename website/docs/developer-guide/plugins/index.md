@@ -1246,16 +1246,16 @@ contract:
 
 | Import | What it gives you |
 |---|---|
-| `tools.skills_tool.find_all_skills(*, skip_disabled=False)` | Loadable skills as `{"name", "description", "category"}` dicts: the cached, first-wins, platform/environment-gated walk `skills_list` uses. `name` is what `skill_view()` accepts. |
-| `tools.skills_tool.sort_skills(skills)` | The one listing order (category, then name). |
-| `tools.skills_tool.skill_search_dirs()` | `(roots, active_dir)`: `(tier, dir)` roots in precedence order (project, local, `create_dir`, external) and the live profile's skills dir. |
-| `tools.skills_tool.skill_lookup_path_error(name)` | An error string if `name` is absolute or contains `..`, else `None`. Check it before any lookup. |
-| `tools.skills_tool.locate_skill(name, local_category_name, roots)` | `(error_json, skill_dir, skill_md)` for one name over `roots`: tier precedence, same-tier collision refusal and the project-skill quarantine gate. `local_category_name` is an extra relative path to try (it is not a category filter), so pass `None` unless you need one. `skill_md` is set only when `error_json` is `None`. |
-| `tools.skills_sync.dir_hash(directory)` | The package hash the bundled-skill sync stores, so you can tell whether a user's copy still matches what was installed. |
-| `tools.skill_usage.read_skill_name(skill_md, fallback)` | The frontmatter `name:` of a `SKILL.md`, else `fallback`. |
+| `hermes_agent.tools.skills_tool.find_all_skills(*, skip_disabled=False)` | Loadable skills as `{"name", "description", "category"}` dicts: the cached, first-wins, platform/environment-gated walk `skills_list` uses. `name` is what `skill_view()` accepts. |
+| `hermes_agent.tools.skills_tool.sort_skills(skills)` | The one listing order (category, then name). |
+| `hermes_agent.tools.skills_tool.skill_search_dirs()` | `(roots, active_dir)`: `(tier, dir)` roots in precedence order (project, local, `create_dir`, external) and the live profile's skills dir. |
+| `hermes_agent.tools.skills_tool.skill_lookup_path_error(name)` | An error string if `name` is absolute or contains `..`, else `None`. Check it before any lookup. |
+| `hermes_agent.tools.skills_tool.locate_skill(name, local_category_name, roots)` | `(error_json, skill_dir, skill_md)` for one name over `roots`: tier precedence, same-tier collision refusal and the project-skill quarantine gate. `local_category_name` is an extra relative path to try (it is not a category filter), so pass `None` unless you need one. `skill_md` is set only when `error_json` is `None`. |
+| `hermes_agent.tools.skills_sync.dir_hash(directory)` | The package hash the bundled-skill sync stores, so you can tell whether a user's copy still matches what was installed. |
+| `hermes_agent.tools.skill_usage.read_skill_name(skill_md, fallback)` | The frontmatter `name:` of a `SKILL.md`, else `fallback`. |
 
 ```python
-from tools.skills_tool import find_all_skills, locate_skill, skill_lookup_path_error, skill_search_dirs, sort_skills
+from hermes_agent.tools.skills_tool import find_all_skills, locate_skill, skill_lookup_path_error, skill_search_dirs, sort_skills
 
 def list_skills():
     return sort_skills(find_all_skills())
@@ -1636,10 +1636,10 @@ Every name in `hermes_cli.plugins.VALID_HOOKS` has at least one core fire site. 
 
 | Hook | Fired by |
 |------|----------|
-| `pre_tool_call` | `hermes_cli/plugins.py` `_dispatch_pre_tool_call_hooks`, called from `agent/tool_executor.py` `_pre_tool_block`, `agent/agent_runtime_helpers.py` `_pre_tool_block_message` and `model_tools.py` `_pre_dispatch_guards` |
-| `post_tool_call` | `model_tools.py` `_emit_post_tool_call_hook` |
-| `transform_terminal_output` | `tools/terminal_tool_result.py` `_apply_output_transform_hook` |
-| `transform_tool_result` | `model_tools.py` `_apply_transform_tool_result_hook` |
+| `pre_tool_call` | `hermes_cli/plugins.py` `_dispatch_pre_tool_call_hooks`, called from `agent/tool_executor.py` `_pre_tool_block`, `agent/agent_runtime_helpers.py` `_pre_tool_block_message` and `hermes_agent/model_tools.py` `_pre_dispatch_guards` |
+| `post_tool_call` | `hermes_agent/model_tools.py` `_emit_post_tool_call_hook` |
+| `transform_terminal_output` | `hermes_agent/tools/terminal_tool_result.py` `_apply_output_transform_hook` |
+| `transform_tool_result` | `hermes_agent/model_tools.py` `_apply_transform_tool_result_hook` |
 | `transform_llm_output` | `agent/turn_finalizer.py` `apply_llm_output_transform` |
 | `pre_llm_call` | `agent/turn_context.py` `_collect_pre_llm_call_context` |
 | `post_llm_call` | `agent/turn_finalizer.py` `_apply_output_hooks` |
@@ -1658,16 +1658,16 @@ Every name in `hermes_cli.plugins.VALID_HOOKS` has at least one core fire site. 
 | `on_session_reset` | `hermes_cli/cli_session_mixin.py` `CLISessionMixin._notify_session_boundary`; `hermes_agent/tui_gateway/session_registry.py` `_start_session_services`; `hermes_agent/gateway/slash_commands_session.py` `GatewaySessionCommandsMixin._handle_reset_command`; `hermes_agent/gateway/run_shutdown_session_end.py` `GatewaySessionEndMixin._reset_session_off_loop` |
 | `on_session_delete` | `hermes_agent/hermes_state_common.py` `emit_session_deleted` |
 | `on_session_open` | `hermes_agent/gateway/session_open.py` `_Open._deliver` |
-| `on_skill_lifecycle` | `tools/skill_usage.py` `_emit_skill_lifecycle` |
-| `subagent_start` | `tools/delegate_tool.py` `_build_child_agent` |
-| `subagent_stop` | `tools/delegate_tool_results.py` `_fire_subagent_stop_hooks` |
+| `on_skill_lifecycle` | `hermes_agent/tools/skill_usage.py` `_emit_skill_lifecycle` |
+| `subagent_start` | `hermes_agent/tools/delegate_tool.py` `_build_child_agent` |
+| `subagent_stop` | `hermes_agent/tools/delegate_tool_results.py` `_fire_subagent_stop_hooks` |
 | `pre_gateway_dispatch` | `hermes_agent/gateway/run_inbound_hooks.py` `GatewayInboundHooksMixin._hm_pre_gateway_dispatch_hook`; webhook and relay ingress: `hermes_agent/gateway/platforms/webhook_ingress.py` `_admit_once` |
 | `post_gateway_admission` | `hermes_agent/gateway/run_inbound_consumer.py` `run_post_admission_hook`; `hermes_agent/gateway/platforms/webhook_ingress.py` `_admit_once` |
 | `agent_loop_stopped` | `hermes_agent/gateway/run_agent_cache.py` `GatewayAgentCacheMixin._interrupt_and_clear_session`; `hermes_agent/tui_gateway/session_lifecycle.py` `_interrupt_session_turn` |
-| `pre_approval_request` / `post_approval_response` | `tools/approval_context.py` `_fire_approval_hook`, called from `tools/approval.py`, `tools/approval_prompt.py`, `tools/approval_gateway_wait.py`, `tools/approval_smart.py` and `tools/file_tools_write_guards.py` |
-| `on_human_input_request` / `on_human_input_resolved` | `tools/human_input_hooks.py` `human_input_request` |
+| `pre_approval_request` / `post_approval_response` | `hermes_agent/tools/approval_context.py` `_fire_approval_hook`, called from `hermes_agent/tools/approval.py`, `hermes_agent/tools/approval_prompt.py`, `hermes_agent/tools/approval_gateway_wait.py`, `hermes_agent/tools/approval_smart.py` and `hermes_agent/tools/file_tools_write_guards.py` |
+| `on_human_input_request` / `on_human_input_resolved` | `hermes_agent/tools/human_input_hooks.py` `human_input_request` |
 | `on_room_member_activity` | `hermes_agent/tui_gateway/hosted_room_member_activity.py` `emit_room_member_activity` |
-| `pre_transcription` | `tools/transcription_command.py` `_apply_pre_transcription_hook` |
+| `pre_transcription` | `hermes_agent/tools/transcription_command.py` `_apply_pre_transcription_hook` |
 | `kanban_task_claimed` | `hermes_cli/kanban_db.py` `claim_task` (through `_fire_task_hook`) |
 | `kanban_task_completed` | `hermes_cli/kanban_db.py` `complete_task` (through `_fire_task_hook`); `hermes_cli/kanban_swarm.py` `create_swarm` |
 | `kanban_task_blocked` | `hermes_cli/kanban_db.py` `block_task` (through `_fire_task_hook`) |
@@ -2559,7 +2559,7 @@ description: Custom image generation backend
 ### Computer-use backend plugins
 
 The `computer_use` tool talks to exactly one **driver** through the `ComputerUseBackend` ABC
-(`tools/computer_use/backend.py`). `computer_use.backend` in `config.yaml` picks it; the default is the
+(`hermes_agent/tools/computer_use/backend.py`). `computer_use.backend` in `config.yaml` picks it; the default is the
 built-in cua-driver, which ships as an ordinary provider at `plugins/computer_use/cua/`. Another driver
 is a provider plugin in `~/.hermes/plugins/<name>/` whose `register(ctx)` calls
 `ctx.register_computer_use_provider()`. The directory name is the value you put in `computer_use.backend`.
@@ -2567,7 +2567,7 @@ Computer-use providers are single-select, like memory providers and context engi
 
 ```python
 # ~/.hermes/plugins/my-driver/__init__.py
-from tools.computer_use.backend import (
+from hermes_agent.tools.computer_use.backend import (
     ActionResult, CaptureResult, ComputerUseBackend, ComputerUseProvider,
 )
 

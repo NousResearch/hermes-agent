@@ -12,7 +12,7 @@ from utils import env_var_enabled
 
 logger = logging.getLogger(__name__)
 
-# Opt-in debug tracing — pairs with HERMES_DEBUG_INTERRUPT in tools/environments/base.py.
+# Opt-in debug tracing — pairs with HERMES_DEBUG_INTERRUPT in hermes_agent/tools/environments/base.py.
 _DEBUG_INTERRUPT = env_var_enabled("HERMES_DEBUG_INTERRUPT")
 if _DEBUG_INTERRUPT:
     # AIAgent's quiet_mode forces the `tools` logger to ERROR on CLI startup;

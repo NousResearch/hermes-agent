@@ -170,7 +170,7 @@ async def pause_delegation(connection, ref, params):
     """``/agents pause|resume`` and the overlay's ``p``: main's ``delegation.pause`` — block or
     unblock NEW ``delegate_task`` spawns; running children keep going.
 
-    The gate (``tools.delegate_tool_registry``) is process-wide, as it was in main's sidecar (a
+    The gate (``hermes_agent.tools.delegate_tool_registry``) is process-wide, as it was in main's sidecar (a
     TUI's sidecar served one TUI, but its gate covered every agent in that process). On the shared
     owner it therefore covers every chat this gateway runs, which is what an operator's kill switch
     is for; ``delegation.status`` reports the same flag to every client."""
@@ -189,7 +189,7 @@ async def pause_delegation(connection, ref, params):
             from hermes_cli.profiles import profile_matches_home
             if not profile_matches_home(profile, Path(connection.authority.profile_id)):
                 raise RuntimeStoreError('profile_mismatch')
-    from tools.delegate_tool_registry import set_spawn_paused
+    from hermes_agent.tools.delegate_tool_registry import set_spawn_paused
     return {'paused': set_spawn_paused(paused)}
 
 
@@ -236,7 +236,7 @@ async def rollback(connection, ref, params, *, kind):
     terminal = json.loads(policy.terminal_json)
 
     def run() -> dict:
-        from tools.checkpoint_manager import CheckpointManager
+        from hermes_agent.tools.checkpoint_manager import CheckpointManager
         from hermes_agent.tui_gateway.checkpoints import _resolve_checkpoint_hash
         mgr = CheckpointManager(enabled=bool(kwargs['checkpoints_enabled']), **{
             key[len('checkpoint_'):]: value for key, value in kwargs.items() if key.startswith('checkpoint_')})
@@ -246,7 +246,7 @@ async def rollback(connection, ref, params, *, kind):
         # Host checkpoints are not a container-backed session's tree (main's _container_checkpoint_refusal),
         # classified under the session's frozen terminal policy, not the owner's ambient one.
         from agent.runtime_scope import bind_terminal_policy
-        from tools.terminal_scope import reset_terminal_scope
+        from hermes_agent.tools.terminal_scope import reset_terminal_scope
         token = bind_terminal_policy(terminal, profile_home=authority.profile_id)
         try:
             refusal = mgr.unsupported_backend_reason(task_id)
@@ -262,7 +262,7 @@ async def rollback(connection, ref, params, *, kind):
                 # whose newest row bounds the span from below, so a turn started since cannot move it;
                 # without it ``undo_since`` is already bounded by the client (the rewired classic CLI).
                 from hermes_agent.gateway.session_local_recovery import transcript_target
-                from tools.checkpoint_undo_hint import undo_hint_payload, undo_span_start
+                from hermes_agent.tools.checkpoint_undo_hint import undo_hint_payload, undo_span_start
                 kept, transcript = [], transcript_target(authority, ref)
                 if (cut := params.get('undo_message_id')) is not None:
                     kept = [m for m in authority.db.get_messages_as_conversation(
@@ -291,7 +291,7 @@ async def rollback(connection, ref, params, *, kind):
         if refusal:
             return {'success': False, 'error': refusal}
         # Main's whole-tree /rollback keeps the user's hand-edits unless ``--all`` (``all``) says otherwise.
-        from tools.checkpoint_undo_hint import checkpoint_taken_at
+        from hermes_agent.tools.checkpoint_undo_hint import checkpoint_taken_at
         taken.append(checkpoint_taken_at(cwd, target))
         return mgr.restore(cwd, target, file_path=file_path or None,
                            safe=not file_path and not params.get('all'))
@@ -344,7 +344,7 @@ async def _rewind_last_turn(connection, ref, taken=None):
     authority = connection.authority
     from agent.context_compressor import user_originated_turn_view
     from hermes_agent.gateway.session_local_recovery import local_history
-    from tools.checkpoint_undo_hint import rollback_rewinds_newest_turn
+    from hermes_agent.tools.checkpoint_undo_hint import rollback_rewinds_newest_turn
     rows = [row for row in await asyncio.to_thread(local_history, authority, ref) if not row.get('archived')]
     users = [i for i, row in enumerate(rows) if isinstance(row.get('row_id'), int)
              and user_originated_turn_view(row) is not None]

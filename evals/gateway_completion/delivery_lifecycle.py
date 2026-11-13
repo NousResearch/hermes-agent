@@ -13,8 +13,8 @@ from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
 from plugins.platforms.discord.adapter import DiscordAdapter
 from hermes_agent.gateway.platforms.base import SendResult
 from hermes_agent.gateway.session_context import set_session_vars, clear_session_vars
-from tools.terminal_tool_background import spawn_background_process
-from tools.process_registry import process_registry as pr
+from hermes_agent.tools.terminal_tool_background import spawn_background_process
+from hermes_agent.tools.process_registry import process_registry as pr
 import hermes_agent.gateway.run_notifications as rn
 
 print("SOURCE", rn.__file__, "HOME", HOME)
@@ -135,7 +135,7 @@ async def main():
     )
     assert not turns and len(sends) == 1
     # Real async executor/ledger/queue; only child model replaced by a local subprocess.
-    from tools.async_delegation import dispatch_async_delegation, get_durable_delegation
+    from hermes_agent.tools.async_delegation import dispatch_async_delegation, get_durable_delegation
     import subprocess
 
     def local_child():

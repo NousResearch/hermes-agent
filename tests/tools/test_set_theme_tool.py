@@ -2,7 +2,7 @@
 
 import json
 
-from tools.registry import discover_builtin_tools, registry
+from hermes_agent.tools.registry import discover_builtin_tools, registry
 
 
 def _dispatch(args: dict, callback) -> dict:

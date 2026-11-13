@@ -1,4 +1,4 @@
-"""Tests for tools.approval.request_tool_approval — the plugin pre_tool_call
+"""Tests for hermes_agent.tools.approval.request_tool_approval — the plugin pre_tool_call
 ``{"action": "approve"}`` escalation into the human-approval gate.
 
 These verify that a plugin-driven approval reuses the SAME machinery as a
@@ -8,11 +8,11 @@ the gateway submit_pending path, cron_mode, and fail-closed timeouts.
 
 import pytest
 
-from tools import approval
-from tools import approval_prompt
-import tools.approval_context as tools_approval_context
-from tools import approval_context
-from tools.approval import request_tool_approval
+from hermes_agent.tools import approval
+from hermes_agent.tools import approval_prompt
+import hermes_agent.tools.approval_context as tools_approval_context
+from hermes_agent.tools import approval_context
+from hermes_agent.tools.approval import request_tool_approval
 
 
 @pytest.fixture(autouse=True)
@@ -33,7 +33,7 @@ def _isolate_approval_state(monkeypatch):
     monkeypatch.setattr(approval, "_YOLO_MODE_FROZEN", False, raising=False)
     # No thread-registered CLI callback by default.
     monkeypatch.setattr(
-        "tools.terminal_tool._get_approval_callback", lambda: None, raising=False
+        "hermes_agent.tools.terminal_tool._get_approval_callback", lambda: None, raising=False
     )
     yield
 

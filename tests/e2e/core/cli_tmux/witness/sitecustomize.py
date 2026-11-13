@@ -8,7 +8,7 @@ for this directory is set only in that test's child env). Appends one JSON line 
                              attestation that this pid is witnessed. A spawned CLI with no
                              ``startup`` line was not instrumented, and its silence proves nothing.
 * ``agent_init <class>``     an ``AIAgent`` was constructed in this process
-* ``tool <name>``            ``tools.registry`` dispatched a tool in this process
+* ``tool <name>``            ``hermes_agent.tools.registry`` dispatched a tool in this process
 * ``sqlite_write <file>:<table>``  an INSERT/UPDATE/DELETE on a ``*.db`` file opened by this process
 
 ``role`` is ``gateway`` for ``gateway run`` (the daemon), else ``cli``; ``ppid`` lets the test tie

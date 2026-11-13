@@ -131,7 +131,7 @@ def is_enabled(name: str) -> bool:
 def _browser_profile_enabled() -> bool:
     """The real-profile browser login source is on exactly when ``browser.use_real_profile`` is — the
     same consent that snapshots the profile's Login Data. Not a bw/op-style installed-CLI check."""
-    from tools.browser_session_cloud import use_real_profile
+    from hermes_agent.tools.browser_session_cloud import use_real_profile
     return use_real_profile()
 
 

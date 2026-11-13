@@ -177,7 +177,7 @@ def _collect_resume_entries(display_history, disp: dict, clean_assistant):
     visible output are skipped, as are tool-call-only rows when ``resume_skip_tool_only``.
     """
     from agent.message_metadata import withheld_prompt_text
-    from tools.ansi_strip import sanitize_display_text as _sanitize_display_text
+    from hermes_agent.tools.ansi_strip import sanitize_display_text as _sanitize_display_text
     max_user_len = int(disp.get("resume_max_user_chars", 300))
     max_asst_len = int(disp.get("resume_max_assistant_chars", 200))
     max_asst_lines = int(disp.get("resume_max_assistant_lines", 3))
@@ -867,7 +867,7 @@ class CLIAgentSetupMixin:
         """Render a dim Rich-panel recap of the previous conversation, capped at the last
         ``resume_exchanges`` user/assistant exchanges with a hidden-count indicator."""
         from cli import CLI_CONFIG, _record_output_history_entry, _strip_reasoning_tags, _suspend_output_history
-        from tools.ansi_strip import sanitize_display_text as _sanitize_display_text
+        from hermes_agent.tools.ansi_strip import sanitize_display_text as _sanitize_display_text
         display_history = getattr(self, "_resume_display_history", self.conversation_history)
         if not display_history or self.resume_display == "minimal":
             return

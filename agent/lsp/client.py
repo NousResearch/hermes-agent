@@ -260,7 +260,7 @@ class LSPClient:
 
     async def _spawn(self) -> None:
         from agent.delegation_context import delegated_child_subprocess_env
-        from tools.environments.local import hermes_subprocess_env
+        from hermes_agent.tools.environments.local import hermes_subprocess_env
         cmd = self._command
         if sys.platform == "win32" and cmd[0].lower().endswith((".cmd", ".bat")):
             cmd = ["cmd.exe", "/c", *cmd]  # CreateProcess can't run .cmd/.bat shims directly

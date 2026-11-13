@@ -39,6 +39,6 @@ def test_xvnc_never_sends_the_holders_clipboard_to_watchers(tmp_path):
     assert "-SendCutText=0" in argv, argv
     assert not any(a.startswith("-AcceptCutText") for a in argv), "paste into the screen must keep working"
     # Xvnc's own cut-text cap and the bridge filter's must agree, or one side drops a paste the other admits.
-    from tools.bot_desktop.rfb_filter import _MAX_CUT_TEXT
+    from hermes_agent.tools.bot_desktop.rfb_filter import _MAX_CUT_TEXT
     assert int(argv[argv.index("-MaxCutText") + 1]) == _MAX_CUT_TEXT, argv
     assert not os.path.exists(tmp_path / "rfb.sock")  # stub never bound it; nothing leaked

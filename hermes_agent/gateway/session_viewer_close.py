@@ -86,7 +86,7 @@ async def close_viewer_session(authority, session_id, reason):
         return  # a viewer attached while the detach was off the loop: nothing closes or ends
     if is_history_mount(live):
         return  # stored history: no route, agent or delegation of its own
-    from tools.async_delegation import interrupt_for_session, refuse_for_session
+    from hermes_agent.tools.async_delegation import interrupt_for_session, refuse_for_session
     route = live.route
     parents = tuple(dict.fromkeys((session_id, _physical_target(authority, session_id))))
     refuse_for_session((authority.profile_id, session_id), session_key=route, parent_session_ids=parents)

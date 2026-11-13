@@ -1,6 +1,6 @@
 """Tests for MCP tool-handler circuit-breaker recovery.
 
-The circuit breaker in ``tools/mcp_tool.py`` is intended to short-circuit
+The circuit breaker in ``hermes_agent/tools/mcp_tool.py`` is intended to short-circuit
 calls to an MCP server that has failed ``_CIRCUIT_BREAKER_THRESHOLD``
 consecutive times, then *transition back to a usable state* once the
 server has had time to recover (or an explicit reconnect succeeds).
@@ -18,7 +18,7 @@ import pytest
 
 
 pytest.importorskip("mcp.client.auth.oauth2")
-from tools import mcp_tool_loop as _mcp_loop
+from hermes_agent.tools import mcp_tool_loop as _mcp_loop
 
 
 # ---------------------------------------------------------------------------
@@ -109,8 +109,8 @@ def test_circuit_breaker_half_opens_after_cooldown(monkeypatch, tmp_path):
     """
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
-    from tools import mcp_tool
-    from tools.mcp_tool_handlers import _make_tool_handler
+    from hermes_agent.tools import mcp_tool
+    from hermes_agent.tools.mcp_tool_handlers import _make_tool_handler
 
     call_count = {"n": 0}
 
@@ -177,8 +177,8 @@ def test_circuit_breaker_reopens_on_probe_failure(monkeypatch, tmp_path):
     """
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
-    from tools import mcp_tool
-    from tools.mcp_tool_handlers import _make_tool_handler
+    from hermes_agent.tools import mcp_tool
+    from hermes_agent.tools.mcp_tool_handlers import _make_tool_handler
 
     call_count = {"n": 0}
 
@@ -234,8 +234,8 @@ def test_half_open_probe_on_dead_session_requests_reconnect(monkeypatch, tmp_pat
     """
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
-    from tools import mcp_tool
-    from tools.mcp_tool_handlers import _make_tool_handler
+    from hermes_agent.tools import mcp_tool
+    from hermes_agent.tools.mcp_tool_handlers import _make_tool_handler
 
     server = _install_stub_server(mcp_tool, "srv", None)
     # Simulate a dead/parked transport: no live session.
@@ -275,8 +275,8 @@ def test_half_open_dead_session_recovers_after_reconnect(monkeypatch, tmp_path):
     """
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
-    from tools import mcp_tool
-    from tools.mcp_tool_handlers import _make_tool_handler
+    from hermes_agent.tools import mcp_tool
+    from hermes_agent.tools.mcp_tool_handlers import _make_tool_handler
 
     async def _call_tool_success(*a, **kw):
         result = MagicMock()
@@ -336,10 +336,10 @@ def test_circuit_breaker_cleared_on_reconnect(monkeypatch, tmp_path):
     """
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
-    from tools import mcp_tool
-    from tools import mcp_tool_handlers as _mcp_handlers
-    from tools import mcp_tool_loop as _mcp_loop
-    from tools.mcp_oauth_manager import get_manager, reset_manager_for_tests
+    from hermes_agent.tools import mcp_tool
+    from hermes_agent.tools import mcp_tool_handlers as _mcp_handlers
+    from hermes_agent.tools import mcp_tool_loop as _mcp_loop
+    from hermes_agent.tools.mcp_oauth_manager import get_manager, reset_manager_for_tests
     from mcp.client.auth import OAuthFlowError
 
     reset_manager_for_tests()
@@ -410,8 +410,8 @@ def test_run_loop_parks_instead_of_exiting_then_revives(monkeypatch, tmp_path):
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
-    from tools import mcp_tool
-    from tools.mcp_tool import MCPServerTask
+    from hermes_agent.tools import mcp_tool
+    from hermes_agent.tools.mcp_tool import MCPServerTask
 
     # Shrink the budget and collapse backoff sleeps (but still yield control
     # to the loop) so the test runs fast without starving the scheduler.
@@ -505,8 +505,8 @@ def test_initial_connect_budget_parks_instead_of_exiting_then_revives(monkeypatc
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
-    from tools import mcp_tool
-    from tools.mcp_tool import MCPServerTask
+    from hermes_agent.tools import mcp_tool
+    from hermes_agent.tools.mcp_tool import MCPServerTask
 
     monkeypatch.setattr(mcp_tool, "_MAX_INITIAL_CONNECT_RETRIES", 2)
 
@@ -579,8 +579,8 @@ def test_breaker_opened_by_tool_errors_says_rejected_not_unreachable(monkeypatch
     (#11113); a single transport strike in the streak makes it "unreachable" again."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
-    from tools import mcp_tool
-    from tools.mcp_tool_handlers import _make_tool_handler
+    from hermes_agent.tools import mcp_tool
+    from hermes_agent.tools.mcp_tool_handlers import _make_tool_handler
 
     async def _call_tool_rejects(*a, **kw):
         result = MagicMock()

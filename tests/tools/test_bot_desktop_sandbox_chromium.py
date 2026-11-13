@@ -10,7 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from tools.bot_desktop import sandbox_host
+from hermes_agent.tools.bot_desktop import sandbox_host
 
 pytestmark = pytest.mark.platforms("posix")  # the probe is a POSIX shell script run inside the Linux sandbox
 

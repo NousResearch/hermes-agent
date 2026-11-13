@@ -96,7 +96,7 @@ def test_build_skill_nodes_skips_profile_install_swap_leftover(tmp_path):
 def test_foreground_created_skill_is_in_journey_before_first_use(tmp_path):
     """A skill created in the foreground (/learn, skill_manage) shows in the journey with zero
     uses, while an unmarked never-used local skill (hand-written) stays out."""
-    from tools import skill_usage
+    from hermes_agent.tools import skill_usage
 
     home = tmp_path / ".hermes"
     for name in ("fresh-learn-skill", "hand-written"):

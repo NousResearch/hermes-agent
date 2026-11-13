@@ -1,4 +1,4 @@
-"""Tests for tools/bot_mode_dm.py — the Bot-Chat-only ``message_agent`` tool.
+"""Tests for hermes_agent/tools/bot_mode_dm.py — the Bot-Chat-only ``message_agent`` tool.
 
 The containment contract is the headline here: the tool must exist ONLY in a
 canonical Bot Chat session on a Bot-Mode-managed install, and must refuse to
@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pytest
 
-from tools import bot_mode_dm, bot_mode_probe, bot_relay
+from hermes_agent.tools import bot_mode_dm, bot_mode_probe, bot_relay
 
 
 @pytest.fixture(autouse=True)
@@ -143,10 +143,10 @@ def test_config_toggle_disables_injection(tmp_path):
 
 def test_schema_never_in_global_registry():
     """message_agent must not be registered/toolset-reachable anywhere."""
-    from tools.registry import registry
+    from hermes_agent.tools.registry import registry
 
     assert bot_mode_dm.MESSAGE_AGENT_TOOL_NAME not in getattr(registry, "_tools", {})
-    import toolsets
+    from hermes_agent import toolsets
 
     for names in toolsets.TOOLSETS.values():
         assert bot_mode_dm.MESSAGE_AGENT_TOOL_NAME not in names
@@ -230,7 +230,7 @@ def _capture_spawn(monkeypatch):
         calls.append({"command": command, **kwargs})
         return json.dumps({"output": "Background process started", "session_id": "proc_test1234"})
 
-    import tools.terminal_tool as terminal_tool_module
+    import hermes_agent.tools.terminal_tool as terminal_tool_module
 
     monkeypatch.setattr(terminal_tool_module, "terminal_tool", fake_terminal_tool)
     return calls
@@ -245,7 +245,7 @@ class _FakeAuthority:
         self.records = {}
 
     def __call__(self, home, params):
-        from tools import bot_live_delivery as live
+        from hermes_agent.tools import bot_live_delivery as live
 
         self.calls.append((Path(home).resolve(), dict(params)))
         record = self.records.get(params["id"])
@@ -262,7 +262,7 @@ class _FakeAuthority:
 
     def settle(self, delivery_id, **outcome):
         """The owner settles the admission and republishes its receipt file (what waiters poll)."""
-        from tools import bot_live_delivery as live
+        from hermes_agent.tools import bot_live_delivery as live
 
         record = self.records[delivery_id]
         record.update(outcome)
@@ -273,7 +273,7 @@ class _FakeAuthority:
 def _canonical_target(monkeypatch, *targets: Path) -> _FakeAuthority:
     """Every ``targets`` profile home has a ready authority (its Bot Chat is admitted canonically);
     any other home has none, so a DM there falls through to the runner hand-off."""
-    from tools import bot_live_delivery as live
+    from hermes_agent.tools import bot_live_delivery as live
 
     homes = {t.resolve() for t in targets}
 
@@ -674,7 +674,7 @@ def test_unavailable_authority_is_reported_never_worked_around(tmp_path, monkeyp
     resend" state) and nothing else (no CLI, no background runner) is started."""
     home = _managed_home(tmp_path)
     agent = _FakeAgent(home, title="Bot Chat")
-    from tools import bot_live_delivery as live
+    from hermes_agent.tools import bot_live_delivery as live
 
     def unavailable(home):  # "no_owner": discovery is ready but the profile has no store (None)
         if lookup == "not_ready":
@@ -682,7 +682,7 @@ def test_unavailable_authority_is_reported_never_worked_around(tmp_path, monkeyp
 
     monkeypatch.setattr(live, "find_canonical_live_owner", unavailable)
     monkeypatch.setattr(bot_mode_dm, "_dm_dir", lambda: tmp_path)
-    import tools.terminal_tool as terminal_tool_module
+    import hermes_agent.tools.terminal_tool as terminal_tool_module
 
     monkeypatch.setattr(terminal_tool_module, "terminal_tool",
                         lambda *a, **k: pytest.fail("no runner may start without admission"))
@@ -702,7 +702,7 @@ def test_notification_spawn_failure_is_reported_after_admission(tmp_path, monkey
     target = home / "profiles" / "researcher"
     authority = _canonical_target(monkeypatch, target)
     monkeypatch.setattr(bot_mode_dm, "_dm_dir", lambda: tmp_path)
-    import tools.terminal_tool as terminal_tool_module
+    import hermes_agent.tools.terminal_tool as terminal_tool_module
 
     def boom(command, **kwargs):
         raise RuntimeError("spawn failed")
@@ -717,14 +717,14 @@ def test_notification_spawn_failure_is_reported_after_admission(tmp_path, monkey
 
 
 def test_live_dm_admitted_before_waiter_failure(tmp_path, monkeypatch):
-    from tools import bot_live_delivery as live
+    from hermes_agent.tools import bot_live_delivery as live
 
     home = _managed_home(tmp_path)
     target = home / "profiles" / "researcher"
     authority = _canonical_target(monkeypatch, target)
     monkeypatch.setattr(bot_mode_dm, "_dm_dir", lambda: tmp_path)
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "wrong-home"))
-    import tools.terminal_tool as terminal
+    import hermes_agent.tools.terminal_tool as terminal
     monkeypatch.setattr(terminal, "terminal_tool", lambda *a, **k: json.dumps({"error": "spawn failed"}))
 
     result = json.loads(bot_mode_dm.message_agent_tool("researcher", "hello", agent=_FakeAgent(home)))
@@ -756,7 +756,7 @@ def test_live_dm_runner_retry_never_reexecutes_failed_admission(tmp_path, monkey
     # The authority settles the admission as failed; a retry of the same runner
     # reads that exact receipt (same id) and never admits or executes again.
     authority.settle(queued["delivery_id"], status="failed")
-    from tools import bot_live_delivery as live
+    from hermes_agent.tools import bot_live_delivery as live
     monkeypatch.setattr(live, "find_canonical_live_owner", lambda h: pytest.fail("intent is pinned"))
     assert bot_mode_dm._run_delivery(argv, str(dm_file), stdin_file=False) == 1
     failed = json.loads(capsys.readouterr().out)
@@ -768,7 +768,7 @@ def test_live_dm_runner_retry_never_reexecutes_failed_admission(tmp_path, monkey
 
 def _admitted_live_dm(tmp_path, monkeypatch, delivery_id):
     """One DM admitted to a ready (fake) authority, with the wait loop sped up."""
-    from tools import bot_live_delivery as live
+    from hermes_agent.tools import bot_live_delivery as live
 
     authority = _canonical_target(monkeypatch, tmp_path)
     owner = live.find_canonical_live_owner(tmp_path)
@@ -1023,7 +1023,7 @@ def test_delivery_command_round_trip_through_windows_local_shell(tmp_path):
     Peer (stdin) transport, like the Linux sibling: a local query-file delivery without a
     canonical Bot Chat owner is refused with ``runtime_unavailable`` by design.
     """
-    from tools.environments.local import _find_shell
+    from hermes_agent.tools.environments.local import _find_shell
 
     dm_file = tmp_path / "message with spaces.txt"
     dm_file.write_text("secret", encoding="utf-8")
@@ -1066,7 +1066,7 @@ def test_spawn_failure_unlinks_untransferred_file(
     dm_file = tmp_path / "message.txt"
     dm_file.write_text("secret", encoding="utf-8")
 
-    import tools.terminal_tool as terminal_tool_module
+    import hermes_agent.tools.terminal_tool as terminal_tool_module
 
     def fail_spawn(command, **kwargs):
         assert dm_file.exists()
@@ -1089,7 +1089,7 @@ def test_successful_spawn_transfers_cleanup_to_runner(tmp_path, monkeypatch):
     dm_file = tmp_path / "message.txt"
     dm_file.write_text("secret", encoding="utf-8")
 
-    import tools.terminal_tool as terminal_tool_module
+    import hermes_agent.tools.terminal_tool as terminal_tool_module
 
     def launched(command, **kwargs):
         assert dm_file.exists()
@@ -1217,7 +1217,7 @@ def test_pending_approval_spawn_names_the_approval_and_reclaims_the_dm_file(tmp_
     a local delivery must say the runner needs approval (nothing was sent), not blame the spawn."""
     dm_file = tmp_path / "message.txt"
     dm_file.write_text("secret", encoding="utf-8")
-    import tools.terminal_tool as terminal_tool_module
+    import hermes_agent.tools.terminal_tool as terminal_tool_module
 
     pending = terminal_tool_module._error_json("", status="pending_approval", approval_pending=True,
                                                command="python3 runner", description="command flagged")
@@ -1234,13 +1234,13 @@ def test_relay_waiter_that_cannot_start_reports_queued_not_failed(tmp_path, monk
     """The relay envelope is queued before the reply waiter spawns and the Desktop drains it on its
     own: a waiter that cannot start is a lost wake-up, not a failed delivery (a hard error makes the
     sender resend and deliver twice)."""
-    from tools import bot_relay
+    from hermes_agent.tools import bot_relay
 
     root = tmp_path / ".hermes"
     (root / "profiles" / "default").mkdir(parents=True)
     bot_relay.write_remote_roster(root, [{"profile": "researcher", "handle": "researcher",
                                           "connection_id": "laptop-1", "connection_label": "laptop"}])
-    import tools.terminal_tool as terminal_tool_module
+    import hermes_agent.tools.terminal_tool as terminal_tool_module
 
     pending = terminal_tool_module._error_json("", status="pending_approval", approval_pending=True,
                                                command="python3 waiter", description="command flagged")
@@ -1259,7 +1259,7 @@ def test_ack_names_poll_return_path_when_session_cannot_receive_completions(tmp_
     """#101142: on a non-push sender surface (api_server) terminal_tool refuses the
     ``notify_on_complete`` promise, so the reply can never be injected later. The ack must not
     promise a completion notification; it names the surface-supported return path instead."""
-    import tools.terminal_tool as terminal_tool_module
+    import hermes_agent.tools.terminal_tool as terminal_tool_module
 
     monkeypatch.setattr(terminal_tool_module, "terminal_tool", lambda command, **kw: json.dumps({
         "output": "Background process started", "session_id": "proc_np1", "notify_on_complete": False,
@@ -1278,7 +1278,7 @@ def test_live_owner_ack_carries_the_poll_return_path_when_session_cannot_receive
     """#101142 sibling: a live-owner (Desktop) target still runs the same tracked runner whose
     stdout carries the reply. On a non-push sender the live-owner ack must propagate
     ``reply_delivery="poll"`` and the wait instruction instead of 'finish your turn'."""
-    import tools.terminal_tool as terminal_tool_module
+    import hermes_agent.tools.terminal_tool as terminal_tool_module
 
     home = _managed_home(tmp_path)
     target = home / "profiles" / "researcher"
@@ -1298,8 +1298,8 @@ def test_poll_reply_is_persisted_as_a_delivery_row_when_the_runner_exits(tmp_pat
     """#101142 durable leg: with no completion notification the sender may end its turn without
     polling; the tracked runner's exit must still land the reply in the sender's session transcript
     as a DELIVERY row (``display_kind=process_complete``), so nothing is silently lost."""
-    import tools.terminal_tool as terminal_tool_module
-    from tools.process_registry import process_registry
+    import hermes_agent.tools.terminal_tool as terminal_tool_module
+    from hermes_agent.tools.process_registry import process_registry
 
     reply = json.dumps({"status": "settled", "reply": "PAYLOAD_SENTINEL_42", "delivery_id": "d1"})
     procs = []

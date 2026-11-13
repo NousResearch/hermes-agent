@@ -134,7 +134,7 @@ async def test_pending_voice_interrupt_reuses_transcript_and_echo():
     )
 
     with patch(
-        "tools.transcription_tools.transcribe_audio",
+        "hermes_agent.tools.transcription_tools.transcribe_audio",
         return_value={"success": True, "transcript": "hello once", "provider": "mock"},
     ) as mock_transcribe:
         interrupt_text, interrupt_transcripts = await runner._transcribe_pending_audio_event_once(
@@ -205,7 +205,7 @@ async def test_monitor_to_drain_transcribes_and_echoes_pending_voice_once(
         patch("hermes_agent.gateway.run._hermes_home", tmp_path),
         patch("hermes_agent.gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "fake"}),
         patch(
-            "tools.transcription_tools.transcribe_audio",
+            "hermes_agent.tools.transcription_tools.transcribe_audio",
             return_value={"success": True, "transcript": "hello once", "provider": "mock"},
         ) as mock_transcribe,
     ):

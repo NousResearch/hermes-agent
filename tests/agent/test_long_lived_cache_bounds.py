@@ -84,7 +84,7 @@ def test_codex_context_memos_keep_the_newest_128_tokens(monkeypatch):
 
 
 def test_skill_command_scopes_are_lru_bounded_and_recent_scope_stays_warm(monkeypatch):
-    import tools.skills_tool as st
+    import hermes_agent.tools.skills_tool as st
     project = {"value": "/repo/0"}
     monkeypatch.setattr(sc, "_skill_commands_by_key", {})
     monkeypatch.setattr(sc, "_skill_commands_sig_by_key", {})
@@ -181,7 +181,7 @@ def test_heal_counters_are_lru_bounded_and_no_session_is_ever_renotified(monkeyp
 
 
 def test_skill_scope_used_through_dispatch_keeps_its_reload_baseline(monkeypatch):
-    import tools.skills_tool as st
+    import hermes_agent.tools.skills_tool as st
     project = {"value": "/repo/live"}
     for name in ("_skill_commands_by_key", "_skill_commands_sig_by_key", "_last_interactive_skill_commands_by_key", "_scope_recency"):
         monkeypatch.setattr(sc, name, {}, raising=False)

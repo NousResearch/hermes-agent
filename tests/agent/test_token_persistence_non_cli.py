@@ -16,8 +16,8 @@ def _mock_response(*, usage: dict, content: str = "done"):
 
 def _make_agent(session_db, *, platform: str):
     with (
-        patch("model_tools.get_tool_definitions", return_value=[]),
-        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]),
+        patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
         patch("agent.process_bootstrap.OpenAI"),
     ):
         agent = AIAgent(
@@ -67,14 +67,14 @@ def test_session_search_lazily_opens_db_when_entrypoint_did_not_pass_one(monkeyp
     hermes_state_registry.acquire = lambda db_path=None: sentinel_db
     monkeypatch.setitem(sys.modules, "hermes_agent.hermes_state_registry", hermes_state_registry)
 
-    session_search_mod = ModuleType("tools.session_search_tool")
+    session_search_mod = ModuleType("hermes_agent.tools.session_search_tool")
 
     def fake_session_search(**kwargs):
         captured.update(kwargs)
         return json.dumps({"success": True, "results": []})
 
     session_search_mod.session_search = fake_session_search
-    monkeypatch.setitem(sys.modules, "tools.session_search_tool", session_search_mod)
+    monkeypatch.setitem(sys.modules, "hermes_agent.tools.session_search_tool", session_search_mod)
 
     agent = _make_agent(None, platform="acp")
     result = json.loads(agent._invoke_tool(

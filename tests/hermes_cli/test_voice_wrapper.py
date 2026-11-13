@@ -164,7 +164,7 @@ class TestSpeakTextGuards:
 
     def test_speak_text_uses_returned_tts_file_path(self, monkeypatch):
         from hermes_cli import voice
-        from tools import tts_tool
+        from hermes_agent.tools import tts_tool
 
         played = []
         returned_path = "/tmp/hermes_voice/actual.flac"
@@ -185,7 +185,7 @@ class TestSpeakTextGuards:
 
     def test_speak_text_plays_returned_file_paths(self, monkeypatch):
         from hermes_cli import voice
-        from tools import tts_tool
+        from hermes_agent.tools import tts_tool
 
         played = []
 
@@ -454,8 +454,8 @@ class TestSpeakTextStreamingDispatch:
 
     def test_streaming_provider_routes_through_dispatcher(self, monkeypatch):
         from hermes_cli import voice
-        import tools.tts_streaming as ts
-        from tools import tts_tool, tts_tool_speaker
+        import hermes_agent.tools.tts_streaming as ts
+        from hermes_agent.tools import tts_tool, tts_tool_speaker
 
         streamed = []
 

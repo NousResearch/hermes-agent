@@ -1,12 +1,12 @@
-"""The session /yolo contract every surface shares (``tools.approval_yolo``): a toggle persists before it flips
+"""The session /yolo contract every surface shares (``hermes_agent.tools.approval_yolo``): a toggle persists before it flips
 the live flag, a fresh process re-arms it from the stored copy, a row created after the toggle records it, and a
 compression rotation publishes the continuation row with it (the CLI manual /compress dropped it before)."""
 
 import pytest
 
 from hermes_agent.hermes_state import SessionDB
-from tools import approval
-from tools.approval_yolo import restore_session_yolo, toggle_session_yolo, transfer_session_yolo, with_session_yolo
+from hermes_agent.tools import approval
+from hermes_agent.tools.approval_yolo import restore_session_yolo, toggle_session_yolo, transfer_session_yolo, with_session_yolo
 
 
 @pytest.fixture

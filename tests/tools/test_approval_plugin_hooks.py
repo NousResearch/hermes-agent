@@ -1,6 +1,6 @@
 """Tests for pre_approval_request / post_approval_response plugin hooks.
 
-These hooks fire in tools/approval.py::check_all_command_guards whenever a
+These hooks fire in hermes_agent/tools/approval.py::check_all_command_guards whenever a
 dangerous command needs user approval. They are observer-only (return values
 ignored) and must fire on BOTH the CLI-interactive path and the async gateway
 path, so external tools like macOS notifiers can be alerted regardless of
@@ -10,21 +10,21 @@ from unittest.mock import patch
 
 import pytest
 
-import tools.approval as approval_module
-from tools import approval_context
-from tools import approval_smart
-from tools.approval import check_all_command_guards, check_execute_code_guard, clear_session
-from tools.approval_context import set_current_session_key
-from tools.approval_prompt import request_elicitation_consent
-from tools.file_tools_write_guards import _request_protected_instruction_approval
+import hermes_agent.tools.approval as approval_module
+from hermes_agent.tools import approval_context
+from hermes_agent.tools import approval_smart
+from hermes_agent.tools.approval import check_all_command_guards, check_execute_code_guard, clear_session
+from hermes_agent.tools.approval_context import set_current_session_key
+from hermes_agent.tools.approval_prompt import request_elicitation_consent
+from hermes_agent.tools.file_tools_write_guards import _request_protected_instruction_approval
 
 
 @pytest.fixture
 def isolated_session(monkeypatch, tmp_path):
     """Give each test a fresh session_key, clean approval-state, and isolated
     HERMES_HOME so the real user's command_allowlist doesn't leak in."""
-    import tools.approval as _am
-    from tools import approval_context
+    import hermes_agent.tools.approval as _am
+    from hermes_agent.tools import approval_context
 
     session_key = "test:session:approval_hooks"
     token = set_current_session_key(session_key)
@@ -359,7 +359,7 @@ class TestClassicCliPromptsFireGatewayTwinHooks:
                              ids=["protected_write", "elicitation"])
     def test_cli_branch_fires_the_gateway_payload(self, isolated_session, monkeypatch,
                                                   run, approved, cli_surface):
-        from tools.terminal_tool import set_approval_callback
+        from hermes_agent.tools.terminal_tool import set_approval_callback
 
         monkeypatch.setattr(approval_context, "_get_approval_config",
                             lambda: {"mode": "manual", "timeout": 60})
@@ -389,7 +389,7 @@ class TestClassicCliPromptsFireGatewayTwinHooks:
     def test_protected_write_without_a_human_channel_fires_no_hooks(self, isolated_session, monkeypatch):
         """Fail-closed with no panel callback: nobody is waiting, so observers hear nothing."""
         monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
-        monkeypatch.setattr("tools.terminal_tool._get_approval_callback", lambda: None)
+        monkeypatch.setattr("hermes_agent.tools.terminal_tool._get_approval_callback", lambda: None)
         result, captured = _capture_hooks(lambda: _request_protected_instruction_approval(["AGENTS.md"]))
         assert result is not None and "has NOT consented" in result
         assert captured == []

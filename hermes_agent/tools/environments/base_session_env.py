@@ -1,4 +1,4 @@
-"""Bash session-snapshot scripting for ``tools.environments.base``.
+"""Bash session-snapshot scripting for ``hermes_agent.tools.environments.base``.
 
 Pure string builders: the CWD marker, the ``export -p`` dump that strips
 per-session vars, the ``init_session`` bootstrap, and the per-command wrapper.
@@ -16,7 +16,7 @@ from typing import Iterable
 # one of these prefixes (or is HERMES_UI_SESSION_ID); unit tests use this regex as the
 # Python-side contract for the exclusion set.
 # Per-session variables that the gateway bridges freshly onto every command's process environment (via
-# tools/environments/local._inject_session_context_env, reading hermes_agent.gateway.session_context._VAR_MAP). They must
+# hermes_agent/tools/environments/local._inject_session_context_env, reading hermes_agent.gateway.session_context._VAR_MAP). They must
 # NEVER be persisted into the shared bash session snapshot: a single long-lived backend serves many
 # concurrent sessions (the messaging gateway, TUI, desktop/web dashboard all collapse the terminal to one
 # "default" environment), so ``export -p`` dumping the FIRST session's HERMES_SESSION_ID into the snapshot

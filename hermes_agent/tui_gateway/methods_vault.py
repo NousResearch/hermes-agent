@@ -192,8 +192,8 @@ def _(rid, params: dict) -> dict:
     ``preview.act`` request on THIS socket, so only the window that asked can answer it."""
     import json as _json
 
-    from tools.browser_vault_preview import run_preview_vault
-    from tools.browser_vault_tool import browser_vault_fill
+    from hermes_agent.tools.browser_vault_preview import run_preview_vault
+    from hermes_agent.tools.browser_vault_tool import browser_vault_fill
     from hermes_agent.tui_gateway import server_requests
     from hermes_agent.tui_gateway.transport import current_transport
 

@@ -1,6 +1,6 @@
 """Dangerous-command detection: normalization, tokenizing, and pattern tables.
 
-Pure command classification for :mod:`tools.approval` — no approval state, config reads, or
+Pure command classification for :mod:`hermes_agent.tools.approval` — no approval state, config reads, or
 prompting live here.
 """
 
@@ -14,7 +14,7 @@ import shlex
 import tempfile
 import unicodedata
 
-logger = logging.getLogger("tools.approval")
+logger = logging.getLogger("hermes_agent.tools.approval")
 
 # Sensitive write targets, matched via ~ / $HOME / $HERMES_HOME spellings. The resolved absolute
 # home is folded into these forms at detection time by _normalize_command_for_detection(), so no
@@ -758,7 +758,7 @@ def _approval_key_aliases(pattern_key: str) -> set[str]:
 def _normalize_command_for_detection(command: str) -> str:
     """Normalize a command before pattern matching so ANSI escapes, null bytes, Unicode fullwidth
     forms, and shell splicing tricks cannot bypass detection."""
-    from tools.ansi_strip import strip_ansi
+    from hermes_agent.tools.ansi_strip import strip_ansi
     command = unicodedata.normalize('NFKC', strip_ansi(command).replace('\x00', ''))
     # Collapse backslash-newline continuations (`rm -rf \<newline>/` runs as `rm -rf /`). MUST
     # precede the generic escape strip below, whose [^\n] class skips newlines and would leave the

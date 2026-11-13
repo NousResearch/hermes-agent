@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 import pytest
 
-from tools.blueprints import (
+from hermes_agent.tools.blueprints import (
     BlueprintError,
     BlueprintSpec,
     create_blueprint_job,
@@ -90,7 +90,7 @@ class TestBlueprintSpecForInstalled:
         rec_dir.mkdir(parents=True)
         (rec_dir / "SKILL.md").write_text(BLUEPRINT_SKILL, encoding="utf-8")
 
-        with patch("tools.skills_hub.SKILLS_DIR", skills_dir):
+        with patch("hermes_agent.tools.skills_hub.SKILLS_DIR", skills_dir):
             spec = blueprint_spec_for_installed("morning-brief")
         assert spec is not None
         assert spec.schedule == "0 8 * * *"
@@ -101,7 +101,7 @@ class TestBlueprintSpecForInstalled:
         d = skills_dir / "misc" / "not-a-blueprint"
         d.mkdir(parents=True)
         (d / "SKILL.md").write_text(PLAIN_SKILL, encoding="utf-8")
-        with patch("tools.skills_hub.SKILLS_DIR", skills_dir):
+        with patch("hermes_agent.tools.skills_hub.SKILLS_DIR", skills_dir):
             assert blueprint_spec_for_installed("not-a-blueprint") is None
 
 

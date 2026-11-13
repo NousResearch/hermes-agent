@@ -221,7 +221,7 @@ web:
 
 ## Hermes 如何将其接入工具
 
-`web_search` 和 `web_extract` 工具位于 `tools/web_tools.py`。调用时执行以下步骤：
+`web_search` 和 `web_extract` 工具位于 `hermes_agent/tools/web_tools.py`。调用时执行以下步骤：
 
 1. 读取相关配置键（`web_search` 对应 `web.search_backend`，`web_extract` 对应 `web.extract_backend`）
 2. 向注册表查询具有该 `name` 的提供商
@@ -245,7 +245,7 @@ web:
 - **`plugins/web/ddgs/`** — 无需 key、懒加载 SDK 的提供商。适用于封装 Python 包的后端。
 - **`plugins/web/firecrawl/`** — 完整的多能力提供商（搜索 + 提取 + 爬取），支持多种格式模式。
 - **`plugins/web/searxng/`** — 自托管、通过 URL 配置、无需认证的后端。
-- **`plugins/web/xai/`** — 通过 Grok 服务端 `web_search` 工具实现的 LLM 驱动搜索。展示了如何复用现有的 OAuth/环境变量凭据（`tools/xai_http.py`）而无需新增环境变量，以及如何编写遵守无网络调用约定的轻量 `is_available()`。
+- **`plugins/web/xai/`** — 通过 Grok 服务端 `web_search` 工具实现的 LLM 驱动搜索。展示了如何复用现有的 OAuth/环境变量凭据（`hermes_agent/tools/xai_http.py`）而无需新增环境变量，以及如何编写遵守无网络调用约定的轻量 `is_available()`。
 
 ## 通过 pip 分发
 

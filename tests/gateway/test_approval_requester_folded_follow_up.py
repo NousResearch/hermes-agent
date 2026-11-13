@@ -25,8 +25,8 @@ class _Agent:
 
 
 def _raise_approval(key):
-    from tools import approval as approval_mod
-    from tools.approval_gateway_wait import _ApprovalEntry
+    from hermes_agent.tools import approval as approval_mod
+    from hermes_agent.tools.approval_gateway_wait import _ApprovalEntry
 
     approval_mod._gateway_queues.setdefault(key, []).append(_ApprovalEntry({"command": "rm -rf notes"}))
 
@@ -71,7 +71,7 @@ async def test_a_folded_follow_up_rebinds_the_running_turns_approvals(
     (111, "Alice Example", ("111", "Alice Example")),  # one member's turn: the child keeps the sender
 ], ids=["other-member", "same-member"])
 async def test_a_child_process_started_after_a_fold_names_the_turns_actor(follow_uid, follow_name, actor):
-    from tools.environments.local import _inject_session_context_env
+    from hermes_agent.tools.environments.local import _inject_session_context_env
 
     adapter = _observe_adapter()
     alice = _observed_event(adapter, 111, "Alice Example", "summarize the repo")

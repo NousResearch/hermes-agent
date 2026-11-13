@@ -8,7 +8,7 @@ from pathlib import Path
 
 from hermes_constants import get_hermes_home
 
-logger = logging.getLogger("tools.transcription_tools")
+logger = logging.getLogger("hermes_agent.tools.transcription_tools")
 
 # Keys include the profile's absolute file path; a served profile never inherits
 # another profile's verification. Changed/replaced files must be checked again.

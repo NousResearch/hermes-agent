@@ -23,10 +23,10 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from hermes_constants import get_hermes_home, hermes_home_key
-from tools.daemon_pool import DaemonThreadPoolExecutor
-from tools.thread_context import propagate_context_to_thread
-from tools.async_delegation_worker import worker_ledger, require_ledger_owner
-from tools.delegation_redaction import redact_child_result, redact_completion_event
+from hermes_agent.tools.daemon_pool import DaemonThreadPoolExecutor
+from hermes_agent.tools.thread_context import propagate_context_to_thread
+from hermes_agent.tools.async_delegation_worker import worker_ledger, require_ledger_owner
+from hermes_agent.tools.delegation_redaction import redact_child_result, redact_completion_event
 
 logger = logging.getLogger(__name__)
 
@@ -207,7 +207,7 @@ def _persist_dispatch(record: dict[str, Any]) -> None:
 def _prune_durable_records() -> None:
     """Bound terminal history, preferring delivered records for deletion."""
     require_ledger_owner()
-    from tools.delegate_tool_auto_resume import KEEP_WAITING_UNITS_SQL as keep
+    from hermes_agent.tools.delegate_tool_auto_resume import KEEP_WAITING_UNITS_SQL as keep
     cutoff = time.time() - _DURABLE_RETENTION_SECONDS
     with _DB_LOCK, _transaction() as conn:
         conn.execute(
@@ -305,7 +305,7 @@ def recover_abandoned_delegations() -> int:
     if alive is None:
         return 0
     now, recovered = time.time(), 0
-    from tools.delegate_tool_resumable import continuable_of, plan_recovery, recover_abandoned
+    from hermes_agent.tools.delegate_tool_resumable import continuable_of, plan_recovery, recover_abandoned
     plan = plan_recovery(_db_path(), alive)  # its git probes run before the write lock below
     recovered_records: dict[str, dict[str, Any]] = {}
     with _DB_LOCK, _transaction() as conn:
@@ -328,7 +328,7 @@ def recover_abandoned_delegations() -> int:
             diagnostics = {"last_known_status": last_state, "task_transcripts": task.get("task_transcripts") or {}}
             # Verbatim transcript tails + a git snapshot of the owner's cwd, so the parent can
             # continue or re-dispatch from the event alone instead of opening files (#116000).
-            from tools.async_delegation_recovery_hints import git_state_hint, transcript_tails
+            from hermes_agent.tools.async_delegation_recovery_hints import git_state_hint, transcript_tails
             if tails := transcript_tails(diagnostics["task_transcripts"]):
                 diagnostics["transcript_tails"] = tails
             if hint := git_state_hint(task.get("owner_cwd")):
@@ -336,7 +336,7 @@ def recover_abandoned_delegations() -> int:
             silent = False
             if continuable := continuable_of(conn, delegation_id):
                 diagnostics["resumable_subagent_ids"] = continuable
-                from tools.delegate_tool_auto_resume import boot_notice
+                from hermes_agent.tools.delegate_tool_auto_resume import boot_notice
                 notice, promised = boot_notice(conn, continuable, recovered_records)
                 error += notice or (
                     " Its subagents can be continued on their own conversation and worktree: "
@@ -539,7 +539,7 @@ def sweep_orphaned_completions(target_queue, *, now: Optional[float] = None) -> 
     recover_abandoned_delegations()
     now = time.time() if now is None else now
     home = hermes_home_key(get_hermes_home())
-    from tools.process_registry import process_registry
+    from hermes_agent.tools.process_registry import process_registry
     live = _queued_completion_ids(target_queue, process_registry.completion_queue)
     with _orphan_lock:
         offered = {delegation_id for key, delegation_id in _offered if key == home}
@@ -817,7 +817,7 @@ def failed_delegations_for_session(
         task, result = _json_object(task_json), redact_child_result(_json_object(result_json))
         goals = task.get("goals") if isinstance(task.get("goals"), list) and task["goals"] else [task.get("goal") or ""]
         tasks = result["results"] if isinstance(result.get("results"), list) else [] if task.get("is_batch") else [result]
-        from tools.delegate_tool_auto_resume import waiting_on_resume
+        from hermes_agent.tools.delegate_tool_auto_resume import waiting_on_resume
         if waiting_on_resume(result):  # every child waits on its automatic resume (or its one give-up failure)
             continue
         if not tasks and str(state).lower() in _FAILED_TASK_STATES:  # crash, stall or owner exit: no per-task rows
@@ -996,7 +996,7 @@ def _dispatch_admitted(
     # unit queues behind a full pool and the stale monitor kills it before its child ever starts.
     executor = _get_executor(max(max_async_children, live_units))
 
-    from tools.approval_notify_lease import acquire, run as run_with_notify_lease
+    from hermes_agent.tools.approval_notify_lease import acquire, run as run_with_notify_lease
     lease = acquire(session_key)
     with _records_lock:
         record["_approval_lease"] = lease
@@ -1168,7 +1168,7 @@ def completion_event(record: dict[str, Any], result: dict[str, Any], status: str
         result = {**result, **_stall_meta(record)}
     is_batch = bool(record.get("is_batch"))
     children = result.get("results") or ([] if is_batch else [result])
-    from tools.delegate_tool_auto_resume import waiting_on_resume
+    from hermes_agent.tools.delegate_tool_auto_resume import waiting_on_resume
     waiting = [r for r in children if waiting_on_resume(r)]
     silent = bool(children) and len(waiting) == len(children)  # every child will resume: the parent hears nothing
     if waiting and not silent:  # a mixed unit: the promised child reads as waiting, not failed
@@ -1215,7 +1215,7 @@ def _push_completion_event(record: dict[str, Any], result: dict[str, Any], statu
     ``_persist_completion`` re-scrubs with force for the durable row (and the worker IPC)."""
     label = " batch" if record.get("is_batch") else ""
     try:
-        from tools.process_registry import process_registry
+        from hermes_agent.tools.process_registry import process_registry
     except Exception as exc:  # pragma: no cover  # health: allow BLE001 -- a worker thread logs the lost result
         logger.error(f"Async delegation{label} %s finished but process_registry import failed; "
                      "result lost: %s", record.get("delegation_id"), exc)
@@ -1253,7 +1253,7 @@ def push_task_failure_notice(delegation_id: str, entry: dict[str, Any], *, n_tas
             return
         snapshot = dict(record)
     try:
-        from tools.process_registry import process_registry
+        from hermes_agent.tools.process_registry import process_registry
     except Exception as exc:  # pragma: no cover
         logger.error("Async delegation batch %s: task failure notice dropped (process_registry import): %s", delegation_id, exc)
         return
@@ -1480,7 +1480,7 @@ def interrupt_all(reason: str = "shutdown", *, resumable: bool = False) -> int:
     normal finalize path. ``resumable`` (gateway shutdown): a restart, not a person, stops
     them, so each child keeps a resumable record (``delegate_tool_resumable``)."""
     if resumable:
-        from tools.delegate_tool_resumable import note_gateway_shutdown
+        from hermes_agent.tools.delegate_tool_resumable import note_gateway_shutdown
         note_gateway_shutdown()
     with _records_lock:
         targets = [r for r in _records.values() if r.get("status") in _ACTIVE_STATES]
@@ -1494,7 +1494,7 @@ def interrupt_for_session(
     selector matches, see ``_session_records``). Returns how many."""
     targets = _session_records(_ACTIVE_STATES, session_key, origin_ui_session_id, parent_session_id)
     # Its children already waiting to resume must not wake up after the person stopped or closed it.
-    from tools.delegate_tool_auto_resume import supersede_for_session
+    from hermes_agent.tools.delegate_tool_auto_resume import supersede_for_session
     try:
         supersede_for_session(session_key=session_key, origin_ui_session_id=origin_ui_session_id,
                               parent_session_id=parent_session_id, reason=reason)

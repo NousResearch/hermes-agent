@@ -16,8 +16,8 @@ def child(repo, case, account):
     os.environ['HERMES_HOME'] = str(home)
     sys.path.insert(0, str(repo))
     from hermes_agent.hermes_state import SessionDB
-    import tools.session_search_tool as search
-    from tools.registry import registry
+    import hermes_agent.tools.session_search_tool as search
+    from hermes_agent.tools.registry import registry
 
     target = home / 'profiles' / 'reader-target' if case == 'foreign' else home
     if case != 'empty':

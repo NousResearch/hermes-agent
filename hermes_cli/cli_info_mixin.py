@@ -181,7 +181,7 @@ class CLIInfoMixin:
 
                 def _refresh_banner_snapshot() -> None:
                     try:
-                        from model_tools import get_toolset_for_tool
+                        from hermes_agent.model_tools import get_toolset_for_tool
                         tools = get_tool_definitions(
                             enabled_toolsets=self.enabled_toolsets,
                             disabled_toolsets=self.disabled_toolsets, quiet_mode=True)
@@ -196,7 +196,7 @@ class CLIInfoMixin:
                 ).start()
             else:
                 # Cold path: compute live, then persist the snapshot for the next launch.
-                from model_tools import get_toolset_for_tool
+                from hermes_agent.model_tools import get_toolset_for_tool
                 tools = get_tool_definitions(enabled_toolsets=self.enabled_toolsets,
                                              disabled_toolsets=self.disabled_toolsets, quiet_mode=True)
                 availability = compute_toolset_availability(self.enabled_toolsets)
@@ -426,7 +426,7 @@ class CLIInfoMixin:
             tools, get_toolset_for_tool = remote
         else:
             from cli import get_tool_definitions
-            from model_tools import get_toolset_for_tool
+            from hermes_agent.model_tools import get_toolset_for_tool
             # Pre-assembly list: /tools is a discovery surface, so it must show the full catalog
             # including tools deferred behind the tool_search bridge (users verify MCP installs here).
             tools = get_tool_definitions(enabled_toolsets=self.enabled_toolsets,
@@ -957,10 +957,10 @@ class CLIInfoMixin:
         if (connection := connection_for(self)) is not None:
             return self._reload_gateway_mcp(connection)
         try:
-            from tools.mcp_tool_lifecycle import shutdown_mcp_servers
-            from tools.mcp_tool_discovery import discover_mcp_tools
-            from tools.mcp_tool_agent import reprobe_tool_availability
-            from tools.mcp_tool import _servers, _lock
+            from hermes_agent.tools.mcp_tool_lifecycle import shutdown_mcp_servers
+            from hermes_agent.tools.mcp_tool_discovery import discover_mcp_tools
+            from hermes_agent.tools.mcp_tool_agent import reprobe_tool_availability
+            from hermes_agent.tools.mcp_tool import _servers, _lock
             with _lock:
                 old_servers = set(_servers.keys())
             if not self._command_running:
@@ -991,7 +991,7 @@ class CLIInfoMixin:
             # gateway reload / late-binding paths (name-diff, thread-safe, additive-preserving so
             # memory-provider and context-engine tools survive the rebuild).
             if self.agent is not None:
-                from tools.mcp_tool_agent import refresh_agent_mcp_tools
+                from hermes_agent.tools.mcp_tool_agent import refresh_agent_mcp_tools
                 # Pick up servers ENABLED in config this session: enabled_toolsets was resolved at
                 # startup, so merge now-connected names in (unless `all`/`*` is pinned) so a
                 # freshly-added server isn't filtered out. Mirrors startup (see __init__).

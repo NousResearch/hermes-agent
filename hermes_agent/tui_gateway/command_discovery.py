@@ -32,7 +32,7 @@ def _skill_usage_lookup():
     """``(usage, origin)`` callables for the skill catalog: activity count (use + view + patch) and
     "hub" / "bundled" / "local" (``/api/skills`` ``provenance``, "local" spelled "agent"). Failure → 0 / "local"."""
     try:
-        from tools.skill_usage import (
+        from hermes_agent.tools.skill_usage import (
             _read_bundled_names, _read_hub_installed_names, activity_count, load_usage)
         records, bundled, hub = load_usage(), _read_bundled_names(), _read_hub_installed_names()
     except Exception as e:

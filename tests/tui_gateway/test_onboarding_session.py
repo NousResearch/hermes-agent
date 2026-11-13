@@ -113,7 +113,7 @@ def test_only_a_chat_with_a_run_in_progress_gets_the_onboarding_toolset(root):
 
 def test_an_unrestricted_chat_with_a_run_keeps_every_tool_and_gets_setup_beat(root):
     """HERMES_TUI_TOOLSETS=all loads None, which selects no session-gated toolset (onboarding is one)."""
-    from model_tools import _select_tool_names
+    from hermes_agent.model_tools import _select_tool_names
     db = server._get_db()
     db.create_session("onb", "desktop")
     db.create_session("plain", "desktop")
@@ -156,7 +156,7 @@ def test_the_opening_plays_the_greeting_and_name_card_until_the_name_card_was_sh
     (None, GREETING, "What should I call you?"),
 ])
 def test_the_opening_greets_and_asks_the_name_in_the_run_s_locale(root, locale, opens_with, asks):
-    from tools.setup_beat_tool import setup_beat_tool
+    from hermes_agent.tools.setup_beat_tool import setup_beat_tool
 
     db = server._get_db()
     db.create_session("onb", "desktop")

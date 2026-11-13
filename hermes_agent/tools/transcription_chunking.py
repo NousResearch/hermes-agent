@@ -18,11 +18,11 @@ import subprocess
 from tempfile import TemporaryDirectory
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from tools.transcription_audio import (
+from hermes_agent.tools.transcription_audio import (
     _find_ffmpeg_binary, _probe_audio_duration, _run_quiet, _transcode_audio_for_stt)
-from tools.transcription_common import MAX_FILE_SIZE, _error_result, _ok_result
+from hermes_agent.tools.transcription_common import MAX_FILE_SIZE, _error_result, _ok_result
 
-logger = logging.getLogger("tools.transcription_tools")
+logger = logging.getLogger("hermes_agent.tools.transcription_tools")
 
 _MB = 1024 * 1024
 # Vendor-documented per-request upload caps. Providers not listed here (DeepInfra's
@@ -116,7 +116,7 @@ def transcribe_oversized(
     path: str, limit: tuple[int, Optional[float]], dispatch: Callable[[str], dict[str, Any]],
 ) -> dict[str, Any]:
     """Fit *path* under *limit* (re-encode, else split at silences) and run *dispatch* per piece."""
-    from tools.voice_mode_transcript import is_whisper_hallucination
+    from hermes_agent.tools.voice_mode_transcript import is_whisper_hallucination
 
     max_bytes, max_seconds = limit
     ffmpeg = _find_ffmpeg_binary()

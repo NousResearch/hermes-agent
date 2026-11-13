@@ -17,7 +17,7 @@ Docker Backend in ``website/docs/user-guide/configuration.md``.
 
 import pytest
 
-from tools import terminal_tool
+from hermes_agent.tools import terminal_tool
 
 
 @pytest.fixture(autouse=True)
@@ -422,7 +422,7 @@ def test_file_panel_mirror_names_the_unnamed_chat_sandbox(monkeypatch, tmp_path)
     profile actually uses, with and without a mounted workspace."""
     from hermes_agent.gateway.platforms.docker_media_paths import _docker_sandbox_dir_candidates
     from hermes_agent.gateway.session_context import clear_session_vars, set_session_vars
-    from tools.environments.path_utils import sanitize_task_id_for_path
+    from hermes_agent.tools.environments.path_utils import sanitize_task_id_for_path
 
     _persistent_docker(monkeypatch)
     monkeypatch.delenv("TERMINAL_DOCKER_SHARED_CONTAINER_KEY", raising=False)
@@ -470,7 +470,7 @@ def test_a_home_the_tui_stamps_custom_keys_one_container_for_every_path(monkeypa
     panel's first candidate (the one a Save may write to), plain and mounted."""
     from hermes_agent.gateway.platforms.docker_media_paths import _docker_sandbox_dir_candidates
     from hermes_agent.gateway.session_context import clear_session_vars, reset_session_vars, set_session_vars
-    from tools.environments.path_utils import sanitize_task_id_for_path
+    from hermes_agent.tools.environments.path_utils import sanitize_task_id_for_path
 
     import hermes_constants
 
@@ -505,7 +505,7 @@ def test_a_home_the_tui_stamps_custom_keys_one_container_for_every_path(monkeypa
 
 
 def test_home_profile_name_is_cached_per_home_never_across_homes(monkeypatch, tmp_path):
-    from tools.terminal_tool_config import home_profile_name
+    from hermes_agent.tools.terminal_tool_config import home_profile_name
 
     for name in ("tenant-a", "tenant-b", "default", "tenant-a"):
         _use_home(monkeypatch, tmp_path, name)
@@ -515,7 +515,7 @@ def test_home_profile_name_is_cached_per_home_never_across_homes(monkeypatch, tm
 def test_an_unresolvable_home_keeps_the_shared_default_key(monkeypatch):
     import hermes_constants
     from hermes_agent.gateway.platforms.docker_media_paths import _docker_sandbox_dir_candidates
-    from tools.terminal_tool_config import home_profile_name
+    from hermes_agent.tools.terminal_tool_config import home_profile_name
 
     def _boom():
         raise RuntimeError("no home")

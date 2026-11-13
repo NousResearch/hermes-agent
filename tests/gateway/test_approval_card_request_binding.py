@@ -21,8 +21,8 @@ if importlib.util.find_spec("lark_oapi") is None and "lark_oapi" not in sys.modu
     for _name in ("lark_oapi", "lark_oapi.api.im.v1", "lark_oapi.event", "lark_oapi.event.callback_type"):
         sys.modules.setdefault(_name, _lark)
 
-from tools import approval
-from tools.approval_gateway_wait import _ApprovalEntry
+from hermes_agent.tools import approval
+from hermes_agent.tools.approval_gateway_wait import _ApprovalEntry
 
 SESSION = "agent:main:test:dm:1"
 

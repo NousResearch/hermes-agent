@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 
 def _bs():
-    from tools import browser_session
+    from hermes_agent.tools import browser_session
     return browser_session
 
 
@@ -116,7 +116,7 @@ def _close_cloud_session(session_info: dict[str, Any]) -> None:
     bb_session_id = session_info.get("bb_session_id")
     if not bb_session_id:
         return
-    from tools.browser_session_cloud import get_cloud_provider
+    from hermes_agent.tools.browser_session_cloud import get_cloud_provider
     provider = get_cloud_provider()
     if provider is None:
         return
@@ -131,22 +131,22 @@ def release_session_backend(cache_key: str, session_info: dict[str, Any]) -> Non
     _close_cloud_session(session_info)
     features = session_info.get("features") or {}
     if features.get("lightpanda"):
-        from tools.browser_lightpanda import stop_lightpanda
+        from hermes_agent.tools.browser_lightpanda import stop_lightpanda
         stop_lightpanda(session_info.get("session_name", ""))
     launcher_key = session_info.get("launcher_key")
     if not launcher_key or _launcher_key_in_use(launcher_key, session_info):
         return  # nothing launched for it, or a shared browser another live session still uses
     if features.get("sandbox"):
-        from tools.browser_session_sandbox import stop_sandbox_browser
+        from hermes_agent.tools.browser_session_sandbox import stop_sandbox_browser
         stop_sandbox_browser(session_info)
     elif not features.get("real_profile"):  # outlives its sessions: stopped at exit / on consent-off
-        from tools.browser_launcher import stop_browser
+        from hermes_agent.tools.browser_launcher import stop_browser
         stop_browser(launcher_key)
 
 
 def cleanup_single_session(cache_key: str) -> None:
     """Tear down one session by its exact key."""
-    from tools.browser_session_cdp import stop_cdp_supervisor
+    from hermes_agent.tools.browser_session_cdp import stop_cdp_supervisor
     stop_cdp_supervisor(cache_key)  # close our WebSocket BEFORE the backend tears the endpoint down
     bs = _bs()
     with bs._cleanup_lock:
@@ -184,15 +184,15 @@ def cleanup_profile_browsers(home_key: str) -> None:
         cleanup_single_session(key)
 
     def _stop_supervisors():
-        from tools.browser_supervisor import SUPERVISOR_REGISTRY
+        from hermes_agent.tools.browser_supervisor import SUPERVISOR_REGISTRY
         SUPERVISOR_REGISTRY.stop_home(home_key)
     _best_effort("CDP supervisor stop", _stop_supervisors)
 
     def _stop_harness():
-        from tools.browser_use_cli import stop_harness_daemons
+        from hermes_agent.tools.browser_use_cli import stop_harness_daemons
         stop_harness_daemons(home_key)
     _best_effort("Browser Use harness daemon stop", _stop_harness)
-    from tools.browser_session_cloud import reset_caches
+    from hermes_agent.tools.browser_session_cloud import reset_caches
     reset_caches(home_key)
 
 
@@ -212,25 +212,25 @@ def cleanup_all_browsers() -> None:
         _best_effort(f"browser cleanup for {key}", lambda key=key: _cleanup_in_owner_scope(key))
 
     def _stop_supervisors():
-        from tools.browser_supervisor import SUPERVISOR_REGISTRY
+        from hermes_agent.tools.browser_supervisor import SUPERVISOR_REGISTRY
         SUPERVISOR_REGISTRY.stop_all()
     _best_effort("CDP supervisor stop", _stop_supervisors)
 
     def _stop_harness():
-        from tools.browser_use_cli import stop_harness_daemons
+        from hermes_agent.tools.browser_use_cli import stop_harness_daemons
         stop_harness_daemons()
     _best_effort("Browser Use harness daemon stop", _stop_harness)
 
     def _stop_launched():
-        from tools.browser_launcher import stop_all_browsers
+        from hermes_agent.tools.browser_launcher import stop_all_browsers
         stop_all_browsers()  # incl. the shared real-profile / persistent-profile browsers
     _best_effort("Chromium stop", _stop_launched)
 
     def _stop_lightpanda():
-        from tools.browser_lightpanda import stop_all_lightpanda
+        from hermes_agent.tools.browser_lightpanda import stop_all_lightpanda
         stop_all_lightpanda()
     _best_effort("Lightpanda stop", _stop_lightpanda)
-    from tools.browser_session_cloud import reset_caches
+    from hermes_agent.tools.browser_session_cloud import reset_caches
     reset_caches()
 
 
@@ -255,8 +255,8 @@ def emergency_cleanup_all_sessions() -> None:
 def reap_orphaned_browser_sessions() -> int:
     """Stop Chromium / ``lightpanda serve`` processes whose owning Hermes process is gone (Chromium: in every
     profile this process serves, incl. each live session's owning home)."""
-    from tools.browser_launcher import reap_orphaned_browsers
-    from tools.browser_lightpanda import reap_orphaned_lightpanda
+    from hermes_agent.tools.browser_launcher import reap_orphaned_browsers
+    from hermes_agent.tools.browser_lightpanda import reap_orphaned_lightpanda
     bs = _bs()
     with bs._cleanup_lock:
         session_homes = list(bs._session_owner_homes.values())
@@ -283,7 +283,7 @@ def _human_holds_shared_browser(cache_key: str) -> bool:
 
 def _force_reap(cache_key: str) -> None:
     """Janitor last resort after repeated failures (#100738): drop the record, release the backend."""
-    from tools.browser_session_cdp import stop_cdp_supervisor
+    from hermes_agent.tools.browser_session_cdp import stop_cdp_supervisor
     stop_cdp_supervisor(cache_key)
     bs = _bs()
     with bs._cleanup_lock:

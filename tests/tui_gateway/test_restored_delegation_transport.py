@@ -10,9 +10,9 @@ from unittest.mock import Mock
 
 import pytest
 
-from tools import async_delegation as ad
-from tools.process_registry import process_registry
-from tools.process_registry_notifications import format_process_notification
+from hermes_agent.tools import async_delegation as ad
+from hermes_agent.tools.process_registry import process_registry
+from hermes_agent.tools.process_registry_notifications import format_process_notification
 from hermes_agent.tui_gateway import server
 from hermes_agent.tui_gateway.transport import StdioTransport, TeeTransport
 from hermes_agent.tui_gateway.ws import WSTransport

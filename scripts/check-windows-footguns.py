@@ -494,7 +494,7 @@ FOOTGUNS: list[Footgun] = [
     Footgun(
         name="module-level import of a POSIX-only stdlib module",
         # Only unindented imports: a top-level `import fcntl` fails at import time on Windows and takes
-        # every importer down with it (tools.bot_desktop.lease took computer_use down on native
+        # every importer down with it (hermes_agent.tools.bot_desktop.lease took computer_use down on native
         # Windows). Indented imports inside a function or a try/except ImportError are the fix shape.
         pattern=re.compile(
             r"^(?:import\s+(?:fcntl|pwd|grp|termios|resource|pty|tty)\b"

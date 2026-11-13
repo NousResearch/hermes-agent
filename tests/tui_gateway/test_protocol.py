@@ -146,8 +146,8 @@ def test_session_interrupt_uses_explicit_stop_compatibility(server, monkeypatch,
 
 def test_live_session_payload_replays_pending_approval(server, monkeypatch):
     """A reattached client receives the approval that was emitted while detached."""
-    from tools import approval
-    from tools import approval_gateway_wait
+    from hermes_agent.tools import approval
+    from hermes_agent.tools import approval_gateway_wait
 
     session = {
         "agent": types.SimpleNamespace(),
@@ -588,7 +588,7 @@ def test_clear_pending_cancels_only_that_session(capture):
 
 
 def test_approval_pending_replays_unresolved_requests(server, monkeypatch):
-    from tools import approval
+    from hermes_agent.tools import approval
 
     server._sessions["ui-1"] = {"session_key": "agent-1", "history": []}
     pending = [{"request_id": "req-1", "command": "danger"}]
@@ -602,7 +602,7 @@ def test_approval_pending_replays_unresolved_requests(server, monkeypatch):
 
 
 def test_approval_received_acknowledges_exact_request(server, monkeypatch):
-    from tools import approval
+    from hermes_agent.tools import approval
 
     server._sessions["ui-1"] = {"session_key": "agent-1", "history": []}
     calls = []
@@ -625,7 +625,7 @@ def test_approval_received_acknowledges_exact_request(server, monkeypatch):
 
 
 def test_approval_response_correlates_request_id(server, monkeypatch):
-    from tools import approval
+    from hermes_agent.tools import approval
 
     server._sessions["ui-1"] = {"session_key": "agent-1", "history": []}
     calls = []
@@ -650,7 +650,7 @@ def test_approval_response_correlates_request_id(server, monkeypatch):
 def test_approval_respond_falls_back_to_request_id_lookup(server, monkeypatch):
     """A stale live sid must not 4001 an approval answer when the request_id
     resolves to a live session (durable-identity fallback, #91684)."""
-    from tools import approval
+    from hermes_agent.tools import approval
 
     live = {"session_key": "agent-live", "history": []}
     server._sessions["ui-live"] = live
@@ -686,7 +686,7 @@ def test_approval_respond_falls_back_to_request_id_lookup(server, monkeypatch):
 
 def test_approval_respond_falls_back_to_stored_session_id(server, monkeypatch):
     """session_id holding a STORED id maps to the live runtime record."""
-    from tools import approval
+    from hermes_agent.tools import approval
 
     live = {"session_key": "stored-91684", "history": []}
     server._sessions["ui-stored"] = live
@@ -713,7 +713,7 @@ def test_approval_respond_falls_back_to_stored_session_id(server, monkeypatch):
 
 
 def test_approval_respond_4001_when_nothing_resolves(server, monkeypatch):
-    from tools import approval
+    from hermes_agent.tools import approval
 
     monkeypatch.setattr(approval, "list_gateway_approvals", lambda key: [])
     response = server.handle_request(
@@ -1215,7 +1215,7 @@ def test_sync_session_key_after_compress_reanchors_active_session_lease(
     )
     monkeypatch.setattr(server, "_restart_slash_worker", lambda *_args, **_kwargs: None)
 
-    with patch.dict(sys.modules, {"tools.approval": fake_approval}):
+    with patch.dict(sys.modules, {"hermes_agent.tools.approval": fake_approval}):
         server._sync_session_key_after_compress("ui-1", session)
 
     snapshot = active_session_registry_snapshot()
@@ -1338,7 +1338,7 @@ def test_slash_exec_scopes_skill_lookup_to_session_profile(server, tmp_path):
     }
 
     with (
-        patch("tools.skills_tool.SKILLS_DIR", empty_local_dir),
+        patch("hermes_agent.tools.skills_tool.SKILLS_DIR", empty_local_dir),
         patch.object(sc_mod, "_skill_commands_by_key", {}),
     ):
         resp = server.handle_request({
@@ -1361,7 +1361,7 @@ def test_command_dispatch_expands_stacked_skills_from_temp_home(server, tmp_path
     over the remaining instruction instead of leaving the second token in
     the prompt as plain text."""
     from agent import skill_commands
-    from tools import skills_tool
+    from hermes_agent.tools import skills_tool
 
     home = tmp_path / ".hermes"
     skills_dir = home / "skills"
@@ -1411,7 +1411,7 @@ def test_command_dispatch_stacked_split_keeps_unknown_tokens_as_instruction(serv
     """A non-skill or repeated token stops the stack and stays instruction text —
     the split must never eat content the user meant as the prompt."""
     from agent import skill_commands
-    from tools import skills_tool
+    from hermes_agent.tools import skills_tool
 
     home = tmp_path / ".hermes"
     skills_dir = home / "skills"
@@ -1478,7 +1478,7 @@ def test_sessionless_slash_palette_follows_profile_param(server, tmp_path, monke
     set_multiplex_active(True)
     try:
         with (
-            patch("tools.skills_tool.SKILLS_DIR", tmp_path / "no-local-skills"),
+            patch("hermes_agent.tools.skills_tool.SKILLS_DIR", tmp_path / "no-local-skills"),
             patch.object(sc_mod, "_skill_commands_by_key", {}),
         ):
             assert palette("s6probe-a") == ({"/s6probe-a-only"}, {"s6probe-a-only"}, {"/s6probe-a-qc"})
@@ -1563,7 +1563,7 @@ def test_slash_exec_skill_scan_raise_returns_dispatch_payload_not_banner(server,
         return real_get()
 
     with (
-        patch("tools.skills_tool.SKILLS_DIR", empty_local_dir),
+        patch("hermes_agent.tools.skills_tool.SKILLS_DIR", empty_local_dir),
         patch.object(sc_mod, "get_skill_commands", flaky),
         patch.object(sc_mod, "_skill_commands_by_key", {}),
     ):
@@ -1590,7 +1590,7 @@ def test_slash_exec_skill_scan_raise_is_hard_error_not_banner_when_dispatch_miss
         raise OSError("external_dirs hiccup")
 
     with (
-        patch("tools.skills_tool.SKILLS_DIR", empty_local_dir),
+        patch("hermes_agent.tools.skills_tool.SKILLS_DIR", empty_local_dir),
         patch.object(sc_mod, "get_skill_commands", always_raise),
         patch.object(sc_mod, "_skill_commands_by_key", {}),
     ):
@@ -1664,7 +1664,7 @@ def test_slash_exec_worker_skill_refuse_returns_dispatch_payload(server, tmp_pat
         return real_get()
 
     with (
-        patch("tools.skills_tool.SKILLS_DIR", empty_local_dir),
+        patch("hermes_agent.tools.skills_tool.SKILLS_DIR", empty_local_dir),
         patch.object(sc_mod, "get_skill_commands", stale_then_real),
         patch.object(sc_mod, "_skill_commands_by_key", {}),
     ):
@@ -1707,7 +1707,7 @@ def test_command_dispatch_scopes_skill_lookup_to_session_profile(server, tmp_pat
     }
 
     with (
-        patch("tools.skills_tool.SKILLS_DIR", empty_local_dir),
+        patch("hermes_agent.tools.skills_tool.SKILLS_DIR", empty_local_dir),
         patch.object(sc_mod, "_skill_commands_by_key", {}),
     ):
         resp = server.handle_request({
@@ -1741,7 +1741,7 @@ def test_slash_exec_routes_a_secondary_only_bundle_to_dispatch(server, tmp_path,
     server._sessions[sid] = {"session_key": sid, "agent": None, "profile_home": str(profile_b)}
 
     with (
-        patch("tools.skills_tool.SKILLS_DIR", tmp_path / "no-local-skills"),
+        patch("hermes_agent.tools.skills_tool.SKILLS_DIR", tmp_path / "no-local-skills"),
         patch.object(sb_mod, "_bundles_cache", {}),
         patch.object(sb_mod, "_bundles_cache_mtime", None),
         patch.object(sc_mod, "_skill_commands_by_key", {}),
@@ -1918,12 +1918,12 @@ def test_unregister_live_transport_stops_delivery(capture, monkeypatch):
 
 
 def test_approval_for_a_ws_client_that_never_advertised_settles_the_queue_entry(server, monkeypatch):
-    """The approval wait is owned by ``tools.approval``'s queue, not by ``server_requests``. When the request
+    """The approval wait is owned by ``hermes_agent.tools.approval``'s queue, not by ``server_requests``. When the request
     cannot be sent (the only client predates server→client requests) the queue entry must be withdrawn too,
     otherwise ``_await_gateway_decision`` idles for the whole approvals.timeout with no prompt anywhere
     (#112548). The decision is a withdrawal (``cancelled`` cause), never a user deny."""
-    from tools import approval as approval_mod
-    from tools import approval_gateway_wait as wait_mod
+    from hermes_agent.tools import approval as approval_mod
+    from hermes_agent.tools import approval_gateway_wait as wait_mod
 
     peer = _silent_ws()
     _ws_session(server, "ws-old-approval", peer)

@@ -10,7 +10,7 @@ import httpx
 
 @pytest.fixture
 def local_gateway(monkeypatch):
-    from tools import managed_tool_gateway
+    from hermes_agent.tools import managed_tool_gateway
 
     requests = []
 
@@ -59,7 +59,7 @@ def local_gateway(monkeypatch):
             return response.json()
 
     monkeypatch.setattr("plugins.web.firecrawl.provider.Firecrawl", FirecrawlSDK)
-    monkeypatch.setattr("tools.web_tools._firecrawl_client", None, raising=False)
+    monkeypatch.setattr("hermes_agent.tools.web_tools._firecrawl_client", None, raising=False)
     try:
         yield requests
     finally:
@@ -86,7 +86,7 @@ def test_only_managed_search_may_use_billed_fallback(
     monkeypatch, tmp_path, local_gateway, selection, direct_key, expected_paths,
 ):
     from hermes_cli.config import atomic_config_write
-    from tools import web_tools
+    from hermes_agent.tools import web_tools
     from tests.tools.conftest import register_all_web_providers
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -121,7 +121,7 @@ def test_only_managed_search_may_use_billed_fallback(
 
 def test_managed_search_without_identity_names_the_gateway(monkeypatch, tmp_path, local_gateway):
     from hermes_cli.config import atomic_config_write
-    from tools import managed_tool_gateway, web_tools
+    from hermes_agent.tools import managed_tool_gateway, web_tools
     from tests.tools.conftest import register_all_web_providers
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -139,7 +139,7 @@ def test_managed_search_without_identity_names_the_gateway(monkeypatch, tmp_path
 
 def test_unentitled_managed_search_gets_fast_search_but_no_billed_fallback(monkeypatch, tmp_path, local_gateway):
     from hermes_cli.config import atomic_config_write
-    from tools import managed_tool_gateway, web_tools
+    from hermes_agent.tools import managed_tool_gateway, web_tools
     from tests.tools.conftest import register_all_web_providers
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))

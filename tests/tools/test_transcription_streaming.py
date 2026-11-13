@@ -7,8 +7,8 @@ import threading
 
 from websockets.sync.server import serve
 
-from tools import transcription_streaming as ts
-from tools import voice_mode
+from hermes_agent.tools import transcription_streaming as ts
+from hermes_agent.tools import voice_mode
 
 
 def _xai_like_server(received: list):
@@ -74,7 +74,7 @@ class _Session:
 
 def test_recording_uses_the_live_transcript_and_falls_back_to_the_file(tmp_path, monkeypatch):
     uploads: list = []
-    monkeypatch.setattr("tools.transcription_tools.transcribe_audio",
+    monkeypatch.setattr("hermes_agent.tools.transcription_tools.transcribe_audio",
                         lambda path, **kw: uploads.append(path) or {"success": True, "transcript": "from file"})
     live_wav, failed_wav = str(tmp_path / "a.wav"), str(tmp_path / "b.wav")
 

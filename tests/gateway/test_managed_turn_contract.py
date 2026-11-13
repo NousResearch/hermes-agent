@@ -12,7 +12,7 @@ import pytest
 def assignment(tmp_path, monkeypatch, *, finite=True, unattended=False, yolo=False):
     from hermes_agent.gateway.session_local import _bypass_policy
     from hermes_agent.gateway.session_managed_worker import _bootstrap
-    from tools.approval import clear_session
+    from hermes_agent.tools.approval import clear_session
     clear_session('managed-contract')
     policy = _bypass_policy({'cwd': str(tmp_path), 'model': 'fixture', 'provider': 'custom',
                             'base_url': 'http://127.0.0.1:9/v1', 'ignore_user_config': True}, private_secrets={})
@@ -32,7 +32,7 @@ def test_child_executes_under_finite_policy_and_preserves_receipt(tmp_path, monk
     from agent import managed_worker as worker
     from hermes_agent.gateway.session_finite import finite_turn_required, unattended_turn
     from hermes_scope import Fence, current_scope
-    from tools.approval import _yolo_active, clear_session
+    from hermes_agent.tools.approval import _yolo_active, clear_session
     frame, _ = assignment(tmp_path, monkeypatch, unattended=unattended)
     frame['scope'].update(epoch=3, generation=8)  # distinct, so a swapped fence is caught
     observed, frames, scopes = [], [], []
@@ -76,7 +76,7 @@ def test_child_executes_under_finite_policy_and_preserves_receipt(tmp_path, monk
     monkeypatch.setattr(worker, 'WorkerControls', Controls)
     monkeypatch.setattr('agent.runtime_session_store.WorkerRPC', lambda home: lambda *a, **k: {'owner_epoch': 3})
     monkeypatch.setattr('agent.runtime_session_store.RuntimeSessionStore', Store)
-    monkeypatch.setattr('tools.process_registry.process_registry.recover_from_checkpoint', lambda: None)
+    monkeypatch.setattr('hermes_agent.tools.process_registry.process_registry.recover_from_checkpoint', lambda: None)
     monkeypatch.setattr('run_agent.AIAgent', Agent)
     monkeypatch.setattr('agent.title_generator.wait_for_title_upgrades', lambda: None)
     clear_session('managed-contract')  # the child owns a fresh approval registry
@@ -100,7 +100,7 @@ def test_child_executes_under_finite_policy_and_preserves_receipt(tmp_path, monk
 
 def test_current_yolo_revocation_overrides_frozen_launch(tmp_path, monkeypatch):
     from hermes_agent.gateway.session_managed_worker import _bootstrap
-    from tools.approval import disable_session_yolo, clear_session, is_session_yolo_enabled
+    from hermes_agent.tools.approval import disable_session_yolo, clear_session, is_session_yolo_enabled
     frame, args = assignment(tmp_path, monkeypatch, yolo=True)
     assert json.loads(frame['policy']['request_json'])['turn_v1']['yolo'] is True
     from hermes_agent.gateway.session_managed_worker import worker_turn_scope
@@ -116,7 +116,7 @@ def test_current_yolo_revocation_overrides_frozen_launch(tmp_path, monkeypatch):
 def test_committed_surface_crosses_the_bootstrap_validated_and_one_turn_only(tmp_path, monkeypatch):
     from agent.managed_worker import validate_bootstrap
     from hermes_agent.gateway.session_kanban import run_worker_turns
-    from tools.voice_live import VOICE_LIVE_TURN_NOTE
+    from hermes_agent.tools.voice_live import VOICE_LIVE_TURN_NOTE
     frame, (authority, ref, row, policy, scope) = assignment(tmp_path, monkeypatch)
     surface = {'surface': 'voice-live', 'voice_context': 'User: UNIQUE_PRIOR_CONTEXT', 'voice_turn': True}
     from hermes_agent.gateway.session_managed_worker import _bootstrap

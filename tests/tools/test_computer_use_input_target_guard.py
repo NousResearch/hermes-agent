@@ -9,7 +9,7 @@ the unknown-action suggestion hint (model emitted "hotkey" for "key").
 import json
 from types import SimpleNamespace
 
-from tools.computer_use.tool import (
+from hermes_agent.tools.computer_use.tool import (
     _dispatch,
     _input_target_mismatch,
 )
@@ -52,7 +52,7 @@ def test_click_with_mismatched_app_refused():
     assert out["code"] == "input_target_mismatch"
 
 def _fake_action_result(action="type_text"):
-    from tools.computer_use.backend import ActionResult
+    from hermes_agent.tools.computer_use.backend import ActionResult
 
     return ActionResult(ok=True, action=action, message="done")
 

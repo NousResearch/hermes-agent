@@ -5,7 +5,7 @@ import time
 
 import pytest
 
-from tools.process_registry import ProcessRegistry
+from hermes_agent.tools.process_registry import ProcessRegistry
 
 
 @pytest.mark.platforms("linux")

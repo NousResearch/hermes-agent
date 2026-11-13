@@ -28,8 +28,8 @@ from agent.memory_manager_tools import (inject_memory_provider_tools, memory_pro
 from agent.memory_provider import MemoryProvider, PRE_COMPRESS_CHECKPOINT_API_VERSION, ctx_bound, spawn_context_thread
 from agent.skill_commands import extract_user_instruction_from_skill_message
 from hermes_constants import hermes_home_key
-from tools.hook_output_spill import get_spill_config, spill_if_oversized
-from tools.registry import tool_error
+from hermes_agent.tools.hook_output_spill import get_spill_config, spill_if_oversized
+from hermes_agent.tools.registry import tool_error
 
 logger = logging.getLogger(__name__)
 
@@ -317,7 +317,7 @@ class MemoryManager:
         # ``clarify``, ``delegate_task``). Reject it here, at the door, so it never enters the routing table
         # at all — matching the built-ins-always-win invariant used by the TTS/browser/search provider
         # registries. See #40466.
-        from toolsets import _HERMES_CORE_TOOLS
+        from hermes_agent.toolsets import _HERMES_CORE_TOOLS
 
         for raw_schema in schemas:
             schema = normalize_tool_schema(raw_schema)
@@ -502,7 +502,7 @@ class MemoryManager:
                 if self._sync_executor is None and not self._shutting_down:
                     try:
                         # Daemon workers: a wedged provider must never block interpreter exit.
-                        from tools.daemon_pool import DaemonThreadPoolExecutor
+                        from hermes_agent.tools.daemon_pool import DaemonThreadPoolExecutor
                         self._sync_executor = DaemonThreadPoolExecutor(max_workers=1, thread_name_prefix="mem-sync")
                     except Exception as e:  # pragma: no cover - resource exhaustion
                         logger.warning("Failed to create memory sync executor: %s", e)
@@ -580,7 +580,7 @@ class MemoryManager:
     def get_all_tool_schemas(self) -> list[dict[str, Any]]:
         """Collect deduplicated tool schemas from all providers; reserved core tool names are
         skipped because :meth:`add_provider` refuses to route them."""
-        from toolsets import _HERMES_CORE_TOOLS
+        from hermes_agent.toolsets import _HERMES_CORE_TOOLS
 
         schemas: list[dict[str, Any]] = []
         seen = set()

@@ -17,44 +17,44 @@ import weakref
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from tools.terminal_tool import set_approval_callback as _set_subagent_approval_cb
+from hermes_agent.tools.terminal_tool import set_approval_callback as _set_subagent_approval_cb
 from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
 
 # The delegate_tool_* siblings hold the pieces split out of this module; every name callers or patching tests reach as
-# ``tools.delegate_tool.<name>`` is re-imported here. Mutable flag globals live only in their owning module.
-from tools.delegate_tool_child_run import (
+# ``hermes_agent.tools.delegate_tool.<name>`` is re-imported here. Mutable flag globals live only in their owning module.
+from hermes_agent.tools.delegate_tool_child_run import (
     _ChildRun, _attach_child, _build_child_goal_message, _close_child, _detach_child, _build_result_entry, _dump_subagent_timeout_diagnostic, _fabricated_entry,
     _lease_child_credential, _merge_late_steer, _register_child, _reserve_child_transcript, _start_heartbeat, _validate_child_output_schema,
 )
-from tools.delegate_tool_config import (
+from hermes_agent.tools.delegate_tool_config import (
     _DEFAULT_MAX_CONCURRENT_CHILDREN, _get_child_timeout, _get_max_async_children, _get_max_concurrent_children,
     _get_max_spawn_depth, _get_oneshot_max_children, _get_orchestrator_enabled, _get_subagent_approval_callback, _get_worktree_isolation,
     _inherit_parent_capabilities, _load_config, _merge_request_overrides, _resolve_child_credential_pool,
     _resolve_child_runtime, _resolve_delegation_credentials,
     _subagent_auto_approve, _subagent_auto_deny,
 )
-from tools.delegate_tool_dispatch import _Batch, _announce_batch, _capture_origin, _run_batch
-from tools.delegate_tool_progress import (
+from hermes_agent.tools.delegate_tool_dispatch import _Batch, _announce_batch, _capture_origin, _run_batch
+from hermes_agent.tools.delegate_tool_progress import (
     DelegateEvent, SUBAGENT_FAILURE_STATUSES, _batch_prefix, _build_child_progress_callback,
     _build_child_system_prompt, _clean_error_text, _emit_parent_console, _quiet, _resolve_workspace_hint,
     _safe_progress, format_batch_tag, format_subagent_failure_line,
 )
-from tools.delegate_tool_registry import (
+from hermes_agent.tools.delegate_tool_registry import (
     _CONTROL_ACTIONS, _active_subagents, _active_subagents_lock, _capture_gateway_steer_authority,
     _handle_control_action, _is_descendant_of, _owns_subagent_record, _register_subagent, _unregister_subagent,
     get_subagent_attribution, interrupt_subagent, is_spawn_paused, list_active_subagents, set_spawn_paused,
     steer_subagent,
 )
-from tools.delegate_tool_tasks import (
+from hermes_agent.tools.delegate_tool_tasks import (
     _MAX_TASK_IMAGES, _coerce_task_images, _coerce_task_schemas, _normalize_task_images, _normalize_task_list,
 )
-from tools.delegate_tool_tuning import pin_child_service_tier
-from tools.delegate_tool_toolsets import (
+from hermes_agent.tools.delegate_tool_tuning import pin_child_service_tier
+from hermes_agent.tools.delegate_tool_toolsets import (
     DELEGATE_BLOCKED_TOOLS, _expand_parent_toolsets, _resolve_child_toolsets, _strip_blocked_tools,
 )
-from tools.delegate_tool_results import (
+from hermes_agent.tools.delegate_tool_results import (
     _apply_summary_budget, _build_child_preserving_parent_tools, _run_child_lifecycle, _summarize_tool_arguments,
 )
 
@@ -226,12 +226,12 @@ def _build_child_agent(
     routing_cfg: Optional[dict[str, Any]] = None,
     # Legacy; accepted for wire compat but ignored (capability is depth-derived).
     role: str = "leaf",
-    # Per-task route from the delegation provider (tools/delegate_tool_routes.py): a reasoning
+    # Per-task route from the delegation provider (hermes_agent/tools/delegate_tool_routes.py): a reasoning
     # effort that beats delegation.reasoning_effort, and the profile home the child runs as.
     override_reasoning_effort: Any = None,
     profile_home: Optional[Path] = None,
-    override_service_tier: Optional[str] = None,  # a route's checked speed tier (tools/delegate_tool_tuning.py)
-    # action='continue' rebuilds a finished child under its own id and session (tools/delegate_tool_continue.py).
+    override_service_tier: Optional[str] = None,  # a route's checked speed tier (hermes_agent/tools/delegate_tool_tuning.py)
+    # action='continue' rebuilds a finished child under its own id and session (hermes_agent/tools/delegate_tool_continue.py).
     subagent_id: Optional[str] = None,
     session_id: Optional[str] = None,
     expect_endpoint: Optional[tuple] = None,  # endpoint_identity it first ran on; a different one refuses
@@ -242,8 +242,8 @@ def _build_child_agent(
     import uuid as _uuid
     from run_agent import AIAgent
     from agent.delegation_context import delegated_child_context
-    from tools.delegate_tool_resumable import endpoint_identity
-    from tools.delegate_tool_routes import delegated_profile_scope
+    from hermes_agent.tools.delegate_tool_resumable import endpoint_identity
+    from hermes_agent.tools.delegate_tool_routes import delegated_profile_scope
     # Role is depth-derived: a child may delegate iff the kill switch is on and
     # depth budget remains below max_spawn_depth. The `role` arg is ignored.
     child_depth = getattr(parent_agent, "_delegate_depth", 0) + 1
@@ -369,7 +369,7 @@ def _build_child_agent(
     # subagent_id lets a viewer find the stored transcript once the live registry
     # has forgotten the child (``delegate_tool_sessions``).
     if parent_sid and getattr(child, "_session_init_model_config", None) is not None:
-        from tools.delegate_tool_sessions import SUBAGENT_ID_KEY
+        from hermes_agent.tools.delegate_tool_sessions import SUBAGENT_ID_KEY
         child._session_init_model_config["_delegate_from"] = parent_sid
         child._session_init_model_config[SUBAGENT_ID_KEY] = subagent_id
     child._delegate_profile_home = profile_home  # _ChildRun.await_child runs the conversation in this scope
@@ -425,7 +425,7 @@ def _run_single_child(
         )
     except BaseException:
         # Nothing below runs, so a continued child's durable claim is handed back here.
-        from tools.delegate_tool_resumable import release_unstarted
+        from hermes_agent.tools.delegate_tool_resumable import release_unstarted
         release_unstarted(child)
         raise
     run = _ChildRun(child, parent_agent, task_index, goal, _subagent_id, child_progress_cb, heartbeat=heartbeat)
@@ -487,7 +487,7 @@ def _credential_overrides(creds: dict[str, Any], routing_cfg: dict[str, Any]) ->
 
 
 def _route_overrides(route: Any) -> dict[str, Any]:
-    """``_build_child_agent`` kwargs for one task route (``tools.delegate_tool_routes.TaskRoute``)."""
+    """``_build_child_agent`` kwargs for one task route (``hermes_agent.tools.delegate_tool_routes.TaskRoute``)."""
     return {
         **_credential_overrides(route.creds, route.routing_cfg),
         "override_reasoning_effort": route.reasoning_effort, "profile_home": route.profile_home,
@@ -503,8 +503,8 @@ def _build_children(
     """Build every child on the main thread (construction is not thread-safe), each on its task's route;
     ``(children, None)`` or ``([], error)`` on an explicit-pin preflight failure. ``rebuild`` (action='continue')
     gives per-task builder kwargs (toolsets, model, subagent_id, session_id) that replace the spawn defaults."""
-    from tools.delegation_live_log import wrap_progress_callback
-    from tools.delegation_output_schema import append_output_contract
+    from hermes_agent.tools.delegation_live_log import wrap_progress_callback
+    from hermes_agent.tools.delegation_output_schema import append_output_contract
     children = []
     for i, t in enumerate(task_list):
         route = routes[i]
@@ -560,7 +560,7 @@ def _routes_for(task_list: list[dict[str, Any]], cfg: dict[str, Any], credential
                 parent_agent: Any) -> tuple[list[Any], Optional[str]]:
     """Per-task routes: an internal caller's explicit ``credentials_cfg`` (e.g. /review → auxiliary.review) owns
     every task's route; otherwise the active delegation provider decides each one."""
-    from tools.delegate_tool_routes import resolve_task_routes, route_for_config
+    from hermes_agent.tools.delegate_tool_routes import resolve_task_routes, route_for_config
     if credentials_cfg is None:
         return resolve_task_routes(task_list, cfg, parent_agent)
     try:
@@ -572,7 +572,7 @@ def _routes_for(task_list: list[dict[str, Any]], cfg: dict[str, Any], credential
 
 def _settle_refused_transcripts(refused: list[dict[str, Any]], live_deleg_id: Optional[str], live_writers: list,
                                 live_home: Any) -> None:
-    from tools.delegation_live_log import update_manifest_statuses
+    from hermes_agent.tools.delegation_live_log import update_manifest_statuses
     for entry in refused:
         _writer = live_writers[entry["task_index"]] if entry["task_index"] < len(live_writers) else None
         if _writer is not None:
@@ -614,13 +614,13 @@ def delegate_task(
     dispatch handle when running in the background."""
     if parent_agent is None:
         return tool_error("delegate_task requires a parent agent context.")
-    from tools.hosted_tool_policy import host_feature_refusal
+    from hermes_agent.tools.hosted_tool_policy import host_feature_refusal
     if refusal := host_feature_refusal("delegation", "delegate_task"):  # /review reaches here outside a tool call
         return tool_error(refusal)
 
     normalized_action = (action or "").strip().lower()
     if normalized_action == "continue":
-        from tools.delegate_tool_continue import continue_subagent
+        from hermes_agent.tools.delegate_tool_continue import continue_subagent
         return continue_subagent(subagent_id, message, parent_agent, background=is_truthy_value(background, default=False))
     if normalized_action in _CONTROL_ACTIONS:
         return _handle_control_action(normalized_action, subagent_id, message, parent_agent)
@@ -671,7 +671,7 @@ def delegate_task(
         routes, err = _routes_for(task_list, cfg, credentials_cfg, parent_agent)
     if err:
         return tool_error(err)
-    from tools.delegate_tool_auto_resume import refuse_waiting_duplicates
+    from hermes_agent.tools.delegate_tool_auto_resume import refuse_waiting_duplicates
     routes = refuse_waiting_duplicates(task_list, routes, parent_agent)
     # Fail closed per task: a task its backend cannot route is refused alone (its entry carries the error); the call
     # is a tool error only when no task can run.
@@ -701,7 +701,7 @@ def delegate_task(
     # (with a warning — that fallback is exactly the #91996 failure mode).
     _live_home = _parent_live_home(parent_agent)
 
-    from tools.delegation_live_log import create_live_transcripts
+    from hermes_agent.tools.delegation_live_log import create_live_transcripts
     live_deleg_id, live_writers, live_paths = create_live_transcripts(
         task_list, context, model=creds.get("model"), provider=creds.get("provider"),
         home=_live_home,
@@ -744,7 +744,7 @@ def _build_top_level_description(*, independent_completions=None) -> str:
         )
     else:
         restrictions_rule = "- Children cannot call delegate_task, clarify, memory, or cronjob.\n"
-    from tools.delegate_tool_config import _get_independent_completions
+    from hermes_agent.tools.delegate_tool_config import _get_independent_completions
 
     if independent_completions is None:
         independent_completions = _get_independent_completions()
@@ -808,7 +808,7 @@ def _build_tasks_param_description() -> str:
 def _build_dynamic_schema_overrides() -> dict:
     """Per-call schema overrides (ToolEntry.dynamic_schema_overrides): every
     get_definitions() pass rewrites the descriptions to the user's actual limits."""
-    from tools.delegate_tool_config import _get_independent_completions
+    from hermes_agent.tools.delegate_tool_config import _get_independent_completions
 
     independent_completions = _get_independent_completions()
     overrides_params = {**DELEGATE_TASK_SCHEMA["parameters"]}
@@ -826,7 +826,7 @@ def _build_dynamic_schema_overrides() -> dict:
 
     # The active delegation provider's per-task parameters and guidance (delegation.backend; none for the
     # built-in default). Built from config with the rest of the definition, never per turn.
-    from tools.delegate_tool_routes import schema_extension
+    from hermes_agent.tools.delegate_tool_routes import schema_extension
     extra_params, addendum = schema_extension(_load_config())
     if extra_params:
         tasks = overrides_params["properties"]["tasks"]
@@ -968,7 +968,7 @@ def adopt_session_delegation_mode(agent: Any) -> None:
 
 
 # --- Registry ---
-from tools.registry import registry, tool_error
+from hermes_agent.tools.registry import registry, tool_error
 
 def _model_background_value(args: dict, parent_agent=None) -> bool:
     """Background flag for the MODEL-facing dispatch path (registry fallback). Top-level delegations always run in the

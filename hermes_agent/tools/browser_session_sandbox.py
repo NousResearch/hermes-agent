@@ -42,7 +42,7 @@ GONE = "gone"
 
 
 def _sandbox():
-    from tools.bot_desktop import runtime as _bd_runtime
+    from hermes_agent.tools.bot_desktop import runtime as _bd_runtime
     env = _bd_runtime._sandbox_env(create=True)
     if env is None:
         raise RuntimeError("the terminal backend's sandbox is not running, so there is nowhere to run the browser")
@@ -55,7 +55,7 @@ def _sandbox():
 
 
 def _read_devtools(env, user, udd: str) -> Optional[tuple[int, str]]:
-    from tools.environments import streams
+    from hermes_agent.tools.environments import streams
     proc = streams.run_in(env, ["cat", f"{udd}/DevToolsActivePort"], user=user, timeout=10)
     lines = proc.stdout.decode("utf-8", "replace").splitlines() if proc.returncode == 0 else []
     if len(lines) >= 2 and lines[0].strip().isdigit() and lines[1].startswith("/devtools/browser/"):
@@ -67,7 +67,7 @@ def _live_devtools(env, user, udd: str):
     """One exec: ``(port, path)`` of the Chromium on ``udd`` while its DevTools port answers; ``GONE`` when the
     sandbox says it is not running (a crashed Chromium leaves a stale ``DevToolsActivePort`` behind); None
     when the exec itself failed or timed out, which proves nothing either way."""
-    from tools.environments import streams
+    from hermes_agent.tools.environments import streams
     active = shlex.quote(f"{udd}/DevToolsActivePort")
     script = (f'[ -s {active} ] || exit {_GONE_RC}; p=$(head -n1 {active}); '
               f'( exec 3<>"/dev/tcp/127.0.0.1/$p" ) 2>/dev/null || exit {_GONE_RC}; cat {active}')
@@ -109,9 +109,9 @@ _STOP_SCRIPT = (
 
 def _start_chromium(env, user, exe: str, udd: str, child_env: dict) -> tuple[int, Optional[str]]:
     """Launch detached in the sandbox; returns its sandbox pid and start time (None when unreadable)."""
-    from tools.bot_desktop.browser import SHARED_PROFILE_ARGS
-    from tools.browser_launcher import CHROMIUM_SANDBOX_BYPASS_ARGS, build_chromium_argv
-    from tools.environments import streams
+    from hermes_agent.tools.bot_desktop.browser import SHARED_PROFILE_ARGS
+    from hermes_agent.tools.browser_launcher import CHROMIUM_SANDBOX_BYPASS_ARGS, build_chromium_argv
+    from hermes_agent.tools.environments import streams
     # Container: no user namespaces for Chromium's own sandbox, so the bypass flags always apply (this
     # host's facts say nothing about the sandbox); the shared-profile flags match the dock's icon.
     argv = build_chromium_argv(exe, udd, packaged=False, headed=True, sandbox_bypass=False,
@@ -151,8 +151,8 @@ def _key_lock(key: str) -> threading.Lock:
 def _spawn_owned(env, user, udd: str, key: str, published: dict) -> int:
     """Launch the sandbox Chromium and own it under ``key`` from the moment it exists, before its port is
     up, so stop_sandbox_browser can always stop it; returns its sandbox pid."""
-    from tools.bot_desktop import sandbox_host
-    from tools.environments import streams
+    from hermes_agent.tools.bot_desktop import sandbox_host
+    from hermes_agent.tools.environments import streams
     exe = sandbox_host.chromium_executable(env)
     if not exe:
         raise RuntimeError("the sandbox image has no Chromium to run the browser")
@@ -165,9 +165,9 @@ def _spawn_owned(env, user, udd: str, key: str, published: dict) -> int:
 
 def create_sandbox_session(cache_key: str) -> dict[str, Any]:
     """Session on the sandbox Chromium (attach to the running one, else launch it)."""
-    from tools.bot_desktop import sandbox_host
-    from tools.browser_session import _session_record
-    from tools.environments import streams
+    from hermes_agent.tools.bot_desktop import sandbox_host
+    from hermes_agent.tools.browser_session import _session_record
+    from hermes_agent.tools.environments import streams
     env, published = _sandbox()
     user = sandbox_host._user_for(env)
     udd = sandbox_host.browser_profile_dir(env)
@@ -196,7 +196,7 @@ def create_sandbox_session(cache_key: str) -> dict[str, Any]:
 
 
 def _confirm(cdp_url: str, env, port: int) -> None:
-    from tools.environments import streams
+    from hermes_agent.tools.environments import streams
     _confirmed[cdp_url] = (id(env), port, streams.forward_failures(env, port), time.monotonic())
 
 
@@ -205,8 +205,8 @@ def sandbox_browser_alive(session_info: dict[str, Any]) -> bool:
     the sandbox answers that it died, was relaunched (new DevTools path) or the sandbox was replaced (new
     forward). Re-probed only after a connection through the forward failed or the last confirmation expired;
     a probe that cannot reach the sandbox keeps the session."""
-    from tools.bot_desktop import runtime as _bd_runtime, sandbox_host
-    from tools.environments import streams
+    from hermes_agent.tools.bot_desktop import runtime as _bd_runtime, sandbox_host
+    from hermes_agent.tools.environments import streams
     env = _bd_runtime._sandbox_env(create=False)
     if env is None:
         return False
@@ -245,8 +245,8 @@ def _stop_launched(key: str) -> None:
         launched = _launched.pop(key, None)
     if launched is None:
         return
-    from tools.bot_desktop import sandbox_host
-    from tools.environments import streams
+    from hermes_agent.tools.bot_desktop import sandbox_host
+    from hermes_agent.tools.environments import streams
     env, pid, start, udd = launched
     if start is None:
         logger.warning("browser: leaving sandbox Chromium pid %s running: its start time could not be read at "

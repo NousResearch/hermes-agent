@@ -17,7 +17,7 @@ import re
 import shlex
 import subprocess
 
-logger = logging.getLogger("tools.terminal_tool")
+logger = logging.getLogger("hermes_agent.tools.terminal_tool")
 
 # Placeholder for the watchdog's ``read -t`` seconds. ``_prepare_command`` cannot know the
 # command's timeout, so ``BaseEnvironment.execute`` fills it via ``fill_timeout_token``.
@@ -227,7 +227,7 @@ def _counted_sudo_words(command: str) -> tuple[int, list[list[str]]]:
     Each counted sudo reads ``<prefix><sudo word> -A <its options...>`` once marked. Text that
     happens to contain the prefix adds a chunk, so the lists can outnumber *count*.
     """
-    from tools.terminal_tool_sudo import _rewrite_real_sudo_invocations, _scan_shell
+    from hermes_agent.tools.terminal_tool_sudo import _rewrite_real_sudo_invocations, _scan_shell
 
     marked, count = _rewrite_real_sudo_invocations(command, askpass=True)
     if not count:
@@ -282,7 +282,7 @@ def has_background_sudo(command: str | None) -> bool:
     them. It errs toward True: a miss would stop serving a backgrounded sudo that the stdin
     form still feeds.
     """
-    from tools.terminal_tool_sudo import _rewrite_real_sudo_invocations, _scan_shell
+    from hermes_agent.tools.terminal_tool_sudo import _rewrite_real_sudo_invocations, _scan_shell
 
     if not command:
         return False

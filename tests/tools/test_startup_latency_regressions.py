@@ -4,7 +4,7 @@ non-blocking banner update check.
 These pin the CLI cold-start contract established in the sub-400ms pass:
 - check_fn availability probes must not import the OpenAI SDK or build
   real HTTP clients (aux_probe_mode).
-- tools/mcp_tool must not import the `mcp` SDK at module import time.
+- hermes_agent/tools/mcp_tool must not import the `mcp` SDK at module import time.
 - build_welcome_banner must not block on the update-check prefetch.
 """
 
@@ -88,7 +88,7 @@ class TestAuxProbeMode:
 
 class TestVisionCheckUsesProbeMode:
     def test_check_vision_requirements_enters_probe_mode(self):
-        from tools import vision_tools
+        from hermes_agent.tools import vision_tools
         import agent.auxiliary_client as aux
 
         states = []
@@ -103,12 +103,12 @@ class TestVisionCheckUsesProbeMode:
 
 class TestLazyMcpSdk:
     def test_module_import_does_not_import_mcp_sdk(self):
-        """Importing tools.mcp_tool must not pull in the `mcp` package."""
+        """Importing hermes_agent.tools.mcp_tool must not pull in the `mcp` package."""
         import subprocess
 
         code = (
             "import sys; sys.modules.pop('mcp', None); "
-            "import tools.mcp_tool; "
+            "import hermes_agent.tools.mcp_tool; "
             "assert 'mcp' not in sys.modules, 'mcp imported eagerly'; "
             "print('ok')"
         )
@@ -122,7 +122,7 @@ class TestLazyMcpSdk:
 
     def test_lazy_symbol_getattr_resolves_via_ensure(self):
         import importlib.util
-        from tools import mcp_tool
+        from hermes_agent.tools import mcp_tool
 
         if importlib.util.find_spec("mcp") is None:
             pytest.skip("mcp SDK not installed")

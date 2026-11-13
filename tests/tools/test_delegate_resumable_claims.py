@@ -32,8 +32,8 @@ def _set_row(parent, sid, **cols):
 def test_a_resumable_outcome_without_a_durable_record_is_pruned_as_before(tmp_path, monkeypatch):
     """No record (its write failed): nothing pins the tree, so the stop prunes it as main did."""
     from hermes_constants import get_hermes_home
-    from tools.delegate_tool import delegate_task
-    from tools.terminal_tool import get_session_cwd, record_session_cwd
+    from hermes_agent.tools.delegate_tool import delegate_task
+    from hermes_agent.tools.terminal_tool import get_session_cwd, record_session_cwd
 
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -42,7 +42,7 @@ def test_a_resumable_outcome_without_a_durable_record_is_pruned_as_before(tmp_pa
     _git("add", "a.txt", cwd=repo)
     _git("commit", "-qm", "init", cwd=repo)
     (get_hermes_home() / "config.yaml").write_text(json.dumps({"delegation": {"worktree_isolation": True}}))
-    monkeypatch.setattr("tools.delegate_tool_resumable.record_start", lambda run: None)
+    monkeypatch.setattr("hermes_agent.tools.delegate_tool_resumable.record_start", lambda run: None)
     cwds = []
     model = _FailingModel(resets_at=time.time() + 3600)
 
@@ -70,12 +70,12 @@ def test_a_resumable_outcome_without_a_durable_record_is_pruned_as_before(tmp_pa
 def test_a_finished_tool_call_checkpoints_the_running_childs_cwd(tmp_path, monkeypatch, progress):
     """A hard kill between heartbeats still knows where the child was, also for a child with no progress
     callback at all (no parent callback, live transcript unavailable)."""
-    from tools.delegate_tool import delegate_task
+    from hermes_agent.tools.delegate_tool import delegate_task
     if progress == "none":
-        monkeypatch.setattr("tools.delegation_live_log.create_live_transcripts",
+        monkeypatch.setattr("hermes_agent.tools.delegation_live_log.create_live_transcripts",
                             lambda tasks, *a, **k: (None, [None] * len(tasks), [None] * len(tasks)))
-    from tools.delegate_tool_routes import child_profile_scope
-    from tools.terminal_tool import record_session_cwd
+    from hermes_agent.tools.delegate_tool_routes import child_profile_scope
+    from hermes_agent.tools.terminal_tool import record_session_cwd
 
     moved = tmp_path / "moved"
     moved.mkdir()
@@ -110,8 +110,8 @@ def test_a_finished_tool_call_checkpoints_the_running_childs_cwd(tmp_path, monke
 def test_a_resumable_isolated_child_keeps_its_worktree_and_continues_in_it(tmp_path, reason):
     """A usage limit (AUTO_AT) or a provider failure (ON_FIX) keeps the child's isolation tree for the continue."""
     from hermes_constants import get_hermes_home
-    from tools.delegate_tool import delegate_task
-    from tools.terminal_tool import get_session_cwd, record_session_cwd
+    from hermes_agent.tools.delegate_tool import delegate_task
+    from hermes_agent.tools.terminal_tool import get_session_cwd, record_session_cwd
 
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -166,9 +166,9 @@ def test_a_resumable_isolated_child_keeps_its_worktree_and_continues_in_it(tmp_p
 
 def test_a_continue_racing_onto_the_durable_row_does_not_run_the_child_twice(monkeypatch):
     """B arrives between A's in-process claim and A's durable claim, so B falls through to the durable row."""
-    import tools.delegate_tool_resumable as resumable
-    from tools.delegate_tool_continue import _claim
-    from tools.delegate_tool_registry import _recent_subagents
+    import hermes_agent.tools.delegate_tool_resumable as resumable
+    from hermes_agent.tools.delegate_tool_continue import _claim
+    from hermes_agent.tools.delegate_tool_registry import _recent_subagents
 
     parent = _parent()
     with patch("run_agent.AIAgent", side_effect=_ScriptedModel()):
@@ -192,8 +192,8 @@ def test_a_continue_racing_onto_the_durable_row_does_not_run_the_child_twice(mon
 
 
 def test_a_continue_that_fails_before_its_run_records_itself_hands_the_claim_back():
-    from tools.delegate_tool import delegate_task
-    import tools.delegate_tool as dt
+    from hermes_agent.tools.delegate_tool import delegate_task
+    import hermes_agent.tools.delegate_tool as dt
 
     parent = _parent()
     model = _ScriptedModel()
@@ -219,7 +219,7 @@ def test_a_continue_that_fails_before_its_run_records_itself_hands_the_claim_bac
 @pytest.mark.parametrize("owner", ["dead", "alive"])
 def test_claim_reclaims_a_row_whose_owner_died_after_boot_recovery(owner):
     from hermes_agent.gateway.status import get_process_start_time
-    from tools.delegate_tool import delegate_task
+    from hermes_agent.tools.delegate_tool import delegate_task
 
     parent = _parent()
     model = _ScriptedModel()
@@ -241,10 +241,10 @@ def test_claim_reclaims_a_row_whose_owner_died_after_boot_recovery(owner):
 
 
 def test_boot_recovery_holds_no_write_lock_while_it_probes_git(monkeypatch):
-    import tools.delegate_tool_resumable as resumable
+    import hermes_agent.tools.delegate_tool_resumable as resumable
     from hermes_constants import get_hermes_home
     from hermes_agent.hermes_state import SessionDB
-    from tools.async_delegation import recover_abandoned_delegations
+    from hermes_agent.tools.async_delegation import recover_abandoned_delegations
 
     db = get_hermes_home() / "state.db"
     SessionDB(db_path=db).close()
@@ -280,7 +280,7 @@ def test_boot_recovery_holds_no_write_lock_while_it_probes_git(monkeypatch):
 @pytest.mark.parametrize("stopped", ["recorded", "crashed"])
 def test_a_continue_resumes_the_childs_newest_conversation_segment(stopped):
     """``compression.in_place: false``: the child's conversation moved to a new session mid-run."""
-    from tools.delegate_tool import delegate_task
+    from hermes_agent.tools.delegate_tool import delegate_task
 
     model = _ScriptedModel()
     rotated = []
@@ -327,7 +327,7 @@ def test_a_continue_resumes_the_childs_newest_conversation_segment(stopped):
 
 
 def test_each_profiles_pins_obey_that_profiles_own_cap():
-    import tools.delegate_tool_resumable as resumable
+    import hermes_agent.tools.delegate_tool_resumable as resumable
     from hermes_constants import get_hermes_home
     from hermes_agent.hermes_state import SessionDB
 

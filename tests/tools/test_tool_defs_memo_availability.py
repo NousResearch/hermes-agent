@@ -9,12 +9,12 @@ from collections import OrderedDict
 
 import pytest
 
-import model_tools
-from model_tools import get_tool_definitions
+from hermes_agent import model_tools
+from hermes_agent.model_tools import get_tool_definitions
 from tests.module_clock import install_module_clock
-from tools import registry as registry_mod
-from tools.mcp_tool_agent import reprobe_tool_availability
-from tools.registry import invalidate_check_fn_cache, registry
+from hermes_agent.tools import registry as registry_mod
+from hermes_agent.tools.mcp_tool_agent import reprobe_tool_availability
+from hermes_agent.tools.registry import invalidate_check_fn_cache, registry
 
 MAIL = "mcp__probe_mail__list_messages"
 ANCHOR = "mcp__probe_anchor__ping"
@@ -236,7 +236,7 @@ def test_direct_tool_list_stays_frozen_mid_session_and_a_new_session_sees_the_re
     """Without Tool Search the tools sit in tools[], which is frozen for the session (#101367):
     a check_fn flip alone never changes it between turns. ``/new`` and ``/reload-mcp`` are the
     consented refresh points, and both must see the recovered server."""
-    from tools.mcp_tool_agent import refresh_agent_mcp_tools
+    from hermes_agent.tools.mcp_tool_agent import refresh_agent_mcp_tools
 
     agent = _direct_agent()
     assert ANCHOR in _names(agent.tools) and MAIL not in _names(agent.tools)
@@ -258,7 +258,7 @@ def test_direct_tool_list_stays_frozen_mid_session_and_a_new_session_sees_the_re
 def test_direct_tool_list_still_appends_a_late_registration_at_the_tail(mail_state, clock, direct_tools):
     """The freeze holds back check_fn flips only: a server that registers mid-session (the
     registry generation moves) still lands at the tail between turns, as on main."""
-    from tools.mcp_tool_agent import refresh_agent_mcp_tools
+    from hermes_agent.tools.mcp_tool_agent import refresh_agent_mcp_tools
 
     late = "mcp__probe_anchor__aaa_late"
     agent = _direct_agent()
@@ -320,7 +320,7 @@ def test_bridge_tools_stay_out_of_a_live_session_when_its_only_deferrable_tools_
     """Tool Search on, and the session's only deferrable tools were down when it was built, so it
     has no bridge. Their recovery is a check_fn flip: it must not add ``tool_search`` /
     ``tool_describe`` / ``tool_call`` to the live tools[]. ``/new`` gets them."""
-    from tools.mcp_tool_agent import refresh_agent_mcp_tools
+    from hermes_agent.tools.mcp_tool_agent import refresh_agent_mcp_tools
 
     selection = ["mcp-probe-mail", "clarify"]
     agent = _agent(selection)
@@ -346,8 +346,8 @@ def test_selection_widened_by_a_late_connection_appends_with_the_generation_unch
     connected in this process: nothing registers, the generation stays put, and the server's
     tools must still append between turns, as on main."""
     from hermes_constants import hermes_home_key
-    from tools.connectors import mcp as connectors_mcp
-    from tools.mcp_tool_agent import refresh_agent_mcp_tools
+    from hermes_agent.tools.connectors import mcp as connectors_mcp
+    from hermes_agent.tools.mcp_tool_agent import refresh_agent_mcp_tools
 
     late = "mcp__probe_late__fetch"
     registry.register(name=late, toolset="mcp-probe_late", schema=_schema(late, "Fetch from the late server"),
@@ -359,8 +359,8 @@ def test_selection_widened_by_a_late_connection_appends_with_the_generation_unch
     generation = registry._generation
     monkeypatch.setitem(connectors_mcp._LATE_ATTEMPTS, (hermes_home_key(), "late-session"),
                         {"probe_late": _ApprovedLateAttempt()})
-    monkeypatch.setattr("tools.mcp_tool_config._load_mcp_config", lambda: {"probe_late": {"command": "probe"}})
-    monkeypatch.setattr("tools.mcp_tool_discovery.register_mcp_servers", lambda servers: None)  # connected already
+    monkeypatch.setattr("hermes_agent.tools.mcp_tool_config._load_mcp_config", lambda: {"probe_late": {"command": "probe"}})
+    monkeypatch.setattr("hermes_agent.tools.mcp_tool_discovery.register_mcp_servers", lambda servers: None)  # connected already
     try:
         assert connectors_mcp.adopt_late_connections(agent) == ["probe_late"]
         assert registry._generation == generation
@@ -374,7 +374,7 @@ def test_registration_landing_during_the_refresh_build_appends_in_that_refresh(
         mail_state, clock, direct_tools, monkeypatch):
     """The hold decision reads the generation after the build: a server that registers while the
     refresh is building is a late registration, not a check_fn flip, and lands this turn."""
-    from tools.mcp_tool_agent import refresh_agent_mcp_tools
+    from hermes_agent.tools.mcp_tool_agent import refresh_agent_mcp_tools
 
     late = "mcp__probe_anchor__aaa_midbuild"
     agent = _direct_agent()
@@ -415,7 +415,7 @@ def test_pin_restore_in_the_same_process_holds_a_check_fn_flip(mail_state, clock
     """An agent rebuilt from the session pin in the same process (gateway agent-cache eviction,
     ``/model``, a fresh agent per turn) is the same conversation: a tool that is new only because
     its check_fn flipped stays out, the same rule the between-turns refresh applies."""
-    from tools.mcp_tool_agent import persist_agent_tool_names, refresh_agent_mcp_tools, restore_agent_tool_prefix
+    from hermes_agent.tools.mcp_tool_agent import persist_agent_tool_names, refresh_agent_mcp_tools, restore_agent_tool_prefix
 
     store = _PinStore()
     persist_agent_tool_names(_session_agent(store, "pinned-session"))
@@ -437,8 +437,8 @@ def test_pin_restore_still_appends_a_late_registration_and_a_restore_in_a_new_pr
     """Guards for the hold above: a real registration since the pin still appends, and a process
     that did not write the pin (``--resume`` in a new process, a fresh worker) cannot tell a flip
     from a registration, so it appends as on main."""
-    from tools import mcp_tool_agent
-    from tools.mcp_tool_agent import persist_agent_tool_names, restore_agent_tool_prefix
+    from hermes_agent.tools import mcp_tool_agent
+    from hermes_agent.tools.mcp_tool_agent import persist_agent_tool_names, restore_agent_tool_prefix
 
     store = _PinStore()
     persist_agent_tool_names(_session_agent(store, "pinned-session"))
@@ -470,7 +470,7 @@ def test_pin_restore_in_the_same_process_keeps_the_pinned_bridge_through_an_outa
     synthesized, never registered, so the restore must carry it like the between-turns refresh does.
     Otherwise tools[] shrinks to the fresh build, the narrowed pin is persisted, and recovery keeps it."""
     from hermes_agent.hermes_state import SessionDB
-    from tools.mcp_tool_agent import persist_agent_tool_names, restore_agent_tool_prefix
+    from hermes_agent.tools.mcp_tool_agent import persist_agent_tool_names, restore_agent_tool_prefix
 
     selection = ["mcp-probe-mail", "clarify"]
     db = SessionDB(db_path=tmp_path / "state.db")

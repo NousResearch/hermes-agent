@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, Optional
 
 if TYPE_CHECKING:  # pragma: no cover - annotation only
-    from tools.mcp_dashboard_oauth import DashboardOAuthFlow
+    from hermes_agent.tools.mcp_dashboard_oauth import DashboardOAuthFlow
 from hermes_cli.config import redact_key
 from hermes_cli.web_models import MCPServerCreate
 
@@ -82,7 +82,7 @@ def _redact_mcp_env(env: dict[str, Any]) -> dict[str, str]:
 
 
 def _mcp_server_summary(name: str, cfg: dict[str, Any], plugin: str | None = None) -> dict[str, Any]:
-    from tools.mcp_tool_common import mcp_server_enabled
+    from hermes_agent.tools.mcp_tool_common import mcp_server_enabled
 
     transport = "http" if cfg.get("url") else ("stdio" if cfg.get("command") else "unknown")
     auth = cfg.get("auth")
@@ -122,9 +122,9 @@ def _run_dashboard_mcp_oauth(flow, cfg: dict) -> None:
     try:
         from agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_secret_scope
         from hermes_constants import reset_hermes_home_override, set_hermes_home_override
-        from tools.mcp_dashboard_oauth import dashboard_oauth_flow
-        from tools.mcp_oauth import HermesTokenStorage, force_interactive_oauth, login_connect_timeout
-        from tools.mcp_oauth_manager import get_manager
+        from hermes_agent.tools.mcp_dashboard_oauth import dashboard_oauth_flow
+        from hermes_agent.tools.mcp_oauth import HermesTokenStorage, force_interactive_oauth, login_connect_timeout
+        from hermes_agent.tools.mcp_oauth_manager import get_manager
 
         home_token = secret_token = None
         try:
@@ -151,7 +151,7 @@ def _run_dashboard_mcp_oauth(flow, cfg: dict) -> None:
                     flow.tools = [{"name": t, "description": d} for t, d in tools]
                     flow.mark_approved()
                     if flow.reconnect_live:
-                        from tools.mcp_tool_loop import reconnect_mcp_server
+                        from hermes_agent.tools.mcp_tool_loop import reconnect_mcp_server
 
                         reconnect_mcp_server(flow.server_name)
                 except Exception:
@@ -164,13 +164,13 @@ def _run_dashboard_mcp_oauth(flow, cfg: dict) -> None:
             if home_token is not None:
                 reset_hermes_home_override(home_token)
     except Exception as exc:
-        from tools.mcp_dashboard_oauth import exception_message
+        from hermes_agent.tools.mcp_dashboard_oauth import exception_message
 
         msg = exception_message(exc)
         # Providers gating RFC 7591 registration to pre-approved clients 403 the
         # register call before any auth URL exists; say so, not "403 Forbidden".
         try:
-            from tools.mcp_oauth import humanize_oauth_registration_error
+            from hermes_agent.tools.mcp_oauth import humanize_oauth_registration_error
 
             humanized = humanize_oauth_registration_error(
                 flow.server_name, exc, server_url=cfg.get("url") if isinstance(cfg, dict) else None

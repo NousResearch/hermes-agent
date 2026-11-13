@@ -351,7 +351,7 @@ def _base64_bytes(payload: str) -> int:
 
 def _clean_stream_text(text: str) -> str:
     """Strip ANSI escapes; keep only the final ``\\r`` frame of each line (tqdm redraws)."""
-    from tools.ansi_strip import strip_ansi
+    from hermes_agent.tools.ansi_strip import strip_ansi
     return "\n".join(([f for f in line.split("\r") if f] or [""])[-1]
                      for line in strip_ansi(text).replace("\r\n", "\n").split("\n"))
 

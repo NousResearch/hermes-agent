@@ -82,7 +82,7 @@ def test_registered_plugin_dialect_reaches_every_gate(install_dialect_plugin):
     """profile.api_mode → determine_api_mode → resolve_runtime_provider → agent ladder → delegation."""
     from hermes_cli.providers import determine_api_mode
     from hermes_cli.runtime_provider import _parse_api_mode, resolve_runtime_provider
-    from tools.delegate_tool_config import _direct_endpoint_credentials
+    from hermes_agent.tools.delegate_tool_config import _direct_endpoint_credentials
 
     install_dialect_plugin("example-dialect", "example_dialect", register=True)
 

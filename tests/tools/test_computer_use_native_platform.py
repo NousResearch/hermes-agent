@@ -5,7 +5,7 @@ import sys
 
 import pytest
 
-from tools.computer_use import tool
+from hermes_agent.tools.computer_use import tool
 
 
 @pytest.fixture
@@ -31,8 +31,8 @@ def backend(monkeypatch):
     ({"action": "list_windows"}, "list_windows"),
 ])
 def test_native_computer_use_dispatches_to_backend(backend, args, expected_call, host_platform):
-    import tools.computer_use_tool
-    from tools.registry import registry
+    import hermes_agent.tools.computer_use_tool
+    from hermes_agent.tools.registry import registry
 
     assert sys.platform == host_platform
     result = registry.dispatch("computer_use", args)

@@ -14,7 +14,7 @@ from dataclasses import dataclass, replace
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 # Logger-name parity with the origin module (records must look unchanged).
-logger = logging.getLogger("tools.browser_supervisor")
+logger = logging.getLogger("hermes_agent.tools.browser_supervisor")
 
 # Snapshot caps for frame_tree — keep payloads bounded on ad-heavy pages.
 FRAME_TREE_MAX_ENTRIES = 30

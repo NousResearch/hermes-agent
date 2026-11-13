@@ -35,7 +35,7 @@ def _dget(obj: Any, key: str) -> Any:
 def has_codex_credentials() -> bool:
     """Cheap probe: True when openai-codex OAuth tokens are *likely* usable.
 
-    Mirrors ``tools/xai_http.has_xai_credentials`` — deliberately avoids
+    Mirrors ``hermes_agent/tools/xai_http.has_xai_credentials`` — deliberately avoids
     ``resolve_codex_runtime_credentials`` (disk locks, OAuth network refresh), because
     this runs on every ``hermes tools`` repaint. Checks, fast-to-slow:
     ``providers.openai-codex.tokens.access_token`` in ``auth.json``, then any

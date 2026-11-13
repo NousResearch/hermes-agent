@@ -150,7 +150,7 @@ VALID_HOOKS: set[str] = {
     "agent_loop_stopped",
     # Approval observers (returns ignored; veto via pre_tool_call). Kwargs: command, description, pattern_key,
     # pattern_keys, session_key, surface ("cli"|"gateway"|"smart"|"mcp-elicitation/<server>"|"mcp-trust/<server>"|
-    # "vault-payment"); post_approval_response adds choice/decided_by. on_human_input_*: tools/human_input_hooks.py.
+    # "vault-payment"); post_approval_response adds choice/decided_by. on_human_input_*: hermes_agent/tools/human_input_hooks.py.
     "pre_approval_request", "post_approval_response", "on_human_input_request", "on_human_input_resolved",
     # on_room_member_activity: a hosted Group Chat member's live runtime events (tool.started/completed,
     # request.opened, message.delta, reasoning.delta, turn.error, ...) stamped with room_id, thread_id,
@@ -337,7 +337,7 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         # unload-all park in ``_persistent_carryover`` until force re-discovery evicts the stale ones.
         # Registration handles are kept both per plugin (ownership lookup) and globally (reverse-order
         # teardown for overrides spanning plugins). Registry overlays keyed by scope_key (see
-        # tools/registry.py and hermes_agent/gateway/platform_registry.py) carry the profile dimension; anything still
+        # hermes_agent/tools/registry.py and hermes_agent/gateway/platform_registry.py) carry the profile dimension; anything still
         # process-global is guarded by the identity checks. TODO(#64178): extend explicit profile keying to
         # any remaining process-global slots when the symmetric force-reload lands.
         self._ownership_ledger: dict[str, list[PluginRegistration]] = {}
@@ -1216,8 +1216,8 @@ def _resolve_block_from_details(
     if details.action != "approve":
         return None
     try:
-        from tools.approval import request_tool_approval
-        from tools.approval_context import reset_current_observability_context, set_current_observability_context
+        from hermes_agent.tools.approval import request_tool_approval
+        from hermes_agent.tools.approval_context import reset_current_observability_context, set_current_observability_context
         approval_tokens = None
         with suppress(Exception):
             approval_tokens = set_current_observability_context(
@@ -1360,7 +1360,7 @@ def get_plugin_toolsets() -> list[tuple]:
     if not manager._plugin_tool_names:
         return []
     try:
-        from tools.registry import registry
+        from hermes_agent.tools.registry import registry
     except Exception:
         return []
     # Group plugin tool names by their toolset, then map each toolset back to the plugin that

@@ -3,7 +3,7 @@
 A Hermes process attaching through another spelling of the profile (``/alias -> /profile``) after the owner
 crashed takes the launch record over. The record must still describe the browser as launched (the
 ``--user-data-dir`` its argv carries), or the reaper cannot verify it once this process crashes too: it would
-leave Chromium running and delete its only record (``tools/browser_launcher.py``). Runs the real launcher against a
+leave Chromium running and delete its only record (``hermes_agent/tools/browser_launcher.py``). Runs the real launcher against a
 fake Chromium that takes the profile singleton and serves ``/json/version`` like the real one.
 """
 
@@ -19,7 +19,7 @@ import pytest
 
 from tests.tools.browser_launcher_fakes import kill_fake, pids, write_fake_chromium
 from tests.waiting import wait_until
-from tools import browser_launcher as launcher
+from hermes_agent.tools import browser_launcher as launcher
 
 pytestmark = [pytest.mark.platforms("linux"),
               pytest.mark.live_system_guard_bypass]  # the fake browser is ours to stop if a leg failed

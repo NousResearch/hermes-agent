@@ -27,7 +27,7 @@ from typing import Callable
 import psutil
 
 from hermes_constants import get_hermes_home
-from tools.environments.base import _file_mtime_key
+from hermes_agent.tools.environments.base import _file_mtime_key
 from utils import mtime_is_racy
 
 logger = logging.getLogger(__name__)
@@ -132,7 +132,7 @@ def iter_sync_files(container_base: str = "/root/.hermes") -> list[tuple[str, st
     """Enumerate all (host_path, remote_path) pairs to sync to a remote. Credential paths are
     remapped from the hardcoded /root/.hermes to *container_base* (remote home may differ)."""
     # Late import: credential_files pulls in agent modules (circular at module level).
-    from tools.credential_files import get_credential_file_mounts, iter_cache_files, iter_skills_files
+    from hermes_agent.tools.credential_files import get_credential_file_mounts, iter_cache_files, iter_skills_files
 
     files = [
         (entry["host_path"], entry["container_path"].replace("/root/.hermes", container_base, 1))
@@ -155,7 +155,7 @@ def _resolve_host_path_str(host_path: str) -> str:
 def _credential_host_paths() -> set[str]:
     """Return credential files that are upload-only for remote sandboxes."""
     try:
-        from tools.credential_files import get_credential_file_mounts
+        from hermes_agent.tools.credential_files import get_credential_file_mounts
         mounts = get_credential_file_mounts()
     except Exception:
         return set()

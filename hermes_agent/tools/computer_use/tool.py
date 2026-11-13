@@ -23,13 +23,13 @@ from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 from hermes_dir_acl import make_user_dir
 
 from agent.image_eviction_policy import image_dimensions_from_bytes
-from tools.computer_use.backend import ActionResult, CaptureResult, ComputerUseBackend, UIElement
+from hermes_agent.tools.computer_use.backend import ActionResult, CaptureResult, ComputerUseBackend, UIElement
 
 logger = logging.getLogger(__name__)
 
 # ── Approval & safety ───────────────────────────────────────────────────────
 # Optional computer_use-specific prompt handed to the shared gate as its explicit ``approval_callback``; when None the
-# gate resolves the per-thread CLI callback (``tools.terminal_tool.set_approval_callback``) like every other tool, so
+# gate resolves the per-thread CLI callback (``hermes_agent.tools.terminal_tool.set_approval_callback``) like every other tool, so
 # in-tree hosts never call this. Same contract as that callback: ``cb(command, description, **kw)`` ->
 # "once" | "session" | "always" | "deny" | "timeout".
 _approval_callback = None
@@ -85,7 +85,7 @@ _backends: dict[str, ComputerUseBackend] = {}
 _backend_call_locks: dict[str, threading.RLock] = {}
 _backend_permission_modes: dict[str, str] = {}
 _backend_displays: dict[str, str] = {}  # DISPLAY the cached backend was spawned against (Bot Desktop rebind)
-# Approval grants live in the shared store (``tools.approval``: session set + permanent allowlist), keyed by the
+# Approval grants live in the shared store (``hermes_agent.tools.approval``: session set + permanent allowlist), keyed by the
 # gate's session key, so a computer_use "always" is one allowlist entry like any terminal pattern. Only the
 # once-per-session escalation warning is tracked here.
 _approval_lock = threading.Lock()
@@ -137,11 +137,11 @@ def _cua_permission_mode(session_id: str) -> str:
     # computer_use.capability_manifest — the backend fails loudly without it.
     configured = "standard"
     with contextlib.suppress(Exception):
-        from tools.computer_use.cua_backend import _cua_configured_permission_mode
+        from hermes_agent.tools.computer_use.cua_backend import _cua_configured_permission_mode
         configured = _cua_configured_permission_mode()
     with contextlib.suppress(Exception):
-        from tools.approval import is_approval_bypass_active_for_session
-        from tools.approval_context import get_current_session_key
+        from hermes_agent.tools.approval import is_approval_bypass_active_for_session
+        from hermes_agent.tools.approval_context import get_current_session_key
         if is_approval_bypass_active_for_session(session_id) or (
                 bool(key := get_current_session_key(default="")) and is_approval_bypass_active_for_session(key)):
             with _approval_lock:
@@ -164,7 +164,7 @@ def _install_backend(sid: str, backend: ComputerUseBackend, permission_mode: str
     """Record a backend in the session caches (the empty session also mirrors it onto the ``_backend`` hook).
     Caller holds ``_backend_lock``."""
     global _backend
-    from tools.computer_use.cua_backend import desktop_identity
+    from hermes_agent.tools.computer_use.cua_backend import desktop_identity
     _backends[sid], _backend_permission_modes[sid] = backend, permission_mode
     _backend_displays[sid] = desktop_identity()
     _backend_call_locks[sid] = threading.RLock()
@@ -212,7 +212,7 @@ def _get_backend(session_id: str = "") -> ComputerUseBackend:
                 backend = _new_backend(permission_mode)
                 backend.start()  # under the cache lock: one backend per session; a concurrent toggle releases it
                 return _install_backend(sid, backend, permission_mode)
-            from tools.computer_use.cua_backend import backend_display_stale, desktop_identity
+            from hermes_agent.tools.computer_use.cua_backend import backend_display_stale, desktop_identity
             if (_backend_permission_modes.get(sid, "standard") == permission_mode
                     and not backend_display_stale(_backend_displays.get(sid, ""), desktop_identity())):
                 return cached
@@ -229,7 +229,7 @@ def _backend_for_call(session_id: str = "") -> Iterator[ComputerUseBackend]:
     while a caller waits. Revalidate AFTER acquiring its profile-scoped call
     lock; teardown needs that same lock. Never wait under the global cache lock.
     """
-    from tools.computer_use.cua_backend import backend_display_stale, desktop_identity
+    from hermes_agent.tools.computer_use.cua_backend import backend_display_stale, desktop_identity
 
     sid = _scoped_sid(session_id)
     while True:
@@ -255,7 +255,7 @@ def _backend_for_call(session_id: str = "") -> Iterator[ComputerUseBackend]:
 def release_computer_use_session(session_id: str) -> bool:
     """Release one session-owned backend (lifecycle seam for hosts/plugins); idempotent, True iff one was released.
     Cache entries are removed BEFORE stopping so new lookups cannot retain the stale target/ref namespace. Approval
-    grants are not touched here: they live in the shared store and die with ``tools.approval.clear_session``."""
+    grants are not touched here: they live in the shared store and die with ``hermes_agent.tools.approval.clear_session``."""
     sid = _scoped_sid(session_id)
     _reset_screenshot_dedup(sid)  # the next capture of a re-created session must deliver pixels
     with _backend_lock:
@@ -316,7 +316,7 @@ class _NoopBackend(ComputerUseBackend):  # pragma: no cover
 
 # ── Dispatch ────────────────────────────────────────────────────────────────
 def handle_computer_use(args: dict[str, Any], **kwargs) -> Any:
-    """Main entry point (tools.registry): a JSON string (text-only) or a dict marked `_multimodal`. Order: hard
+    """Main entry point (hermes_agent.tools.registry): a JSON string (text-only) or a dict marked `_multimodal`. Order: hard
     blocks (_reject_unsafe) -> approval scopes (destructive action, then 'bring_to_front' — persistent focus is a
     separate visible side effect with its own scope) -> backend -> dispatch under the session call lock."""
     action = (args.get("action") or "").strip().lower()
@@ -324,8 +324,8 @@ def handle_computer_use(args: dict[str, Any], **kwargs) -> Any:
         return json.dumps({"error": "missing `action`"})
     session_id = str(kwargs.get("session_id") or "")  # approval-state / daemon-mode isolation key
     # Bot Desktop lease: while a human drives the screen every action, capture included, is refused.
-    from tools.bot_desktop import lease as _bd_lease
-    from tools.bot_desktop.runtime import ensure_started_for_tool as _bd_ensure_started
+    from hermes_agent.tools.bot_desktop import lease as _bd_lease
+    from hermes_agent.tools.bot_desktop.runtime import ensure_started_for_tool as _bd_ensure_started
     def _refused(e: Exception) -> str:
         return json.dumps({"ok": False, "action": action, "code": "human_has_control", "error": str(e)})
     try:
@@ -381,11 +381,11 @@ def handle_computer_use(args: dict[str, Any], **kwargs) -> Any:
 
 def _request_approval(action: str, args: dict[str, Any]) -> Optional[str]:
     """None if approved, else a JSON error string. The decision (yolo bypass, session/permanent grants, CLI prompt,
-    gateway pending, cron/unattended policy, fail-closed with nobody to ask) is ``tools.approval``'s shared gate,
+    gateway pending, cron/unattended policy, fail-closed with nobody to ask) is ``hermes_agent.tools.approval``'s shared gate,
     so a computer_use grant is one store entry like any terminal pattern. Scope key ``cua:<action>:<mode>``:
     foreground delivery is a visible focus change, so a background ``session`` grant must NOT cover it (#67052).
     """
-    from tools.approval import _run_approval_gate
+    from hermes_agent.tools.approval import _run_approval_gate
 
     mode = "foreground" if args.get("delivery_mode") == "foreground" else "background"
     description = f"Allow computer_use to perform `{action}`?"
@@ -897,7 +897,7 @@ def _should_route_through_aux_vision() -> bool:
     try:
         from agent.auxiliary_client import _read_main_model, _read_main_provider
         from hermes_cli.config import load_config_readonly
-        from tools.vision_tools import _native_tool_result_images
+        from hermes_agent.tools.vision_tools import _native_tool_result_images
         stage = "decision"
         provider, model = _read_main_provider() or "", _read_main_model() or ""
         # The shared native-tool-result gate (vision_analyze, browser screenshots, MCP images use it too), so a
@@ -929,8 +929,8 @@ def _route_capture_through_aux_vision(cap: CaptureResult, summary: str, *, visib
         return None
     problem, temp_image_path = "aux-vision import failed", None
     try:
-        from model_tools import _run_async
-        from tools.vision_tools import vision_analyze_tool
+        from hermes_agent.model_tools import _run_async
+        from hermes_agent.tools.vision_tools import vision_analyze_tool
         problem = "failed to decode capture base64"
         raw = base64.b64decode(cap.png_b64, validate=False)
         problem = None  # from here on failures are loud (warning)
@@ -977,5 +977,5 @@ def check_computer_use_requirements() -> bool:
         return True
 
 def get_computer_use_schema() -> dict[str, Any]:
-    from tools.computer_use.schema import COMPUTER_USE_SCHEMA
+    from hermes_agent.tools.computer_use.schema import COMPUTER_USE_SCHEMA
     return COMPUTER_USE_SCHEMA

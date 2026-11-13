@@ -12,7 +12,7 @@ path retained as a compatibility fallback.
 import threading
 import types
 
-import tools.async_delegation as ad
+import hermes_agent.tools.async_delegation as ad
 from hermes_agent.tui_gateway import server
 
 

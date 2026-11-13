@@ -258,7 +258,7 @@ def plan_sweep(repo_root: str, max_age_hours: int = 24, settings: Optional[dict]
     worktrees_dir = Path(repo_root) / ".worktrees"
     if not worktrees_dir.is_dir():
         return []
-    from tools.delegate_tool_resumable import pin_reason
+    from hermes_agent.tools.delegate_tool_resumable import pin_reason
     pins = ops.resumable_pins()
     candidates = ops._prune_candidates(worktrees_dir, max_age_hours, now, pins=pins)
     doomed_names = {entry.name for entry, _m, _f in candidates}
@@ -403,7 +403,7 @@ def pinned_now(path: str) -> Optional[str]:
     """Why a resumable subagent pins *path* at this moment (re-read, never the plan's copy), else None. A continue
     can claim a record and pin its tree between the sweep's plan and its removal; only the unattended sweep asks."""
     from hermes_cli import worktree_ops as ops
-    from tools.delegate_tool_resumable import pin_reason
+    from hermes_agent.tools.delegate_tool_resumable import pin_reason
     return pin_reason(path, ops.resumable_pins())
 
 

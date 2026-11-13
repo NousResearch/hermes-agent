@@ -176,6 +176,6 @@ ACP 在 prompt 执行期间临时在终端工具上安装审批回调，执行�
 ## 相关文件
 
 - `tests/acp/` — ACP 测试套件
-- `toolsets.py` — `hermes-acp` toolset 定义
+- `hermes_agent/toolsets.py` — `hermes-acp` toolset 定义
 - `hermes_cli/main.py` — `hermes acp` CLI 子命令
 - `pyproject.toml` — `[acp]` 可选依赖 + `hermes-acp` 脚本

@@ -44,7 +44,7 @@ from urllib.parse import parse_qs, urlparse
 
 from hermes_constants import secure_parent_dir
 from utils import atomic_json_write
-from tools.mcp_dashboard_oauth import contextvar_set as _contextvar_set, get_dashboard_oauth_flow
+from hermes_agent.tools.mcp_dashboard_oauth import contextvar_set as _contextvar_set, get_dashboard_oauth_flow
 
 if TYPE_CHECKING:  # annotations only; the SDK is imported lazily at runtime
     from mcp.client.auth import OAuthClientProvider
@@ -418,7 +418,7 @@ class HermesTokenStorage:
         self._hermes_home = Path(hermes_home) if hermes_home is not None else None
         # Issuer binding: ``loaded_issuer`` is what the token file on disk recorded (the authorization
         # server that granted the stored refresh token); ``_bound_issuer`` is stamped onto the next
-        # ``set_tokens`` write. See ``tools.mcp_oauth_provider.enforce_refresh_token_issuer``.
+        # ``set_tokens`` write. See ``hermes_agent.tools.mcp_oauth_provider.enforce_refresh_token_issuer``.
         self.loaded_issuer: str | None = None
         self._bound_issuer: str | None = None
 
@@ -447,7 +447,7 @@ class HermesTokenStorage:
         cls = _sdk_class(sdk_name) if data is not None else None
         if (cls is not None and sdk_name == "OAuthMetadata" and isinstance(data, dict)
                 and data.get("device_authorization_endpoint")):
-            from tools.mcp_oauth_device import DeviceOAuthMetadata
+            from hermes_agent.tools.mcp_oauth_device import DeviceOAuthMetadata
             cls = DeviceOAuthMetadata
         if cls is None:
             return None
@@ -1212,7 +1212,7 @@ def humanize_oauth_registration_error(
     when the user overrode it or an older Hermes is running."""
     msg = str(exc)
     lowered = msg.lower()
-    from tools.mcp_oauth_provider import _DISCOVERY_CONTEXT_LEAD
+    from hermes_agent.tools.mcp_oauth_provider import _DISCOVERY_CONTEXT_LEAD
     if msg.startswith(_DISCOVERY_CONTEXT_LEAD):  # the 403 there is the metadata fetch, not a DCR refusal
         return None
     # A 404 on registration (Google's hosted Gmail/Drive MCP servers answer the SDK's guessed /register with
@@ -1245,13 +1245,13 @@ def humanize_oauth_registration_error(
 
 def build_oauth_auth(server_name: str, server_url: str, oauth_config: dict | None = None) -> "OAuthClientProvider | None":
     """``httpx.Auth`` OAuth handler for an MCP server; None if the SDK lacks OAuth. Legacy API — new code
-    uses :func:`tools.mcp_oauth_manager.get_manager` so state is shared across config-time, runtime and reconnect paths."""
+    uses :func:`hermes_agent.tools.mcp_oauth_manager.get_manager` so state is shared across config-time, runtime and reconnect paths."""
     global HermesOAuthClientProvider
     if not _OAUTH_AVAILABLE or _sdk_class("OAuthClientProvider") is None:
         logger.warning("MCP OAuth requested for '%s' but SDK auth types are not available. Run: "
                        f"{install_hint('mcp')}", server_name)
         return None
-    from tools.mcp_oauth_provider import build_provider_kwargs, prepare_oauth_config
+    from hermes_agent.tools.mcp_oauth_provider import build_provider_kwargs, prepare_oauth_config
 
     cfg, storage = prepare_oauth_config(server_name, server_url, oauth_config)
     if not _is_interactive() and not storage.has_cached_tokens():
@@ -1261,7 +1261,7 @@ def build_oauth_auth(server_name: str, server_url: str, oauth_config: dict | Non
             "initial authorization, then cached tokens will be reused.")
     kwargs = build_provider_kwargs(cfg, storage, ssh_proxy_hint=True)
     if HermesOAuthClientProvider is None:
-        from tools.mcp_oauth_provider import HermesProviderMixin
+        from hermes_agent.tools.mcp_oauth_provider import HermesProviderMixin
 
         HermesOAuthClientProvider = type("HermesOAuthClientProvider", (HermesProviderMixin, _sdk_class("OAuthClientProvider")), {
             "__doc__": "SDK provider plus Hermes' token-endpoint fixes (see ``HermesProviderMixin``).",

@@ -1,6 +1,6 @@
 """POSIX session kernels: the kernel's whole process group dies with its owner, however the owner dies.
 
-The owners are real host processes importing the real ``tools.code_kernel._spawn``; each starts a kernel
+The owners are real host processes importing the real ``hermes_agent.tools.code_kernel._spawn``; each starts a kernel
 whose cell spawns a subprocess of its own (it stays in the kernel's group, as every cell child does).
 One owner is SIGKILLed so no Python cleanup of ours can run; the other is the live-owner control.
 """
@@ -94,7 +94,7 @@ def test_owner_sigkill_reaps_the_kernel_group_not_a_live_owners(tmp_path):
 def _kernel_with_cell_child(monkeypatch, tmp_path, child_argv):
     """A real kernel (spawn registration captured) running a cell that spawned *child_argv*."""
     from hermes_cli import process_identity
-    from tools.code_kernel import SessionKernel, _spawn
+    from hermes_agent.tools.code_kernel import SessionKernel, _spawn
 
     calls = []
     for verb, name in (("register", "own_process_groups"), ("unregister", "release_process_groups")):
@@ -140,7 +140,7 @@ def test_teardown_releases_the_kernels_group(monkeypatch, tmp_path):
 def test_teardown_keeps_covering_a_cell_child_that_survived_it(monkeypatch, tmp_path):
     # Ignores the teardown's SIGTERM. Escalation is off so a kernel slow to exit under load cannot
     # turn the TERM into a tree SIGKILL that takes the child too (the precondition, not the point).
-    from tools import code_execution_tool
+    from hermes_agent.tools import code_execution_tool
     real_kill = code_execution_tool._kill_process_group
     monkeypatch.setattr(code_execution_tool, "_kill_process_group",
                         lambda proc, escalate=False: real_kill(proc, escalate=False))

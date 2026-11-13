@@ -502,7 +502,7 @@ class TestKillProcessTree:
         """A descendant that setsid'd out of the parent's group must die too.
 
         killpg on the parent's group cannot reach it; the psutil descendant
-        sweep must (tools/environments/base.py documents user commands doing
+        sweep must (hermes_agent/tools/environments/base.py documents user commands doing
         exactly this).
         """
         started = tmp_path / "setsid_grandchild_started"

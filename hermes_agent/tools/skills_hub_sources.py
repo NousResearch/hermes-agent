@@ -7,13 +7,13 @@ import re
 from typing import Any, Dict, List, Optional, Union
 from urllib.parse import quote, urljoin, urlparse, urlunparse
 
-from tools.skills_hub_models import (
+from hermes_agent.tools.skills_hub_models import (
     GuardedFetchMixin, SkillBundle, SkillMeta, SkillSource, _first_matching, _get_json, _get_text,
     _hermes_tags, _memo_json, _parse_frontmatter, _referenced_support_paths,
     _validate_bundle_rel_path, _validate_skill_name, hub,
 )
 
-logger = logging.getLogger("tools.skills_hub")
+logger = logging.getLogger("hermes_agent.tools.skills_hub")
 
 
 # --- Well-known Agent Skills endpoint source adapter ------------------------

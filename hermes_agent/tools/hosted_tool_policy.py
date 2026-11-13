@@ -7,7 +7,7 @@ until someone shows it acts only through the agent's sandbox:
 
 * :func:`hosted_tool_refusal` — a tool runs in a hosted scope only if it is on
   :data:`HOSTED_TOOL_ALLOWLIST`, the tools whose every effect goes through the agent's own sandbox
-  (``tools.environments.sandbox_scope``). Everything else (memory, recall, todo, vision, browser, web,
+  (``hermes_agent.tools.environments.sandbox_scope``). Everything else (memory, recall, todo, vision, browser, web,
   MCP, connectors, catalog, delegation, skills, cron, ...) is refused before its handler. The agent
   loop asks once per call, in ``agent.tool_executor._dispatch_authorized_once``: the one function every
   sequential, concurrent and batched call goes through, whatever executes it (inline agent tools,
@@ -71,7 +71,7 @@ class HostedToolRefused(PermissionError):
 
 
 def _hosted() -> bool:
-    from tools.environments.sandbox_scope import hosted_scope
+    from hermes_agent.tools.environments.sandbox_scope import hosted_scope
     return hosted_scope() is not None
 
 

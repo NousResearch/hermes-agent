@@ -10,7 +10,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Callable, ClassVar, Dict, List, Optional
 
-from tools.connectors.contract import Actor, SettleReason, TargetState, allowed, resolves
+from hermes_agent.tools.connectors.contract import Actor, SettleReason, TargetState, allowed, resolves
 
 logger = logging.getLogger(__name__)
 
@@ -250,8 +250,8 @@ class ConnectionOperation:
             target.pop("launch", None)  # the card's consent line; the model named the server itself
         if result.get("settled_at") is None:
             return result
-        from tools.registry import registry
-        from tools.tool_search_catalog import build_catalog_listing_with_form
+        from hermes_agent.tools.registry import registry
+        from hermes_agent.tools.tool_search_catalog import build_catalog_listing_with_form
 
         for target in result["targets"]:
             # Setup instructions are the card's text for the user. A catalog entry's notes can be

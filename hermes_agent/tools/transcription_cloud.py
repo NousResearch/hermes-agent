@@ -4,7 +4,7 @@ OpenAI-SDK-shaped backends (groq, openai, deepinfra), Mistral Voxtral, REST mult
 backends (xAI, ElevenLabs), and OpenAI audio credential resolution (config > keyless
 local server > env > managed Nous gateway). Facade-owned state and helpers
 (``_HAS_OPENAI``, ``_resolve_provider_key``, ``_resolve_stt_language``, ``_load_stt_config``)
-are read lazily from ``tools.transcription_tools``.
+are read lazily from ``hermes_agent.tools.transcription_tools``.
 """
 
 from __future__ import annotations
@@ -17,8 +17,8 @@ from typing import Any, Callable, Dict, Optional
 from urllib.parse import urljoin
 
 from utils import is_truthy_value
-from tools.transcription_audio import _transcode_audio_for_stt
-from tools.transcription_common import (
+from hermes_agent.tools.transcription_audio import _transcode_audio_for_stt
+from hermes_agent.tools.transcription_common import (
     DEFAULT_GROQ_STT_MODEL, DEFAULT_STT_MODEL, ELEVENLABS_STT_BASE_URL,
     GROQ_BASE_URL, GROQ_MODELS, OPENAI_BASE_URL, OPENAI_MODELS, RETIRED_GROQ_MODELS, STTResponseError,
     XAI_STT_BASE_URL,
@@ -26,7 +26,7 @@ from tools.transcription_common import (
     normalize_xai_stt_model)
 
 # Log-record parity with the origin module.
-logger = logging.getLogger("tools.transcription_tools")
+logger = logging.getLogger("hermes_agent.tools.transcription_tools")
 # Voxtral-style ``language xx <asr_text> ...`` prefix some SDK responses carry.
 _ASR_TEXT_RE = re.compile(
     r"\s*language\s+[\w.-]+(?:\s*<audio_language>[^<]*</audio_language>)?\s*<asr_text>\s*(?P<text>.*)",
@@ -34,7 +34,7 @@ _ASR_TEXT_RE = re.compile(
 
 
 def _has_xai_stt_credentials() -> bool:
-    from tools.xai_http import resolve_xai_http_credentials
+    from hermes_agent.tools.xai_http import resolve_xai_http_credentials
     return bool(resolve_xai_http_credentials().get("api_key"))
 
 
@@ -47,8 +47,8 @@ def _with_openai_client(api_key: str, base_url: Optional[str], file_path: str, l
     subclass) so timeouts report as connection errors, as they always have."""
     try:
         from openai import OpenAI
-        from tools.transcription_common import DEFAULT_STT_TIMEOUT, _config_number
-        from tools.transcription_tools import _load_stt_config
+        from hermes_agent.tools.transcription_common import DEFAULT_STT_TIMEOUT, _config_number
+        from hermes_agent.tools.transcription_tools import _load_stt_config
         openai_config = _get_stt_section(_load_stt_config(), "openai")
         client = OpenAI(
             api_key=api_key,
@@ -99,7 +99,7 @@ def _transcribe_groq(
     file_path: str, model_name: str, *, language: Optional[str] = None, prompt: Optional[str] = None
 ) -> dict[str, Any]:
     """Transcribe via the Groq Whisper API; language: hook > ``stt.groq.language`` > ``stt.language`` > env > auto."""
-    from tools.transcription_tools import _HAS_OPENAI, _resolve_provider_key, _resolve_stt_language
+    from hermes_agent.tools.transcription_tools import _HAS_OPENAI, _resolve_provider_key, _resolve_stt_language
     api_key = _resolve_provider_key("GROQ_API_KEY", "groq")
     if not api_key:
         return _error_result("GROQ_API_KEY not set")
@@ -131,7 +131,7 @@ def _transcribe_openai(
     """Transcribe via the OpenAI ``audio.transcriptions.create`` SDK shape, shared by every
     OpenAI-compatible endpoint (DeepInfra etc.): explicit ``api_key``/``base_url`` skip the
     OpenAI-only auth chain; ``provider_label`` names the response's provider."""
-    from tools.transcription_tools import _HAS_OPENAI, _resolve_stt_language
+    from hermes_agent.tools.transcription_tools import _HAS_OPENAI, _resolve_stt_language
     if api_key is None:
         try:
             api_key, fallback_base = _resolve_openai_audio_client_config()
@@ -195,7 +195,7 @@ def _transcribe_mistral(
     file_path: str, model_name: str, *, language: Optional[str] = None, prompt: Optional[str] = None
 ) -> dict[str, Any]:
     """Transcribe with the ``mistralai`` SDK (``/v1/audio/transcriptions``); requires ``MISTRAL_API_KEY``."""
-    from tools.transcription_tools import _resolve_provider_key, _resolve_stt_language
+    from hermes_agent.tools.transcription_tools import _resolve_provider_key, _resolve_stt_language
     api_key = _resolve_provider_key("MISTRAL_API_KEY", "mistral")
     if not api_key:
         return _error_result("MISTRAL_API_KEY not set")
@@ -254,8 +254,8 @@ def _transcribe_xai(
 ) -> dict[str, Any]:
     """Transcribe via xAI ``POST /v1/stt`` (multipart). Supports ITN, diarization, word timestamps."""
     from hermes_cli.config import get_env_value
-    from tools.transcription_tools import _load_stt_config, _resolve_stt_language
-    from tools.xai_http import resolve_xai_http_credentials
+    from hermes_agent.tools.transcription_tools import _load_stt_config, _resolve_stt_language
+    from hermes_agent.tools.xai_http import resolve_xai_http_credentials
     if prompt:
         _log_prompt_unsupported("STT provider 'xai'")
     # STT is API-billed: prefer the explicit XAI_API_KEY over the xAI OAuth/Grok-subscription
@@ -281,7 +281,7 @@ def _transcribe_xai(
     language = language or _resolve_stt_language("xai", stt_config) or ""
 
     def _post() -> Any:
-        from tools.xai_http import hermes_xai_user_agent
+        from hermes_agent.tools.xai_http import hermes_xai_user_agent
         # Always name the model: xAI moved the server default from 1.0 to 2.0 mid-September and
         # will retire 1.0, so an omitted field silently changes what Hermes runs.
         resolved_model = normalize_xai_stt_model(model_name)
@@ -331,7 +331,7 @@ def _transcribe_elevenlabs(
 ) -> dict[str, Any]:
     """Transcribe using ElevenLabs Scribe STT API."""
     from hermes_cli.config import get_env_value
-    from tools.transcription_tools import _load_stt_config, _resolve_provider_key, _resolve_stt_language
+    from hermes_agent.tools.transcription_tools import _load_stt_config, _resolve_provider_key, _resolve_stt_language
     if prompt:
         _log_prompt_unsupported("STT provider 'elevenlabs'")
     api_key = _resolve_provider_key("ELEVENLABS_API_KEY", "elevenlabs")
@@ -365,7 +365,7 @@ def _transcribe_deepinfra(
     file_path: str, model_name: str, *, language: Optional[str] = None, prompt: Optional[str] = None
 ) -> dict[str, Any]:
     """Resolve DeepInfra credentials/model (shared ``hermes_cli.models`` helpers), then delegate to :func:`_transcribe_openai`."""
-    from tools.transcription_tools import _load_stt_config, _resolve_provider_key
+    from hermes_agent.tools.transcription_tools import _load_stt_config, _resolve_provider_key
     api_key = _resolve_provider_key("DEEPINFRA_API_KEY", "deepinfra")
     if not api_key:
         return _error_result("DEEPINFRA_API_KEY not set")
@@ -400,7 +400,7 @@ def _is_local_or_private_url(url: str) -> bool:
 def _direct_openai_credentials(cfg_api_key: str, cfg_base_url: str) -> Optional[tuple[str, str]]:
     """Direct-credential ladder: config key > keyless local base_url (placeholder key so the SDK
     constructs a client) > env key; None if none apply."""
-    from tools.tool_backend_helpers import resolve_openai_audio_api_key
+    from hermes_agent.tools.tool_backend_helpers import resolve_openai_audio_api_key
     if cfg_api_key:
         return cfg_api_key, (cfg_base_url or OPENAI_BASE_URL)
     # A local OpenAI-compatible server needs no key — send a placeholder so the SDK doesn't refuse to
@@ -416,9 +416,9 @@ def _resolve_openai_audio_client_config() -> tuple[str, str]:
     ``"nous"`` -> managed gateway ONLY (a direct OPENAI_API_KEY must NOT override it); any other
     stored provider -> direct credentials ONLY (no silent managed fallback); never-configured ->
     legacy ladder: direct credentials, then the managed gateway. Failures raise ValueError."""
-    from tools.transcription_tools import _load_stt_config
-    from tools.managed_tool_gateway import resolve_managed_tool_gateway
-    from tools.tool_backend_helpers import (
+    from hermes_agent.tools.transcription_tools import _load_stt_config
+    from hermes_agent.tools.managed_tool_gateway import resolve_managed_tool_gateway
+    from hermes_agent.tools.tool_backend_helpers import (
         NOUS_MANAGED_PROVIDER, managed_nous_tools_enabled, nous_tool_gateway_unavailable_message,
         read_selection, selection_error)
     openai_cfg = _load_stt_config().get("openai") or {}

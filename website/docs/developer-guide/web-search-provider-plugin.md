@@ -221,7 +221,7 @@ If your provider only supports one capability, leave the other flags at their de
 
 ## How Hermes wires it into the tools
 
-The `web_search` and `web_extract` tools live in `tools/web_tools.py`. At call time they:
+The `web_search` and `web_extract` tools live in `hermes_agent/tools/web_tools.py`. At call time they:
 
 1. Read the relevant config key (`web.search_backend` for `web_search`, `web.extract_backend` for `web_extract`)
 2. Ask the registry for the provider with that `name`
@@ -248,7 +248,7 @@ Declare a third-party plugin's own dependencies in its manifest or
 - **`plugins/web/ddgs/`** — no-key provider that lazy-installs its SDK. Useful pattern for backends that wrap a Python package.
 - **`plugins/web/firecrawl/`** — full multi-capability provider (search + extract + crawl) with multiple format modes.
 - **`plugins/web/searxng/`** — self-hosted, URL-configured backend with no auth.
-- **`plugins/web/xai/`** — LLM-backed search via Grok's server-side `web_search` tool. Shows how to reuse an existing OAuth/env-var credential surface (`tools/xai_http.py`) without adding new env vars, and how to write a cheap `is_available()` that honors the no-network contract.
+- **`plugins/web/xai/`** — LLM-backed search via Grok's server-side `web_search` tool. Shows how to reuse an existing OAuth/env-var credential surface (`hermes_agent/tools/xai_http.py`) without adding new env vars, and how to write a cheap `is_available()` that honors the no-network contract.
 
 ## Distribute via pip
 

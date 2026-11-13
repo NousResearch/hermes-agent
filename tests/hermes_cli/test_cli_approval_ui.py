@@ -97,7 +97,7 @@ class TestCliApprovalUi:
     def test_session_less_gate_offers_only_once_and_deny(self):
         """A gate that re-asks every time must not advertise a session scope.
 
-        The protected agent-instruction gate (tools/file_tools.py) grants one
+        The protected agent-instruction gate (hermes_agent/tools/file_tools.py) grants one
         operation and persists nothing, so offering "session" here makes every
         later write re-prompt and reads as a broken gate (#81887).
         """
@@ -218,7 +218,7 @@ class TestCliApprovalUi:
         """Background /btw tasks must use the prompt_toolkit approval UI.
 
         The foreground chat path registers dangerous-command callbacks inside
-        its worker thread because tools.terminal_tool stores them in
+        its worker thread because hermes_agent.tools.terminal_tool stores them in
         threading.local(). /background used to skip that, so dangerous commands
         fell back to raw input() in a background thread and timed out under
         prompt_toolkit.
@@ -232,7 +232,7 @@ class TestCliApprovalUi:
                 self.thinking_callback = None
 
             def run_conversation(self, **kwargs):
-                from tools.terminal_tool import (
+                from hermes_agent.tools.terminal_tool import (
                     _get_approval_callback,
                     _get_sudo_password_callback,
                 )
@@ -341,7 +341,7 @@ class TestApprovalCallbackThreadLocalWiring:
         If this ever starts passing as "visible", the thread-local isolation
         is gone and the ACP race GHSA-qg5c-hvr5-hjgr may be back.
         """
-        from tools.terminal_tool import (
+        from hermes_agent.tools.terminal_tool import (
             set_approval_callback,
             _get_approval_callback,
         )
@@ -369,7 +369,7 @@ class TestApprovalCallbackThreadLocalWiring:
         This is exactly what cli.py's run_agent() closure does. If this test
         fails, the CLI approval prompt freeze (#13617) has regressed.
         """
-        from tools.terminal_tool import (
+        from hermes_agent.tools.terminal_tool import (
             set_approval_callback,
             set_sudo_password_callback,
             _get_approval_callback,

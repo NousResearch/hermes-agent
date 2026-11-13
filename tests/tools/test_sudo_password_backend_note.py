@@ -9,14 +9,14 @@ import sys
 
 import pytest
 
-from tools import terminal_tool, terminal_tool_sudo
-from tools.environments.base import BaseEnvironment
-from tools.environments.docker import DockerEnvironment
-from tools.environments.local import LocalEnvironment
-from tools.environments.ssh import SSHEnvironment
+from hermes_agent.tools import terminal_tool, terminal_tool_sudo
+from hermes_agent.tools.environments.base import BaseEnvironment
+from hermes_agent.tools.environments.docker import DockerEnvironment
+from hermes_agent.tools.environments.local import LocalEnvironment
+from hermes_agent.tools.environments.ssh import SSHEnvironment
 
 PW = "synthetic-note-pw-3"
-NOTE_LOGGER = "tools.environments.sudo_password_note"
+NOTE_LOGGER = "hermes_agent.tools.environments.sudo_password_note"
 
 
 class _RecordingSandboxEnv(BaseEnvironment):
@@ -91,7 +91,7 @@ def test_plugin_backend_note_uses_its_registered_name(caplog):
     """A plugin backend is named as registered, not after its Python class."""
     import types
 
-    from tools.terminal_tool_backends import _stamp_plugin_env
+    from hermes_agent.tools.terminal_tool_backends import _stamp_plugin_env
 
     terminal_tool_sudo._set_cached_sudo_password(PW)
     env = _RecordingSandboxEnv()

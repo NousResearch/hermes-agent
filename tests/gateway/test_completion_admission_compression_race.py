@@ -9,7 +9,7 @@ from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
 from hermes_agent.gateway.platforms.base import BasePlatformAdapter
 from hermes_agent.gateway.run import GatewayRunner, _profile_runtime_scope
 from hermes_agent.gateway.session import SessionSource
-from tools import async_delegation as ad
+from hermes_agent.tools import async_delegation as ad
 
 
 class _QueuedTransport(BasePlatformAdapter):

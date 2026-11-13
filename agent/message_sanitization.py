@@ -439,7 +439,7 @@ _IMAGE_CORRUPT_PHRASES = (
     # unsupported image format". Like the Codex case above, the bad bytes are baked into immutable
     # conversation history and re-sent on every retry, wedging the session. Strip the images so the turn
     # recovers instead of exhausting retries. (issue #76884; complements the proactive full-decode
-    # validation in tools/vision_tools._normalize_to_supported_image)
+    # validation in hermes_agent/tools/vision_tools._normalize_to_supported_image)
     "failed to decode image",
 )
 

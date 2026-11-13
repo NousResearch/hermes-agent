@@ -22,26 +22,26 @@ from tempfile import TemporaryDirectory
 from typing import Optional, Dict, Any
 
 from utils import is_truthy_value
-from tools.transcription_common import (
+from hermes_agent.tools.transcription_common import (
     BUILTIN_STT_PROVIDERS, CLOUD_STT_PROVIDERS, DEFAULT_ELEVENLABS_STT_MODEL,
     DEFAULT_GROQ_STT_MODEL, DEFAULT_LOCAL_MODEL, DEFAULT_MISTRAL_STT_MODEL, DEFAULT_PROVIDER,
     DEFAULT_STT_MODEL, LOCAL_STT_COMMAND_ENV, LOCAL_STT_LANGUAGE_ENV,
     normalize_xai_stt_model, _error_result, _get_stt_section, _ok_result)
-from tools.transcription_audio import (
+from hermes_agent.tools.transcription_audio import (
     _convert_caf_to_wav, _prepare_audio_for_transcription, _trim_silence_for_cloud_stt,
     _validate_audio_file, _validate_audio_source_file)
-from tools.transcription_chunking import exceeds_upload_limit, transcribe_oversized, upload_limit
-from tools.transcription_local import (
+from hermes_agent.tools.transcription_chunking import exceeds_upload_limit, transcribe_oversized, upload_limit
+from hermes_agent.tools.transcription_local import (
     _get_idle_unload_seconds, _has_local_command, _join_confident_segments,
     _load_local_whisper_model, _looks_like_cuda_lib_error, _normalize_local_model,
     _normalize_local_stt_language, _transcribe_local_command, _try_lazy_install_stt,
     build_local_transcribe_kwargs)
 # The ``_transcribe_<provider>`` handlers are looked up in this module's globals by _dispatch_stt_provider.
-from tools.transcription_cloud import (
+from hermes_agent.tools.transcription_cloud import (
     _has_xai_stt_credentials, _resolve_openai_audio_client_config, _transcribe_deepinfra,
     _transcribe_elevenlabs, _transcribe_groq, _transcribe_mistral, _transcribe_openai,
     _transcribe_xai)
-from tools.transcription_command import (
+from hermes_agent.tools.transcription_command import (
     _apply_pre_transcription_hook, _dispatch_to_plugin_provider, _enforce_prompt_length_limit,
     _resolve_command_stt_provider_config, _transcribe_command_stt, _unregistered_stt_provider_error)
 
@@ -50,7 +50,7 @@ logger = logging.getLogger(__name__)
 
 def _resolve_provider_key(env_var: str, provider_id: str) -> str:
     """STT API key via the shared voice-key resolver (config > env/.env > credential pool); resolved per call."""
-    from tools.tool_backend_helpers import resolve_provider_secret
+    from hermes_agent.tools.tool_backend_helpers import resolve_provider_secret
     return resolve_provider_secret(env_var, provider_id)
 
 
@@ -260,7 +260,7 @@ def _get_provider(stt_config: dict) -> str:
         # Legacy DEFAULT_CONFIG seeded ``stt.provider: local`` on every install, so only a
         # raw config.yaml selection counts as explicit; otherwise autodetect (local-first anyway).
         try:
-            from tools.tool_backend_helpers import read_selection
+            from hermes_agent.tools.tool_backend_helpers import read_selection
             if read_selection("stt") is None:
                 explicit = False
         except Exception:  # pragma: no cover — helpers are in-repo
@@ -567,7 +567,7 @@ def transcribe_audio(
     file_path: str, model: Optional[str] = None, source: Optional[str] = None) -> dict[str, Any]:
     """Validate, preprocess supported inputs, and dispatch transcription. ``source`` is a caller-surface
     label (``"gateway"``, ``"voice_mode"``) forwarded to the ``pre_transcription`` hook only."""
-    from tools.hosted_tool_policy import host_feature_refusal
+    from hermes_agent.tools.hosted_tool_policy import host_feature_refusal
     if refusal := host_feature_refusal("transcription", "Transcription"):
         return {"success": False, "transcript": "", "error": refusal}
     # Secret-store refusal runs before ANY validation so the error names the real reason.

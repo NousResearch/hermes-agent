@@ -19,15 +19,15 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_platform.host.runtime import is_wsl
-from tools.computer_use.backend import ActionResult, ComputerUseBackend
-from tools.computer_use.cua_backend_capture import _CaptureMixin
-from tools.computer_use.cua_backend_daemon import _EmbeddedCuaDaemon
-from tools.computer_use.cua_backend_driver import (
+from hermes_agent.tools.computer_use.backend import ActionResult, ComputerUseBackend
+from hermes_agent.tools.computer_use.cua_backend_capture import _CaptureMixin
+from hermes_agent.tools.computer_use.cua_backend_daemon import _EmbeddedCuaDaemon
+from hermes_agent.tools.computer_use.cua_backend_driver import (
     _CUA_DRIVER_CMD_ENV, cua_driver_binary_available, cua_driver_runtime_contract_status,
     resolve_cua_driver_cmd)
-from tools.computer_use.cua_backend_input import _InputMixin
-from tools.computer_use.cua_backend_parse import _action_result_from
-from tools.computer_use.cua_backend_session import _AsyncBridge, _CuaDriverSession
+from hermes_agent.tools.computer_use.cua_backend_input import _InputMixin
+from hermes_agent.tools.computer_use.cua_backend_parse import _action_result_from
+from hermes_agent.tools.computer_use.cua_backend_session import _AsyncBridge, _CuaDriverSession
 
 logger = logging.getLogger(__name__)
 # cua-driver's anonymous PostHog telemetry gate ("0" disables; absent => ON upstream).
@@ -128,7 +128,7 @@ def desktop_identity(env: Optional[dict[str, str]] = None) -> str:
     noticed — the cached cua-driver still points at the old seat or at no display at all. A running Bot Desktop
     is that screen wherever it is hosted; one inside the terminal backend is not part of this machine's env."""
     if env is None:
-        from tools.bot_desktop import runtime as _bd_runtime
+        from hermes_agent.tools.bot_desktop import runtime as _bd_runtime
         if screen := _bd_runtime.published_env().get("DISPLAY"):
             _bd_runtime.touch_activity()
             return str(screen)
@@ -149,7 +149,7 @@ def cua_driver_child_env(base_env: Optional[dict[str, str]] = None) -> dict[str,
     env = dict(os.environ if base_env is None else base_env)
     # A running Bot Desktop for this profile owns the agent's screen: DISPLAY/XAUTHORITY/DBUS point there so
     # cua-driver never acts on a seat the human is sitting at (#90374 class) and headless hosts get a display.
-    from tools.bot_desktop.runtime import desktop_env as _bot_desktop_env
+    from hermes_agent.tools.bot_desktop.runtime import desktop_env as _bot_desktop_env
     env = _bot_desktop_env(env)
     if _cua_telemetry_disabled():
         env[_CUA_TELEMETRY_ENV_VAR] = "0"
@@ -163,13 +163,13 @@ def sandbox_mcp_invocation() -> Optional[tuple[tuple[str, list[str]], dict[str, 
     gateway-hosted desktop, where the local driver is used. Placement is the authority: a ``terminal``
     placement gets its screen started here and a ``refused`` one raises — the host driver is never the
     fallback for a sandbox whose screen is down."""
-    from tools.bot_desktop import placement, runtime as _bd_runtime
+    from hermes_agent.tools.bot_desktop import placement, runtime as _bd_runtime
     if _bd_runtime.tool_placement() == placement.GATEWAY:
         return None
     published = _bd_runtime.published_env()
     if not published.get("DISPLAY"):
         raise RuntimeError("the screen inside the terminal backend's sandbox is gone; start it again")
-    from tools.bot_desktop import sandbox_host
+    from hermes_agent.tools.bot_desktop import sandbox_host
     env = _bd_runtime._sandbox_env(create=True)
     if env is None:
         raise RuntimeError("the terminal backend's sandbox is not running, so there is nowhere to run cua-driver")
@@ -186,7 +186,7 @@ def sanitized_cua_driver_env() -> dict[str, str]:
     with contextlib.suppress(Exception):
         # cua-driver is a third-party binary — never hand it provider API keys via inherited env (same
         # policy as the manifest probe and MCP spawn; #53503/#55709/#58889 lineage).
-        from tools.environments.local import _sanitize_subprocess_env
+        from hermes_agent.tools.environments.local import _sanitize_subprocess_env
         return _sanitize_subprocess_env(env)
     return env
 

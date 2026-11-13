@@ -9,8 +9,8 @@ round-trips through the gateway's blocking-prompt bridge like ``read_terminal``
 
 from typing import Callable, Optional
 
-from tools.read_terminal_tool import read_pane
-from tools.browser_vault_preview import redact_preview_result
+from hermes_agent.tools.read_terminal_tool import read_pane
+from hermes_agent.tools.browser_vault_preview import redact_preview_result
 
 
 def read_preview_tool(

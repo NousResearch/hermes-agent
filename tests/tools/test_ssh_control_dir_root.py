@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-import tools.environments.ssh as ssh_mod
+import hermes_agent.tools.environments.ssh as ssh_mod
 
 
 @pytest.fixture

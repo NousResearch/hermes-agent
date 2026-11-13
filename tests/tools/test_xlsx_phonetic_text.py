@@ -8,9 +8,9 @@ import zipfile
 
 import pytest
 
-from tools import file_tools  # registers the public read_file handler
-from tools.read_extract import extract_document_text
-from tools.registry import registry
+from hermes_agent.tools import file_tools  # registers the public read_file handler
+from hermes_agent.tools.read_extract import extract_document_text
+from hermes_agent.tools.registry import registry
 
 S = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
 W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"

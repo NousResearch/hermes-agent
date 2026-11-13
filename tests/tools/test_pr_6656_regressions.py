@@ -25,9 +25,9 @@ from pathlib import Path
 
 import pytest
 
-from tools.skills_hub_install import bundle_content_hash, uninstall_skill
-from tools.skills_hub_models import SkillBundle
-from tools.skills_guard import content_hash
+from hermes_agent.tools.skills_hub_install import bundle_content_hash, uninstall_skill
+from hermes_agent.tools.skills_hub_models import SkillBundle
+from hermes_agent.tools.skills_guard import content_hash
 
 # =============================================================================
 # uninstall_skill: path traversal guard
@@ -50,7 +50,7 @@ class TestUninstallPathTraversal:
         function default. Patching ``HubLockFile.__init__.__defaults__``
         is the standard tool for this.
         """
-        import tools.skills_hub as hub
+        import hermes_agent.tools.skills_hub as hub
         skills_dir = tmp_path / "skills"
         hub_dir = skills_dir / ".hub"
         hub_dir.mkdir(parents=True)

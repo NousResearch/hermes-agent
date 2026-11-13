@@ -8,7 +8,7 @@ import json
 from unittest.mock import patch
 
 
-from tools.connectors.tool import MANAGE_CONNECTIONS_SCHEMA, manage_connections
+from hermes_agent.tools.connectors.tool import MANAGE_CONNECTIONS_SCHEMA, manage_connections
 
 
 class FakeClient:
@@ -126,10 +126,10 @@ def _session_tool_names(enabled_toolsets, *, connectors, disabled_toolsets=None)
     check_fn, not about how many MCP servers the developer running the suite
     happens to have configured.
     """
-    from model_tools import _compute_tool_definitions
-    from tools.registry import invalidate_check_fn_cache
+    from hermes_agent.model_tools import _compute_tool_definitions
+    from hermes_agent.tools.registry import invalidate_check_fn_cache
 
-    with patch("tools.connectors.gateway.config.connectors_available",
+    with patch("hermes_agent.tools.connectors.gateway.config.connectors_available",
                return_value=connectors):
         invalidate_check_fn_cache()
         try:
@@ -190,7 +190,7 @@ def test_session_the_portal_has_not_enabled_never_receives_the_tool(tmp_path, mo
     model cannot call it and read the gateway's 404 back to the user. The handler keeps the same
     gate for the direct RPC path."""
     from hermes_cli.tools_config import _get_platform_tools
-    from tools.registry import registry
+    from hermes_agent.tools.registry import registry
     from hermes_agent.tui_gateway.server import _load_enabled_toolsets
 
     monkeypatch.chdir(tmp_path)
@@ -204,7 +204,7 @@ def test_session_the_portal_has_not_enabled_never_receives_the_tool(tmp_path, mo
     for selection in selections:
         assert "manage_connections" not in _session_tool_names(selection, connectors=False), selection
 
-    with patch("tools.connectors.gateway.config.connectors_available", return_value=False):
+    with patch("hermes_agent.tools.connectors.gateway.config.connectors_available", return_value=False):
         out = json.loads(registry.dispatch("manage_connections", {"action": "status"}))
     assert "not available in this session" in out["error"]
 
@@ -230,7 +230,7 @@ def test_operator_can_still_turn_it_off(tmp_path, monkeypatch):
 
 
 def test_tool_is_never_deferrable():
-    from tools.tool_search import is_deferrable_tool_name
+    from hermes_agent.tools.tool_search import is_deferrable_tool_name
 
     # Core names short-circuit before the toolset check, so listing
     # "connections" in _DIRECT_SURFACE_TOOLSETS would be redundant.

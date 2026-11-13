@@ -12,12 +12,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-import tools.mcp_tool as mcp
-from tools import mcp_tool_discovery as _mcp_discovery
-from tools import mcp_tool_handlers as _mcp_handlers
-from tools import mcp_tool_loop as _mcp_loop
-from tools import mcp_tool_registration as _mcp_registration
-from tools import mcp_tool_schema as _mcp_schema
+import hermes_agent.tools.mcp_tool as mcp
+from hermes_agent.tools import mcp_tool_discovery as _mcp_discovery
+from hermes_agent.tools import mcp_tool_handlers as _mcp_handlers
+from hermes_agent.tools import mcp_tool_loop as _mcp_loop
+from hermes_agent.tools import mcp_tool_registration as _mcp_registration
+from hermes_agent.tools import mcp_tool_schema as _mcp_schema
 
 
 @pytest.fixture(autouse=True)
@@ -67,16 +67,16 @@ def _lazy_config():
 class TestLazyMcpRegistration:
     def test_registers_from_cache_without_connect(self):
         config = _lazy_config()
-        with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
-             patch("tools.mcp_schema_cache.config_fingerprint", return_value="abc"), \
-             patch("tools.mcp_schema_cache.get_cached_entry", return_value=_fake_cache_entry()), \
+        with patch("hermes_agent.tools.mcp_tool._MCP_AVAILABLE", True), \
+             patch("hermes_agent.tools.mcp_schema_cache.config_fingerprint", return_value="abc"), \
+             patch("hermes_agent.tools.mcp_schema_cache.get_cached_entry", return_value=_fake_cache_entry()), \
              patch(
-                 "tools.mcp_tool_registration._register_from_cache_sync",
+                 "hermes_agent.tools.mcp_tool_registration._register_from_cache_sync",
                  return_value=["mcp_playwright_browser_navigate"],
              ) as mock_register, \
-             patch("tools.mcp_tool_discovery._discover_and_register_server", new_callable=AsyncMock) as mock_discover, \
-             patch("tools.mcp_tool_loop._ensure_mcp_loop") as mock_loop, \
-             patch("tools.mcp_tool_loop._run_on_mcp_loop") as mock_run:
+             patch("hermes_agent.tools.mcp_tool_discovery._discover_and_register_server", new_callable=AsyncMock) as mock_discover, \
+             patch("hermes_agent.tools.mcp_tool_loop._ensure_mcp_loop") as mock_loop, \
+             patch("hermes_agent.tools.mcp_tool_loop._run_on_mcp_loop") as mock_run:
 
             _mcp_discovery.register_mcp_servers(config)
 
@@ -87,11 +87,11 @@ class TestLazyMcpRegistration:
 
     def test_cache_miss_falls_back_to_eager_connect(self):
         config = _lazy_config()
-        with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
-             patch("tools.mcp_schema_cache.config_fingerprint", return_value="abc"), \
-             patch("tools.mcp_schema_cache.get_cached_entry", return_value=None), \
-             patch("tools.mcp_tool_loop._ensure_mcp_loop"), \
-             patch("tools.mcp_tool_loop._run_on_mcp_loop") as mock_run:
+        with patch("hermes_agent.tools.mcp_tool._MCP_AVAILABLE", True), \
+             patch("hermes_agent.tools.mcp_schema_cache.config_fingerprint", return_value="abc"), \
+             patch("hermes_agent.tools.mcp_schema_cache.get_cached_entry", return_value=None), \
+             patch("hermes_agent.tools.mcp_tool_loop._ensure_mcp_loop"), \
+             patch("hermes_agent.tools.mcp_tool_loop._run_on_mcp_loop") as mock_run:
 
             _mcp_discovery.register_mcp_servers(config)
 
@@ -99,10 +99,10 @@ class TestLazyMcpRegistration:
 
     def test_non_lazy_server_never_touches_cache(self):
         config = {"playwright": {"command": "npx", "args": []}}
-        with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
-             patch("tools.mcp_schema_cache.get_cached_entry") as mock_get, \
-             patch("tools.mcp_tool_loop._ensure_mcp_loop"), \
-             patch("tools.mcp_tool_loop._run_on_mcp_loop") as mock_run:
+        with patch("hermes_agent.tools.mcp_tool._MCP_AVAILABLE", True), \
+             patch("hermes_agent.tools.mcp_schema_cache.get_cached_entry") as mock_get, \
+             patch("hermes_agent.tools.mcp_tool_loop._ensure_mcp_loop"), \
+             patch("hermes_agent.tools.mcp_tool_loop._run_on_mcp_loop") as mock_run:
 
             _mcp_discovery.register_mcp_servers(config)
 
@@ -113,9 +113,9 @@ class TestLazyMcpRegistration:
         config = _lazy_config()
         mcp._lazy_server_configs["playwright"] = dict(config["playwright"])
         mcp._lazy_server_tool_names["playwright"] = ["mcp_playwright_browser_navigate"]
-        with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
-             patch("tools.mcp_tool_registration._register_from_cache_sync") as mock_register, \
-             patch("tools.mcp_tool_loop._run_on_mcp_loop") as mock_run:
+        with patch("hermes_agent.tools.mcp_tool._MCP_AVAILABLE", True), \
+             patch("hermes_agent.tools.mcp_tool_registration._register_from_cache_sync") as mock_register, \
+             patch("hermes_agent.tools.mcp_tool_loop._run_on_mcp_loop") as mock_run:
 
             names = _mcp_discovery.register_mcp_servers(config)
 
@@ -265,7 +265,7 @@ class TestLazyFirstUseConnect:
         # Stale-cache reconciliation: the cached manifest advertised tool X,
         # but the live server only registers tool Y → X must be deregistered
         # after the first-use connect so the model stops seeing a phantom.
-        from tools.registry import registry
+        from hermes_agent.tools.registry import registry
 
         mcp._lazy_server_configs["playwright"] = {"command": "npx", "lazy": True}
         mcp._lazy_server_fingerprints["playwright"] = "stale-fp"
@@ -335,9 +335,9 @@ class TestLazyMcpStatus:
         ``configured``; a live one stays ``connected``."""
         import logging
 
-        from tools import mcp_tool_config as _mcp_config
-        from tools import mcp_tool_loop as _mcp_loop
-        from tools.mcp_tool_scope import _server_key
+        from hermes_agent.tools import mcp_tool_config as _mcp_config
+        from hermes_agent.tools import mcp_tool_loop as _mcp_loop
+        from hermes_agent.tools.mcp_tool_scope import _server_key
 
         servers = _lazy_config()
         controls = {"eager": {"command": "/nonexistent/eager"}, "live": {"command": "/nonexistent/live"}}
@@ -350,15 +350,15 @@ class TestLazyMcpStatus:
             mcp._lazy_server_tool_names[key] = list(cached)
             return list(cached)
 
-        with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
+        with patch("hermes_agent.tools.mcp_tool._MCP_AVAILABLE", True), \
              patch.object(_mcp_config, "_load_mcp_config", return_value=dict(servers)), \
              patch.object(_mcp_loop, "_try_acquire_mcp_discovery_lock", return_value=mcp._LOCK_UNAVAILABLE), \
-             patch("tools.mcp_schema_cache.config_fingerprint", return_value="abc"), \
-             patch("tools.mcp_schema_cache.get_cached_entry", return_value=_fake_cache_entry()), \
-             patch("tools.mcp_tool_registration._register_from_cache_sync", side_effect=_fake_register), \
-             patch("tools.mcp_tool_discovery._discover_and_register_server", new_callable=AsyncMock), \
-             patch("tools.mcp_tool_loop._ensure_mcp_loop"), patch("tools.mcp_tool_loop._run_on_mcp_loop"), \
-             caplog.at_level(logging.INFO, logger="tools.mcp_tool"):
+             patch("hermes_agent.tools.mcp_schema_cache.config_fingerprint", return_value="abc"), \
+             patch("hermes_agent.tools.mcp_schema_cache.get_cached_entry", return_value=_fake_cache_entry()), \
+             patch("hermes_agent.tools.mcp_tool_registration._register_from_cache_sync", side_effect=_fake_register), \
+             patch("hermes_agent.tools.mcp_tool_discovery._discover_and_register_server", new_callable=AsyncMock), \
+             patch("hermes_agent.tools.mcp_tool_loop._ensure_mcp_loop"), patch("hermes_agent.tools.mcp_tool_loop._run_on_mcp_loop"), \
+             caplog.at_level(logging.INFO, logger="hermes_agent.tools.mcp_tool"):
             _mcp_discovery.discover_mcp_tools()
             mcp._servers[_server_key("live")] = live
             status = {e["name"]: e for e in _mcp_discovery.get_mcp_status({**servers, **controls})}

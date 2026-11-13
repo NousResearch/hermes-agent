@@ -41,8 +41,8 @@ def make_agent(monkeypatch):
     with (
         patch("agent.process_bootstrap.OpenAI"),
         patch("agent.model_metadata_http.get") as metadata_get,
-        patch("model_tools.get_tool_definitions", return_value=[]),
-        patch("tools.env_probe.warm_environment_probe_async"),
+        patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]),
+        patch("hermes_agent.tools.env_probe.warm_environment_probe_async"),
     ):
         # The prewarm thread and compressor keep imported metadata aliases; stop
         # their shared HTTP boundary while retaining the real metadata resolution.

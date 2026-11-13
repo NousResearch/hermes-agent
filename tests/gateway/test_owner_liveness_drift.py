@@ -35,7 +35,7 @@ def _api_server_run_alive() -> bool:
 
 
 def _async_delegation_alive(monkeypatch, tmp_path) -> bool:
-    import tools.async_delegation as ad
+    import hermes_agent.tools.async_delegation as ad
 
     monkeypatch.setattr(ad, "_db_path", lambda: tmp_path / "state.db")
     with ad._DB_LOCK, ad._transaction() as conn:

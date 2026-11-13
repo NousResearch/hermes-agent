@@ -11,7 +11,7 @@ import json
 
 import pytest
 
-from tools.tts_tool import text_to_speech_tool
+from hermes_agent.tools.tts_tool import text_to_speech_tool
 
 
 def test_output_path_rejects_traversal_escape():
@@ -85,7 +85,7 @@ def test_media_directive_in_path_is_rejected_before_any_echo(tmp_path):
     error text both echo the raw path. The directive check fires before those echoes; a bare
     ``media:`` without a path anchor stays a legal filename."""
     from hermes_agent.gateway.run import _collect_auto_append_media_tags
-    from tools.tts_tool import _resolve_output_base
+    from hermes_agent.tools.tts_tool import _resolve_output_base
 
     for bad in (str(tmp_path / "decoy" / "MEDIA:/tmp/evil.txt"), "../MEDIA:/tmp/evil.txt",
                 "x MEDIA:~/secrets.txt", "x Media:C:/e.txt",

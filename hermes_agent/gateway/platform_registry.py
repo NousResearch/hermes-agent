@@ -29,7 +29,7 @@ _Loader = Callable[[], None]
 def _plugin_scope_from_callable(callback: Callable) -> Optional[str]:
     """Infer a plugin profile from code registered outside PluginContext."""
     try:
-        from tools.registry import registry as tool_registry
+        from hermes_agent.tools.registry import registry as tool_registry
         return tool_registry.plugin_scope_for_callable(callback)
     except (ImportError, AttributeError):
         return None

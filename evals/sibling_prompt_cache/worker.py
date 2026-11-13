@@ -42,7 +42,7 @@ sys.path.insert(0, TREE)
 import agent.turn_response_check as trc
 from hermes_agent.hermes_state import SessionDB
 from run_agent import AIAgent
-from tools.delegate_tool import delegate_task
+from hermes_agent.tools.delegate_tool import delegate_task
 
 calls = []
 _orig = trc.record_response_usage

@@ -19,9 +19,9 @@ from pathlib import Path
 import pytest
 
 from tests.waiting import wait_until
-from tools import terminal_tool, terminal_tool_sudo
-from tools import terminal_tool_sudo_askpass as askpass
-from tools.environments.base import BaseEnvironment
+from hermes_agent.tools import terminal_tool, terminal_tool_sudo
+from hermes_agent.tools import terminal_tool_sudo_askpass as askpass
+from hermes_agent.tools.environments.base import BaseEnvironment
 
 PW = "synthetic-pw-7"
 PRE = askpass.SUDO_ASKPASS_PREFIX
@@ -409,7 +409,7 @@ def live_env(tmp_path, monkeypatch):
     by absolute path, so no host sudo can ever be reached; the cached password is the source."""
     if sys.platform == "win32" or not all(shutil.which(tool) for tool in _LIVE_TOOLS):
         pytest.skip("needs a POSIX bash with mkfifo and mktemp")
-    from tools.environments.local import LocalEnvironment
+    from hermes_agent.tools.environments.local import LocalEnvironment
 
     monkeypatch.delenv("SUDO_PASSWORD", raising=False)
     monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
@@ -657,7 +657,7 @@ def test_live_backgrounded_sudo_is_served_after_the_shell_exits(tmp_path):
 def test_live_backgrounded_sudo_in_case_or_coproc_is_served_after_the_shell_exits(live_env, body):
     env, sudo, temp_dir = live_env
     if body.startswith("coproc"):
-        from tools.environments.local import _find_bash
+        from hermes_agent.tools.environments.local import _find_bash
         if subprocess.run([_find_bash(), "-c", "coproc true"], capture_output=True, check=False).returncode:
             pytest.skip("this bash has no coproc (bash 3.2)")
     out = temp_dir.parent / "out"
@@ -766,7 +766,7 @@ def test_live_noclobber_session_keeps_the_askpass_form(configured_password, tmp_
 
 @_needs_posix_shell
 def test_live_local_backend_noclobber_startup_keeps_caller_input(configured_password, tmp_path, monkeypatch):
-    from tools.environments.local import LocalEnvironment
+    from hermes_agent.tools.environments.local import LocalEnvironment
 
     fake = _write_fake_sudo(tmp_path / "bin")
     startup = tmp_path / "bash-env"

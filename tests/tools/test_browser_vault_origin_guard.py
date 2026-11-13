@@ -102,7 +102,7 @@ def vault(tmp_path):
 
 
 def _on_page(page: _FakePage):
-    from tools import browser_vault_tool
+    from hermes_agent.tools import browser_vault_tool
 
     return patch.object(browser_vault_tool, "_ensure_supervisor", return_value=page)
 
@@ -123,7 +123,7 @@ def _refused_before_resolution(out: dict, backend: _RecordingBackend, page: _Fak
 
 class TestOneTimeCode:
     def test_saved_code_is_not_minted_for_a_page_on_another_origin(self, vault):
-        from tools import browser_vault_tool
+        from hermes_agent.tools import browser_vault_tool
 
         store, backend, asked = vault
         meta = _login(store)
@@ -134,7 +134,7 @@ class TestOneTimeCode:
         assert asked == []  # a refusal, not a silent switch to asking the user
 
     def test_saved_code_is_minted_on_the_saved_origin_and_pinned_to_it(self, vault):
-        from tools import browser_vault_tool
+        from hermes_agent.tools import browser_vault_tool
 
         store, backend, asked = vault
         meta = _login(store)
@@ -147,7 +147,7 @@ class TestOneTimeCode:
         assert '"https://bank.example"' in write  # the in-page origin assert names the saved origin
 
     def test_a_code_without_a_saved_item_is_still_asked_of_the_user(self, vault):
-        from tools import browser_vault_tool
+        from hermes_agent.tools import browser_vault_tool
 
         _, backend, asked = vault
         page = _FakePage("https://elsewhere.example/verify", _OTP_CONTROLS)
@@ -159,7 +159,7 @@ class TestOneTimeCode:
 
 class TestFill:
     def test_password_is_not_resolved_for_a_page_on_another_origin(self, vault):
-        from tools import browser_vault_tool
+        from hermes_agent.tools import browser_vault_tool
 
         store, backend, _ = vault
         meta = _login(store, otp=False)
@@ -169,19 +169,19 @@ class TestFill:
         _refused_before_resolution(out, backend, page)
 
     def test_card_is_refused_before_the_user_is_asked_to_confirm(self, vault):
-        from tools import browser_vault_tool
+        from hermes_agent.tools import browser_vault_tool
 
         store, backend, _ = vault
         meta = store.add_item(kind="payment", label="Card", origin="https://shop.example", secret=_CARD)
         page = _FakePage("https://elsewhere.example/checkout", _CARD_CONTROLS)
         with _on_page(page), \
-             patch("tools.approval_prompt.request_elicitation_consent", return_value="accept") as consent:
+             patch("hermes_agent.tools.approval_prompt.request_elicitation_consent", return_value="accept") as consent:
             out = json.loads(browser_vault_tool.browser_vault_fill(meta.id, task_id="t"))
         _refused_before_resolution(out, backend, page)
         consent.assert_not_called()
 
     def test_address_is_not_resolved_for_a_page_on_another_origin(self, vault):
-        from tools import browser_vault_tool
+        from hermes_agent.tools import browser_vault_tool
 
         store, backend, _ = vault
         meta = store.add_item(kind="address", label="Home", origin="https://shop.example", secret=_ADDRESS)
@@ -194,7 +194,7 @@ class TestFill:
         """save_login stores the login for the page it read, then fills through the same guard: a page that
         navigated away while the user was typing gets nothing."""
         from agent.vault_backends import unlock as unlock_mod
-        from tools import browser_vault_tool
+        from hermes_agent.tools import browser_vault_tool
 
         store, backend, _ = vault
         page = _FakePage("https://bank.example/login", _LOGIN_CONTROLS)

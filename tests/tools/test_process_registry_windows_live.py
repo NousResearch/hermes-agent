@@ -25,7 +25,7 @@ pytestmark = pytest.mark.platforms("windows")  # live Windows background-executo
 @pytest.fixture()
 def registry(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes-home"))
-    import tools.process_registry as pr
+    import hermes_agent.tools.process_registry as pr
 
     reg = pr.ProcessRegistry()
     yield reg
@@ -63,7 +63,7 @@ class TestWindowsSpawnParity:
         """Even with full (faked) gateway identity, the Windows spawn takes
         the legacy path: no scope argv is built, no probe runs, and the job
         behaves exactly as without the identity."""
-        import tools.process_registry as pr
+        import hermes_agent.tools.process_registry as pr
 
         monkeypatch.setenv("_HERMES_GATEWAY", "1")
         monkeypatch.setattr(

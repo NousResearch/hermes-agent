@@ -1,7 +1,7 @@
 """Web Search Provider Registry.
 
 Populated by plugins via :meth:`PluginContext.register_web_search_provider`;
-consumed by the ``web_search`` / ``web_extract`` wrappers in :mod:`tools.web_tools`.
+consumed by the ``web_search`` / ``web_extract`` wrappers in :mod:`hermes_agent.tools.web_tools`.
 
 Active selection, in precedence order (the ``supports_search`` /
 ``supports_extract`` capability filter applies at every step, so a search-only
@@ -10,7 +10,7 @@ provider configured as ``web.extract_backend`` falls through):
 1. ``web.search_backend`` / ``web.extract_backend``, then ``web.backend``.
 2. The single capability-eligible provider that is registered AND available.
 3. Legacy preference walk (``_LEGACY_PREFERENCE``) filtered by availability —
-   the historic ``tools.web_tools._get_backend()`` order, so installs that never
+   the historic ``hermes_agent.tools.web_tools._get_backend()`` order, so installs that never
    set a config key keep landing on the same provider.
 4. Keyless free-tier walk (``_KEYLESS_PREFERENCE``), last resort.
 5. ``None`` — the tool points the user at ``hermes tools``.

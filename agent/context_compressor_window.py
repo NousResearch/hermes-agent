@@ -20,7 +20,7 @@ class CompactionWindowMixin:
 
     # Set by agent_init when compression.prepare_ahead is on; None leaves compress() inline as before.
     prepared_compaction: Optional[PreparedCompaction] = None
-    # Set on delegated children (tools/delegate_tool.py): their first user turn is the whole brief.
+    # Set on delegated children (hermes_agent/tools/delegate_tool.py): their first user turn is the whole brief.
     pin_task_turn: bool = False
 
     def _restart_handoff_probe_bounds(self, messages: list[dict[str, Any]]) -> tuple[int, int]:

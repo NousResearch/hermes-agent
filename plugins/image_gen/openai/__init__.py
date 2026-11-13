@@ -97,7 +97,7 @@ def _load_image_bytes(ref: str) -> tuple[bytes, str]:
     ref = ref.strip()
     lower = ref.lower()
     if lower.startswith(("http://", "https://")):
-        from tools.url_safety import create_ssrf_safe_client, is_safe_url
+        from hermes_agent.tools.url_safety import create_ssrf_safe_client, is_safe_url
 
         if not is_safe_url(ref):
             raise ValueError(f"Image reference URL failed the SSRF safety check: {ref}")

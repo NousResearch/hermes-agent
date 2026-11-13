@@ -1,6 +1,6 @@
 """A notification turn the gateway admits while the classic CLI is idle reaches main's screen.
 
-On main the CLI drained ``tools.process_registry`` itself and ran the ``[IMPORTANT: Background
+On main the CLI drained ``hermes_agent.tools.process_registry`` itself and ran the ``[IMPORTANT: Background
 process ...]`` turn. Over the session authority the process (and its completion) live in the
 gateway, which admits and runs that turn on its own; the CLI viewer must paint main's
 ``◈ Background Process Finished: ...`` header and stream the turn's reply through the same callbacks.
@@ -66,7 +66,7 @@ def test_idle_cli_paints_header_and_streams_the_gateway_admitted_turn(monkeypatc
     conn, client = _connected()
     try:
         # The CLI process never owns the registry over the gateway: draining it is a bug.
-        monkeypatch.setattr("tools.process_registry.process_registry", SimpleNamespace(
+        monkeypatch.setattr("hermes_agent.tools.process_registry.process_registry", SimpleNamespace(
             drain_notifications=Mock(side_effect=AssertionError("CLI drained the process registry"))))
         cli = _idle_cli(conn)
         _play(conn, client, _gateway_frames())
@@ -205,7 +205,7 @@ def test_idle_cli_shows_a_gateway_review_subagents_completion(capsys):
     """``/review`` runs its reviewer as a gateway-side async delegation (#134889 M4/CLI-6). Its
     completion turn must reach an idle classic CLI as main's ``◈ Subagent Task ...`` header plus the
     streamed reply; a claim without the card was skipped and the result never shown."""
-    from tools.process_registry_notifications import format_process_notification
+    from hermes_agent.tools.process_registry_notifications import format_process_notification
     evt = _delegation_completion("Review the work just discussed")
     text = format_process_notification(evt)
     card = _claim_card(evt, text)

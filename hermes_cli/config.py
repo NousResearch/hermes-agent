@@ -1902,7 +1902,7 @@ def write_platform_config_field(
     save_config(config)
 
 
-# ``terminal.<key>`` -> env var read by tools.terminal_tool. Every key maps to ``TERMINAL_<KEY>``
+# ``terminal.<key>`` -> env var read by hermes_agent.tools.terminal_tool. Every key maps to ``TERMINAL_<KEY>``
 # except ``backend`` (historically ``TERMINAL_ENV``).
 TERMINAL_CONFIG_ENV_MAP = {
     "backend": "TERMINAL_ENV",
@@ -1954,7 +1954,7 @@ def apply_terminal_config_to_env(
     *, env: Optional[dict[str, str]] = None, config: Optional[dict[str, Any]] = None,
     override: Optional[bool] = None) -> dict[str, str]:
     """Bridge ``terminal.*`` config into the env vars terminal tools read.
-    ``tools.terminal_tool`` is environment-driven because it also runs in child processes (TUI,
+    ``hermes_agent.tools.terminal_tool`` is environment-driven because it also runs in child processes (TUI,
     dashboard PTY, gateway workers); this gives those launch paths the same bridge as the CLI
     without importing ``cli.py``. Explicit keys in the user's raw ``terminal`` section override
     matching env values; merged defaults only backfill missing env vars."""
@@ -3268,7 +3268,7 @@ def set_config_value(key: str, value: str, force: bool = False):
         _set_nested(user_config, key, value)
     except ValueError as e:
         _exit_invalid(f"✗ {e}")
-    from tools.mcp_tool_common import drop_legacy_disabled_for_key
+    from hermes_agent.tools.mcp_tool_common import drop_legacy_disabled_for_key
     for _note in _dropped_shadow_notes(user_config, key, legacy_key, drop_legacy_disabled_for_key):
         print(_note)
     # A provider switch re-points ``model:`` at a new route; ``base_url``/``api_mode`` are route

@@ -93,7 +93,7 @@ class TestFireworksDoctor:
         monkeypatch.setattr(httpx, "get", lambda *a, **k: types.SimpleNamespace(status_code=200))
         monkeypatch.setitem(
             sys.modules,
-            "model_tools",
+            "hermes_agent.model_tools",
             types.SimpleNamespace(check_tool_availability=lambda *a, **k: ([], []), TOOLSET_REQUIREMENTS={}),
         )
         with contextlib.suppress(Exception):

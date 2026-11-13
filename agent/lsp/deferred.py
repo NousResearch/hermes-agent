@@ -2,7 +2,7 @@
 
 ``write_file`` / ``patch`` return as soon as the bytes are on disk and verified; the language server
 check runs on the LSP loop (``agent.lsp.edit_check``).  Its verdict is queued here under the session
-that made the edit (bound by ``tools.file_tools`` around the write) and handed to that session's agent
+that made the edit (bound by ``hermes_agent.tools.file_tools`` around the write) and handed to that session's agent
 at its next tool result, or its next user turn when no tool runs again
 (``agent.plugin_live_notes``: a new row not yet flushed, so no cached byte moves).
 

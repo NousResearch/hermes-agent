@@ -12,14 +12,14 @@ import httpx
 
 from hermes_cli._subprocess_compat import windows_hide_flags
 from agent.retry_utils import parse_retry_after_seconds
-from tools.skills_guard import TRUSTED_REPOS
-from tools.skills_hub_models import (
+from hermes_agent.tools.skills_guard import TRUSTED_REPOS
+from hermes_agent.tools.skills_hub_models import (
     SkillBundle, SkillMeta, SkillSource, _cache_metas, _cached_metas, _dedupe_by_trust,
     _hermes_tags, _matches_query, _parse_frontmatter, _referenced_support_paths, hub,
     _validate_bundle_rel_path,
 )
 
-logger = logging.getLogger("tools.skills_hub")
+logger = logging.getLogger("hermes_agent.tools.skills_hub")
 
 # GitHub tap repo (owner/repo) -> provider label used by the docs-site catalog
 # (website/scripts/extract-skills.py::GITHUB_TAP_LABELS). The runtime index collapses every tap into
@@ -214,7 +214,7 @@ class GitHubSource(SkillSource):
         {"repo": "anthropics/skills", "path": "skills/"},
         {"repo": "huggingface/skills", "path": "skills/"},
         # NVIDIA-verified skills (CUDA-X, NeMo, cuOpt, ...), each with a signed skill.oms.sig
-        # + governance card; `trusted` via tools/skills_guard.py::TRUSTED_REPOS.
+        # + governance card; `trusted` via hermes_agent/tools/skills_guard.py::TRUSTED_REPOS.
         {"repo": "NVIDIA/skills", "path": "skills/"},
         # Vendor-maintained skills for their own products; they replaced our copied
         # weights-and-biases / qdrant / pinecone / notion / airtable / shopify optional skills.
@@ -228,7 +228,7 @@ class GitHubSource(SkillSource):
         # --- Science bucket ---
         # Two scientific-skill repos share one hub category via the tap-level "bucket" key so
         # their skills surface together. Both stay `community` trust on purpose (NOT in
-        # tools/skills_guard.py::TRUSTED_REPOS): the guard scans every skill and INSTALL_POLICY
+        # hermes_agent/tools/skills_guard.py::TRUSTED_REPOS): the guard scans every skill and INSTALL_POLICY
         # auto-installs only "safe" ones. Skills wrap third-party tools with their OWN licenses
         # (some GPL; KEGG is commercial for non-academic use) — surfaced per skill, not vetted here.
         # K-Dense-AI/scientific-agent-skills: flat skills/<name>/, MIT.

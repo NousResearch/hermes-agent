@@ -210,7 +210,7 @@ def _blank_slate_minimal_toolsets(config: dict):
     keep = {"file", "terminal", "vision", "skills"}
     config.setdefault("platform_toolsets", {})["cli"] = sorted(keep)
     try:
-        from toolsets import TOOLSETS, resolve_toolset
+        from hermes_agent.toolsets import TOOLSETS, resolve_toolset
         from hermes_cli.tools_config import CONFIGURABLE_TOOLSETS, _get_plugin_toolset_keys
         all_keys = {k for k, _, _ in CONFIGURABLE_TOOLSETS}
         all_keys.update(_get_plugin_toolset_keys())
@@ -255,8 +255,8 @@ def _set_bundled_skills_opt_out(opt_out: bool, log_label: str, on_success=None, 
     """Record the bundled-skills opt-out marker and sync (essential skills are always seeded);
     ``on_success(sync_result)`` / ``on_error(exc)`` report the outcome."""
     try:
-        from tools.skills_sync import sync_skills
-        from tools.skills_sync_bundled_ops import set_bundled_skills_opt_out
+        from hermes_agent.tools.skills_sync import sync_skills
+        from hermes_agent.tools.skills_sync_bundled_ops import set_bundled_skills_opt_out
         set_bundled_skills_opt_out(opt_out)
         result = sync_skills(quiet=True)
         if on_success is not None:

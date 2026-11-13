@@ -665,8 +665,8 @@ def test_turn_that_crosses_the_trigger_splices_the_summary_prepared_during_its_t
         "name": "web_search", "description": "search", "parameters": {"type": "object", "properties": {}},
     }}]
     with (
-        patch("model_tools.get_tool_definitions", return_value=tool_defs),
-        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("hermes_agent.model_tools.get_tool_definitions", return_value=tool_defs),
+        patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
         patch("agent.process_bootstrap.OpenAI"),
     ):
         agent = AIAgent(api_key="test-key-1234567890", base_url="https://openrouter.ai/api/v1",
@@ -706,7 +706,7 @@ def test_turn_that_crosses_the_trigger_splices_the_summary_prepared_during_its_t
         _loop_response(prompt_tokens=6000, content="done"),
     ]
     with (
-        patch("model_tools.handle_function_call", side_effect=run_tool),
+        patch("hermes_agent.model_tools.handle_function_call", side_effect=run_tool),
         patch.object(agent, "_persist_session"),
         patch.object(agent, "_save_trajectory"),
         patch.object(agent, "_cleanup_task_resources"),

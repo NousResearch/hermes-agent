@@ -24,7 +24,7 @@ def _no_codex_backoff(monkeypatch):
 
 def _patch_agent_bootstrap(monkeypatch):
     monkeypatch.setattr(
-        "model_tools.get_tool_definitions",
+        "hermes_agent.model_tools.get_tool_definitions",
         lambda **kwargs: [
             {
                 "type": "function",
@@ -36,7 +36,7 @@ def _patch_agent_bootstrap(monkeypatch):
             }
         ],
     )
-    monkeypatch.setattr("model_tools.check_toolset_requirements", dict)
+    monkeypatch.setattr("hermes_agent.model_tools.check_toolset_requirements", dict)
 
 
 def _build_agent(monkeypatch):

@@ -15,8 +15,8 @@ from pathlib import Path
 
 import pytest
 
-from tools.environments.local import LocalEnvironment
-from tools.file_operations import ShellFileOperations
+from hermes_agent.tools.environments.local import LocalEnvironment
+from hermes_agent.tools.file_operations import ShellFileOperations
 
 
 @pytest.fixture
@@ -45,7 +45,7 @@ class TestFailClosedSyntaxGate:
     def test_invalid_python_is_NOT_hard_refused(self, ops, tmp_path: Path):
         """Deliberate scope decision: .py keeps the pre-existing NON-BLOCKING
         lint-delta report rather than a hard refusal (see
-        ``_FAIL_CLOSED_INPROC_EXTS`` in tools/file_operations.py for why --
+        ``_FAIL_CLOSED_INPROC_EXTS`` in hermes_agent/tools/file_operations.py for why --
         this codebase's own test suite writes arbitrary non-Python content
         through *.py paths as generic write-mechanics fixtures)."""
         target = tmp_path / "broken.py"

@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from typing import Any, Mapping, Optional
 
-from tools.connectors.turn import CARD, LINK, SIDE
+from hermes_agent.tools.connectors.turn import CARD, LINK, SIDE
 
 __all__ = [
     "SIDE_AGENT_HINT",

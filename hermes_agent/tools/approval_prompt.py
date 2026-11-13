@@ -1,20 +1,20 @@
-"""Human prompt surfaces for :mod:`tools.approval`.
+"""Human prompt surfaces for :mod:`hermes_agent.tools.approval`.
 
 The interactive CLI prompt (callback panel or ``input()`` fallback) and the
 operator-selected plugin approval transport. Detection, allowed scopes,
 persistence, timeout policy and the final authorization stay host-owned in
-``tools.approval``; this module only asks and reports the answer.
+``hermes_agent.tools.approval``; this module only asks and reports the answer.
 """
 
 import logging
 import os
 import sys
 import threading
-from tools import approval_context as _ctx, approval_gateway_wait as _gw
-from tools.approval_human_wait import activity_heartbeat, human_wait_window
-from tools.interrupt import is_interrupted
+from hermes_agent.tools import approval_context as _ctx, approval_gateway_wait as _gw
+from hermes_agent.tools.approval_human_wait import activity_heartbeat, human_wait_window
+from hermes_agent.tools.interrupt import is_interrupted
 
-logger = logging.getLogger("tools.approval")
+logger = logging.getLogger("hermes_agent.tools.approval")
 
 
 def prompt_dangerous_approval(command: str, description: str, timeout_seconds: int | None = None,
@@ -25,7 +25,7 @@ def prompt_dangerous_approval(command: str, description: str, timeout_seconds: i
 
     allow_permanent=False hides [a]lways. allow_session=False hides
     [s]ession too — the caller grants one operation and re-asks next time (the
-    protected agent-instruction gate in ``tools/file_tools.py``); offering a scope
+    protected agent-instruction gate in ``hermes_agent/tools/file_tools.py``); offering a scope
     the caller discards makes every later write re-prompt and reads as broken.
     smart_denied: owner override of a Smart DENY, offer only once/deny.
     title: header for the plain-input prompt when the question is not a dangerous command
@@ -44,7 +44,7 @@ def prompt_dangerous_approval(command: str, description: str, timeout_seconds: i
     """
     if timeout_seconds is None:
         timeout_seconds = _ctx._get_approval_timeout()
-    from tools.human_input_hooks import human_input_request
+    from hermes_agent.tools.human_input_hooks import human_input_request
     # Everything below is a human prompt (callback panel or input() fallback, both bounded by the approval deadline):
     # record it as human-wait time so the concurrent batch deadline excludes it.
     # See #79719.
@@ -132,11 +132,11 @@ def _ask_human(command: str, description: str, timeout_seconds: int, allow_perma
     # Fail-closed guard: when prompt_toolkit owns the terminal and no callback is registered on this thread, the
     # input() fallback would spawn a daemon thread whose read never sees Enter (keystrokes go to prompt_toolkit) — an
     # invisible deadlock. Fail closed loudly instead; threads needing interactive approval must install a callback via
-    # tools.terminal_tool.set_approval_callback() first.
+    # hermes_agent.tools.terminal_tool.set_approval_callback() first.
     try:
         # Fail fast and log loudly so the caller can surface a real error to the agent. Any thread
         # that needs interactive approval must install a callback via
-        # tools.terminal_tool.set_approval_callback() before reaching this point (see delegate_tool.py,
+        # hermes_agent.tools.terminal_tool.set_approval_callback() before reaching this point (see delegate_tool.py,
         # run_agent.py _execute_tool_calls_concurrent / _spawn_background_review for the established
         # pattern). See #15216.
         from prompt_toolkit.application.current import get_app_or_none
@@ -240,7 +240,7 @@ def _present_with_selected_transport(*, command: str, description: str, pattern_
         request_id=request.request_id, request_digest=request.digest,
     )
     _ctx._fire_approval_hook("pre_approval_request", **hook_kwargs)
-    from tools.human_input_hooks import human_input_request
+    from hermes_agent.tools.human_input_hooks import human_input_request
     with human_input_request("approval", prompt=request.command, session_key=session_key) as human, \
             human_wait_window(session_key):
         result = invoke_approval_transport(
@@ -267,7 +267,7 @@ def _transport_choice(attempt: dict, *, pattern_key: str, description: str):
         logger.warning("Approval transport %r failed (%s); using explicit builtin fallback",
                        attempt.get("name"), failure)
         return None, None
-    from tools import approval as _a
+    from hermes_agent.tools import approval as _a
     breaker_addendum = _a._denial_breaker_addendum(_ctx.get_current_session_key())
     return None, _a._denied(
         f"BLOCKED: Selected approval transport failed ({failure}); the user "
@@ -288,7 +288,7 @@ def _remembered_consent(session_key: str, choice, remember_key: str | None, unre
     """:func:`_consent`, recording a ``session``/``always`` answer under *remember_key*. Without a key
     those scopes were never offered, so a stale or typed broader answer covers this call only."""
     if remember_key is not None:
-        from tools import approval as _a
+        from hermes_agent.tools import approval as _a
         _a._persist_choice(session_key, choice, [remember_key])
     return _consent(choice, unresolved)
 
@@ -306,8 +306,8 @@ def request_elicitation_consent(message: str, description: str, *,
 
     Without *remember_key* the consent covers one call, so every surface offers only
     once/deny. With it, the session and always choices are offered and recorded under
-    that approval key; the caller checks ``tools.approval.is_approved`` before asking."""
-    from tools import approval as _a
+    that approval key; the caller checks ``hermes_agent.tools.approval.is_approved`` before asking."""
+    from hermes_agent.tools import approval as _a
     try:
         session_key = _ctx.get_current_session_key()
     except Exception as exc:  # pragma: no cover -- defensive
@@ -362,7 +362,7 @@ def request_elicitation_consent(message: str, description: str, *,
     _ctx._fire_approval_hook("pre_approval_request", **hook_kwargs)
     hook_choice = "cancelled"
     try:
-        from tools.terminal_tool import _get_approval_callback
+        from hermes_agent.tools.terminal_tool import _get_approval_callback
         # Pass the agent thread's panel callback: without it prompt_toolkit fails the prompt closed unseen.
         choice = prompt_dangerous_approval(message, description, timeout_seconds=timeout_seconds,
                                            allow_permanent=scoped, allow_session=scoped, title=title,

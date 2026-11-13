@@ -30,8 +30,8 @@ def voice_config(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("HERMES_HOME", str(home))
-    for name in ("hermes_cli.config", "tools.transcription_tools", "tools.tts_tool",
-                 "tools.voice_client_config"):
+    for name in ("hermes_cli.config", "hermes_agent.tools.transcription_tools", "hermes_agent.tools.tts_tool",
+                 "hermes_agent.tools.voice_client_config"):
         if name in sys.modules:
             importlib.reload(sys.modules[name])
 

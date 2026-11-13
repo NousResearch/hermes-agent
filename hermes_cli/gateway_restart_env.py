@@ -15,7 +15,7 @@ from typing import Optional
 
 def _host_gateway_watcher_env() -> dict[str, str]:
     """Scrubbed default-profile env for a detached host-gateway respawn watcher."""
-    from tools.environments.local import host_gateway_child_env
+    from hermes_agent.tools.environments.local import host_gateway_child_env
     env = host_gateway_child_env()
     env.pop("_HERMES_GATEWAY", None)
     return env
@@ -43,7 +43,7 @@ def _launch_bot_token_names() -> set[str]:
     from agent.secret_scope import load_env_file
     from hermes_cli.env_loader import launch_dotenv_keys, source_supplied_names
     from hermes_constants import get_routing_process_hermes_home
-    from tools.environments.local_env_policy import _ADAPTER_SECRET_ENV, _home_adapter_secret_env
+    from hermes_agent.tools.environments.local_env_policy import _ADAPTER_SECRET_ENV, _home_adapter_secret_env
     from hermes_agent.gateway.restart import is_supervised_gateway_launch
     adapter_secrets = _ADAPTER_SECRET_ENV | _home_adapter_secret_env()
     if is_supervised_gateway_launch():
@@ -70,7 +70,7 @@ def profile_gateway_restart_env(home: Optional[str]) -> Optional[dict[str, str]]
         return None
     from agent.secret_scope import build_profile_secret_scope
     from hermes_constants import apply_scratch_tmp_env, get_default_hermes_root, get_routing_process_hermes_home
-    from tools.environments.local import strip_launch_profile_env
+    from hermes_agent.tools.environments.local import strip_launch_profile_env
     target = Path(home).resolve()
     if target != get_default_hermes_root().resolve() and target == get_routing_process_hermes_home().resolve():
         return None

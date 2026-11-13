@@ -13,7 +13,7 @@ source: https://developers.figma.com/docs/figma-mcp-server/remote-server-install
 # endpoint allowlists *exact* client_name strings (not arbitrary clients):
 # "Claude Code" and "Codex" succeed; "Hermes Agent" 403s. Hermes's MCP
 # OAuth layer auto-sets client_name to "Claude Code" for this host (see
-# tools/mcp_oauth.apply_oauth_provider_defaults) so the browser flow can
+# hermes_agent/tools/mcp_oauth.apply_oauth_provider_defaults) so the browser flow can
 # start. Users can override via oauth.client_name if they want Codex
 # instead. Scope defaults to mcp:connect.
 transport:

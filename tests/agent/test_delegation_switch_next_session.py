@@ -63,8 +63,8 @@ def _sent_task_fields(srv) -> set[str]:
 
 def _routed_on(agent) -> str:
     """The backend a task naming no option routes on for ``agent``'s session."""
-    from tools.delegate_tool_config import _load_config
-    from tools.delegate_tool_routes import resolve_task_routes
+    from hermes_agent.tools.delegate_tool_config import _load_config
+    from hermes_agent.tools.delegate_tool_routes import resolve_task_routes
     routes, error = resolve_task_routes([{"goal": "a plain task"}], _load_config(), agent)
     assert error is None
     return routes[0].backend

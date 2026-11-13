@@ -13,7 +13,7 @@ from hermes_agent.hermes_state_runtime import (
     begin_runtime_epoch,
     claim_session_input,
 )
-from tools.bot_live_delivery import _locked, _read, _write
+from hermes_agent.tools.bot_live_delivery import _locked, _read, _write
 
 
 def _settled_admission(db, epoch, request_id, text, reply):

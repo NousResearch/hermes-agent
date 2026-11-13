@@ -5,7 +5,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from tools.process_registry import ProcessRegistry, ProcessSession
+from hermes_agent.tools.process_registry import ProcessRegistry, ProcessSession
 
 
 @pytest.fixture()

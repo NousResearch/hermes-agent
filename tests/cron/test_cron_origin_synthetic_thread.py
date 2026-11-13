@@ -26,7 +26,7 @@ from datetime import timedelta
 from unittest.mock import patch
 
 import hermes_time
-from tools.cronjob_tools import _origin_from_env
+from hermes_agent.tools.cronjob_tools import _origin_from_env
 
 
 def _session_env(env: dict):
@@ -114,7 +114,7 @@ class TestNearHorizonSlackThreadKept:
         """Production entry point: the cronjob_manage create handler passes the schedule
         into origin capture, so the stored job carries the asking thread."""
         from hermes_agent.cron import jobs
-        from tools import cronjob_tools
+        from hermes_agent.tools import cronjob_tools
 
         provider = make_cron_provider()
         monkeypatch.setattr("hermes_agent.cron.scheduler_provider.resolve_cron_scheduler", lambda: provider)
@@ -155,7 +155,7 @@ class TestNearHorizonSlackThreadKept:
         frozen = hermes_time.now()
         with (
             _session_env(_TOP_LEVEL_SLACK),
-            patch("tools.cronjob_job_args.hermes_time") as frozen_clock,
+            patch("hermes_agent.tools.cronjob_job_args.hermes_time") as frozen_clock,
         ):
             frozen_clock.now.return_value = frozen
             origin = _origin_from_env({"kind": "once", "run_at": frozen.isoformat()})

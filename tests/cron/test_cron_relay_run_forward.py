@@ -9,7 +9,7 @@ execute in-process and hit the native standalone fallback.
 import json
 from unittest.mock import patch
 
-from tools import cronjob_tools
+from hermes_agent.tools import cronjob_tools
 
 
 class _Resp:

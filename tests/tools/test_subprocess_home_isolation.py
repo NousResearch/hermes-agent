@@ -64,7 +64,7 @@ class TestGetSubprocessHome:
         """A host with no HOME at all (systemd system unit without User=) must still hand
         terminal children a HOME; without it a `set -u` script dies on its first `$HOME` (#116081).
 
-        Drives the production spawn seam, tools.environments.local.build_subprocess_env, not the
+        Drives the production spawn seam, hermes_agent.tools.environments.local.build_subprocess_env, not the
         resolver directly.
         """
         self._host_mode(monkeypatch)
@@ -73,7 +73,7 @@ class TestGetSubprocessHome:
         monkeypatch.delenv("HOME", raising=False)
         monkeypatch.setenv("HERMES_REAL_HOME", str(real_home))
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
-        from tools.environments.local import build_subprocess_env
+        from hermes_agent.tools.environments.local import build_subprocess_env
         assert build_subprocess_env()["HOME"] == str(real_home)
 
     def test_container_auto_uses_profile_home_when_home_dir_exists(self, tmp_path, monkeypatch):
@@ -157,7 +157,7 @@ class TestMakeRunEnvHomeInjection:
         monkeypatch.setenv("HOME", str(real_home))
         monkeypatch.setenv("PATH", "/usr/bin:/bin")
 
-        from tools.environments.local import _make_run_env
+        from hermes_agent.tools.environments.local import _make_run_env
         result = _make_run_env({})
 
         assert result["HOME"] == str(real_home)
@@ -175,7 +175,7 @@ class TestMakeRunEnvHomeInjection:
         monkeypatch.setenv("HOME", str(real_home))
         monkeypatch.setenv("PATH", "/usr/bin:/bin")
 
-        from tools.environments.local import _make_run_env
+        from hermes_agent.tools.environments.local import _make_run_env
         result = _make_run_env({})
 
         assert result["HOME"] == str(hermes_home / "home")
@@ -189,7 +189,7 @@ class TestMakeRunEnvHomeInjection:
         monkeypatch.setenv("HOME", "/root")
         monkeypatch.setenv("PATH", "/usr/bin:/bin")
 
-        from tools.environments.local import _make_run_env
+        from hermes_agent.tools.environments.local import _make_run_env
         result = _make_run_env({})
 
         assert result["HOME"] == "/root"
@@ -199,7 +199,7 @@ class TestMakeRunEnvHomeInjection:
         monkeypatch.setenv("HOME", "/home/user")
         monkeypatch.setenv("PATH", "/usr/bin:/bin")
 
-        from tools.environments.local import _make_run_env
+        from hermes_agent.tools.environments.local import _make_run_env
         result = _make_run_env({})
 
         assert result["HOME"] == "/home/user"
@@ -223,7 +223,7 @@ class TestSanitizeSubprocessEnvHomeInjection:
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
 
         base_env = {"HOME": str(real_home), "PATH": "/usr/bin", "USER": "root"}
-        from tools.environments.local import _sanitize_subprocess_env
+        from hermes_agent.tools.environments.local import _sanitize_subprocess_env
         result = _sanitize_subprocess_env(base_env)
 
         assert result["HOME"] == str(real_home)
@@ -240,7 +240,7 @@ class TestSanitizeSubprocessEnvHomeInjection:
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
 
         base_env = {"HOME": str(real_home), "PATH": "/usr/bin", "USER": "root"}
-        from tools.environments.local import _sanitize_subprocess_env
+        from hermes_agent.tools.environments.local import _sanitize_subprocess_env
         result = _sanitize_subprocess_env(base_env)
 
         assert result["HOME"] == str(hermes_home / "home")
@@ -252,7 +252,7 @@ class TestSanitizeSubprocessEnvHomeInjection:
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
 
         base_env = {"HOME": "/root", "PATH": "/usr/bin"}
-        from tools.environments.local import _sanitize_subprocess_env
+        from hermes_agent.tools.environments.local import _sanitize_subprocess_env
         result = _sanitize_subprocess_env(base_env)
 
         assert result["HOME"] == "/root"
@@ -289,7 +289,7 @@ def test_bound_profile_home_mode_beats_the_launch_profiles_bridged_value(tmp_pat
     """A served profile's ``home_mode: profile`` decides its subprocess HOME even though
     ``os.environ`` carries the LAUNCH profile's bridged ``TERMINAL_HOME_MODE=auto`` (#146103)."""
     from agent.runtime_scope import bind_profile_scope
-    from tools.environments.local import _make_run_env
+    from hermes_agent.tools.environments.local import _make_run_env
 
     monkeypatch.setattr(hermes_constants, "is_container", lambda: False)
     launch = tmp_path / "fakehome" / ".hermes"
@@ -310,7 +310,7 @@ def test_policy_frozen_before_home_mode_keeps_the_bridged_mode(tmp_path, monkeyp
     the mode the process bridged from the profile's config, never drops ``home_mode: profile`` to
     ``auto`` (the real ``$HOME``) until the session's policy is refreshed (#146103)."""
     from agent.runtime_scope import bind_terminal_policy
-    from tools.terminal_scope import build_profile_terminal_scope
+    from hermes_agent.tools.terminal_scope import build_profile_terminal_scope
 
     monkeypatch.setattr(hermes_constants, "is_container", lambda: False)
     launch = tmp_path / "fakehome" / ".hermes"

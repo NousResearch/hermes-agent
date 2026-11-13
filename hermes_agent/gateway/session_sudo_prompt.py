@@ -33,12 +33,12 @@ def sudo_prompt_scope(turn, agent):
     if not local_viewer_turn(turn):
         yield
         return
-    from tools.terminal_tool import _get_sudo_password_callback, set_sudo_password_callback
+    from hermes_agent.tools.terminal_tool import _get_sudo_password_callback, set_sudo_password_callback
     authority, session_id, _generation = turn._approval_owner
 
     def callback():
         from hermes_agent.gateway.run import _redact_approval_command
-        from tools.terminal_tool_sudo import get_sudo_prompt_command
+        from hermes_agent.tools.terminal_tool_sudo import get_sudo_prompt_command
         live = authority.sessions.get(session_id)
         if live is None:
             return ""

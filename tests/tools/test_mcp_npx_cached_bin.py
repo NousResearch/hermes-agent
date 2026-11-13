@@ -18,7 +18,7 @@ import os
 
 import pytest
 
-from tools.mcp_tool_config import _npx_cached_bin
+from hermes_agent.tools.mcp_tool_config import _npx_cached_bin
 
 
 def _cache(tmp_path, *, package, deps=None, bin_field, make_bin=True, entry="abc123"):
@@ -128,7 +128,7 @@ def test_unusable_args_are_ignored(args):
 @pytest.mark.parametrize("rejected", [False, True])
 def test_preflight_checks_original_package_before_cache_access(tmp_path, monkeypatch, rejected):
     import asyncio
-    from tools import mcp_tool
+    from hermes_agent.tools import mcp_tool
 
     target = _cache(tmp_path, package="mcp-linear", bin_field={"mcp-linear": "i.js"})
     args = ["-y", "mcp-linear", "--port", "7"]
@@ -138,7 +138,7 @@ def test_preflight_checks_original_package_before_cache_access(tmp_path, monkeyp
         seen.append((command, list(arguments)))
         return "malicious package" if rejected else None
 
-    monkeypatch.setattr("tools.osv_check.check_package_for_malware", check)
+    monkeypatch.setattr("hermes_agent.tools.osv_check.check_package_for_malware", check)
     if rejected:
         monkeypatch.setattr(mcp_tool, "_npx_cached_bin", lambda *a: pytest.fail("cache read before refusal"))
         with pytest.raises(ValueError, match="malicious package"):
@@ -158,7 +158,7 @@ def test_windows_selects_launchers_never_the_sh_script():
     `os.name`, which breaks path handling process-wide (it took pytest's own
     traceback formatting down when I tried).
     """
-    from tools.mcp_tool_config import _npx_bin_candidates
+    from hermes_agent.tools.mcp_tool_config import _npx_bin_candidates
 
     win = _npx_bin_candidates("/c/bin", "mcp-linear", windows=True)
     assert win == [os.path.join("/c/bin", "mcp-linear.cmd"), os.path.join("/c/bin", "mcp-linear.exe")]

@@ -8,8 +8,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from tools.environments.ssh import SSHEnvironment
-from tools.environments import ssh as ssh_env
+from hermes_agent.tools.environments.ssh import SSHEnvironment
+from hermes_agent.tools.environments import ssh as ssh_env
 
 # A real sshd to run against: scripts/ci/start_test_sshd.sh starts a throwaway one
 # and prints these (the remote-backends CI lane exports them). HERMES_TEST_* rather
@@ -29,7 +29,7 @@ requires_ssh = pytest.mark.skipif(
 
 
 def _run(command, task_id="ssh_test", **kwargs):
-    from tools.terminal_tool import terminal_tool
+    from hermes_agent.tools.terminal_tool import terminal_tool
     return json.loads(terminal_tool(command, task_id=task_id, **kwargs))
 
 
@@ -37,8 +37,8 @@ def _cleanup(task_id="ssh_test"):
     # The env is cached under the resolved key ("default" without a session key), not
     # the raw task id: cleaning the raw id was a no-op that let one test's env leak
     # into the next.
-    from tools.terminal_tool import _resolve_container_task_id
-    from tools.terminal_tool_lifecycle import cleanup_vm
+    from hermes_agent.tools.terminal_tool import _resolve_container_task_id
+    from hermes_agent.tools.terminal_tool_lifecycle import cleanup_vm
     cleanup_vm(_resolve_container_task_id(task_id))
 
 
@@ -46,13 +46,13 @@ class TestBuildSSHCommand:
 
     @pytest.fixture(autouse=True)
     def _mock_connection(self, monkeypatch):
-        monkeypatch.setattr("tools.environments.ssh.subprocess.run",
+        monkeypatch.setattr("hermes_agent.tools.environments.ssh.subprocess.run",
                             lambda *a, **k: subprocess.CompletedProcess([], 0))
-        monkeypatch.setattr("tools.environments.ssh.subprocess.Popen",
+        monkeypatch.setattr("hermes_agent.tools.environments.ssh.subprocess.Popen",
                             lambda *a, **k: MagicMock(stdout=iter([]),
                                                       stderr=iter([]),
                                                       stdin=MagicMock()))
-        monkeypatch.setattr("tools.environments.base.time.sleep", lambda _: None)
+        monkeypatch.setattr("hermes_agent.tools.environments.base.time.sleep", lambda _: None)
 
     @pytest.mark.platforms("posix")
     def test_base_flags(self, monkeypatch):
@@ -100,7 +100,7 @@ class TestBuildSSHCommand:
     def test_run_bash_forwards_passthrough_by_sendenv_never_in_remote_argv(self, monkeypatch):
         """#14091: allowlisted names travel as ``-o SendEnv=NAME`` with values only in the ssh client env;
         provider credentials on the allowlist stay behind; a .env value fills an unset shell var."""
-        from tools import env_passthrough
+        from hermes_agent.tools import env_passthrough
 
         env = SSHEnvironment(host="h", user="u")
         monkeypatch.setenv("NEXTCLOUD_URL", "https://next.example")
@@ -121,7 +121,7 @@ class TestBuildSSHCommand:
         assert "sk-must-not-forward" not in remote_text
 
     def test_run_bash_without_passthrough_inherits_env_unchanged(self, monkeypatch):
-        from tools import env_passthrough
+        from hermes_agent.tools import env_passthrough
 
         monkeypatch.setattr(env_passthrough, "get_all_passthrough", lambda: frozenset())
         captured = self._capture_run_bash(monkeypatch, SSHEnvironment(host="h", user="u"))
@@ -141,13 +141,13 @@ class TestControlSocketPath:
 
     @pytest.fixture(autouse=True)
     def _mock_connection(self, monkeypatch):
-        monkeypatch.setattr("tools.environments.ssh.subprocess.run",
+        monkeypatch.setattr("hermes_agent.tools.environments.ssh.subprocess.run",
                             lambda *a, **k: subprocess.CompletedProcess([], 0))
-        monkeypatch.setattr("tools.environments.ssh.subprocess.Popen",
+        monkeypatch.setattr("hermes_agent.tools.environments.ssh.subprocess.Popen",
                             lambda *a, **k: MagicMock(stdout=iter([]),
                                                       stderr=iter([]),
                                                       stdin=MagicMock()))
-        monkeypatch.setattr("tools.environments.base.time.sleep", lambda _: None)
+        monkeypatch.setattr("hermes_agent.tools.environments.base.time.sleep", lambda _: None)
 
     # SSH appends ``.XXXXXXXXXXXXXXXX`` (17 bytes) to the ControlPath in
     # ControlMaster mode; the macOS sun_path field is 104 bytes including
@@ -167,10 +167,10 @@ class TestControlSocketPath:
         path that fits once SSH appends its ControlMaster suffix
         (issues #11840, #133436)."""
         monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
-        monkeypatch.setattr("tools.environments.ssh.tempfile.gettempdir",
+        monkeypatch.setattr("hermes_agent.tools.environments.ssh.tempfile.gettempdir",
                             lambda: fake_tmp)
         # Path arithmetic only: never create the control dir on the test host.
-        monkeypatch.setattr("tools.environments.ssh.ensure_owned_private_dir", os.fspath)
+        monkeypatch.setattr("hermes_agent.tools.environments.ssh.ensure_owned_private_dir", os.fspath)
 
         env = SSHEnvironment(
             host="9373:9b91:4480:558d:708e:e601:24e8:d8d0",
@@ -207,15 +207,15 @@ class TestTerminalToolConfig:
         """TERMINAL_PERSISTENT_SHELL=false disables SSH persistent by default."""
         monkeypatch.delenv("TERMINAL_SSH_PERSISTENT", raising=False)
         monkeypatch.setenv("TERMINAL_PERSISTENT_SHELL", "false")
-        from tools.terminal_tool import _get_env_config
+        from hermes_agent.tools.terminal_tool import _get_env_config
         assert _get_env_config()["ssh_persistent"] is False
 
     @requires_ssh
     @pytest.mark.parametrize("setting, expected", [(None, True), ("false", False)])
     def test_ssh_persistent_reaches_the_environment(self, monkeypatch, setting, expected):
         """terminal.persistent_shell (bridged to TERMINAL_PERSISTENT_SHELL) reaches SSHEnvironment."""
-        from tools.terminal_tool import _get_env_config
-        from tools.terminal_tool_lifecycle import _create_configured_env
+        from hermes_agent.tools.terminal_tool import _get_env_config
+        from hermes_agent.tools.terminal_tool_lifecycle import _create_configured_env
         _setup_ssh_env(monkeypatch, persistent=True)
         monkeypatch.delenv("TERMINAL_SSH_PERSISTENT")
         if setting is None:
@@ -435,7 +435,7 @@ class TestRealSSHBackend:
     def test_passthrough_env_reaches_remote_via_sendenv(self, monkeypatch):
         """#14091 end to end: the name rides SendEnv, the value the ssh client env, and the
         test sshd's ``AcceptEnv HERMES_RB_*`` hands it to the remote shell."""
-        from tools import env_passthrough
+        from hermes_agent.tools import env_passthrough
 
         monkeypatch.setenv("HERMES_RB_PASS", "through-sendenv")
         monkeypatch.setenv("HERMES_RB_PRIVATE", "stays-local")
@@ -447,7 +447,7 @@ class TestRealSSHBackend:
         assert r["output"].strip() == "p=through-sendenv q=unset"
 
     def test_file_tools_write_and_read_on_the_remote(self):
-        from tools.file_tools import read_file_tool, write_file_tool
+        from hermes_agent.tools.file_tools import read_file_tool, write_file_tool
 
         home = _run("pwd")["output"].strip()
         path = f"{home}/notes/remote.txt"

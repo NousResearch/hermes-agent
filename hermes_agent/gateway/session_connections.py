@@ -1,6 +1,6 @@
 """The ``manage_connections`` card on the session authority: ``connection.respond``, the operation's ``status``/``wake`` and the card's Try again (``connectors.connect`` with ``reconnect``), plus the open card a resume restores (``pending_connection``).
 
-The operation lives in ``tools/connectors/live.py`` under the turn's session key (the live session's route) and profile, so a card can only drive its own session's operation. Account-owned calls (the Connectors page) are not the session's and stay on the legacy handlers (``hermes_agent/tui_gateway/methods_connectors.py``). Answers and refusals share that file's code (``tools.connectors.run.respond``, ``hermes_agent/tui_gateway/connector_refusals.py``); ``ConnectorRefusal`` carries a refusal through the authority's error path.
+The operation lives in ``hermes_agent/tools/connectors/live.py`` under the turn's session key (the live session's route) and profile, so a card can only drive its own session's operation. Account-owned calls (the Connectors page) are not the session's and stay on the legacy handlers (``hermes_agent/tui_gateway/methods_connectors.py``). Answers and refusals share that file's code (``tools.connectors.run.respond``, ``hermes_agent/tui_gateway/connector_refusals.py``); ``ConnectorRefusal`` carries a refusal through the authority's error path.
 """
 import asyncio
 from functools import partial
@@ -29,7 +29,7 @@ def handlers(connection):
 
 def pending_connection(authority, session_id):
     """The open operation of a live session as its ``connection.request`` payload, or None."""
-    from tools.connectors import live
+    from hermes_agent.tools.connectors import live
     operation = live.current(authority.sessions[session_id].route, profile_home=authority.profile_id)
     return operation.request_payload() if operation is not None else None
 
@@ -63,7 +63,7 @@ def _view(operation):
 async def _handle(connection, method, _ref, params):
     from hermes_agent.gateway.session_busy_controls import authorize
     from hermes_agent.gateway.session_contract import SessionRef
-    from tools.connectors import live
+    from hermes_agent.tools.connectors import live
     from hermes_agent.tui_gateway import connector_refusals as refusals
     request, answer = _request(method, params)
     authority = connection.authority
@@ -90,8 +90,8 @@ async def _handle(connection, method, _ref, params):
 
 
 def _respond(operation, answer):
-    from tools.connectors.operation import IllegalTransition
-    from tools.connectors.run import respond
+    from hermes_agent.tools.connectors.operation import IllegalTransition
+    from hermes_agent.tools.connectors.run import respond
     from hermes_agent.tui_gateway.connector_refusals import INVALID_ANSWER
     try:
         return {'status': 'ok', 'settled': respond(operation, answer.model_dump_json(exclude_none=True))}
@@ -101,8 +101,8 @@ def _respond(operation, answer):
 
 def _retry(authority, ref, operation, request):
     """The card's Try again, under the session's own context, as the sidecar ran it for its session."""
-    from tools.connectors import run
-    from tools.connectors.gateway.errors import GatewayAuthError
+    from hermes_agent.tools.connectors import run
+    from hermes_agent.tools.connectors.gateway.errors import GatewayAuthError
     from hermes_agent.tui_gateway.connector_refusals import (INVALID_PARAMS, REISSUE_REFUSALS, REISSUE_REFUSED, REQUEST_FAILED,
                                                 UNKNOWN_TARGET_REFUSAL, auth_refusal)
     if not request.reconnect:
@@ -130,8 +130,8 @@ def _retry(authority, ref, operation, request):
 
 def _require_connectors(authority, ref):
     """The sidecar's ``_session_connector_gate``: connectors on, and ``manage_connections`` in the session's tools."""
-    import model_tools
-    from tools.connectors import connectors_available
+    from hermes_agent import model_tools
+    from hermes_agent.tools.connectors import connectors_available
     from hermes_agent.tui_gateway import connector_refusals as refusals
     enabled, disabled = _session_toolsets(authority, ref)
     if 'manage_connections' not in model_tools._select_tool_names(enabled, disabled, quiet_mode=True) or not connectors_available():
@@ -144,7 +144,7 @@ def _session_toolsets(authority, ref):
         return getattr(agent, 'enabled_toolsets', None), getattr(agent, 'disabled_toolsets', None)
     from agent.skill_utils import parse_config_string_list
     from hermes_agent.gateway.session_policy import policy_for_source
-    from toolsets import session_disabled_toolsets
+    from hermes_agent.toolsets import session_disabled_toolsets
     policy = policy_for_source(authority.runner, authority.sessions[ref.session_id].source)
     config = policy.config(authority, secrets=False) if policy is not None else {}
     enabled = list(policy.current_toolsets(config)) if policy is not None else None

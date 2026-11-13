@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 
 def test_postprocess_adds_agent_visible_image_for_active_ssh_env(monkeypatch, tmp_path):
-    from tools import image_generation_tool
+    from hermes_agent.tools import image_generation_tool
 
     hermes_home = tmp_path / ".hermes"
     image_dir = hermes_home / "cache" / "images"
@@ -41,8 +41,8 @@ def test_postprocess_adds_agent_visible_image_for_active_ssh_env(monkeypatch, tm
 
 
 def test_concurrent_image_results_preserve_shared_remote_sync_state(monkeypatch, tmp_path):
-    from tools import image_generation_tool
-    from tools.environments import file_sync
+    from hermes_agent.tools import image_generation_tool
+    from hermes_agent.tools.environments import file_sync
 
     hermes_home = tmp_path / ".hermes"
     image_dir = hermes_home / "cache" / "images"
@@ -114,7 +114,7 @@ def test_concurrent_image_results_preserve_shared_remote_sync_state(monkeypatch,
 
 
 def test_handle_image_generate_postprocesses_plugin_result(monkeypatch, tmp_path):
-    from tools import image_generation_tool
+    from hermes_agent.tools import image_generation_tool
 
     hermes_home = tmp_path / ".hermes"
     image_dir = hermes_home / "cache" / "images"

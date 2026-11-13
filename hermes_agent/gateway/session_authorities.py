@@ -291,7 +291,7 @@ def _prepare_owner_scope(home: Path):
         return None
     from agent.secret_scope import current_secret_scope
     from hermes_agent.gateway.run import _profile_runtime_scope
-    from tools.terminal_scope import get_terminal_scope
+    from hermes_agent.tools.terminal_scope import get_terminal_scope
     with _profile_runtime_scope(home, hydrate_secrets=False):
         return current_secret_scope(), get_terminal_scope()
 

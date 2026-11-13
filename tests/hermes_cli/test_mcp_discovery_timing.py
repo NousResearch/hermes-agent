@@ -95,12 +95,12 @@ def _stub_mcp_modules(monkeypatch):
     )
     monkeypatch.setitem(
         sys.modules,
-        "tools.mcp_oauth",
+        "hermes_agent.tools.mcp_oauth",
         types.SimpleNamespace(suppress_interactive_oauth=lambda: __import__("contextlib").nullcontext()),
     )
     monkeypatch.setitem(
         sys.modules,
-        "tools.mcp_tool_discovery",
+        "hermes_agent.tools.mcp_tool_discovery",
         types.SimpleNamespace(
             discover_mcp_tools=lambda: None,
             get_mcp_status=lambda: [{"connected": True}],

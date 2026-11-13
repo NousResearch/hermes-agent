@@ -375,7 +375,7 @@ def test_harness_refusals_are_not_tool_failures_on_either_classifier(tmp_path):
     `_detect_tool_failure` may count them, or the cheap refusal feeds the streak that
     fires `repeated_exact_failure_block` over calls that never failed."""
     from agent.display import _detect_tool_failure
-    from tools.file_tools import _dedup_stub_or_block, read_file_tool, search_tool
+    from hermes_agent.tools.file_tools import _dedup_stub_or_block, read_file_tool, search_tool
 
     target = tmp_path / "responses.ts"
     target.write_text("export const x = 1;\n" * 30, encoding="utf-8")

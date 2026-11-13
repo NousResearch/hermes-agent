@@ -38,7 +38,7 @@ def _redacted(text: str) -> str:
 def _identity() -> dict:
     try:
         from hermes_agent.gateway.session_context import get_session_env
-        from tools import approval_context
+        from hermes_agent.tools import approval_context
         session_id = approval_context._approval_session_id.get() or get_session_env("HERMES_SESSION_ID")
         platform = (os.getenv("HERMES_PLATFORM") or get_session_env("HERMES_SESSION_PLATFORM")
                     or get_session_env("HERMES_SESSION_SOURCE") or "cli")

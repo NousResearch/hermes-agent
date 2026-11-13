@@ -20,8 +20,8 @@ import threading
 import pytest
 
 from agent.delegation_context import delegated_child_context
-from tools import terminal_tool as tt
-from tools import terminal_tool_sudo as tts
+from hermes_agent.tools import terminal_tool as tt
+from hermes_agent.tools import terminal_tool_sudo as tts
 
 
 @pytest.fixture(autouse=True)
@@ -157,7 +157,7 @@ def test_single_query_never_prompts(monkeypatch):
 
 def test_single_query_sudo_failure_gets_the_headless_tip_and_no_reprompt_promise(monkeypatch):
     """A -q sudo failure is told how to fix it (SUDO_PASSWORD), never promised a prompt it will not get."""
-    from tools.terminal_tool_result import _sudo_annotations
+    from hermes_agent.tools.terminal_tool_result import _sudo_annotations
 
     monkeypatch.setenv("HERMES_INTERACTIVE", "1")
     monkeypatch.setenv("HERMES_SINGLE_QUERY_SESSION", "1")

@@ -45,7 +45,7 @@ class TestAutoVoiceReplyFormat:
                 "voice_compatible": True,
             })
 
-        with patch("tools.tts_tool.text_to_speech_tool", side_effect=fake_tts):
+        with patch("hermes_agent.tools.tts_tool.text_to_speech_tool", side_effect=fake_tts):
             await runner._send_voice_reply(event, "hello from auto tts")
 
         assert requested_paths and requested_paths[0].endswith(".ogg")

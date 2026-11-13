@@ -8,8 +8,8 @@ import sys
 
 from hermes_cli import kanban_db as kb
 from hermes_cli.kanban_db_connect import connect
-from tools import kanban_tools
-from tools.environments.local import LocalEnvironment
+from hermes_agent.tools import kanban_tools
+from hermes_agent.tools.environments.local import LocalEnvironment
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -57,8 +57,8 @@ def test_terminal_descendants_cannot_mutate_even_after_task_is_removed(tmp_path,
         terminal.cleanup()
     from agent.skill_preprocessing import run_inline_shell
     from agent.shell_hooks import ShellHookSpec, _spawn
-    from tools.code_execution_env import _build_child_env
-    from tools.mcp_tool_config import _build_safe_env
+    from hermes_agent.tools.code_execution_env import _build_child_env
+    from hermes_agent.tools.mcp_tool_config import _build_safe_env
 
     command = f"{shlex.quote(sys.executable)} {shlex.quote(str(script))}"
     outputs = [result.get("output", ""), run_inline_shell(command, tmp_path, 45),

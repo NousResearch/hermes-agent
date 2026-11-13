@@ -5,7 +5,7 @@ placeholder as ``error`` — never a partial result that reads as an empty stop.
 """
 from types import SimpleNamespace
 
-from tools.delegate_tool_child_run import _SchemaOutcome, _build_result_entry
+from hermes_agent.tools.delegate_tool_child_run import _SchemaOutcome, _build_result_entry
 
 
 def test_interrupted_child_entry_carries_its_partial_output():

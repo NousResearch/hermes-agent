@@ -11,9 +11,9 @@ import pytest
 
 from hermes_agent.gateway.session_context import clear_session_vars, set_session_vars
 from hermes_cli.config import load_config
-from tools import approval, approval_prompt, mcp_tool
-from tools import mcp_tool_handlers as handlers
-from tools.approval_context import reset_current_session_key, set_current_session_key
+from hermes_agent.tools import approval, approval_prompt, mcp_tool
+from hermes_agent.tools import mcp_tool_handlers as handlers
+from hermes_agent.tools.approval_context import reset_current_session_key, set_current_session_key
 
 
 @pytest.fixture(autouse=True)
@@ -79,7 +79,7 @@ def test_consent_without_an_identity_offers_and_records_only_once(monkeypatch):
     assert approval._session_approved == {}
 
     asked = []
-    monkeypatch.setattr("tools.terminal_tool._get_approval_callback",
+    monkeypatch.setattr("hermes_agent.tools.terminal_tool._get_approval_callback",
                         lambda: lambda *a, **kw: asked.append(kw) or "always")
     monkeypatch.setattr(approval_prompt._ctx, "_no_user_can_answer", lambda: False)
     assert approval_prompt.request_elicitation_consent("Fill card?", "pay") == "accept"

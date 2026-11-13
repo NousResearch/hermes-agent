@@ -139,7 +139,7 @@ class TestFutureDatedClaims:
 
 class TestHonestRunSkipMessages:
     def test_paused_job_not_reported_as_already_firing(self):
-        from tools.cronjob_tools import _execute_job_now
+        from hermes_agent.tools.cronjob_tools import _execute_job_now
 
         job = create_job(name="paused job", schedule="0 7 * * *", prompt="x")
         from hermes_agent.cron.jobs import pause_job
@@ -151,7 +151,7 @@ class TestHonestRunSkipMessages:
         assert "already being fired" not in (res["error"] or "").lower()
 
     def test_missing_job_not_reported_as_already_firing(self):
-        from tools.cronjob_tools import _execute_job_now
+        from hermes_agent.tools.cronjob_tools import _execute_job_now
 
         res = _execute_job_now({"id": "does-not-exist-123"})
         assert res["claimed"] is False

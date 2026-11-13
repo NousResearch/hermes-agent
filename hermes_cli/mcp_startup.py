@@ -78,13 +78,13 @@ def _discovery_registered_servers(status) -> bool:
 
 
 def _any_mcp_connected() -> bool:
-    from tools.mcp_tool_discovery import get_mcp_status
+    from hermes_agent.tools.mcp_tool_discovery import get_mcp_status
 
     return _discovery_registered_servers(get_mcp_status() or [])
 
 
 def _servers_awaiting_connect() -> list[str]:
-    from tools.mcp_tool_discovery import mcp_servers_awaiting_connect
+    from hermes_agent.tools.mcp_tool_discovery import mcp_servers_awaiting_connect
 
     pending = mcp_servers_awaiting_connect()
     return pending if _mcp_server_filter is None else [n for n in pending if n in _mcp_server_filter]
@@ -198,12 +198,12 @@ def _discovery_gil_budget() -> Iterator[None]:
 def _discover_mcp_tools_without_interactive_oauth() -> None:
     """Run MCP discovery without letting OAuth read from the user's stdin."""
     try:
-        from tools.mcp_oauth import suppress_interactive_oauth
+        from hermes_agent.tools.mcp_oauth import suppress_interactive_oauth
     except Exception:
         suppress_interactive_oauth = nullcontext
 
     with _discovery_gil_budget(), suppress_interactive_oauth():
-        from tools.mcp_tool_discovery import discover_mcp_tools
+        from hermes_agent.tools.mcp_tool_discovery import discover_mcp_tools
 
         # Only pass the kwarg when a filter is set: many tests (and any
         # out-of-tree caller) stub discover_mcp_tools with a zero-arg

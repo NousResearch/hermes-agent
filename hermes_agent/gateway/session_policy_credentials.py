@@ -273,7 +273,7 @@ def recover_config_secrets(authority, policy, skip=None):
                 frozen = json.loads(policy.config_json) if frozen is None else frozen
                 lookup = _current_custom_path(frozen, config, path)
             if path[0] is None:
-                from tools.terminal_scope import build_profile_terminal_scope
+                from hermes_agent.tools.terminal_scope import build_profile_terminal_scope
                 value, lookup = build_profile_terminal_scope(home), path[1:]
             value = _defined(value, lookup)
             actual = None if value is _ABSENT else _fingerprint(value)

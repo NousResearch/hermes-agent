@@ -1,4 +1,4 @@
-"""Declared MCP tool costs and the per-chat spend limit (``tools.mcp_tool_costs``).
+"""Declared MCP tool costs and the per-chat spend limit (``hermes_agent.tools.mcp_tool_costs``).
 
 Invariants: a costed call's prompt names the cost and the chat's running total; only dispatched
 calls count; a call that would cross ``spend_limit`` asks even on a ``trust: full`` server and is
@@ -15,10 +15,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from tools import mcp_tool, mcp_tool_costs
-from tools import mcp_tool_handlers as handlers
-from tools import mcp_tool_registration as registration
-from tools.approval_context import reset_current_session_key, set_current_session_key
+from hermes_agent.tools import mcp_tool, mcp_tool_costs
+from hermes_agent.tools import mcp_tool_handlers as handlers
+from hermes_agent.tools import mcp_tool_registration as registration
+from hermes_agent.tools.approval_context import reset_current_session_key, set_current_session_key
 
 COSTED = {"trust": "full", "tool_costs": {"paid_render": 40, "batch": {"credits": [5, 20], "note": "per item"}},
           "spend_limit": 100}
@@ -44,7 +44,7 @@ def session():
     session = MagicMock()
     session.call_tool = AsyncMock(return_value=result)
     with patch.dict(mcp_tool._servers, {"srv": SimpleNamespace(session=session, _rpc_lock=None)}), \
-         patch("tools.mcp_tool_loop._run_on_mcp_loop", side_effect=_run_on_loop), \
+         patch("hermes_agent.tools.mcp_tool_loop._run_on_mcp_loop", side_effect=_run_on_loop), \
          patch.dict(mcp_tool._server_error_counts, {}, clear=True), \
          patch.dict(mcp_tool._server_trust_levels, {}, clear=True), \
          patch.dict(mcp_tool._tool_read_only_hints, {}, clear=True), \
@@ -63,7 +63,7 @@ def _call(tool, chat="chat-a", answer="accept"):
     asked = []
     token = set_current_session_key(chat)
     try:
-        with patch("tools.approval_prompt.request_elicitation_consent",
+        with patch("hermes_agent.tools.approval_prompt.request_elicitation_consent",
                    side_effect=lambda msg, desc, **kw: asked.append(msg) or answer):
             raw = handlers._make_tool_handler("srv", tool, 30.0)({})
     finally:
@@ -121,7 +121,7 @@ def test_over_limit_untrusted_prompt_shows_notice_then_arguments_on_the_text_fal
     asked = []
     token = set_current_session_key("chat-a")
     try:
-        with patch("tools.approval_prompt.request_elicitation_consent",
+        with patch("hermes_agent.tools.approval_prompt.request_elicitation_consent",
                    side_effect=lambda msg, desc, **kw: asked.append((msg, desc)) or "decline"):
             handlers._make_tool_handler("srv", "paid_render", 30.0)({"scene": "castle", "notes": "y" * 3_000})
     finally:
@@ -158,7 +158,7 @@ def test_chats_and_profiles_never_share_a_tally(session):
 
 def test_declarations_validate_translate_and_survive_a_native_trust_override(tmp_path, caplog):
     from hermes_cli.agent_plugins import AgentPluginError, load_agent_plugin
-    from tools.mcp_tool_config import _filter_suspicious_mcp_servers, _load_mcp_config, _portable_mcp_servers
+    from hermes_agent.tools.mcp_tool_config import _filter_suspicious_mcp_servers, _load_mcp_config, _portable_mcp_servers
 
     def package(server_decl):
         root = tmp_path / "pkg"
@@ -198,13 +198,13 @@ def test_a_chat_keeps_its_total_across_a_rotation_and_each_cron_run_has_its_own(
     from hermes_agent.gateway.session_context import clear_session_vars, set_session_vars
     config = dict(COSTED, tool_costs={**COSTED["tool_costs"], "mcp_srv_typo": 3})
     _register(config)
-    with caplog.at_level("WARNING", logger="tools.mcp_tool"):  # live discovery sees the full tool list
+    with caplog.at_level("WARNING", logger="hermes_agent.tools.mcp_tool"):  # live discovery sees the full tool list
         registration._warn_unknown_cost_keys("srv", "srv", ["paid_render", "batch", "free_status"])
     assert "mcp_srv_typo" in caplog.text  # a key the server does not offer is named, never silently dropped
     for _ in range(2):
         _call("paid_render", chat="parent")
     # Compression (CLI, TUI/Desktop) and /branch continue the chat under a new id through this one hook.
-    from tools.approval_yolo import transfer_session_yolo
+    from hermes_agent.tools.approval_yolo import transfer_session_yolo
     transfer_session_yolo("parent", "child")
     assert "used about 80 credits" in _call("paid_render", chat="child", answer="decline")[1][0]
     # Cron: the approval session key is "" for every job; each run binds its own tally.
@@ -251,7 +251,7 @@ def test_parallel_over_limit_calls_are_asked_one_at_a_time(session):
         finally:
             reset_current_session_key(token)
 
-    with patch("tools.approval_prompt.request_elicitation_consent", side_effect=consent):
+    with patch("hermes_agent.tools.approval_prompt.request_elicitation_consent", side_effect=consent):
         threads = [threading.Thread(target=one) for _ in range(2)]
         for th in threads:
             th.start()

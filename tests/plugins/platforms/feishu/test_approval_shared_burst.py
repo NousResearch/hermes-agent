@@ -9,8 +9,8 @@ from hermes_agent.gateway.run import GatewayRunner
 from hermes_agent.gateway.session import SessionSource, build_session_context
 from plugins.platforms.feishu.adapter import FeishuAdapter
 from tests.gateway.test_approval_requester_binding import write_approvers
-from tools import approval as approval_mod
-from tools.approval_gateway_wait import _ApprovalEntry
+from hermes_agent.tools import approval as approval_mod
+from hermes_agent.tools.approval_gateway_wait import _ApprovalEntry
 
 
 @pytest.fixture(autouse=True)

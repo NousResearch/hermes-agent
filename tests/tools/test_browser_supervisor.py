@@ -1,4 +1,4 @@
-"""Integration tests for tools.browser_supervisor.
+"""Integration tests for hermes_agent.tools.browser_supervisor.
 
 Exercises the supervisor end-to-end against a real local Chrome
 (``--remote-debugging-port``).  Skipped when Chrome is not installed
@@ -204,7 +204,7 @@ def _fire_on_page(cdp_url: str, expression: str) -> None:
 @pytest.fixture
 def supervisor_registry():
     """Yield the global registry and tear down any supervisors after the test."""
-    from tools.browser_supervisor import SUPERVISOR_REGISTRY
+    from hermes_agent.tools.browser_supervisor import SUPERVISOR_REGISTRY
 
     yield SUPERVISOR_REGISTRY
     SUPERVISOR_REGISTRY.stop_all()
@@ -296,7 +296,7 @@ def test_prompt_dialog_with_response_text(chrome_cdp, supervisor_registry):
 
 def test_browser_dialog_tool_end_to_end(chrome_cdp, supervisor_registry):
     """Full agent-path check: fire an alert, call the tool handler directly."""
-    from tools.browser_dialog_tool import browser_dialog
+    from hermes_agent.tools.browser_dialog_tool import browser_dialog
 
     cdp_url, _port = chrome_cdp
     supervisor = supervisor_registry.get_or_start(task_id="pytest-tool", cdp_url=cdp_url)

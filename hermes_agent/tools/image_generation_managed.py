@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional, Tuple
 
-from tools.tool_backend_helpers import NOUS_MANAGED_PROVIDER
+from hermes_agent.tools.tool_backend_helpers import NOUS_MANAGED_PROVIDER
 
 FAL, KREA, PORTAL = "fal", "krea", "portal"
 
@@ -40,7 +40,7 @@ _FAL_KREA_PREFIX = "fal-ai/krea/"
 def managed_backend_for_model(model_id: Optional[str]) -> str:
     """Gateway that serves ``model_id`` under the managed selection (unset → FAL default)."""
     from plugins.image_gen.krea import KREA_MODEL_IDS
-    from tools.image_generation_catalog import FAL_MODELS
+    from hermes_agent.tools.image_generation_catalog import FAL_MODELS
 
     candidate = model_id.strip() if isinstance(model_id, str) else ""
     if not candidate or candidate in FAL_MODELS:
@@ -67,7 +67,7 @@ def managed_route(provider: Any, model_id: Any) -> Optional[str]:
 
 def _plugin_rows(name: str) -> list:
     """``list_models()`` of a registered image gen plugin; ``[]`` when unavailable."""
-    from tools.image_generation_tool import _get_plugin_provider
+    from hermes_agent.tools.image_generation_tool import _get_plugin_provider
 
     try:
         provider = _get_plugin_provider(name)
@@ -85,7 +85,7 @@ def managed_image_catalog(
     that are not another entry in disguise. Every row carries ``backend`` so callers can hide
     the gateways an account is not entitled to.
     """
-    from tools.image_generation_catalog import DEFAULT_MODEL, FAL_MODELS
+    from hermes_agent.tools.image_generation_catalog import DEFAULT_MODEL, FAL_MODELS
 
     catalog: dict[str, dict[str, Any]] = {
         mid: {**meta, "backend": FAL} for mid, meta in FAL_MODELS.items()

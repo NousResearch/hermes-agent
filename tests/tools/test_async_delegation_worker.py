@@ -9,7 +9,7 @@ import psutil
 from hermes_cli.process_identity import worker_birth
 from hermes_agent.hermes_state import SessionDB
 from hermes_agent.hermes_state_runtime import RuntimeStoreError
-from tools import async_delegation as ledger
+from hermes_agent.tools import async_delegation as ledger
 
 
 def test_worker_dispatch_is_bound_to_execution_and_cannot_replace_foreign_rows(tmp_path):

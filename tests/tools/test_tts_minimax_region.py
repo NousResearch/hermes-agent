@@ -4,12 +4,12 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from tools.tts_tool import (
+from hermes_agent.tools.tts_tool import (
     _generate_minimax_tts,
     _resolve_minimax_tts_runtime,
     check_tts_requirements,
 )
-from tools.tts_tool_providers import DEFAULT_MINIMAX_BASE_URL, DEFAULT_MINIMAX_CN_BASE_URL
+from hermes_agent.tools.tts_tool_providers import DEFAULT_MINIMAX_BASE_URL, DEFAULT_MINIMAX_CN_BASE_URL
 
 
 GLOBAL_CREDENTIAL_SENTINEL = "FAKE_GLOBAL_CREDENTIAL"
@@ -176,7 +176,7 @@ def test_availability_uses_atomic_runtime(
     expected,
 ):
     _fake_minimax_credentials.update(credentials)
-    monkeypatch.setattr("tools.tts_tool._load_tts_config", lambda: config)
+    monkeypatch.setattr("hermes_agent.tools.tts_tool._load_tts_config", lambda: config)
 
     assert check_tts_requirements() is expected
 

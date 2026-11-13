@@ -4878,7 +4878,7 @@
       },
       "ActiveSubagent": {
         "additionalProperties": true,
-        "description": "One live child from ``tools/delegate_tool_registry.py::list_active_subagents`` (the record\nis extended by the child runner \u2014 ``missed_steer`` etc. \u2014 so it stays open).",
+        "description": "One live child from ``hermes_agent/tools/delegate_tool_registry.py::list_active_subagents`` (the record\nis extended by the child runner \u2014 ``missed_steer`` etc. \u2014 so it stays open).",
         "properties": {
           "subagent_id": {
             "title": "Subagent Id",
@@ -13577,7 +13577,7 @@
         "type": "object"
       },
       "ConnectionActor": {
-        "description": "``tools/connectors/contract.py::Actor``.",
+        "description": "``hermes_agent/tools/connectors/contract.py::Actor``.",
         "enum": [
           "user",
           "backend_watcher",
@@ -13625,7 +13625,7 @@
         "type": "object"
       },
       "ConnectionAnswerStatus": {
-        "description": "What the card says about one row: ``tools/connectors/mcp.py::apply_answer``.",
+        "description": "What the card says about one row: ``hermes_agent/tools/connectors/mcp.py::apply_answer``.",
         "enum": [
           "approved",
           "skipped"
@@ -14342,7 +14342,7 @@
         "type": "object"
       },
       "ConnectionSettleReason": {
-        "description": "``tools/connectors/contract.py::SettleReason``.",
+        "description": "``hermes_agent/tools/connectors/contract.py::SettleReason``.",
         "enum": [
           "all_resolved",
           "continue",
@@ -14470,7 +14470,7 @@
         "type": "string"
       },
       "ConnectionTargetState": {
-        "description": "``tools/connectors/contract.py::TargetState``.",
+        "description": "``hermes_agent/tools/connectors/contract.py::TargetState``.",
         "enum": [
           "pending",
           "initiated",
@@ -16032,7 +16032,7 @@
       },
       "CronJobRow": {
         "additionalProperties": true,
-        "description": "``tools/cronjob_job_args.py::_format_job``.",
+        "description": "``hermes_agent/tools/cronjob_job_args.py::_format_job``.",
         "properties": {
           "job_id": {
             "title": "Job Id",
@@ -16524,7 +16524,7 @@
       },
       "CronManageResult": {
         "additionalProperties": true,
-        "description": "Pass-through of ``tools/cronjob_tools.py::cronjob`` JSON: ``list`` \u2192 ``jobs``/``count``\n(+ ``scoped`` when profile-scoped); ``add`` \u2192 the created job's summary + ``job``; ``remove`` \u2192\n``removed_job``; ``pause``/``resume`` \u2192 ``job``. A tool-level failure lands in ``error``.",
+        "description": "Pass-through of ``hermes_agent/tools/cronjob_tools.py::cronjob`` JSON: ``list`` \u2192 ``jobs``/``count``\n(+ ``scoped`` when profile-scoped); ``add`` \u2192 the created job's summary + ``job``; ``remove`` \u2192\n``removed_job``; ``pause``/``resume`` \u2192 ``job``. A tool-level failure lands in ``error``.",
         "properties": {
           "success": {
             "anyOf": [
@@ -17373,7 +17373,7 @@
       },
       "DisplayLease": {
         "additionalProperties": false,
-        "description": "``tools/bot_desktop/lease.py::Lease`` as clients may see it: the holder's viewer id is a\ncapability and never leaves the gateway; ``viewer_hash`` lets the holder recognise itself.",
+        "description": "``hermes_agent/tools/bot_desktop/lease.py::Lease`` as clients may see it: the holder's viewer id is a\ncapability and never leaves the gateway; ``viewer_hash`` lets the holder recognise itself.",
         "properties": {
           "holder": {
             "$ref": "#/components/schemas/LeaseHolder"
@@ -17740,7 +17740,7 @@
       },
       "DisplayStatus": {
         "additionalProperties": false,
-        "description": "``tools/bot_desktop/runtime.py::DesktopStatus`` plus the lease and the profile it speaks for.",
+        "description": "``hermes_agent/tools/bot_desktop/runtime.py::DesktopStatus`` plus the lease and the profile it speaks for.",
         "properties": {
           "profile": {
             "title": "Profile",
@@ -23793,7 +23793,7 @@
       },
       "McpServerRuntimeRow": {
         "additionalProperties": false,
-        "description": "Safe projection of ``tools.mcp_tool_discovery.get_mcp_status`` rows.",
+        "description": "Safe projection of ``hermes_agent.tools.mcp_tool_discovery.get_mcp_status`` rows.",
         "properties": {
           "name": {
             "title": "Name",
@@ -24775,7 +24775,7 @@
       },
       "MessageReactionPayload": {
         "additionalProperties": false,
-        "description": "``tools/react_to_message_tool.py``.",
+        "description": "``hermes_agent/tools/react_to_message_tool.py``.",
         "properties": {
           "row_id": {
             "title": "Row Id",
@@ -26023,7 +26023,7 @@
       },
       "PaneRevealPayload": {
         "additionalProperties": true,
-        "description": "``tools/focus_pane_tool.py``.",
+        "description": "``hermes_agent/tools/focus_pane_tool.py``.",
         "properties": {
           "pane": {
             "title": "Pane",
@@ -26329,7 +26329,7 @@
       },
       "PendingApproval": {
         "additionalProperties": true,
-        "description": "One unresolved ``tools/approval.py`` gateway queue entry as ``server._approval_request_payload``\nrenders it (command redacted; ``choices`` precomputed). The key set is owned by the approval tool.",
+        "description": "One unresolved ``hermes_agent/tools/approval.py`` gateway queue entry as ``server._approval_request_payload``\nrenders it (command redacted; ``choices`` precomputed). The key set is owned by the approval tool.",
         "properties": {
           "request_id": {
             "anyOf": [
@@ -28530,7 +28530,7 @@
       },
       "PluginScanFinding": {
         "additionalProperties": false,
-        "description": "One security-scan finding (``tools.plugin_guard``) on a plugin tree the scan blocked.",
+        "description": "One security-scan finding (``hermes_agent.tools.plugin_guard``) on a plugin tree the scan blocked.",
         "properties": {
           "pattern_id": {
             "title": "Pattern Id",
@@ -29586,7 +29586,7 @@
       },
       "PreviewActRequestParams": {
         "additionalProperties": false,
-        "description": "``tools/drive_preview_tool.py`` and ``tools/annotate_preview_tool.py`` field sets.",
+        "description": "``hermes_agent/tools/drive_preview_tool.py`` and ``hermes_agent/tools/annotate_preview_tool.py`` field sets.",
         "properties": {
           "session_id": {
             "title": "Session Id",
@@ -29737,7 +29737,7 @@
       },
       "PreviewClosePayload": {
         "additionalProperties": false,
-        "description": "``tools/preview_tool.py`` / ``tools/close_preview_tool.py``; ``url`` '' closes every tab.",
+        "description": "``hermes_agent/tools/preview_tool.py`` / ``hermes_agent/tools/close_preview_tool.py``; ``url`` '' closes every tab.",
         "properties": {
           "url": {
             "default": "",
@@ -29750,7 +29750,7 @@
       },
       "PreviewOpenPayload": {
         "additionalProperties": false,
-        "description": "``tools/open_preview_tool.py``.",
+        "description": "``hermes_agent/tools/open_preview_tool.py``.",
         "properties": {
           "url": {
             "title": "Url",
@@ -29901,7 +29901,7 @@
       },
       "ProcessEntry": {
         "additionalProperties": true,
-        "description": "``tools/process_registry.py::list_sessions`` row plus the gateway's ``output_tail``.",
+        "description": "``hermes_agent/tools/process_registry.py::list_sessions`` row plus the gateway's ``output_tail``.",
         "properties": {
           "session_id": {
             "title": "Session Id",
@@ -30145,7 +30145,7 @@
       },
       "ProcessKillResult": {
         "additionalProperties": true,
-        "description": "``tools/process_registry.py::kill_process`` snapshot; ``error`` rides on the failure statuses.",
+        "description": "``hermes_agent/tools/process_registry.py::kill_process`` snapshot; ``error`` rides on the failure statuses.",
         "properties": {
           "status": {
             "$ref": "#/components/schemas/ProcessKillStatus"
@@ -34157,7 +34157,7 @@
       },
       "RelayAgentRow": {
         "additionalProperties": true,
-        "description": "A roster row the Desktop pushes (``tools/bot_relay.py::_normalize_roster_row``); invalid\nrows are dropped server-side, so the shape stays open.",
+        "description": "A roster row the Desktop pushes (``hermes_agent/tools/bot_relay.py::_normalize_roster_row``); invalid\nrows are dropped server-side, so the shape stays open.",
         "properties": {
           "profile": {
             "anyOf": [
@@ -34249,7 +34249,7 @@
       },
       "RelayEnvelope": {
         "additionalProperties": true,
-        "description": "``tools/bot_relay.py::enqueue_envelope``.",
+        "description": "``hermes_agent/tools/bot_relay.py::enqueue_envelope``.",
         "properties": {
           "id": {
             "title": "Id",
@@ -34959,7 +34959,7 @@
       },
       "RollbackRestoreResult": {
         "additionalProperties": true,
-        "description": "``tools/checkpoint_manager.py::restore`` outcome; ``history_removed`` is added for a full\n(non-file) restore that also rewound the live transcript.",
+        "description": "``hermes_agent/tools/checkpoint_manager.py::restore`` outcome; ``history_removed`` is added for a full\n(non-file) restore that also rewound the live transcript.",
         "properties": {
           "success": {
             "title": "Success",
@@ -44498,7 +44498,7 @@
       },
       "SubagentOutputTailEntry": {
         "additionalProperties": false,
-        "description": "``tools/delegate_tool_results.py::_extract_output_tail`` row.",
+        "description": "``hermes_agent/tools/delegate_tool_results.py::_extract_output_tail`` row.",
         "properties": {
           "tool": {
             "title": "Tool",
@@ -44706,7 +44706,7 @@
         "type": "object"
       },
       "SubagentStatus": {
-        "description": "Lifecycle of one delegated child (``tools/delegate_tool_child_run.py``); ``failed`` /\n``error`` / ``timeout`` / ``interrupted`` / ``completed`` are terminal.",
+        "description": "Lifecycle of one delegated child (``hermes_agent/tools/delegate_tool_child_run.py``); ``failed`` /\n``error`` / ``timeout`` / ``interrupted`` / ``completed`` are terminal.",
         "enum": [
           "queued",
           "running",
@@ -45733,7 +45733,7 @@
       },
       "ThemeApplyRequestParams": {
         "additionalProperties": false,
-        "description": "``tools/set_theme_tool.py`` values; accent is a swatch id, ``theme`` or ``#rrggbb``.",
+        "description": "``hermes_agent/tools/set_theme_tool.py`` values; accent is a swatch id, ``theme`` or ``#rrggbb``.",
         "properties": {
           "session_id": {
             "title": "Session Id",
@@ -45904,7 +45904,7 @@
       },
       "TipShowPayload": {
         "additionalProperties": false,
-        "description": "``tools/tip_tool.py``.",
+        "description": "``hermes_agent/tools/tip_tool.py``.",
         "properties": {
           "selector": {
             "title": "Selector",
@@ -46145,7 +46145,7 @@
       },
       "ToolLabel": {
         "additionalProperties": false,
-        "description": "``tools.tool_labels.ToolLabel`` \u2014 what one call executed through the tool_search bridge is,\nin words. Clients render ``text`` (or ``app``/``action`` in their own columns) and never parse\nthe tool name themselves.",
+        "description": "``hermes_agent.tools.tool_labels.ToolLabel`` \u2014 what one call executed through the tool_search bridge is,\nin words. Clients render ``text`` (or ``app``/``action`` in their own columns) and never parse\nthe tool name themselves.",
         "properties": {
           "kind": {
             "$ref": "#/components/schemas/ToolLabelKind"
@@ -46690,7 +46690,7 @@
       },
       "TourRequestParams": {
         "additionalProperties": false,
-        "description": "``tools/tour_tool.py`` field set.",
+        "description": "``hermes_agent/tools/tour_tool.py`` field set.",
         "properties": {
           "session_id": {
             "title": "Session Id",
@@ -49090,7 +49090,7 @@
       },
       "WakeInputDevice": {
         "additionalProperties": true,
-        "description": "``tools/wake_word.py::_describe_input_device`` \u2014 PortAudio diagnostics for the configured mic.",
+        "description": "``hermes_agent/tools/wake_word.py::_describe_input_device`` \u2014 PortAudio diagnostics for the configured mic.",
         "properties": {
           "selector": {
             "anyOf": [

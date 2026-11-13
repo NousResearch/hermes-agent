@@ -15,7 +15,7 @@ from unittest.mock import patch
 
 import pytest
 
-from tools.mcp_tool import MCPServerTask
+from hermes_agent.tools.mcp_tool import MCPServerTask
 
 def _task_with_pids(pids, *, http=False):
     task = object.__new__(MCPServerTask)
@@ -99,7 +99,7 @@ def test_fast_fail_probe_never_calls_the_watcher_on_the_plain_path():
     from types import SimpleNamespace
     from unittest.mock import AsyncMock
 
-    from tools.mcp_tool_handlers import _call_tool_racing_stdio_death
+    from hermes_agent.tools.mcp_tool_handlers import _call_tool_racing_stdio_death
 
     # AsyncMock qualifies as a coroutine function (like the real async method)
     # and counts calls even when the returned coroutine is never awaited.

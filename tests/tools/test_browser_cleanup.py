@@ -1,4 +1,4 @@
-"""Regression tests for browser session cleanup (tools/browser_session_lifecycle.py)."""
+"""Regression tests for browser session cleanup (hermes_agent/tools/browser_session_lifecycle.py)."""
 
 import contextlib
 import os
@@ -10,9 +10,9 @@ from unittest.mock import patch
 
 import pytest
 
-from tools import browser_launcher as launcher
-from tools import browser_session as bs
-from tools import browser_session_lifecycle as lifecycle
+from hermes_agent.tools import browser_launcher as launcher
+from hermes_agent.tools import browser_session as bs
+from hermes_agent.tools import browser_session_lifecycle as lifecycle
 
 
 class TestBrowserCleanup:
@@ -37,7 +37,7 @@ class TestBrowserCleanup:
         }
         bs._session_last_activity["task-1"] = 123.0
 
-        with patch("tools.browser_launcher.stop_browser") as mock_stop:
+        with patch("hermes_agent.tools.browser_launcher.stop_browser") as mock_stop:
             lifecycle.cleanup_browser("task-1")
 
         assert "task-1" not in bs._active_sessions
@@ -53,8 +53,8 @@ class TestBrowserCleanup:
         bs._session_last_activity["task-2"] = 2.0
 
         with (
-            patch("tools.browser_session_lifecycle.cleanup_all_browsers") as mock_cleanup_all,
-            patch("tools.browser_session_lifecycle.reap_orphaned_browser_sessions") as mock_reap,
+            patch("hermes_agent.tools.browser_session_lifecycle.cleanup_all_browsers") as mock_cleanup_all,
+            patch("hermes_agent.tools.browser_session_lifecycle.reap_orphaned_browser_sessions") as mock_reap,
         ):
             lifecycle.emergency_cleanup_all_sessions()
 
@@ -125,7 +125,7 @@ class TestInactivityJanitorMultiplex:
             seen["home"] = str(get_hermes_home())
             seen["key"] = secret_scope.get_secret("BROWSER_USE_API_KEY")
 
-        with patch("tools.browser_launcher.stop_browser", side_effect=fake_stop):
+        with patch("hermes_agent.tools.browser_launcher.stop_browser", side_effect=fake_stop):
             lifecycle.cleanup_inactive_sessions()
 
         assert seen == {"home": str(p1), "key": "p1-key"}
@@ -141,8 +141,8 @@ class TestInactivityJanitorMultiplex:
         provider = MagicMock()
 
         with (
-            patch("tools.browser_session_lifecycle.cleanup_single_session", side_effect=RuntimeError("boom")),
-            patch("tools.browser_session_cloud.get_cloud_provider", return_value=provider),
+            patch("hermes_agent.tools.browser_session_lifecycle.cleanup_single_session", side_effect=RuntimeError("boom")),
+            patch("hermes_agent.tools.browser_session_cloud.get_cloud_provider", return_value=provider),
         ):
             for _ in range(bs.MAX_INACTIVITY_CLEANUP_FAILURES - 1):
                 lifecycle.cleanup_inactive_sessions()
@@ -180,7 +180,7 @@ class TestAtexitLifecycleUnimportable:
     def test_hook_stays_silent_when_lifecycle_import_fails(self, monkeypatch):
         """Mid-`hermes update` the on-disk tree can be half-new, so the atexit hook's import of
         the lifecycle module raises; the hook must stay silent (#112437)."""
-        monkeypatch.setitem(sys.modules, "tools.browser_session_lifecycle", None)  # import -> ImportError
+        monkeypatch.setitem(sys.modules, "hermes_agent.tools.browser_session_lifecycle", None)  # import -> ImportError
         bs._atexit_cleanup()  # must not raise
 
 
@@ -284,9 +284,9 @@ class _Completed:
 
 @pytest.fixture
 def fake_sandbox(monkeypatch, isolated_sessions):
-    from tools import browser_session_sandbox
-    from tools.bot_desktop import runtime, sandbox_host
-    from tools.environments import streams
+    from hermes_agent.tools import browser_session_sandbox
+    from hermes_agent.tools.bot_desktop import runtime, sandbox_host
+    from hermes_agent.tools.environments import streams
     sandbox, env = _FakeSandbox(), object()
     monkeypatch.setattr(browser_session_sandbox, "_launched", {}, raising=False)
     monkeypatch.setattr(browser_session_sandbox, "_confirmed", {}, raising=False)
@@ -307,7 +307,7 @@ class TestSandboxSharedBrowser:
 
     def test_the_sandbox_browser_is_stopped_only_after_its_last_session_tears_down(self, fake_sandbox,
                                                                                  isolated_sessions):
-        from tools.browser_session_sandbox import create_sandbox_session
+        from hermes_agent.tools.browser_session_sandbox import create_sandbox_session
         isolated_sessions["task-A"] = create_sandbox_session("task-A")  # launches it
         isolated_sessions["task-B"] = create_sandbox_session("task-B")  # attaches to it
 
@@ -318,7 +318,7 @@ class TestSandboxSharedBrowser:
         assert fake_sandbox.killed == [4242]
 
     def test_a_sandbox_session_is_dead_once_its_chromium_is_gone(self, fake_sandbox):
-        from tools.browser_session_sandbox import create_sandbox_session
+        from hermes_agent.tools.browser_session_sandbox import create_sandbox_session
         info = create_sandbox_session("task-A")
         assert bs._backend_dead(info) is False
 
@@ -330,7 +330,7 @@ class TestSandboxSharedBrowser:
                                                                       monkeypatch):
         """Only a definitive answer from inside the sandbox ("no DevTools port file", "port closed") means
         Chromium is gone; a docker/ssh exec that fails or times out says nothing about it."""
-        from tools.browser_session_sandbox import create_sandbox_session
+        from hermes_agent.tools.browser_session_sandbox import create_sandbox_session
         monkeypatch.setattr(bs, "_create_session_for_key", lambda key, force_local: create_sandbox_session(key))
         first = bs.get_session_info("task-A")
         for failure in ("exit-255", "timeout"):
@@ -341,7 +341,7 @@ class TestSandboxSharedBrowser:
 
     def test_a_healthy_sandbox_session_spends_no_exec_per_browser_call(self, fake_sandbox, isolated_sessions,
                                                                      monkeypatch):
-        from tools.browser_session_sandbox import create_sandbox_session
+        from hermes_agent.tools.browser_session_sandbox import create_sandbox_session
         monkeypatch.setattr(bs, "_create_session_for_key", lambda key, force_local: create_sandbox_session(key))
         first = bs.get_session_info("task-A")
         fake_sandbox.probes = 0
@@ -353,8 +353,8 @@ class TestSandboxSharedBrowser:
             self, fake_sandbox, monkeypatch):
         """No forward failure surfaces for a relaunch the harness never connected through, so the confirmed
         answer is only trusted for a short while: healthy calls inside it spend no exec."""
-        from tools import browser_session_sandbox
-        from tools.browser_session_sandbox import create_sandbox_session
+        from hermes_agent.tools import browser_session_sandbox
+        from hermes_agent.tools.browser_session_sandbox import create_sandbox_session
         clock = [1000.0]
         monkeypatch.setattr(browser_session_sandbox, "time", SimpleNamespace(monotonic=lambda: clock[0]))
         info = create_sandbox_session("task-A")
@@ -372,9 +372,9 @@ class TestSandboxBrowserOwnership:
 
     @pytest.mark.parametrize("failure", ["never-ready", "interrupted"])
     def test_a_failed_start_stops_the_chromium_it_spawned(self, fake_sandbox, monkeypatch, failure):
-        from tools import browser_session_sandbox
-        from tools.browser_session_sandbox import create_sandbox_session
-        from tools.environments import streams
+        from hermes_agent.tools import browser_session_sandbox
+        from hermes_agent.tools.browser_session_sandbox import create_sandbox_session
+        from hermes_agent.tools.environments import streams
         if failure == "never-ready":
             fake_sandbox.port_published = False
             monkeypatch.setattr(browser_session_sandbox, "_LAUNCH_TIMEOUT_S", 0.0)
@@ -390,8 +390,8 @@ class TestSandboxBrowserOwnership:
         assert browser_session_sandbox._launched == {}
 
     def test_a_timed_out_port_wait_is_a_readiness_failure(self, fake_sandbox, monkeypatch):
-        from tools import browser_session_sandbox
-        from tools.browser_session_sandbox import create_sandbox_session
+        from hermes_agent.tools import browser_session_sandbox
+        from hermes_agent.tools.browser_session_sandbox import create_sandbox_session
         fake_sandbox.timeouts.add("cat")
         monkeypatch.setattr(browser_session_sandbox, "_LAUNCH_TIMEOUT_S", 0.01)
         with pytest.raises(RuntimeError, match="did not expose a DevTools endpoint"):
@@ -399,14 +399,14 @@ class TestSandboxBrowserOwnership:
         assert fake_sandbox.killed == [4242]
 
     def test_a_timed_out_stop_does_not_crash_the_teardown(self, fake_sandbox, isolated_sessions):
-        from tools.browser_session_sandbox import create_sandbox_session
+        from hermes_agent.tools.browser_session_sandbox import create_sandbox_session
         isolated_sessions["task-A"] = create_sandbox_session("task-A")
         fake_sandbox.timeouts.add("kill")
         lifecycle.cleanup_single_session("task-A")
         assert "task-A" not in isolated_sessions
 
     def test_sessions_racing_onto_one_container_launch_one_browser(self, fake_sandbox):
-        from tools.browser_session_sandbox import create_sandbox_session
+        from hermes_agent.tools.browser_session_sandbox import create_sandbox_session
         fake_sandbox.probe_barrier = threading.Barrier(2)
         results, errors = [], []
 
@@ -454,9 +454,9 @@ class _FakeContainers:
 
 @pytest.fixture
 def fake_containers(monkeypatch, isolated_sessions):
-    from tools import browser_session_sandbox
-    from tools.bot_desktop import runtime, sandbox_host
-    from tools.environments import streams
+    from hermes_agent.tools import browser_session_sandbox
+    from hermes_agent.tools.bot_desktop import runtime, sandbox_host
+    from hermes_agent.tools.environments import streams
     containers = _FakeContainers()
     monkeypatch.setattr(browser_session_sandbox, "_launched", {}, raising=False)
     monkeypatch.setattr(browser_session_sandbox, "_confirmed", {}, raising=False)
@@ -486,7 +486,7 @@ class TestSandboxBrowserPerContainer:
 
     def test_profiles_sharing_one_container_share_its_browser_until_the_last_session(self, fake_containers,
                                                                                   isolated_sessions, tmp_path):
-        from tools.browser_session_sandbox import create_sandbox_session
+        from hermes_agent.tools.browser_session_sandbox import create_sandbox_session
         shared = fake_containers.current = object()  # terminal.docker_shared_container_key
         isolated_sessions["a"] = _in_home(tmp_path / "a", lambda: create_sandbox_session("a"))
         isolated_sessions["b"] = _in_home(tmp_path / "b", lambda: create_sandbox_session("b"))
@@ -498,7 +498,7 @@ class TestSandboxBrowserPerContainer:
         assert fake_containers.killed == [(shared, pid)]
 
     def test_a_per_session_container_browser_stops_with_that_session(self, fake_containers, isolated_sessions):
-        from tools.browser_session_sandbox import create_sandbox_session
+        from hermes_agent.tools.browser_session_sandbox import create_sandbox_session
         first = fake_containers.current = object()  # container_persistent: false
         isolated_sessions["s1"] = create_sandbox_session("s1")
         second = fake_containers.current = object()

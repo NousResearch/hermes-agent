@@ -334,7 +334,7 @@ class Soak:
 
     def ev_manual(self, name):
         from hermes_agent.cron.jobs import get_job
-        from tools.cronjob_tools import _execute_job_now
+        from hermes_agent.tools.cronjob_tools import _execute_job_now
 
         t = self.now()
         result = _execute_job_now(get_job(self.ids[name]))

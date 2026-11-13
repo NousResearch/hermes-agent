@@ -11,7 +11,7 @@ import pytest
 
 from tests.tools.test_sandbox_scope_conformance import provider as _conformance_provider
 from tests.tools.test_sandbox_scope_conformance import A
-from tools.environments import sandbox_conformance as c
+from hermes_agent.tools.environments import sandbox_conformance as c
 
 provider = _conformance_provider  # the recording-sandbox fixture, by its name
 
@@ -76,7 +76,7 @@ def test_hosted_relative_path_anchors_in_the_sandbox_default(provider, monkeypat
 
 def test_local_terminal_cwd_tilde_still_expands_to_this_hosts_home(monkeypatch, host_paths):
     """With no scope bound a ``~`` TERMINAL_CWD is this host's HOME, as it always was."""
-    from tools.terminal_tool import _resolve_config_cwd
+    from hermes_agent.tools.terminal_tool import _resolve_config_cwd
 
     host_home, _ = host_paths
     monkeypatch.setenv("TERMINAL_CWD", "~")
@@ -87,8 +87,8 @@ def test_local_relative_path_still_anchors_on_the_process_cwd(monkeypatch, host_
     """With no scope bound and no configured cwd a relative write lands in the process cwd, as it always did."""
     import os
 
-    import model_tools  # registers the tools dispatched through the registry
-    from tools import file_tools, terminal_tool
+    from hermes_agent import model_tools  # registers the tools dispatched through the registry
+    from hermes_agent.tools import file_tools, terminal_tool
 
     _, host_cwd = host_paths
     monkeypatch.setenv("TERMINAL_ENV", "local")

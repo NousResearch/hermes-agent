@@ -1,4 +1,4 @@
-"""Content/file search tier for ``tools.file_operations``.
+"""Content/file search tier for ``hermes_agent.tools.file_operations``.
 
 ``ShellFileOperations`` inherits ``SearchMixin``; module-level helpers are pure
 (no I/O).
@@ -16,8 +16,8 @@ from pathlib import Path
 from typing import Any, List, Optional
 
 from agent.search_policy import SEARCH_PRUNE_DIR_NAMES
-from tools import interrupt as tool_interrupt
-from tools.file_operations_common import ExecuteResult, SearchMatch, SearchResult
+from hermes_agent.tools import interrupt as tool_interrupt
+from hermes_agent.tools.file_operations_common import ExecuteResult, SearchMatch, SearchResult
 
 _MACOS_TCC_PROTECTED_HOME_DIRS = (
     "Desktop", "Documents", "Downloads", "Library", "Movies", "Music", "Pictures",
@@ -60,8 +60,8 @@ _FILENAME_SEARCH_WAIT_SECONDS = 0.05
 
 def _normalized_filename_search_root(env: Any, root: str, fallback_cwd: str) -> str:
     """Normalize a filename-walk root without resolving remote paths locally."""
-    from tools.environments.base import env_uses_host_filesystem
-    from tools.environments.local import _IS_WINDOWS, _msys_to_windows_path
+    from hermes_agent.tools.environments.base import env_uses_host_filesystem
+    from hermes_agent.tools.environments.local import _IS_WINDOWS, _msys_to_windows_path
 
     cwd = getattr(env, "cwd", None) or fallback_cwd
     if env_uses_host_filesystem(env):
@@ -531,8 +531,8 @@ class SearchMixin:
         cached = self._rg_resolution_cache.get(cmd)
         if cached:
             return cached
-        from tools.environments.base import env_uses_host_filesystem
-        from tools.environments.local import _IS_WINDOWS
+        from hermes_agent.tools.environments.base import env_uses_host_filesystem
+        from hermes_agent.tools.environments.local import _IS_WINDOWS
 
         # A host search is Hermes's own work, so it runs the pinned ripgrep, never the
         # first rg on the terminal PATH, where the user's tools come first.
@@ -605,7 +605,7 @@ class SearchMixin:
         (``2>/dev/null``) for probes. Like the shell's ``2>&1``-free ``| head``, kept
         stderr is drained on its own pipe so diagnostics never use up the
         ``fetch_limit`` lines meant for results; it is prepended to stdout."""
-        from tools.environments.local import _kill_process_group_posix, _make_run_env
+        from hermes_agent.tools.environments.local import _kill_process_group_posix, _make_run_env
         cwd = getattr(self.env, "cwd", None) or self.cwd
         args = shlex.split(" ".join(argv))
         try:
@@ -695,7 +695,7 @@ class SearchMixin:
         """Quote an executable without leaking controller path semantics."""
         if re.fullmatch(r"[A-Za-z0-9_.-]+", executable):
             return executable
-        from tools.environments.base import env_uses_host_filesystem
+        from hermes_agent.tools.environments.base import env_uses_host_filesystem
 
         if env_uses_host_filesystem(self.env):
             return self._escape_native_tool_arg(executable)
@@ -711,7 +711,7 @@ class SearchMixin:
         env = getattr(self, "env", None)
         if env is not None and getattr(env, "is_local", True) is False:
             return []
-        from tools import file_operations as _fo  # lazy: _HOME is monkeypatched there
+        from hermes_agent.tools import file_operations as _fo  # lazy: _HOME is monkeypatched there
         cwd = getattr(self.env, "cwd", None) or self.cwd
         return _macos_protected_search_exclusions(path, cwd=cwd, home=_fo._HOME, platform=sys.platform)
 
@@ -924,8 +924,8 @@ class SearchMixin:
     def _is_broad_local_search_root(self, path: str) -> bool:
         """Whether a no-rg LOCAL root (filesystem root, $HOME or an ancestor of it) is
         unsafe for recursive find. Controller paths never classify remotes."""
-        from tools.environments.base import env_uses_host_filesystem
-        from tools.environments.local import _IS_WINDOWS, _msys_to_windows_path
+        from hermes_agent.tools.environments.base import env_uses_host_filesystem
+        from hermes_agent.tools.environments.local import _IS_WINDOWS, _msys_to_windows_path
 
         if not env_uses_host_filesystem(self.env):
             return False
@@ -941,7 +941,7 @@ class SearchMixin:
             # the isinstance check above, so this resolves on the host that runs find.
             return os.path.normcase(os.path.realpath(value))
 
-        from tools import file_operations as _fo  # lazy: _HOME is monkeypatched there
+        from hermes_agent.tools import file_operations as _fo  # lazy: _HOME is monkeypatched there
         root = normalized(path)
         home = normalized(_fo._HOME)
         drive = os.path.splitdrive(root)[0]
@@ -1165,8 +1165,8 @@ class SearchMixin:
         if failure is not None:
             return failure
 
-        from tools.environments.base import env_uses_host_filesystem
-        from tools.environments.local import _IS_WINDOWS, _msys_to_windows_path
+        from hermes_agent.tools.environments.base import env_uses_host_filesystem
+        from hermes_agent.tools.environments.local import _IS_WINDOWS, _msys_to_windows_path
         if _IS_WINDOWS and env_uses_host_filesystem(self.env):
             raw_files = [_msys_to_windows_path(file_path) for file_path in raw_files]
         return SearchResult(

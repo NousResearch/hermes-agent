@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from tools import bot_mode_dm
+from hermes_agent.tools import bot_mode_dm
 
 
 @pytest.fixture()

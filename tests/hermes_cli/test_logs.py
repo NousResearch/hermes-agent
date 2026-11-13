@@ -177,7 +177,7 @@ def _python_log_line(logger_name: str) -> str:
 def _mcp_output_line() -> str:
     import io
 
-    from tools.mcp_tool_config import _StderrTee
+    from hermes_agent.tools.mcp_tool_config import _StderrTee
 
     log = io.StringIO()
     tee = _StderrTee(log)

@@ -7,9 +7,9 @@ import json
 import threading
 from collections import OrderedDict
 from typing import Optional
-from tools.mcp_tool_common import _core
+from hermes_agent.tools.mcp_tool_common import _core
 
-logger = logging.getLogger("tools.mcp_tool")
+logger = logging.getLogger("hermes_agent.tools.mcp_tool")
 
 # Serializes in-place swaps of ``agent.tools`` / ``agent.valid_tool_names`` by
 # the reload RPC, gateway reload and late-binding refresh thread; the run loop
@@ -48,7 +48,7 @@ def _resolve_refresh_toolsets(agent, enabled_override, disabled_override):
         enabled = enabled_override if enabled_override is not None else enabled
         if disabled_override is not None:
             from agent.oneshot_footprint import agent_is_oneshot
-            from toolsets import session_disabled_toolsets
+            from hermes_agent.toolsets import session_disabled_toolsets
             agent._configured_disabled_toolsets = disabled_override
             disabled = session_disabled_toolsets(
                 disabled_override, getattr(agent, "platform", None), oneshot=agent_is_oneshot(agent))
@@ -68,8 +68,8 @@ def _tool_defs_content_changed(agent, new_defs: list) -> bool:
 
 def _drop_session_tools(agent, new_defs: list, new_names: set) -> tuple:
     # Drops only: runs after a merge, where a carried or pinned entry keeps the bytes already sent. The one-shot
-    # schema variants (``toolsets.agent_tool_surface``) shape fresh definitions, before any merge.
-    from toolsets import agent_tool_drops
+    # schema variants (``hermes_agent.toolsets.agent_tool_surface``) shape fresh definitions, before any merge.
+    from hermes_agent.toolsets import agent_tool_drops
     drops = agent_tool_drops(agent)
     if not drops:
         return new_defs, new_names
@@ -79,7 +79,7 @@ def _drop_session_tools(agent, new_defs: list, new_names: set) -> tuple:
 def _frozen_tool_names(registered: set) -> frozenset:
     """Names the tools[] freeze holds back: every name availability alone can bring into a build,
     the registered tools and the Tool Search bridge ``assemble_tool_defs`` adds once anything defers."""
-    from tools.tool_search_catalog import BRIDGE_TOOL_NAMES
+    from hermes_agent.tools.tool_search_catalog import BRIDGE_TOOL_NAMES
     return frozenset(registered) | frozenset(BRIDGE_TOOL_NAMES)
 
 
@@ -149,9 +149,9 @@ def refresh_agent_mcp_tools(
     With ``preserve_prefix`` off (explicit ``/reload-mcp``, and a rebuild before the
     first turn) a same-name schema change is published. The caller has already
     accepted the cache break, or nothing has been cached yet."""
-    from model_tools import get_tool_definitions
-    from tools.registry import registry
-    from toolsets import agent_tool_surface, tool_selection_key
+    from hermes_agent.model_tools import get_tool_definitions
+    from hermes_agent.tools.registry import registry
+    from hermes_agent.toolsets import agent_tool_surface, tool_selection_key
     enabled, disabled = _resolve_refresh_toolsets(agent, enabled_override, disabled_override)
     # Generation captured BEFORE the slow get_tool_definitions call (a slower caller holding an
     # OLDER set must not clobber a newer one); definitions computed OUTSIDE the lock.
@@ -199,8 +199,8 @@ def reprobe_tool_availability() -> None:
     """Explicit ``/reload-mcp`` hatch out of the tools[] freeze: drop the ``check_fn`` verdict
     cache AND the ``get_tool_definitions`` memo (keyed on registry generation, so it would
     otherwise replay the stale verdicts)."""
-    from model_tools import _clear_tool_defs_cache
-    from tools.registry import invalidate_check_fn_cache
+    from hermes_agent.model_tools import _clear_tool_defs_cache
+    from hermes_agent.tools.registry import invalidate_check_fn_cache
     invalidate_check_fn_cache()
     _clear_tool_defs_cache()
 
@@ -254,7 +254,7 @@ def _pin_restore_held(agent, registered: set) -> tuple[bool, frozenset]:
     """(pinned here, held) for a restore from this session's pin: whether this process wrote the pin (the
     rebuild is the same conversation), and the names it holds back: those the freeze holds when neither the
     registry nor the agent's toolset selection has moved since."""
-    from tools.registry import registry
+    from hermes_agent.tools.registry import registry
     session_id = getattr(agent, "session_id", None)
     if not session_id:
         return False, frozenset()
@@ -270,8 +270,8 @@ def _config_permitted_names(agent) -> set:
     forward. A client-surface toolset counts as allowed (only its client can add it, so its absence
     here is no config choice); ``disabled_toolsets`` still strips it."""
     from agent.oneshot_footprint import ONESHOT_DISABLED_TOOLSETS, agent_is_oneshot
-    from model_tools import _select_tool_names
-    from toolsets import CLIENT_SURFACE_TOOLSETS
+    from hermes_agent.model_tools import _select_tool_names
+    from hermes_agent.toolsets import CLIENT_SURFACE_TOOLSETS
     enabled = getattr(agent, "enabled_toolsets", None)
     if enabled is not None:
         enabled = [*enabled, *CLIENT_SURFACE_TOOLSETS]
@@ -285,7 +285,7 @@ def _config_permitted_names(agent) -> set:
 def _drop_gated_carried_tools(merged: list, carried: set) -> list:
     """A carried tool also passes the session-level schema gates the fresh build applied
     (``browser_exec`` needs ``terminal`` in the same array), judged on the merged array."""
-    from model_tools import _DYNAMIC_SCHEMA_REWRITERS
+    from hermes_agent.model_tools import _DYNAMIC_SCHEMA_REWRITERS
     available = {_def_name(t) for t in merged}
     return [t for t in merged if _def_name(t) not in carried or _def_name(t) not in _DYNAMIC_SCHEMA_REWRITERS
             or _DYNAMIC_SCHEMA_REWRITERS[_def_name(t)](t, available) is not None]
@@ -298,7 +298,7 @@ def _pinned_tool_defs(saved, fresh, keep_bytes=False) -> tuple:
     pinned, version = (saved.get("tools") or [], saved.get("version")) if isinstance(saved, dict) else (saved, None)
     if not isinstance(pinned, list):
         return [], False, []
-    from tools.registry import registry
+    from hermes_agent.tools.registry import registry
     same_code = version is not None and version == tool_pin_version()
 
     def _pinned_def(item):
@@ -318,7 +318,7 @@ def pinned_tool_defs(saved) -> list:
     pinned definitions keep their bytes, a legacy name list takes each tool's current registry schema."""
     # With no agent built yet (gateway warm-up off, failed or still running), nothing has run tool
     # discovery, so the registry would resolve no legacy name.
-    import model_tools
+    from hermes_agent import model_tools
     return _pinned_tool_defs(saved, {}, keep_bytes=True)[2]
 
 
@@ -337,7 +337,7 @@ def restore_agent_tool_prefix(agent, saved) -> bool:
     pinned, same_code, pinned_defs = _pinned_tool_defs(saved, {_def_name(t): t for t in _agent_tool_defs(agent)})
     if not pinned:
         return False
-    from tools.registry import registry
+    from hermes_agent.tools.registry import registry
     fresh_defs = _agent_tool_defs(agent)
     fresh = {_def_name(t): t for t in fresh_defs}
     registered_names = {entry.name for entry in registry.get_all_entries()}
@@ -345,7 +345,7 @@ def restore_agent_tool_prefix(agent, saved) -> bool:
     carried &= _config_permitted_names(agent) if carried else set()
     pinned_here, held = _pin_restore_held(agent, registered_names)
     if pinned_here:  # same conversation: the synthesized bridge keeps its slot, as in _merge_preserving_prefix
-        from tools.tool_search_catalog import BRIDGE_TOOL_NAMES
+        from hermes_agent.tools.tool_search_catalog import BRIDGE_TOOL_NAMES
         carried |= {_def_name(d) for d in pinned_defs if _def_name(d) in BRIDGE_TOOL_NAMES}
     merged = [d for d in pinned_defs if _def_name(d) in fresh or _def_name(d) in carried]
     pinned_names = {_def_name(d) for d in merged}
@@ -362,7 +362,7 @@ def restore_agent_tool_prefix(agent, saved) -> bool:
     if isinstance(saved, dict) and saved.get("delegation_backend"):
         from agent.delegation_backends import adopt_built_backend
         adopt_built_backend(agent, pinned, saved["delegation_backend"])
-    from tools.delegate_tool import adopt_session_delegation_mode
+    from hermes_agent.tools.delegate_tool import adopt_session_delegation_mode
     adopt_session_delegation_mode(agent)  # the restored delegate_task decides joined vs background from here on
     if not same_code or merged != list(pinned):
         persist_agent_tool_names(agent)
@@ -389,7 +389,7 @@ def _merge_preserving_prefix(current_defs: list, new_defs: list, registered_name
     The bridge tools are synthesized by ``assemble_tool_defs``, never registered, and a fresh
     snapshot omits them when the deferred set shrinks under the activation threshold: they
     keep their slot regardless (search reads the live catalog at dispatch)."""
-    from tools.tool_search_catalog import BRIDGE_TOOL_NAMES
+    from hermes_agent.tools.tool_search_catalog import BRIDGE_TOOL_NAMES
     fresh = {_def_name(entry): entry for entry in new_defs if _def_name(entry)}
     merged = []
     for entry in current_defs:
@@ -405,7 +405,7 @@ def _reinject_authorized_dynamic_tools(agent, tools_list: list, name_set: set) -
     """``message_agent`` is injected by an auth gate, never registered, so a registry-derived
     rebuild drops it. Scrub any stale copy from the STAGED pair and re-add it only when the live
     gate re-authorizes, so the publisher exposes a coherent ``(tools, valid_tool_names)``."""
-    from tools.bot_mode_dm import MESSAGE_AGENT_TOOL_NAME, message_agent_authorized, message_agent_tool_schema
+    from hermes_agent.tools.bot_mode_dm import MESSAGE_AGENT_TOOL_NAME, message_agent_authorized, message_agent_tool_schema
 
     tools_list[:] = [entry for entry in tools_list if _def_name(entry) != MESSAGE_AGENT_TOOL_NAME]
     name_set.discard(MESSAGE_AGENT_TOOL_NAME)

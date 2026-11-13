@@ -1,6 +1,6 @@
 """Gateway-side clarify primitive (blocking event-based queue). The agent runs on a worker
 thread while the event loop handles the user's reply, so a pending clarify is stored
-module-level (same shape as ``tools.approval``) and the agent thread blocks on an ``Event``
+module-level (same shape as ``hermes_agent.tools.approval``) and the agent thread blocks on an ``Event``
 until an adapter button callback or the gateway text-intercept resolves it, or the timeout
 fires. Adapters render inline buttons (an "Other" row flips the entry into text-capture
 mode) or a numbered-list text fallback."""
@@ -34,7 +34,7 @@ class _ClarifyEntry:
 _lock = threading.RLock()
 _entries: dict[str, _ClarifyEntry] = {}  # clarify_id -> entry (button callbacks)
 _session_index: dict[str, list[str]] = {}  # session_key -> [clarify_id] FIFO (text intercept, cleanup)
-# Per-session notify callbacks (gateway -> adapter bridge); mirrors tools.approval. Tests clear it.
+# Per-session notify callbacks (gateway -> adapter bridge); mirrors hermes_agent.tools.approval. Tests clear it.
 _notify_cbs: dict[str, Callable[[_ClarifyEntry], None]] = {}
 
 # Outcomes for typed clarify replies. Gateway cancels the pending prompt on
@@ -54,7 +54,7 @@ def register(clarify_id: str, session_key: str, question: str, choices: Optional
     Open-ended (no choices) entries start in text mode: the next message IS the response.
     *authority* says who may answer it; default: the current turn's actor, approvers and admins."""
     if authority is None:
-        from tools.approval_context import prompt_authority
+        from hermes_agent.tools.approval_context import prompt_authority
         authority = prompt_authority()
     entry = _ClarifyEntry(clarify_id, session_key, question, list(choices) if choices else None,
                           bool(multi_select) and bool(choices), awaiting_text=not bool(choices), authority=authority)
@@ -73,10 +73,10 @@ def wait_for_response(clarify_id: str, timeout: float) -> Optional[str]:
     if entry is None:
         return None
     try:
-        from tools.environments.base import touch_activity_if_due
+        from hermes_agent.tools.environments.base import touch_activity_if_due
     except Exception:  # pragma: no cover - optional
         touch_activity_if_due = None
-    from tools.interrupt import is_interrupted
+    from hermes_agent.tools.interrupt import is_interrupted
     deadline = None if timeout is None or float(timeout) <= 0.0 else time.monotonic() + float(timeout)
     activity_state = {"last_touch": time.monotonic(), "start": time.monotonic()}
     while True:
@@ -142,7 +142,7 @@ def get_pending_for_session(session_key: str, *, include_choice_prompts: bool = 
 def _match_label(text: str, choices: list[str]) -> Optional[str]:
     """Stripped choice text matching ``text`` case-insensitively, ignoring the '(Recommended)'
     suffix the first choice carries by the time it reaches adapters; None if no match."""
-    from tools.clarify_tool import strip_recommended
+    from hermes_agent.tools.clarify_tool import strip_recommended
     wanted = strip_recommended(text).casefold()
     for choice in choices:
         if strip_recommended(str(choice)).casefold() == wanted:

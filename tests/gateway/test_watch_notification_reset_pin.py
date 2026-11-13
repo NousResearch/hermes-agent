@@ -208,7 +208,7 @@ async def _run_async_watcher(runner, monkeypatch, clock, *, ticks):
 
 def _persist_delegation(entry, pinned, delegation_id):
     import time
-    from tools import async_delegation as delegation
+    from hermes_agent.tools import async_delegation as delegation
     evt = dict(_notice(entry, pinned, 'async_delegation'), delegation_id=delegation_id,
                summary='review findings', status='completed', dispatched_at=time.time())
     delegation._persist_dispatch(evt)
@@ -223,8 +223,8 @@ async def test_permanently_refused_completion_converges_to_dropped_across_restar
     replay the row and retry it for a few minutes converge to ``dropped`` instead of each refunding
     it (#141153)."""
     from hermes_agent.gateway import run_notifications
-    from tools import async_delegation as delegation
-    from tools.process_registry import process_registry
+    from hermes_agent.tools import async_delegation as delegation
+    from hermes_agent.tools.process_registry import process_registry
     runner, authority, entry = await _gateway(monkeypatch)
     try:
         _persist_delegation(entry, _route_gone(runner, entry), 'refused-1')
@@ -250,8 +250,8 @@ async def test_live_pinned_completion_survives_a_long_restart_wait(monkeypatch):
     after-turn wait is open (``runtime_draining``, up to ``restart_after_turn_timeout``) spends no
     delivery attempt however long the wait lasts, and is delivered once admission reopens."""
     from hermes_agent.gateway import run_notifications
-    from tools import async_delegation as delegation
-    from tools.process_registry import process_registry
+    from hermes_agent.tools import async_delegation as delegation
+    from hermes_agent.tools.process_registry import process_registry
     runner, authority, entry = await _gateway(monkeypatch)
     try:
         evt = _persist_delegation(entry, entry.session_id, 'live-1')
@@ -278,8 +278,8 @@ async def test_foreign_pinned_completion_spends_nothing_across_restarts(monkeypa
     nothing proves its owner gone (d6635ffe03b): replayed by three processes for minutes each, it
     spends no delivery attempt, unlike a proven-permanent refusal (#141153)."""
     from hermes_agent.gateway import run_notifications
-    from tools import async_delegation as delegation
-    from tools.process_registry import process_registry
+    from hermes_agent.tools import async_delegation as delegation
+    from hermes_agent.tools.process_registry import process_registry
     runner, authority, entry = await _gateway(monkeypatch)
     try:
         _persist_delegation(entry, await _foreign_pin(runner), 'foreign-1')

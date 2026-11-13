@@ -18,7 +18,7 @@ import types
 
 import pytest
 
-from tools import voice_live
+from hermes_agent.tools import voice_live
 from hermes_agent.tui_gateway import server
 
 

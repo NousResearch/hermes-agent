@@ -36,7 +36,7 @@ class TestExecuteToolCallsInterruptHook:
         monkeypatch.setattr("hermes_cli.lifecycle.has_hook", lambda name: True)
 
         with (
-            patch("model_tools.handle_function_call", side_effect=KeyboardInterrupt),
+            patch("hermes_agent.model_tools.handle_function_call", side_effect=KeyboardInterrupt),
             patch("run_agent._set_interrupt"),
             patch("agent.interrupt_control._set_interrupt"),
             # The concurrent worker absorbs Ctrl-C into a cancelled result; sequential re-raises.

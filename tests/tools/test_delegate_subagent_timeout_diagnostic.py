@@ -89,7 +89,7 @@ class TestDumpSubagentTimeoutDiagnostic:
     def test_returns_none_on_unwritable_logs_dir(self, tmp_path, monkeypatch):
         # Point HERMES_HOME at an unwritable path so logs/ can't be created
         # (simulates permission-denied). Helper must not raise.
-        from tools.delegate_tool import _dump_subagent_timeout_diagnostic
+        from hermes_agent.tools.delegate_tool import _dump_subagent_timeout_diagnostic
         bogus = tmp_path / "does-not-exist" / ".hermes"
         monkeypatch.setenv("HERMES_HOME", str(bogus))
         child = _StubChild()
@@ -116,7 +116,7 @@ class TestDumpSubagentTimeoutDiagnostic:
         # #121572: an elided goal must carry the non-imitable counted marker,
         # never the bare "...[truncated]" the model could copy.
         from agent.compression_marker import _COMPRESSION_MARKER_RE
-        from tools.delegate_tool import _dump_subagent_timeout_diagnostic
+        from hermes_agent.tools.delegate_tool import _dump_subagent_timeout_diagnostic
         child = _StubChild()
         path = _dump_subagent_timeout_diagnostic(
             child=child,
@@ -140,7 +140,7 @@ class TestRunSingleChildTimeoutDump:
 
     def _invoke_with_short_timeout(self, child, monkeypatch):
         """Run _run_single_child with a tiny timeout to force the timeout branch."""
-        from tools import delegate_tool
+        from hermes_agent.tools import delegate_tool
         # Force a 0.3s timeout so the test is fast
         monkeypatch.setattr(delegate_tool, "_get_child_timeout", lambda: 0.3)
 
@@ -177,7 +177,7 @@ class TestRunSingleChildTimeoutDump:
     def test_non_timeout_error_has_null_timeout_metadata(self, hermes_home, monkeypatch):
         """The metadata fields are timeout-specific — a child that raises
         must report them as None so consumers can key on presence."""
-        from tools import delegate_tool
+        from hermes_agent.tools import delegate_tool
         monkeypatch.setattr(delegate_tool, "_get_child_timeout", lambda: 30.0)
 
         child = _StubChild(api_call_count=1, hang_seconds=0.0)

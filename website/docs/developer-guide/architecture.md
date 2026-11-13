@@ -151,7 +151,7 @@ User input → HermesCLI.process_input()
     → prompt_builder.build_system_prompt()
     → runtime_provider.resolve_runtime_provider()
     → API call (chat_completions / codex_responses / anthropic_messages)
-    → tool_calls? → model_tools.handle_function_call() → loop
+    → tool_calls? → hermes_agent.model_tools.handle_function_call() → loop
     → final response → display → save to SessionDB
 ```
 
@@ -219,7 +219,7 @@ A shared runtime resolver used by CLI, gateway, cron, ACP, and auxiliary calls. 
 
 ### Tool System
 
-Central tool registry (`tools/registry.py`) with 70+ registered tools across ~28 toolsets. Each tool file self-registers at import time. The registry handles schema collection, dispatch, availability checking, and error wrapping. Terminal tools support 6 built-in backends (local, Docker, SSH, Daytona, Modal, Vercel Sandbox) plus plugin backends (e.g. Singularity).
+Central tool registry (`hermes_agent/tools/registry.py`) with 70+ registered tools across ~28 toolsets. Each tool file self-registers at import time. The registry handles schema collection, dispatch, availability checking, and error wrapping. Terminal tools support 6 built-in backends (local, Docker, SSH, Daytona, Modal, Vercel Sandbox) plus plugin backends (e.g. Singularity).
 
 → [Tools Runtime](./tools-runtime.md)
 
@@ -273,13 +273,13 @@ Generates ShareGPT-format trajectories from agent sessions for training data gen
 ## File Dependency Chain
 
 ```text
-tools/registry.py  (no deps — imported by all tool files)
+hermes_agent/tools/registry.py  (no deps — imported by all tool files)
        ↑
-tools/*.py  (each calls registry.register() at import time)
+hermes_agent/tools/*.py  (each calls registry.register() at import time)
        ↑
-model_tools.py  (imports tools/registry + triggers tool discovery)
+hermes_agent/model_tools.py  (imports hermes_agent/tools/registry + triggers tool discovery)
        ↑
 run_agent.py, cli.py, hermes_agent/batch_runner.py, environments/
 ```
 
-This chain means tool registration happens at import time, before any agent instance is created. Any `tools/*.py` file with a top-level `registry.register()` call is auto-discovered — no manual import list needed.
+This chain means tool registration happens at import time, before any agent instance is created. Any `hermes_agent/tools/*.py` file with a top-level `registry.register()` call is auto-discovered — no manual import list needed.

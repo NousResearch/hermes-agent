@@ -82,8 +82,8 @@ def _make_413_error(*, use_status_code=True, message="Request entity too large")
 
 def _new_test_agent():
     with (
-        patch("model_tools.get_tool_definitions", return_value=_make_tool_defs("web_search")),
-        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("hermes_agent.model_tools.get_tool_definitions", return_value=_make_tool_defs("web_search")),
+        patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
         patch("agent.process_bootstrap.OpenAI"),
     ):
         a = AIAgent(
@@ -1431,7 +1431,7 @@ class TestToolResultPreflightCompression:
         large_result = "x" * 100_000
 
         with (
-            patch("model_tools.handle_function_call", return_value=large_result),
+            patch("hermes_agent.model_tools.handle_function_call", return_value=large_result),
             patch.object(agent, "_compress_context") as mock_compress,
             patch.object(agent, "_persist_session"),
             patch.object(agent, "_save_trajectory"),
@@ -1481,7 +1481,7 @@ class TestToolResultPreflightCompression:
                 "agent.model_metadata.estimate_messages_tokens_rough",
                 side_effect=lambda *_a, **_k: next(assembled_estimates),
             ),
-            patch("model_tools.handle_function_call", return_value="x" * 100_000),
+            patch("hermes_agent.model_tools.handle_function_call", return_value="x" * 100_000),
             patch.object(
                 agent,
                 "_compress_context",

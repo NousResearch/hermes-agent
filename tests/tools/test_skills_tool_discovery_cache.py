@@ -13,7 +13,7 @@ import time
 
 import pytest
 
-import tools.skills_tool as st
+import hermes_agent.tools.skills_tool as st
 
 
 @pytest.fixture(autouse=True)

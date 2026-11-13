@@ -2,7 +2,7 @@
 
 Providers register via ``PluginContext.register_tts_provider()`` and service
 ``text_to_speech`` only when ``tts.provider`` names neither a built-in
-(``BUILTIN_TTS_PROVIDERS`` in :mod:`tools.tts_tool`; the registry rejects
+(``BUILTIN_TTS_PROVIDERS`` in :mod:`hermes_agent.tools.tts_tool`; the registry rejects
 colliding names) nor a ``tts.providers.<name>: type: command`` entry (config is
 more local than a plugin install, so it wins). :meth:`TTSProvider.synthesize`
 should raise on failure — the dispatcher builds the ``{success: False}`` envelope.

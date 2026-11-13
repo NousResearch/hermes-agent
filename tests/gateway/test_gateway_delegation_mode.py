@@ -100,7 +100,7 @@ def _delegate_def(request: dict) -> dict:
 @pytest.fixture
 def dispatches(monkeypatch):
     """Every hand-off to the async completion registry (the background path)."""
-    from tools import async_delegation
+    from hermes_agent.tools import async_delegation
 
     calls = []
     real = async_delegation.dispatch_async_delegation_batch
@@ -116,7 +116,7 @@ def dispatches(monkeypatch):
 async def _turn(monkeypatch, config: dict, *, platform=Platform.WHATSAPP, model=None, during=None):
     """One inbound message through the real gateway turn; returns (chat, the parent's model requests)."""
     import hermes_agent.gateway.run as gateway_run
-    from tools import async_delegation
+    from hermes_agent.tools import async_delegation
 
     home = Path(os.environ["HERMES_HOME"])
     chat = _Chat(platform)
@@ -178,7 +178,7 @@ async def test_interim_off_joins_the_children_and_the_chat_gets_one_completed_an
 
 @pytest.mark.asyncio
 async def test_interim_on_keeps_the_background_path_and_its_schema_byte_identical(monkeypatch, dispatches):
-    import model_tools
+    from hermes_agent import model_tools
 
     chat, requests = await _turn(monkeypatch, {})
 
@@ -233,7 +233,7 @@ async def test_stop_during_the_inline_wait_cancels_the_children(monkeypatch, dis
     """``/stop`` hard-interrupts the running parent and a follow-up message under the default
     ``busy_input_mode: interrupt`` soft-interrupts it; inline children are attached to the parent, so either
     reaches the child's in-flight request and the turn ends without waiting for the provider."""
-    from tools import delegate_tool
+    from hermes_agent.tools import delegate_tool
 
     parents, stops = [], []
     real_build = delegate_tool._build_child_agent
@@ -282,7 +282,7 @@ def test_each_profile_resolves_its_own_mode_under_the_multiplexer(monkeypatch, t
     """A -> B -> A through ``_profile_scope_for_source`` (the seam every turn enters): the mode comes from the
     routed profile's own config, never from whichever profile resolved last."""
     from agent import secret_scope
-    from tools.delegate_tool_config import gateway_delegation_inline
+    from hermes_agent.tools.delegate_tool_config import gateway_delegation_inline
 
     root = tmp_path / "hermes"
     beta = root / "profiles" / "beta"
@@ -318,7 +318,7 @@ async def _two_turns(monkeypatch, config: dict, *, first_heartbeat: bool, restar
 
     import hermes_agent.gateway.run as gateway_run
     from hermes_agent.hermes_state import SessionDB
-    from tools import async_delegation
+    from hermes_agent.tools import async_delegation
 
     home = Path(os.environ["HERMES_HOME"])
     platform = Platform.TELEGRAM
@@ -398,7 +398,7 @@ async def test_a_heartbeat_built_agent_pins_the_configured_mode_across_a_restart
 @pytest.mark.parametrize("platform_key", ["api_server", "local", "webhook"])
 def test_auto_never_joins_on_a_surface_that_is_not_a_chat(platform_key):
     """``auto`` is about a pause message reaching a person: API, local and webhook turns keep today's path."""
-    from tools.delegate_tool_config import gateway_delegation_inline
+    from hermes_agent.tools.delegate_tool_config import gateway_delegation_inline
 
     assert gateway_delegation_inline(_interim(False), platform_key, interim_enabled=False) is False
     assert gateway_delegation_inline({"delegation": {"gateway_mode": "inline"}}, platform_key, interim_enabled=True)

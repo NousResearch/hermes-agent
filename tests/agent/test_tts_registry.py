@@ -189,7 +189,7 @@ class TestResolveOutputFormat:
 
 class TestBuiltinSync:
     """``_BUILTIN_NAMES`` in agent/tts_registry.py is duplicated from
-    ``BUILTIN_TTS_PROVIDERS`` in tools/tts_tool.py (importing directly
+    ``BUILTIN_TTS_PROVIDERS`` in hermes_agent/tools/tts_tool.py (importing directly
     would create a circular dependency). This test fails loudly if the
     two lists drift — a new built-in added to tts_tool.py MUST also be
     added to tts_registry.py's _BUILTIN_NAMES or the registry will
@@ -198,7 +198,7 @@ class TestBuiltinSync:
     """
 
     def test_registry_builtins_match_dispatcher_builtins(self):
-        from tools.tts_tool import BUILTIN_TTS_PROVIDERS
+        from hermes_agent.tools.tts_tool import BUILTIN_TTS_PROVIDERS
 
         assert tts_registry._BUILTIN_NAMES == BUILTIN_TTS_PROVIDERS, (
             "agent.tts_registry._BUILTIN_NAMES and "

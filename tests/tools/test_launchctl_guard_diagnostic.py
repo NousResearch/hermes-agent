@@ -3,11 +3,11 @@
 import json
 import plistlib
 
-from tools.terminal_tool_guards import gateway_lifecycle_block
+from hermes_agent.tools.terminal_tool_guards import gateway_lifecycle_block
 
 
 def test_bootstrap_rejection_does_not_invent_keepalive(tmp_path, monkeypatch):
-    from tools import process_registry
+    from hermes_agent.tools import process_registry
 
     monkeypatch.setattr(process_registry, "_is_supervised_gateway_process", lambda: True)
     plist = tmp_path / "com.example.schedule.plist"

@@ -28,7 +28,7 @@ def curator_env(tmp_path, monkeypatch):
     importlib.reload(hermes_constants)
     from agent import curator
     importlib.reload(curator)
-    from tools import skill_usage
+    from hermes_agent.tools import skill_usage
     importlib.reload(skill_usage)
     yield {"home": home, "curator": curator, "skill_usage": skill_usage}
 

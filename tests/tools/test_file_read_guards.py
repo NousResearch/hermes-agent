@@ -15,15 +15,15 @@ import time
 import unittest
 from unittest.mock import patch, MagicMock
 
-from tools.file_tools import (
+from hermes_agent.tools.file_tools import (
     read_file_tool,
     write_file_tool,
     _is_blocked_device,
     _DEFAULT_MAX_READ_CHARS,
 )
-from tools.file_tools_write_guards import _READ_DEDUP_STATUS_MESSAGE
-from tools.file_tools_read_tracking import _read_tracker
-from tools.file_tools_read_tracking import (
+from hermes_agent.tools.file_tools_write_guards import _READ_DEDUP_STATUS_MESSAGE
+from hermes_agent.tools.file_tools_read_tracking import _read_tracker
+from hermes_agent.tools.file_tools_read_tracking import (
     notify_other_tool_call,
     reset_file_dedup,
 )
@@ -165,7 +165,7 @@ class TestDevicePathBlocking(unittest.TestCase):
         self.assertIn("error", result)
         self.assertIn("device file", result["error"])
 
-    @patch("tools.file_tools._get_file_ops")
+    @patch("hermes_agent.tools.file_tools._get_file_ops")
     def test_read_file_tool_rejects_device_symlink_before_io(self, mock_ops):
         with tempfile.TemporaryDirectory() as tmpdir:
             link_path = os.path.join(tmpdir, "zero-link")
@@ -180,7 +180,7 @@ class TestDevicePathBlocking(unittest.TestCase):
         self.assertIn("device file", result["error"])
         mock_ops.assert_not_called()
 
-    @patch("tools.file_tools._get_file_ops")
+    @patch("hermes_agent.tools.file_tools._get_file_ops")
     def test_read_file_tool_rejects_task_cwd_relative_device_alias_symlink(self, mock_ops):
         if not os.path.exists("/dev/stdin"):
             self.skipTest("/dev/stdin is not available on this platform")
@@ -312,8 +312,8 @@ class TestCharacterCountGuard(unittest.TestCase):
     def tearDown(self):
         _read_tracker.clear()
 
-    @patch("tools.file_tools._get_file_ops")
-    @patch("tools.file_tools._get_max_read_chars", return_value=1000)
+    @patch("hermes_agent.tools.file_tools._get_file_ops")
+    @patch("hermes_agent.tools.file_tools._get_max_read_chars", return_value=1000)
     def test_oversized_multiline_read_truncated_with_continuation(self, _mock_limit, mock_ops):
         """A read whose many lines exceed the char budget is trimmed to the
         last complete line and offers a next_offset, instead of returning an
@@ -340,8 +340,8 @@ class TestCharacterCountGuard(unittest.TestCase):
         self.assertIn("offset", result["hint"])
 
 
-    @patch("tools.file_tools._get_file_ops")
-    @patch("tools.file_tools._get_max_read_chars", return_value=_DEFAULT_MAX_READ_CHARS)
+    @patch("hermes_agent.tools.file_tools._get_file_ops")
+    @patch("hermes_agent.tools.file_tools._get_max_read_chars", return_value=_DEFAULT_MAX_READ_CHARS)
     def test_content_under_limit_passes(self, _mock_limit, mock_ops):
         """Content just under the limit should pass through fine."""
         mock_ops.return_value = _make_fake_ops(
@@ -377,7 +377,7 @@ class TestFileDedup(unittest.TestCase):
         except OSError:
             pass
 
-    @patch("tools.file_tools._get_file_ops")
+    @patch("hermes_agent.tools.file_tools._get_file_ops")
     def test_second_read_returns_dedup_stub(self, mock_ops):
         """Second read of same file+range returns non-content dedup status."""
         mock_ops.return_value = _make_fake_ops(
@@ -395,13 +395,13 @@ class TestFileDedup(unittest.TestCase):
         self.assertFalse(r2.get("content_returned"))
         self.assertNotIn("content", r2)
 
-    @patch("tools.file_tools._get_file_ops")
+    @patch("hermes_agent.tools.file_tools._get_file_ops")
     def test_background_review_fork_gets_content_and_read_mark_not_stub(self, mock_ops):
         """The review fork shares the parent's task_id; a dedup stub there would skip the
         read-mark its read-before-write guard requires (#95976)."""
         from pathlib import Path
-        from tools.skill_manager_guards import _background_review_has_read, _reset_background_review_read_marks
-        from tools.skill_provenance import reset_current_write_origin, set_current_write_origin
+        from hermes_agent.tools.skill_manager_guards import _background_review_has_read, _reset_background_review_read_marks
+        from hermes_agent.tools.skill_provenance import reset_current_write_origin, set_current_write_origin
 
         mock_ops.return_value = _make_fake_ops(content="line one\nline two\n", file_size=20)
         read_file_tool(self._tmpfile, task_id="dup")  # parent's read arms the dedup
@@ -415,7 +415,7 @@ class TestFileDedup(unittest.TestCase):
         self.assertIn("content", fork)
         self.assertTrue(_background_review_has_read(Path(self._tmpfile)))
 
-    @patch("tools.file_tools._get_file_ops")
+    @patch("hermes_agent.tools.file_tools._get_file_ops")
     def test_write_rejects_internal_read_status_text(self, mock_ops):
         """write_file must not persist internal read_file status text."""
         fake = MagicMock(env=None)
@@ -432,7 +432,7 @@ class TestFileDedup(unittest.TestCase):
         fake.write_file.assert_not_called()
 
 
-    @patch("tools.file_tools._get_file_ops")
+    @patch("hermes_agent.tools.file_tools._get_file_ops")
     def test_different_task_not_deduped(self, mock_ops):
         """Different task_ids have separate dedup caches."""
         mock_ops.return_value = _make_fake_ops(
@@ -468,7 +468,7 @@ class TestDedupStubLoopGuard(unittest.TestCase):
         except OSError:
             pass
 
-    @patch("tools.file_tools._get_file_ops")
+    @patch("hermes_agent.tools.file_tools._get_file_ops")
     def test_third_read_is_blocked(self, mock_ops):
         """read → stub → BLOCKED.  Second stub escalates to hard error."""
         mock_ops.return_value = _make_fake_ops(
@@ -494,7 +494,7 @@ class TestDedupStubLoopGuard(unittest.TestCase):
         # same passive message it has been ignoring.
         self.assertNotIn("dedup", r3)
 
-    @patch("tools.file_tools._get_file_ops")
+    @patch("hermes_agent.tools.file_tools._get_file_ops")
     def test_subsequent_reads_stay_blocked(self, mock_ops):
         """Once blocked, continued hammering keeps returning BLOCKED."""
         mock_ops.return_value = _make_fake_ops(
@@ -510,7 +510,7 @@ class TestDedupStubLoopGuard(unittest.TestCase):
             self.assertIn("error", rN)
             self.assertIn("BLOCKED", rN["error"])
 
-    @patch("tools.file_tools._get_file_ops")
+    @patch("hermes_agent.tools.file_tools._get_file_ops")
     def test_file_modification_clears_block(self, mock_ops):
         """Real file change should break out of the block — new content
         is legitimately different and the agent should see it."""
@@ -531,7 +531,7 @@ class TestDedupStubLoopGuard(unittest.TestCase):
         self.assertNotIn("error", r4)
         self.assertNotIn("dedup", r4)
 
-    @patch("tools.file_tools._get_file_ops")
+    @patch("hermes_agent.tools.file_tools._get_file_ops")
     def test_other_tool_call_clears_hits(self, mock_ops):
         """An intervening non-read tool call resets stub-hit counters,
         just like it resets the consecutive-read counter."""
@@ -550,7 +550,7 @@ class TestDedupStubLoopGuard(unittest.TestCase):
         self.assertTrue(r3.get("dedup"))
         self.assertNotIn("error", r3)
 
-    @patch("tools.file_tools._get_file_ops")
+    @patch("hermes_agent.tools.file_tools._get_file_ops")
     def test_different_ranges_tracked_independently(self, mock_ops):
         """Stub-hit counter is keyed by (path, offset, limit), so hammering
         one range shouldn't block reads of a different range."""
@@ -571,7 +571,7 @@ class TestDedupStubLoopGuard(unittest.TestCase):
         ))
         self.assertNotIn("error", r_other)
 
-    @patch("tools.file_tools._get_file_ops")
+    @patch("hermes_agent.tools.file_tools._get_file_ops")
     def test_reset_file_dedup_clears_hits(self, mock_ops):
         """Post-compression reset must clear stub-hit counters too,
         otherwise the agent stays blocked after compression."""
@@ -619,7 +619,7 @@ class TestDedupResetOnCompression(unittest.TestCase):
         except OSError:
             pass
 
-    @patch("tools.file_tools._get_file_ops")
+    @patch("hermes_agent.tools.file_tools._get_file_ops")
     def test_first_post_compaction_read_recovers_exact_content(self, mock_ops):
         """First post-compaction read is full; later reads deduplicate."""
         mock_ops.return_value = _make_fake_ops(
@@ -667,7 +667,7 @@ class TestConfigOverride(unittest.TestCase):
     def tearDown(self):
         _read_tracker.clear()
 
-    @patch("tools.file_tools._get_file_ops")
+    @patch("hermes_agent.tools.file_tools._get_file_ops")
     @patch("hermes_cli.config.load_config_readonly", return_value={"file_read_max_chars": 50})
     def test_custom_config_lowers_limit(self, _mock_cfg, mock_ops):
         """A config value of 50 should trigger truncation for reads over 50 chars,
@@ -679,7 +679,7 @@ class TestConfigOverride(unittest.TestCase):
         self.assertEqual(result["truncated_by"], "bytes")
         self.assertLessEqual(len(result["content"]), 50)
 
-    @patch("tools.file_tools._get_file_ops")
+    @patch("hermes_agent.tools.file_tools._get_file_ops")
     @patch("hermes_cli.config.load_config_readonly", return_value={"file_read_max_chars": 500_000})
     def test_custom_config_raises_limit(self, _mock_cfg, mock_ops):
         """A config value of 500K should allow reads up to 500K chars."""
@@ -719,7 +719,7 @@ class TestWriteInvalidatesDedup(unittest.TestCase):
         except OSError:
             pass
 
-    @patch("tools.file_tools._get_file_ops")
+    @patch("hermes_agent.tools.file_tools._get_file_ops")
     def test_write_invalidates_dedup_same_second(self, mock_ops):
         """read→write→read within the same mtime second returns fresh content.
 
@@ -754,7 +754,7 @@ class TestWriteInvalidatesDedup(unittest.TestCase):
                             "read after write must not return dedup stub")
         self.assertIn("content", r2)
 
-    @patch("tools.file_tools._get_file_ops")
+    @patch("hermes_agent.tools.file_tools._get_file_ops")
     def test_write_invalidates_all_offsets(self, mock_ops):
         """A write invalidates dedup entries for ALL offset/limit combos."""
         fake = MagicMock(env=None)

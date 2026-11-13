@@ -13,8 +13,8 @@ import time
 
 import pytest
 
-from tools import code_execution_tool, terminal_tool as tt
-from tools.terminal_tool_lifecycle import _cleanup_inactive_envs
+from hermes_agent.tools import code_execution_tool, terminal_tool as tt
+from hermes_agent.tools.terminal_tool_lifecycle import _cleanup_inactive_envs
 
 
 class _ReapingEnv:
@@ -86,7 +86,7 @@ def test_overlapping_calls_hold_the_env_until_the_last_exits_then_idle_a_full_li
 
 
 def test_a_remote_execute_code_call_keeps_its_environment_past_the_lifetime(env, monkeypatch):
-    from tools import code_kernel_remote
+    from hermes_agent.tools import code_kernel_remote
 
     def run_cell(code, *, env, **kwargs):
         env.execute("python3 cell.py")

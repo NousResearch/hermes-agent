@@ -239,7 +239,7 @@ def _shape_message(m: dict[str, Any], anchor_id: Optional[int] = None,
     """Slim a message row; keeps ``content`` even when empty (tool-call-only turns)."""
     content = m.get("content")
     if isinstance(content, str) and "\x1b" in content:  # archived terminal output carries ANSI
-        from tools.ansi_strip import strip_ansi
+        from hermes_agent.tools.ansi_strip import strip_ansi
         content = strip_ansi(content)
     entry = {"id": m.get("id"), "role": m.get("role"), "content": content, "timestamp": m.get("timestamp")}
     entry.update({k: m.get(k) for k in ("tool_name", "tool_calls", "tool_call_id") if m.get(k)})
@@ -793,7 +793,7 @@ SESSION_SEARCH_SCHEMA = {
 }
 
 
-from tools.registry import registry, tool_error
+from hermes_agent.tools.registry import registry, tool_error
 
 registry.register(
     name="session_search",

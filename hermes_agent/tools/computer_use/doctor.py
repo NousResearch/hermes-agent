@@ -16,8 +16,8 @@ from contextlib import contextmanager, suppress
 from typing import Any, Callable, Dict, Iterator, List, Optional, Sequence, Tuple, Union
 
 from hermes_cli._subprocess_compat import windows_hide_flags
-from tools.computer_use.permissions import _child_env as _sanitized_cua_env
-from tools.computer_use.permissions import stale_tcc_grant_hint
+from hermes_agent.tools.computer_use.permissions import _child_env as _sanitized_cua_env
+from hermes_agent.tools.computer_use.permissions import stale_tcc_grant_hint
 
 # Match the ALLOWED_STATUS_VALUES + ALLOWED_OVERALL_VALUES the cua-driver integration test pins.
 _STATUS_GLYPH = {"pass": "✅", "fail": "❌", "skip": "⏭️"}
@@ -351,7 +351,7 @@ def _apply_daemon_liveness_guard(report: Report, binary: str) -> Report:
     """Append one check per configured daemon unit whose ``cua-driver serve`` is not answering on its socket
     (pass when it is). Only configured daemons are probed: on Linux the MCP runtime needs no daemon, so an
     unconfigured, silent socket is not a finding. Unknown probe results add nothing (#114748)."""
-    from tools.computer_use.cua_backend import cua_daemon_listening
+    from hermes_agent.tools.computer_use.cua_backend import cua_daemon_listening
 
     checks = report.get("checks")
     if sys.platform != "linux" or not isinstance(checks, list):
@@ -432,7 +432,7 @@ def run_doctor(driver_cmd: Optional[str] = None, *, include: Sequence[str] = (),
     for stream in (sys.stdout, sys.stderr):
         with suppress(AttributeError, OSError):
             stream.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[union-attr]
-    from tools.computer_use.cua_backend_driver import resolve_cua_driver_cmd
+    from hermes_agent.tools.computer_use.cua_backend_driver import resolve_cua_driver_cmd
     binary = resolve_cua_driver_cmd(driver_cmd)
     if not binary:
         print(f"cua-driver: not installed (looked for {driver_cmd or 'cua-driver (PATH and canonical install paths)'!r}).\n  Run: hermes computer-use install")

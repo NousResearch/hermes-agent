@@ -24,13 +24,13 @@ import pytest
 
 from hermes_agent.gateway.config import Platform
 from hermes_agent.gateway.run import GatewayRunner
-from tools.process_registry import ProcessRegistry, ProcessSession
+from hermes_agent.tools.process_registry import ProcessRegistry, ProcessSession
 
 
 @pytest.fixture(autouse=True)
 def isolated_registry(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    import tools.process_registry as pr_module
+    import hermes_agent.tools.process_registry as pr_module
 
     monkeypatch.setattr(pr_module, "CHECKPOINT_PATH", tmp_path / "processes.json")
     registry = pr_module.ProcessRegistry()
@@ -307,7 +307,7 @@ def test_async_delegation_gate_unchanged():
 # ---------------------------------------------------------------------------
 
 def test_parent_session_id_survives_checkpoint_recovery(tmp_path, monkeypatch):
-    import tools.process_registry as pr_module
+    import hermes_agent.tools.process_registry as pr_module
 
     checkpoint = tmp_path / "processes.json"
     checkpoint.write_text(json.dumps([{

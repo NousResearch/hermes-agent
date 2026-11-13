@@ -5,8 +5,8 @@ desktop gateway wires to a ``terminal.close`` event. ``desktop_ui`` toolset only
 
 import json
 
-from tools.process_registry import process_registry
-from tools.registry import registry, tool_error
+from hermes_agent.tools.process_registry import process_registry
+from hermes_agent.tools.registry import registry, tool_error
 
 
 def close_terminal_tool(process_id: str) -> str:

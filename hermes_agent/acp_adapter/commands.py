@@ -151,7 +151,7 @@ class SlashCommandsMixin:
 
     def _cmd_tools(self, args: str, state: SessionState) -> str:
         try:
-            from model_tools import get_tool_definitions
+            from hermes_agent.model_tools import get_tool_definitions
             from types import SimpleNamespace
             from agent.memory_manager_tools import inject_memory_provider_tools
 

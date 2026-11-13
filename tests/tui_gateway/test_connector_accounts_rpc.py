@@ -8,19 +8,19 @@ import threading
 
 import pytest
 
-from tools.connectors import live
-from tools.connectors.gateway.errors import IdempotencyConflict
+from hermes_agent.tools.connectors import live
+from hermes_agent.tools.connectors.gateway.errors import IdempotencyConflict
 from hermes_agent.tui_gateway import server
 
 
 @pytest.fixture(autouse=True)
 def _gate(monkeypatch):
     live.reset_for_tests()
-    monkeypatch.setattr("tools.connectors.connectors_available", lambda: True)
+    monkeypatch.setattr("hermes_agent.tools.connectors.connectors_available", lambda: True)
     # Connect and rename create the guest identity first; in an empty test home that is a real
     # mint on the live Portal (up to 5s), so a slow or refusing Portal failed these tests.
-    monkeypatch.setattr("tools.connectors.ensure_guest_identity", lambda: None)
-    monkeypatch.setattr("tools.connectors.managed.ensure_guest_identity", lambda: None)
+    monkeypatch.setattr("hermes_agent.tools.connectors.ensure_guest_identity", lambda: None)
+    monkeypatch.setattr("hermes_agent.tools.connectors.managed.ensure_guest_identity", lambda: None)
     yield
     live.reset_for_tests()
 
@@ -71,7 +71,7 @@ def test_account_connect_with_an_alias_mints_that_account(monkeypatch):
         def account_status(self, connection_id, *, timeout=None):
             return None
 
-    monkeypatch.setattr("tools.connectors.managed.managed_client", Client)
+    monkeypatch.setattr("hermes_agent.tools.connectors.managed.managed_client", Client)
     reply = _rpc("connectors.connect", owner={"type": "account"}, connectors=["gmail"], alias="work")
     assert "result" in reply, reply
     assert minted.wait(2)
@@ -80,15 +80,15 @@ def test_account_connect_with_an_alias_mints_that_account(monkeypatch):
 
 
 def test_a_session_retry_for_another_account_does_not_re_mint_the_open_one(monkeypatch):
-    from tools.connectors.contract import Actor, TargetState
-    from tools.connectors.operation import ConnectionOperation, Target
+    from hermes_agent.tools.connectors.contract import Actor, TargetState
+    from hermes_agent.tools.connectors.operation import ConnectionOperation, Target
 
     transport = _Transport()
     session = dict(transport=transport, agent=None, session_key="alias-sid", history=[],
                    history_lock=threading.Lock(), history_version=0, running=False, attached_images=[],
                    source="desktop")
     monkeypatch.setitem(server._sessions, "alias-sid", session)
-    monkeypatch.setattr("model_tools._select_tool_names", lambda *a, **k: {"manage_connections"})
+    monkeypatch.setattr("hermes_agent.model_tools._select_tool_names", lambda *a, **k: {"manage_connections"})
     operation = ConnectionOperation([Target("gmail", "connector", "connect", alias="home")], session_key="alias-sid")
     live.open(operation)
     operation.transition("gmail", TargetState.initiated, Actor.backend_watcher, connect_url="https://l/1")
@@ -103,7 +103,7 @@ def test_a_session_retry_for_another_account_does_not_re_mint_the_open_one(monke
             mints.append((tuple(names), kwargs.get("alias")))
             return {"results": []}
 
-    monkeypatch.setattr("tools.connectors.managed.managed_client", Client)
+    monkeypatch.setattr("hermes_agent.tools.connectors.managed.managed_client", Client)
     reply = _rpc("connectors.connect", transport, owner={"type": "session", "session_id": "alias-sid"},
                  connectors=["gmail"], alias="work")
     assert reply["error"]["code"] == 4004
@@ -119,15 +119,15 @@ def test_a_session_retry_for_another_account_does_not_re_mint_the_open_one(monke
 
 
 def test_a_session_retry_with_the_open_accounts_id_reissues_it(monkeypatch):
-    from tools.connectors.contract import Actor, TargetState
-    from tools.connectors.operation import ConnectionOperation, Target
+    from hermes_agent.tools.connectors.contract import Actor, TargetState
+    from hermes_agent.tools.connectors.operation import ConnectionOperation, Target
 
     transport = _Transport()
     session = dict(transport=transport, agent=None, session_key="retry-sid", history=[],
                    history_lock=threading.Lock(), history_version=0, running=False, attached_images=[],
                    source="desktop")
     monkeypatch.setitem(server._sessions, "retry-sid", session)
-    monkeypatch.setattr("model_tools._select_tool_names", lambda *a, **k: {"manage_connections"})
+    monkeypatch.setattr("hermes_agent.model_tools._select_tool_names", lambda *a, **k: {"manage_connections"})
     operation = ConnectionOperation([Target("gmail", "connector", "reconnect", alias="work")], session_key="retry-sid")
     live.open(operation)
     operation.transition("gmail", TargetState.initiated, Actor.backend_watcher, connect_url="https://l/1",
@@ -144,7 +144,7 @@ def test_a_session_retry_with_the_open_accounts_id_reissues_it(monkeypatch):
             return {"results": [{"connector": n, "status": "initiated", "connect_url": "https://l/2",
                                  "connection_id": "ca_work2"} for n in names]}
 
-    monkeypatch.setattr("tools.connectors.managed.managed_client", Client)
+    monkeypatch.setattr("hermes_agent.tools.connectors.managed.managed_client", Client)
     reply = _rpc("connectors.connect", transport, owner={"type": "session", "session_id": "retry-sid"},
                  connectors=["gmail"], reconnect=True, connection_id="ca_work")
     assert "result" in reply, reply
@@ -155,6 +155,6 @@ def test_rename_to_a_name_another_account_holds_is_alias_taken(monkeypatch):
     def taken(self, connection_id, alias):
         raise IdempotencyConflict("alias taken", code="alias_taken", status=409)
 
-    monkeypatch.setattr("tools.connectors.portal.client.PortalConnectorClient.rename_account", taken)
+    monkeypatch.setattr("hermes_agent.tools.connectors.portal.client.PortalConnectorClient.rename_account", taken)
     reply = _rpc("connectors.accounts.rename", connection_id="ca_1", alias="home")
     assert reply["error"]["data"]["reason"] == "ALIAS_TAKEN"

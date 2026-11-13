@@ -10,22 +10,22 @@ import threading
 from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Callable, Dict, Iterable, List, Optional
-from tools.mcp_tool_common import _parse_boolish, _core, _resolve_tool_timeout, mcp_field, mcp_server_enabled
-from tools import mcp_tool_config as _config
-from tools import mcp_tool_events as _events
-from tools import mcp_tool_handlers as _handlers
-from tools import mcp_tool_schema as _schema
-from tools.mcp_tool_handlers import (
+from hermes_agent.tools.mcp_tool_common import _parse_boolish, _core, _resolve_tool_timeout, mcp_field, mcp_server_enabled
+from hermes_agent.tools import mcp_tool_config as _config
+from hermes_agent.tools import mcp_tool_events as _events
+from hermes_agent.tools import mcp_tool_handlers as _handlers
+from hermes_agent.tools import mcp_tool_schema as _schema
+from hermes_agent.tools.mcp_tool_handlers import (
     _make_check_fn, _make_get_prompt_handler, _make_list_prompts_handler,
     _make_list_resources_handler, _make_read_resource_handler)
-from tools.mcp_tool_schema import (
+from hermes_agent.tools.mcp_tool_schema import (
     _UTILITY_CAPABILITY_ATTRS, _build_utility_schemas, _normalize_name_filter, matches_name_filter)
-from tools.mcp_tool_scope import _key_name, _key_scope, _resolve_server_key, _server_key
+from hermes_agent.tools.mcp_tool_scope import _key_name, _key_scope, _resolve_server_key, _server_key
 
 if TYPE_CHECKING:  # pragma: no cover
-    from tools.mcp_tool import MCPServerTask
+    from hermes_agent.tools.mcp_tool import MCPServerTask
 
-logger = logging.getLogger("tools.mcp_tool")
+logger = logging.getLogger("hermes_agent.tools.mcp_tool")
 _SCOPE_REFRESH_LOCKS = tuple(threading.RLock() for _ in range(16))
 
 _UTILITY_ORIGIN_PREFIX = "generated utility "
@@ -65,7 +65,7 @@ def _record_cost_policy(server_name: str, config: dict, key) -> None:
     """Declared ``tool_costs``/``spend_limit`` for *key*. Load-time validation already dropped malformed
     entries (``_filter_suspicious_mcp_servers``); a direct caller's bad table still fails loudly. Caller holds
     ``_core._lock``."""
-    from tools.mcp_tool_costs import config_cost_policy
+    from hermes_agent.tools.mcp_tool_costs import config_cost_policy
     policy = config_cost_policy(server_name, config)
     if policy is None:
         _core._server_cost_policies.pop(key, None)
@@ -90,7 +90,7 @@ def _record_tool_trust_metadata(server_name: str, config: dict, tools: list[Any]
 def _warn_unknown_cost_keys(server_name: str, key, tool_names: list[str]) -> None:
     """Live discovery only: the schema cache omits tools the user's include/exclude filter dropped, so a valid
     cost for a filtered tool would read as unknown there."""
-    from tools.mcp_tool_costs import unknown_cost_keys
+    from hermes_agent.tools.mcp_tool_costs import unknown_cost_keys
     if unknown := unknown_cost_keys(_core._server_cost_policies.get(key), tool_names):
         logger.warning("MCP server '%s': tool_costs names %s, which the server does not offer, so those calls "
                        "carry no cost and no spend limit. Use the server's own tool names (without Hermes' "
@@ -132,7 +132,7 @@ def _server_key_for_task(server) -> object:
 def _deregister_mcp_tool_all_scopes(server, tool_name: str) -> None:
     """Deregister one server tool from every profile overlay that owns it. *server* is the
     live task or a connection key."""
-    from tools.registry import registry
+    from hermes_agent.tools.registry import registry
 
     key = server if isinstance(server, (str, tuple)) else _server_key_for_task(server)
     with _core._lock:
@@ -149,7 +149,7 @@ def _restore_server_toolset_alias(key) -> None:
     """Keep the process-global alias while any profile still owns tools of a server with this
     name — including another profile's same-named connection (the alias is per NAME; the
     registry deregister dropped it after checking only one scope)."""
-    from tools.registry import registry
+    from hermes_agent.tools.registry import registry
 
     server_name = _key_name(key)
     with _core._lock:
@@ -165,7 +165,7 @@ def _restore_server_toolset_alias(key) -> None:
 
 def _remove_server_scope(key, scope: str) -> None:
     """Remove one profile's MCP overlay for a shared live connection."""
-    from tools.registry import registry
+    from hermes_agent.tools.registry import registry
 
     server_name = _key_name(key)
     for tool_name in registry.get_tool_names_for_toolset(f"mcp-{server_name}"):
@@ -217,7 +217,7 @@ def _existing_tool_names() -> list[str]:
     """Tool names for all connected servers plus lazy (cache-registered) servers, whose tools live only in the registry."""
     scope = _core._mcp_registry_scope()
     if scope is not None:
-        from tools.registry import registry
+        from hermes_agent.tools.registry import registry
 
         with _core._lock:
             server_names = [
@@ -361,7 +361,7 @@ def _register_candidates(name: str, candidates: list[_Candidate], *, check_fn: C
     ownership pre-check is advisory (servers connect in parallel): ``registry.register()`` is
     the atomic gate and its verdict is re-read after every call. *key* is the connection whose
     ``_server_tool_scopes`` records the registering scope (default: this scope's own)."""
-    from tools.registry import registry
+    from hermes_agent.tools.registry import registry
     toolset_name = f"mcp-{name}"
     registered: list[str] = []
     scope_value = scope()
@@ -404,7 +404,7 @@ def _write_schema_cache(name: str, server: "MCPServerTask", config: dict, should
     try:
         # Write-through (#56832): refresh the on-disk schema cache after a live connect so the next startup
         # can lazily register this server without spawning it. Cache failures never break registration.
-        from tools.mcp_schema_cache import config_fingerprint, write_cache_entry
+        from hermes_agent.tools.mcp_schema_cache import config_fingerprint, write_cache_entry
         tools_payload = []
         for t in server._tools:
             if not should_register(t.name):
@@ -432,7 +432,7 @@ def _write_schema_cache(name: str, server: "MCPServerTask", config: dict, should
 def _register_server_tools(name: str, server: "MCPServerTask", config: dict) -> list[str]:
     """Register a connected server's tools plus utilities (initial discovery and list_changed
     refresh); returns the names. Toolset aliases derive from the live registry, not
-    ``toolsets.TOOLSETS``; lossy normalization collisions (``read-file``/``read_file``) fail closed."""
+    ``hermes_agent.toolsets.TOOLSETS``; lossy normalization collisions (``read-file``/``read_file``) fail closed."""
     should_register = _make_tool_filter(name, config)
     key = _server_key_for_task(server)
     _record_tool_trust_metadata(name, config, server._tools, key)
@@ -465,7 +465,7 @@ def _connection_identity(config: dict) -> tuple:
     with different headers/env/auth/client certificates/TLS policy are two identities; borrowing
     across them would call tools as the other user, or under the other profile's ``ssl_verify`` /
     ``strict_redirect_headers``."""
-    from tools.mcp_schema_cache import config_fingerprint
+    from hermes_agent.tools.mcp_schema_cache import config_fingerprint
 
     def _frozen(value):
         return json.dumps(value or {}, sort_keys=True, default=str)
@@ -493,7 +493,7 @@ def _adopter_identity_digest(server_name: str, config: dict) -> str | None:
     inputs each attempt connects with; an adopter recomputes it here. A resolver failure refuses
     adoption for this server only, never discovery for the whole scope. None is the one refuse
     sentinel: no connectable config, no live endpoint, or a resolver failure."""
-    from tools.mcp_tool_transport import LiveEndpointUnavailable, _connect_inputs
+    from hermes_agent.tools.mcp_tool_transport import LiveEndpointUnavailable, _connect_inputs
 
     if "url" not in config and not config.get("command"):  # the transport refuses it before resolving
         return None
@@ -543,7 +543,7 @@ def _register_connected_into_current_scope(servers: dict) -> int:
     allowlist, and route fingerprints prevent borrowing a differently-authenticated connection.
     Missing or changed config entries remove only this profile's overlay.
     """
-    from tools.registry import registry
+    from hermes_agent.tools.registry import registry
 
     scope = _core._mcp_registry_scope()
     if scope is None:
@@ -564,7 +564,7 @@ def _register_connected_into_current_scope(servers: dict) -> int:
     # ``discover_mcp_tools`` released its temporary owner scope (#113746), so the config load and
     # the resolution bind THIS profile's own secret scope; unscoped, a source-tagged secret read
     # would refuse a share whose values are equal.
-    from tools.mcp_tool_discovery import _owner_secret_scope
+    from hermes_agent.tools.mcp_tool_discovery import _owner_secret_scope
     with _owner_secret_scope():
         profile_servers = _config._load_mcp_config() if omitted else {}
         judged = {**{name: profile_servers.get(name) for name in omitted}, **servers}
@@ -635,7 +635,7 @@ def _register_from_cache_sync(name: str, config: dict, entry: dict) -> list[str]
     Lazy startup (#56832, design by Vansh5632): tools appear in the registry immediately; the first real
     call routes through ``_get_connected_server_for_call`` → ``_ensure_lazy_server_connected``.
     """
-    from tools.mcp_schema_cache import config_fingerprint, tools_from_cache_entry, utility_tools_from_cache_entry
+    from hermes_agent.tools.mcp_schema_cache import config_fingerprint, tools_from_cache_entry, utility_tools_from_cache_entry
     tool_timeout = _resolve_tool_timeout(config)
     cached_tools = _cached_tools(tools_from_cache_entry(entry))
     _record_tool_trust_metadata(name, config, cached_tools)

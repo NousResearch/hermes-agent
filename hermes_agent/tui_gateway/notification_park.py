@@ -63,7 +63,7 @@ def _release(events) -> None:
     is cleared and whose hold ends, so the orphan sweep re-offers the still-pending row; see the module docstring."""
     if not events:
         return
-    from tools.async_delegation import return_completion_offer
+    from hermes_agent.tools.async_delegation import return_completion_offer
     for evt in events:
         is_delegation = evt.get("type") == "async_delegation"
         if is_delegation:
@@ -98,7 +98,7 @@ def park(evt: dict) -> bool:
     then disposes of the event exactly as it did before the park existed."""
     if not _parkable(evt):
         return False
-    from tools.async_delegation import completion_copy_id, mark_copy_held
+    from hermes_agent.tools.async_delegation import completion_copy_id, mark_copy_held
     now = time.monotonic()
     with _lock:
         expired = _expire_locked(now)
@@ -136,7 +136,7 @@ def claim(owns: Callable[[dict], bool]) -> list:
 def unhold(events) -> None:
     """End the held-copy mark ``park`` took for each of ``events`` (a no-op for anything but a result copy)."""
     if events:
-        from tools.async_delegation import completion_copy_id, unmark_copy_held
+        from hermes_agent.tools.async_delegation import completion_copy_id, unmark_copy_held
         for evt in events:
             unmark_copy_held(completion_copy_id(evt))
 

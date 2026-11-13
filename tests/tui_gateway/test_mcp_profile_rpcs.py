@@ -146,7 +146,7 @@ def test_status_is_profile_scoped_and_credential_safe(hermes_root):
 
 def test_status_reports_parked_servers_and_flags_rejected_oauth(hermes_root):
     """Desktop's background health toast reads this flag instead of probing (#89576, #142406)."""
-    from tools import mcp_tool
+    from hermes_agent.tools import mcp_tool
 
     for name in ("expired", "offline", "dropped"):
         _result(_call("mcp.servers.add", {"name": name, "config": {"url": f"https://{name}.example/mcp"}}))
@@ -176,7 +176,7 @@ def test_status_reports_parked_servers_and_flags_rejected_oauth(hermes_root):
 
 
 def test_status_does_not_mix_launch_runtime_into_another_profile(hermes_root):
-    from tools import mcp_tool
+    from hermes_agent.tools import mcp_tool
 
     _result(
         _call(
@@ -216,7 +216,7 @@ def test_status_includes_named_profile_runtime_in_multiplex(hermes_root):
         reset_hermes_home_override,
         set_hermes_home_override,
     )
-    from tools import mcp_tool
+    from hermes_agent.tools import mcp_tool
 
     _result(
         _call(

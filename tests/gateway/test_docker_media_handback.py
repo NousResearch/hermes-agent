@@ -13,8 +13,8 @@ from hermes_agent.gateway.config import Platform, PlatformConfig
 from hermes_agent.gateway.platforms.base import BasePlatformAdapter, SendResult
 from hermes_agent.gateway.platforms.event import MessageEvent
 from hermes_agent.gateway.session import SessionSource
-from tools.environments import docker as docker_env
-from tools.environments import docker_ownership
+from hermes_agent.tools.environments import docker as docker_env
+from hermes_agent.tools.environments import docker_ownership
 
 # Root reads a mode-0 file, so the permission premise only holds for an unprivileged gateway.
 pytestmark = [pytest.mark.platforms("linux"),

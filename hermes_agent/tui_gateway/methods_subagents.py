@@ -17,7 +17,7 @@ _SUBAGENT_TAIL_BYTES = 16384
 
 
 def _owned_subagent_records(session_id, transport, owner):
-    from tools.delegate_tool_registry import _active_subagents, _active_subagents_lock, _subagent_transport_matches
+    from hermes_agent.tools.delegate_tool_registry import _active_subagents, _active_subagents_lock, _subagent_transport_matches
 
     with _active_subagents_lock:
         return [dict(r) for r in _active_subagents.values()
@@ -35,7 +35,7 @@ def _visible_subagent_records(session_id, transport, owner):
     resume remints the id and rebuilds the session record, and compression rotates the durable key,
     so the exact match alone hid every still-running child from the panel for good (#114909).
     Control RPCs (steer / interrupt / tail) keep the exact generation authority."""
-    from tools.delegate_tool_registry import (
+    from hermes_agent.tools.delegate_tool_registry import (
         _active_subagents, _active_subagents_lock, _owns_subagent_record, _subagent_transport_matches,
     )
 
@@ -76,8 +76,8 @@ def _live_work_owners():
     routes by). A process names the conversation that spawned it (``parent_session_id``, from
     ``HERMES_SESSION_ID``) and its routing ``session_key``, which on the gateway path is a route
     (``agent:main:local:dm:...``), never a stored id."""
-    from tools.delegate_tool_registry import _active_subagents, _active_subagents_lock
-    from tools.process_registry import process_registry
+    from hermes_agent.tools.delegate_tool_registry import _active_subagents, _active_subagents_lock
+    from hermes_agent.tools.process_registry import process_registry
 
     with _active_subagents_lock:
         owners = [("subagents", (str(r.get("owner_agent_session_id") or ""), ""))
@@ -149,7 +149,7 @@ def _failed_delegations(session_id, owner):
     """Recently failed async delegation tasks for this session from the durable store (the live
     roster forgets ended children and dies with a renderer reload, #97202). Read under the session's
     profile home, where its delegations were persisted; a store error degrades to no rows."""
-    from tools.async_delegation import failed_delegations_for_session
+    from hermes_agent.tools.async_delegation import failed_delegations_for_session
 
     agent_session_id = str(getattr(owner.get("agent"), "session_id", "") or "")
     try:

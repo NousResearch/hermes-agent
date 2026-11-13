@@ -32,7 +32,7 @@ def _tree(repo, name, *, dirty):
 
 def _unpinned_record(parent, sid, tree):
     """A resumable record that lost its pin to the cap while staying continuable."""
-    from tools import delegate_tool_resumable as r
+    from hermes_agent.tools import delegate_tool_resumable as r
     with sqlite3.connect(parent._session_db.db_path) as conn:  # health: allow HX015 -- temp-home store
         r._upsert(conn, sid, {"owners": [parent.session_id], "session_id": "child", "cwd": str(tree),
                               "pin_paths": [str(tree)], "worktrees_at_start": []},
@@ -41,7 +41,7 @@ def _unpinned_record(parent, sid, tree):
 
 def _continue_now(parent, sid, tree):
     """What ``action='continue'`` does before its first model call: claim the row and record the run."""
-    from tools import delegate_tool_resumable as r
+    from hermes_agent.tools import delegate_tool_resumable as r
     record, err = r.claim(parent, sid)
     assert record is not None and err is None, err
     with patch.object(r, "_child_cwd", return_value=str(tree)):
@@ -98,7 +98,7 @@ def test_a_pin_taken_while_the_archive_snapshot_ran_keeps_the_tree(tmp_path):
 
 
 def test_the_record_keeps_no_endpoint_credential_and_still_refuses_a_changed_endpoint():
-    from tools.delegate_tool import delegate_task
+    from hermes_agent.tools.delegate_tool import delegate_task
     secret_url = "https://user:FIXTURE_PASS@llm.invalid/v1?api_key=FIXTURE_SECRET"
     model = _FailingModel(resets_at=time.time() + 3600)
     parent = _parent()
@@ -128,8 +128,8 @@ def test_the_record_keeps_no_endpoint_credential_and_still_refuses_a_changed_end
 
 @pytest.mark.parametrize("failing", ["first-write", "start-never-lands"])
 def test_a_failed_first_record_write_is_retried_whole_and_never_leaves_a_partial_row(failing):
-    from tools import delegate_tool_resumable as r
-    from tools.delegate_tool import delegate_task
+    from hermes_agent.tools import delegate_tool_resumable as r
+    from hermes_agent.tools.delegate_tool import delegate_task
     real_upsert, calls = r._upsert, []
 
     def flaky_upsert(conn, sid, record, **kw):
@@ -170,7 +170,7 @@ def test_a_start_retry_still_waiting_when_the_child_stops_never_reopens_the_stop
     "still running" until the process exits)."""
     import threading
 
-    from tools import delegate_tool_resumable as r
+    from hermes_agent.tools import delegate_tool_resumable as r
     parent = _parent()
     sid = "sa-late-retry"
     run = _run(parent, sid)
@@ -207,7 +207,7 @@ def test_a_start_retry_still_waiting_when_the_child_stops_never_reopens_the_stop
 def test_a_start_write_that_never_landed_before_the_stop_is_not_written_by_a_later_flush():
     """The start write failed at record_start and again at record_stop's retry: a flush after the stop (a late
     heartbeat tick) must not write a ``running`` row that no stop row will ever follow."""
-    from tools import delegate_tool_resumable as r
+    from hermes_agent.tools import delegate_tool_resumable as r
     parent = _parent()
     sid = "sa-never-landed"
     run = _run(parent, sid)

@@ -219,7 +219,7 @@ class caplog_at:
 
 def test_gateway_approval_hooks_report_a_cli_sessions_surface(tmp_path, monkeypatch):
     from hermes_agent.gateway.session_policy import _ACTIVE_POLICY
-    from tools.approval_gateway_wait import _await_gateway_decision
+    from hermes_agent.tools.approval_gateway_wait import _await_gateway_decision
 
     seen = []
     approval_hooks = {"pre_approval_request", "post_approval_response"}

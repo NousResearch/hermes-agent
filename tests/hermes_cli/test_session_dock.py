@@ -27,7 +27,7 @@ def test_dock_paints_goal_on_top_and_queue_last_and_follows_their_lifecycle(herm
     from cli import _VoiceInputMessage
     from hermes_cli.cli_subagent_monitor import SubagentMonitor
     from hermes_cli.goals import GoalManager
-    from tools.process_registry_notifications import TimelineNotification
+    from hermes_agent.tools.process_registry_notifications import TimelineNotification
 
     mgr = GoalManager(session_id="sid-a", default_max_turns=20)
     mgr.set("ship the dock feature")

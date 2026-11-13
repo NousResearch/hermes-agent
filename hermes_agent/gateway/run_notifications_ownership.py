@@ -34,7 +34,7 @@ def _local_completion_card(evt: dict) -> dict[str, str]:
     completion or async delegation (a gateway-side ``/review`` reports as one), and a liveness tick's
     one-line receipt. The claim's ``message.start`` carries it, and an idle classic CLI only opens a
     turn that has one. ``{}`` for a watch match."""
-    from tools.process_registry_notifications import (
+    from hermes_agent.tools.process_registry_notifications import (
         PROCESS_COMPLETE_DISPLAY_KIND, async_delegation_display_text, process_completion_display_text)
     evt_type = evt.get("type", "completion")
     if evt_type == "completion":
@@ -46,7 +46,7 @@ def _local_completion_card(evt: dict) -> dict[str, str]:
         # The wake stays machinery (no bubble, and a quiet tick may end in silence); the receipt lets an
         # idle CLI open the turn with one line and show the agent's reply.
         from hermes_agent.gateway.response_filters import INTERNAL_NOTIFICATION_DISPLAY_KIND
-        from tools.process_registry_notifications import heartbeat_display_text
+        from hermes_agent.tools.process_registry_notifications import heartbeat_display_text
         return {"display_kind": INTERNAL_NOTIFICATION_DISPLAY_KIND, "display_text": heartbeat_display_text(evt)}
     return {}
 
@@ -297,8 +297,8 @@ class GatewayNotificationOwnershipMixin:
         so the next delivery re-runs the pre-flight; boundary verdicts stay dropped."""
         if verdict != "retry" or not completion_ids:
             return
-        from tools.async_delegation import requeue_admitted_completion
-        from tools.process_registry import process_registry
+        from hermes_agent.tools.async_delegation import requeue_admitted_completion
+        from hermes_agent.tools.process_registry import process_registry
         runner = cast(Any, self)
         with runner._completion_delivery_lock:
             for delegation_id in completion_ids:

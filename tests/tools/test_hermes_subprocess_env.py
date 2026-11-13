@@ -14,8 +14,8 @@ full credential environment. Two tiers:
 import os
 from unittest.mock import patch
 
-from tools.environments.local import hermes_subprocess_env
-from tools.environments.local_env_policy import _ALWAYS_STRIP_KEYS, _HERMES_PROVIDER_ENV_FORCE_PREFIX
+from hermes_agent.tools.environments.local import hermes_subprocess_env
+from hermes_agent.tools.environments.local_env_policy import _ALWAYS_STRIP_KEYS, _HERMES_PROVIDER_ENV_FORCE_PREFIX
 
 
 _TIER1_SAMPLE = {
@@ -141,7 +141,7 @@ class TestBrowserPassthroughPattern:
     def test_browser_keys_recoverable_after_strip(self):
         """browser_exec pattern: strip everything, then re-add only the key
         the browser harness itself reads."""
-        from tools.browser_use_cli import _HARNESS_PASSTHROUGH_KEYS
+        from hermes_agent.tools.browser_use_cli import _HARNESS_PASSTHROUGH_KEYS
 
         leaked = {
             "BROWSER_USE_API_KEY": "bu-key",

@@ -15,7 +15,7 @@ The cron subsystem provides scheduled task execution — from simple one-shot de
 | `hermes_agent/cron/jobs.py` | Job model, storage, atomic read/write to `jobs.json` |
 | `hermes_agent/cron/jobs_time.py` | Per-job `timezone` / `grace_minutes` knobs: validation, tolerant reads, due-scan zone |
 | `hermes_agent/cron/scheduler.py` | Scheduler loop — due-job detection, execution, repeat tracking |
-| `tools/cronjob_tools.py` | Model-facing `cronjob_manage` tool registration and handler |
+| `hermes_agent/tools/cronjob_tools.py` | Model-facing `cronjob_manage` tool registration and handler |
 | `hermes_agent/gateway/run.py` | Gateway integration — cron ticking in the long-running loop |
 | `hermes_cli/cron.py` | CLI `hermes cron` subcommands |
 

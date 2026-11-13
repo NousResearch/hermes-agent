@@ -1,7 +1,7 @@
 """Background-process launch path: ``terminal(background=true)`` spawns a tracked
 process via the process registry (Popen locally, ``env.execute`` in a sandbox),
 stamps gateway routing metadata for completion / watch-pattern notifications and
-returns the JSON result. Lazy ``tools.terminal_tool`` imports keep the origin's
+returns the JSON result. Lazy ``hermes_agent.tools.terminal_tool`` imports keep the origin's
 monkeypatch points authoritative.
 """
 
@@ -10,7 +10,7 @@ import logging
 import sys
 from typing import Any, List, Optional
 
-logger = logging.getLogger("tools.terminal_tool")
+logger = logging.getLogger("hermes_agent.tools.terminal_tool")
 
 # A silent background process (no notify_on_complete / watch_patterns) is right
 # only for servers/watchers; for bounded tasks the agent almost always wanted a
@@ -111,7 +111,7 @@ def _apply_async_support(proc_session, result_data, notify_on_complete, watch_pa
     if not (notify_on_complete or watch_patterns):
         return notify_on_complete, watch_patterns
     from hermes_agent.gateway.session_context import async_delivery_supported, get_session_env
-    from tools.environments.sandbox_scope import hosted_scope
+    from hermes_agent.tools.environments.sandbox_scope import hosted_scope
 
     # A hosted agent's process is invisible outside its scope, and no notification consumer binds
     # that scope (the gateway watcher and every drain pass over it), so its notice could never land.
@@ -169,8 +169,8 @@ def spawn_background_process(
     Never inline-polls ``is_interrupted()``: the spawn detaches and returns
     exit_code 0 immediately, so the stale-interrupt kill cannot occur here.
     """
-    from tools.process_registry import process_registry
-    from tools.terminal_tool import (
+    from hermes_agent.tools.process_registry import process_registry
+    from hermes_agent.tools.terminal_tool import (
         _redact_terminal_error_text, _resolve_command_cwd, _resolve_notification_flag_conflict,
     )
 
@@ -266,7 +266,7 @@ def yield_to_background_handler(
         return None
 
     def _handler(proc, output_so_far: str) -> dict:
-        from tools.process_registry import process_registry
+        from hermes_agent.tools.process_registry import process_registry
         session = process_registry.adopt_local(
             proc, command=command, cwd=cwd, task_id=effective_task_id,
             owner_task_id=task_id or effective_task_id, session_key=session_key,

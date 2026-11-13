@@ -462,7 +462,7 @@ def _installed_client(plugin: str, oauth_id: str) -> Optional[tuple[Path, OAuthC
 
 
 def _unattended() -> bool:
-    from tools.approval_context import _is_gateway_approval_context, _no_user_can_answer
+    from hermes_agent.tools.approval_context import _is_gateway_approval_context, _no_user_can_answer
 
     return _no_user_can_answer() or _is_gateway_approval_context()
 

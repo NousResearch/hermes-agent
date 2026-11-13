@@ -8,7 +8,7 @@ import pytest
 
 
 def _flow(flow_id: str = "flow-retry", server_name: str = "asana"):
-    from tools.mcp_dashboard_oauth import DashboardOAuthFlow
+    from hermes_agent.tools.mcp_dashboard_oauth import DashboardOAuthFlow
 
     return DashboardOAuthFlow(
         flow_id=flow_id,
@@ -20,7 +20,7 @@ def _flow(flow_id: str = "flow-retry", server_name: str = "asana"):
 
 
 def test_dashboard_flow_exposes_authorization_url_and_accepts_callback():
-    from tools.mcp_dashboard_oauth import DashboardOAuthFlow
+    from hermes_agent.tools.mcp_dashboard_oauth import DashboardOAuthFlow
 
     flow = DashboardOAuthFlow(
         flow_id="flow-1",
@@ -46,7 +46,7 @@ def test_dashboard_flow_exposes_authorization_url_and_accepts_callback():
 def test_dashboard_flow_preserves_rfc9207_iss():
     """RFC 9207 ``iss`` survives the callback bridge: mcp 2.x rejects an authorization response
     that omits it when the authorization server advertised support (Cloudflare, Resend)."""
-    from tools.mcp_dashboard_oauth import DashboardOAuthFlow
+    from hermes_agent.tools.mcp_dashboard_oauth import DashboardOAuthFlow
 
     flow = DashboardOAuthFlow(
         flow_id="flow-iss",
@@ -62,7 +62,7 @@ def test_dashboard_flow_preserves_rfc9207_iss():
 
 
 def test_dashboard_flow_accepts_only_one_concurrent_callback():
-    from tools.mcp_dashboard_oauth import DashboardOAuthFlow
+    from hermes_agent.tools.mcp_dashboard_oauth import DashboardOAuthFlow
 
     flow = DashboardOAuthFlow(
         flow_id="flow-race",
@@ -98,8 +98,8 @@ def test_dashboard_flow_accepts_only_one_concurrent_callback():
 def test_mcp_oauth_helpers_use_dashboard_flow_without_loopback_port():
     # _build_client_metadata validates through the SDK's OAuthClientMetadata model.
     pytest.importorskip("mcp.shared.auth", reason="MCP SDK not installed")
-    from tools.mcp_dashboard_oauth import DashboardOAuthFlow, dashboard_oauth_flow
-    from tools.mcp_oauth import (
+    from hermes_agent.tools.mcp_dashboard_oauth import DashboardOAuthFlow, dashboard_oauth_flow
+    from hermes_agent.tools.mcp_oauth import (
         HermesTokenStorage,
         _build_client_metadata,
         _configure_callback_port,
@@ -156,7 +156,7 @@ def test_first_mark_error_reason_reaches_callback_waiter_and_is_never_clobbered(
 def test_empty_exception_text_stays_diagnosable():
     """``str()`` of a bare ``TimeoutError()``/``RuntimeError()`` is ""; the workers record the type
     name and the flow never exposes a blank cause to the waiter or the poller."""
-    from tools.mcp_dashboard_oauth import exception_message
+    from hermes_agent.tools.mcp_dashboard_oauth import exception_message
 
     assert exception_message(RuntimeError()) == "RuntimeError"
     assert exception_message(RuntimeError("boom")) == "boom"
@@ -169,7 +169,7 @@ def test_empty_exception_text_stays_diagnosable():
 
 
 def test_failed_reauth_rollback_preserves_newer_oauth_state(tmp_path, monkeypatch):
-    from tools.mcp_oauth import HermesTokenStorage
+    from hermes_agent.tools.mcp_oauth import HermesTokenStorage
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     storage = HermesTokenStorage("reports")
@@ -192,8 +192,8 @@ def test_preregistered_pinned_redirect_port_keeps_loopback_listener_under_dashbo
     import socket
     import urllib.request
 
-    from tools.mcp_dashboard_oauth import DashboardOAuthFlow, dashboard_oauth_flow
-    from tools.mcp_oauth import (
+    from hermes_agent.tools.mcp_dashboard_oauth import DashboardOAuthFlow, dashboard_oauth_flow
+    from hermes_agent.tools.mcp_oauth import (
         HermesTokenStorage,
         _build_client_metadata,
         _configure_callback_port,
@@ -240,10 +240,10 @@ def test_server_task_does_not_park_on_an_ended_dashboard_flow(
     """
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
-    from tools import mcp_tool
-    from tools.mcp_dashboard_oauth import dashboard_oauth_flow
-    from tools.mcp_oauth import _make_redirect_handler
-    from tools.mcp_tool import MCPServerTask
+    from hermes_agent.tools import mcp_tool
+    from hermes_agent.tools.mcp_dashboard_oauth import dashboard_oauth_flow
+    from hermes_agent.tools.mcp_oauth import _make_redirect_handler
+    from hermes_agent.tools.mcp_tool import MCPServerTask
 
     monkeypatch.setattr(mcp_tool, "_PARKED_RETRY_INTERVAL", 0.05)
     _real_sleep = asyncio.sleep
@@ -287,7 +287,7 @@ def test_server_task_does_not_park_on_an_ended_dashboard_flow(
         await task.shutdown()
         return failure, parked, task._task
 
-    with caplog.at_level(logging.WARNING, logger="tools.mcp_tool"):
+    with caplog.at_level(logging.WARNING, logger="hermes_agent.tools.mcp_tool"):
         failure, parked, run_task = asyncio.run(_scenario())
 
     assert failure is not None, "the transport never failed, so the ladder was not exercised"

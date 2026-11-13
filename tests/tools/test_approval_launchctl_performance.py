@@ -11,7 +11,7 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__fi
 
 def test_launchctl_guard_long_negative_input_is_bounded():
     code = '''
-from tools.approval_detection import DANGEROUS_PATTERNS_COMPILED
+from hermes_agent.tools.approval_detection import DANGEROUS_PATTERNS_COMPILED
 rules = [(rx, desc) for rx, desc in DANGEROUS_PATTERNS_COMPILED
          if desc == "stop/restart hermes launchd service (kills running agents)"]
 assert len(rules) == 1

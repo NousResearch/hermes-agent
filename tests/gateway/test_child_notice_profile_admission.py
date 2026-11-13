@@ -24,8 +24,8 @@ def _build_rig(monkeypatch, tmp_path, request, surface_a, mode):
     from hermes_cli.profiles import get_profile_dir
     from hermes_constants import get_hermes_home
     from hermes_agent import hermes_state
-    from tools import process_registry as pr_module
-    from tools.process_registry import ProcessRegistry
+    from hermes_agent.tools import process_registry as pr_module
+    from hermes_agent.tools.process_registry import ProcessRegistry
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setenv("HERMES_BASE_HOME", str(tmp_path))
@@ -87,7 +87,7 @@ async def _for_each_leg(rig, owner, surface_a, path, consume):
     from hermes_agent.gateway.run import _async_profile_runtime_scope, _profile_runtime_scope
     from hermes_agent.gateway.session import SessionSource
     from hermes_constants import get_hermes_home
-    from tools.process_registry import ProcessSession
+    from hermes_agent.tools.process_registry import ProcessSession
 
     runner, registry, homes = rig.runner, rig.registry, rig.homes
     handed_off = owner in {"handoff", "live_handoff"}

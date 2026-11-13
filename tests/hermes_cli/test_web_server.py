@@ -2951,7 +2951,7 @@ class TestNewEndpoints:
         assert cfg["web"]["backend"] == "firecrawl"
 
         # The REAL runtime resolution — not a parallel reimplementation.
-        from tools.web_tools import _get_extract_backend, _get_search_backend
+        from hermes_agent.tools.web_tools import _get_extract_backend, _get_search_backend
         assert _get_search_backend() == "searxng"
         assert _get_extract_backend() == "firecrawl"
 

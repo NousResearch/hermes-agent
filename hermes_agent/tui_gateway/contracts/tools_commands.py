@@ -1,8 +1,8 @@
 """Contracts: system / process / slash-command / rollback / cron / browser / config RPCs
 (handlers in ``hermes_agent/tui_gateway/methods_tools.py``, browser helpers in ``methods_browser.py``).
 
-Several results here are pass-throughs of dicts another module owns (``tools/process_registry.py``,
-``tools/checkpoint_manager.py``, ``tools/cronjob_tools.py``): those declare every key the producer is
+Several results here are pass-throughs of dicts another module owns (``hermes_agent/tools/process_registry.py``,
+``hermes_agent/tools/checkpoint_manager.py``, ``hermes_agent/tools/cronjob_tools.py``): those declare every key the producer is
 known to emit plus ``extra="allow"`` so a new upstream key never trips the strict gate.
 """
 
@@ -92,7 +92,7 @@ class ProcessListParams(Params):
 
 
 class ProcessEntry(_Open):
-    """``tools/process_registry.py::list_sessions`` row plus the gateway's ``output_tail``."""
+    """``hermes_agent/tools/process_registry.py::list_sessions`` row plus the gateway's ``output_tail``."""
 
     session_id: str
     command: str = ""
@@ -137,7 +137,7 @@ class ProcessKillStatus(WireEnum):
 
 
 class ProcessKillResult(_Open):
-    """``tools/process_registry.py::kill_process`` snapshot; ``error`` rides on the failure statuses."""
+    """``hermes_agent/tools/process_registry.py::kill_process`` snapshot; ``error`` rides on the failure statuses."""
 
     status: ProcessKillStatus
     session_id: str | None = None
@@ -368,7 +368,7 @@ method("config.show", params=ConfigShowParams, result=ConfigShowResult,
 class RollbackListParams(Params):
     session_id: str
     profile: str | None = None
-    # Epoch seconds an /undo's span began (``tools/checkpoint_undo_hint.py::undo_span_start``): the result
+    # Epoch seconds an /undo's span began (``hermes_agent/tools/checkpoint_undo_hint.py::undo_span_start``): the result
     # then carries ``undo_hint`` naming the files that span changed.
     undo_since: float | None = None
     # The rewound user row's id (``session.mutate`` rewind's ``target_message.id``): the kept rows before it
@@ -403,7 +403,7 @@ class RollbackRestoreParams(Params):
 
 
 class RollbackRestoreResult(_Open):
-    """``tools/checkpoint_manager.py::restore`` outcome; ``history_removed`` is added for a full
+    """``hermes_agent/tools/checkpoint_manager.py::restore`` outcome; ``history_removed`` is added for a full
     (non-file) restore that also rewound the live transcript."""
 
     success: bool
@@ -464,7 +464,7 @@ class CronManageParams(Params):
 
 
 class CronJobRow(_Open):
-    """``tools/cronjob_job_args.py::_format_job``."""
+    """``hermes_agent/tools/cronjob_job_args.py::_format_job``."""
 
     job_id: str
     name: str = ""
@@ -508,7 +508,7 @@ class CronRemovedJob(Result):
 
 
 class CronManageResult(_Open):
-    """Pass-through of ``tools/cronjob_tools.py::cronjob`` JSON: ``list`` → ``jobs``/``count``
+    """Pass-through of ``hermes_agent/tools/cronjob_tools.py::cronjob`` JSON: ``list`` → ``jobs``/``count``
     (+ ``scoped`` when profile-scoped); ``add`` → the created job's summary + ``job``; ``remove`` →
     ``removed_job``; ``pause``/``resume`` → ``job``. A tool-level failure lands in ``error``."""
 

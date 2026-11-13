@@ -79,7 +79,7 @@ class TestAtomicWritersRefuseDeletedProfileHome:
         assert not profile.exists()
 
     def test_oauth_token_write_after_delete(self, tmp_path):
-        from tools.mcp_oauth import _write_json
+        from hermes_agent.tools.mcp_oauth import _write_json
 
         profile = _tombstoned_profile(tmp_path)
         with pytest.raises(
@@ -89,7 +89,7 @@ class TestAtomicWritersRefuseDeletedProfileHome:
         assert not profile.exists()
 
     def test_memory_store_add_after_delete(self, tmp_path):
-        from tools.memory_tool_store import MemoryStore
+        from hermes_agent.tools.memory_tool_store import MemoryStore
 
         profile = _tombstoned_profile(tmp_path)
         token = set_hermes_home_override(profile)

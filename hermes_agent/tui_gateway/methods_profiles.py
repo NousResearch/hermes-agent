@@ -470,7 +470,7 @@ def _describe_toolsets(cfg):
     from hermes_cli.tools_config import (
         _coerce_platform_toolsets_value, _get_effective_configurable_toolsets, _get_platform_tools,
         _toolset_allowed_for_platform)
-    from toolsets import resolve_toolset
+    from hermes_agent.toolsets import resolve_toolset
     pinned = _coerce_platform_toolsets_value((cfg.get("platform_toolsets") or {}).get("cli"), "cli")
     pinned_set = _clean_names(pinned) if isinstance(pinned, list) else None
     platform_enabled = _try(lambda: set(_get_platform_tools(cfg, "cli", include_default_mcp_servers=False)), set())
@@ -617,14 +617,14 @@ def _save_toolset_pin(cfg, enabled, save_config) -> None:
 def _mcp_entry_enabled(entry: dict) -> bool:
     """The runtime's ``enabled`` reader; a legacy ``disabled: true`` (what older editors wrote,
     migrated by config v46) still reads as off."""
-    from tools.mcp_tool_common import mcp_server_enabled
+    from hermes_agent.tools.mcp_tool_common import mcp_server_enabled
     return mcp_server_enabled(entry)
 
 
 def _save_mcp_toggles(cfg, enabled, launch_mcp, save_config) -> None:
     """Write the ``enabled`` flag every runtime resolver reads (``enabled_mcp_server_names``,
     coding_context, oneshot); the legacy ``disabled`` key is dropped so old configs migrate."""
-    from tools.mcp_tool_common import write_mcp_server_enabled
+    from hermes_agent.tools.mcp_tool_common import write_mcp_server_enabled
     wanted = _clean_names(enabled)
     mcp_cfg = cfg.get("mcp_servers") if isinstance(cfg.get("mcp_servers"), dict) else {}
     for srv in wanted:

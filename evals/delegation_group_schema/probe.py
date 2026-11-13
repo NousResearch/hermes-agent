@@ -27,7 +27,7 @@ with tempfile.TemporaryDirectory(prefix="delegate-schema-") as home:
 
     socket.socket.connect = deny_network
     import tiktoken
-    from model_tools import get_tool_definitions
+    from hermes_agent.model_tools import get_tool_definitions
 
     encoder = tiktoken.get_encoding("o200k_base")
     definitions = get_tool_definitions(enabled_toolsets=["hermes-cli"], quiet_mode=True)

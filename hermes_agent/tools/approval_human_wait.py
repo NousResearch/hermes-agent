@@ -1,4 +1,4 @@
-"""Human-wait accounting for :mod:`tools.approval` (per session).
+"""Human-wait accounting for :mod:`hermes_agent.tools.approval` (per session).
 
 Tracks wall-clock time the agent spends verifiably blocked on a HUMAN prompt
 (CLI approval prompt, gateway approval round-trip). The concurrent tool batch
@@ -55,7 +55,7 @@ def human_wait_ceiling() -> float:
     holding ``_human_wait_lock`` — it reads the config cache.
     ``_get_approval_timeout`` caps at ``agent.deadline.MAX_SAFE_TIMEOUT_S`` so the
     value is always safe for ``Lock.acquire(timeout=...)`` / ``Thread.join(timeout=...)``."""
-    from tools import approval_context
+    from hermes_agent.tools import approval_context
     from agent.deadline import MAX_SAFE_TIMEOUT_S
     return min(MAX_SAFE_TIMEOUT_S, float(approval_context._get_approval_timeout()) + HUMAN_WAIT_MARGIN_S)
 
@@ -88,7 +88,7 @@ def _human_wait_state(session_key: str) -> _HumanWaitState:
 def _resolve_key(session_key: str | None) -> str:
     if session_key is not None:
         return session_key
-    from tools import approval_context
+    from hermes_agent.tools import approval_context
     return approval_context.get_current_session_key()
 
 
@@ -97,7 +97,7 @@ def activity_heartbeat(label: str):
     while a human wait is parked, so the gateway watchdog does not kill the agent
     while the user is still answering. No-op in minimal tool-only environments."""
     try:
-        from tools.environments.base import touch_activity_if_due
+        from hermes_agent.tools.environments.base import touch_activity_if_due
     except Exception:  # pragma: no cover - minimal tool-only environments
         return lambda: None
     now = time.monotonic()

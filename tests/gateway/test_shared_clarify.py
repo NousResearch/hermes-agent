@@ -22,7 +22,7 @@ def test_real_shared_clarify_survives_detach(tmp_path):
 def test_expired_clarify_disappears_before_turn_settlement():
     from hermes_agent.gateway.session_events import SessionEvents
     from hermes_agent.gateway.session_pending_controls import PendingControls
-    from tools import clarify_gateway
+    from hermes_agent.tools import clarify_gateway
 
     events = SessionEvents()
     controls = PendingControls(events)

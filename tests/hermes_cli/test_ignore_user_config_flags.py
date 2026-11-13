@@ -136,7 +136,7 @@ class TestIgnoreUserConfigDelegationDefault:
         """The CLI's built-in default (``hermes_cli/cli_config_load.py``, re-exported by ``cli``) is the
         value a `--ignore-user-config` run actually uses."""
         import cli
-        from tools.delegate_tool import DEFAULT_MAX_ITERATIONS
+        from hermes_agent.tools.delegate_tool import DEFAULT_MAX_ITERATIONS
 
         assert DEFAULT_MAX_ITERATIONS == _default("delegation", "max_iterations")
         assert cli._cli_config_defaults()["delegation"]["max_iterations"] == DEFAULT_MAX_ITERATIONS
@@ -151,7 +151,7 @@ class TestIgnoreUserConfigDelegationDefault:
         root = Path(__file__).resolve().parents[2]
         (tmp_path / "config.yaml").write_text("delegation:\n  max_iterations: 7\n")
         script = (
-            "import json, cli; from tools import delegate_tool_config; "
+            "import json, cli; from hermes_agent.tools import delegate_tool_config; "
             "print(json.dumps([cli.CLI_CONFIG['delegation']['max_iterations'], "
             "delegate_tool_config._load_config()['max_iterations']]))"
         )

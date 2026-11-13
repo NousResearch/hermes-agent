@@ -13,9 +13,9 @@ import time
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Sequence
 
-from tools.connectors import live
-from tools.connectors.contract import SettleReason
-from tools.connectors.operation import ConnectionOperation, Target
+from hermes_agent.tools.connectors import live
+from hermes_agent.tools.connectors.contract import SettleReason
+from hermes_agent.tools.connectors.operation import ConnectionOperation, Target
 
 UNKNOWN_TARGET = "unknown_target"
 MIXED_KINDS = "mixed_kinds"
@@ -44,7 +44,7 @@ class Kind:
 
 
 def reissue(operation: ConnectionOperation, names: Sequence[str], *, initiator: Optional[str] = None) -> Optional[str]:
-    from tools.connectors.contract import Actor, TargetState, allowed
+    from hermes_agent.tools.connectors.contract import Actor, TargetState, allowed
 
     targets = [operation.target(name) for name in names]
     if any(target is None for target in targets):
@@ -59,13 +59,13 @@ def reissue(operation: ConnectionOperation, names: Sequence[str], *, initiator: 
     if any(allowed(target.kind, target.state, TargetState.initiated) is None for target in targets):
         return NOT_ALLOWED
     if targets[0].kind == "connector":
-        from tools.connectors.managed import CARD_RETRY, managed_client, mint
+        from hermes_agent.tools.connectors.managed import CARD_RETRY, managed_client, mint
 
         client = managed_client(creates_guest=True, initiator=initiator or CARD_RETRY, call=operation.call)
         mint(client, operation, stale, reinitiate=True, actor=Actor.user)
         return None
-    from tools.connectors import catalog
-    from tools.connectors.mcp import retry
+    from hermes_agent.tools.connectors import catalog
+    from hermes_agent.tools.connectors.mcp import retry
 
     rerun = catalog.retry if catalog.owns(operation.op_id) else retry
     return REFUSED if rerun(operation, stale) else None
@@ -74,7 +74,7 @@ def reissue(operation: ConnectionOperation, names: Sequence[str], *, initiator: 
 def apply_answer(operation: ConnectionOperation, raw: str) -> None:
     """Hand the card's answer to the module running this operation (a catalog install or an MCP
     one); a managed operation's card only skips and continues, which the MCP fold also covers."""
-    from tools.connectors import catalog, display, mcp
+    from hermes_agent.tools.connectors import catalog, display, mcp
 
     if isinstance(operation, display.DisplayOperation):
         display.apply_answer(operation, raw)
@@ -125,7 +125,7 @@ def open_and_drive(
     try:
         live.open(operation)
     except live.OperationAlreadyOpen as exc:
-        from tools.registry import tool_error
+        from hermes_agent.tools.registry import tool_error
 
         return tool_error(
             f"a connection operation is already open in this session ({exc.existing.op_id}); it settles "
@@ -165,7 +165,7 @@ def drive_operation(
 
 
 def _watch(operation: ConnectionOperation, kind: Kind, tick_seconds: Optional[float]) -> None:
-    from tools.interrupt import is_interrupted
+    from hermes_agent.tools.interrupt import is_interrupted
 
     tick = WATCH_INTERVAL_SECONDS if tick_seconds is None else tick_seconds
     while not operation.settled:
@@ -184,7 +184,7 @@ def _watch(operation: ConnectionOperation, kind: Kind, tick_seconds: Optional[fl
 
 def _sleep_until_wake(operation: ConnectionOperation, tick: float) -> None:
     """Sleep up to one tick, leaving early on ``wake``, the deadline, or the interrupt flag."""
-    from tools.interrupt import is_interrupted
+    from hermes_agent.tools.interrupt import is_interrupted
 
     until = min(time.time() + tick, operation.deadline_at)
     while not operation.settled and not is_interrupted():

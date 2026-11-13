@@ -40,7 +40,7 @@ from typing import Any, Callable, Iterator, Optional
 
 from agent.terminal_env_provider import TerminalEnvironmentProvider
 from hermes_scope import Principal, Scope
-from tools.environments.sandbox_scope import CrossAgentHandleRefused, ProcessRef, ProcessStream, SandboxIdentity
+from hermes_agent.tools.environments.sandbox_scope import CrossAgentHandleRefused, ProcessRef, ProcessStream, SandboxIdentity
 
 STUB_BACKEND = "recording_sandbox"
 
@@ -156,7 +156,7 @@ def _bind(scope: Scope):
 
 
 def call_tool(name: str, args: dict, *, task_id: str) -> dict:
-    from tools.registry import registry
+    from hermes_agent.tools.registry import registry
     result = registry.dispatch(name, args, task_id=task_id)
     return json.loads(result) if isinstance(result, str) else result
 
@@ -166,7 +166,7 @@ def _identity(scope: Scope) -> SandboxIdentity:
 
 
 def _env_for(task_id: str) -> Any:
-    from tools.terminal_tool_lifecycle import get_active_env
+    from hermes_agent.tools.terminal_tool_lifecycle import get_active_env
     env = get_active_env(task_id)
     assert env is not None, "the terminal call did not leave an environment"
     return env
@@ -400,7 +400,7 @@ def check_background_process_invisible(provider: RecordingSandboxProvider, a: Sc
 
 
 def _age_sandbox(a: Scope) -> str:
-    from tools import terminal_tool
+    from hermes_agent.tools import terminal_tool
     key = _identity(a).key
     terminal_tool._last_activity[key] = 0.0  # idle since the epoch
     return key
@@ -409,8 +409,8 @@ def _age_sandbox(a: Scope) -> str:
 def check_idle_sandbox_kept_while_working(provider: RecordingSandboxProvider, a: Scope) -> None:
     """A sandbox whose agent has a background process still running is never reaped as idle,
     whatever task id that process was started under."""
-    from tools import terminal_tool
-    from tools.terminal_tool_lifecycle import _cleanup_inactive_envs
+    from hermes_agent.tools import terminal_tool
+    from hermes_agent.tools.terminal_tool_lifecycle import _cleanup_inactive_envs
     with _bind(a):
         started = call_tool("terminal", {"command": "sleep 600", "background": True}, task_id="t")
     assert started.get("session_id"), f"the background spawn failed: {started}"
@@ -428,7 +428,7 @@ def check_idle_sandbox_kept_while_working(provider: RecordingSandboxProvider, a:
 def check_idle_sandbox_suspended_not_destroyed(provider: RecordingSandboxProvider, a: Scope) -> None:
     """An idle sandbox is suspended (``stop_idle``), not destroyed, and the call reaches the backend
     under its owning agent's scope though the reaper runs with none bound."""
-    from tools.terminal_tool_lifecycle import _cleanup_inactive_envs
+    from hermes_agent.tools.terminal_tool_lifecycle import _cleanup_inactive_envs
     with _bind(a):
         call_tool("terminal", {"command": "true"}, task_id="t")
     _age_sandbox(a)
@@ -451,7 +451,7 @@ def check_process_notifications_private(provider: RecordingSandboxProvider, a: S
     and a drain under B (even with the same session key, or no filter at all) neither delivers,
     consumes, suppresses nor drops them: they stay queued, and A's own drain receives them. Its live
     output never reaches the (scope-less) UI sink."""
-    from tools.process_registry import ProcessSession, process_registry as registry
+    from hermes_agent.tools.process_registry import ProcessSession, process_registry as registry
     key = _identity(a).key
     secret = f"PRIVATE-{_marker(a)}"
     session = ProcessSession(
@@ -496,7 +496,7 @@ def check_oversized_results_stay_in_sandbox(provider: RecordingSandboxProvider, 
     """An oversized tool result of A is written straight into A's sandbox (never this host's
     spillover directory, never another agent's sandbox), under a name carrying A's identity; with no
     sandbox of its own it is truncated inline instead."""
-    from tools.tool_result_storage import get_spillover_dir, maybe_persist_tool_result
+    from hermes_agent.tools.tool_result_storage import get_spillover_dir, maybe_persist_tool_result
     secret = f"RESULT-{_marker(a)}"
     spill = get_spillover_dir()
     before = set(spill.iterdir()) if spill.is_dir() else set()
@@ -538,7 +538,7 @@ def check_media_never_read_on_host(provider: RecordingSandboxProvider, a: Scope,
     cache either (that cache is the profile's, not the agent's)."""
     import asyncio
     from hermes_constants import get_hermes_home
-    from tools.image_source import ImageResolutionError, ResolveContext, resolve_image_source
+    from hermes_agent.tools.image_source import ImageResolutionError, ResolveContext, resolve_image_source
     cache = get_hermes_home() / "cache" / "images"
     cache.mkdir(parents=True, exist_ok=True)
     planted = [host_dir / "photo.png", cache / f"inbound-{uuid.uuid4().hex[:8]}.png"]
@@ -561,12 +561,12 @@ def check_media_never_read_on_host(provider: RecordingSandboxProvider, a: Scope,
 
 
 def check_host_tools_refused(provider: RecordingSandboxProvider, a: Scope, b: Scope) -> None:
-    """Deny by default: every registered tool off ``tools.hosted_tool_policy.HOSTED_TOOL_ALLOWLIST``
+    """Deny by default: every registered tool off ``hermes_agent.tools.hosted_tool_policy.HOSTED_TOOL_ALLOWLIST``
     (memory, recall, browser, web, vision, MCP, connectors, skills, cron, delegation, ... and any tool
     added later) is refused under a hosted scope before its handler runs, and still reaches its
     handler with no scope bound."""
-    from tools.hosted_tool_policy import HOSTED_TOOL_ALLOWLIST
-    from tools.registry import registry
+    from hermes_agent.tools.hosted_tool_policy import HOSTED_TOOL_ALLOWLIST
+    from hermes_agent.tools.registry import registry
     names = sorted(n for n in registry.get_all_tool_names() if n not in HOSTED_TOOL_ALLOWLIST)
     assert names, "no host tool is registered to check"
     reached: list[str] = []

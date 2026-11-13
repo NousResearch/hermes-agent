@@ -1,6 +1,6 @@
-"""Context demotions for plugin install-scan findings (``tools.plugin_guard``).
+"""Context demotions for plugin install-scan findings (``hermes_agent.tools.plugin_guard``).
 
-The threat regexes in ``tools.skills_guard`` are written for a SKILL.md the agent will execute
+The threat regexes in ``hermes_agent.tools.skills_guard`` are written for a SKILL.md the agent will execute
 verbatim. A plugin repository is a codebase: the same text sits in READMEs, test fixtures, JSON
 scenery, denylists and regex literals, where it cannot run on the host at install time. Each
 helper here recognises one such *class* of inert context and lowers the finding one step or to
@@ -16,7 +16,7 @@ import re
 from pathlib import Path
 from typing import Optional
 
-from tools.skills_guard import _COMPILED_THREAT_PATTERNS, Finding
+from hermes_agent.tools.skills_guard import _COMPILED_THREAT_PATTERNS, Finding
 
 # pattern id -> compiled regex, to locate a finding's token on its full source line.
 _PATTERN_BY_ID = {pid: rx for rx, pid, *_ in _COMPILED_THREAT_PATTERNS}

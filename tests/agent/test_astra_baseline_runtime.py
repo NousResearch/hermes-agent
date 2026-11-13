@@ -18,7 +18,7 @@ def test_explicit_astra_resolves_and_uses_official_responses(monkeypatch, tmp_pa
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda *args, **kwargs: {})
     monkeypatch.setattr("agent.process_bootstrap.OpenAI", lambda **_kwargs: SimpleNamespace())
-    monkeypatch.setattr("model_tools.get_tool_definitions", lambda *args, **kwargs: [])
+    monkeypatch.setattr("hermes_agent.model_tools.get_tool_definitions", lambda *args, **kwargs: [])
 
     from run_agent import AIAgent
 

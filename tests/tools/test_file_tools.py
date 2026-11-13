@@ -10,7 +10,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from tools.file_tools import (
+from hermes_agent.tools.file_tools import (
     read_file_tool,
 )
 
@@ -18,11 +18,11 @@ from tools.file_tools import (
 class TestReadFileHandler:
 
 
-    @patch("tools.file_tools._get_file_ops")
+    @patch("hermes_agent.tools.file_tools._get_file_ops")
     def test_dispatch_without_limit_uses_schema_default(self, mock_get):
         """The model omits ``limit`` on most reads; the dispatch handler must fall
         back to the SAME default the schema advertises (drifted to 500 vs 2000)."""
-        from tools.file_tools import READ_FILE_SCHEMA, _handle_read_file
+        from hermes_agent.tools.file_tools import READ_FILE_SCHEMA, _handle_read_file
         mock_ops = MagicMock()
         result_obj = MagicMock()
         result_obj.content = "x"
@@ -34,11 +34,11 @@ class TestReadFileHandler:
         schema_default = READ_FILE_SCHEMA["parameters"]["properties"]["limit"]["default"]
         assert mock_ops.read_file.call_args.args[2] == schema_default
 
-    @patch("tools.file_tools._get_file_ops")
+    @patch("hermes_agent.tools.file_tools._get_file_ops")
     def test_exception_returns_error_json(self, mock_get):
         mock_get.side_effect = RuntimeError("terminal not available")
 
-        from tools.file_tools import read_file_tool
+        from hermes_agent.tools.file_tools import read_file_tool
         result = json.loads(read_file_tool("/tmp/test.txt"))
         assert "error" in result
         assert "terminal not available" in result["error"]
@@ -46,21 +46,21 @@ class TestReadFileHandler:
 
 class TestWriteFileHandler:
 
-    @patch("tools.file_tools._get_file_ops")
+    @patch("hermes_agent.tools.file_tools._get_file_ops")
     def test_permission_error_returns_error_json_without_error_log(self, mock_get, caplog):
         mock_get.side_effect = PermissionError("read-only filesystem")
 
-        from tools.file_tools import write_file_tool
-        with caplog.at_level(logging.DEBUG, logger="tools.file_tools"):
+        from hermes_agent.tools.file_tools import write_file_tool
+        with caplog.at_level(logging.DEBUG, logger="hermes_agent.tools.file_tools"):
             result = json.loads(write_file_tool("/tmp/out.txt", "data"))
         assert "error" in result
         assert "read-only" in result["error"]
         assert not any(r.levelno >= logging.ERROR for r in caplog.records)
 
-    @patch("tools.file_tools._get_file_ops")
+    @patch("hermes_agent.tools.file_tools._get_file_ops")
     def test_rejects_read_file_line_numbered_content(self, mock_get):
         """#19798 — do not persist read_file's LINE_NUM|CONTENT display format."""
-        from tools.file_tools import write_file_tool
+        from hermes_agent.tools.file_tools import write_file_tool
 
         content = " 1|setting: new_value\n 2|other: thing\n"
         result = json.loads(write_file_tool("/tmp/config.yaml", content))
@@ -73,7 +73,7 @@ class TestWriteFileHandler:
 
     def test_missing_content_key_returns_error(self):
         """#19096 — handler must reject tool calls where 'content' key is absent."""
-        from tools.file_tools import _handle_write_file
+        from hermes_agent.tools.file_tools import _handle_write_file
 
         result = json.loads(_handle_write_file({"path": "/tmp/oops.md"}))
         assert "error" in result
@@ -81,16 +81,16 @@ class TestWriteFileHandler:
 
     def test_missing_path_key_returns_error(self):
         """#19096 — handler must reject tool calls where 'path' key is absent."""
-        from tools.file_tools import _handle_write_file
+        from hermes_agent.tools.file_tools import _handle_write_file
 
         result = json.loads(_handle_write_file({"content": "hello"}))
         assert "error" in result
 
     def test_explicit_empty_content_is_allowed(self):
         """#19096 — explicit empty string content (file truncation) must still work."""
-        from tools.file_tools import _handle_write_file
+        from hermes_agent.tools.file_tools import _handle_write_file
 
-        with patch("tools.file_tools._get_file_ops") as mock_get:
+        with patch("hermes_agent.tools.file_tools._get_file_ops") as mock_get:
             mock_ops = MagicMock()
             result_obj = MagicMock()
             result_obj.to_dict.return_value = {"status": "ok", "path": "/tmp/empty.txt", "bytes": 0}
@@ -102,7 +102,7 @@ class TestWriteFileHandler:
 
     def test_non_string_content_returns_error(self):
         """#19096 — content must be a string, not a dict or list."""
-        from tools.file_tools import _handle_write_file
+        from hermes_agent.tools.file_tools import _handle_write_file
 
         result = json.loads(_handle_write_file({"path": "/tmp/x.txt", "content": {"nested": "dict"}}))
         assert "error" in result
@@ -114,20 +114,20 @@ class TestPatchHandler:
 
 
 
-    @patch("tools.file_tools._get_file_ops")
+    @patch("hermes_agent.tools.file_tools._get_file_ops")
     def test_unknown_mode_errors(self, mock_get):
-        from tools.file_tools import patch_tool
+        from hermes_agent.tools.file_tools import patch_tool
         result = json.loads(patch_tool(mode="invalid_mode"))
         assert "error" in result
 
-    @patch("tools.file_tools._get_file_ops")
+    @patch("hermes_agent.tools.file_tools._get_file_ops")
     def test_patch_v4a_rejects_traversal_in_update_header(self, mock_get):
         """V4A '*** Update File:' headers come from patch content, which can
         carry prompt-injection-controlled paths (skill content, web extract).
         ``..`` traversal in the header must be rejected before the patch is
         applied, even though the explicit ``path=`` arg is allowed to use
         ``..`` for legitimate cross-worktree edits."""
-        from tools.file_tools import patch_tool
+        from hermes_agent.tools.file_tools import patch_tool
         result = json.loads(patch_tool(
             mode="patch",
             patch=(
@@ -144,9 +144,9 @@ class TestPatchHandler:
         # patch_v4a must not be invoked when the header is rejected
         mock_get.return_value.patch_v4a.assert_not_called()
 
-    @patch("tools.file_tools._get_file_ops")
+    @patch("hermes_agent.tools.file_tools._get_file_ops")
     def test_patch_v4a_rejects_traversal_in_add_header(self, mock_get):
-        from tools.file_tools import patch_tool
+        from hermes_agent.tools.file_tools import patch_tool
         result = json.loads(patch_tool(
             mode="patch",
             patch=(
@@ -175,9 +175,9 @@ class TestPatchSensitivePathExtraction:
        same traversal rejection as the other V4A headers).
     """
 
-    @patch("tools.file_tools._get_file_ops")
+    @patch("hermes_agent.tools.file_tools._get_file_ops")
     def test_patch_move_to_sensitive_dst_blocked(self, mock_get):
-        from tools.file_tools import patch_tool
+        from hermes_agent.tools.file_tools import patch_tool
         patch_text = (
             "*** Begin Patch\n"
             "*** Move File: /tmp/work.txt -> /etc/crontab\n"
@@ -189,7 +189,7 @@ class TestPatchSensitivePathExtraction:
         mock_get.assert_not_called()
 
 
-    @patch("tools.file_tools._get_file_ops")
+    @patch("hermes_agent.tools.file_tools._get_file_ops")
     def test_patch_update_no_space_after_asterisks_blocked(self, mock_get):
         """``***Update File:`` (no space after asterisks) must also be caught.
 
@@ -197,7 +197,7 @@ class TestPatchSensitivePathExtraction:
         sensitive path check must be at least as lenient or the check
         is bypassed.
         """
-        from tools.file_tools import patch_tool
+        from hermes_agent.tools.file_tools import patch_tool
         patch_text = (
             "*** Begin Patch\n"
             "***Update File: /etc/resolv.conf\n"
@@ -212,7 +212,7 @@ class TestPatchSensitivePathExtraction:
         mock_get.assert_not_called()
 
 
-    @patch("tools.file_tools._get_file_ops")
+    @patch("hermes_agent.tools.file_tools._get_file_ops")
     def test_patch_move_safe_paths_not_blocked(self, mock_get):
         """Safe Move operations should still reach the file_ops dispatch."""
         mock_ops = MagicMock()
@@ -221,7 +221,7 @@ class TestPatchSensitivePathExtraction:
         mock_ops.patch_v4a.return_value = result_obj
         mock_get.return_value = mock_ops
 
-        from tools.file_tools import patch_tool
+        from hermes_agent.tools.file_tools import patch_tool
         patch_text = (
             "*** Begin Patch\n"
             "*** Move File: /tmp/a.txt -> /tmp/b.txt\n"
@@ -235,11 +235,11 @@ class TestPatchSensitivePathExtraction:
 class TestSearchHandler:
 
 
-    @patch("tools.file_tools._get_file_ops")
+    @patch("hermes_agent.tools.file_tools._get_file_ops")
     def test_search_exception_returns_error(self, mock_get):
         mock_get.side_effect = RuntimeError("no terminal")
 
-        from tools.file_tools import search_tool
+        from hermes_agent.tools.file_tools import search_tool
         result = json.loads(search_tool(pattern="x"))
         assert "error" in result
 
@@ -256,7 +256,7 @@ class TestWindowsMsysPathResolution:
         """Windows-only: ``_resolve_path_for_task`` hands the translated path
         to ``ntpath``/``Path``, and only a real Windows ``Path`` renders
         ``C:\\Users\\...`` — faking ``sys.platform`` left PosixPath in place."""
-        import tools.file_tools_paths as file_tools
+        import hermes_agent.tools.file_tools_paths as file_tools
 
         monkeypatch.setattr(file_tools, "_uses_container_paths", lambda task_id="default": False)
 
@@ -271,7 +271,7 @@ class TestWindowsMsysPathResolution:
         Windows-only: the translation this guards against only happens when
         the host really is Windows, so the negative is only meaningful there.
         """
-        import tools.file_tools_paths as file_tools
+        import hermes_agent.tools.file_tools_paths as file_tools
 
         monkeypatch.setattr(file_tools, "_uses_container_paths", lambda task_id="default": True)
         monkeypatch.setattr(
@@ -291,7 +291,7 @@ class TestWindowsMsysPathResolution:
 class TestPatchHints:
     """Patch tool should hint when old_string is not found."""
 
-    @patch("tools.file_tools._get_file_ops")
+    @patch("hermes_agent.tools.file_tools._get_file_ops")
     def test_no_match_includes_hint(self, mock_get):
         mock_ops = MagicMock()
         result_obj = MagicMock()
@@ -301,13 +301,13 @@ class TestPatchHints:
         mock_ops.patch_replace.return_value = result_obj
         mock_get.return_value = mock_ops
 
-        from tools.file_tools import patch_tool
+        from hermes_agent.tools.file_tools import patch_tool
         raw = patch_tool(mode="replace", path="foo.py", old_string="x", new_string="y")
         # patch_tool surfaces the hint as a structured "_hint" field on the
         # JSON error payload (not an inline "[Hint: ..." tail).
         assert json.loads(raw).get("_hint")
 
-    @patch("tools.file_tools._get_file_ops")
+    @patch("hermes_agent.tools.file_tools._get_file_ops")
     def test_success_no_hint(self, mock_get):
         mock_ops = MagicMock()
         result_obj = MagicMock()
@@ -315,7 +315,7 @@ class TestPatchHints:
         mock_ops.patch_replace.return_value = result_obj
         mock_get.return_value = mock_ops
 
-        from tools.file_tools import patch_tool
+        from hermes_agent.tools.file_tools import patch_tool
         raw = patch_tool(mode="replace", path="foo.py", old_string="x", new_string="y")
         assert "_hint" not in raw
 
@@ -325,12 +325,12 @@ class TestSearchHints:
 
     def setup_method(self):
         """Clear read/search tracker between tests to avoid cross-test state."""
-        from tools.file_tools_read_tracking import _read_tracker
+        from hermes_agent.tools.file_tools_read_tracking import _read_tracker
         _read_tracker.clear()
 
 
 
-    @patch("tools.file_tools._get_file_ops")
+    @patch("hermes_agent.tools.file_tools._get_file_ops")
     def test_truncated_hint_with_nonzero_offset(self, mock_get):
         mock_ops = MagicMock()
         result_obj = MagicMock()
@@ -342,7 +342,7 @@ class TestSearchHints:
         mock_ops.search.return_value = result_obj
         mock_get.return_value = mock_ops
 
-        from tools.file_tools import search_tool
+        from hermes_agent.tools.file_tools import search_tool
         raw = search_tool(pattern="foo", offset=50, limit=50)
         parsed = json.loads(raw)
         assert "offset=100" in parsed["_hint"]
@@ -358,10 +358,10 @@ class TestSensitivePathCheck:
 
     def test_hermes_config_blocked_for_write_file(self, tmp_path, monkeypatch):
         fake_config = tmp_path / "config.yaml"
-        monkeypatch.setattr("tools.file_tools_write_guards._hermes_config_resolved", str(fake_config))
-        monkeypatch.setattr("tools.file_tools_write_guards._hermes_config_resolved_loaded", True)
+        monkeypatch.setattr("hermes_agent.tools.file_tools_write_guards._hermes_config_resolved", str(fake_config))
+        monkeypatch.setattr("hermes_agent.tools.file_tools_write_guards._hermes_config_resolved_loaded", True)
 
-        from tools.file_tools import write_file_tool
+        from hermes_agent.tools.file_tools import write_file_tool
         result = json.loads(write_file_tool(str(fake_config), "approvals:\n  mode: off\n"))
         assert "error" in result
         assert "Hermes config" in result["error"]
@@ -369,10 +369,10 @@ class TestSensitivePathCheck:
 
 
     def test_system_path_still_blocked(self, monkeypatch):
-        monkeypatch.setattr("tools.file_tools_write_guards._hermes_config_resolved", "/some/other/path")
-        monkeypatch.setattr("tools.file_tools_write_guards._hermes_config_resolved_loaded", True)
+        monkeypatch.setattr("hermes_agent.tools.file_tools_write_guards._hermes_config_resolved", "/some/other/path")
+        monkeypatch.setattr("hermes_agent.tools.file_tools_write_guards._hermes_config_resolved_loaded", True)
 
-        from tools.file_tools import write_file_tool
+        from hermes_agent.tools.file_tools import write_file_tool
         result = json.loads(write_file_tool("/etc/passwd", "evil"))
         assert "error" in result
         assert "sensitive system path" in result["error"]
@@ -380,7 +380,7 @@ class TestSensitivePathCheck:
     def test_macos_private_var_carveouts(self):
         """macOS temp dirs under /private/var must not be blanket-blocked,
         while the genuinely-sensitive /private/var subtrees still are."""
-        from tools.file_tools_write_guards import _check_sensitive_path
+        from hermes_agent.tools.file_tools_write_guards import _check_sensitive_path
 
         # $TMPDIR / /tmp / /var/folders realpath into these on macOS.
         assert _check_sensitive_path("/private/var/folders/xy/T/tmp.txt") is None
@@ -391,17 +391,17 @@ class TestSensitivePathCheck:
         # /etc (and its macOS /private/etc mirror) stay blocked.
         assert _check_sensitive_path("/private/etc/hosts") is not None
 
-    @patch("tools.file_tools._get_file_ops")
+    @patch("hermes_agent.tools.file_tools._get_file_ops")
     def test_normal_file_not_blocked(self, mock_get, monkeypatch):
-        monkeypatch.setattr("tools.file_tools_write_guards._hermes_config_resolved", "/home/user/.hermes/config.yaml")
-        monkeypatch.setattr("tools.file_tools_write_guards._hermes_config_resolved_loaded", True)
+        monkeypatch.setattr("hermes_agent.tools.file_tools_write_guards._hermes_config_resolved", "/home/user/.hermes/config.yaml")
+        monkeypatch.setattr("hermes_agent.tools.file_tools_write_guards._hermes_config_resolved_loaded", True)
         mock_ops = MagicMock()
         result_obj = MagicMock()
         result_obj.to_dict.return_value = {"status": "ok", "path": "/tmp/other.txt", "bytes": 5}
         mock_ops.write_file.return_value = result_obj
         mock_get.return_value = mock_ops
 
-        from tools.file_tools import write_file_tool
+        from hermes_agent.tools.file_tools import write_file_tool
         result = json.loads(write_file_tool("/tmp/other.txt", "hello"))
         assert result["status"] == "ok"
 
@@ -419,7 +419,7 @@ class TestPatchSchemaShape:
         anyOf/oneOf (breaks Anthropic/Fireworks/Kimi sanitizers)."""
         from unittest.mock import patch as _p
 
-        import tools.file_tools as ft
+        import hermes_agent.tools.file_tools as ft
 
         with _p("agent.auxiliary_client._read_main_provider", return_value="openai"), \
              _p("agent.auxiliary_client._read_main_model", return_value="gpt-5.2"):
@@ -446,15 +446,15 @@ class TestSessionCwdSurvivesEnvRecreation:
     Regression guard for issue #26211.
     """
 
-    @patch("tools.terminal_tool._active_environments", new_callable=dict)
-    @patch("tools.file_tools._file_ops_cache", new_callable=dict)
-    @patch("tools.terminal_tool._get_env_config")
-    @patch("tools.terminal_tool_backends._create_environment")
+    @patch("hermes_agent.tools.terminal_tool._active_environments", new_callable=dict)
+    @patch("hermes_agent.tools.file_tools._file_ops_cache", new_callable=dict)
+    @patch("hermes_agent.tools.terminal_tool._get_env_config")
+    @patch("hermes_agent.tools.terminal_tool_backends._create_environment")
     def test_recorded_cwd_used_for_recreated_env(
         self, mock_create_env, mock_config, mock_cache, mock_active
     ):
-        import tools.terminal_tool as tt
-        from tools.file_tools import _get_file_ops
+        import hermes_agent.tools.terminal_tool as tt
+        from hermes_agent.tools.file_tools import _get_file_ops
 
         mock_env = MagicMock()
         mock_env.cwd = "/Users/user/project"
@@ -487,18 +487,18 @@ class TestSessionCwdSurvivesEnvRecreation:
             tt.clear_session_cwd(task_id)
 
 
-    @patch("tools.terminal_tool._active_environments", new_callable=dict)
-    @patch("tools.file_tools._file_ops_cache", new_callable=dict)
-    @patch("tools.terminal_tool._get_env_config")
-    @patch("tools.terminal_tool_backends._create_environment")
+    @patch("hermes_agent.tools.terminal_tool._active_environments", new_callable=dict)
+    @patch("hermes_agent.tools.file_tools._file_ops_cache", new_callable=dict)
+    @patch("hermes_agent.tools.terminal_tool._get_env_config")
+    @patch("hermes_agent.tools.terminal_tool_backends._create_environment")
     def test_stale_cache_cwd_rescued_into_record_on_cleanup_detection(
         self, mock_create_env, mock_config, mock_cache, mock_active
     ):
         """If the env died but the file-ops cache entry survived, its cwd is
         rescued into the session record before the cache entry is dropped —
         the recreated env starts where the user left off."""
-        import tools.terminal_tool as tt
-        from tools.file_tools import _get_file_ops
+        import hermes_agent.tools.terminal_tool as tt
+        from hermes_agent.tools.file_tools import _get_file_ops
 
         task_id = "default"
         tt.clear_session_cwd(task_id)
@@ -549,8 +549,8 @@ class TestSilentFileMisplacementE2E:
     """
 
     def test_relative_write_after_env_cleanup_lands_in_user_cwd(self, tmp_path, monkeypatch):
-        import tools.terminal_tool as tt
-        import tools.file_tools as ft
+        import hermes_agent.tools.terminal_tool as tt
+        import hermes_agent.tools.file_tools as ft
 
         project = tmp_path / "project"
         config_default = tmp_path / "config_default"
@@ -604,8 +604,8 @@ class TestDedupInvalidationTaskResolution:
     """
 
     def test_invalidate_evicts_the_task_resolved_key(self, tmp_path, monkeypatch):
-        import tools.terminal_tool as tt
-        import tools.file_tools as ft
+        import hermes_agent.tools.terminal_tool as tt
+        import hermes_agent.tools.file_tools as ft
 
         workspace = tmp_path / "workspace"
         proc = tmp_path / "proc"
@@ -620,8 +620,8 @@ class TestDedupInvalidationTaskResolution:
 
         # The task resolves the relative path into the workspace; the default
         # task (the old buggy resolution) would resolve into proc.
-        from tools.file_tools_paths import _resolve_path_for_task
-        from tools.file_tools_read_tracking import _read_tracker
+        from hermes_agent.tools.file_tools_paths import _resolve_path_for_task
+        from hermes_agent.tools.file_tools_read_tracking import _read_tracker
         correct = str(_resolve_path_for_task("data.txt", task_id))
         buggy = str(_resolve_path_for_task("data.txt"))
         assert correct != buggy, "test precondition: cwds must diverge"
@@ -632,7 +632,7 @@ class TestDedupInvalidationTaskResolution:
         assert correct in keys, keys
 
         # Invalidate as write_file_tool does; the entry must be gone.
-        from tools.file_tools_read_tracking import _invalidate_dedup_for_path
+        from hermes_agent.tools.file_tools_read_tracking import _invalidate_dedup_for_path
         _invalidate_dedup_for_path("data.txt", task_id)
         remaining = [k[0] for k in _read_tracker.get(task_id, {}).get("dedup", {})]
         assert correct not in remaining, remaining
@@ -649,7 +649,7 @@ class TestDedupInvalidationTaskResolution:
 # ---------------------------------------------------------------------------
 
 class TestNotFoundCache:
-    @patch("tools.file_tools._get_file_ops")
+    @patch("hermes_agent.tools.file_tools._get_file_ops")
     def test_read_caches_file_not_found_and_skips_subprocess_on_retry(self, mock_get):
         mock_ops = MagicMock()
         result_obj = MagicMock()
@@ -662,8 +662,8 @@ class TestNotFoundCache:
         mock_ops.read_file.return_value = result_obj
         mock_get.return_value = mock_ops
 
-        from tools.file_tools import read_file_tool
-        from tools.file_tools_read_tracking import _read_tracker
+        from hermes_agent.tools.file_tools import read_file_tool
+        from hermes_agent.tools.file_tools_read_tracking import _read_tracker
         # Use a unique task_id so we don't collide with other tests.
         tid = "neg-cache-read-1"
         _read_tracker.pop(tid, None)
@@ -680,7 +680,7 @@ class TestNotFoundCache:
             "Negative cache hit must skip the subprocess on retry"
         )
 
-    @patch("tools.file_tools._get_file_ops")
+    @patch("hermes_agent.tools.file_tools._get_file_ops")
     def test_read_cache_isolated_per_task(self, mock_get):
         mock_ops = MagicMock()
         result_obj = MagicMock()
@@ -691,8 +691,8 @@ class TestNotFoundCache:
         mock_ops.read_file.return_value = result_obj
         mock_get.return_value = mock_ops
 
-        from tools.file_tools import read_file_tool
-        from tools.file_tools_read_tracking import _read_tracker
+        from hermes_agent.tools.file_tools import read_file_tool
+        from hermes_agent.tools.file_tools_read_tracking import _read_tracker
         for tid in ("neg-cache-iso-A", "neg-cache-iso-B"):
             _read_tracker.pop(tid, None)
 
@@ -702,7 +702,7 @@ class TestNotFoundCache:
         assert mock_ops.read_file.call_count == 2
 
 
-    @patch("tools.file_tools._get_file_ops")
+    @patch("hermes_agent.tools.file_tools._get_file_ops")
     def test_search_caches_path_not_found_and_skips_subprocess_on_retry(self, mock_get):
         mock_ops = MagicMock()
         result_obj = MagicMock()
@@ -714,8 +714,8 @@ class TestNotFoundCache:
         mock_ops.search.return_value = result_obj
         mock_get.return_value = mock_ops
 
-        from tools.file_tools import search_tool
-        from tools.file_tools_read_tracking import _read_tracker
+        from hermes_agent.tools.file_tools import search_tool
+        from hermes_agent.tools.file_tools_read_tracking import _read_tracker
         tid = "neg-cache-search-3"
         _read_tracker.pop(tid, None)
 
@@ -729,7 +729,7 @@ class TestNotFoundCache:
             "Search negative cache hit must skip the subprocess on retry"
         )
 
-    @patch("tools.file_tools._get_file_ops")
+    @patch("hermes_agent.tools.file_tools._get_file_ops")
     def test_read_and_search_caches_are_namespaced(self, mock_get):
         # A read that misses must NOT serve a subsequent search call's miss
         # (different error JSON shapes).
@@ -751,8 +751,8 @@ class TestNotFoundCache:
 
         mock_get.return_value = mock_ops
 
-        from tools.file_tools import read_file_tool, search_tool
-        from tools.file_tools_read_tracking import _read_tracker
+        from hermes_agent.tools.file_tools import read_file_tool, search_tool
+        from hermes_agent.tools.file_tools_read_tracking import _read_tracker
         tid = "neg-cache-namespace-4"
         _read_tracker.pop(tid, None)
 
@@ -763,7 +763,7 @@ class TestNotFoundCache:
         assert mock_ops.read_file.call_count == 1
         assert mock_ops.search.call_count == 1
 
-    @patch("tools.file_tools._get_file_ops")
+    @patch("hermes_agent.tools.file_tools._get_file_ops")
     def test_write_invalidates_read_negative_cache(self, mock_get):
         # After write_file on a path, a subsequent read must hit disk,
         # not return the cached "not found" stub.
@@ -784,8 +784,8 @@ class TestNotFoundCache:
         mock_ops.write_file.return_value = write_result_obj
         mock_get.return_value = mock_ops
 
-        from tools.file_tools import read_file_tool, write_file_tool
-        from tools.file_tools_read_tracking import _read_tracker
+        from hermes_agent.tools.file_tools import read_file_tool, write_file_tool
+        from hermes_agent.tools.file_tools_read_tracking import _read_tracker
         tid = "neg-cache-write-invalidate-5"
         _read_tracker.pop(tid, None)
 
@@ -803,7 +803,7 @@ class TestNotFoundCache:
 
     def test_not_found_ttl_expires(self):
         # A cache entry older than _NOT_FOUND_TTL_SECONDS must be discarded.
-        from tools.file_tools_read_tracking import (
+        from hermes_agent.tools.file_tools_read_tracking import (
             _NOT_FOUND_TTL_SECONDS, _check_not_found_cache, _read_tracker, _read_tracker_lock,
             _record_not_found)
 
@@ -830,7 +830,7 @@ class TestNotFoundCache:
         by a terminal command or any external process, NOT write_file_tool —
         must be served for real on the next read. The agent pattern
         'check for file → create it → read it' breaks otherwise."""
-        from tools.file_tools_read_tracking import _check_not_found_cache, _record_not_found, _read_tracker
+        from hermes_agent.tools.file_tools_read_tracking import _check_not_found_cache, _record_not_found, _read_tracker
 
         tid = "neg-cache-oob-read"
         _read_tracker.pop(tid, None)
@@ -848,13 +848,13 @@ class TestNotFoundCache:
             "out-of-band — the existence guard regressed"
         )
         # …and the entry is evicted, not just skipped.
-        with __import__("tools.file_tools", fromlist=["x"])._read_tracker_lock:
+        with __import__("hermes_agent.tools.file_tools", fromlist=["x"])._read_tracker_lock:
             assert ("read", str(target)) not in _read_tracker[tid].get("not_found", {})
 
     def test_out_of_band_creation_defeats_cached_search_miss(self, tmp_path):
         """Same contract for search roots: creating a file under a
         previously-missing directory must defeat the cached 'Path not found'."""
-        from tools.file_tools_read_tracking import _check_not_found_cache, _record_not_found, _read_tracker
+        from hermes_agent.tools.file_tools_read_tracking import _check_not_found_cache, _record_not_found, _read_tracker
 
         tid = "neg-cache-oob-search"
         _read_tracker.pop(tid, None)
@@ -873,8 +873,8 @@ class TestNotFoundCache:
     def test_notify_other_tool_call_clears_not_found(self):
         """Belt-and-suspenders: any non-read tool (terminal etc.) invalidates
         the task's negative cache via the dispatcher's notify hook."""
-        from tools.file_tools_read_tracking import _check_not_found_cache, _record_not_found, _read_tracker
-        from tools.file_tools_read_tracking import notify_other_tool_call
+        from hermes_agent.tools.file_tools_read_tracking import _check_not_found_cache, _record_not_found, _read_tracker
+        from hermes_agent.tools.file_tools_read_tracking import notify_other_tool_call
 
         tid = "neg-cache-notify"
         _read_tracker.pop(tid, None)
@@ -902,7 +902,7 @@ class TestSSHConfigWriteGate:
         return tmp_path / ".ssh" / "config"
 
     def test_no_human_present_blocks_and_writes_nothing(self, ssh_config):
-        from tools.file_tools import write_file_tool
+        from hermes_agent.tools.file_tools import write_file_tool
 
         result = json.loads(write_file_tool(str(ssh_config), "Host x\n  ProxyCommand evil\n"))
         assert "BLOCKED" in result["error"]
@@ -911,7 +911,7 @@ class TestSSHConfigWriteGate:
     def test_single_query_session_denies_with_the_q_mode_message(self, ssh_config, monkeypatch):
         monkeypatch.setenv("HERMES_SINGLE_QUERY_SESSION", "1")
         monkeypatch.setenv("HERMES_INTERACTIVE", "1")  # `hermes chat -q` exports it too
-        from tools.file_tools import write_file_tool
+        from hermes_agent.tools.file_tools import write_file_tool
 
         result = json.loads(write_file_tool(str(ssh_config), "Host x\n  ProxyCommand evil\n"))
         assert "BLOCKED" in result["error"]
@@ -928,7 +928,7 @@ class TestSSHConfigWriteGate:
         (ws / "sshdir").symlink_to(ssh_config.parent, target_is_directory=True)
         monkeypatch.setenv("TERMINAL_CWD", str(ws))
         monkeypatch.chdir(elsewhere)
-        from tools.file_tools_write_guards import _check_approval_required_write
+        from hermes_agent.tools.file_tools_write_guards import _check_approval_required_write
 
         assert "BLOCKED" in (_check_approval_required_write(["sshdir/config"], "ssh-gate-task") or "")
 
@@ -978,7 +978,7 @@ class TestSecretFileReadRedaction:
         ops.read_file.return_value = result_obj
         return ops
 
-    @patch("tools.file_tools._get_file_ops")
+    @patch("hermes_agent.tools.file_tools._get_file_ops")
     def test_read_file_of_hermes_config_masks_opaque_token(self, mock_get, hermes_home):
         # read_file renders line-numbered content ("5|      ADS_API_TOKEN: …"); the gutter is
         # part of the text the redactor sees, so the fixture must carry it (a gutter-free
@@ -987,7 +987,7 @@ class TestSecretFileReadRedaction:
                 f"4|      ADS_API_TOKEN: {self.SYNTH}\n5|MAX_TOKENS: 100\n")
         mock_get.return_value = self._read_ops(body)
 
-        from tools.file_tools import read_file_tool
+        from hermes_agent.tools.file_tools import read_file_tool
         out = json.loads(read_file_tool(str(hermes_home / "config.yaml"), task_id="secret-read"))
 
         assert self.SYNTH not in out["content"]
@@ -999,7 +999,7 @@ class TestSecretFileReadRedaction:
         out = json.loads(read_file_tool(str(hermes_home.parent / "proj-config.yaml"), task_id="plain-read"))
         assert self.SYNTH in out["content"]
 
-    @patch("tools.file_tools._get_file_ops")
+    @patch("hermes_agent.tools.file_tools._get_file_ops")
     def test_search_in_hermes_home_masks_opaque_token(self, mock_get, hermes_home):
         config = hermes_home / "config.yaml"
         ops = MagicMock()
@@ -1007,7 +1007,7 @@ class TestSecretFileReadRedaction:
             [self._Match(str(config), f"      ADS_API_TOKEN: {self.SYNTH}")])
         mock_get.return_value = ops
 
-        from tools.file_tools import search_tool
+        from hermes_agent.tools.file_tools import search_tool
         raw = search_tool(pattern="ADS_API_TOKEN", path=str(hermes_home),
                           task_id="secret-search")
 

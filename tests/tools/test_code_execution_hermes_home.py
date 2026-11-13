@@ -16,7 +16,7 @@ from hermes_constants import (
     reset_hermes_home_override,
     set_hermes_home_override,
 )
-from tools.code_execution_env import _build_child_env
+from hermes_agent.tools.code_execution_env import _build_child_env
 
 
 @pytest.fixture

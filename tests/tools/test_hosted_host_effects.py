@@ -15,7 +15,7 @@ from agent.runtime_scope import bind_state
 from tests.tools.test_sandbox_scope_conformance import A
 from tests.tools.test_sandbox_scope_conformance import host_dir as _conformance_host_dir
 from tests.tools.test_sandbox_scope_conformance import provider as _conformance_provider
-from tools.environments import sandbox_conformance as c
+from hermes_agent.tools.environments import sandbox_conformance as c
 
 provider = _conformance_provider  # the recording-sandbox fixture, by its name
 host_dir = _conformance_host_dir
@@ -26,10 +26,10 @@ host_dir = _conformance_host_dir
 
 
 def _remote_execute_code(provider, monkeypatch, payload):
-    from tools import approval
-    import tools.code_kernel_remote as remote
-    import tools.process_registry as processes
-    from tools.registry import registry
+    from hermes_agent.tools import approval
+    import hermes_agent.tools.code_kernel_remote as remote
+    import hermes_agent.tools.process_registry as processes
+    from hermes_agent.tools.registry import registry
 
     original = c.RecordingSandboxEnvironment.execute
 
@@ -67,7 +67,7 @@ def test_execute_code_remote_stdout_never_spills_to_host(provider, monkeypatch):
 
 def test_local_execute_code_stdout_still_spills_to_cache():
     from hermes_constants import get_hermes_home
-    from tools import code_execution_tool
+    from hermes_agent.tools import code_execution_tool
     _text, meta = code_execution_tool._truncate_stdout_text("LOCAL-STDOUT\n" * 8000)
     path = Path(meta["stdout_spill_path"])
     assert path.parent == get_hermes_home() / "cache" / "exec" and "LOCAL-STDOUT" in path.read_text()
@@ -79,7 +79,7 @@ def test_local_execute_code_stdout_still_spills_to_cache():
 
 def _plant_skill(monkeypatch):
     from hermes_constants import get_hermes_home
-    import tools.skills_tool as skills
+    import hermes_agent.tools.skills_tool as skills
     root = get_hermes_home() / "skills"
     skill = root / "private_probe"
     skill.mkdir(parents=True, exist_ok=True)
@@ -91,7 +91,7 @@ def _plant_skill(monkeypatch):
 def test_preloaded_skills_never_read_host(monkeypatch):
     from agent import skill_commands
     from agent.prompt_builder import build_skills_system_prompt
-    from tools.skills_tool import skill_view, skills_list
+    from hermes_agent.tools.skills_tool import skill_view, skills_list
     root = _plant_skill(monkeypatch)
     read = []
     real_read = Path.read_text
@@ -123,8 +123,8 @@ def test_a_hosted_write_is_not_judged_by_this_hosts_skill_locks(provider, host_d
     host symlink or literally: the path is the sandbox's, so it is neither resolved on this host nor
     refused by the host skill's name, and the write reaches the sandbox."""
     from hermes_constants import get_hermes_home
-    from tools import skill_usage
-    from tools.skill_lock import skill_refusal
+    from hermes_agent.tools import skill_usage
+    from hermes_agent.tools.skill_lock import skill_refusal
     skill = get_hermes_home() / "skills" / "locked_probe"
     skill.mkdir(parents=True)
     (skill / "SKILL.md").write_text("---\nname: locked_probe\ndescription: x\n---\nbody\n", encoding="utf-8")
@@ -227,8 +227,8 @@ def test_local_shell_hook_still_runs(tmp_path, monkeypatch):
 
 
 def _hosted_background(monkeypatch, command="echo TENANT-PROCESS-PRIVATE"):
-    import tools.process_registry as processes
-    from tools.registry import registry
+    import hermes_agent.tools.process_registry as processes
+    from hermes_agent.tools.registry import registry
     r = processes.process_registry
     original = c.RecordingSandboxEnvironment.execute
 
@@ -267,8 +267,8 @@ def test_background_process_metadata_and_result_stay_off_host(provider, monkeypa
 
 def test_local_process_checkpoint_and_receipt_unchanged():
     from hermes_constants import get_hermes_home
-    from tools import process_registry as processes
-    from tools.process_registry_results import save_completed_result
+    from hermes_agent.tools import process_registry as processes
+    from hermes_agent.tools.process_registry_results import save_completed_result
     r = processes.ProcessRegistry()
     session = processes.ProcessSession(id="proc_localcheck", command="echo LOCAL-PROCESS")
     with r._lock:
@@ -285,8 +285,8 @@ def test_local_process_checkpoint_and_receipt_unchanged():
 
 
 def test_terminal_output_spill_and_blocked_scripts_stay_off_host():
-    from tools.approval_floors import _save_blocked_payload
-    from tools.environments.base_output import _new_output_collector
+    from hermes_agent.tools.approval_floors import _save_blocked_payload
+    from hermes_agent.tools.environments.base_output import _new_output_collector
     with bind_state(A):
         assert _new_output_collector(SimpleNamespace(), True)._spill_path is None
         assert _save_blocked_payload("echo TENANT-BLOCKED") is None

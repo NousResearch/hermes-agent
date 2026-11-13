@@ -17,7 +17,7 @@ def test_adopted_worker_failure_is_visible(tmp_path, monkeypatch, manual, death)
     from hermes_agent.cron import executions
     from hermes_agent.cron import scheduler
     from hermes_agent.cron.jobs import claim_job_for_fire, create_job, get_job, use_cron_store
-    from tools.process_registry import GatewayChildDispatch
+    from hermes_agent.tools.process_registry import GatewayChildDispatch
 
     print("SCHEDULER", scheduler.__file__, flush=True)
     home = tmp_path / "profile"
@@ -89,7 +89,7 @@ else:
         return GatewayChildDispatch("degraded", [sys.executable, str(worker), *flags])
 
     monkeypatch.setattr(
-        "tools.process_registry.restart_safe_gateway_child_argv", dispatch
+        "hermes_agent.tools.process_registry.restart_safe_gateway_child_argv", dispatch
     )
     with use_cron_store(home):
         # A lost worker must obey the same bounded history as normal finishes.

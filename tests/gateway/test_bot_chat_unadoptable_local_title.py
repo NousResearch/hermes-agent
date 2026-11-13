@@ -31,7 +31,7 @@ def _squatter(db, sid, *, column, value, source='tui'):
 async def _deliver(authority, key, connection=None):
     from hermes_agent.gateway.session_authorities import served_profile_name
     from hermes_agent.gateway.session_bot import deliver
-    from tools.bot_live_delivery import _bot_chat_tip
+    from hermes_agent.tools.bot_live_delivery import _bot_chat_tip
     home = Path(authority.db.db_path).parent.resolve()
     # The cron producer's door: ``bot_relay.deliver`` on a local interactive connection, no author,
     # pinned to the Bot Chat it discovered first (``find_canonical_live_owner``).

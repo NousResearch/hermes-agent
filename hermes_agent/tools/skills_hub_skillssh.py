@@ -6,12 +6,12 @@ import re
 import time
 from typing import Any, Dict, List, Optional
 
-from tools.skills_hub_github import GitHubAuth, GitHubSource, _split_repo_id
-from tools.skills_hub_models import (
+from hermes_agent.tools.skills_hub_github import GitHubAuth, GitHubSource, _split_repo_id
+from hermes_agent.tools.skills_hub_models import (
     SkillBundle, SkillMeta, SkillSource, _cache_metas, _cached_metas, _get_json, _get_text, _memo_json, hub,
 )
 
-logger = logging.getLogger("tools.skills_hub")
+logger = logging.getLogger("hermes_agent.tools.skills_hub")
 
 
 def _strip_html(value: str) -> str:

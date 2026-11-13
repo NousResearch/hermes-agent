@@ -25,8 +25,8 @@ def test_reconnect_counter_resets_after_successful_session(monkeypatch, tmp_path
     """
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
-    from tools import mcp_tool
-    from tools.mcp_tool import MCPServerTask
+    from hermes_agent.tools import mcp_tool
+    from hermes_agent.tools.mcp_tool import MCPServerTask
 
     # Shrink budget so the test can exhaust it quickly if the counter
     # does NOT reset (the bug scenario).
@@ -130,8 +130,8 @@ def test_reconnect_counter_still_parks_on_consecutive_failures(monkeypatch, tmp_
     """
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
-    from tools import mcp_tool
-    from tools.mcp_tool import MCPServerTask
+    from hermes_agent.tools import mcp_tool
+    from hermes_agent.tools.mcp_tool import MCPServerTask
 
     monkeypatch.setattr(mcp_tool, "_MAX_RECONNECT_RETRIES", 2)
 

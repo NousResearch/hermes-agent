@@ -1,7 +1,7 @@
 """Lightpanda local engine.
 
 With ``browser.engine: lightpanda``, each browser session spawns one ``lightpanda serve`` and
-``browser_exec`` drives its CDP endpoint (``BU_CDP_URL``). ``tools.browser_session`` owns the
+``browser_exec`` drives its CDP endpoint (``BU_CDP_URL``). ``hermes_agent.tools.browser_session`` owns the
 session cache, inactivity reaper and atexit sweep.
 """
 
@@ -138,7 +138,7 @@ def _record_path(session_name: str) -> Path:
 
 
 def _browser_env() -> dict:
-    from tools.browser_session import build_browser_env
+    from hermes_agent.tools.browser_session import build_browser_env
     return build_browser_env()
 
 
@@ -175,7 +175,7 @@ def _terminate(proc: subprocess.Popen, what: str = "lightpanda") -> None:
 
 def _safe_start_time(pid: int) -> Optional[int]:
     try:
-        from tools.process_registry import ProcessRegistry
+        from hermes_agent.tools.process_registry import ProcessRegistry
         return ProcessRegistry._safe_host_start_time(pid)
     except Exception:
         return None
@@ -183,7 +183,7 @@ def _safe_start_time(pid: int) -> Optional[int]:
 
 def _tree_kill(pid: int, expected_start) -> None:
     """Tree-kill ``pid`` via ProcessRegistry, verifying its start time first."""
-    from tools.process_registry import ProcessRegistry
+    from hermes_agent.tools.process_registry import ProcessRegistry
     ProcessRegistry._terminate_host_pid(pid, expected_start=expected_start)
 
 
@@ -348,7 +348,7 @@ def reap_orphaned_lightpanda() -> int:
 
 def using_lightpanda_engine() -> bool:
     """True when ``browser.engine`` is ``lightpanda``."""
-    from tools.browser_session_cloud import get_browser_engine
+    from hermes_agent.tools.browser_session_cloud import get_browser_engine
     return get_browser_engine() == "lightpanda"
 
 
@@ -360,8 +360,8 @@ def lightpanda_engine_status() -> tuple[bool, str]:
     ``hermes doctor``."""
     if not using_lightpanda_engine():
         return False, ""
-    from tools.browser_session_cdp import get_cdp_override_raw
-    from tools.browser_session_cloud import get_cloud_provider, use_real_profile
+    from hermes_agent.tools.browser_session_cdp import get_cdp_override_raw
+    from hermes_agent.tools.browser_session_cloud import get_cloud_provider, use_real_profile
     if get_cdp_override_raw():
         return False, "a CDP override is active (/browser connect or browser.cdp_url)"
     # Real profile before the cloud provider: browser_exec resolves it first, so it claims the session.
@@ -374,7 +374,7 @@ def lightpanda_engine_status() -> tuple[bool, str]:
     if provider is not None:
         name = getattr(provider, "display_name", "") or type(provider).__name__
         return False, f"cloud provider {name} is selected (browser.cloud_provider, or auto-detected from credentials)"
-    from tools.browser_use_cli import _read_browser_cfg, is_legacy_browser_use_cloud_config
+    from hermes_agent.tools.browser_use_cli import _read_browser_cfg, is_legacy_browser_use_cloud_config
     if is_legacy_browser_use_cloud_config(_read_browser_cfg()):
         return False, "Browser Use cloud (BROWSER_USE_API_KEY) is selected"
     return True, "Hermes spawns `lightpanda serve` per browser session"

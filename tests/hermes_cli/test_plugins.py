@@ -216,7 +216,7 @@ class TestPluginDiscovery:
         # fits the 64-char provider cap with the tool verb intact instead of being hash-clamped.
         [internal_name] = manager.get_portable_mcp_servers()
         assert internal_name == "worker"
-        from tools.mcp_tool_schema import mcp_prefixed_tool_name
+        from hermes_agent.tools.mcp_tool_schema import mcp_prefixed_tool_name
         wire = mcp_prefixed_tool_name(internal_name, "nvapp_client_get_driver_status")
         assert wire.endswith("__nvapp_client_get_driver_status") and len(wire) <= 64
         assert manager._plugins["portable.test"].enabled is True
@@ -402,7 +402,7 @@ class TestPluginDiscovery:
         """A sweep that raises must not cache 'discovered' with no plugins.
 
         Regression for the stranded-empty-registry class of failures: callers
-        (e.g. tools.web_tools._ensure_web_plugins_loaded) swallow discovery
+        (e.g. hermes_agent.tools.web_tools._ensure_web_plugins_loaded) swallow discovery
         exceptions as warnings, so if a failed sweep flipped ``_discovered``
         permanently, every later call would early-return against an empty
         registry ("No web provider configured") for the process lifetime.
@@ -1136,7 +1136,7 @@ class TestForceReloadSymmetry:
     def test_unload_all_sweeps_preledger_tool_names(self, monkeypatch):
         """Tool names without ledger entries are deregistered globally (#60050)."""
         deregistered = []
-        import tools.registry as tools_registry_mod
+        import hermes_agent.tools.registry as tools_registry_mod
 
         monkeypatch.setattr(
             tools_registry_mod.registry,
@@ -1630,8 +1630,8 @@ class TestForceReloadSymmetry:
         mock_registry = MagicMock()
         mock_registry.dispatch.side_effect = _dispatch
 
-        with patch("model_tools.registry", mock_registry):
-            from model_tools import handle_function_call
+        with patch("hermes_agent.model_tools.registry", mock_registry):
+            from hermes_agent.model_tools import handle_function_call
 
             result = handle_function_call(
                 "web_search",
@@ -1792,7 +1792,7 @@ class TestResolvePreToolBlock:
 
     def test_approve_gate_receives_tool_observability_context(self, monkeypatch):
         from hermes_cli.plugins import resolve_pre_tool_block
-        from tools import approval_context
+        from hermes_agent.tools import approval_context
 
         seen = {}
         monkeypatch.setattr(
@@ -1807,7 +1807,7 @@ class TestResolvePreToolBlock:
             seen["tool_call_id"] = approval_context._approval_tool_call_id.get()
             return {"approved": True, "message": None}
 
-        monkeypatch.setattr("tools.approval.request_tool_approval", _approve)
+        monkeypatch.setattr("hermes_agent.tools.approval.request_tool_approval", _approve)
 
         assert resolve_pre_tool_block(
             "write_file",
@@ -1839,7 +1839,7 @@ class TestResolvePreToolBlock:
             seen["rule_key"] = kwargs.get("rule_key")
             return {"approved": True, "message": None}
 
-        monkeypatch.setattr("tools.approval.request_tool_approval", _approve)
+        monkeypatch.setattr("hermes_agent.tools.approval.request_tool_approval", _approve)
 
         assert resolve_pre_tool_block("write_file", {}) is None
         assert seen == {
@@ -1857,7 +1857,7 @@ class TestResolvePreToolBlock:
         )
         def _boom(*a, **k):
             raise RuntimeError("gate crashed")
-        monkeypatch.setattr("tools.approval.request_tool_approval", _boom)
+        monkeypatch.setattr("hermes_agent.tools.approval.request_tool_approval", _boom)
         msg = resolve_pre_tool_block("terminal", {})
         assert msg is not None and "gate failed" in msg  # fail-closed
 
@@ -2085,7 +2085,7 @@ class TestPluginContext:
         enabled third-party plugin could replace a built-in tool (e.g.
         ``shell_exec``, ``write_file``) without the operator's knowledge.
         """
-        from tools.registry import registry
+        from hermes_agent.tools.registry import registry
         from hermes_cli.plugins import PluginToolOverrideError
 
         registry.register(
@@ -2156,7 +2156,7 @@ class TestPluginContext:
         to the handler's defining plugin module, not to a transient "currently
         loading" flag, so the timing of the call cannot launder the override.
         """
-        from tools.registry import registry
+        from hermes_agent.tools.registry import registry
 
         registry.register(
             name="gated_override_target",
@@ -2252,7 +2252,7 @@ class TestPluginToolVisibility:
         mgr.discover_and_load()
         monkeypatch.setattr(plugins_mod, "_plugin_manager", mgr)
 
-        from model_tools import get_tool_definitions
+        from hermes_agent.model_tools import get_tool_definitions
 
         def _reachable(tools):
             names = [t["function"]["name"] for t in tools]
@@ -2616,7 +2616,7 @@ class TestPluginDispatchTool:
         mock_registry = MagicMock()
         mock_registry.dispatch.return_value = '{"ok": true}'
 
-        with patch("tools.registry.registry", mock_registry):
+        with patch("hermes_agent.tools.registry.registry", mock_registry):
             ctx.dispatch_tool("delegate_task", {"goal": "test"}, parent_agent=explicit_agent)
 
         call_kwargs = mock_registry.dispatch.call_args
@@ -2657,7 +2657,7 @@ class TestDispatchToolWithoutCliRef:
     """
 
     def test_dispatch_tool_invokes_handler_without_cli_ref(self):
-        from tools.registry import registry
+        from hermes_agent.tools.registry import registry
 
         mgr = PluginManager()
         assert mgr._cli_ref is None  # worker/hook context

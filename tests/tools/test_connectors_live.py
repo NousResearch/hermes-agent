@@ -2,8 +2,8 @@
 
 import pytest
 
-from tools.connectors import live
-from tools.connectors import operation as op
+from hermes_agent.tools.connectors import live
+from hermes_agent.tools.connectors import operation as op
 
 
 @pytest.fixture(autouse=True)

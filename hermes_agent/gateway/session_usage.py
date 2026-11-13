@@ -89,7 +89,7 @@ def usage_stats(agent) -> dict:
             tps = _finite(sum(outputs[-n:]) / total) if total > 0 else None
     active = 0
     with contextlib.suppress(Exception):
-        from tools.async_delegation import active_count
+        from hermes_agent.tools.async_delegation import active_count
         active = active_count()
     base = getattr(agent, TURN_BASE_ATTR, None)
     stats.update(avg_latency_s=avg_latency, tokens_per_s=tps,

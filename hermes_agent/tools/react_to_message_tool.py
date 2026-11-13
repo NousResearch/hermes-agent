@@ -8,8 +8,8 @@ import contextlib
 import json
 
 from hermes_agent.gateway.session_context import get_session_env
-from tools import desktop_ui
-from tools.registry import registry, tool_error
+from hermes_agent.tools import desktop_ui
+from hermes_agent.tools.registry import registry, tool_error
 
 
 def _open_session_db():

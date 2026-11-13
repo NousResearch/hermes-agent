@@ -10,7 +10,7 @@ _FIRE = datetime(2026, 10, 31, 19, 5, tzinfo=timezone(timedelta(hours=-7), "PDT"
 
 def _prompt(job):
     with patch("hermes_agent.cron.scheduler_prompt._hermes_now", return_value=_FIRE), patch(
-        "tools.skills_tool.skill_view", return_value='{"success": false, "error": "not found"}'
+        "hermes_agent.tools.skills_tool.skill_view", return_value='{"success": false, "error": "not found"}'
     ):
         return _build_job_prompt(job)
 

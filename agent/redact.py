@@ -1708,7 +1708,7 @@ def _is_under_hermes_home(path: str) -> bool:
     so the resolve cost stays off the per-token command scan.
     """
     from agent.file_safety import _hermes_dirs
-    from tools.environments.sandbox_scope import sandbox_lexical_path
+    from hermes_agent.tools.environments.sandbox_scope import sandbox_lexical_path
     # A hosted path names a file in the sandbox: judged as written (never empty), not resolved on this host.
     try:
         target = os.path.normcase(sandbox_lexical_path(path) or os.path.realpath(os.path.expanduser(path)))

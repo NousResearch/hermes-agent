@@ -2,7 +2,7 @@
 
 import json
 
-from tools.todo_tool import TodoStore, todo_tool
+from hermes_agent.tools.todo_tool import TodoStore, todo_tool
 
 class TestWriteAndRead:
     def test_write_replaces_list(self):
@@ -164,7 +164,7 @@ class TestTodoStoreBounds:
     """
 
     def test_oversized_content_is_truncated(self):
-        from tools.todo_tool import MAX_TODO_CONTENT_CHARS
+        from hermes_agent.tools.todo_tool import MAX_TODO_CONTENT_CHARS
         store = TodoStore()
         store.write([{"id": "1", "content": "A" * 50001, "status": "pending"}])
         item = store.read()[0]
@@ -172,7 +172,7 @@ class TestTodoStoreBounds:
         assert item["content"].endswith("… [truncated]")
 
     def test_injection_block_is_bounded(self):
-        from tools.todo_tool import MAX_TODO_CONTENT_CHARS
+        from hermes_agent.tools.todo_tool import MAX_TODO_CONTENT_CHARS
         store = TodoStore()
         store.write([{"id": "1", "content": "A" * 50001, "status": "pending"}])
         inj = store.format_for_injection()
@@ -180,7 +180,7 @@ class TestTodoStoreBounds:
         assert len(inj) < MAX_TODO_CONTENT_CHARS + 200
 
     def test_item_count_is_bounded(self):
-        from tools.todo_tool import MAX_TODO_ITEMS
+        from hermes_agent.tools.todo_tool import MAX_TODO_ITEMS
         store = TodoStore()
         store.write([
             {"id": str(i), "content": f"task {i}", "status": "pending"}

@@ -200,10 +200,10 @@ CONN_LOG = []  # every call: {"args", "error"} in order
 
 
 def manage_connections_stub(args, **kw):
-    from tools.connectors.managed import NOTE as HOSTED_NOTE
-    from tools.connectors.mcp import NOTE as MCP_NOTE
-    from tools.connectors.targets import MCP_ACTIONS, normalize_targets, validate_action
-    from tools.registry import tool_error
+    from hermes_agent.tools.connectors.managed import NOTE as HOSTED_NOTE
+    from hermes_agent.tools.connectors.mcp import NOTE as MCP_NOTE
+    from hermes_agent.tools.connectors.targets import MCP_ACTIONS, normalize_targets, validate_action
+    from hermes_agent.tools.registry import tool_error
 
     args = args if isinstance(args, dict) else {}
     action = str(args.get("action") or "status").strip().lower()
@@ -236,11 +236,11 @@ def manage_connections_stub(args, **kw):
     return json.dumps({"targets": targets, "note": HOSTED_NOTE})
 
 
-import model_tools  # registers the built-in tools
-import tools.connectors as connectors_pkg
-import tools.connectors.tool as connectors_tool
-from tools.connectors.gateway import config as gateway_config
-from tools.registry import registry
+from hermes_agent import model_tools  # registers the built-in tools
+import hermes_agent.tools.connectors as connectors_pkg
+import hermes_agent.tools.connectors.tool as connectors_tool
+from hermes_agent.tools.connectors.gateway import config as gateway_config
+from hermes_agent.tools.registry import registry
 
 
 def _blocked(*a, **kw):

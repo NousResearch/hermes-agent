@@ -13,7 +13,7 @@ import json
 
 import pytest
 
-from tools import browser_session_cloud, browser_url_policy, browser_use_cli
+from hermes_agent.tools import browser_session_cloud, browser_url_policy, browser_use_cli
 
 PRIVATE_URL = "http://127.0.0.1:8080/secret"
 PUBLIC_URL = "https://example.com/page"
@@ -90,7 +90,7 @@ class TestExpressionScanHelper:
 
 @pytest.mark.parametrize("local_backend,allow_private", [(True, False), (False, True)])
 def test_raw_cdp_keeps_the_metadata_floor_when_the_private_guard_is_off(monkeypatch, local_backend, allow_private):
-    from tools import browser_cdp_tool, browser_session_cloud
+    from hermes_agent.tools import browser_cdp_tool, browser_session_cloud
     monkeypatch.setattr(browser_session_cloud, "is_local_backend", lambda: local_backend)
     monkeypatch.setattr(browser_session_cloud, "allow_private_urls", lambda: allow_private)
     guard = browser_cdp_tool._browser_cdp_private_guard
@@ -107,7 +107,7 @@ def test_raw_cdp_keeps_the_metadata_floor_when_the_private_guard_is_off(monkeypa
 @pytest.fixture
 def cdp_guard(monkeypatch, local_backend):
     """The raw CDP guard with a public page open: private guard on for a remote backend, off for a local one."""
-    from tools import browser_cdp_tool
+    from hermes_agent.tools import browser_cdp_tool
     monkeypatch.setattr(browser_session_cloud, "is_local_backend", lambda: local_backend)
     monkeypatch.setattr(browser_session_cloud, "allow_private_urls", lambda: False)
     monkeypatch.setattr(browser_cdp_tool, "_current_page_private_url", lambda endpoint, target_id: None)
@@ -206,7 +206,7 @@ def test_raw_cdp_reads_the_host_after_userinfo(cdp_guard, local_backend):
 @pytest.mark.parametrize("local_backend", [False, True])
 def test_raw_cdp_scheme_relative_literals_cost_no_dns_lookup(cdp_guard, monkeypatch):
     """``//word`` comments are judged by their literal host: no resolver call per comment."""
-    from tools import url_safety
+    from hermes_agent.tools import url_safety
     lookups = []
     monkeypatch.setattr(url_safety, "_getaddrinfo", lambda host, port=None: lookups.append(host) or [])
     script = "\n".join(f"//step{i} fill the form" for i in range(20)) + "\n//eslint-disable-next-line\nrun()"

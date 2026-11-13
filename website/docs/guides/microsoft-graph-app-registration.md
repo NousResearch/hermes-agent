@@ -142,7 +142,7 @@ Hermes ships a Graph auth smoke-test. From your Hermes install:
 ```python
 python -c "
 import asyncio
-from tools.microsoft_graph_auth import MicrosoftGraphTokenProvider
+from hermes_agent.tools.microsoft_graph_auth import MicrosoftGraphTokenProvider
 provider = MicrosoftGraphTokenProvider.from_env()
 token = asyncio.run(provider.get_access_token())
 print('Token acquired, length:', len(token))

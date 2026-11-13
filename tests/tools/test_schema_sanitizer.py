@@ -1,4 +1,4 @@
-"""Tests for tools/schema_sanitizer.py.
+"""Tests for hermes_agent/tools/schema_sanitizer.py.
 
 Targets the known llama.cpp ``json-schema-to-grammar`` failure modes that
 cause ``HTTP 400: Unable to generate parser for this template. ...
@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import copy
 
-from tools.schema_sanitizer import (
+from hermes_agent.tools.schema_sanitizer import (
     sanitize_tool_schemas,
     strip_pattern_and_format,
 )
@@ -282,7 +282,7 @@ def test_strip_responses_mixed_formats():
 # in the tools array 400s the whole request on Anthropic/Bedrock/Vertex/Azure.
 # ---------------------------------------------------------------------------
 
-from tools.schema_sanitizer import sanitize_property_key
+from hermes_agent.tools.schema_sanitizer import sanitize_property_key
 
 
 def test_sanitize_property_key_empty_falls_back():
@@ -365,7 +365,7 @@ def test_dependent_schemas_still_recursively_sanitized():
 # Ported from: block/goose tool_schema_normalize.rs (Apache-2.0)
 # ---------------------------------------------------------------------------
 
-from tools.schema_sanitizer import collapse_const_unions
+from hermes_agent.tools.schema_sanitizer import collapse_const_unions
 
 
 def test_pure_const_union_collapses_to_enum():
@@ -475,7 +475,7 @@ def test_null_plus_const_union_ordering_with_nullable_strip():
     the remaining null branch by collapsing consts and keeping nullability as
     a hint.
     """
-    from tools.mcp_tool_schema import _normalize_mcp_input_schema
+    from hermes_agent.tools.mcp_tool_schema import _normalize_mcp_input_schema
 
     schema = {
         "type": "object",
@@ -498,7 +498,7 @@ def test_null_plus_const_union_ordering_with_nullable_strip():
 
 
 def test_normalize_mcp_input_schema_collapses_const_unions():
-    from tools.mcp_tool_schema import _normalize_mcp_input_schema
+    from hermes_agent.tools.mcp_tool_schema import _normalize_mcp_input_schema
 
     schema = {
         "type": "object",
@@ -535,7 +535,7 @@ def test_normalize_mcp_input_schema_preserves_constraint_fragments():
     failed client-side validation while the MCP server was healthy.
     """
     from jsonschema.validators import Draft202012Validator  # what tool_search_validation selects
-    from tools.mcp_tool_schema import _normalize_mcp_input_schema
+    from hermes_agent.tools.mcp_tool_schema import _normalize_mcp_input_schema
 
     out = _normalize_mcp_input_schema({
         "type": "object",
@@ -563,7 +563,7 @@ def test_normalize_mcp_input_schema_preserves_constraint_fragments():
 def test_normalize_mcp_input_schema_still_repairs_declared_objects():
     """The dangling-``required`` repair (PR #4651, Gemini 400s otherwise) still fires on the
     root and on nested nodes that declare ``properties``/``type`` — only bare fragments are exempt."""
-    from tools.mcp_tool_schema import _normalize_mcp_input_schema
+    from hermes_agent.tools.mcp_tool_schema import _normalize_mcp_input_schema
 
     out = _normalize_mcp_input_schema({
         "type": "object",
@@ -581,7 +581,7 @@ def test_normalize_mcp_input_schema_still_repairs_declared_objects():
 def test_builtin_tool_without_required_gets_empty_required_list():
     """Object nodes that never had ``required`` are coerced to ``required: []`` (#56123):
     strict OpenAI-compatible backends read a missing key as ``null`` and 400 the request."""
-    from tools.read_window_tool import READ_WINDOW_BELOW_SCHEMA
+    from hermes_agent.tools.read_window_tool import READ_WINDOW_BELOW_SCHEMA
 
     tools = [{"type": "function", "function": copy.deepcopy(READ_WINDOW_BELOW_SCHEMA)}]
     params = sanitize_tool_schemas(tools)[0]["function"]["parameters"]
@@ -610,7 +610,7 @@ def _walk_schema(node):
 
 def test_clarify_schema_has_no_unbounded_repetition_keyword():
     """The clarify schema must not carry a length bound llama.cpp's grammar converter rejects."""
-    from tools.clarify_tool import CLARIFY_SCHEMA
+    from hermes_agent.tools.clarify_tool import CLARIFY_SCHEMA
     for node in _walk_schema(CLARIFY_SCHEMA["parameters"]):
         for key in ("maxLength", "minLength"):
             assert node.get(key, 0) < 2000, f"{key}={node[key]} breaks llama.cpp grammar parsing"
@@ -618,8 +618,8 @@ def test_clarify_schema_has_no_unbounded_repetition_keyword():
 
 def test_registered_tool_schemas_stay_inside_llama_cpp_repetition_limit():
     """No built-in tool may ship a length/count bound of 2000+ (llama.cpp rejects the whole request)."""
-    import model_tools
-    from tools.registry import registry
+    from hermes_agent import model_tools
+    from hermes_agent.tools.registry import registry
     offenders = []
     for name in registry.get_all_tool_names():
         entry = registry.get_entry(name)

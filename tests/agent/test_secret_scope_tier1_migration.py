@@ -169,7 +169,7 @@ class TestMatrixStartupSecret:
 
 class TestToolGatewayUserToken:
     def test_scoped_value_wins(self, monkeypatch):
-        from tools.managed_tool_gateway import _read_user_token_override
+        from hermes_agent.tools.managed_tool_gateway import _read_user_token_override
 
         monkeypatch.setenv("TOOL_GATEWAY_USER_TOKEN", "env-tok")
         ss.set_multiplex_active(True)
@@ -177,7 +177,7 @@ class TestToolGatewayUserToken:
             assert _read_user_token_override() == "scoped-tok"
 
     def test_scoped_miss_no_borrow(self, monkeypatch):
-        from tools.managed_tool_gateway import _read_user_token_override
+        from hermes_agent.tools.managed_tool_gateway import _read_user_token_override
 
         monkeypatch.setenv("TOOL_GATEWAY_USER_TOKEN", "other-profile-tok")
         ss.set_multiplex_active(True)
@@ -185,14 +185,14 @@ class TestToolGatewayUserToken:
             assert _read_user_token_override() is None
 
     def test_unscoped_multiplex_falls_back(self, monkeypatch):
-        from tools.managed_tool_gateway import _read_user_token_override
+        from hermes_agent.tools.managed_tool_gateway import _read_user_token_override
 
         monkeypatch.setenv("TOOL_GATEWAY_USER_TOKEN", "own-env-tok")
         ss.set_multiplex_active(True)
         assert _read_user_token_override() == "own-env-tok"
 
     def test_scope_failure_never_borrows_env(self, monkeypatch):
-        from tools.managed_tool_gateway import _read_user_token_override
+        from hermes_agent.tools.managed_tool_gateway import _read_user_token_override
 
         monkeypatch.setenv("TOOL_GATEWAY_USER_TOKEN", "other-profile-tok")
         ss.set_multiplex_active(True)
@@ -202,7 +202,7 @@ class TestToolGatewayUserToken:
 
 class TestOpenRouterCheckApiKey:
     def test_scoped_value_wins(self, monkeypatch):
-        from tools.openrouter_client import check_api_key
+        from hermes_agent.tools.openrouter_client import check_api_key
 
         monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
         ss.set_multiplex_active(True)
@@ -210,7 +210,7 @@ class TestOpenRouterCheckApiKey:
             assert check_api_key() is True
 
     def test_scoped_miss_no_borrow(self, monkeypatch):
-        from tools.openrouter_client import check_api_key
+        from hermes_agent.tools.openrouter_client import check_api_key
 
         monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-other-profile")
         ss.set_multiplex_active(True)
@@ -218,7 +218,7 @@ class TestOpenRouterCheckApiKey:
             assert check_api_key() is False
 
     def test_scope_failure_never_borrows_env(self, monkeypatch):
-        from tools.openrouter_client import check_api_key
+        from hermes_agent.tools.openrouter_client import check_api_key
 
         monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-other-profile")
         ss.set_multiplex_active(True)

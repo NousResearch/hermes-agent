@@ -2,7 +2,7 @@
 register for the active backend), and that override marks the task as an isolated rollout like a
 built-in backend's image override does."""
 
-from tools import terminal_tool as tt
+from hermes_agent.tools import terminal_tool as tt
 
 
 def test_plugin_backend_reads_its_own_per_task_image_override():

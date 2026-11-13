@@ -91,7 +91,7 @@ def _deliver(live_result=None, standalone_result=None, release=None):
          patch("hermes_agent.cron.scheduler.load_config", return_value={"cron": {"wrap_response": True}}), \
          patch("hermes_agent.cron.scheduler_delivery._record_delivery_verification"), \
          patch("hermes_agent.gateway.delivery.DeliveryRouter", return_value=router), \
-         patch("tools.send_message_tool._send_to_platform", _send_to_platform), \
+         patch("hermes_agent.tools.send_message_tool._send_to_platform", _send_to_platform), \
          patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro):
         adapters = {Platform.TELEGRAM: MagicMock()} if live else None
         return _deliver_result(_job(), "x" * 5000 + "\nTODO: deploy prod now", adapters=adapters,
@@ -182,7 +182,7 @@ def test_a_partial_standalone_split_send_frames_replies_to_its_landed_chunks(mon
 
     with patch("hermes_agent.gateway.config.load_gateway_config", return_value=cfg), \
          patch("hermes_agent.cron.scheduler.load_config", return_value={"cron": {"wrap_response": True}}), \
-         patch("tools.send_message_tool._send_to_platform", send), \
+         patch("hermes_agent.tools.send_message_tool._send_to_platform", send), \
          patch("hermes_agent.cron.jobs.update_job"):
         assert _deliver_result(job, "status line ok\n" * 700)
     assert bot.send_message.await_count == 3

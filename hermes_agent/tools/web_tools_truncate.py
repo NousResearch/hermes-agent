@@ -3,14 +3,14 @@
 Pages at or under the char budget are returned whole; larger pages become a head+tail window plus a
 footer that says how much is shown, where the full text is stored (cache/web) and the exact read_file
 call that pages the omitted middle. Inline base64 images become ``[IMAGE: alt]`` placeholders. Logs under the
-origin (tools.web_tools) logger.
+origin (hermes_agent.tools.web_tools) logger.
 """
 
 import logging
 import re
 from typing import Any, List, Optional
 
-logger = logging.getLogger("tools.web_tools")
+logger = logging.getLogger("hermes_agent.tools.web_tools")
 
 # Per-page char budget sent to the model (override: web.extract_char_limit); larger pages are head+tail
 # truncated, full text stored on disk.
@@ -40,7 +40,7 @@ def _clamp_or_default(value: Any) -> int:
 
 def _get_extract_char_limit() -> int:
     """``web.extract_char_limit`` clamped to a sane range, else the default."""
-    from tools.web_tools import _load_web_config  # lazy: tests patch tools.web_tools._load_web_config
+    from hermes_agent.tools.web_tools import _load_web_config  # lazy: tests patch hermes_agent.tools.web_tools._load_web_config
     return _clamp_or_default(_load_web_config().get("extract_char_limit"))
 
 
@@ -63,7 +63,7 @@ def _store_full_text(url: str, content: str) -> Optional[str]:
     try:
         import hashlib
         from hermes_constants import get_hermes_dir
-        from tools.web_result_cache import _host_slug
+        from hermes_agent.tools.web_result_cache import _host_slug
         cache_dir = get_hermes_dir("cache/web", "web_cache")
         cache_dir.mkdir(parents=True, exist_ok=True)
         path = cache_dir / f"{_host_slug(url)}-{hashlib.sha256(url.encode('utf-8')).hexdigest()[:10]}.md"
@@ -72,7 +72,7 @@ def _store_full_text(url: str, content: str) -> Optional[str]:
                 f"\n\n[... stored copy truncated at {MAX_STORED_TEXT_CHARS:,} chars "
                 f"of {len(content):,}; re-extract a more specific URL for the rest ...]"
             )
-        from tools.spill_safety import write_text_exclusive
+        from hermes_agent.tools.spill_safety import write_text_exclusive
         # Deterministic name in a well-known dir: refuse symlinks (lstat-unlink + exclusive create);
         # same-URL re-extraction legitimately overwrites. Not private: cache/web is bind-mounted
         # into remote backends' container UID.
@@ -102,7 +102,7 @@ def _truncate_with_footer(content: str, url: str, char_limit: int) -> tuple[str,
     if stored_path:
         # The footer is read by the AGENT, whose read_file runs inside the active backend: render the
         # path where docker/modal/ssh/... see the mounted cache, not the host path (#72389, #81984).
-        from tools.credential_files import to_agent_visible_cache_path
+        from hermes_agent.tools.credential_files import to_agent_visible_cache_path
         stored_path = to_agent_visible_cache_path(stored_path)
     footer_lines = [
         "", "─" * 8 + " [TRUNCATED] " + "─" * 8,
@@ -140,7 +140,7 @@ def _binary_payload_kind(text: str) -> str:
     """Magic-byte type name when a fetched body is a raw binary file, else ``""``. Backends return
     the body as text with NUL bytes dropped, so signatures are compared NUL-stripped on both sides.
     Only the file tools' own signature table; HTML/markdown/JSON never start with one."""
-    from tools.file_operations import _MAGIC_SIGNATURES
+    from hermes_agent.tools.file_operations import _MAGIC_SIGNATURES
 
     head = text[:32].encode("latin-1", "ignore").replace(b"\x00", b"")
     for prefix, name in _MAGIC_SIGNATURES:

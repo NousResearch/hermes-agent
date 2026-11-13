@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from typing import Callable, Optional
 
 from hermes_constants import get_hermes_home
-from tools.tool_backend_helpers import managed_nous_tools_enabled
+from hermes_agent.tools.tool_backend_helpers import managed_nous_tools_enabled
 
 logger = logging.getLogger(__name__)
 

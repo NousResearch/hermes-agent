@@ -338,7 +338,7 @@ class TestShrinkImagePartsHelper:
 
         resize_hits = {"count": 0}
         monkeypatch.setattr(
-            "tools.vision_tools._resize_image_for_vision",
+            "hermes_agent.tools.vision_tools._resize_image_for_vision",
             lambda *a, **kw: resize_hits.__setitem__("count", resize_hits["count"] + 1) or small_url,
             raising=False,
         )
@@ -365,7 +365,7 @@ class TestShrinkImagePartsHelper:
             return shrunk
 
         monkeypatch.setattr(
-            "tools.vision_tools._resize_image_for_vision",
+            "hermes_agent.tools.vision_tools._resize_image_for_vision",
             _fake_resize,
             raising=False,
         )
@@ -397,7 +397,7 @@ class TestShrinkImagePartsHelper:
             return shrunk
 
         monkeypatch.setattr(
-            "tools.vision_tools._resize_image_for_vision",
+            "hermes_agent.tools.vision_tools._resize_image_for_vision",
             _fake_resize,
             raising=False,
         )
@@ -436,7 +436,7 @@ class TestShrinkImagePartsHelper:
         shrunk = "data:image/jpeg;base64," + "C" * 500
 
         monkeypatch.setattr(
-            "tools.vision_tools._resize_image_for_vision",
+            "hermes_agent.tools.vision_tools._resize_image_for_vision",
             lambda *a, **kw: shrunk,
             raising=False,
         )
@@ -461,7 +461,7 @@ class TestShrinkImagePartsHelper:
         oversized_url = _big_png_data_url(5000)
 
         monkeypatch.setattr(
-            "tools.vision_tools._resize_image_for_vision",
+            "hermes_agent.tools.vision_tools._resize_image_for_vision",
             lambda *a, **kw: None,  # resize returned nothing usable
             raising=False,
         )
@@ -505,7 +505,7 @@ class TestShrinkImagePartsHelper:
             return small
 
         monkeypatch.setattr(
-            "tools.vision_tools._resize_image_for_vision",
+            "hermes_agent.tools.vision_tools._resize_image_for_vision",
             fake_resize,
             raising=False,
         )
@@ -553,7 +553,7 @@ class TestShrinkImagePartsHelper:
             return dimensionally_shrunk
 
         monkeypatch.setattr(
-            "tools.vision_tools._resize_image_for_vision",
+            "hermes_agent.tools.vision_tools._resize_image_for_vision",
             _fake_resize,
             raising=False,
         )
@@ -587,7 +587,7 @@ class TestShrinkImagePartsHelper:
         still_oversized = "data:image/png;base64," + "H" * 120 * 1024
 
         monkeypatch.setattr(
-            "tools.vision_tools._resize_image_for_vision",
+            "hermes_agent.tools.vision_tools._resize_image_for_vision",
             lambda *a, **kw: still_oversized,
             raising=False,
         )
@@ -633,7 +633,7 @@ class TestShrinkImagePartsHelper:
             return "data:image/png;base64," + "H" * 120 * 1024      # still over
 
         monkeypatch.setattr(
-            "tools.vision_tools._resize_image_for_vision",
+            "hermes_agent.tools.vision_tools._resize_image_for_vision",
             _fake_resize,
             raising=False,
         )
@@ -671,7 +671,7 @@ class TestShrinkImagePartsHelper:
         byte_smaller_still_over = "data:image/png;base64," + "K" * 1000
 
         monkeypatch.setattr(
-            "tools.vision_tools._resize_image_for_vision",
+            "hermes_agent.tools.vision_tools._resize_image_for_vision",
             lambda *a, **kw: byte_smaller_still_over,
             raising=False,
         )
@@ -709,7 +709,7 @@ class TestShrinkCopyOnWriteHistoryIsolation:
         shrunk = "data:image/jpeg;base64," + "C" * 1000
 
         monkeypatch.setattr(
-            "tools.vision_tools._resize_image_for_vision",
+            "hermes_agent.tools.vision_tools._resize_image_for_vision",
             lambda *a, **kw: shrunk,
             raising=False,
         )

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Open a URL, dev server, or file in the Hermes desktop GUI's preview pane.
 
-Registration lives in the `desktop_preview` tool (``tools.preview_tool``); this module keeps
+Registration lives in the `desktop_preview` tool (``hermes_agent.tools.preview_tool``); this module keeps
 the normalizer + open action. Emits ``preview.open`` via ``desktop_ui``: the renderer opens
 the pane for the window that asked and never steals focus for a background session.
 """
@@ -11,8 +11,8 @@ import re
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
-from tools import desktop_ui
-from tools.registry import tool_error
+from hermes_agent.tools import desktop_ui
+from hermes_agent.tools.registry import tool_error
 
 
 def _normalize_target(raw: str) -> str:

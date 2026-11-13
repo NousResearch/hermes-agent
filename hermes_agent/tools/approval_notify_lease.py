@@ -1,6 +1,6 @@
 """Dispatch-owned approval transport; never extends a completed turn's stream lifetime.
 
-A background child takes a lease at dispatch (``tools.async_delegation``). Its prompts go through the
+A background child takes a lease at dispatch (``hermes_agent.tools.async_delegation``). Its prompts go through the
 ``background_notify`` the gateway turn runner published for the chat
 (``hermes_agent/gateway/run_turn_runner_approval_transport.py``), before and after the parent turn ends, so ending
 the parent never withdraws or strands them (#133514). A surface that publishes none keeps main's
@@ -27,19 +27,19 @@ class NotifyLease:
         The lease transport is used even while the dispatching turn still runs: that turn's notifier
         projects onto its canonical execution generation, which can settle mid-send. A child prompt
         must outlive the parent, so it never borrows the parent's generation, typing or stream."""
-        from tools import approval
+        from hermes_agent.tools import approval
         if not self.active:
             return None
         return self.callback or approval._gateway_notify_cbs.get(self.session_key)
 
     def deliverable(self):
         """False only while the lease is live but nothing could show its prompt."""
-        from tools import approval
+        from hermes_agent.tools import approval
         with approval._lock:
             return not self.active or self._target_locked() is not None
 
     def notify(self, data):
-        from tools import approval
+        from hermes_agent.tools import approval
         with approval._lock:
             target = self._target_locked()
         if target is None:
@@ -47,7 +47,7 @@ class NotifyLease:
         target(data)
 
     def release(self):
-        from tools import approval
+        from hermes_agent.tools import approval
         with approval._lock:
             self.active = False
             self.callback = None
@@ -63,7 +63,7 @@ class NotifyLease:
 
 
 def acquire(session_key):
-    from tools import approval
+    from hermes_agent.tools import approval
     with approval._lock:
         # Only a transport built to outlive its turn is kept; a turn-scoped callback is not.
         lease = NotifyLease(session_key, getattr(approval._gateway_notify_cbs.get(session_key), "background_notify", None))
@@ -87,7 +87,7 @@ def stranded_denial(session_key, is_gateway, noun, pattern_key, description):
     lease = current(session_key)
     if not is_gateway or lease is None or lease.deliverable():
         return None
-    from tools.approval import _denied
+    from hermes_agent.tools.approval import _denied
     return _denied(
         "BLOCKED: no approval channel is available to ask the user — the gateway turn "
         f"that delivers approval prompts has ended, so this {noun} did not run "

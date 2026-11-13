@@ -12,7 +12,7 @@ from tests.hermes_cli.test_cli_approval_ui import _make_background_cli_stub
 
 
 def test_background_task_delegation_runs_inline(monkeypatch):
-    import tools.delegate_tool as dt
+    import hermes_agent.tools.delegate_tool as dt
 
     monkeypatch.setattr(dt, "_build_child_agent", lambda **kw: SimpleNamespace(_subagent_id="child"))
     monkeypatch.setattr(dt, "_resolve_delegation_credentials", lambda *a, **kw: {
@@ -24,7 +24,7 @@ def test_background_task_delegation_runs_inline(monkeypatch):
         "api_calls": 1, "duration_seconds": 0, "model": "test", "exit_reason": "completed",
     })
     detached = MagicMock(return_value={"delegation_id": "detached"})
-    monkeypatch.setattr("tools.async_delegation.dispatch_async_delegation_batch", detached)
+    monkeypatch.setattr("hermes_agent.tools.async_delegation.dispatch_async_delegation_batch", detached)
     seen = {}
 
     class FakeAgent:

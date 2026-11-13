@@ -197,7 +197,7 @@ class WorkerControls:
                 state['event'].set()
 
     def read(self):
-        from tools.approval import resolve_gateway_approval
+        from hermes_agent.tools.approval import resolve_gateway_approval
         try:
             while True:
                 frame = read_frame(sys.stdin.buffer)
@@ -228,7 +228,7 @@ class WorkerControls:
                 _die_with_owner()
 
     def approval(self, data):
-        from tools.approval import ack_gateway_approval
+        from hermes_agent.tools.approval import ack_gateway_approval
         fields = {'request_id', 'command', 'description', 'allow_session', 'allow_permanent', 'smart_denied', 'edit'}
         self.channel.send('approval', data={k: v for k, v in data.items() if k in fields})
         ack_gateway_approval(self.route, data['request_id'])
@@ -256,7 +256,7 @@ class WorkerControls:
 
     def _ask(self, question, choices, multi_select):
         import uuid
-        from tools.clarify_gateway import get_clarify_timeout
+        from hermes_agent.tools.clarify_gateway import get_clarify_timeout
         timeout = get_clarify_timeout()  # the frozen worker config; <= 0 is unlimited, as on every surface
         prompt_id = uuid.uuid4().hex
         state = {'event': threading.Event(), 'answer': None}
@@ -293,8 +293,8 @@ def discover_profile_mcp(policy):
     """The owner's MCP registry never crosses into this fresh interpreter; connect the profile's
     configured servers here, filtered to the frozen toolset selection, before tool discovery snapshots
     agent.tools. Safe mode keeps its deliberate no-MCP policy (discover_mcp_tools returns [])."""
-    from tools.mcp_oauth import suppress_interactive_oauth
-    from tools.mcp_tool_discovery import discover_mcp_tools
+    from hermes_agent.tools.mcp_oauth import suppress_interactive_oauth
+    from hermes_agent.tools.mcp_tool_discovery import discover_mcp_tools
     with suppress_interactive_oauth():
         discover_mcp_tools(allowed_mcp_names=list(policy.toolsets))
 
@@ -348,7 +348,7 @@ def execute(frame, channel):
     bind_worker_context(frame)
     # Background processes a previous admission of this session started outlive that worker
     # (F24); adopt them so process_manage in this turn can poll and kill them.
-    from tools.process_registry import process_registry
+    from hermes_agent.tools.process_registry import process_registry
     process_registry.recover_from_checkpoint()
     # Store construction binds the delegation ledger before tool discovery.
     from hermes_agent.gateway.session_policy import restore_policy, policy_scope, register_worker_hooks
@@ -356,8 +356,8 @@ def execute(frame, channel):
     register_worker_hooks(policy)
     discover_profile_mcp(policy)
     from run_agent import AIAgent
-    from tools.approval import register_gateway_notify, unregister_gateway_notify
-    from tools.approval_context import set_current_session_key
+    from hermes_agent.tools.approval import register_gateway_notify, unregister_gateway_notify
+    from hermes_agent.tools.approval_context import set_current_session_key
     set_current_session_key(frame['route'])
     os.environ['HERMES_GATEWAY_SESSION'] = '1'
     from hermes_agent.gateway.session_worker_construct import checkpoint_agent_kwargs, construct_kwargs, routing_agent_kwargs

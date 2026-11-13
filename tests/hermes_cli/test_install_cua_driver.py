@@ -218,7 +218,7 @@ def test_setup_refuses_bare_binary_without_required_signed_app(monkeypatch, tmp_
 @pytest.mark.platforms("macos")
 def test_setup_registers_only_the_validated_selected_app(monkeypatch, tmp_path):
     from hermes_cli import tools_config_cua as cua
-    from tools.computer_use import cua_backend_daemon as daemon
+    from hermes_agent.tools.computer_use import cua_backend_daemon as daemon
 
     app = tmp_path / "CuaDriver.app"
     driver = app / "Contents" / "MacOS" / "cua-driver"

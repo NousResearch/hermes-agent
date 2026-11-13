@@ -142,7 +142,7 @@ def _prepare(authority, session_id, mcp_only=False, adopt_only=False):
     from hermes_agent.gateway.session_policy import SURFACES, restore_policy
     from hermes_agent.hermes_state_local import local_receipt
     from hermes_agent.hermes_state_mutation_prepared import policy_picks
-    from tools.terminal_scope import build_profile_terminal_scope
+    from hermes_agent.tools.terminal_scope import build_profile_terminal_scope
     generation = authority.db.get_session(session_id)['runtime_generation']
     stored = local_receipt(authority.db, session_id)['policy']
     old = restore_policy(stored)
@@ -266,8 +266,8 @@ def drop_session_terminal(authority, ref):
     Its recorded cwd (keyed by its route or task id) goes too: it wins over the new binding's directory."""
     from hermes_agent.gateway.session_authorities import owner_scope
     from hermes_agent.hermes_state_local import local_receipt
-    from tools.terminal_tool import _qualify_task_key, clear_session_cwd
-    from tools.terminal_tool_lifecycle import cleanup_vm
+    from hermes_agent.tools.terminal_tool import _qualify_task_key, clear_session_cwd
+    from hermes_agent.tools.terminal_tool_lifecycle import cleanup_vm
     ids = {ref.session_id, local_receipt(authority.db, ref.session_id)['entry']['session_id']}
     route = authority.sessions[ref.session_id].route
     from hermes_agent.gateway.session_policy import unbind_turn_workspace

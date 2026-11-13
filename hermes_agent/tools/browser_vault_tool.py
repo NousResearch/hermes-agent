@@ -34,7 +34,7 @@ import secrets
 import logging
 from typing import Any, Dict, Optional
 
-from tools.browser_vault_context import plugin_errors_as_refusal, saved_origins, snapshot_refusal, write_backend_code
+from hermes_agent.tools.browser_vault_context import plugin_errors_as_refusal, saved_origins, snapshot_refusal, write_backend_code
 
 logger = logging.getLogger(__name__)
 
@@ -48,8 +48,8 @@ def _check_vault_available() -> bool:
     agent can offer to remember a login the first time it meets a form; hiding the tool until an item
     exists meant nobody ever discovered the feature. Deferral keeps that presence nearly free."""
     from agent.browser_page_registry import list_providers
-    from tools.browser_session_cdp import get_cdp_override_raw
-    from tools.browser_use_cli import browser_exec_available
+    from hermes_agent.tools.browser_session_cdp import get_cdp_override_raw
+    from hermes_agent.tools.browser_use_cli import browser_exec_available
     return bool(browser_exec_available() or get_cdp_override_raw() or list_providers())
 
 
@@ -67,7 +67,7 @@ def _page_backend(task_id: str):
     page pinned for a ``target='preview'`` operation, else the plugin browser holding this task's live page
     (e.g. Camofox), else None."""
     from agent.browser_page_registry import backend_for_task
-    from tools.browser_vault_preview import active_page
+    from hermes_agent.tools.browser_vault_preview import active_page
     return active_page() or backend_for_task(task_id)
 
 
@@ -108,13 +108,13 @@ def _ensure_supervisor(task_id: str):
     """The supervisor for ``task_id`` (browser_exec attaches one on every call), attaching one on demand to
     the task's session CDP endpoint when none is running. None when no endpoint is known; a fill then
     refuses rather than touching argv."""
-    from tools.browser_supervisor import SUPERVISOR_REGISTRY
+    from hermes_agent.tools.browser_supervisor import SUPERVISOR_REGISTRY
 
     supervisor = SUPERVISOR_REGISTRY.get(task_id)
     if supervisor is not None:
         return supervisor
-    from tools.browser_session import session_for_task
-    from tools.browser_session_cdp import get_dialog_policy_config, resolve_cdp_override
+    from hermes_agent.tools.browser_session import session_for_task
+    from hermes_agent.tools.browser_session_cdp import get_dialog_policy_config, resolve_cdp_override
 
     cdp_url = str(session_for_task(task_id).get("cdp_url") or "")
     if not cdp_url:
@@ -161,9 +161,9 @@ def _eval_js_secret(task_id: str, expression: str) -> dict[str, Any]:
     # human-length prompt (enter_code waits for the user's code); a takeover during that wait must
     # refuse here, before the credential lands in a page the human is now typing into. The outer
     # epoch check only discards the result, and a fill is a side effect, not a result.
-    from tools.browser_vault_preview import active_page
+    from hermes_agent.tools.browser_vault_preview import active_page
     if active_page() is None and _bot_desktop_browser_session(task_id):
-        from tools.bot_desktop import lease as _bd_lease
+        from hermes_agent.tools.bot_desktop import lease as _bd_lease
         try:
             _bd_lease.assert_agent_may_act()
         except _bd_lease.HumanHasControl as exc:
@@ -643,7 +643,7 @@ def _confirm_payment_fill(label: str, origin: str) -> bool:
     """Human confirmation before a card is written into a page: a prompt injection that reaches a checkout
     must not be able to spend. Routes through the approval surface of the active session (gateway button
     round-trip or CLI panel); headless sessions cannot confirm and the fill is refused."""
-    from tools.approval_prompt import request_elicitation_consent
+    from hermes_agent.tools.approval_prompt import request_elicitation_consent
 
     return request_elicitation_consent(
         f"Fill payment card '{label}' on {origin}",
@@ -688,7 +688,7 @@ BROWSER_VAULT_SCHEMA = {
 
 
 def _bot_desktop_browser_session(task_id: Optional[str]) -> bool:
-    from tools.browser_session import session_for_task, shares_bot_desktop_browser
+    from hermes_agent.tools.browser_session import session_for_task, shares_bot_desktop_browser
     return shares_bot_desktop_browser(session_for_task(task_id))
 
 
@@ -696,7 +696,7 @@ def _fenced_page_op(task_id: Optional[str], fn) -> str:
     """Vault operations focus, inspect and fill the page over the supervisor socket, bypassing
     browser_exec; they must honour the Bot Desktop lease like every other page access, or a human
     typing a credential on the taken-over screen could be read or written to."""
-    from tools.browser_session import run_fenced, session_for_task
+    from hermes_agent.tools.browser_session import run_fenced, session_for_task
 
     res = run_fenced(session_for_task(task_id), lambda: {"raw": fn()})
     return res["raw"] if "raw" in res else json.dumps(res)
@@ -722,7 +722,7 @@ def _handle_vault(args: dict[str, Any], **kwargs) -> str:
     if target == "preview":
         # The in-app browser is not the Bot Desktop browser; its window owns the page and refuses a
         # changed tab or document itself. Never retried on another browser.
-        from tools.browser_vault_preview import run_preview_vault
+        from hermes_agent.tools.browser_vault_preview import run_preview_vault
         return run_preview_vault(kwargs.get("preview_callback"), page_ops[action])
     if target != "browser":
         return json.dumps({"success": False, "error_type": "invalid_target",
@@ -730,7 +730,7 @@ def _handle_vault(args: dict[str, Any], **kwargs) -> str:
     return _fenced_page_op(tid, page_ops[action])
 
 
-from tools.registry import no_cache_check_fn, registry
+from hermes_agent.tools.registry import no_cache_check_fn, registry
 
 _check_vault_available = no_cache_check_fn(_check_vault_available)
 

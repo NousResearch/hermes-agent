@@ -1,8 +1,8 @@
 """Wake-word hotword engines (pyopen-wakeword / sherpa-onnx KWS / Porcupine).
 
 All three run fully on-device. Config, platform probes and sensitivity accessors
-live in :mod:`tools.wake_word`; engines read them lazily through that module (import cycle).
-This module is the SINGLE owner of the engine implementations — ``tools.wake_word``
+live in :mod:`hermes_agent.tools.wake_word`; engines read them lazily through that module (import cycle).
+This module is the SINGLE owner of the engine implementations — ``hermes_agent.tools.wake_word``
 imports these classes and must not shadow them with copies.
 
 Dependency admission: constructing an engine ensures its ``wake-*`` extra. The
@@ -20,11 +20,11 @@ from contextlib import suppress
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-logger = logging.getLogger("tools.wake_word")
+logger = logging.getLogger("hermes_agent.tools.wake_word")
 
 
 def _ww():
-    from tools import wake_word
+    from hermes_agent.tools import wake_word
     return wake_word
 
 

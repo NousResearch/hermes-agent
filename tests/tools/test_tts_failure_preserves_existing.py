@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 from hermes_agent.gateway.session_context import _UNSET, _VAR_MAP
-from tools import tts_tool
+from hermes_agent.tools import tts_tool
 
 
 @pytest.fixture(autouse=True)

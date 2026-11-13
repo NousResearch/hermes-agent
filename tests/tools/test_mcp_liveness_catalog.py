@@ -4,7 +4,7 @@ import json
 import sys
 
 from hermes_platform import declaration
-from tools.registry import registry
+from hermes_agent.tools.registry import registry
 
 
 def _schema(name):
@@ -23,8 +23,8 @@ def _decl(tmp_path):
 
 def test_hidden_declared_server_appears_in_listing_and_empty_summary(tmp_path, monkeypatch):
     from hermes_cli import agent_plugins
-    from tools.tool_search import ToolSearchConfig, dispatch_tool_search
-    from tools.tool_search_catalog import build_catalog_listing_with_form
+    from hermes_agent.tools.tool_search import ToolSearchConfig, dispatch_tool_search
+    from hermes_agent.tools.tool_search_catalog import build_catalog_listing_with_form
 
     server = "example-hidden"
     tool_name = "mcp__example-hidden__inspect"
@@ -57,7 +57,7 @@ def test_hidden_declared_server_appears_in_listing_and_empty_summary(tmp_path, m
 
 
 def test_hidden_undeclared_server_is_absent(monkeypatch):
-    from tools.tool_search_catalog import build_catalog_listing_with_form
+    from hermes_agent.tools.tool_search_catalog import build_catalog_listing_with_form
 
     tool_name = "mcp__plain-hidden__inspect"
     registry.register(

@@ -38,7 +38,7 @@ a new worktree costs near-zero.
 The shadow store uses ``GIT_DIR`` + ``GIT_WORK_TREE`` + ``GIT_INDEX_FILE``
 so no git state leaks into the user's project directory.
 
-Auto-maintenance (``tools.checkpoint_maintenance``)
+Auto-maintenance (``hermes_agent.tools.checkpoint_maintenance``)
 ---------------------------------------------------
 
 Shadow state accumulates over time.  ``prune_checkpoints`` deletes refs whose
@@ -421,7 +421,7 @@ def _git_env(
     normalized_working_dir = _normalize_path(working_dir)
     # git child with hand-isolated config env; exact preservation — a HOME
     # rewrite would change which ~/.gitconfig the isolation vars are hiding.
-    from tools.environments.local import build_subprocess_env
+    from hermes_agent.tools.environments.local import build_subprocess_env
 
     env = selected_git_env(build_subprocess_env(scrub_secrets=False, inherit_profile_home=False))
     env["GIT_DIR"] = str(store)
@@ -618,7 +618,7 @@ def _init_store(store: Path, working_dir: str) -> Optional[str]:
     # ``git init --bare`` rejects GIT_WORK_TREE, so we can't use _run_git
     # here (which always sets GIT_DIR + GIT_WORK_TREE).  Use a raw
     # subprocess with just the config-isolation env vars.
-    from tools.environments.local import build_subprocess_env
+    from hermes_agent.tools.environments.local import build_subprocess_env
 
     init_env = selected_git_env(build_subprocess_env(scrub_secrets=False, inherit_profile_home=False))
     init_env["GIT_CONFIG_GLOBAL"] = os.devnull
@@ -942,7 +942,7 @@ class CheckpointManager:
 
         Classifies the task's backend at call time (nothing is remembered), so /rollback is
         refused before the first mutation and follows a backend change within the session."""
-        from tools.file_tools_paths import container_backend_for_task
+        from hermes_agent.tools.file_tools_paths import container_backend_for_task
         backend = container_backend_for_task(task_id)
         if backend is None:
             return None
@@ -968,7 +968,7 @@ class CheckpointManager:
         if not self.enabled:
             return
         try:
-            from tools.checkpoint_pruning import store_lock
+            from hermes_agent.tools.checkpoint_pruning import store_lock
 
             path = _normalize_path(file_path)
             digest = _hash_file(path)
@@ -1056,7 +1056,7 @@ class CheckpointManager:
         Never raises — all errors are silently logged. Never in a hosted scope: the working
         directory is the agent's sandbox's, not this host's.
         """
-        from tools.hosted_tool_policy import host_feature_enabled
+        from hermes_agent.tools.hosted_tool_policy import host_feature_enabled
         if not self.enabled or not host_feature_enabled("checkpoints"):
             return False
 
@@ -1073,7 +1073,7 @@ class CheckpointManager:
         self._checkpointed_dirs.add(abs_dir)
 
         try:
-            from tools.checkpoint_pruning import store_lock
+            from hermes_agent.tools.checkpoint_pruning import store_lock
 
             with store_lock(_resolve_checkpoint_base()):
                 return self._take(abs_dir, reason)
@@ -1160,7 +1160,7 @@ class CheckpointManager:
 
     def diff(self, working_dir: str, commit_hash: str) -> dict:
         """Show diff between a checkpoint and the current working tree."""
-        from tools.checkpoint_pruning import PruneError, store_lock
+        from hermes_agent.tools.checkpoint_pruning import PruneError, store_lock
 
         try:
             with store_lock(_resolve_checkpoint_base()):
@@ -1269,8 +1269,8 @@ class CheckpointManager:
         them from every checkpoint, and — only when a delete failed —
         ``failed_deletes`` listing paths that could not be removed.
         """
-        from tools.checkpoint_pruning import PruneError, store_lock
-        from tools.hosted_tool_policy import host_feature_refusal
+        from hermes_agent.tools.checkpoint_pruning import PruneError, store_lock
+        from hermes_agent.tools.hosted_tool_policy import host_feature_refusal
         if refusal := host_feature_refusal("checkpoints", "Checkpoint restore"):
             return {"success": False, "error": refusal}
 
@@ -1835,7 +1835,7 @@ class CheckpointManager:
     def _prune(self, store: Path, working_dir: str, ref: str) -> None:
         """Checkpoint-take path: snapshot-count budget plus one size round, gc deferred to the
         periodic prune — a repack here held the tool call for the whole gc on a large store."""
-        from tools.checkpoint_pruning import Pruner, PruneError
+        from hermes_agent.tools.checkpoint_pruning import Pruner, PruneError
 
         pruner = Pruner(_run_git, store, working_dir, _GIT_TIMEOUT, _dir_size_bytes, _REFS_PREFIX)
         try:

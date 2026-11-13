@@ -23,9 +23,9 @@ class TestFirecrawlClientConfig:
 
     def setup_method(self):
         """Reset client and env vars before each test."""
-        import tools.web_tools
-        tools.web_tools._firecrawl_client = None
-        tools.web_tools._firecrawl_client_config = None
+        import hermes_agent.tools.web_tools
+        hermes_agent.tools.web_tools._firecrawl_client = None
+        hermes_agent.tools.web_tools._firecrawl_client_config = None
         for key in (
             "FIRECRAWL_API_KEY",
             "FIRECRAWL_API_URL",
@@ -39,17 +39,17 @@ class TestFirecrawlClientConfig:
         # tool_backend_helpers definition and the managed_tool_gateway import so the
         # full firecrawl client init path sees True.
         self._managed_patchers = [
-            patch("tools.tool_backend_helpers.managed_nous_tools_enabled", return_value=True),
-            patch("tools.managed_tool_gateway.managed_nous_tools_enabled", return_value=True),
+            patch("hermes_agent.tools.tool_backend_helpers.managed_nous_tools_enabled", return_value=True),
+            patch("hermes_agent.tools.managed_tool_gateway.managed_nous_tools_enabled", return_value=True),
         ]
         for p in self._managed_patchers:
             p.start()
 
     def teardown_method(self):
         """Reset client after each test."""
-        import tools.web_tools
-        tools.web_tools._firecrawl_client = None
-        tools.web_tools._firecrawl_client_config = None
+        import hermes_agent.tools.web_tools
+        hermes_agent.tools.web_tools._firecrawl_client = None
+        hermes_agent.tools.web_tools._firecrawl_client_config = None
         for key in (
             "FIRECRAWL_API_KEY",
             "FIRECRAWL_API_URL",
@@ -67,7 +67,7 @@ class TestFirecrawlClientConfig:
     def test_no_config_raises_with_helpful_message(self):
         """Neither key nor URL → ValueError with guidance."""
         with patch("plugins.web.firecrawl.provider.Firecrawl"):
-            with patch("tools.managed_tool_gateway.read_nous_access_token", return_value=None):
+            with patch("hermes_agent.tools.managed_tool_gateway.read_nous_access_token", return_value=None):
                 from plugins.web.firecrawl.provider import _get_firecrawl_client
                 with pytest.raises(ValueError, match="FIRECRAWL_API_KEY"):
                     _get_firecrawl_client()
@@ -75,7 +75,7 @@ class TestFirecrawlClientConfig:
     def test_tool_gateway_domain_builds_firecrawl_gateway_origin(self):
         """Shared gateway domain should derive the Firecrawl vendor hostname."""
         with patch.dict(os.environ, {"TOOL_GATEWAY_DOMAIN": "nousresearch.com"}):
-            with patch("tools.managed_tool_gateway.read_nous_access_token", return_value="nous-token"):
+            with patch("hermes_agent.tools.managed_tool_gateway.read_nous_access_token", return_value="nous-token"):
                 with patch("plugins.web.firecrawl.provider.Firecrawl") as mock_fc:
                     from plugins.web.firecrawl.provider import _get_firecrawl_client
                     result = _get_firecrawl_client()
@@ -91,7 +91,7 @@ class TestFirecrawlClientConfig:
 
     def test_constructor_failure_allows_retry(self):
         """If Firecrawl() raises, next call should retry (not return None)."""
-        import tools.web_tools
+        import hermes_agent.tools.web_tools
         with patch.dict(os.environ, {"FIRECRAWL_API_KEY": "fc-test"}):
             with patch("plugins.web.firecrawl.provider.Firecrawl") as mock_fc:
                 mock_fc.side_effect = [RuntimeError("init failed"), MagicMock()]
@@ -101,7 +101,7 @@ class TestFirecrawlClientConfig:
                     _get_firecrawl_client()
 
                 # Client stayed None, so retry should work
-                assert tools.web_tools._firecrawl_client is None
+                assert hermes_agent.tools.web_tools._firecrawl_client is None
                 result = _get_firecrawl_client()
                 assert result is not None
 
@@ -111,7 +111,7 @@ class TestFirecrawlClientConfig:
         """FIRECRAWL_API_KEY='' with no URL → should raise."""
         with patch.dict(os.environ, {"FIRECRAWL_API_KEY": ""}):
             with patch("plugins.web.firecrawl.provider.Firecrawl"):
-                with patch("tools.managed_tool_gateway.read_nous_access_token", return_value=None):
+                with patch("hermes_agent.tools.managed_tool_gateway.read_nous_access_token", return_value=None):
                     from plugins.web.firecrawl.provider import _get_firecrawl_client
                     with pytest.raises(ValueError):
                         _get_firecrawl_client()
@@ -120,8 +120,8 @@ class TestFirecrawlClientConfig:
         """Explicit Firecrawl config should build the keyless cloud client."""
         from plugins.web.firecrawl import provider as firecrawl_provider
 
-        with patch("tools.web_tools._load_web_config", return_value={"backend": "firecrawl"}):
-            with patch("tools.managed_tool_gateway.read_nous_access_token", return_value=None):
+        with patch("hermes_agent.tools.web_tools._load_web_config", return_value={"backend": "firecrawl"}):
+            with patch("hermes_agent.tools.managed_tool_gateway.read_nous_access_token", return_value=None):
                 with patch("plugins.web.firecrawl.provider.Firecrawl", side_effect=AssertionError("SDK path should not run")):
                     from plugins.web.firecrawl.provider import _get_firecrawl_client
 
@@ -246,8 +246,8 @@ class TestBackendSelection:
         for key in self._ENV_KEYS:
             os.environ.pop(key, None)
         self._managed_patchers = [
-            patch("tools.tool_backend_helpers.managed_nous_tools_enabled", return_value=True),
-            patch("tools.managed_tool_gateway.managed_nous_tools_enabled", return_value=True),
+            patch("hermes_agent.tools.tool_backend_helpers.managed_nous_tools_enabled", return_value=True),
+            patch("hermes_agent.tools.managed_tool_gateway.managed_nous_tools_enabled", return_value=True),
         ]
         for p in self._managed_patchers:
             p.start()
@@ -262,8 +262,8 @@ class TestBackendSelection:
 
     def test_config_parallel(self):
         """web.backend=parallel in config → 'parallel' regardless of keys."""
-        from tools.web_tools import _get_backend
-        with patch("tools.web_tools._load_web_config", return_value={"backend": "parallel"}):
+        from hermes_agent.tools.web_tools import _get_backend
+        with patch("hermes_agent.tools.web_tools._load_web_config", return_value={"backend": "parallel"}):
             assert _get_backend() == "parallel"
 
 
@@ -271,58 +271,58 @@ class TestBackendSelection:
 
     def test_fallback_parallel_only_key(self):
         """Only PARALLEL_API_KEY set → 'parallel'."""
-        from tools.web_tools import _get_backend
-        with patch("tools.web_tools._load_web_config", return_value={}), \
+        from hermes_agent.tools.web_tools import _get_backend
+        with patch("hermes_agent.tools.web_tools._load_web_config", return_value={}), \
              patch.dict(os.environ, {"PARALLEL_API_KEY": "test-key"}):
             assert _get_backend() == "parallel"
 
     def test_fallback_exa_only_key(self):
         """Only EXA_API_KEY set → 'exa'."""
-        from tools.web_tools import _get_backend
-        with patch("tools.web_tools._load_web_config", return_value={}), \
+        from hermes_agent.tools.web_tools import _get_backend
+        with patch("hermes_agent.tools.web_tools._load_web_config", return_value={}), \
              patch.dict(os.environ, {"EXA_API_KEY": "exa-test"}):
             assert _get_backend() == "exa"
 
     def test_fallback_exa_takes_priority_over_parallel(self):
         """Direct-credential backends are tried in the order tavily > exa > parallel > keenable
         so an explicit Exa key wins when both Exa and Parallel are configured."""
-        from tools.web_tools import _get_backend
-        with patch("tools.web_tools._load_web_config", return_value={}), \
+        from hermes_agent.tools.web_tools import _get_backend
+        with patch("hermes_agent.tools.web_tools._load_web_config", return_value={}), \
              patch.dict(os.environ, {"EXA_API_KEY": "exa-test", "PARALLEL_API_KEY": "par-test"}):
             assert _get_backend() == "exa"
 
     def test_fallback_keenable_only_key(self):
         """Only KEENABLE_API_KEY set → 'keenable'."""
-        from tools.web_tools import _get_backend
-        with patch("tools.web_tools._load_web_config", return_value={}), \
+        from hermes_agent.tools.web_tools import _get_backend
+        with patch("hermes_agent.tools.web_tools._load_web_config", return_value={}), \
              patch.dict(os.environ, {"KEENABLE_API_KEY": "kn-test"}):
             assert _get_backend() == "keenable"
 
     def test_fallback_exa_beats_firecrawl_direct(self):
         """Exa ranks above firecrawl in the explicit-credential block."""
-        from tools.web_tools import _get_backend
-        with patch("tools.web_tools._load_web_config", return_value={}), \
+        from hermes_agent.tools.web_tools import _get_backend
+        with patch("hermes_agent.tools.web_tools._load_web_config", return_value={}), \
              patch.dict(os.environ, {"EXA_API_KEY": "exa-test", "FIRECRAWL_API_KEY": "fc-test"}):
             assert _get_backend() == "exa"
 
     def test_fallback_tavily_only_key(self):
         """Only TAVILY_API_KEY set → 'tavily'."""
-        from tools.web_tools import _get_backend
-        with patch("tools.web_tools._load_web_config", return_value={}), \
+        from hermes_agent.tools.web_tools import _get_backend
+        with patch("hermes_agent.tools.web_tools._load_web_config", return_value={}), \
              patch.dict(os.environ, {"TAVILY_API_KEY": "tvly-test"}):
             assert _get_backend() == "tavily"
 
     def test_fallback_tavily_beats_firecrawl_direct(self):
         """Tavily ranks above firecrawl in the explicit-credential block."""
-        from tools.web_tools import _get_backend
-        with patch("tools.web_tools._load_web_config", return_value={}), \
+        from hermes_agent.tools.web_tools import _get_backend
+        with patch("hermes_agent.tools.web_tools._load_web_config", return_value={}), \
              patch.dict(os.environ, {"TAVILY_API_KEY": "tvly-test", "FIRECRAWL_API_KEY": "fc-test"}):
             assert _get_backend() == "tavily"
 
     def test_fallback_tavily_beats_exa(self):
         """Tavily ranks above Exa in the explicit-credential block."""
-        from tools.web_tools import _get_backend
-        with patch("tools.web_tools._load_web_config", return_value={}), \
+        from hermes_agent.tools.web_tools import _get_backend
+        with patch("hermes_agent.tools.web_tools._load_web_config", return_value={}), \
              patch.dict(os.environ, {"TAVILY_API_KEY": "tvly-test", "EXA_API_KEY": "exa-test"}):
             assert _get_backend() == "tavily"
 
@@ -330,15 +330,15 @@ class TestBackendSelection:
     def test_fallback_parallel_beats_firecrawl_direct(self):
         """Parallel + Firecrawl-direct → parallel (parallel is the higher-priority
         explicit-credential backend; firecrawl-direct ranks below it)."""
-        from tools.web_tools import _get_backend
-        with patch("tools.web_tools._load_web_config", return_value={}), \
+        from hermes_agent.tools.web_tools import _get_backend
+        with patch("hermes_agent.tools.web_tools._load_web_config", return_value={}), \
              patch.dict(os.environ, {"PARALLEL_API_KEY": "test-key", "FIRECRAWL_API_KEY": "fc-test"}):
             assert _get_backend() == "parallel"
 
     def test_fallback_firecrawl_only_key(self):
         """Only FIRECRAWL_API_KEY set → 'firecrawl'."""
-        from tools.web_tools import _get_backend
-        with patch("tools.web_tools._load_web_config", return_value={}), \
+        from hermes_agent.tools.web_tools import _get_backend
+        with patch("hermes_agent.tools.web_tools._load_web_config", return_value={}), \
              patch.dict(os.environ, {"FIRECRAWL_API_KEY": "fc-test"}):
             assert _get_backend() == "firecrawl"
 
@@ -349,11 +349,11 @@ class TestBackendSelection:
         the Parallel/Exa free tier instead — covered in
         test_web_keyless_fallback.py.
         """
-        from tools.web_tools import _get_backend
-        with patch("tools.web_tools._load_web_config", return_value={}), \
-             patch("tools.web_tools._is_tool_gateway_ready", return_value=False), \
-             patch("tools.web_tools._ddgs_package_importable", return_value=False), \
-             patch("tools.web_tools._list_registered_web_providers", return_value=[]), \
+        from hermes_agent.tools.web_tools import _get_backend
+        with patch("hermes_agent.tools.web_tools._load_web_config", return_value={}), \
+             patch("hermes_agent.tools.web_tools._is_tool_gateway_ready", return_value=False), \
+             patch("hermes_agent.tools.web_tools._ddgs_package_importable", return_value=False), \
+             patch("hermes_agent.tools.web_tools._list_registered_web_providers", return_value=[]), \
              patch("agent.web_search_registry._keyless_tier_enabled", return_value=False):
             assert _get_backend() == "firecrawl"
 
@@ -361,24 +361,24 @@ class TestBackendSelection:
         """Strict selection: web.backend=nonexistent is returned as-is so the
         dispatch path raises the honest selection-naming error — never
         silently rerouted through the credential ladder."""
-        from tools.web_tools import _get_backend
-        with patch("tools.web_tools._load_web_config", return_value={"backend": "nonexistent"}), \
+        from hermes_agent.tools.web_tools import _get_backend
+        with patch("hermes_agent.tools.web_tools._load_web_config", return_value={"backend": "nonexistent"}), \
              patch.dict(os.environ, {"PARALLEL_API_KEY": "test-key"}):
             assert _get_backend() == "nonexistent"
 
     def test_stored_backend_wins_over_other_credentials(self):
         """Strict selection: a stored web.backend beats env keys for other
         vendors — no availability probe, no credential override."""
-        from tools.web_tools import _get_backend
-        with patch("tools.web_tools._load_web_config", return_value={"backend": "firecrawl"}), \
+        from hermes_agent.tools.web_tools import _get_backend
+        with patch("hermes_agent.tools.web_tools._load_web_config", return_value={"backend": "firecrawl"}), \
              patch.dict(os.environ, {"EXA_API_KEY": "exa-test"}):
             assert _get_backend() == "firecrawl"
 
     def test_nous_backend_maps_to_firecrawl(self):
         """The managed 'nous' selection is serviced by the firecrawl
         provider (whose client resolver routes managed)."""
-        from tools.web_tools import _get_backend
-        with patch("tools.web_tools._load_web_config", return_value={"backend": "nous"}):
+        from hermes_agent.tools.web_tools import _get_backend
+        with patch("hermes_agent.tools.web_tools._load_web_config", return_value={"backend": "nous"}):
             assert _get_backend() == "firecrawl"
 
     def test_managed_gateway_does_not_preempt_explicit_exa(self):
@@ -387,17 +387,17 @@ class TestBackendSelection:
         Free Nous tiers don't include web search, so the user's deliberate
         Exa setup would fail at runtime with "no subscription" if the
         gateway pre-empted it."""
-        from tools.web_tools import _get_backend
-        with patch("tools.web_tools._load_web_config", return_value={}), \
-             patch("tools.web_tools._is_tool_gateway_ready", return_value=True), \
+        from hermes_agent.tools.web_tools import _get_backend
+        with patch("hermes_agent.tools.web_tools._load_web_config", return_value={}), \
+             patch("hermes_agent.tools.web_tools._is_tool_gateway_ready", return_value=True), \
              patch.dict(os.environ, {"EXA_API_KEY": "exa-test"}):
             assert _get_backend() == "exa"
 
     def test_managed_gateway_does_not_preempt_explicit_tavily(self):
         """A Nous OAuth token must not beat an explicit TAVILY_API_KEY."""
-        from tools.web_tools import _get_backend
-        with patch("tools.web_tools._load_web_config", return_value={}), \
-             patch("tools.web_tools._is_tool_gateway_ready", return_value=True), \
+        from hermes_agent.tools.web_tools import _get_backend
+        with patch("hermes_agent.tools.web_tools._load_web_config", return_value={}), \
+             patch("hermes_agent.tools.web_tools._is_tool_gateway_ready", return_value=True), \
              patch.dict(os.environ, {"TAVILY_API_KEY": "tvly-test"}):
             assert _get_backend() == "tavily"
 
@@ -405,9 +405,9 @@ class TestBackendSelection:
         """When no explicit-credential backend is configured, a Nous-managed
         gateway token still selects firecrawl — the convenience path is
         preserved, just no longer pre-empts."""
-        from tools.web_tools import _get_backend
-        with patch("tools.web_tools._load_web_config", return_value={}), \
-             patch("tools.web_tools._is_tool_gateway_ready", return_value=True):
+        from hermes_agent.tools.web_tools import _get_backend
+        with patch("hermes_agent.tools.web_tools._load_web_config", return_value={}), \
+             patch("hermes_agent.tools.web_tools._is_tool_gateway_ready", return_value=True):
             assert _get_backend() == "firecrawl"
 
 
@@ -415,8 +415,8 @@ class TestParallelClientConfig:
     """Test suite for Parallel client initialization."""
 
     def setup_method(self):
-        import tools.web_tools
-        tools.web_tools._parallel_client = None
+        import hermes_agent.tools.web_tools
+        hermes_agent.tools.web_tools._parallel_client = None
         os.environ.pop("PARALLEL_API_KEY", None)
         fake_parallel = types.ModuleType("parallel")
 
@@ -435,13 +435,13 @@ class TestParallelClientConfig:
         # lazy-dep gate (a version-pinned metadata check) must not refuse first
         # on an install without the parallel extra.
         self._lazy_gate_patch = patch(
-            "tools.lazy_deps.ensure", lambda *args, **kwargs: None
+            "hermes_agent.tools.lazy_deps.ensure", lambda *args, **kwargs: None
         )
         self._lazy_gate_patch.start()
 
     def teardown_method(self):
-        import tools.web_tools
-        tools.web_tools._parallel_client = None
+        import hermes_agent.tools.web_tools
+        hermes_agent.tools.web_tools._parallel_client = None
         os.environ.pop("PARALLEL_API_KEY", None)
         sys.modules.pop("parallel", None)
         self._lazy_gate_patch.stop()
@@ -491,8 +491,8 @@ class TestExaClientConfig:
     """Exa shares the key-checked client cache with Parallel."""
 
     def setup_method(self):
-        import tools.web_tools
-        tools.web_tools._exa_client = None
+        import hermes_agent.tools.web_tools
+        hermes_agent.tools.web_tools._exa_client = None
         os.environ.pop("EXA_API_KEY", None)
         fake_exa = types.ModuleType("exa_py")
 
@@ -507,12 +507,12 @@ class TestExaClientConfig:
 
         fake_exa.Exa = Exa
         sys.modules["exa_py"] = fake_exa
-        self._lazy_gate_patch = patch("tools.lazy_deps.ensure", lambda *args, **kwargs: None)
+        self._lazy_gate_patch = patch("hermes_agent.tools.lazy_deps.ensure", lambda *args, **kwargs: None)
         self._lazy_gate_patch.start()
 
     def teardown_method(self):
-        import tools.web_tools
-        tools.web_tools._exa_client = None
+        import hermes_agent.tools.web_tools
+        hermes_agent.tools.web_tools._exa_client = None
         os.environ.pop("EXA_API_KEY", None)
         sys.modules.pop("exa_py", None)
         self._lazy_gate_patch.stop()
@@ -561,7 +561,7 @@ class TestWebSearchSchema:
 
 
     def test_web_search_clamps_limit_before_backend_call(self):
-        import tools.web_tools
+        import hermes_agent.tools.web_tools
 
         # After the web-provider plugin migration, _parallel_search lives in
         # plugins.web.parallel.provider.ParallelWebSearchProvider.search; the
@@ -576,12 +576,12 @@ class TestWebSearchSchema:
         fake_provider.search = fake_search
         fake_provider.name = "parallel"
 
-        with patch("tools.web_tools._get_search_backend", return_value="parallel"), \
+        with patch("hermes_agent.tools.web_tools._get_search_backend", return_value="parallel"), \
              patch("agent.web_search_registry.get_provider", return_value=fake_provider), \
-             patch("tools.interrupt.is_interrupted", return_value=False), \
-             patch.object(tools.web_tools._debug, "log_call"), \
-             patch.object(tools.web_tools._debug, "save"):
-            result = json.loads(tools.web_tools.web_search_tool("docs", limit=500))
+             patch("hermes_agent.tools.interrupt.is_interrupted", return_value=False), \
+             patch.object(hermes_agent.tools.web_tools._debug, "log_call"), \
+             patch.object(hermes_agent.tools.web_tools._debug, "save"):
+            result = json.loads(hermes_agent.tools.web_tools.web_search_tool("docs", limit=500))
 
         assert result == {"success": True, "data": {"web": []}}
         fake_search.assert_called_once_with("docs", 100)
@@ -591,7 +591,7 @@ class TestWebSearchErrorHandling:
     """Test suite for web_search_tool() error responses."""
 
     def test_search_error_response_does_not_expose_diagnostics(self):
-        import tools.web_tools
+        import hermes_agent.tools.web_tools
 
         # After the web-provider plugin migration, the firecrawl client lives
         # at plugins.web.firecrawl.provider._get_firecrawl_client. We mock the
@@ -604,12 +604,12 @@ class TestWebSearchErrorHandling:
         fake_provider.search.side_effect = RuntimeError("boom")
         fake_provider.name = "firecrawl"
 
-        with patch("tools.web_tools._get_search_backend", return_value="firecrawl"), \
+        with patch("hermes_agent.tools.web_tools._get_search_backend", return_value="firecrawl"), \
              patch("agent.web_search_registry.get_provider", return_value=fake_provider), \
-             patch("tools.interrupt.is_interrupted", return_value=False), \
-             patch.object(tools.web_tools._debug, "log_call") as mock_log_call, \
-             patch.object(tools.web_tools._debug, "save"):
-            result = json.loads(tools.web_tools.web_search_tool("test query", limit=3))
+             patch("hermes_agent.tools.interrupt.is_interrupted", return_value=False), \
+             patch.object(hermes_agent.tools.web_tools._debug, "log_call") as mock_log_call, \
+             patch.object(hermes_agent.tools.web_tools._debug, "save"):
+            result = json.loads(hermes_agent.tools.web_tools.web_search_tool("test query", limit=3))
 
         assert result == {"error": "Error searching web: boom"}
 
@@ -643,14 +643,14 @@ class TestCheckWebApiKey:
         for key in self._ENV_KEYS:
             os.environ.pop(key, None)
         self._managed_patchers = [
-            patch("tools.tool_backend_helpers.managed_nous_tools_enabled", return_value=True),
-            patch("tools.managed_tool_gateway.managed_nous_tools_enabled", return_value=True),
+            patch("hermes_agent.tools.tool_backend_helpers.managed_nous_tools_enabled", return_value=True),
+            patch("hermes_agent.tools.managed_tool_gateway.managed_nous_tools_enabled", return_value=True),
             # ddgs availability is package-presence driven and the plugin
             # registry can hold an available ddgs provider. Neutralize both
             # fallback surfaces so this class only exercises env-key/gateway
             # resolution — otherwise these tests flip on machines where the
             # optional ``ddgs`` package is installed (dev venvs) vs CI.
-            patch("tools.web_tools._ddgs_package_importable", return_value=False),
+            patch("hermes_agent.tools.web_tools._ddgs_package_importable", return_value=False),
             patch("agent.web_search_registry.get_active_search_provider", return_value=None),
             patch("agent.web_search_registry.get_active_extract_provider", return_value=None),
         ]
@@ -665,28 +665,28 @@ class TestCheckWebApiKey:
 
     def test_parallel_key_only(self):
         with patch.dict(os.environ, {"PARALLEL_API_KEY": "test-key"}):
-            from tools.web_tools import check_web_api_key
+            from hermes_agent.tools.web_tools import check_web_api_key
             assert check_web_api_key() is True
 
     def test_exa_key_only(self):
         with patch.dict(os.environ, {"EXA_API_KEY": "exa-test"}):
-            from tools.web_tools import check_web_api_key
+            from hermes_agent.tools.web_tools import check_web_api_key
             assert check_web_api_key() is True
 
     def test_null_backend_value_does_not_crash(self):
         # config.yaml with ``web:\n  backend:`` yields backend=None. The gate
         # must not raise AttributeError on None.lower() — mirrors _get_backend.
-        with patch("tools.web_tools._load_web_config", return_value={"backend": None}):
-            from tools.web_tools import check_web_api_key
+        with patch("hermes_agent.tools.web_tools._load_web_config", return_value={"backend": None}):
+            from hermes_agent.tools.web_tools import check_web_api_key
             assert check_web_api_key() is False
 
     def test_configured_xai_backend_still_lights_gate(self):
         """An explicit ``web.backend: xai`` selection still counts toward the
         gate: the bundled web-xai plugin's provider can serve it when loaded,
         and a stored selection is returned as-is by _get_backend either way."""
-        with patch("tools.web_tools._load_web_config", return_value={"backend": "xai"}), \
-             patch("tools.xai_http.has_xai_credentials", return_value=True):
-            from tools.web_tools import check_web_api_key
+        with patch("hermes_agent.tools.web_tools._load_web_config", return_value={"backend": "xai"}), \
+             patch("hermes_agent.tools.xai_http.has_xai_credentials", return_value=True):
+            from hermes_agent.tools.web_tools import check_web_api_key
             assert check_web_api_key() is True
 
     def test_xai_only_env_end_to_end_toolset_gate(self, monkeypatch, tmp_path):
@@ -698,10 +698,10 @@ class TestCheckWebApiKey:
         monkeypatch.setenv("XAI_API_KEY", "xai-test-key")
         for k in ("PERPLEXITY_API_KEY", "SEARXNG_URL", "BRAVE_SEARCH_API_KEY"):
             monkeypatch.delenv(k, raising=False)
-        from tools.registry import invalidate_check_fn_cache
-        import model_tools
+        from hermes_agent.tools.registry import invalidate_check_fn_cache
+        from hermes_agent import model_tools
 
-        with patch("tools.web_tools._load_web_config", return_value={}):
+        with patch("hermes_agent.tools.web_tools._load_web_config", return_value={}):
             invalidate_check_fn_cache()
             names = {d["function"]["name"]
                      for d in model_tools.get_tool_definitions(enabled_toolsets=["web"])}
@@ -715,10 +715,10 @@ class TestCheckWebApiKey:
 
 
     def test_configured_firecrawl_backend_accepts_managed_gateway(self):
-        with patch("tools.web_tools._load_web_config", return_value={"backend": "firecrawl"}):
-            with patch("tools.managed_tool_gateway.peek_nous_access_token", return_value="nous-token"):
+        with patch("hermes_agent.tools.web_tools._load_web_config", return_value={"backend": "firecrawl"}):
+            with patch("hermes_agent.tools.managed_tool_gateway.peek_nous_access_token", return_value="nous-token"):
                 with patch.dict(os.environ, {"FIRECRAWL_GATEWAY_URL": "http://127.0.0.1:3002"}, clear=False):
-                    from tools.web_tools import check_web_api_key
+                    from hermes_agent.tools.web_tools import check_web_api_key
                     assert check_web_api_key() is True
 
     def test_explicit_unavailable_active_provider_is_not_ready(self):
@@ -733,8 +733,8 @@ class TestCheckWebApiKey:
                 return False
 
         unavailable = _UnavailableProvider()
-        with patch("tools.web_tools._load_web_config", return_value={"backend": "firecrawl"}), \
-             patch("tools.web_tools._is_backend_available", return_value=False), \
+        with patch("hermes_agent.tools.web_tools._load_web_config", return_value={"backend": "firecrawl"}), \
+             patch("hermes_agent.tools.web_tools._is_backend_available", return_value=False), \
              patch(
                  "agent.web_search_registry.get_active_search_provider",
                  return_value=unavailable,
@@ -743,7 +743,7 @@ class TestCheckWebApiKey:
                  "agent.web_search_registry.get_active_extract_provider",
                  return_value=unavailable,
              ):
-            from tools.web_tools import check_web_api_key, _provider_is_ready
+            from hermes_agent.tools.web_tools import check_web_api_key, _provider_is_ready
             assert _provider_is_ready(unavailable) is False
             assert check_web_api_key() is False
 
@@ -756,8 +756,8 @@ class TestCheckWebApiKey:
                 return True
 
         available = _AvailableProvider()
-        with patch("tools.web_tools._load_web_config", return_value={"backend": "custom-ok"}), \
-             patch("tools.web_tools._is_backend_available", return_value=False), \
+        with patch("hermes_agent.tools.web_tools._load_web_config", return_value={"backend": "custom-ok"}), \
+             patch("hermes_agent.tools.web_tools._is_backend_available", return_value=False), \
              patch(
                  "agent.web_search_registry.get_active_search_provider",
                  return_value=available,
@@ -766,7 +766,7 @@ class TestCheckWebApiKey:
                  "agent.web_search_registry.get_active_extract_provider",
                  return_value=None,
              ):
-            from tools.web_tools import check_web_api_key
+            from hermes_agent.tools.web_tools import check_web_api_key
             assert check_web_api_key() is True
 
 
@@ -847,28 +847,28 @@ class TestNonBuiltinProviderAvailability:
     def test_check_web_api_key_returns_true_for_custom_provider(self):
         """With only a custom provider registered (no built-in creds),
         check_web_api_key() must return True."""
-        with patch("tools.web_tools._ddgs_package_importable", return_value=False), \
-             patch("tools.managed_tool_gateway.peek_nous_access_token", return_value=None):
-            from tools.web_tools import check_web_api_key
+        with patch("hermes_agent.tools.web_tools._ddgs_package_importable", return_value=False), \
+             patch("hermes_agent.tools.managed_tool_gateway.peek_nous_access_token", return_value=None):
+            from hermes_agent.tools.web_tools import check_web_api_key
             assert check_web_api_key() is True
 
     def test_get_backend_discovers_custom_provider(self):
         """_get_backend() must return the custom provider name when it's
         the only available provider."""
-        with patch("tools.web_tools._ddgs_package_importable", return_value=False), \
-             patch("tools.managed_tool_gateway.peek_nous_access_token", return_value=None):
-            from tools.web_tools import _get_backend
+        with patch("hermes_agent.tools.web_tools._ddgs_package_importable", return_value=False), \
+             patch("hermes_agent.tools.managed_tool_gateway.peek_nous_access_token", return_value=None):
+            from hermes_agent.tools.web_tools import _get_backend
             assert _get_backend() == "fake-plugin-prov"
 
 
     def test_capability_backend_honors_custom_extract_provider(self):
         """Per-capability selection (_get_extract_backend) must resolve the
         custom provider when configured, instead of dead-ending — issue #32698."""
-        with patch("tools.web_tools._ddgs_package_importable", return_value=False), \
-             patch("tools.managed_tool_gateway.peek_nous_access_token", return_value=None), \
-             patch("tools.web_tools._load_web_config",
+        with patch("hermes_agent.tools.web_tools._ddgs_package_importable", return_value=False), \
+             patch("hermes_agent.tools.managed_tool_gateway.peek_nous_access_token", return_value=None), \
+             patch("hermes_agent.tools.web_tools._load_web_config",
                    return_value={"extract_backend": "fake-plugin-prov"}):
-            from tools.web_tools import _get_extract_backend
+            from hermes_agent.tools.web_tools import _get_extract_backend
             assert _get_extract_backend() == "fake-plugin-prov"
 
 
@@ -1021,11 +1021,11 @@ def test_xai_only_gate_agrees_with_dispatcher_when_web_xai_plugin_loaded(monkeyp
         registry._providers.clear()
     registry.register_provider(XAIWebSearchProvider())
     try:
-        with patch("tools.web_tools._load_web_config", return_value={}), \
-             patch("tools.web_tools._ensure_web_plugins_loaded", lambda: None), \
-             patch("tools.web_tools.check_firecrawl_api_key", return_value=False), \
+        with patch("hermes_agent.tools.web_tools._load_web_config", return_value={}), \
+             patch("hermes_agent.tools.web_tools._ensure_web_plugins_loaded", lambda: None), \
+             patch("hermes_agent.tools.web_tools.check_firecrawl_api_key", return_value=False), \
              patch("agent.web_search_registry._keyless_tier_enabled", return_value=False):
-            from tools.web_tools import _get_backend, check_web_api_key
+            from hermes_agent.tools.web_tools import _get_backend, check_web_api_key
             assert registry.get_active_search_provider().name == "xai"
             assert _get_backend() == "firecrawl"  # legacy sentinel: nothing servable
             assert check_web_api_key() is False

@@ -47,7 +47,7 @@ class TestWrapCommandAdvertisesHarness:
     """The shell-level export in BaseEnvironment._wrap_command."""
 
     def _wrap(self, command: str) -> str:
-        from tools.environments.local import LocalEnvironment
+        from hermes_agent.tools.environments.local import LocalEnvironment
 
         env = LocalEnvironment.__new__(LocalEnvironment)
         env._snapshot_ready = False

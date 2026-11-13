@@ -10,7 +10,7 @@ Cloud-sandbox persistent filesystems preserve working state across sandbox
 recreation but do NOT guarantee the same live sandbox or long-running
 processes survive cleanup, idle reaping, or Hermes exit.
 
-Companion modules (re-exported here, so ``tools.terminal_tool.<name>`` stays the
+Companion modules (re-exported here, so ``hermes_agent.tools.terminal_tool.<name>`` stays the
 import/patch target): ``terminal_tool_config`` (TERMINAL_* reads, ``_quiet``),
 ``terminal_tool_backends`` (env builders + requirement checkers),
 ``terminal_tool_lifecycle`` (reaper/teardown/ensure_task_env),
@@ -39,23 +39,23 @@ def _redact_terminal_error_text(value: Any) -> str:
     return redact_sensitive_text("" if value is None else str(value), force=True)
 
 
-from tools.registry import tool_error
-from tools.terminal_tool_lifecycle import (
+from hermes_agent.tools.registry import tool_error
+from hermes_agent.tools.terminal_tool_lifecycle import (
     _call_in_flight, _cleanup_inactive_envs, _create_configured_env,
     _evict_environment_for_task, cleanup_all_environments, ensure_task_env,
 )
-from tools.terminal_tool_config import (
+from hermes_agent.tools.terminal_tool_config import (
     _is_container_backend, _is_host_cwd, _is_mounted_host_cwd, _is_unusable_container_cwd,
     _is_windows_drive_path, _parse_env_var, _plugin_env_flag, _quiet, _safe_getcwd, _tenv, _tenv_bool,
     _in_sandbox_home, coerce_ssh_remote_cwd, home_profile_name, profile_container_key,
     translate_mounted_host_path,
 )
-from tools.terminal_tool_backends import (
+from hermes_agent.tools.terminal_tool_backends import (
     _REQUIREMENT_CHECKERS, _VERCEL_SANDBOX_DEFAULT_CWD, _check_plugin_requirements,
     _record_unavailable_reason, terminal_backend_unavailable_reason,
 )
 # display_hermes_home imported lazily at call site (stale-module safety during hermes update)
-from tools.tool_backend_helpers import coerce_modal_mode, managed_nous_tools_enabled
+from hermes_agent.tools.tool_backend_helpers import coerce_modal_mode, managed_nous_tools_enabled
 
 
 def _safe_parse_import_env(name: str, default: Any, converter, type_label: str):
@@ -81,7 +81,7 @@ FOREGROUND_MAX_TIMEOUT = _safe_parse_import_env("TERMINAL_MAX_FOREGROUND_TIMEOUT
 # Approval / sudo-prompt UI callbacks (CLI registers prompt_toolkit-aware
 # ones). Thread-local so overlapping ACP sessions, each on its own executor
 # thread, can't stomp on each other (GHSA-qg5c-hvr5-hjgr). Gateway mode
-# resolves approvals via the per-session queue in tools.approval instead.
+# resolves approvals via the per-session queue in hermes_agent.tools.approval instead.
 _callback_tls = threading.local()
 
 
@@ -127,7 +127,7 @@ def _container_profile() -> str:
     named profile stamps none on its own chats) is the launch profile's, so it keys that profile by name, like
     the profile's Desktop sessions and its session-less work (:func:`_sessionless_container_key`)."""
     from hermes_constants import get_hermes_home_override, profile_name_for_home
-    from tools.environments.local import _is_routed_home
+    from hermes_agent.tools.environments.local import _is_routed_home
 
     override = get_hermes_home_override()
     session = _current_session_profile()
@@ -137,7 +137,7 @@ def _container_profile() -> str:
     return session or home_profile_name()
 
 
-from tools.approval import (
+from hermes_agent.tools.approval import (
     check_all_command_guards as _check_all_guards_impl,
 )
 
@@ -172,7 +172,7 @@ def _check_all_guards(command: str, env_type: str,
                                   has_host_access=has_host_access)
 
 
-from tools.environments.base import EnvironmentConnectionError
+from hermes_agent.tools.environments.base import EnvironmentConnectionError
 
 
 # Tool description for LLM
@@ -228,7 +228,7 @@ def _maybe_reap_docker_orphans(container_config: dict[str, Any]) -> None:
     max_age = max(60, lifetime) * 2
 
     try:
-        from tools.environments.docker import reap_orphan_containers, _container_identity
+        from hermes_agent.tools.environments.docker import reap_orphan_containers, _container_identity
     except ImportError:
         return
     # Never fail the env-creation path because of a janitor problem.
@@ -354,7 +354,7 @@ def register_task_env_overrides(task_id: str, overrides: dict[str, Any]):
         # Live env may be cached under the raw task_id (per-session surfaces)
         # or the collapsed container id (isolation-keyed rollouts); try both so
         # a CWD-only override (which collapses to "default") still finds it.
-        from tools.environments.sandbox_scope import hosted_scope
+        from hermes_agent.tools.environments.sandbox_scope import hosted_scope
         container_id = _resolve_container_task_id(task_id)
         with _env_lock:
             # A hosted scope's only environment is its sandbox; a raw task id may name anyone's.
@@ -473,7 +473,7 @@ def _routed_home_task_key(profile_scoped: bool) -> Optional[str]:
     container instead of a second one per home path.
     """
     from hermes_constants import get_hermes_home_override, profile_name_for_home
-    from tools.environments.local import _is_routed_home
+    from hermes_agent.tools.environments.local import _is_routed_home
 
     override = get_hermes_home_override()
     if not override or not _is_routed_home(override):
@@ -515,7 +515,7 @@ def _qualify_task_key(key: str) -> str:
     qualifies with its sandbox key, so two agents' identical task ids never share a record. CLI and
     single-profile gateways (no routed home) keep the historical raw key.
     """
-    from tools.environments.sandbox_scope import current_sandbox_key
+    from hermes_agent.tools.environments.sandbox_scope import current_sandbox_key
     scope = current_sandbox_key() or _routed_home_task_key(profile_scoped=True)
     return f"{scope}:{key}" if scope else key
 
@@ -544,9 +544,9 @@ def _resolve_container_task_id(task_id: Optional[str]) -> str:
        profile's session-bound work); else ``"default"``.
 
     A hosted scope overrides all four: its key is the agent's sandbox identity
-    (``tools.environments.sandbox_scope``), whatever task id the call carries.
+    (``hermes_agent.tools.environments.sandbox_scope``), whatever task id the call carries.
     """
-    from tools.environments.sandbox_scope import current_sandbox_key
+    from hermes_agent.tools.environments.sandbox_scope import current_sandbox_key
     hosted_key = current_sandbox_key()
     if hosted_key:
         return hosted_key
@@ -635,7 +635,7 @@ def resolve_task_overrides(task_id: Optional[str]) -> dict[str, Any]:
     session's override is silently dropped. Single source of that lookup so
     the terminal and file layers can't drift apart.
     """
-    from tools.environments.sandbox_scope import hosted_scope
+    from hermes_agent.tools.environments.sandbox_scope import hosted_scope
     raw = task_id or "default"
     if hosted_scope() is not None:
         # The collapsed id is the agent's bare sandbox key, which only an unscoped registration
@@ -675,7 +675,7 @@ def _lookup_active_env(effective_task_id: str, task_id: Optional[str]):
     instead of spawning a duplicate. Refreshes ``_last_activity`` on a hit. A hosted scope reads
     only its sandbox key and is refused anything but its own sandbox there.
     """
-    from tools.environments.sandbox_scope import admit_env, hosted_scope
+    from hermes_agent.tools.environments.sandbox_scope import admit_env, hosted_scope
     for key in (effective_task_id, task_id) if hosted_scope() is None else (effective_task_id,):
         if key and key in _active_environments:
             _last_activity[key] = time.time()
@@ -781,7 +781,7 @@ def _ensure_terminal_env_bridged() -> None:
 
     terminal_tool reads ALL terminal settings from os.environ (TERMINAL_*). See #61115, #65696.
     """
-    from tools.terminal_scope import get_terminal_scope
+    from hermes_agent.tools.terminal_scope import get_terminal_scope
 
     if get_terminal_scope() is not None:
         return
@@ -832,7 +832,7 @@ def _resolve_config_cwd(env_type: str, mount_docker_cwd: bool) -> tuple:
     default_cwd = _backend_default_cwd(env_type)
     cwd = _tenv("TERMINAL_CWD", default_cwd)
     from hermes_cli.config import _is_ssh_remote_tilde_cwd
-    from tools.environments.sandbox_scope import hosted_scope
+    from hermes_agent.tools.environments.sandbox_scope import hosted_scope
     # The backend's own default is an in-sandbox path: its ``~`` is the sandbox home, not ours. So is a
     # hosted scope's ``~``: it names that agent's sandbox home, never this host's HOME.
     if cwd and cwd != default_cwd and not _is_ssh_remote_tilde_cwd(env_type, cwd) and hosted_scope() is None:
@@ -993,9 +993,9 @@ def _atexit_cleanup():
                 with _quiet("wait_for_cleanup raised on exit"):  # never block shutdown on a bad backend
                     wait_fn(timeout=15.0)
     # Workers of envs the idle reaper already detached are not in the registry (#86317).
-    if "tools.environments.docker" in sys.modules:
+    if "hermes_agent.tools.environments.docker" in sys.modules:
         with _quiet("teardown drain raised on exit"):
-            sys.modules["tools.environments.docker"].DockerEnvironment.wait_for_all_teardowns(timeout=15.0)
+            sys.modules["hermes_agent.tools.environments.docker"].DockerEnvironment.wait_for_all_teardowns(timeout=15.0)
 
 atexit.register(_atexit_cleanup)
 
@@ -1008,12 +1008,12 @@ def _command_requires_pipe_stdin(command: str) -> bool:
     return normalized.startswith("gh auth login") and "--with-token" in normalized
 
 
-from tools.terminal_tool_guards import (
+from hermes_agent.tools.terminal_tool_guards import (
     _foreground_background_guidance, _safe_command_preview, _validate_workdir,
     gateway_lifecycle_block, locked_skill_block, self_repo_block, trailing_amp_background_command,
 )
-from tools.terminal_tool_background import _YIELDED_NOTE, spawn_background_process, yield_to_background_handler
-from tools.terminal_tool_result import finalize_foreground_result
+from hermes_agent.tools.terminal_tool_background import _YIELDED_NOTE, spawn_background_process, yield_to_background_handler
+from hermes_agent.tools.terminal_tool_result import finalize_foreground_result
 
 
 def _resolve_notification_flag_conflict(*, notify_on_complete: bool, watch_patterns, background: bool) -> tuple:
@@ -1136,7 +1136,7 @@ def _fatal_error_json(e: BaseException) -> str:
     in it), so both fields are force-redacted before reaching the model.
     """
     import traceback
-    from tools.environments.sandbox_scope import hosted_scope
+    from hermes_agent.tools.environments.sandbox_scope import hosted_scope
     tb_str = traceback.format_exc()
     logger.error("terminal_tool exception:\n%s", tb_str)
     body = {
@@ -1208,7 +1208,7 @@ def _run_approval_guards(command: str, env_type: str, config: dict[str, Any], *,
     if approval.get("smart_approved"):
         return _ApprovalVerdict(note=f"Command was flagged ({desc}) and auto-approved by smart approval.")
     if approval.get("pre_approved"):
-        from tools.approval_provenance import preapproval_note
+        from hermes_agent.tools.approval_provenance import preapproval_note
         return _ApprovalVerdict(note=preapproval_note(approval["pre_approved"]))
     return _ApprovalVerdict()
 
@@ -1263,7 +1263,7 @@ def _plan_execution(
     # ambient policy is forbidden.
     # See #68559.
     if not _host_local:
-        from tools.terminal_scope import enforce_no_refusal
+        from hermes_agent.tools.terminal_scope import enforce_no_refusal
 
         enforce_no_refusal()
 
@@ -1420,7 +1420,7 @@ def _run_foreground(
     # a genuine interrupt during the backoff sleep must survive and abort
     # the next attempt (rc 130).
     if clear_interrupt:
-        from tools.interrupt import clear_current_thread_interrupt
+        from hermes_agent.tools.interrupt import clear_current_thread_interrupt
         clear_current_thread_interrupt()
 
     for retry_count in range(max_retries + 1):
@@ -1588,7 +1588,7 @@ def terminal_tool(
             # Session key for cwd records: the contextvar doesn't cross tool-worker
             # threads, so fall back to the raw task_id (the top-level agent's
             # session_key) as a stable anchor.
-            from tools.approval import get_current_session_key
+            from hermes_agent.tools.approval import get_current_session_key
 
             session_key = get_current_session_key(default="") or (task_id or "")
             # A delegated child inherits its parent's session key (approvals, completion routing),
@@ -1608,7 +1608,7 @@ def terminal_tool(
             # unconditionally (``force`` cannot bypass them), so the command is
             # refused with a retryable error instead of running unguarded.
             from agent.deadline import run_bounded_sync
-            from tools.interrupt import acting_for_tid
+            from hermes_agent.tools.interrupt import acting_for_tid
 
             # The guard chain runs on the deadline worker; keep it answerable to /stop
             # aimed at this tool thread (a remote-backend script read polls is_interrupted()).
@@ -1682,7 +1682,7 @@ def check_terminal_requirements() -> bool:
         return False
 
 
-from tools.registry import registry
+from hermes_agent.tools.registry import registry
 
 TERMINAL_SCHEMA = {
     "name": "terminal",

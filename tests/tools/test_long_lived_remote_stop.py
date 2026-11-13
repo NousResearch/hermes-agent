@@ -17,7 +17,7 @@ import time
 import pytest
 
 from tests.waiting import wait_until
-from tools.environments.base_processes import LongLivedProcessMixin
+from hermes_agent.tools.environments.base_processes import LongLivedProcessMixin
 
 
 class _PrefixEnv(LongLivedProcessMixin):

@@ -48,7 +48,7 @@ _ROUTE_DEFAULT_HEADERS = (
     ("chatgpt.com", lambda self, url: _lazy_attr("agent.codex_headers", "codex_cloudflare_headers")(
         self._client_kwargs.get("api_key", ""), base_url=url)),
     # Covers provider=xai and provider=xai-oauth (api.x.ai).
-    ("x.ai", lambda self, url: _lazy_attr("tools.xai_http", "hermes_xai_default_headers")()),
+    ("x.ai", lambda self, url: _lazy_attr("hermes_agent.tools.xai_http", "hermes_xai_default_headers")()),
 )
 
 
@@ -105,7 +105,7 @@ class ClientLifecycleMixin:
         from run_agent import _quietly, cleanup_browser, cleanup_vm
 
         def kill_processes() -> None:
-            from tools.process_registry import process_registry
+            from hermes_agent.tools.process_registry import process_registry
             # A session can run several task IDs; delegated IDs also differ from session_id.
             # Never match the environment key (e.g. "default"), shared by parent and siblings.
             owners = getattr(self, "_process_owner_task_ids", ())
@@ -121,14 +121,14 @@ class ClientLifecycleMixin:
                     )
 
         def release_computer_use() -> None:
-            from tools.computer_use.tool import release_computer_use_session
+            from hermes_agent.tools.computer_use.tool import release_computer_use_session
             release_computer_use_session(task_id)
 
         def forget_file_state() -> None:
             # File tools key their read stamps / writer claims by the per-turn task_id (cron:
             # ``cron:<job>:<uuid>``, subagents: ``subagent-N-xxxx``), which differs from session_id;
             # cleanup_vm(session_id) alone leaves a finished run looking like a live sibling (#114446).
-            from tools.file_tools import clear_file_ops_cache
+            from hermes_agent.tools.file_tools import clear_file_ops_cache
             for owner in getattr(self, "_process_owner_task_ids", ()):
                 if owner and owner != task_id:
                     clear_file_ops_cache(owner)

@@ -75,7 +75,7 @@ class TestTurnRouting:
 
     def test_default_desktop_session_with_tool_search_gets_the_note(self):
         """Real toolset resolution + real defer list: read_window_below is deferred, not dropped."""
-        from tools.registry import discover_builtin_tools
+        from hermes_agent.tools.registry import discover_builtin_tools
 
         discover_builtin_tools()
         enabled = server._load_enabled_toolsets("desktop")

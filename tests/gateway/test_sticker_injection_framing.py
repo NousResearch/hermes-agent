@@ -35,7 +35,7 @@ def test_handle_sticker_frames_a_fresh_vision_transcript(monkeypatch):
     """Production entry point: a cache-miss sticker goes through vision, and the text the gateway
     hands the agent is the framed, single-line note."""
     import plugins.platforms.telegram.adapter as tg
-    from tools import vision_tools
+    from hermes_agent.tools import vision_tools
 
     async def fetch(_sticker, _what, *_a, **_k):
         return None, b"webp"

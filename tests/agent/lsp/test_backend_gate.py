@@ -26,7 +26,7 @@ def _reset():
 
 
 def test_maybe_lsp_diagnostics_returns_empty_for_non_local(monkeypatch):
-    from tools.file_operations import ShellFileOperations
+    from hermes_agent.tools.file_operations import ShellFileOperations
 
     fake_env = MagicMock()
     fake_env.execute = MagicMock(return_value=MagicMock(exit_code=0, stdout=""))
@@ -52,8 +52,8 @@ def test_maybe_lsp_diagnostics_returns_empty_for_non_local(monkeypatch):
 
 def test_edit_check_started_for_local_env(tmp_path, monkeypatch):
     """The local backend hands the written file and its pre-/post-edit text to the service's edit check."""
-    from tools.environments.local import LocalEnvironment
-    from tools.file_operations import ShellFileOperations
+    from hermes_agent.tools.environments.local import LocalEnvironment
+    from hermes_agent.tools.file_operations import ShellFileOperations
 
     fops = ShellFileOperations(LocalEnvironment(cwd=str(tmp_path)))
     started = []

@@ -8,7 +8,7 @@ from contextlib import contextmanager
 
 from tests.tools.test_sandbox_scope_conformance import A
 from tests.tools.test_sandbox_scope_conformance import provider as _conformance_provider
-from tools.environments import sandbox_conformance as c
+from hermes_agent.tools.environments import sandbox_conformance as c
 
 provider = _conformance_provider  # the recording-sandbox fixture, by its name
 
@@ -17,9 +17,9 @@ provider = _conformance_provider  # the recording-sandbox fixture, by its name
 def _running_under_replaced_env(provider):
     """Start a hosted background process through the terminal tool, then cache a second environment
     of the same sandbox (created and wrapped as the hosted cache holds it) under the sandbox key."""
-    from tools import terminal_tool
-    from tools.environments.sandbox_scope import create_hosted_environment
-    from tools.process_registry import process_registry
+    from hermes_agent.tools import terminal_tool
+    from hermes_agent.tools.environments.sandbox_scope import create_hosted_environment
+    from hermes_agent.tools.process_registry import process_registry
     with c._bind(A):
         started = c.call_tool("terminal", {"command": "sleep 600", "background": True}, task_id="t")
     session_id = started.get("session_id")
@@ -45,8 +45,8 @@ def test_hosted_sandbox_is_kept_while_a_process_carrying_its_key_runs(provider):
     """Pins the hosted keep-alive rule: a sandbox is kept while a process carrying its key runs, even
     when its cached environment is not the object that process was spawned through. No production
     path produces that state today; the cache entry is replaced directly."""
-    from tools import terminal_tool
-    from tools.terminal_tool_lifecycle import _cleanup_inactive_envs
+    from hermes_agent.tools import terminal_tool
+    from hermes_agent.tools.terminal_tool_lifecycle import _cleanup_inactive_envs
     with _running_under_replaced_env(provider) as (key, _session_id):
         c._age_sandbox(A)
         seen = len(provider.calls)
@@ -58,8 +58,8 @@ def test_hosted_sandbox_is_kept_while_a_process_carrying_its_key_runs(provider):
 def test_hosted_sandbox_is_suspended_once_that_process_has_exited(provider):
     """Control: in the same replaced-environment state, once the process is killed the next reaper pass
     suspends the sandbox (``stop_idle``); it is not destroyed."""
-    from tools import terminal_tool
-    from tools.terminal_tool_lifecycle import _cleanup_inactive_envs
+    from hermes_agent.tools import terminal_tool
+    from hermes_agent.tools.terminal_tool_lifecycle import _cleanup_inactive_envs
     with _running_under_replaced_env(provider) as (key, session_id):
         with c._bind(A):
             killed = c.call_tool("process_manage", {"action": "kill", "session_id": session_id}, task_id="t")

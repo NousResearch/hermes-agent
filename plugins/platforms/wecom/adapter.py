@@ -722,7 +722,7 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
     PROFILE's (``_live_adapter``): a bare ``runner.adapters`` hit is the default profile's bot under
     multiplex, so a secondary profile's send would leave with the wrong identity."""
     try:
-        from tools.send_message_senders import _live_adapter
+        from hermes_agent.tools.send_message_senders import _live_adapter
         _, adapter = _live_adapter(Platform.WECOM)
     except Exception:
         adapter = None

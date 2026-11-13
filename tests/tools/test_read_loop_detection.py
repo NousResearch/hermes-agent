@@ -19,9 +19,9 @@ import json
 import unittest
 from unittest.mock import patch, MagicMock
 
-from tools.file_tools import read_file_tool, search_tool
-from tools.file_tools_read_tracking import _read_tracker
-from tools.file_tools_read_tracking import notify_other_tool_call
+from hermes_agent.tools.file_tools import read_file_tool, search_tool
+from hermes_agent.tools.file_tools_read_tracking import _read_tracker
+from hermes_agent.tools.file_tools_read_tracking import notify_other_tool_call
 
 
 class _FakeReadResult:
@@ -64,7 +64,7 @@ class TestReadLoopDetection(unittest.TestCase):
         _read_tracker.clear()
 
 
-    @patch("tools.file_tools._get_file_ops", return_value=_make_fake_file_ops())
+    @patch("hermes_agent.tools.file_tools._get_file_ops", return_value=_make_fake_file_ops())
     def test_second_consecutive_read_no_warning(self, _mock_ops):
         """2nd consecutive read should NOT warn (threshold is 3)."""
         read_file_tool("/tmp/test.py", offset=1, limit=500, task_id="t1")
@@ -75,7 +75,7 @@ class TestReadLoopDetection(unittest.TestCase):
         self.assertIn("content", result)
 
 
-    @patch("tools.file_tools._get_file_ops", return_value=_make_fake_file_ops())
+    @patch("hermes_agent.tools.file_tools._get_file_ops", return_value=_make_fake_file_ops())
     def test_fourth_consecutive_read_is_blocked(self, _mock_ops):
         """4th consecutive read of the same region is BLOCKED — no content."""
         for _ in range(3):
@@ -87,7 +87,7 @@ class TestReadLoopDetection(unittest.TestCase):
 
 
 
-    @patch("tools.file_tools._get_file_ops", return_value=_make_fake_file_ops())
+    @patch("hermes_agent.tools.file_tools._get_file_ops", return_value=_make_fake_file_ops())
     def test_warning_still_returns_content(self, _mock_ops):
         """Even with a warning (3rd read), the file content is still returned."""
         for _ in range(2):
@@ -107,7 +107,7 @@ class TestNotifyOtherToolCall(unittest.TestCase):
     def tearDown(self):
         _read_tracker.clear()
 
-    @patch("tools.file_tools._get_file_ops", return_value=_make_fake_file_ops())
+    @patch("hermes_agent.tools.file_tools._get_file_ops", return_value=_make_fake_file_ops())
     def test_other_tool_resets_consecutive(self, _mock_ops):
         """After another tool runs, re-reading the same file is NOT consecutive."""
         read_file_tool("/tmp/test.py", task_id="t1")
@@ -119,7 +119,7 @@ class TestNotifyOtherToolCall(unittest.TestCase):
         self.assertNotIn("_warning", result)
         self.assertIn("content", result)
 
-    @patch("tools.file_tools._get_file_ops", return_value=_make_fake_file_ops())
+    @patch("hermes_agent.tools.file_tools._get_file_ops", return_value=_make_fake_file_ops())
     def test_other_tool_prevents_block(self, _mock_ops):
         """Agent can keep reading if other tools are used in between."""
         for i in range(10):
@@ -143,7 +143,7 @@ class TestSearchLoopDetection(unittest.TestCase):
         _read_tracker.clear()
 
 
-    @patch("tools.file_tools._get_file_ops", return_value=_make_fake_file_ops())
+    @patch("hermes_agent.tools.file_tools._get_file_ops", return_value=_make_fake_file_ops())
     def test_second_consecutive_search_no_warning(self, _mock_ops):
         """2nd consecutive search should NOT warn (threshold is 3)."""
         search_tool("def main", task_id="t1")
@@ -152,7 +152,7 @@ class TestSearchLoopDetection(unittest.TestCase):
         self.assertNotIn("error", result)
 
 
-    @patch("tools.file_tools._get_file_ops", return_value=_make_fake_file_ops())
+    @patch("hermes_agent.tools.file_tools._get_file_ops", return_value=_make_fake_file_ops())
     def test_fourth_consecutive_search_is_blocked(self, _mock_ops):
         """4th consecutive identical search is BLOCKED."""
         for _ in range(3):
@@ -163,7 +163,7 @@ class TestSearchLoopDetection(unittest.TestCase):
         self.assertNotIn("matches", result)
 
 
-    @patch("tools.file_tools._get_file_ops", return_value=_make_fake_file_ops())
+    @patch("hermes_agent.tools.file_tools._get_file_ops", return_value=_make_fake_file_ops())
     def test_pagination_offset_does_not_count_as_repeat(self, _mock_ops):
         """Paginating truncated results should not be blocked as a repeat search."""
         for offset in (0, 50, 100, 150):
@@ -171,7 +171,7 @@ class TestSearchLoopDetection(unittest.TestCase):
             self.assertNotIn("_warning", result)
             self.assertNotIn("error", result)
 
-    @patch("tools.file_tools._get_file_ops", return_value=_make_fake_file_ops())
+    @patch("hermes_agent.tools.file_tools._get_file_ops", return_value=_make_fake_file_ops())
     def test_read_between_searches_resets_consecutive(self, _mock_ops):
         """A read_file call between searches resets search consecutive counter."""
         search_tool("def main", task_id="t1")
@@ -187,7 +187,7 @@ class TestTodoInjectionFiltering(unittest.TestCase):
     """Verify that format_for_injection filters completed/cancelled todos."""
 
     def test_filters_completed_and_cancelled(self):
-        from tools.todo_tool import TodoStore
+        from hermes_agent.tools.todo_tool import TodoStore
         store = TodoStore()
         store.write([
             {"id": "1", "content": "Read codebase", "status": "completed"},

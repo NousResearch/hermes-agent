@@ -129,7 +129,7 @@ def get_available_skills() -> dict[str, list[str]]:
     ``prefetch_banner_data()`` pays it off-thread. A failed scan yields ``{}`` and is not cached.
     """
     def _scan():
-        from tools.skills_tool import find_all_skills
+        from hermes_agent.tools.skills_tool import find_all_skills
         return find_all_skills()  # already filtered
 
     def _compute():
@@ -473,7 +473,7 @@ def compute_toolset_availability(enabled_toolsets: list[str] | None = None) -> d
 
     Split out so the result can be snapshotted and replayed without importing ``model_tools``.
     """
-    from model_tools import check_tool_availability, TOOLSET_REQUIREMENTS
+    from hermes_agent.model_tools import check_tool_availability, TOOLSET_REQUIREMENTS
     enabled_toolsets = enabled_toolsets or []
     _, unavailable_toolsets = check_tool_availability(quiet=True)
     # The availability check walks the GLOBAL registry, so it includes toolsets outside this
@@ -581,7 +581,7 @@ def _mcp_configured() -> bool:
 
 
 def _probe_mcp_status() -> list:
-    from tools.mcp_tool_discovery import get_mcp_status
+    from hermes_agent.tools.mcp_tool_discovery import get_mcp_status
     return get_mcp_status()
 
 
@@ -688,7 +688,7 @@ def build_welcome_banner(
     from rich.panel import Panel
     from rich.table import Table
     if get_toolset_for_tool is None:
-        from model_tools import get_toolset_for_tool
+        from hermes_agent.model_tools import get_toolset_for_tool
     tools = tools or []
     enabled_toolsets = enabled_toolsets or []
     if availability is None:

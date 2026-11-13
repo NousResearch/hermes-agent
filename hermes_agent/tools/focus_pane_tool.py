@@ -5,8 +5,8 @@ The renderer runs each pane's own reveal path and only acts on the active window
 a background turn never moves the user's focus. URLs/files go through `desktop_preview`.
 """
 
-from tools import desktop_ui
-from tools.registry import registry, tool_error
+from hermes_agent.tools import desktop_ui
+from hermes_agent.tools.registry import registry, tool_error
 
 PANES = ("chat", "files", "terminal", "review", "sessions")
 

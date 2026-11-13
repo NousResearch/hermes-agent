@@ -7,10 +7,10 @@ from pathlib import Path
 import pytest
 
 from hermes_constants import CONNECTOR_DOWNLOADS_SUBDIR, get_hermes_home
-from tools.connectors.gateway import files
-from tools.connectors.gateway.bridge import connector_describe, run_remote
-from tools.connectors.gateway.client import ConnectorClient
-from tools.connectors.gateway.merge import partition_calls
+from hermes_agent.tools.connectors.gateway import files
+from hermes_agent.tools.connectors.gateway.bridge import connector_describe, run_remote
+from hermes_agent.tools.connectors.gateway.client import ConnectorClient
+from hermes_agent.tools.connectors.gateway.merge import partition_calls
 
 GATEWAY = "https://tool-gateway.test"
 UPLOAD_URL = "https://storage.test/put?X-Amz-Signature=abc"
@@ -250,8 +250,8 @@ def test_strict_mode_refuses_a_fresh_file_but_resends_a_downloaded_one(tmp_path,
 
 
 def test_a_search_hit_shows_paths_so_execute_needs_no_schema_lookup(tmp_path):
-    from tools.connectors.gateway.bridge import ConnectorLeg
-    from tools.connectors.search import connector_entries_by_group
+    from hermes_agent.tools.connectors.gateway.bridge import ConnectorLeg
+    from hermes_agent.tools.connectors.search import connector_entries_by_group
 
     hits = {"results": [{"use_case": "email a file", "tools": ["GMAIL_SEND_EMAIL"]}],
             "schemas": {"GMAIL_SEND_EMAIL": {"connector": "gmail", "description": "Send", "input_schema": GMAIL_SEND}}}
@@ -276,10 +276,10 @@ def test_a_relative_path_resolves_against_the_session_working_directory(tmp_path
 
 
 def test_dispatch_resolves_a_relative_path_in_the_calling_task_s_directory(tmp_path, monkeypatch):
-    import model_tools
-    from tools.connectors.gateway import bridge, config
-    from tools.registry import invalidate_check_fn_cache
-    from tools.terminal_tool import clear_task_env_overrides, register_task_env_overrides
+    from hermes_agent import model_tools
+    from hermes_agent.tools.connectors.gateway import bridge, config
+    from hermes_agent.tools.registry import invalidate_check_fn_cache
+    from hermes_agent.tools.terminal_tool import clear_task_env_overrides, register_task_env_overrides
 
     task_dir = tmp_path / "task"
     _pdf(task_dir / "q3.pdf", b"from the task directory")

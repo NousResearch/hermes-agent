@@ -1,6 +1,6 @@
 """Tests for the advisory SkillEvaluator Tier 1 install scan.
 
-The adapter (tools/skillevaluator_scan.py) must:
+The adapter (hermes_agent/tools/skillevaluator_scan.py) must:
 - classify secrets-class vs advisory findings correctly,
 - degrade to an unavailable (no-op) report on every failure mode,
 - never raise out of the install path helper.
@@ -14,7 +14,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from tools.skillevaluator_scan import (
+from hermes_agent.tools.skillevaluator_scan import (
     Tier1Report,
     _parse_report,
     format_tier1_report,
@@ -104,27 +104,27 @@ class TestParseReport:
 
 class TestRunTier1Scan:
     def test_scanner_missing_degrades(self, tmp_path):
-        with mock.patch("tools.skillevaluator_scan.shutil.which", return_value=None):
+        with mock.patch("hermes_agent.tools.skillevaluator_scan.shutil.which", return_value=None):
             report = run_tier1_scan(tmp_path)
         assert not report.available
         assert report.findings == []
 
     def test_scanner_timeout_degrades(self, tmp_path):
-        with mock.patch("tools.skillevaluator_scan.shutil.which", return_value="/usr/bin/skillevaluator"), \
-             mock.patch("tools.skillevaluator_scan.subprocess.run",
+        with mock.patch("hermes_agent.tools.skillevaluator_scan.shutil.which", return_value="/usr/bin/skillevaluator"), \
+             mock.patch("hermes_agent.tools.skillevaluator_scan.subprocess.run",
                         side_effect=subprocess.TimeoutExpired(cmd="x", timeout=1)):
             report = run_tier1_scan(tmp_path)
         assert not report.available
 
     def test_scanner_launch_failure_degrades(self, tmp_path):
-        with mock.patch("tools.skillevaluator_scan.shutil.which", return_value="/usr/bin/skillevaluator"), \
-             mock.patch("tools.skillevaluator_scan.subprocess.run", side_effect=OSError("boom")):
+        with mock.patch("hermes_agent.tools.skillevaluator_scan.shutil.which", return_value="/usr/bin/skillevaluator"), \
+             mock.patch("hermes_agent.tools.skillevaluator_scan.subprocess.run", side_effect=OSError("boom")):
             report = run_tier1_scan(tmp_path)
         assert not report.available
 
     def test_no_json_report_degrades(self, tmp_path):
-        with mock.patch("tools.skillevaluator_scan.shutil.which", return_value="/usr/bin/skillevaluator"), \
-             mock.patch("tools.skillevaluator_scan.subprocess.run",
+        with mock.patch("hermes_agent.tools.skillevaluator_scan.shutil.which", return_value="/usr/bin/skillevaluator"), \
+             mock.patch("hermes_agent.tools.skillevaluator_scan.subprocess.run",
                         return_value=subprocess.CompletedProcess([], 1, "", "")):
             report = run_tier1_scan(tmp_path)
         assert not report.available
@@ -138,8 +138,8 @@ class TestRunTier1Scan:
             (outdir / "skillevaluator-output-1.json").write_text(json.dumps(payload))
             return subprocess.CompletedProcess(cmd, 1, "", "")
 
-        with mock.patch("tools.skillevaluator_scan.shutil.which", return_value="/usr/bin/skillevaluator"), \
-             mock.patch("tools.skillevaluator_scan.subprocess.run", side_effect=fake_run):
+        with mock.patch("hermes_agent.tools.skillevaluator_scan.shutil.which", return_value="/usr/bin/skillevaluator"), \
+             mock.patch("hermes_agent.tools.skillevaluator_scan.subprocess.run", side_effect=fake_run):
             report = run_tier1_scan(tmp_path)
         assert report.available
         assert not report.passed
@@ -200,14 +200,14 @@ class TestInstallPathHelper:
     def test_helper_never_raises_on_scanner_error(self, tmp_path):
         from hermes_cli.skills_hub import _print_tier1_advisory
         console = mock.MagicMock()
-        with mock.patch("tools.skillevaluator_scan.run_tier1_scan",
+        with mock.patch("hermes_agent.tools.skillevaluator_scan.run_tier1_scan",
                         side_effect=RuntimeError("boom")):
             _print_tier1_advisory(tmp_path, console)  # must not raise
 
     def test_helper_silent_when_unavailable(self, tmp_path):
         from hermes_cli.skills_hub import _print_tier1_advisory
         console = mock.MagicMock()
-        with mock.patch("tools.skillevaluator_scan.run_tier1_scan",
+        with mock.patch("hermes_agent.tools.skillevaluator_scan.run_tier1_scan",
                         return_value=Tier1Report(available=False)):
             _print_tier1_advisory(tmp_path, console)
         console.print.assert_not_called()
@@ -215,9 +215,9 @@ class TestInstallPathHelper:
     def test_helper_silent_when_disabled(self, tmp_path):
         from hermes_cli.skills_hub import _print_tier1_advisory
         console = mock.MagicMock()
-        with mock.patch("tools.skillevaluator_scan.tier1_advisory_enabled",
+        with mock.patch("hermes_agent.tools.skillevaluator_scan.tier1_advisory_enabled",
                         return_value=False), \
-             mock.patch("tools.skillevaluator_scan.run_tier1_scan") as scan:
+             mock.patch("hermes_agent.tools.skillevaluator_scan.run_tier1_scan") as scan:
             _print_tier1_advisory(tmp_path, console)
         scan.assert_not_called()
         console.print.assert_not_called()
@@ -228,7 +228,7 @@ class TestInstallPathHelper:
         report = _parse_report(_report_json([
             _finding("emails", message="Non-placeholder email: a@b.com"),
         ]))
-        with mock.patch("tools.skillevaluator_scan.run_tier1_scan",
+        with mock.patch("hermes_agent.tools.skillevaluator_scan.run_tier1_scan",
                         return_value=report):
             _print_tier1_advisory(tmp_path, console)
         assert console.print.called

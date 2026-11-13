@@ -32,12 +32,12 @@ and re-enters core dispatch for each entry so per-tool policy fires against
 the composed ``connectors__`` name.
 """
 
-from tools.connectors.gateway.config import (
+from hermes_agent.tools.connectors.gateway.config import (
     MAX_CALLS_PER_DISPATCH,
     ConnectorConfig,
     connectors_available,
 )
-from tools.connectors.gateway.errors import (
+from hermes_agent.tools.connectors.gateway.errors import (
     GatewayAuthError,
     GatewayUnavailable,
     IdempotencyConflict,
@@ -45,7 +45,7 @@ from tools.connectors.gateway.errors import (
     parse_gateway_error,
     render_connection_required,
 )
-from tools.connectors.gateway.names import (
+from hermes_agent.tools.connectors.gateway.names import (
     CONNECTOR_BATCH_SENTINEL,
     CONNECTOR_NAME_PREFIX,
     ConnectorName,

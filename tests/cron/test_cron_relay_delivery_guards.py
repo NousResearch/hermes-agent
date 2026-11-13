@@ -74,9 +74,9 @@ class TestOriginThreadStaleGuard:
         """slack:<home_chat> must not inherit the stale creation thread."""
         _slack_home(monkeypatch)
         monkeypatch.setattr(
-            "tools.send_message_tool.prepare_send_message_platforms", lambda: None)
+            "hermes_agent.tools.send_message_tool.prepare_send_message_platforms", lambda: None)
         monkeypatch.setattr(
-            "tools.send_message_tool.resolve_send_target",
+            "hermes_agent.tools.send_message_tool.resolve_send_target",
             lambda platform, rest, **kw: (rest, None, None))
         job = {"origin": {"platform": "slack", "chat_id": "D0BJTDCSR7C",
                           "thread_id": SYNTH}}
@@ -87,9 +87,9 @@ class TestOriginThreadStaleGuard:
         """Origin-affinity re-attach is preserved for genuine non-home threads."""
         _slack_home(monkeypatch, chat_id="D_OTHER_HOME")
         monkeypatch.setattr(
-            "tools.send_message_tool.prepare_send_message_platforms", lambda: None)
+            "hermes_agent.tools.send_message_tool.prepare_send_message_platforms", lambda: None)
         monkeypatch.setattr(
-            "tools.send_message_tool.resolve_send_target",
+            "hermes_agent.tools.send_message_tool.resolve_send_target",
             lambda platform, rest, **kw: (rest, None, None))
         job = {"origin": {"platform": "slack", "chat_id": "C0AGENERAL",
                           "thread_id": "1755040000.000100"}}

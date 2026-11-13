@@ -223,7 +223,7 @@ Mensaje del usuario → AIAgent._run_agent_loop()
 
 ### Patrones de Diseño Clave
 
-- **Herramientas auto-registradas**: Cada archivo de herramienta llama a `registry.register()` en el momento de importación. `model_tools.py` activa el descubrimiento importando todos los módulos de herramientas.
+- **Herramientas auto-registradas**: Cada archivo de herramienta llama a `registry.register()` en el momento de importación. `hermes_agent/model_tools.py` activa el descubrimiento importando todos los módulos de herramientas.
 - **Agrupación en toolsets**: Las herramientas se agrupan en toolsets (`web`, `terminal`, `file`, `browser`, etc.) que pueden habilitarse/deshabilitarse por plataforma.
 - **Persistencia de sesión**: Todas las conversaciones se almacenan en SQLite (`hermes_agent/hermes_state.py`) con búsqueda de texto completo y títulos de sesión únicos.
 - **Inyección efímera**: Los prompts del sistema y los mensajes de relleno se inyectan en el momento de la llamada API, nunca se persisten en la base de datos ni en los logs.
@@ -251,7 +251,7 @@ Las herramientas se auto-registran en el registro central. Cada archivo de herra
 """my_tool — Breve descripción de lo que hace esta herramienta."""
 
 import json
-from tools.registry import registry
+from hermes_agent.tools.registry import registry
 
 
 def my_tool(param1: str, param2: int = 10, **kwargs) -> str:
@@ -292,11 +292,11 @@ registry.register(
 ```
 
 **Conectar a un toolset (requerido):** Las herramientas integradas se auto-descubren: cualquier
-archivo `tools/*.py` que contenga una llamada de nivel superior `registry.register(...)` es
-importado por `discover_builtin_tools()` en `tools/registry.py` cuando `model_tools`
-se carga. **No** hay una lista de importaciones manual en `model_tools.py` que mantener.
+archivo `hermes_agent/tools/*.py` que contenga una llamada de nivel superior `registry.register(...)` es
+importado por `discover_builtin_tools()` en `hermes_agent/tools/registry.py` cuando `model_tools`
+se carga. **No** hay una lista de importaciones manual en `hermes_agent/model_tools.py` que mantener.
 
-Todavía debes añadir el nombre de la herramienta a la lista apropiada en `toolsets.py`
+Todavía debes añadir el nombre de la herramienta a la lista apropiada en `hermes_agent/toolsets.py`
 (por ejemplo `_HERMES_CORE_TOOLS` o un toolset dedicado); de lo contrario la herramienta
 se registra pero nunca se expone al agente.
 
@@ -479,10 +479,10 @@ Hermes tiene acceso al terminal. La seguridad importa.
 | Capa | Implementación |
 |------|---------------|
 | **Piping de contraseña sudo** | Usa `shlex.quote()` para prevenir inyección de shell |
-| **Detección de comandos peligrosos** | Patrones regex en `tools/approval.py` con flujo de aprobación del usuario |
-| **Inyección de prompts en cron** | Escáner en `tools/cronjob_tools.py` bloquea patrones de anulación de instrucciones |
+| **Detección de comandos peligrosos** | Patrones regex en `hermes_agent/tools/approval.py` con flujo de aprobación del usuario |
+| **Inyección de prompts en cron** | Escáner en `hermes_agent/tools/cronjob_tools.py` bloquea patrones de anulación de instrucciones |
 | **Lista de denegación de escritura** | Rutas protegidas resueltas a través de `os.path.realpath()` para prevenir bypass de enlaces simbólicos |
-| **Skills Guard** | Escáner de seguridad para habilidades instaladas desde el hub (`tools/skills_guard.py`) |
+| **Skills Guard** | Escáner de seguridad para habilidades instaladas desde el hub (`hermes_agent/tools/skills_guard.py`) |
 | **Sandbox de ejecución de código** | El proceso hijo `execute_code` se ejecuta con claves API eliminadas del entorno |
 | **Fortalecimiento de contenedor** | Docker: todas las capacidades eliminadas, sin escalada de privilegios, límites de PID, tmpfs de tamaño limitado |
 

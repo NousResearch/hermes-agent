@@ -12,13 +12,13 @@ from typing import Any
 from agent.runtime_scope import bind_state
 from tests.tools.test_sandbox_scope_conformance import A, B
 from tests.tools.test_sandbox_scope_conformance import provider as _conformance_provider
-from tools.environments import sandbox_conformance as c
+from hermes_agent.tools.environments import sandbox_conformance as c
 
 provider = _conformance_provider
 
 
 def test_hosted_terminal_never_reads_a_named_script_on_the_host(provider, monkeypatch, tmp_path):
-    import tools.process_registry as processes
+    import hermes_agent.tools.process_registry as processes
     monkeypatch.setattr(processes, "_is_supervised_gateway_process", lambda: True)
     host_dir = tmp_path / "host-workspace"  # apart from the test's HERMES_HOME
     host_dir.mkdir()
@@ -54,8 +54,8 @@ def test_hosted_agents_sharing_a_task_id_keep_their_own_file_bookkeeping(provide
 
 
 def test_hosted_scope_is_offered_only_its_allowlist(provider):
-    from model_tools import get_tool_definitions
-    from tools.hosted_tool_policy import HOSTED_TOOL_ALLOWLIST
+    from hermes_agent.model_tools import get_tool_definitions
+    from hermes_agent.tools.hosted_tool_policy import HOSTED_TOOL_ALLOWLIST
 
     local = {t["function"]["name"] for t in get_tool_definitions(quiet_mode=True)}  # fills the memo first
     with bind_state(A):
@@ -65,7 +65,7 @@ def test_hosted_scope_is_offered_only_its_allowlist(provider):
 
 
 def test_clear_session_finds_a_hosted_agents_local_kernels():
-    from tools.code_kernel import _KERNELS, shutdown_kernels_for_owner
+    from hermes_agent.tools.code_kernel import _KERNELS, shutdown_kernels_for_owner
 
     torn = []
     key = ("sandbox:acme/agent-a:session-key", "standard", "python3", "/workspace", frozenset())
@@ -81,7 +81,7 @@ def test_clear_session_finds_a_hosted_agents_local_kernels():
 
 
 def test_clear_session_finds_a_hosted_agents_remote_kernels():
-    from tools.code_kernel_remote import _REMOTE_KERNELS, shutdown_remote_kernels_for_owner
+    from hermes_agent.tools.code_kernel_remote import _REMOTE_KERNELS, shutdown_remote_kernels_for_owner
 
     killed = []
     key = ("sandbox:acme/agent-a:session-key", "remote", "stub", "t", frozenset())
@@ -99,7 +99,7 @@ def test_clear_session_finds_a_hosted_agents_remote_kernels():
 def test_local_shutdown_does_not_kill_colon_suffix_owner():
     """A session close matches its owner exactly: ``room`` is not ``telegram:room``, locally or
     inside a sandbox (where the sandbox key, not a bare suffix, qualifies the owner)."""
-    from tools.code_kernel import _KERNELS, shutdown_kernels_for_owner
+    from hermes_agent.tools.code_kernel import _KERNELS, shutdown_kernels_for_owner
 
     torn: list[str] = []
     keys = []
@@ -118,9 +118,9 @@ def test_local_shutdown_does_not_kill_colon_suffix_owner():
 def test_session_close_does_not_touch_another_agents_kernel(provider):
     """Two hosted agents share a session key; a session close under one agent resolves that
     agent's sandbox-qualified owner and must not run teardown in the other agent's sandbox."""
-    from tools.code_kernel_remote import (RemoteKernel, _REMOTE_KERNELS, _kernel_key,
+    from hermes_agent.tools.code_kernel_remote import (RemoteKernel, _REMOTE_KERNELS, _kernel_key,
                                           shutdown_remote_kernels_for_owner)
-    from tools.environments.sandbox_scope import ScopedEnvironment, sandbox_identity
+    from hermes_agent.tools.environments.sandbox_scope import ScopedEnvironment, sandbox_identity
 
     reached = []
 
@@ -132,8 +132,8 @@ def test_session_close_does_not_touch_another_agents_kernel(provider):
     keys = []
     try:
         for scope in (A, B):
-            from tools.approval_context import reset_current_session_key, set_current_session_key
-            from tools.code_kernel import _resolve_owner
+            from hermes_agent.tools.approval_context import reset_current_session_key, set_current_session_key
+            from hermes_agent.tools.code_kernel import _resolve_owner
             token = set_current_session_key("shared-session")
             try:
                 with bind_state(scope):
@@ -156,8 +156,8 @@ def test_session_close_does_not_touch_another_agents_kernel(provider):
 
 
 def test_another_agents_eviction_still_stops_the_owning_kernels_service(provider):
-    from tools.code_kernel_remote import RemoteKernel
-    from tools.environments.sandbox_scope import ScopedEnvironment
+    from hermes_agent.tools.code_kernel_remote import RemoteKernel
+    from hermes_agent.tools.environments.sandbox_scope import ScopedEnvironment
 
     reached = []
 

@@ -15,9 +15,9 @@ import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 from hermes_cli.stderr_timestamp import stamp_line, timestamp
-from tools.mcp_tool_common import _env_ref_name, _prepend_path
+from hermes_agent.tools.mcp_tool_common import _env_ref_name, _prepend_path
 
-logger = logging.getLogger("tools.mcp_tool")
+logger = logging.getLogger("hermes_agent.tools.mcp_tool")
 
 _mcp_stderr_log_fh: dict[str, Any] = {}  # profile home key -> handle
 _mcp_stderr_log_lock = threading.Lock()
@@ -163,7 +163,7 @@ def _workspace_folder() -> str:
     """Absolute workspace root for ``${workspaceFolder}``: the session's authoritative root
     (terminal cwd / task override / $TERMINAL_CWD), else cwd."""
     try:
-        from tools.file_tools_paths import _authoritative_workspace_root
+        from hermes_agent.tools.file_tools_paths import _authoritative_workspace_root
         root = _authoritative_workspace_root()
     except Exception:
         root = None
@@ -202,7 +202,7 @@ def _build_safe_env(user_env: Optional[dict]) -> dict:
     precisely so subprocesses can consume them), plus the server config's own ``env``."""
     from agent.secret_scope import get_secret
     from hermes_cli.env_loader import secret_source_names
-    from tools.environments.local_env_policy import hermes_consumed_credentials
+    from hermes_agent.tools.environments.local_env_policy import hermes_consumed_credentials
     env = {
         key: value for key, value in os.environ.items()
         if key in _SAFE_ENV_KEYS or key.upper() in _SAFE_ENV_KEYS_CASE_INSENSITIVE or key.startswith("XDG_")}
@@ -649,7 +649,7 @@ def _warn_hidden_whitespace(server_name: str, config: dict) -> list[str]:
 def _malformed_cost_table(name: str, cfg: Any) -> Optional[str]:
     """Why a server's ``tool_costs``/``spend_limit``/``cost_unit`` is unusable, else None. A budget the
     user declared must never be silently dropped while its server keeps spending, so the server is skipped."""
-    from tools.mcp_tool_costs import config_cost_policy
+    from hermes_agent.tools.mcp_tool_costs import config_cost_policy
     try:
         config_cost_policy(name, cfg if isinstance(cfg, dict) else None)
     except ValueError as exc:
@@ -682,7 +682,7 @@ def _portable_mcp_servers(safe_servers: dict[str, dict], rejected: frozenset[str
     The package's declared costs are facts about its server, so a same-name native entry (the way a user widens
     a package server's trust) keeps them unless it sets the cost key itself; ``spend_limit: 0`` turns the limit off."""
     from agent.secret_scope import UnscopedSecretError
-    from tools.mcp_tool_costs import CONFIG_KEYS
+    from hermes_agent.tools.mcp_tool_costs import CONFIG_KEYS
     try:
         from hermes_cli.plugins import discover_plugins, get_plugin_manager
         discover_plugins()

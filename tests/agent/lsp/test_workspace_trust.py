@@ -132,8 +132,8 @@ def test_only_operator_workspaces_and_listed_directories_are_trusted(tmp_path, m
         _checkout_shipping_its_own_toolchain(root)
     handed, _ = _record_spawns(tmp_path, monkeypatch, launcher, roots, trusted_workspaces=[tmp_path / "listed"])
 
-    from tools.environments.local import LocalEnvironment
-    from tools.file_operations import ShellFileOperations
+    from hermes_agent.tools.environments.local import LocalEnvironment
+    from hermes_agent.tools.file_operations import ShellFileOperations
     fops = ShellFileOperations(LocalEnvironment(cwd=str(launch / "src")))
     ran = []
     monkeypatch.setattr(fops, "_exec", lambda cmd, **_: ran.append(cmd) or SimpleNamespace(exit_code=0, stdout=""))

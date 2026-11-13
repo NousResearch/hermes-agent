@@ -82,8 +82,8 @@ class TestMcpRegistrationE2E:
             {"function": {"name": "terminal"}},
         ]
 
-        with patch("tools.mcp_tool_discovery.register_mcp_servers", side_effect=mock_register), \
-             patch("model_tools.get_tool_definitions", return_value=fake_tools):
+        with patch("hermes_agent.tools.mcp_tool_discovery.register_mcp_servers", side_effect=mock_register), \
+             patch("hermes_agent.model_tools.get_tool_definitions", return_value=fake_tools):
             resp = await acp_agent.new_session(cwd="/tmp", mcp_servers=servers)
 
         assert isinstance(resp, NewSessionResponse)
@@ -222,8 +222,8 @@ class TestSessionLifecycleMcpE2E:
         state.agent.tools = []
         state.agent.valid_tool_names = set()
 
-        with patch("tools.mcp_tool_discovery.register_mcp_servers", side_effect=mock_register), \
-             patch("model_tools.get_tool_definitions", return_value=[]):
+        with patch("hermes_agent.tools.mcp_tool_discovery.register_mcp_servers", side_effect=mock_register), \
+             patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]):
             await acp_agent.load_session(cwd="/tmp", session_id=sid, mcp_servers=servers)
 
         assert "srv" in registered
@@ -249,8 +249,8 @@ class TestSessionLifecycleMcpE2E:
         state.agent.tools = []
         state.agent.valid_tool_names = set()
 
-        with patch("tools.mcp_tool_discovery.register_mcp_servers", side_effect=mock_register), \
-             patch("model_tools.get_tool_definitions", return_value=[]):
+        with patch("hermes_agent.tools.mcp_tool_discovery.register_mcp_servers", side_effect=mock_register), \
+             patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]):
             await acp_agent.resume_session(cwd="/tmp", session_id=sid, mcp_servers=servers)
 
         assert "srv2" in registered
@@ -271,8 +271,8 @@ class TestSessionLifecycleMcpE2E:
             return []
 
         # Need to set up the forked session's agent too
-        with patch("tools.mcp_tool_discovery.register_mcp_servers", side_effect=mock_register), \
-             patch("model_tools.get_tool_definitions", return_value=[]):
+        with patch("hermes_agent.tools.mcp_tool_discovery.register_mcp_servers", side_effect=mock_register), \
+             patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]):
             fork_resp = await acp_agent.fork_session(
                 cwd="/tmp", session_id=sid, mcp_servers=servers
             )

@@ -7,7 +7,7 @@ import logging
 import pytest
 
 from tests.tools.test_delegate_output_schema import _StubChild, _StubParent
-from tools.delegate_tool import _run_single_child
+from hermes_agent.tools.delegate_tool import _run_single_child
 
 
 def test_raised_child_logs_its_traceback(caplog: pytest.LogCaptureFixture) -> None:
@@ -16,7 +16,7 @@ def test_raised_child_logs_its_traceback(caplog: pytest.LogCaptureFixture) -> No
     def boom(user_message, task_id=None, **_kw):
         raise KeyError("local-parent-session")
     child.run_conversation = boom
-    with caplog.at_level(logging.WARNING, logger="tools.delegate_tool_child_run"):
+    with caplog.at_level(logging.WARNING, logger="hermes_agent.tools.delegate_tool_child_run"):
         entry = _run_single_child(0, "triage", child, _StubParent())
     assert entry["status"] == "error"
     (record,) = [r for r in caplog.records if "raised KeyError" in r.getMessage()]

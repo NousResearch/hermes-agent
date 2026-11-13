@@ -10,8 +10,8 @@ root=pathlib.Path(tempfile.mkdtemp(prefix='hint-probe-'))
 sys.path.insert(0, sys.argv[1] if len(sys.argv)>1 else os.getcwd())  # repo root under test
 os.environ['HERMES_HOME']=tempfile.mkdtemp(dir=root)
 os.environ['TERMINAL_ENV']='local'
-from tools import file_tools as f
-from tools.file_operations import WriteResult
+from hermes_agent.tools import file_tools as f
+from hermes_agent.tools.file_operations import WriteResult
 print('module',f.__file__)
 with tempfile.TemporaryDirectory(dir=root) as d:
  p=pathlib.Path(d)/'file.txt'

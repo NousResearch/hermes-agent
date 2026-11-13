@@ -704,7 +704,7 @@ class SessionTranscriptMixin:
                 logger.debug("rewind_session: rewind failed: %s", e)
                 return None
             self._clear_dirty_transcript(session_id)
-            from tools.checkpoint_undo_hint import undo_span_start
+            from hermes_agent.tools.checkpoint_undo_hint import undo_span_start
             return {"rewound_count": outcome.rewound_count, "turns_undone": outcome.turns_undone,
                     "target_text": outcome.live_text,
                     "undo_since": undo_span_start(outcome.live_view.get("timestamp"), outcome.prefix)}

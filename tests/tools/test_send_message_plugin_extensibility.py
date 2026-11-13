@@ -13,7 +13,7 @@ import pytest
 
 from hermes_agent.gateway.config import Platform
 from hermes_agent.gateway.platform_registry import PlatformEntry, platform_registry
-from tools.send_message_tool import resolve_send_target, send_message_tool
+from hermes_agent.tools.send_message_tool import resolve_send_target, send_message_tool
 
 
 @pytest.fixture
@@ -137,7 +137,7 @@ def test_host_send_honors_sync_and_async_plugin_handlers(plugin_platform, async_
         entry.send_message_handler = sync_handler
 
     with patch("hermes_agent.gateway.config.load_gateway_config", return_value=config), \
-         patch("tools.interrupt.is_interrupted", return_value=False), \
+         patch("hermes_agent.tools.interrupt.is_interrupted", return_value=False), \
          patch("hermes_agent.gateway.mirror.mirror_to_session", return_value=True):
         result = json.loads(send_message_tool({
             "target": f"{name}:@Alice@Example.COM",
@@ -169,7 +169,7 @@ def test_cli_and_cron_share_plugin_target_normalization(plugin_platform, monkeyp
 
     monkeypatch.setattr("hermes_cli.send_cmd._load_hermes_env", lambda: None)
     with patch("hermes_agent.gateway.config.load_gateway_config", return_value=config), \
-         patch("tools.interrupt.is_interrupted", return_value=False), \
+         patch("hermes_agent.tools.interrupt.is_interrupted", return_value=False), \
          patch("hermes_agent.gateway.mirror.mirror_to_session", return_value=True), \
          pytest.raises(SystemExit) as exc:
         cmd_send(args)
@@ -230,15 +230,15 @@ from types import SimpleNamespace
 from unittest.mock import patch
 from hermes_cli.plugins import discover_plugins
 from hermes_agent.gateway.config import Platform
-from tools.registry import registry
-from tools.send_message_tool import send_message_tool
+from hermes_agent.tools.registry import registry
+from hermes_agent.tools.send_message_tool import send_message_tool
 
 discover_plugins()
 platform = Platform("fmsg")
 pconfig = SimpleNamespace(enabled=True, token=None, extra={})
 config = SimpleNamespace(platforms={platform: pconfig}, get_home_channel=lambda p: None)
 with patch("hermes_agent.gateway.config.load_gateway_config", return_value=config), \
-     patch("tools.interrupt.is_interrupted", return_value=False), \
+     patch("hermes_agent.tools.interrupt.is_interrupted", return_value=False), \
      patch("hermes_agent.gateway.mirror.mirror_to_session", return_value=True):
     host_send = json.loads(send_message_tool({"target": "fmsg:@Alice@Example.COM",
                                               "message": "hello", "subject": "hi"}))
@@ -273,7 +273,7 @@ def test_declared_target_syntax_and_standalone_policy_drive_send_routing():
     import asyncio
 
     from hermes_agent.gateway.platforms.send_targets import NOT_EXPLICIT, StandaloneSendPolicy
-    from tools.send_message_tool import _send_to_platform
+    from hermes_agent.tools.send_message_tool import _send_to_platform
 
     calls: list[dict] = []
 

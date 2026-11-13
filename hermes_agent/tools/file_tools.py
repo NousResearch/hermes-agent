@@ -20,22 +20,22 @@ from pathlib import Path, PurePosixPath
 
 from agent.file_safety import get_nt_namespace_error, get_read_block_error, is_blocked_device_path
 from agent.tool_result_classification import GUARDRAIL_REFUSAL_KEY
-from tools.binary_extensions import has_binary_extension
-from tools.skill_provenance import is_background_review
-from tools.file_operations import (
+from hermes_agent.tools.binary_extensions import has_binary_extension
+from hermes_agent.tools.skill_provenance import is_background_review
+from hermes_agent.tools.file_operations import (
     ShellFileOperations, normalize_read_pagination, normalize_search_pagination)
-from tools.file_operations_common import DEFAULT_READ_LIMIT, count_conflict_blocks
-from tools import file_state
+from hermes_agent.tools.file_operations_common import DEFAULT_READ_LIMIT, count_conflict_blocks
+from hermes_agent.tools import file_state
 from hermes_platform.host import facts
 from agent.redact import _is_secret_file_arg, redact_sensitive_text
-from tools.file_tools_paths import (
+from hermes_agent.tools.file_tools_paths import (
     _expand_tilde, _hosted_tilde, _path_resolution_warning, _resolve_base_dir, _resolve_entry_for_task,
     _resolve_path_for_task)
-from tools.file_tools_write_guards import (
+from hermes_agent.tools.file_tools_write_guards import (
     _READ_DEDUP_STATUS_MESSAGE, _check_approval_required_write, _check_binary_document_write,
     _check_cross_profile_path, _check_protected_instruction_write, _check_sensitive_path,
     _is_internal_file_tool_content, _stale_overwrite_blocker, _stale_write_refusal)
-from tools.file_tools_read_tracking import (
+from hermes_agent.tools.file_tools_read_tracking import (
     _bump_consecutive, _cap_read_tracker_data, _carry_full_write_baselines, _check_file_staleness,
     _check_not_found_cache, _dedup_lookup, _known_full_content_sha256,
     _file_metadata, _file_version, _on_host,
@@ -124,7 +124,7 @@ def _file_ops_uses_host_paths(file_ops) -> bool:
     env = getattr(file_ops, "env", None)
     if env is None:
         return True
-    from tools.environments.base import env_uses_host_filesystem
+    from hermes_agent.tools.environments.base import env_uses_host_filesystem
 
     return env_uses_host_filesystem(env)
 
@@ -148,7 +148,7 @@ def _rewrite_v4a_patch_paths_for_host(patch: str, path_to_resolved: dict, path_t
     In a hosted scope only a ``~`` header changes, to the sandbox's home; every other header is the
     sandbox's to anchor and is sent as written.
     """
-    from tools.environments.sandbox_scope import hosted_scope
+    from hermes_agent.tools.environments.sandbox_scope import hosted_scope
     hosted = hosted_scope() is not None
     if not _file_ops_uses_host_paths(file_ops) and not hosted:
         return patch
@@ -176,7 +176,7 @@ def _is_blocked_device(filepath: str, base_dir: str | Path | None = None) -> boo
     Literal first so /dev/stdin is caught before resolving to a terminal path;
     every symlink hop is checked so an alias cannot bypass the guard.
     """
-    from tools.environments.sandbox_scope import hosted_scope
+    from hermes_agent.tools.environments.sandbox_scope import hosted_scope
     expanded = _expand_tilde(filepath)
     if base_dir is not None and not os.path.isabs(expanded):
         expanded = os.path.join(os.fspath(base_dir), expanded)
@@ -261,8 +261,8 @@ _file_ops_cache: dict = {}
 def _create_terminal_env_for_file_ops(raw_task_id: str, task_id: str):
     """Build the terminal environment for *task_id* via the shared ``_create_configured_env``,
     so a file tool that runs before any terminal command still gets the configured backend."""
-    from tools.terminal_tool_config import _is_container_backend, coerce_ssh_remote_cwd
-    from tools.terminal_tool import (
+    from hermes_agent.tools.terminal_tool_config import _is_container_backend, coerce_ssh_remote_cwd
+    from hermes_agent.tools.terminal_tool import (
         _create_configured_env, _get_env_config, _is_mounted_host_cwd, _is_unusable_container_cwd,
         _resolve_task_host_cwd, _select_image, get_session_cwd, resolve_task_overrides)
 
@@ -310,8 +310,8 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
     with a registered env override keep their isolation. In a hosted scope every
     task id resolves to the agent's sandbox, so these operations run there.
     """
-    from tools.environments.sandbox_scope import admit_env
-    from tools.terminal_tool import (
+    from hermes_agent.tools.environments.sandbox_scope import admit_env
+    from hermes_agent.tools.terminal_tool import (
         _active_environments, _env_lock, _last_activity, _start_cleanup_thread,
         _creation_locks, _creation_locks_lock, _resolve_container_task_id,
         get_session_cwd, record_session_cwd)
@@ -425,8 +425,8 @@ def _read_extracted_document(path: str, _resolved, offset: int, limit: int, task
     (size cap, encrypted, malformed), or ``None`` to fall through to the normal
     read path. Runs BEFORE the binary-extension guard.
     """
-    from tools.environments.sandbox_scope import hosted_scope
-    from tools.read_extract import (
+    from hermes_agent.tools.environments.sandbox_scope import hosted_scope
+    from hermes_agent.tools.read_extract import (
         ANYDOC_EXTENSIONS, EXTRACTABLE_EXTENSIONS, MAX_DOCUMENT_BYTES, ExtractionError,
         extract_document_bytes, is_extractable_document)
     if hosted_scope() is not None:
@@ -460,7 +460,7 @@ def _read_extracted_document(path: str, _resolved, offset: int, limit: int, task
     total_lines = len(lines)
     end_line = offset + limit - 1
     page_text = "\n".join(lines[offset - 1:end_line])
-    from tools.tool_output_limits import get_max_line_length
+    from hermes_agent.tools.tool_output_limits import get_max_line_length
     max_line_length = get_max_line_length()
     truncated_lines = any(len(line) > max_line_length for line in page_text.split('\n'))
     result_dict = {
@@ -591,7 +591,7 @@ def _record_successful_read(task_data: dict, task_id: str, path: str, resolved_s
             # file is accepted. A partial read doesn't count — the guard requires the CURRENT full content
             # to have been seen. No-op outside review forks (mark_background_review_skill_read gates on
             # is_background_review).
-            from tools.skill_manager_guards import mark_background_review_skill_read
+            from hermes_agent.tools.skill_manager_guards import mark_background_review_skill_read
             mark_background_review_skill_read(Path(resolved_str))
         except Exception:
             logger.debug("background-review read-mark failed", exc_info=True)
@@ -604,7 +604,7 @@ def _read_device_base(path: str, task_id: str) -> tuple[Path | PurePosixPath | N
     try:
         return (None if Path(path).expanduser().is_absolute() else _resolve_base_dir(task_id)), False
     except ValueError:
-        from tools.environments.sandbox_scope import hosted_scope
+        from hermes_agent.tools.environments.sandbox_scope import hosted_scope
         if hosted_scope() is None:
             raise
         return None, True
@@ -692,7 +692,7 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
         # Failed reads cannot establish whole-file knowledge.
         _err = result_dict.get("error") or ""
         if isinstance(_err, str) and _err.startswith("File not found:"):
-            from tools.tool_result_storage import expired_archive_fields
+            from hermes_agent.tools.tool_result_storage import expired_archive_fields
             result_dict.update(expired_archive_fields(path))
             _record_not_found("read", resolved_str, task_id, json.dumps(result_dict, ensure_ascii=False))
         if _err or result_dict.get("is_binary"):
@@ -940,7 +940,7 @@ def _collect_v4a_header_paths(patch: str) -> tuple[list[str], list[str], list[st
     BOTH endpoints; only Update/Add write text and feed the binary-document
     guard; Delete and Move act on the directory entry (``entry_paths``).
     """
-    from tools.path_security import has_traversal_component
+    from hermes_agent.tools.path_security import has_traversal_component
 
     headers = [(m.group(3), m.group(2) in ("Update", "Add")) for m in _V4A_SINGLE_HEADER_RE.finditer(patch)]
     headers += [(g, False) for m in _V4A_MOVE_HEADER_RE.finditer(patch) for g in (m.group(2), m.group(3))]
@@ -1146,12 +1146,12 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
 # ---------------------------------------------------------------------------
 # Schemas + Registry
 # ---------------------------------------------------------------------------
-from tools.registry import registry, tool_error
+from hermes_agent.tools.registry import registry, tool_error
 
 
 def _check_file_reqs():
-    """Lazy wrapper to avoid circular import with tools/__init__.py."""
-    from tools import check_file_requirements
+    """Lazy wrapper to avoid circular import with hermes_agent/tools/__init__.py."""
+    from hermes_agent.tools import check_file_requirements
     return check_file_requirements()
 
 READ_FILE_SCHEMA = {
@@ -1405,7 +1405,7 @@ def _read_file_schema_overrides():
     picks up a key added mid-session.
     """
     try:
-        from tools.read_extract import hosted_ocr_available
+        from hermes_agent.tools.read_extract import hosted_ocr_available
 
         if hosted_ocr_available():
             return {

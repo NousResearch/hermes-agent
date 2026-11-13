@@ -282,7 +282,7 @@ TODO_SCHEMA = {
     }
 }
 
-# Pre-rename names that replay as the Todo tool. model_tools._LEGACY_TOOL_ALIASES derives its todo
+# Pre-rename names that replay as the Todo tool. hermes_agent.model_tools._LEGACY_TOOL_ALIASES derives its todo
 # entries from this, so the alias map and the transcript/TUI predicates below cannot drift.
 TODO_LEGACY_ALIASES = ("todo",)
 TODO_TOOL_NAMES = frozenset((TODO_SCHEMA["name"], *TODO_LEGACY_ALIASES))
@@ -311,7 +311,7 @@ def is_todo_tool_call(tool_call: Any) -> bool:
     # unicode-escaped name slips past, which json.dumps never writes for ASCII.
     if isinstance(raw_args, str) and "todo" not in raw_args:
         return False
-    from tools.tool_search_catalog import TOOL_CALL_NAME
+    from hermes_agent.tools.tool_search_catalog import TOOL_CALL_NAME
 
     if name != TOOL_CALL_NAME:
         return False
@@ -321,13 +321,13 @@ def is_todo_tool_call(tool_call: Any) -> bool:
         return False
     if not isinstance(args, dict):
         return False
-    from tools.tool_search_validation import normalize_tool_call_entries
+    from hermes_agent.tools.tool_search_validation import normalize_tool_call_entries
 
     entries, error = normalize_tool_call_entries(args)
     return not error and len(entries) == 1 and is_todo_tool_name(entries[0]["name"])
 
 
-from tools.registry import registry, tool_error
+from hermes_agent.tools.registry import registry, tool_error
 
 registry.register(
     name="todo_list", toolset="todo", schema=TODO_SCHEMA, check_fn=check_todo_requirements,

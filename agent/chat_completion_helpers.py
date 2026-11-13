@@ -53,7 +53,7 @@ from agent.reasoning_summaries import (
 from agent.local_prompt_progress import prompt_progress, with_prompt_progress
 from agent.repetition_guard import RunawayStreamWatch, is_repetition_dominated
 from agent.stream_single_writer import claim_stream_writer, stream_writer_is_current
-from tools.terminal_tool_lifecycle import is_persistent_env
+from hermes_agent.tools.terminal_tool_lifecycle import is_persistent_env
 from utils import base_url_host_matches, base_url_hostname, env_float, env_int
 
 logger = logging.getLogger(__name__)
@@ -1413,7 +1413,7 @@ def _build_codex_kwargs(agent, api_messages, tools_for_api, reasoning_config, re
     if is_xai_responses:
         try:
             import copy as _copy
-            from tools.schema_sanitizer import strip_pattern_and_format, strip_slash_enum
+            from hermes_agent.tools.schema_sanitizer import strip_pattern_and_format, strip_slash_enum
             tools_for_api = _copy.deepcopy(tools_for_api)
             tools_for_api, _ = strip_pattern_and_format(tools_for_api)
             tools_for_api, _ = strip_slash_enum(tools_for_api)
@@ -2319,7 +2319,7 @@ def cleanup_task_resources(agent, task_id: str) -> None:
     terminal envs (``_cleanup_inactive_envs`` reaps them after ``terminal.lifetime_seconds``)
     and ``cleanup_browser`` in headed mode (the inactivity reaper handles idle sessions)."""
     def _headed() -> bool:
-        from tools.browser_session_cloud import is_headed_mode
+        from hermes_agent.tools.browser_session_cloud import is_headed_mode
         return is_headed_mode()
 
     for label, skip, skip_what, cleanup in (

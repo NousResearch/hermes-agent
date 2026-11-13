@@ -16,9 +16,9 @@ def _approval_agent(decisions):
 
     def run_conversation(**_kw):
         # The real blocking wait the terminal guard uses, reached through the turn's contextvar.
-        from tools.approval import _gateway_notify_cb
-        from tools.approval_context import get_current_session_key
-        from tools.approval_gateway_wait import _await_gateway_decision
+        from hermes_agent.tools.approval import _gateway_notify_cb
+        from hermes_agent.tools.approval_context import get_current_session_key
+        from hermes_agent.tools.approval_gateway_wait import _await_gateway_decision
         key = get_current_session_key(default="")
         decisions.append(_await_gateway_decision(
             key, _gateway_notify_cb(key), {"command": "rm -rf /tmp/x", "description": "dangerous",
@@ -31,7 +31,7 @@ def _approval_agent(decisions):
 @pytest.mark.asyncio
 async def test_streamed_completion_approval_resolves_via_runs_endpoint(monkeypatch):
     # Bound the agent thread's blocking wait so a regression fails fast instead of holding teardown.
-    monkeypatch.setattr("tools.approval_context._get_approval_timeout", lambda: 5)
+    monkeypatch.setattr("hermes_agent.tools.approval_context._get_approval_timeout", lambda: 5)
     adapter, decisions = _make_adapter(), []
     app = _create_app(adapter)
     app.router.add_post("/v1/runs/{run_id}/approval", adapter._handle_run_approval)
@@ -64,7 +64,7 @@ def _canonical_approval_turn(owner, decisions):
     authority's shared controls exactly as ``TurnRunner._approval_notify_sync`` does."""
     async def handle(event):
         from hermes_agent.gateway.session_results import execution_result
-        from tools.approval_gateway_wait import _await_gateway_decision
+        from hermes_agent.tools.approval_gateway_wait import _await_gateway_decision
         sid = event.source.chat_id
         live, generation = owner.sessions[sid], owner.db.get_session(sid)['runtime_generation']
 
@@ -94,7 +94,7 @@ async def test_canonical_streamed_approval_reaches_sse_and_resolves_via_runs_end
     """Under the session authority the advertised stream run id is bound to its exact durable
     admission: the shared approval prompt reaches the SSE, and the generation-fenced reply to
     ``POST /v1/runs/{run_id}/approval`` resolves the same waiter WS viewers see."""
-    monkeypatch.setattr("tools.approval_context._get_approval_timeout", lambda: 5)
+    monkeypatch.setattr("hermes_agent.tools.approval_context._get_approval_timeout", lambda: 5)
     decisions = []
     owner.runner._handle_message = _canonical_approval_turn(owner, decisions)
     app = _create_app(api)
@@ -131,7 +131,7 @@ async def test_exact_streamed_retry_replays_the_already_pending_approval(api, ow
     (same session, Idempotency-Key, auth scope) reuses the admission under a new completion id.
     The prompt was published before the retry subscribed, so the retry stream must replay it from
     the authority's pending controls, or an SSE-only client waits on a prompt it never sees."""
-    monkeypatch.setattr("tools.approval_context._get_approval_timeout", lambda: 15)
+    monkeypatch.setattr("hermes_agent.tools.approval_context._get_approval_timeout", lambda: 15)
     decisions = []
     owner.runner._handle_message = _canonical_approval_turn(owner, decisions)
     api._api_key = "pending-retry-key-long-enough"

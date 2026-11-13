@@ -36,7 +36,7 @@ def _install_discover_spy(monkeypatch):
     # The plain-chat path also arms MCP discovery. Its config probe imports
     # ``hermes_cli.plugins`` (replaced by the stub above), fails, and falls
     # back to "assume configured", which spawned a REAL ``cli-mcp-discovery``
-    # daemon thread that was still importing ``tools.mcp_tool`` when pytest
+    # daemon thread that was still importing ``hermes_agent.tools.mcp_tool`` when pytest
     # exited. A daemon thread inside a C-extension import at interpreter
     # finalization dies via pthread_exit → glibc "FATAL: exception not
     # rethrown" → SIGABRT. Plugin discovery is the only subject here.

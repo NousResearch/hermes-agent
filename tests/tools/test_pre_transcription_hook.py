@@ -1,5 +1,5 @@
 """Tests for the ``pre_transcription`` plugin hook and STT prompt threading
-(issue #64168) wired into ``tools.transcription_tools.transcribe_audio``.
+(issue #64168) wired into ``hermes_agent.tools.transcription_tools.transcribe_audio``.
 
 Covers:
 
@@ -32,7 +32,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 import hermes_cli.plugins as plugins_mod
-from tools import transcription_tools
+from hermes_agent.tools import transcription_tools
 
 
 PROMPT = "Hermes, Teknium, Nous Research, kanban"
@@ -77,8 +77,8 @@ def _no_hooks(monkeypatch):
 def _dispatch_ctx(stt_config, provider):
     """Patch config load + provider resolution around transcribe_audio."""
     return (
-        patch("tools.transcription_tools._load_stt_config", return_value=stt_config),
-        patch("tools.transcription_tools._get_provider", return_value=provider),
+        patch("hermes_agent.tools.transcription_tools._load_stt_config", return_value=stt_config),
+        patch("hermes_agent.tools.transcription_tools._get_provider", return_value=provider),
     )
 
 
@@ -109,10 +109,10 @@ class TestPromptThreading:
 
         cfg_patch, prov_patch = _dispatch_ctx({"provider": "local"}, "local")
         with cfg_patch, prov_patch, \
-             patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
-             patch("tools.transcription_tools._load_local_whisper_model",
+             patch("hermes_agent.tools.transcription_tools._HAS_FASTER_WHISPER", True), \
+             patch("hermes_agent.tools.transcription_tools._load_local_whisper_model",
                    return_value=mock_model), \
-             patch("tools.transcription_tools._local_model", None):
+             patch("hermes_agent.tools.transcription_tools._local_model", None):
             result = transcription_tools.transcribe_audio(audio)
 
         assert result["success"] is True
@@ -129,7 +129,7 @@ class TestPromptThreading:
 
         cfg_patch, prov_patch = _dispatch_ctx({"provider": "openai"}, "openai")
         with cfg_patch, prov_patch, \
-             patch("tools.transcription_tools._HAS_OPENAI", True), \
+             patch("hermes_agent.tools.transcription_tools._HAS_OPENAI", True), \
              patch("openai.OpenAI", return_value=mock_client):
             result = transcription_tools.transcribe_audio(audio)
 
@@ -148,7 +148,7 @@ class TestPromptThreading:
 
         cfg_patch, prov_patch = _dispatch_ctx({"provider": "groq"}, "groq")
         with cfg_patch, prov_patch, \
-             patch("tools.transcription_tools._HAS_OPENAI", True), \
+             patch("hermes_agent.tools.transcription_tools._HAS_OPENAI", True), \
              patch("openai.OpenAI", return_value=mock_client):
             result = transcription_tools.transcribe_audio(audio)
 
@@ -195,7 +195,7 @@ class TestHookMergeMechanics:
         backend = MagicMock(return_value={"success": True, "transcript": "hi"})
         cfg_patch, prov_patch = _dispatch_ctx({"provider": "openai"}, "openai")
         with cfg_patch, prov_patch, \
-             patch("tools.transcription_tools._transcribe_openai", backend):
+             patch("hermes_agent.tools.transcription_tools._transcribe_openai", backend):
             transcription_tools.transcribe_audio(audio)
 
         args, _ = backend.call_args
@@ -212,9 +212,9 @@ class TestHookMergeMechanics:
 
         backend = MagicMock(return_value={"success": True, "transcript": "hi"})
         cfg_patch, prov_patch = _dispatch_ctx({"provider": "openai"}, "openai")
-        with caplog.at_level(logging.WARNING, logger="tools.transcription_tools"), \
+        with caplog.at_level(logging.WARNING, logger="hermes_agent.tools.transcription_tools"), \
              cfg_patch, prov_patch, \
-             patch("tools.transcription_tools._transcribe_openai", backend):
+             patch("hermes_agent.tools.transcription_tools._transcribe_openai", backend):
             transcription_tools.transcribe_audio(audio)
 
         args, kwargs = backend.call_args
@@ -229,7 +229,7 @@ class TestHookMergeMechanics:
         backend = MagicMock(return_value={"success": True, "transcript": "hi"})
         cfg_patch, prov_patch = _dispatch_ctx({"provider": "openai"}, "openai")
         with cfg_patch, prov_patch, \
-             patch("tools.transcription_tools._transcribe_openai", backend):
+             patch("hermes_agent.tools.transcription_tools._transcribe_openai", backend):
             transcription_tools.transcribe_audio(audio)
 
         _, kwargs = backend.call_args
@@ -245,7 +245,7 @@ class TestHookMergeMechanics:
             {"provider": "openai", "prompt": "config base"}, "openai",
         )
         with cfg_patch, prov_patch, \
-             patch("tools.transcription_tools._transcribe_openai", backend):
+             patch("hermes_agent.tools.transcription_tools._transcribe_openai", backend):
             transcription_tools.transcribe_audio(
                 audio, model="whisper-1", source="gateway",
             )
@@ -278,8 +278,8 @@ class TestNoHookPath:
         mock_client = MagicMock()
         mock_client.audio.transcriptions.create.return_value = "hello"
 
-        with patch("tools.transcription_tools._HAS_OPENAI", True), \
-             patch("tools.transcription_tools._resolve_stt_language",
+        with patch("hermes_agent.tools.transcription_tools._HAS_OPENAI", True), \
+             patch("hermes_agent.tools.transcription_tools._resolve_stt_language",
                    return_value=None), \
              patch("openai.OpenAI", return_value=mock_client):
             transcription_tools._transcribe_openai(audio, "whisper-1")
@@ -303,7 +303,7 @@ class TestSttPromptConfig:
             {"provider": "openai", "prompt": PROMPT}, "openai",
         )
         with cfg_patch, prov_patch, \
-             patch("tools.transcription_tools._transcribe_openai", backend):
+             patch("hermes_agent.tools.transcription_tools._transcribe_openai", backend):
             transcription_tools.transcribe_audio(audio)
 
         _, kwargs = backend.call_args
@@ -318,7 +318,7 @@ class TestSttPromptConfig:
             {"provider": "openai", "prompt": "config base"}, "openai",
         )
         with cfg_patch, prov_patch, \
-             patch("tools.transcription_tools._transcribe_openai", backend):
+             patch("hermes_agent.tools.transcription_tools._transcribe_openai", backend):
             transcription_tools.transcribe_audio(audio)
 
         _, kwargs = backend.call_args
@@ -338,14 +338,14 @@ class TestSttPromptConfig:
         cfg_patch, prov_patch = _dispatch_ctx(
             {"provider": "openai", "prompt": "config base"}, "openai",
         )
-        with caplog.at_level(logging.WARNING, logger="tools.transcription_tools"), \
+        with caplog.at_level(logging.WARNING, logger="hermes_agent.tools.transcription_tools"), \
              cfg_patch, prov_patch, \
-             patch("tools.transcription_tools._transcribe_openai", backend):
+             patch("hermes_agent.tools.transcription_tools._transcribe_openai", backend):
             result = transcription_tools.transcribe_audio(audio)
 
         assert result["success"] is True  # truncation never errors
         _, kwargs = backend.call_args
-        from tools import transcription_command
+        from hermes_agent.tools import transcription_command
         max_chars = (
             transcription_command._WHISPER_PROMPT_TOKEN_CAP
             * transcription_command._PROMPT_CHARS_PER_TOKEN
@@ -368,7 +368,7 @@ class TestSttPromptConfig:
             {"provider": "mistral", "prompt": "config base"}, "mistral",
         )
         with cfg_patch, prov_patch, \
-             patch("tools.transcription_tools._transcribe_mistral", backend):
+             patch("hermes_agent.tools.transcription_tools._transcribe_mistral", backend):
             transcription_tools.transcribe_audio(audio)
 
         _, kwargs = backend.call_args
@@ -384,7 +384,7 @@ class TestSttPromptConfig:
             {"provider": "openai", "prompt": "   "}, "openai",
         )
         with cfg_patch, prov_patch, \
-             patch("tools.transcription_tools._transcribe_openai", backend):
+             patch("hermes_agent.tools.transcription_tools._transcribe_openai", backend):
             transcription_tools.transcribe_audio(audio)
 
         _, kwargs = backend.call_args
@@ -402,11 +402,11 @@ class TestUnsupportedBackends:
     ):
         audio = _make_audio(tmp_path)
         monkeypatch.setattr(
-            "tools.xai_http.resolve_xai_http_credentials",
+            "hermes_agent.tools.xai_http.resolve_xai_http_credentials",
             lambda: {"api_key": "xk-test", "base_url": None},
         )
         monkeypatch.setattr(
-            "tools.xai_http.hermes_xai_user_agent", lambda: "test-ua",
+            "hermes_agent.tools.xai_http.hermes_xai_user_agent", lambda: "test-ua",
         )
 
         response = MagicMock(status_code=200)
@@ -414,8 +414,8 @@ class TestUnsupportedBackends:
         fake_requests = SimpleNamespace(post=MagicMock(return_value=response))
         monkeypatch.setitem(sys.modules, "requests", fake_requests)
 
-        with caplog.at_level(logging.DEBUG, logger="tools.transcription_tools"), \
-             patch("tools.transcription_tools._load_stt_config", return_value={}):
+        with caplog.at_level(logging.DEBUG, logger="hermes_agent.tools.transcription_tools"), \
+             patch("hermes_agent.tools.transcription_tools._load_stt_config", return_value={}):
             result = transcription_tools._transcribe_xai(
                 audio, "grok-stt", prompt=PROMPT,
             )
@@ -435,8 +435,8 @@ class TestUnsupportedBackends:
         fake_requests = SimpleNamespace(post=MagicMock(return_value=response))
         monkeypatch.setitem(sys.modules, "requests", fake_requests)
 
-        with caplog.at_level(logging.DEBUG, logger="tools.transcription_tools"), \
-             patch("tools.transcription_tools._load_stt_config", return_value={}):
+        with caplog.at_level(logging.DEBUG, logger="hermes_agent.tools.transcription_tools"), \
+             patch("hermes_agent.tools.transcription_tools._load_stt_config", return_value={}):
             result = transcription_tools._transcribe_elevenlabs(
                 audio, "scribe_v2", prompt=PROMPT,
             )
@@ -559,14 +559,14 @@ def test_real_fixture_plugins_thread_prompt_in_registration_order(
         mock_model = MagicMock()
         mock_model.transcribe.return_value = ([mock_segment], mock_info)
 
-        with patch("tools.transcription_tools._load_stt_config",
+        with patch("hermes_agent.tools.transcription_tools._load_stt_config",
                    return_value={"provider": "local"}), \
-             patch("tools.transcription_tools._get_provider",
+             patch("hermes_agent.tools.transcription_tools._get_provider",
                    return_value="local"), \
-             patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
-             patch("tools.transcription_tools._load_local_whisper_model",
+             patch("hermes_agent.tools.transcription_tools._HAS_FASTER_WHISPER", True), \
+             patch("hermes_agent.tools.transcription_tools._load_local_whisper_model",
                    return_value=mock_model), \
-             patch("tools.transcription_tools._local_model", None):
+             patch("hermes_agent.tools.transcription_tools._local_model", None):
             result = transcription_tools.transcribe_audio(audio)
     finally:
         plugins_mod._plugin_manager = old_manager

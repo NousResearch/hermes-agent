@@ -53,7 +53,7 @@ async def subagent_control(connection, ref, params, *, steer):
         from agent.interrupt_compat import request_hard_interrupt
         return {'found': child is not None and bool(request_hard_interrupt(child, f'Interrupted via Desktop ({sub})')),
                 'subagent_id': sub}
-    from tools import delegate_tool_registry as registry
+    from hermes_agent.tools import delegate_tool_registry as registry
     with registry._active_subagents_lock:  # linearized with the child's final steer drain
         record = registry._active_subagents.get(sub)
         queued = bool(child is not None and record and record.get('agent') is child and record.get('accepting_steer')
@@ -77,9 +77,9 @@ async def show_tools(connection, ref, params):
     agent = authority.agent(ref)
 
     def build():
-        import model_tools
+        from hermes_agent import model_tools
         from agent.skill_utils import parse_config_string_list
-        from toolsets import session_disabled_toolsets
+        from hermes_agent.toolsets import session_disabled_toolsets
         with owner_scope(authority):
             if agent is not None:
                 enabled, disabled = getattr(agent, 'enabled_toolsets', None), getattr(agent, 'disabled_toolsets', None)
@@ -215,7 +215,7 @@ async def approvals(connection, ref, params, *, ack=False):
     with live.event_stream.lock:
         pending = [(route, prompt) for route, prompt in live.controls.pending.values() if prompt['kind'] == 'approval']
     if ack:
-        from tools.approval import ack_gateway_approval
+        from hermes_agent.tools.approval import ack_gateway_approval
         route = next((route for route, prompt in pending if prompt['prompt_id'] == params['request_id']), None)
         return {'acknowledged': route is not None and ack_gateway_approval(route, params['request_id'])}
     return {'approvals': [{'request_id': prompt['prompt_id'], 'command': prompt['command'],
@@ -282,7 +282,7 @@ def _owned_targets(connection, ref, params, *, select):
     with live.event_stream.lock:
         _require_current_route(authority, ref)
         agent, records = _owner_objects(authority, ref)
-        module = sys.modules.get('tools.process_registry')
+        module = sys.modules.get('hermes_agent.tools.process_registry')
         if module is None:
             return None, []
         registry = module.process_registry
@@ -320,8 +320,8 @@ async def reload_mcp(connection, ref, params):
         raise RuntimeStoreError('permission_denied')
     if params.get('confirm') is not True:
         return {'status': 'confirm_required', 'message': 'Reloading MCP refreshes every chat of this profile.'}
-    from tools.mcp_oauth import suppress_interactive_oauth
-    from tools import mcp_tool_discovery as discovery
+    from hermes_agent.tools.mcp_oauth import suppress_interactive_oauth
+    from hermes_agent.tools import mcp_tool_discovery as discovery
 
     def reconcile():
         with suppress_interactive_oauth():
@@ -428,7 +428,7 @@ async def stop_processes(connection, ref, params):
 def _interrupt_delegations(authority, ref):
     """Main's ``/stop`` also interrupted the background (async) delegations; here only the ones this
     session dispatched (its route or its durable id), never another chat's."""
-    module = sys.modules.get('tools.async_delegation')
+    module = sys.modules.get('hermes_agent.tools.async_delegation')
     if module is None:
         return 0
     return module.interrupt_for_session(session_key=authority.sessions[ref.session_id].route,
@@ -529,7 +529,7 @@ def _has_fallback_evicted_ancestor(agent, target_sids, expected_db, route, regis
 
 
 def subagent_records(parent, session_id=None, *, session_db=None, route=None, include_fallback_evicted=True):
-    registry = sys.modules.get('tools.delegate_tool_registry')
+    registry = sys.modules.get('hermes_agent.tools.delegate_tool_registry')
     target_sid = (session_id or getattr(parent, 'session_id', None)) if include_fallback_evicted else None
     if registry is None or (parent is None and not target_sid):
         return []
@@ -634,7 +634,7 @@ def _owned_locked(registry, keys, owners):
 
 
 def process_snapshot(authority, ref, agent, records):
-    module = sys.modules.get('tools.process_registry')
+    module = sys.modules.get('hermes_agent.tools.process_registry')
     if module is None:
         return []
     registry = module.process_registry

@@ -3,7 +3,7 @@ keeps 1h, the child is built at 5m, and the child's wire markers carry no ``ttl`
 stays disabled (the child is not re-enabled to 5m)."""
 from types import SimpleNamespace
 from agent.prompt_caching import apply_anthropic_cache_control
-from tools.delegate_tool import _apply_child_cache_ttl
+from hermes_agent.tools.delegate_tool import _apply_child_cache_ttl
 
 
 def _markers(messages):
@@ -45,8 +45,8 @@ def test_real_spawn_path_applies_it(tmp_path, monkeypatch):
     (tmp_path / "config.yaml").write_text(
         "prompt_caching:\n  cache_ttl: 1h\nmodel:\n  default: anthropic/claude-sonnet-4.6\n", encoding="utf-8")
     from run_agent import AIAgent
-    from tools import delegate_tool as dt
-    import tools.delegate_tool_config as dtc
+    from hermes_agent.tools import delegate_tool as dt
+    import hermes_agent.tools.delegate_tool_config as dtc
     monkeypatch.setattr(dt, "_load_config", dict)
     monkeypatch.setattr(dtc, "_load_config", dict)
     kw = dict(api_key="k", base_url="https://openrouter.ai/api/v1", provider="openrouter",

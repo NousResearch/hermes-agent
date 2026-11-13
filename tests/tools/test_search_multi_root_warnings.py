@@ -12,9 +12,9 @@ import shutil
 
 import pytest
 
-from tools.file_operations import ShellFileOperations
-import tools.file_tools  # registers search_files
-from tools.registry import registry
+from hermes_agent.tools.file_operations import ShellFileOperations
+import hermes_agent.tools.file_tools  # registers search_files
+from hermes_agent.tools.registry import registry
 
 
 @pytest.fixture

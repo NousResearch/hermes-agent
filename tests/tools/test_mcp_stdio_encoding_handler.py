@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from tools.mcp_tool import MCPServerTask, _MCP_AVAILABLE
+from hermes_agent.tools.mcp_tool import MCPServerTask, _MCP_AVAILABLE
 
 pytestmark = pytest.mark.skipif(not _MCP_AVAILABLE, reason="MCP SDK not installed")
 
@@ -40,11 +40,11 @@ class TestStdioEncodingErrorHandler:
 
         async def _test():
             with (
-                patch("tools.mcp_tool.StdioServerParameters") as mock_params,
-                patch("tools.mcp_tool.stdio_client", return_value=mock_stdio_cm),
-                patch("tools.mcp_tool.ClientSession", return_value=mock_session_cm),
-                patch("tools.mcp_tool_lifecycle._snapshot_child_pids", return_value=set()),
-                patch("tools.mcp_tool_config._write_stderr_log_header"),
+                patch("hermes_agent.tools.mcp_tool.StdioServerParameters") as mock_params,
+                patch("hermes_agent.tools.mcp_tool.stdio_client", return_value=mock_stdio_cm),
+                patch("hermes_agent.tools.mcp_tool.ClientSession", return_value=mock_session_cm),
+                patch("hermes_agent.tools.mcp_tool_lifecycle._snapshot_child_pids", return_value=set()),
+                patch("hermes_agent.tools.mcp_tool_config._write_stderr_log_header"),
             ):
                 server = MCPServerTask("test-encoding")
                 await server.start({

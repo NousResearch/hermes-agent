@@ -4,9 +4,9 @@ and the execute-path CONNECTION_REQUIRED error carries a link only where no card
 import pytest
 from pydantic import ValidationError
 
-from tools.connectors.gateway import wire
-from tools.connectors.gateway.merge import partition_calls, splice_remote_results
-from tools.connectors.turn import CARD, LINK, SIDE, scoped_connection_surface
+from hermes_agent.tools.connectors.gateway import wire
+from hermes_agent.tools.connectors.gateway.merge import partition_calls, splice_remote_results
+from hermes_agent.tools.connectors.turn import CARD, LINK, SIDE, scoped_connection_surface
 
 
 def test_connections_result_carries_status_reason_under_either_spelling():

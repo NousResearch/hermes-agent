@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from tools.patch_parser import apply_v4a_operations, parse_v4a_patch
+from hermes_agent.tools.patch_parser import apply_v4a_operations, parse_v4a_patch
 
 
 class _AliasingFileOps:
@@ -63,8 +63,8 @@ def test_alias_spelled_sequential_edits_and_delete_then_add_still_apply():
 @pytest.mark.platforms("posix")
 def test_dotdot_through_a_symlinked_dir_is_a_different_file(tmp_path):
     """``sub/link/../f.txt`` is ``real/f.txt`` when ``link -> real/deep``: two files, both edited."""
-    from tools.environments.local import LocalEnvironment
-    from tools.file_operations import ShellFileOperations
+    from hermes_agent.tools.environments.local import LocalEnvironment
+    from hermes_agent.tools.file_operations import ShellFileOperations
     for rel in ("sub/f.txt", "real/f.txt"):
         (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
         (tmp_path / rel).write_text("foo\n")
@@ -85,8 +85,8 @@ def test_dotdot_through_a_symlinked_dir_is_a_different_file(tmp_path):
 @contextlib.contextmanager
 def _non_host_file_ops(cwd, **env_attrs):
     """Real ShellFileOperations on a LocalEnvironment taking the remote backends' lexical path."""
-    from tools.environments.local import LocalEnvironment
-    from tools.file_operations import ShellFileOperations
+    from hermes_agent.tools.environments.local import LocalEnvironment
+    from hermes_agent.tools.file_operations import ShellFileOperations
     env = LocalEnvironment(cwd=str(cwd), timeout=30, persistent=False)
     env.uses_host_filesystem = False
     for name, value in env_attrs.items():

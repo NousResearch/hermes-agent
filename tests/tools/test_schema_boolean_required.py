@@ -1,7 +1,7 @@
 import copy
 
 from jsonschema import Draft202012Validator
-from tools.schema_sanitizer import sanitize_tool_schemas
+from hermes_agent.tools.schema_sanitizer import sanitize_tool_schemas
 
 
 def test_boolean_required_preserves_parent_intent():

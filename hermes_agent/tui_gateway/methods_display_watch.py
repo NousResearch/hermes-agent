@@ -1,6 +1,6 @@
 """Cross-process lease watcher: ``display.lease`` for transitions made OUTSIDE ``hermes serve``.
 
-The lease (``tools.bot_desktop.lease``) lives on disk and is changed by whatever process hosts the
+The lease (``hermes_agent.tools.bot_desktop.lease``) lives on disk and is changed by whatever process hosts the
 agent — a ``hermes computer-use screen`` takeover from the CLI, a cron worker's release.
 ``lease.on_change`` only fires in the writing process, so ``methods_display``'s in-process
 listener never sees those; the Desktop's hero tone and pane state stayed stale until the
@@ -31,7 +31,7 @@ _runtime_marks: dict[str, tuple] = {}
 
 def _lease_event_payload(profile_key: str, lease) -> dict:
     # Same shape and the same redaction (viewer_hash, never the raw id) as the in-process broadcast.
-    from tools.bot_desktop.lease import public_view
+    from hermes_agent.tools.bot_desktop.lease import public_view
     return {"profile_key": profile_key, "lease": public_view(lease)}
 
 
@@ -83,7 +83,7 @@ def _poll_runtime_files() -> None:
     file move (start/stop by the CLI or gateway) or the launcher dying without touching its files
     (Xvnc crash: env and launcher.pid stay put, only the pid stops being live)."""
     from hermes_constants import hermes_home_key, reset_hermes_home_override, set_hermes_home_override
-    from tools.bot_desktop import runtime as _bd_runtime
+    from hermes_agent.tools.bot_desktop import runtime as _bd_runtime
     for home in _watched_lease_homes():
         key = hermes_home_key(home)
         sd = home / "bot-desktop"
@@ -115,7 +115,7 @@ def _poll_idle_screens() -> None:
         return
     _last_idle_check = time.monotonic()
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
-    from tools.bot_desktop import runtime as _bd_runtime
+    from hermes_agent.tools.bot_desktop import runtime as _bd_runtime
     for home in _watched_lease_homes():
         token = set_hermes_home_override(home)
         try:
@@ -127,7 +127,7 @@ def _poll_idle_screens() -> None:
 def _poll_lease_files() -> None:
     """One pass: read a home's lease only when its file mtime moved; broadcast when the epoch did."""
     from hermes_constants import hermes_home_key
-    from tools.bot_desktop import lease as _bd_lease
+    from hermes_agent.tools.bot_desktop import lease as _bd_lease
     for home in _watched_lease_homes():
         key = hermes_home_key(home)
         try:
@@ -153,7 +153,7 @@ def _ensure_lease_watcher() -> None:
     if _lease_watcher_started.is_set():
         return
     _lease_watcher_started.set()
-    from tools.bot_desktop import lease as _bd_lease
+    from hermes_agent.tools.bot_desktop import lease as _bd_lease
 
     def _seen_locally(profile_key: str, lease) -> None:
         # methods_display's listener broadcasts in-process transitions; only then is the file

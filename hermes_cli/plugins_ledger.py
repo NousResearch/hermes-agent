@@ -305,7 +305,7 @@ class PluginLedgerMixin:
         preledger_tools = tuple(n for n in self._plugin_tool_names if n not in ledger_tool_names)
         if preledger_tools:
             try:
-                from tools.registry import registry as tool_registry
+                from hermes_agent.tools.registry import registry as tool_registry
             except Exception as exc:  # pragma: no cover - defensive
                 logger.debug("unload: tools.registry unavailable: %s", exc)
             else:

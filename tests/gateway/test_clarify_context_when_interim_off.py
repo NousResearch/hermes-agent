@@ -131,7 +131,7 @@ async def test_clarify_card_posts_when_its_explanation_send_never_returns(monkey
 async def test_a_question_cancelled_while_its_explanation_sends_posts_no_card():
     """/new or a cancel lands while the card waits for its explanation: the withdrawn card stays unsent."""
     from hermes_agent.gateway.run_turn_runner import TurnRunner
-    from tools import clarify_gateway
+    from hermes_agent.tools import clarify_gateway
 
     cards: list[dict] = []
 

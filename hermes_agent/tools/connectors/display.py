@@ -8,9 +8,9 @@ import json
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
-from tools.connectors.contract import SettleReason
-from tools.connectors.operation import ConnectionOperation
-from tools.connectors.run import Callback, Kind, open_and_drive
+from hermes_agent.tools.connectors.contract import SettleReason
+from hermes_agent.tools.connectors.operation import ConnectionOperation
+from hermes_agent.tools.connectors.run import Callback, Kind, open_and_drive
 
 OFF_DESKTOP_NOTE = (
     "The connector card shows only in the Hermes desktop app. Tell the user to connect apps from the "

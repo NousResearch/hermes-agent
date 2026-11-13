@@ -91,7 +91,7 @@ def _fake_remote_backend(monkeypatch, remote_root: Path) -> list:
     import json
     import subprocess
 
-    import tools.terminal_tool as terminal_tool_mod
+    import hermes_agent.tools.terminal_tool as terminal_tool_mod
 
     calls = []
 

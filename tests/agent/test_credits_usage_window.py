@@ -1120,8 +1120,8 @@ class TestBlockedResponseCapture:
 
         from agent.turn_api_error import handle_api_error
         from run_agent import AIAgent
-        with patch("model_tools.get_tool_definitions", return_value=[]), \
-                patch("model_tools.check_toolset_requirements", return_value={}), \
+        with patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]), \
+                patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}), \
                 patch("agent.process_bootstrap.OpenAI"):
             agent = AIAgent(api_key="test-key-1234567890", base_url="https://inference-api.nousresearch.com/v1",
                             quiet_mode=True, skip_context_files=True, skip_memory=True)
@@ -1133,7 +1133,7 @@ class TestBlockedResponseCapture:
         error.response = SimpleNamespace(headers=h, status_code=status)
         seen = []
         with patch.object(agent, "_capture_credits", lambda r, **kw: seen.append((r, kw))), \
-                patch("tools.interpreter_shutdown.interpreter_shutting_down", return_value=True):
+                patch("hermes_agent.tools.interpreter_shutdown.interpreter_shutting_down", return_value=True):
             verdict = handle_api_error(
                 agent, api_error=error, _retry=None, thinking_spinner=None, messages=[], api_messages=[],
                 api_kwargs={}, system_message="", active_system_prompt="", conversation_history=[],

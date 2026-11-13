@@ -114,7 +114,7 @@ def test_ignored_sigint_leaves_terminal_commands_runnable():
     """SIGINT inherited as SIG_IGN (a server started as ``cmd &`` from a non-interactive shell) ends
     nothing, so it must not raise the one-way exit fence: the process lives on and every later
     terminal command would return 'host is exiting' rc 130."""
-    from tools.environments.local import LocalEnvironment
+    from hermes_agent.tools.environments.local import LocalEnvironment
 
     prev = {signal.SIGTERM: signal.getsignal(signal.SIGTERM),
             signal.SIGINT: signal.signal(signal.SIGINT, signal.SIG_IGN)}
@@ -182,8 +182,8 @@ def test_shutdown_mid_tool_kills_the_command_and_keeps_its_result(monkeypatch):
 
     import psutil
 
-    from tools.environments.local import LocalEnvironment
-    from tools.interrupt import set_interrupt
+    from hermes_agent.tools.environments.local import LocalEnvironment
+    from hermes_agent.tools.interrupt import set_interrupt
 
     env = LocalEnvironment(cwd=os.getcwd())
     messages = [{"role": "assistant", "tool_calls": [{"id": "call-1"}]}]
@@ -244,7 +244,7 @@ def test_sigterm_grace_hard_exit_kills_a_sigterm_ignoring_command(monkeypatch):
 
     import psutil
 
-    from tools.environments.local import LocalEnvironment
+    from hermes_agent.tools.environments.local import LocalEnvironment
     from hermes_agent.tui_gateway import entry
 
     env = LocalEnvironment(cwd=os.getcwd())

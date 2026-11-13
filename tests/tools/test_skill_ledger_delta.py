@@ -22,13 +22,13 @@ def ledger_home(tmp_path, monkeypatch):
 
 
 def _manifest(skills: Path, name: str, **files: str):
-    from tools import skill_ledger
+    from hermes_agent.tools import skill_ledger
     return [{"path": str(skills / name / rel), "sha256": skill_ledger._store_blob(body.encode())}
             for rel, body in sorted(files.items())]
 
 
 def test_entry_stores_only_changed_paths_and_rollback_still_restores(ledger_home):
-    from tools import skill_ledger
+    from hermes_agent.tools import skill_ledger
     skills = ledger_home / "skills"
     before = _manifest(skills, "big", **{"SKILL.md": "v1", "references/a.md": "same", "references/gone.md": "old"})
     after = _manifest(skills, "big", **{"SKILL.md": "v2", "references/a.md": "same", "references/new.md": "added"})
@@ -51,7 +51,7 @@ def test_entry_stores_only_changed_paths_and_rollback_still_restores(ledger_home
 
 
 def test_compact_rewrites_legacy_full_manifests_in_place(ledger_home):
-    from tools import skill_ledger
+    from hermes_agent.tools import skill_ledger
     skills = ledger_home / "skills"
     full = _manifest(skills, "big", **{f"references/{n}.md": "same" for n in range(50)})
     changed_before = full + _manifest(skills, "big", **{"SKILL.md": "v1"})
@@ -75,7 +75,7 @@ def test_compact_rewrites_legacy_full_manifests_in_place(ledger_home):
 
 def test_compact_leaves_an_undecodable_ledger_untouched(ledger_home, caplog):
     """Compaction must not replace a ledger it could not decode (gate mutation M2)."""
-    from tools import skill_ledger
+    from hermes_agent.tools import skill_ledger
     ledger = skill_ledger.ledger_path()
     ledger.parent.mkdir(parents=True, exist_ok=True)
     ledger.write_bytes(b"\xff")
@@ -88,7 +88,7 @@ def test_list_entries_treats_an_undecodable_ledger_as_empty_and_warns(ledger_hom
     """A ledger that exists but is not UTF-8 lists as empty (rollback then fails closed on
     ``get_entry`` -> None) and, unlike a merely missing ledger, is warned about: corruption
     would otherwise be indistinguishable from a fresh install with no history."""
-    from tools import skill_ledger
+    from hermes_agent.tools import skill_ledger
     ledger = skill_ledger.ledger_path()
     ledger.parent.mkdir(parents=True, exist_ok=True)
     ledger.write_bytes(b"\xff")
@@ -98,7 +98,7 @@ def test_list_entries_treats_an_undecodable_ledger_as_empty_and_warns(ledger_hom
 
 
 def test_list_entries_is_silent_when_the_ledger_is_merely_missing(ledger_home, caplog):
-    from tools import skill_ledger
+    from hermes_agent.tools import skill_ledger
     assert not skill_ledger.ledger_path().exists()
     assert skill_ledger.list_entries() == []
     assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
@@ -106,7 +106,7 @@ def test_list_entries_is_silent_when_the_ledger_is_merely_missing(ledger_home, c
 
 def _age_past_gc_grace(blob: Path) -> None:
     """An unreferenced blob younger than the grace window may belong to an in-flight capture."""
-    from tools import skill_ledger
+    from hermes_agent.tools import skill_ledger
     aged = blob.stat().st_mtime - 2 * skill_ledger._BLOB_GC_GRACE_SECS
     os.utime(blob, (aged, aged))
 
@@ -114,7 +114,7 @@ def _age_past_gc_grace(blob: Path) -> None:
 def test_gc_blobs_removes_only_unreferenced(ledger_home):
     """The blob store was write-only (#107539): after compaction, blobs no entry references are
     deleted; every referenced blob survives so any entry can still roll back."""
-    from tools import skill_ledger
+    from hermes_agent.tools import skill_ledger
     skills = ledger_home / "skills"
     kept = _manifest(skills, "s", **{"SKILL.md": "v1"})
     skill_ledger.append_entry("create", "s", before=[], after=kept, actor="agent")
@@ -136,7 +136,7 @@ def test_gc_blobs_removes_only_unreferenced(ledger_home):
 
 @pytest.mark.parametrize("failure", ["unreadable", "missing", "invalid-encoding", "malformed-json", "non-dict-row"])
 def test_gc_keeps_rollback_blobs_when_the_ledger_cannot_be_read(ledger_home, caplog, failure):
-    from tools import skill_ledger
+    from hermes_agent.tools import skill_ledger
 
     skill = ledger_home / "skills" / "demo" / "SKILL.md"
     skill.parent.mkdir()

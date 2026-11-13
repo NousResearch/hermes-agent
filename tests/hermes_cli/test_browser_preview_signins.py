@@ -38,7 +38,7 @@ def cdp_server():
 @pytest.fixture
 def released(monkeypatch):
     calls = []
-    monkeypatch.setattr("tools.browser_session_real_profile.terminate_real_profile_browser",
+    monkeypatch.setattr("hermes_agent.tools.browser_session_real_profile.terminate_real_profile_browser",
                         lambda: calls.append(True))
     return calls
 
@@ -52,7 +52,7 @@ def _run(monkeypatch, *, tty=False):
 
 
 def test_exports_the_real_profile_browsers_cookies_to_stdout(monkeypatch, cdp_server, released):
-    monkeypatch.setattr("tools.browser_session_real_profile.real_profile_cdp", lambda: (cdp_server, None))
+    monkeypatch.setattr("hermes_agent.tools.browser_session_real_profile.real_profile_cdp", lambda: (cdp_server, None))
 
     code, out = _run(monkeypatch)
 
@@ -65,7 +65,7 @@ def test_exports_the_real_profile_browsers_cookies_to_stdout(monkeypatch, cdp_se
 
 
 def test_consent_off_reports_disabled_and_reads_nothing(monkeypatch, released):
-    monkeypatch.setattr("tools.browser_session_real_profile.real_profile_cdp", lambda: (None, None))
+    monkeypatch.setattr("hermes_agent.tools.browser_session_real_profile.real_profile_cdp", lambda: (None, None))
 
     code, out = _run(monkeypatch)
 
@@ -73,7 +73,7 @@ def test_consent_off_reports_disabled_and_reads_nothing(monkeypatch, released):
 
 
 def test_a_browser_that_cannot_start_is_an_error_not_an_empty_import(monkeypatch, released):
-    monkeypatch.setattr("tools.browser_session_real_profile.real_profile_cdp", lambda: (None, "profile locked"))
+    monkeypatch.setattr("hermes_agent.tools.browser_session_real_profile.real_profile_cdp", lambda: (None, "profile locked"))
 
     code, out = _run(monkeypatch)
 
@@ -81,7 +81,7 @@ def test_a_browser_that_cannot_start_is_an_error_not_an_empty_import(monkeypatch
 
 
 def test_refuses_to_print_cookie_values_to_a_terminal(monkeypatch, capsys):
-    monkeypatch.setattr("tools.browser_session_real_profile.real_profile_cdp",
+    monkeypatch.setattr("hermes_agent.tools.browser_session_real_profile.real_profile_cdp",
                         lambda: pytest.fail("must not read cookies for a terminal"))
 
     code, out = _run(monkeypatch, tty=True)

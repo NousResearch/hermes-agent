@@ -21,9 +21,9 @@ import pytest
 
 from tests.tools.test_sudo_askpass_delivery import PW, _write_fake_sudo
 from tests.waiting import wait_until
-from tools import terminal_tool, terminal_tool_sudo
-from tools import terminal_tool_sudo_askpass as askpass
-from tools.environments.base import BaseEnvironment
+from hermes_agent.tools import terminal_tool, terminal_tool_sudo
+from hermes_agent.tools import terminal_tool_sudo_askpass as askpass
+from hermes_agent.tools.environments.base import BaseEnvironment
 
 pytestmark = [
     pytest.mark.platforms("posix"),
@@ -92,7 +92,7 @@ def _bare(cls, runner):
 
 
 def _modal_env(runner, _monkeypatch):
-    from tools.environments.modal import ModalEnvironment, _AsyncWorker
+    from hermes_agent.tools.environments.modal import ModalEnvironment, _AsyncWorker
 
     env = _bare(ModalEnvironment, runner)
     env._worker = _AsyncWorker()
@@ -104,7 +104,7 @@ def _modal_env(runner, _monkeypatch):
 
 
 def _daytona_env(runner, _monkeypatch):
-    from tools.environments.daytona import DaytonaEnvironment
+    from hermes_agent.tools.environments.daytona import DaytonaEnvironment
 
     def upload(content, path):
         Path(path).write_bytes(content)
@@ -123,7 +123,7 @@ def _daytona_env(runner, _monkeypatch):
 
 
 def _vercel_env(runner, _monkeypatch):
-    from tools.environments.vercel_sandbox import VercelSandboxEnvironment
+    from hermes_agent.tools.environments.vercel_sandbox import VercelSandboxEnvironment
 
     def write_files(files):
         for item in files:
@@ -150,8 +150,8 @@ class _GatewayResponse:
 
 
 def _managed_modal_env(runner, monkeypatch):
-    from tools import credential_files
-    from tools.environments import managed_modal
+    from hermes_agent.tools import credential_files
+    from hermes_agent.tools.environments import managed_modal
 
     monkeypatch.setattr(credential_files, "get_credential_file_mounts", list)
     monkeypatch.setattr(managed_modal, "resolve_managed_tool_gateway", lambda vendor: types.SimpleNamespace(
@@ -297,7 +297,7 @@ def test_sdk_backend_sudo_wrapper_that_execs_cannot_end_the_command_early(make_b
 
 def test_local_backend_sudo_rejecting_askpass_falls_back_to_stdin_form(tmp_path, monkeypatch):
     """LocalEnvironment with a probe answer of True: the prologue's own check still falls back."""
-    from tools.environments.local import LocalEnvironment
+    from hermes_agent.tools.environments.local import LocalEnvironment
 
     monkeypatch.delenv("SUDO_PASSWORD", raising=False)
     monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
@@ -458,16 +458,16 @@ def test_sdk_backend_without_password_leaves_sudo_command_alone(make_backend, ba
 
 
 def _probe_backends():
-    from tools.environments.docker import DockerEnvironment
-    from tools.environments.local import LocalEnvironment
-    from tools.environments.ssh import SSHEnvironment
+    from hermes_agent.tools.environments.docker import DockerEnvironment
+    from hermes_agent.tools.environments.local import LocalEnvironment
+    from hermes_agent.tools.environments.ssh import SSHEnvironment
     return [LocalEnvironment, DockerEnvironment, SSHEnvironment]
 
 
 @pytest.mark.parametrize("index", range(3))
 def test_local_docker_ssh_still_run_the_capability_probe_once(index, monkeypatch):
     cls = _probe_backends()[index]
-    monkeypatch.setattr("tools.terminal_tool_sudo_askpass.platform.system", lambda: "Linux")
+    monkeypatch.setattr("hermes_agent.tools.terminal_tool_sudo_askpass.platform.system", lambda: "Linux")
     env = cls.__new__(cls)
     calls = []
 

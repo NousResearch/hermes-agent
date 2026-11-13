@@ -26,7 +26,7 @@ from typing import Any, Dict, Optional
 
 from agent.deadline import poll_until
 from hermes_constants import get_hermes_home
-from tools.environments import streams
+from hermes_agent.tools.environments import streams
 
 logger = logging.getLogger(__name__)
 
@@ -57,7 +57,7 @@ _RELAY = (
 def plugin_image_advice(backend: Optional[str]) -> Optional[str]:
     """How to get the desktop stack into a plugin backend's sandbox, or None for a built-in backend: a plugin
     picks its image through its own settings, so there is no ``terminal.<plugin>_image`` key to name."""
-    from tools.terminal_tool_config import _BUILTIN_BACKENDS
+    from hermes_agent.tools.terminal_tool_config import _BUILTIN_BACKENDS
     if not backend or backend in _BUILTIN_BACKENDS:
         return None
     return (f"give the {backend} plugin's sandbox the desktop stack through the plugin's own image setting "

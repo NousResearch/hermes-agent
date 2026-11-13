@@ -8,9 +8,9 @@ import threading
 import time
 from typing import Any, Dict, List, Optional
 from agent.interrupt_compat import request_hard_interrupt
-from tools.registry import tool_error
+from hermes_agent.tools.registry import tool_error
 
-logger = logging.getLogger("tools.delegate_tool")  # log-record parity with the origin module
+logger = logging.getLogger("hermes_agent.tools.delegate_tool")  # log-record parity with the origin module
 
 _spawn_pause_lock = threading.Lock()
 _spawn_paused: bool = False
@@ -297,7 +297,7 @@ def _list_payload(parent_agent: Any) -> dict[str, Any]:
             "accepting_steer": bool(r.get("accepting_steer", False)),
             "live_transcript": getattr(r.get("agent"), "_live_transcript_path", None),
         })
-    from tools.delegate_tool_auto_resume import waiting_entries
+    from hermes_agent.tools.delegate_tool_auto_resume import waiting_entries
     live = {e["subagent_id"] for e in entries}
     entries += [w for w in waiting_entries(parent_agent) if w["subagent_id"] not in live]
     payload: dict[str, Any] = {"action": "list", "count": len(entries), "subagents": entries}
@@ -322,7 +322,7 @@ def _handle_control_action(action: str, subagent_id: Optional[str], message: Opt
     with _active_subagents_lock:
         record = _active_subagents.get(sid)
     if record is None and action == "stop":
-        from tools.delegate_tool_auto_resume import dismiss
+        from hermes_agent.tools.delegate_tool_auto_resume import dismiss
         dismissed = dismiss(parent_agent, sid)
         if dismissed == "dismissed":  # not running, waiting to resume: it never resumes, its pin is released
             return json.dumps({"action": "stop", "subagent_id": sid, "status": "dismissed",

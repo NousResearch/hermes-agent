@@ -11,7 +11,7 @@ contract on the threshold, not on any waveform shape.
 
 import pytest
 
-from tools.voice_mode import AudioRecorder, SILENCE_RMS_THRESHOLD
+from hermes_agent.tools.voice_mode import AudioRecorder, SILENCE_RMS_THRESHOLD
 
 
 class _Frame:
@@ -39,8 +39,8 @@ class _FakeAudio:
 
 @pytest.fixture
 def mock_audio(monkeypatch, tmp_path):
-    monkeypatch.setattr("tools.voice_mode._import_audio", lambda: (None, _FakeAudio()))
-    monkeypatch.setattr("tools.voice_mode._TEMP_DIR", str(tmp_path))
+    monkeypatch.setattr("hermes_agent.tools.voice_mode._import_audio", lambda: (None, _FakeAudio()))
+    monkeypatch.setattr("hermes_agent.tools.voice_mode._TEMP_DIR", str(tmp_path))
     return _FakeAudio()
 
 

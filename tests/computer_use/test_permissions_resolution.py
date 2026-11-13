@@ -45,7 +45,7 @@ def pm_driver(tmp_path, monkeypatch):
 def test_status_finds_pm_driver_when_path_omits_it(pm_driver, monkeypatch):
     """Desktop status probes the same selected binary as the runtime, without installing."""
     from pm import paths
-    from tools.computer_use import permissions
+    from hermes_agent.tools.computer_use import permissions
 
     monkeypatch.setenv("PATH", "")
     before = paths.facts_path().read_bytes()
@@ -75,7 +75,7 @@ def test_status_finds_pm_driver_when_path_omits_it(pm_driver, monkeypatch):
 
 
 def test_status_missing_pm_binary_is_unknown(pm_driver):
-    from tools.computer_use import permissions
+    from hermes_agent.tools.computer_use import permissions
 
     pm_driver.unlink()
     with patch.object(permissions, "_run") as run:

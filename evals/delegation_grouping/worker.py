@@ -120,11 +120,11 @@ TASKS = {
 }
 TASK = TASKS[TASK_ID]
 
-import tools.process_registry as pr
+import hermes_agent.tools.process_registry as pr
 
 pr._SYSTEMD_SCOPE_AVAILABLE = False
-from tools.process_registry import process_registry
-import tools.async_delegation as ad
+from hermes_agent.tools.process_registry import process_registry
+import hermes_agent.tools.async_delegation as ad
 from run_agent import AIAgent
 
 agent = AIAgent(base_url=INFER_URL, api_key=INFER_KEY, provider="custom", model=MODEL, quiet_mode=True,

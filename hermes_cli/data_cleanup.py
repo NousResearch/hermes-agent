@@ -19,7 +19,7 @@ def plan_data_removal(home: Path, project: Path, userdata: Path | None = None) -
     from hermes_constants import get_default_hermes_root
     from pm.environments import base_venv, installs_root, store_root
     from hermes_cli.steward import is_bundled_payload
-    from tools.checkpoint_pruning import store_lock_path
+    from hermes_agent.tools.checkpoint_pruning import store_lock_path
 
     home = home.resolve()
     if home == Path(home.anchor) or home == Path.home().resolve():

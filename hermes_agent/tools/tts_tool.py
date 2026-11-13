@@ -31,25 +31,25 @@ logger = logging.getLogger(__name__)
 
 def _resolve_provider_key(env_var: str, provider_id: str) -> str:
     """Resolve a TTS provider API key via the shared voice-key resolver (config > env/.env > pool)."""
-    from tools.tool_backend_helpers import resolve_provider_secret
+    from hermes_agent.tools.tool_backend_helpers import resolve_provider_secret
     return resolve_provider_secret(env_var, provider_id)
 
 
-from tools.tts_command_provider import (
+from hermes_agent.tools.tts_command_provider import (
     BUILTIN_TTS_PROVIDERS, _configured_command_tts_output_path, _generate_command_tts,
     _get_command_tts_output_format, _is_command_tts_voice_compatible, _resolve_command_provider_config)
-from tools.tool_backend_helpers import NOUS_MANAGED_PROVIDER
-from tools.tts_tool_delivery import (
+from hermes_agent.tools.tool_backend_helpers import NOUS_MANAGED_PROVIDER
+from hermes_agent.tools.tts_tool_delivery import (
     _resolve_max_text_length, _build_audio_delivery_files, _convert_to_opus, _remove_quietly,
     _repair_ogg_container, _resolve_audio_delivery_profile, _split_text_for_tts)
-from tools.tts_tool_providers import (
+from hermes_agent.tools.tts_tool_providers import (
     _generate_edge_tts, _generate_elevenlabs, _generate_gemini_tts, _generate_minimax_tts,
     _generate_mistral_tts, _generate_xai_tts, _resolve_minimax_tts_runtime)
-from tools.tts_tool_local import _generate_kittentts, _generate_neutts, _generate_piper_tts
-from tools.tts_tool_plugins import (
+from hermes_agent.tools.tts_tool_local import _generate_kittentts, _generate_neutts, _generate_piper_tts
+from hermes_agent.tools.tts_tool_plugins import (
     _dispatch_to_plugin_provider, _plugin_provider_is_available,
     _plugin_provider_is_voice_compatible)
-from tools.tts_tool_openai import _generate_deepinfra_tts, _generate_openai_tts, _has_openai_audio_backend
+from hermes_agent.tools.tts_tool_openai import _generate_deepinfra_tts, _generate_openai_tts, _has_openai_audio_backend
 
 
 _PM_FEATURE_ALIASES = {"tts.edge": "edge-tts", "tts.elevenlabs": "tts-premium", "tts.mistral": "mistral"}
@@ -346,7 +346,7 @@ def _find_voices(find: Any) -> str:
     api_key = _resolve_provider_key("ELEVENLABS_API_KEY", "elevenlabs")
     if not api_key:
         return tool_error("ELEVENLABS_API_KEY not set. Get one at https://elevenlabs.io/", success=False)
-    from tools.tts_elevenlabs_voices import search_voices
+    from hermes_agent.tools.tts_elevenlabs_voices import search_voices
     return search_voices(find, tts_config, api_key)
 
 
@@ -366,7 +366,7 @@ def _resolve_output_base(
     on protected credential/system locations. Default ``<audio cache>/tts_<timestamp>.<ext>``: the
     command format, ``.ogg`` for native-Opus providers on Opus platforms, else ``.mp3``."""
     if output_path:
-        from tools.path_security import has_traversal_component, has_unsafe_path_chars
+        from hermes_agent.tools.path_security import has_traversal_component, has_unsafe_path_chars
         if has_unsafe_path_chars(output_path):
             return None, _error_json(
                 "output_path contains control characters or line separators; "
@@ -514,7 +514,7 @@ def text_to_speech_tool(
     if not text or not text.strip():
         return tool_error("Text is required", success=False)
     try:  # shared cleaner: markdown, emoji, think blocks, verifier footer, units, newlines
-        from tools.tts_text_normalize import prepare_spoken_text
+        from hermes_agent.tools.tts_text_normalize import prepare_spoken_text
         text = prepare_spoken_text(text, max_chars=None)
     except Exception:
         text = text.strip()
@@ -585,7 +585,7 @@ def _minimax_requirements() -> bool:
 
 def _xai_requirements() -> bool:
     try:
-        from tools.xai_http import resolve_xai_http_credentials
+        from hermes_agent.tools.xai_http import resolve_xai_http_credentials
         # Same ordering as _generate_xai_tts / XAIStreamer: an explicit key wins over the
         # subscription OAuth bearer (which 403s on metered /v1/tts) — never touch the OAuth
         # pool for an availability probe when a key is configured. See #87045, #113727.
@@ -675,7 +675,7 @@ def check_tts_requirements() -> bool:
 
 
 # --- Registry ---
-from tools.registry import registry, tool_error
+from hermes_agent.tools.registry import registry, tool_error
 
 def _output_path_description(home: str) -> str:
     return f"Optional custom file path to save the audio. Defaults to {home}/audio_cache/<timestamp>.mp3"
@@ -689,7 +689,7 @@ def _tts_schema_overrides() -> dict:
     params["properties"]["output_path"]["description"] = _output_path_description(display_hermes_home())
     if not elevenlabs_voice_selection_active():
         return {"parameters": params}
-    from tools.tts_elevenlabs_voices import FIND_VOICES_SCHEMA
+    from hermes_agent.tools.tts_elevenlabs_voices import FIND_VOICES_SCHEMA
     params["properties"]["voice_id"] = {
         "type": "string",
         "description": ("ElevenLabs voice for this audio (a voice_id from find_voices). "

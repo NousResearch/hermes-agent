@@ -8,9 +8,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Mapping, Optional, Sequence
 
-from tools.connectors.gateway.errors import render_connection_required
-from tools.connectors.gateway.names import parse_connector_name
-from tools.connectors.turn import connection_surface
+from hermes_agent.tools.connectors.gateway.errors import render_connection_required
+from hermes_agent.tools.connectors.gateway.names import parse_connector_name
+from hermes_agent.tools.connectors.turn import connection_surface
 
 __all__ = [
     "Partition",

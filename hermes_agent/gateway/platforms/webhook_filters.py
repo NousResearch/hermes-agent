@@ -181,14 +181,14 @@ class WebhookRouteProcessor:
         if is_shell:
             # ``shutil.which("bash")`` inherits PATH order and returns System32's WSL stub on
             # Windows hosts where System32 precedes Git (#116818); ``_find_bash`` probes Git Bash first.
-            from tools.environments.local import _find_bash
+            from hermes_agent.tools.environments.local import _find_bash
             try:
                 interpreter = _find_bash()
             except RuntimeError as exc:
                 logger.warning("[webhook] script ignored webhook: %s", exc)
                 return False, None
         try:
-            from tools.environments.local import build_subprocess_env
+            from hermes_agent.tools.environments.local import build_subprocess_env
             popen_kwargs = {"creationflags": 0x08000000} if sys.platform == "win32" else {}
             result = subprocess.run(
                 [interpreter, str(path)], input=json.dumps(payload), capture_output=True, text=True, encoding="utf-8", errors="replace",

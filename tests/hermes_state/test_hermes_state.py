@@ -2065,7 +2065,7 @@ class TestAsyncDelegationsSchemaAgreement:
     def test_fresh_session_db_then_tool(self, tmp_path):
         import sqlite3
 
-        from tools.async_delegation import _initialize_schema
+        from hermes_agent.tools.async_delegation import _initialize_schema
 
         db_path = tmp_path / "state.db"
         db = SessionDB(db_path=db_path)
@@ -2094,7 +2094,7 @@ class TestAsyncDelegationsSchemaAgreement:
     def test_legacy_store_then_tool_then_session_db(self, tmp_path):
         import sqlite3
 
-        from tools.async_delegation import _initialize_schema
+        from hermes_agent.tools.async_delegation import _initialize_schema
 
         db_path = tmp_path / "legacy-tool-state.db"
         self._legacy_db(db_path)

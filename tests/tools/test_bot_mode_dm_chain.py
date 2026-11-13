@@ -1,4 +1,4 @@
-"""``message_agent``'s chain gate through the real tool entry (``tools/bot_mode_dm_chain.py``): the
+"""``message_agent``'s chain gate through the real tool entry (``hermes_agent/tools/bot_mode_dm_chain.py``): the
 recipient identity it compares, notify-only replies on every transport, released no-sends (#137027)."""
 
 import json
@@ -7,8 +7,8 @@ import pytest
 
 from agent import bot_chain
 from hermes_agent.gateway.bot_loop_guard import BotLoopGuardSettings
-from tools import bot_mode_dm, bot_relay
-from tools.bot_mode_probe import NO_REPLY_MARKER
+from hermes_agent.tools import bot_mode_dm, bot_relay
+from hermes_agent.tools.bot_mode_probe import NO_REPLY_MARKER
 
 # _fresh_probe_cache is the autouse probe-cache reset; importing it applies it here too.
 from tests.tools.test_bot_mode_dm import _FakeAgent, _canonical_target, _capture_spawn, _fresh_probe_cache, _managed_home
@@ -28,7 +28,7 @@ def _bot_turn(agent, author_id, message="hi", **envelope):
 def test_recipients_are_keyed_by_the_identity_their_turns_carry(tmp_path):
     """Greptile 4467193900: ``@hermes`` is the default bot, whose turns carry ``bot:default``; two peers'
     same-named agents stay two recipients; a relay row is ``bot:<connection>/<profile>``."""
-    from tools.bot_mode_dm_chain import recipient_key
+    from hermes_agent.tools.bot_mode_dm_chain import recipient_key
 
     home = _managed_home(tmp_path, teammates=("researcher",), peers=("peer-a", "peer-b"))
     # The sender's own relay folder, which delivery reads too.
@@ -43,7 +43,7 @@ def test_recipients_are_keyed_by_the_identity_their_turns_carry(tmp_path):
 
 def test_a_peer_reply_is_keyed_as_the_peers_author_id(tmp_path):
     """A peer dm reaches us as ``bot:<its hostname>/<profile>``; answering it by peer name is the reply."""
-    from tools.bot_mode_dm_chain import recipient_key
+    from hermes_agent.tools.bot_mode_dm_chain import recipient_key
 
     home = _managed_home(tmp_path, peers=("spark",))
     sender = _sender(home, author={"id": "bot:spark/default", "name": "hermes", "is_bot": True})
@@ -54,7 +54,7 @@ def test_a_peer_reply_is_keyed_as_the_peers_author_id(tmp_path):
 def _sender(home, author=None):
     from types import SimpleNamespace
 
-    from tools import bot_mode_probe as probe
+    from hermes_agent.tools import bot_mode_probe as probe
 
     agent = _FakeAgent(home)
     agent._turn_author = author

@@ -7,7 +7,7 @@ consume ANY non-command message in the session as the clarify answer —
 arbitrary prose vanished into clarify resolution and the agent appeared to
 ignore the user's thread messages.
 
-After the fix (``tools/clarify_gateway._coerce_text_response`` rejects
+After the fix (``hermes_agent/tools/clarify_gateway._coerce_text_response`` rejects
 arbitrary prose for native multi-choice prompts):
 
   * numeric selections ("2") and exact choice labels still resolve, and
@@ -83,7 +83,7 @@ def _event(text):
 
 
 def _clear_clarify_state():
-    from tools import clarify_gateway as cm
+    from hermes_agent.tools import clarify_gateway as cm
 
     with cm._lock:
         cm._entries.clear()
@@ -107,7 +107,7 @@ async def _dispatch(runner, event):
     """Run _handle_message with a tripwire installed AFTER the clarify
     intercept (the slash-confirm pending lookup is the next statement), so a
     raised ``_FellThroughIntercept`` proves the message was NOT swallowed."""
-    import tools.slash_confirm as slash_confirm_mod
+    import hermes_agent.tools.slash_confirm as slash_confirm_mod
 
     def _tripwire(_key):
         raise _FellThroughIntercept()
@@ -121,7 +121,7 @@ async def _dispatch(runner, event):
 async def test_thread_prose_not_swallowed_by_native_multi_choice_clarify():
     """Arbitrary prose during a pending button-clarify continues as a normal turn."""
     _clear_clarify_state()
-    from tools import clarify_gateway as cm
+    from hermes_agent.tools import clarify_gateway as cm
 
     adapter = _StubAdapter()
     runner = _make_runner(adapter)
@@ -146,7 +146,7 @@ async def test_thread_prose_not_swallowed_by_native_multi_choice_clarify():
 async def test_thread_prose_retires_the_native_card_before_falling_through():
     """The card adapter gets one retire call (cancel notice) while the prose still falls through."""
     _clear_clarify_state()
-    from tools import clarify_gateway as cm
+    from hermes_agent.tools import clarify_gateway as cm
 
     adapter = _CardAdapter()
     runner = _make_runner(adapter)
@@ -164,7 +164,7 @@ async def test_thread_prose_retires_the_native_card_before_falling_through():
 async def test_typed_selection_retires_the_native_card_with_the_answer():
     """A numeric pick typed into the thread resolves the clarify AND rewrites the card."""
     _clear_clarify_state()
-    from tools import clarify_gateway as cm
+    from hermes_agent.tools import clarify_gateway as cm
 
     adapter = _CardAdapter()
     runner = _make_runner(adapter)
@@ -181,7 +181,7 @@ async def test_typed_selection_retires_the_native_card_with_the_answer():
 async def test_thread_prose_does_not_overwrite_concurrent_button_choice():
     """A button result that wins the race remains the clarify response."""
     _clear_clarify_state()
-    from tools import clarify_gateway as cm
+    from hermes_agent.tools import clarify_gateway as cm
 
     adapter = _StubAdapter()
     runner = _make_runner(adapter)
@@ -205,7 +205,7 @@ async def test_thread_prose_does_not_overwrite_concurrent_button_choice():
 async def test_native_multi_select_out_of_range_keeps_clarify_pending():
     """Out-of-range multi-select numbers must not cancel the pending prompt."""
     _clear_clarify_state()
-    from tools import clarify_gateway as cm
+    from hermes_agent.tools import clarify_gateway as cm
 
     adapter = _StubAdapter()
     runner = _make_runner(adapter)
@@ -233,7 +233,7 @@ async def test_native_multi_select_out_of_range_keeps_clarify_pending():
 async def test_native_multi_select_bad_comma_list_keeps_clarify_pending():
     """Unrecognised comma-lists are retryable selection attempts, not prose."""
     _clear_clarify_state()
-    from tools import clarify_gateway as cm
+    from hermes_agent.tools import clarify_gateway as cm
 
     adapter = _StubAdapter()
     runner = _make_runner(adapter)
@@ -261,7 +261,7 @@ async def test_native_multi_select_bad_comma_list_keeps_clarify_pending():
 async def test_native_multi_select_prose_releases_clarify_before_routing():
     """Free prose on multi-select still breaks the redirect/steer deadlock."""
     _clear_clarify_state()
-    from tools import clarify_gateway as cm
+    from hermes_agent.tools import clarify_gateway as cm
 
     adapter = _StubAdapter()
     runner = _make_runner(adapter)
@@ -291,7 +291,7 @@ async def test_native_multi_select_prose_releases_clarify_before_routing():
 async def test_prose_still_accepted_after_other_flips_text_capture():
     """After the user taps 'Other', free text IS the answer — must resolve."""
     _clear_clarify_state()
-    from tools import clarify_gateway as cm
+    from hermes_agent.tools import clarify_gateway as cm
 
     adapter = _StubAdapter()
     runner = _make_runner(adapter)

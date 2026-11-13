@@ -41,9 +41,9 @@ class CLIProcessNotificationsMixin:
             # notification turn itself; this viewer only paints it (IPS-086).
             queue_admitted_turn(self, store)
             return
-        from tools.process_registry import process_registry
-        from tools.async_delegation import claim_event_delivery, complete_event_delivery
-        from tools.process_registry_notifications import (
+        from hermes_agent.tools.process_registry import process_registry
+        from hermes_agent.tools.async_delegation import claim_event_delivery, complete_event_delivery
+        from hermes_agent.tools.process_registry_notifications import (
             HEARTBEAT_DISPLAY_KIND, ProcessNotificationBatch, TimelineNotification, group_process_notifications,
             heartbeat_display_text)
 
@@ -76,8 +76,8 @@ class CLIProcessNotificationsMixin:
     def _tui_unwrap_input(self, user_input):
         """Unwrap ``_VoiceInputMessage`` / ``_SeededQueryMessage`` -> ``(text_or_tuple, is_voice_input, is_seeded_query)``."""
         from cli import _VoiceInputMessage, _SeededQueryMessage
-        from tools.process_registry import process_registry
-        from tools.process_registry_notifications import (
+        from hermes_agent.tools.process_registry import process_registry
+        from hermes_agent.tools.process_registry_notifications import (
             PROCESS_COMPLETE_DISPLAY_KIND, ProcessNotificationBatch, TimelineNotification)
         if isinstance(user_input, ProcessNotificationBatch):
             rendered = user_input.render(process_registry)

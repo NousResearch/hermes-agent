@@ -1,7 +1,7 @@
 """The reaper never deletes the throwaway profile of a Chromium that is still running on it.
 
 A Hermes process SIGKILLed mid-launch can leave a live Chromium whose launch record is missing or cannot
-prove the pid (``tools/browser_launcher.py``: ``_reclaim_throwaway_dirs``, ``_reap_record``). Deleting the dir
+prove the pid (``hermes_agent/tools/browser_launcher.py``: ``_reclaim_throwaway_dirs``, ``_reap_record``). Deleting the dir
 under it corrupts a running browser, so the dir waits until that Chromium is gone.
 """
 
@@ -17,7 +17,7 @@ import pytest
 
 from tests.tools.browser_launcher_fakes import kill_fake, write_fake_chromium
 from tests.waiting import wait_until
-from tools import browser_launcher as launcher
+from hermes_agent.tools import browser_launcher as launcher
 
 pytestmark = [pytest.mark.platforms("linux"),
               pytest.mark.live_system_guard_bypass]  # the fake browsers are ours to stop if a leg failed
@@ -29,7 +29,7 @@ def _dir_of_a_dead_owner() -> Path:
     """A throwaway profile dir named for a Hermes process that has exited (it died mid-launch)."""
     from hermes_constants import hermes_home_key
     code = ("import sys\n"
-            "from tools.browser_launcher import _default_user_data_dir, _prepare_dir\n"
+            "from hermes_agent.tools.browser_launcher import _default_user_data_dir, _prepare_dir\n"
             "udd = _default_user_data_dir('browser-exec-default', sys.argv[1])\n"
             "_prepare_dir(udd, True)\n"
             "print(udd, flush=True)\n")

@@ -275,7 +275,7 @@ def pin_process_hermes_home(path: str | Path | None) -> None:
     ``os.environ["HERMES_HOME"]`` for legacy readers (Hermes WebUI) otherwise makes every turn's own
     profile look like the launch profile: ``agent.secret_scope.serves_routed_profile()`` turns
     False and that turn's MCP connections fall back to bare, cross-profile names; the sibling
-    launch-home checks (``secret_scope._is_process_home``, ``tools.environments.local._is_routed_home``,
+    launch-home checks (``secret_scope._is_process_home``, ``hermes_agent.tools.environments.local._is_routed_home``,
     ``hermes_cli.env_loader._process_hermes_home``) misjudge the same way. ``None`` clears the pin.
 
     Process-global on purpose: it names the process's own identity, not a per-task value. It is NOT
@@ -779,8 +779,8 @@ def _bound_terminal_home_mode() -> str | None:
     without the key: a session policy frozen before ``home_mode`` was projected keeps the process value
     it ran with, not ``auto``. A served profile's turn must not read the LAUNCH profile's bridged value
     from ``os.environ`` (#146103). Read through ``sys.modules`` for the same boot-path reason as
-    ``get_hermes_home_override``: no scope can be bound before ``tools.terminal_scope`` is imported."""
-    get_terminal_scope = getattr(sys.modules.get("tools.terminal_scope"), "get_terminal_scope", None)
+    ``get_hermes_home_override``: no scope can be bound before ``hermes_agent.tools.terminal_scope`` is imported."""
+    get_terminal_scope = getattr(sys.modules.get("hermes_agent.tools.terminal_scope"), "get_terminal_scope", None)
     policy = get_terminal_scope() if get_terminal_scope is not None else None
     mode = None if policy is None else policy.get("TERMINAL_HOME_MODE")
     return None if mode is None else str(mode).strip() or "auto"

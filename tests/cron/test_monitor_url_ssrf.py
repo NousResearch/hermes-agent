@@ -66,7 +66,7 @@ def local_server():
 @pytest.fixture
 def public_host(monkeypatch, local_server):
     """Make PUBLIC_HOST a public-address host whose connections land on the local server."""
-    from tools import url_safety
+    from hermes_agent.tools import url_safety
 
     monkeypatch.delenv("HERMES_ALLOW_PRIVATE_URLS", raising=False)
     url_safety._reset_allow_private_cache()

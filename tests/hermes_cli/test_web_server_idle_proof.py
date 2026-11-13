@@ -41,7 +41,7 @@ def test_idle_proof_reads_the_real_cron_and_human_input_ledgers():
     """The probe must see a running cron job (invisible to the renderer) and a pending approval
     or open clarify request in the live process ledgers, not a renderer-published flag."""
     from hermes_agent.cron import scheduler
-    from tools import approval
+    from hermes_agent.tools import approval
     from hermes_agent.tui_gateway import server_requests
 
     assert idle_proof()["idle"] is True
@@ -55,7 +55,7 @@ def test_idle_proof_reads_the_real_cron_and_human_input_ledgers():
         with scheduler._running_lock:
             scheduler._running_job_ids.discard(scheduler._inflight_key("idle-proof-live-job"))
 
-    from tools.approval_gateway_wait import _ApprovalEntry
+    from hermes_agent.tools.approval_gateway_wait import _ApprovalEntry
 
     entry = _ApprovalEntry({"request_id": "idle-proof-approval"})
     with approval._lock:

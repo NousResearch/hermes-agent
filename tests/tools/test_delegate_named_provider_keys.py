@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from tools.delegate_tool_config import _resolve_delegation_credentials
+from hermes_agent.tools.delegate_tool_config import _resolve_delegation_credentials
 
 
 def _parent(key="parent-provider-key"):

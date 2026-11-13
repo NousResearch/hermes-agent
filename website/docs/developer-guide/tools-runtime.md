@@ -10,17 +10,17 @@ Hermes tools are self-registering functions grouped into toolsets and executed t
 
 Primary files:
 
-- `tools/registry.py`
-- `model_tools.py`
-- `toolsets.py`
-- `tools/terminal_tool.py`
-- `tools/environments/*`
+- `hermes_agent/tools/registry.py`
+- `hermes_agent/model_tools.py`
+- `hermes_agent/toolsets.py`
+- `hermes_agent/tools/terminal_tool.py`
+- `hermes_agent/tools/environments/*`
 
 ## Tool registration model
 
 Each tool module calls `registry.register(...)` at import time.
 
-`model_tools.py` is responsible for importing/discovering tool modules and building the schema list used by the model.
+`hermes_agent/model_tools.py` is responsible for importing/discovering tool modules and building the schema list used by the model.
 
 ### How `registry.register()` works
 
@@ -46,10 +46,10 @@ Each call creates a `ToolEntry` stored in the singleton `ToolRegistry._tools` di
 
 ### Discovery: `discover_builtin_tools()`
 
-When `model_tools.py` is imported, it calls `discover_builtin_tools()` from `tools/registry.py`. This function scans every `tools/*.py` file using AST parsing to find modules that contain top-level `registry.register()` calls, then imports them:
+When `hermes_agent/model_tools.py` is imported, it calls `discover_builtin_tools()` from `hermes_agent/tools/registry.py`. This function scans every `hermes_agent/tools/*.py` file using AST parsing to find modules that contain top-level `registry.register()` calls, then imports them:
 
 ```python
-# tools/registry.py (simplified)
+# hermes_agent/tools/registry.py (simplified)
 def discover_builtin_tools(tools_dir=None):
     tools_path = Path(tools_dir) if tools_dir else Path(__file__).parent
     for path in sorted(tools_path.glob("*.py")):
@@ -65,7 +65,7 @@ Each import triggers the module's `registry.register()` calls. Errors in optiona
 
 After core tool discovery, MCP tools and plugin tools are also discovered:
 
-1. **MCP tools** — `tools.mcp_tool_discovery.discover_mcp_tools()` (re-exported by the `tools.mcp_tool` facade) reads MCP server config and registers tools from external servers.
+1. **MCP tools** — `hermes_agent.tools.mcp_tool_discovery.discover_mcp_tools()` (re-exported by the `hermes_agent.tools.mcp_tool` facade) reads MCP server config and registers tools from external servers.
 2. **Plugin tools** — `hermes_cli.plugins.discover_plugins()` loads user/project/pip plugins that may register additional tools.
 
 ## Tool availability checking (`check_fn`)
@@ -105,7 +105,7 @@ Toolsets are named bundles of tools. Hermes resolves them through:
 
 ### How `get_tool_definitions()` filters tools
 
-The main entry point is `model_tools.get_tool_definitions(enabled_toolsets, disabled_toolsets, quiet_mode)`:
+The main entry point is `hermes_agent.model_tools.get_tool_definitions(enabled_toolsets, disabled_toolsets, quiet_mode)`:
 
 1. **If `enabled_toolsets` is provided** — only tools from those toolsets are included. Each toolset name is resolved via `resolve_toolset()` which expands composite toolsets into individual tool names.
 
@@ -134,7 +134,7 @@ Model response with tool_call
     ↓
 agent loop (`agent/conversation_loop.py`, via `run_agent.py`'s `AIAgent` facade)
     ↓
-model_tools.handle_function_call(name, args, task_id, user_task)
+hermes_agent.model_tools.handle_function_call(name, args, task_id, user_task)
     ↓
 [Agent-loop tools?] → handled directly by agent loop (todo, memory, session_search, delegate_task)
     ↓
@@ -183,7 +183,7 @@ When a tool handler is async, `_run_async()` bridges it to the sync dispatch pat
 
 ## The DANGEROUS_PATTERNS approval flow
 
-The terminal tool integrates a dangerous-command approval system defined in `tools/approval.py`:
+The terminal tool integrates a dangerous-command approval system defined in `hermes_agent/tools/approval.py`:
 
 1. **Pattern detection** — `DANGEROUS_PATTERNS` is a list of `(regex, description)` tuples covering destructive operations:
    - Recursive deletes (`rm -rf`)
@@ -224,8 +224,8 @@ It also supports:
 - PTY mode
 - approval callbacks for dangerous commands
 
-`tools/process_registry_checkpoint.py` owns running-process checkpoints and
-PID-safe adoption. Completed output is separate: `tools/process_registry_results.py`
+`hermes_agent/tools/process_registry_checkpoint.py` owns running-process checkpoints and
+PID-safe adoption. Completed output is separate: `hermes_agent/tools/process_registry_results.py`
 writes one atomic, redacted receipt per process under the profile's
 `logs/process-results/`. Producers cannot overwrite another parent's results by
 rewriting the shared PID checkpoint. The registry persists the receipt before

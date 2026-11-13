@@ -21,7 +21,7 @@ import pytest
 
 from tests.waiting import wait_until
 
-from tools.cronjob_tools import (
+from hermes_agent.tools.cronjob_tools import (
     _try_dispatch_background_run,
     cronjob,
 )
@@ -44,7 +44,7 @@ def _bound_session_key(key="agent:main:telegram:dm:123"):
     """Context manager binding the approval session key contextvar."""
     import contextlib
 
-    from tools.approval_context import _approval_session_key
+    from hermes_agent.tools.approval_context import _approval_session_key
 
     @contextlib.contextmanager
     def _cm():
@@ -68,9 +68,9 @@ class TestBackgroundDispatch:
             return True
 
         with _bound_session_key():
-            with patch("tools.cronjob_tools.claim_job_for_fire", side_effect=lambda jid, **kw: {**_job(jid), "fire_claim": {"by": "bg-owner"}}), \
+            with patch("hermes_agent.tools.cronjob_tools.claim_job_for_fire", side_effect=lambda jid, **kw: {**_job(jid), "fire_claim": {"by": "bg-owner"}}), \
                  patch("hermes_agent.cron.scheduler.run_one_job", side_effect=slow_run_one_job), \
-                 patch("tools.cronjob_tools.get_job",
+                 patch("hermes_agent.tools.cronjob_tools.get_job",
                        return_value={"last_status": "ok", "last_error": None}):
                 res = _try_dispatch_background_run(_job('job-bg-01'))
 
@@ -90,17 +90,17 @@ class TestBackgroundDispatch:
         the job outcome onto process_registry.completion_queue."""
         import time
 
-        from tools.process_registry import process_registry
+        from hermes_agent.tools.process_registry import process_registry
 
         # The runner executes on a daemon thread — the patches must stay
         # active until the completion event lands, so poll INSIDE the blocks.
         with _bound_session_key("agent:main:telegram:dm:777"):
-            with patch("tools.cronjob_tools.claim_job_for_fire", side_effect=lambda jid, **kw: {**_job(jid), "fire_claim": {"by": "bg-owner"}}), \
+            with patch("hermes_agent.tools.cronjob_tools.claim_job_for_fire", side_effect=lambda jid, **kw: {**_job(jid), "fire_claim": {"by": "bg-owner"}}), \
                  patch("hermes_agent.cron.scheduler.run_one_job", return_value=True), \
-                 patch("tools.cronjob_tools.get_job",
+                 patch("hermes_agent.tools.cronjob_tools.get_job",
                        return_value={"last_status": "ok", "last_error": None,
                                      "next_run_at": "2026-08-07T09:00:00"}), \
-                 patch("tools.cronjob_tools._latest_job_output_excerpt",
+                 patch("hermes_agent.tools.cronjob_tools._latest_job_output_excerpt",
                        return_value="LOCAL JOB PAYLOAD"):
                 res = _try_dispatch_background_run(_job('job-bg-02'))
                 assert res["dispatched"] is True
@@ -132,12 +132,12 @@ class TestBackgroundDispatch:
         """A delivery that failed everywhere reached nobody, so its output stays in the completion
         the agent relays; a delivered or partly delivered one is not copied into the invoking
         session (it already reached a chat)."""
-        from tools.cronjob_tools import _manual_run_completion
+        from hermes_agent.tools.cronjob_tools import _manual_run_completion
 
         refreshed = {"last_status": "ok", "last_delivery_error": delivery_error,
                      "last_delivery_reached_none": reached_none}
-        with patch("tools.cronjob_tools.get_job", return_value=refreshed), \
-             patch("tools.cronjob_tools._latest_job_output_excerpt", return_value="THE REPORT"):
+        with patch("hermes_agent.tools.cronjob_tools.get_job", return_value=refreshed), \
+             patch("hermes_agent.tools.cronjob_tools._latest_job_output_excerpt", return_value="THE REPORT"):
             out = _manual_run_completion(
                 {"success": True}, "j1", "nightly", "telegram:-100999", time.time())
         assert ("THE REPORT" in out["summary"]) is echoed
@@ -148,7 +148,7 @@ class TestBackgroundDispatch:
         delivered externally, the completion must report status without copying
         the payload into that other session.
         """
-        from tools.process_registry import process_registry
+        from hermes_agent.tools.process_registry import process_registry
 
         job = {
             **_job("job-bg-explicit-target"),
@@ -156,15 +156,15 @@ class TestBackgroundDispatch:
         }
         with _bound_session_key("agent:main:telegram:dm:170829464:581299"):
             with patch(
-                "tools.cronjob_tools.claim_job_for_fire",
+                "hermes_agent.tools.cronjob_tools.claim_job_for_fire",
                 return_value={**job, "fire_claim": {"by": "bg-owner"}},
             ), patch(
                 "hermes_agent.cron.scheduler.run_one_job", return_value=True
             ), patch(
-                "tools.cronjob_tools.get_job",
+                "hermes_agent.tools.cronjob_tools.get_job",
                 return_value={"last_status": "ok", "last_error": None},
             ), patch(
-                "tools.cronjob_tools._latest_job_output_excerpt",
+                "hermes_agent.tools.cronjob_tools._latest_job_output_excerpt",
                 return_value="PAYLOAD FOR THREAD 539316",
             ):
                 res = _try_dispatch_background_run(job)
@@ -189,12 +189,12 @@ class TestBackgroundDispatch:
     def test_failed_run_reports_error_status_in_event(self):
         import time
 
-        from tools.process_registry import process_registry
+        from hermes_agent.tools.process_registry import process_registry
 
         with _bound_session_key("agent:main:telegram:dm:778"):
-            with patch("tools.cronjob_tools.claim_job_for_fire", side_effect=lambda jid, **kw: {**_job(jid), "fire_claim": {"by": "bg-owner"}}), \
+            with patch("hermes_agent.tools.cronjob_tools.claim_job_for_fire", side_effect=lambda jid, **kw: {**_job(jid), "fire_claim": {"by": "bg-owner"}}), \
                  patch("hermes_agent.cron.scheduler.run_one_job", return_value=True), \
-                 patch("tools.cronjob_tools.get_job",
+                 patch("hermes_agent.tools.cronjob_tools.get_job",
                        return_value={"last_status": "error",
                                      "last_error": "provider exploded"}):
                 res = _try_dispatch_background_run(_job('job-bg-03'))
@@ -220,10 +220,10 @@ class TestBackgroundDispatch:
         """Paused/already-firing jobs report in the tool response, not as a
         delayed completion event."""
         with _bound_session_key():
-            with patch("tools.cronjob_tools.claim_job_for_fire", return_value=False), \
-                 patch("tools.cronjob_tools.get_job",
+            with patch("hermes_agent.tools.cronjob_tools.claim_job_for_fire", return_value=False), \
+                 patch("hermes_agent.tools.cronjob_tools.get_job",
                        return_value={**_JOB, "enabled": False}), \
-                 patch("tools.async_delegation.dispatch_async_delegation") as m_disp:
+                 patch("hermes_agent.tools.async_delegation.dispatch_async_delegation") as m_disp:
                 res = _try_dispatch_background_run(_job('job-bg-04'))
         assert res["claimed"] is False
         assert "paused/disabled" in res["error"]
@@ -246,11 +246,11 @@ class TestSyncFallbacks:
     def test_pool_at_capacity_runs_inline(self):
         """A rejected dispatch must not strand the already-taken claim."""
         with _bound_session_key():
-            with patch("tools.cronjob_tools.claim_job_for_fire", side_effect=lambda jid, **kw: {**_job(jid), "fire_claim": {"by": "bg-owner"}}), \
-                 patch("tools.async_delegation.dispatch_async_delegation",
+            with patch("hermes_agent.tools.cronjob_tools.claim_job_for_fire", side_effect=lambda jid, **kw: {**_job(jid), "fire_claim": {"by": "bg-owner"}}), \
+                 patch("hermes_agent.tools.async_delegation.dispatch_async_delegation",
                        return_value={"status": "rejected", "error": "capacity"}), \
                  patch("hermes_agent.cron.scheduler.run_one_job", return_value=True) as m_run, \
-                 patch("tools.cronjob_tools.get_job",
+                 patch("hermes_agent.tools.cronjob_tools.get_job",
                        return_value={"last_status": "ok", "last_error": None}):
                 res = _try_dispatch_background_run(_job('job-bg-07'))
         assert res["dispatched"] is False
@@ -266,7 +266,7 @@ class TestInFlightDedupe:
         """The authoritative guard: _run_claimed_job refuses to fire a job
         whose id is already registered in the scheduler running set."""
         from hermes_agent.cron import scheduler as sched
-        from tools.cronjob_tools import _run_claimed_job
+        from hermes_agent.tools.cronjob_tools import _run_claimed_job
 
         assert sched.try_register_running_job("job-bg-08")   # simulate ticker mid-run
         try:
@@ -282,7 +282,7 @@ class TestInFlightDedupe:
         """A normal run holds the registration for run_one_job's duration and
         releases it after — visible to get_running_job_ids mid-run."""
         from hermes_agent.cron import scheduler as sched
-        from tools.cronjob_tools import _run_claimed_job
+        from hermes_agent.tools.cronjob_tools import _run_claimed_job
 
         seen_during_run = {}
 
@@ -291,7 +291,7 @@ class TestInFlightDedupe:
             return True
 
         with patch("hermes_agent.cron.scheduler.run_one_job", side_effect=probe_run), \
-             patch("tools.cronjob_tools.get_job",
+             patch("hermes_agent.tools.cronjob_tools.get_job",
                    return_value={"last_status": "ok", "last_error": None}):
             res = _run_claimed_job(_job('job-bg-09'))
 
@@ -300,7 +300,7 @@ class TestInFlightDedupe:
         assert "job-bg-09" not in sched.get_running_job_ids()   # released after
 
     def test_run_claimed_job_reports_exact_unknown_execution_not_stale_success(self):
-        from tools.cronjob_tools import _run_claimed_job
+        from hermes_agent.tools.cronjob_tools import _run_claimed_job
 
         def probe_run(job, **_kwargs):
             job["execution_id"] = "exec-unknown"
@@ -312,7 +312,7 @@ class TestInFlightDedupe:
                  "status": "unknown",
                  "error": "worker owner exited",
              }), \
-             patch("tools.cronjob_tools.get_job", return_value={
+             patch("hermes_agent.tools.cronjob_tools.get_job", return_value={
                  "last_status": "ok",
                  "last_error": None,
              }):
@@ -329,8 +329,8 @@ class TestInFlightDedupe:
         assert sched.try_register_running_job("job-bg-10")
         try:
             with _bound_session_key():
-                with patch("tools.cronjob_tools.claim_job_for_fire") as m_claim, \
-                     patch("tools.async_delegation.dispatch_async_delegation") as m_disp:
+                with patch("hermes_agent.tools.cronjob_tools.claim_job_for_fire") as m_claim, \
+                     patch("hermes_agent.tools.async_delegation.dispatch_async_delegation") as m_disp:
                     res = _try_dispatch_background_run(_job('job-bg-10'))
             assert res["claimed"] is False
             assert "already running" in res["error"]
@@ -343,10 +343,10 @@ class TestCronjobRunToolIntegration:
     def test_run_action_returns_background_note(self):
         """cronjob(action='run') surfaces the handle + do-not-wait note."""
         with _bound_session_key():
-            with patch("tools.cronjob_tools.resolve_job_ref", return_value=_job('job-bg-12')), \
-                 patch("tools.cronjob_tools.claim_job_for_fire", side_effect=lambda jid, **kw: {**_job(jid), "fire_claim": {"by": "bg-owner"}}), \
+            with patch("hermes_agent.tools.cronjob_tools.resolve_job_ref", return_value=_job('job-bg-12')), \
+                 patch("hermes_agent.tools.cronjob_tools.claim_job_for_fire", side_effect=lambda jid, **kw: {**_job(jid), "fire_claim": {"by": "bg-owner"}}), \
                  patch("hermes_agent.cron.scheduler.run_one_job", return_value=True), \
-                 patch("tools.cronjob_tools.get_job",
+                 patch("hermes_agent.tools.cronjob_tools.get_job",
                        return_value={"id": "job-bg-12", "name": "bg run",
                                      "last_status": "ok", "last_error": None}):
                 out = json.loads(cronjob(action="run", job_id="job-bg-12"))

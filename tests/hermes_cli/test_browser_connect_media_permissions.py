@@ -15,8 +15,8 @@ import stat
 import pytest
 
 import hermes_cli.browser_connect as bc
-import tools.computer_use.tool as cu
-import tools.vision_tools as vt
+import hermes_agent.tools.computer_use.tool as cu
+import hermes_agent.tools.vision_tools as vt
 
 
 def _mode(path) -> int:

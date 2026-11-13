@@ -7,8 +7,8 @@ defined the name or it was a declared passthrough, and a launch-residue value fo
 same name won. The builder now overlays the bound secret scope first — the same
 semantics as ``build_subprocess_env(strip_launch_profile=True)``."""
 
-from tools.environments.local import _make_run_env
-from tools.process_registry import ProcessRegistry
+from hermes_agent.tools.environments.local import _make_run_env
+from hermes_agent.tools.process_registry import ProcessRegistry
 
 # A Hermes-managed provider credential name, built at runtime so no credential-shaped
 # literal sits in the source: the test only needs the NAME to be blocklisted.

@@ -314,8 +314,8 @@ class TestSendVoiceReply:
 
         tts_result = json.dumps({"success": True, "file_path": "/tmp/test.ogg"})
 
-        with patch("tools.tts_tool.text_to_speech_tool", return_value=tts_result) as mock_tts, \
-             patch("tools.tts_text_normalize._strip_markdown_for_tts", side_effect=lambda t: t), \
+        with patch("hermes_agent.tools.tts_tool.text_to_speech_tool", return_value=tts_result) as mock_tts, \
+             patch("hermes_agent.tools.tts_text_normalize._strip_markdown_for_tts", side_effect=lambda t: t), \
              patch("os.path.isfile", return_value=True), \
              patch("os.unlink"), \
              patch("os.makedirs"):
@@ -342,8 +342,8 @@ class TestSendVoiceReply:
 
         tts_result = json.dumps({"success": True, "file_path": "/tmp/test.ogg"})
 
-        with patch("tools.tts_tool.text_to_speech_tool", return_value=tts_result), \
-             patch("tools.tts_text_normalize._strip_markdown_for_tts", side_effect=lambda t: t), \
+        with patch("hermes_agent.tools.tts_tool.text_to_speech_tool", return_value=tts_result), \
+             patch("hermes_agent.tools.tts_text_normalize._strip_markdown_for_tts", side_effect=lambda t: t), \
              patch("os.path.isfile", return_value=True), \
              patch("os.unlink"), \
              patch("os.makedirs"):
@@ -429,7 +429,7 @@ class TestVoiceReceiver:
 
         monkeypatch.delenv("FFMPEG_PATH", raising=False)
         monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
-        # Discovery delegates to tools.transcription_tools; simulate "not found".
+        # Discovery delegates to hermes_agent.tools.transcription_tools; simulate "not found".
         monkeypatch.setattr(ffmpeg_utils, "_shared_find_ffmpeg", lambda: None)
 
         assert ffmpeg_utils.resolve_ffmpeg_executable() == str(ffmpeg)
@@ -819,9 +819,9 @@ class TestDiscordVoiceChannelMethods:
         pcm_data = b"\x00" * 96000
 
         with patch("plugins.platforms.discord.adapter.VoiceReceiver.pcm_to_wav"), \
-             patch("tools.transcription_tools.transcribe_audio",
+             patch("hermes_agent.tools.transcription_tools.transcribe_audio",
                    return_value={"success": True, "transcript": "Hello"}), \
-             patch("tools.voice_mode_transcript.is_whisper_hallucination", return_value=False):
+             patch("hermes_agent.tools.voice_mode_transcript.is_whisper_hallucination", return_value=False):
             await adapter._process_voice_input(111, 42, pcm_data, None)
 
         callback.assert_called_once_with(guild_id=111, user_id=42, transcript="Hello")
@@ -894,7 +894,7 @@ class TestStreamTtsToSpeaker:
 
     def test_none_sentinel_flushes_buffer(self):
         """None sentinel causes remaining buffer to be spoken."""
-        from tools.tts_tool_speaker import stream_tts_to_speaker
+        from hermes_agent.tools.tts_tool_speaker import stream_tts_to_speaker
         text_q = queue.Queue()
         stop_evt = threading.Event()
         done_evt = threading.Event()
@@ -912,7 +912,7 @@ class TestStreamTtsToSpeaker:
 
     def test_stop_event_aborts_early(self):
         """Setting stop_event causes early exit."""
-        from tools.tts_tool_speaker import stream_tts_to_speaker
+        from hermes_agent.tools.tts_tool_speaker import stream_tts_to_speaker
         text_q = queue.Queue()
         stop_evt = threading.Event()
         done_evt = threading.Event()
@@ -928,7 +928,7 @@ class TestStreamTtsToSpeaker:
 
     def test_done_event_set_on_exception(self):
         """tts_done_event is set even when an exception occurs."""
-        from tools.tts_tool_speaker import stream_tts_to_speaker
+        from hermes_agent.tools.tts_tool_speaker import stream_tts_to_speaker
         text_q = queue.Queue()
         stop_evt = threading.Event()
         done_evt = threading.Event()
@@ -1554,9 +1554,9 @@ class TestStreamTtsTempfileFallback:
 
     def test_tempfile_handle_closed_before_playback(self, monkeypatch):
         import wave
-        import tools.tts_tool as tts_mod
-        import tools.voice_mode as vm
-        from tools.tts_tool_speaker import stream_tts_to_speaker
+        import hermes_agent.tools.tts_tool as tts_mod
+        import hermes_agent.tools.voice_mode as vm
+        from hermes_agent.tools.tts_tool_speaker import stream_tts_to_speaker
 
         # Fake registry streamer so resolve_streaming_provider yields chunked
         # PCM regardless of which real providers are configured in the env.
@@ -1569,7 +1569,7 @@ class TestStreamTtsTempfileFallback:
                 yield b"\x00\x00" * 240
 
         monkeypatch.setattr(
-            "tools.tts_streaming.resolve_streaming_provider",
+            "hermes_agent.tools.tts_streaming.resolve_streaming_provider",
             lambda tts_config, preferred=None: _FakeStreamer(),
         )
 

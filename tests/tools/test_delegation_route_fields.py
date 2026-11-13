@@ -58,14 +58,14 @@ def _spawn(routes, *, cfg=None, parent=None, construct=_construct, provider=None
     """``(tool result, [AIAgent kwargs], [built children])`` for one task per route."""
     batches = []
     with (
-        patch("tools.delegate_tool._load_config", return_value=cfg or {}),
-        patch("tools.delegate_tool_routes._active_provider", return_value=provider or _Backend(routes)),
+        patch("hermes_agent.tools.delegate_tool._load_config", return_value=cfg or {}),
+        patch("hermes_agent.tools.delegate_tool_routes._active_provider", return_value=provider or _Backend(routes)),
         patch("run_agent.AIAgent", side_effect=construct) as agent,
-        patch("tools.delegate_tool._run_batch",
+        patch("hermes_agent.tools.delegate_tool._run_batch",
               side_effect=lambda batch, background: batches.append(batch) or json.dumps(
                   {"status": "built", **({"refused": batch.refused} if batch.refused else {})})),
     ):
-        from tools.delegate_tool import delegate_task
+        from hermes_agent.tools.delegate_tool import delegate_task
         result = json.loads(delegate_task(tasks=[{"goal": f"task number {i}"} for i in range(len(routes))],
                                           parent_agent=parent or _parent()))
     children = [c for _, _, c in batches[0].children] if batches else []
@@ -85,7 +85,7 @@ def test_route_tier_reaches_the_child_and_its_sibling_keeps_the_default():
     ({**CODEX, "service_tier": "auto"}, "auto"),  # bounded windows are per user turn, meaningless for a child
 ])
 def test_a_tier_the_route_does_not_offer_refuses_that_task_and_its_sibling_runs(route, needle):
-    from tools.delegation_live_log import _manifest_path
+    from hermes_agent.tools.delegation_live_log import _manifest_path
 
     result, built, (sibling,) = _spawn([route, None])
     (refused,) = result["refused"]
@@ -156,7 +156,7 @@ def test_the_delegation_sections_own_effort_keeps_its_warn_and_inherit_rule():
 
 
 def test_labelled_route_result_reports_what_the_child_ran_on():
-    from tools.delegate_tool_child_run import _SchemaOutcome, _build_result_entry, _fabricated_entry
+    from hermes_agent.tools.delegate_tool_child_run import _SchemaOutcome, _build_result_entry, _fabricated_entry
 
     _, _, (deep, local) = _spawn([{**CODEX, "reasoning_effort": "high", "service_tier": "fast", "label": "deep"},
                                   {**LOCAL, "reasoning_effort": "none", "label": "local"}])
@@ -173,7 +173,7 @@ def test_every_backend_routed_result_names_its_backend_and_the_default_keeps_its
     """An unlabelled backend route still reports its backend and what ran; the default backend's children leave the
     result entry exactly as before."""
     from agent.delegation_registry import get_active_provider
-    from tools.delegate_tool_child_run import _SchemaOutcome, _build_result_entry
+    from hermes_agent.tools.delegate_tool_child_run import _SchemaOutcome, _build_result_entry
 
     def entry_of(child):
         return _build_result_entry(child, {"final_response": "ok", "completed": True}, 0, 1.0,
@@ -188,7 +188,7 @@ def test_every_backend_routed_result_names_its_backend_and_the_default_keeps_its
 
 def test_an_inherited_fast_tier_is_reported_as_what_ran():
     """An empty backend route inherits the parent's request settings, fast tier included: the report says fast."""
-    from tools.delegate_tool_child_run import _SchemaOutcome, _build_result_entry
+    from hermes_agent.tools.delegate_tool_child_run import _SchemaOutcome, _build_result_entry
 
     _, _, (child,) = _spawn([{"label": "inherit"}], parent=_parent(request_overrides={"service_tier": "priority"}))
     entry = _build_result_entry(child, {"final_response": "ok", "completed": True}, 0, 1.0,

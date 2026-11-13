@@ -142,7 +142,7 @@ def quiescent_home(home: Path):
     from hermes_agent.gateway.status import _release_file_lock, _try_acquire_file_lock
     from hermes_cli.active_sessions import _FileLock, _prune_dead, _read_entries
     from hermes_cli.runtime_state import _lock
-    from tools.checkpoint_pruning import store_lock
+    from hermes_agent.tools.checkpoint_pruning import store_lock
 
     home = home.resolve()
     _refuse_backend_writers(home)

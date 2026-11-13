@@ -1,6 +1,6 @@
 """MCP connection/transport error classification: URL validation, TLS client certs, identity
 headers, redirect header stripping, exception-group unwrapping, auth/session-expired/
-method-not-found detection and connect-error formatting. Split from tools/mcp_tool.py."""
+method-not-found detection and connect-error formatting. Split from hermes_agent/tools/mcp_tool.py."""
 
 import asyncio
 import contextlib
@@ -11,10 +11,10 @@ import os
 import re
 from typing import Any, List, Optional
 from urllib.parse import urlparse
-from tools.mcp_tool_common import _exc_str, _sanitize_error, _core
-from tools.mcp_tool_node_abi import NodeAbiMismatchError
+from hermes_agent.tools.mcp_tool_common import _exc_str, _sanitize_error, _core
+from hermes_agent.tools.mcp_tool_node_abi import NodeAbiMismatchError
 
-logger = logging.getLogger("tools.mcp_tool")
+logger = logging.getLogger("hermes_agent.tools.mcp_tool")
 
 # Stateless (2026-07-28) servers reject a legacy ``initialize`` with this or plain method-not-found.
 _JSONRPC_UNSUPPORTED_PROTOCOL_VERSION = -32022
@@ -496,7 +496,7 @@ def _get_auth_error_types() -> tuple:
             ([sdk_mod.HTTPStatusError] if sdk_mod is not None else []) + _optional_types("httpx", "HTTPStatusError")))
         auth_types = (*_optional_types("mcp.client.auth", "OAuthFlowError", "OAuthTokenError"),
                       *_optional_types("mcp.client.auth", "UnauthorizedError"),  # older SDKs
-                      *_optional_types("tools.mcp_oauth", "OAuthNonInteractiveError"), *http_types)
+                      *_optional_types("hermes_agent.tools.mcp_oauth", "OAuthNonInteractiveError"), *http_types)
         _AUTH_ERROR_TYPES = (auth_types, http_types)
     return _AUTH_ERROR_TYPES
 

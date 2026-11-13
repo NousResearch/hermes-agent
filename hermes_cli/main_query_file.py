@@ -12,7 +12,7 @@ def _read_query_file(args) -> None:
     Callers never have to shell-quote message bodies — this is the transport
     the Bot Mode DM protocol uses; interpolating arbitrary text into a
     double-quoted shell argument truncates on quotes and executes $(...)
-    (see tools/bot_mode_probe.py).
+    (see hermes_agent/tools/bot_mode_probe.py).
     """
     _qfile = getattr(args, "query_file", None)
     if not _qfile:

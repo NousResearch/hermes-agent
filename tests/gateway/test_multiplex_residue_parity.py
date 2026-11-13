@@ -101,8 +101,8 @@ def test_mcp_discovery_slot_is_per_profile_home(two_homes, monkeypatch):
         seen.append(get_hermes_home().name)
         done.set()
 
-    monkeypatch.setattr("tools.mcp_tool_discovery.discover_mcp_tools", fake_discover)
-    monkeypatch.setattr("tools.mcp_tool_discovery.get_mcp_status", lambda *a, **k: [{"connected": True}])
+    monkeypatch.setattr("hermes_agent.tools.mcp_tool_discovery.discover_mcp_tools", fake_discover)
+    monkeypatch.setattr("hermes_agent.tools.mcp_tool_discovery.get_mcp_status", lambda *a, **k: [{"connected": True}])
     for home in (root, alpha):
         token = set_hermes_home_override(str(home))
         try:

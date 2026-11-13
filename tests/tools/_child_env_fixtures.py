@@ -25,8 +25,8 @@ def child_env(monkeypatch, tmp_path):
                 HERMES_RUNTIME_DIR=str(tmp_path / "runtime"),
                 TERMINAL_ENV="local", TERMINAL_CWD=str(tmp_path), LANG="C.UTF-8")
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    from tools import env_passthrough
-    from tools.environments import local
+    from hermes_agent.tools import env_passthrough
+    from hermes_agent.tools.environments import local
     monkeypatch.setattr(local, "_read_terminal_shell_init_config", lambda: ([], False))
     monkeypatch.setattr(env_passthrough, "_config_passthrough", {})
     # The skill-registered allowlist is a process-wide set (see #90004): the
@@ -39,7 +39,7 @@ def child_env(monkeypatch, tmp_path):
         try:
             yield tmp_path
         finally:
-            from tools.code_kernel import shutdown_all_kernels
+            from hermes_agent.tools.code_kernel import shutdown_all_kernels
             shutdown_all_kernels()
             env_passthrough._allowed_env_vars.clear()
             env_passthrough._allowed_env_vars.update(saved_allowed)
@@ -66,8 +66,8 @@ def project_python(child_env):
 
 
 def run_code(code, mode="project", enabled_tools=("read_file",), reset=True):
-    from tools.code_execution_tool import execute_code
-    with patch("tools.code_execution_tool._load_config", return_value={"mode": mode}):
+    from hermes_agent.tools.code_execution_tool import execute_code
+    with patch("hermes_agent.tools.code_execution_tool._load_config", return_value={"mode": mode}):
         result = json.loads(execute_code(code=code, task_id="child-env-test",
                                         enabled_tools=list(enabled_tools), reset=reset))
     assert result["status"] == "success", result

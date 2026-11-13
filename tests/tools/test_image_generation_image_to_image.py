@@ -47,7 +47,7 @@ def _write_cfg(home, cfg: dict):
 
 class TestFalEditPayload:
     def test_edit_payload_includes_image_urls(self):
-        from tools.image_generation_tool import _build_fal_edit_payload
+        from hermes_agent.tools.image_generation_tool import _build_fal_edit_payload
 
         payload = _build_fal_edit_payload(
             "fal-ai/nano-banana-pro", "make it night", ["https://x/y.png"],
@@ -63,7 +63,7 @@ class TestFalEditPayload:
         """Kling Image v3's i2i endpoint takes a SINGULAR `image_url` string;
         the catalog opts in via edit_image_param and only the first source
         image is sent — no `image_urls` list may leak into the payload."""
-        from tools.image_generation_tool import _build_fal_edit_payload
+        from hermes_agent.tools.image_generation_tool import _build_fal_edit_payload
 
         payload = _build_fal_edit_payload(
             "fal-ai/kling-image/v3/text-to-image", "make it winter",
@@ -83,7 +83,7 @@ class TestMandatoryKeysSurviveWhitelist:
     _SIZES = {"square": "1024x1024", "landscape": "1536x1024", "portrait": "1024x1536"}
 
     def test_edit_keeps_prompt_and_image_urls(self, monkeypatch):
-        from tools import image_generation_tool as t
+        from hermes_agent.tools import image_generation_tool as t
 
         fake = {
             "size_style": "image_size_preset",
@@ -98,7 +98,7 @@ class TestMandatoryKeysSurviveWhitelist:
         assert payload["image_urls"] == ["https://x/y.png"]
 
     def test_text_keeps_prompt(self, monkeypatch):
-        from tools import image_generation_tool as t
+        from hermes_agent.tools import image_generation_tool as t
 
         fake = {
             "size_style": "image_size_preset",
@@ -129,7 +129,7 @@ class TestFalRouting:
         monkeypatch.setattr(image_tool, "_resolve_managed_fal_gateway", lambda: None)
 
     def test_text_to_image_uses_base_endpoint(self, cfg_home, monkeypatch):
-        import tools.image_generation_tool as image_tool
+        import hermes_agent.tools.image_generation_tool as image_tool
 
         _write_cfg(cfg_home, {"image_gen": {"model": "fal-ai/nano-banana-pro"}})
         capture: dict = {}
@@ -148,7 +148,7 @@ class TestFalRouting:
 
 
     def test_edit_skips_upscaler(self, cfg_home, monkeypatch):
-        import tools.image_generation_tool as image_tool
+        import hermes_agent.tools.image_generation_tool as image_tool
 
         # flux-2-pro has upscale=True for text-to-image, but edits must skip it.
         _write_cfg(cfg_home, {"image_gen": {"model": "fal-ai/flux-2-pro"}})
@@ -176,7 +176,7 @@ class TestFalRouting:
 
         from PIL import Image
 
-        import tools.image_generation_tool as image_tool
+        import hermes_agent.tools.image_generation_tool as image_tool
 
         monkeypatch.setenv("TERMINAL_ENV", "local")
         _write_cfg(cfg_home, {"image_gen": {"model": "fal-ai/flux-2-pro"}})
@@ -201,7 +201,7 @@ class TestFalRouting:
 
         from PIL import Image
 
-        import tools.image_generation_tool as image_tool
+        import hermes_agent.tools.image_generation_tool as image_tool
 
         monkeypatch.setenv("TERMINAL_ENV", "local")
         Image.frombytes("RGB", (1600, 1600), os.urandom(1600 * 1600 * 3)).save(tmp_path / "big.png")
@@ -254,7 +254,7 @@ class _LegacyProvider(ImageGenProvider):
 
 class TestPluginDispatchImageToImage:
     def test_dispatch_forwards_image_url(self, cfg_home, monkeypatch):
-        import tools.image_generation_tool as image_tool
+        import hermes_agent.tools.image_generation_tool as image_tool
         from hermes_cli import plugins as plugins_module
         from agent import image_gen_registry as reg
 
@@ -277,7 +277,7 @@ class TestPluginDispatchImageToImage:
 
 
     def test_legacy_provider_edit_request_surfaces_clear_error(self, cfg_home, monkeypatch):
-        import tools.image_generation_tool as image_tool
+        import hermes_agent.tools.image_generation_tool as image_tool
         from hermes_cli import plugins as plugins_module
         from agent import image_gen_registry as reg
 
@@ -307,7 +307,7 @@ class TestDynamicSchema:
 
 
     def test_builder_wired_into_registry(self):
-        from tools.registry import discover_builtin_tools, registry
+        from hermes_agent.tools.registry import discover_builtin_tools, registry
 
         discover_builtin_tools()
         entry = registry._tools["image_generate"]

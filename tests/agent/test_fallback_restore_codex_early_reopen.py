@@ -40,8 +40,8 @@ def _fallback_agent():
     tool_defs = [{"type": "function", "function": {
         "name": "web_search", "description": "x", "parameters": {"type": "object", "properties": {}}}}]
     with (
-        patch("model_tools.get_tool_definitions", return_value=tool_defs),
-        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("hermes_agent.model_tools.get_tool_definitions", return_value=tool_defs),
+        patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
         patch("agent.process_bootstrap.OpenAI"),
     ):
         agent = AIAgent(

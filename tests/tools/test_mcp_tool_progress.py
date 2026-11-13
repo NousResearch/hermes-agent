@@ -35,9 +35,9 @@ def test_mcp_progress_notifications_reach_tool_progress_callback(monkeypatch, tm
     monkeypatch.setenv("HERMES_HOME", str(home))
 
     from agent.tool_progress_relay import bound_tool_progress
-    from tools import mcp_tool_discovery as disc
-    from tools import mcp_tool_loop as _loop
-    from tools.registry import registry
+    from hermes_agent.tools import mcp_tool_discovery as disc
+    from hermes_agent.tools import mcp_tool_loop as _loop
+    from hermes_agent.tools.registry import registry
 
     events = []
     try:
@@ -46,7 +46,7 @@ def test_mcp_progress_notifications_reach_tool_progress_callback(monkeypatch, tm
             result = registry.dispatch("mcp__prog__slow", {})
         assert "done" in result
     finally:
-        from tools.mcp_tool_lifecycle import shutdown_mcp_servers
+        from hermes_agent.tools.mcp_tool_lifecycle import shutdown_mcp_servers
         shutdown_mcp_servers()
         _loop._stop_mcp_loop()
 

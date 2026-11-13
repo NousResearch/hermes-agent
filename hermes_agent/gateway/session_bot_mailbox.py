@@ -2,7 +2,7 @@
 import asyncio
 from contextlib import asynccontextmanager
 
-from tools.bot_live_delivery import _locked, _read, _write
+from hermes_agent.tools.bot_live_delivery import _locked, _read, _write
 
 
 @asynccontextmanager
@@ -127,7 +127,7 @@ async def requeue_pin(home, key):
 
 
 def _refuse_pin(home, key):
-    from tools.bot_failure_reasons import AGENT_BLOCKED
+    from hermes_agent.tools.bot_failure_reasons import AGENT_BLOCKED
     with _locked(home) as root:
         path = root / f'{key}.json'
         current = _read(path)

@@ -14,7 +14,7 @@ def test_siblings_send_one_system_prompt_and_get_their_context_in_the_user_turn(
     from run_agent import AIAgent
     from tests.e2e.core.history._helpers import NO_BACKGROUND_REVIEW, OFFLINE_CONFIG
     from tests.fakes.fake_llm_provider import FakeLLMServer, Text, write_hermes_home
-    from tools.delegate_tool import delegate_task
+    from hermes_agent.tools.delegate_tool import delegate_task
 
     home = Path(os.environ["HERMES_HOME"])
     with FakeLLMServer([]) as srv:
@@ -45,7 +45,7 @@ def test_schema_correction_turn_carries_the_contract_even_after_a_compaction():
     from run_agent import AIAgent
     from tests.e2e.core.history._helpers import NO_BACKGROUND_REVIEW, OFFLINE_CONFIG
     from tests.fakes.fake_llm_provider import FakeLLMServer, Text, ToolCall, write_hermes_home
-    from tools.delegate_tool import delegate_task
+    from hermes_agent.tools.delegate_tool import delegate_task
 
     home = Path(os.environ["HERMES_HOME"])
     schema = {"type": "object", "properties": {"count": {"type": "integer"}}, "required": ["count"]}
@@ -74,7 +74,7 @@ def test_schema_correction_turn_carries_the_contract_even_after_a_compaction():
 def test_a_shared_brief_is_one_cacheable_prefix_for_every_sibling():
     """Siblings given one context send it as the same leading bytes, as their own marked part on a marker route."""
     from agent.prompt_caching import apply_anthropic_cache_control
-    from tools.delegate_tool_progress import child_task_message
+    from hermes_agent.tools.delegate_tool_progress import child_task_message
 
     brief = "Repo layout and rules: " + "x" * 2000
     one, two = (child_task_message(goal, brief) for goal in ("find the bug", "write the test"))
@@ -119,7 +119,7 @@ def test_a_steered_child_keeps_its_brief_through_a_second_compaction():
 def test_codex_siblings_share_the_session_header_the_backend_caches_under():
     from agent.chat_completion_helpers import _build_api_kwargs_for_mode
     from run_agent import AIAgent
-    from tools.delegate_tool import _build_child_agent
+    from hermes_agent.tools.delegate_tool import _build_child_agent
 
     route = {"provider": "openai-codex", "base_url": "https://chatgpt.com/backend-api/codex", "api_key": "fake",
              "api_mode": "codex_responses", "model": "gpt-5.4"}

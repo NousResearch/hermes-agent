@@ -29,7 +29,7 @@ from pathlib import Path
 
 import pytest
 
-from tools.process_registry import ProcessRegistry, ProcessSession
+from hermes_agent.tools.process_registry import ProcessRegistry, ProcessSession
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -191,7 +191,7 @@ def test_wait_uses_reconcile_for_orphaned_pipe_exits(registry, monkeypatch):
 # ── config plumbing ──────────────────────────────────────────────────────────
 
 def test_config_reader_falls_back_when_config_unreadable(monkeypatch):
-    import tools.process_registry as pr_mod
+    import hermes_agent.tools.process_registry as pr_mod
 
     def _boom():
         raise RuntimeError("config unreadable")
@@ -236,7 +236,7 @@ def test_finalize_single_query_settles_session_then_releases_then_lingers(monkey
     import cli as cli_mod
 
     order = []
-    from tools.process_registry import process_registry
+    from hermes_agent.tools.process_registry import process_registry
 
     monkeypatch.setattr(
         process_registry,
@@ -269,7 +269,7 @@ def test_finalize_single_query_survives_wait_failure(monkeypatch):
     import cli as cli_mod
 
     order = []
-    from tools.process_registry import process_registry
+    from hermes_agent.tools.process_registry import process_registry
 
     def _boom(*a, **k):
         raise RuntimeError("wait exploded")

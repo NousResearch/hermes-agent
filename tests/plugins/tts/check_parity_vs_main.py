@@ -97,7 +97,7 @@ with open(config_path, "w") as f:
 
 # Fresh import — must not have anything cached from prior runs.
 for name in list(sys.modules):
-    if (name.startswith("tools.")
+    if (name.startswith("hermes_agent.tools.")
             or name.startswith("agent.")
             or name.startswith("plugins.")
             or name.startswith("hermes_cli.")):
@@ -122,7 +122,7 @@ try:
 except ImportError:
     pass
 
-import tools.tts_tool as tts_tool
+from hermes_agent.tools import tts_tool
 
 # Read the config the same way text_to_speech_tool() does.
 tts_config = tts_tool._load_tts_config()

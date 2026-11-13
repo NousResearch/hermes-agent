@@ -17,7 +17,7 @@ import tempfile
 import threading
 import time
 
-from tools.budget_config import DEFAULT_PREVIEW_SIZE_CHARS, BudgetConfig, DEFAULT_BUDGET
+from hermes_agent.tools.budget_config import DEFAULT_PREVIEW_SIZE_CHARS, BudgetConfig, DEFAULT_BUDGET
 
 logger = logging.getLogger(__name__)
 PERSISTED_OUTPUT_TAG = "<persisted-output>"
@@ -28,7 +28,7 @@ SPILLOVER_SUBDIR = "cache/spillover"
 # retention window — see _spillover_retention_hours().
 SPILLOVER_MAX_AGE_HOURS = 24
 _BUDGET_TOOL_NAME = "__budget_enforcement__"
-# The exact key set tools/mcp_tool_handlers.py::_render_call_tool_result emits. A JSON object whose
+# The exact key set hermes_agent/tools/mcp_tool_handlers.py::_render_call_tool_result emits. A JSON object whose
 # keys stay inside this set is that handler's own envelope, never an arbitrary tool's JSON payload.
 _MCP_ENVELOPE_KEYS = frozenset({"result", "structuredContent", "_meta"})
 _ENVELOPE_METADATA_TAG = "<mcp-result-metadata>"
@@ -189,7 +189,7 @@ def _is_host_side_env(env) -> bool:
     yet) or a backend whose files are the host's. Others resolve ``read_file`` inside the sandbox."""
     if env is None:
         return True
-    from tools.environments.base import env_uses_host_filesystem
+    from hermes_agent.tools.environments.base import env_uses_host_filesystem
 
     return env_uses_host_filesystem(env)
 
@@ -232,7 +232,7 @@ def _sandbox_visible_spillover_path(host_path: str, env) -> str | None:
     container created before spillover joined the mount list lacks the bind mount and must
     fall back to the in-sandbox write."""
     try:
-        from tools.credential_files import to_agent_visible_cache_path
+        from hermes_agent.tools.credential_files import to_agent_visible_cache_path
         visible = to_agent_visible_cache_path(host_path)
     except Exception as exc:
         logger.debug("Spillover path translation failed: %s", exc)
@@ -361,7 +361,7 @@ def _write_to_sandbox(content: str, remote_path: str, env) -> bool:
     storage_dir = os.path.dirname(remote_path)
     # Private dir: archived results carry tool output (can hold secrets) under a
     # shared temp root on remote backends. The umask also covers the cat redirect.
-    from tools.code_execution_rpc import _private_dirs_cmd
+    from hermes_agent.tools.code_execution_rpc import _private_dirs_cmd
     cmd = (f"{_private_dirs_cmd(storage_dir)} "
            f"&& cat > {shlex.quote(remote_path)}")
     if env.execute(cmd, timeout=30, stdin_data=content).get("returncode", 1) != 0:
@@ -477,7 +477,7 @@ def _persist_hosted(content: str, tool_use_id: str, env) -> str | None:
     failed write — the caller truncates inline). Nothing is written on this host, and the file name
     carries the sandbox identity, so two agents' equal tool-use ids never share a file. ``None``
     outside a hosted scope: the caller keeps the host spillover."""
-    from tools.environments.sandbox_scope import (
+    from hermes_agent.tools.environments.sandbox_scope import (
         CrossAgentHandleRefused, admit_env, current_sandbox_key)
     sandbox_key = current_sandbox_key()
     if not sandbox_key:

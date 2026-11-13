@@ -132,7 +132,7 @@ class TestStartupPlatformIsolation:
                 with patch("hermes_cli.config.load_config", return_value={}):
                     with patch("agent.shell_hooks.register_from_config"):
                         with patch(
-                            "tools.process_registry.process_registry.recover_from_checkpoint",
+                            "hermes_agent.tools.process_registry.process_registry.recover_from_checkpoint",
                             return_value=0,
                         ):
                             with patch(
@@ -874,7 +874,7 @@ class TestVoiceInputCallbackWiring:
                     with patch("hermes_cli.config.load_config", return_value={}):
                         with patch("agent.shell_hooks.register_from_config"):
                             with patch(
-                                "tools.process_registry.process_registry.recover_from_checkpoint",
+                                "hermes_agent.tools.process_registry.process_registry.recover_from_checkpoint",
                                 return_value=0,
                             ):
                                 with patch(

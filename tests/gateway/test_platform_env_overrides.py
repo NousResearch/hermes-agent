@@ -34,7 +34,7 @@ def test_env_override_secrets_stay_in_terminal_secret_blocklist():
     so every secret a plugin's env rows read must already be declared where that policy looks."""
     from hermes_cli.config import PLATFORM_SECRET_ENV_SUFFIXES
     from hermes_cli.profile_channels import config_env_table_keys
-    from tools.environments.local_env_policy import _ADAPTER_SECRET_ENV
+    from hermes_agent.tools.environments.local_env_policy import _ADAPTER_SECRET_ENV
 
     secrets = {name.upper() for name in config_env_table_keys(_entries())
                if name.upper().endswith(PLATFORM_SECRET_ENV_SUFFIXES)}

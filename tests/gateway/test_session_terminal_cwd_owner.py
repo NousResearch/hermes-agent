@@ -29,7 +29,7 @@ def _entry(session_id, created_at):
 
 
 def test_a_new_between_the_check_and_the_write_leaves_the_fresh_conversation_alone(tmp_path, monkeypatch):
-    from tools import terminal_tool
+    from hermes_agent.tools import terminal_tool
     monkeypatch.setattr(terminal_tool, '_session_cwd', {})
     monkeypatch.setenv('TERMINAL_ENV', 'local')
     store = _Store()

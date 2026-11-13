@@ -614,14 +614,14 @@ def _refresh_mcp_tools_between_turns(agent: Any) -> None:
     try:
         # An authorization that committed after its connection card closed: same import-cost gate,
         # the module is loaded only in a process that ran a connection operation.
-        if "tools.connectors.mcp" in sys.modules:
-            from tools.connectors.mcp import adopt_late_connections
+        if "hermes_agent.tools.connectors.mcp" in sys.modules:
+            from hermes_agent.tools.connectors.mcp import adopt_late_connections
             adopt_late_connections(agent)
         # Import-cost gate: MCP tools are only registered by code that already imported
-        # ``tools.mcp_tool`` (~0.4s); not in sys.modules => nothing to do.
-        if not getattr(agent, "_skip_mcp_refresh", False) and "tools.mcp_tool" in sys.modules:
-            from tools.mcp_tool_discovery import has_registered_mcp_tools
-            from tools.mcp_tool_agent import refresh_agent_mcp_tools
+        # ``hermes_agent.tools.mcp_tool`` (~0.4s); not in sys.modules => nothing to do.
+        if not getattr(agent, "_skip_mcp_refresh", False) and "hermes_agent.tools.mcp_tool" in sys.modules:
+            from hermes_agent.tools.mcp_tool_discovery import has_registered_mcp_tools
+            from hermes_agent.tools.mcp_tool_agent import refresh_agent_mcp_tools
             if has_registered_mcp_tools():
                 refresh_agent_mcp_tools(agent, quiet_mode=True, preserve_prefix=True)
     except Exception:
@@ -933,7 +933,7 @@ def _collect_pre_llm_call_context(
         try:
             # Spill oversized per-hook context to disk so a runaway plugin can't inflate every subsequent
             # turn's prompt. Ported from openai/codex PR #21069 ("Spill large hook outputs from context").
-            from tools.hook_output_spill import (
+            from hermes_agent.tools.hook_output_spill import (
                 get_spill_config as _spill_cfg, spill_if_oversized as _spill_if_oversized
             )
             _spill_config_cached = _spill_cfg()
@@ -1234,7 +1234,7 @@ def build_turn_context(
     # warning and a needless first-turn prefix cache miss. (Issue #45499.)
     set_session_context(agent.session_id)
     set_current_write_origin(getattr(agent, "_memory_write_origin", "assistant_tool"))
-    from tools.skill_provenance import set_review_attended
+    from hermes_agent.tools.skill_provenance import set_review_attended
     set_review_attended(getattr(agent, "_review_attended", False))
     agent._restore_primary_runtime()
     _publish_runtime_main(agent)
@@ -1314,7 +1314,7 @@ def build_turn_context(
     # Bot Mode DM tool — injected ONLY into a bot's canonical "Bot Chat" session (same
     # gate as the protocol section); gate is session-stable, so cache-safe.
     try:
-        from tools.bot_mode_dm import ensure_message_agent_tool
+        from hermes_agent.tools.bot_mode_dm import ensure_message_agent_tool
 
         ensure_message_agent_tool(agent)
     except Exception:

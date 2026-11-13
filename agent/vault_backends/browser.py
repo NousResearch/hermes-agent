@@ -8,7 +8,7 @@ key-button picker alongside the Hermes vault / Bitwarden / 1Password sources and
 on click.
 
 There is no decryption code here, and no new consent key. The reads go over CDP against the
-already-running real-profile browser (``tools.browser_real_profile_logins``):
+already-running real-profile browser (``hermes_agent.tools.browser_real_profile_logins``):
 
 - ``list_items`` → origin + username only, read from the plaintext columns of the profile's snapshot
   ``Login Data`` (never the encrypted password).
@@ -88,7 +88,7 @@ class BrowserProfileLoginBackend(LoginBackend):
         # whatever the copy dir holds (usually nothing), so listing degrades to empty rather than
         # raising.
         try:
-            from tools.browser_session_real_profile import (
+            from hermes_agent.tools.browser_session_real_profile import (
                 real_profile_cdp, terminate_real_profile_browser)
             # A profile switch with the old real-profile browser STILL RUNNING is the case the
             # round-2 marker check alone misses: ``real_profile_cdp()`` would re-ATTACH to that live
@@ -144,7 +144,7 @@ class BrowserProfileLoginBackend(LoginBackend):
 
     @staticmethod
     def _login_data_present(copy_dir: str) -> bool:
-        from tools.browser_real_profile_logins import login_data_present
+        from hermes_agent.tools.browser_real_profile_logins import login_data_present
         return login_data_present(copy_dir)
 
     def _handle(self, nav_url: str, username: str) -> str:
@@ -165,7 +165,7 @@ class BrowserProfileLoginBackend(LoginBackend):
         copy_dir = self._ensure_snapshot()
         if not copy_dir:
             return []
-        from tools.browser_real_profile_logins import read_login_metadata
+        from hermes_agent.tools.browser_real_profile_logins import read_login_metadata
         from agent.vault_store import VaultError
         out: list[VaultItemMeta] = []
         for row in read_login_metadata(copy_dir):
@@ -208,11 +208,11 @@ class BrowserProfileLoginBackend(LoginBackend):
             origin = normalize_origin(nav_url)
         except VaultError:
             origin = nav_url
-        from tools.browser_session_real_profile import real_profile_cdp
+        from hermes_agent.tools.browser_session_real_profile import real_profile_cdp
         cdp_url, err = real_profile_cdp()
         if cdp_url is None:
             raise RuntimeError(err or "real-profile browsing is off; cannot resolve the saved password")
-        from tools.browser_real_profile_logins import resolve_login_password
+        from hermes_agent.tools.browser_real_profile_logins import resolve_login_password
         # nav_url opens the exact saved sign-in page (path preserved); origin is the origin the final
         # page must still be on after any redirect before the autofilled value is accepted.
         password = resolve_login_password(cdp_url, nav_url, origin, username)

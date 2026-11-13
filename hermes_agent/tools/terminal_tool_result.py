@@ -1,7 +1,7 @@
 """Foreground result post-processing for the terminal tool (cwd dual-write,
 sudo handling, transform hook, truncation, ANSI strip, redaction, exit-code
 notes/hints, spill redaction, verification evidence) + exit-code tables. Lazy
-``tools.terminal_tool`` lookups keep the origin's monkeypatch points authoritative.
+``hermes_agent.tools.terminal_tool`` lookups keep the origin's monkeypatch points authoritative.
 """
 
 import json
@@ -13,7 +13,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Optional
 
-logger = logging.getLogger("tools.terminal_tool")
+logger = logging.getLogger("hermes_agent.tools.terminal_tool")
 
 
 @contextmanager
@@ -115,8 +115,8 @@ def _interpret_exit_code(command: str, exit_code: int) -> str | None:
 
 def _sudo_annotations(command: str, output: str, env_type: str) -> tuple[str, bool, bool]:
     """Sudo failure handling -> (output, auth_failed, cache_cleared)."""
-    import tools.terminal_tool as tt
-    from tools.terminal_tool_sudo import (
+    import hermes_agent.tools.terminal_tool as tt
+    from hermes_agent.tools.terminal_tool_sudo import (
         _handle_sudo_failure, _invalidate_cached_sudo_on_auth_failure, _no_sudo_user,
         _sudo_wrong_password_failure,
     )
@@ -138,7 +138,7 @@ def _apply_output_transform_hook(command, output, returncode, task_id, env_type)
     Replacements are still subject to the output limit applied afterwards."""
     with _quiet("transform_terminal_output hook"):
         from hermes_cli.lifecycle import invoke_hook
-        from tools.approval_context import _approval_tool_call_id
+        from hermes_agent.tools.approval_context import _approval_tool_call_id
         # Concurrent terminal calls in one turn must gate per call, not collapse into one;
         # an empty id is treated as "no identity" by the hook gate.
         results = invoke_hook("transform_terminal_output", command=command, output=output,
@@ -149,17 +149,17 @@ def _apply_output_transform_hook(command, output, returncode, task_id, env_type)
 
 
 def _truncate_head_tail(output: str) -> str:
-    from tools.tool_output_limits import get_max_bytes
-    from tools.tool_output_truncate import truncate_head_tail
+    from hermes_agent.tools.tool_output_limits import get_max_bytes
+    from hermes_agent.tools.tool_output_truncate import truncate_head_tail
     return truncate_head_tail(output, get_max_bytes())
 
 
 def _failure_hint(command: str, returncode: int, output: str, exit_note) -> Optional[str]:
-    """Recovery hints for well-known failure shapes (tools/terminal_hints.py);
+    """Recovery hints for well-known failure shapes (hermes_agent/tools/terminal_hints.py);
     on rc=0, warn when a pipeline tail / `|| echo` may mask an upstream
     failure and the output carries strong failure indicators (advisory only)."""
     with _quiet("failure hint"):
-        from tools import terminal_hints
+        from hermes_agent.tools import terminal_hints
         if returncode == 0:
             return terminal_hints.annotate_masked_success(command, output)
         if not exit_note:
@@ -175,8 +175,8 @@ def _redact_spill_file(path, total_chars, command) -> list[tuple[str, Any]]:
         return []
     try:
         from agent.redact import redact_terminal_output
-        from tools.ansi_strip import strip_ansi
-        from tools.spill_safety import write_text_exclusive
+        from hermes_agent.tools.ansi_strip import strip_ansi
+        from hermes_agent.tools.spill_safety import write_text_exclusive
         raw_spill = Path(path).read_text(encoding="utf-8-sig", errors="replace")
         # lstat-checked unlink + exclusive create: the redacted copy can't
         # be diverted through a symlink planted since the collector's write.
@@ -210,7 +210,7 @@ def finalize_foreground_result(
     workdir: Optional[str], command_cwd: Optional[str], approval_note: Optional[str],
 ) -> str:
     """Turn a raw ``env.execute`` result into the tool's JSON result string."""
-    from tools.terminal_tool import record_session_cwd
+    from hermes_agent.tools.terminal_tool import record_session_cwd
 
     # Record the cwd this command finished in as THIS session's durable cwd —
     # only when the command actually reported it (an interrupted/killed command
@@ -233,7 +233,7 @@ def finalize_foreground_result(
     # redact secrets; redact_terminal_output is command-aware (env-dump
     # commands get the KEY=value pass, source/config dumps skip it).
     from agent.redact import redact_terminal_output
-    from tools.ansi_strip import strip_ansi
+    from hermes_agent.tools.ansi_strip import strip_ansi
     output = strip_ansi(output)
     # For source/config dumps (MAX_TOKENS=100, "apiKey": "x" fixtures, postgresql:// f-string templates) the
     # ENV/JSON/template passes are skipped to avoid false positives (code_file=True). But for env-dump

@@ -14,7 +14,7 @@ import threading
 
 import pytest
 
-from tools import approval, code_kernel
+from hermes_agent.tools import approval, code_kernel
 from hermes_agent.tui_gateway import server
 
 SESSION_KEY = "20260907_120000_abcdef"

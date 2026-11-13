@@ -16,9 +16,9 @@ from contextlib import ExitStack, suppress
 
 import pytest
 
-from tools.connectors import live
-from tools.connectors.contract import Actor, TargetState
-from tools.connectors.operation import ConnectionOperation, Target
+from hermes_agent.tools.connectors import live
+from hermes_agent.tools.connectors.contract import Actor, TargetState
+from hermes_agent.tools.connectors.operation import ConnectionOperation, Target
 from hermes_agent.tui_gateway import server
 from hermes_agent.tui_gateway.transport import StdioTransport
 
@@ -62,8 +62,8 @@ def owned(monkeypatch):
     live.reset_for_tests()
     # A connect from the panel creates the guest identity first; in an empty test home that is a
     # real mint on the live Portal (up to 5s), which outlived the 2s reply wait on a slow Portal.
-    monkeypatch.setattr("tools.connectors.ensure_guest_identity", lambda: None)
-    monkeypatch.setattr("tools.connectors.managed.ensure_guest_identity", lambda: None)
+    monkeypatch.setattr("hermes_agent.tools.connectors.ensure_guest_identity", lambda: None)
+    monkeypatch.setattr("hermes_agent.tools.connectors.managed.ensure_guest_identity", lambda: None)
     with ExitStack() as stack:
         owner, stranger = PipeClient(stack), PipeClient(stack)
         session = dict(transport=owner.transport, agent=None, session_key=SID, history=[],
@@ -202,10 +202,10 @@ def test_panel_connect_reissues_only_a_dead_link(owned, monkeypatch):
             mints.append((tuple(names), reinitiate))
             return {"results": [{"connector": n, "status": "initiated", "connect_url": f"https://l/{n}/2"} for n in names]}
 
-    monkeypatch.setattr("tools.connectors.gateway.client.ConnectorClient", Client)
+    monkeypatch.setattr("hermes_agent.tools.connectors.gateway.client.ConnectorClient", Client)
     # The real dispatcher: availability gate passes, then the open operation routes to _reissue.
-    monkeypatch.setattr("tools.connectors.connectors_available", lambda: True)
-    monkeypatch.setattr("model_tools._select_tool_names", lambda *a, **k: {"manage_connections"})
+    monkeypatch.setattr("hermes_agent.tools.connectors.connectors_available", lambda: True)
+    monkeypatch.setattr("hermes_agent.model_tools._select_tool_names", lambda *a, **k: {"manage_connections"})
 
     refused = _connect_rpc(owner, connectors=["gmail"])
     assert refused["error"]["code"] == 4002 and mints == []
@@ -234,9 +234,9 @@ def test_a_failed_reissue_leaves_the_row_failed_with_no_link(owned, monkeypatch,
         def connections(self, names, *, reinitiate=False, **_):
             return {"results": [{"connector": n, "status": "failed", "status_reason": "vendor: still no"} for n in names]}
 
-    monkeypatch.setattr("tools.connectors.gateway.client.ConnectorClient", Client)
-    monkeypatch.setattr("tools.connectors.connectors_available", lambda: True)
-    monkeypatch.setattr("model_tools._select_tool_names", lambda *a, **k: {"manage_connections"})
+    monkeypatch.setattr("hermes_agent.tools.connectors.gateway.client.ConnectorClient", Client)
+    monkeypatch.setattr("hermes_agent.tools.connectors.connectors_available", lambda: True)
+    monkeypatch.setattr("hermes_agent.model_tools._select_tool_names", lambda *a, **k: {"manage_connections"})
 
     before = len(owner.frames)
     _rpc(owner, "connectors.connect", connectors=["notion"])

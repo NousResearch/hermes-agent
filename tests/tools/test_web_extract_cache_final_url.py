@@ -8,8 +8,8 @@ import asyncio
 
 import pytest
 
-from tools import web_result_cache as wrc
-from tools import web_tools_extract as wte
+from hermes_agent.tools import web_result_cache as wrc
+from hermes_agent.tools import web_tools_extract as wte
 
 REDIRECTOR = "https://redirector.example/to-target"
 TARGET = "https://target.example/"
@@ -21,7 +21,7 @@ def _isolated_cache(tmp_path, monkeypatch):
     cache_dir.mkdir(parents=True)
     monkeypatch.setattr(wrc, "_cache_dir", lambda: cache_dir)
     monkeypatch.setattr(wrc, "_web_config", dict)
-    monkeypatch.setattr("tools.web_tools_extract._extract_timeout_seconds", lambda: 0)
+    monkeypatch.setattr("hermes_agent.tools.web_tools_extract._extract_timeout_seconds", lambda: 0)
 
 
 class _RedirectingProvider:
@@ -57,16 +57,16 @@ def _extract(provider):
 @pytest.mark.parametrize("gate", ["blocklist", "ssrf"])
 def test_cached_redirect_is_regated_on_its_final_url(monkeypatch, gate):
     check, safe = _policy()
-    monkeypatch.setattr("tools.website_policy.check_website_access", check)
-    monkeypatch.setattr("tools.url_safety.async_is_safe_url", safe)
+    monkeypatch.setattr("hermes_agent.tools.website_policy.check_website_access", check)
+    monkeypatch.setattr("hermes_agent.tools.url_safety.async_is_safe_url", safe)
     provider = _RedirectingProvider()
     assert _extract(provider)[0]["content"] == "TARGET PAGE"
     assert _extract(provider)[0].get("cached") is True  # control: an allowed target is served from cache
     assert provider.calls == 1
 
     check, safe = _policy(**({"blocked_host": "target.example"} if gate == "blocklist" else {"unsafe_host": "target.example"}))
-    monkeypatch.setattr("tools.website_policy.check_website_access", check)
-    monkeypatch.setattr("tools.url_safety.async_is_safe_url", safe)
+    monkeypatch.setattr("hermes_agent.tools.website_policy.check_website_access", check)
+    monkeypatch.setattr("hermes_agent.tools.url_safety.async_is_safe_url", safe)
     result = _extract(provider)[0]
 
     assert provider.calls == 2, "a hit whose final URL is now refused must be a miss (live fetch re-checks)"
@@ -78,14 +78,14 @@ def test_an_uncached_refetch_never_retargets_the_old_entry(monkeypatch):
     """A refused hit re-fetches; if that fetch lands somewhere allowed but is too big to cache, the old
     entry keeps its own final URL, so its blocked content is never served under the new target."""
     check, safe = _policy()
-    monkeypatch.setattr("tools.website_policy.check_website_access", check)
-    monkeypatch.setattr("tools.url_safety.async_is_safe_url", safe)
+    monkeypatch.setattr("hermes_agent.tools.website_policy.check_website_access", check)
+    monkeypatch.setattr("hermes_agent.tools.url_safety.async_is_safe_url", safe)
     _extract(_RedirectingProvider())
 
     check, safe = _policy(blocked_host="target.example")
-    monkeypatch.setattr("tools.website_policy.check_website_access", check)
-    monkeypatch.setattr("tools.url_safety.async_is_safe_url", safe)
-    from tools.web_tools_truncate import MAX_STORED_TEXT_CHARS
+    monkeypatch.setattr("hermes_agent.tools.website_policy.check_website_access", check)
+    monkeypatch.setattr("hermes_agent.tools.url_safety.async_is_safe_url", safe)
+    from hermes_agent.tools.web_tools_truncate import MAX_STORED_TEXT_CHARS
     huge = "x" * (MAX_STORED_TEXT_CHARS + 1)
 
     class _NowElsewhere(_RedirectingProvider):
@@ -104,8 +104,8 @@ def test_crlf_page_round_trips_through_the_cache(monkeypatch):
     """A page with CRLF line endings (Tavily passes text through untouched) must hit on the next
     call, not miss forever and re-buy the vendor fetch."""
     check, safe = _policy()
-    monkeypatch.setattr("tools.website_policy.check_website_access", check)
-    monkeypatch.setattr("tools.url_safety.async_is_safe_url", safe)
+    monkeypatch.setattr("hermes_agent.tools.website_policy.check_website_access", check)
+    monkeypatch.setattr("hermes_agent.tools.url_safety.async_is_safe_url", safe)
 
     class _Crlf(_RedirectingProvider):
         async def extract(self, urls, format=None):
@@ -124,8 +124,8 @@ def test_interleaved_writers_never_pair_one_body_with_anothers_final_url(monkeyp
     final-URL write lands. B's body must stay paired with B's destination, so blocking B's host
     makes the hit a miss instead of serving it under A's still-allowed destination."""
     check, safe = _policy()
-    monkeypatch.setattr("tools.website_policy.check_website_access", check)
-    monkeypatch.setattr("tools.url_safety.async_is_safe_url", safe)
+    monkeypatch.setattr("hermes_agent.tools.website_policy.check_website_access", check)
+    monkeypatch.setattr("hermes_agent.tools.url_safety.async_is_safe_url", safe)
 
     def landing(host, body):
         class _Provider(_RedirectingProvider):
@@ -147,7 +147,7 @@ def test_interleaved_writers_never_pair_one_body_with_anothers_final_url(monkeyp
         real_record(*args, **kwargs)
 
     check, safe = _policy(blocked_host="origin-b.example")
-    monkeypatch.setattr("tools.website_policy.check_website_access", check)
+    monkeypatch.setattr("hermes_agent.tools.website_policy.check_website_access", check)
     later = _RedirectingProvider()
     result = _extract(later)[0]
     assert later.calls == 1 and not result.get("cached"), "B's blocked body was served under A's final URL"

@@ -117,7 +117,7 @@ class TestBuildSessionContextPrompt:
         ss.set_multiplex_active(True)
         token = ss.set_secret_scope(_ExplodingScope())
         try:
-            with patch("tools.mcp_tool_discovery.get_registered_mcp_server_names", return_value=[]), \
+            with patch("hermes_agent.tools.mcp_tool_discovery.get_registered_mcp_server_names", return_value=[]), \
                     patch("hermes_cli.config.load_config", return_value={}), \
                     patch("hermes_cli.tools_config._get_platform_tools", return_value=["slack"]):
                 assert _slack_tools_loaded() is False
@@ -129,13 +129,13 @@ class TestBuildSessionContextPrompt:
         """Regression (review of #63234): a connected MCP server whose tools
         are ACTUALLY registered in the live registry must be detected as
         Slack capability, without mocking _slack_tools_loaded itself -- this
-        exercises the real tools.mcp_tool registration signal the earlier
+        exercises the real hermes_agent.tools.mcp_tool registration signal the earlier
         (mocked-wholesale) tests didn't reach. Native SLACK_BOT_TOKEN/toolset
         config is intentionally left unset so only the MCP path can pass."""
         import os as _os
         from unittest.mock import patch
         from hermes_agent.gateway.session import _slack_tools_loaded
-        from tools import mcp_tool_registration as _mcp_registration
+        from hermes_agent.tools import mcp_tool_registration as _mcp_registration
 
         # No native slack toolset / token configured.
         with patch.dict(_os.environ, {}, clear=False):
@@ -143,7 +143,7 @@ class TestBuildSessionContextPrompt:
 
             # Simulate a connected MCP server ("company-slack") that has
             # registered a real tool, via the actual tracking function used
-            # by the live registration path (tools/mcp_tool.py:_track_mcp_tool_server),
+            # by the live registration path (hermes_agent/tools/mcp_tool.py:_track_mcp_tool_server),
             # not a mock of the capability check.
             _mcp_registration._track_mcp_tool_server("mcp-company-slack_post_message", "company-slack")
             try:

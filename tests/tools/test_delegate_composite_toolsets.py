@@ -2,7 +2,7 @@
 
 import unittest
 
-from tools.delegate_tool import _expand_parent_toolsets, _strip_blocked_tools
+from hermes_agent.tools.delegate_tool import _expand_parent_toolsets, _strip_blocked_tools
 
 
 class TestExpandParentToolsets(unittest.TestCase):

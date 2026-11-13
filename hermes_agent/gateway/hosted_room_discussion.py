@@ -217,7 +217,7 @@ def _member_actor(member: DiscussionMember, *, display_name: bool = True) -> dic
 
 
 def _all_failure_reasons() -> frozenset[str]:
-    from tools.bot_failure_reasons import ALL_REASONS
+    from hermes_agent.tools.bot_failure_reasons import ALL_REASONS
     return ALL_REASONS
 
 
@@ -987,7 +987,7 @@ def _settled_effects(
 
 def _failed_effects(result: Any, **_: Any) -> Effects:
     error_text = _terminal_text(result, field="error", fallback="member turn failed")
-    from tools.bot_failure_reasons import classify_agent_error
+    from hermes_agent.tools.bot_failure_reasons import classify_agent_error
     supplied_reason = (
         str(result.get("reason_code") or result.get("reason") or "").strip() if isinstance(result, Mapping) else "")
     reason_code = supplied_reason if supplied_reason in _all_failure_reasons() else classify_agent_error(error_text)

@@ -30,7 +30,7 @@ from rich.console import Console
 from rich.progress import BarColumn, MofNCompleteColumn, Progress, SpinnerColumn, TextColumn, TimeRemainingColumn
 
 from agent.conversation_compression_checkpoint import checkpoint_required_from_config
-from model_tools import TOOL_TO_TOOLSET_MAP
+from hermes_agent.model_tools import TOOL_TO_TOOLSET_MAP
 from run_agent import AIAgent
 from hermes_agent.toolset_distributions import (
     list_distributions,
@@ -215,12 +215,12 @@ def _prepare_container_image(
         except Exception as img_err:
             if config.get("verbose"):
                 print(f"   Prompt {prompt_index}: Docker image check failed: {img_err}", flush=True)
-    from tools.terminal_tool import register_task_env_overrides
+    from hermes_agent.tools.terminal_tool import register_task_env_overrides
     overrides = {
         "docker_image": container_image,
         "modal_image": container_image,
         "daytona_image": container_image,
-        # A plugin backend reads its own ``<backend>_image`` override (tools.terminal_tool._select_image).
+        # A plugin backend reads its own ``<backend>_image`` override (hermes_agent.tools.terminal_tool._select_image).
         f"{env_type}_image": container_image,
     }
     if prompt_data.get("cwd"):

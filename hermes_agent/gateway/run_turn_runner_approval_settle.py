@@ -1,6 +1,6 @@
 """Tell the chat when an exec-approval prompt times out (messaging platforms).
 
-``tools.approval_gateway_wait._await_gateway_decision`` calls ``entry.settle(reason)`` once the
+``hermes_agent.tools.approval_gateway_wait._await_gateway_decision`` calls ``entry.settle(reason)`` once the
 wait ends. Only the TUI registered such a hook, so on Telegram / Slack / WhatsApp a card whose
 timer ran out kept live buttons and the user never learned the command did NOT run. The turn
 runner registers the hook here right after the prompt was delivered.
@@ -34,7 +34,7 @@ def register_timeout_notice(
     already-redacted command shown to the user. The notice is skipped when the run is no longer
     current (``ctx._run_still_current``).
     """
-    from tools.approval import register_gateway_settle
+    from hermes_agent.tools.approval import register_gateway_settle
 
     request_id = approval_data.get("request_id")
     session_key = runner._ctx.session_key or ""

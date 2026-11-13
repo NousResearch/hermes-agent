@@ -2,7 +2,7 @@
 
 Import-safe, stdlib-only, like ``hermes_constants``. Binding and deriving profile state from a
 scope lives in ``agent/runtime_scope.py``; this module holds only the values and the context-local
-slot, so ``hermes_constants``, ``agent.secret_scope`` and ``tools.terminal_scope`` can ask "is a
+slot, so ``hermes_constants``, ``agent.secret_scope`` and ``hermes_agent.tools.terminal_scope`` can ask "is a
 scope bound, and for which agent?" without importing anything heavier.
 
 Every activity a gateway runs for a profile binds a :class:`Scope`: a turn, cache eviction, a

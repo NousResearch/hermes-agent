@@ -35,9 +35,9 @@ def validate_editor(source, editor):
 
 
 def request_editor_edit(proposal):
-    from tools import approval
-    from tools.approval_context import get_current_session_key
-    from tools.approval_gateway_wait import _await_gateway_decision
+    from hermes_agent.tools import approval
+    from hermes_agent.tools.approval_context import get_current_session_key
+    from hermes_agent.tools.approval_gateway_wait import _await_gateway_decision
     route = get_current_session_key()
     notify = approval._gateway_notify_cb(route)
     if notify is None:

@@ -2,7 +2,7 @@
 
 Session identity and observability contextvars, the interactive/gateway/cron/
 unattended predicates, and the ``approvals.*`` config readers used by every
-gate in :mod:`tools.approval`.
+gate in :mod:`hermes_agent.tools.approval`.
 """
 
 import contextvars
@@ -12,7 +12,7 @@ from agent.i18n import t
 from hermes_cli.config import cfg_get
 from utils import env_var_enabled, is_truthy_value
 
-logger = logging.getLogger("tools.approval")
+logger = logging.getLogger("hermes_agent.tools.approval")
 
 
 def _ctx(name: str, default: str | None = "") -> contextvars.ContextVar:
@@ -258,7 +258,7 @@ def _resolve_cli_approval_callback(approval_callback=None):
     if approval_callback is not None:
         return approval_callback
     try:
-        from tools.terminal_tool import _get_approval_callback
+        from hermes_agent.tools.terminal_tool import _get_approval_callback
         return _get_approval_callback()
     except Exception:
         return None

@@ -27,7 +27,7 @@ def test_one_shot_cli_path_reaps_dead_owner_row_before_returning_sync(tmp_path, 
 
     from hermes_agent.cron import executions
     from hermes_agent.gateway.session_context import _SESSION_ASYNC_DELIVERY
-    from tools import cronjob_tools
+    from hermes_agent.tools import cronjob_tools
 
     monkeypatch.setattr(executions, "EXECUTIONS_FILE", tmp_path / "executions.db")
     row = executions.create_execution("dead-owner-job", source="direct")

@@ -818,7 +818,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         # child env, never Hermes' credentials. Under a multiplexed secondary the launch env carries the
         # DEFAULT profile's WHATSAPP_* values, so every bridge-consumed key is re-resolved from this
         # profile (dropped on a scoped miss), never inherited from the launch env.
-        from tools.environments.local import hermes_subprocess_env
+        from hermes_agent.tools.environments.local import hermes_subprocess_env
         bridge_env = with_hermes_node_path(hermes_subprocess_env())
         reply_prefix = _wenv("WHATSAPP_REPLY_PREFIX")
         if reply_prefix:

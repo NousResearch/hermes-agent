@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-import tools.process_registry as pr
+import hermes_agent.tools.process_registry as pr
 
 
 @pytest.fixture
@@ -65,7 +65,7 @@ def test_exit_racing_promotion_is_never_lost(sleeper, monkeypatch):
     """The process exits after the policy saw it running but before it promotes: the exit was
     published while notify_on_complete was still off, so the result must report the exit rather
     than promise a completion message nobody will queue."""
-    import tools.process_registry_wait_policy as policy
+    import hermes_agent.tools.process_registry_wait_policy as policy
 
     _home, session = sleeper
     _wait(session.id)

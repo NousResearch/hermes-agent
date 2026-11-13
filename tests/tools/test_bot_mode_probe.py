@@ -1,10 +1,10 @@
-"""Tests for tools/bot_mode_probe.py — the Bot Mode teammate-protocol section."""
+"""Tests for hermes_agent/tools/bot_mode_probe.py — the Bot Mode teammate-protocol section."""
 
 import textwrap
 
 import pytest
 
-from tools import bot_mode_probe
+from hermes_agent.tools import bot_mode_probe
 
 
 @pytest.fixture(autouse=True)

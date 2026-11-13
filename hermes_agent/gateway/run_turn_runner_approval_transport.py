@@ -1,7 +1,7 @@
 """The approval notifier a gateway turn registers, and the transport its background children keep.
 
 A background ``delegate_task`` child outlives the turn that dispatched it, and that turn's ``finally``
-unregisters the session's notifier (#133514). ``tools.approval_notify_lease.acquire`` takes
+unregisters the session's notifier (#133514). ``hermes_agent.tools.approval_notify_lease.acquire`` takes
 ``background_notify`` at dispatch, so the child's later approval still reaches the chat it came from:
 rendered through the adapter that answers that chat when the prompt is raised (the turn's own
 resolver), never through the finished turn's stream or typing state, and never projected onto its

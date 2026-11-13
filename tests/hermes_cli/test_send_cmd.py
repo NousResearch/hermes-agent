@@ -27,7 +27,7 @@ def _parse(argv):
     return parser.parse_args(["send", *argv])
 
 class _FakeTool:
-    """Replacement for ``tools.send_message_tool.send_message_tool``."""
+    """Replacement for ``hermes_agent.tools.send_message_tool.send_message_tool``."""
 
     def __init__(self, payload):
         self.payload = payload
@@ -45,12 +45,12 @@ def fake_tool(monkeypatch):
 
     fake = _FakeTool({"success": True, "message_id": "m123"})
 
-    mod = types.ModuleType("tools.send_message_tool")
+    mod = types.ModuleType("hermes_agent.tools.send_message_tool")
     mod.send_message_tool = fake
-    # Register the stub so ``from tools.send_message_tool import ...`` inside
+    # Register the stub so ``from hermes_agent.tools.send_message_tool import ...`` inside
     # cmd_send resolves to our fake. Also patch the parent ``tools`` package
     # entry so attribute lookup works.
-    monkeypatch.setitem(sys.modules, "tools.send_message_tool", mod)
+    monkeypatch.setitem(sys.modules, "hermes_agent.tools.send_message_tool", mod)
     return fake
 
 # ---------------------------------------------------------------------------
@@ -126,9 +126,9 @@ def whatsapp_bridge(monkeypatch):
     session_dir.mkdir(parents=True, exist_ok=True)
     (session_dir / ".bridge-token").write_text(token)
     monkeypatch.setattr("hermes_agent.gateway.config.load_gateway_config", lambda: config)
-    monkeypatch.setattr("tools.interrupt.is_interrupted", lambda: False)
-    monkeypatch.setattr("model_tools._run_async", lambda coro: asyncio.run(coro))
-    monkeypatch.setattr("tools.send_message_tool._mirror_sent_message", lambda *_args: False)
+    monkeypatch.setattr("hermes_agent.tools.interrupt.is_interrupted", lambda: False)
+    monkeypatch.setattr("hermes_agent.model_tools._run_async", lambda coro: asyncio.run(coro))
+    monkeypatch.setattr("hermes_agent.tools.send_message_tool._mirror_sent_message", lambda *_args: False)
     monkeypatch.setattr(aiohttp, "ClientSession", lambda *_args, **_kwargs: BridgeSession())
     return SimpleNamespace(calls=calls, state=state)
 

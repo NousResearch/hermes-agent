@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from tools.environments.file_sync import FileSyncManager
+from hermes_agent.tools.environments.file_sync import FileSyncManager
 
 
 @pytest.mark.parametrize("bulk", [False, True])

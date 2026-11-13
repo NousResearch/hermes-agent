@@ -14,7 +14,7 @@ transcript settles). Acquiring pre-loads the configured local model into the
 exact singleton slot transcription reads, so the bill is paid while the user
 is still speaking instead of inside the transcription request's timeout.
 
-Mirrors :mod:`tools.tts_tool_lifecycle` with one deliberate divergence:
+Mirrors :mod:`hermes_agent.tools.tts_tool_lifecycle` with one deliberate divergence:
 releasing the last lease does NOT unload the model. The cached local model is
 shared with the gateway/CLI/Telegram surfaces in the same backend process —
 one surface's "mic closed" must not evict an engine another surface is about
@@ -30,7 +30,7 @@ import threading
 import time
 from typing import Any, Dict, List, Optional
 
-logger = logging.getLogger("tools.stt_lease")
+logger = logging.getLogger("hermes_agent.tools.stt_lease")
 
 _stt_lease_lock = threading.Lock()
 _stt_leases: set = set()
@@ -48,8 +48,8 @@ def warm_stt_provider(
     are ``action: "noop"``. The result carries ``provider`` / ``warmed`` /
     ``action`` / ``error``.
     """
-    from tools import transcription_tools
-    from tools.transcription_local import _normalize_local_model
+    from hermes_agent.tools import transcription_tools
+    from hermes_agent.tools.transcription_local import _normalize_local_model
 
     if stt_config is None:
         stt_config = transcription_tools._load_stt_config()

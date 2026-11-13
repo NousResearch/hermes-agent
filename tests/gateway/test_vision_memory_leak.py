@@ -47,7 +47,7 @@ class TestEnrichMessageWithVision:
             "A photograph of a dog."
         )
         fake_result = json.dumps({"success": True, "analysis": leaked})
-        with patch("tools.vision_tools.vision_analyze_tool", new=AsyncMock(return_value=fake_result)):
+        with patch("hermes_agent.tools.vision_tools.vision_analyze_tool", new=AsyncMock(return_value=fake_result)):
             out = _run(gateway_runner._enrich_message_with_vision("caption", ["/tmp/img.jpg"]))
         assert "photograph of a dog" in out
         assert "fenced leak" not in out

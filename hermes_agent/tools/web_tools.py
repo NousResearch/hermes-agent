@@ -13,16 +13,16 @@ import json
 import logging
 import os
 from typing import List, Any, Optional
-# Per-vendor client cache slots; plugins read/write these via tools.web_tools (tests reset them to None).
+# Per-vendor client cache slots; plugins read/write these via hermes_agent.tools.web_tools (tests reset them to None).
 _firecrawl_client = _firecrawl_client_config = _parallel_client = _async_parallel_client = _exa_client = None
 
 from plugins.web.firecrawl.provider import _is_tool_gateway_ready, check_firecrawl_api_key
-from tools.debug_helpers import DebugSession
-from tools.tool_backend_helpers import NOUS_MANAGED_PROVIDER, read_selection, selection_exists
-from tools.url_safety import async_is_safe_url
-from tools.web_tools_rescue import _managed_search_fallback, _rescue_eligible, _rescue_search
-from tools.web_tools_truncate import _effective_char_limit, _trim_results, _truncate_results, convert_base64_images_to_links
-from tools.web_tools_extract import (
+from hermes_agent.tools.debug_helpers import DebugSession
+from hermes_agent.tools.tool_backend_helpers import NOUS_MANAGED_PROVIDER, read_selection, selection_exists
+from hermes_agent.tools.url_safety import async_is_safe_url
+from hermes_agent.tools.web_tools_rescue import _managed_search_fallback, _rescue_eligible, _rescue_search
+from hermes_agent.tools.web_tools_truncate import _effective_char_limit, _trim_results, _truncate_results, convert_base64_images_to_links
+from hermes_agent.tools.web_tools_extract import (
     _extract_safe_urls, _merge_in_order, _no_provider_error, _resolve_extract_provider, _result_entry,
     _strict_selection_error, _validate_extract_urls,
 )
@@ -170,7 +170,7 @@ def _managed_web_search() -> bool:
     backend = _autodetect_backend()
     if backend == "firecrawl":
         return not (_has_env("FIRECRAWL_API_KEY") or _has_env("FIRECRAWL_API_URL")) and _is_tool_gateway_ready()
-    from tools.managed_tool_gateway import peek_nous_access_token, resolve_free_search_gateway
+    from hermes_agent.tools.managed_tool_gateway import peek_nous_access_token, resolve_free_search_gateway
     return backend is None and resolve_free_search_gateway(token_reader=peek_nous_access_token) is not None
 
 
@@ -203,7 +203,7 @@ def _ddgs_package_importable() -> bool:
 def _xai_available() -> bool:
     # Cheap probe only (env var OR auth.json OAuth): resolve_xai_http_credentials() may hit the network.
     try:
-        from tools.xai_http import has_xai_credentials
+        from hermes_agent.tools.xai_http import has_xai_credentials
         return has_xai_credentials()
     except Exception:
         return False
@@ -315,7 +315,7 @@ def web_search_tool(query: str, limit: int = 5) -> str:
     }
 
     try:
-        from tools.interrupt import is_interrupted
+        from hermes_agent.tools.interrupt import is_interrupted
         if is_interrupted():
             return tool_error("Interrupted", success=False)
         # Sync only — every provider's search() is sync.
@@ -348,11 +348,11 @@ def web_search_tool(query: str, limit: int = 5) -> str:
 
 
 def _memoized_search(provider, query: str, limit: int) -> dict:
-    """TTL memo + single-flight around the paid vendor call (tools/web_result_cache.py); sits after every
+    """TTL memo + single-flight around the paid vendor call (hermes_agent/tools/web_result_cache.py); sits after every
     safety/config check. The provider is asked for the BUCKETED count so near-identical limits share an entry;
     the caller's count is sliced out. Only successful, non-rescued responses are cached — caching a rescue
     would make the one-shot ring fallback sticky for a whole TTL."""
-    from tools.web_result_cache import bucket_limit, search_memo, slice_search_response
+    from hermes_agent.tools.web_result_cache import bucket_limit, search_memo, slice_search_response
 
     def _paid_search() -> tuple[dict, bool]:
         fetch_limit = bucket_limit(limit)
@@ -510,7 +510,7 @@ def check_web_api_key() -> bool:
 
 
 # ─── Registry ─────────────────────────────────────────────────────────────────
-from tools.registry import registry, tool_error
+from hermes_agent.tools.registry import registry, tool_error
 
 WEB_SEARCH_SCHEMA = {
     "name": "web_search",

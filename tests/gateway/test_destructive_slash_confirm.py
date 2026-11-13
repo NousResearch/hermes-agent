@@ -81,7 +81,7 @@ def _make_runner():
 async def test_gate_on_pending_confirm_registered(monkeypatch):
     """When the gate is on, a pending slash-confirm entry is registered for
     the session — the user's /approve reply will resolve it."""
-    from tools import slash_confirm as _slash_confirm_mod
+    from hermes_agent.tools import slash_confirm as _slash_confirm_mod
     runner = _make_runner()
     runner._read_user_config = lambda: {"approvals": {"destructive_slash_confirm": True}}
     session_key = build_session_key(_make_source())
@@ -108,7 +108,7 @@ async def test_gate_on_pending_confirm_registered(monkeypatch):
 async def test_resolve_always_persists_opt_out_and_runs_execute(monkeypatch):
     """Resolving with 'always' must (a) flip the config gate to False,
     (b) run execute, and (c) include a one-time opt-out note in the reply."""
-    from tools import slash_confirm as _slash_confirm_mod
+    from hermes_agent.tools import slash_confirm as _slash_confirm_mod
     runner = _make_runner()
     runner._read_user_config = lambda: {"approvals": {"destructive_slash_confirm": True}}
     session_key = build_session_key(_make_source())

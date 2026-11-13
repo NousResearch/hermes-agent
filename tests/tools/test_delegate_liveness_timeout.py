@@ -16,7 +16,7 @@ import threading
 import time
 from types import SimpleNamespace
 
-from tools import delegate_tool
+from hermes_agent.tools import delegate_tool
 
 _CAP_SECONDS = 0.4
 

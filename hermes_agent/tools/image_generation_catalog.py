@@ -1,4 +1,4 @@
-"""FAL image model catalog + upscaler constants for ``tools.image_generation_tool``.
+"""FAL image model catalog + upscaler constants for ``hermes_agent.tools.image_generation_tool``.
 
 Each entry translates the unified inputs (prompt + aspect_ratio) into the model's native
 payload. ``size_style``: ``"image_size_preset"`` (FAL preset enum), ``"aspect_ratio"`` (ratio

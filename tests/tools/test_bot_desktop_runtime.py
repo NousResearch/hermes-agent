@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from tools.bot_desktop import runtime, thumbnail
+from hermes_agent.tools.bot_desktop import runtime, thumbnail
 
 
 @pytest.mark.parametrize("pm", sorted(runtime.PACKAGES))
@@ -395,7 +395,7 @@ def test_allocation_lock_is_released_once_xvnc_claims_the_number(in_process_runt
 
 def _startable_host(monkeypatch, tmp_path, *, running=False):
     """A Linux host with the packages present, so only the check under test can block a start."""
-    from tools.bot_desktop import resources
+    from hermes_agent.tools.bot_desktop import resources
     monkeypatch.setattr(runtime, "is_supported_host", lambda: True)
     monkeypatch.setattr(runtime, "missing_binaries", list)
     monkeypatch.setattr(runtime, "state_dir", lambda: tmp_path / "bd")
@@ -457,13 +457,13 @@ def test_a_tight_but_sufficient_start_is_logged(tmp_path, monkeypatch, caplog):
     """Above the floor but below the derived threshold the start proceeds and says so. It is the only
     signal an operator gets that a screen came up with no room for the browser that is the point of it,
     so it has to actually fire rather than merely be computable."""
-    from tools.bot_desktop import resources
+    from hermes_agent.tools.bot_desktop import resources
 
     spawned = _startable_host(monkeypatch, tmp_path)
     monkeypatch.setattr(resources, "min_free_mb", lambda: 1536)  # threshold -> 2048
     monkeypatch.setattr(resources, "memory_info",
                         lambda: resources.MemoryInfo(available_mb=1800, limit_mb=2048))
-    with caplog.at_level("WARNING", logger="tools.bot_desktop.runtime"):
+    with caplog.at_level("WARNING", logger="hermes_agent.tools.bot_desktop.runtime"):
         runtime.start()
     assert spawned, "1800 MB clears the 1536 MB floor, so the screen still starts"
     logged = [r.getMessage() for r in caplog.records]
@@ -472,12 +472,12 @@ def test_a_tight_but_sufficient_start_is_logged(tmp_path, monkeypatch, caplog):
 
 def test_a_comfortable_start_is_not_logged(tmp_path, monkeypatch, caplog):
     """And it stays quiet with real headroom, or it would fire on every start and mean nothing."""
-    from tools.bot_desktop import resources
+    from hermes_agent.tools.bot_desktop import resources
 
     _startable_host(monkeypatch, tmp_path)
     monkeypatch.setattr(resources, "min_free_mb", lambda: 1536)
     monkeypatch.setattr(resources, "memory_info",
                         lambda: resources.MemoryInfo(available_mb=7210, limit_mb=8182))
-    with caplog.at_level("WARNING", logger="tools.bot_desktop.runtime"):
+    with caplog.at_level("WARNING", logger="hermes_agent.tools.bot_desktop.runtime"):
         runtime.start()
     assert not [m for m in (r.getMessage() for r in caplog.records) if "available" in m]

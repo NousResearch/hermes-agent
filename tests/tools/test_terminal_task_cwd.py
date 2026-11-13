@@ -3,7 +3,7 @@
 import json
 from types import SimpleNamespace
 
-from tools import terminal_tool
+from hermes_agent.tools import terminal_tool
 
 
 def _minimal_terminal_config(cwd="/default"):
@@ -134,7 +134,7 @@ def test_background_command_prefers_recorded_session_cwd_over_init_time_cwd(monk
             self.calls.append(kwargs)
             return SimpleNamespace(id="proc_test", pid=1234)
 
-    import tools.process_registry as process_registry_mod
+    import hermes_agent.tools.process_registry as process_registry_mod
 
     registry = FakeRegistry()
     task_id = "session-live-cwd-bg"
@@ -189,8 +189,8 @@ def test_host_local_background_command_bypasses_configured_backend(tmp_path, mon
             calls.append(("configured", kwargs))
             raise AssertionError("host-local command reached configured backend")
 
-    import tools.process_registry as process_registry_mod
-    from tools import self_repo_guard
+    import hermes_agent.tools.process_registry as process_registry_mod
+    from hermes_agent.tools import self_repo_guard
 
     task_id = "bot-delivery"
     monkeypatch.setattr(

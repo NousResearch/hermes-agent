@@ -153,7 +153,7 @@ def _sanitize_single_tool(tool: dict) -> dict:
     if not isinstance(top.get("required"), list):
         top["required"] = []
     # The recursive pass only handles array-form ``type: [X, "null"]``; collapse anyOf unions
-    # here, keeping ``nullable: true`` so ``tools.arg_coercion._schema_allows_null`` still coerces.
+    # here, keeping ``nullable: true`` so ``hermes_agent.tools.arg_coercion._schema_allows_null`` still coerces.
     top = strip_nullable_unions(top, keep_nullable_hint=True)
     top = _strip_top_level_combinators(top, path=name)
     fn["parameters"] = _strip_ref_siblings(top)

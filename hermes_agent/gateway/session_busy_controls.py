@@ -133,7 +133,7 @@ async def yolo_config(connection, ref, params, write):
     """Session-scoped /yolo (TUI slash + Shift+Tab, Desktop toggle): this session's approval bypass,
     never HERMES_YOLO_MODE or approvals.mode. A ``--yolo`` launch is seeded first, so revoking it
     here is not re-enabled by the next turn's launch seeding. The write goes through the shared
-    ``tools.approval_yolo.toggle_session_yolo`` contract on the route's persisted copy
+    ``hermes_agent.tools.approval_yolo.toggle_session_yolo`` contract on the route's persisted copy
     (``SessionEntry.yolo``, restored by ``restore_gateway_yolo``), like the messaging
     ``/yolo``: persisted before the live flip, so an OFF here is not revived by the next turn."""
     value = params.get('value')
@@ -141,8 +141,8 @@ async def yolo_config(connection, ref, params, write):
         raise RuntimeStoreError('invalid_params')
     authorize(connection, ref, params, 'session:control' if write else 'session:read')
     from hermes_agent.gateway.session_policy import policy_for_source
-    from tools.approval import is_session_yolo_enabled
-    from tools.approval_yolo import restore_gateway_yolo, toggle_session_yolo
+    from hermes_agent.tools.approval import is_session_yolo_enabled
+    from hermes_agent.tools.approval_yolo import restore_gateway_yolo, toggle_session_yolo
     live = connection.authority.sessions[ref.session_id]
     runner = connection.authority.runner
     policy = policy_for_source(runner, live.source)

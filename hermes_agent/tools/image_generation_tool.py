@@ -23,23 +23,23 @@ def _load_fal_client() -> Any:
     """Lazily import fal_client into the module global (idempotent; keeps a test-installed mock)."""
     global fal_client
     if fal_client is None:
-        from tools.fal_common import import_fal_client
+        from hermes_agent.tools.fal_common import import_fal_client
         fal_client = import_fal_client()
     return fal_client
 
 
-from tools.debug_helpers import DebugSession
-from tools.fal_common import (
+from hermes_agent.tools.debug_helpers import DebugSession
+from hermes_agent.tools.fal_common import (
     _ManagedFalSyncClient, _extract_http_status, _managed_fal_billing_error,
     _normalize_fal_queue_url_format, submit_managed_fal_with_rate_limit_retry, wait_fal_queue_result,
 )
-from tools.image_generation_catalog import (
+from hermes_agent.tools.image_generation_catalog import (
     DEFAULT_ASPECT_RATIO, DEFAULT_MODEL, FAL_MODELS, UPSCALER_CREATIVITY, UPSCALER_DEFAULT_PROMPT,
     UPSCALER_FACTOR, UPSCALER_GUIDANCE_SCALE, UPSCALER_MODEL, UPSCALER_NEGATIVE_PROMPT,
     UPSCALER_NUM_INFERENCE_STEPS, UPSCALER_RESEMBLANCE, UPSCALER_SAFETY_CHECKER, VALID_ASPECT_RATIOS,
 )
-from tools.managed_tool_gateway import resolve_managed_tool_gateway
-from tools.tool_backend_helpers import (
+from hermes_agent.tools.managed_tool_gateway import resolve_managed_tool_gateway
+from hermes_agent.tools.tool_backend_helpers import (
     NOUS_MANAGED_PROVIDER, fal_key_is_configured, managed_nous_tools_enabled,
     nous_tool_gateway_unavailable_message, read_selection, selection_error)
 
@@ -99,7 +99,7 @@ def _wait_fal_result(handler, *, poll_seconds: float = 0.5):
     The get runs on a daemon worker; the interrupt bit is polled between join slices and on
     interrupt the worker is abandoned (remote job keeps running).
     """
-    from tools.interrupt import is_interrupted
+    from hermes_agent.tools.interrupt import is_interrupted
     result_box: list = []
     error_box: list = []
     def _get():
@@ -298,7 +298,7 @@ def _looks_like_absolute_file_path(value: str) -> bool:
 
 def _active_terminal_env(task_id: str | None):
     try:
-        from tools.terminal_tool_lifecycle import get_active_env
+        from hermes_agent.tools.terminal_tool_lifecycle import get_active_env
         return get_active_env(task_id or "default")
     except Exception as exc:
         logger.debug("Could not inspect active terminal environment: %s", exc)
@@ -321,7 +321,7 @@ def _agent_cache_base_for_env(env: Any) -> str | None:
             return f"{str(remote_home).rstrip('/')}/.hermes"
         if env.__class__.__name__ in _CONTAINER_HOME_ENVS:
             return "/root/.hermes"
-    from tools.terminal_scope import terminal_env
+    from hermes_agent.tools.terminal_scope import terminal_env
     backend = (terminal_env("TERMINAL_ENV") or "local").strip().lower()
     return _CACHE_BASE_BY_BACKEND.get(backend)
 
@@ -343,7 +343,7 @@ def _postprocess_image_generate_result(raw: str, task_id: str | None = None) -> 
     if not cache_base:
         return raw
     try:
-        from tools.credential_files import map_cache_path_to_container
+        from hermes_agent.tools.credential_files import map_cache_path_to_container
         agent_path = map_cache_path_to_container(image, container_base=cache_base)
     except Exception as exc:
         logger.debug("Could not translate image cache path for backend: %s", exc)
@@ -388,8 +388,8 @@ _FAL_INLINE_BUDGET = 3_500_000
 def _inline_fal_sources(sources: list) -> list:
     """FAL only fetches URLs, so local paths become ``data:`` URLs through the guarded resolver
     (credential-read guard, image sniff) on every terminal backend; then fit the gateway budget."""
-    from model_tools import _run_async
-    from tools.image_source import ImageResolutionError, resolve_local_source_to_data_url
+    from hermes_agent.model_tools import _run_async
+    from hermes_agent.tools.image_source import ImageResolutionError, resolve_local_source_to_data_url
     try:
         urls = [_run_async(resolve_local_source_to_data_url(s, None)) for s in sources]
     except ImageResolutionError as exc:
@@ -599,7 +599,7 @@ def check_image_generation_requirements() -> bool:
 
 
 # --- Registry ---
-from tools.registry import registry, tool_error
+from hermes_agent.tools.registry import registry, tool_error
 
 IMAGE_GENERATE_SCHEMA = {
     "name": "image_generate",
@@ -740,8 +740,8 @@ def _normalize_krea_model(model_id: Optional[str]) -> Optional[str]:
 
 def _managed_model_plugin() -> Optional[tuple]:
     """``(plugin_name, model_id)`` when the stored selection routes to the Krea or Portal gateway
-    (rule: :func:`tools.image_generation_managed.managed_route`), else ``None`` for the FAL path."""
-    from tools.image_generation_managed import KREA, PORTAL, managed_route
+    (rule: :func:`hermes_agent.tools.image_generation_managed.managed_route`), else ``None`` for the FAL path."""
+    from hermes_agent.tools.image_generation_managed import KREA, PORTAL, managed_route
 
     model_id = _read_configured_image_model()
     return {KREA: ("krea", model_id), PORTAL: ("nous", model_id)}.get(
@@ -791,20 +791,20 @@ def _maybe_route_managed_model(
 def _confine_source_images(image_url, reference_image_urls, task_id, *, permitted: tuple = ("image",)):
     """Resolve path-like sources to ``data:`` URLs under a non-local terminal backend.
 
-    Routes through ``tools.image_source`` (in-sandbox exec-read, media-cache host reads,
+    Routes through ``hermes_agent.tools.image_source`` (in-sandbox exec-read, media-cache host reads,
     credential guard) so generation obeys the same confinement as vision. URLs/data: pass
     through; on the local backend only a path that misses by an invisible character is rewritten to
     its on-disk spelling. Returns ``(image_url, reference_image_urls, error_json_or_None)``.
     """
-    from tools.image_source import _is_local_terminal_backend, local_source_spelling
+    from hermes_agent.tools.image_source import _is_local_terminal_backend, local_source_spelling
     if _is_local_terminal_backend():  # never in a hosted scope, whose sources are its sandbox's
         # Providers open local paths themselves: hand them the on-disk spelling of a name the
         # model retyped with a plain space (macOS screenshot names carry U+202F before AM/PM).
         if isinstance(reference_image_urls, (list, tuple)):
             reference_image_urls = [local_source_spelling(r) for r in reference_image_urls]
         return local_source_spelling(image_url), reference_image_urls, None
-    from model_tools import _run_async
-    from tools.image_source import ImageResolutionError, resolve_local_source_to_data_url
+    from hermes_agent.model_tools import _run_async
+    from hermes_agent.tools.image_source import ImageResolutionError, resolve_local_source_to_data_url
 
     def resolve(ref):
         return _run_async(resolve_local_source_to_data_url(ref, task_id, permitted=permitted))
@@ -877,7 +877,7 @@ def _fall_back_to_fal(raw: str, prompt: str, aspect_ratio: str, sources: dict[st
 
 # --- Dynamic schema — reflect the active backend's image-to-image capability ---
 # Advertising edit capability up front saves a wasted turn. Memoized by config.yaml mtime in
-# model_tools.get_tool_definitions(), so it rebuilds on switch.
+# hermes_agent.model_tools.get_tool_definitions(), so it rebuilds on switch.
 _NO_CAPABILITIES = {"modalities": ["text"], "max_reference_images": 0, "supports_upscale": False}
 
 

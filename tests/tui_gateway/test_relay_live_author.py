@@ -11,7 +11,7 @@ import types
 
 import pytest
 
-from tools.bot_relay import DeliveryAuthor
+from hermes_agent.tools.bot_relay import DeliveryAuthor
 from hermes_agent.tui_gateway import server as srv
 
 AUTHOR = {"id": "bot:coder", "name": "coder", "is_bot": True}
@@ -58,7 +58,7 @@ def turn_env(monkeypatch, tmp_path):
 
 
 def test_live_relay_forwards_sender_to_canonical_authority(tmp_path, monkeypatch):
-    from tools import bot_live_delivery
+    from hermes_agent.tools import bot_live_delivery
 
     home = tmp_path / ".hermes"
     (home / "profiles" / "ops").mkdir(parents=True)

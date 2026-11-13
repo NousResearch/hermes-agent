@@ -27,15 +27,15 @@ def test_cli_completion_drain_uses_visible_session_identity(monkeypatch):
     completed = []
 
     monkeypatch.setattr(
-        "tools.process_registry.process_registry",
+        "hermes_agent.tools.process_registry.process_registry",
         FakeRegistry(),
     )
     monkeypatch.setattr(
-        "tools.async_delegation.claim_event_delivery",
+        "hermes_agent.tools.async_delegation.claim_event_delivery",
         lambda evt, consumer: claimed.append((evt, consumer)) or "claim-token",
     )
     monkeypatch.setattr(
-        "tools.async_delegation.complete_event_delivery",
+        "hermes_agent.tools.async_delegation.complete_event_delivery",
         lambda evt, token: completed.append((evt, token)),
     )
 

@@ -109,7 +109,7 @@ def secret_cli_env() -> dict:
     Intentionally receives tokens — no scrub, no HOME rewrite (both CLIs store state under the
     real user home).
     """
-    from tools.environments.local import build_subprocess_env
+    from hermes_agent.tools.environments.local import build_subprocess_env
 
     env = build_subprocess_env(scrub_secrets=False, inherit_profile_home=False)
     env.setdefault("NO_COLOR", "1")

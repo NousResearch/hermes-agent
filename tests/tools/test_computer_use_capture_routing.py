@@ -68,7 +68,7 @@ def _make_capture(
     width: int = 1280,
     height: int = 800,
 ):
-    from tools.computer_use.backend import CaptureResult, UIElement
+    from hermes_agent.tools.computer_use.backend import CaptureResult, UIElement
 
     elements = list(elements or [
         UIElement(index=0, role="AXButton", label="Sign in",
@@ -102,7 +102,7 @@ class TestCaptureResponseDefaultPath:
     """When routing helper says 'native', the existing multimodal envelope wins."""
 
     def test_som_capture_returns_multimodal_envelope_when_native(self):
-        from tools.computer_use import tool as cu_tool
+        from hermes_agent.tools.computer_use import tool as cu_tool
 
         cap = _make_capture(png_b64=_PNG_B64, mode="som")
         with patch.object(cu_tool, "_should_route_through_aux_vision",
@@ -131,7 +131,7 @@ class TestCaptureResponseRoutedToAuxVision:
     def test_som_capture_returns_text_with_vision_analysis(
         self, tmp_cache_dir,
     ):
-        from tools.computer_use import tool as cu_tool
+        from hermes_agent.tools.computer_use import tool as cu_tool
 
         cap = _make_capture(mode="som")
 
@@ -150,8 +150,8 @@ class TestCaptureResponseRoutedToAuxVision:
 
         with patch.object(cu_tool, "_should_route_through_aux_vision",
                           return_value=True), \
-             patch("model_tools._run_async", side_effect=_fake_run_async), \
-             patch("tools.vision_tools.vision_analyze_tool",
+             patch("hermes_agent.model_tools._run_async", side_effect=_fake_run_async), \
+             patch("hermes_agent.tools.vision_tools.vision_analyze_tool",
                    new_callable=lambda: fake_vat):
             resp = cu_tool._capture_response(cap)
 
@@ -183,7 +183,7 @@ class TestCaptureResponseRoutedToAuxVision:
 
 
     def test_invalid_aux_response_degrades_to_text_payload(self, tmp_cache_dir):
-        from tools.computer_use import tool as cu_tool
+        from hermes_agent.tools.computer_use import tool as cu_tool
 
         cap = _make_capture(mode="som")
 
@@ -194,8 +194,8 @@ class TestCaptureResponseRoutedToAuxVision:
 
         with patch.object(cu_tool, "_should_route_through_aux_vision",
                           return_value=True), \
-             patch("model_tools._run_async", side_effect=_fake_run_async), \
-             patch("tools.vision_tools.vision_analyze_tool",
+             patch("hermes_agent.model_tools._run_async", side_effect=_fake_run_async), \
+             patch("hermes_agent.tools.vision_tools.vision_analyze_tool",
                    new_callable=lambda: fake_vat):
             resp = cu_tool._capture_response(cap)
 
@@ -212,7 +212,7 @@ class TestRoutingDecisionWiring:
     """Verify _should_route_through_aux_vision wires the right config + helper."""
 
     def test_explicit_aux_vision_in_config_routes_to_aux(self):
-        from tools.computer_use import tool as cu_tool
+        from hermes_agent.tools.computer_use import tool as cu_tool
 
         cfg = {
             "model": {"default": "tencent/hy3-preview", "provider": "openrouter"},
@@ -232,27 +232,27 @@ class TestRoutingDecisionWiring:
 
 
     def test_helper_decision_exception_is_swallowed(self):
-        from tools.computer_use import tool as cu_tool
+        from hermes_agent.tools.computer_use import tool as cu_tool
 
         with patch("agent.auxiliary_client._read_main_provider",
                    return_value="openrouter"), \
              patch("agent.auxiliary_client._read_main_model",
                    return_value="x"), \
              patch("hermes_cli.config.load_config_readonly", return_value={}), \
-             patch("tools.vision_tools._native_tool_result_images",
+             patch("hermes_agent.tools.vision_tools._native_tool_result_images",
                    side_effect=ValueError("policy bug")):
             assert cu_tool._should_route_through_aux_vision() is False
 
 
 def _route(provider, model, cfg, *, catalog, provider_takes_media, veto=False):
     """The capture route through the real shared gate; only the capability lookups underneath are patched."""
-    from tools.computer_use import tool as cu_tool
+    from hermes_agent.tools.computer_use import tool as cu_tool
     with patch("agent.auxiliary_client._read_main_provider", return_value=provider), \
          patch("agent.auxiliary_client._read_main_model", return_value=model), \
          patch("hermes_cli.config.load_config_readonly", return_value=cfg), \
          patch("agent.image_routing._lookup_supports_vision", return_value=catalog), \
-         patch("tools.vision_tools._supports_media_in_tool_results", return_value=provider_takes_media), \
-         patch("tools.vision_tools._profile_rejects_tool_media", return_value=veto):
+         patch("hermes_agent.tools.vision_tools._supports_media_in_tool_results", return_value=provider_takes_media), \
+         patch("hermes_agent.tools.vision_tools._profile_rejects_tool_media", return_value=veto):
         return cu_tool._should_route_through_aux_vision()
 
 

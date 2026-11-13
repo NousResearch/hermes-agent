@@ -29,15 +29,15 @@ from datetime import datetime, timezone, UTC
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, REPO_ROOT)
 
-# Ensure HERMES_HOME is set (needed by tools/skills_hub*.py imports)
+# Ensure HERMES_HOME is set (needed by hermes_agent/tools/skills_hub*.py imports)
 os.environ.setdefault("HERMES_HOME", os.path.join(os.path.expanduser("~"), ".hermes"))
 
-from tools.skills_hub_clawhub import ClawHubSource
-from tools.skills_hub_github import GitHubAuth, GitHubSource
-from tools.skills_hub_models import SkillMeta
-from tools.skills_hub_official import OptionalSkillSource
-from tools.skills_hub_skillssh import SkillsShSource
-from tools.skills_hub_sources import BrowseShSource, LobeHubSource, WellKnownSkillSource
+from hermes_agent.tools.skills_hub_clawhub import ClawHubSource
+from hermes_agent.tools.skills_hub_github import GitHubAuth, GitHubSource
+from hermes_agent.tools.skills_hub_models import SkillMeta
+from hermes_agent.tools.skills_hub_official import OptionalSkillSource
+from hermes_agent.tools.skills_hub_skillssh import SkillsShSource
+from hermes_agent.tools.skills_hub_sources import BrowseShSource, LobeHubSource, WellKnownSkillSource
 import httpx
 
 OUTPUT_PATH = os.path.join(REPO_ROOT, "website", "static", "api", "skills-index.json")

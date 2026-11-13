@@ -202,8 +202,8 @@ def _inject_context_from(job: dict, prompt: str) -> tuple[str, bool]:
 
 def _load_cron_skill_parts(job: dict, skill_names: list[str]) -> list[str]:
     """Load each named skill/bundle into prompt parts; unknown ones are skipped with a notice."""
-    from tools.skills_tool import skill_view
-    from tools.skill_usage import bump_use
+    from hermes_agent.tools.skills_tool import skill_view
+    from hermes_agent.tools.skill_usage import bump_use
     from agent.skill_bundles import build_bundle_invocation_message, resolve_bundle_command_key
     from agent.skill_commands import _inject_skill_config, ambiguous_skill_label
     from agent.skill_utils import normalize_skill_lookup_name
@@ -399,8 +399,8 @@ def _scan_assembled_cron_prompt(
     Since cron runs non-interactively (auto-approves tool calls), a malicious skill carrying an injection
     payload bypassed every gate. See #3968.
     """
-    from tools.cronjob_tools import _scan_cron_prompt
-    from tools.cronjob_prompt_scan import _scan_cron_skill_assembled
+    from hermes_agent.tools.cronjob_tools import _scan_cron_prompt
+    from hermes_agent.tools.cronjob_prompt_scan import _scan_cron_skill_assembled
     if has_skills or has_injected_data:
         # The cleaned (sanitized) prompt is what actually runs.
         assembled, scan_error = _scan_cron_skill_assembled(assembled)
@@ -422,7 +422,7 @@ def _guard_job_credential_exfil(job: dict) -> None:
     store, reach provider resolution unchecked. Fallback providers come from operator config and
     are validated by the caller, not here."""
     try:
-        from tools.cronjob_tools import _validate_cron_base_url
+        from hermes_agent.tools.cronjob_tools import _validate_cron_base_url
         err = _validate_cron_base_url(job.get("provider"), job.get("base_url"))
     except Exception as exc:
         # Fail CLOSED on validator/import errors — but only for jobs WITH a base_url override;

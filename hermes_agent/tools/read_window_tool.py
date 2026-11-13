@@ -8,8 +8,8 @@ main process (native window enumeration) -> ``window.read.respond``.
 
 from typing import Callable, Optional
 
-from tools.read_terminal_tool import read_pane
-from tools.registry import registry
+from hermes_agent.tools.read_terminal_tool import read_pane
+from hermes_agent.tools.registry import registry
 
 
 def read_window_below_tool(callback: Optional[Callable] = None) -> str:

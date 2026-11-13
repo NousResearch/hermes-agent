@@ -108,7 +108,7 @@ def blueprint_spec_for_installed(skill_name: str) -> Optional[BlueprintSpec]:
     """Find ``<skill_name>/SKILL.md`` anywhere in the skills tree and parse its
     blueprint block; None when not found or not a blueprint."""
     try:
-        from tools.skills_hub import SKILLS_DIR
+        from hermes_agent.tools.skills_hub import SKILLS_DIR
     except Exception:  # pragma: no cover - import guard
         return None
     # Skills live at skills/<category>/<name>/SKILL.md or skills/<name>/SKILL.md.

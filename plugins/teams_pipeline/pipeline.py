@@ -28,7 +28,7 @@ from plugins.teams_pipeline.meetings import (
 from plugins.teams_pipeline.models import (
     MeetingArtifact, TeamsMeetingPipelineJob, TeamsMeetingRef, TeamsMeetingSummaryPayload)
 from plugins.teams_pipeline.store import TeamsPipelineStore
-from tools.transcription_tools import transcribe_audio
+from hermes_agent.tools.transcription_tools import transcribe_audio
 
 logger = logging.getLogger(__name__)
 

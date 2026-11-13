@@ -38,7 +38,7 @@ def _expand_tilde(path: str, task_id: str = "default") -> str:
     """
     if not path or "~" not in path:
         return path
-    from tools.environments.sandbox_scope import hosted_scope
+    from hermes_agent.tools.environments.sandbox_scope import hosted_scope
     if hosted_scope() is not None:
         return _expand_sandbox_tilde(path, task_id)
     try:
@@ -60,7 +60,7 @@ def _expand_sandbox_tilde(path: str, task_id: str = "default") -> str:
     if path != "~" and not path.startswith("~/"):
         raise ValueError(f"Cannot resolve {path!r} in the sandbox: '~user' paths are not supported. "
                          "Pass an absolute path.")
-    from tools.terminal_tool_config import plugin_sandbox_home
+    from hermes_agent.tools.terminal_tool_config import plugin_sandbox_home
     env = _live_or_started_env(task_id)  # the caller's sandbox, as its own call would bring it up
     home = plugin_sandbox_home(env) if env is not None else None
     if home is None:
@@ -71,17 +71,17 @@ def _expand_sandbox_tilde(path: str, task_id: str = "default") -> str:
 def _hosted_tilde(path: str, task_id: str = "default") -> str:
     """*path* with a hosted ``~`` expanded against the sandbox's home, for a tool that sends the path as given;
     unchanged outside a hosted scope."""
-    from tools.environments.sandbox_scope import hosted_scope
+    from hermes_agent.tools.environments.sandbox_scope import hosted_scope
     return _expand_sandbox_tilde(path, task_id) if path and hosted_scope() is not None else path
 
 
 def _terminal_env_type_for_task(task_id: str = "default") -> str:
     """Best-effort terminal backend type for path-resolution decisions."""
     try:
-        from tools.terminal_tool import (
+        from hermes_agent.tools.terminal_tool import (
             _active_environments, _env_lock, _get_env_config, _resolve_container_task_id)
 
-        from tools.environments.sandbox_scope import hosted_scope
+        from hermes_agent.tools.environments.sandbox_scope import hosted_scope
         try:
             container_key = _resolve_container_task_id(task_id)
         except Exception:
@@ -102,12 +102,12 @@ def _terminal_env_type_for_task(task_id: str = "default") -> str:
 
 
 def _uses_container_paths(task_id: str = "default") -> bool:
-    from tools.environments.sandbox_scope import hosted_scope
+    from hermes_agent.tools.environments.sandbox_scope import hosted_scope
     if hosted_scope() is not None:
         return True  # a hosted agent's paths name its sandbox: never anchored or dereferenced on this host
     env_type = _terminal_env_type_for_task(task_id)
     try:
-        from tools.terminal_tool import _is_container_backend
+        from hermes_agent.tools.terminal_tool import _is_container_backend
 
         return _is_container_backend(env_type)
     except Exception:
@@ -134,7 +134,7 @@ def _sentinel_free_abs_cwd(raw: str | None, task_id: str = "default") -> str | N
     try:
         expanded = _expand_tilde(raw, task_id)
     except ValueError:
-        from tools.environments.sandbox_scope import hosted_scope
+        from hermes_agent.tools.environments.sandbox_scope import hosted_scope
         if hosted_scope() is None:
             raise
         return None  # a hosted ``~`` the sandbox gives no meaning to anchors nothing
@@ -148,7 +148,7 @@ def _configured_terminal_cwd(task_id: str = "default") -> str | None:
     commands start in, never the raw value the config may have discarded."""
     # See #68559.
     from agent.runtime_cwd import scope_terminal_cwd
-    from tools.environments.sandbox_scope import hosted_scope
+    from hermes_agent.tools.environments.sandbox_scope import hosted_scope
 
     if hosted_scope() is not None:
         return _container_default_cwd(task_id)
@@ -163,7 +163,7 @@ def _registered_task_cwd_override(task_id: str = "default") -> str | None:
     env, but the cwd value stays keyed by the raw session id.
     """
     try:
-        from tools.terminal_tool import resolve_task_overrides
+        from hermes_agent.tools.terminal_tool import resolve_task_overrides
 
         overrides = resolve_task_overrides(task_id)
     except Exception:
@@ -180,12 +180,12 @@ def _authoritative_workspace_root(task_id: str = "default") -> str | None:
     (TUI/Desktop/ACP); (3) a sentinel-free absolute ``$TERMINAL_CWD``.
     """
     try:
-        from tools.terminal_tool import get_session_cwd
+        from hermes_agent.tools.terminal_tool import get_session_cwd
 
         recorded = get_session_cwd(task_id)
     except Exception:
         recorded = None
-    from tools.environments.sandbox_scope import hosted_scope
+    from hermes_agent.tools.environments.sandbox_scope import hosted_scope
     if recorded and str(recorded).strip().startswith("~") and hosted_scope() is not None:
         recorded = _sentinel_free_abs_cwd(recorded, task_id)  # the sandbox's home, or no anchor
     return recorded or _registered_task_cwd_override(task_id) or _configured_terminal_cwd(task_id)
@@ -195,7 +195,7 @@ def _host_text(text: str, container_paths: bool, task_id: str = "default") -> st
     """Expand ``~``; on host backends also translate Git Bash ``/c/Users/...`` drive
     paths before Path sees them. Container/WSL Linux paths are never rewritten."""
     if not container_paths:
-        from tools.environments.local import _msys_to_windows_path
+        from hermes_agent.tools.environments.local import _msys_to_windows_path
 
         text = _msys_to_windows_path(text)
     return _expand_tilde(text, task_id)
@@ -229,8 +229,8 @@ def _ssh_remote_anchor(task_id: str) -> str:
     host path) is skipped. ``coerce_ssh_remote_cwd`` maps the host subprocess home back to ``~``.
     """
     from agent.runtime_cwd import scope_terminal_cwd
-    from tools.terminal_tool import get_session_cwd, resolve_task_overrides
-    from tools.terminal_tool_config import coerce_ssh_remote_cwd
+    from hermes_agent.tools.terminal_tool import get_session_cwd, resolve_task_overrides
+    from hermes_agent.tools.terminal_tool_config import coerce_ssh_remote_cwd
 
     for raw in (get_session_cwd(task_id), resolve_task_overrides(task_id).get("cwd"), scope_terminal_cwd()):
         text = str(raw or "").strip()
@@ -243,9 +243,9 @@ def _live_or_started_env(task_id: str):
     """The task's live terminal environment, else one brought up through the file tools' own creator. A failed
     bring-up is remembered briefly, so one tool call's several path resolutions don't each wait out the
     backend's connect timeout; the tool's own backend call reports the error."""
-    from tools.file_tools import _get_file_ops
-    from tools.terminal_tool import _resolve_container_task_id
-    from tools.terminal_tool_lifecycle import get_active_env
+    from hermes_agent.tools.file_tools import _get_file_ops
+    from hermes_agent.tools.terminal_tool import _resolve_container_task_id
+    from hermes_agent.tools.terminal_tool_lifecycle import get_active_env
 
     key = _resolve_container_task_id(task_id)
     env = get_active_env(task_id)
@@ -321,7 +321,7 @@ def _resolve_base_dir(
             return _resolve_ssh_path(".", task_id)
         container_paths = _uses_container_paths(task_id)
     root = _authoritative_workspace_root(task_id) or (_container_default_cwd(task_id) if container_paths else None)
-    from tools.environments.sandbox_scope import hosted_scope
+    from hermes_agent.tools.environments.sandbox_scope import hosted_scope
     if hosted_scope() is not None:
         # The process cwd is this host's directory, never the sandbox's: with no absolute in-sandbox anchor a
         # relative path has nothing to resolve against.
@@ -340,7 +340,7 @@ def _container_default_cwd(task_id: str = "default") -> str | None:
     cwd is a host directory (``/opt/data`` in the Docker image) the sandbox does not have. The live env's cwd is NOT
     used: a shared env's cwd is wherever ANOTHER session last ``cd``'d."""
     try:
-        from tools.terminal_tool import _get_env_config
+        from hermes_agent.tools.terminal_tool import _get_env_config
 
         cwd = _get_env_config().get("cwd")
         if cwd == "~":
@@ -348,7 +348,7 @@ def _container_default_cwd(task_id: str = "default") -> str | None:
             # call that follows would, and use the home THAT environment resolved. When it can't connect,
             # relative paths fall back to the process cwd below; the file operation itself then fails on
             # the same connection, so nothing is read or written on the host.
-            from tools.terminal_tool_config import plugin_sandbox_home
+            from hermes_agent.tools.terminal_tool_config import plugin_sandbox_home
 
             env = _live_or_started_env(task_id)
             cwd = plugin_sandbox_home(env) if env is not None else None

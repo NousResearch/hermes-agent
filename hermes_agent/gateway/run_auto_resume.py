@@ -1,6 +1,6 @@
 """The gateway's ``delegation.auto_resume`` scheduler: one watcher per gateway process, a tick per served profile.
 
-The policy (what is due, supersession, the attempt cap) lives in ``tools/delegate_tool_auto_resume.py``; this module
+The policy (what is due, supersession, the attempt cap) lives in ``hermes_agent/tools/delegate_tool_auto_resume.py``; this module
 binds each profile's scope (``_profile_runtime_scope``, never ``os.environ``) and performs the continue the way a
 parent turn would: a stand-in parent agent built on the parent conversation's own next-turn route with its session id,
 the parent conversation's routing bound in a fresh context, then ``delegate_task(action='continue')``'s own entry point. The
@@ -78,8 +78,8 @@ def _continue_as_parent(runner: Any, db: Any, record: dict[str, Any], unit: dict
     from hermes_agent.gateway.session_authorities import active_authority
     from hermes_agent.gateway.session_local_recovery import restore_completion_route
     from hermes_agent.gateway.session_policy import policy_for_source, policy_scope
-    from tools.delegate_tool_auto_resume import STAND_IN_FAILED
-    from tools.delegate_tool_continue import continue_subagent
+    from hermes_agent.tools.delegate_tool_auto_resume import STAND_IN_FAILED
+    from hermes_agent.tools.delegate_tool_continue import continue_subagent
     try:
         # As a completion's delivery does: boot leaves an automatically ended local parent unrestored, and without
         # its frozen policy the stand-in would run on the launch route.
@@ -131,15 +131,15 @@ def _profile_homes(runner: Any) -> list[tuple[str, Path]]:
 def _capacity() -> int:
     """The bound profile's ``delegation.max_concurrent_children`` minus the units THIS profile has running."""
     from hermes_constants import get_hermes_home
-    from tools.async_delegation import active_count
-    from tools.delegate_tool_config import _get_max_concurrent_children
+    from hermes_agent.tools.async_delegation import active_count
+    from hermes_agent.tools.delegate_tool_config import _get_max_concurrent_children
     return _get_max_concurrent_children() - active_count(home=get_hermes_home())
 
 
 def tick_profiles(runner: Any) -> list[str]:
     """One scheduler pass over every served profile, each under its own scope (blocking: run off the loop)."""
     from hermes_agent.gateway.run import _profile_runtime_scope
-    from tools.delegate_tool_auto_resume import tick
+    from hermes_agent.tools.delegate_tool_auto_resume import tick
     resumed: list[str] = []
     for name, home in _profile_homes(runner):
         if not (home / "state.db").is_file():

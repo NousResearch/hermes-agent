@@ -27,9 +27,9 @@ def probe_with_rollback(
     ``on_commit`` runs right after the configuration is saved: a card install persists its setup
     values there, so they land with the authorization and never before it."""
     from hermes_cli.mcp_config import _oauth_tokens_present, _probe_single_server
-    from tools.mcp_dashboard_oauth import exception_message
-    from tools.mcp_oauth import HermesTokenStorage, login_connect_timeout
-    from tools.mcp_oauth_manager import get_manager
+    from hermes_agent.tools.mcp_dashboard_oauth import exception_message
+    from hermes_agent.tools.mcp_oauth import HermesTokenStorage, login_connect_timeout
+    from hermes_agent.tools.mcp_oauth_manager import get_manager
     manager = get_manager()
     storage = HermesTokenStorage(server_name)
     # An attempt that replaced a still-running one starts from that one's half-written files, so
@@ -79,7 +79,7 @@ def probe_with_rollback(
     if discovery_error:
         return
     if reconnect_live:
-        from tools.mcp_tool_loop import reconnect_mcp_server
+        from hermes_agent.tools.mcp_tool_loop import reconnect_mcp_server
         reconnect_mcp_server(server_name)
 
 
@@ -129,7 +129,7 @@ def _reuse_saved_authorization(
     must not delete the working grant first. Any failure here falls through to the interactive
     flow, which replaces the grant."""
     from hermes_cli.mcp_config import _oauth_tokens_present, _probe_single_server
-    from tools.mcp_oauth import suppress_interactive_oauth
+    from hermes_agent.tools.mcp_oauth import suppress_interactive_oauth
 
     if not _oauth_tokens_present(server_name):
         return False
@@ -162,8 +162,8 @@ def run_worker(
     try:
         from agent.secret_scope import (
             build_profile_secret_scope, reset_secret_scope, set_secret_scope)
-        from tools.mcp_dashboard_oauth import dashboard_oauth_flow
-        from tools.mcp_oauth import force_interactive_oauth
+        from hermes_agent.tools.mcp_dashboard_oauth import dashboard_oauth_flow
+        from hermes_agent.tools.mcp_oauth import force_interactive_oauth
         home_token = secret_token = None
         try:
             home_token = set_hermes_home_override(hermes_home)
@@ -181,10 +181,10 @@ def run_worker(
                 reset_hermes_home_override(home_token)
     except Exception as exc:
         from hermes_cli.mcp_config import probe_failure_class
-        from tools.mcp_dashboard_oauth import exception_message
+        from hermes_agent.tools.mcp_dashboard_oauth import exception_message
         msg = exception_message(exc)
         with suppress(Exception):
-            from tools.mcp_oauth import humanize_oauth_registration_error
+            from hermes_agent.tools.mcp_oauth import humanize_oauth_registration_error
             msg = humanize_oauth_registration_error(
                 server_name, exc, server_url=cfg.get("url") if isinstance(cfg, dict) else None
             ) or msg
@@ -218,7 +218,7 @@ def _validate_client_redirect_uri(uri: str) -> str:
 
 def _start_loopback_receiver(flow) -> http.server.HTTPServer:
     """Bind the single backend-hosted one-shot receiver and feed its callback into ``flow``."""
-    from tools.mcp_oauth import _parse_redirect_query
+    from hermes_agent.tools.mcp_oauth import _parse_redirect_query
 
     class _Handler(http.server.BaseHTTPRequestHandler):
         def do_GET(self):
@@ -277,7 +277,7 @@ def choose_callback_receiver(flow, cfg: dict, client_redirect_uri: Optional[str]
 def _ssh_detail(redirect_uri: str) -> str:
     if not (os.environ.get("SSH_CLIENT") or os.environ.get("SSH_TTY")) or not redirect_uri:
         return ""
-    from tools.mcp_oauth import _SSH_HINT_LOOPBACK
+    from hermes_agent.tools.mcp_oauth import _SSH_HINT_LOOPBACK
     parsed = urlparse(redirect_uri)
     return _SSH_HINT_LOOPBACK.format(host=parsed.hostname or "127.0.0.1", port=parsed.port or 0).strip()
 
@@ -311,7 +311,7 @@ def start(
     ``cfg`` is an install's in-memory configuration; without it the saved one is authorized."""
     from hermes_cli.mcp_config import _get_mcp_servers
     from hermes_constants import get_hermes_home
-    from tools.mcp_dashboard_oauth import DashboardOAuthFlow
+    from hermes_agent.tools.mcp_dashboard_oauth import DashboardOAuthFlow
     from hermes_agent.tui_gateway import mcp_oauth_sessions
 
     cfg = dict(cfg if cfg is not None else _get_mcp_servers().get(server_name) or {})

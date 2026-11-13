@@ -1,7 +1,7 @@
 """A relay reply is an immutable delivery receipt, not a last-writer-wins file."""
 import json
 
-from tools.bot_relay import write_reply
+from hermes_agent.tools.bot_relay import write_reply
 
 
 def test_relay_reply_retry_cannot_replace_a_settled_delivery(tmp_path):

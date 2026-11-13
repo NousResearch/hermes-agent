@@ -805,7 +805,7 @@ def try_register_running_job(job_id: str, *, owner=None, future=_FUTURE_PENDING)
     ``future`` atomically because no executor submission will replace the pending sentinel.
 
     This is the single dedupe owner shared by the ticker's ``_submit_with_guard`` and manual runs
-    (``tools/cronjob_tools``): the fire claim alone cannot prevent a double-fire because its TTL (300s) is
+    (``hermes_agent/tools/cronjob_tools``): the fire claim alone cannot prevent a double-fire because its TTL (300s) is
     routinely outlived by real jobs, after which a manual ``cronjob(action='run')`` would claim successfully
     and run the same job concurrently (idea from #53395 by @izumi0uu).
     Registration also makes the run visible to ``get_running_job_ids`` (the gateway shutdown drain, #60432)
@@ -1280,7 +1280,7 @@ def _interpreter_shutting_down(exc: Optional[BaseException] = None) -> bool:
     ``asyncio.run``, or a fresh pool) is doomed and only pollutes ``errors.log`` with a traceback. See
     #55924, #58720.
     """
-    from tools.interpreter_shutdown import interpreter_shutting_down
+    from hermes_agent.tools.interpreter_shutdown import interpreter_shutting_down
 
     return interpreter_shutting_down(exc)
 
@@ -1833,7 +1833,7 @@ def _init_cron_mcp_tools(job_id: str) -> None:
         # paths called discover_mcp_tools() at startup. Idempotent: subsequent ticks short-circuit on
         # already-connected servers inside register_mcp_servers(). Non-fatal on failure: a broken MCP server
         # shouldn't kill an otherwise-working cron job. See #4219.
-        from tools.mcp_tool_discovery import discover_mcp_tools
+        from hermes_agent.tools.mcp_tool_discovery import discover_mcp_tools
         _mcp_tools = discover_mcp_tools()
         if _mcp_tools:
             logger.info("Job '%s': %d MCP tool(s) available", job_id, len(_mcp_tools))
@@ -2336,7 +2336,7 @@ class _CronRunScope:
 
     def __init__(self, job: dict, job_id: str, execution_id: Optional[str]):
         from hermes_agent.gateway.session_context import set_session_vars, _VAR_MAP
-        from tools.terminal_tool import record_session_cwd
+        from hermes_agent.tools.terminal_tool import record_session_cwd
 
         self._var_map = _VAR_MAP
         # Resolve workdir BEFORE set_session_vars so it owns the _SESSION_CWD set/clear.
@@ -2381,12 +2381,12 @@ class _CronRunScope:
         # concurrent jobs); copy_context() carries it into the agent thread.
         self._non_dispatcher_token = enter_non_dispatcher_owned_context()
         # Each run is its own MCP spend "chat" (its approval session key is "" for every job).
-        from tools.mcp_tool_costs import bind_run
+        from hermes_agent.tools.mcp_tool_costs import bind_run
         self._spend_token = bind_run(self.task_id)
 
     def exit(self) -> None:
         from hermes_agent.gateway.session_context import clear_session_vars
-        from tools.terminal_tool import clear_session_cwd
+        from hermes_agent.tools.terminal_tool import clear_session_cwd
 
         clear_session_cwd(self.task_id)
         clear_session_vars(self._ctx_tokens)  # also clears _SESSION_CWD
@@ -2395,7 +2395,7 @@ class _CronRunScope:
         if self._non_dispatcher_token is not None:
             exit_non_dispatcher_owned_context(self._non_dispatcher_token)
         if self._spend_token is not None:
-            from tools.mcp_tool_costs import unbind_run
+            from hermes_agent.tools.mcp_tool_costs import unbind_run
             unbind_run(self._spend_token)
         for name in _CRON_DELIVERY_VARS:
             self._var_map[name].set("")
@@ -3324,7 +3324,7 @@ def _run_one_job_body(
         # and bookkeeping (hermes_agent/gateway/run.py _profile_runtime_scope does the same per turn) — else the
         # ticker reads process-global TERMINAL_* env another profile pinned (#68559, #98581). A
         # malformed policy installs a refusal scope: terminal execution raises instead.
-        from tools.terminal_scope import (
+        from hermes_agent.tools.terminal_scope import (
             install_profile_terminal_scope)
 
         _terminal_scope_token = install_profile_terminal_scope(_get_hermes_home())
@@ -3486,7 +3486,7 @@ def _run_one_job_body(
         if _fire_scope_tokens is not None:
             _reset_fire_secret_scope(_fire_scope_tokens)
         if _terminal_scope_token is not None:
-            from tools.terminal_scope import reset_terminal_scope
+            from hermes_agent.tools.terminal_scope import reset_terminal_scope
 
             reset_terminal_scope(_terminal_scope_token)
 
@@ -3631,8 +3631,8 @@ def _launch_external_cron_worker(job: dict) -> bool:
 
     from agent.secret_scope import is_multiplex_active
     from hermes_agent.cron.scheduler_provider import routed_profile_fire
-    from tools.environments.local import build_subprocess_env, strip_launch_profile_env
-    from tools.process_registry import (
+    from hermes_agent.tools.environments.local import build_subprocess_env, strip_launch_profile_env
+    from hermes_agent.tools.process_registry import (
         restart_safe_gateway_child_argv,
         scoped_spawn_lost_user_bus,
         systemd_user_bus_env,
@@ -4206,10 +4206,10 @@ def _resolve_max_parallel_workers() -> Optional[int]:
 
 
 def _sweep_mcp_orphans() -> None:
-    """Reap MCP stdio orphans (only PIDs flagged by tools.mcp_tool._run_stdio's finally block);
+    """Reap MCP stdio orphans (only PIDs flagged by hermes_agent.tools.mcp_tool._run_stdio's finally block);
     run AFTER jobs finish so live sessions are never touched."""
     try:
-        from tools.mcp_tool_lifecycle import _kill_orphaned_mcp_children
+        from hermes_agent.tools.mcp_tool_lifecycle import _kill_orphaned_mcp_children
         _kill_orphaned_mcp_children()
     except Exception as _e:
         logger.debug("Post-tick MCP orphan cleanup failed: %s", _e)

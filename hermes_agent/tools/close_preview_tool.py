@@ -2,8 +2,8 @@
 Registration lives in `desktop_preview`. The renderer drops the matching tab — or
 the whole pane when no url is given — only for the window that asked."""
 
-from tools import desktop_ui
-from tools.open_preview_tool import _normalize_target
+from hermes_agent.tools import desktop_ui
+from hermes_agent.tools.open_preview_tool import _normalize_target
 
 
 def close_preview_tool(url: str = "") -> str:

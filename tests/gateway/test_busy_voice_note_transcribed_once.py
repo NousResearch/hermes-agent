@@ -72,7 +72,7 @@ async def test_busy_voice_note_is_transcribed_and_echoed_once(tmp_path, monkeypa
         calls.append(path)
         return {'success': True, 'transcript': 'stop and check the logs', 'provider': 'fake'}
 
-    monkeypatch.setattr('tools.transcription_tools.transcribe_audio', transcribe_audio)
+    monkeypatch.setattr('hermes_agent.tools.transcription_tools.transcribe_audio', transcribe_audio)
     runner, authority, source, agent, sent = await _busy_rig(tmp_path, monkeypatch)
     clip = tmp_path / 'note.ogg'
     clip.write_bytes(b'OggS voice note bytes')
@@ -99,7 +99,7 @@ async def test_busy_voice_note_is_transcribed_and_echoed_once(tmp_path, monkeypa
 @pytest.mark.asyncio
 async def test_same_voice_note_sent_again_while_idle_is_echoed_again(tmp_path, monkeypatch):
     """The hand-off is consumed by the one turn it was for: the clip resent later echoes anew."""
-    monkeypatch.setattr('tools.transcription_tools.transcribe_audio',
+    monkeypatch.setattr('hermes_agent.tools.transcription_tools.transcribe_audio',
                         lambda path, model=None, source=None: {'success': True, 'transcript': 'hi', 'provider': 'f'})
     runner, authority, source, _agent, sent = await _busy_rig(tmp_path, monkeypatch)
     clip = tmp_path / 'note.ogg'
@@ -134,7 +134,7 @@ async def _admit_busy_voice(runner, authority, source, clip):
 async def test_same_clip_forwarded_to_another_chat_still_echoes_there(tmp_path, monkeypatch):
     """The "already echoed" hand-off belongs to the busy MESSAGE: the same clip arriving idle in
     another chat before that message's FIFO turn runs is echoed in that chat, and only once overall."""
-    monkeypatch.setattr('tools.transcription_tools.transcribe_audio',
+    monkeypatch.setattr('hermes_agent.tools.transcription_tools.transcribe_audio',
                         lambda path, model=None, source=None: {'success': True, 'transcript': 'hi', 'provider': 'f'})
     runner, authority, source, _agent, sent = await _busy_rig(tmp_path, monkeypatch)
     clip = tmp_path / 'note.ogg'
@@ -164,7 +164,7 @@ async def test_a_forwarded_copy_never_takes_the_busy_messages_transcript(tmp_pat
     def transcribe(path, model=None, source=None):
         calls.append(path)
         return {'success': True, 'transcript': 'paid words' if len(calls) == 1 else 'different words', 'provider': 'f'}
-    monkeypatch.setattr('tools.transcription_tools.transcribe_audio', transcribe)
+    monkeypatch.setattr('hermes_agent.tools.transcription_tools.transcribe_audio', transcribe)
     runner, authority, source, agent, sent = await _busy_rig(tmp_path, monkeypatch)
     clip = tmp_path / 'note.ogg'
     clip.write_bytes(b'OggS forwarded busy clip')
@@ -192,7 +192,7 @@ async def test_a_clip_listed_twice_in_one_message_echoes_once(tmp_path, monkeypa
         calls.append(path)
         return {'success': True, 'transcript': 'twice', 'provider': 'f'}
 
-    monkeypatch.setattr('tools.transcription_tools.transcribe_audio', transcribe_audio)
+    monkeypatch.setattr('hermes_agent.tools.transcription_tools.transcribe_audio', transcribe_audio)
     runner, authority, source, _agent, sent = await _busy_rig(tmp_path, monkeypatch)
     clip = tmp_path / 'note.ogg'
     clip.write_bytes(b'OggS current and quoted media')
@@ -210,7 +210,7 @@ async def test_a_clip_listed_twice_in_one_message_echoes_once(tmp_path, monkeypa
 @pytest.mark.asyncio
 async def test_a_refused_busy_echo_is_sent_by_the_turn(tmp_path, monkeypatch):
     """Flood control refusing the busy path's echo must not mark the clip shown: the FIFO turn echoes it."""
-    monkeypatch.setattr('tools.transcription_tools.transcribe_audio',
+    monkeypatch.setattr('hermes_agent.tools.transcription_tools.transcribe_audio',
                         lambda path, model=None, source=None: {'success': True, 'transcript': 'hi', 'provider': 'f'})
     runner, authority, source, _agent, _sent = await _busy_rig(tmp_path, monkeypatch)
     shown, refuse = [], [True]
@@ -239,7 +239,7 @@ async def test_a_partly_refused_busy_echo_repeats_no_shown_clip(tmp_path, monkey
     """Three clips, the middle one's busy echo refused: the busy path still echoes the third (a steered
     message has no later turn), and the turn echoes only the refused clip, never a shown one again."""
     words = {'a.ogg': 'one', 'b.ogg': 'two', 'c.ogg': 'three'}
-    monkeypatch.setattr('tools.transcription_tools.transcribe_audio',
+    monkeypatch.setattr('hermes_agent.tools.transcription_tools.transcribe_audio',
                         lambda path, model=None, source=None: {
                             'success': True, 'transcript': words[os.path.basename(path)], 'provider': 'f'})
     runner, authority, source, _agent, _sent = await _busy_rig(tmp_path, monkeypatch)

@@ -2,7 +2,7 @@
 named profile's store instead of silently searching the injected (default) DB (#82903).
 
 The gateway hard-injects ``db=agent._get_session_db_for_recall()``; without ``profile`` reaching
-``tools.session_search_tool.session_search`` the tool's ``_resolve_profile_db`` never runs and
+``hermes_agent.tools.session_search_tool.session_search`` the tool's ``_resolve_profile_db`` never runs and
 ``profile="llm-wiki"`` returns the same rows as no profile at all.
 """
 

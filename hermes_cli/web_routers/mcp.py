@@ -256,7 +256,7 @@ async def auth_mcp_server(name: str, request: Request, profile: Optional[str] = 
     """Start MCP OAuth and hand the authorization URL to the dashboard browser."""
     from hermes_cli.mcp_config import _get_mcp_servers
     from hermes_constants import get_hermes_home
-    from tools.mcp_dashboard_oauth import DashboardOAuthFlow, exception_message
+    from hermes_agent.tools.mcp_dashboard_oauth import DashboardOAuthFlow, exception_message
 
     _require_token(request)
     _gc_mcp_oauth_flows()
@@ -388,7 +388,7 @@ async def set_mcp_server_enabled(name: str, body: MCPEnabledToggle, profile: Opt
                 raise HTTPException(status_code=404, detail=f"Server '{name}' not found")
             if not isinstance(servers[name], dict):
                 raise HTTPException(status_code=400, detail="Malformed server config")
-            from tools.mcp_tool_common import write_mcp_server_enabled
+            from hermes_agent.tools.mcp_tool_common import write_mcp_server_enabled
             write_mcp_server_enabled(servers[name], body.enabled)
             save_config(cfg)
         return {"ok": True, "name": name, "enabled": bool(body.enabled)}

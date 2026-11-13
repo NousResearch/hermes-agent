@@ -1,5 +1,5 @@
 import sys; sys.path.insert(0, sys.argv[1] if len(sys.argv) > 1 else ".")  # usage: python hardline_scanner_matrix.py <repo_root>
-from tools.approval_detection import detect_hardline_command as d
+from hermes_agent.tools.approval_detection import detect_hardline_command as d
 cases = {
     # the reviewer's witnesses
     "newline-hidden reboot in quoted $(grep)":  ('echo "$(grep -P \'safe\' /dev/null\nreboot)"', True),

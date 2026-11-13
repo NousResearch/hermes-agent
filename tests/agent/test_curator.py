@@ -23,7 +23,7 @@ def curator_env(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     monkeypatch.setenv("HERMES_HOME", str(home))
 
-    import tools.skill_usage as usage
+    import hermes_agent.tools.skill_usage as usage
     importlib.reload(usage)
     from agent import curator
     importlib.reload(curator)
@@ -78,7 +78,7 @@ def test_bundled_skills_are_off_limits_unless_opted_in(curator_env, monkeypatch)
     """Shipped skills vanishing after 30 idle days is opt-in: with no config the reader says off, and
     the same reader flips with the key. Both loaders see the same answer (DEFAULT_CONFIG agrees)."""
     import importlib
-    import tools.skill_usage as usage
+    import hermes_agent.tools.skill_usage as usage
     from hermes_cli.config_defaults import DEFAULT_CONFIG
     importlib.reload(usage)  # the fixture pins _prune_builtins_enabled; reload restores the real reader
     monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"curator": {}})
@@ -253,7 +253,7 @@ def _write_cron_job(home: Path, skill_ref: str, monkeypatch):
     import importlib
     import json
 
-    from tools import skills_tool
+    from hermes_agent.tools import skills_tool
     monkeypatch.setattr(skills_tool, "SKILLS_DIR", home / "skills")
 
     cron_dir = home / "cron"
@@ -1037,7 +1037,7 @@ def test_review_fork_toolset_surface_excludes_execution_tools():
     the user's own install decision, not the attack class this guard defends
     against.
     """
-    from toolsets import resolve_toolset
+    from hermes_agent.toolsets import resolve_toolset
 
     surface = set(resolve_toolset("skills", include_registry=False))
 
@@ -1076,7 +1076,7 @@ def test_review_fork_seeds_shared_read_marks(curator_env, monkeypatch):
     """
     curator = curator_env["curator"]
     importlib.reload(curator)
-    from tools.skill_manager_guards import _background_review_read_paths
+    from hermes_agent.tools.skill_manager_guards import _background_review_read_paths
 
     monkeypatch.setattr(
         "hermes_cli.config.load_config",

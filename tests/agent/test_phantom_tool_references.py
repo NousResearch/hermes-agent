@@ -91,7 +91,7 @@ class TestEssentialSkillsUndisableable:
         assert cfg["skills"]["disabled"] == ["other"]
 
     def test_skill_manage_delete_refused(self):
-        from tools.skill_manager_guards import _pinned_guard
+        from hermes_agent.tools.skill_manager_guards import _pinned_guard
         msg = _pinned_guard("hermes-agent")
         assert msg is not None
 
@@ -99,7 +99,7 @@ class TestEssentialSkillsUndisableable:
 class TestEssentialOnlySync:
     def test_opted_out_sync_seeds_only_essential(self, monkeypatch, tmp_path):
         """A profile with .no-bundled-skills still gets the hermes-agent skill."""
-        import tools.skills_sync as ss
+        import hermes_agent.tools.skills_sync as ss
 
         home = tmp_path / ".hermes"
         home.mkdir()

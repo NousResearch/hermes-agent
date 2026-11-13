@@ -317,7 +317,7 @@ def test_room_member_turns_cannot_block_on_an_unanswerable_clarify(hosted_owner,
     from hermes_agent.gateway.session_local_recovery import local_adapter_map
     from hermes_agent.gateway.config import Platform
     from agent.skill_utils import parse_config_string_list
-    from model_tools import get_tool_definitions
+    from hermes_agent.model_tools import get_tool_definitions
 
     authority, loop, principal, _ = hosted_owner
     monkeypatch.setattr(run, '_load_gateway_config', lambda: {

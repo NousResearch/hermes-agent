@@ -14,8 +14,8 @@ import time
 
 import pytest
 
-import tools.process_registry as module
-from tools.process_registry import ProcessRegistry
+import hermes_agent.tools.process_registry as module
+from hermes_agent.tools.process_registry import ProcessRegistry
 
 _POSIX_PTY = pytest.mark.skipif(
     sys.platform == "win32" or shutil.which("setsid") is None, reason="POSIX PTY + setsid")

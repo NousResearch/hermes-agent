@@ -139,7 +139,7 @@ def run_cli(repo, mode):
         if mode == "persistence":
             # Inject a filesystem write error after real registration/metadata writes.
             argv = [sys.executable, "-c", '''
-from tools import mcp_oauth
+from hermes_agent.tools import mcp_oauth
 write = mcp_oauth._write_json
 def fail_token(path, data):
     if path.name == "fixture.json":

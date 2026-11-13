@@ -7,8 +7,8 @@ the whole turn (#112033).
 
 from types import SimpleNamespace
 
-from tools.process_registry import ProcessRegistry
-from tools.terminal_tool_background import _register_completion_watcher
+from hermes_agent.tools.process_registry import ProcessRegistry
+from hermes_agent.tools.terminal_tool_background import _register_completion_watcher
 
 
 def _proc_session():

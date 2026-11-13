@@ -6,10 +6,10 @@ is configured but fails at runtime (issue #10883).
 from types import SimpleNamespace
 from unittest.mock import Mock
 
-from tools.bot_desktop import placement
-from tools import browser_launcher
-from tools import browser_session as bs
-from tools import browser_session_cloud as bs_cloud
+from hermes_agent.tools.bot_desktop import placement
+from hermes_agent.tools import browser_launcher
+from hermes_agent.tools import browser_session as bs
+from hermes_agent.tools import browser_session_cloud as bs_cloud
 
 _LOCAL_CDP = "ws://127.0.0.1:9333/devtools/browser/local"
 
@@ -17,10 +17,10 @@ _LOCAL_CDP = "ws://127.0.0.1:9333/devtools/browser/local"
 def _reset_session_state(monkeypatch):
     """Clear caches so each test starts fresh; the local browser is a stub launcher browser."""
     monkeypatch.setattr(bs, "_active_sessions", {})
-    monkeypatch.setattr("tools.browser_session_lifecycle.start_cleanup_thread", lambda: None)
-    monkeypatch.setattr("tools.browser_session_lifecycle.update_session_activity", lambda t: None)
-    monkeypatch.setattr("tools.browser_session_cdp.ensure_cdp_supervisor", lambda task_id: None)
-    monkeypatch.setattr("tools.bot_desktop.runtime.tool_placement", lambda: placement.GATEWAY)  # host browser
+    monkeypatch.setattr("hermes_agent.tools.browser_session_lifecycle.start_cleanup_thread", lambda: None)
+    monkeypatch.setattr("hermes_agent.tools.browser_session_lifecycle.update_session_activity", lambda t: None)
+    monkeypatch.setattr("hermes_agent.tools.browser_session_cdp.ensure_cdp_supervisor", lambda task_id: None)
+    monkeypatch.setattr("hermes_agent.tools.bot_desktop.runtime.tool_placement", lambda: placement.GATEWAY)  # host browser
     monkeypatch.setattr(browser_launcher, "launch_chromium",
                         lambda key, **kw: (SimpleNamespace(cdp_url=_LOCAL_CDP, pid=4242), None))
 
@@ -35,7 +35,7 @@ class TestCloudProviderRuntimeFallback:
         provider = Mock()
         provider.create_session.side_effect = RuntimeError("401 Unauthorized")
         monkeypatch.setattr(bs_cloud, "get_cloud_provider", lambda: provider)
-        monkeypatch.setattr("tools.browser_session_cdp.get_cdp_override", lambda: None)
+        monkeypatch.setattr("hermes_agent.tools.browser_session_cdp.get_cdp_override", lambda: None)
 
         session = bs.get_session_info("task-1")
 
@@ -51,7 +51,7 @@ class TestCloudProviderRuntimeFallback:
         _reset_session_state(monkeypatch)
 
         monkeypatch.setattr(bs_cloud, "get_cloud_provider", lambda: None)
-        monkeypatch.setattr("tools.browser_session_cdp.get_cdp_override", lambda: None)
+        monkeypatch.setattr("hermes_agent.tools.browser_session_cdp.get_cdp_override", lambda: None)
 
         session = bs.get_session_info("task-4")
 
@@ -66,7 +66,7 @@ class TestCloudProviderRuntimeFallback:
         provider = Mock()
         provider.create_session.return_value = None
         monkeypatch.setattr(bs_cloud, "get_cloud_provider", lambda: provider)
-        monkeypatch.setattr("tools.browser_session_cdp.get_cdp_override", lambda: None)
+        monkeypatch.setattr("hermes_agent.tools.browser_session_cdp.get_cdp_override", lambda: None)
 
         session = bs.get_session_info("task-7")
 

@@ -1,5 +1,5 @@
 """Cron job argument normalization, validation and result shaping (re-exported by
-tools/cronjob_tools.py)."""
+hermes_agent/tools/cronjob_tools.py)."""
 
 import contextlib
 import logging
@@ -11,7 +11,7 @@ from hermes_agent.cron.jobs import effective_job_state
 import hermes_time
 
 # Logger parity with the origin module.
-logger = logging.getLogger("tools.cronjob_tools")
+logger = logging.getLogger("hermes_agent.tools.cronjob_tools")
 
 # A one-shot firing within this many minutes is still part of the conversation that created it:
 # with platforms.slack.extra.reply_in_thread at its default true, the whole exchange under a
@@ -428,7 +428,7 @@ def _validate_cron_script_path(script: Optional[str]) -> Optional[str]:
             f"Got absolute or home-relative path: {raw!r}. "
             f"Place scripts in {scripts_dir}/ and use just the filename.")
 
-    from tools.path_security import validate_within_dir
+    from hermes_agent.tools.path_security import validate_within_dir
     scripts_dir.mkdir(parents=True, exist_ok=True)
     resolved_script = scripts_dir / raw
     if validate_within_dir(resolved_script, scripts_dir):

@@ -35,7 +35,7 @@ def keeper_job(tmp_path, monkeypatch):
 
 
 def _run(job_id, *, gateway_serves_profile):
-    from tools.cronjob_tools import cronjob
+    from hermes_agent.tools.cronjob_tools import cronjob
     with patch("hermes_cli.cron._builtin_gateway_liveness", return_value=gateway_serves_profile), \
          patch("hermes_agent.cron.scheduler.run_one_job", return_value=True) as m_run:
         out = json.loads(cronjob(action="run", job_id=job_id))

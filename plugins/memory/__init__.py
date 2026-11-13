@@ -418,7 +418,7 @@ class _ClaimGatedHandler:
         provider = self._collector.provider
         if provider is None or serves_caller(provider, f"tool {self._name}"):
             return self.__wrapped__(*args, **kwargs)
-        from tools.registry import tool_error
+        from hermes_agent.tools.registry import tool_error
 
         refusal = tool_error(refused_tool_message(self._name))
         if not self._is_async:

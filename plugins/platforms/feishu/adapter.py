@@ -2390,7 +2390,7 @@ class FeishuAdapter(FeishuChoiceCardsMixin, FeishuSyntheticEventsMixin, BasePlat
         if not state:
             return
         try:
-            from tools.approval import resolve_gateway_approval_card
+            from hermes_agent.tools.approval import resolve_gateway_approval_card
             count = resolve_gateway_approval_card(state["session_key"], choice, state.get("request_id"),
                                                   actor_id=user_id or open_id, extra=self.config.extra)
             logger.info(
@@ -2696,7 +2696,7 @@ class FeishuAdapter(FeishuChoiceCardsMixin, FeishuSyntheticEventsMixin, BasePlat
 
     async def _download_remote_document(self, file_url: str, *, default_ext: str, preferred_name: str) -> tuple[str, str]:
         from hermes_agent.gateway.platforms.base import read_httpx_body_with_limit, ssrf_redirect_guard
-        from tools.url_safety import create_ssrf_safe_async_client, is_safe_url
+        from hermes_agent.tools.url_safety import create_ssrf_safe_async_client, is_safe_url
         if not is_safe_url(file_url):
             raise ValueError(f"Blocked unsafe URL (SSRF protection): {file_url[:80]}")
         async with create_ssrf_safe_async_client(
@@ -4256,7 +4256,7 @@ def _qr_register_inner(*, initial_domain: str, timeout_seconds: int) -> Optional
 # migrations: a register(ctx) entry point plus hook implementations that replace the per-platform core
 # touchpoints (the Platform.FEISHU elif in hermes_agent/gateway/run.py, the feishu_cfg YAML→env block +
 # _PLATFORM_CONNECTED_CHECKERS entry in hermes_agent/gateway/config.py, the _setup_feishu wizard + _PLATFORMS["feishu"]
-# static dict in hermes_cli/gateway.py, and the _send_feishu dispatch in tools/send_message_tool.py).
+# static dict in hermes_cli/gateway.py, and the _send_feishu dispatch in hermes_agent/tools/send_message_tool.py).
 # ──────────────────────────────────────────────────────────────────────────
 _MIGRATION_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
 _MIGRATION_VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".3gp"}

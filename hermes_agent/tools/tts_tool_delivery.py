@@ -1,4 +1,4 @@
-"""Long-form chunking, ffmpeg encoding, container repair and delivery packing (``tools.tts_tool``).
+"""Long-form chunking, ffmpeg encoding, container repair and delivery packing (``hermes_agent.tools.tts_tool``).
 
 Provider-agnostic post-processing: split text under a per-request cap, wrap raw PCM as WAV,
 convert WAV/MP3 to the target container, sniff/repair mislabelled ``.ogg`` files, and combine
@@ -22,16 +22,16 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from hermes_cli._subprocess_compat import windows_hide_flags
-from tools.tts_command_provider import (
+from hermes_agent.tools.tts_command_provider import (
     BUILTIN_TTS_PROVIDERS, DEFAULT_COMMAND_TTS_MAX_TEXT_LENGTH, _get_named_provider_config,
     _is_command_provider_config)
 
-logger = logging.getLogger("tools.tts_tool")
+logger = logging.getLogger("hermes_agent.tools.tts_tool")
 
 
 def _origin():
-    """``tools.tts_tool``, resolved per call so seams monkeypatched there still apply."""
-    from tools import tts_tool
+    """``hermes_agent.tools.tts_tool``, resolved per call so seams monkeypatched there still apply."""
+    from hermes_agent.tools import tts_tool
     return tts_tool
 
 
@@ -84,7 +84,7 @@ def _resolve_max_text_length(provider: Optional[str], tts_config: Optional[dict[
     if override:
         return override
     if key == "elevenlabs":
-        from tools.tts_tool_providers import DEFAULT_ELEVENLABS_MODEL_ID  # providers imports this module
+        from hermes_agent.tools.tts_tool_providers import DEFAULT_ELEVENLABS_MODEL_ID  # providers imports this module
         model_id = prov_cfg.get("model_id") or DEFAULT_ELEVENLABS_MODEL_ID
         mapped = ELEVENLABS_MODEL_MAX_TEXT_LENGTH.get(str(model_id).strip())
         if mapped:
@@ -299,7 +299,7 @@ def _convert_to_opus(mp3_path: str) -> Optional[str]:
 
 def _sniff_audio_container(path: str) -> str:
     """Return a container id ('ogg', 'wav', 'mp3', 'flac', ...) or 'unknown'."""
-    from tools.audio_container import sniff_container
+    from hermes_agent.tools.audio_container import sniff_container
     try:
         with open(path, "rb") as fh:
             return sniff_container(fh.read(12)) or "unknown"

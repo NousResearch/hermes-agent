@@ -386,7 +386,7 @@ def fuzzy_find_and_replace(content: str, old_string: str, new_string: str,
             "first if unsure). Do not re-send this call unchanged.")
     # All consumers, including validation and approval previews, must use the
     # same correction policy before a fuzzy strategy can match ambiguous text.
-    from tools.escape_drift_autocorrect import AmbiguousEscapeDriftError, maybe_correct_escape_drift
+    from hermes_agent.tools.escape_drift_autocorrect import AmbiguousEscapeDriftError, maybe_correct_escape_drift
     try:
         old_string, new_string, correction_note = maybe_correct_escape_drift(old_string, new_string, content)
     except AmbiguousEscapeDriftError as exc:

@@ -305,7 +305,7 @@ def _refuse_unavailable_portable_plugin(plugin_name: str, tree: Path, app_title:
         return
     from hermes_cli.agent_plugins import load_agent_plugin
     from hermes_platform.resolver.availability import availability
-    from tools.mcp_liveness import availability_problem, describe
+    from hermes_agent.tools.mcp_liveness import availability_problem, describe
 
     try:
         package = load_agent_plugin(tree, tree.parent / ".hermes-install-data")
@@ -334,7 +334,7 @@ def _known_issue_warnings(entry) -> list[str]:
 def interactive_scan_decision(console, verb: str) -> Callable[[Any], bool]:
     """The terminal ``[y/N]`` that accepts a caution verdict, shared by install and update (*verb*)."""
     def decide(scan_result) -> bool:
-        from tools.plugin_guard import format_scan_report
+        from hermes_agent.tools.plugin_guard import format_scan_report
         console.print()
         console.print("[yellow]⚠ Security scan flagged this plugin:[/yellow]")
         console.print(format_scan_report(scan_result))

@@ -3469,7 +3469,7 @@ class TestSendImageSSRFGuards:
             return url == "https://public.example/image.png"
 
         with (
-            patch("tools.url_safety.is_safe_url", side_effect=fake_is_safe_url),
+            patch("hermes_agent.tools.url_safety.is_safe_url", side_effect=fake_is_safe_url),
             patch("httpx.AsyncClient", side_effect=fake_async_client),
         ):
             result = await adapter.send_image(

@@ -5,7 +5,7 @@ override a schema verdict; it only vouches for an exact path (and what is below 
 Four owners supply them:
 
 * Core selection keys (``browser.cloud_provider``, ``<category>.use_gateway``, ``stt.provider``):
-  :func:`tools.tool_backend_helpers.selection_config_keys`, built from ``read_selection``'s tables.
+  :func:`hermes_agent.tools.tool_backend_helpers.selection_config_keys`, built from ``read_selection``'s tables.
 * Core-owned unseeded keys outside that table, each listed with its reader (:data:`CORE_RUNTIME_KEYS`).
 * MoA preset fields under any preset name (:func:`hermes_cli.moa_config.is_preset_field_path`). Only a
   preset's own fields and its aggregator slot fields qualify, not arbitrary descendants of ``moa.presets``.
@@ -109,7 +109,7 @@ def is_runtime_read_key(parts: list[str]) -> bool:
     The MoA rule needs the segments (a preset name may contain a dot); the other owners match the
     dotted join."""
     from hermes_cli.moa_config import is_preset_field_path
-    from tools.tool_backend_helpers import selection_config_keys
+    from hermes_agent.tools.tool_backend_helpers import selection_config_keys
 
     if is_preset_field_path(parts):
         return True

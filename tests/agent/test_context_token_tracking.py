@@ -18,11 +18,11 @@ import run_agent
 
 
 def _patch_bootstrap(monkeypatch):
-    monkeypatch.setattr("model_tools.get_tool_definitions", lambda **kwargs: [{
+    monkeypatch.setattr("hermes_agent.model_tools.get_tool_definitions", lambda **kwargs: [{
         "type": "function",
         "function": {"name": "t", "description": "t", "parameters": {"type": "object", "properties": {}}},
     }])
-    monkeypatch.setattr("model_tools.check_toolset_requirements", dict)
+    monkeypatch.setattr("hermes_agent.model_tools.check_toolset_requirements", dict)
 
 
 class _FakeAnthropicClient:

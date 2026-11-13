@@ -119,7 +119,7 @@ def test_mkstemp_heritage_writers_keep_new_files_owner_only(tmp_path):
     import os
     import stat
 
-    from tools.bot_relay import _atomic_write_json
+    from hermes_agent.tools.bot_relay import _atomic_write_json
     from hermes_agent.tui_gateway.turn_marker import _store
 
     old_umask = os.umask(0o022)

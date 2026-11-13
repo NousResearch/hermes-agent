@@ -32,7 +32,7 @@ def _by_name(agent):
 
 
 def test_oneshot_tool_build_drops_clarify_and_delegate_live_control(monkeypatch):
-    import model_tools
+    from hermes_agent import model_tools
 
     interactive = _built_agent(monkeypatch, oneshot=False)
     tools = _by_name(interactive)
@@ -56,7 +56,7 @@ def test_oneshot_resume_keeps_the_pinned_interactive_tool_bytes(monkeypatch, con
     # `hermes -z --resume <interactive session>`: the same-code pin's bytes head every request (prompt cache), so
     # neither the one-shot delegate_task variant nor the one-shot clarify gate may rewrite or drop a pinned tool;
     # a clarify the user's config disables since the pin still drops, as it would for an interactive resume.
-    from tools.mcp_tool_agent import restore_agent_tool_prefix, tool_pin_version
+    from hermes_agent.tools.mcp_tool_agent import restore_agent_tool_prefix, tool_pin_version
 
     interactive = _built_agent(monkeypatch, oneshot=False)
     oneshot = _built_agent(monkeypatch, oneshot=True, disabled=["clarify"] if config_disables_clarify else None)

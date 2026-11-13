@@ -53,7 +53,7 @@ def gateway_home(tmp_path, monkeypatch):
     (home / "config.yaml").write_text("plugins:\n  enabled: [rpprobe]\n  disabled: []\n", encoding="utf-8")
     monkeypatch.setenv("HERMES_HOME", str(home))
     from hermes_cli import plugins
-    from tools.mcp_tool_lifecycle import shutdown_mcp_servers
+    from hermes_agent.tools.mcp_tool_lifecycle import shutdown_mcp_servers
     plugins._reset_plugin_managers_for_tests()
     loop = asyncio.new_event_loop()
     thread = threading.Thread(target=loop.run_forever, daemon=True)
@@ -72,7 +72,7 @@ def gateway_home(tmp_path, monkeypatch):
 @pytest.mark.platforms("posix")
 def test_reload_plugins_answers_with_the_plugins_mcp_tools_already_registered(gateway_home):
     from hermes_agent.gateway.run_plugin_rewire import reload_plugins_verb
-    from tools.registry import registry
+    from hermes_agent.tools.registry import registry
     _home, loop = gateway_home
     runner = SimpleNamespace(config=SimpleNamespace(multiplex_profiles=False), adapters={})
 

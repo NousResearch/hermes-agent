@@ -7,7 +7,7 @@ environment's own object, and a name is only meaningful inside the environment t
 
 Spawning goes through :meth:`LongLivedProcessMixin._spawn_long_lived`: the local backend runs the
 argv on this host with its own run environment; a backend with an exec prefix (docker, ssh, a plugin
-declaring ``supports_streams``) runs it inside the sandbox through ``tools.environments.streams``;
+declaring ``supports_streams``) runs it inside the sandbox through ``hermes_agent.tools.environments.streams``;
 SDK backends with neither raise :class:`NotImplementedError`. A hosted backend implements the three
 public methods itself (they receive the bound scope, see ``sandbox_scope.ScopedEnvironment``).
 """
@@ -22,9 +22,9 @@ import threading
 import uuid
 from typing import Any, Optional
 
-from tools.environments.sandbox_scope import ProcessRef, ProcessStream
+from hermes_agent.tools.environments.sandbox_scope import ProcessRef, ProcessStream
 
-logger = logging.getLogger("tools.environments")
+logger = logging.getLogger("hermes_agent.tools.environments")
 
 
 class LongLivedProcessMixin:
@@ -48,7 +48,7 @@ class LongLivedProcessMixin:
         return state["lock"]
 
     def _spawn_long_lived(self, argv: list[str], child_env: Optional[dict]) -> subprocess.Popen:
-        from tools.environments.streams import exec_prefix, open_stream, sandbox_temp_dir
+        from hermes_agent.tools.environments.streams import exec_prefix, open_stream, sandbox_temp_dir
         try:
             prefix = exec_prefix(self)  # type: ignore[arg-type]  # a BaseEnvironment at runtime, the mixin in isolation
             if prefix is None:
@@ -145,7 +145,7 @@ class LongLivedProcessMixin:
                    "if [ -n \"$p\" ]; then pkill -TERM -P $p 2>/dev/null; kill -TERM $p 2>/dev/null; fi; "
                    "rm -f \"$f\")")
         try:
-            from tools.environments.sandbox_scope import accepts_scope
+            from hermes_agent.tools.environments.sandbox_scope import accepts_scope
             if scope is not None and accepts_scope(execute):
                 execute(command, scope=scope)
             else:

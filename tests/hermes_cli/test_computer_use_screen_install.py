@@ -6,7 +6,7 @@ import argparse
 import subprocess
 
 from hermes_cli.subcommands.computer_use_screen import build_screen_parser
-from tools.bot_desktop import install, runtime
+from hermes_agent.tools.bot_desktop import install, runtime
 
 
 def test_cli_install_goes_through_the_shared_installer(monkeypatch):

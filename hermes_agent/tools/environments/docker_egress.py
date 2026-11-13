@@ -11,7 +11,7 @@ import hashlib
 import json
 import logging
 
-logger = logging.getLogger("tools.environments.docker")
+logger = logging.getLogger("hermes_agent.tools.environments.docker")
 
 _EGRESS_LABEL_KEY = "hermes-egress"
 _CONTAINER_CA = "/etc/ssl/certs/hermes-egress-ca.crt"

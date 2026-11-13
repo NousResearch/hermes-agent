@@ -1010,7 +1010,7 @@ def _route_named_profile_dashboard(
         (getattr(args, "skip_build", False), ["--skip-build"])):
         if enabled:
             reexec_argv.extend(extra)
-    from tools.environments.local import build_subprocess_env
+    from hermes_agent.tools.environments.local import build_subprocess_env
     # HERMES_HOME is pinned to the machine root below — the factory must not
     # re-inject a profile home.
     env = build_subprocess_env(scrub_secrets=False, inherit_profile_home=False)

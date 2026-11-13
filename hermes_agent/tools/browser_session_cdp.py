@@ -104,7 +104,7 @@ def get_cdp_override_raw() -> str:
     """The *configured* CDP override, no network I/O: live ``/browser connect`` > ``BROWSER_CDP_URL`` >
     ``browser.cdp_url``. Is-it-configured gates (check_fns, local-mode checks, doctor) MUST use this:
     a 10 s discovery probe against a stale URL would stall every schema build."""
-    from tools.browser_session_cloud import browser_cfg
+    from hermes_agent.tools.browser_session_cloud import browser_cfg
     return live_cdp_override() or env_cdp_url() or browser_cfg("cdp_url", "", lambda v: str(v or "").strip())
 
 
@@ -116,8 +116,8 @@ def get_cdp_override() -> str:
 
 def get_dialog_policy_config() -> tuple[str, float]:
     """``browser.dialog_policy`` + ``browser.dialog_timeout_s``; supervisor defaults when absent/invalid."""
-    from tools.browser_session_cloud import browser_cfg
-    from tools.browser_supervisor_dialogs import DEFAULT_DIALOG_POLICY, DEFAULT_DIALOG_TIMEOUT_S, _VALID_POLICIES
+    from hermes_agent.tools.browser_session_cloud import browser_cfg
+    from hermes_agent.tools.browser_supervisor_dialogs import DEFAULT_DIALOG_POLICY, DEFAULT_DIALOG_TIMEOUT_S, _VALID_POLICIES
     policy = str(browser_cfg("dialog_policy", DEFAULT_DIALOG_POLICY) or DEFAULT_DIALOG_POLICY)
     if policy not in _VALID_POLICIES:
         logger.debug("Invalid browser.dialog_policy=%r; using default", policy)
@@ -135,14 +135,14 @@ def ensure_cdp_supervisor(task_id: str) -> None:
     never breaks the session."""
     cdp_url = get_cdp_override()
     if not cdp_url:
-        from tools import browser_session as _bs
+        from hermes_agent.tools import browser_session as _bs
         with _bs._cleanup_lock:
             session_cdp = str((_bs._active_sessions.get(task_id) or {}).get("cdp_url") or "")
         cdp_url = resolve_cdp_override(session_cdp) if session_cdp else ""
     if not cdp_url:
         return
     try:
-        from tools.browser_supervisor import SUPERVISOR_REGISTRY
+        from hermes_agent.tools.browser_supervisor import SUPERVISOR_REGISTRY
         policy, timeout_s = get_dialog_policy_config()
         SUPERVISOR_REGISTRY.get_or_start(task_id=task_id, cdp_url=cdp_url, dialog_policy=policy,
                                          dialog_timeout_s=timeout_s)
@@ -153,7 +153,7 @@ def ensure_cdp_supervisor(task_id: str) -> None:
 def stop_cdp_supervisor(task_id: str) -> None:
     """Stop ``task_id``'s CDP supervisor if one exists."""
     try:
-        from tools.browser_supervisor import SUPERVISOR_REGISTRY
+        from hermes_agent.tools.browser_supervisor import SUPERVISOR_REGISTRY
         SUPERVISOR_REGISTRY.stop(task_id)
     except Exception as exc:  # health: allow BLE001 -- teardown must never abort on a supervisor error
         logger.debug("CDP supervisor stop for task=%s failed (non-fatal): %s", task_id, exc)

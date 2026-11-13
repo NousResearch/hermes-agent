@@ -226,7 +226,7 @@ class TestApiServerSessionProfileBinding:
 
     def test_bound_profile_selects_profile_scoped_container_key(self, monkeypatch):
         """Persistent-Docker container keys honour the api_server-bound profile (real resolver chain)."""
-        import tools.terminal_tool as tt
+        import hermes_agent.tools.terminal_tool as tt
         from hermes_agent.gateway.session_context import clear_session_vars
 
         adapter = _make_adapter(multiplex=True)

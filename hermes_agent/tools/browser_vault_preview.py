@@ -1,6 +1,6 @@
 """Vault page operations on the Hermes Desktop in-app browser (the preview ``<webview>``).
 
-The vault code in ``tools.browser_vault_tool`` owns classification, origin/nonce checks, secret
+The vault code in ``hermes_agent.tools.browser_vault_tool`` owns classification, origin/nonce checks, secret
 resolution and redaction registration. This module only carries its scripts to ONE page the Desktop
 window pinned for the operation: an opaque target the renderer minted for the tab (``open``), every
 ``evaluate`` bound to it, and ``close`` at the end. The renderer refuses an evaluate once that tab's

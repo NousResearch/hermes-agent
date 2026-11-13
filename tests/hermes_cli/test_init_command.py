@@ -43,7 +43,7 @@ class TestSessionActiveDirectory:
     """
 
     def test_session_cwd_record_wins_over_process_cwd(self, tmp_path, monkeypatch):
-        from tools.terminal_tool import clear_session_cwd, record_session_cwd
+        from hermes_agent.tools.terminal_tool import clear_session_cwd, record_session_cwd
 
         workspace = tmp_path / "proj"
         workspace.mkdir()
@@ -60,7 +60,7 @@ class TestSessionActiveDirectory:
             clear_session_cwd("desktop:123")
 
     def test_stale_record_falls_back_to_process_cwd(self, tmp_path, monkeypatch):
-        from tools.terminal_tool import clear_session_cwd, record_session_cwd
+        from hermes_agent.tools.terminal_tool import clear_session_cwd, record_session_cwd
 
         launch_dir = tmp_path / "home"
         launch_dir.mkdir()
@@ -75,7 +75,7 @@ class TestSessionActiveDirectory:
             clear_session_cwd("desktop:123")
 
     def test_explicit_cwd_wins_over_session_record(self, tmp_path):
-        from tools.terminal_tool import clear_session_cwd, record_session_cwd
+        from hermes_agent.tools.terminal_tool import clear_session_cwd, record_session_cwd
 
         record_session_cwd("desktop:123", str(tmp_path / "other"))
         try:
@@ -91,7 +91,7 @@ class TestSessionActiveDirectory:
         # inheriting a bound session env) resolve the key from
         # HERMES_SESSION_KEY.
         from hermes_agent.gateway.session_context import set_session_vars
-        from tools.terminal_tool import clear_session_cwd, record_session_cwd
+        from hermes_agent.tools.terminal_tool import clear_session_cwd, record_session_cwd
 
         workspace = tmp_path / "proj"
         workspace.mkdir()
@@ -111,7 +111,7 @@ class TestSessionActiveDirectory:
         # The guard lives in the builder so every surface shares it: a ``cwd`` naming a
         # directory that is gone (deleted project, removed linked worktree) must not win —
         # write_file would otherwise recreate the directory and write AGENTS.md into it.
-        from tools.terminal_tool import clear_session_cwd, record_session_cwd
+        from hermes_agent.tools.terminal_tool import clear_session_cwd, record_session_cwd
 
         workspace = tmp_path / "proj"
         workspace.mkdir()

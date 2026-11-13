@@ -3,7 +3,7 @@
 import logging
 import re
 
-logger = logging.getLogger("tools.send_message_tool")
+logger = logging.getLogger("hermes_agent.tools.send_message_tool")
 
 # E.164 phone recipients ("+1555..."): the '+' fails the isdigit() rule and the channel directory
 # cannot resolve a raw number, so keep the '+' and treat it as explicit.

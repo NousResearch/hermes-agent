@@ -46,7 +46,7 @@ AUTO_APPROVE_ASK = "ask"
 AUTO_APPROVE_WORKSPACE = "workspace_session"
 AUTO_APPROVE_SESSION = "session"
 
-# ``\s*`` after the stars as in tools/patch_parser.py: a header the parser applies must not escape approval.
+# ``\s*`` after the stars as in hermes_agent/tools/patch_parser.py: a header the parser applies must not escape approval.
 _V4A_FILE_RE = re.compile(r'^\*\*\*\s*(?:Update|Add|Delete)\s+File:\s*(.+)$', re.MULTILINE)
 _V4A_MOVE_RE = re.compile(r'^\*\*\*\s*Move\s+File:\s*(.+?)\s*->\s*(.+)$', re.MULTILINE)
 
@@ -74,7 +74,7 @@ def _required_path(arguments: dict[str, Any]) -> str:
     path = str(arguments.get("path") or "")
     if not path:
         raise ValueError("path required")
-    from tools.file_tools_paths import _resolve_path_for_task
+    from hermes_agent.tools.file_tools_paths import _resolve_path_for_task
     return str(_resolve_path_for_task(path))
 
 
@@ -95,7 +95,7 @@ def _proposal_for_patch_replace(arguments: dict[str, Any]) -> EditProposal:
     if old_text is None:
         raise ValueError(f"Failed to read file: {path}")
 
-    from tools.fuzzy_match import fuzzy_find_and_replace
+    from hermes_agent.tools.fuzzy_match import fuzzy_find_and_replace
 
     new_text, match_count, _strategy, error = fuzzy_find_and_replace(
         old_text, str(old_string), str(new_string), bool(arguments.get("replace_all", False)))

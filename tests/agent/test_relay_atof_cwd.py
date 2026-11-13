@@ -15,7 +15,7 @@ def test_run_conversation_exports_session_and_turn_cwds(tmp_path, monkeypatch):
     from agent import relay_runtime
     from hermes_cli.lifecycle import finalize_session
     from run_agent import AIAgent
-    from tools.terminal_tool import clear_session_cwd, record_session_cwd
+    from hermes_agent.tools.terminal_tool import clear_session_cwd, record_session_cwd
 
     hermes_home = tmp_path / "hermes-home"
     session_cwd = tmp_path / "session"

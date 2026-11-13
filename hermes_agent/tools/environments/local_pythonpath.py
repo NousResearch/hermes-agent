@@ -1,9 +1,9 @@
 """Hermes-owned PYTHONPATH stripping for child processes. Launchers prepend the repo
-root and the Hermes venv's site-packages so the backend can ``import tools``; leaked
+root and the Hermes venv's site-packages so the backend can ``from hermes_agent import tools``; leaked
 into a child Python of a DIFFERENT version they load the backend's C extensions and
 crash. Only entries proven Hermes-owned by *path provenance* are removed — never by a
 cross-version heuristic. Module state (``_hermes_repo_root_aliases``, ``_in_venv``,
-``_hermes_site_packages``) lives in ``tools.environments.local`` (via :func:`_state`)
+``_hermes_site_packages``) lives in ``hermes_agent.tools.environments.local`` (via :func:`_state`)
 so tests monkeypatching it there keep working."""
 
 import logging
@@ -12,16 +12,16 @@ import platform
 import sys
 from pathlib import Path
 
-from tools.environments.local_env_policy import _ACTIVE_VENV_MARKER_VARS
+from hermes_agent.tools.environments.local_env_policy import _ACTIVE_VENV_MARKER_VARS
 
 _IS_WINDOWS = platform.system() == "Windows"
 
-logger = logging.getLogger("tools.environments.local")
+logger = logging.getLogger("hermes_agent.tools.environments.local")
 
 
 def _state():
-    """Return the ``tools.environments.local`` module (owner of the caches)."""
-    from tools.environments import local
+    """Return the ``hermes_agent.tools.environments.local`` module (owner of the caches)."""
+    from hermes_agent.tools.environments import local
 
     return local
 

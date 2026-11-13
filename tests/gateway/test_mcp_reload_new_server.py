@@ -35,10 +35,10 @@ def _reloadable(authority, monkeypatch):
     authority.runner.config = SimpleNamespace(multiplex_profiles=False)
     authority.runner._mcp_reload_refresh_cached_agents = lambda multiplex, profile: None
     monkeypatch.setattr('hermes_agent.gateway.session_authorities.served_profile_name', lambda profile_id: 'default')
-    monkeypatch.setattr('tools.mcp_tool_discovery.reconcile_mcp_servers_with_config',
+    monkeypatch.setattr('hermes_agent.tools.mcp_tool_discovery.reconcile_mcp_servers_with_config',
                         lambda: {'removed': [], 'added': ['fixt'], 'pending': []})
-    monkeypatch.setattr('tools.mcp_tool_discovery.mcp_servers_not_connected', list)
-    monkeypatch.setattr('tools.mcp_tool_discovery.mcp_servers_ready', lambda: ['fixt', 'old'])
+    monkeypatch.setattr('hermes_agent.tools.mcp_tool_discovery.mcp_servers_not_connected', list)
+    monkeypatch.setattr('hermes_agent.tools.mcp_tool_discovery.mcp_servers_ready', lambda: ['fixt', 'old'])
 
 
 def _worker_frame(authority, sid, monkeypatch):
@@ -56,7 +56,7 @@ def _worker_frame(authority, sid, monkeypatch):
 def _worker_servers(frame, monkeypatch):
     """What the worker's discovery connects: the servers of its bound config (``bind_worker_policy`` makes
     it every config read) that its toolsets name, as ``discover_mcp_tools`` filters them."""
-    from tools.mcp_tool_config import _load_mcp_config
+    from hermes_agent.tools.mcp_tool_config import _load_mcp_config
     config, toolsets = json.loads(frame['policy']['config_json']), set(frame['policy']['toolsets'])
     with monkeypatch.context() as bound:
         bound.setattr('hermes_cli.config.load_config', lambda *args, **kwargs: config)
@@ -260,9 +260,9 @@ async def test_a_server_that_fails_to_start_is_unavailable_on_every_reload(tmp_p
     """A stdio server whose ``command`` is missing parks after its first connect: discovery keeps the parked
     task registered (it self-probes), yet it serves nothing. ``reload.mcp`` names it unavailable, never as
     added or among the chat's ``session_servers``, on the first reload and on the next."""
-    from tools import mcp_tool
-    from tools.mcp_tool_lifecycle import shutdown_mcp_servers
-    from tools.mcp_tool_scope import _server_key
+    from hermes_agent.tools import mcp_tool
+    from hermes_agent.tools.mcp_tool_lifecycle import shutdown_mcp_servers
+    from hermes_agent.tools.mcp_tool_scope import _server_key
     home = _home(monkeypatch)
     (home / 'config.yaml').write_text(CONFIG.replace('mcp_servers: {old: {command: old-mcp}}\n', ''))
     monkeypatch.setattr('hermes_agent.gateway.session_policy.launch_key', lambda authority, policy: None)
@@ -328,9 +328,9 @@ def test_a_lazy_server_whose_first_connect_failed_is_not_ready(tmp_path, monkeyp
     the registration (a later use retries it) but serves nothing: a missing executable parks a registered
     task, and a server that never answers its handshake times out and leaves no task at all."""
     import sys
-    from tools import mcp_tool, mcp_tool_discovery as discovery
-    from tools.mcp_tool_lifecycle import shutdown_mcp_servers
-    from tools.mcp_tool_scope import _server_key
+    from hermes_agent.tools import mcp_tool, mcp_tool_discovery as discovery
+    from hermes_agent.tools.mcp_tool_lifecycle import shutdown_mcp_servers
+    from hermes_agent.tools.mcp_tool_scope import _server_key
     lazy = {'missing': {'command': str(tmp_path / 'no-such-mcp'), 'lazy': True, 'connect_timeout': 5},
             'silent': {'command': sys.executable, 'args': ['-c', 'import sys; sys.stdin.read()'], 'lazy': True,
                        'connect_timeout': 1}}
@@ -433,8 +433,8 @@ async def test_a_removed_pick_keeps_later_refreshes_following_config_after_a_res
 
 
 def test_not_connected_names_a_configured_server_in_cooldown(monkeypatch):
-    from tools import mcp_tool, mcp_tool_discovery as discovery
-    from tools.mcp_tool_scope import _server_key
+    from hermes_agent.tools import mcp_tool, mcp_tool_discovery as discovery
+    from hermes_agent.tools.mcp_tool_scope import _server_key
     monkeypatch.setattr(discovery._config, '_load_mcp_config', lambda: {**OLD, 'fixt': {'command': 'x'}})
     monkeypatch.setattr(discovery, '_connect_cooldown_active', lambda name: True)
     monkeypatch.setitem(mcp_tool._servers, _server_key('old'), object())
@@ -455,9 +455,9 @@ def test_reload_counts_only_changes_that_took_effect(monkeypatch):
     connection = SimpleNamespace(actor=SimpleNamespace(capabilities={'session:control'}),
                                  authority=SimpleNamespace(runner=runner, profile_id='fixture'))
     reconciled, not_connected = {}, ['broken']
-    monkeypatch.setattr('tools.mcp_tool_discovery.reconcile_mcp_servers_with_config', lambda: dict(reconciled))
-    monkeypatch.setattr('tools.mcp_tool_discovery.mcp_servers_not_connected', lambda: list(not_connected))
-    monkeypatch.setattr('tools.mcp_tool_discovery.mcp_servers_ready', lambda: ['fixt'])
+    monkeypatch.setattr('hermes_agent.tools.mcp_tool_discovery.reconcile_mcp_servers_with_config', lambda: dict(reconciled))
+    monkeypatch.setattr('hermes_agent.tools.mcp_tool_discovery.mcp_servers_not_connected', lambda: list(not_connected))
+    monkeypatch.setattr('hermes_agent.tools.mcp_tool_discovery.mcp_servers_ready', lambda: ['fixt'])
     monkeypatch.setattr('hermes_agent.gateway.session_authorities.served_profile_name', lambda profile_id: 'default')
 
     def reload(**outcome):
@@ -486,10 +486,10 @@ def test_messaging_reload_names_a_server_that_did_not_connect():
     from unittest.mock import patch
     from tests.gateway.test_mcp_reload_refreshes_cached_agents import _make_event, _make_runner_with_cached_agents
     runner = _make_runner_with_cached_agents(num_agents=0)
-    with (patch('tools.mcp_tool_lifecycle.shutdown_mcp_servers'),
-          patch('tools.mcp_tool_discovery.discover_mcp_tools', return_value=[]),
-          patch('tools.mcp_tool_discovery.mcp_servers_not_connected', return_value=['fixt']),
-          patch.dict('tools.mcp_tool._servers', {}, clear=True)):
+    with (patch('hermes_agent.tools.mcp_tool_lifecycle.shutdown_mcp_servers'),
+          patch('hermes_agent.tools.mcp_tool_discovery.discover_mcp_tools', return_value=[]),
+          patch('hermes_agent.tools.mcp_tool_discovery.mcp_servers_not_connected', return_value=['fixt']),
+          patch.dict('hermes_agent.tools.mcp_tool._servers', {}, clear=True)):
         result = asyncio.run(runner._execute_mcp_reload(_make_event()))
     assert 'did not connect: fixt' in result
 

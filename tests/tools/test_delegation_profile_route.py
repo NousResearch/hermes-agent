@@ -58,7 +58,7 @@ def _parent():
 
 
 def test_profile_route_resolves_the_target_profiles_model_and_key(two_profiles):
-    from tools.delegate_tool_routes import _route_to_task_route
+    from hermes_agent.tools.delegate_tool_routes import _route_to_task_route
 
     launch, coder = two_profiles
     route = _route_to_task_route({"profile": "coder", "label": "coder"}, _parent(), {})
@@ -71,16 +71,16 @@ def test_profile_route_resolves_the_target_profiles_model_and_key(two_profiles):
 
 def test_unknown_profile_is_refused_with_an_instruction(two_profiles):
     from agent.delegation_provider import DelegationRouteError
-    from tools.delegate_tool_routes import _route_to_task_route
+    from hermes_agent.tools.delegate_tool_routes import _route_to_task_route
 
     with pytest.raises(DelegationRouteError, match="hermes profile list"):
         _route_to_task_route({"profile": "nobody"}, _parent(), {})
 
 
 def test_child_is_built_and_converses_inside_the_target_profile_scope(two_profiles):
-    from tools.delegate_tool import _build_child_agent, _route_overrides
-    from tools.delegate_tool_child_run import _ChildRun
-    from tools.delegate_tool_routes import _route_to_task_route
+    from hermes_agent.tools.delegate_tool import _build_child_agent, _route_overrides
+    from hermes_agent.tools.delegate_tool_child_run import _ChildRun
+    from hermes_agent.tools.delegate_tool_routes import _route_to_task_route
 
     launch, coder = two_profiles
     parent = _parent()
@@ -114,7 +114,7 @@ def test_child_is_built_and_converses_inside_the_target_profile_scope(two_profil
         _current_task_id = None
 
     run = _ChildRun(_Child(), _Parent(), 0, "work as coder", None, None)
-    with patch("tools.delegate_tool_child_run._create_isolated_worktree", return_value=None):
+    with patch("hermes_agent.tools.delegate_tool_child_run._create_isolated_worktree", return_value=None):
         run.seed_workspace()
         result, failure, _ = run.await_child()
     assert failure is None and result["final_response"] == "ok"
@@ -125,7 +125,7 @@ def test_child_is_built_and_converses_inside_the_target_profile_scope(two_profil
 
 def test_secret_missing_from_target_profile_never_falls_back_to_the_launch_env(two_profiles):
     from agent.secret_scope import get_secret
-    from tools.delegate_tool_routes import delegated_profile_scope
+    from hermes_agent.tools.delegate_tool_routes import delegated_profile_scope
 
     _, coder = two_profiles
     (coder / ".env").write_text("PROFILE_KEY=coder-key\n", encoding="utf-8")
@@ -142,7 +142,7 @@ def _set_config(home, **sections):
 
 
 def _build(route, parent):
-    from tools.delegate_tool import _build_child_agent, _route_overrides
+    from hermes_agent.tools.delegate_tool import _build_child_agent, _route_overrides
     seen = {}
 
     def construct(**kwargs):
@@ -158,7 +158,7 @@ def _build(route, parent):
 
 def test_profile_whose_default_is_an_alias_takes_the_alias_route(two_profiles):
     """Same owner as CLI startup: ``model.default: <alias>`` is the alias's model and endpoint."""
-    from tools.delegate_tool_routes import _route_to_task_route
+    from hermes_agent.tools.delegate_tool_routes import _route_to_task_route
 
     _, coder = two_profiles
     _set_config(coder, model={"default": "localqwen"},
@@ -168,7 +168,7 @@ def test_profile_whose_default_is_an_alias_takes_the_alias_route(two_profiles):
 
 
 def test_named_custom_profile_child_leases_its_own_account_on_a_shared_url(two_profiles):
-    from tools.delegate_tool_routes import _route_to_task_route
+    from hermes_agent.tools.delegate_tool_routes import _route_to_task_route
 
     _, coder = two_profiles
     url = "https://gateway.invalid/v1"
@@ -191,13 +191,13 @@ def test_named_custom_profile_child_leases_its_own_account_on_a_shared_url(two_p
     ({}, None),  # unset in the target profile: its default, never the launching parent's level
 ])
 def test_profile_child_reasoning_is_the_target_profiles_resolved_setting(two_profiles, agent_cfg, expected):
-    from tools.delegate_tool_routes import _route_to_task_route
+    from hermes_agent.tools.delegate_tool_routes import _route_to_task_route
 
     _, coder = two_profiles
     _set_config(coder, agent=agent_cfg)
     parent = _parent()
     parent.reasoning_config = {"enabled": True, "effort": "xhigh"}
-    with patch("tools.delegate_tool._load_config", return_value={"reasoning_effort": "xhigh"}):
+    with patch("hermes_agent.tools.delegate_tool._load_config", return_value={"reasoning_effort": "xhigh"}):
         _, built = _build(_route_to_task_route({"profile": "coder"}, parent, {}), parent)
     assert built["reasoning_config"] == expected
 
@@ -207,7 +207,7 @@ def test_profile_child_lease_and_schema_retry_run_inside_the_target_profile(two_
     are child work: they run as the routed profile, like the first conversation."""
     from types import SimpleNamespace
 
-    from tools.delegate_tool_child_run import _lease_child_credential, _validate_child_output_schema
+    from hermes_agent.tools.delegate_tool_child_run import _lease_child_credential, _validate_child_output_schema
 
     launch, coder = two_profiles
     seen = {}
@@ -241,12 +241,12 @@ def test_profile_child_lease_and_schema_retry_run_inside_the_target_profile(two_
 
 
 @pytest.mark.parametrize("failing", ["agent.secret_scope.set_secret_scope",
-                                     "tools.terminal_scope.install_profile_terminal_scope"])
+                                     "hermes_agent.tools.terminal_scope.install_profile_terminal_scope"])
 def test_profile_scope_that_fails_to_enter_leaves_the_parent_in_its_own_profile(two_profiles, failing):
     """A step of the scope binding that raises unwinds the steps already bound: the parent never stays
     inside the child's profile (home override, secret scope, multiplex flag)."""
     from agent.secret_scope import current_secret_scope_home, is_multiplex_active
-    from tools.delegate_tool_routes import delegated_profile_scope
+    from hermes_agent.tools.delegate_tool_routes import delegated_profile_scope
 
     _, coder = two_profiles
     before = (_snapshot(), current_secret_scope_home(), is_multiplex_active())
@@ -268,8 +268,8 @@ class _ProfileProvider:
 
 
 def _resolve_coder_task():
-    from tools.delegate_tool_routes import resolve_task_routes
-    with patch("tools.delegate_tool_routes._active_provider", return_value=_ProfileProvider()):
+    from hermes_agent.tools.delegate_tool_routes import resolve_task_routes
+    with patch("hermes_agent.tools.delegate_tool_routes._active_provider", return_value=_ProfileProvider()):
         return resolve_task_routes([{"goal": "work as coder"}], {}, _parent())
 
 
@@ -280,7 +280,7 @@ def test_profile_route_is_refused_under_a_managed_worker_config_snapshot(two_pro
 
     from agent import safe_worker_policy
     from agent.delegation_provider import DelegationRouteError
-    from tools.delegate_tool_routes import _route_to_task_route
+    from hermes_agent.tools.delegate_tool_routes import _route_to_task_route
 
     launch, _ = two_profiles
     frozen = yaml.safe_load((launch / "config.yaml").read_text(encoding="utf-8"))
@@ -324,7 +324,7 @@ def test_profile_pinned_to_a_missing_acp_command_is_refused_at_routing(two_profi
 
 def test_one_profile_under_two_labels_resolves_once_and_keeps_each_label(two_profiles):
     from hermes_cli import runtime_provider
-    from tools.delegate_tool_routes import _route_to_task_route
+    from hermes_agent.tools.delegate_tool_routes import _route_to_task_route
 
     cache, parent = {}, _parent()
     with patch.object(runtime_provider, "resolve_runtime_provider", wraps=runtime_provider.resolve_runtime_provider) as rp:
@@ -339,9 +339,9 @@ def test_one_profile_under_two_labels_resolves_once_and_keeps_each_label(two_pro
 def test_profile_child_reads_the_starting_directory_seeded_for_it(two_profiles, worktree):
     """cwd records are keyed by the active profile on a multiplexed host: the child's starting directory (the
     parent's, or its isolated worktree) is recorded where the child, running as the target profile, reads it."""
-    from tools.delegate_tool_child_run import _ChildRun
-    from tools.delegate_tool_routes import child_profile_scope
-    from tools.terminal_tool import clear_session_cwd, get_session_cwd, record_session_cwd
+    from hermes_agent.tools.delegate_tool_child_run import _ChildRun
+    from hermes_agent.tools.delegate_tool_routes import child_profile_scope
+    from hermes_agent.tools.terminal_tool import clear_session_cwd, get_session_cwd, record_session_cwd
 
     _, coder = two_profiles
 
@@ -354,7 +354,7 @@ def test_profile_child_reads_the_starting_directory_seeded_for_it(two_profiles, 
     record_session_cwd("parent-task", "/work/repo")
     run = _ChildRun(_Child(), _Parent(), 0, "work as coder", None, None)
     try:
-        with patch("tools.delegate_tool_child_run._create_isolated_worktree", return_value=worktree):
+        with patch("hermes_agent.tools.delegate_tool_child_run._create_isolated_worktree", return_value=worktree):
             run.seed_workspace()
         with child_profile_scope(run.child):
             assert get_session_cwd(run.child_task_id) == (worktree or {}).get("path", "/work/repo")
@@ -367,8 +367,8 @@ def test_profile_child_uses_the_target_profiles_persistent_container(two_profile
     session runs in coder's container (coder's image, mounts, env), while the session's delivery identity
     (HERMES_SESSION_PROFILE, read by notifications) stays the parent's."""
     from hermes_agent.gateway.session_context import clear_session_vars, get_session_env, set_session_vars
-    from tools import terminal_tool
-    from tools.delegate_tool_routes import delegated_profile_scope
+    from hermes_agent.tools import terminal_tool
+    from hermes_agent.tools.delegate_tool_routes import delegated_profile_scope
 
     _, coder = two_profiles
     _set_config(coder, terminal={"backend": "docker", "container_persistent": True})
@@ -387,8 +387,8 @@ def test_routed_child_in_a_room_turn_is_gated_by_its_own_stricter_approval_mode(
     turn keeps the room's ``smart``."""
     from hermes_agent.gateway.hosted_room_execution_policy import (
         RoomExecutionPolicy, bind_room_execution_policy, execution_policy_mapping, reset_room_execution_policy)
-    from tools import approval_context
-    from tools.delegate_tool_child_run import _ChildRun
+    from hermes_agent.tools import approval_context
+    from hermes_agent.tools.delegate_tool_child_run import _ChildRun
 
     launch, coder = two_profiles
     _set_config(launch, approvals={"mode": "smart"})
@@ -410,7 +410,7 @@ def test_routed_child_in_a_room_turn_is_gated_by_its_own_stricter_approval_mode(
     token = bind_room_execution_policy(policy)
     try:
         run = _ChildRun(_Child(), _Parent(), 0, "rm -rf ~/scratch/old", None, None)
-        with patch("tools.delegate_tool_child_run._create_isolated_worktree", return_value=None):
+        with patch("hermes_agent.tools.delegate_tool_child_run._create_isolated_worktree", return_value=None):
             run.seed_workspace()
             result, failure, _ = run.await_child()
         assert failure is None and result["final_response"] == "ok"
@@ -424,10 +424,10 @@ def test_room_members_session_grant_cannot_preapprove_a_profile_routed_child(two
     """A 'session' grant on the member's terminal must not authorize a different profile's terminal."""
     from hermes_agent.gateway.hosted_room_execution_policy import (
         RoomExecutionPolicy, bind_room_execution_policy, execution_policy_mapping, reset_room_execution_policy)
-    from tools import approval, approval_context
-    from tools.approval_context import reset_current_session_key, set_current_session_key
-    from tools.approval_detection import detect_dangerous_command
-    from tools.delegate_tool_child_run import _ChildRun
+    from hermes_agent.tools import approval, approval_context
+    from hermes_agent.tools.approval_context import reset_current_session_key, set_current_session_key
+    from hermes_agent.tools.approval_detection import detect_dangerous_command
+    from hermes_agent.tools.delegate_tool_child_run import _ChildRun
 
     launch, coder = two_profiles
     _set_config(launch, approvals={"mode": "smart"})
@@ -473,7 +473,7 @@ def test_room_members_session_grant_cannot_preapprove_a_profile_routed_child(two
         # The existing grant stays valid for the member's own terminal.
         assert approval.check_dangerous_command(command, "local")["approved"]
         run = _ChildRun(_Child(), _Parent(), 0, command, None, None)
-        with patch("tools.delegate_tool_child_run._create_isolated_worktree", return_value=None):
+        with patch("hermes_agent.tools.delegate_tool_child_run._create_isolated_worktree", return_value=None):
             run.seed_workspace()
             result, failure, _ = run.await_child()
         assert failure is None and result["final_response"] == "ok"
@@ -489,8 +489,8 @@ def test_room_members_session_grant_cannot_preapprove_a_profile_routed_child(two
 def test_routed_childs_session_grant_stays_in_its_profile_and_ends_with_the_session(two_profiles, monkeypatch):
     """A 'session' grant given inside a profile-routed child covers that child's profile only, and
     ``clear_session`` (gateway /new, /stop) retires it with the conversation's other grants."""
-    from tools import approval
-    from tools.delegate_tool_routes import delegated_profile_scope
+    from hermes_agent.tools import approval
+    from hermes_agent.tools.delegate_tool_routes import delegated_profile_scope
 
     _, coder = two_profiles
     monkeypatch.setattr(approval, "_session_approved", {})
@@ -508,8 +508,8 @@ def test_child_routed_back_to_the_launch_profile_uses_the_launch_profiles_contai
     """A ``coder`` chat on a default-launched gateway (its turn bound to coder, HERMES_SESSION_PROFILE=coder) routing
     a child to ``default`` runs that child in default's persistent container, not the parent chat's."""
     from hermes_agent.gateway.session_context import clear_session_vars, set_session_vars
-    from tools import terminal_tool
-    from tools.delegate_tool_routes import delegated_profile_scope
+    from hermes_agent.tools import terminal_tool
+    from hermes_agent.tools.delegate_tool_routes import delegated_profile_scope
 
     launch, coder = two_profiles
     for home in (launch, coder):

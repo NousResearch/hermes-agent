@@ -208,7 +208,7 @@ def _scan_plugin_tree(plugin_dir: Path, identifier: str, *, force: bool, scan_de
     """
     if not _scan_on_install_enabled():
         return None
-    from tools.plugin_guard import format_scan_report, scan_plugin, should_allow_plugin_install
+    from hermes_agent.tools.plugin_guard import format_scan_report, scan_plugin, should_allow_plugin_install
     result = scan_plugin(plugin_dir, source=identifier)
     allowed, reason = should_allow_plugin_install(result, force=force)
     if allowed is None and reviewed_pin:
@@ -953,7 +953,7 @@ def _get_plugin_toolset_key(name: str) -> Optional[str]:
     """Toolset key a plugin registers its tools under, or None: from the live registry (plugin
     already loaded), else from ``provides_tools`` in plugin.yaml looked up in the registry."""
     try:
-        from tools.registry import registry
+        from hermes_agent.tools.registry import registry
     except Exception:
         return None
 

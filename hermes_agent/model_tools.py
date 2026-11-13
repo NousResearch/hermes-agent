@@ -1,7 +1,7 @@
 """Thin orchestration layer over the tool registry.
 
-Importing runs tool discovery (each tools/*.py self-registers via
-tools.registry.register()); exposes get_tool_definitions() (toolset-filtered
+Importing runs tool discovery (each hermes_agent/tools/*.py self-registers via
+hermes_agent.tools.registry.register()); exposes get_tool_definitions() (toolset-filtered
 schemas sent to the model) and handle_function_call() (dispatch with
 hooks/middleware) plus registry pass-throughs.
 """
@@ -18,13 +18,13 @@ import threading
 import time
 from typing import Dict, Any, List, Optional, Tuple
 
-from tools.registry import (
+from hermes_agent.tools.registry import (
     CHECK_FN_CACHE_BYPASS, check_fn_cache_epoch, check_fn_cache_scope, check_fn_verdict_window, discover_builtin_tools,
     registry, tool_error)
-from tools.registry import _MAX_TOOL_ERROR_CHARS as _TOOL_ERROR_MAX_LEN
-from toolsets import resolve_toolset, validate_toolset
-from tools.arg_coercion import coerce_tool_args
-from tools.todo_tool import TODO_LEGACY_ALIASES, TODO_SCHEMA
+from hermes_agent.tools.registry import _MAX_TOOL_ERROR_CHARS as _TOOL_ERROR_MAX_LEN
+from hermes_agent.toolsets import resolve_toolset, validate_toolset
+from hermes_agent.tools.arg_coercion import coerce_tool_args
+from hermes_agent.tools.todo_tool import TODO_LEGACY_ALIASES, TODO_SCHEMA
 
 logger = logging.getLogger(__name__)
 
@@ -126,7 +126,7 @@ def _run_async(coro):
 
         pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
         # Carry profile + approval/sudo context so get_hermes_home() resolves correctly.
-        from tools.thread_context import propagate_context_to_thread
+        from hermes_agent.tools.thread_context import propagate_context_to_thread
         future = pool.submit(propagate_context_to_thread(_run_in_worker))
         try:
             return future.result(timeout=300)
@@ -147,7 +147,7 @@ def _run_async(coro):
     return _get_tool_loop().run_until_complete(coro)
 
 
-# --- Tool discovery (importing each tools/*.py triggers registry.register) ---
+# --- Tool discovery (importing each hermes_agent/tools/*.py triggers registry.register) ---
 discover_builtin_tools()
 
 # MCP discovery is deliberately NOT run here: it blocks up to 120 s and the
@@ -289,7 +289,7 @@ def _tool_defs_cache_key(
         cfg_fp = config_version(get_config_path())
     except (FileNotFoundError, OSError, ImportError):
         cfg_fp = None
-    from tools.environments.sandbox_scope import hosted_scope
+    from hermes_agent.tools.environments.sandbox_scope import hosted_scope
     return (
         registry.current_scope_key(), frozenset(enabled_toolsets) if enabled_toolsets is not None else None,
         frozenset(disabled_toolsets) if disabled_toolsets else None, registry._generation, cfg_fp,
@@ -301,7 +301,7 @@ def _tool_defs_cache_key(
 
 def _apply_toolset_selection(tools: set, names: list[str], quiet_mode: bool, *, disable: bool) -> None:
     """Add (or subtract) every toolset in *names* to/from *tools*, printing the selection unless quiet."""
-    from toolsets import bundle_non_core_tools, get_toolset
+    from hermes_agent.toolsets import bundle_non_core_tools, get_toolset
     verb, icon = ("Disabled", "🚫") if disable else ("Enabled", "✅")
     for name in names:
         if validate_toolset(name):
@@ -344,7 +344,7 @@ def _select_tool_names(enabled_toolsets: Optional[list[str]], disabled_toolsets:
             enabled.append("kanban")
         _apply_toolset_selection(tools, enabled, quiet_mode, disable=False)
     else:
-        from toolsets import TOOLSET_SESSION_PLATFORMS, get_all_toolsets
+        from hermes_agent.toolsets import TOOLSET_SESSION_PLATFORMS, get_all_toolsets
         for ts_name in get_all_toolsets():
             if ts_name not in TOOLSET_SESSION_PLATFORMS:
                 tools.update(resolve_toolset(ts_name))
@@ -370,7 +370,7 @@ def _rewrite_execute_code(td: dict[str, Any], available: set) -> Optional[dict[s
     """List only sandbox tools that are actually available."""
     # Without this, the model sees "web_search is available in execute_code" even when the API key isn't
     # configured or the toolset is disabled (#560-discord).
-    from tools.code_execution_tool import SANDBOX_ALLOWED_TOOLS, build_execute_code_schema, _get_execution_mode
+    from hermes_agent.tools.code_execution_tool import SANDBOX_ALLOWED_TOOLS, build_execute_code_schema, _get_execution_mode
     return _fn_def(build_execute_code_schema(SANDBOX_ALLOWED_TOOLS & available, mode=_get_execution_mode()))
 
 
@@ -378,7 +378,7 @@ def _discord_rewriter(schema_fn_name: str):
     """Schema depends on the bot's privileged intents and the config action allowlist; None drops the tool."""
     def _rewrite(td: dict[str, Any], available: set) -> Optional[dict[str, Any]]:
         try:
-            from tools import discord_tool as _dt
+            from hermes_agent.tools import discord_tool as _dt
             dynamic = getattr(_dt, schema_fn_name)()
         except Exception:
             dynamic = None
@@ -404,7 +404,7 @@ def _rewrite_browser_exec(td: dict[str, Any], available: set) -> Optional[dict[s
 def _rewrite_browser_exec_vision(td: dict[str, Any], available: set) -> Optional[dict[str, Any]]:
     """Point a header that says screenshots are not attached at vision_analyze, only when the
     session has it (an auxiliary vision route alone does not expose the tool)."""
-    from tools.browser_use_cli import SCREENSHOTS_DETACHED
+    from hermes_agent.tools.browser_use_cli import SCREENSHOTS_DETACHED
     fn = td["function"]
     desc = fn.get("description", "")
     if "vision_analyze" not in available or SCREENSHOTS_DETACHED not in desc:
@@ -527,7 +527,7 @@ def _compute_tool_definitions(enabled_toolsets: Optional[list[str]] = None, disa
     tools_to_include = _select_tool_names(enabled_toolsets, disabled_toolsets, quiet_mode)
     # Selection is per schema, not per process/profile. Kanban's local checks
     # are uncached; the outer definitions cache already keys on this selection.
-    from tools.kanban_toolset_context import scoped_kanban_toolset_selection
+    from hermes_agent.tools.kanban_toolset_context import scoped_kanban_toolset_selection
     with scoped_kanban_toolset_selection(enabled_toolsets):
         filtered_tools = _apply_dynamic_schemas(registry.get_definitions(tools_to_include, quiet=quiet_mode))
     global _last_resolved_tool_names
@@ -539,7 +539,7 @@ def _compute_tool_definitions(enabled_toolsets: Optional[list[str]] = None, disa
     # Normalize schema shapes llama.cpp's grammar converter rejects (bare
     # "type": "object", string-valued nodes from malformed MCP servers).
     try:
-        from tools.schema_sanitizer import sanitize_tool_schemas
+        from hermes_agent.tools.schema_sanitizer import sanitize_tool_schemas
         filtered_tools = sanitize_tool_schemas(filtered_tools)
     except Exception as e:  # pragma: no cover — defensive
         logger.warning("Schema sanitization skipped: %s", e)
@@ -549,7 +549,7 @@ def _compute_tool_definitions(enabled_toolsets: Optional[list[str]] = None, disa
     # configured share of the context window. Core tools are never deferred.
     # Must be the LAST step (after sanitization); idempotent if called twice.
     try:
-        from tools.tool_search import assemble_tool_defs, load_config as _load_ts_config
+        from hermes_agent.tools.tool_search import assemble_tool_defs, load_config as _load_ts_config
         ts_cfg = _load_ts_config()
         if not skip_tool_search_assembly and ts_cfg.enabled != "off":
             assembly = assemble_tool_defs(filtered_tools, context_length=_resolve_active_context_length(), config=ts_cfg)
@@ -562,7 +562,7 @@ def _compute_tool_definitions(enabled_toolsets: Optional[list[str]] = None, disa
     except Exception as e:  # pragma: no cover — never break tool loading
         logger.warning("Tool search assembly skipped: %s", e)
 
-    from tools.hosted_tool_policy import hosted_tool_refusal
+    from hermes_agent.tools.hosted_tool_policy import hosted_tool_refusal
     # A hosted scope runs only its allowlist (the tool_search bridge included): advertising the
     # rest would only earn refusals.
     return [tool for tool in filtered_tools if hosted_tool_refusal(tool["function"]["name"]) is None]
@@ -644,7 +644,7 @@ _READ_SEARCH_TOOLS = {"read_file", "search_files"}
 
 # --- Tool error sanitization --------------------------------------------------
 # Defense-in-depth: strip role tags / CDATA / code fences from exception text the
-# model will read, and cap length (cap shared with tools/registry.py so text never
+# model will read, and cap length (cap shared with hermes_agent/tools/registry.py so text never
 # passes two different caps with two different markers).
 _TOOL_ERROR_STRIP_RES = (
     re.compile(r'</?(?:tool_call|function_call|result|response|output|input|system|assistant|user)>', re.IGNORECASE),
@@ -736,7 +736,7 @@ def _dispatch_bridge_tool(function_name: str, function_args: dict[str, Any],
     tool_call should be re-dispatched as the real tool.
     """
     try:
-        from tools import tool_search as ts
+        from hermes_agent.tools import tool_search as ts
     except Exception:
         return None
     if not ts.is_bridge_tool(function_name):
@@ -749,7 +749,7 @@ def _dispatch_bridge_tool(function_name: str, function_args: dict[str, Any],
     except Exception:
         current_defs = []
     args = function_args or {}
-    from tools.managed_gateway_identity import CallRef
+    from hermes_agent.tools.managed_gateway_identity import CallRef
     call = CallRef(turn_id=ids.turn_id, tool_call_id=ids.tool_call_id) if ids else None
     if function_name == ts.TOOL_SEARCH_NAME:
         return ts.dispatch_tool_search(args, current_tool_defs=current_defs, call=call), None
@@ -833,7 +833,7 @@ def _pre_dispatch_guards(function_name: str, function_args: dict[str, Any], skip
 def _approval_observability(ids: _CallIds):
     """Bind the approval observability context (turn/tool_call/session ids) for the block."""
     try:
-        from tools.approval_context import reset_current_observability_context, set_current_observability_context
+        from hermes_agent.tools.approval_context import reset_current_observability_context, set_current_observability_context
         tokens = set_current_observability_context(turn_id=ids.turn_id or "", tool_call_id=ids.tool_call_id or "",
                                                    session_id=ids.session_id or "")
     except Exception:
@@ -862,7 +862,7 @@ def _execute_tool(function_name: str, function_args: dict[str, Any], original_ar
         dispatch_kwargs["user_task"] = user_task
 
     def _dispatch(next_args: dict[str, Any]) -> Any:
-        from tools.connectors import dispatch_connector_call, is_connector_name
+        from hermes_agent.tools.connectors import dispatch_connector_call, is_connector_name
         if is_connector_name(function_name):
             return dispatch_connector_call(function_name, next_args, ids.tool_call_id, ids.turn_id, ids.task_id)
         return registry.dispatch(function_name, next_args, **dispatch_kwargs)
@@ -923,7 +923,7 @@ def handle_function_call(
     function_name = _LEGACY_TOOL_ALIASES.get(function_name, function_name)
     ids = _CallIds(task_id, session_id, tool_call_id, turn_id, api_request_id, conversation_id)
     start = time.monotonic()
-    from tools.hosted_tool_policy import hosted_tool_refusal
+    from hermes_agent.tools.hosted_tool_policy import hosted_tool_refusal
     if refusal := hosted_tool_refusal(function_name):
         # Callers outside the agent loop (execute_code RPC, the session kernel, the MCP bridge,
         # connector batches) meet the same allowlist before bridges, connectors or the registry.
@@ -943,7 +943,7 @@ def handle_function_call(
         result, underlying = bridged
         if underlying is None:
             return _emit(result, duration_ms=_elapsed_ms(start))
-        from tools.connectors import CONNECTOR_BATCH_SENTINEL, dispatch_connector_batch
+        from hermes_agent.tools.connectors import CONNECTOR_BATCH_SENTINEL, dispatch_connector_batch
         if underlying[0] == CONNECTOR_BATCH_SENTINEL:
             return _emit(dispatch_connector_batch(
                 underlying[1]["calls"], ids, user_task=user_task,
@@ -957,8 +957,8 @@ def handle_function_call(
             enabled_toolsets=enabled_toolsets, disabled_toolsets=disabled_toolsets,
         )
 
-    from tools.connectors import is_connector_name
-    from tools.connectors.gateway.names import parse_connector_name
+    from hermes_agent.tools.connectors import is_connector_name
+    from hermes_agent.tools.connectors.gateway.names import parse_connector_name
     if function_name == "manage_connections" or is_connector_name(function_name):
         if "manage_connections" not in _select_tool_names(enabled_toolsets, disabled_toolsets, quiet_mode=True):
             return _emit(tool_error("Connectors are not available in this session."))
@@ -981,7 +981,7 @@ def handle_function_call(
         # Any non-read/search tool resets the consecutive-read-loop counter.
         if function_name not in _READ_SEARCH_TOOLS:
             try:
-                from tools.file_tools_read_tracking import notify_other_tool_call
+                from hermes_agent.tools.file_tools_read_tracking import notify_other_tool_call
                 notify_other_tool_call(task_id or "default")
             except Exception:
                 pass  # file_tools may not be loaded yet

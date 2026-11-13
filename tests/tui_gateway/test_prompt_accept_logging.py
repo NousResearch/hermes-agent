@@ -115,7 +115,7 @@ def test_turn_settles_before_post_turn_trim(turn_stubs, monkeypatch, caplog, set
     """A blocked post-turn trim must not hold the session running or its bookend (#131740);
     turn audio still ends BEFORE settlement, so a next turn admitted during the trim keeps its own."""
     from hermes_cli import mem_trim
-    from tools import voice_mode
+    from hermes_agent.tools import voice_mode
 
     entered, release = threading.Event(), threading.Event()
 

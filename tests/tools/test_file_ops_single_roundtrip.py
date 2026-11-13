@@ -14,8 +14,8 @@ from unittest.mock import patch
 
 import pytest
 
-from tools.environments.local import LocalEnvironment
-from tools.file_operations import ExecuteResult, ShellFileOperations
+from hermes_agent.tools.environments.local import LocalEnvironment
+from hermes_agent.tools.file_operations import ExecuteResult, ShellFileOperations
 
 pytestmark = pytest.mark.platforms("posix")  # POSIX shell probes
 

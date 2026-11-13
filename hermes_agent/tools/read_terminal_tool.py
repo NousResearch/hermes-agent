@@ -9,8 +9,8 @@ gateway's blocking-prompt bridge (as `clarify` does): tui_gateway emits
 
 from typing import Callable, Optional
 
-from tools.desktop_ui import passthrough_json
-from tools.registry import registry, tool_error
+from hermes_agent.tools.desktop_ui import passthrough_json
+from hermes_agent.tools.registry import registry, tool_error
 
 
 def read_pane(callback: Optional[Callable], window, errors: tuple) -> str:

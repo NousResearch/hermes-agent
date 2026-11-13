@@ -451,7 +451,7 @@ async def test_matrix_pairing_revoke_denies_live_message_and_approval_without_re
             room_id=room_id,
             content={"m.relates_to": {"event_id": prompt_id, "key": "✅"}},
         )
-        with patch("tools.approval.resolve_gateway_approval", return_value=1) as resolve:
+        with patch("hermes_agent.tools.approval.resolve_gateway_approval", return_value=1) as resolve:
             await adapter._on_reaction(event)
         return prompt, resolve
 

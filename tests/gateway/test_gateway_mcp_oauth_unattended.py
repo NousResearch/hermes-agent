@@ -13,8 +13,8 @@ from hermes_agent.gateway.config import GatewayConfig
 @pytest.mark.asyncio
 async def test_gateway_startup_discovery_suppresses_interactive_oauth(monkeypatch):
     import hermes_agent.gateway.run as gateway_run
-    from tools import mcp_tool_discovery as _mcp_discovery
-    from tools.mcp_oauth import _is_interactive, force_interactive_oauth
+    from hermes_agent.tools import mcp_tool_discovery as _mcp_discovery
+    from hermes_agent.tools.mcp_oauth import _is_interactive, force_interactive_oauth
 
     seen: list = []
     monkeypatch.setattr(_mcp_discovery, "discover_mcp_tools", lambda: seen.append(_is_interactive()) or [])
@@ -29,8 +29,8 @@ def test_mcp_config_reconciler_reconciles_every_tick_after_baseline(monkeypatch,
     chore never came back for it. First tick is baseline only (startup discovery owns it); every
     later tick reconciles with interactive OAuth suppressed; nothing to report stays silent."""
     from hermes_agent.gateway.run_profile_reconcile import _mcp_config_reconciler
-    from tools import mcp_tool_discovery as _mcp_discovery
-    from tools.mcp_oauth import _is_interactive
+    from hermes_agent.tools import mcp_tool_discovery as _mcp_discovery
+    from hermes_agent.tools.mcp_oauth import _is_interactive
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     (tmp_path / "config.yaml").write_text("mcp_servers:\n  linear:\n    url: https://x/mcp\n")

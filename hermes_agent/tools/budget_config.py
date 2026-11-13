@@ -68,7 +68,7 @@ class BudgetConfig:
             return self.tool_overrides[tool_name]
         if tool_name.startswith(MCP_TOOL_PREFIX):
             return min(self.mcp_result_size, self.default_result_size)
-        from tools.registry import registry
+        from hermes_agent.tools.registry import registry
         registry_value = registry.get_max_result_size(tool_name, default=self.default_result_size)
         if registry_value == float("inf"):
             return registry_value

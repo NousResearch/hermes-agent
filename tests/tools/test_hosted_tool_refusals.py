@@ -1,6 +1,6 @@
 """Hosted scopes keep host-only paths outside tool dispatch closed.
 
-Tool calls meet the deny-by-default allowlist (``tools/hosted_tool_policy.py``, covered by
+Tool calls meet the deny-by-default allowlist (``hermes_agent/tools/hosted_tool_policy.py``, covered by
 ``test_hosted_deny_by_default.py`` and the conformance check ``host_tools_refused``). This file drives
 the paths that run without a tool call (checkpoints, inline skill shell, ``@`` references, the
 workspace probe, cron scripts, MCP stdio spawns, media delivery, transcription, ``/review``
@@ -20,7 +20,7 @@ import pytest
 
 from agent.runtime_scope import bind_state
 from hermes_scope import Principal, Scope
-from tools.hosted_tool_policy import HostedToolRefused
+from hermes_agent.tools.hosted_tool_policy import HostedToolRefused
 
 A = Scope("acme", "agent-a", Principal("u1"), owner=Principal("u1"), can_administer=True)
 
@@ -40,8 +40,8 @@ def no_spawn(monkeypatch):
 
 def test_browser_exec_runs_no_tenant_python_on_the_host(monkeypatch, no_spawn):
     """browser_exec is reached only by tool dispatch, where the allowlist refuses it before setup."""
-    import tools.browser_use_cli as browser
-    from tools.registry import registry
+    import hermes_agent.tools.browser_use_cli as browser
+    from hermes_agent.tools.registry import registry
 
     setup = []
     monkeypatch.setattr(browser, "_find_cli", lambda: setup.append("cli") or [sys.executable, "-"])
@@ -55,7 +55,7 @@ def test_browser_exec_runs_no_tenant_python_on_the_host(monkeypatch, no_spawn):
 
 
 def test_checkpoints_take_and_restore_nothing_on_the_host(tmp_path, no_spawn):
-    from tools.checkpoint_manager import CheckpointManager
+    from hermes_agent.tools.checkpoint_manager import CheckpointManager
 
     mgr = CheckpointManager(enabled=True)
     (tmp_path / "f.txt").write_text("x")
@@ -76,7 +76,7 @@ def test_inline_skill_shell_does_not_run_on_the_host(tmp_path, no_spawn):
 
 def test_context_references_read_nothing_on_the_host(tmp_path, monkeypatch):
     from agent.context_references import preprocess_context_references
-    from tools.environments import sandbox_conformance as conformance
+    from hermes_agent.tools.environments import sandbox_conformance as conformance
 
     planted = tmp_path / "secret.txt"
     planted.write_text("HOST-ONLY")
@@ -104,7 +104,7 @@ def test_a_cron_script_does_not_run_on_the_host(tmp_path, no_spawn):
 
 
 def test_an_mcp_stdio_server_is_not_started_on_the_host(no_spawn):
-    from tools.mcp_tool import MCPServerTask
+    from hermes_agent.tools.mcp_tool import MCPServerTask
 
     server = MCPServerTask("user-server")
     with bind_state(A), pytest.raises(HostedToolRefused):
@@ -123,8 +123,8 @@ def test_media_delivery_never_attaches_a_host_file(tmp_path):
 
 
 def test_transcription_reads_no_host_audio(tmp_path, no_spawn):
-    from tools.environments import sandbox_conformance as conformance
-    from tools.transcription_tools import transcribe_audio
+    from hermes_agent.tools.environments import sandbox_conformance as conformance
+    from hermes_agent.tools.transcription_tools import transcribe_audio
 
     audio = tmp_path / "voice.ogg"
     audio.write_bytes(b"OggS")
@@ -135,7 +135,7 @@ def test_transcription_reads_no_host_audio(tmp_path, no_spawn):
 
 
 def test_delegation_spawns_no_child_agent():
-    from tools.delegate_tool import delegate_task
+    from hermes_agent.tools.delegate_tool import delegate_task
 
     class Parent:
         def __getattr__(self, name):
@@ -146,7 +146,7 @@ def test_delegation_spawns_no_child_agent():
 
 
 def test_document_extraction_is_not_done_on_the_host(monkeypatch):
-    from tools import file_tools, read_extract
+    from hermes_agent.tools import file_tools, read_extract
 
     monkeypatch.setattr(read_extract, "extract_document_bytes",
                         lambda *a, **k: (_ for _ in ()).throw(AssertionError("extracted on the host")))
@@ -159,7 +159,7 @@ def test_local_calls_still_reach_every_guarded_path(tmp_path):
     """With no scope bound the same entry points behave as before (spot checks of the cheap ones)."""
     from agent.coding_context import build_coding_workspace_block
     from agent.skill_preprocessing import run_inline_shell
-    from tools.checkpoint_manager import CheckpointManager
+    from hermes_agent.tools.checkpoint_manager import CheckpointManager
 
     assert run_inline_shell("echo LOCAL", tmp_path, 5) == "LOCAL"
     subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
@@ -170,7 +170,7 @@ def test_local_calls_still_reach_every_guarded_path(tmp_path):
 
 def test_an_mcp_servers_tool_is_refused_in_a_hosted_scope():
     """A tool an MCP server registered (toolset ``mcp-<server>``) runs for the profile, not the agent."""
-    from tools.registry import registry
+    from hermes_agent.tools.registry import registry
 
     calls = []
     registry.register(name="mcp_probe_server_echo", toolset="mcp-probe-server",

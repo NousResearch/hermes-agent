@@ -5,7 +5,7 @@ while `patch` (1.3k chars/call) succeeded 99.7% of the time; the tool result is 
 """
 import json
 
-from tools.file_tools import read_file_tool, write_file_tool
+from hermes_agent.tools.file_tools import read_file_tool, write_file_tool
 
 
 def _big(n_lines=800):

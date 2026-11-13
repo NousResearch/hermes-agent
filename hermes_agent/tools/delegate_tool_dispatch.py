@@ -15,15 +15,15 @@ from functools import partial
 from typing import Any, Dict, List, Optional
 
 from hermes_cli.observability.shared_metrics_loop import begin_delegation_run, finish_delegation_unit
-from tools.async_delegation import _new_delegation_id, record_unit_child
-from tools.delegate_tool_child_run import _attach_child, _close_child, _detach_child, _fabricated_entry, _signal_child_stop
-from tools.delegate_tool_progress import (
+from hermes_agent.tools.async_delegation import _new_delegation_id, record_unit_child
+from hermes_agent.tools.delegate_tool_child_run import _attach_child, _close_child, _detach_child, _fabricated_entry, _signal_child_stop
+from hermes_agent.tools.delegate_tool_progress import (
     SUBAGENT_FAILURE_STATUSES, _print_completion_line, _quiet, describe_subagent_failure, format_batch_tag,
 )
-from tools.delegate_tool_registry import _capture_gateway_steer_authority
-from tools.delegate_tool_results import _finalize_child_results
+from hermes_agent.tools.delegate_tool_registry import _capture_gateway_steer_authority
+from hermes_agent.tools.delegate_tool_results import _finalize_child_results
 
-logger = logging.getLogger("tools.delegate_tool")  # log-record parity with the origin module
+logger = logging.getLogger("hermes_agent.tools.delegate_tool")  # log-record parity with the origin module
 
 
 @dataclass
@@ -66,7 +66,7 @@ class _Batch:
         }
 
     def run_child(self, i: int, task: dict[str, Any], child: Any) -> dict[str, Any]:
-        from tools.delegate_tool import _run_single_child
+        from hermes_agent.tools.delegate_tool import _run_single_child
         return _run_single_child(task_index=i, goal=task["goal"], child=child, parent_agent=self.parent_agent, **self.owner_kwargs())
 
 
@@ -83,7 +83,7 @@ def _capture_origin() -> tuple[str, str, Any, Any, bool]:
     capability flag rides the same request-scoped binding and is captured here for the same
     reason — and fails closed: a binding that never declared it (or a read error) leaves the
     session treated as non-wake-capable (#98619)."""
-    from tools.async_delegation import _current_origin_session_id
+    from hermes_agent.tools.async_delegation import _current_origin_session_id
     _origin_wake_sid = _current_origin_session_id()
     _origin_ui_session_id = ""
     _origin_session_history_delivery = False
@@ -125,13 +125,13 @@ def _record_finished_child(batch: _Batch, entry: Any, honor_parent_interrupt: bo
 
 
 def _waiting_on_resume(entry: dict[str, Any]) -> bool:
-    from tools.delegate_tool_auto_resume import waiting_on_resume
+    from hermes_agent.tools.delegate_tool_auto_resume import waiting_on_resume
     return waiting_on_resume(entry)
 
 
 def _release_unstarted_child(batch: _Batch, child: Any) -> None:
     """Teardown for a child whose run never started (``_run_single_child``'s finally never runs for it)."""
-    from tools.delegate_tool_resumable import release_unstarted
+    from hermes_agent.tools.delegate_tool_resumable import release_unstarted
     release_unstarted(child)
     _detach_child(batch.parent_agent, child)
     _close_child(child, "Failed to close a subagent that never started")
@@ -152,9 +152,9 @@ def _run_children_parallel(batch: _Batch, results: list, *, honor_parent_interru
     completion line printed per child). Polls futures with a short ``wait()`` timeout instead of ``as_completed()``
     so a wedged child cannot block the parent forever after an interrupt; on parent interrupt the still-pending
     children are reported ``interrupted`` and abandoned (they already got the interrupt signal)."""
-    # Daemon workers (tools.daemon_pool): the `with` block still joins normally, but if the parent is interrupted
+    # Daemon workers (hermes_agent.tools.daemon_pool): the `with` block still joins normally, but if the parent is interrupted
     # while a child is wedged, the abandoned worker must not block interpreter exit.
-    from tools.daemon_pool import DaemonThreadPoolExecutor
+    from hermes_agent.tools.daemon_pool import DaemonThreadPoolExecutor
     parent_agent, n_tasks = batch.parent_agent, len(batch.task_list)
     task_labels = [t["goal"][:40] for t in batch.task_list]
     spinner_ref = getattr(parent_agent, "_delegate_spinner", None)
@@ -180,8 +180,8 @@ def _run_children_parallel(batch: _Batch, results: list, *, honor_parent_interru
     # waiting on the interrupt path instead (same shape as moa_loop).
     interrupted, futures = False, {}
     try:
-        from tools.delegate_tool_config import _get_prefix_stagger_seconds
-        from tools.delegate_tool_prefix_gate import PrefixCacheGate
+        from hermes_agent.tools.delegate_tool_config import _get_prefix_stagger_seconds
+        from hermes_agent.tools.delegate_tool_prefix_gate import PrefixCacheGate
         gate = PrefixCacheGate.for_children(batch.children, _get_prefix_stagger_seconds())
         run = batch.run_child if gate is None else partial(_run_gated, batch, gate, honor_parent_interrupt)
         futures = {executor.submit(contextvars.copy_context().run, run, i, t, child): i for i, t, child in batch.children}
@@ -204,7 +204,7 @@ def _run_children_parallel(batch: _Batch, results: list, *, honor_parent_interru
                     # Non-durable and separate from the unit's final result (which is still delivered once). A child
                     # promised an automatic resume is not failed: it reports once, later (delegate_tool_auto_resume).
                     with _quiet("task failure notice failed", exc_info=True):
-                        from tools.async_delegation import push_task_failure_notice
+                        from hermes_agent.tools.async_delegation import push_task_failure_notice
                         _i = entry.get("task_index", -1)
                         _live = batch.live_paths[_i] if isinstance(_i, int) and 0 <= _i < len(batch.live_paths) else None
                         push_task_failure_notice(
@@ -223,7 +223,7 @@ def _execute_and_aggregate(batch: _Batch, *, honor_parent_interrupt: bool = True
     sync path and the background runner; a background runner receives a per-group unit (a subset of the call's
     children) so each group JOINS only on itself. Live transcripts are finalized but retained as the full-fidelity
     record (retention pruning happens on future dispatches)."""
-    from tools.delegation_live_log import update_manifest_statuses
+    from hermes_agent.tools.delegation_live_log import update_manifest_statuses
     results: list = []
     if len(batch.children) == 1:
         results.append(batch.run_child(*batch.children[0]))
@@ -259,7 +259,7 @@ def _execute_and_aggregate(batch: _Batch, *, honor_parent_interrupt: bool = True
     if batch.live_deleg_id:
         combined["delegation_id"] = batch.live_deleg_id
     # Runtime truth about children's background processes, as prose the parent can't miss inside the JSON.
-    from tools.process_registry_notifications import _process_accounting_lines
+    from hermes_agent.tools.process_registry_notifications import _process_accounting_lines
     process_notes = [line for entry in results for line in _process_accounting_lines(entry)]
     if process_notes:
         combined["process_notes"] = process_notes
@@ -341,7 +341,7 @@ def _resolve_async_session_key(parent_agent: Any, origin_ui_session_id: str) -> 
     the key resolves empty; its drain is a positive-ownership filter on the durable session_id (empty would fail
     closed), so stamp the parent's durable id.
     """
-    from tools.approval_context import get_current_session_key
+    from hermes_agent.tools.approval_context import get_current_session_key
     session_key = get_current_session_key(default="")
     agent_session_id = str(getattr(parent_agent, "session_id", "") or "")
     with _quiet(None):
@@ -432,7 +432,7 @@ def _units_of(batch: _Batch) -> list[_Batch]:
 
     Off by default (``delegation.independent_completions``): the whole call is ONE unit and returns as one message.
     A per-task flurry of completions (one new turn each) fragmented orchestrators that had no plan for it."""
-    from tools.delegate_tool_config import _get_independent_completions
+    from hermes_agent.tools.delegate_tool_config import _get_independent_completions
     if not _get_independent_completions():
         return [batch]
     members: dict[Any, list[tuple]] = {}
@@ -444,7 +444,7 @@ def _units_of(batch: _Batch) -> list[_Batch]:
 
 def _dispatch_unit(unit: _Batch, unit_id: Optional[str], slot_key: Optional[str], routing: dict) -> dict:
     """Hand ONE unit to the async registry; the runner joins on that unit's children only."""
-    from tools.async_delegation import dispatch_async_delegation_batch
+    from hermes_agent.tools.async_delegation import dispatch_async_delegation_batch
     child_agents = [c for (_, _, c) in unit.children]
 
     def _interrupt():
@@ -479,7 +479,7 @@ def _dispatch_background(batch: _Batch) -> str:
     of one call shares ONE pool slot (``slot_key``), so grouping never changes capacity accounting. Falls back to
     running synchronously (with an explanatory ``note``) when the session cannot receive detached completions or the
     async pool is at capacity."""
-    from tools.delegate_tool import _get_max_async_children
+    from hermes_agent.tools.delegate_tool import _get_max_async_children
     wake_sid = _resolve_async_wake_sid(
         batch.origin_wake_sid, batch.origin_session_history_delivery,
         oneshot_session=getattr(batch.parent_agent, "_oneshot_session", None) is True,  # agent_is_oneshot's pin
@@ -535,7 +535,7 @@ def _dispatch_background(batch: _Batch) -> str:
 
 def _refuse_detached_only(batch: _Batch, why: str) -> str:
     """A detached-only batch that cannot detach: nothing ran, its children are released."""
-    from tools.registry import tool_error
+    from hermes_agent.tools.registry import tool_error
     for _, _, child in batch.children:
         _release_unstarted_child(batch, child)
     return tool_error(f"Not continued: {why}.")
@@ -543,7 +543,7 @@ def _refuse_detached_only(batch: _Batch, why: str) -> str:
 
 def _run_batch(batch: _Batch, background: bool) -> str:
     """Tool result JSON: a dispatch handle (background) or the joined combined results."""
-    from tools.delegate_tool import session_joins_delegation
+    from hermes_agent.tools.delegate_tool import session_joins_delegation
     # Every unit of this call shares task_list, so its last joined unit emits the call's one row.
     begin_delegation_run(
         batch.task_list, subagents=len(batch.children), depth=getattr(batch.parent_agent, "_delegate_depth", 0) + 1,

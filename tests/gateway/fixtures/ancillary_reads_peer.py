@@ -84,9 +84,9 @@ async def probe(mode):
                 assert sid not in authority.sessions, 'read restored a cold session'
                 authority.sessions[sid] = live
             else:
-                from tools.process_registry import process_registry
-                from tools.delegate_tool_child_run import _register_child
-                from tools.delegate_tool_registry import _unregister_subagent
+                from hermes_agent.tools.process_registry import process_registry
+                from hermes_agent.tools.delegate_tool_child_run import _register_child
+                from hermes_agent.tools.delegate_tool_registry import _unregister_subagent
                 class Agent:
                     pass
                 parent, old_parent, other_parent = Agent(), Agent(), Agent()

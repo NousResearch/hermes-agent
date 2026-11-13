@@ -28,8 +28,8 @@ class TestEdgeTtsSpeed:
         mock_edge = MagicMock()
         mock_edge.Communicate = MagicMock(return_value=mock_comm)
 
-        with patch("tools.tts_tool._import_edge_tts", return_value=mock_edge):
-            from tools.tts_tool import _generate_edge_tts
+        with patch("hermes_agent.tools.tts_tool._import_edge_tts", return_value=mock_edge):
+            from hermes_agent.tools.tts_tool import _generate_edge_tts
             asyncio.run(_generate_edge_tts("Hello", str(tmp_path / "out.mp3"), tts_config))
         return mock_edge.Communicate
 
@@ -59,10 +59,10 @@ class TestOpenaiTtsSpeed:
         mock_client.audio.speech.create.return_value = mock_response
         mock_cls = MagicMock(return_value=mock_client)
 
-        with patch("tools.tts_tool._import_openai_client", return_value=mock_cls), \
-             patch("tools.tts_tool_openai._resolve_openai_audio_client_config",
+        with patch("hermes_agent.tools.tts_tool._import_openai_client", return_value=mock_cls), \
+             patch("hermes_agent.tools.tts_tool_openai._resolve_openai_audio_client_config",
                    return_value=("test-key", None, False)):
-            from tools.tts_tool import _generate_openai_tts
+            from hermes_agent.tools.tts_tool import _generate_openai_tts
             _generate_openai_tts("Hello", str(tmp_path / "out.mp3"), tts_config)
         return mock_client.audio.speech.create
 
@@ -92,10 +92,10 @@ class TestOpenaiTtsLangCode:
         mock_client.audio.speech.create.return_value = mock_response
         mock_cls = MagicMock(return_value=mock_client)
 
-        with patch("tools.tts_tool._import_openai_client", return_value=mock_cls), \
-             patch("tools.tts_tool_openai._resolve_openai_audio_client_config",
+        with patch("hermes_agent.tools.tts_tool._import_openai_client", return_value=mock_cls), \
+             patch("hermes_agent.tools.tts_tool_openai._resolve_openai_audio_client_config",
                    return_value=("test-key", None, False)):
-            from tools.tts_tool import _generate_openai_tts
+            from hermes_agent.tools.tts_tool import _generate_openai_tts
             _generate_openai_tts("Hola", str(tmp_path / "out.mp3"), tts_config)
         return mock_client.audio.speech.create
 
@@ -149,7 +149,7 @@ class TestMinimaxTtsT2aV2:
         monkeypatch.setenv("MINIMAX_API_KEY", "test-key")
         resp = response if response is not None else _hex_response()
         with patch("requests.post", return_value=resp) as mock_post:
-            from tools.tts_tool import _generate_minimax_tts
+            from hermes_agent.tools.tts_tool import _generate_minimax_tts
             output = _generate_minimax_tts("Hello", str(tmp_path / "out.mp3"), tts_config)
         return mock_post, output
 
@@ -199,7 +199,7 @@ class TestMinimaxTtsLegacyTextToSpeech:
         mock_response.headers = {"Content-Type": "audio/mpeg"}
         mock_response.content = b"\x00\x01\x02\x03"
         with patch("requests.post", return_value=mock_response) as mock_post:
-            from tools.tts_tool import _generate_minimax_tts
+            from hermes_agent.tools.tts_tool import _generate_minimax_tts
             output = _generate_minimax_tts("Hello", str(tmp_path / "out.mp3"), cfg)
         return mock_post, output
 
@@ -233,16 +233,16 @@ class TestToolLevelSpeed:
         mock_client.audio.speech.create.return_value = mock_response
         mock_cls = MagicMock(return_value=mock_client)
 
-        with patch("tools.tts_tool._import_openai_client", return_value=mock_cls), \
-             patch("tools.tts_tool_openai._resolve_openai_audio_client_config",
+        with patch("hermes_agent.tools.tts_tool._import_openai_client", return_value=mock_cls), \
+             patch("hermes_agent.tools.tts_tool_openai._resolve_openai_audio_client_config",
                    return_value=("test-key", None, False)), \
-             patch("tools.tts_tool._load_tts_config", return_value={"provider": "openai", "openai": {}}), \
-             patch("tools.tts_tool._get_provider", return_value="openai"), \
-             patch("tools.tts_tool._resolve_command_provider_config", return_value=None), \
-             patch("tools.tts_tool._resolve_max_text_length", return_value=4096), \
-             patch("tools.tts_tool._generate_openai_tts") as mock_gen, \
+             patch("hermes_agent.tools.tts_tool._load_tts_config", return_value={"provider": "openai", "openai": {}}), \
+             patch("hermes_agent.tools.tts_tool._get_provider", return_value="openai"), \
+             patch("hermes_agent.tools.tts_tool._resolve_command_provider_config", return_value=None), \
+             patch("hermes_agent.tools.tts_tool._resolve_max_text_length", return_value=4096), \
+             patch("hermes_agent.tools.tts_tool._generate_openai_tts") as mock_gen, \
              patch("hermes_agent.gateway.session_context.get_session_env", return_value=""):
-            from tools.tts_tool import text_to_speech_tool
+            from hermes_agent.tools.tts_tool import text_to_speech_tool
             text_to_speech_tool("Hello", str(tmp_path / "out.mp3"), speed=0.7)
 
         # Verify the tts_config passed to the generator has speed=0.7
@@ -254,13 +254,13 @@ class TestToolLevelSpeed:
         """Speed values outside 0.25-4.0 are clamped."""
         monkeypatch.setenv("OPENAI_API_KEY", "test-key")
 
-        with patch("tools.tts_tool._load_tts_config", return_value={"provider": "openai", "openai": {}}), \
-             patch("tools.tts_tool._get_provider", return_value="openai"), \
-             patch("tools.tts_tool._resolve_command_provider_config", return_value=None), \
-             patch("tools.tts_tool._resolve_max_text_length", return_value=4096), \
-             patch("tools.tts_tool._generate_openai_tts") as mock_gen, \
+        with patch("hermes_agent.tools.tts_tool._load_tts_config", return_value={"provider": "openai", "openai": {}}), \
+             patch("hermes_agent.tools.tts_tool._get_provider", return_value="openai"), \
+             patch("hermes_agent.tools.tts_tool._resolve_command_provider_config", return_value=None), \
+             patch("hermes_agent.tools.tts_tool._resolve_max_text_length", return_value=4096), \
+             patch("hermes_agent.tools.tts_tool._generate_openai_tts") as mock_gen, \
              patch("hermes_agent.gateway.session_context.get_session_env", return_value=""):
-            from tools.tts_tool import text_to_speech_tool
+            from hermes_agent.tools.tts_tool import text_to_speech_tool
             text_to_speech_tool("Hello", str(tmp_path / "out.mp3"), speed=10.0)
 
         config_passed = mock_gen.call_args[0][2]
@@ -271,13 +271,13 @@ class TestToolLevelSpeed:
         monkeypatch.setenv("OPENAI_API_KEY", "test-key")
         original_config = {"provider": "openai", "openai": {}, "speed": 1.5}
 
-        with patch("tools.tts_tool._load_tts_config", return_value=original_config), \
-             patch("tools.tts_tool._get_provider", return_value="openai"), \
-             patch("tools.tts_tool._resolve_command_provider_config", return_value=None), \
-             patch("tools.tts_tool._resolve_max_text_length", return_value=4096), \
-             patch("tools.tts_tool._generate_openai_tts") as mock_gen, \
+        with patch("hermes_agent.tools.tts_tool._load_tts_config", return_value=original_config), \
+             patch("hermes_agent.tools.tts_tool._get_provider", return_value="openai"), \
+             patch("hermes_agent.tools.tts_tool._resolve_command_provider_config", return_value=None), \
+             patch("hermes_agent.tools.tts_tool._resolve_max_text_length", return_value=4096), \
+             patch("hermes_agent.tools.tts_tool._generate_openai_tts") as mock_gen, \
              patch("hermes_agent.gateway.session_context.get_session_env", return_value=""):
-            from tools.tts_tool import text_to_speech_tool
+            from hermes_agent.tools.tts_tool import text_to_speech_tool
             text_to_speech_tool("Hello", str(tmp_path / "out.mp3"), speed=None)
 
         config_passed = mock_gen.call_args[0][2]

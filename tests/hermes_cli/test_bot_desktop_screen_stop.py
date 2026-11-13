@@ -8,7 +8,7 @@ import pytest
 
 @pytest.mark.platforms("linux")
 def test_screen_stop_hands_back_even_when_the_desktop_has_already_exited():
-    from tools.bot_desktop import lease
+    from hermes_agent.tools.bot_desktop import lease
 
     parser = argparse.ArgumentParser()
     build_screen_parser(parser.add_subparsers(), lambda sub, help_text: sub.add_argument('--json', action='store_true'))
@@ -21,7 +21,7 @@ def test_screen_stop_hands_back_even_when_the_desktop_has_already_exited():
 @pytest.mark.platforms("linux")
 def test_screen_stop_refuses_while_a_human_holds_unless_forced(monkeypatch):
     """Same door as display.stop: a runbook or stray `screen stop` must not yank a live takeover."""
-    from tools.bot_desktop import lease, runtime
+    from hermes_agent.tools.bot_desktop import lease, runtime
 
     stopped: list = []
     monkeypatch.setattr(runtime, "stop", lambda: stopped.append(1) or True)

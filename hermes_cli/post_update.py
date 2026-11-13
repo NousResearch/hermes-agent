@@ -144,7 +144,7 @@ def _drop_unchanged_backups(backups: dict) -> None:
 def step_sync_skills() -> dict:
     """Sync bundled skills into the active home. Content-diffed, respects
     user modifications and deletions; converges on repeat runs."""
-    from tools.skills_sync import sync_skills
+    from hermes_agent.tools.skills_sync import sync_skills
 
     result = sync_skills(quiet=True) or {}
     return {

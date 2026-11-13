@@ -131,7 +131,7 @@ async def test_consumed_completion_skips_raw_notification(monkeypatch, tmp_path)
     skip fell through to the text-notification branch, double-delivering the
     same output to the chat (observed on Slack with
     background_process_notifications: all)."""
-    import tools.process_registry as pr_module
+    import hermes_agent.tools.process_registry as pr_module
 
     sessions = [SimpleNamespace(
         output_buffer="done\n", exited=True, exit_code=0, command="sleep 1; echo done",
@@ -165,7 +165,7 @@ async def test_agent_notify_receipt_only_while_launching_turn_is_busy(
     """#112033: with notify_on_complete the agent reports the result itself, so the chat gets no
     separate receipt — except while the launching turn is still running, when the injection only
     queues a follow-up and the concise receipt is the only thing the user would see."""
-    import tools.process_registry as pr_module
+    import hermes_agent.tools.process_registry as pr_module
 
     sessions = [SimpleNamespace(
         output_buffer="done\n", exited=True, exit_code=0, command="echo done", started_at=None,
@@ -220,7 +220,7 @@ async def test_consumed_completion_skips_raw_notification_without_agent_notify(
     """#65379 variant: same double-delivery guard for plain watchers
     (notify_on_complete=False) — wait/log consumption suppresses the raw
     completion message in every mode."""
-    import tools.process_registry as pr_module
+    import hermes_agent.tools.process_registry as pr_module
 
     sessions = [SimpleNamespace(
         output_buffer="done\n", exited=True, exit_code=0, command="echo done",
@@ -502,7 +502,7 @@ async def test_agent_notify_refused_completion_backs_off_then_sends_plain_notice
     """A refused completion injection must not poll an exited process forever, and must not be
     dropped either: bounded backoff, then the plain completion notice (#138940). A last refusal
     whose admission actually committed (lost ACK) must not add a second notice."""
-    import tools.process_registry as pr_module
+    import hermes_agent.tools.process_registry as pr_module
     from hermes_agent.gateway import session_automation
     from hermes_agent.gateway import run_notifications as rn
 
@@ -552,7 +552,7 @@ async def test_agent_notify_refused_completion_backs_off_then_sends_plain_notice
 @pytest.mark.asyncio
 async def test_concise_mode_no_interim_output_updates(monkeypatch, tmp_path):
     """concise never pushes 'is still running~ New output' interim updates."""
-    import tools.process_registry as pr_module
+    import hermes_agent.tools.process_registry as pr_module
 
     running = SimpleNamespace(
         output_buffer="chunk one\n", exited=False, exit_code=None,
@@ -854,7 +854,7 @@ async def test_raw_output_modes_are_human_facing(monkeypatch, tmp_path):
     """#54266: the chat-facing watcher messages (final in all/result/error, interim in all) carry a
     status header and the (ANSI-stripped) output, never the internal ``proc_*`` id or the bracketed
     ``[Background process …~ …]`` debug wrapper. Full output stays available via the process tool."""
-    import tools.process_registry as pr_module
+    import hermes_agent.tools.process_registry as pr_module
 
     running = SimpleNamespace(output_buffer="\x1b[32mstep 1 ok\x1b[0m\n", exited=False, exit_code=None,
                               command="make -j8 all", started_at=None)

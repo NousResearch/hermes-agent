@@ -5,13 +5,13 @@ import os
 from unittest.mock import MagicMock, patch
 
 import pytest
-from tools.bot_desktop import placement
-from tools import browser_launcher as launcher
-from tools import browser_lightpanda as lp
-from tools import browser_session as bs
-from tools import browser_session_cdp as bs_cdp
-from tools import browser_session_cloud as bs_cloud
-from tools import browser_session_lifecycle as lifecycle
+from hermes_agent.tools.bot_desktop import placement
+from hermes_agent.tools import browser_launcher as launcher
+from hermes_agent.tools import browser_lightpanda as lp
+from hermes_agent.tools import browser_session as bs
+from hermes_agent.tools import browser_session_cdp as bs_cdp
+from hermes_agent.tools import browser_session_cloud as bs_cloud
+from hermes_agent.tools import browser_session_lifecycle as lifecycle
 
 
 # ---------------------------------------------------------------------------
@@ -59,10 +59,10 @@ class TestLightpandaRequirements:
     """Lightpanda should serve browser sessions without local Chromium."""
 
     def _local(self, monkeypatch, engine_lightpanda):
-        monkeypatch.setattr("tools.browser_session_real_profile.real_profile_cdp", lambda: (None, None))
+        monkeypatch.setattr("hermes_agent.tools.browser_session_real_profile.real_profile_cdp", lambda: (None, None))
         monkeypatch.setattr(lp, "using_lightpanda_engine", lambda: engine_lightpanda)
         monkeypatch.setattr(bs_cloud, "is_local_backend", lambda: True)
-        monkeypatch.setattr("tools.bot_desktop.runtime.tool_placement", lambda: placement.GATEWAY)  # host browser
+        monkeypatch.setattr("hermes_agent.tools.bot_desktop.runtime.tool_placement", lambda: placement.GATEWAY)  # host browser
         monkeypatch.setattr(launcher, "chromium_ready", lambda: (False, "Chromium browser is missing."))
         monkeypatch.setattr(lp, "launch_lightpanda", lambda name, **kw: (_FakeServer(), None))
 
@@ -126,7 +126,7 @@ class TestLightpandaEngineStatus:
         for name, fn in gates.items():
             monkeypatch.setattr(homes[name], name, fn)
         monkeypatch.setattr(
-            "tools.browser_use_cli.is_legacy_browser_use_cloud_config", lambda cfg: False
+            "hermes_agent.tools.browser_use_cli.is_legacy_browser_use_cloud_config", lambda cfg: False
         )
 
     def test_not_lightpanda(self, monkeypatch):
@@ -154,7 +154,7 @@ class TestLightpandaEngineStatus:
     def test_shadowed_by_legacy_browser_use_cloud(self, monkeypatch):
         self._gates(monkeypatch)
         monkeypatch.setattr(
-            "tools.browser_use_cli.is_legacy_browser_use_cloud_config", lambda cfg: True
+            "hermes_agent.tools.browser_use_cli.is_legacy_browser_use_cloud_config", lambda cfg: True
         )
         used, reason = lp.lightpanda_engine_status()
         assert used is False and "Browser Use cloud" in reason
@@ -192,7 +192,7 @@ class TestLightpandaSessionCreation:
                 return launch
             return _FakeServer(), None
 
-        monkeypatch.setattr("tools.browser_session_real_profile.real_profile_cdp", lambda: (None, None))
+        monkeypatch.setattr("hermes_agent.tools.browser_session_real_profile.real_profile_cdp", lambda: (None, None))
         monkeypatch.setattr(lp, "using_lightpanda_engine", lambda: True)
         monkeypatch.setattr(bs_cloud, "is_local_backend", lambda: local_backend)
         monkeypatch.setattr(lp, "launch_lightpanda", fake_launch)
@@ -304,7 +304,7 @@ class TestLightpandaSessionLifecycle:
         self._seed()
         stopped = []
         monkeypatch.setattr(lp, "stop_lightpanda", stopped.append)
-        with patch("tools.browser_launcher.stop_browser") as chromium_stop:
+        with patch("hermes_agent.tools.browser_launcher.stop_browser") as chromium_stop:
             lifecycle.cleanup_browser("task-1")
         chromium_stop.assert_not_called()
         assert stopped == ["lp_dead"]
@@ -313,15 +313,15 @@ class TestLightpandaSessionLifecycle:
 
     def test_emergency_cleanup_stops_all_lightpanda(self, monkeypatch):
         bs._cleanup_done = False
-        with patch("tools.browser_lightpanda.stop_all_lightpanda") as stop_all, \
-             patch("tools.browser_launcher.stop_all_browsers"), \
-             patch("tools.browser_session_lifecycle.reap_orphaned_browser_sessions"):
+        with patch("hermes_agent.tools.browser_lightpanda.stop_all_lightpanda") as stop_all, \
+             patch("hermes_agent.tools.browser_launcher.stop_all_browsers"), \
+             patch("hermes_agent.tools.browser_session_lifecycle.reap_orphaned_browser_sessions"):
             lifecycle.emergency_cleanup_all_sessions()
         stop_all.assert_called_once()
 
     def test_orphan_reaper_sweeps_lightpanda_records(self):
-        with patch("tools.browser_lightpanda.reap_orphaned_lightpanda", return_value=0) as reap, \
-             patch("tools.browser_launcher.reap_orphaned_browsers", return_value=0):
+        with patch("hermes_agent.tools.browser_lightpanda.reap_orphaned_lightpanda", return_value=0) as reap, \
+             patch("hermes_agent.tools.browser_launcher.reap_orphaned_browsers", return_value=0):
             lifecycle.reap_orphaned_browser_sessions()
         reap.assert_called_once()
 

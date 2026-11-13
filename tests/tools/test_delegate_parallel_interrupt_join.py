@@ -13,7 +13,7 @@ import threading
 import time
 from types import SimpleNamespace
 
-from tools.delegate_tool_dispatch import _Batch, _run_children_parallel
+from hermes_agent.tools.delegate_tool_dispatch import _Batch, _run_children_parallel
 
 
 def _batch(children, parent):

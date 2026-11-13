@@ -64,7 +64,7 @@ def gateway_server(monkeypatch):
     monkeypatch.setenv("PERPLEXITY_GATEWAY_URL", requests.base + "/perplexity")
     monkeypatch.setenv("PERPLEXITY_BASE_URL", requests.base + "/direct")
     monkeypatch.setenv("FIRECRAWL_GATEWAY_URL", requests.base)
-    monkeypatch.setattr("tools.web_tools._firecrawl_client", None, raising=False)
+    monkeypatch.setattr("hermes_agent.tools.web_tools._firecrawl_client", None, raising=False)
     try:
         yield requests
     finally:
@@ -89,7 +89,7 @@ def _write_home(home, monkeypatch, *, nous_state=None, config=None):
 
 
 def _search():
-    from tools import web_tools
+    from hermes_agent.tools import web_tools
     from tests.tools.conftest import register_all_web_providers
 
     register_all_web_providers()
@@ -105,8 +105,8 @@ def test_unentitled_nous_identity_autodetects_free_fast_search(monkeypatch, tmp_
     """Guests are the users this route exists for: an anonymous identity and a zero-credit account
     both reach the gateway, while the paid gate stays closed for extract and every other vendor."""
     from hermes_cli.nous_account import get_nous_portal_account_info
-    from tools import web_tools
-    from tools.tool_backend_helpers import managed_nous_tools_enabled
+    from hermes_agent.tools import web_tools
+    from hermes_agent.tools.tool_backend_helpers import managed_nous_tools_enabled
 
     _write_home(tmp_path / "home", monkeypatch, nous_state=state)
     # Premise: the guest case really reads as the anonymous tier, and the paid-tool gate is closed
@@ -143,7 +143,7 @@ def test_free_fast_search_failure_skips_paid_firecrawl_but_keeps_keyless_rescue(
     (_nous_state(EXHAUSTED, "oauth"), {"web": {"search_backend": "exa"}}),
 ])
 def test_free_fast_search_needs_a_usable_identity_and_no_explicit_selection(monkeypatch, tmp_path, gateway_server, state, config):
-    from tools import web_tools
+    from hermes_agent.tools import web_tools
 
     _write_home(tmp_path / "home", monkeypatch, nous_state=state, config=config)
 
@@ -164,7 +164,7 @@ def test_free_fast_search_eligibility_follows_the_served_profile(monkeypatch, tm
     from hermes_cli.nous_account import reset_nous_portal_account_info_cache
     from agent.secret_scope import set_multiplex_active
     from hermes_agent.gateway.run import _profile_runtime_scope
-    from tools import web_tools
+    from hermes_agent.tools import web_tools
 
     root = tmp_path / ".hermes"
     profile_a, profile_b = root / "profiles" / "a", root / "profiles" / "b"

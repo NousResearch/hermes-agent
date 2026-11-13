@@ -115,7 +115,7 @@ def _build_manager(home):
 
 
 def _registry_call(home):
-    from tools.registry import registry
+    from hermes_agent.tools.registry import registry
     with _scoped(home):
         return json.loads(registry.dispatch(_TOOL, {}))
 

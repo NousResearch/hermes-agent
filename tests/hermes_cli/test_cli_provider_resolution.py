@@ -16,7 +16,7 @@ from hermes_cli import model_switch
 # Module isolation: _import_cli() wipes tools.* / cli / run_agent from
 # sys.modules so it can re-import cli fresh.  Without cleanup the wiped
 # modules leak into subsequent tests, breaking
-# mock patches that target "tools.file_tools._get_file_ops" etc.
+# mock patches that target "hermes_agent.tools.file_tools._get_file_ops" etc.
 # ---------------------------------------------------------------------------
 
 def _reset_modules(prefixes: tuple[str, ...]):
@@ -112,7 +112,7 @@ def _install_prompt_toolkit_stubs():
 
 def _import_cli():
     for name in list(sys.modules):
-        if name == "cli" or name == "run_agent" or name == "tools" or name.startswith("tools."):
+        if name == "cli" or name == "run_agent" or name == "hermes_agent.tools" or name.startswith("hermes_agent.tools."):
             sys.modules.pop(name, None)
 
     if "firecrawl" not in sys.modules:

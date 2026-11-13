@@ -7,10 +7,10 @@ import hashlib
 import fnmatch
 import re
 from typing import Any, List
-from tools.ansi_strip import strip_tool_metadata_text
-from tools.mcp_tool_common import mcp_field
+from hermes_agent.tools.ansi_strip import strip_tool_metadata_text
+from hermes_agent.tools.mcp_tool_common import mcp_field
 
-logger = logging.getLogger("tools.mcp_tool")
+logger = logging.getLogger("hermes_agent.tools.mcp_tool")
 
 # Prompt-injection indicators in MCP tool descriptions. WARNING-level only: log but never
 # block, since false positives would break legitimate servers.
@@ -132,7 +132,7 @@ def _normalize_mcp_input_schema(schema: dict | None) -> dict:
     """
     if not schema:
         return dict(_EMPTY_OBJECT_SCHEMA)
-    from tools.schema_sanitizer import collapse_const_unions, strip_nullable_unions
+    from hermes_agent.tools.schema_sanitizer import collapse_const_unions, strip_nullable_unions
     normalized = _rewrite_local_refs(schema)
     normalized = strip_nullable_unions(normalized, keep_nullable_hint=True)
     normalized = collapse_const_unions(normalized)

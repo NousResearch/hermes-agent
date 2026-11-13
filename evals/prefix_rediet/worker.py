@@ -193,8 +193,8 @@ def vault(action, args):
     return json.dumps({"success": False, "error": f"unknown action {action!r}"})
 
 
-import model_tools
-from tools.registry import registry
+from hermes_agent import model_tools
+from hermes_agent.tools.registry import registry
 
 
 def stub(name, handler):

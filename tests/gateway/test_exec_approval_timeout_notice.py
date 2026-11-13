@@ -15,8 +15,8 @@ from typing import Any, List
 import pytest
 
 from hermes_agent.gateway.platforms.base import SendResult
-from tools import approval as _approval
-from tools.approval_gateway_wait import _ApprovalEntry
+from hermes_agent.tools import approval as _approval
+from hermes_agent.tools.approval_gateway_wait import _ApprovalEntry
 
 SESSION = "agent:main:telegram:dm:1"
 APPROVAL = {"command": "rm -rf /tmp/x", "description": "recursive delete", "pattern_key": "k"}

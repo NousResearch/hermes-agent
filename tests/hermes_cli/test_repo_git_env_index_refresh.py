@@ -51,7 +51,7 @@ def test_dashboard_review_list(repo):
 
 
 def test_slash_diff(repo):
-    from tools.working_diff import collect_working_diff
+    from hermes_agent.tools.working_diff import collect_working_diff
     collect_working_diff(str(repo))
     assert "README" in _git(repo, "status", "--porcelain")
 

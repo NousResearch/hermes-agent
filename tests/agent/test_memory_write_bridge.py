@@ -120,10 +120,10 @@ def test_committed_entry_identity_comes_from_locked_store(
 ):
     target = 'memory'
     from contextlib import contextmanager
-    from tools import memory_tool_store
-    from tools.memory_tool import MemoryStore, memory_tool
+    from hermes_agent.tools import memory_tool_store
+    from hermes_agent.tools.memory_tool import MemoryStore, memory_tool
 
-    monkeypatch.setattr('tools.memory_tool.get_memory_dir', lambda: tmp_path)
+    monkeypatch.setattr('hermes_agent.tools.memory_tool.get_memory_dir', lambda: tmp_path)
     store = MemoryStore()
     store.load_from_disk()
     store.add(target, 'Prefers tea')
@@ -178,9 +178,9 @@ def test_previous_content_cannot_come_from_uncommitted_arguments():
 
 @pytest.mark.parametrize('batch', [False, True])
 def test_patch_mirrors_as_a_replace_of_the_whole_entry(tmp_path, monkeypatch, batch):
-    from tools.memory_tool import MemoryStore, memory_tool
+    from hermes_agent.tools.memory_tool import MemoryStore, memory_tool
 
-    monkeypatch.setattr('tools.memory_tool.get_memory_dir', lambda: tmp_path)
+    monkeypatch.setattr('hermes_agent.tools.memory_tool.get_memory_dir', lambda: tmp_path)
     store = MemoryStore()
     store.load_from_disk()
     store.add('memory', 'Server runs on port 8080 behind nginx')

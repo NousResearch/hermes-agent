@@ -1239,7 +1239,7 @@ class GatewayStartupMixin:
         # scope-relative, so a served secondary's turn wrote ITS home's processes.json; recover each
         # served profile's file under its scope or those processes are never re-adopted.
         with _log_suppressed(logging.WARNING, "Process checkpoint recovery: %s"):
-            from tools.process_registry import process_registry
+            from hermes_agent.tools.process_registry import process_registry
             recovered = process_registry.recover_from_checkpoint()
             recovered += self._recover_secondary_process_checkpoints(process_registry)
             if recovered:
@@ -1247,7 +1247,7 @@ class GatewayStartupMixin:
         # The gateway owns delegation state: replay durable completions the previous
         # process never delivered. Explicit here, never at tools import (clients).
         with _log_suppressed(logging.WARNING, "Could not restore async delegation completions: %s"):
-            from tools.async_delegation import restore_undelivered_completions
+            from hermes_agent.tools.async_delegation import restore_undelivered_completions
             restore_undelivered_completions(process_registry.completion_queue)
         # Recover the turns the last process left marked (in flight, or reply not yet ledgered).
         # SKIP after a clean exit — the previous process already drained.
@@ -1459,7 +1459,7 @@ class GatewayStartupMixin:
     ) -> tuple[bool, int]:
         """Bring up multiplexed secondary-profile adapters. Returns (aborted, connected_count)."""
         from hermes_agent.gateway.run import MultiplexConfigError
-        from tools.process_registry import process_registry as _pr
+        from hermes_agent.tools.process_registry import process_registry as _pr
         # The launch profile's durable completions replay here, not at import (#123265); the
         # secondaries' ledgers are replayed by _restore_secondary_completion_ledgers below.
         _pr.restore_completions()
@@ -1649,7 +1649,7 @@ class GatewayStartupMixin:
         # Resume recovered process watchers. Detach the batch atomically (fresh list, not clear(): a
         # concurrent append during the yield must not be lost); yield every 100 to keep the loop live.
         with _log_suppressed(logging.ERROR, "Recovered watcher setup error: %s"):
-            from tools.process_registry import process_registry
+            from hermes_agent.tools.process_registry import process_registry
             watchers = process_registry.pending_watchers
             process_registry.pending_watchers = []
             for i, watcher in enumerate(watchers):

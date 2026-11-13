@@ -32,8 +32,8 @@ _OAUTH_LIKE_TOKEN = "sk-ant-oauth-example-1234567890abcdef"
 def agent():
     """Minimal AIAgent construction, skipping tool discovery."""
     with (
-        patch("model_tools.get_tool_definitions", return_value=[]),
-        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]),
+        patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
         patch("agent.process_bootstrap.OpenAI"),
     ):
         a = AIAgent(
@@ -240,8 +240,8 @@ class TestOAuthFlagOnConstruction:
 
     def test_minimax_init_does_not_flip_oauth(self):
         with (
-            patch("model_tools.get_tool_definitions", return_value=[]),
-            patch("model_tools.check_toolset_requirements", return_value={}),
+            patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]),
+            patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
             patch("agent.anthropic_adapter.build_anthropic_client",
                   return_value=MagicMock()),
             # Simulate a stale ANTHROPIC_TOKEN in the env — the init code

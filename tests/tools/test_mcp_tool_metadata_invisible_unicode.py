@@ -6,7 +6,7 @@ schema stays the same object (schemas are frozen wire bytes for prompt caching).
 import json
 from types import SimpleNamespace
 
-from tools.mcp_tool_schema import _convert_mcp_schema, strip_schema_annotations
+from hermes_agent.tools.mcp_tool_schema import _convert_mcp_schema, strip_schema_annotations
 
 HIDDEN = "\U000e0069\U000e0067\u202e\u2066"  # TAG 'i','g' + RLO + LRI: invisible to the user
 FAMILY = "\U0001f468\u200d\U0001f469\u200d\U0001f467"  # ZWJ emoji sequence: must survive

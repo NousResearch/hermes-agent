@@ -425,7 +425,7 @@ def test_monitor_script_failure_is_error_not_change(hermes_env, monkeypatch):
 
 def test_cronjob_tool_create_with_monitor_script(hermes_env):
     from hermes_agent.cron.jobs import get_job
-    from tools.cronjob_tools import cronjob
+    from hermes_agent.tools.cronjob_tools import cronjob
 
     _write_script(hermes_env, "mon.sh", "echo hi\n")
     result = json.loads(
@@ -443,7 +443,7 @@ def test_cronjob_tool_create_with_monitor_script(hermes_env):
 
 
 def test_cronjob_tool_rejects_monitor_script_path_escape(hermes_env):
-    from tools.cronjob_tools import cronjob
+    from hermes_agent.tools.cronjob_tools import cronjob
 
     result = json.loads(
         cronjob(
@@ -459,7 +459,7 @@ def test_cronjob_tool_rejects_monitor_script_path_escape(hermes_env):
 
 def test_cronjob_tool_update_clears_monitor_script(hermes_env):
     from hermes_agent.cron.jobs import get_job
-    from tools.cronjob_tools import cronjob
+    from hermes_agent.tools.cronjob_tools import cronjob
 
     _write_script(hermes_env, "mon.sh", "echo hi\n")
     created = json.loads(

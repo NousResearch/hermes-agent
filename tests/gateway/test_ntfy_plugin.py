@@ -8,7 +8,7 @@ Most tests target the adapter class directly. The plugin-shape tests
 (``register()``, ``_env_enablement``, ``_standalone_send``, registry
 presence) replace the core-file grep tests from the original PR — the
 ntfy adapter no longer modifies ``hermes_agent/gateway/config.py``, ``hermes_agent/gateway/run.py``,
-``hermes_agent/cron/scheduler.py``, ``toolsets.py``, etc.  Everything routes through
+``hermes_agent/cron/scheduler.py``, ``hermes_agent/toolsets.py``, etc.  Everything routes through
 the ``platform_registry``.
 """
 

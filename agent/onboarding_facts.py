@@ -16,7 +16,7 @@ def read_facts(*, facts_source: str = "local", locale: str | None = None) -> Fac
     """``locale``: the desktop's UI language, preferred over the backend OS locale for wording."""
     from hermes_cli.plugin_catalog_presence import onboarding_names
     from hermes_platform.host.summary import summary
-    from tools.tour_tool import check_tours_enabled
+    from hermes_agent.tools.tour_tool import check_tours_enabled
 
     host = summary()
     machine = host["machine"]

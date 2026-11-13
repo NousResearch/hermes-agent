@@ -6,7 +6,7 @@ files. In a multiplexed gateway every turn runs under a HERMES_HOME override, so
 would hand the launch profile's value to every other profile. Under an override the slot is read and
 written per home key (routed profiles start cold, never from the launch profile's warmed value);
 without one the module attribute stays the slot, so single-profile behaviour and the tests that reset
-``models._X = None`` are untouched. Same shape as ``tools.approval._permanent_set``.
+``models._X = None`` are untouched. Same shape as ``hermes_agent.tools.approval._permanent_set``.
 """
 
 from __future__ import annotations

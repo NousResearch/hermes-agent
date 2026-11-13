@@ -57,7 +57,7 @@ def _locate_memory(node_id: str) -> tuple[Path, list[str], int]:
     card's local index is its global index minus the MEMORY.md card count). Read-only
     view: mutations resolve the id again INSIDE ``_mutate_memory``'s lock."""
     from hermes_constants import get_hermes_home
-    from tools.memory_tool import MemoryStore
+    from hermes_agent.tools.memory_tool import MemoryStore
 
     source, gidx, fingerprint = _parse_memory_id(node_id)
     path = get_hermes_home() / "memories" / _MEMORY_FILES[source]
@@ -90,15 +90,15 @@ def _mutate_memory(node_id: str, replacement: str | None) -> dict[str, Any]:
     dropped whatever the agent stored in between and reformatted hand-edited files
     (#119668). The id is resolved to its entry text INSIDE the lock and matched by exact
     text against the store's re-read entries; a target gone under the lock is refused."""
-    from tools.memory_tool import load_on_disk_store
+    from hermes_agent.tools.memory_tool import load_on_disk_store
 
     source, _, _ = _parse_memory_id(node_id)
     name = _MEMORY_FILES[source]
     message = f"deleted memory from {name}" if replacement is None else f"updated memory in {name}"
 
     def _apply(entries, limit):
-        from tools.memory_tool import ENTRY_DELIMITER
-        from tools.memory_tool_store import _error
+        from hermes_agent.tools.memory_tool import ENTRY_DELIMITER
+        from hermes_agent.tools.memory_tool_store import _error
 
         _, chunks, local = _locate_memory(node_id)
         text = chunks[local].strip()
@@ -149,7 +149,7 @@ def _memory_detail(node_id: str) -> dict[str, Any]:
 
 
 def _skill_detail(node_id: str) -> dict[str, Any]:
-    from tools.skill_manager_tool import _find_skill
+    from hermes_agent.tools.skill_manager_tool import _find_skill
     found = _find_skill(node_id)
     if not found:
         return {"ok": False, "message": f"skill '{node_id}' not found"}
@@ -166,7 +166,7 @@ def delete_node(node_id: str) -> dict[str, Any]:
 
 
 def _delete_skill(name: str) -> dict[str, Any]:
-    from tools import skill_usage
+    from hermes_agent.tools import skill_usage
     # Pin must be respected by autonomous maintenance. The curator already skips pinned skills from every
     # auto-transition; the background review fork is the same kind of autonomous, no-user-present actor, so
     # it must not write to a pinned skill either (issue #25839). This is stricter than the foreground
@@ -191,7 +191,7 @@ def edit_node(node_id: str, content: str) -> dict[str, Any]:
 
 
 def _edit_skill(name: str, content: str) -> dict[str, Any]:
-    from tools.skill_manager_tool import _edit_skill as _do_edit
+    from hermes_agent.tools.skill_manager_tool import _edit_skill as _do_edit
     result = _do_edit(name, content)
     if result.get("success"):
         _clear_skill_cache()

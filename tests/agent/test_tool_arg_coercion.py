@@ -8,8 +8,8 @@ against the tool's JSON Schema before dispatch.
 
 from unittest.mock import patch
 
-import model_tools
-from tools.arg_coercion import (
+from hermes_agent import model_tools
+from hermes_agent.tools.arg_coercion import (
     coerce_tool_args,
     _coerce_value,
     _coerce_number,
@@ -112,7 +112,7 @@ class TestCoerceToolArgs:
 
     def test_coerces_integer_arg(self):
         schema = self._mock_schema({"limit": {"type": "integer"}})
-        with patch("tools.arg_coercion.registry.get_schema", return_value=schema):
+        with patch("hermes_agent.tools.arg_coercion.registry.get_schema", return_value=schema):
             args = {"limit": "10"}
             result = coerce_tool_args("test_tool", args)
             assert result["limit"] == 10
@@ -123,7 +123,7 @@ class TestCoerceToolArgs:
 
     def test_leaves_already_correct_types(self):
         schema = self._mock_schema({"limit": {"type": "integer"}})
-        with patch("tools.arg_coercion.registry.get_schema", return_value=schema):
+        with patch("hermes_agent.tools.arg_coercion.registry.get_schema", return_value=schema):
             args = {"limit": 10}
             result = coerce_tool_args("test_tool", args)
             assert result["limit"] == 10
@@ -236,7 +236,7 @@ class TestCoerceToolArgsNested:
 
     def test_array_elements_as_json_strings_are_parsed(self):
         schema = self._array_of_objects_schema()
-        with patch("tools.arg_coercion.registry.get_schema", return_value=schema):
+        with patch("hermes_agent.tools.arg_coercion.registry.get_schema", return_value=schema):
             args = {"items": ['{"id": "1", "content": "x"}']}
             result = coerce_tool_args("test_tool", args)
             assert result["items"] == [{"id": "1", "content": "x"}]
@@ -261,7 +261,7 @@ class TestCoerceToolArgsNested:
                 },
             },
         }
-        with patch("tools.arg_coercion.registry.get_schema", return_value=schema):
+        with patch("hermes_agent.tools.arg_coercion.registry.get_schema", return_value=schema):
             args = {"address": '{"street": "Alpha Ave", "zip": "A-001"}'}
             result = coerce_tool_args("test_tool", args)
             assert result["address"] == {
@@ -282,7 +282,7 @@ class TestCoerceToolArgsNested:
                 },
             },
         }
-        with patch("tools.arg_coercion.registry.get_schema", return_value=schema):
+        with patch("hermes_agent.tools.arg_coercion.registry.get_schema", return_value=schema):
             result = coerce_tool_args("test_tool", {"count": "5", "verbose": "true"})
             assert result == {"count": 5, "verbose": True}
 
@@ -301,7 +301,7 @@ class TestCoerceToolArgsNested:
                 },
             },
         }
-        with patch("tools.arg_coercion.registry.get_schema", return_value=schema):
+        with patch("hermes_agent.tools.arg_coercion.registry.get_schema", return_value=schema):
             result = coerce_tool_args("test_tool", {"offset": "7", "page": "3"})
             assert result == {"offset": 7, "page": 3}
 
@@ -315,7 +315,7 @@ class TestCoerceToolArgsNested:
                 "properties": {"count": {"$ref": "#/$defs/a~2b"}},
             },
         }
-        with patch("tools.arg_coercion.registry.get_schema", return_value=schema):
+        with patch("hermes_agent.tools.arg_coercion.registry.get_schema", return_value=schema):
             assert coerce_tool_args("test_tool", {"count": "5"}) == {"count": "5"}
 
     def test_sanitized_keys_behind_a_ref_map_back_to_wire_names(self):
@@ -329,7 +329,7 @@ class TestCoerceToolArgsNested:
                 "properties": {"person": {"$ref": "#/$defs/Person"}},
             },
         }
-        with patch("tools.arg_coercion.registry.get_schema", return_value=schema):
+        with patch("hermes_agent.tools.arg_coercion.registry.get_schema", return_value=schema):
             result = coerce_tool_args("test_tool", {"person": {"first_name": "Ada"}})
             assert result == {"person": {"first name": "Ada"}}
 
@@ -353,7 +353,7 @@ class TestCoerceToolArgsNested:
                 },
             },
         }
-        with patch("tools.arg_coercion.registry.get_schema", return_value=schema):
+        with patch("hermes_agent.tools.arg_coercion.registry.get_schema", return_value=schema):
             args = {"addresses": ['{"street": "Alpha Ave"}']}
             result = coerce_tool_args("test_tool", args)
             assert result["addresses"] == [{"street": "Alpha Ave"}]
@@ -372,7 +372,7 @@ class TestCoerceToolArgsNested:
                     "properties": {"address": {"$ref": ref}},
                 },
             }
-            with patch("tools.arg_coercion.registry.get_schema", return_value=schema):
+            with patch("hermes_agent.tools.arg_coercion.registry.get_schema", return_value=schema):
                 raw = '{"street": "Alpha Ave"}'
                 result = coerce_tool_args("test_tool", {"address": raw})
                 assert result["address"] == raw
@@ -381,7 +381,7 @@ class TestCoerceToolArgsNested:
     def test_string_subfield_with_json_content_preserved(self):
         """A string-typed sub-field whose value looks like JSON must NOT be parsed."""
         schema = self._array_of_objects_schema()
-        with patch("tools.arg_coercion.registry.get_schema", return_value=schema):
+        with patch("hermes_agent.tools.arg_coercion.registry.get_schema", return_value=schema):
             args = {"items": [{"id": "1", "content": '{"not": "parsed"}'}]}
             result = coerce_tool_args("test_tool", args)
             assert result["items"][0]["content"] == '{"not": "parsed"}'

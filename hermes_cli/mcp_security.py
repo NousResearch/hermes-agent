@@ -2,7 +2,7 @@
 
 Blocks three narrow shapes (see ``validate_mcp_server_entry``), including a hardcoded IOC blocklist
 for the June 2026 hermes-0day campaign. Runs BOTH at save time (``_save_mcp_server`` — dashboard API +
-CLI) and at spawn time (``tools.mcp_tool._filter_suspicious_mcp_servers``), so a hand-edited or
+CLI) and at spawn time (``hermes_agent.tools.mcp_tool._filter_suspicious_mcp_servers``), so a hand-edited or
 pre-planted ``config.yaml`` entry is caught before it can execute.
 """
 from __future__ import annotations

@@ -15,17 +15,17 @@ from typing import Any, Callable, Mapping, Optional, Protocol, Sequence
 import requests
 from pydantic import ValidationError
 
-from tools.connectors.gateway import wire
-from tools.connectors.gateway.config import session_platform
-from tools.connectors.gateway.errors import (
+from hermes_agent.tools.connectors.gateway import wire
+from hermes_agent.tools.connectors.gateway.config import session_platform
+from hermes_agent.tools.connectors.gateway.errors import (
     GatewayAuthError,
     GatewayUnavailable,
     ToolGatewayError,
     parse_gateway_error,
 )
 
-from tools.connectors.gateway.merge import PlannedCall
-from tools.managed_gateway_identity import CallRef, connector_headers, log_connector_outcome, response_request_id
+from hermes_agent.tools.connectors.gateway.merge import PlannedCall
+from hermes_agent.tools.managed_gateway_identity import CallRef, connector_headers, log_connector_outcome, response_request_id
 
 logger = logging.getLogger(__name__)
 
@@ -95,7 +95,7 @@ def _default_transport() -> Transport:
 
 def _default_endpoint_resolver() -> Optional[str]:
     """Resolve the connector deployment origin directly, not as a vendor passthrough."""
-    from tools.managed_gateway_auth import connector_gateway_origin
+    from hermes_agent.tools.managed_gateway_auth import connector_gateway_origin
 
     try:
         return connector_gateway_origin() or None
@@ -104,7 +104,7 @@ def _default_endpoint_resolver() -> Optional[str]:
 
 
 def _default_header_provider(url: str) -> dict:
-    from tools.managed_gateway_auth import managed_gateway_auth_headers
+    from hermes_agent.tools.managed_gateway_auth import managed_gateway_auth_headers
 
     return managed_gateway_auth_headers(url)
 

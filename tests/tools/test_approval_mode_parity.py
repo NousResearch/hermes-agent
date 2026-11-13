@@ -3,12 +3,12 @@
 The approval mode (``approvals.mode``) and timeout (``approvals.timeout``)
 must resolve identically on every surface that consults them:
 
-  - the canonical core: ``tools.approval_context._get_approval_mode`` /
-    ``tools.approval_context._get_approval_timeout``
+  - the canonical core: ``hermes_agent.tools.approval_context._get_approval_mode`` /
+    ``hermes_agent.tools.approval_context._get_approval_timeout``
   - the TUI gateway: ``hermes_agent.tui_gateway.server._load_approval_mode`` (delegates
     to the core as of the decision-core migration)
   - the codex app-server surface: ``agent/codex_runtime.py`` feeds
-    ``auto_approve_*`` from ``tools.approval.is_approval_bypass_active()``,
+    ``auto_approve_*`` from ``hermes_agent.tools.approval.is_approval_bypass_active()``,
     which itself reads the core resolver — so parity there reduces to
     ``is_approval_bypass_active() == (mode == "off")`` when no yolo
     source is active.
@@ -88,7 +88,7 @@ CASES = [
 ]
 
 def _approval_module():
-    """Resolve tools.approval via sys.modules, not the package attribute.
+    """Resolve hermes_agent.tools.approval via sys.modules, not the package attribute.
 
     The ``tui_server`` fixture's ``patch.dict("sys.modules", ...)`` purges
     modules imported during its block at teardown; ``from tools import
@@ -97,7 +97,7 @@ def _approval_module():
     through ``importlib.import_module`` keeps the test and the server on
     the same sys.modules entry.
     """
-    return importlib.import_module("tools.approval")
+    return importlib.import_module("hermes_agent.tools.approval")
 
 @pytest.mark.parametrize("yaml_text,expected_mode,expected_timeout", CASES)
 def test_mode_and_timeout_parity_across_surfaces(
@@ -107,7 +107,7 @@ def test_mode_and_timeout_parity_across_surfaces(
 
     _write_config(hermes_home, yaml_text)
 
-    ctx = importlib.import_module("tools.approval_context")
+    ctx = importlib.import_module("hermes_agent.tools.approval_context")
     core_mode = ctx._get_approval_mode()
     core_timeout = ctx._get_approval_timeout()
     tui_mode = tui_server._load_approval_mode()

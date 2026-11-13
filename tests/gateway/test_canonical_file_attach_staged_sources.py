@@ -97,7 +97,7 @@ async def test_a_staged_pick_is_copied_into_the_session_cache_without_retransmis
     assert isinstance(attached, dict) and attached['attached'] is True and attached['uploaded'] is True, attached
     stored = Path(attached['path'])
     # The cache directory container/SSH terminal backends mount.
-    from tools.credential_files import _CACHE_DIRS
+    from hermes_agent.tools.credential_files import _CACHE_DIRS
     assert stored.parent == owner.attachments and stored.parent.name in {rel for rel, _ in _CACHE_DIRS}
     assert stored.read_bytes() == Path(receipt['path']).read_bytes() == b'browser payload'
     assert attached['ref_text'].startswith('@file:')

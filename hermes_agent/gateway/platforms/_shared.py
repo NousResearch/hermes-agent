@@ -176,7 +176,7 @@ def send_error(message: Any, *, nothing_sent: bool = False) -> dict:
     (no credential, or the connection failed before the request left). Only that marker lets cron
     queue the payload for a post-reconnect replay; any other failure may already be on screen, so
     a replay would post it twice."""
-    from tools.send_message_senders import _error
+    from hermes_agent.tools.send_message_senders import _error
     return {**_error(str(message)), **({"retryable": True} if nothing_sent else {})}
 
 

@@ -4,9 +4,9 @@ agent assuming background processes and unsynced files survived."""
 
 import json
 
-from tools.environments import docker as docker_env
-from tools.environments.local import LocalEnvironment
-from tools.terminal_tool_result import finalize_foreground_result
+from hermes_agent.tools.environments import docker as docker_env
+from hermes_agent.tools.environments.local import LocalEnvironment
+from hermes_agent.tools.terminal_tool_result import finalize_foreground_result
 
 
 def test_execute_folds_recreation_flag_once():

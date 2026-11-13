@@ -43,7 +43,7 @@ class WorkerDelegationLedger:
     def dispatch(self, record):
         if record.get('parent_session_id') != self.store.scope['session_id']:
             raise WorkerPersistenceError('permission_denied')
-        from tools.async_delegation import _ROUTING_KEYS
+        from hermes_agent.tools.async_delegation import _ROUTING_KEYS
         if any(record.get(key) for key in _ROUTING_KEYS):
             raise WorkerPersistenceError('unsupported_producer')
         # Reached from a tool callback, on Relay's loop (#139029).

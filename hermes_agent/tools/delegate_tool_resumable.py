@@ -23,7 +23,7 @@ import time
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
-logger = logging.getLogger("tools.delegate_tool")  # log-record parity with the origin module
+logger = logging.getLogger("hermes_agent.tools.delegate_tool")  # log-record parity with the origin module
 
 AUTO_AT, AUTO_ON_BOOT, ON_FIX = "AUTO_AT", "AUTO_ON_BOOT", "ON_FIX"
 REPAIR_THEN_CONTINUE, HANDOFF = "REPAIR_THEN_CONTINUE", "HANDOFF"
@@ -46,7 +46,7 @@ _MODE_BY_REASON: dict[str, tuple[str, Optional[float]]] = {
 
 
 def _settings() -> tuple[float, int]:
-    from tools.delegate_tool_config import _load_config
+    from hermes_agent.tools.delegate_tool_config import _load_config
     cfg = _load_config()
     try:
         ttl = max(0.0, float(cfg.get("resumable_ttl_hours", _DEFAULT_TTL_HOURS)))
@@ -91,7 +91,7 @@ def _db_path_for(parent_agent: Any = None) -> Optional[Path]:
 
 def _connect(path: Path):
     from hermes_cli.sqlite_util import transaction
-    from tools.async_delegation import open_state_db
+    from hermes_agent.tools.async_delegation import open_state_db
     return transaction(open_state_db(path, "state.db (resumable_subagents)"))
 
 
@@ -141,7 +141,7 @@ def _apply_limits(conn) -> None:
     now = time.time()
     conn.execute("UPDATE resumable_subagents SET pinned=0, state='expired' WHERE expires_at IS NOT NULL "
                  "AND expires_at <= ? AND state IN ('resumable','completed','stopped','superseded')", (now,))
-    from tools.delegate_tool_auto_resume import OWED_SQL  # kept until the scheduler delivers its one give-up
+    from hermes_agent.tools.delegate_tool_auto_resume import OWED_SQL  # kept until the scheduler delivers its one give-up
     conn.execute(f"DELETE FROM resumable_subagents WHERE state='expired' AND updated_at < ? AND NOT COALESCE(({OWED_SQL}), 0)",
                  (now - _EXPIRED_RETENTION_S - ttl * 3600,))
     conn.execute("""UPDATE resumable_subagents SET pinned=0 WHERE pinned=1 AND subagent_id NOT IN (
@@ -269,7 +269,7 @@ def record_start(run: Any) -> None:
         return
     path = _db_path_for(run.parent_agent)
     cwd = _child_cwd(run)
-    from tools.delegate_tool_registry import _recent_subagents, _active_subagents_lock
+    from hermes_agent.tools.delegate_tool_registry import _recent_subagents, _active_subagents_lock
     owners = {str(getattr(child, "_parent_session_id", "") or "") or str(getattr(run.parent_agent, "session_id", "")
                                                                          or "")}
     # The git probes run before the write transaction (seconds on a slow repo; no state.db lock held through them).
@@ -292,7 +292,7 @@ def record_start(run: Any) -> None:
 
     def _do(conn):
         if origin == "auto":  # the parent's last word: a stop, /stop or replacement since the claim cancels it here
-            from tools.delegate_tool_auto_resume import admit_start
+            from hermes_agent.tools.delegate_tool_auto_resume import admit_start
             if cancelled := admit_start(conn, sid):
                 return cancelled
         prev = _row(conn, sid) or {}
@@ -355,8 +355,8 @@ def _ancestor_sessions(child: Any) -> set[str]:
 
 
 def _child_cwd(run: Any) -> Optional[str]:
-    from tools.delegate_tool_routes import child_profile_scope
-    from tools.terminal_tool import get_session_cwd
+    from hermes_agent.tools.delegate_tool_routes import child_profile_scope
+    from hermes_agent.tools.terminal_tool import get_session_cwd
     with child_profile_scope(run.child):
         cwd = get_session_cwd(run.child_task_id)
     return os.path.realpath(cwd) if isinstance(cwd, str) and cwd else None
@@ -416,8 +416,8 @@ def stamp_entry(run: Any, entry: dict[str, Any]) -> None:
     if state == "resumable":
         entry["resume_mode"] = mode
         if getattr(run.child, "_delegation_unit_id", None) and not durable["auto"]["auto_off"]:
-            from tools.delegate_tool_auto_resume import promise
-            from tools.delegate_tool_auto_resume import gave_up, gave_up_line
+            from hermes_agent.tools.delegate_tool_auto_resume import promise
+            from hermes_agent.tools.delegate_tool_auto_resume import gave_up, gave_up_line
             candidate = {**durable["auto"], "resume_mode": mode, "next_attempt_at": next_at}
             if auto := promise(candidate):
                 entry["auto_resume"] = auto
@@ -480,7 +480,7 @@ def note_gateway_shutdown() -> int:
     """Gateway shutdown is about to stop this process's children: mark them first (in memory and on every profile's
     running records), so each reads as a restart (resumable) rather than a user stop however its run ends, a
     SIGKILL mid-unwind included. Returns how many records were marked."""
-    from tools.delegate_tool_registry import _active_subagents, _active_subagents_lock
+    from hermes_agent.tools.delegate_tool_registry import _active_subagents, _active_subagents_lock
     with _active_subagents_lock:
         live = [r.get("agent") for r in _active_subagents.values()]
     for agent in live:
@@ -559,7 +559,7 @@ def continuable_of(conn, unit_id: str) -> list[str]:
 def _reclaim_dead_owner(path: Optional[Path], sid: str, record: dict[str, Any]) -> Optional[dict[str, Any]]:
     """A ``running``/``claimed`` row whose owner process died (after this process's boot recovery ran): finish it
     the way boot recovery would and return the finished record; None while its owner is alive."""
-    from tools.async_delegation import _owner_liveness
+    from hermes_agent.tools.async_delegation import _owner_liveness
     alive = _owner_liveness()
     pid, started = record.get("owner_pid"), record.get("owner_started_at")
     if alive is None or alive(pid, started):
@@ -581,7 +581,7 @@ def _reclaim_dead_owner(path: Optional[Path], sid: str, record: dict[str, Any]) 
 def claim(parent_agent: Any, sid: str) -> tuple[Optional[dict[str, Any]], Optional[str]]:
     """Take a finished child's durable record for ``continue`` (``(record, None)``, or ``(None, error)``). The
     state flip to ``claimed`` is one guarded UPDATE, so two continues never run one conversation twice."""
-    from tools.delegate_tool_registry import _owns_subagent_record
+    from hermes_agent.tools.delegate_tool_registry import _owns_subagent_record
     path = _db_path_for(parent_agent)
     record = _write(path, lambda conn: (_apply_limits(conn), _row(conn, sid))[1])
     if record is None:
@@ -595,7 +595,7 @@ def claim(parent_agent: Any, sid: str) -> tuple[Optional[dict[str, Any]], Option
         return None, (f"Subagent '{sid}' is still running or being continued. Try again shortly; if this persists, "
                       "spawn a new task.") if record.get("state") in ("running", "claimed") else None
     owner = _owner_identity()  # boot recovery must not reclaim a continue this live process is starting
-    from tools.delegate_tool_auto_resume import CANCEL_DEBT  # the parent took it over: no automatic report owed
+    from hermes_agent.tools.delegate_tool_auto_resume import CANCEL_DEBT  # the parent took it over: no automatic report owed
     claimed = _write(path, lambda conn: conn.execute(
         f"UPDATE resumable_subagents SET state='claimed', owner_pid=?, owner_started_at=?, updated_at=?, "
         f"record_json=json_set(record_json, {CANCEL_DEBT}) WHERE subagent_id=? AND state=?",

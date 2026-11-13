@@ -12,11 +12,11 @@ import shlex
 import threading
 from pathlib import Path, PurePosixPath
 
-from tools.environments.base import BaseEnvironment
-from tools.environments.base_output import _ThreadedProcessHandle
-from tools.environments.file_sync import (
+from hermes_agent.tools.environments.base import BaseEnvironment
+from hermes_agent.tools.environments.base_output import _ThreadedProcessHandle
+from hermes_agent.tools.environments.file_sync import (
     FileSyncManager, iter_sync_files, quoted_mkdir_command, quoted_rm_command, unique_parent_dirs)
-from tools.environments.remote_common import ensure_lazy_dep
+from hermes_agent.tools.environments.remote_common import ensure_lazy_dep
 
 logger = logging.getLogger(__name__)
 

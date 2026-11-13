@@ -86,7 +86,7 @@ def test_integrity_check_and_journal_mode_are_tracked(state_db, tracked):
 
 
 def test_spillover_reference_scan_is_tracked(state_db, tracked):
-    from tools.tool_result_storage import referenced_spillover_names
+    from hermes_agent.tools.tool_result_storage import referenced_spillover_names
     spill_dir = state_db.parent / "a" / "b"
     spill_dir.mkdir(parents=True)
     referenced_spillover_names(spill_dir)

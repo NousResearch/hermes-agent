@@ -29,8 +29,8 @@ def _response():
 def test_guard_first_writer_carries_the_agent_source(tmp_path):
     db = SessionDB(tmp_path / "state.db")
     with (
-        patch("model_tools.get_tool_definitions", return_value=[]),
-        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]),
+        patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
         patch("agent.process_bootstrap.OpenAI"),
     ):
         agent = AIAgent(

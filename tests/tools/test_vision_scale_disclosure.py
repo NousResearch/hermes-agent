@@ -5,9 +5,9 @@ model, the model's reported coordinates are in the *shrunk* (or crop-local)
 coordinate space. These tests verify that both vision paths now disclose the
 scale factor / crop offset so coordinates can be mapped back deterministically:
 
-* ``tools.computer_use.tool._shrink_capture_for_vision`` returns
+* ``hermes_agent.tools.computer_use.tool._shrink_capture_for_vision`` returns
   ``(bytes, scale_note)``;
-* ``tools.vision_tools.vision_analyze_tool`` emits a ``scale_note`` field and
+* ``hermes_agent.tools.vision_tools.vision_analyze_tool`` emits a ``scale_note`` field and
   prefixes the analysis text when its downscale/region paths fire.
 
 The scale math is verified deterministically with Pillow — no LLM needed.
@@ -24,8 +24,8 @@ import pytest
 PIL = pytest.importorskip("PIL")
 from PIL import Image
 
-from tools.computer_use.tool import _shrink_capture_for_vision
-from tools.vision_tools import _build_scale_note, vision_analyze_tool
+from hermes_agent.tools.computer_use.tool import _shrink_capture_for_vision
+from hermes_agent.tools.vision_tools import _build_scale_note, vision_analyze_tool
 
 
 ORIG_W, ORIG_H = 3024, 1964
@@ -151,9 +151,9 @@ class TestVisionAnalyzeScaleDisclosure:
         _make_noise_png(img_path, ORIG_W, ORIG_H)
 
         with (
-            patch("tools.vision_tools._MAX_BASE64_BYTES", 8 * 1024 * 1024),
+            patch("hermes_agent.tools.vision_tools._MAX_BASE64_BYTES", 8 * 1024 * 1024),
             patch(
-                "tools.vision_tools.async_call_llm",
+                "hermes_agent.tools.vision_tools.async_call_llm",
                 new_callable=AsyncMock,
                 return_value=_mock_llm_response(),
             ),
@@ -186,7 +186,7 @@ class TestVisionAnalyzeScaleDisclosure:
         Image.new("RGB", (320, 200), (5, 5, 5)).save(img_path, format="PNG")
 
         with patch(
-            "tools.vision_tools.async_call_llm",
+            "hermes_agent.tools.vision_tools.async_call_llm",
             new_callable=AsyncMock,
             return_value=_mock_llm_response(),
         ):
@@ -207,9 +207,9 @@ class TestVisionAnalyzeScaleDisclosure:
         region = [300, 100, 2700, 1900]  # 2400x1800 at offset (300, 100)
 
         with (
-            patch("tools.vision_tools._MAX_BASE64_BYTES", 8 * 1024 * 1024),
+            patch("hermes_agent.tools.vision_tools._MAX_BASE64_BYTES", 8 * 1024 * 1024),
             patch(
-                "tools.vision_tools.async_call_llm",
+                "hermes_agent.tools.vision_tools.async_call_llm",
                 new_callable=AsyncMock,
                 return_value=_mock_llm_response(),
             ),
@@ -239,7 +239,7 @@ class TestVisionAnalyzeScaleDisclosure:
         Image.new("RGB", (800, 600), (0, 0, 0)).save(img_path, format="PNG")
 
         with patch(
-            "tools.vision_tools.async_call_llm",
+            "hermes_agent.tools.vision_tools.async_call_llm",
             new_callable=AsyncMock,
             return_value=_mock_llm_response(),
         ):

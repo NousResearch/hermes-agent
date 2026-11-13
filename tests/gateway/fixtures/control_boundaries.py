@@ -14,8 +14,8 @@ async def exercise_control_boundaries(tmp_path, monkeypatch):
     from hermes_agent.hermes_state import SessionDB
     from hermes_agent.hermes_state_runtime import (RuntimeStoreError, admit_session_input, begin_runtime_epoch,
                                      claim_session_input, settle_session_input)
-    from tools.approval import list_gateway_approvals, resolve_gateway_approval
-    from tools.approval_gateway_wait import _await_gateway_decision
+    from hermes_agent.tools.approval import list_gateway_approvals, resolve_gateway_approval
+    from hermes_agent.tools.approval_gateway_wait import _await_gateway_decision
 
     db = SessionDB(tmp_path / 'controls.db')
     db.create_session('s', source='telegram')
@@ -108,7 +108,7 @@ async def exercise_control_boundaries(tmp_path, monkeypatch):
         assert live.event_stream.watermark() == before
         assert not list_gateway_approvals(live.route)
         adapter.mode = 'sent'
-        from tools import approval_context
+        from hermes_agent.tools import approval_context
         with monkeypatch.context() as scoped:
             scoped.setattr(approval_context, '_get_approval_timeout', lambda: 0)
             timed_out = await asyncio.to_thread(_await_gateway_decision, live.route, turn._approval_notify_sync,
@@ -133,7 +133,7 @@ async def exercise_control_boundaries(tmp_path, monkeypatch):
         # after a new generation has claimed the session.
         admit_session_input(db, epoch=epoch, principal_id='owner', session_id='s', request_id='next', payload={'text': 'next'})
         newer = claim_session_input(db, epoch=epoch, session_id='s')
-        from tools import approval_context
+        from hermes_agent.tools import approval_context
         monkeypatch.setattr(approval_context, "_get_approval_timeout", lambda: 0)
         before = live.event_stream.watermark()
         stale = await asyncio.to_thread(_await_gateway_decision, live.route, turn._approval_notify_sync,

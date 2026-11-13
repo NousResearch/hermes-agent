@@ -13,7 +13,7 @@ from unittest.mock import patch
 
 import pytest
 
-from tools.environments.local import _find_bash, _find_shell
+from hermes_agent.tools.environments.local import _find_bash, _find_shell
 
 
 def _pid_alive(pid: int) -> bool:

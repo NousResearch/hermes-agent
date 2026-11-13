@@ -82,7 +82,7 @@ class TestCronJobTrigger:
         ).encode()
 
         with patch(
-            "tools.cronjob_tools.execute_job_for_event",
+            "hermes_agent.tools.cronjob_tools.execute_job_for_event",
             side_effect=_fake_execute,
         ):
             async with TestClient(TestServer(app)) as cli:
@@ -127,7 +127,7 @@ class TestCronJobTrigger:
             }
 
         with patch(
-            "tools.cronjob_tools.execute_job_for_event", side_effect=_fail
+            "hermes_agent.tools.cronjob_tools.execute_job_for_event", side_effect=_fail
         ):
             async with TestClient(TestServer(app)) as cli:
                 resp = await cli.post(
@@ -163,7 +163,7 @@ class TestCronJobTrigger:
             seen.append((get_hermes_home(), extra_prompt))
             return {"claimed": True, "success": True, "error": None}
 
-        with patch("tools.cronjob_tools.execute_job_for_event", side_effect=_fake_execute):
+        with patch("hermes_agent.tools.cronjob_tools.execute_job_for_event", side_effect=_fake_execute):
             async with TestClient(TestServer(_create_app(adapter))) as cli:
                 resp = await cli.post("/webhooks/ev", data=b'{"n": 1}',
                                       headers={"Content-Type": "application/json", "X-GitHub-Delivery": "d-3"})
@@ -197,7 +197,7 @@ class TestCronJobRouteValidation:
 
 class TestExecuteJobForEvent:
     def test_unknown_job_returns_error(self):
-        from tools import cronjob_tools
+        from hermes_agent.tools import cronjob_tools
 
         with patch.object(cronjob_tools, "resolve_job_ref", return_value=None):
             result = cronjob_tools.execute_job_for_event("nope")
@@ -207,7 +207,7 @@ class TestExecuteJobForEvent:
 
     def test_ambiguous_ref_returns_error(self):
         from hermes_agent.cron.jobs import AmbiguousJobReference
-        from tools import cronjob_tools
+        from hermes_agent.tools import cronjob_tools
 
         with patch.object(
             cronjob_tools,

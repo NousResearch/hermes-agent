@@ -7,7 +7,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from tools.computer_use import cua_backend_driver
+from hermes_agent.tools.computer_use import cua_backend_driver
 
 
 
@@ -86,7 +86,7 @@ def test_permissions_status_names_the_stale_tcc_row_for_the_missing_grant(
 ) -> None:
     """A grant the daemon reports missing while System Settings shows it ON is a stale TCC row (trycua/cua#3170);
     the status output must name the reset for exactly the missing service, never for one that is granted."""
-    from tools.computer_use import permissions
+    from hermes_agent.tools.computer_use import permissions
 
     status = {"platform": "darwin", "platform_supported": True, "installed": True, "version": "cua-driver 0.28.2",
               "ready": False, "can_grant": True, "checks": [], "source": None, "error": None,

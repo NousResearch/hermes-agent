@@ -20,7 +20,7 @@ def _clean_cwd(value: Any) -> str:
 def _recorded_cwd(key: str) -> str:
     if not key:
         return ""
-    from tools.terminal_tool import get_session_cwd
+    from hermes_agent.tools.terminal_tool import get_session_cwd
 
     return _clean_cwd(get_session_cwd(key))
 
@@ -65,7 +65,7 @@ def resolve_relay_scope_cwds(
     backend = ""
     if not session_cwd:
         try:
-            from tools.terminal_scope import terminal_env
+            from hermes_agent.tools.terminal_scope import terminal_env
 
             backend = terminal_env("TERMINAL_ENV", "local").strip().lower()
             session_cwd = _clean_cwd(terminal_env("TERMINAL_CWD", ""))

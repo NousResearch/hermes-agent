@@ -6,7 +6,7 @@ sidebar_label: Subagent lifecycle API
 # Public Subagent Lifecycle API
 
 Plugins can launch and supervise fresh Hermes child sessions without importing
-`tools.delegate_tool`, gateway internals, TUI state, or `AIAgent` fields.
+`hermes_agent.tools.delegate_tool`, gateway internals, TUI state, or `AIAgent` fields.
 The service resolves its parent from the current agent turn, so it works in
 CLI, gateway, non-interactive, and kanban-worker sessions. Launching outside an
 active agent turn fails closed with `No active Hermes parent session`.

@@ -24,8 +24,8 @@ async def test_only_the_viewers_own_turn_skips_the_whole_script_gate(tmp_path, m
     from hermes_agent.gateway.session_local import create_local_session
     from hermes_agent.gateway.session_policy import _ACTIVE_POLICY, policy_for_source
     from hermes_agent.hermes_state import SessionDB
-    from tools import approval as A
-    from tools import approval_context
+    from hermes_agent.tools import approval as A
+    from hermes_agent.tools import approval_context
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setenv("HERMES_EXEC_ASK", "1")  # start_gateway() sets it process-wide

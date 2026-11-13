@@ -14,9 +14,9 @@ FENCED = "echo '```' " + "A" * 4000 + " && rm -rf ~ # TAIL"  # cannot be fenced 
 
 @pytest.fixture
 def pending(monkeypatch):
-    """A real queued approval for ``sk`` / ``r1`` in ``tools.approval``'s queue."""
-    from tools import approval
-    from tools.approval_gateway_wait import _ApprovalEntry
+    """A real queued approval for ``sk`` / ``r1`` in ``hermes_agent.tools.approval``'s queue."""
+    from hermes_agent.tools import approval
+    from hermes_agent.tools.approval_gateway_wait import _ApprovalEntry
 
     entry = _ApprovalEntry({"request_id": "r1", "command": FENCED})
     monkeypatch.setitem(approval._gateway_queues, "sk", [entry])
@@ -149,7 +149,7 @@ async def test_matrix_crafted_approve_reaction_keeps_the_deny_only_card_live(pen
 def test_a_forged_approve_tap_on_a_deny_only_request_resolves_nothing(pending):
     """Backend half: a card choice the card never offered (hand-added ✅ reaction, replayed callback data)
     cannot resolve a Deny-only request; Deny still can."""
-    from tools.approval import resolve_gateway_approval_card, restrict_gateway_approval_card_to_deny
+    from hermes_agent.tools.approval import resolve_gateway_approval_card, restrict_gateway_approval_card_to_deny
 
     restrict_gateway_approval_card_to_deny("sk", "r1")
     assert resolve_gateway_approval_card("sk", "once", "r1") == 0
@@ -165,12 +165,12 @@ async def test_qq_forged_allow_once_tap_on_a_deny_only_card_resolves_nothing(pen
     than the session owner is still refused before the backend is asked."""
     from plugins.platforms.qqbot.adapter import QQAdapter
     from plugins.platforms.qqbot.keyboards import parse_interaction_event
-    from tools.approval import restrict_gateway_approval_card_to_deny
+    from hermes_agent.tools.approval import restrict_gateway_approval_card_to_deny
 
     adapter = QQAdapter(PlatformConfig(enabled=True, extra={"app_id": "a", "client_secret": "b"}))
     restrict_gateway_approval_card_to_deny("sk", "r1")
     sk = "agent:main:qqbot:dm:u-42"
-    from tools import approval
+    from hermes_agent.tools import approval
     monkeypatch.setitem(approval._gateway_queues, sk, [pending])
 
     def tap(user, decision):
@@ -190,7 +190,7 @@ async def test_feishu_full_command_with_a_refused_chunk_leaves_the_card_deny_onl
     """Feishu's send() used to report only its LAST chunk: a refused chunk followed by a delivered one
     returned success, the card kept Approve and the user could approve text they never received."""
     from tests.gateway.test_feishu_approval_buttons import _make_adapter
-    from tools.approval import resolve_gateway_approval_card
+    from hermes_agent.tools.approval import resolve_gateway_approval_card
 
     adapter, calls = _make_adapter(), []
 

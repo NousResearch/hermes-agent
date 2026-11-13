@@ -1,5 +1,5 @@
 """Skills Hub data models, path validators, and SKILL.md helpers. Leaf module (no imports from
-tools.skills_hub) so every source adapter module can import it at top level without cycles."""
+hermes_agent.tools.skills_hub) so every source adapter module can import it at top level without cycles."""
 
 import json
 import logging
@@ -13,13 +13,13 @@ from urllib.parse import unquote, urlsplit
 import httpx
 import hermes_yaml as yaml
 
-logger = logging.getLogger("tools.skills_hub")
+logger = logging.getLogger("hermes_agent.tools.skills_hub")
 
 
 def hub():
-    """``tools.skills_hub`` resolved at call time: its cache / HTTP / index helpers are the test-patch targets
-    (``patch("tools.skills_hub._read_index_cache")`` ...), so adapters look them up on every call, not at import."""
-    import tools.skills_hub as mod
+    """``hermes_agent.tools.skills_hub`` resolved at call time: its cache / HTTP / index helpers are the test-patch targets
+    (``patch("hermes_agent.tools.skills_hub._read_index_cache")`` ...), so adapters look them up on every call, not at import."""
+    import hermes_agent.tools.skills_hub as mod
     return mod
 
 
@@ -158,7 +158,7 @@ class SkillSource(ABC):
 
 
 class GuardedFetchMixin:
-    """SSRF/policy-guarded GETs, routed through ``tools.skills_hub`` (test-patchable)."""
+    """SSRF/policy-guarded GETs, routed through ``hermes_agent.tools.skills_hub`` (test-patchable)."""
 
     @staticmethod
     def _fetch_text(url: str) -> Optional[str]:

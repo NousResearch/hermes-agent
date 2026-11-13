@@ -35,9 +35,9 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-from tools.delegate_tool_resumable import AUTO_AT, AUTO_ON_BOOT
+from hermes_agent.tools.delegate_tool_resumable import AUTO_AT, AUTO_ON_BOOT
 
-logger = logging.getLogger("tools.delegate_tool")  # log-record parity with the origin module
+logger = logging.getLogger("hermes_agent.tools.delegate_tool")  # log-record parity with the origin module
 
 MAX_AUTO_ATTEMPTS = 2
 DEFAULT_DEADLINE_MINUTES = 360
@@ -54,13 +54,13 @@ _TRANSIENT_REFUSALS = ("still running", "being continued", "still stopping", "pa
 
 def enabled() -> bool:
     """``delegation.auto_resume`` of the bound profile (opt-in, default off)."""
-    from tools.delegate_tool_config import _load_config
+    from hermes_agent.tools.delegate_tool_config import _load_config
     from utils import is_truthy_value
     return is_truthy_value(_load_config().get("auto_resume", False))
 
 
 def _deadline_s() -> float:
-    from tools.delegate_tool_config import _load_config
+    from hermes_agent.tools.delegate_tool_config import _load_config
     try:
         return max(0.0, float(_load_config().get("auto_resume_deadline_minutes", DEFAULT_DEADLINE_MINUTES))) * 60
     except (TypeError, ValueError):
@@ -171,7 +171,7 @@ def _db() -> Path:
 
 
 def _write(fn) -> Any:
-    from tools.delegate_tool_resumable import _write as write
+    from hermes_agent.tools.delegate_tool_resumable import _write as write
     return write(_db(), fn)
 
 
@@ -307,7 +307,7 @@ def _due(record: dict[str, Any], now: float) -> bool:
     if record.get("resume_mode") == AUTO_AT:
         return isinstance(record.get("next_attempt_at"), (int, float)) and now >= float(record["next_attempt_at"])
     # AUTO_ON_BOOT: the process that ran it is gone (a pid this process reuses still has another start time).
-    from tools.delegate_tool_resumable import _owner_identity
+    from hermes_agent.tools.delegate_tool_resumable import _owner_identity
     me = _owner_identity()
     return (record.get("owner_pid"), record.get("owner_started_at")) != (me["owner_pid"], me["owner_started_at"])
 
@@ -348,7 +348,7 @@ def _claim(record: dict[str, Any], parent_sid: str) -> tuple[Optional[dict[str, 
     spends the attempt (BEFORE it runs: a resume that kills the process still counts). A parent decision that
     committed first wins; none can land in between. ``(claimed record, None)``, or ``(None, supersede note)``,
     or ``(None, None)`` when the row moved."""
-    from tools.delegate_tool_resumable import _begin_immediate, _owner_identity, _row
+    from hermes_agent.tools.delegate_tool_resumable import _begin_immediate, _owner_identity, _row
     sid, attempts = record["subagent_id"], int(record.get("auto_attempts") or 0)
     owner = _owner_identity()
 
@@ -374,7 +374,7 @@ def _claim(record: dict[str, Any], parent_sid: str) -> tuple[Optional[dict[str, 
 def take_claim(path: Any, sid: str) -> Optional[dict[str, Any]]:
     """The continue path's view of this process's automatic claim of *sid* (``claimed``, ``$.auto_claim`` set, by
     this process), as the record a release hands back to ``resumable``; None once the parent cancelled it."""
-    from tools.delegate_tool_resumable import _row, _write as write
+    from hermes_agent.tools.delegate_tool_resumable import _row, _write as write
     row = write(path, lambda conn: _row(conn, sid))
     if not row or row.get("state") != "claimed" or not row.get("auto_claim") or row.get("owner_pid") != os.getpid():
         return None
@@ -386,7 +386,7 @@ def confirm_start(path: Any, sid: str) -> Optional[str]:
     the parent has not cancelled it (stop, /stop, /new), else the reason, with
     the row left as the parent's decision put it (or moved to ``superseded``). The claim stays cancellable as
     unstarted until the run records itself: :func:`admit_start` gives the parent the last word there."""
-    from tools.delegate_tool_resumable import _begin_immediate, _row, _write as write
+    from hermes_agent.tools.delegate_tool_resumable import _begin_immediate, _row, _write as write
 
     def do(conn):
         _begin_immediate(conn)
@@ -404,7 +404,7 @@ def admit_start(conn, sid: str) -> Optional[str]:
     """Inside ``record_start``'s write transaction for a run the scheduler started: None while this process's claim
     still stands and nothing superseded it, else why the parent cancelled it. The parent's decision stays on the row
     and the attempt is refunded; a stop that lands after this point meets a registered, running child."""
-    from tools.delegate_tool_resumable import _begin_immediate, _row
+    from hermes_agent.tools.delegate_tool_resumable import _begin_immediate, _row
     _begin_immediate(conn)
     row = _row(conn, sid) or {}
     if row.get("state") == "claimed" and row.get("auto_claim") and row.get("owner_pid") == os.getpid():
@@ -485,8 +485,8 @@ def _verdict(record: dict[str, Any], now: float) -> tuple[str, Any]:
 def tick(start: Callable[..., Optional[str]], *, capacity: int, now: Optional[float] = None) -> list[str]:
     """One pass over the bound profile's records; returns the subagent ids it resumed. ``start(record, unit_row,
     message)`` performs the continue and returns an error string, or None once the child was dispatched."""
-    from tools.delegate_tool_registry import is_spawn_paused
-    from tools.delegate_tool_resumable import retry_hand_backs
+    from hermes_agent.tools.delegate_tool_registry import is_spawn_paused
+    from hermes_agent.tools.delegate_tool_resumable import retry_hand_backs
     retry_hand_backs()  # a claim a failed start could not hand back is owed again before candidates are read
     if not enabled():  # nothing starts; a child the stop promised a resume still gets its one report
         _settle_disabled(now or time.time())
@@ -527,8 +527,8 @@ def gave_up_delegation_id(unit_id: Any, sid: str) -> str:
 def _gave_up_completion(record: dict[str, Any], reason: str, row: dict[str, Any]) -> tuple[dict, dict]:
     """``(event, result)`` of the ONE failed completion, on the route of the unit that reported the last stop, with
     the child's last summary and transcript tail."""
-    from tools.async_delegation import _ROUTING_KEYS, completion_event
-    from tools.async_delegation_recovery_hints import transcript_tails
+    from hermes_agent.tools.async_delegation import _ROUTING_KEYS, completion_event
+    from hermes_agent.tools.async_delegation_recovery_hints import transcript_tails
     sid = record["subagent_id"]
     task = json.loads(row.get("task_json") or "{}")
     prior = json.loads(row.get("result_json") or "{}") or {}
@@ -553,8 +553,8 @@ def _give_up(record: dict[str, Any], reason: str) -> bool:
     """A promised record will not be resumed: ONE write transaction marks it and records its one failed completion
     as its own pending ledger row (:func:`gave_up_delegation_id`), so a crash on either side of the commit leaves
     the report replayable (restart replay, orphan sweep) and never doubled; then the in-memory copy is queued."""
-    from tools.async_delegation import redact_child_result, redact_completion_event
-    from tools.delegate_tool_resumable import _begin_immediate
+    from hermes_agent.tools.async_delegation import redact_child_result, redact_completion_event
+    from hermes_agent.tools.delegate_tool_resumable import _begin_immediate
     sid = record["subagent_id"]
     cols = ("origin_session", "origin_ui_session_id", "parent_session_id", "origin_session_id", "task_json",
             "result_json", "dispatched_at")
@@ -579,7 +579,7 @@ def _give_up(record: dict[str, Any], reason: str) -> bool:
         logger.info("Subagent %s gave up on automatic resume (%s) but has no completion route", sid, reason)
     if not evt:
         return False
-    from tools.process_registry import process_registry
+    from hermes_agent.tools.process_registry import process_registry
     process_registry.completion_queue.put(evt)
     logger.info("Subagent %s: automatic resume %s; delivered one failure to its parent", sid, reason)
     return True
@@ -605,8 +605,8 @@ def waiting_entries(parent_agent: Any) -> list[dict[str, Any]]:
     one that will give up instead (deadline, attempts, expiry, auto_resume turned off), even before a tick says so."""
     if not enabled():  # the next tick delivers each promised child's give-up: none is waiting
         return []
-    from tools.delegate_tool_registry import _owns_subagent_record
-    from tools.delegate_tool_resumable import _db_path_for, _write as write
+    from hermes_agent.tools.delegate_tool_registry import _owns_subagent_record
+    from hermes_agent.tools.delegate_tool_resumable import _db_path_for, _write as write
     path = _db_path_for(parent_agent)
     rows = (write(path, lambda conn: conn.execute(
         f"SELECT subagent_id, record_json FROM resumable_subagents WHERE state='resumable' AND {OWED_SQL} "
@@ -696,14 +696,14 @@ def dismiss(parent_agent: Any, sid: str) -> Optional[str]:
     A stop on a row the parent's own continue holds is recorded on it (``$.auto_cancel``): ``"recorded"``.
     The read and the cancel are one write transaction: a refused continue handing the row back in between would
     otherwise make the cancel match nothing and lose the stop."""
-    from tools.delegate_tool_resumable import _begin_immediate, _db_path_for, _write as write
+    from hermes_agent.tools.delegate_tool_resumable import _begin_immediate, _db_path_for, _write as write
     return write(_db_path_for(parent_agent), lambda conn: (_begin_immediate(conn), _dismiss_in(conn, parent_agent,
                                                                                                sid))[1])
 
 
 def _dismiss_in(conn, parent_agent: Any, sid: str) -> Optional[str]:
-    from tools.delegate_tool_registry import _owns_subagent_record
-    from tools.delegate_tool_resumable import _row
+    from hermes_agent.tools.delegate_tool_registry import _owns_subagent_record
+    from hermes_agent.tools.delegate_tool_resumable import _row
     record = _row(conn, sid)
     if not record:
         return None

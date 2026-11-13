@@ -20,11 +20,11 @@ logger = logging.getLogger(__name__)
 
 def _callback_api():
     """(getter, setter) pairs for every thread-local prompt callback a tool may need mid-dispatch
-    (lazy: terminal_tool imports tools.approval at load, so a top-level import risks a cycle).
+    (lazy: terminal_tool imports hermes_agent.tools.approval at load, so a top-level import risks a cycle).
     Add a new per-thread prompt here — a callback missing from this table is silently absent on
     every parallel/timeout worker, so the tool believes nobody can answer."""
     from agent.vault_backends import unlock as vault_unlock
-    from tools import terminal_tool as tt
+    from hermes_agent.tools import terminal_tool as tt
 
     return ((tt._get_approval_callback, tt.set_approval_callback),
             (tt._get_sudo_password_callback, tt.set_sudo_password_callback),

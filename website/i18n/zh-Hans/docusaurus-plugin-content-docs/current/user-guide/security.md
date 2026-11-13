@@ -84,7 +84,7 @@ YOLO 模式会禁用会话中**所有**危险命令安全检查——**但硬性
 - Cron 任务以无头 `approve` 模式运行
 - 用户明确点击"始终允许"
 
-黑名单是 `--yolo` 之下的底线。它在审批层看到命令**之前**就会触发，且没有任何覆盖标志。当前涵盖的模式（非详尽列表；与 `tools/approval.py::UNRECOVERABLE_BLOCKLIST` 保持同步）：
+黑名单是 `--yolo` 之下的底线。它在审批层看到命令**之前**就会触发，且没有任何覆盖标志。当前涵盖的模式（非详尽列表；与 `hermes_agent/tools/approval.py::UNRECOVERABLE_BLOCKLIST` 保持同步）：
 
 | 模式 | 为何列为硬性规则 |
 |---|---|
@@ -110,7 +110,7 @@ approvals:
 
 ### 触发审批的条件
 
-以下模式会触发审批提示（定义于 `tools/approval.py`）：
+以下模式会触发审批提示（定义于 `hermes_agent/tools/approval.py`）：
 
 | 模式 | 描述 |
 |---------|-------------|
@@ -303,7 +303,7 @@ hermes pairing clear-pending
 
 ### Docker 安全标志
 
-每个容器均使用以下标志运行（定义于 `tools/environments/docker.py`）：
+每个容器均使用以下标志运行（定义于 `hermes_agent/tools/environments/docker.py`）：
 
 ```python
 _SECURITY_ARGS = [

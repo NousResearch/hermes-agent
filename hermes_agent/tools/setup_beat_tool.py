@@ -16,7 +16,7 @@ from typing import Any
 from agent import onboarding_flow as flow
 from agent.onboarding_text import finish_reminder, reminder
 from agent.onboarding_text import question as beat_question
-from tools.registry import registry, tool_error
+from hermes_agent.tools.registry import registry, tool_error
 
 logger = logging.getLogger(__name__)
 
@@ -24,8 +24,8 @@ BEATS = ("next", *flow.BEAT_IDS, "done")
 
 
 def _connected() -> dict:
-    from tools.connectors.display import connected_slugs
-    from tools.connectors.gateway.client import ConnectorClient
+    from hermes_agent.tools.connectors.display import connected_slugs
+    from hermes_agent.tools.connectors.gateway.client import ConnectorClient
 
     return {"connected": sorted(connected_slugs(ConnectorClient()))}
 
@@ -79,7 +79,7 @@ def _skill_resolver() -> Callable[[str], str | None]:
     """A written first-task skill name -> the name skill_view loads it with here, or None. A plugin skill
     (``blender:blender``) resolves through the installed catalog plugin to its registered name."""
     from hermes_cli.plugins_activation_live import catalog_plugin_skill
-    from tools.skills_tool import find_all_skills
+    from hermes_agent.tools.skills_tool import find_all_skills
 
     bundled = {skill["name"] for skill in find_all_skills()}
     return lambda name: catalog_plugin_skill(name) if ":" in name else (name if name in bundled else None)
@@ -95,7 +95,7 @@ def _result(step: flow.Step, beat: str | None = None, extra: str = "") -> str:
 
 def _connector_slugs() -> set[str] | None:
     """The connectors this account can connect, as the card lists them; None when the list is unreachable."""
-    from tools.connectors.targets import hosted_names
+    from hermes_agent.tools.connectors.targets import hosted_names
 
     return hosted_names()
 

@@ -2,7 +2,7 @@
 
 from unittest.mock import MagicMock
 
-from tools import react_to_message_tool as reactions
+from hermes_agent.tools import react_to_message_tool as reactions
 
 
 def test_reaction_database_closes_when_write_fails(monkeypatch):

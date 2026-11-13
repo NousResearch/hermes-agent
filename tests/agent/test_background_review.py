@@ -874,7 +874,7 @@ def _interrupt_scoped_agent() -> AIAgent:
 def test_supersede_hard_interrupt_targets_review_fork_only():
     """Regression for #118693: a live turn superseding the background review must
     flag only the fork. The foreground agent's instance flags and its execution
-    thread's ``tools.interrupt`` bit must stay untouched, or a user-facing stream
+    thread's ``hermes_agent.tools.interrupt`` bit must stay untouched, or a user-facing stream
     mid-flight is exactly what gets killed."""
     import time
 
@@ -883,7 +883,7 @@ def test_supersede_hard_interrupt_targets_review_fork_only():
         finish_background_review_run,
         prepare_background_review_run,
     )
-    from tools.interrupt import (
+    from hermes_agent.tools.interrupt import (
         _interrupt_reasons,
         _interrupted_threads,
         is_thread_interrupted,

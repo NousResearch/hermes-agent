@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 import pytest
 
-from tools import browser_session_cloud
+from hermes_agent.tools import browser_session_cloud
 
 
 @pytest.fixture(autouse=True)

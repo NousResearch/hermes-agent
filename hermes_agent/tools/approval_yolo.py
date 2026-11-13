@@ -1,6 +1,6 @@
 """Session ``/yolo``: the one toggle / restore / carry contract every surface calls.
 
-The bypass itself is ``tools.approval``'s in-memory per-key set, so every process starts with it empty.
+The bypass itself is ``hermes_agent.tools.approval``'s in-memory per-key set, so every process starts with it empty.
 Each surface persists it where its session identity lives: CLI, TUI and Desktop on the session row
 (``model_config.yolo_mode``), the messaging gateway on the routing entry, whose key outlives compression
 rotations; sessions the gateway owns for CLI/TUI/Desktop clients (``config.set key=yolo``) and their managed
@@ -11,7 +11,7 @@ is decided here, so the CLI ``/yolo``, the TUI Shift+Tab, the Desktop zap and a 
 import logging
 from typing import Any, Callable, Optional
 
-from tools import approval
+from hermes_agent.tools import approval
 
 logger = logging.getLogger(__name__)
 
@@ -95,7 +95,7 @@ def transfer_session_yolo(old_key: str, new_key: str) -> None:
     The new row records it at creation (``with_session_yolo``), so nothing is written here. Every
     continuation site calls this, so it also moves the chat's MCP spend total: a rotation must not hand a
     chat that spent its limit a fresh budget."""
-    from tools.mcp_tool_costs import transfer_session
+    from hermes_agent.tools.mcp_tool_costs import transfer_session
     transfer_session(old_key, new_key)
     if not old_key or not new_key or old_key == new_key or not approval.is_session_yolo_enabled(old_key):
         return

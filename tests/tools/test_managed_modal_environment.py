@@ -54,16 +54,16 @@ def _install_fake_tools_package(*, credential_mounts=None):
         get_hermes_home=lambda: Path(tempfile.gettempdir()) / "hermes-home",
     )
 
-    tools_package = types.ModuleType("tools")
+    tools_package = types.ModuleType("hermes_agent.tools")
     tools_package.__path__ = [str(TOOLS_DIR)]  # type: ignore[attr-defined]
-    sys.modules["tools"] = tools_package
+    sys.modules["hermes_agent.tools"] = tools_package
 
-    env_package = types.ModuleType("tools.environments")
+    env_package = types.ModuleType("hermes_agent.tools.environments")
     env_package.__path__ = [str(TOOLS_DIR / "environments")]  # type: ignore[attr-defined]
-    sys.modules["tools.environments"] = env_package
+    sys.modules["hermes_agent.tools.environments"] = env_package
 
     interrupt_event = threading.Event()
-    sys.modules["tools.interrupt"] = types.SimpleNamespace(
+    sys.modules["hermes_agent.tools.interrupt"] = types.SimpleNamespace(
         set_interrupt=lambda value=True: interrupt_event.set() if value else interrupt_event.clear(),
         is_interrupted=lambda: interrupt_event.is_set(),
         _interrupt_event=interrupt_event,
@@ -78,8 +78,8 @@ def _install_fake_tools_package(*, credential_mounts=None):
         def _prepare_command(self, command: str):
             return command, None
 
-    sys.modules["tools.environments.base"] = types.SimpleNamespace(BaseEnvironment=_DummyBaseEnvironment)
-    sys.modules["tools.managed_tool_gateway"] = types.SimpleNamespace(
+    sys.modules["hermes_agent.tools.environments.base"] = types.SimpleNamespace(BaseEnvironment=_DummyBaseEnvironment)
+    sys.modules["hermes_agent.tools.managed_tool_gateway"] = types.SimpleNamespace(
         resolve_managed_tool_gateway=lambda vendor: types.SimpleNamespace(
             vendor=vendor,
             gateway_origin="https://modal-gateway.example.com",
@@ -87,7 +87,7 @@ def _install_fake_tools_package(*, credential_mounts=None):
             managed_mode=True,
         )
     )
-    sys.modules["tools.credential_files"] = types.SimpleNamespace(
+    sys.modules["hermes_agent.tools.credential_files"] = types.SimpleNamespace(
         get_credential_file_mounts=lambda: list(credential_mounts or []),
     )
 
@@ -108,7 +108,7 @@ class _FakeResponse:
 
 def test_managed_modal_execute_polls_until_completed(monkeypatch):
     _install_fake_tools_package()
-    managed_modal = _load_tool_module("tools.environments.managed_modal", "environments/managed_modal.py")
+    managed_modal = _load_tool_module("hermes_agent.tools.environments.managed_modal", "environments/managed_modal.py")
 
     calls = []
     poll_count = {"value": 0}
@@ -151,7 +151,7 @@ def test_managed_modal_rejects_host_credential_passthrough():
             "container_path": "/root/.hermes/token.json",
         }]
     )
-    managed_modal = _load_tool_module("tools.environments.managed_modal", "environments/managed_modal.py")
+    managed_modal = _load_tool_module("hermes_agent.tools.environments.managed_modal", "environments/managed_modal.py")
 
     with pytest.raises(ValueError, match="credential-file passthrough"):
         managed_modal.ManagedModalEnvironment(image="python:3.11")
@@ -159,7 +159,7 @@ def test_managed_modal_rejects_host_credential_passthrough():
 
 def test_managed_modal_execute_times_out_and_cancels(monkeypatch):
     _install_fake_tools_package()
-    managed_modal = _load_tool_module("tools.environments.managed_modal", "environments/managed_modal.py")
+    managed_modal = _load_tool_module("hermes_agent.tools.environments.managed_modal", "environments/managed_modal.py")
 
     calls = []
     monotonic_values = iter([0.0, 0.0, 0.0, 12.5, 12.5])

@@ -2,7 +2,7 @@
 exception, and always name the next step (/agents). Contract tests, not snapshots.
 """
 
-from tools.delegate_tool_progress import describe_subagent_failure, format_subagent_failure_line
+from hermes_agent.tools.delegate_tool_progress import describe_subagent_failure, format_subagent_failure_line
 
 
 def test_classified_reason_replaces_raw_exception_text():

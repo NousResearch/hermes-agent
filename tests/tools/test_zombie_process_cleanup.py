@@ -47,10 +47,10 @@ class TestAgentCloseMethod:
             agent._active_children_lock = threading.Lock()
             agent.client = None
 
-            with patch("tools.process_registry.process_registry") as mock_registry, \
+            with patch("hermes_agent.tools.process_registry.process_registry") as mock_registry, \
                  patch("run_agent.cleanup_vm") as mock_cleanup_vm, \
                  patch("run_agent.cleanup_browser") as mock_cleanup_browser, \
-                 patch("tools.computer_use.tool.release_computer_use_session") as mock_cleanup_cua:
+                 patch("hermes_agent.tools.computer_use.tool.release_computer_use_session") as mock_cleanup_cua:
                 mock_registry.list_sessions.return_value = [
                     {"session_id": "owned", "owner_task_id": "sa-owned", "status": "running"},
                     {"session_id": "foreign", "owner_task_id": "parent", "status": "running"},
@@ -95,10 +95,10 @@ class TestAgentCloseMethod:
             agent.client = None
 
             with patch(
-                "tools.process_registry.process_registry.list_sessions",
+                "hermes_agent.tools.process_registry.process_registry.list_sessions",
                 side_effect=RuntimeError("process cleanup failed"),
             ), patch(
-                "tools.computer_use.tool.release_computer_use_session",
+                "hermes_agent.tools.computer_use.tool.release_computer_use_session",
             ) as mock_cleanup_cua:
                 agent.close()
 
@@ -119,7 +119,7 @@ class TestAgentCloseMethod:
             agent.client = None
 
             with patch(
-                "tools.computer_use.tool.release_computer_use_session",
+                "hermes_agent.tools.computer_use.tool.release_computer_use_session",
             ) as mock_cleanup_cua:
                 agent.release_clients()
 
@@ -237,8 +237,8 @@ class TestGatewayCleanupWiring:
         try:
             with patch("hermes_agent.gateway.status.remove_pid_file"), \
                  patch("hermes_agent.gateway.status.write_runtime_status"), \
-                 patch("tools.terminal_tool.cleanup_all_environments"), \
-                 patch("tools.browser_session_lifecycle.cleanup_all_browsers"):
+                 patch("hermes_agent.tools.terminal_tool.cleanup_all_environments"), \
+                 patch("hermes_agent.tools.browser_session_lifecycle.cleanup_all_browsers"):
                 loop.run_until_complete(GatewayRunner.stop(runner))
         finally:
             loop.close()
@@ -278,7 +278,7 @@ class TestDelegationCleanup:
             set_hermes_home_override,
         )
         from agent import relay_runtime
-        from tools.delegate_tool import _run_single_child
+        from hermes_agent.tools.delegate_tool import _run_single_child
 
         parent = MagicMock()
         parent._active_children = []
@@ -323,7 +323,7 @@ class TestDelegationCleanup:
         from unittest.mock import MagicMock
 
         from agent import relay_runtime
-        from tools.delegate_tool import _run_single_child
+        from hermes_agent.tools.delegate_tool import _run_single_child
 
         parent = MagicMock()
         parent._active_children = []
@@ -361,7 +361,7 @@ class TestDelegationCleanup:
             reset_hermes_home_override,
             set_hermes_home_override,
         )
-        from tools.delegate_tool import _run_single_child
+        from hermes_agent.tools.delegate_tool import _run_single_child
 
         relay_runtime._reset_for_tests()
         profile_home = tmp_path / "profile-timeout"
@@ -379,7 +379,7 @@ class TestDelegationCleanup:
         parent._active_children.append(child)
         relay_host = MagicMock()
         monkeypatch.setattr(relay_runtime, "get_runtime", lambda **_kwargs: relay_host)
-        monkeypatch.setattr("tools.delegate_tool._get_child_timeout", lambda: 2)
+        monkeypatch.setattr("hermes_agent.tools.delegate_tool._get_child_timeout", lambda: 2)
 
         # The parent's cap must not elapse before the worker thread has opened the child's turn, or
         # the "late result" scenario degrades into "child never started" on a loaded runner. Gate the
@@ -389,7 +389,7 @@ class TestDelegationCleanup:
                 child_started.wait(timeout=5)
                 return super().wait(timeout)
 
-        from tools import delegate_tool
+        from hermes_agent.tools import delegate_tool
 
         real_start_heartbeat = delegate_tool._start_heartbeat
 

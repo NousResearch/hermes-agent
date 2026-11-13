@@ -214,7 +214,7 @@ async def test_suffixed_bsuid_live_allowlist_interactive_dispatch(monkeypatch, e
     adapter = _build_adapter(monkeypatch, {env_var: f"{_BSUID}@s.whatsapp.net"})
     adapter.handle_message = AsyncMock()
     resolver = MagicMock(return_value=True)
-    monkeypatch.setattr("tools.clarify_gateway.resolve_gateway_clarify", resolver)
+    monkeypatch.setattr("hermes_agent.tools.clarify_gateway.resolve_gateway_clarify", resolver)
 
     async def expect_tap(sender, prompt_id, allowed):
         adapter._clarify_state[prompt_id] = "session"

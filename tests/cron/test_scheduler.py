@@ -22,7 +22,7 @@ from hermes_agent.cron.scheduler import (
     _summarize_cron_failure_for_delivery,
 )
 from hermes_agent.cron.scheduler_delivery import _resolve_origin, _send_media_via_adapter
-from tools.env_passthrough import clear_env_passthrough
+from hermes_agent.tools.env_passthrough import clear_env_passthrough
 
 
 def _run_owned_job(job, tmp_path, db=None):
@@ -441,7 +441,7 @@ class TestDeliverResultWrapping:
             patch("hermes_agent.gateway.config.load_gateway_config", return_value=config),
             patch("hermes_agent.cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}),
             patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro),
-            patch("tools.send_message_tool._send_to_platform", new=standalone_send),
+            patch("hermes_agent.tools.send_message_tool._send_to_platform", new=standalone_send),
         ):
             result = _deliver_result(
                 job,
@@ -1120,7 +1120,7 @@ class TestRunJobConfigEnvVarExpansion:
              patch("hermes_agent.hermes_state_registry.acquire", return_value=fake_db), \
              patch("hermes_cli.runtime_provider.resolve_runtime_provider",
                    side_effect=resolve_runtime), \
-             patch("tools.mcp_tool_discovery.discover_mcp_tools", return_value=[]), \
+             patch("hermes_agent.tools.mcp_tool_discovery.discover_mcp_tools", return_value=[]), \
              patch("run_agent.AIAgent") as mock_agent_cls:
             mock_agent = MagicMock()
             mock_agent.run_conversation.return_value = {"final_response": "ok"}
@@ -1172,7 +1172,7 @@ class TestRunJobConfigEnvVarExpansion:
              patch("hermes_agent.hermes_state_registry.acquire", return_value=fake_db), \
              patch("hermes_cli.runtime_provider.resolve_runtime_provider",
                    side_effect=resolve_runtime), \
-             patch("tools.mcp_tool_discovery.discover_mcp_tools", return_value=[]), \
+             patch("hermes_agent.tools.mcp_tool_discovery.discover_mcp_tools", return_value=[]), \
              patch("run_agent.AIAgent") as mock_agent_cls:
             mock_agent = MagicMock()
             mock_agent.run_conversation.return_value = {"final_response": "ok"}
@@ -1321,13 +1321,13 @@ class TestRunJobSkillBacked:
 
         def _skill_view(name):
             assert name == "notion"
-            from tools.env_passthrough import register_env_passthrough
+            from hermes_agent.tools.env_passthrough import register_env_passthrough
 
             register_env_passthrough(["NOTION_API_KEY"])
             return json.dumps({"success": True, "content": "# notion\nUse Notion."})
 
         def _run_conversation(prompt, *, task_id=None):
-            from tools.env_passthrough import get_all_passthrough
+            from hermes_agent.tools.env_passthrough import get_all_passthrough
 
             assert isinstance(task_id, str)
             assert task_id.startswith("cron:skill-env-job:")
@@ -1348,7 +1348,7 @@ class TestRunJobSkillBacked:
                      "api_mode": "chat_completions",
                  },
              ), \
-             patch("tools.skills_tool.skill_view", side_effect=_skill_view), \
+             patch("hermes_agent.tools.skills_tool.skill_view", side_effect=_skill_view), \
              patch("run_agent.AIAgent") as mock_agent_cls:
             mock_agent = MagicMock()
             mock_agent.run_conversation.side_effect = _run_conversation
@@ -1618,7 +1618,7 @@ class TestBuildJobPromptMissingSkill:
 
     def test_missing_skill_injects_user_notice_into_prompt(self):
         """A system notice about the missing skill is injected into the prompt."""
-        with patch("tools.skills_tool.skill_view", side_effect=self._missing_skill_view):
+        with patch("hermes_agent.tools.skills_tool.skill_view", side_effect=self._missing_skill_view):
             result = _build_job_prompt({"skills": ["ghost-skill"], "prompt": "do something"})
         assert "ghost-skill" in result
         assert "not found" in result.lower() or "skipped" in result.lower()
@@ -1640,8 +1640,8 @@ class TestBuildJobPromptAbsoluteSkillPath:
                 return json.dumps({"success": True, "content": "# Alpha\nDo alpha."})
             return json.dumps({"success": False, "error": f"Skill '{name}' not found."})
 
-        with patch("tools.skills_tool.SKILLS_DIR", skills_dir), \
-             patch("tools.skills_tool.skill_view", side_effect=_skill_view):
+        with patch("hermes_agent.tools.skills_tool.SKILLS_DIR", skills_dir), \
+             patch("hermes_agent.tools.skills_tool.skill_view", side_effect=_skill_view):
             result = _build_job_prompt({"skills": [absolute_path], "prompt": "go"})
 
         assert seen_names == ["alpha-skill"]
@@ -1656,8 +1656,8 @@ class TestBuildJobPromptBumpUse:
         def _skill_view(name: str) -> str:
             return json.dumps({"success": True, "content": f"Content for {name}."})
 
-        with patch("tools.skills_tool.skill_view", side_effect=_skill_view), \
-             patch("tools.skill_usage.bump_use") as mock_bump:
+        with patch("hermes_agent.tools.skills_tool.skill_view", side_effect=_skill_view), \
+             patch("hermes_agent.tools.skill_usage.bump_use") as mock_bump:
             _build_job_prompt({
                 "id": "cron-task",
                 "skills": ["alpha", "beta"],
@@ -1815,7 +1815,7 @@ class TestDeliverResultTimeoutCancelsFuture:
         standalone_send = AsyncMock(return_value={"success": True})
         with patch("hermes_agent.gateway.config.load_gateway_config", return_value=mock_cfg), \
              patch("hermes_agent.cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
-             patch("tools.send_message_tool._send_to_platform", new=standalone_send):
+             patch("hermes_agent.tools.send_message_tool._send_to_platform", new=standalone_send):
             result = _deliver_result(job, "Hello world", adapters={Platform.TELEGRAM: adapter}, loop=loop)
         return result, standalone_send
 
@@ -1889,7 +1889,7 @@ class TestDeliverResultPartialSplitDelivery:
         try:
             with patch("hermes_agent.gateway.config.load_gateway_config", return_value=mock_cfg), \
                  patch("hermes_agent.cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
-                 patch("tools.send_message_tool._send_to_platform", new=standalone_send):
+                 patch("hermes_agent.tools.send_message_tool._send_to_platform", new=standalone_send):
                 result = _deliver_result(job, "Hello world", adapters={Platform.TELEGRAM: adapter}, loop=loop)
         finally:
             loop.call_soon_threadsafe(loop.stop)
@@ -1944,7 +1944,7 @@ class TestDeliverResultLiveAdapterUnconfirmed:
         with patch("hermes_agent.gateway.config.load_gateway_config", return_value=mock_cfg), \
              patch("hermes_agent.cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
              patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro), \
-             patch("tools.send_message_tool._send_to_platform", new=standalone_send):
+             patch("hermes_agent.tools.send_message_tool._send_to_platform", new=standalone_send):
             result = _deliver_result(
                 job,
                 "Hello world",
@@ -2134,7 +2134,7 @@ class TestCronDeliveryMirror:
         mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
 
         with patch("hermes_agent.gateway.config.load_gateway_config", return_value=mock_cfg), \
-             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})), \
+             patch("hermes_agent.tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})), \
              patch("hermes_agent.gateway.mirror.mirror_to_session", return_value=True) as mirror_mock:
             job = {
                 "id": "test-job",

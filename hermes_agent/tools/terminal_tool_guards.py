@@ -4,8 +4,8 @@ Pure functions that decide whether a command may run at all: workdir
 validation, the foreground long-lived/background-operator guidance, the
 supervised-gateway lifecycle block, and the Windows self-repo git guard.
 Each ``*_block`` helper returns a finished JSON error string, or None when
-the command may proceed. Split out of tools/terminal_tool.py; the origin
-module re-imports every public helper so ``tools.terminal_tool.<name>``
+the command may proceed. Split out of hermes_agent/tools/terminal_tool.py; the origin
+module re-imports every public helper so ``hermes_agent.tools.terminal_tool.<name>``
 keeps resolving.
 """
 
@@ -18,9 +18,9 @@ import stat
 from pathlib import Path
 from typing import Any, Optional
 
-from tools.shell_heredoc import strip_inert_heredoc_bodies
+from hermes_agent.tools.shell_heredoc import strip_inert_heredoc_bodies
 
-logger = logging.getLogger("tools.terminal_tool")
+logger = logging.getLogger("hermes_agent.tools.terminal_tool")
 
 
 # Workdir allowlist: Unicode alnum plus path/drive/UNC separators and common
@@ -474,8 +474,8 @@ def _approval_identity(command: str) -> tuple:
     dangerous pattern key/description (what session/permanent approvals are stored under), the
     sudo-stdin floor, runtime self-delete, the user's deny rules and the permanent allowlist."""
     from agent.runtime_self_protection import command_deletes_runtime
-    from tools.approval import _command_matches_permanent_allowlist, _match_user_deny_rule
-    from tools.approval_detection import _check_sudo_stdin_guard, detect_dangerous_command, detect_hardline_command
+    from hermes_agent.tools.approval import _command_matches_permanent_allowlist, _match_user_deny_rule
+    from hermes_agent.tools.approval_detection import _check_sudo_stdin_guard, detect_dangerous_command, detect_hardline_command
     return (
         tuple(detect_hardline_command(command)),
         tuple(detect_dangerous_command(command)),
@@ -576,9 +576,9 @@ def gateway_lifecycle_block(
     a self-restart into a respawn loop, so it passes too.
     Returns the JSON error string when blocked, else None.
     """
-    from tools.environments.sandbox_scope import hosted_scope
-    from tools.process_registry import _is_supervised_gateway_process
-    from tools.terminal_tool import _resolve_command_cwd, get_session_cwd
+    from hermes_agent.tools.environments.sandbox_scope import hosted_scope
+    from hermes_agent.tools.process_registry import _is_supervised_gateway_process
+    from hermes_agent.tools.terminal_tool import _resolve_command_cwd, get_session_cwd
 
     # A hosted command runs in the agent's remote sandbox, which cannot reach this gateway; the
     # scan below would read the scripts it names on this host.
@@ -660,8 +660,8 @@ def self_repo_block(
     backends cannot reach that checkout. Returns the JSON error string when
     blocked, else None.
     """
-    from tools.self_repo_guard import detect_self_repo_git_mutation, guard_active
-    from tools.terminal_tool import _resolve_command_cwd
+    from hermes_agent.tools.self_repo_guard import detect_self_repo_git_mutation, guard_active
+    from hermes_agent.tools.terminal_tool import _resolve_command_cwd
 
     if not guard_active():
         return None
@@ -675,10 +675,10 @@ def self_repo_block(
 
 def locked_skill_block(*, command: str, cwd: str, workdir: Optional[str], session_key: str) -> Optional[str]:
     """Refuse commands that write into a skill the user locked, change the lock record, or run
-    ``hermes curator unlock`` (see tools/skill_lock). Local backend only: a remote or container
+    ``hermes curator unlock`` (see hermes_agent/tools/skill_lock). Local backend only: a remote or container
     backend cannot reach this profile's skills dir. Returns the JSON error string when blocked."""
-    from tools.skill_lock import command_refusal
-    from tools.terminal_tool import _resolve_command_cwd
+    from hermes_agent.tools.skill_lock import command_refusal
+    from hermes_agent.tools.terminal_tool import _resolve_command_cwd
 
     guard_cwd = _resolve_command_cwd(workdir=workdir, default_cwd=cwd, session_key=session_key)
     reason = command_refusal(command, guard_cwd)

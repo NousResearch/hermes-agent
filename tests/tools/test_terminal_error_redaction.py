@@ -4,7 +4,7 @@ import json
 from types import SimpleNamespace
 
 from agent import redact
-from tools import terminal_tool
+from hermes_agent.tools import terminal_tool
 
 
 SECRET = "OPENAI_API_KEY=sk-testterminalerrorredaction1234567890"
@@ -106,7 +106,7 @@ def test_environment_creation_import_error_redacts_exception_text(monkeypatch):
     def fail_create_environment(**kwargs):
         raise ImportError(f"backend import failed with {SECRET}")
 
-    monkeypatch.setattr("tools.terminal_tool_backends._create_environment", fail_create_environment)
+    monkeypatch.setattr("hermes_agent.tools.terminal_tool_backends._create_environment", fail_create_environment)
 
     result = json.loads(terminal_tool.terminal_tool(command="echo ok"))
 
@@ -125,7 +125,7 @@ def test_background_start_error_redacts_exception_text(monkeypatch):
         def spawn_local(self, **kwargs):
             raise RuntimeError(f"spawn failed with {SECRET}")
 
-    import tools.process_registry as process_registry_mod
+    import hermes_agent.tools.process_registry as process_registry_mod
 
     _patch_common(monkeypatch, Env())
     monkeypatch.setattr(process_registry_mod, "process_registry", FailingRegistry())

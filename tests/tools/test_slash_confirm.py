@@ -1,4 +1,4 @@
-"""Tests for tools/slash_confirm.py — the generic slash-command confirmation primitive.
+"""Tests for hermes_agent/tools/slash_confirm.py — the generic slash-command confirmation primitive.
 
 Covers register/resolve/clear lifecycle, stale-entry behavior, confirm_id
 mismatch, handler exceptions, and async resolution.
@@ -9,7 +9,7 @@ import time
 
 import pytest
 
-from tools import slash_confirm
+from hermes_agent.tools import slash_confirm
 
 
 @pytest.fixture(autouse=True)

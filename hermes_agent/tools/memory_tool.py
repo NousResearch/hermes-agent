@@ -13,7 +13,7 @@ from hermes_constants import get_hermes_home
 from typing import Dict, Any, List, Optional, Tuple
 
 from utils import is_truthy_value
-from tools.registry import no_cache_check_fn
+from hermes_agent.tools.registry import no_cache_check_fn
 
 # fcntl is Unix-only; Windows uses msvcrt. MemoryStore reads both lazily from
 # this module (tests patch ``memory_tool.fcntl``).
@@ -40,7 +40,7 @@ def get_memory_dir() -> Path:
     return get_hermes_home() / "memories"
 
 
-from tools.memory_tool_store import (
+from hermes_agent.tools.memory_tool_store import (
     ENTRY_DELIMITER, FAILURE_CLASS, MEMORY_BLOCK_HEADERS, PATCH_DROP_HINT, MemoryStore, _scan_memory_content)
 
 
@@ -85,7 +85,7 @@ def _gate_or_stage(store: MemoryStore, summary: str, detail: str, payload: dict[
     """JSON tool-result string when the write must NOT proceed (blocked or staged
     for approval), None to proceed. Fails open if the gate module can't load."""
     try:
-        from tools import write_approval as wa
+        from hermes_agent.tools import write_approval as wa
     except Exception:
         return None
     decision = wa.evaluate_gate(wa.MEMORY, inline_summary=summary, inline_detail=detail)
@@ -184,7 +184,7 @@ def _background_delete_gate(store, action, operations, target="memory", content=
     store instead of merely denied: the fork's own review summary is never published back, so
     a plain denial would drop the consolidation request with no surfacing path at all. A
     staging failure fails closed to a plain denial."""
-    from tools.skill_provenance import is_unattended_review
+    from hermes_agent.tools.skill_provenance import is_unattended_review
 
     if not is_unattended_review():
         return None
@@ -198,7 +198,7 @@ def _background_delete_gate(store, action, operations, target="memory", content=
     try:
         if (unmatched := _pin_matched_entries(store, payload)) is not None:
             return unmatched
-        from tools import write_approval as wa
+        from hermes_agent.tools import write_approval as wa
         FAILURE_CLASS.set("staged")
         record = wa.stage_write(
             wa.MEMORY, payload,
@@ -329,7 +329,7 @@ def _memory_target_error(
             "For a batch, remove target from every operation; use separate calls for different stores. "
             "Nothing was written or staged.")}
     if not isinstance(target, str) or target not in {"memory", "user"}:
-        from tools.registry import _bound_error_text
+        from hermes_agent.tools.registry import _bound_error_text
         FAILURE_CLASS.set("invalid_args")
         return {"success": False,
                 "error": _bound_error_text(f"Invalid memory target '{target}'. Use 'memory' or 'user'.")}
@@ -463,7 +463,7 @@ def _build_memory_schema_overrides() -> dict[str, Any]:
     return {"description": description, "parameters": parameters}
 
 
-from tools.registry import registry, tool_error
+from hermes_agent.tools.registry import registry, tool_error
 
 registry.register(
     name="memory",

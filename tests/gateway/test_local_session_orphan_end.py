@@ -83,7 +83,7 @@ def _stored_close(db, sid):
 @pytest.mark.asyncio
 async def test_a_dropped_viewer_ends_the_session_after_its_turn_settles(tmp_path, monkeypatch):
     import hermes_agent.gateway.session_finite as finite
-    import tools.async_delegation as delegation
+    import hermes_agent.tools.async_delegation as delegation
     from hermes_agent.hermes_state_runtime import admit_session_input, list_session_admissions
 
     armed = _capture_timers(monkeypatch)
@@ -189,7 +189,7 @@ async def test_work_finishing_after_close_and_restart_is_noted_on_the_ended_sess
     from tests.gateway.test_completion_admission import pending
     from tests.gateway.test_session_end_delegations import _local
     from tests.gateway.test_unviewed_completion_notes import _delegation_note, _process_event, _restart, _target
-    import tools.async_delegation as delegation
+    import hermes_agent.tools.async_delegation as delegation
 
     delegation._reset_for_tests()
     runner, authority, ref, _actor = await _local(tmp_path, monkeypatch)

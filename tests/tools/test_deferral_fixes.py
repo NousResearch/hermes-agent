@@ -27,8 +27,8 @@ from types import SimpleNamespace
 import pytest
 
 from agent.tool_dispatch_helpers import _plan_tool_batch_segments
-from tools.tool_search import build_catalog, search_catalog
-from tools.tool_search_catalog import CATALOG_SUMMARY_MAX_CHARS, _short_desc
+from hermes_agent.tools.tool_search import build_catalog, search_catalog
+from hermes_agent.tools.tool_search_catalog import CATALOG_SUMMARY_MAX_CHARS, _short_desc
 
 
 def _tc(name, arguments="{}", call_id=None):
@@ -72,10 +72,10 @@ def mcp_pair(monkeypatch):
 
     Registers via the actual registry (so ``resolve_underlying_call``'s
     deferability check passes) and marks the server parallel-safe through
-    the real provenance maps in ``tools.mcp_tool``.
+    the real provenance maps in ``hermes_agent.tools.mcp_tool``.
     """
-    from tools import mcp_tool
-    from tools.registry import registry
+    from hermes_agent.tools import mcp_tool
+    from hermes_agent.tools.registry import registry
 
     names = ["mcp__pytestsrv__alpha_read", "mcp__pytestsrv__beta_read"]
     for n in names:
@@ -109,7 +109,7 @@ class TestBridgePeelInPlanner:
         assert _flatten_ids(segments) == ["a", "b"]
 
     def test_bridged_call_to_non_opted_in_tool_stays_sequential(self, mcp_pair):
-        from tools import mcp_tool
+        from hermes_agent.tools import mcp_tool
 
         with mcp_tool._lock:
             mcp_tool._parallel_safe_servers.discard("pytestsrv")
@@ -217,7 +217,7 @@ class TestSourceNameIndexing:
 
     @staticmethod
     def _register(name, toolset, desc):
-        from tools.registry import registry
+        from hermes_agent.tools.registry import registry
 
         registry.register(
             name=name,
@@ -230,7 +230,7 @@ class TestSourceNameIndexing:
     def test_service_query_reaches_tool_without_service_in_name(self):
         """A plugin tool named ``create_issue`` in toolset ``mcp-linear``
         must be reachable by the query "linear"."""
-        from tools.registry import registry
+        from hermes_agent.tools.registry import registry
 
         names = [
             self._register("create_issue", "mcp-linear", "Create a new issue in a team."),
@@ -252,7 +252,7 @@ class TestSourceNameIndexing:
         as a near-zero-IDF token: a query containing "mcp" matched EVERY
         tool, drowning the discriminating terms. Now "mcp" contributes
         nothing to ranking, so the discriminating term decides alone."""
-        from tools.registry import registry
+        from hermes_agent.tools.registry import registry
 
         names = [
             self._register("mcp__linear__create_issue", "mcp-linear", "Create an issue."),
@@ -276,7 +276,7 @@ class TestSourceNameIndexing:
         is admitted: an empty group, not `limit` tools sharing a common word. The old
         name-substring fallback ("hub" -> github_*) is gone with it; the substring path
         admitted tools that matched no query token at all."""
-        from tools.registry import registry
+        from hermes_agent.tools.registry import registry
 
         names = [
             self._register("github_create_issue", "mcp-github", "Create an issue."),

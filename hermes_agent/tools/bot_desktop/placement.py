@@ -44,12 +44,12 @@ def _setting() -> str:
 
 
 def _terminal_backend() -> str:
-    from tools.terminal_tool import _get_env_config
+    from hermes_agent.tools.terminal_tool import _get_env_config
     return str(_get_env_config().get("env_type") or "local")
 
 
 def _plugin_streams(backend: str) -> bool:
-    from tools.terminal_tool_config import _plugin_env_flag
+    from hermes_agent.tools.terminal_tool_config import _plugin_env_flag
     return _plugin_env_flag(backend, "supports_streams") is True
 
 
@@ -89,7 +89,7 @@ def resolve() -> Placement:
 def terminal_environment(*, create: bool = True) -> Optional[Any]:
     """This profile's terminal environment object (the one ``terminal`` runs commands in). ``create=False``
     only returns an already-running one."""
-    from tools import terminal_tool as tt
+    from hermes_agent.tools import terminal_tool as tt
     task_id = tt._resolve_container_task_id(None)
     with tt._env_lock:
         env = tt._lookup_active_env(task_id, None)

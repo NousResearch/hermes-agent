@@ -4,12 +4,12 @@ import logging
 from dataclasses import dataclass, field, replace as dataclass_replace
 from typing import Any, Callable, Optional, Sequence
 
-from tools.connectors.gateway.config import connectors_available, guest_identity_pending
-from tools.connectors.gateway.errors import GatewayAuthError, GatewayUnavailable, ToolGatewayError
-from tools.connectors.gateway.files import FileInputError, model_parameters, save_outputs, stage_inputs
-from tools.connectors.gateway.merge import fill_remote_failure, splice_remote_results
-from tools.connectors.gateway.names import parse_connector_name, vendor_slug_candidates
-from tools.managed_gateway_identity import CallRef
+from hermes_agent.tools.connectors.gateway.config import connectors_available, guest_identity_pending
+from hermes_agent.tools.connectors.gateway.errors import GatewayAuthError, GatewayUnavailable, ToolGatewayError
+from hermes_agent.tools.connectors.gateway.files import FileInputError, model_parameters, save_outputs, stage_inputs
+from hermes_agent.tools.connectors.gateway.merge import fill_remote_failure, splice_remote_results
+from hermes_agent.tools.connectors.gateway.names import parse_connector_name, vendor_slug_candidates
+from hermes_agent.tools.managed_gateway_identity import CallRef
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +54,7 @@ def _leg_failure(exc: Exception) -> Optional[str]:
 
 def _default_client_factory(call: Optional[CallRef] = None):
     """The real client for the model's read and execute legs. These never create an identity."""
-    from tools.connectors.gateway.client import ConnectorClient
+    from hermes_agent.tools.connectors.gateway.client import ConnectorClient
 
     if guest_identity_pending():
         raise GatewayAuthError(NOT_SET_UP_MESSAGE, code=NOT_SET_UP)
@@ -233,7 +233,7 @@ def _execute_with_files(client: Any, planned: Sequence[Any], task_id: Optional[s
 
     A call whose file input is refused or fails to stage gets that error as its result and is never
     executed; its siblings still run."""
-    from tools.connectors.gateway.client import return_to_args
+    from hermes_agent.tools.connectors.gateway.client import return_to_args
 
     results: list[Optional[dict[str, Any]]] = [None] * len(planned)
     runnable: list[tuple[int, Any]] = []

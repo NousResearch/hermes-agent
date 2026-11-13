@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from tools.connectors.gateway.errors import ToolGatewayError
+from hermes_agent.tools.connectors.gateway.errors import ToolGatewayError
 
 
 class InvalidConnectorSlug(ValueError):

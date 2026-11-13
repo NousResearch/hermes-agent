@@ -312,9 +312,9 @@ async def test_configured_toolchain_names_a_local_client_omitted_never_leak_from
     without it. PATH is the documented exception (a client that sent none keeps the gateway's)."""
     import sys
     from hermes_agent.gateway.session_policy import policy_scope
-    from tools.code_execution_env import _build_child_env
-    from tools.environments.local import _make_run_env
-    from tools.process_registry import ProcessRegistry
+    from hermes_agent.tools.code_execution_env import _build_child_env
+    from hermes_agent.tools.environments.local import _make_run_env
+    from hermes_agent.tools.process_registry import ProcessRegistry
     home = _home(tmp_path, _CONFIG + 'terminal: {client_env_passthrough: [GEM_HOME]}\n')
     monkeypatch.setenv('GEM_HOME', '/alpha')
     monkeypatch.setenv('PATH', '/daemon/bin:/usr/bin:/bin')
@@ -354,7 +354,7 @@ async def test_host_values_apply_only_over_a_gateway_proven_local_attach(tmp_pat
     from hermes_cli.runtime_provider import resolve_requested_provider
     from hermes_agent.hermes_state_local import local_receipt
     from hermes_agent.hermes_state_runtime import RuntimeStoreError
-    from tools.environments.local import _make_run_env
+    from hermes_agent.tools.environments.local import _make_run_env
     home = _home(tmp_path, 'platform_toolsets: {cli: []}\nmodel: {default: m}\n')  # no configured provider
     repo = tmp_path / 'repo'
     (repo / '.hermes' / 'plugins' / 'mine').mkdir(parents=True)

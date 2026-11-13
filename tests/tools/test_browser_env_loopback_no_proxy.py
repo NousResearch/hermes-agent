@@ -9,7 +9,7 @@ for loopback URLs only.
 
 import pytest
 
-import tools.browser_session as bs
+import hermes_agent.tools.browser_session as bs
 from agent.proxy_bypass import add_loopback_no_proxy, loopback_connect_kwargs, loopback_request_kwargs
 
 
@@ -17,7 +17,7 @@ from agent.proxy_bypass import add_loopback_no_proxy, loopback_connect_kwargs, l
 def stub_sanitized_env(monkeypatch):
     """Replace the credential-scrub layer with a fixed dict so the test sees exactly what
     ``build_browser_env`` adds on top."""
-    from tools.environments import local
+    from hermes_agent.tools.environments import local
     holder = {}
     monkeypatch.setattr(local, "hermes_subprocess_env", lambda inherit_credentials=False: dict(holder))
     return holder

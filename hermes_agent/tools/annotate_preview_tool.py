@@ -10,7 +10,7 @@ renderer resolves refs and owns the overlay). ``desktop_ui`` toolset only.
 import json
 from typing import Callable, Optional
 
-from tools.registry import registry, tool_error
+from hermes_agent.tools.registry import registry, tool_error
 
 ACTIONS = ("add", "hold", "remove", "clear")
 

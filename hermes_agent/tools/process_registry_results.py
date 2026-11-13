@@ -15,7 +15,7 @@ from hermes_dir_acl import make_user_dir
 from hermes_constants import get_hermes_home
 from utils import atomic_json_write
 
-logger = logging.getLogger("tools.process_registry")
+logger = logging.getLogger("hermes_agent.tools.process_registry")
 
 RESULT_RETENTION_SECONDS = 7 * 24 * 60 * 60
 MAX_RETAINED_RESULTS = 64
@@ -52,7 +52,7 @@ def save_completed_result(session) -> None:
     if session.sandbox_key:
         return
     from agent.redact import redact_sensitive_text, redact_terminal_output
-    from tools.process_registry import MAX_OUTPUT_CHARS
+    from hermes_agent.tools.process_registry import MAX_OUTPUT_CHARS
 
     with session._lock:
         record = {key: getattr(session, key) for key in _RESULT_FIELDS}
@@ -90,10 +90,10 @@ def _owns_result(owner: str, parent: str | None) -> bool:
 
 def load_completed_results(prefix: str = "") -> dict:
     """Restore read-only snapshots; no process handles, watchers, or queue events."""
-    from tools.process_registry import ProcessSession
+    from hermes_agent.tools.process_registry import ProcessSession
 
     from hermes_agent.gateway.session_context import get_session_env
-    from tools.environments.sandbox_scope import hosted_scope
+    from hermes_agent.tools.environments.sandbox_scope import hosted_scope
 
     owner = get_session_env("HERMES_SESSION_ID", "")
     # A hosted agent's processes leave no receipt here and it sees no local one: never read or prune them.

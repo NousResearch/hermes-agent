@@ -2151,7 +2151,7 @@ class TestTransientTransportRetry:
 
     @pytest.mark.asyncio
     async def test_vision_skips_same_provider_retry_on_timeout_async(self):
-        """Async twin of the sync guard: tools/vision_tools.py drives
+        """Async twin of the sync guard: hermes_agent/tools/vision_tools.py drives
         ``async_call_llm``, so the skip must hold on the async site too."""
         class _Timeout(Exception):
             pass
@@ -2978,7 +2978,7 @@ class TestAnthropicAuxiliaryReasoningTranslation:
         # commandcode-anthropic: OpenAI-shaped URL, anthropic_messages api_mode, and a profile
         # class that overrides build_api_kwargs_extras (so the generic extra_body.reasoning
         # fallback the adapter used to read is suppressed). The adapter must still be told.
-        import model_tools
+        from hermes_agent import model_tools
         import providers
 
         assert providers.get_provider_profile("commandcode-anthropic") is not None
@@ -2998,7 +2998,7 @@ class TestAnthropicAuxiliaryReasoningTranslation:
         # Bare ``provider: commandcode-anthropic`` (no api_mode) must wrap the client on the
         # profile's declared wire, or the ``_reasoning_config`` kwarg above would reach a plain
         # OpenAI client and TypeError.
-        import model_tools
+        from hermes_agent import model_tools
         from agent.auxiliary_client import AnthropicAuxiliaryClient, resolve_provider_client
 
         monkeypatch.setenv("COMMANDCODE_API_KEY", "sk-test-" + "x" * 20)

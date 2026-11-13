@@ -1,6 +1,6 @@
 """Live operator-note injection into a running kanban worker.
 
-``tools.kanban_tools.inject_new_comments_from_env`` polls the worker's task
+``hermes_agent.tools.kanban_tools.inject_new_comments_from_env`` polls the worker's task
 for comments added *after* the run started and folds them into the live turn
 via the agent's OUT-OF-BAND steer channel — so a user can talk to a running
 task without the block→comment→unblock dance or a restart.
@@ -22,7 +22,7 @@ if str(_WORKTREE) not in sys.path:
 
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
-import tools.kanban_tools as kt
+import hermes_agent.tools.kanban_tools as kt
 
 
 class FakeAgent:

@@ -50,7 +50,7 @@ class TestIsSkillDisabled:
             "disabled": ["a/one"],
             "platform_disabled": {"telegram": ["tg-skill"]}
         }}
-        from tools.skills_tool import _is_skill_disabled
+        from hermes_agent.tools.skills_tool import _is_skill_disabled
         assert _is_skill_disabled("tg-skill", platform="telegram") is True
         # Any of several identifiers (declared name, duplicate's load path) disables.
         assert _is_skill_disabled("other", "tg-skill", platform="telegram") is True
@@ -65,7 +65,7 @@ class TestIsSkillDisabled:
         mock_load.return_value = {"skills": {
             "platform_disabled": {"discord": ["discord-skill"]}
         }}
-        from tools.skills_tool import _is_skill_disabled
+        from hermes_agent.tools.skills_tool import _is_skill_disabled
         assert _is_skill_disabled("discord-skill") is True
 
 
@@ -139,8 +139,8 @@ class TestGetDisabledSkillNames:
 # ---------------------------------------------------------------------------
 
 class TestFindAllSkillsFiltering:
-    @patch("tools.skills_tool._get_disabled_skill_names", return_value={"my-skill"})
-    @patch("tools.skills_tool.skill_matches_platform", return_value=True)
+    @patch("hermes_agent.tools.skills_tool._get_disabled_skill_names", return_value={"my-skill"})
+    @patch("hermes_agent.tools.skills_tool.skill_matches_platform", return_value=True)
     def test_disabled_skill_excluded(self, mock_platform, mock_disabled, tmp_path, monkeypatch):
         skill_dir = tmp_path / "my-skill"
         skill_dir.mkdir()
@@ -148,11 +148,11 @@ class TestFindAllSkillsFiltering:
         skill_md.write_text("---\nname: my-skill\ndescription: A test skill\n---\nContent")
         # Point SKILLS_DIR at the real tempdir so iter_skill_index_files
         # (which uses os.walk) can actually find the file.
-        import tools.skills_tool as _st
+        import hermes_agent.tools.skills_tool as _st
         import agent.skill_utils as _su
         monkeypatch.setattr(_st, "SKILLS_DIR", tmp_path)
         monkeypatch.setattr(_su, "get_external_skills_dirs", list)
-        from tools.skills_tool import find_all_skills
+        from hermes_agent.tools.skills_tool import find_all_skills
         skills = find_all_skills()
         assert not any(s["name"] == "my-skill" for s in skills)
 

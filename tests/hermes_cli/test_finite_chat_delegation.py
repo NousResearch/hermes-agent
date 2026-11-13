@@ -193,7 +193,7 @@ def test_finite_chat_joins_parallel_children_before_final_response(tmp_path, mod
 def test_tty_seeded_chat_keeps_background_delegation(monkeypatch, query, image):
     """A TTY -q (or image seed) still owns a later-turn completion consumer."""
     import cli
-    import tools.delegate_tool as dt
+    import hermes_agent.tools.delegate_tool as dt
     from hermes_agent.gateway.session_context import reset_session_vars
     from run_agent import AIAgent
     from tests.tools.test_delegate import _make_mock_parent
@@ -217,7 +217,7 @@ def test_tty_seeded_chat_keeps_background_delegation(monkeypatch, query, image):
         dispatched.append(unit)
         return {"status": "dispatched", "delegation_id": "interactive-delegation"}
 
-    monkeypatch.setattr("tools.delegate_tool_dispatch._dispatch_unit", dispatch)
+    monkeypatch.setattr("hermes_agent.tools.delegate_tool_dispatch._dispatch_unit", dispatch)
     seeded = SimpleNamespace(run=lambda: AIAgent._dispatch_delegate_task(
         parent, {"tasks": [{"goal": "independent task"}]},
     ))

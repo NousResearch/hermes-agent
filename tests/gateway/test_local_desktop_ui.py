@@ -12,8 +12,8 @@ import pytest
 
 from hermes_agent.gateway import local_desktop_ui, local_viewer_events, session_server_requests
 from hermes_agent.gateway.session_context import clear_session_vars, set_session_vars
-from tools import desktop_ui
-from tools.process_registry import process_registry
+from hermes_agent.tools import desktop_ui
+from hermes_agent.tools.process_registry import process_registry
 
 _ANSWERS = {
     "preview.read": {"value": "page text"},
@@ -51,7 +51,7 @@ def window(monkeypatch):
     monkeypatch.setattr(local_desktop_ui, "_process_routes", {})
     monkeypatch.setattr(local_desktop_ui, "_emitter_installed", False)
     monkeypatch.setattr(local_desktop_ui, "_process_sinks_installed", False)
-    from tools.connectors.operation import ConnectionOperation
+    from hermes_agent.tools.connectors.operation import ConnectionOperation
     monkeypatch.setattr(ConnectionOperation, "on_change", None)
     monkeypatch.setattr(desktop_ui, "_emit", None)
     monkeypatch.setattr(process_registry, "on_output", None)
@@ -132,9 +132,9 @@ def test_restore_puts_the_agents_callbacks_back(window):
 
 
 def test_the_connection_card_opens_and_updates_on_the_owning_session(window, monkeypatch):
-    from tools.connectors import live
-    from tools.connectors.contract import Actor, TargetState
-    from tools.connectors.operation import ConnectionOperation, Target
+    from hermes_agent.tools.connectors import live
+    from hermes_agent.tools.connectors.contract import Actor, TargetState
+    from hermes_agent.tools.connectors.operation import ConnectionOperation, Target
 
     monkeypatch.setattr(live, "_open", {})
     local_viewer_events.wire(window.turn, window.agent)
@@ -152,9 +152,9 @@ def test_the_connection_card_opens_and_updates_on_the_owning_session(window, mon
 
 def test_connection_updates_reach_the_owner_in_either_install_order(window, monkeypatch):
     """The sidecar's hook may be installed after ours; an operation of another profile with the same route is not ours."""
-    from tools.connectors import live
-    from tools.connectors.contract import Actor, TargetState
-    from tools.connectors.operation import ConnectionOperation, Target
+    from hermes_agent.tools.connectors import live
+    from hermes_agent.tools.connectors.contract import Actor, TargetState
+    from hermes_agent.tools.connectors.operation import ConnectionOperation, Target
 
     monkeypatch.setattr(live, "_open", {})
     local_viewer_events.wire(window.turn, window.agent)

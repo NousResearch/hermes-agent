@@ -11,7 +11,7 @@ import json
 import os
 from typing import Callable, Optional
 
-from tools.registry import registry
+from hermes_agent.tools.registry import registry
 
 # Set by the GUI gateway: ``(task_id, primary_path, project_name)`` re-anchors that session's
 # workspace. ``None`` in CLI/messaging — the DB write still happens, nothing to move.
@@ -76,7 +76,7 @@ def _calling_session_project_id(conn, task_id: Optional[str]) -> tuple[bool, Opt
     workspace (``cwd_source``) in the terminal override table; a caller it never registered (CLI,
     scripts) is unscoped and falls back to the profile-global pointer."""
     from hermes_cli import projects_db as pdb
-    from tools.terminal_tool import resolve_task_overrides
+    from hermes_agent.tools.terminal_tool import resolve_task_overrides
     overrides = resolve_task_overrides(task_id) if task_id else {}
     if "cwd_source" not in overrides:
         return False, None

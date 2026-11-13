@@ -109,7 +109,7 @@ def _coerce_task_schemas(
 ) -> tuple[list[Optional[dict[str, Any]]], Optional[str]]:
     """Per-task coerced output schemas. A malformed output_schema fails the whole call before any child spawns;
     schema-less tasks resolve to None and take no new code paths downstream."""
-    from tools.delegation_output_schema import coerce_output_schema
+    from hermes_agent.tools.delegation_output_schema import coerce_output_schema
     task_schemas: list[Optional[dict[str, Any]]] = []
     for i, task in enumerate(task_list):
         raw_schema = task.get("output_schema")

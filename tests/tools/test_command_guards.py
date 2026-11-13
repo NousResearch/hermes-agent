@@ -5,10 +5,10 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 
-import tools.approval as approval_module
-from tools import approval_context
-from tools.approval import approve_session, check_all_command_guards, detect_dangerous_command
-from tools.approval_context import set_current_session_key, reset_current_session_key
+import hermes_agent.tools.approval as approval_module
+from hermes_agent.tools import approval_context
+from hermes_agent.tools.approval import approve_session, check_all_command_guards, detect_dangerous_command
+from hermes_agent.tools.approval_context import set_current_session_key, reset_current_session_key
 
 
 @pytest.fixture(autouse=True)
@@ -160,7 +160,7 @@ class TestGatewayApprovalAllowPermanent:
     def _capture_gateway_payload(self, command, session_key):
         """Run the gateway approval path, denying inline, and return the
         single notify payload the renderer would have received."""
-        from tools.approval import (
+        from hermes_agent.tools.approval import (
             register_gateway_notify,
             resolve_gateway_approval,
             unregister_gateway_notify,

@@ -1,4 +1,4 @@
-"""Process-handle plumbing for ``tools.environments.base``.
+"""Process-handle plumbing for ``hermes_agent.tools.environments.base``.
 
 Bounded output capture (head/tail window + disk spill), the ``ProcessHandle``
 duck type, the SDK adapter ``_ThreadedProcessHandle``, stdin piping, and the
@@ -15,8 +15,8 @@ from pathlib import Path
 from typing import IO, Callable, Protocol
 
 from hermes_constants import get_hermes_home
-from tools.environments.fd_wait import open_fd_waiter
-from tools.tool_output_truncate import head_tail_split, truncation_notice
+from hermes_agent.tools.environments.fd_wait import open_fd_waiter
+from hermes_agent.tools.tool_output_truncate import head_tail_split, truncation_notice
 from hermes_cli._subprocess_compat import windows_hide_flags
 
 # Sentinel capacity for full-fidelity capture: large enough that the collector
@@ -55,7 +55,7 @@ class _BoundedOutputCollector:
             return
         try:
             if self._spill_fh is None:
-                from tools.spill_safety import ensure_spill_dir, open_exclusive
+                from hermes_agent.tools.spill_safety import ensure_spill_dir, open_exclusive
                 # Raw pre-redaction output: private perms + symlink-refusing
                 # exclusive create (a planted link must fail, never redirect).
                 ensure_spill_dir(self._spill_path.parent, private=True)
@@ -175,12 +175,12 @@ def _new_output_collector(proc, bounded_capture: bool) -> _BoundedOutputCollecto
     if not bounded_capture:
         return _BoundedOutputCollector(_UNBOUNDED_CAPTURE_CHARS)
     try:
-        from tools.tool_output_limits import get_max_bytes
+        from hermes_agent.tools.tool_output_limits import get_max_bytes
         capture_limit = get_max_bytes()
     except Exception:
         capture_limit = 50_000
     spill_path = None
-    from tools.hosted_tool_policy import host_feature_enabled
+    from hermes_agent.tools.hosted_tool_policy import host_feature_enabled
     if not host_feature_enabled("tool_host_artifacts"):  # a hosted agent's output is never teed here
         return _BoundedOutputCollector(capture_limit)
     try:

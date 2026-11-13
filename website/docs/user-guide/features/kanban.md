@@ -932,7 +932,7 @@ To disable without removing: add `dashboard.plugins.kanban.enabled: false` to `c
 
 ### Scope boundary
 
-The GUI is deliberately thin. Everything the plugin does is reachable from the CLI; the plugin just makes it comfortable for humans. Auto-assignment, budgets, governance gates, and org-chart views remain user-space — a router profile, another plugin, or a reuse of `tools/approval.py` — exactly as listed in the out-of-scope section of the design spec.
+The GUI is deliberately thin. Everything the plugin does is reachable from the CLI; the plugin just makes it comfortable for humans. Auto-assignment, budgets, governance gates, and org-chart views remain user-space — a router profile, another plugin, or a reuse of `hermes_agent/tools/approval.py` — exactly as listed in the out-of-scope section of the design spec.
 
 ## CLI command reference
 

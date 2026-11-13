@@ -145,7 +145,7 @@ class TestDispatcherOwnedPredicate:
 class TestKanbanGatesRespectContext:
     def test_task_tools_hidden_from_cron_agent(self, worker_env):
         from agent.delegation_context import non_dispatcher_owned_context
-        from tools import kanban_tools
+        from hermes_agent.tools import kanban_tools
 
         assert kanban_tools._check_kanban_mode() is True
         with non_dispatcher_owned_context():
@@ -154,7 +154,7 @@ class TestKanbanGatesRespectContext:
     def test_complete_does_not_default_to_worker_task(self, worker_env):
         """The damage path: kanban_complete must not inherit the task id."""
         from agent.delegation_context import non_dispatcher_owned_context
-        from tools import kanban_tools
+        from hermes_agent.tools import kanban_tools
 
         assert kanban_tools._default_task_id(None) == "t_worker_real_task"
         with non_dispatcher_owned_context():
@@ -163,7 +163,7 @@ class TestKanbanGatesRespectContext:
     def test_explicit_task_id_still_honoured(self, worker_env):
         """Only the implicit default is suppressed, not an explicit argument."""
         from agent.delegation_context import non_dispatcher_owned_context
-        from tools import kanban_tools
+        from hermes_agent.tools import kanban_tools
 
         with non_dispatcher_owned_context():
             assert kanban_tools._default_task_id("t_explicit") == "t_explicit"
@@ -185,7 +185,7 @@ class TestKanbanGatesRespectContext:
 
     def test_toolset_force_add_suppressed(self, worker_env):
         from agent.delegation_context import non_dispatcher_owned_context
-        import model_tools
+        from hermes_agent import model_tools
 
         assert model_tools._is_dispatcher_owned_worker() is True
         with non_dispatcher_owned_context():

@@ -79,7 +79,7 @@ def test_genuine_external_worker_crash_is_recovered_unknown(
 
 @pytest.mark.platforms("linux")
 def test_restart_safe_gateway_child_fails_closed_when_required(monkeypatch):
-    from tools import process_registry
+    from hermes_agent.tools import process_registry
 
     monkeypatch.setattr(process_registry, "_is_supervised_gateway_process", lambda: True)
     monkeypatch.setenv("INVOCATION_ID", "managed-service")
@@ -97,7 +97,7 @@ def test_restart_safe_gateway_child_fails_closed_when_required(monkeypatch):
 def test_restart_safe_gateway_child_degrades_without_scope(monkeypatch, caplog):
     """Managed gateway + no user bus degrades to a mode distinct from the
     in-process passthrough, and warns once per process, not per dispatch."""
-    from tools import process_registry
+    from hermes_agent.tools import process_registry
 
     monkeypatch.setattr(process_registry, "_is_supervised_gateway_process", lambda: True)
     monkeypatch.setenv("INVOCATION_ID", "managed-service")
@@ -117,7 +117,7 @@ def test_restart_safe_gateway_child_degrades_without_scope(monkeypatch, caplog):
 
 
 def test_restart_safe_gateway_child_is_unchanged_outside_managed_gateway(monkeypatch):
-    from tools import process_registry
+    from hermes_agent.tools import process_registry
 
     command = ["python", "worker.py"]
     monkeypatch.setattr(process_registry, "_is_supervised_gateway_process", lambda: False)
@@ -291,13 +291,13 @@ def test_scoped_wrapper_exit_without_user_bus_names_the_cause_and_invalidates_pr
     after the user bus vanished; the wrapper exits 1 with no child. The job error must name the
     missing bus (not a bare exit code) and the cached verdict must flip so the next fire re-probes."""
     from hermes_agent.cron import scheduler
-    import tools.process_registry as pr
-    from tools.process_registry import GatewayChildDispatch
+    import hermes_agent.tools.process_registry as pr
+    from hermes_agent.tools.process_registry import GatewayChildDispatch
 
     job = {"id": "job-bus", "execution_id": "exec-1", "prompt": "work"}
     monkeypatch.setattr(scheduler, "_get_hermes_home", lambda: tmp_path)
     monkeypatch.setattr(
-        "tools.process_registry.restart_safe_gateway_child_argv",
+        "hermes_agent.tools.process_registry.restart_safe_gateway_child_argv",
         lambda command, **_: GatewayChildDispatch("scoped", ["systemd-run", "--", *command]),
     )
     monkeypatch.setattr(scheduler, "mark_execution_handoff_pending",
@@ -330,7 +330,7 @@ def test_launch_external_worker_treats_a_routed_fire_as_multiplexed(tmp_path, mo
     import hermes_constants
     from agent import secret_scope
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
-    from tools.process_registry import GatewayChildDispatch
+    from hermes_agent.tools.process_registry import GatewayChildDispatch
 
     launch = tmp_path / "launch"
     routed = tmp_path / "routed"
@@ -342,7 +342,7 @@ def test_launch_external_worker_treats_a_routed_fire_as_multiplexed(tmp_path, mo
     monkeypatch.setattr(scheduler, "_get_hermes_home", lambda: routed)
     monkeypatch.setattr(hermes_constants, "get_process_hermes_home", lambda: launch)
     monkeypatch.setattr(
-        "tools.process_registry.restart_safe_gateway_child_argv",
+        "hermes_agent.tools.process_registry.restart_safe_gateway_child_argv",
         lambda command, *, unit_suffix, require_restart_safe_scope=False: GatewayChildDispatch(
             "scoped", ["scope", "--", *command]),
     )
@@ -366,7 +366,7 @@ def test_launch_external_worker_uses_restart_safe_scope_and_acknowledges(
     tmp_path, monkeypatch
 ):
     from hermes_agent.cron import scheduler
-    from tools.env_passthrough import clear_env_passthrough, register_env_passthrough
+    from hermes_agent.tools.env_passthrough import clear_env_passthrough, register_env_passthrough
 
     job = {"id": "job-1", "execution_id": "exec-1", "prompt": "work"}
     monkeypatch.setattr(scheduler, "_get_hermes_home", lambda: tmp_path)
@@ -375,14 +375,14 @@ def test_launch_external_worker_uses_restart_safe_scope_and_acknowledges(
     )
     register_env_passthrough(["SERVICE_TOKEN"])
     wrapped_commands = []
-    from tools.process_registry import GatewayChildDispatch
+    from hermes_agent.tools.process_registry import GatewayChildDispatch
 
     def wrap(command, *, unit_suffix, require_restart_safe_scope=False):
         wrapped_commands.append((command, unit_suffix))
         return GatewayChildDispatch("scoped", ["scope", "--", *command])
 
     monkeypatch.setattr(
-        "tools.process_registry.restart_safe_gateway_child_argv", wrap
+        "hermes_agent.tools.process_registry.restart_safe_gateway_child_argv", wrap
     )
 
     spawned, payloads, handoff, get = _stub_external_worker_launch(scheduler, monkeypatch)
@@ -414,12 +414,12 @@ def test_launch_external_worker_honors_ack_within_adoption_grace(
     """A cold worker that acks after 5s but inside the adoption grace is adopted, not abandoned."""
     from hermes_agent.cron import scheduler
     from hermes_agent.cron.executions import HANDOFF_ADOPTION_GRACE_SECONDS
-    from tools.process_registry import GatewayChildDispatch
+    from hermes_agent.tools.process_registry import GatewayChildDispatch
 
     job = {"id": "job-cold", "execution_id": "exec-cold", "prompt": "work"}
     monkeypatch.setattr(scheduler, "_get_hermes_home", lambda: tmp_path)
     monkeypatch.setattr(
-        "tools.process_registry.restart_safe_gateway_child_argv",
+        "hermes_agent.tools.process_registry.restart_safe_gateway_child_argv",
         lambda command, **_kw: GatewayChildDispatch("scoped", ["scope", "--", *command]),
     )
     monkeypatch.setattr(
@@ -480,12 +480,12 @@ def test_worker_dying_before_ack_names_its_stderr_cause(tmp_path, monkeypatch):
     went to DEVNULL (#112729); the dispatch error must carry the worker's own traceback and the
     capture file must not outlive the attempt."""
     from hermes_agent.cron import scheduler
-    from tools.process_registry import GatewayChildDispatch
+    from hermes_agent.tools.process_registry import GatewayChildDispatch
 
     monkeypatch.setattr(scheduler, "_get_hermes_home", lambda: tmp_path)
     monkeypatch.setattr(scheduler, "mark_execution_handoff_pending", lambda execution_id: {"id": execution_id})
     monkeypatch.setattr(
-        "tools.process_registry.restart_safe_gateway_child_argv",
+        "hermes_agent.tools.process_registry.restart_safe_gateway_child_argv",
         lambda command, *, unit_suffix, require_restart_safe_scope=False: GatewayChildDispatch(
             "direct", [sys.executable, "-c", "import cron_module_that_does_not_exist"]),
     )
@@ -577,7 +577,7 @@ def test_launch_external_worker_stays_in_process_outside_managed_gateway(
     monkeypatch,
 ):
     from hermes_agent.cron import scheduler
-    from tools.process_registry import GatewayChildDispatch
+    from hermes_agent.tools.process_registry import GatewayChildDispatch
 
     command_calls = []
 
@@ -586,7 +586,7 @@ def test_launch_external_worker_stays_in_process_outside_managed_gateway(
         return GatewayChildDispatch("in_process", command)
 
     monkeypatch.setattr(
-        "tools.process_registry.restart_safe_gateway_child_argv", passthrough
+        "hermes_agent.tools.process_registry.restart_safe_gateway_child_argv", passthrough
     )
     popen = Mock()
     monkeypatch.setattr(scheduler.subprocess, "Popen", popen)
@@ -606,7 +606,7 @@ def test_launch_external_worker_degrades_by_default_with_real_helper(
     plumbing: the default still Popens the job externally with the #101940
     handoff (never in-process)."""
     from hermes_agent.cron import scheduler
-    from tools import process_registry
+    from hermes_agent.tools import process_registry
 
     job = {"id": "job-1", "execution_id": "exec-1", "prompt": "work"}
     monkeypatch.setattr(scheduler, "_get_hermes_home", lambda: tmp_path)
@@ -633,12 +633,12 @@ def test_launch_external_worker_pins_the_gateways_tree_on_pythonpath(
     otherwise kills it with "No module named 'cron'" before the ack. The spawn env carries
     the gateway's own checkout first and keeps the gateway's other PYTHONPATH entries."""
     from hermes_agent.cron import scheduler
-    from tools.process_registry import GatewayChildDispatch
+    from hermes_agent.tools.process_registry import GatewayChildDispatch
 
     job = {"id": "job-1", "execution_id": "exec-1", "prompt": "work"}
     monkeypatch.setattr(scheduler, "_get_hermes_home", lambda: tmp_path)
     monkeypatch.setattr(
-        "tools.process_registry.restart_safe_gateway_child_argv",
+        "hermes_agent.tools.process_registry.restart_safe_gateway_child_argv",
         lambda command, **_: GatewayChildDispatch("degraded", command),
     )
     monkeypatch.setenv("PYTHONPATH", str(tmp_path / "user-libs"))
@@ -662,17 +662,17 @@ def test_launch_external_worker_pin_extends_the_sanitized_env_not_os_environ(
     so the pin is skipped there."""
     from hermes_agent.cron import scheduler
     import hermes_agent.cron.scheduler_worker_env as worker_env_mod
-    from tools.process_registry import GatewayChildDispatch
+    from hermes_agent.tools.process_registry import GatewayChildDispatch
 
     job = {"id": "job-1", "execution_id": "exec-1", "prompt": "work"}
     monkeypatch.setattr(scheduler, "_get_hermes_home", lambda: tmp_path)
     monkeypatch.setattr(
-        "tools.process_registry.restart_safe_gateway_child_argv",
+        "hermes_agent.tools.process_registry.restart_safe_gateway_child_argv",
         lambda command, **_: GatewayChildDispatch("degraded", command),
     )
     monkeypatch.setenv("PYTHONPATH", str(tmp_path / "raw-environ-only"))
     monkeypatch.setattr(
-        "tools.environments.local.build_subprocess_env",
+        "hermes_agent.tools.environments.local.build_subprocess_env",
         lambda **_: {"PATH": os.environ.get("PATH", ""),
                      "PYTHONPATH": str(tmp_path / "kept-by-sanitizer")},
     )
@@ -1158,7 +1158,7 @@ def test_managed_gateway_restart_preserves_active_worker_and_single_side_effect(
     from hermes_agent.cron.jobs import create_job, use_cron_store
     from hermes_agent.gateway.config import Platform, PlatformConfig
     from hermes_agent.gateway.status import _pid_exists
-    from tools import process_registry
+    from hermes_agent.tools import process_registry
 
     if not process_registry._systemd_run_user_scope_available():
         pytest.skip("systemd-run --user --scope is unavailable on this host")
@@ -1235,7 +1235,7 @@ def test_managed_gateway_restart_preserves_active_worker_and_single_side_effect(
         f"os.environ['HERMES_HOME'] = {str(home)!r}\n"
         "os.environ['INVOCATION_ID'] = 'restart-fixture'\n"
         "from hermes_agent.cron import scheduler\n"
-        "from tools import process_registry\n"
+        "from hermes_agent.tools import process_registry\n"
         "process_registry._is_supervised_gateway_process = lambda: True\n"
         f"job = json.loads(pathlib.Path({str(payload)!r}).read_text())\n"
         "if not scheduler.run_one_job(job, adapters=None, loop=None):\n"

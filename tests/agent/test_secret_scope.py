@@ -254,7 +254,7 @@ class TestScopeSetupRecovery:
         def boom(home, env_overlay=None):
             raise RuntimeError("terminal policy unreadable")
 
-        monkeypatch.setattr("tools.terminal_scope.prepare_profile_terminal_scope", boom)
+        monkeypatch.setattr("hermes_agent.tools.terminal_scope.prepare_profile_terminal_scope", boom)
         with pytest.raises(RuntimeError):
             server._profile_runtime_scope_tokens(home, hydrate_secrets=False)
         assert get_hermes_home_override() is None
@@ -505,7 +505,7 @@ class TestRelayRoutingStampGlobals:
     versa). Auth material (GATEWAY_RELAY_SECRET / _ID / _DELIVERY_KEY and the
     IDP_* credentials) stays profile-scoped with the fail-closed guard —
     mirroring the API_SERVER_KEY line above and the terminal env blocklist
-    (tools/environments/local.py)."""
+    (hermes_agent/tools/environments/local.py)."""
 
     ROUTING_VARS = (
         "GATEWAY_RELAY_URL",
@@ -569,7 +569,7 @@ class TestSecretScopeAcrossExecutorThreads:
     """
 
     def test_scoped_read_works_in_daemon_pool_worker(self, monkeypatch):
-        from tools.daemon_pool import DaemonThreadPoolExecutor
+        from hermes_agent.tools.daemon_pool import DaemonThreadPoolExecutor
 
         monkeypatch.setenv("SURPLUS_API_KEY", "env-key")
         ss.set_multiplex_active(True)

@@ -12,9 +12,9 @@ from unittest.mock import patch
 
 import pytest
 
-from tools.connectors import live
-from tools.connectors.run import apply_answer
-from tools.connectors.tool import manage_connections
+from hermes_agent.tools.connectors import live
+from hermes_agent.tools.connectors.run import apply_answer
+from hermes_agent.tools.connectors.tool import manage_connections
 
 
 @pytest.fixture(autouse=True)
@@ -52,7 +52,7 @@ def test_display_waits_for_the_user_and_reports_what_they_connected(ending):
             answer = {"settled_by": "continue"} if ending == "continue" else {"said": " maybe later "}
             apply_answer(live.get("s1", payload["op_id"]), json.dumps(answer))
 
-    with patch("tools.connectors.operation.OPERATION_DEADLINE_SECONDS", 2 if ending == "deadline" else 60):
+    with patch("hermes_agent.tools.connectors.operation.OPERATION_DEADLINE_SECONDS", 2 if ending == "deadline" else 60):
         out = _display(gw, callback=card, card_surface=True)
 
     (payload,) = seen

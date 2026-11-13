@@ -30,7 +30,7 @@ def main():
         from hermes_agent.cron import jobs, scheduler
         from hermes_cli.cli_cron_lines import cron_list_lines
         from openai import OpenAI
-        from tools.cronjob_job_args import _format_job
+        from hermes_agent.tools.cronjob_job_args import _format_job
 
         with socket.socket() as held:
             held.bind(("127.0.0.1", 0))

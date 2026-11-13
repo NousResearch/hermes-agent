@@ -1,4 +1,4 @@
-"""Symlink-refusal and permission tests for tools.spill_safety.
+"""Symlink-refusal and permission tests for hermes_agent.tools.spill_safety.
 
 The bug class: spill/cache writers used ``open(path, "w")`` /
 ``Path.write_text`` in predictable directories, which follows a pre-planted
@@ -13,7 +13,7 @@ import sys
 
 import pytest
 
-from tools.spill_safety import (
+from hermes_agent.tools.spill_safety import (
     ensure_spill_dir,
     open_exclusive,
     write_text_exclusive,

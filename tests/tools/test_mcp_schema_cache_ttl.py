@@ -1,10 +1,10 @@
-"""SEP-2549 schema-cache TTL expiry (tools/mcp_schema_cache.py)."""
+"""SEP-2549 schema-cache TTL expiry (hermes_agent/tools/mcp_schema_cache.py)."""
 
 import time
 
 import pytest
 
-from tools import mcp_schema_cache as sc
+from hermes_agent.tools import mcp_schema_cache as sc
 
 
 @pytest.fixture(autouse=True)

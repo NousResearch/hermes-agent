@@ -333,7 +333,7 @@ _OAUTH_TOOL_NAME_REVERSE_ALIASES = {wire_name: name for name, wire_name in _OAUT
 _OAUTH_PROSE_ALIAS_NAMES = frozenset({"session_search"})
 
 # Word-boundary matchers so a longer identifier containing the token (e.g.
-# ``tools/session_search_tool.py`` in AGENTS.md) is left alone; ``\b`` treats ``_`` as a word char.
+# ``hermes_agent/tools/session_search_tool.py`` in AGENTS.md) is left alone; ``\b`` treats ``_`` as a word char.
 _OAUTH_PROSE_ALIAS_PATTERNS = tuple(
     (re.compile(rf"\b{re.escape(name)}\b"), _OAUTH_TOOL_NAME_ALIASES[name])
     for name in sorted(_OAUTH_PROSE_ALIAS_NAMES)

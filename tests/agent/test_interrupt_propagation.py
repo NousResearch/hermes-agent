@@ -9,7 +9,7 @@ import time
 import unittest
 from unittest.mock import MagicMock
 
-from tools.interrupt import get_interrupt_reason, set_interrupt, is_interrupted
+from hermes_agent.tools.interrupt import get_interrupt_reason, set_interrupt, is_interrupted
 
 
 class TestInterruptPropagationToChild(unittest.TestCase):
@@ -235,7 +235,7 @@ class TestPerThreadInterruptIsolation(unittest.TestCase):
         set_interrupt(False, tid_a)
 
         # Simulate checking from thread B's perspective
-        from tools.interrupt import _interrupted_threads, _lock
+        from hermes_agent.tools.interrupt import _interrupted_threads, _lock
         with _lock:
             assert tid_a not in _interrupted_threads
             assert tid_b in _interrupted_threads

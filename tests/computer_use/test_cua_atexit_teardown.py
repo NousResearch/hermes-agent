@@ -7,7 +7,7 @@ not keep the driver alive after tool completion"). #69903 fixed the *overlay*
 redraw loop that made the lingering process burn CPU, but not the lingering
 process itself.
 
-``tools/computer_use/tool.py`` registers an ``atexit`` hook that stops the
+``hermes_agent/tools/computer_use/tool.py`` registers an ``atexit`` hook that stops the
 cached backend, mirroring ``browser_tool``'s
 ``atexit.register(_emergency_cleanup_all_sessions)``.
 
@@ -19,7 +19,7 @@ of ``atexit`` — not a snapshot of the module's source.
 import atexit
 from unittest.mock import MagicMock, patch
 
-from tools.computer_use import tool as cu_tool
+from hermes_agent.tools.computer_use import tool as cu_tool
 
 
 class TestAtexitTeardown:

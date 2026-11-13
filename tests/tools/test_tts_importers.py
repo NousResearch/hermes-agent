@@ -7,7 +7,7 @@ from unittest.mock import MagicMock
 import pytest
 
 import pm
-from tools import tts_tool
+from hermes_agent.tools import tts_tool
 
 
 @pytest.mark.parametrize("importer,module,attribute,feature", [
@@ -41,7 +41,7 @@ def test_sdk_import_fallback(tmp_path, monkeypatch, importer, module, attribute,
 
 
 def test_mistral_stt_fallback_reads_audio_and_requires_key(tmp_path, monkeypatch):
-    from tools import transcription_tools
+    from hermes_agent.tools import transcription_tools
 
     audio = tmp_path / "speech.wav"
     audio.write_bytes(b"fixture-audio")

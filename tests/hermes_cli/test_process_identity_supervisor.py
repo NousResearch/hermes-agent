@@ -23,8 +23,8 @@ import pytest
 from tests.waiting import wait_until
 
 from hermes_cli import process_identity
-from tools import mcp_tool
-from tools import mcp_tool_lifecycle as _mcp_lifecycle
+from hermes_agent.tools import mcp_tool
+from hermes_agent.tools import mcp_tool_lifecycle as _mcp_lifecycle
 
 pytestmark = pytest.mark.platforms("posix")  # the supervisor is POSIX-only (process groups)
 
@@ -636,15 +636,15 @@ def _stdio_connection(child_pid, fake_supervisor):
     session_cm.__aexit__ = AsyncMock(return_value=False)
 
     with (
-        patch("tools.mcp_tool.stdio_client", return_value=stdio_cm),
-        patch("tools.mcp_tool.ClientSession", return_value=session_cm),
+        patch("hermes_agent.tools.mcp_tool.stdio_client", return_value=stdio_cm),
+        patch("hermes_agent.tools.mcp_tool.ClientSession", return_value=session_cm),
         # First call is the pids_before baseline; the second reports our child
         # as the newly spawned server.
         patch(
-            "tools.mcp_tool_lifecycle._snapshot_child_pids",
+            "hermes_agent.tools.mcp_tool_lifecycle._snapshot_child_pids",
             side_effect=[set(), {child_pid}],
         ),
-        patch("tools.mcp_tool_config._write_stderr_log_header"),
+        patch("hermes_agent.tools.mcp_tool_config._write_stderr_log_header"),
         patch(
             "hermes_cli.process_identity._spawn_supervisor",
             return_value=fake_supervisor,

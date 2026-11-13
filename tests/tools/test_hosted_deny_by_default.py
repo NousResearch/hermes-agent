@@ -1,6 +1,6 @@
 """A hosted scope is deny-by-default: an allowlist of sandbox-only tools, one switch for host features.
 
-``tools/hosted_tool_policy.py`` holds both decisions. These tests drive every route a tool call can take
+``hermes_agent/tools/hosted_tool_policy.py`` holds both decisions. These tests drive every route a tool call can take
 (the agent loop's sequential and concurrent paths, inline agent tools, memory-provider tools, the
 registry, ``handle_function_call``) and every non-tool feature that reads or writes this host's
 profile state, under a hosted scope, and check nothing reaches the host. The same entry points with no
@@ -25,8 +25,8 @@ from agent.runtime_scope import bind_state
 from hermes_scope import Principal, Scope
 from tests.tools.test_sandbox_scope_conformance import A, B
 from tests.tools.test_sandbox_scope_conformance import provider as _conformance_provider
-from tools.environments import sandbox_conformance as c
-from tools.environments.sandbox_scope import sandbox_identity
+from hermes_agent.tools.environments import sandbox_conformance as c
+from hermes_agent.tools.environments.sandbox_scope import sandbox_identity
 
 provider = _conformance_provider  # the recording-sandbox fixture, by its name
 
@@ -51,14 +51,14 @@ def _png() -> bytes:
 def test_the_allowlist_is_exactly_the_sandbox_only_tools():
     """A tool joins only by editing this set (with a reason in hosted_tool_policy.py): anything new
     stays refused in a hosted scope until then."""
-    from tools.hosted_tool_policy import HOSTED_TOOL_ALLOWLIST
+    from hermes_agent.tools.hosted_tool_policy import HOSTED_TOOL_ALLOWLIST
     assert HOSTED_TOOL_ALLOWLIST == {
         "terminal", "process_manage", "execute_code", "read_file", "write_file", "patch", "search_files",
     }
 
 
 def test_a_newly_registered_tool_is_refused_until_allowlisted():
-    from tools.registry import registry
+    from hermes_agent.tools.registry import registry
     reached = []
     registry.register(name="brand_new_probe_tool", toolset="brand-new",
                       schema={"name": "brand_new_probe_tool", "description": "x", "parameters": {}},
@@ -75,8 +75,8 @@ def test_a_newly_registered_tool_is_refused_until_allowlisted():
 def test_in_a_local_scope_the_allowlist_is_never_consulted(monkeypatch):
     """Unscoped and local: the policy answers "allowed" without looking at the allowlist, and every
     tool dispatches to its handler as before."""
-    import tools.hosted_tool_policy as policy
-    from tools.registry import registry
+    import hermes_agent.tools.hosted_tool_policy as policy
+    from hermes_agent.tools.registry import registry
 
     class Exploding(frozenset):
         def __contains__(self, item):
@@ -115,8 +115,8 @@ def _null():
 def _make_agent(tmp_path: Path):
     from run_agent import AIAgent
     with (
-        patch("model_tools.get_tool_definitions", return_value=[]),
-        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]),
+        patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
         patch("agent.process_bootstrap.OpenAI"),
         patch("run_agent._hermes_home", tmp_path),
         patch("agent.model_metadata.fetch_model_metadata", return_value={}),
@@ -151,7 +151,7 @@ def _call(call_id: str, name: str, args: dict | None = None):
 def test_every_agent_loop_route_is_refused_before_its_executor(tmp_path, monkeypatch, path):
     """Memory-provider tools, inline agent tools (catalog, memory, session_search, todo) and registry
     tools all reach their executor only through the one chokepoint, on both execution paths."""
-    import tools.connectors.catalog_tool as catalog
+    import hermes_agent.tools.connectors.catalog_tool as catalog
     from agent import tool_executor as te
 
     agent = _make_agent(tmp_path)
@@ -188,8 +188,8 @@ def test_a_local_agent_loop_still_reaches_every_executor(tmp_path):
 
 def test_the_inline_executor_table_refuses_on_its_own(monkeypatch):
     """Callers that use the inline table directly (outside the loop) meet the same allowlist."""
-    import tools.connectors.catalog_tool as catalog
-    import tools.connectors.tool as connector
+    import hermes_agent.tools.connectors.catalog_tool as catalog
+    import hermes_agent.tools.connectors.tool as connector
     from agent.inline_tool_executors import INLINE_TOOL_EXECUTORS, InlineToolContext
 
     reached = []
@@ -208,8 +208,8 @@ def test_the_inline_executor_table_refuses_on_its_own(monkeypatch):
 
 def test_handle_function_call_refuses_connectors_and_bridges(monkeypatch):
     """Connector calls skip the registry (``dispatch_connector_call``); the entry point refuses them."""
-    import model_tools
-    from tools import connectors
+    from hermes_agent import model_tools
+    from hermes_agent.tools import connectors
 
     reached = []
     monkeypatch.setattr(connectors, "dispatch_connector_call", lambda *a, **k: reached.append(a) or "{}")
@@ -226,7 +226,7 @@ def test_handle_function_call_refuses_connectors_and_bridges(monkeypatch):
 
 def test_inline_memory_writes_no_host_store():
     from agent.inline_tool_executors import INLINE_TOOL_EXECUTORS, InlineToolContext
-    from tools.memory_tool import MemoryStore, get_memory_dir
+    from hermes_agent.tools.memory_tool import MemoryStore, get_memory_dir
     with bind_state(A):
         store = MemoryStore()
         store.load_from_disk()
@@ -242,7 +242,7 @@ def test_inline_memory_writes_no_host_store():
 
 
 def test_the_memory_store_itself_never_touches_the_host_file_in_a_hosted_scope():
-    from tools.memory_tool import MemoryStore, get_memory_dir
+    from hermes_agent.tools.memory_tool import MemoryStore, get_memory_dir
     path = get_memory_dir() / "MEMORY.md"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("HOST-MEMORY-PRIVATE\n")
@@ -260,7 +260,7 @@ def test_the_memory_store_itself_never_touches_the_host_file_in_a_hosted_scope()
 def test_session_search_reads_no_host_history():
     from hermes_constants import get_hermes_home
     from hermes_agent.hermes_state import SessionDB
-    from tools.registry import registry
+    from hermes_agent.tools.registry import registry
     db = SessionDB(get_hermes_home() / "state.db")
     db.create_session("private-host-history", source="cli")
     db.append_message("private-host-history", role="user", content="HOST-HISTORY-PRIVATE")
@@ -284,9 +284,9 @@ def test_recall_never_opens_the_profile_state_db(monkeypatch):
 
 
 def test_web_extract_never_spills_to_host(provider, monkeypatch):
-    import tools.web_tools as web
+    import hermes_agent.tools.web_tools as web
     from hermes_constants import get_hermes_home
-    from tools.registry import registry
+    from hermes_agent.tools.registry import registry
 
     async def safe(url):
         return True
@@ -307,7 +307,7 @@ def test_web_extract_never_spills_to_host(provider, monkeypatch):
 
 
 def test_vision_preparation_does_not_materialize_on_host(provider, monkeypatch):
-    from tools import vision_tools as vision
+    from hermes_agent.tools import vision_tools as vision
     png = _png()
     original = c.RecordingSandboxEnvironment.execute
 
@@ -323,7 +323,7 @@ def test_vision_preparation_does_not_materialize_on_host(provider, monkeypatch):
 
 
 def test_video_is_not_materialized_on_host():
-    from tools import vision_tools as vision
+    from hermes_agent.tools import vision_tools as vision
     temp: list = []
     with bind_state(A), pytest.raises(ValueError, match="hosted agent"):
         asyncio.run(vision._materialize_video("/workspace/a.mp4", "t", temp))
@@ -423,7 +423,7 @@ def test_no_checkpoint_preflight_in_a_hosted_scope(tmp_path):
 
 
 def test_every_host_feature_is_off_in_a_hosted_scope_and_on_locally():
-    from tools.hosted_tool_policy import HOST_FEATURES, host_feature_enabled
+    from hermes_agent.tools.hosted_tool_policy import HOST_FEATURES, host_feature_enabled
     with bind_state(A):
         assert not any(host_feature_enabled(f) for f in HOST_FEATURES)
     with bind_state(_local_scope()):
@@ -458,8 +458,8 @@ def test_a_hosted_backend_without_stop_idle_is_refused_at_creation(provider, mon
 def test_an_idle_hosted_sandbox_is_never_destroyed(provider, monkeypatch):
     """Even if a backend lost ``stop_idle`` after creation, the reaper suspends (or fails) rather than
     destroying the workspace."""
-    from tools import terminal_tool
-    from tools.terminal_tool_lifecycle import _cleanup_inactive_envs
+    from hermes_agent.tools import terminal_tool
+    from hermes_agent.tools.terminal_tool_lifecycle import _cleanup_inactive_envs
     with bind_state(A):
         c.call_tool("terminal", {"command": "true"}, task_id="t")
     terminal_tool._last_activity[sandbox_identity(A).key] = time.time() - 1000

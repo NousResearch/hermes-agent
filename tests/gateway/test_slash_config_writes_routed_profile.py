@@ -17,7 +17,7 @@ import hermes_yaml as yaml
 import hermes_agent.gateway.run as gateway_run
 from hermes_agent.gateway.config import GatewayConfig
 from hermes_agent.gateway.run import GatewayRunner, _profile_runtime_scope
-from tools import write_approval as wa
+from hermes_agent.tools import write_approval as wa
 
 
 class _Runner(GatewayRunner):

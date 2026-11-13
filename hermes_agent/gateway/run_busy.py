@@ -673,7 +673,7 @@ class GatewayBusySessionMixin:
         # not queue behind a turn that can't start until it resolves (auto-deny deadlock). Gated on
         # has_blocking_approval so a conversational "yes" never fires a command.
         try:
-            from tools.approval import has_blocking_approval
+            from hermes_agent.tools.approval import has_blocking_approval
             # --- Approval response routing (#46866) --- When the agent is blocked waiting for a
             # dangerous-command approval, plain-text responses like "yes" or "approve" must be routed to the
             # approval handler instead of being steered/queued/interrupted. Slash forms (/approve, /deny)
@@ -1659,7 +1659,7 @@ class GatewayBusySessionMixin:
         """Ask the user to confirm a slash command; ``handler(choice)`` runs on "once"/"always"/
         "cancel" and its return is sent as a message. Returns None if buttons rendered, else the
         text-fallback message (which IS the ack)."""
-        from tools import slash_confirm as _slash_confirm_mod
+        from hermes_agent.tools import slash_confirm as _slash_confirm_mod
         source = event.source
         session_key = self._session_key_for_source(source)
         # object.__new__ test runners lack the counter; fall back to a local one.
@@ -1671,7 +1671,7 @@ class GatewayBusySessionMixin:
 
         # Register FIRST so a fast button click cannot race the send_slash_confirm return. The
         # command runs outside any turn: its sender is the requester, never a bound turn's actor.
-        from tools.approval_context import prompt_authority
+        from hermes_agent.tools.approval_context import prompt_authority
         actor = event if event.user_id is not None else source  # as session_context binds it
         _slash_confirm_mod.register(session_key, confirm_id, command, handler, authority=prompt_authority(
             str(event.sender_id() or ""), str(actor.user_name or ""), str(getattr(source, "chat_type", None) or "")))

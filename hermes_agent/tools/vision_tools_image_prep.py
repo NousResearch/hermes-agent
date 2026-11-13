@@ -15,7 +15,7 @@ from typing import Any, Optional
 
 from hermes_constants import get_hermes_dir
 
-logger = logging.getLogger("tools.vision_tools")
+logger = logging.getLogger("hermes_agent.tools.vision_tools")
 
 _EXTENSION_MIME_TYPES = {
     ".jpg": "image/jpeg",
@@ -166,7 +166,7 @@ def rasterize_svg_data_url(url: str) -> Optional[str]:
         raw = base64.b64decode(payload) if ";base64" in header.lower() else unquote(payload).encode()
     except Exception:
         return None
-    from tools.vision_tools import _secure_cache_dir, _write_private_bytes
+    from hermes_agent.tools.vision_tools import _secure_cache_dir, _write_private_bytes
     out_dir = _secure_cache_dir("cache/vision", "temp_vision_images")
     stem = out_dir / f"inline_{uuid.uuid4()}"
     svg_path, png_path = stem.with_suffix(".svg"), stem.with_suffix(".png")
@@ -189,7 +189,7 @@ def _normalize_to_supported_image(
     Pillow-readable rasters (BMP, TIFF) re-encode to PNG."""
     if detected_mime in _supported_media_types():
         return image_path, detected_mime, None
-    from tools.vision_tools import _secure_cache_dir
+    from hermes_agent.tools.vision_tools import _secure_cache_dir
     out_dir = _secure_cache_dir("cache/vision", "temp_vision_images")
     out_path = out_dir / f"converted_{uuid.uuid4()}.png"
     if detected_mime == "image/svg+xml":

@@ -15,13 +15,13 @@ from tests.acp_adapter.test_session_mcp_policy import owner, policy
 
 
 def _editor_servers():
-    from tools.mcp_tool import _servers
+    from hermes_agent.tools.mcp_tool import _servers
     return {key: server for key, server in _servers.items() if key[-1].startswith('editor_')}
 
 
 def test_changed_credentials_with_equal_schemas_keep_the_manifest(server_spec, tmp_path):
     from hermes_agent.gateway.session_local_mcp import attach_editor_mcp, rebind_editor_mcp
-    from tools.registry import registry
+    from hermes_agent.tools.registry import registry
     authority = owner()
     before = policy(authority, 'rebind', server_spec, tmp_path)
     changed = json.loads(json.dumps(server_spec))

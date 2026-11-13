@@ -89,7 +89,7 @@ def _provider(manager, registry_mod: str, lookup: str):
 
 
 def _call_echo(text: str = "hi") -> str:
-    import model_tools
+    from hermes_agent import model_tools
 
     return model_tools.handle_function_call(
         "conformance_echo", {"text": text}, task_id="task-1", session_id="session-1",
@@ -154,7 +154,7 @@ def test_provider_registrar_makes_the_provider_resolvable_by_name(surface, regis
 def test_unload_disposes_every_registration(surface):
     """Disabling/uninstalling a plugin unloads it: nothing it registered stays live."""
     from hermes_cli import plugins
-    from tools.registry import registry
+    from hermes_agent.tools.registry import registry
 
     manager, home = surface
     assert manager.unload(PLUGIN) is True

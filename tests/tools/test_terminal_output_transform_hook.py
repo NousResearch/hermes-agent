@@ -6,8 +6,8 @@ from unittest.mock import MagicMock
 import pytest
 
 import hermes_cli.plugins as plugins_mod
-import tools.terminal_tool as terminal_tool_module
-from tools.environments.local import LocalEnvironment
+import hermes_agent.tools.terminal_tool as terminal_tool_module
+from hermes_agent.tools.environments.local import LocalEnvironment
 
 
 _UNSET = object()
@@ -97,7 +97,7 @@ def test_large_process_output_is_bounded_before_sudo_and_plugin_hooks(
     monkeypatch, tmp_path
 ):
     limit = 10_000
-    monkeypatch.setattr("tools.tool_output_limits.get_max_bytes", lambda: limit)
+    monkeypatch.setattr("hermes_agent.tools.tool_output_limits.get_max_bytes", lambda: limit)
     monkeypatch.setattr(
         terminal_tool_module, "_get_env_config", lambda: _make_env_config(tmp_path)
     )
@@ -121,7 +121,7 @@ def test_large_process_output_is_bounded_before_sudo_and_plugin_hooks(
         return []
 
     monkeypatch.setattr(
-        "tools.terminal_tool_sudo._sudo_wrong_password_failure", _sudo_spy
+        "hermes_agent.tools.terminal_tool_sudo._sudo_wrong_password_failure", _sudo_spy
     )
     monkeypatch.setattr("hermes_cli.plugins.invoke_hook", _hook_spy)
 

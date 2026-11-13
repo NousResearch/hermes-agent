@@ -967,10 +967,10 @@ def prune_tier_hours(name: str, max_age_hours: float) -> float:
 
 
 def resumable_pins() -> dict:
-    """``{realpath: reason}`` for trees a resumable subagent still owns (``tools.delegate_tool_resumable``);
+    """``{realpath: reason}`` for trees a resumable subagent still owns (``hermes_agent.tools.delegate_tool_resumable``);
     empty when the records cannot be read (the sweep then behaves as before)."""
     try:
-        from tools.delegate_tool_resumable import pinned_worktrees
+        from hermes_agent.tools.delegate_tool_resumable import pinned_worktrees
         return pinned_worktrees()
     except Exception:
         logger.debug("resumable subagent pins unreadable", exc_info=True)
@@ -984,7 +984,7 @@ def _prune_candidates(worktrees_dir: Path, max_age_hours: int, now: float, pins:
     deliberately named trees at 3x (``prune_tier_hours``); *force* marks the hard (3x) tier. A tree a
     resumable subagent pins (*pins*, default ``resumable_pins()``) is never a candidate while the pin lasts.
     """
-    from tools.delegate_tool_resumable import pin_reason
+    from hermes_agent.tools.delegate_tool_resumable import pin_reason
     kanban_re = re.compile(r"^t_[0-9a-f]+$")
     pins = resumable_pins() if pins is None else pins
     candidates: list = []

@@ -283,7 +283,7 @@ def _tool_description(request, name: str) -> str:
 def test_refresh_keeps_the_sessions_tools_pin(profile, monkeypatch):
     """The refresh is about instructions: tools[] stays the array the session already sends, even
     when the agent built for this turn derives a different schema for one of its tools."""
-    import model_tools
+    from hermes_agent import model_tools
 
     srv, home, project = profile
     history, _ = _turn(srv, home, "chat-a", "hello", [])

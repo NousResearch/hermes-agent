@@ -12,8 +12,8 @@ from pathlib import Path
 
 import pytest
 
-from tools import browser_launcher as launcher
-from tools import browser_session_cloud as bs_cloud
+from hermes_agent.tools import browser_launcher as launcher
+from hermes_agent.tools import browser_session_cloud as bs_cloud
 
 _WITH_DISPLAY = {"DISPLAY": ":0", "WAYLAND_DISPLAY": "wayland-0"}
 
@@ -25,7 +25,7 @@ def home(monkeypatch, tmp_path):
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setenv("HERMES_RUNTIME_DIR", str(tmp_path / "tools"))
-    monkeypatch.setattr("tools.browser_session_cloud.chromium_args", list)
+    monkeypatch.setattr("hermes_agent.tools.browser_session_cloud.chromium_args", list)
     bs_cloud.reset_caches()
     yield home
     bs_cloud.reset_caches()

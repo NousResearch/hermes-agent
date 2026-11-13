@@ -13,7 +13,7 @@ from hermes_cli.doctor_platform import _system_package_install_cmd
 from hermes_cli.doctor_report import Finding, _fail_and_issue, check_bool, check_info, check_ok, check_warn, doctor_check
 from hermes_cli.vercel_auth import describe_vercel_auth
 from hermes_constants import is_termux as _is_termux
-from tools.environments.docker import docker_runtime_name, docker_runtime_start_hint, find_docker
+from hermes_agent.tools.environments.docker import docker_runtime_name, docker_runtime_start_hint, find_docker
 
 
 def _safe_which(cmd: str) -> str | None:
@@ -115,7 +115,7 @@ def _doctor_web_capability_rows() -> list[tuple[str, str, str]]:
     rows: list[tuple[str, str, str]] = []
     try:
         from agent.web_search_registry import get_active_extract_provider, get_active_search_provider
-        from tools.web_tools import _ensure_web_plugins_loaded, _provider_is_ready
+        from hermes_agent.tools.web_tools import _ensure_web_plugins_loaded, _provider_is_ready
         # Fresh process: bundled web providers only register during plugin discovery (idempotent, cheap).
         _ensure_web_plugins_loaded()
     except Exception:
@@ -247,7 +247,7 @@ def _check_daytona_backend(issues: list[str]) -> None:
 
 
 def _check_vercel_backend(issues: list[str]) -> None:
-    from tools.terminal_tool_backends import _SUPPORTED_VERCEL_RUNTIMES
+    from hermes_agent.tools.terminal_tool_backends import _SUPPORTED_VERCEL_RUNTIMES
     runtime = os.getenv("TERMINAL_VERCEL_RUNTIME", "node24").strip() or "node24"
     supported = ", ".join(_SUPPORTED_VERCEL_RUNTIMES)
     _require(runtime in _SUPPORTED_VERCEL_RUNTIMES, ("Vercel runtime", f"({runtime})"),
@@ -350,7 +350,7 @@ def _check_chromium(should_fix: bool) -> None:
 def _check_lightpanda() -> None:
     """Lightpanda engine (browser.engine); browser_exec spawns ``lightpanda serve`` itself."""
     try:
-        from tools.browser_lightpanda import (
+        from hermes_agent.tools.browser_lightpanda import (
             LIGHTPANDA_INSTALL_HINT, find_lightpanda_binary, lightpanda_engine_status, using_lightpanda_engine)
     except ImportError:  # a broken browser module is surfaced by the tool-availability rows
         return
@@ -479,7 +479,7 @@ def _check_tool_availability(should_fix: bool, f: Finding) -> None:
     from hermes_cli.doctor import PROJECT_ROOT
     if str(PROJECT_ROOT) not in sys.path:
         sys.path.insert(0, str(PROJECT_ROOT))
-    from model_tools import check_tool_availability, TOOLSET_REQUIREMENTS
+    from hermes_agent.model_tools import check_tool_availability, TOOLSET_REQUIREMENTS
     available, unavailable = _apply_doctor_tool_availability_overrides(*check_tool_availability())
     # Web is split into search/extract readiness rows so an explicitly
     # selected but unconfigured backend cannot look healthy.

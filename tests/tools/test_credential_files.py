@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 import pytest
 
-from tools.credential_files import (
+from hermes_agent.tools.credential_files import (
     clear_credential_files,
     get_credential_file_mounts,
     get_cache_directory_mounts,
@@ -23,7 +23,7 @@ from tools.credential_files import (
 @pytest.fixture(autouse=True)
 def _clean_state():
     """Reset module state between tests."""
-    import tools.credential_files as _cred_mod
+    import hermes_agent.tools.credential_files as _cred_mod
     clear_credential_files()
     _cred_mod._config_files = {}
     yield
@@ -453,7 +453,7 @@ class TestCacheDirectoryMounts:
         path translation only covers mounted dirs — so the dir must appear in
         BOTH the mounts and the sync list, or a fresh paste dangles on the
         remote host."""
-        from tools.environments.file_sync import iter_sync_files
+        from hermes_agent.tools.environments.file_sync import iter_sync_files
 
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()
@@ -531,26 +531,26 @@ class TestToAgentVisiblePathPerBackend:
     def test_docker_maps_to_root_hermes(self, tmp_path, monkeypatch):
         staged = self._staged(tmp_path, monkeypatch)
         monkeypatch.setenv("TERMINAL_ENV", "docker")
-        from tools.credential_files import to_agent_visible_cache_path
+        from hermes_agent.tools.credential_files import to_agent_visible_cache_path
         assert to_agent_visible_cache_path(staged) == "/root/.hermes/attachments/drop.zip"
 
     def test_ssh_maps_to_tilde_hermes(self, tmp_path, monkeypatch):
         staged = self._staged(tmp_path, monkeypatch)
         monkeypatch.setenv("TERMINAL_ENV", "ssh")
-        from tools.credential_files import to_agent_visible_cache_path
+        from hermes_agent.tools.credential_files import to_agent_visible_cache_path
         assert to_agent_visible_cache_path(staged) == "~/.hermes/attachments/drop.zip"
 
     @pytest.mark.parametrize("backend", ["local", ""])
     def test_untranslated_backends_keep_host_path(self, tmp_path, monkeypatch, backend):
         staged = self._staged(tmp_path, monkeypatch)
         monkeypatch.setenv("TERMINAL_ENV", backend)
-        from tools.credential_files import to_agent_visible_cache_path
+        from hermes_agent.tools.credential_files import to_agent_visible_cache_path
         assert to_agent_visible_cache_path(staged) == staged
 
     def test_non_cache_path_passes_through(self, tmp_path, monkeypatch):
         self._staged(tmp_path, monkeypatch)
         monkeypatch.setenv("TERMINAL_ENV", "docker")
-        from tools.credential_files import to_agent_visible_cache_path
+        from hermes_agent.tools.credential_files import to_agent_visible_cache_path
         assert to_agent_visible_cache_path("/etc/hosts") == "/etc/hosts"
 
     def test_symlinked_home_maps_resolved_path(self, tmp_path, monkeypatch):
@@ -564,7 +564,7 @@ class TestToAgentVisiblePathPerBackend:
         monkeypatch.setenv("TERMINAL_ENV", "docker")
         staged = link_home / "attachments" / "paste.txt"
         staged.write_text("x", encoding="utf-8")
-        from tools.credential_files import to_agent_visible_cache_path
+        from hermes_agent.tools.credential_files import to_agent_visible_cache_path
         assert to_agent_visible_cache_path(str(staged.resolve())) == "/root/.hermes/attachments/paste.txt"
         assert to_agent_visible_cache_path(str(staged)) == "/root/.hermes/attachments/paste.txt"
         # A sibling outside the mounted dirs still passes through.
@@ -701,19 +701,19 @@ class TestMasterCredentialStoresAreNeverMountable:
         The fail-closed path must be observable (#67665): a silent deny with
         no diagnostic reproduces the trust gap the deny-list was added to fix.
         """
-        import tools.credential_files as cf
+        import hermes_agent.tools.credential_files as cf
 
         home = self._home(tmp_path)
         with patch.dict(os.environ, {"HERMES_HOME": str(home)}), \
                 patch.object(cf, "get_read_block_error", None):
-            with caplog.at_level("ERROR", logger="tools.credential_files"):
+            with caplog.at_level("ERROR", logger="hermes_agent.tools.credential_files"):
                 assert cf.register_credential_file("google_token.json") is False
             assert cf.get_credential_file_mounts() == []
         assert any("deny-list cannot be consulted" in r.message for r in caplog.records)
 
     def test_guard_exception_fails_closed_with_traceback(self, tmp_path, caplog):
         """A raising guard refuses the mount and logs the stack trace."""
-        import tools.credential_files as cf
+        import hermes_agent.tools.credential_files as cf
 
         home = self._home(tmp_path)
 
@@ -722,7 +722,7 @@ class TestMasterCredentialStoresAreNeverMountable:
 
         with patch.dict(os.environ, {"HERMES_HOME": str(home)}), \
                 patch.object(cf, "get_read_block_error", _boom):
-            with caplog.at_level("ERROR", logger="tools.credential_files"):
+            with caplog.at_level("ERROR", logger="hermes_agent.tools.credential_files"):
                 assert cf.register_credential_file("google_token.json") is False
             assert cf.get_credential_file_mounts() == []
         rec = next(r for r in caplog.records if "read guard raised" in r.message)

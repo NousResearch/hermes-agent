@@ -12,7 +12,7 @@ Wire protocol: one JSON request per stdin line ``{"id", "code"}``; replies frame
 stdout as ``<SENTINEL> <byte-length>\\n<json>`` with a per-kernel random SENTINEL from
 the env. Bytes outside frames are raw fd output attributed to the running cell (calls
 are serialized per kernel). A forged frame can only fake its own cell result.
-Also hosts what ``tools.code_kernel_remote`` shares: owner resolution, registry, cell core.
+Also hosts what ``hermes_agent.tools.code_kernel_remote`` shares: owner resolution, registry, cell core.
 """
 
 from __future__ import annotations
@@ -254,7 +254,7 @@ class CellAuthority:
         # ((getter, setter), captured value) per thread-local prompt callback (approval, sudo, vault unlock…)
         self._callbacks: list = []
         try:
-            from tools.thread_context import _callback_api
+            from hermes_agent.tools.thread_context import _callback_api
             self._callbacks = [(pair, pair[0]()) for pair in _callback_api()]
         except Exception:
             # Fail-closed like propagate_context_to_thread: no callbacks → dangerous approvals deny.
@@ -265,15 +265,15 @@ class CellAuthority:
 
     def dispatch(self, tool_name: str, tool_args: dict) -> str:
         """Run one tool call under THIS cell's context and callbacks."""
-        from tools.registry import tool_error
+        from hermes_agent.tools.registry import tool_error
         if not self.active:
             return tool_error("No active execute_code cell: the cell this kernel call "
                               "belonged to has settled, so its tool authority is retired.")
         return self.ctx.run(self._invoke, tool_name, tool_args)
 
     def _invoke(self, tool_name: str, tool_args: dict) -> str:
-        from model_tools import handle_function_call
-        from tools.file_tools_read_tracking import programmatic_file_read
+        from hermes_agent.model_tools import handle_function_call
+        from hermes_agent.tools.file_tools_read_tracking import programmatic_file_read
         previous = None
         if self._callbacks:
             try:
@@ -348,7 +348,7 @@ class SessionKernel:
     def teardown(self) -> None:
         self.stop_event.set()
         if self.alive():
-            from tools.code_execution_tool import _kill_process_group
+            from hermes_agent.tools.code_execution_tool import _kill_process_group
             _kill_process_group(self.proc, escalate=True)
         if self.proc is not None and not _IS_WINDOWS:
             from hermes_cli.process_identity import release_process_group_once_empty
@@ -405,7 +405,7 @@ DEFAULT_KERNEL_IDLE_TIMEOUT = 1800
 
 
 def _lifecycle_limits() -> tuple[int, int]:
-    from tools.code_execution_tool import _load_config
+    from hermes_agent.tools.code_execution_tool import _load_config
     config = _load_config()
     def limit(key: str, default: int) -> int:
         try:
@@ -429,12 +429,12 @@ def _resolve_owner(task_id: str) -> str:
     (verified live, both directions). Children get their own kernels keyed by delegation session id.
     """
     try:
-        from tools.approval_context import get_current_session_key
+        from hermes_agent.tools.approval_context import get_current_session_key
         session_key = get_current_session_key(default="")
     except Exception:
         session_key = ""
     owner = session_key or (task_id or "")
-    from tools.environments.sandbox_scope import current_sandbox_key
+    from hermes_agent.tools.environments.sandbox_scope import current_sandbox_key
     if sandbox := current_sandbox_key():
         # Session keys are not unique across hosted agents; a kernel belongs to one agent's sandbox.
         owner = f"{sandbox}:{owner}"
@@ -460,14 +460,14 @@ def session_close_owner(owner: str) -> str:
     key (as ``_resolve_owner`` stamps it) and only the current agent's kernels match — never
     another agent's identically-keyed session. Locally there is no sandbox key and the bare
     session key is matched exactly, so an owner is never torn down as another's colon-suffix."""
-    from tools.environments.sandbox_scope import current_sandbox_key
+    from hermes_agent.tools.environments.sandbox_scope import current_sandbox_key
     if sandbox := current_sandbox_key():
         owner = f"{sandbox}:{owner}"
     return owner
 
 
 def shutdown_kernels_for_owner(owner: str) -> None:
-    """Dispose every kernel a session owns — wired into ``tools.approval.clear_session``
+    """Dispose every kernel a session owns — wired into ``hermes_agent.tools.approval.clear_session``
     so kernels die at the same boundary that clears approval/yolo state (/new, session close).
 
     See #88637.
@@ -492,7 +492,7 @@ def shutdown_kernels_for_delegated_child(child_session_id: str) -> None:
         return
     matcher = delegated_child_owner_matcher(child_session_id)
     _REGISTRY.shutdown(owner_matches=matcher)
-    from tools.code_kernel_remote import shutdown_remote_kernels_where
+    from hermes_agent.tools.code_kernel_remote import shutdown_remote_kernels_where
     shutdown_remote_kernels_where(matcher)
 
 
@@ -505,8 +505,8 @@ def _rpc_forever(kernel: SessionKernel, max_tool_calls: int,
     its 300s idle timeout, and a kernel idles longer between cells, so re-accept until teardown
     (the client stub reconnects: HERMES_RPC_PERSISTENT). The serving thread carries NO frozen
     authority — every dispatch routes through the CURRENT cell's ``CellAuthority``."""
-    from tools.code_execution_rpc import _rpc_server_loop
-    from tools.registry import tool_error
+    from hermes_agent.tools.code_execution_rpc import _rpc_server_loop
+    from hermes_agent.tools.registry import tool_error
     def _dispatch(tool_name: str, tool_args: dict) -> str:
         authority = kernel.cell_authority
         if authority is None:
@@ -520,7 +520,7 @@ def _rpc_forever(kernel: SessionKernel, max_tool_calls: int,
 
 def _stdout_reader(kernel: SessionKernel) -> None:
     """Split the child's stdout into protocol frames and raw passthrough."""
-    from tools.code_execution_tool import MAX_STDOUT_BYTES
+    from hermes_agent.tools.code_execution_tool import MAX_STDOUT_BYTES
     assert kernel.proc is not None and kernel.proc.stdout is not None
     stream = kernel.proc.stdout
     marker = ("\n" + kernel.sentinel + " ").encode("utf-8")
@@ -575,7 +575,7 @@ def _stdout_reader(kernel: SessionKernel) -> None:
 
 
 def _stderr_reader(kernel: SessionKernel) -> None:
-    from tools.code_execution_tool import MAX_STDERR_BYTES
+    from hermes_agent.tools.code_execution_tool import MAX_STDERR_BYTES
     assert kernel.proc is not None and kernel.proc.stderr is not None
     while chunk := kernel.proc.stderr.read1(4096):
         kernel.stderr.append(chunk, MAX_STDERR_BYTES)
@@ -632,8 +632,8 @@ def _parent_process_handle(child_env: dict[str, str]):
 
 def _spawn(kernel: SessionKernel, *, child_python: str, child_cwd: str,
            sandbox_tools: frozenset, max_tool_calls: int, task_id: str = "") -> None:
-    from tools.code_execution_env import _build_child_env
-    from tools.code_execution_tool import generate_hermes_tools_module
+    from hermes_agent.tools.code_execution_env import _build_child_env
+    from hermes_agent.tools.code_execution_tool import generate_hermes_tools_module
     kernel.tmpdir = tempfile.mkdtemp(prefix="hermes_kernel_")
     kernel.rpc_token = secrets.token_urlsafe(32)
     kernel.sentinel = "@@HERMES-KERNEL-" + secrets.token_urlsafe(16) + "@@"
@@ -816,9 +816,9 @@ def _cell_result(kernel: SessionKernel, key: tuple, status: str, payload: dict[s
                  timeout: int, sandbox_tools: frozenset, reused: bool,
                  state_reset: bool, exec_start: float) -> dict[str, Any]:
     """Assemble the tool result for one settled cell (disposing the kernel where the contract says so)."""
-    from tools.code_execution_tool import _sandbox_failure_hint, _truncate_stdout_text
+    from hermes_agent.tools.code_execution_tool import _sandbox_failure_hint, _truncate_stdout_text
     from agent.redact import redact_sensitive_text
-    from tools.ansi_strip import strip_ansi
+    from hermes_agent.tools.ansi_strip import strip_ansi
     def clean(text: str) -> str:
         return redact_sensitive_text(strip_ansi(text), code_file=True)
     if status in ("timeout", "interrupted"):
@@ -837,7 +837,7 @@ def _cell_result(kernel: SessionKernel, key: tuple, status: str, payload: dict[s
                    "execution_count": kernel.execution_count, "state_reset": state_reset},
     }
     result.update(stdout_metadata)
-    from tools.code_execution_rpc import tool_errors_since
+    from hermes_agent.tools.code_execution_rpc import tool_errors_since
     tool_errors = tool_errors_since(kernel.tool_call_log, kernel.cell_log_start)
     if tool_errors:
         result["tool_errors"] = tool_errors
@@ -859,7 +859,7 @@ def _cell_result(kernel: SessionKernel, key: tuple, status: str, payload: dict[s
         result.update(exit_code=-1, error=message,
                       output=(stdout_text + "\n\n⏰ " + message) if stdout_text else ("⏰ " + message))
     elif status == "interrupted":
-        from tools.code_execution_tool import _format_interrupted_output
+        from hermes_agent.tools.code_execution_tool import _format_interrupted_output
         result.update(exit_code=-1, output=_format_interrupted_output(stdout_text),
                       error="Interrupted; the session kernel was killed and its state was lost.")
     elif cell_status == "error":
@@ -937,7 +937,7 @@ def _run_cell(kernel: SessionKernel, key: tuple, code: str, *, task_id: str, chi
             )
             return json.dumps(result, ensure_ascii=False)
         except Exception as exc:  # pragma: no cover - defensive parity with per-call
-            from tools.code_execution_tool import _error_result
+            from hermes_agent.tools.code_execution_tool import _error_result
             logger.error("session kernel failed: %s: %s", type(exc).__name__, exc, exc_info=True)
             _REGISTRY.discard(key, kernel)
             return _error_result(str(exc), tool_calls_made=kernel.tool_call_counter[0],

@@ -1,10 +1,10 @@
 """Progressive tool disclosure ("tool search"): MCP/plugin tools and a curated set of
 event-triggered core tools are replaced in the model-visible array by three bridge tools —
-tool_search / tool_describe / tool_call. Invariants: core tools (``toolsets._HERMES_CORE_TOOLS``)
+tool_search / tool_describe / tool_call. Invariants: core tools (``hermes_agent.toolsets._HERMES_CORE_TOOLS``)
 and session-gated GUI toolsets never defer unless named in ``defer``; ANY deferrable tool
 activates the bridge (the listing scales with budget, not activation); the catalog is
 stateless — rebuilt from the live tool-defs every assembly (a session-keyed one drifts and
-silently drops tools); bridge calls route through ``model_tools.handle_function_call``."""
+silently drops tools); bridge calls route through ``hermes_agent.model_tools.handle_function_call``."""
 
 from __future__ import annotations
 
@@ -17,20 +17,20 @@ from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from hermes_cli.config_defaults import DEFAULT_CONFIG
-from tools.registry import tool_error
-from toolsets import CLIENT_SURFACE_TOOLSETS, TOOLSET_SESSION_PLATFORMS
-from tools.tool_search_catalog import (
+from hermes_agent.tools.registry import tool_error
+from hermes_agent.toolsets import CLIENT_SURFACE_TOOLSETS, TOOLSET_SESSION_PLATFORMS
+from hermes_agent.tools.tool_search_catalog import (
     BRIDGE_TOOL_NAMES, CHARS_PER_TOKEN, TOOL_CALL_NAME, TOOL_DESCRIBE_NAME, TOOL_SEARCH_NAME,
     CatalogEntry, _fn, _listing_group_label, _registry_entry, _registry_toolset,
     build_catalog, build_catalog_listing_with_form, search_catalog)
-from tools.tool_search_validation import (
+from hermes_agent.tools.tool_search_validation import (
     local_batch_error, normalize_tool_call_entries, not_deferrable_error, session_unavailable_error,
     unavailable_in_session_reason, validate_deferred_call_args)
-from tools.connectors import CONNECTOR_BATCH_SENTINEL, is_connector_name
-from tools.connectors.search import (
+from hermes_agent.tools.connectors import CONNECTOR_BATCH_SENTINEL, is_connector_name
+from hermes_agent.tools.connectors.search import (
     connections_in_scope, connector_entries_by_group, connectors_unavailable, remote_schemas_for)
 
-logger = logging.getLogger("tools.tool_search")
+logger = logging.getLogger("hermes_agent.tools.tool_search")
 # Bound the work one bridge call requests. Search is capped at the gateway's
 # own limit: the connector search route answers 7 use_cases per request and
 # returns HTTP 502 for 8 or more (measured 2026-09-09), and one local call
@@ -127,9 +127,9 @@ load_config_readonly = functools.partial(_config_from_loader, "load_config_reado
 
 
 def _core_tool_names() -> frozenset[str]:
-    """Names that never defer by default (lazy: ``toolsets`` imports ``tools.registry``)."""
+    """Names that never defer by default (lazy: ``toolsets`` imports ``hermes_agent.tools.registry``)."""
     try:
-        from toolsets import _HERMES_CORE_TOOLS
+        from hermes_agent.toolsets import _HERMES_CORE_TOOLS
         return frozenset(_HERMES_CORE_TOOLS)
     except Exception:
         return frozenset()
@@ -412,7 +412,7 @@ def _shared_tool_record(entry: CatalogEntry) -> dict[str, Any]:
 
 def _available_source_summary(catalog: list[CatalogEntry]) -> list[dict[str, Any]]:
     """Deterministic summaries of connected and declared unavailable sources."""
-    from tools.tool_search_catalog import hidden_declared_sources
+    from hermes_agent.tools.tool_search_catalog import hidden_declared_sources
 
     counts = Counter(_listing_group_label(entry.source_name) for entry in catalog)
     rows = [{"name": name, "tool_count": counts[name]} for name in sorted(counts)]
@@ -584,7 +584,7 @@ def resolve_underlying_call(args: dict[str, Any], session_tool_names: Optional[I
     """Parse a ``tool_call`` invocation into (underlying_name, args, error_msg).
 
     Used by:
-    * the dispatcher in ``model_tools.handle_function_call``,
+    * the dispatcher in ``hermes_agent.model_tools.handle_function_call``,
     * the display layer (so the activity feed shows the underlying tool),
     * the trajectory recorder.
 

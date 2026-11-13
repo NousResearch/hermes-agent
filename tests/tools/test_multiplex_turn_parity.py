@@ -51,7 +51,7 @@ def test_routed_local_profile_cwd_matches_standalone_gateway(tmp_path, two_homes
     import; the routed profile's terminal scope must yield the same cwd, not the multiplexer's
     process cwd — otherwise the system prompt, context files and the terminal all start in
     wherever ``hermes gateway`` happened to be launched from."""
-    from tools.terminal_scope import build_profile_terminal_scope, install_and_reset_profile_terminal_scope
+    from hermes_agent.tools.terminal_scope import build_profile_terminal_scope, install_and_reset_profile_terminal_scope
     from agent.runtime_cwd import resolve_agent_cwd
 
     a, _ = two_homes
@@ -65,7 +65,7 @@ def test_routed_local_profile_cwd_matches_standalone_gateway(tmp_path, two_homes
 def test_launch_artifact_context_cwd_follows_routed_profile(two_homes, tmp_path):
     """Ignoring a Desktop launch cwd must still resolve terminal.cwd from the profile whose turn is active."""
     from agent.runtime_cwd import resolve_context_cwd, reset_session_cwd, set_session_cwd
-    from tools.terminal_scope import install_and_reset_profile_terminal_scope
+    from hermes_agent.tools.terminal_scope import install_and_reset_profile_terminal_scope
 
     a, b = two_homes
     workspaces = {"a": tmp_path / "workspace-a", "b": tmp_path / "workspace-b"}
@@ -88,7 +88,7 @@ def test_terminal_backend_consumers_read_the_routed_scope(two_homes):
     """Every ``TERMINAL_ENV`` reader that shapes a turn (image-source locality, credential-file path
     translation, image-gen cache base, skill readiness) resolves the ROUTED profile's backend."""
     from hermes_agent.gateway.run import _profile_runtime_scope
-    from tools import credential_files, image_generation_tool, image_source
+    from hermes_agent.tools import credential_files, image_generation_tool, image_source
 
     a, b = two_homes
 
@@ -113,7 +113,7 @@ def test_terminal_backend_consumers_read_the_routed_scope(two_homes):
 def test_permanent_allowlist_is_per_profile(two_homes):
     """Profile A's ``command_allowlist`` must not pre-approve commands for routed profile B, and
     B's own 'always' approvals must not be folded into A's set."""
-    from tools import approval
+    from hermes_agent.tools import approval
 
     a, b = two_homes
     approval.load_permanent_allowlist()  # launch-profile startup load (A)
@@ -129,8 +129,8 @@ def test_profile_scoped_process_caches_follow_routed_home(two_homes, monkeypatch
     """Config-derived singletons (redaction switch, aux unhealthy marks, LSP service, browser
     engine/headed flags, MCP stderr log path) are keyed by the routed profile home."""
     from agent import auxiliary_client, lsp, redact
-    from tools import browser_session_cloud, mcp_tool_config
-    from tools.browser_session_lifecycle import cleanup_all_browsers
+    from hermes_agent.tools import browser_session_cloud, mcp_tool_config
+    from hermes_agent.tools.browser_session_lifecycle import cleanup_all_browsers
 
     a, b = two_homes
     monkeypatch.setattr(redact, "_REDACT_ENABLED", False)  # launch profile opted out

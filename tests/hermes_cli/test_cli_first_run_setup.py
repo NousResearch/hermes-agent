@@ -45,7 +45,7 @@ def _restore_cli_and_tool_modules():
 
 def _import_cli():
     for name in list(sys.modules):
-        if name == "cli" or name == "run_agent" or name == "tools" or name.startswith("tools."):
+        if name == "cli" or name == "run_agent" or name == "hermes_agent.tools" or name.startswith("hermes_agent.tools."):
             sys.modules.pop(name, None)
     if "firecrawl" not in sys.modules:
         sys.modules["firecrawl"] = types.SimpleNamespace(Firecrawl=object)

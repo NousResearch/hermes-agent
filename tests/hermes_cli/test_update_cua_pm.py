@@ -74,7 +74,7 @@ def test_macos_refresh_registers_post_ensure_signed_app(
     refresh, monkeypatch, tmp_path, capsys, registration_exit,
 ):
     """Exercise native setup dispatch; no real LaunchServices or codesign writes."""
-    from tools.computer_use import cua_backend_daemon as daemon
+    from hermes_agent.tools.computer_use import cua_backend_daemon as daemon
 
     lookup, ensure = refresh
     old = tmp_path / "old-cua-driver"

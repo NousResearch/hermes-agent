@@ -43,7 +43,7 @@ def _child_env() -> dict[str, str]:
     lineage). Each layer degrades gracefully so permission probes never break on a helper import error.
     """
     try:
-        from tools.computer_use.cua_backend import sanitized_cua_driver_env
+        from hermes_agent.tools.computer_use.cua_backend import sanitized_cua_driver_env
         return sanitized_cua_driver_env()
     except Exception:
         return dict(os.environ)
@@ -87,7 +87,7 @@ def computer_use_status(driver_cmd: Optional[str] = None) -> dict[str, Any]:
     UI keys off: macOS = both TCC grants, elsewhere = driver health (no TCC model); ``None`` = unknown (binary missing /
     probe failed). ``can_grant`` is macOS-only."""
     from plugins.computer_use import DEFAULT_BACKEND, configured_backend_name, get_active_provider
-    from tools.computer_use.cua_backend_driver import resolve_cua_driver_cmd  # same resolver as the tool itself
+    from hermes_agent.tools.computer_use.cua_backend_driver import resolve_cua_driver_cmd  # same resolver as the tool itself
     plat, name = sys.platform, configured_backend_name()
     binary = resolve_cua_driver_cmd(driver_cmd) if name == DEFAULT_BACKEND else None
     out: dict[str, Any] = {"platform": plat, "platform_supported": plat in _RUNTIME_PLATFORMS,
@@ -124,7 +124,7 @@ def request_permissions_grant(driver_cmd: Optional[str] = None) -> int:
     if sys.platform != "darwin":
         print("Computer Use permissions are a macOS concept; nothing to grant here.")
         return 64
-    from tools.computer_use.cua_backend_driver import resolve_cua_driver_cmd
+    from hermes_agent.tools.computer_use.cua_backend_driver import resolve_cua_driver_cmd
     binary = resolve_cua_driver_cmd(driver_cmd)
     if not binary:
         print("cua-driver: not installed. Run: hermes computer-use install")

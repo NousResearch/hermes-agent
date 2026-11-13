@@ -16,10 +16,10 @@ from unittest.mock import patch
 
 import pytest
 
-from tools.connectors import live
-from tools.connectors.mcp import apply_answer
-from tools.connectors.mcp_launch import launch_target
-from tools.connectors.tool import manage_connections
+from hermes_agent.tools.connectors import live
+from hermes_agent.tools.connectors.mcp import apply_answer
+from hermes_agent.tools.connectors.mcp_launch import launch_target
+from hermes_agent.tools.connectors.tool import manage_connections
 
 
 @pytest.fixture(autouse=True)
@@ -44,10 +44,10 @@ def test_card_names_the_launch_target_and_the_model_result_does_not():
         skip = json.dumps({"targets": [{"name": "acme", "status": "skipped"}]})
         threading.Timer(0.01, lambda: apply_answer(live.get("s1", payload["op_id"]), skip)).start()
 
-    with patch("tools.connectors.mcp._catalog_names", return_value=["acme"]), \
-         patch("tools.connectors.mcp._configured_names", return_value=[]), \
+    with patch("hermes_agent.tools.connectors.mcp._catalog_names", return_value=["acme"]), \
+         patch("hermes_agent.tools.connectors.mcp._configured_names", return_value=[]), \
          patch("hermes_cli.mcp_catalog.get_entry", return_value=entry), \
-         patch("tools.connectors.run.WATCH_INTERVAL_SECONDS", 0.01):
+         patch("hermes_agent.tools.connectors.run.WATCH_INTERVAL_SECONDS", 0.01):
         out = json.loads(manage_connections({"action": "install", "connectors": [{"name": "acme", "mcp": True}]},
                                             connection_callback=callback, session_id="s1", mcp_backend=_Backend()))
 
@@ -248,7 +248,7 @@ def test_a_string_args_value_is_one_argument_and_still_masked():
 
 
 def test_enable_reads_env_and_cwd_from_the_configured_entry():
-    from tools.connectors.mcp_launch import launch_for
+    from hermes_agent.tools.connectors.mcp_launch import launch_for
 
     cfg = {"acme": {"command": "node", "args": ["srv.js"], "env": {"NODE_OPTIONS": "--require /x.js"}, "cwd": "/w"}}
     with patch("hermes_cli.mcp_catalog.installed_servers", return_value=cfg):

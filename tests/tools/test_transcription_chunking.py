@@ -10,9 +10,9 @@ from unittest.mock import patch
 
 import pytest
 
-import tools.transcription_chunking as chunking
-import tools.transcription_tools as tt
-from tools.transcription_audio import _probe_audio_duration
+import hermes_agent.tools.transcription_chunking as chunking
+import hermes_agent.tools.transcription_tools as tt
+from hermes_agent.tools.transcription_audio import _probe_audio_duration
 
 _HAS_FFMPEG = bool(shutil.which("ffmpeg")) and bool(shutil.which("ffprobe"))
 pytestmark = pytest.mark.skipif(not _HAS_FFMPEG, reason="ffmpeg/ffprobe not installed")

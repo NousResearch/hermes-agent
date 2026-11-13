@@ -512,7 +512,7 @@ def _session_list_by_title(rid, db, title_lookup: str) -> dict:
     lineages resolve to the live tip (``resolved_id``)."""
     row = db.get_session_by_title(title_lookup)
     if row and row.get("archived"):
-        from tools.bot_mode_probe import BOT_CHAT_TITLE
+        from hermes_agent.tools.bot_mode_probe import BOT_CHAT_TITLE
         # A Bot Chat archived by the ws-orphan reaper / agent_close is an accident (the desktop would mint
         # replacements forever): resurrect recoverable reasons only. Re-fetch by ID — title is not UNIQUE.
         if title_lookup == BOT_CHAT_TITLE and _unarchive_recoverable(db, row["id"]):
@@ -823,7 +823,7 @@ def _resume_follow_tip(ctx: _Resume) -> None:
         return
     tip = ctx.target
     with contextlib.suppress(Exception):
-        from tools.bot_mode_probe import BOT_CHAT_TITLE
+        from hermes_agent.tools.bot_mode_probe import BOT_CHAT_TITLE
         if (ctx.found.get("title") or "").strip() == BOT_CHAT_TITLE:
             tip = ctx.db.get_compression_tip(ctx.target) or ctx.target
         else:
@@ -1063,7 +1063,7 @@ def _(rid, params: dict) -> dict:
         if live is not None:
             return _resume_reuse_live(ctx, *live)
         from hermes_agent.hermes_state import SessionDB
-        from tools.approval_yolo import restore_session_yolo  # a fresh backend starts with an empty set
+        from hermes_agent.tools.approval_yolo import restore_session_yolo  # a fresh backend starts with an empty set
         restore_session_yolo(ctx.target, SessionDB.session_yolo_enabled(ctx.found))
         if ctx.lazy:
             return _resume_lazy(ctx)
@@ -2195,7 +2195,7 @@ def _(rid, params: dict, session: dict) -> dict:
 # ── delegation / spawn trees ─────────────────────────────────────────
 @method("delegation.status")
 def _(rid, params: dict) -> dict:
-    from tools import delegate_tool as dt
+    from hermes_agent.tools import delegate_tool as dt
     return _ok(rid, {"active": dt.list_active_subagents(), "paused": dt.is_spawn_paused(),
                      "max_spawn_depth": dt._get_max_spawn_depth(),
                      "max_concurrent_children": dt._get_max_concurrent_children()})
@@ -2203,7 +2203,7 @@ def _(rid, params: dict) -> dict:
 
 @method("delegation.pause")
 def _(rid, params: dict) -> dict:
-    from tools.delegate_tool import set_spawn_paused
+    from hermes_agent.tools.delegate_tool import set_spawn_paused
     return _ok(rid, {"paused": set_spawn_paused(bool(params.get("paused", True)))})
 
 
@@ -2211,7 +2211,7 @@ def _(rid, params: dict) -> dict:
 def _(rid, params: dict) -> dict:
     """Queue steering text into a live delegated child (the in-flight tool call is never cut). "queued"
     is not "delivered": a child past its final tool batch surfaces ``missed_steer`` on the parent entry."""
-    from tools.delegate_tool import steer_subagent
+    from hermes_agent.tools.delegate_tool import steer_subagent
     if not (subagent_id := _str_param(params, "subagent_id")):
         return _err(rid, 4000, "subagent_id required")
     if not (text := (params.get("text") or "").strip()):

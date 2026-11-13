@@ -77,7 +77,7 @@ def _home(tmp_path, monkeypatch, delegation: dict, plugins=("probe-options",), d
 
 
 def _definition():
-    from tools.registry import registry
+    from hermes_agent.tools.registry import registry
     return registry.get_definitions({"delegate_task"})[0]["function"]
 
 
@@ -88,7 +88,7 @@ def _task_props(definition):
 @pytest.fixture
 def recorded(monkeypatch):
     """Record what each child is built with; children 'complete' immediately."""
-    from tools import delegate_tool as dt
+    from hermes_agent.tools import delegate_tool as dt
     built = []
 
     def build(**kwargs):
@@ -111,8 +111,8 @@ def test_selected_plugin_backend_extends_schema_and_routes_each_task(tmp_path, m
     _, manager = _home(tmp_path, monkeypatch, {"backend": "probe-options", "backends": {"probe-options": {"options": OPTIONS}}})
     try:
         from agent.delegation_registry import get_active_provider
-        from tools.delegate_tool import delegate_task
-        from tools.delegate_tool_config import _load_config
+        from hermes_agent.tools.delegate_tool import delegate_task
+        from hermes_agent.tools.delegate_tool_config import _load_config
 
         assert get_active_provider(_load_config()).name == "probe-options"
         definition = _definition()
@@ -144,7 +144,7 @@ def test_an_unroutable_task_is_refused_alone_and_its_siblings_run(tmp_path, monk
     and which backend refused it; the call is a tool error only when no task can run."""
     _, manager = _home(tmp_path, monkeypatch, {"backend": "probe-options", "backends": {"probe-options": {"options": OPTIONS}}})
     try:
-        from tools.delegate_tool import delegate_task
+        from hermes_agent.tools.delegate_tool import delegate_task
 
         out = json.loads(delegate_task(tasks=[
             {"goal": "a task with a typo in it", "option": "fsat"},
@@ -168,7 +168,7 @@ def test_an_unroutable_task_is_refused_alone_and_its_siblings_run(tmp_path, monk
 def test_a_missing_backend_fails_closed_and_default_keeps_todays_route(tmp_path, monkeypatch, recorded):
     """Unset and ``default`` are today's behaviour; a backend nobody provides is a tool error naming it and the fix,
     never a quiet run on the default route."""
-    from tools.delegate_tool import delegate_task
+    from hermes_agent.tools.delegate_tool import delegate_task
 
     pinned = {"model": "pinned-model", "base_url": "http://127.0.0.1:9/v1", "api_key": "k"}
     definitions, outcomes = [], []
@@ -187,15 +187,15 @@ def test_a_missing_backend_fails_closed_and_default_keeps_todays_route(tmp_path,
 
 
 def test_a_backend_route_without_its_own_chain_inherits_delegation_fallback_providers(tmp_path, monkeypatch):
-    from tools.delegate_tool_config import _resolve_child_fallback_chain
-    from tools.delegate_tool_routes import resolve_task_routes
+    from hermes_agent.tools.delegate_tool_config import _resolve_child_fallback_chain
+    from hermes_agent.tools.delegate_tool_routes import resolve_task_routes
 
     chain = [{"provider": "openrouter", "model": "backup-model"}]
     options = [{**OPTIONS[0]}, {**OPTIONS[1], "fallback_providers": []}]
     _, manager = _home(tmp_path, monkeypatch, {"backend": "probe-options", "fallback_providers": chain,
                                                "backends": {"probe-options": {"options": options}}})
     try:
-        from tools.delegate_tool_config import _load_config
+        from hermes_agent.tools.delegate_tool_config import _load_config
 
         routes, err = resolve_task_routes([{"goal": "inherits", "option": "fast"}, {"goal": "own empty chain",
                                                                                      "option": "deep"}],
@@ -232,7 +232,7 @@ def test_a_saved_switch_refuses_the_previous_backends_parameter_and_names_the_fi
     _registry.register(profiles)
     try:
         from agent.delegation_backends import list_backends, set_global_backend
-        from tools.delegate_tool import delegate_task
+        from hermes_agent.tools.delegate_tool import delegate_task
 
         assert [b.name for b in list_backends()] == ["default", "probe-options", "probe-profiles"]
         before = (home / "config.yaml").read_bytes()
@@ -284,7 +284,7 @@ def test_a_global_backend_switch_is_refused_on_a_managed_install(tmp_path, monke
 
 def test_plugin_parameters_never_redefine_core_or_route_fields(tmp_path, monkeypatch):
     from agent.delegation_provider import DelegationProvider
-    from tools.delegate_tool_routes import schema_extension
+    from hermes_agent.tools.delegate_tool_routes import schema_extension
 
     class Greedy(DelegationProvider):
         @property
@@ -313,7 +313,7 @@ def test_route_task_always_sees_the_core_task_position(tmp_path, monkeypatch):
     """``index`` is core's: a provider declaring it never lets the model's value replace the real position."""
     from agent.delegation_provider import DelegationProvider
     from agent.delegation_registry import _registry
-    from tools.delegate_tool_routes import resolve_task_routes, schema_extension
+    from hermes_agent.tools.delegate_tool_routes import resolve_task_routes, schema_extension
 
     seen = []
 
@@ -344,7 +344,7 @@ def test_backend_key_reads_through_the_real_loader(tmp_path, monkeypatch):
     """``delegation.backend`` defaults to ``default`` and a configured value reaches the registry."""
     from agent.delegation_registry import configured_backend
     from hermes_cli.config import load_config
-    from tools.delegate_tool_config import _load_config
+    from hermes_agent.tools.delegate_tool_config import _load_config
 
     _, manager = _home(tmp_path / "unset", monkeypatch, {}, plugins=())
     try:
@@ -372,7 +372,7 @@ def test_backend_settings_come_from_its_own_backends_block(tmp_path, monkeypatch
 
 def test_default_strategy_is_the_bundled_plugin_through_the_same_seam(tmp_path, monkeypatch, recorded):
     from agent.delegation_registry import get_active_provider
-    from tools.delegate_tool import delegate_task
+    from hermes_agent.tools.delegate_tool import delegate_task
 
     _, manager = _home(tmp_path / "on", monkeypatch, {"model": "pinned-model"}, plugins=())
     try:
@@ -399,7 +399,7 @@ def test_runtime_with_zero_plugins_loaded_still_delegates_on_the_bundled_default
     bundled default strategy on first use instead of losing delegate_task."""
     from agent import delegation_registry
     from agent.delegation_registry import _load_bundled, _registry, get_active_provider
-    from tools.delegate_tool import delegate_task
+    from hermes_agent.tools.delegate_tool import delegate_task
 
     monkeypatch.setattr(delegation_registry, "_first_use", {})
 
@@ -429,7 +429,7 @@ def test_first_use_default_never_outlives_a_later_disable(tmp_path, monkeypatch,
     ``delegation/default`` is disabled, the next delegation refuses even in the runtime that loaded it."""
     from agent import delegation_registry
     from agent.delegation_registry import _registry
-    from tools.delegate_tool import delegate_task
+    from hermes_agent.tools.delegate_tool import delegate_task
 
     monkeypatch.setattr(delegation_registry, "_first_use", {})
     home = tmp_path / ".hermes"
@@ -461,7 +461,7 @@ def test_a_replacement_default_strategy_gets_the_full_route_contract(monkeypatch
     """Rules follow the route, not the name: a provider registered as ``default`` that returns a speed tier and
     a label has the tier checked and applied, exactly like any other backend."""
     from agent.delegation_provider import DelegationProvider
-    from tools.delegate_tool_routes import resolve_task_routes
+    from hermes_agent.tools.delegate_tool_routes import resolve_task_routes
 
     class Replacement(DelegationProvider):
         @property
@@ -472,7 +472,7 @@ def test_a_replacement_default_strategy_gets_the_full_route_contract(monkeypatch
             return {"base_url": "https://chatgpt.com/backend-api/codex", "api_key": "k", "model": "gpt-6-astra",
                     "service_tier": "fast", "label": "codex-fast"}
 
-    monkeypatch.setattr("tools.delegate_tool_routes._active_provider", lambda config: Replacement())
+    monkeypatch.setattr("hermes_agent.tools.delegate_tool_routes._active_provider", lambda config: Replacement())
     (route,), error = resolve_task_routes([{"goal": "one plain delegated task"}], {}, _parent())
     assert error is None and route.label == "codex-fast"
     assert route.creds["service_tier"] == "priority" and route.creds["request_overrides"]["service_tier"] == "priority"

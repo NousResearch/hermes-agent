@@ -57,7 +57,7 @@ def test_cron_writes_run_on_the_gateway_not_in_the_cli(monkeypatch, capsys):
 
     def local_write(**_k):
         raise AssertionError("the CLI process must not write the cron store")
-    monkeypatch.setattr("tools.cronjob_tools.cronjob", local_write)
+    monkeypatch.setattr("hermes_agent.tools.cronjob_tools.cronjob", local_write)
     cli = SimpleNamespace(session_id="local-s", _gateway_command_wait=None)
     assert gateway_setting_commands.run(cli, "cron", "/cron pause probe") is True
     assert calls == [("slash.exec", {"session_id": "local-s", "command": "cron pause probe"}, False)]

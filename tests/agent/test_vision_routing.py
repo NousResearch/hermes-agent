@@ -254,7 +254,7 @@ auxiliary:
         monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
         _fresh_modules()
 
-        from tools.vision_tools import check_vision_requirements
+        from hermes_agent.tools.vision_tools import check_vision_requirements
         assert check_vision_requirements() is True
 
 
@@ -275,7 +275,7 @@ model:
 """)
         _fresh_modules()
 
-        from tools import vision_tools
+        from hermes_agent.tools import vision_tools
 
         with patch.object(vision_tools, "_should_use_native_vision_fast_path", return_value=True):
             assert vision_tools.check_video_requirements() is False  # no aux client resolves

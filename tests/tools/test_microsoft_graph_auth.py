@@ -1,4 +1,4 @@
-"""Tests for tools/microsoft_graph_auth.py."""
+"""Tests for hermes_agent/tools/microsoft_graph_auth.py."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ import asyncio
 import httpx
 import pytest
 
-from tools.microsoft_graph_auth import (
+from hermes_agent.tools.microsoft_graph_auth import (
     CachedAccessToken,
     DEFAULT_GRAPH_SCOPE,
     GraphCredentials,

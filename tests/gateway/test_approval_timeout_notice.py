@@ -19,7 +19,7 @@ class _Runner:
 
 def _capture_settle(monkeypatch):
     hooks = {}
-    monkeypatch.setattr("tools.approval.register_gateway_settle", lambda sk, rid, fn: hooks.__setitem__(rid, fn))
+    monkeypatch.setattr("hermes_agent.tools.approval.register_gateway_settle", lambda sk, rid, fn: hooks.__setitem__(rid, fn))
     return hooks
 
 

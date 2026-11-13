@@ -13,7 +13,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from tools.environments.file_sync import (
+from hermes_agent.tools.environments.file_sync import (
     FileSyncManager,
     _cleanup_stale_sync_back_temp,
     _sha256_file,
@@ -115,7 +115,7 @@ class TestStaleSyncBackTempCleanup:
         for path in (stale_tar, stale_dir):
             os.utime(path, (now - _SYNC_BACK_STALE_SECONDS - 1,) * 2)
         os.utime(recent, (now - _SYNC_BACK_STALE_SECONDS + 1,) * 2)
-        monkeypatch.setattr("tools.environments.file_sync.time.time", lambda: now)
+        monkeypatch.setattr("hermes_agent.tools.environments.file_sync.time.time", lambda: now)
 
         assert _cleanup_stale_sync_back_temp(tmp_path) == 2
 
@@ -249,7 +249,7 @@ class TestSyncBackConflict:
         mgr = _make_manager(tmp_path, file_mapping=mapping, bulk_download_fn=download_fn)
         mgr._pushed_hashes[remote_path] = _sha256_bytes(original_content)
 
-        with caplog.at_level(logging.WARNING, logger="tools.environments.file_sync"):
+        with caplog.at_level(logging.WARNING, logger="hermes_agent.tools.environments.file_sync"):
             mgr.sync_back(hermes_home=tmp_path / ".hermes")
 
         # Conflict warning was logged
@@ -262,7 +262,7 @@ class TestSyncBackConflict:
 class TestSyncBackRetries:
     """Retry behaviour with exponential backoff."""
 
-    @patch("tools.environments.file_sync._sleep")
+    @patch("hermes_agent.tools.environments.file_sync._sleep")
     def test_sync_back_retries_on_failure(self, mock_sleep, tmp_path):
         call_count = 0
 
@@ -279,14 +279,14 @@ class TestSyncBackRetries:
 
         assert call_count == 3
 
-    @patch("tools.environments.file_sync._sleep")
+    @patch("hermes_agent.tools.environments.file_sync._sleep")
     def test_sync_back_all_retries_exhausted(self, mock_sleep, tmp_path, caplog):
         def always_fail(dest: Path):
             raise RuntimeError("persistent failure")
 
         mgr = _make_manager(tmp_path, bulk_download_fn=always_fail)
 
-        with caplog.at_level(logging.WARNING, logger="tools.environments.file_sync"):
+        with caplog.at_level(logging.WARNING, logger="hermes_agent.tools.environments.file_sync"):
             # Should NOT raise -- failures are logged, not propagated
             mgr.sync_back(hermes_home=tmp_path / ".hermes")
 
@@ -336,7 +336,7 @@ class TestSyncBackSIGINT:
         def tracking_signal(*args):
             signal_called.append(args)
 
-        with patch("tools.environments.file_sync.signal.signal", side_effect=tracking_signal):
+        with patch("hermes_agent.tools.environments.file_sync.signal.signal", side_effect=tracking_signal):
             # Run from a worker thread
             exc = []
             def run():
@@ -372,7 +372,7 @@ class TestSyncBackSizeCap:
         )
 
         # Cap at 1 byte so any non-empty tar exceeds it
-        with caplog.at_level(logging.WARNING, logger="tools.environments.file_sync"):
+        with caplog.at_level(logging.WARNING, logger="hermes_agent.tools.environments.file_sync"):
             with patch("hermes_cli.config.load_config", return_value={"terminal": {"sync_back_max_bytes": 1}}):
                 mgr.sync_back(hermes_home=tmp_path / ".hermes")
 
@@ -399,7 +399,7 @@ class TestSyncBackSizeCap:
 
         monkeypatch.setattr("hermes_cli.config.load_config",
                             lambda: {"terminal": {"sync_back_max_bytes": "lots"}})
-        with caplog.at_level(logging.WARNING, logger="tools.environments.file_sync"):
+        with caplog.at_level(logging.WARNING, logger="hermes_agent.tools.environments.file_sync"):
             mgr.sync_back(hermes_home=tmp_path / ".hermes")
         assert Path(host_file).read_bytes() == b"remote_version"  # default cap applies
         assert any("sync_back_max_bytes" in r.message for r in caplog.records)

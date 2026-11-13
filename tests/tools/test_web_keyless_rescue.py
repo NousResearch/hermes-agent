@@ -18,8 +18,8 @@ from unittest.mock import patch
 
 import pytest
 
-from tools import web_tools
-from tools import web_tools_rescue
+from hermes_agent.tools import web_tools
+from hermes_agent.tools import web_tools_rescue
 from plugins.web import keyless_mcp
 from plugins.web.keenable.provider import KeenableWebSearchProvider
 
@@ -99,11 +99,11 @@ class TestEligibility:
         monkeypatch.setattr("plugins.web.firecrawl.provider._env", lambda name: "")
         monkeypatch.setattr("plugins.web.firecrawl.provider._is_tool_gateway_ready", lambda: True)
         monkeypatch.setattr(
-            "tools.tool_backend_helpers.read_selection", lambda kind: "nous"
+            "hermes_agent.tools.tool_backend_helpers.read_selection", lambda kind: "nous"
         )
         assert web_tools_rescue._rescue_eligible(_GatewayFirecrawlBoomProvider()) is True
         monkeypatch.setattr(
-            "tools.tool_backend_helpers.read_selection", lambda kind: "firecrawl"
+            "hermes_agent.tools.tool_backend_helpers.read_selection", lambda kind: "firecrawl"
         )
         monkeypatch.setattr("plugins.web.keyless_mcp._web_config_selects", lambda name: name == "firecrawl")
         assert web_tools_rescue._rescue_eligible(_GatewayFirecrawlBoomProvider()) is False
@@ -161,7 +161,7 @@ class TestSearchRescue:
             "agent.web_search_provider.get_provider_env", lambda name: ""
         )
         monkeypatch.setattr(
-            "tools.tool_backend_helpers.read_selection", lambda kind: "nous"
+            "hermes_agent.tools.tool_backend_helpers.read_selection", lambda kind: "nous"
         )
         with patch.object(
             keyless_mcp, "search_with_failover", return_value=_ring_ok()

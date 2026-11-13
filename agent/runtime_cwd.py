@@ -69,7 +69,7 @@ def scope_terminal_cwd() -> str:
     active refusal scope must raise, not silently resolve the launch profile's cwd.
     """
     try:
-        from tools.terminal_scope import terminal_env
+        from hermes_agent.tools.terminal_scope import terminal_env
     except ImportError:
         return os.environ.get("TERMINAL_CWD", "")
     return terminal_env("TERMINAL_CWD", "")

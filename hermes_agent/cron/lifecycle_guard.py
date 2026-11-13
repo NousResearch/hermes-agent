@@ -52,7 +52,7 @@ _GATEWAY_LIFECYCLE_PATTERN = re.compile(
     # sit alongside `unload`: Apple deprecated load/unload in favour of bootstrap/bootout, so `bootout` is
     # the modern spelling of an already-listed verb, `remove` is its legacy sibling, and `disable` is what
     # makes an unload durable across boots. Omitting them left the bypassable approval layer
-    # (tools/approval.py, skipped on force=True) as the only cover, while this hard block — documented as
+    # (hermes_agent/tools/approval.py, skipped on force=True) as the only cover, while this hard block — documented as
     # "force=True cannot help here" — let them through (#80260).
     r"|(?:launchctl\s+(?:kickstart|unload|load|stop|restart|submit|bootstrap|bootout|remove|disable)\b[^\n]*\bhermes[.\-]?gateway)"
     # Branch C: systemctl ops on a hermes-gateway unit.
@@ -418,7 +418,7 @@ def contains_gateway_lifecycle_command(text: str) -> bool:
     # Heredoc bodies that are provably inert data (quoted delimiter, data-sink consumer like `cat > file
     # <<'EOF'`) are masked before scanning (#88336): a runbook line "a human can run: hermes gateway
     # restart" inside such a body is documentation, not a command this shell will execute.
-    from tools.shell_heredoc import strip_inert_heredoc_bodies
+    from hermes_agent.tools.shell_heredoc import strip_inert_heredoc_bodies
 
     text = strip_inert_heredoc_bodies(text)
     normalized = _SHELL_LINE_CONTINUATION.sub(" ", text)
@@ -540,7 +540,7 @@ def _capped_read_limit(max_bytes: Optional[int]) -> int:
 
 
 def lifecycle_scan_root_within_budget(text: str) -> bool:
-    """Whether *text* may safely enter an optional tokenizer pass (``tools/terminal_tool.py`` gates
+    """Whether *text* may safely enter an optional tokenizer pass (``hermes_agent/tools/terminal_tool.py`` gates
     its launchctl pre-scan on this). A FRESH budget, independent of the full guard's walk: the
     pre-scan may pass while the walk later exhausts, still fail-closed — only the friendlier
     launchctl diagnostic is lost. ``False`` is not a verdict: callers must still run the full guard."""
@@ -1114,7 +1114,7 @@ def _contains_unsafe_gateway_action(
     # The walks below must see the same masked view `_direct_lifecycle_scan` sees (#110422): a
     # path or `sh -c` payload inside a provably-inert heredoc body is never shell-executed, and an
     # oversized data file mentioned there otherwise fails closed as a "script".
-    from tools.shell_heredoc import strip_inert_heredoc_bodies
+    from hermes_agent.tools.shell_heredoc import strip_inert_heredoc_bodies
 
     walk_command = strip_inert_heredoc_bodies(command)
 
@@ -1194,7 +1194,7 @@ def scan_gateway_lifecycle(
     unexpected failure is logged and treated as "walk found nothing".
 
     This is the contract #76762 established ("a guarded path must never crash the guard") enforced at the
-    boundary instead of per-syscall: a guard crash propagates out of ``tools/terminal_tool.py`` and breaks
+    boundary instead of per-syscall: a guard crash propagates out of ``hermes_agent/tools/terminal_tool.py`` and breaks
     every terminal command until the gateway restarts (#77780, #78256), which is strictly worse than either
     verdict.
     """

@@ -41,8 +41,8 @@ def portal(monkeypatch):
             calls.append((connection_id, alias))
             return {"connectionId": connection_id, "connector": "gmail", "alias": alias, "label": "a@x.test"}
 
-    monkeypatch.setattr("tools.connectors.portal.client.PortalConnectorClient", FakePortal)
-    monkeypatch.setattr("tools.connectors.connectors_available", lambda: True, raising=False)
+    monkeypatch.setattr("hermes_agent.tools.connectors.portal.client.PortalConnectorClient", FakePortal)
+    monkeypatch.setattr("hermes_agent.tools.connectors.connectors_available", lambda: True, raising=False)
     return calls
 
 
@@ -70,7 +70,7 @@ def test_rename_to_an_invalid_name_calls_nothing(portal, capsys):
 
 
 def test_reconnect_repairs_an_unnamed_account_by_its_id(portal, monkeypatch):
-    from tools.connectors import account
+    from hermes_agent.tools.connectors import account
 
     started: list[dict] = []
 
@@ -86,7 +86,7 @@ def test_reconnect_repairs_an_unnamed_account_by_its_id(portal, monkeypatch):
 
 
 def test_reconnect_on_a_connected_account_starts_nothing(portal, monkeypatch, capsys):
-    from tools.connectors import account
+    from hermes_agent.tools.connectors import account
 
     started: list[dict] = []
     monkeypatch.setattr(account, "find_or_start_operation", lambda names, **kw: started.append(kw))
@@ -99,7 +99,7 @@ def test_reconnect_on_a_connected_account_starts_nothing(portal, monkeypatch, ca
 
 
 def test_forced_reconnect_on_a_connected_account_repairs_it_by_id(portal, monkeypatch):
-    from tools.connectors import account
+    from hermes_agent.tools.connectors import account
 
     started: list[dict] = []
 

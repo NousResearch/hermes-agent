@@ -4,7 +4,7 @@ and the RESULT carries the activation summary (``live_now.mcp_servers`` naming t
 connected in place) plus ``gateway_reloaded`` / ``restart_required``.
 
 The broken invariant: before, ``_plugins_install`` returned with no rescan, so a later non-forced
-``discover_plugins()`` (``tools/mcp_tool_config._portable_mcp_servers`` → ``reload.mcp``) short-circuited on
+``discover_plugins()`` (``hermes_agent/tools/mcp_tool_config._portable_mcp_servers`` → ``reload.mcp``) short-circuited on
 ``_discovered`` and never saw the new plugin's MCP servers until a full relaunch."""
 
 from __future__ import annotations
@@ -50,8 +50,8 @@ def test_plugins_manage_install_rescans_fires_on_plugin_loaded_and_exposes_mcp_s
          patch("hermes_cli.plugins_cmd._python_dependency_summary", return_value=[]), \
          patch("hermes_cli.plugins_admission.admit_plugin_set_change", _commit_plugin_selection), \
          patch("hermes_agent.gateway.control_socket.reload_gateway_plugins", return_value=None), \
-         patch("tools.mcp_tool_discovery.register_mcp_servers", return_value=[]), \
-         patch("tools.connectors.mcp._registered_tool_names", return_value=[]):  # no gateway, no real server
+         patch("hermes_agent.tools.mcp_tool_discovery.register_mcp_servers", return_value=[]), \
+         patch("hermes_agent.tools.connectors.mcp._registered_tool_names", return_value=[]):  # no gateway, no real server
         resp = server.handle_request({"id": "1", "method": "plugins.manage",
                                       "params": {"action": "install", "repo": "owner/late-mcp", "enable": True}})
     result = resp["result"]
@@ -60,7 +60,7 @@ def test_plugins_manage_install_rescans_fires_on_plugin_loaded_and_exposes_mcp_s
     assert servers == ["worker"]  # exactly the mcp.json name, as mcp.servers.* know it
     assert result["gateway_reloaded"] is False and result["restart_required"] is True
     # The invariant that was broken: a later NON-forced discovery (what reload.mcp runs) sees the servers.
-    from tools.mcp_tool_config import _portable_mcp_servers
+    from hermes_agent.tools.mcp_tool_config import _portable_mcp_servers
     merged: dict = {}
     _portable_mcp_servers(merged)
     assert set(merged) == set(servers)

@@ -54,9 +54,9 @@ def test_command_output_survives_pipe_fd_above_fd_setsize(high_fds, tmp_path, mo
     including when the selector itself cannot be created (EMFILE: epoll/kqueue need an fd)."""
     import errno
 
-    from tools.environments import fd_wait
-    from tools.environments.local import LocalEnvironment
-    from tools.process_registry import ProcessRegistry
+    from hermes_agent.tools.environments import fd_wait
+    from hermes_agent.tools.environments.local import LocalEnvironment
+    from hermes_agent.tools.process_registry import ProcessRegistry
 
     def _emfile():
         raise OSError(errno.EMFILE, "Too many open files")
@@ -96,7 +96,7 @@ def test_pty_bridge_reads_and_waits_above_fd_setsize(high_fds, monkeypatch):
 
     pytest.importorskip("ptyprocess")
     from hermes_cli.pty_bridge import PtyBridge
-    from tools.environments import fd_wait
+    from hermes_agent.tools.environments import fd_wait
 
     bridge = PtyBridge.spawn(["/bin/sh", "-c", "echo pty-high-fd; exec sleep 30"])
     try:

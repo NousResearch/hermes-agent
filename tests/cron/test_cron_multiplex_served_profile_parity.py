@@ -80,7 +80,7 @@ def test_child_env_for_served_profile_drops_launch_profile_settings(two_homes):
     """A worker/bot-chat child spawned for served alpha must not inherit the default profile's
     non-credential ``.env`` settings or bridged ``TERMINAL_*`` policy — a standalone alpha never
     had them. Alpha's own home pin and non-profile env survive."""
-    from tools.environments.local import build_subprocess_env, strip_launch_profile_env
+    from hermes_agent.tools.environments.local import build_subprocess_env, strip_launch_profile_env
 
     root, alpha = two_homes
     token = set_secret_scope(build_profile_secret_scope(alpha))
@@ -135,7 +135,7 @@ def test_child_env_keeps_launch_managed_dir(two_homes, monkeypatch):
     """``HERMES_MANAGED_DIR`` is deployment bootstrap, not launch-profile residue: a served
     profile's children keep the launch value even when the launch ``.env`` names the key
     (pre-fix the leftover file entry would strip it and silently drop managed scope, #135200)."""
-    from tools.environments.local import build_subprocess_env, strip_launch_profile_env
+    from hermes_agent.tools.environments.local import build_subprocess_env, strip_launch_profile_env
 
     root, alpha = two_homes
     (root / ".env").write_text(

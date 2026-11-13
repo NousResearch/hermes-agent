@@ -11,7 +11,7 @@ from typing import Literal
 
 from pydantic import Field
 
-from tools.tour_presets import TourPreset
+from hermes_agent.tools.tour_presets import TourPreset
 
 from .base import JsonValue, Params, Payload, Result, WireEnum
 from .registry import event, server_request
@@ -183,7 +183,7 @@ class ApprovalRequestParams(ServerRequestParams):
     tool_name: str | None = None
     session_id_hint: str | None = Field(default=None, alias="gateway_session_id")
     # The approval queue entry carries tool-specific context the card may render; the closed set
-    # of keys is owned by tools/approval.py, so it stays open here.
+    # of keys is owned by hermes_agent/tools/approval.py, so it stays open here.
     model_config = Params.model_config | {"extra": "allow"}
 
 
@@ -275,7 +275,7 @@ class PreviewVaultOperation(Params):
 
 
 class PreviewActRequestParams(ServerRequestParams):
-    """``tools/drive_preview_tool.py`` and ``tools/annotate_preview_tool.py`` field sets."""
+    """``hermes_agent/tools/drive_preview_tool.py`` and ``hermes_agent/tools/annotate_preview_tool.py`` field sets."""
 
     action: str
     ref: str | None = None
@@ -304,7 +304,7 @@ class TourStep(Params):
 
 
 class TourRequestParams(ServerRequestParams):
-    """``tools/tour_tool.py`` field set."""
+    """``hermes_agent/tools/tour_tool.py`` field set."""
 
     action: str
     surface: str | None = None
@@ -333,7 +333,7 @@ class ThemePicker(WireEnum):
 
 
 class ThemeApplyRequestParams(ServerRequestParams):
-    """``tools/set_theme_tool.py`` values; accent is a swatch id, ``theme`` or ``#rrggbb``."""
+    """``hermes_agent/tools/set_theme_tool.py`` values; accent is a swatch id, ``theme`` or ``#rrggbb``."""
 
     accent: str | None = None
     mode: ThemeMode | None = None
@@ -381,7 +381,7 @@ class RequestCancelReason(WireEnum):
 class RequestCancelPayload(Payload):
     id: str
     method: str
-    reason: str  # a RequestCancelReason value; callers in tools/approval may pass their own wording
+    reason: str  # a RequestCancelReason value; callers in hermes_agent/tools/approval may pass their own wording
 
 
 event("request.cancel", RequestCancelPayload,

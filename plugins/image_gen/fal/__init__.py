@@ -1,5 +1,5 @@
 """FAL.ai registration adapter. Catalog, payload, submission, managed-gateway selection and
-Clarity Upscaler chaining live in :mod:`tools.image_generation_tool`; this plugin imports it at
+Clarity Upscaler chaining live in :mod:`hermes_agent.tools.image_generation_tool`; this plugin imports it at
 call time so tests keep patching ``image_tool.*`` and there is one FAL code path."""
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ _PASSTHROUGH_KWARGS = (
 
 
 class FalImageGenProvider(StaticImageGenProvider):
-    """FAL.ai backend delegating to ``tools.image_generation_tool`` at call time."""
+    """FAL.ai backend delegating to ``hermes_agent.tools.image_generation_tool`` at call time."""
 
     provider_id = "fal"
     label = "FAL.ai"
@@ -30,7 +30,7 @@ class FalImageGenProvider(StaticImageGenProvider):
 
     def is_available(self) -> bool:
         # Direct FAL_KEY or a managed Nous fal-queue origin, per the legacy module.
-        import tools.image_generation_tool as _it
+        import hermes_agent.tools.image_generation_tool as _it
 
         try:
             return bool(_it.check_fal_api_key())
@@ -38,16 +38,16 @@ class FalImageGenProvider(StaticImageGenProvider):
             return False
 
     def list_models(self) -> list[dict[str, Any]]:
-        from tools.image_generation_catalog import FAL_MODELS
+        from hermes_agent.tools.image_generation_catalog import FAL_MODELS
         return catalog_rows(FAL_MODELS)
 
     def default_model(self) -> Optional[str]:
-        from tools.image_generation_catalog import DEFAULT_MODEL
+        from hermes_agent.tools.image_generation_catalog import DEFAULT_MODEL
         return DEFAULT_MODEL
 
     def capabilities(self) -> dict[str, Any]:
         # Image-to-image depends on the selected model (``edit_endpoint``); upscale works for any.
-        import tools.image_generation_tool as _it
+        import hermes_agent.tools.image_generation_tool as _it
 
         try:
             _model_id, meta = _it._resolve_fal_model()
@@ -67,7 +67,7 @@ class FalImageGenProvider(StaticImageGenProvider):
         **kwargs: Any,
     ) -> dict[str, Any]:
         """Forward to ``image_generate_tool`` and reshape its JSON-string response into the ABC dict."""
-        import tools.image_generation_tool as _it
+        import hermes_agent.tools.image_generation_tool as _it
 
         aspect = resolve_aspect_ratio(aspect_ratio)
         passthrough = {key: kwargs[key] for key in _PASSTHROUGH_KWARGS if kwargs.get(key) is not None}

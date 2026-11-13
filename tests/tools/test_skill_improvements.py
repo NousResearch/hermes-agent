@@ -1,4 +1,4 @@
-"""Tests for skill fuzzy patching via tools.fuzzy_match."""
+"""Tests for skill fuzzy patching via hermes_agent.tools.fuzzy_match."""
 
 import json
 import os
@@ -6,7 +6,7 @@ import stat
 
 import pytest
 
-from tools.skill_manager_tool import (
+from hermes_agent.tools.skill_manager_tool import (
     _create_skill,
     _edit_skill,
     _patch_skill,
@@ -39,7 +39,7 @@ class TestFuzzyPatchSkill:
     def setup_skills(self, tmp_path, monkeypatch):
         skills_dir = tmp_path / "skills"
         skills_dir.mkdir()
-        monkeypatch.setattr("tools.skill_manager_tool.SKILLS_DIR", skills_dir)
+        monkeypatch.setattr("hermes_agent.tools.skill_manager_tool.SKILLS_DIR", skills_dir)
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         self.skills_dir = skills_dir
 
@@ -106,7 +106,7 @@ word word word
     def test_create_rollback_removes_skill_when_scan_blocks(self, monkeypatch):
         """Blocked skill creation removes the newly created skill directory."""
         monkeypatch.setattr(
-            "tools.skill_manager_tool._security_scan_skill",
+            "hermes_agent.tools.skill_manager_tool._security_scan_skill",
             lambda _skill_dir: "blocked",
         )
 
@@ -227,7 +227,7 @@ word word word
         reference.write_text("original\n", encoding="utf-8")
         reference.chmod(0o660)
         monkeypatch.setattr(
-            "tools.skill_manager_tool._security_scan_skill",
+            "hermes_agent.tools.skill_manager_tool._security_scan_skill",
             lambda _skill_dir: "blocked",
         )
 
@@ -250,7 +250,7 @@ word word word
         skill_md.chmod(0o660)
         replacement = SKILL_CONTENT.replace("Step 1: Do the thing.", "blocked edit")
         monkeypatch.setattr(
-            "tools.skill_manager_tool._security_scan_skill",
+            "hermes_agent.tools.skill_manager_tool._security_scan_skill",
             lambda _skill_dir: "blocked",
         )
 
@@ -267,7 +267,7 @@ word word word
         skill_md = self.skills_dir / "rollback-skill" / "SKILL.md"
         skill_md.chmod(0o600)
         monkeypatch.setattr(
-            "tools.skill_manager_tool._security_scan_skill",
+            "hermes_agent.tools.skill_manager_tool._security_scan_skill",
             lambda _skill_dir: "blocked",
         )
 
@@ -290,7 +290,7 @@ word word word
         reference.write_text("original\n", encoding="utf-8")
         reference.chmod(0o660)
         monkeypatch.setattr(
-            "tools.skill_manager_tool._security_scan_skill",
+            "hermes_agent.tools.skill_manager_tool._security_scan_skill",
             lambda _skill_dir: "blocked",
         )
 
@@ -305,7 +305,7 @@ word word word
         _create_skill("rollback-skill", SKILL_CONTENT)
         reference = self.skills_dir / "rollback-skill" / "references/example.md"
         monkeypatch.setattr(
-            "tools.skill_manager_tool._security_scan_skill",
+            "hermes_agent.tools.skill_manager_tool._security_scan_skill",
             lambda _skill_dir: "blocked",
         )
 

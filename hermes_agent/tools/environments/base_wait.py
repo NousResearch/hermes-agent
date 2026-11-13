@@ -5,7 +5,7 @@ heartbeats so "agent never sees the interrupt" reports can be diagnosed from age
 import threading
 import time
 
-from tools.interrupt import is_interrupted
+from hermes_agent.tools.interrupt import is_interrupted
 
 _FMT = {
     "ENTER": "timeout=%ss activity_cb=%s initial_interrupt=%s",
@@ -24,7 +24,7 @@ class _WaitTrace:
         self.iterations = 0
         if not enabled:
             return
-        from tools.environments.base import get_activity_callback
+        from hermes_agent.tools.environments.base import get_activity_callback
 
         self._get_cb, self._log, self._timeout = get_activity_callback, logger, timeout
         self._tid = threading.current_thread().ident

@@ -42,7 +42,7 @@ CACHE_TTL_S = 300.0
 _SPENT_TURNS_KEPT = 64
 _PENDING_OUTPUTS_ATTR = "_shared_metrics_tool_outputs"
 _PENDING_OUTPUTS_MAX = 256
-# The one notice tools/tool_output_truncate.py writes when terminal, execute_code or MCP output was
+# The one notice hermes_agent/tools/tool_output_truncate.py writes when terminal, execute_code or MCP output was
 # cut down inside the tool, before Hermes ever saw the full text.
 _TOOL_TRUNCATION_NOTICE = re.compile(r"\[[A-Z_ ]{1,32} TRUNCATED - [\d,]{1,20} chars omitted out of ([\d,]{1,20}) total\]")
 _NOTICE_MIN_CHARS = 1_000
@@ -312,7 +312,7 @@ def observe_request_tools(agent: Any, tools_for_api: Any) -> None:
 def tool_snapshot(agent: Any, tools_for_api: list) -> tuple[tuple[str, ...], frozenset[str], int, int]:
     """(sent tool names, enabled shipped toolsets, enabled tool count, estimated schema tokens)."""
     from agent.model_metadata import _estimate_tools_tokens_rough
-    from model_tools import get_toolset_for_tool
+    from hermes_agent.model_tools import get_toolset_for_tool
 
     names = tuple(_tool_names(tools_for_api))
     enabled = list(_tool_names(getattr(agent, "tools", None) or tools_for_api))

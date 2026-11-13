@@ -26,7 +26,7 @@ import time
 from typing import Callable, Optional
 
 from hermes_constants import hermes_home_key
-from tools.bot_desktop import runtime
+from hermes_agent.tools.bot_desktop import runtime
 
 logger = logging.getLogger(__name__)
 

@@ -4,17 +4,17 @@ cloud backend the app attached to)."""
 
 import pytest
 
-from tools.connectors import live
-from tools.managed_gateway_identity import user_agent
+from hermes_agent.tools.connectors import live
+from hermes_agent.tools.managed_gateway_identity import user_agent
 from hermes_agent.tui_gateway import server
 
 
 @pytest.fixture
 def remote_backend(monkeypatch):
     monkeypatch.delenv("HERMES_DESKTOP", raising=False)
-    monkeypatch.setattr("tools.connectors.connectors_available", lambda: True)
-    monkeypatch.setattr("tools.connectors.ensure_guest_identity", lambda: None)
-    monkeypatch.setattr("tools.connectors.managed.ensure_guest_identity", lambda: None)
+    monkeypatch.setattr("hermes_agent.tools.connectors.connectors_available", lambda: True)
+    monkeypatch.setattr("hermes_agent.tools.connectors.ensure_guest_identity", lambda: None)
+    monkeypatch.setattr("hermes_agent.tools.connectors.managed.ensure_guest_identity", lambda: None)
     live.reset_for_tests()
     yield
     live.reset_for_tests()
@@ -25,7 +25,7 @@ def _dispatch(method, params):
 
 
 def test_account_reads_and_connects_name_the_desktop(remote_backend, monkeypatch):
-    from tools.connectors.gateway.errors import GatewayUnavailable
+    from hermes_agent.tools.connectors.gateway.errors import GatewayUnavailable
 
     agents = []
 
@@ -41,9 +41,9 @@ def test_account_reads_and_connects_name_the_desktop(remote_backend, monkeypatch
             agents.append(user_agent())
             return {"results": [{"connector": n, "status": "active"} for n in names]}
 
-    monkeypatch.setattr("tools.connectors.portal.client.PortalConnectorClient.require_authentication", lambda self: None)
-    monkeypatch.setattr("tools.connectors.portal.tools_cache.read_tools", read_tools)
-    monkeypatch.setattr("tools.connectors.gateway.client.ConnectorClient", Client)
+    monkeypatch.setattr("hermes_agent.tools.connectors.portal.client.PortalConnectorClient.require_authentication", lambda self: None)
+    monkeypatch.setattr("hermes_agent.tools.connectors.portal.tools_cache.read_tools", read_tools)
+    monkeypatch.setattr("hermes_agent.tools.connectors.gateway.client.ConnectorClient", Client)
 
     assert _dispatch("connectors.tools", {"slug": "gmail", "refresh": False})["error"]["code"] == 4041
     connected = _dispatch("connectors.connect", {"owner": {"type": "account"}, "connectors": ["gmail"]})

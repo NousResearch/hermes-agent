@@ -80,9 +80,9 @@ def test_browser_document_upload_remains_extractable_after_file_attach(
         from hermes_agent.gateway.runtime_bootstrap import TicketStore
         from hermes_cli import install_identity
         from tests.gateway.test_canonical_file_attach_staged_sources import _attach, _authority_with_old_desktop_chat
-        from tools.file_tools import read_file_tool
-        from tools.terminal_tool import clear_task_env_overrides, register_task_env_overrides
-        from tools.terminal_tool_lifecycle import cleanup_vm
+        from hermes_agent.tools.file_tools import read_file_tool
+        from hermes_agent.tools.terminal_tool import clear_task_env_overrides, register_task_env_overrides
+        from hermes_agent.tools.terminal_tool_lifecycle import cleanup_vm
 
         home = tmp_path / "hermes-home"
         workspace = tmp_path / "workspace"

@@ -130,7 +130,7 @@ class PluginHost:
         return [*host_launcher(), sys.executable, "-m", _HOST_MODULE]
 
     def _env(self) -> dict[str, str]:
-        from tools.environments.local import served_profile_child_env
+        from hermes_agent.tools.environments.local import served_profile_child_env
         env = self._base_context.run(served_profile_child_env, target_home=self._home, inherit_credentials=True)
         env.update(self._base_context.run(_hosted_ambient_credentials, self._home))
         repo_root = project_root_str()

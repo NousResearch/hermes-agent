@@ -459,7 +459,7 @@ def _isolate_hermes_home(_hermetic_environment):
 def _reset_foreground_exit_fence():
     """A test that drives a hard-exit path raises the one-way foreground-spawn fence; lower it after."""
     yield
-    if (base := sys.modules.get("tools.environments.base")) is not None:
+    if (base := sys.modules.get("hermes_agent.tools.environments.base")) is not None:
         base._exit_fenced = False
 
 
@@ -780,7 +780,7 @@ def _state_db_write_guard(request, monkeypatch):
 #
 # The skill ``test-suite-cascade-diagnosis`` documents the cascade patterns
 # this replaces; the running example was ``test_command_guards`` failing
-# 12/15 CI runs because ``tools.approval._session_approved`` carried
+# 12/15 CI runs because ``hermes_agent.tools.approval._session_approved`` carried
 # approvals from one test's session into another's.
 
 
@@ -1034,7 +1034,7 @@ def _wal_is_usable() -> bool:
 #      the TTS dispatch in ``prompt.submit``, which checks
 #      ``_voice_tts_enabled()`` — now true — and fires
 #      ``hermes_cli.voice.speak_text(final_response)`` on a daemon thread.
-#   3. ``speak_text`` needs no API key to be audible: ``tools/tts_tool.py``
+#   3. ``speak_text`` needs no API key to be audible: ``hermes_agent/tools/tts_tool.py``
 #      defaults to the ``edge`` provider, which is keyless.
 #
 # Because the flag is set from *inside* the process, ``scripts/run_tests.sh``'s
@@ -1049,7 +1049,7 @@ def _wal_is_usable() -> bool:
 #    them wherever they import it from.
 #  • ``hermes_cli.voice.play_audio_file`` — the module-level binding
 #    ``speak_text`` actually plays through. Patching the binding inside
-#    ``hermes_cli.voice`` (not ``tools.voice_mode``) keeps the real function
+#    ``hermes_cli.voice`` (not ``hermes_agent.tools.voice_mode``) keeps the real function
 #    available to the tests that legitimately exercise it with a mocked
 #    audio backend (``tests/tools/test_voice_mode.py``).
 #
@@ -1439,7 +1439,7 @@ def _audio_playback_guard(request, monkeypatch):
 #
 # Serve what a test needs from a fixture instead: a server on 127.0.0.1, a stubbed
 # transport (tests/hermes_cli/anon_portal.py routes httpx at a fake Portal), a seeded
-# cache, or a patched resolver seam (``tools.url_safety._getaddrinfo`` for the SSRF
+# cache, or a patched resolver seam (``hermes_agent.tools.url_safety._getaddrinfo`` for the SSRF
 # guards). Address literals resolve without a lookup and stay allowed. Live canaries opt
 # in with ``@pytest.mark.live``, the PM tests that download real toolchains and wheels on
 # purpose with ``@pytest.mark.allow_network``. Processes a test spawns are outside the fence.
@@ -1492,10 +1492,10 @@ def pytest_runtest_protocol(item, nextitem):
 
 @pytest.fixture
 def public_dns(monkeypatch):
-    """The SSRF guard (``tools.url_safety``) resolves every hostname to a public address, and an
+    """The SSRF guard (``hermes_agent.tools.url_safety``) resolves every hostname to a public address, and an
     address literal to itself. Only the guard's lookup is served: a client that really connects
     still meets the fence, so nothing leaves the machine."""
-    from tools import url_safety
+    from hermes_agent.tools import url_safety
 
     def resolve(hostname, port=None):
         try:
@@ -1512,7 +1512,7 @@ def public_dns(monkeypatch):
 def _isolate_computer_use_approval_state():
     """Reset the computer-use explicit approval callback after every test.
 
-    ``tools.computer_use.tool._approval_callback`` is a module-global handed to
+    ``hermes_agent.tools.computer_use.tool._approval_callback`` is a module-global handed to
     the shared approval gate as its explicit callback, where it takes precedence
     over the per-thread terminal one. A test that installs it and does not
     reset it poisons every later computer-use test in the same process: a
@@ -1523,7 +1523,7 @@ def _isolate_computer_use_approval_state():
     """
     yield
     try:
-        from tools.computer_use import tool as _cu_tool
+        from hermes_agent.tools.computer_use import tool as _cu_tool
 
         _cu_tool.set_approval_callback(None)
     except Exception:

@@ -67,7 +67,7 @@ def test_fragments_omit_bg_segment_when_idle():
 
 
 # ── Background terminal-process indicator (⚙ N) ───────────────────────────
-# Source of truth is tools.process_registry.process_registry._running (a dict
+# Source of truth is hermes_agent.tools.process_registry.process_registry._running (a dict
 # of currently-running shell processes spawned by terminal(background=true)).
 # Distinct from /bg tasks above: ▶ counts agent threads, ⚙ counts
 # shell processes. Both can be active simultaneously.
@@ -84,7 +84,7 @@ class _FakeRunningRegistry:
 
 
 def _patch_process_registry(monkeypatch, count: int) -> None:
-    import tools.process_registry as pr_mod
+    import hermes_agent.tools.process_registry as pr_mod
     monkeypatch.setattr(pr_mod, "process_registry", _FakeRunningRegistry(count))
 
 
@@ -103,14 +103,14 @@ def _patch_process_registry(monkeypatch, count: int) -> None:
 
 
 # ── Background/async subagent indicator (⛓ N) ─────────────────────────────
-# Source of truth is tools.async_delegation.active_count() — the count of
+# Source of truth is hermes_agent.tools.async_delegation.active_count() — the count of
 # delegate_task delegations (batch + background single) still in the
 # "running" state. Distinct from ▶ (/bg agent threads) and ⚙ (shell
 # processes); all three can be active at once.
 
 
 def _patch_async_active(monkeypatch, count: int) -> None:
-    import tools.async_delegation as ad_mod
+    import hermes_agent.tools.async_delegation as ad_mod
     monkeypatch.setattr(ad_mod, "active_count", lambda: count)
 
 
@@ -126,7 +126,7 @@ def test_snapshot_reports_zero_when_no_background_subagents(monkeypatch):
 def test_snapshot_safe_when_async_active_count_raises(monkeypatch):
     """If active_count() raises the snapshot stays at 0; no propagate."""
     cli_obj = _make_cli()
-    import tools.async_delegation as ad_mod
+    import hermes_agent.tools.async_delegation as ad_mod
 
     def _boom():
         raise RuntimeError("boom")

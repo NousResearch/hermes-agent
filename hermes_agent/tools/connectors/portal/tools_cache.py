@@ -11,10 +11,10 @@ from typing import Callable, Literal, Protocol
 from pydantic import ValidationError
 
 from hermes_constants import get_hermes_home
-from tools.connectors.gateway.errors import GatewayAuthError, GatewayUnavailable, ToolGatewayError
-from tools.connectors.portal.client import NotModified, validate_slug
-from tools.connectors.portal.errors import PortalToolsUnavailable
-from tools.connectors.portal.wire import ConnectorTool, ConnectorToolsListing
+from hermes_agent.tools.connectors.gateway.errors import GatewayAuthError, GatewayUnavailable, ToolGatewayError
+from hermes_agent.tools.connectors.portal.client import NotModified, validate_slug
+from hermes_agent.tools.connectors.portal.errors import PortalToolsUnavailable
+from hermes_agent.tools.connectors.portal.wire import ConnectorTool, ConnectorToolsListing
 from utils import atomic_json_write, read_json_or_empty
 
 

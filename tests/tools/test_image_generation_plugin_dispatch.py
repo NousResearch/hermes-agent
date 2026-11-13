@@ -22,7 +22,7 @@ class TestPluginDispatch:
         plugin whose generate() lacks **kwargs never sees it."""
         from agent.image_gen_provider import ImageGenProvider
         from hermes_cli import plugins as plugins_module
-        from tools import image_generation_tool
+        from hermes_agent.tools import image_generation_tool
 
         seen = {}
 
@@ -65,7 +65,7 @@ class TestPluginDispatch:
             self, monkeypatch, tmp_path, eligible, image_url, enabled, fal_ok, falls_back):
         """Fallback runs for an eligible Krea failure with no source images and the switch on, and
         names what ran; otherwise the Krea error is returned untouched."""
-        from tools import image_generation_tool as ig
+        from hermes_agent.tools import image_generation_tool as ig
 
         krea_error = {"success": False, "image": None, "error": "Krea connection error", "error_type": "connection_error",
                       "fallback_eligible": eligible}
@@ -101,7 +101,7 @@ class TestPluginDispatch:
 
     def test_fallback_keeps_the_upscale_and_names_the_fal_upscaler(self, monkeypatch, tmp_path):
         """An upscale asked of Krea still runs on the FAL rerun, and the note says which upscaler did it."""
-        from tools import image_generation_tool as ig
+        from hermes_agent.tools import image_generation_tool as ig
 
         krea_error = {"success": False, "image": None, "error": "refused", "error_type": "connection_error",
                       "fallback_eligible": True}
@@ -124,7 +124,7 @@ class TestPluginDispatch:
 
     def test_deepinfra_key_alone_does_not_select_image_backend(self, monkeypatch):
         """DeepInfra chat credentials do not imply consent to image billing."""
-        from tools import image_generation_tool
+        from hermes_agent.tools import image_generation_tool
 
         monkeypatch.setenv("DEEPINFRA_API_KEY", "«redacted:sk-…»")
         monkeypatch.delenv("FAL_KEY", raising=False)
@@ -132,7 +132,7 @@ class TestPluginDispatch:
         assert image_generation_tool._dispatch_to_plugin_provider("a cat", "square") is None
 
     def test_requirements_ignore_unselected_paid_plugin(self, monkeypatch):
-        from tools import image_generation_tool
+        from hermes_agent.tools import image_generation_tool
 
         monkeypatch.setattr(image_generation_tool, "check_fal_api_key", lambda: False)
         monkeypatch.setattr(

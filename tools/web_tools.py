@@ -292,9 +292,21 @@ def _ensure_web_plugins_loaded() -> None:
 # A bundled provider plugin can lose its registration when plugin discovery races at startup
 # (a "dictionary changed size during iteration" warning leaves that provider missing from the
 # registry). Dispatch is the last line of defence: when the configured backend is a bundled
-# provider whose module is importable, register it here instead of failing the call.
+# provider whose module is importable, register it here instead of failing the call. Every
+# bundled vendor is listed — a registry wedged by a failed force-reload would otherwise leave
+# the whole process unable to search or extract until it is restarted.
 _BUNDLED_SEARCH_PROVIDERS = {
+    "brave-free": ("plugins.web.brave_free.provider", "BraveFreeWebSearchProvider"),
     "ddgs": ("plugins.web.ddgs.provider", "DDGSWebSearchProvider"),
+    "exa": ("plugins.web.exa.provider", "ExaWebSearchProvider"),
+    "firecrawl": ("plugins.web.firecrawl.provider", "FirecrawlWebSearchProvider"),
+    "keenable": ("plugins.web.keenable.provider", "KeenableWebSearchProvider"),
+    "openai-native": ("plugins.web.openai_native.provider", "OpenAINativeWebSearchProvider"),
+    "parallel": ("plugins.web.parallel.provider", "ParallelWebSearchProvider"),
+    "perplexity": ("plugins.web.perplexity.provider", "PerplexityWebSearchProvider"),
+    "searxng": ("plugins.web.searxng.provider", "SearXNGWebSearchProvider"),
+    "tavily": ("plugins.web.tavily.provider", "TavilyWebSearchProvider"),
+    "xai": ("plugins.web.xai.provider", "XAIWebSearchProvider"),
 }
 
 

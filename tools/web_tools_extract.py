@@ -117,6 +117,11 @@ def _resolve_extract_provider(backend: str):
     """
     from agent.web_search_registry import get_active_extract_provider, get_provider as _wsp_get_provider
     provider = _wsp_get_provider(backend) if backend else None
+    if provider is None and backend:
+        # Last line of defence, mirroring web_search: a bundled provider whose plugin registration was
+        # lost (failed force-reload / discovery race) is registered on demand instead of failing the call.
+        from tools.web_tools import _register_bundled_search_provider
+        provider = _register_bundled_search_provider(backend)
     if provider is not None and provider.supports_extract():
         return provider, None
     if provider is not None:

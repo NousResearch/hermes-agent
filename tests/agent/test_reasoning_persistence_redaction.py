@@ -52,6 +52,9 @@ def _assistant_message():
             {"type": "reasoning.summary", "summary": _THOUGHT},
             _signed_detail(),
             {"type": "reasoning.encrypted", "data": "opaque-blob"},
+            # Bedrock Converse shape for unsigned (non-Claude) reasoning.
+            {"type": "thinking", "thinking": _THOUGHT},
+            {"type": "thinking", "thinking": _THOUGHT, "signature": "sig-anthropic"},
         ],
     )
 
@@ -80,12 +83,14 @@ def test_reasoning_fields_persist_redacted_and_signed_details_stay_exact(tmp_pat
     reasoning, reasoning_content, details_json = rows[0]
     assert _SECRET not in reasoning
     assert _SECRET not in reasoning_content
-    unsigned_summary, signed, encrypted = stored["reasoning_details"]
+    unsigned_summary, signed, encrypted, unsigned_thinking, signed_thinking = stored["reasoning_details"]
     assert _SECRET not in unsigned_summary["summary"]
+    assert _SECRET not in unsigned_thinking["thinking"]
     # Provider-verified replay material is untouched (byte-exact).
     assert signed == _signed_detail()
     assert encrypted == {"type": "reasoning.encrypted", "data": "opaque-blob"}
-    assert details_json.count(_SECRET) == 1  # only inside the signed entry
+    assert signed_thinking == {"type": "thinking", "thinking": _THOUGHT, "signature": "sig-anthropic"}
+    assert details_json.count(_SECRET) == 2  # only inside the two signed entries
     # Copy-on-write: the SDK response object is not mutated.
     assert source.reasoning_details[0]["summary"] == _THOUGHT
 

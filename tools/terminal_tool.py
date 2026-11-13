@@ -973,7 +973,9 @@ from tools.terminal_tool_guards import (
     _foreground_background_guidance, _safe_command_preview, _validate_workdir,
     gateway_lifecycle_block, locked_skill_block, self_repo_block, trailing_amp_background_command,
 )
-from tools.terminal_tool_background import _YIELDED_NOTE, spawn_background_process, yield_to_background_handler
+from tools.terminal_tool_background import (
+    _TIMED_OUT_YIELD_NOTE, _YIELDED_NOTE, spawn_background_process, yield_to_background_handler,
+)
 from tools.terminal_tool_result import finalize_foreground_result
 
 
@@ -1358,9 +1360,17 @@ def _acquire_env(plan: _ExecPlan, task_id: Optional[str]) -> Any:
 
 
 def _yield_kwargs(command: str, **ctx) -> dict:
-    """``env.execute`` kwargs enabling yield-to-background (local backend only)."""
+    """``env.execute`` kwargs enabling yield-to-background (local backend only). With
+    ``terminal.background_on_timeout`` a command still running at its timeout is handed over the
+    same way instead of killed, but only where its completion notice can reach the agent."""
     handler = yield_to_background_handler(command=command, **ctx)
-    return {"yield_handler": handler} if handler is not None else {}
+    if handler is None:
+        return {}
+    from agent.delegation_context import is_delegated_child_context
+    from gateway.session_context import async_delivery_supported
+    on_timeout = (_tenv_bool("TERMINAL_BACKGROUND_ON_TIMEOUT", "false") and async_delivery_supported()
+                  and not is_delegated_child_context())
+    return {"yield_handler": handler, "background_on_timeout": on_timeout}
 
 
 def _run_foreground(
@@ -1420,7 +1430,9 @@ def _run_foreground(
         return json.dumps({
             "output": result.get("output", ""), "exit_code": None, "error": None,
             "status": "yielded_to_background", "session_id": result["yielded_session_id"],
-            "pid": result.get("pid"), "notify_on_complete": True, "note": _YIELDED_NOTE,
+            "pid": result.get("pid"), "notify_on_complete": True,
+            "note": (_TIMED_OUT_YIELD_NOTE.format(timeout=effective_timeout) if result.get("timed_out")
+                     else _YIELDED_NOTE),
         }, ensure_ascii=False)
     if metered:
         record_terminal_outcome(command, env_type, result)

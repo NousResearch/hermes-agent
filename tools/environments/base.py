@@ -521,12 +521,14 @@ class BaseEnvironment(LongLivedProcessMixin, ABC):
     def _wait_for_process(
         self, proc: ProcessHandle, timeout: int = 120, *,
         bounded_capture: bool = False, watch_interrupt_tid: int | None = None,
-        output=None, yield_handler: Callable[[ProcessHandle, str], dict] | None = None) -> dict:
+        output=None, yield_handler: Callable[[ProcessHandle, str], dict] | None = None,
+        background_on_timeout: bool = False) -> dict:
         """Poll-based wait with interrupt checking and stdout draining (shared, not overridden).
         ``yield_handler(proc, output_so_far)``: when the tool thread is asked to yield
         (``tools.interrupt.request_yield`` — a user message arrived mid-command), the drain
         thread is stopped, the still-running process is handed to the handler and its dict
-        is returned as the result; the process is NOT killed.
+        is returned as the result; the process is NOT killed. ``background_on_timeout`` hands
+        it over the same way at the deadline instead of killing it (``timed_out`` set).
         ``bounded_capture=True`` (foreground terminal-tool path only) retains at most
         ``tool_output.max_bytes`` in a head/tail window so a verbose subprocess cannot OOM the
         process; the default keeps full fidelity for internal consumers. Fires the activity
@@ -566,7 +568,9 @@ class BaseEnvironment(LongLivedProcessMixin, ABC):
                     _kill_and_join()
                     return {**self._finalize_wait_result(output, output.render(suffix="\n[Command interrupted]"), 130),
                             "hermes_interrupted": True}
-                if yield_handler is not None and consume_yield(watch_interrupt_tid):
+                expired = time.monotonic() > deadline
+                if yield_handler is not None and (
+                        (expired and background_on_timeout) or consume_yield(watch_interrupt_tid)):
                     drain_stop.set()
                     drain_thread.join(timeout=1)
                     try:
@@ -576,10 +580,10 @@ class BaseEnvironment(LongLivedProcessMixin, ABC):
                         handed = None
                     if handed is not None:
                         output.close_spill()
-                        return handed
+                        return {**handed, "timed_out": True} if expired else handed
                     drain_stop.clear()
                     drain_thread = _start_drain_thread(proc, output, drain_stop)
-                if time.monotonic() > deadline:
+                if expired:
                     trace.timed_out()
                     _kill_and_join()
                     rendered = output.render(suffix=f"\n[Command timed out after {timeout}s]")
@@ -688,7 +692,8 @@ class BaseEnvironment(LongLivedProcessMixin, ABC):
         stdin_data: str | None = None,
         rewrite_compound_background: bool = True,
         bounded_capture: bool = False,
-        yield_handler: Callable[[ProcessHandle, str], dict] | None = None) -> dict:
+        yield_handler: Callable[[ProcessHandle, str], dict] | None = None,
+        background_on_timeout: bool = False) -> dict:
         """Execute a command, return {"output": str, "returncode": int}. ``bounded_capture=True``
         caps retention at ``tool_output.max_bytes`` WHILE draining; only the foreground terminal
         tool may set it — internal full-fidelity consumers (file-op ``cat`` reads feeding the
@@ -749,7 +754,8 @@ class BaseEnvironment(LongLivedProcessMixin, ABC):
                 return self._wait_for_process(
                     spawned, timeout=effective_timeout, bounded_capture=bounded_capture,
                     watch_interrupt_tid=parent_tid, output=output,
-                    **({"yield_handler": yield_handler} if yield_handler is not None else {}))
+                    **({"yield_handler": yield_handler, "background_on_timeout": background_on_timeout}
+                       if yield_handler is not None else {}))
             finally:
                 with _live_foreground_cond:
                     _live_foreground.pop(id(spawned), None)

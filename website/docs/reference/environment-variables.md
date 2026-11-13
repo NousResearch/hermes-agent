@@ -288,6 +288,7 @@ Exported env vars carry from one command to the next while on; the working direc
 | `TERMINAL_PERSISTENT_SHELL` | SSH backend: carry exported env vars between commands (default: `true`). Also settable via `terminal.persistent_shell` in config.yaml |
 | `TERMINAL_SSH_PERSISTENT` | SSH backend override; wins over `TERMINAL_PERSISTENT_SHELL` (default: follows it) |
 | `TERMINAL_LOCAL_PERSISTENT` | Local backend: carry exported env vars between commands (default: `true`) |
+| `TERMINAL_BACKGROUND_ON_TIMEOUT` | Local backend: a foreground command still running at its timeout moves to the background instead of being ended (default: `false`). Also settable via `terminal.background_on_timeout` |
 
 ## Egress proxy (sandbox-injected)
 

@@ -251,6 +251,13 @@ _YIELDED_NOTE = (
     "process_manage(action='poll'|'wait'|'log', session_id=...) to check on this command."
 )
 
+_TIMED_OUT_YIELD_NOTE = (
+    "The command did not finish within its {timeout}s timeout, so it was moved to the background WITHOUT "
+    "being killed and is still running (terminal.background_on_timeout). Do not start another copy. You "
+    "will be notified when it exits; use process_manage(action='poll'|'wait'|'log'|'kill', session_id=...) "
+    "to check on or stop it."
+)
+
 
 def yield_to_background_handler(
     *, command: str, env_type: str, cwd: Optional[str], effective_task_id: str,

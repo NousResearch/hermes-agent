@@ -371,9 +371,9 @@ DEFAULT_CONFIG = {
         "docker_snap_compat": False,
         # Trusted profiles sharing one Docker container identity; empty = per-profile boundary.
         "docker_shared_container_key": "",
-        # SSH: carry exported env vars between commands (cwd always carries). false = every command
-        # starts from the login env, profile functions included. Local: TERMINAL_LOCAL_PERSISTENT.
+        # SSH: carry exported env vars between commands (cwd always does). Local: TERMINAL_LOCAL_PERSISTENT.
         "persistent_shell": True,
+        "background_on_timeout": False,  # local: a command past its timeout moves to background, not killed
     },
 
     "web": {

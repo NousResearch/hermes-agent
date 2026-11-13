@@ -96,3 +96,22 @@ def test_yield_request_without_steer_leaves_foreground_wait_alone():
     finally:
         interrupt_mod.consume_yield(threading.current_thread().ident)
         env.cleanup()
+
+
+@pytest.mark.live_system_guard_bypass
+@pytest.mark.parametrize("enabled", [True, False])
+def test_background_on_timeout_moves_a_late_command_instead_of_killing_it(tmp_path, monkeypatch, enabled):
+    """terminal.background_on_timeout: a command still running at its timeout keeps running as a
+    notify-on-complete background session; with the setting off the timeout still kills it (124)."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("TERMINAL_BACKGROUND_ON_TIMEOUT", "true" if enabled else "false")
+    r = json.loads(terminal_tool("echo started; sleep 30; echo done", task_id=f"timeout-bg-{enabled}", timeout=2))
+    if not enabled:
+        assert r["exit_code"] == 124 and "timed out" in r["output"]
+        return
+    try:
+        assert r["status"] == "yielded_to_background", r
+        assert "started" in r["output"] and "timeout" in r["note"]
+        assert process_registry.poll(r["session_id"])["status"] == "running"
+    finally:
+        assert process_registry.kill_process(r["session_id"])["status"] == "killed"

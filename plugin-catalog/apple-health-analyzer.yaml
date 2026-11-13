@@ -1,0 +1,32 @@
+name: apple-health-analyzer
+title: Apple Health Data
+repo: https://github.com/krumjahn/apple-health-hermes
+sha: 834a19f690766b887d5bcb7f83df67525fbffac1
+description: >-
+  Read selected daily metrics from Health Data AI Analyzer on the same Mac.
+  Disclosure — requires the separate Mac app, a user-selected integration
+  dataset, manually enabled Local API, and explicit plugin opt-in (off by default).
+  Makes read-only GET requests only to 127.0.0.1:8765; retrieves a whole daily
+  summary locally and returns only requested numeric metric groups for one
+  explicit date. Uses a user-supplied local API token through Hermes's
+  profile-scoped secret settings, never credential-file discovery. Results may
+  reach the configured model provider and persist in conversation history;
+  use a private trusted profile. No raw export reads, shell commands,
+  background jobs, telemetry, plugin health storage, or self-updater.
+maintainer: krumjahn
+tier: community
+category: tools
+version: "0.1.0"
+requires_hermes: ">=0.23.1"
+docs_url: https://github.com/krumjahn/apple-health-hermes/blob/834a19f690766b887d5bcb7f83df67525fbffac1/README.md
+platforms: [macos]
+known_issues:
+  - Requires Hermes and the Mac app on the same Mac; remote hosts and container loopback are unsupported.
+  - Reads an imported integration dataset, not live HealthKit. Dates absent from that dataset are withheld.
+capabilities:
+  provides_tools:
+    - apple_health_analyzer_status
+    - apple_health_analyzer_daily_metrics
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

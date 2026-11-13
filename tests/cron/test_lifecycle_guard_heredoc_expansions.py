@@ -16,6 +16,10 @@ from tools.shell_heredoc import strip_inert_heredoc_bodies
         "cat > $(pwd)/x.py <<'PY'",
         "V=$(uname -s); cat > ./x.py <<'PY'",
         "V=$(printf x; printf y); python3 - <<'PY'",
+        "cat > $(printf '#') <<'PY'",
+        'cat > $(printf "#") <<\'PY\'',
+        "cat > $(printf prefix#suffix) <<'PY'",
+        "cat > `printf '#'` <<'PY'",
     ],
 )
 def test_header_expansions_do_not_turn_quoted_data_into_executed_scripts(tmp_path, opener):
@@ -44,8 +48,8 @@ def test_executable_header_is_still_scanned_when_the_body_is_data(tmp_path, open
     assert scan_gateway_lifecycle(command, cwd=str(tmp_path)) == (True, None)
 
 
-@pytest.mark.parametrize("expansion", ["$(", "<(", ">("])
-def test_commented_closer_does_not_hide_executable_substitution_lines(tmp_path, expansion):
-    command = f"cat > {expansion}printf sink # ) <<':'\nhermes gateway restart\n:\n) </dev/null"
+@pytest.mark.parametrize(("expansion", "closer"), [("$(", ")"), ("<(", ")"), (">(", ")"), ("`", "`")])
+def test_commented_closer_does_not_hide_executable_substitution_lines(tmp_path, expansion, closer):
+    command = f"cat > {expansion}printf sink # {closer} <<':'\nhermes gateway restart\n:\n{closer} </dev/null"
     assert strip_inert_heredoc_bodies(command) == command
     assert scan_gateway_lifecycle(command, cwd=str(tmp_path)) == (True, None)

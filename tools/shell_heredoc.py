@@ -29,6 +29,29 @@ def _span_end(command: str, cursor: int, closer: str) -> int:
     return end
 
 
+def _header_backtick_end(command: str, cursor: int) -> int | None:
+    """Refuse backtick spans with shell comments or unresolved ownership."""
+    end = _span_end(command, cursor, "`")
+    span = command[cursor:end]
+    if len(span) <= 1 or not span.endswith("`") or "\n" in span or "<<" in span:
+        return None
+    quote = None
+    index = cursor + 1
+    while index < end - 1:
+        char = command[index]
+        if char == "\\" and quote != "'":
+            index += 2
+            continue
+        if char == quote:
+            quote = None
+        elif quote is None and char in "'\"":
+            quote = char
+        elif quote is None and char == "#" and (index == cursor + 1 or command[index - 1] in " \t;|&()"):
+            return None
+        index += 1
+    return end
+
+
 def _header_expansion_end(command: str, cursor: int) -> int | None:
     """Find a complete one-line substitution, refusing nested heredoc syntax.
 
@@ -36,9 +59,7 @@ def _header_expansion_end(command: str, cursor: int) -> int | None:
     do not close the outer word. Multiline/nested heredoc ownership stays conservative.
     """
     if command[cursor] == "`":
-        end = _span_end(command, cursor, "`")
-        span = command[cursor:end]
-        return end if len(span) > 1 and span.endswith("`") and "\n" not in span and "<<" not in span else None
+        return _header_backtick_end(command, cursor)
     quotes: list[str | None] = [None]
     cursor += 2
     while cursor < len(command):

@@ -60,11 +60,12 @@ class TestForceFullRedraw:
 
 
 
-    @pytest.mark.parametrize("reflows,new_width,history_lines,paint", [
-        (True, 90, 40, "settled"), (True, 90, 40, "late"), (True, 90, 40, "clipped"), (False, 90, 40, "settled"),
-        (None, 90, 40, "settled"), (None, 250, 40, "settled"), (False, 90, 2, "settled")])
+    @pytest.mark.parametrize("reflows,new_width,history_lines,paint,floor", [
+        (True, 90, 40, "settled", None), (True, 90, 40, "late", None), (True, 90, 40, "clipped", None),
+        (False, 90, 40, "settled", None), (None, 90, 40, "settled", None), (None, 250, 40, "settled", None),
+        (False, 90, 2, "settled", None), (False, 90, 2, "settled", 1)])
     def test_resize_never_loses_or_reprints_a_row(self, bare_cli, monkeypatch, reflows, new_width, history_lines,
-                                                  paint):
+                                                  paint, floor):
         """#95375: on a shrink a reflowing terminal has pushed the rows that grew into
         scrollback, so nothing is erased and replayed there — prompt_toolkit's erase is only
         aimed at the chrome's re-wrapped top. A chrome paint the terminal may have got after
@@ -75,7 +76,9 @@ class TestForceFullRedraw:
         CSI 2J, no 3J) and refilled from its top row with what it held, counted at the width it
         was painted at, before prompt_toolkit repaints. When the viewport holds the whole
         history, only its rows and the chrome are erased: rows above it (the startup banner)
-        were never recorded. A widen truncates nothing and is left alone."""
+        were never recorded; once the chrome is known to reach the last row (startup and /clear
+        arm the floor), the replay is also handed the row the recorded rows start on (``top`` in
+        ``fit``), from which it re-arms the floor. A widen truncates nothing and is left alone."""
         import time
         from collections import deque
 
@@ -99,7 +102,7 @@ class TestForceFullRedraw:
         monkeypatch.setattr(cli_mod, "_replay_output_history", lambda *a: events.append(("replay", *a)))
         monkeypatch.setattr(cli_mod, "_terminal_reflows", lambda: reflows)
         monkeypatch.setattr(cli_mod, "CLI_CONFIG", {"display": {"cli_rebuild_scrollback_on_redraw": False}})
-        cli_mod._set_chrome_floor(None)
+        monkeypatch.setattr("hermes_cli.cli_render._CHROME_FLOOR", floor)
         from prompt_toolkit.data_structures import Size
         app.renderer._last_size = Size(rows=30, columns=200)  # the paint: at the old width
         out.get_size.return_value = Size(rows=30, columns=new_width if paint == "clipped" else 200)
@@ -118,7 +121,8 @@ class TestForceFullRedraw:
         elif reflows:
             assert events == [("original_resize", 4)]
         elif history_lines == 2:  # 2 lines x 2 rows, right above the chrome
-            assert events[:4] == [("raw", "\r"), ("up", 4 + 4), "erase_down", ("replay", (25, 90, True, None), out)]
+            top = None if floor is None else 25 - 4  # from row 21, its 4 rows end above the chrome's row 25
+            assert events[:4] == [("raw", "\r"), ("up", 4 + 4), "erase_down", ("replay", (25, 90, True, top), out)]
             assert events[4][0] == "original_resize" and len(events) == 5
         else:
             assert events[:31] == ["erase_row"] * 30 + [("replay", (25, 90, True, 0), out)]

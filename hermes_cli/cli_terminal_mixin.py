@@ -290,7 +290,7 @@ class CLITerminalMixin:
 
         The chrome is the renderer's last paint: prompt_toolkit may draw the app taller than
         its preferred height (it fills the rows below the cursor it measured, or down to the
-        bottom row once a refill left its top at a known row).
+        bottom row once its top is at a known row: after a refill, startup or ``/clear``).
         """
         from cli import _terminal_reflows
         renderer = app.renderer

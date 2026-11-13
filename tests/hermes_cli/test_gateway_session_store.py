@@ -878,7 +878,9 @@ def test_clear_banner_shows_the_new_gateway_sessions_tools_and_short_label(store
         _session_db=db, session_id="local-old", compact=False, model="fake-model", provider="custom",
         enabled_toolsets=["hermes-cli"], disabled_toolsets=[], agent=None,
         _app=types.SimpleNamespace(output=types.SimpleNamespace(
-            erase_screen=lambda: None, cursor_goto=lambda *_a: None, flush=lambda: None)))
+            erase_screen=lambda: None, cursor_goto=lambda *_a: None, flush=lambda: None,
+            get_size=lambda: types.SimpleNamespace(rows=50, columns=200)),
+            renderer=types.SimpleNamespace(reset=lambda **_k: None)))
     shell._confirm_destructive_slash = lambda *_a, **_k: "once"
     shell._print_random_tip = lambda: None
     shell.new_session = lambda silent=False: setattr(shell, "session_id", db.create({}))

@@ -21,7 +21,7 @@ from agent.think_scrubber import THINK_TAG_NAMES
 from hermes_cli.banner import format_banner_version_label
 from rich.console import Console
 from rich.text import Text as _RichText
-from typing import Any
+from typing import Any, TextIO
 
 def _cli():
     """Late import of the ``cli`` facade: mutable CLI module state (and its test seams) lives there."""
@@ -673,12 +673,15 @@ def _set_paint_gate(app, gate) -> None:
     _PAINT_GATE = (app, gate) if gate is not None else None
 
 
-# Rows from the top of the prompt chrome down to the bottom of the screen, once a refill left
-# the chrome's top at a known row (``None``: unknown). prompt_toolkit learns that only through
-# CPR, which the CLI leaves off; drawn at least this tall, the chrome keeps reaching the bottom
+# Rows from the top of the prompt chrome down to the bottom of the screen, once the chrome's top is at
+# a known row (``None``: unknown): after a refill, and after startup and an in-app ``/clear``, which
+# start it on the last row. prompt_toolkit learns that only through CPR, which the CLI leaves off on
+# POSIX; drawn at least this tall, the chrome keeps reaching the bottom
 # row, where ``_transcript_room`` counts the transcript from, also when it shrinks (a narrower
 # status bar, a closed modal) — rows left blank below it would be counted as transcript (#95375).
 _CHROME_FLOOR = None
+# The chrome's top on the screen's last row: one row down to the bottom.
+_CHROME_FLOOR_AT_LAST_ROW = 1
 
 
 def _set_chrome_floor(rows) -> None:
@@ -688,6 +691,30 @@ def _set_chrome_floor(rows) -> None:
 
 def _chrome_floor():
     return _CHROME_FLOOR
+
+
+def _terminal_rows(stream: TextIO) -> int:
+    """The terminal's height as prompt_toolkit reads it, from the tty behind ``stream``; ``shutil``'s
+    (``$LINES`` first, which a shell may have exported at another height) when that is no tty."""
+    try:
+        rows = os.get_terminal_size(stream.fileno()).lines
+    except (AttributeError, OSError, ValueError):
+        rows = 0
+    return rows or shutil.get_terminal_size().lines
+
+
+def _scroll_to_last_row(stream: TextIO | None = None) -> bool:
+    """Print enough newlines to put the cursor on the terminal's last row; False when it did not (a
+    terminal two rows tall or less, or one that hung up: the next write reports that)."""
+    out = sys.stdout if stream is None else stream
+    rows = _terminal_rows(out)
+    if rows <= 2:
+        return False
+    with suppress(OSError, ValueError):
+        out.write("\n" * (rows - 1))
+        out.flush()
+        return True
+    return False
 
 
 # Rows output scrolled into scrollback while the terminal's width changed under it: a terminal

@@ -87,6 +87,12 @@ def _pre_dispatch_housekeeping(_sched, headless: bool) -> None:
     except Exception as _legacy_exc:
         _sched.logger.warning("Legacy Bot Chat pending drain failed: %s", _legacy_exc, exc_info=True)
     _sched._maybe_reap_dead_owners()
+    # Queued Bot Chat receipts may have settled since the last tick; graduate their job
+    # markers now instead of waiting for the job's next run (#134092).
+    try:
+        _sched._reconcile_queued_deliveries()
+    except Exception as _recon_exc:  # health: allow BLE001 -- housekeeping must never stop dispatch; the sweep retries next tick
+        _sched.logger.debug("Delivery receipt reconcile failed: %s", _recon_exc)
 
 
 def _tick_admitted(

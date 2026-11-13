@@ -396,15 +396,15 @@ _URL_TAIL_CHARS = '.,;:!?\'"*_~|'
 _URL_PATH_MARKS = '*_~'  # inside a URL path a trailing wildcard is URL text, never an emphasis closer
 
 
-def _url_end(url: str, opener: str = '') -> int:
+def _url_end(url: str, closers: str = '') -> int:
     """Length of *url* without trailing prose punctuation; a ``)`` stays only while it closes a ``(``,
-    and a ``*``/``_``/``~`` right after a ``/`` stays (``/web/*``) unless *opener*, the character just
-    before the URL, is that same mark: then it closes emphasis around the URL (``*https://x.com/*``).
+    and a ``*``/``_``/``~`` right after a ``/`` stays (``/web/*``) unless it is in *closers*, the marks
+    that close emphasis opened before the URL (``**bold https://x.com/**``).
     One pass: the paren balance is counted once and updated while trimming."""
     end, unclosed = len(url), url.count(')') - url.count('(')
     while end:
         ch = url[end - 1]
-        if ch in _URL_PATH_MARKS and end >= 2 and url[end - 2] == '/' and ch != opener:
+        if ch in _URL_PATH_MARKS and end >= 2 and url[end - 2] == '/' and ch not in closers:
             break
         if ch == ')' and unclosed > 0:
             unclosed -= 1
@@ -417,12 +417,22 @@ def _url_end(url: str, opener: str = '') -> int:
     return end
 
 
+def _emphasis_closers(text: str, start: int, end: int) -> str:
+    """Marks that may close emphasis at the URL spanning *start*:*end*: the line before it leaves an
+    odd number of that mark's runs open, and the mark does not occur again after it on the line."""
+    before = text[text.rfind('\n', 0, start) + 1:start]
+    line_end = text.find('\n', end)
+    after = text[end:] if line_end < 0 else text[end:line_end]
+    return ''.join(ch for ch in _URL_PATH_MARKS
+                   if ch not in after and len(re.findall(re.escape(ch) + '+', before)) % 2)
+
+
 def _stash_bare_urls(text: str, stash) -> str:
     """Stash bare URLs escaped whole, so a ``*``, ``~~`` or ``||`` inside one stays literal URL text
     instead of pairing into italic/strike/spoiler marks that drop characters or hide the URL."""
     def _one(m) -> str:
         url = m.group(0)
-        end = _url_end(url, text[m.start() - 1] if m.start() else '')
+        end = _url_end(url, _emphasis_closers(text, m.start(), m.end()))
         return stash(_escape_mdv2(url[:end])) + url[end:]
 
     return _BARE_URL_RE.sub(_one, text)

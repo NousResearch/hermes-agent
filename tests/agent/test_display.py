@@ -88,6 +88,12 @@ class TestBuildToolPreview:
         "fill_input('#p', 'abc\\'Hunter2Correct!')",
         "fill_input('#p', \"\"\"Hunter2Correct!\"\"\")",
         "fill_input('#p', 'Hunter2Correct!",
+        "type_text('Hunter2Correct!')",
+        "fill_input('input[type=password]:not(.x)', 'Hunter2Correct!')",
+        "fill_input('#a, #pass', 'Hunter2Correct!')",
+        "fill_input('#p', f'Hunter2Correct!')",
+        "fill_input('#p', r'Hunter2Correct!')",
+        "pw = 'Hunter2Correct!'\nfill_input('#p', pw)",
     ])
     def test_browser_exec_typed_password_never_reaches_display(self, code):
         """#72298: an ordinary password typed by a browser_exec snippet matches no secret shape,
@@ -98,6 +104,19 @@ class TestBuildToolPreview:
                  get_cute_tool_message("browser_exec", args, 0.1))
         assert all("Hunter2Correct!" not in s and "***" in s for s in shown)
         assert args["code"] == code
+
+    def test_browser_exec_display_keeps_selectors_urls_and_untyped_strings(self):
+        """Only typed values are masked: a selector, a URL, a text= kwarg outside insertText and a
+        .value comparison all read as written."""
+        code = ("new_tab(url='https://example.com/login', text='Search page')\n"
+                "fill_input('input[type=password]:not(.x)', 'Hunter2Correct!')\n"
+                "cdp('Input.insertText', text='Hunter2Correct!')\n"
+                "js(\"document.querySelector('#u').value == 'admin'\")")
+        shown = redact_tool_args_for_display("browser_exec", {"code": code})["code"]
+        assert "Hunter2Correct!" not in shown
+        for kept in ("https://example.com/login", "text='Search page'",
+                     "input[type=password]:not(.x)", ".value == 'admin'"):
+            assert kept in shown
 
     def test_browser_type_display_args_redact_api_key(self):
         secret = "ghp_ABCDEFGHIJ1234567890"

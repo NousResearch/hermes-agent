@@ -246,9 +246,11 @@ def test_bare_url_reaches_the_chat_as_literal_text(adapter, url):
     ("*https://example.com/*", "_https://example\\.com/_"),
     ("**https://example.com/**", "*https://example\\.com/*"),
     ("~~https://example.com/~~", "~https://example\\.com/~"),
+    ("**bold https://example.com/**", "*bold https://example\\.com/*"),
+    ("*see https://x.com/docs/*", "_see https://x\\.com/docs/_"),
 ])
 def test_emphasis_wrapping_a_url_that_ends_in_slash_still_renders(adapter, wrapped, rendered):
-    """A trailing mark after ``/`` is URL text (``/web/*``) unless the URL opens with that same mark."""
+    """A trailing mark after ``/`` is URL text (``/web/*``) unless it closes emphasis opened before the URL."""
     out = adapter.format_message(f"see {wrapped} ok")
     assert mdv2_error(out) is None
     assert out == f"see {rendered} ok"

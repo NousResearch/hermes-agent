@@ -64,6 +64,7 @@ import {
 } from "@/lib/pty-resume-loading";
 import {
   MOBILE_REPLACEMENT_WINDOW_MS,
+  mobileBeforeInputCommit,
   normalizePtyMobileInput,
   shouldTreatInputAsMobileReplacement,
 } from "@/lib/pty-mobile-input";
@@ -841,6 +842,20 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
           )
         ) {
           mobileReplacementInputUntilRef.current = Date.now() + MOBILE_REPLACEMENT_WINDOW_MS;
+        }
+        // Keyboards that deliver taps as beforeinput only never trigger
+        // xterm's onData or a compositionend (#137986); hand the commit to
+        // the composition forwarder, whose echo window already drops the
+        // copies on devices where xterm did emit onData.
+        const commit = mobileBeforeInputCommit(
+          input.inputType,
+          input.data,
+          isMobileLike,
+        );
+        if (commit !== null) {
+          mobileReplacementInputUntilRef.current = Date.now() + MOBILE_REPLACEMENT_WINDOW_MS;
+          compositionForwarder.onCompositionEnd(commit);
+          input.preventDefault?.();
         }
       };
       const markCompositionEnd = (ev: CompositionEvent) => {

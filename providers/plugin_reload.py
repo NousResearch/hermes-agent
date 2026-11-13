@@ -58,15 +58,6 @@ def _snapshot(plugin_dir: Path, module_name: str) -> Path:
     return target
 
 
-def _import_source(plugin_dir: Path, module_name: str) -> Path:
-    """Where the plugin's code is imported from: its frozen copy in-process. Under ``plugins.isolation: host``
-    the host child imports the plugin, keyed by the installed path for its extraction cache, so that path is
-    passed through unchanged."""
-    from hermes_cli.plugin_isolation import ISOLATION_HOST, isolation_mode
-
-    return plugin_dir if isolation_mode() == ISOLATION_HOST else _snapshot(plugin_dir, module_name)
-
-
 def tree_fingerprint(plugin_dir: Path) -> str:
     """Digest of the plugin's Python files and manifest (path, size, mtime): it moves whenever an update
     rewrites them, however the plugin was installed."""
@@ -98,7 +89,9 @@ def import_into_layer(plugin_dir: Path, source: str, base_name: str) -> None:
     staging = P._HomeLayer()
     token = P._REGISTRATION_TARGET.set(staging)
     try:
-        P._import_user_module(_import_source(plugin_dir, module_name), source, module_name)
+        # In-process code (including a hosted plugin's in-process profiles) reads the frozen copy; the plugin
+        # host keeps the installed path, the stable key of its extraction cache.
+        P._import_user_module(plugin_dir, source, module_name, code_dir=_snapshot(plugin_dir, module_name))
     except OSError as exc:  # the frozen copy could not be made: keep serving the previous version
         logger.warning("Could not stage provider plugin %s: %s", plugin_dir.name, exc)
         staging.errors[plugin_dir.name] = f"{type(exc).__name__}: {exc}"

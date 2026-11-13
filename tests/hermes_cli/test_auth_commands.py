@@ -1034,3 +1034,31 @@ def test_openrouter_loopback_callback_binds_nonce_path_and_rejects_forged_redire
     assert seen["forged_status"] == 404
     assert seen["genuine_status"] == 200
     assert code == "good-code"
+
+
+def test_normalize_provider_uses_shared_alias_map(tmp_path, monkeypatch):
+    """`hermes auth add <alias>` accepts the aliases `hermes model` / resolve_provider() accept (#57309)."""
+    from hermes_cli.auth import resolve_provider
+    from hermes_cli.auth_commands import _configured_provider_entry, _is_known_provider, _normalize_provider
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    cases = {
+        "glm": "zai",
+        "z-ai": "zai",
+        "kimi": "kimi-coding",
+        "moonshot": "kimi-coding",
+        "grok": "xai",
+        "google": "gemini",
+        "codex": "openai-codex",
+        "or": "openrouter",
+        "open-router": "openrouter",
+        "grok-oauth": "xai-oauth",
+    }
+    for raw, expected in cases.items():
+        assert _normalize_provider(raw) == expected == resolve_provider(raw), raw
+        assert _is_known_provider(expected, _configured_provider_entry(expected)), raw
+
+    # Canonical provider IDs pass through unchanged
+    assert _normalize_provider("qwen-oauth") == "qwen-oauth"
+    # Unknown providers pass through (caller raises a useful error)
+    assert _normalize_provider("totally-fake-provider") == "totally-fake-provider"

@@ -3797,6 +3797,10 @@ def _launch_external_cron_worker(job: dict) -> bool:
                 stderr_path=stderr_path,
             )
         returncode = process.poll()
+        if returncode is not None and ack_path.exists():
+            # The worker published its acknowledgement after the check above and then exited
+            # before this poll: it owned the run, so read the ack on the next pass (#154901).
+            continue
         if returncode is not None:
             with _running_lock:
                 _restart_safe_waiter_job_ids.discard(_inflight_key(job_id))

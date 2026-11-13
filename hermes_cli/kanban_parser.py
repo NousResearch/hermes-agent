@@ -178,6 +178,8 @@ _SPECS = [
         _PRIORITY,
         _arg("--triage", action="store_true",
              help="Park in triage — a specifier will flesh out the spec and promote to todo"),
+        _arg("--no-auto-decompose", action="store_false", dest="auto_decompose", default=True,
+             help="Keep this triage task out of background decomposition; manual `kanban decompose` still works"),
         _arg("--idempotency-key",
              help="Dedup key. If a non-archived task with this key exists, "
                   "its id is returned instead of creating a duplicate."),

@@ -421,6 +421,7 @@ class CreateTaskBody(BaseModel):
     workspace_path: Optional[str] = None
     parents: list[str] = Field(default_factory=list)
     triage: bool = False
+    auto_decompose: bool = True
     idempotency_key: Optional[str] = None
     max_runtime_seconds: Optional[int] = None
     skills: Optional[list[str]] = None

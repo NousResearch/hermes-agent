@@ -341,3 +341,19 @@ def list_triage_ids(*, tenant: Optional[str] = None) -> list[str]:
     with kbc.connect_closing() as conn:
         rows = kb.list_tasks(conn, status="triage", tenant=tenant, limit=1000)
     return [row.id for row in rows]
+
+
+def list_auto_decompose_ids(*, tenant: Optional[str] = None) -> list[str]:
+    """Return triage tasks opted into background decomposition."""
+    with kbc.connect_closing() as conn:
+        clauses = ["status = 'triage'", "auto_decompose = 1"]
+        params: list = []
+        if tenant is not None:
+            clauses.append("tenant = ?")
+            params.append(tenant)
+        rows = conn.execute(
+            "SELECT id FROM tasks WHERE " + " AND ".join(clauses) +
+            " ORDER BY priority DESC, created_at ASC LIMIT 1000",
+            tuple(params),
+        ).fetchall()
+    return [row["id"] for row in rows]

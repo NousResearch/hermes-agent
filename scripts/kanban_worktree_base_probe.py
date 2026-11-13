@@ -24,7 +24,7 @@ def git(cwd: Path, *args: str) -> str:
     return subprocess.run(
         ["git", "-C", str(cwd), "-c", "user.name=Probe", "-c", "user.email=probe@example.com",
          "-c", "commit.gpgsign=false", *args],
-        check=True, capture_output=True, text=True,
+        check=True, capture_output=True, text=True, timeout=120,
     ).stdout
 
 
@@ -37,8 +37,11 @@ def commit(repo: Path, name: str) -> None:
 def build_repo(scratch: Path) -> Path:
     origin = scratch / "origin.git"
     clone = scratch / "clone"
-    subprocess.run(["git", "init", "--bare", "-b", "main", str(origin)], check=True, capture_output=True)
-    subprocess.run(["git", "clone", str(origin), str(clone)], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "init", "--bare", "-b", "main", str(origin)],
+        check=True, capture_output=True, timeout=120,
+    )
+    subprocess.run(["git", "clone", str(origin), str(clone)], check=True, capture_output=True, timeout=120)
     git(clone, "checkout", "-b", "main")
     commit(clone, "base.txt")
     git(clone, "push", "-u", "origin", "main")
@@ -47,7 +50,7 @@ def build_repo(scratch: Path) -> Path:
     # A second clone moves origin ahead; ``clone`` is never fetched, so its
     # origin/main lags the true remote tip and only a fetch can see the new commit.
     pusher = scratch / "pusher"
-    subprocess.run(["git", "clone", str(origin), str(pusher)], check=True, capture_output=True)
+    subprocess.run(["git", "clone", str(origin), str(pusher)], check=True, capture_output=True, timeout=120)
     commit(pusher, "ahead.txt")
     git(pusher, "push", "origin", "main")
     return clone

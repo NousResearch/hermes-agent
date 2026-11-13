@@ -369,6 +369,14 @@ function OrgPicker({ copy, orgs, onPick }: { copy: MoveCopy; orgs: Org[]; onPick
 
 type Org = { id: string; slug: null | string; name: string }
 
+/** `hermes://open/move-to-cloud?agent=<name>` (the portal's agent page) names the agent to
+ *  preselect. A hint only: an unknown or missing name leaves the choice to the user. */
+export function agentHint(hash: string): string {
+  const query = hash.split('?')[1] ?? ''
+
+  return (new URLSearchParams(query).get('agent') ?? '').trim()
+}
+
 /** Cloud sign-in and agent discovery, including the team picker a multi-team account needs. */
 function useCloudAgents(onSignedOut: () => void, onError: (message: string) => void) {
   const [agents, setAgents] = useState<CloudAgent[] | null>(null)
@@ -445,6 +453,16 @@ export function MoveToCloudPage({ openExternal }: { openExternal: (url: string) 
   const { inv, invError, setInv } = useInventory(includeHistory)
 
   useEffect(() => () => abort.current?.abort(), [])
+
+  const hint = useMemo(() => agentHint(typeof window === 'undefined' ? '' : window.location.hash), [])
+
+  useEffect(() => {
+    const match = hint && cloud.agents?.find(agent => agent.name === hint && agent.dashboardUrl)
+
+    if (match) {
+      setSelected(current => current ?? match)
+    }
+  }, [cloud.agents, hint])
 
   const run = async (agent: CloudAgent) => {
     const controller = new AbortController()

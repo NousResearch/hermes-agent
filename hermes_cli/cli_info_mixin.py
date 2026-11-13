@@ -24,6 +24,7 @@ from hermes_cli.cli_modal_mixin import _gated_confirm
 from hermes_cli.colors import Colors as _Colors
 
 CONFIG_WATCH_INTERVAL = 5.0  # seconds between config.yaml stat() calls
+SKIN_WATCH_INTERVAL = 5.0  # fallback poll when fsnotify is unavailable
 
 _TOOL_PROGRESS_CYCLE = ["off", "new", "all", "verbose"]
 # Raw ANSI (not Rich markup): _cprint routes through prompt_toolkit's renderer, while Rich markup
@@ -910,6 +911,138 @@ class CLIInfoMixin:
         print()
         print(t("cli.mcp_watch.changed_reloading"))
         threading.Thread(target=self._reload_mcp, daemon=True).start()
+
+    def _check_skin_reload(self) -> None:
+        """Detect skin changes and hot-reload the TUI style.
+
+        Primary path is event-driven: a daemon fsnotify thread (watchfiles /
+        notify backend, started by ``_start_skin_watcher``) sets
+        ``_skin_dirty`` on config/skin writes, and this idle-tick check does
+        no stat and no parse until the flag is set. When fsnotify is
+        unavailable (or its thread died) it falls back to interval polling
+        every SKIN_WATCH_INTERVAL seconds.
+
+        Tracks ``display.skin`` in config.yaml AND the active skin file's
+        ``(mtime_ns, size)`` — an external rewrite of the same-named skin
+        (e.g. a theme-sync script regenerating ``sync-theme.yaml``) reloads
+        without a name switch. A per-window pin (``/skin NAME --window``)
+        overrides the default: only the pinned skin's file is followed and
+        config.yaml changes are ignored. Activation mirrors the
+        ``/skin`` handler: ``set_active_skin()`` + accent reset + TUI repaint.
+        """
+        watcher = getattr(self, "_skin_watcher_thread", None)
+        dirty = getattr(self, "_skin_dirty", None)
+        if dirty is not None and watcher is not None and watcher.is_alive():
+            if not dirty.is_set():
+                return  # no fsnotify event — no stat, no parse
+            dirty.clear()
+        else:
+            now = time.monotonic()
+            if now - getattr(self, "_last_skin_check", 0.0) < SKIN_WATCH_INTERVAL:
+                return
+            self._last_skin_check = now
+
+        from hermes_cli.config_backend import read_config_doc
+        from hermes_cli.skin_engine import user_skin_file_signature
+
+        override = getattr(self, "_session_skin_override", None)
+        if override is not None:
+            # Pinned window: follow only the override skin's file; a default
+            # change in config.yaml must not yank this window off its skin.
+            new_skin = override
+        else:
+            try:
+                from hermes_cli.config import get_config_path as _get_config_path
+                new_cfg = read_config_doc(_get_config_path()) or {}
+            except Exception:
+                return
+            display = new_cfg.get("display") or {}
+            new_skin = display.get("skin", "default")
+            if not isinstance(new_skin, str) or not new_skin.strip():
+                new_skin = "default"
+            else:
+                new_skin = new_skin.strip()
+
+        sig = (new_skin, user_skin_file_signature(new_skin))
+        if not hasattr(self, "_skin_sig"):
+            self._skin_sig = sig
+            return  # first sighting baselines silently — never a startup notice
+        if sig == self._skin_sig:
+            return  # unchanged — fast path
+        self._skin_sig = sig
+
+        from hermes_cli.skin_engine import list_skins
+        if new_skin not in {s["name"] for s in list_skins()}:
+            print()
+            print(t("cli.skin_watch.unknown_skin", name=new_skin))
+            return
+
+        try:
+            from cli import _ACCENT
+            from hermes_cli.skin_engine import set_active_skin
+            set_active_skin(new_skin)
+            _ACCENT.reset()
+            _repaint = getattr(self, "_apply_tui_skin_style", None)
+            if callable(_repaint):
+                _repaint()
+        except Exception:
+            logging.getLogger(__name__).warning("skin watcher reload failed", exc_info=True)
+            return
+        print()
+        print(t("cli.skin_watch.changed", name=new_skin))
+
+    def _start_skin_watcher(self) -> None:
+        """Spawn the daemon fsnotify thread driving ``_check_skin_reload``.
+
+        Watches config.yaml and ``skins/*.yaml`` via watchfiles (Rust notify
+        backend: inotify / FSEvents / ReadDirectoryChanges — no polling).
+        The thread only sets the ``_skin_dirty`` event; activation stays on
+        the UI thread in the idle tick, where prompt_toolkit style mutation
+        is safe. Missing watchfiles, a missing skins dir, or any watcher
+        failure leaves the event path armed but idle, and the check falls
+        back to interval polling — startup never fails because of this.
+        """
+        thread = getattr(self, "_skin_watcher_thread", None)
+        if thread is not None and thread.is_alive():
+            return
+        try:
+            from watchfiles import watch as _watch
+        except ImportError:
+            logging.getLogger(__name__).debug(
+                "watchfiles unavailable — skin reload uses interval polling")
+            return
+        try:
+            from hermes_cli.config import get_config_path as _get_config_path
+            from hermes_constants import get_hermes_home
+            cfg_path = str(_get_config_path())
+            skins_dir = str(get_hermes_home() / "skins")
+            os.makedirs(skins_dir, exist_ok=True)
+        except Exception:
+            logging.getLogger(__name__).debug(
+                "skin watcher paths unresolvable — using interval polling",
+                exc_info=True)
+            return
+        dirty = getattr(self, "_skin_dirty", None)
+        if dirty is None:
+            dirty = threading.Event()
+            self._skin_dirty = dirty
+
+        def _wanted(_change, path):
+            return path == cfg_path or (
+                path.endswith(".yaml") and path.startswith(skins_dir + os.sep))
+
+        def _loop():
+            try:
+                for _changes in _watch(cfg_path, skins_dir, watch_filter=_wanted):
+                    dirty.set()
+            except Exception:
+                logging.getLogger(__name__).warning(
+                    "skin watcher stopped — falling back to interval polling",
+                    exc_info=True)
+
+        thread = threading.Thread(target=_loop, name="skin-watch", daemon=True)
+        thread.start()
+        self._skin_watcher_thread = thread
 
     def _confirm_and_reload_mcp(self, cmd_original: str = "") -> None:
         """Interactive /reload-mcp — confirm (Approve Once / Always Approve / Cancel, gated by

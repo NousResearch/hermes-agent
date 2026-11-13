@@ -1839,6 +1839,30 @@ class CLITuiMixin:
         self._config_mcp_servers: dict = self.config.get("mcp_servers") or {}
         self._last_config_check: float = 0.0  # monotonic time of last check
 
+        # Skin watcher — hot-reload display.skin / skin-file changes. Baseline
+        # the signature here (same helper the idle tick uses) so the first
+        # tick never prints a spurious change notice.
+        from hermes_cli.skin_engine import user_skin_file_signature as _skin_file_sig
+        _display = self.config.get("display") or {}
+        _skin_name = _display.get("skin", "default")
+        if not isinstance(_skin_name, str) or not _skin_name.strip():
+            _skin_name = "default"
+        else:
+            _skin_name = _skin_name.strip()
+        self._skin_sig: tuple | None = (_skin_name, _skin_file_sig(_skin_name))
+        self._last_skin_check: float = 0.0  # fallback poll clock (fsnotify unavailable)
+        # Per-window skin pin (``/skin NAME --window``); None follows the default.
+        self._session_skin_override: str | None = None
+        # Event-driven primary path: a daemon fsnotify thread sets this on
+        # config/skin writes; the idle tick only stats/parses when it is set.
+        # _start_skin_watcher is best-effort — without it the check falls back
+        # to interval polling, so startup never depends on it.
+        self._skin_dirty: threading.Event = threading.Event()
+        try:
+            self._start_skin_watcher()
+        except Exception:
+            pass
+
         # Modal overlay states: each is a dict (with a response_queue) while active, else None.
         # The prompt_toolkit UI switches to the matching selection/input mode.
         self._clarify_state = None

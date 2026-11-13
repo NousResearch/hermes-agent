@@ -15,7 +15,6 @@ import { CONVERSATION_LEASE, READ_ALOUD_LEASE, syncTtsLease } from '@/lib/tts-le
 import { toLiveHistory } from '@/lib/voice-live'
 import { clearWakeIndicator, syncWakeIndicatorWithVoice } from '@/lib/wake-indicator'
 import { $voiceConversationStartRequest, takeVoiceConversationStart } from '@/store/composer'
-import { resetBrowseState } from '@/store/composer-input-history'
 import { recordFeatureUse } from '@/store/desktop-metrics'
 import { $gateway } from '@/store/gateway'
 import { notify, notifyError } from '@/store/notifications'
@@ -37,7 +36,6 @@ import { useVoiceRecorder } from './use-voice-recorder'
 
 interface UseComposerVoiceArgs {
   busy: boolean
-  clearDraft: () => void
   disabled: boolean
   focusInput: () => void
   insertText: (text: string) => void
@@ -61,7 +59,6 @@ interface UseComposerVoiceArgs {
  */
 export function useComposerVoice({
   busy,
-  clearDraft,
   disabled,
   focusInput,
   insertText,
@@ -178,19 +175,17 @@ export function useComposerVoice({
       return
     }
 
+    // A voice turn sends the spoken transcript alone: the typed draft, its history-browse
+    // snapshot and its staged attachments all stay in the composer (#142510).
     triggerHaptic('submit')
-    resetBrowseState(sessionId)
-    clearDraft()
-    await onSubmit(text, { voiceTurn: true })
+    await onSubmit(text, { attachments: [], voiceTurn: true })
   }
 
   /** A GPT-Live delegation → Hermes turn. The bubble and the persisted row are
    *  what the user said; the transcript window rides the model input only. */
   const submitLiveDelegation = async (text: string, voiceContext: string) => {
     triggerHaptic('submit')
-    resetBrowseState(sessionId)
-    clearDraft()
-    await onSubmit(text, { surface: 'voice-live', voiceContext })
+    await onSubmit(text, { attachments: [], surface: 'voice-live', voiceContext })
   }
 
   /** Recent text turns of this chat, as GPT-Live startup history. */

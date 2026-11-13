@@ -645,7 +645,12 @@ function SessionRow({
                   </>
                 )}
                 <span className="text-border">&#183;</span>
-                <span className="shrink-0">{timeAgo(session.last_active)}</span>
+                {session.profile && (
+                  <>
+                    <span className="text-border">·</span>
+                    <span className="max-w-[min(100%,12rem)] truncate sm:max-w-[180px]">{session.profile}</span>
+                  </>
+                )}
               </div>
               {snippet && <SnippetHighlight snippet={snippet} />}
             </div>

@@ -676,6 +676,9 @@ def _filter_suspicious_mcp_servers(servers: dict[str, dict]) -> dict[str, dict]:
     return safe_servers
 
 
+_REPORTED_NATIVE_OVERRIDES: set[tuple[str, str, tuple[str, ...]]] = set()
+
+
 def _portable_mcp_servers(safe_servers: dict[str, dict], rejected: frozenset[str] = frozenset()) -> None:
     """Merge plugin-provided (portable) MCP servers into *safe_servers*; native config wins on a clash. Never raises.
 
@@ -695,10 +698,18 @@ def _portable_mcp_servers(safe_servers: dict[str, dict], rejected: frozenset[str
                 carried = {k: cfg[k] for k in CONFIG_KEYS if k in cfg and k not in native}
                 if carried:
                     safe_servers[name] = {**native, **carried}
-                    logger.warning("Portable MCP server '%s' conflicts with native config; using the native entry "
-                                   "with the package's declared %s", name, ", ".join(carried))
-                else:
-                    logger.warning("Portable MCP server '%s' conflicts with native config; skipping", name)
+                from hermes_constants import hermes_home_key
+
+                key = (hermes_home_key(), name, tuple(sorted(carried)))
+                if key not in _REPORTED_NATIVE_OVERRIDES:
+                    # Both native-over-portable cases are designed overrides. Report
+                    # each shape once for this profile, not on every config read.
+                    _REPORTED_NATIVE_OVERRIDES.add(key)
+                    if carried:
+                        logger.warning("Portable MCP server '%s' conflicts with native config; using the native entry "
+                                       "with the package's declared %s", name, ", ".join(carried))
+                    else:
+                        logger.warning("Portable MCP server '%s' conflicts with native config; skipping", name)
             else:
                 # Rendered like native entries: a raw ``${VAR}`` here reads as a changed definition
                 # on every transport rebuild and swaps the running header for the literal placeholder.

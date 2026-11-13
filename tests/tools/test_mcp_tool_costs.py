@@ -259,3 +259,19 @@ def test_parallel_over_limit_calls_are_asked_one_at_a_time(session):
             th.join(10)
     assert peak[0] == 1 and len(prompts) == 2
     assert {"used about 80 credits" in p for p in prompts} == {True, False}  # the second saw the first's booking
+
+
+def test_a_native_override_of_a_portable_server_is_reported_once_per_process(caplog, monkeypatch):
+    # Every config load re-merges portable servers; the designed native override must not
+    # log the same warning on each one (one gateway logged it 128 times).
+    from tools import mcp_tool_config
+
+    monkeypatch.setattr(mcp_tool_config, "_REPORTED_NATIVE_OVERRIDES", set())
+    manager = SimpleNamespace(get_portable_mcp_servers=lambda: {"srv": {"command": "python3", "args": ["s.py"]}})
+    with patch("hermes_cli.plugins.discover_plugins"), patch("hermes_cli.plugins.get_plugin_manager", return_value=manager), \
+            caplog.at_level("WARNING", logger="tools.mcp_tool"):
+        for _ in range(3):
+            native = {"srv": {"command": "uvx", "args": ["srv-mcp"]}}
+            mcp_tool_config._portable_mcp_servers(native)
+            assert native["srv"]["command"] == "uvx"  # native still wins every time
+    assert caplog.text.count("Portable MCP server 'srv' conflicts with native config; skipping") == 1

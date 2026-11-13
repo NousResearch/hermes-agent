@@ -47,9 +47,9 @@ def cmd_status(args: argparse.Namespace) -> int:
                 wd = "…" + wd[-59:]
             state = "live" if p.get("exists") else "orphan"
             if p.get("skip_reason"):
-                # No ref will ever exist here until the reason goes away — say
-                # why instead of showing a project with an empty COMMITS column.
-                state = f"{state}, no snapshots: {p['skip_reason']}"
+                # A file-cap refusal can leave earlier rollback points intact.
+                snapshot_state = "new snapshots skipped" if p.get("commits") else "no snapshots"
+                state = f"{state}, {snapshot_state}: {p['skip_reason']}"
             print(f"  {wd:<60}  {p.get('commits', 0):>7}  {_fmt_age(p.get('last_touch')):>12}  {state}")
 
     legacy = info.get("legacy_archives", [])

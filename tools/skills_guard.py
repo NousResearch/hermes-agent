@@ -36,7 +36,7 @@ INSTALL_POLICY = {
     "builtin":       ("allow",  "allow",   "allow"),
     "trusted":       ("allow",  "allow",   "block"),
     "community":     ("allow",  "block",   "block"),
-    # "ask" = error to the agent (retry without the flagged content); only when skills.guard_agent_created is on.
+    # "ask" = error to the agent (retry without the flagged content); when guard_agent_created is on or for background review.
     "agent-created": ("allow",  "allow",   "ask"),
 }
 

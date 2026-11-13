@@ -6,6 +6,7 @@ resolution, comparison, and spawn paths must be provably unaffected.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -66,6 +67,31 @@ class TestMetaAndValidation:
         (profile_env / "profile.yaml").write_text(
             "ui_meta:\n  hermes-bots: 7\n", encoding="utf-8")  # not a mapping
         assert read_profile_meta(profile_env)["bot_title"] == ""
+
+    def test_roster_rows_carry_only_bot_mode_ui_meta(self, profile_env):
+        # A secondary Desktop connection seats bots in sections from /api/profiles (#154536);
+        # other plugins' ui_meta (group-chat logs, images) stays off that 5s poll.
+        (profile_env / "profile.yaml").write_text(
+            "ui_meta:\n  hermes-bots:\n    title: Builder\n    sectionId: jm\n    sectionName: JM\n"
+            "    created: 2026-11-12\n  hermes-bots-groups:\n    rooms: {r1: {log: [hi]}}\n", encoding="utf-8")
+        from hermes_cli import profiles
+        from hermes_cli.web_routers.profiles import _profile_to_dict
+        from hermes_cli.web_server_profiles import _fallback_profile_dicts
+        expected = {"hermes-bots": {"title": "Builder", "sectionId": "jm", "sectionName": "JM",
+                                    "created": "2026-11-12"}}
+        assert _profile_to_dict(list_profiles()[0])["ui_meta"] == expected
+        assert _fallback_profile_dicts(profiles)[0]["ui_meta"] == expected
+        # Each caller gets its own copy of the cached value.
+        read_profile_meta(profile_env)["ui_meta"]["hermes-bots"]["sectionId"] = "poisoned"
+        assert read_profile_meta(profile_env)["ui_meta"] == expected
+
+    def test_non_json_bot_mode_ui_meta_never_fails_the_list(self, profile_env):
+        (profile_env / "profile.yaml").write_text(
+            "ui_meta:\n  hermes-bots:\n    title: NaN Bot\n    score: .nan\n", encoding="utf-8")
+        from hermes_cli.web_routers.profiles import _profile_to_dict
+        row = _profile_to_dict(list_profiles()[0])
+        assert row["ui_meta"] == {} and row["bot_title"] == "NaN Bot"
+        json.dumps(row, allow_nan=False)
 
     def test_empty_clears_key_from_file(self, profile_env):
         write_profile_meta(profile_env, display_name="Harumesu")

@@ -1,0 +1,28 @@
+name: stageglass
+repo: https://github.com/Benito3262/stageglass
+sha: 9d208c532e7a6262646608d73089f1b95a1700cd
+version: "1.0.0"
+title: Stageglass
+description: "Secret-safe ON AIR overlay of a live Hermes session for screen sharing and OBS. Serves a page on 127.0.0.1 only, reads the current message, tool name, tool arguments, and approval text in memory to redact them, and holds the page when redaction is not sure. No network egress, no telemetry, no credential files, and no shell."
+maintainer: Umunnakwe Emmanuel
+tier: community
+category: desktop
+requires_hermes: ">=0.22.5"
+docs_url: https://github.com/Benito3262/stageglass
+readme: true
+known_issues:
+  - "Verified on Linux with Hermes 0.23.1. macOS and Windows load the same code and were not exercised here."
+  - "The last redacted frame stays up after a turn, because on_session_end also fires at the end of every turn. /onair off or /onair hold clears it."
+  - "A bare 64-character hex string, an unfinished PEM block, or a near-miss seed phrase holds the whole feed."
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_llm_call
+    - pre_tool_call
+    - post_tool_call
+    - pre_approval_request
+    - post_approval_response
+    - on_session_start
+    - on_session_end
+  provides_middleware: []
+  requires_env: []

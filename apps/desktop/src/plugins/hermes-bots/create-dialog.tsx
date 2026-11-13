@@ -182,13 +182,14 @@ function creationOwnerFields(owner: string, remote: boolean): Partial<RosterRow>
   return remote ? { ...scoped, remoteSource: true } : scoped
 }
 
-/** The latest draft create or delete per backend + name. A name typed again
- *  after a rename waits for its retired twin's create AND the delete that
- *  create triggers, instead of racing them. */
+/** The latest draft create or delete per owner connection + name. Each new
+ *  op waits only for the entry it found when it started, so waits point
+ *  backwards and cannot cycle; a retired create settles only after its own
+ *  delete, so a name typed again after a rename never races either. */
 const draftOps = new Map<string, Promise<unknown>>()
 
-function draftKey(target: string, slug: string) {
-  return `${target || String(host.state?.connectionId?.get?.() || '')}::${slug}`
+function activeConnection() {
+  return String(host.state?.connectionId?.get?.() || '')
 }
 
 function trackDraftOp<T>(key: string, op: Promise<T>): Promise<T> {
@@ -199,19 +200,13 @@ function trackDraftOp<T>(key: string, op: Promise<T>): Promise<T> {
   return op
 }
 
-async function afterDraftOps(key: string, own: { op?: Promise<unknown> }) {
-  for (let prev = draftOps.get(key); prev && prev !== own.op; prev = draftOps.get(key)) {
-    await prev.catch(() => undefined)
-  }
-}
-
-function discardDraftProfile(draft: string, target: string) {
+function discardDraftProfile(draft: string, target: string, owner: string) {
   const discard = target
     ? requestOnTarget(target, 'cli.exec', { argv: ['profile', 'delete', draft, '--yes'] })
     : deleteBot({ name: draft })
 
   // A failed delete still settles: the recreate then fails visibly as a duplicate.
-  trackDraftOp(draftKey(target, draft), Promise.resolve(discard)
+  return trackDraftOp(`${owner}::${draft}`, Promise.resolve(discard)
     .then(() => host.notify({ kind: 'success', message: `Draft agent "${draft}" discarded` }))
     .catch(err => host.notifyError(err, `Could not clean up draft profile "${draft}"`)))
 }
@@ -313,7 +308,7 @@ function useDraftProfile() {
     } : prev)
 
     if (draft) {
-      discardDraftProfile(draft, draftTargetRef.current)
+      discardDraftProfile(draft, draftTargetRef.current, draftOwnerRef.current)
     }
   }
 
@@ -570,13 +565,17 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
     const machine = (connections || []).find(c => c.id === targetId)?.label
     const warningTitle = targetId ? `${slug} — ${machine ? `${machine} (${targetId})` : targetId}` : slug
 
-    const key = draftKey(target, slug)
-    const own: { op?: Promise<unknown> } = {}
+    const key = `${targetId}::${slug}`
+    const previous = draftOps.get(key)
+
+    // Retired while waiting, or the active gateway this local create would
+    // reach is no longer the owner it was keyed and labelled for.
+    const staleAfterWait = () => generation !== draftGenRef.current || (!target && activeConnection() !== targetId)
 
     const flight = singleFlight(flightRef, async () => {
-      await afterDraftOps(key, own)
+      await previous?.catch(() => undefined)
 
-      if (generation !== draftGenRef.current) {
+      if (staleAfterWait()) {
         return null
       }
 
@@ -617,7 +616,7 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
 
       // Discarded mid-create: delete the profile this flight minted, configure nothing.
       if (generation !== draftGenRef.current) {
-        discardDraftProfile(slug, target)
+        await discardDraftProfile(slug, target, targetId)
 
         return null
       }
@@ -702,7 +701,7 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
       return slug
     })
 
-    own.op = trackDraftOp(key, flight)
+    trackDraftOp(key, flight)
 
     return flight
   }

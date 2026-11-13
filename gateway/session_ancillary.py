@@ -438,6 +438,11 @@ def _interrupt_delegations(authority, ref):
 def _require_current_route(authority, ref):
     """The route still serves this conversation (a reused route must not lend its objects)."""
     live = authority.sessions[ref.session_id]
+    from gateway.session_detached import own_detached_key
+    # A detached conversation runs on its own key, which the store never indexes (detached_entry):
+    # there is no chat route another conversation could have taken over.
+    if live.detached and own_detached_key(live.route, ref.session_id):
+        return
     target = physical_target(authority, ref)
     store = authority.runner.session_store
     with store._lock:

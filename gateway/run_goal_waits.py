@@ -15,8 +15,16 @@ def candidates(authority):
         if not rows:
             return []
         locals_ = conn.execute('SELECT key FROM state_meta WHERE key LIKE ?', (POLICY_PREFIX + '%',)).fetchall()
-        decisions = {key: outstanding(authority, conn, key[len('goal:'):], GoalState.from_json(raw))
-                     for key, raw in rows}
+        parsed = {}
+        decisions = {}
+        for key, raw in rows:
+            try:
+                state = GoalState.from_json(raw)
+            except (ValueError, TypeError, AttributeError, KeyError, OverflowError, RecursionError):
+                logger.debug('Skipping unreadable persisted goal %s', key, exc_info=True)
+                continue
+            parsed[key] = (raw, state)
+            decisions[key] = outstanding(authority, conn, key[len('goal:'):], state)
     # A local creation receipt is the authority, not a viewer or in-memory watch.
     local_entries = {}
     for row in locals_:
@@ -29,8 +37,7 @@ def candidates(authority):
     entries = {e.session_id: e for e in authority.runner.session_store.list_sessions()}
     entries.update({sid: pair[0] for sid, pair in local_entries.items()})
     result = []
-    for key, raw in rows:
-        state = GoalState.from_json(raw)
+    for key, (raw, state) in parsed.items():
         state._persisted_raw = raw
         entry = entries.get(key[len('goal:'):])
         if (entry is not None and entry.origin is not None and not entry.suspended

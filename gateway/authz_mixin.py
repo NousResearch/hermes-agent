@@ -403,7 +403,10 @@ class GatewayAuthorizationMixin:
         if adapter is not None or platform is None:
             return adapter
         # In standalone mode the primary is the sole credential owner.
-        if not getattr(getattr(self, "config", None), "multiplex_profiles", False):
+        if (
+            Platform.RELAY in self._primary_adapters()
+            and not getattr(getattr(self, "config", None), "multiplex_profiles", False)
+        ):
             from gateway.run_delivery_recovery import _transport
 
             transport = _transport(self, platform, profile)

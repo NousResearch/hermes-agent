@@ -16,6 +16,7 @@ from pathlib import Path
 import queue
 import sys
 import threading
+import time
 from hermes_dir_acl import make_user_dir
 
 logger = logging.getLogger(__name__)
@@ -333,10 +334,29 @@ class RuntimeSessionStore(RuntimeSessionCompressionMixin, RuntimeSessionLifecycl
     def retry_pending(self):
         with self.lock:
             results = []
+            # A single missed persist receipt (worker_receipt_timeout) or a discovery miss
+            # (owner_unavailable) on a loaded host must not poison the whole turn. The journal
+            # keeps the entry pending and replays are idempotent (the owner resolves the
+            # original receipt), so retry transient receipt timeouts before latching the sticky
+            # failure. Every other error stays sticky as designed. The rpc call drops and
+            # redials its link on any exception, so each attempt rides a fresh owner connection.
+            _RECEIPT_RETRIES = 3
             try:
                 while self.journal['pending']:
                     entry = self.journal['pending'][0]
-                    result = self.rpc('worker.persist', **self.scope, **entry)
+                    result = None
+                    for attempt in range(_RECEIPT_RETRIES):
+                        try:
+                            result = self.rpc('worker.persist', **self.scope, **entry)
+                            break
+                        except (TimeoutError, WorkerPersistenceError) as exc:
+                            if not _is_transient_persist_error(exc):
+                                raise
+                            if attempt == _RECEIPT_RETRIES - 1:
+                                raise
+                            time.sleep(0.5)
+                    if result is None:  # pragma: no cover — exhaustion always raises above
+                        raise TimeoutError('worker_receipt_timeout')
                     candidate = dict(self.journal, pending=self.journal['pending'][1:])
                     candidate = self._compression_receipt_journal(candidate, result)
                     self._save(candidate)
@@ -495,3 +515,14 @@ class RuntimeSessionStore(RuntimeSessionCompressionMixin, RuntimeSessionLifecycl
                 self.flush_token_counts()
             finally:
                 self._outbox_owner.close()
+
+
+def _is_transient_persist_error(exc):
+    """True for retryable owner-reachability stalls: a slow reply (receipt timeout) or a
+    discovery miss before the write was ever sent (owner_unavailable). Anything else keeps
+    the journal's sticky-failure contract."""
+    if isinstance(exc, TimeoutError):
+        return True
+    if isinstance(exc, WorkerPersistenceError) and exc.args and exc.args[0] == 'owner_unavailable':
+        return True
+    return False

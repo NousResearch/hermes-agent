@@ -27,6 +27,7 @@ import {
   SAFE_STORAGE_ENCODING,
   SECRET_FILE_MODE,
   sensitiveFileBlockReason,
+  setSensitiveHermesHome,
   tightenSecretFileMode,
   writeSecretFileAtomic
 } from './hardening'
@@ -918,6 +919,56 @@ test('resolveReadableFileForIpc blocks common sensitive files', async () => {
     fs.writeFileSync(allowed, 'EXAMPLE_TOKEN=value', 'utf8')
     assert.equal((await resolveReadableFileForIpc(allowed, { purpose: 'File preview' })).resolvedPath, allowed)
   } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true })
+  }
+})
+
+test('resolveReadableFileForIpc blocks Hermes credential stores in the home and every profile', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-desktop-creds-'))
+  const hermesHome = path.join(tempDir, 'hermes-home')
+
+  try {
+    setSensitiveHermesHome(hermesHome)
+
+    const stores = [
+      'auth.json',
+      'auth.lock',
+      '.anthropic_oauth.json',
+      'webhook_subscriptions.json',
+      'auth/google_oauth.json',
+      'mcp-tokens/github.json',
+      'browser-profile/Default/Cookies',
+      'vault/vault.key',
+      'webapp/session-token',
+      'bws_cache.json',
+      'cache/op_cache.json',
+      'runtime/photon-sidecar.json'
+    ]
+
+    for (const base of [hermesHome, path.join(hermesHome, 'profiles', 'work')]) {
+      for (const rel of stores) {
+        const filePath = path.join(base, rel)
+        fs.mkdirSync(path.dirname(filePath), { recursive: true })
+        fs.writeFileSync(filePath, 'TOKEN_MARKER', 'utf8')
+        await rejectsWithCode(resolveReadableFileForIpc(filePath, { purpose: 'File preview' }), 'sensitive-file')
+      }
+    }
+
+    // A symlink outside the home is judged by the store it resolves to.
+    const link = path.join(tempDir, 'innocent.json')
+    fs.symlinkSync(path.join(hermesHome, 'auth.json'), link)
+    await rejectsWithCode(resolveReadableFileForIpc(link, { purpose: 'File preview' }), 'sensitive-file')
+
+    // Ordinary Hermes files and same-named project files stay previewable.
+    const allowed = [path.join(hermesHome, 'config.yaml'), path.join(tempDir, 'project', 'auth.json')]
+
+    for (const filePath of allowed) {
+      fs.mkdirSync(path.dirname(filePath), { recursive: true })
+      fs.writeFileSync(filePath, '{}', 'utf8')
+      assert.equal((await resolveReadableFileForIpc(filePath, { purpose: 'File preview' })).resolvedPath, filePath)
+    }
+  } finally {
+    setSensitiveHermesHome(null)
     fs.rmSync(tempDir, { recursive: true, force: true })
   }
 })

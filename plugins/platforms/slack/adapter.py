@@ -3615,6 +3615,12 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
         installs = getattr(self, "_team_clients", None) or {}
         return team_id if str(team_id) in installs else ""
 
+    def _is_foreign_author(self, author_team: str, resolved_team: str) -> bool:
+        """A ``T…`` author outside every authenticated workspace. A member of a sibling install
+        is not foreign: ``authorizations[0]`` may name another install of the same Grid org."""
+        return bool(author_team and resolved_team and author_team != resolved_team
+                    and not self._team_in_install_set(author_team))
+
     @staticmethod
     def _context_channel_id(context: Any) -> str:
         """Extract the actively viewed channel from either Slack context shape."""
@@ -3885,9 +3891,9 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
             return
         synthetic = self._synthetic_reaction_event(event, action, thread_ts, team_id)
         # The synthetic event stamps the install team, so without the reactor's own
-        # workspace an external-org user reacting in a DM would pass the prefilter's
-        # external-DM gate and get the refused DM thread hydrated (#143792).
-        if str(channel_id).startswith("D"):
+        # workspace an external-org user reacting in a DM — or handed off into a DM
+        # target — would pass the prefilter's external-DM gate (#143792).
+        if str(channel_id).startswith("D") or str(synthetic["channel"]).startswith("D"):
             reactor_team = await self._resolve_author_team(user_id, channel_id, team_id)
             if reactor_team:
                 synthetic["user_team"] = reactor_team
@@ -4079,7 +4085,7 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
                 sender_team = next((
                     v for v in (event.get("team"), file_obj.get("user_team"))
                     if isinstance(v, str) and v.startswith("T")), "")
-            if sender_team and team_id and sender_team != team_id:
+            if self._is_foreign_author(sender_team, team_id):
                 logger.info(
                     "[Slack] Ignoring file share DM from external-org user %s (team %s) in %s",
                     sharer_id, sender_team, channel_id)
@@ -4578,7 +4584,7 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
         is_dm_event = (
             event.get("channel_type") == "im" or str(channel_id).startswith("D")
             or str(event.get("_hermes_reaction_source_channel", "")).startswith("D"))
-        if is_dm_event and author_team and dedup_team_id and author_team != dedup_team_id:
+        if is_dm_event and self._is_foreign_author(author_team, dedup_team_id):
             logger.info(
                 "[Slack] Ignoring DM from external-org user %s (team %s) in %s",
                 event.get("user"), author_team, channel_id)

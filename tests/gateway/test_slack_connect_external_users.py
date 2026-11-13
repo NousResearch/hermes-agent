@@ -252,6 +252,41 @@ async def test_multi_install_unattributed_external_dm_is_refused():
     assert await adapter._prefilter_inbound(event, body) is None
 
 
+@pytest.mark.asyncio
+async def test_multi_install_dm_from_sibling_install_member_passes():
+    """Grid with two installs: ``authorizations[0]`` may name the other install. A member of an
+    authenticated workspace is not an external-org user."""
+    adapter = _make_adapter()
+    adapter._team_clients = {"T_A": MagicMock(), "T_B": MagicMock()}
+    event = _dm_event("T_A", "1712345690.000100")
+    body = {"team_id": "T_A", "authorizations": [{"team_id": "T_B"}]}
+    assert await adapter._prefilter_inbound(event, body) is not None
+
+
+@pytest.mark.asyncio
+async def test_multi_install_dm_from_external_org_still_refused():
+    """The sibling-install allowance never admits a team outside every install."""
+    adapter = _make_adapter()
+    adapter._team_clients = {"T_A": MagicMock(), "T_B": MagicMock()}
+    event = _dm_event(EXT_TEAM, "1712345691.000100")
+    body = {"team_id": "T_A", "authorizations": [{"team_id": "T_B"}]}
+    assert await adapter._prefilter_inbound(event, body) is None
+
+
+@pytest.mark.asyncio
+async def test_file_share_dm_from_sibling_install_member_synthesizes(monkeypatch):
+    """The file_shared sharer gate uses the same install-set rule as the DM gate."""
+    adapter = _make_adapter()
+    adapter._team_clients = {HOST_TEAM: _file_share_client("T_SIBLING"), "T_SIBLING": MagicMock()}
+    monkeypatch.setattr(adapter, "_first_file_share", lambda file_obj, channel_id: {
+        "ts": "1712345686.000100", "thread_ts": ""})
+    handled = AsyncMock()
+    monkeypatch.setattr(adapter, "_handle_slack_message", handled)
+    await adapter._handle_slack_file_shared(
+        _file_share_event(), {"team_id": HOST_TEAM, "authorizations": [{"team_id": HOST_TEAM}]})
+    assert handled.called
+
+
 def test_resolver_legacy_call_without_install_set_keeps_envelope_first():
     """External/Bolt callers without an install set keep the envelope-first order."""
     adapter = _make_adapter()
@@ -449,4 +484,15 @@ async def test_reaction_handoff_from_external_dm_is_refused():
     adapter, accepted = _reaction_adapter(EXT_TEAM)
     adapter.config.extra["reaction_trigger_target"] = "C_HANDOFF"
     await adapter._handle_slack_reaction(_dm_reaction())
+    assert accepted == [None]
+
+
+@pytest.mark.asyncio
+async def test_reaction_handoff_into_dm_from_external_channel_user_is_refused():
+    """A DM handoff target makes the turn a DM even when the reaction was in a channel."""
+    adapter, accepted = _reaction_adapter(EXT_TEAM)
+    adapter.config.extra["reaction_trigger_target"] = "D_HANDOFF"
+    reaction = _dm_reaction()
+    reaction["item"]["channel"] = SHARED_CHANNEL
+    await adapter._handle_slack_reaction(reaction)
     assert accepted == [None]

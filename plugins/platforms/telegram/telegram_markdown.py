@@ -418,17 +418,33 @@ def _url_end(url: str, closers: str = '') -> int:
 
 
 class _MarkRuns:
-    """Run start offsets of each emphasis mark and the newline offsets of *text*, found once so each
-    URL's closer check is a few bisects instead of a rescan of its line."""
+    """Emphasis-mark runs outside URLs and the newline offsets of *text*, found once; URLs are then
+    judged left to right with a few bisects each instead of a rescan of their line."""
 
-    def __init__(self, text: str):
+    def __init__(self, text: str, urls: list[tuple[int, int]]):
         self.newlines = [m.start() for m in re.finditer('\n', text)]
-        self.runs = {ch: [m.start() for m in re.finditer(re.escape(ch) + '+', text)] for ch in _URL_PATH_MARKS}
+        starts = [a for a, _ in urls]
+
+        def _in_url(pos: int) -> bool:  # ``/web/*/`` inside a URL is URL text, never prose emphasis
+            k = bisect.bisect_right(starts, pos) - 1
+            return k >= 0 and pos < urls[k][1]
+
+        def _closes_only(a: int, b: int) -> bool:  # ``now*``: a run that can only close emphasis
+            before, after = text[a - 1:a] or ' ', text[b:b + 1] or ' '
+            return not before.isspace() and (after.isspace() or after in '.,;:!?)')
+
+        self.runs: dict[str, list[int]] = {}
+        self.closes_only: dict[str, list[bool]] = {}
+        for ch in _URL_PATH_MARKS:
+            found = [m.span() for m in re.finditer(re.escape(ch) + '+', text) if not _in_url(m.start())]
+            self.runs[ch] = [a for a, _ in found]
+            self.closes_only[ch] = [_closes_only(a, b) for a, b in found]
         self.size = len(text)
+        self._tail_closers: dict[tuple[int, str], int] = {}  # (line, mark) -> URL tails already closing
 
     def closers(self, start: int, end: int) -> str:
-        """Marks that close emphasis at the URL spanning *start*:*end*: an odd number of that mark's
-        runs precede it on its line (one is left open) and an even number follow it (they pair up)."""
+        """Marks that close emphasis at the URL spanning *start*:*end* (URLs come left to right): one of
+        that mark is open before it on its line, and the next prose run of it is not itself a closer."""
         i = bisect.bisect_left(self.newlines, start)
         line_start = self.newlines[i - 1] + 1 if i else 0
         j = bisect.bisect_left(self.newlines, end)
@@ -436,16 +452,20 @@ class _MarkRuns:
         out = ''
         for ch, runs in self.runs.items():
             before = bisect.bisect_left(runs, start) - bisect.bisect_left(runs, line_start)
-            after = bisect.bisect_left(runs, line_end) - bisect.bisect_left(runs, end)
-            if before % 2 and not after % 2:
-                out += ch
+            if not (before + self._tail_closers.get((i, ch), 0)) % 2:
+                continue
+            nxt = bisect.bisect_left(runs, end)
+            if nxt < len(runs) and runs[nxt] < line_end and self.closes_only[ch][nxt]:
+                continue
+            out += ch
+            self._tail_closers[(i, ch)] = self._tail_closers.get((i, ch), 0) + 1
         return out
 
 
 def _stash_bare_urls(text: str, stash) -> str:
     """Stash bare URLs escaped whole, so a ``*``, ``~~`` or ``||`` inside one stays literal URL text
     instead of pairing into italic/strike/spoiler marks that drop characters or hide the URL."""
-    marks = _MarkRuns(text)
+    marks = _MarkRuns(text, [m.span() for m in _BARE_URL_RE.finditer(text)])
 
     def _one(m) -> str:
         url = m.group(0)

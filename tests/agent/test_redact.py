@@ -683,6 +683,11 @@ class TestElevenLabsTavilyExaKeys:
                 result = redact_sensitive_text(text)
                 assert "E5fG7hJ9kL1m" not in result, result
 
+    def test_hyphenated_tavily_names_are_not_keys(self):
+        # Package/file names starting with tvly- are not keys; only an env segment may carry a hyphen.
+        for text in ("pip install tvly-python-client", "tvly-config-file"):
+            assert redact_sensitive_text(text) == text
+
     def test_all_three_in_env_dump(self):
         env_dump = (
             "HOME=/home/user\n"

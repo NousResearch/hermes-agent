@@ -43,6 +43,8 @@ DEFAULT_DEADLINE_MINUTES = 360
 SUPERSEDED = "superseded"
 CANCELLED = "Not continued: its parent cancelled the automatic resume"
 STAND_IN_FAILED = "Not continued: the scheduler could not build the parent's stand-in"
+TURNED_OFF = "gave up: automatic resume was turned off (delegation.auto_resume: false)"
+EXPIRED = "gave up: its record expired (delegation.resumable_ttl_hours) before it could resume"
 # A continue refused for one of these reasons ran nothing and can succeed on a later tick: the attempt is refunded.
 # A depth-limit refusal is not one: the child's depth does not change between ticks.
 _TRANSIENT_REFUSALS = ("still running", "being continued", "still stopping", "paused", "capacity", CANCELLED,
@@ -187,15 +189,24 @@ def _note(conn, sid: str, *, state: Optional[str], note: str, from_states=("resu
                         params).rowcount == 1
 
 
-def _candidates(now: float) -> list[dict[str, Any]]:
+# A promised record no give-up failure was delivered for: its parent is owed exactly one report.
+OWED_SQL = ("json_extract(record_json, '$.auto_promised') AND json_extract(record_json, '$.auto_gave_up') IS NULL")
+
+
+def _candidates(now: float, *, owed_only: bool = False) -> list[dict[str, Any]]:
+    """Records the scheduler acts on, each with ``expired`` set once its TTL passed (``_apply_limits`` may already
+    have moved it to ``expired``): only an owed one is read then, so its give-up still reports."""
     def read(conn):
         rows = conn.execute(
-            "SELECT subagent_id, record_json, pinned, stop_cause FROM resumable_subagents WHERE state='resumable' "
-            "AND (expires_at IS NULL OR expires_at > ?) ORDER BY updated_at", (now,)).fetchall()
+            "SELECT subagent_id, record_json, pinned, stop_cause, state, expires_at FROM resumable_subagents WHERE "
+            f"(state='resumable' OR (state='expired' AND {OWED_SQL}))" + (f" AND {OWED_SQL}" if owed_only else "")
+            + " ORDER BY updated_at").fetchall()
         # The owner fields come from the JSON (the process that RAN it); a claim moves only the columns.
-        return [{**json.loads(raw or "{}"), "subagent_id": sid, "pinned": pinned, "stop_cause": cause}
-                for sid, raw, pinned, cause in rows]
-    return [r for r in (_write(read) or []) if r.get("resume_mode") in (AUTO_AT, AUTO_ON_BOOT)]
+        return [{**json.loads(raw or "{}"), "subagent_id": sid, "pinned": pinned, "stop_cause": cause,
+                 "expired": state == "expired" or (expires is not None and expires <= now)}
+                for sid, raw, pinned, cause, state, expires in rows]
+    return [r for r in (_write(read) or []) if r.get("resume_mode") in (AUTO_AT, AUTO_ON_BOOT)
+            and (not r["expired"] or (r.get("auto_promised") and not r.get("auto_gave_up")))]
 
 
 def _unit_row(unit_id: Any) -> Optional[dict[str, Any]]:
@@ -402,6 +413,8 @@ def _verdict(record: dict[str, Any], now: float) -> tuple[str, Any]:
     if record.get("auto_gave_up"):
         return "wait", None  # its terminal failure was delivered; nothing more to do
     promised = bool(record.get("auto_promised"))
+    if record.get("expired"):
+        return "give_up", EXPIRED  # _candidates reads an expired record only while it is owed its report
     if promised and (reason := give_up_reason(record, now)):
         return "give_up", reason
     if not _due(record, now):
@@ -420,7 +433,10 @@ def tick(start: Callable[..., Optional[str]], *, capacity: int, now: Optional[fl
     """One pass over the bound profile's records; returns the subagent ids it resumed. ``start(record, unit_row,
     message)`` performs the continue and returns an error string, or None once the child was dispatched."""
     from tools.delegate_tool_registry import is_spawn_paused
-    if not enabled():
+    if not enabled():  # nothing starts; a child the stop promised a resume still gets its one report
+        now = now or time.time()
+        for record in _candidates(now, owed_only=True):
+            _give_up(record, EXPIRED if record["expired"] else TURNED_OFF)
         return []
     # A full pool or a spawn pause holds only new starts (no claim, no stand-in parent built): give-ups, notes and
     # supersessions still settle, so a deadline reports on time.
@@ -494,7 +510,7 @@ def _give_up(record: dict[str, Any], reason: str) -> bool:
         _begin_immediate(conn)
         if conn.execute(
                 "UPDATE resumable_subagents SET record_json=json_set(record_json, '$.auto_gave_up', ?, '$.auto_off', ?, "
-                "'$.auto_note', ?), updated_at=? WHERE subagent_id=? AND state='resumable' "
+                "'$.auto_note', ?), updated_at=? WHERE subagent_id=? AND state IN ('resumable','expired') "
                 "AND json_extract(record_json, '$.auto_gave_up') IS NULL",
                 (reason, reason, reason, time.time(), sid)).rowcount != 1:
             return None
@@ -532,19 +548,21 @@ def _insert_completion(conn, evt: dict[str, Any], result: dict[str, Any]) -> Non
 
 
 def waiting_entries(parent_agent: Any) -> list[dict[str, Any]]:
-    """``delegate_task(action='list')`` rows for this parent's children waiting on a promised automatic resume."""
-    if not enabled():
+    """``delegate_task(action='list')`` rows for this parent's children waiting on a promised automatic resume: not
+    one that will give up instead (deadline, attempts, expiry, auto_resume turned off), even before a tick says so."""
+    if not enabled():  # the next tick delivers each promised child's give-up: none is waiting
         return []
     from tools.delegate_tool_registry import _owns_subagent_record
     from tools.delegate_tool_resumable import _db_path_for, _write as write
     path = _db_path_for(parent_agent)
     rows = (write(path, lambda conn: conn.execute(
-        "SELECT subagent_id, record_json FROM resumable_subagents WHERE state='resumable'").fetchall())
+        f"SELECT subagent_id, record_json FROM resumable_subagents WHERE state='resumable' AND {OWED_SQL} "
+        "AND (expires_at IS NULL OR expires_at > ?)", (time.time(),)).fetchall())
             if path is not None else None) or []
     out = []
     for sid, raw in rows:
         r = json.loads(raw or "{}")
-        if not r.get("auto_promised") or r.get("auto_off") or r.get("auto_gave_up"):
+        if r.get("auto_off") or give_up_reason(r):
             continue
         if not _owns_subagent_record({"ancestor_owner_session_ids": r.get("owners") or ()}, parent_agent):
             continue
@@ -580,8 +598,7 @@ def refuse_waiting_duplicates(task_list: list[dict[str, Any]], routes: list[Any]
 # count cap deletes, and the give-up failure (:func:`_give_up`) is routed through that row.
 KEEP_WAITING_UNITS_SQL = (
     " AND delegation_id NOT IN (SELECT json_extract(record_json, '$.unit_id') FROM resumable_subagents WHERE "
-    "state='resumable' AND json_extract(record_json, '$.auto_promised') AND json_extract(record_json, "
-    "'$.auto_gave_up') IS NULL AND json_extract(record_json, '$.unit_id') IS NOT NULL)")
+    f"state IN ('resumable','expired') AND {OWED_SQL} AND json_extract(record_json, '$.unit_id') IS NOT NULL)")
 
 
 def waiting_on_resume(entry: dict[str, Any]) -> bool:
@@ -593,10 +610,12 @@ def waiting_on_resume(entry: dict[str, Any]) -> bool:
 def supersede_for_session(*, session_key: str = "", origin_ui_session_id: str = "", parent_session_id: str = "",
                           reason: str = "") -> int:
     """A person stopped, reset or closed a conversation: its resumable children must not wake up later. Automatic
-    cleanup (a gateway restart, an orphan reap) is not a decision about them and changes nothing."""
+    cleanup (a gateway restart, an orphan reap) is not a decision about them and changes nothing. With
+    ``auto_resume`` off it still cancels the promised ones, so turning it back on cannot wake them."""
     from hermes_state_common import is_automatic_end_reason
-    if is_automatic_end_reason(reason.rsplit(":", 1)[-1]) or not enabled():
+    if is_automatic_end_reason(reason.rsplit(":", 1)[-1]):
         return 0
+    promised_only = "" if enabled() else f" AND {OWED_SQL}"
     selectors = [(col, val) for col, val in (("origin_session", session_key), ("origin_ui_session_id",
                  origin_ui_session_id), ("parent_session_id", parent_session_id)) if val]
     if not selectors:
@@ -607,7 +626,7 @@ def supersede_for_session(*, session_key: str = "", origin_ui_session_id: str = 
         units = {row[0] for row in conn.execute(f"SELECT delegation_id FROM async_delegations WHERE {where}",
                                                 [val for _, val in selectors])}
         rows = conn.execute("SELECT subagent_id, json_extract(record_json, '$.unit_id') FROM resumable_subagents "
-                            "WHERE state IN ('resumable','claimed')").fetchall()
+                            "WHERE state IN ('resumable','claimed')" + promised_only).fetchall()
         note = f"its parent conversation was stopped or closed ({reason or 'session end'})"
         return sum(_note(conn, sid, state=SUPERSEDED, note=note, unstarted_claim=True)
                    for sid, unit in rows if unit in units)
@@ -616,16 +635,15 @@ def supersede_for_session(*, session_key: str = "", origin_ui_session_id: str = 
 
 def dismiss(parent_agent: Any, sid: str) -> bool:
     """``delegate_task(action='stop')`` on a child that is not running but waits to resume: it never resumes on its
-    own and its worktree pin is released (its transcript stays). False when there is no such record of this parent."""
-    if not enabled():
-        return False
+    own and its worktree pin is released (its transcript stays). False when there is no such record of this parent.
+    With ``auto_resume`` off only a promised one is dismissed (its parent was told to stop it this way)."""
     from tools.delegate_tool_registry import _owns_subagent_record
     from tools.delegate_tool_resumable import _db_path_for, _row, _write as write
     path = _db_path_for(parent_agent)
     record = write(path, lambda conn: _row(conn, sid))
     waiting = record and (record.get("state") in ("resumable", SUPERSEDED)
                           or (record.get("state") == "claimed" and record.get("auto_claim")))
-    if not waiting:
+    if not waiting or not (record.get("auto_promised") or enabled()):
         return False
     if not _owns_subagent_record({"ancestor_owner_session_ids": record.get("owners") or ()}, parent_agent):
         return False

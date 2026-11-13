@@ -159,6 +159,55 @@ def _sysctl_str(name: bytes) -> str:
     return buffer.value.decode(errors="replace").strip()
 
 
+# OpenBSD libc has sysctl(2) MIBs, not sysctlbyname. Values from sys/sysctl.h.
+CTL_HW = 6
+HW_MODEL = 2
+HW_PHYSMEM64 = 19
+
+
+def _openbsd_libc():
+    import ctypes
+    import ctypes.util
+
+    libc = ctypes.CDLL(ctypes.util.find_library("c"), use_errno=True)
+    libc.sysctl.argtypes = [
+        ctypes.POINTER(ctypes.c_int), ctypes.c_uint, ctypes.c_void_p,
+        ctypes.POINTER(ctypes.c_size_t), ctypes.c_void_p, ctypes.c_size_t,
+    ]
+    libc.sysctl.restype = ctypes.c_int
+    return libc, ctypes
+
+
+def _openbsd_sysctl_str(mib: tuple[int, ...]) -> str:
+    """Return a string sysctl MIB, or "" when the call fails."""
+    try:
+        libc, ctypes = _openbsd_libc()
+        name = (ctypes.c_int * len(mib))(*mib)
+        size = ctypes.c_size_t(0)
+        if libc.sysctl(name, len(mib), None, ctypes.byref(size), None, 0) != 0 or not size.value:
+            return ""
+        buffer = ctypes.create_string_buffer(size.value)
+        if libc.sysctl(name, len(mib), buffer, ctypes.byref(size), None, 0) != 0:
+            return ""
+        return buffer.value.decode(errors="replace").strip()
+    except (AttributeError, OSError, TypeError, ValueError):
+        return ""
+
+
+def _openbsd_sysctl_u64(mib: tuple[int, ...]) -> int | None:
+    """Return a 64-bit sysctl MIB, or None when the call fails."""
+    try:
+        libc, ctypes = _openbsd_libc()
+        name = (ctypes.c_int * len(mib))(*mib)
+        value = ctypes.c_uint64(0)
+        size = ctypes.c_size_t(ctypes.sizeof(value))
+        if libc.sysctl(name, len(mib), ctypes.byref(value), ctypes.byref(size), None, 0) != 0:
+            return None
+        return int(value.value) or None
+    except (AttributeError, OSError, TypeError, ValueError):
+        return None
+
+
 @functools.cache
 def cpu_model() -> str:
     """Return the CPU model, or an empty string when unavailable."""
@@ -166,6 +215,8 @@ def cpu_model() -> str:
         return _winreg_str(_CPU_KEY, "ProcessorNameString")
     if sys.platform == "darwin":
         return _sysctl_str(b"machdep.cpu.brand_string")
+    if sys.platform.startswith("openbsd"):
+        return _openbsd_sysctl_str((CTL_HW, HW_MODEL))
     return parse_cpuinfo(_read_text("/proc/cpuinfo"), device_tree_model=_read_text("/proc/device-tree/model", 512))
 
 
@@ -239,6 +290,8 @@ def ram_total_bytes() -> int | None:
             return _windows_ram_total()
         if sys.platform == "darwin":
             return _sysctl_u64(b"hw.memsize") or None
+        if sys.platform.startswith("openbsd"):
+            return _openbsd_sysctl_u64((CTL_HW, HW_PHYSMEM64))
     except (AttributeError, OSError, TypeError, ValueError):
         return None
     return parse_meminfo_total(_read_text("/proc/meminfo", 4096))

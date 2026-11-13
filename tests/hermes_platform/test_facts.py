@@ -117,3 +117,11 @@ def test_linux_live_cpu_facts_match_cpuinfo(cleared_fact_caches) -> None:
 
     assert facts.cpu_vendor() == facts.parse_cpuinfo_vendor(cpuinfo)
     assert facts.cpu_model() in cpuinfo
+
+@pytest.mark.platforms("openbsd")
+def test_openbsd_cpu_and_ram_come_from_sysctl():
+    facts.clear_caches()
+    model = facts.cpu_model()
+    ram = facts.ram_total_bytes()
+    assert model.strip()
+    assert ram is not None and ram > 0

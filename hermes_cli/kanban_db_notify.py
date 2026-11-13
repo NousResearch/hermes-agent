@@ -441,6 +441,58 @@ def record_notify_status(
                      (_encode_notify_delivery_metadata(metadata), *key))
 
 
+def record_status_escalation(
+    conn: sqlite3.Connection, *, task_id: str, platform: str, chat_id: str,
+    thread_id: Optional[str] = None, event_id: int, reason: str,
+) -> None:
+    """Durable management evidence, once per unseen event; no task-state mutation."""
+    key = _sub_key(task_id, platform, chat_id, thread_id)
+    with _kb.write_txn(conn, allow_nested=True):
+        row = conn.execute("SELECT delivery_metadata FROM kanban_notify_subs " + _SUB_KEY_WHERE, key).fetchone()
+        if row is None:
+            raise RuntimeError("notification subscription disappeared")
+        state = _decode_notify_delivery_metadata(row["delivery_metadata"])
+        if int(state.get("task_status_escalated_event", 0)) >= event_id:
+            return
+        _kb.add_comment(conn, task_id, "kanban-notifier",
+                        "Telegram status delivery requires reconciliation: " + reason +
+                        ". Automatic duplicate sends are paused; management wake remains active. "
+                        "Use reconcile_notify_status with an observed message_id, or confirmed_absent=True "
+                        "only after checking the destination. Resolve details_pending separately if present.")
+        state["task_status_escalated_event"] = event_id
+        conn.execute("UPDATE kanban_notify_subs SET delivery_metadata = ? " + _SUB_KEY_WHERE,
+                     (_encode_notify_delivery_metadata(state), *key))
+
+
+def reconcile_notify_status(
+    conn: sqlite3.Connection, *, task_id: str, platform: str, chat_id: str,
+    thread_id: Optional[str] = None, message_id: Optional[str] = None,
+    confirmed_absent: bool = False, details_delivered: bool = False,
+) -> None:
+    """Operator-only reconciliation after inspecting Telegram; never auto-resend ambiguity."""
+    if bool(message_id) == bool(confirmed_absent):
+        raise ValueError("supply an observed message_id OR confirmed_absent=True")
+    key = _sub_key(task_id, platform, chat_id, thread_id)
+    with _kb.write_txn(conn, allow_nested=True):
+        row = conn.execute("SELECT delivery_metadata FROM kanban_notify_subs " + _SUB_KEY_WHERE, key).fetchone()
+        if row is None:
+            raise RuntimeError("notification subscription disappeared")
+        state = _decode_notify_delivery_metadata(row["delivery_metadata"])
+        if state.get("task_status_details_pending"):
+            if details_delivered:
+                state["task_status_details_hash"] = state["task_status_details_pending"]
+                state["task_status_details_" + state["task_status_details_pending"]] = True
+            elif not confirmed_absent:
+                raise ValueError("confirm details delivery or confirmed absence before clearing ambiguity")
+        state.update(task_status_send_pending=False, task_status_message_id=str(message_id or ""),
+                     task_status_details_pending="", task_status_retry_at=0)
+        conn.execute("UPDATE kanban_notify_subs SET delivery_metadata = ? " + _SUB_KEY_WHERE,
+                     (_encode_notify_delivery_metadata(state), *key))
+        # Replay only unconfirmed events, restoring the actual outcome/decision,
+        # not a synthetic 'reconciled' status that would overwrite it.
+        conn.execute("UPDATE kanban_notify_subs SET last_event_id = last_ping_event_id " + _SUB_KEY_WHERE, key)
+
+
 def record_notify_ping(
     conn: sqlite3.Connection, *, task_id: str, platform: str, chat_id: str,
     thread_id: Optional[str] = None, event_id: int,

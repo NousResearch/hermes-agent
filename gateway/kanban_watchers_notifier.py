@@ -590,7 +590,8 @@ class _KanbanNotification:
         """Set ``wake_kinds`` / ``session_key`` / ``synth`` for the wake paths."""
         task, sub = self.task, self.sub
         self.wake_kinds = {ev.kind for ev in self.d["events"] if ev.kind in _WAKE_KINDS} if self.wake_agent else set()
-        self.wake_diagnostic = all(diagnostic_event(ev) for ev in self.d["events"] if ev.kind in self.wake_kinds)
+        self.wake_diagnostic = (not getattr(self, "status_uncertain", False) and
+                                all(diagnostic_event(ev) for ev in self.d["events"] if ev.kind in self.wake_kinds))
         if not self.wake_kinds:
             return
         if self.is_push_adapter:
@@ -614,6 +615,14 @@ class _KanbanNotification:
             synth += "\n" + t("gateway.kanban.wake.handoff", summary=self.wake_handoff)
         if self.wake_review_detail:
             synth += "\n" + t("gateway.kanban.wake.review_detail", reason=self.wake_review_detail)
+        if getattr(self, "status_uncertain", False):
+            synth += ("\nTelegram status delivery is uncertain. Inspect the task's kanban-notifier comment, "
+                      "preserve any requested human decision, and reconcile the subscription with "
+                      "kanban_db_notify.reconcile_notify_status using an observed message ID or confirmed absence. "
+                      "Do not blindly resend or report delivery success.")
+            from gateway.kanban_task_status import render_status
+            synth += "\n\nUndelivered status:\n" + "\n\n".join(
+                render_status(self, ev, full=True) for ev in self.d["events"] if ev.kind in self.wake_kinds)
         self.synth = synth + "\n\n" + t("gateway.kanban.wake.guidance")
 
     def _log_woke(self) -> None:
@@ -761,7 +770,18 @@ class _KanbanNotification:
                 ))
                 self.clear_failures()
             except Exception as exc:
-                from gateway.kanban_task_status import StatusDeferred
+                from gateway.kanban_task_status import StatusDeferred, StatusUncertain
+                if isinstance(exc, StatusUncertain):
+                    # Transport uncertainty is not a task failure or a human gate.
+                    # Persist one management record per event, then admit the normal
+                    # wake even for passive-only subscribers. Never blindly resend.
+                    await _to_thread_process_service(partial(
+                        self.runner._kanban_sub_op, self.board_slug, "record_status_escalation", self.sub,
+                        event_id=ev.id, reason=str(exc),
+                    ))
+                    self.status_uncertain = True
+                    self.wake_agent = True
+                    continue
                 if isinstance(exc, StatusDeferred):
                     await self.rewind()
                     return False

@@ -60,7 +60,10 @@ _PROLOGUE_TEMPLATE = (
     "  done; } 8<&- &\n"
     "    __hermes_sudo_w=$!\n"
     "    \\builtin unset __hermes_sudo_pw\n"
-    "    \\builtin read -r -t @TIMEOUT@ __hermes_sudo_x <&8\n"
+    # A timed-out read (status > 128) while the command's shell ($$) still runs, as after a
+    # yield to the background, keeps serving; EOF on fd 19 or a gone shell ends the wait.
+    "    while \\builtin read -r -t @TIMEOUT@ __hermes_sudo_x <&8; \\builtin test $? -gt 128 &&\n"
+    "      \\builtin kill -0 $$ 2>/dev/null; do \\builtin :; done\n"
     '\\builtin kill "$__hermes_sudo_w" 2>/dev/null\n'
     '\\exec 7<>"$__hermes_sudo_dir/p" 2>/dev/null\n'
     '\\command rm -rf "$__hermes_sudo_dir"\n'

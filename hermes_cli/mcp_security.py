@@ -168,6 +168,7 @@ def _is_command_word(token: str) -> bool:
     return base in _SHELL_INTERPRETERS or base in _EXEC_WRAPPERS
 
 _NEEDS_SHLEX = re.compile(r"[\\'\"#$]")
+_ENV_VAR_REF = re.compile(r"\$\{[A-Za-z_][A-Za-z0-9_]*\}")
 
 def _split_env_string(argv: list[str], idx: int, consumed: int, value: str) -> bool:
     """Replace env's ``-S`` option token(s) with the split string's words."""
@@ -178,10 +179,14 @@ def _split_env_string(argv: list[str], idx: int, consumed: int, value: str) -> b
 
     words = gnu_env_split(value)
     if words is None:
-        # ${NAME} expansion or an escape env would reject: shlex keeps the
-        # words visible to the shell scan, so an unparsed payload over-blocks.
+        # env expands ${NAME} at run time; an unset var is empty, so blanking
+        # every reference lets the GNU parser see the words env would run.
+        words = gnu_env_split(_ENV_VAR_REF.sub("", value))
+    if words is None:
+        # Escape env would reject: keep \_ a word break so shlex cannot glue
+        # ``bash\_-c`` into one word that hides the shell.
         try:
-            words = shlex.split(value)
+            words = shlex.split(value.replace("\\_", " "))
         except ValueError:
             return False  # env itself refuses an unterminated split string
     argv[idx:idx + consumed] = words

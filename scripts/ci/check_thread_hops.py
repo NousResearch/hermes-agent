@@ -52,6 +52,7 @@ class Visitor(ast.NodeVisitor):
         self.comments = comment_lines(text, MARKER)
         self.scope = []
         self.counts = Counter()
+        self.marker_uses = Counter()
         self.hits = {}
         self.threads, self.timers, self.pools = set(), set(), set()
         for node in ast.walk(tree):
@@ -117,7 +118,10 @@ class Visitor(ast.NodeVisitor):
             hit |= fn.attr in ('submit', 'run_in_executor')
             hit |= fn.attr == 'map' and (self.pool_call(fn.value) or
                                            isinstance(fn.value, ast.Name) and fn.value.id in self.instances)
-        if hit and not marked(self.lines, node.lineno, MARKER, comments=self.comments):
+        if hit and marked(self.lines, node.lineno, MARKER, comments=self.comments):
+            self.marker_uses[node.lineno] += 1
+            hit = self.marker_uses[node.lineno] > 1
+        if hit:
             identity = json.dumps([self.path, '.'.join(self.scope), ast.dump(node, include_attributes=False, **DUMP_OPTIONS)], ensure_ascii=True, separators=(',', ':'))
             self.counts[identity] += 1
             fingerprint = hashlib.sha256((identity + '#' + str(self.counts[identity])).encode()).hexdigest()

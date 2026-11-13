@@ -177,3 +177,11 @@ def test_marker_reasons_with_explanations_remain_valid(separator):
     for marker in ('thread-hop: ok', 'detached-spawn: ok'):
         assert comment_lines(f'x.submit(f) # {marker} {separator} process-scoped work\n', marker) == {1}
     assert guard.sites('tools/a.py', f'x.submit(f) # thread-hop: ok {separator} process-scoped work\n') == {}
+
+@pytest.mark.parametrize('source', [
+    'pool.submit(safe); pool.submit(unbound)  # thread-hop: ok — safe is process scoped\n',
+    '# thread-hop: ok — safe is process scoped\npool.submit(safe); pool.submit(unbound)\n',
+])
+def test_one_reasoned_marker_only_exempts_one_handoff(source):
+    # A single site-level exception cannot silently bless a second same-line handoff.
+    assert len(guard.sites('tools/a.py', source)) == 1

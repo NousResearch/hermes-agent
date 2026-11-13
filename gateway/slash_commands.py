@@ -1295,12 +1295,13 @@ class GatewaySlashCommandsMixin(
         return await self._run_in_executor_with_context(_run)
 
     async def _handle_debug_command(self, event: MessageEvent) -> str:
-        """Handle /debug — bare: privacy notice only; ``upload``: upload ONLY the summary (system
-        info + log tails), never full logs; ``hermes debug share`` from the CLI does full uploads."""
+        """Handle /debug — bare: privacy notice only; ``upload``: upload ONLY the allowlisted public
+        summary (no log or message text); full logs go to private storage via
+        ``hermes debug share --nous`` from the CLI."""
         from hermes_cli.debug import (_GATEWAY_PRIVACY_NOTICE, _best_effort_sweep_expired_pastes,
-                                      _capture_dump, _is_dpaste_url, _schedule_auto_delete,
-                                      collect_debug_report, upload_to_pastebin)
+                                      _is_dpaste_url, _schedule_auto_delete, upload_to_pastebin)
         from hermes_cli.debug_redaction import redact_debug_support_text
+        from hermes_cli.debug_summary import collect_public_summary
 
         words = {w.lower() for w in (event.get_command_args() or "").split()}
         wants_local = "local" in words
@@ -1331,7 +1332,7 @@ class GatewaySlashCommandsMixin(
 
         def _collect_and_upload():  # blocking I/O (dump capture, log reads, uploads) -> thread
             _best_effort_sweep_expired_pastes()
-            report = collect_debug_report(log_lines=200, dump_text=_capture_dump())
+            report = collect_public_summary(log_lines=200)
             try:
                 urls = {t("gateway.debug.report_label"): upload_to_pastebin(report)}
             except Exception as exc:

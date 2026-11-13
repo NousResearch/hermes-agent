@@ -167,7 +167,7 @@ gateway:
     upload_failed: "✗ Failed to upload debug report: {error}"
     header: "**Debug report uploaded:**"
     auto_delete: "⏱ Pastes will auto-delete in 6 hours."
-    full_logs_hint: "For full log uploads, use `hermes debug share` from the CLI."
+    full_logs_hint: "This summary has no log lines. If support needs full logs, run `hermes debug share --nous` from the CLI (private storage)."
     share_hint: "Share these links with the Hermes team for support."
     report_label: "Report"
     local_refused: "`/debug local` keeps the report on the machine running Hermes, so it isn't available from a chat. Send `/debug upload` to upload the summary report."
@@ -1780,7 +1780,7 @@ slash:
   version:
     description: "Show Hermes Agent version"
   debug:
-    description: "Debug report (system info + logs): shows the privacy notice; /debug upload shares links"
+    description: "Debug report (versions, config keys, error counts; no log text): shows the privacy notice; /debug upload shares links"
   quit:
     description: "Exit the CLI (use --delete to also remove session history)"
 cli:
@@ -4034,7 +4034,7 @@ tips:
   t343: "/voice tts toggles TTS-only mode — agent replies out loud but you still type your prompts."
   t344: "/reload-skills re-scans ~/.hermes/skills/ so drop-in skills appear without restarting the session."
   t345: "/indicator kaomoji|emoji|unicode|ascii picks the TUI busy-indicator style shown during agent runs."
-  t346: "/debug uploads a support bundle (system info + logs) and returns shareable links — works in chat too."
+  t346: "/debug upload uploads a summary (versions, config keys, error counts; no log text) and returns a shareable link — works in chat too."
   t347: "hermes -z \"<prompt>\" is the purest one-shot: final answer on stdout, nothing else — ideal for piping in scripts."
   t348: "hermes chat --pass-session-id injects the session ID into the system prompt so the agent can self-reference it."
   t349: "hermes chat --image path/to/pic.png attaches a local image to a single -q query without a separate upload step."

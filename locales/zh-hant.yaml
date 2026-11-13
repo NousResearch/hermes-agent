@@ -164,7 +164,7 @@ gateway:
     upload_failed: "✗ 無法上傳除錯報告：{error}"
     header: "**除錯報告已上傳：**"
     auto_delete: "⏱ 貼上的內容將於 6 小時後自動刪除。"
-    full_logs_hint: "如需上傳完整紀錄，請在 CLI 中使用 `hermes debug share`。"
+    full_logs_hint: "如需上傳完整紀錄，請在 CLI 中使用 `hermes debug share --nous`。"
     share_hint: "請將這些連結分享給 Hermes 團隊以取得支援。"
     report_label: "報告"
     local_refused: "`/debug local` 會把報告留在執行 Hermes 的機器上，因此無法在聊天中使用。傳送 `/debug upload` 可上傳摘要報告。"
@@ -1709,7 +1709,7 @@ slash:
   version:
     description: "顯示 Hermes Agent 版本"
   debug:
-    description: "除錯報告（系統資訊 + 日誌）：先顯示隱私聲明；/debug upload 分享連結"
+    description: "除錯報告（版本、設定鍵名、錯誤計數；不含日誌文字）：先顯示隱私聲明；/debug upload 分享連結"
   quit:
     description: "離開 CLI（加上 --delete 同時移除工作階段歷史）"
 cli:
@@ -3920,7 +3920,7 @@ tips:
   t343: "/voice tts 切換純 TTS 模式 — 代理以語音回覆，但你仍以打字輸入提示。"
   t344: "/reload-skills 會重新掃描 ~/.hermes/skills/，讓直接放入的技能無需重啟工作階段即可出現。"
   t345: "/indicator kaomoji|emoji|unicode|ascii 可選擇代理執行期間 TUI 顯示的忙碌指示器樣式。"
-  t346: "/debug 會上傳支援套件（系統資訊 + 日誌）並回傳可分享的連結 — 在聊天中也能用。"
+  t346: "/debug upload 會上傳摘要（版本、設定鍵名、錯誤計數；不含日誌文字）並回傳可分享的連結 — 在聊天中也能用。"
   t347: "hermes -z \"<prompt>\" 是最純粹的單次執行：只將最終答案輸出到 stdout，別無其他 — 最適合在腳本中串接管線。"
   t348: "hermes chat --pass-session-id 會將工作階段 ID 注入系統提示詞，讓代理能自我引用。"
   t349: "hermes chat --image path/to/pic.png 可為單次 -q 查詢附加本機圖片，不需另外上傳。"

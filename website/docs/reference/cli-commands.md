@@ -1101,25 +1101,26 @@ config_overrides:
 hermes debug share [options]
 ```
 
-Upload a debug report (system info + recent logs) to a paste service and get a shareable URL. Useful for quick support requests — includes everything a helper needs to diagnose your issue.
+Upload a debug summary to a public paste service and get a shareable URL, or (with `--nous`) send the full redacted logs to private Nous storage.
 
 | Option | Description |
 |--------|-------------|
-| `--lines <N>` | Number of log lines to include per log file (default: 200). |
+| `--lines <N>` | Log lines per file: scanned for the summary's error counts, and included (redacted) with `--nous` / `--local` (default: 200). |
 | `--expire <days>` | dpaste.com fallback retention in days (minimum 1; default: 1). paste.rs pastes are always deleted after 6 hours; dpaste.com pastes cannot be deleted early. |
 | `--nous` | Upload to Nous-internal diagnostics storage instead of a public paste service. Use this when Nous support asks for a private diagnostic bundle. |
 | `--local` | Print the report locally instead of uploading. |
-| `--no-redact` | Disable upload-time secret redaction. By default, uploads are redacted. |
+| `--no-redact` | Disable secret redaction of the logs sent with `--nous` or printed with `--local`. It has no effect on the public paste, which never carries log text. |
+| `--yes` | Skip the confirmation prompt (required when stdin is not a TTY). |
 
-The report includes system info (OS, Python version, Hermes version), recent agent, gateway, GUI/dashboard, and desktop logs (512 KB limit per file), plus the update and Desktop update hand-off logs when present, and redacted API key status. By default, uploads are redacted so secrets are not included; this covers the system dump (including config values such as `fallback_providers` entries and credentials in their URLs) as well as the logs, and the gateway `/debug` report too.
+**Public paste (default).** The upload is an allowlisted summary, never log lines or message text: Hermes, Python and OS versions; install kind; names of connected platforms and configured built-in toolsets; which `config.yaml` keys are set (key names only, no values; user-named entries such as providers or MCP servers are counted, not named); and counts of warnings/errors by logger, exception class and HTTP status from the recent log tails. The same summary is what the gateway `/debug upload` command and the dashboard **Share debug report** button upload. Public uploads go to paste.rs, falling back to dpaste.com.
 
-Default uploads use public paste services tried in order: paste.rs, dpaste.com. `--nous` uploads the same debug bundle to private Nous diagnostics storage instead; the returned viewer link is for the Nous team and auto-deletes after 14 days.
+**Private bundle (`--nous`).** The full debug report, the system dump and the agent, gateway, GUI/dashboard and desktop logs (512 KB per file), plus the update and Desktop update hand-off logs when present, go to private Nous diagnostics storage. Secrets are redacted unless `--no-redact` is set; other personal data in the logs (names, IDs, message text) is not. The returned viewer link is only for the Nous team and auto-deletes after 14 days. `--local` prints the same bundle without uploading anything.
 
 ### Examples
 
 ```bash
 hermes debug share              # Upload debug report, print URL
-hermes debug share --lines 500  # Include more log lines
+hermes debug share --lines 500  # Scan more log lines for the summary
 hermes debug share --expire 30  # Keep a dpaste.com fallback paste for 30 days
 hermes debug share --nous       # Upload a private diagnostics bundle for Nous support
 hermes debug share --local      # Print report to terminal (no upload)

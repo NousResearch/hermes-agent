@@ -1,6 +1,9 @@
 """Mark's auto-resume model: a promised stop is silent (no completion, shown in ``list``), and a child that runs out
 of attempts or time reports exactly ONE failure."""
+import contextlib
 import json
+import os
+import sqlite3
 import time
 
 import pytest
@@ -348,7 +351,12 @@ def _slash_stop(parent, _sid):
 def _stop(parent, sid):
     from tools.delegate_tool import delegate_task
     out = json.loads(delegate_task(action="stop", subagent_id=sid, parent_agent=parent))
-    assert out["status"] == "dismissed", out
+    assert out.get("status") == "dismissed", out
+
+
+def _stop_claimed(parent, sid):  # the parent's own continue holds it: not a dismiss, but the stop is kept
+    from tools.delegate_tool import delegate_task
+    assert "error" in json.loads(delegate_task(action="stop", subagent_id=sid, parent_agent=parent))
 
 
 @pytest.mark.parametrize("expire_first", [False, True], ids=["cancel-then-ttl", "ttl-then-cancel"])
@@ -357,14 +365,76 @@ def test_a_child_its_parent_cancelled_never_reports_even_when_its_record_expires
     assert _cancelled_then_expired(tmp_path, cancel, expire_first=expire_first) == []
 
 
-def test_a_tick_with_auto_resume_never_enabled_does_not_open_the_store_each_pass(tmp_path):
-    import tools.delegate_tool_auto_resume as auto
+def _home():
     from hermes_constants import get_hermes_home
+    return get_hermes_home()
+
+
+def _turn_off():
+    (_home() / "config.yaml").write_text(json.dumps({"delegation": {"auto_resume": False}}))
+
+
+@contextlib.contextmanager
+def _no_commits(path):
+    conn = sqlite3.connect(path)  # health: allow HX015 -- test observer of other connections' commits
+    try:
+        version = conn.execute("PRAGMA data_version").fetchone()[0]
+        stamps = {p: os.stat(p).st_mtime_ns for p in (path, f"{path}-wal") if os.path.exists(p)}
+        yield
+        assert conn.execute("PRAGMA data_version").fetchone()[0] == version, "a tick committed to state.db"
+        assert {p: os.stat(p).st_mtime_ns for p in stamps} == stamps
+    finally:
+        conn.close()
+
+
+def test_a_disabled_tick_with_nothing_owed_never_writes_the_store(tmp_path):
+    from tools.delegate_tool_auto_resume import tick
+    _enable()
     parent = _parent()
-    (get_hermes_home() / "config.yaml").write_text(json.dumps({"delegation": {"auto_resume": False}}))
-    auto.tick(lambda *args: None, capacity=3)  # this process's one scan for rows an earlier process promised
-    opened, write = [], auto._write
-    with patch.object(auto, "_write", side_effect=lambda fn: (opened.append(1), write(fn))[1]):
+    sid, unit = _silent_stop(tmp_path, parent)
+    _stop(parent, sid)  # its debt is cleared: nothing owed
+    _turn_off()
+    with _no_commits(parent._session_db.db_path):
         for _ in range(5):
-            auto.tick(lambda *args: None, capacity=3)
-    assert opened == [] and parent._session_db.db_path
+            assert tick(_scheduler(parent, []), capacity=3) == []
+    assert _events(unit) == []
+
+
+def _manual_claim_then(tmp_path, cancel):
+    """The parent's own continue claims a promised child and *cancel* (or nothing) lands while it holds the claim;
+    a disabled tick runs inside that window, then the continue is refused before anything ran and ticks follow
+    (enabled ones only after a cancel: a cancelled child must not be resumed)."""
+    from tools.delegate_tool_auto_resume import tick
+    from tools.delegate_tool_resumable import _db_path_for, _write, claim, release
+    _enable()
+    parent = _parent()
+    sid, unit = _silent_stop(tmp_path, parent)
+    record, err = claim(parent, sid)
+    assert record and not err
+    if cancel:
+        cancel(parent, sid)
+    else:
+        _turn_off()
+    dispatched = []
+    tick(_scheduler(parent, dispatched), capacity=3)
+    release(parent, sid, record)
+    _write(_db_path_for(parent), lambda c: c.execute("UPDATE resumable_subagents SET record_json=json_set("
+                                                     "record_json, '$.next_attempt_at', 0) WHERE subagent_id=?", (sid,)))
+    with patch("run_agent.AIAgent", side_effect=_AlwaysLimited()):
+        tick(_scheduler(parent, dispatched), capacity=3)
+    _turn_off()
+    for _ in range(3):
+        tick(_scheduler(parent, dispatched), capacity=3)
+    return dispatched, _db_rows(parent)[sid], _events(unit)
+
+
+def test_a_refused_manual_continue_hands_the_promise_back_and_it_reports_once(tmp_path):
+    dispatched, _row, events = _manual_claim_then(tmp_path, None)
+    assert dispatched == [] and len(events) == 1, events
+
+
+@pytest.mark.parametrize("cancel", [_slash_stop, _stop_claimed], ids=["slash-stop", "action-stop"])
+def test_a_stop_during_the_parents_own_continue_claim_is_never_lost(tmp_path, cancel):
+    dispatched, (state, _pinned, rec), events = _manual_claim_then(tmp_path, cancel)
+    assert dispatched == [] and events == [], (dispatched, events)
+    assert state in ("superseded", "stopped") and rec["auto_promised"] is False and "auto_cancel" not in rec

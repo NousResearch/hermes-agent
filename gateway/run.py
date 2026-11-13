@@ -2471,11 +2471,11 @@ def _event_media_is_audio(event, index: int) -> bool:
 
 
 def _event_media_is_stt_input(event, index: int) -> bool:
-    """True when an audio attachment should enter the automatic STT pipeline."""
-    message_type = getattr(event, "message_type", None)
-    if message_type in {MessageType.AUDIO, MessageType.DOCUMENT}:
+    """Audio entering auto-STT; a VOICE message's photo/PDF never does (unknown/octet-stream MIME follows VOICE)."""
+    mtype, mime = getattr(event, "message_type", None), _event_media_type_at(event, index).lower()
+    if mtype in {MessageType.AUDIO, MessageType.DOCUMENT}:
         return False
-    return message_type == MessageType.VOICE or _event_media_type_at(event, index).startswith("audio/")
+    return mime.startswith("audio/") or (mtype == MessageType.VOICE and mime in {"", "application/octet-stream"})
 
 
 def _event_media_is_video(event, index: int) -> bool:

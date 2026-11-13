@@ -360,7 +360,8 @@ from gateway.whatsapp_identity import normalize_whatsapp_mention_jid, to_whatsap
 from gateway.platforms.base import (
     BasePlatformAdapter, SendResult, SUPPORTED_DOCUMENT_TYPES, cache_image_from_url, cache_audio_from_url,
 )
-from gateway.platforms.helpers import cancel_task
+from gateway.platforms.helpers import cancel_task, chat_ordered_work, spoken_mention_clips, voice_mention_gate_enabled
+from gateway.platforms.helpers import bypasses_chat_order
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms.helpers import caption_is_command
 from utils import env_int
@@ -1310,22 +1311,39 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                             if msg_data.get("event") == "delivery_status":
                                 self._log_delivery_status(msg_data)
                                 continue
-                            event = await self._build_message_event(msg_data)
-                            if event:
-                                # Fire-and-forget: a slow bridge /read must not delay dispatch.
-                                asyncio.create_task(self._send_read_receipt(msg_data))
-                                if event.message_type == MessageType.TEXT:
-                                    self._enqueue_text_event(event)
-                                else:
-                                    await self.handle_message(event)
+                            # A group voice note may wait on gate-time STT: run it off this poll loop, FIFO per chat.
+                            chat, work = str(msg_data.get("chatId") or ""), chat_ordered_work(self)
+                            transcribes = self._may_transcribe_at_gate(msg_data)
+                            if transcribes or (chat and work.busy(chat) and not bypasses_chat_order(msg_data.get("body"))):
+                                work.submit(chat, lambda d=msg_data: self._process_inbound(d), transcribes=transcribes)
+                            else:
+                                await self._process_inbound(msg_data)
             except asyncio.CancelledError:
                 break
-            except Exception as e:
+            except Exception as e:  # health: allow BLE001 -- the poll loop's retry boundary (unchanged from main)
                 if await self._report_bridge_exit():
                     break
                 print(f"[{self.name}] Poll error: {e}")
                 await asyncio.sleep(5)
             await asyncio.sleep(1)  # Poll interval
+
+    async def _process_inbound(self, msg_data: dict[str, Any]) -> None:
+        event = await self._build_message_event(msg_data)
+        if event:
+            # Fire-and-forget: a slow bridge /read must not delay dispatch.
+            receipt = asyncio.create_task(self._send_read_receipt(msg_data))
+            tasks = self.__dict__.setdefault("_background_tasks", set())  # object.__new__ fixtures lack it
+            tasks.add(receipt)
+            receipt.add_done_callback(tasks.discard)
+            if event.message_type == MessageType.TEXT:
+                self._enqueue_text_event(event)
+            else:
+                await self.handle_message(event)
+
+    def _may_transcribe_at_gate(self, data: dict[str, Any]) -> bool:
+        """A group ``ptt`` the spoken-wake-word gate may transcribe (opt-in ``voice_mention_patterns``)."""
+        return bool(data.get("isGroup") and str(data.get("mediaType") or "") == "ptt"
+                    and voice_mention_gate_enabled(self.config.extra))
 
     def _log_delivery_status(self, data: dict[str, Any]) -> None:
         """One gateway.log line per delivery/read status change of a message Hermes sent (Baileys
@@ -1428,16 +1446,35 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             print(f"[{self.name}] Attached quoted-reply media: {path}", flush=True)
         return accepted
 
+    async def _spoken_mention_clips(self, data: dict[str, Any]) -> list[str]:
+        """A captionless group voice note (``ptt``) that only a wake word could admit: transcribe it
+        and match ``mention_patterns`` (opt-in ``voice_mention_patterns``, #102330)."""
+        body = str(data.get("body") or "").strip().lower()
+        if (str(data.get("mediaType") or "") != "ptt" or body not in ("", "[ptt received]") or not self._mention_patterns
+                or not voice_mention_gate_enabled(self.config.extra)
+                or not self._should_process_message(data, spoken_mention=True)):
+            return []
+        paths, _types = await self._collect_bridge_media(data, MessageType.VOICE)
+        # A bridge-cached path stays referenced by the bridge's quotedMediaCache: never delete it.
+        bridge_owned = frozenset(u for u in data.get("mediaUrls") or () if isinstance(u, str) and os.path.isabs(u))
+        return await spoken_mention_clips(
+            [p for p in paths if os.path.isabs(p)], self._mention_patterns, adapter=self, keep=bridge_owned,
+            source=self.build_source(chat_id=data.get("chatId", ""), chat_name=data.get("chatName"), chat_type="group",
+                                     user_id=data.get("senderId"), user_name=data.get("senderName"),
+                                     message_id=data.get("messageId")))
+
     async def _build_message_event(self, data: dict[str, Any]) -> Optional[MessageEvent]:
         """Build a MessageEvent from bridge message data, downloading images to cache."""
         try:
-            if not self._should_process_message(data):
+            clips: list[str] = []
+            if not self._should_process_message(data) and not (clips := await self._spoken_mention_clips(data)):
                 return None
             msg_type = self._classify_bridge_message(data)
             source = self.build_source(chat_id=data.get("chatId", ""), chat_name=data.get("chatName"), chat_type="group" if data.get("isGroup", False) else "dm",
                                        user_id=data.get("senderId"), user_name=data.get("senderName"),
                                        message_id=data.get("messageId"))
-            cached_urls, media_types = await self._collect_bridge_media(data, msg_type)
+            cached_urls, media_types = (clips, [data.get("mime") or "audio/ogg"] * len(clips)) if clips else (
+                await self._collect_bridge_media(data, msg_type))
             body = data.get("body", "")
             if data.get("isGroup"):
                 body = self._clean_bot_mention_text(body, data)
@@ -1471,6 +1508,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 reply_to_text=str(data.get("quotedText") or "").strip() or None,
                 reply_to_author_id=(self._normalize_whatsapp_id(data.get("quotedParticipant")) or None) if quoted else None,
                 reply_to_is_own_message=self._message_is_reply_to_bot(data) if quoted else False,
+                reply_expected=True if clips else None,  # a spoken wake word addressed the bot
             )
         except Exception as e:
             print(f"[{self.name}] Error building event: {e}")

@@ -109,15 +109,23 @@ def _durable_spec(sid: str, record: dict[str, Any], parent_agent: Any) -> tuple[
     return {**record, "route": routes[0], "endpoint": tuple(record.get("endpoint") or ()) or None}, None
 
 
-def _claim(sid: str, parent_agent: Any) -> tuple[Optional[dict[str, Any]], Optional[dict[str, Any]], Optional[str]]:
+def _claim(sid: str, parent_agent: Any, auto: bool = False,
+           ) -> tuple[Optional[dict[str, Any]], Optional[dict[str, Any]], Optional[str]]:
     """``(spec, durable_record, error)``: the in-process record while it is retained, else the durable one. The
     durable claim is the single gate for both: a refusal there refuses the continue even when this caller holds the
-    in-process spec (a second continue that fell through to the row, or one from another process, owns it)."""
+    in-process spec (a second continue that fell through to the row, or one from another process, owns it). *auto*:
+    the scheduler already claimed the row (``delegate_tool_auto_resume._claim``); this takes that claim over."""
     from tools.delegate_tool_resumable import claim as claim_durable
     spec, err = _claim_resume(sid, parent_agent)
     if spec is None and err != _NOT_FOUND.format(sid=sid):
         return None, None, err
-    record, durable_err = claim_durable(parent_agent, sid)
+    if auto:
+        from tools.delegate_tool_auto_resume import CANCELLED, take_claim
+        from tools.delegate_tool_resumable import _db_path_for
+        record = take_claim(_db_path_for(parent_agent), sid)
+        durable_err = None if record is not None else CANCELLED
+    else:
+        record, durable_err = claim_durable(parent_agent, sid)
     if durable_err:  # the durable row is the one gate: another continue holds it (here or in another process)
         if spec is not None:
             _release_resume(sid, spec)
@@ -142,7 +150,7 @@ def _segment_tip(db: Any, sid: str, session_id: str) -> str:
 
 def _start(
     sid: str, message: str, spec: dict[str, Any], parent_agent: Any, background: bool,
-    record: Optional[dict[str, Any]] = None,
+    record: Optional[dict[str, Any]] = None, run_origin: str = "continue",
 ) -> tuple[Optional[str], Optional[str]]:
     """Rebuild, hydrate and dispatch the continued child: ``(tool result JSON, None)`` or ``(None, error)`` when
     it was refused before anything ran."""
@@ -154,6 +162,11 @@ def _start(
     from tools.delegation_live_log import create_live_transcripts
 
     route = spec["route"]
+    if run_origin == "auto":  # the scheduler has no turn to join a result into: it only ever detaches
+        from tools.delegate_tool_dispatch import _resolve_async_wake_sid
+        origin = _capture_origin()
+        if _resolve_async_wake_sid(origin[0], origin[4]) is None:
+            return None, "Not continued: this session cannot receive a detached result."
     with _transcript_store(parent_agent) as db:
         session_id = _segment_tip(db, sid, spec["session_id"])
         history = db.get_messages_as_conversation(session_id, repair_alternation=True) if db is not None else []
@@ -179,21 +192,34 @@ def _start(
             return None, err
         db.reopen_session(session_id)  # its close() ended it; the continued child's close() ends it again
         children[0][2]._delegate_continue_history = history
+        children[0][2]._delegate_run_origin = run_origin  # a parent's own continue ends automatic resumes of it
         from tools.delegate_tool_resumable import hold_claim, last_workspace
         children[0][2]._delegate_continue_workspace = last_workspace(parent_agent, sid)
         if record is not None:  # a run that fails before it records itself hands the claim back
             hold_claim(children[0][2], parent_agent, sid, record)
+        if run_origin == "auto":  # the last word is the parent's: a stop, /stop, /new or replacement since the claim
+            from tools.delegate_tool_auto_resume import confirm_start
+            from tools.delegate_tool_resumable import _db_path_for
+            if cancelled := confirm_start(_db_path_for(parent_agent), sid):
+                from tools.delegate_tool_child_run import _close_child, _detach_child
+                children[0][2]._delegate_claim = None
+                _detach_child(parent_agent, children[0][2])
+                _close_child(children[0][2], "Failed to close a cancelled continue's child")
+                return None, cancelled
     batch = _Batch(
         task_list, [(0, task_list[0], children[0][2])], parent_agent, route.creds, None, "leaf",
         _get_max_concurrent_children(), live_id, writers, paths, *origin, time.monotonic(), live_home=live_home,
+        detached_only=run_origin == "auto",
     )
     return _run_batch(batch, background), None
 
 
-def continue_subagent(subagent_id: Optional[str], message: Optional[str], parent_agent: Any, *, background: bool) -> str:
+def continue_subagent(subagent_id: Optional[str], message: Optional[str], parent_agent: Any, *, background: bool,
+                      auto: bool = False) -> str:
     """delegate_task(action='continue'): validate ownership and finished state, then run ``message`` as the
     child's next turn. Returns the usual dispatch handle (new delegation_id, same subagent_id) or, where the
-    session joins children inline, the joined result."""
+    session joins children inline, the joined result. ``auto``: the ``delegation.auto_resume`` scheduler's
+    continue (``delegate_tool_auto_resume``), the same claim and dispatch on a stand-in for the parent."""
     sid, text = (subagent_id or "").strip(), (message or "").strip()
     if not sid or not text:
         return tool_error("action='continue' requires subagent_id (a finished child of yours) and a non-empty "
@@ -201,11 +227,11 @@ def continue_subagent(subagent_id: Optional[str], message: Optional[str], parent
     refusal = _refusal(parent_agent)
     if refusal:
         return tool_error(refusal)
-    spec, record, err = _claim(sid, parent_agent)
+    spec, record, err = _claim(sid, parent_agent, auto)
     if spec is None:
         return tool_error(err or _NOT_FOUND.format(sid=sid))
     try:
-        result, err = _start(sid, text, spec, parent_agent, background, record)
+        result, err = _start(sid, text, spec, parent_agent, background, record, "auto" if auto else "continue")
     except Exception as exc:
         logger.warning("delegate_task continue of %s failed before dispatch", sid, exc_info=True)
         result, err = None, f"Could not continue subagent '{sid}': {exc}"

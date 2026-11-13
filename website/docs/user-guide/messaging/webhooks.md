@@ -588,7 +588,7 @@ For dynamic subscriptions, add the `toolsets` key by editing `~/.hermes/webhook_
 
 Behavior and safety properties:
 
-- The route list **replaces** the platform-level webhook toolset resolution for that route's runs (it is not merged).
+- The route list **replaces** the platform-level webhook toolset resolution for that route's runs (it is not merged). An explicit empty list (`toolsets: []`) is an override too: that route gets no platform toolsets and no MCP servers, the same as `platform_toolsets.webhook: []`.
 - Names are validated through the same path as `platform_toolsets` config — unknown names and platform-restricted toolsets are dropped.
 - `hermes webhook subscribe` deliberately does **not** accept a toolsets flag. Granting elevated tools is a manual config-file edit, so an agent creating its own subscription at runtime cannot self-grant `terminal`.
 - Only grant elevated toolsets to routes whose senders you fully control, with a real HMAC secret. Anyone who can POST a validly-signed payload to that route is effectively running an agent with those tools.

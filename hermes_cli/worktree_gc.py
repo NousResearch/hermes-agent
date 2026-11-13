@@ -29,6 +29,8 @@ _KANBAN_RE = re.compile(r"^t_[0-9a-f]+$")
 # Bounded cherry probe: a branch this far ahead of upstream is a stale-base
 # lane, not merged scratch; checking it is expensive and it stays preserved.
 _MAX_CHERRY_AHEAD = 50
+# Reason prefix of a branch kept because a git probe failed, not because it holds unique work.
+_UNVERIFIED = "could not verify"
 
 
 @dataclass
@@ -83,6 +85,12 @@ def _git(args: list, cwd: str, timeout: int = 15) -> subprocess.CompletedProcess
     except subprocess.TimeoutExpired:
         return subprocess.CompletedProcess(args=["git", *args], returncode=124, stdout="",
                                            stderr=f"timeout after {timeout}s")
+
+
+def _probe_failure(result: subprocess.CompletedProcess) -> str:
+    """``git <subcommand> exited <rc>: <first stderr line>`` for a failed :func:`_git` probe."""
+    detail = next((ln.strip() for ln in (result.stderr or "").splitlines() if ln.strip()), "no error output")
+    return f"git {result.args[1]} exited {result.returncode}: {detail}"
 
 
 def _tree_size_mb(path: Path, timeout: int = 30) -> Optional[int]:
@@ -360,10 +368,14 @@ def audit_branches(repo_root: str) -> list[BranchRecord]:
 
     result = _git(["branch", "--format=%(refname:short)"], cwd=repo_root, timeout=10)
     if result.returncode != 0:
+        logger.warning("Branch audit of %s skipped: %s", repo_root, _probe_failure(result))
         return []
     branches = _lines(result)
 
     wt = _git(["worktree", "list", "--porcelain"], cwd=repo_root, timeout=10)
+    if wt.returncode != 0:  # checked-out branches unknown: any delete verdict could name one
+        logger.warning("Branch audit of %s skipped: %s", repo_root, _probe_failure(wt))
+        return []
     active = {
         line.removeprefix("branch refs/heads/").strip()
         for line in wt.stdout.splitlines() if line.startswith("branch refs/heads/")}
@@ -377,6 +389,8 @@ def audit_branches(repo_root: str) -> list[BranchRecord]:
         # Rebase merges rewrite SHAs, so --merged misses them; cherry patch-equivalence catches
         # the dominant leak. Bounded: a branch far ahead is a stale-base lane, keep it.
         ahead = _git(["rev-list", "--count", f"{upstream}..{branch}"], cwd=repo_root, timeout=10)
+        if ahead.returncode != 0:  # empty stdout would otherwise parse as "0 ahead" -> delete
+            return BranchRecord(branch, "keep", f"{_UNVERIFIED} ({_probe_failure(ahead)})")
         try:
             ahead_count = int(ahead.stdout.strip() or "0")
         except ValueError:
@@ -387,7 +401,7 @@ def audit_branches(repo_root: str) -> list[BranchRecord]:
             return BranchRecord(branch, "keep", f"{ahead_count} commits ahead (stale-base lane)")
         cherry = _git(["cherry", upstream, branch], cwd=repo_root, timeout=30)
         if cherry.returncode != 0:
-            return BranchRecord(branch, "keep", "could not verify (git cherry failed)")
+            return BranchRecord(branch, "keep", f"{_UNVERIFIED} ({_probe_failure(cherry)})")
         lines = _lines(cherry)
         if lines and all(ln.startswith("-") for ln in lines):
             return BranchRecord(branch, "delete", "all commits patch-equivalent upstream")
@@ -409,12 +423,15 @@ def audit_branches(repo_root: str) -> list[BranchRecord]:
 def reclaim_branches(
     repo_root: str, *, dry_run: bool = False, records: Optional[list[BranchRecord]] = None
 ) -> list[str]:
-    """Delete every delete-verdict branch from a frozen audit list."""
+    """Delete every delete-verdict branch from a frozen audit list. A branch kept only because a
+    probe failed is reported too, so the run never reads as "every branch carries real work"."""
     if records is None:
         records = audit_branches(repo_root)
     actions: list[str] = []
     for record in records:
         if record.verdict != "delete":
+            if record.reason.startswith(_UNVERIFIED):
+                actions.append(f"kept branch {record.name}: {record.reason}")
             continue
         if dry_run:
             actions.append(f"would delete branch {record.name} ({record.reason})")

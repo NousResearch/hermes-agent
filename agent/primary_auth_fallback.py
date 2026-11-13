@@ -9,6 +9,7 @@ the structured reason and the one place that leads a failed turn's copy with it.
 
 from __future__ import annotations
 
+import contextvars
 from dataclasses import dataclass
 from typing import Any, Optional
 
@@ -50,9 +51,35 @@ def primary_auth_failure_from_exc(exc: Any, provider: Any, backup: Any = "") -> 
 
 
 def attach_primary_auth_failure(agent: Any, failure: Optional[PrimaryAuthFailure]) -> None:
-    """Bind (or clear, with None) the reason on an agent built from a fallback runtime."""
-    if agent is not None:
-        agent._primary_auth_failure = failure if isinstance(failure, PrimaryAuthFailure) else None
+    """Bind (or clear, with None) the reason on an agent built from a fallback runtime.
+
+    The failure belongs to the route that resolution fell back to: when a later step moved the turn
+    onto another provider (``/model --once``, an API caller's provider, a channel override), the
+    backup it names is not the one running, so it is dropped rather than blamed on that route."""
+    if agent is None:
+        return
+    if isinstance(failure, PrimaryAuthFailure) and failure.backup:
+        running = str(getattr(agent, "provider", "") or "").strip().lower()
+        if running and running != failure.backup.strip().lower():
+            failure = None
+    agent._primary_auth_failure = failure if isinstance(failure, PrimaryAuthFailure) else None
+
+
+# The failure found while resolving this turn's route. A context variable, not a runner attribute: the
+# gateway resolves concurrent chats on separate threads, each with its own copied context.
+_PENDING: contextvars.ContextVar[Optional[PrimaryAuthFailure]] = contextvars.ContextVar(
+    "pending_primary_auth_failure", default=None)
+
+
+def set_pending_primary_auth_failure(failure: Optional[PrimaryAuthFailure]) -> None:
+    _PENDING.set(failure if isinstance(failure, PrimaryAuthFailure) else None)
+
+
+def take_pending_primary_auth_failure() -> Optional[PrimaryAuthFailure]:
+    """This turn's pending failure, cleared so a later resolution in the same context starts clean."""
+    failure = _PENDING.get()
+    _PENDING.set(None)
+    return failure
 
 
 # Backup failure reason -> what the backup's problem is, in the user's words.

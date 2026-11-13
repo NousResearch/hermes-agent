@@ -182,21 +182,38 @@ function creationOwnerFields(owner: string, remote: boolean): Partial<RosterRow>
   return remote ? { ...scoped, remoteSource: true } : scoped
 }
 
-const pendingDiscards = new Map<string, Promise<unknown>>()
+/** The latest draft create or delete per backend + name. A name typed again
+ *  after a rename waits for its retired twin's create AND the delete that
+ *  create triggers, instead of racing them. */
+const draftOps = new Map<string, Promise<unknown>>()
+
+function draftKey(target: string, slug: string) {
+  return `${target || String(host.state?.connectionId?.get?.() || '')}::${slug}`
+}
+
+function trackDraftOp<T>(key: string, op: Promise<T>): Promise<T> {
+  const forget = () => draftOps.get(key) === op && draftOps.delete(key)
+  draftOps.set(key, op)
+  op.then(forget, forget)
+
+  return op
+}
+
+async function afterDraftOps(key: string, own: { op?: Promise<unknown> }) {
+  for (let prev = draftOps.get(key); prev && prev !== own.op; prev = draftOps.get(key)) {
+    await prev.catch(() => undefined)
+  }
+}
 
 function discardDraftProfile(draft: string, target: string) {
   const discard = target
     ? requestOnTarget(target, 'cli.exec', { argv: ['profile', 'delete', draft, '--yes'] })
     : deleteBot({ name: draft })
 
-  const key = `${target}::${draft}`
-
-  const settled = Promise.resolve(discard)
+  // A failed delete still settles: the recreate then fails visibly as a duplicate.
+  trackDraftOp(draftKey(target, draft), Promise.resolve(discard)
     .then(() => host.notify({ kind: 'success', message: `Draft agent "${draft}" discarded` }))
-    .catch(err => host.notifyError(err, `Could not clean up draft profile "${draft}"`))
-    .finally(() => pendingDiscards.get(key) === settled && pendingDiscards.delete(key))
-
-  pendingDiscards.set(key, settled)
+    .catch(err => host.notifyError(err, `Could not clean up draft profile "${draft}"`)))
 }
 
 /** The live Capabilities surface needs a real profile. Materialize it whenever
@@ -553,9 +570,11 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
     const machine = (connections || []).find(c => c.id === targetId)?.label
     const warningTitle = targetId ? `${slug} — ${machine ? `${machine} (${targetId})` : targetId}` : slug
 
+    const key = draftKey(target, slug)
+    const own: { op?: Promise<unknown> } = {}
+
     const flight = singleFlight(flightRef, async () => {
-      // A same-named draft this dialog just discarded must finish deleting first.
-      await pendingDiscards.get(`${target}::${slug}`)
+      await afterDraftOps(key, own)
 
       if (generation !== draftGenRef.current) {
         return null
@@ -682,6 +701,8 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
 
       return slug
     })
+
+    own.op = trackDraftOp(key, flight)
 
     return flight
   }

@@ -57,7 +57,7 @@ beforeEach(() => {
   vi.stubGlobal("fetch", vi.fn(async (url: string, options?: RequestInit) => {
     if (url === "/api/profiles" && options?.method === "POST") {
       createRequests += 1;
-      return new Response(JSON.stringify(reply));
+      return new Response(JSON.stringify(reply), { status: Number(reply.status ?? 200) });
     }
     if (url === "/api/profiles") return new Response(JSON.stringify({ profiles: [] }));
     if (url === "/api/profiles/active") return new Response(JSON.stringify({ active: "default", current: "default" }));
@@ -102,6 +102,15 @@ it("clears the previous receipt when starting another creation", async () => {
   expect(document.body.textContent).not.toContain("Old creation warning");
   expect(document.querySelector('[role="status"]')!.className).toContain("text-success");
   expect(document.querySelector('[aria-label="Dismiss"]')).toBeNull();
+});
+
+it("keeps the previous receipt when a later creation fails", async () => {
+  reply.warnings = ["Old creation warning"];
+  await create();
+  reply = { status: 500, detail: "boom" };
+  await create();
+  expect(createRequests).toBe(2);
+  expect(document.querySelector('[role="status"]')!.textContent).toContain("Old creation warning");
 });
 
 it.each([{ warnings: undefined }, { warnings: [] }])("preserves success for warning-free and older replies (%j)", async ({ warnings }) => {

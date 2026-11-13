@@ -819,6 +819,31 @@ describe('profile creation warnings', () => {
     expect(createCalls().map(([, params]) => params.name)).toEqual(['inbox-triage', 'inbox-triage'])
   })
 
+  it('recreates a renamed-back draft only after its in-flight twin is created and deleted', async () => {
+    const base = mocks.request.getMockImplementation()!
+    let finishOld: (() => void) | undefined
+    mocks.request.mockImplementation((method: string, params?: unknown) => method === 'profiles.create' && !finishOld
+      ? new Promise(resolve => { finishOld = () => resolve({}) })
+      : base(method, params))
+    let finishDelete!: () => void
+    mocks.deleteBot.mockImplementationOnce(() => new Promise<undefined>(resolve => { finishDelete = () => resolve(undefined) }))
+    await renderDialog(true)
+    fireEvent.click(screen.getByRole('button', { name: 'Capabilities' }))
+    await waitFor(() => expect(finishOld).toBeTypeOf('function'))
+    const input = screen.getByPlaceholderText('inbox-triage')
+    fireEvent.change(input, { target: { value: 'inbox-triagex' } })
+    fireEvent.change(input, { target: { value: 'inbox-triage' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Create bot' }))
+    await act(async () => { await Promise.resolve() })
+    expect(createCalls()).toHaveLength(1)
+    await act(async () => finishOld!())
+    await waitFor(() => expect(mocks.deleteBot).toHaveBeenCalledWith({ name: 'inbox-triage' }))
+    expect(createCalls()).toHaveLength(1)
+    await act(async () => finishDelete())
+    await waitFor(() => expect(mocks.createCanonicalChat).toHaveBeenCalledWith('inbox-triage', { kickoff: true }))
+    expect(createCalls().map(([, params]) => params.name)).toEqual(['inbox-triage', 'inbox-triage'])
+  })
+
   it('keeps the model setup notice and action available when creation also returned warnings', async () => {
     const base = mocks.request.getMockImplementation()!
     mocks.request.mockImplementation(async (method: string, params?: unknown) =>

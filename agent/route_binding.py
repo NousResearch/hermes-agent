@@ -23,106 +23,56 @@ class RouteEntryClient(NamedTuple):
     model: str
     api_mode_explicit: bool
     api_mode: str
-    pool: Any = None  # the credential pool whose selected entry's key the client carries
-
-
-def _env_first_pool_key(provider: str) -> Optional[str]:
-    """The pool to pick ``provider``'s key from before its client is built, or None. Only registry
-    API-key providers served by ``resolve_provider_client``'s generic branch qualify: that branch
-    reads the ``.env`` key ahead of the pool, while selecting the provider directly reads the pool
-    first. Providers that pick from their pool themselves, own their key handling, derive the
-    endpoint from the key, or are shadowed by a ``providers:`` entry keep the resolver's key.
-    The pool is keyed by ``provider`` as given (an alias included), the pool the swap attaches."""
-    from agent.auxiliary_client import _EXPLICIT_PROVIDER_BRANCHES, _normalize_aux_provider
-    from hermes_cli.auth import _API_KEY_BASE_URL_RESOLVERS, PROVIDER_REGISTRY
-    from hermes_cli.runtime_provider import _get_named_custom_provider
-    from providers import get_provider_profile
-    from providers.base import ProviderProfile
-    pool_key, name = provider.strip().lower(), _normalize_aux_provider(provider)
-    pconfig = PROVIDER_REGISTRY.get(name)
-    if (pconfig is None or pconfig.auth_type != "api_key" or name in ("anthropic", "azure-foundry")
-            or name in _EXPLICIT_PROVIDER_BRANCHES or name in _API_KEY_BASE_URL_RESOLVERS):
-        return None
-    profile = get_provider_profile(name)
-    seams = ("resolve_api_key_secret", "runtime_base_url", "prepare_pool_entry", "seed_pool_credentials")
-    if profile is not None and any(getattr(type(profile), s) is not getattr(ProviderProfile, s) for s in seams):
-        return None
-    return None if any(_get_named_custom_provider(p) for p in {provider, name}) else pool_key
-
-
-def _select_pool_key(provider: str, model: str, base_url: Optional[str], *, commit: bool) -> tuple[Any, Optional[str]]:
-    """``(pool, key)`` of the entry a direct selection of ``provider`` would send, else ``(None, None)``.
-    Only a pool entry added for the endpoint the client will use (the entry's ``base_url`` when it
-    names one, else the provider's own) is eligible, so a key never moves to another endpoint.
-    ``commit`` selects (rotating and persisting the pool's cursor); otherwise the pool is only peeked."""
-    try:
-        if (pool_key := _env_first_pool_key(provider)) is None:
-            return None, None
-        from agent.auxiliary_client import _normalize_aux_provider
-        from agent.credential_pool import credential_pool_entry_serves_endpoint as serves, load_pool
-        from hermes_cli.auth import PROVIDER_REGISTRY, _provider_env_base_url, has_usable_secret
-        pconfig = PROVIDER_REGISTRY.get(pool_key) or PROVIDER_REGISTRY[_normalize_aux_provider(provider)]
-        url = base_url or _provider_env_base_url(pconfig) or pconfig.inference_base_url
-        pool = load_pool(pool_key)
-        if not pool.has_credentials() or not any(serves(e, url) for e in pool.entries()):
-            return None, None
-        entry = (pool.select if commit else pool.peek)(model=model or None, endpoint_url=url)
-        key = (getattr(entry, "runtime_api_key", None) or getattr(entry, "access_token", "")) if entry else ""
-    except Exception as exc:  # health: allow BLE001 -- the resolver's own key still applies
-        logger.debug("Fallback to %s: could not pick a pool key: %s", provider, exc)
-        return None, None
-    if entry is None or not serves(entry, url) or not has_usable_secret(key):
-        return None, None
-    logger.info("Fallback to %s: first request uses credential pool entry %s", provider, entry.id)
-    return pool, key
+    pool_choice: Any = None  # hermes_cli.runtime_provider.PoolChoice: the pool entry whose key the client carries
 
 
 def resolve_route_entry_client(entry: dict[str, Any], provider: str, model: str, *,
-                               raw_codex: bool = True, commit_pool_pick: bool = False) -> RouteEntryClient:
+                               raw_codex: bool = True) -> RouteEntryClient:
     """The client :func:`bind_route_entry` binds for ``entry``, shared with ``hermes fallback check
     --live`` so a readiness probe talks to exactly what the swap would. ``raw_codex=False`` returns
-    the chat-completions adapter for Codex/Responses providers. ``commit_pool_pick``: the swap's
-    pool selection; other callers peek and leave the pool's state on disk alone."""
+    the chat-completions adapter for Codex/Responses providers. A registry API-key provider's key
+    comes from its credential pool the way a direct pick takes it; the pool is not touched until the
+    caller commits ``pool_choice``."""
     from agent.auxiliary_client import resolve_provider_client
     from agent.chat_completion_helpers import _fallback_api_mode_hint
     from hermes_cli.fallback_config import resolve_entry_api_key
+    from hermes_cli.runtime_provider import PoolChoice
     # Pass the entry's base_url/api_key so custom endpoints (Ollama Cloud) resolve instead
     # of falling through to OpenRouter defaults.
     base_url_hint = (entry.get("base_url") or "").strip() or None
     api_key_hint = resolve_entry_api_key(entry)
-    pool = None
-    if api_key_hint is None:
-        # An entry naming its own key keeps it; otherwise the key comes from the pool the way a
-        # direct selection picks it, and the resolver still builds the route.
-        pool, api_key_hint = _select_pool_key(provider, model, base_url_hint, commit=commit_pool_pick)
     api_mode_explicit, api_mode = _fallback_api_mode_hint(entry, provider, base_url_hint)
     # Ollama Cloud: OLLAMA_API_KEY from env when the entry has no key. Host match, not
     # substring — GHSA-76xc-57q6-vm5m.
     if base_url_hint and base_url_host_matches(base_url_hint, "ollama.com") and not api_key_hint:
         from agent.secret_scope import get_secret
         api_key_hint = get_secret("OLLAMA_API_KEY") or None
+    choice = PoolChoice(model) if provider != "moa" else None  # MoA keys stay with the preset's own resolution
     client, _resolved_model = resolve_provider_client(
         provider, model=model, raw_codex=raw_codex, explicit_base_url=base_url_hint, explicit_api_key=api_key_hint,
-        api_mode=api_mode)
+        api_mode=api_mode, pool_choice=choice)
     if client is not None and provider != "moa":
         try:
             from hermes_cli.model_normalize import normalize_model_for_provider
             model = normalize_model_for_provider(model, provider)
         except Exception as norm_err:  # health: allow BLE001 -- a bad catalog entry keeps the raw id
             logger.warning("Could not normalize fallback model %r for provider %r: %s", model, provider, norm_err)
-    return RouteEntryClient(client, model, api_mode_explicit, api_mode, pool if client is not None else None)
+    return RouteEntryClient(client, model, api_mode_explicit, api_mode, choice if client is not None else None)
 
 
-def bind_route_entry(agent: Any, entry: dict[str, Any], provider: str, model: str) -> Optional[tuple[str, str]]:
+def bind_route_entry(agent: Any, entry: dict[str, Any], provider: str, model: str, *,
+                     commit_pool_choice: bool = True) -> Optional[tuple[str, str]]:
     """Swap ``agent`` onto ``entry`` (a fallback-chain-shaped dict). Returns ``(old_model,
     old_provider)``, or None when the provider has no usable client. Sets ``_fallback_activated``
-    so the next turn's ``restore_primary_runtime`` reverts it; raises on a failed swap."""
+    so the next turn's ``restore_primary_runtime`` reverts it; raises on a failed swap.
+    ``commit_pool_choice=False`` leaves the pool's pick uncounted in ``agent._route_pool_choice``
+    for a caller that may still refuse the route (it calls ``.commit()`` once it keeps it)."""
     from agent.chat_completion_helpers import (
         _fallback_api_mode_resolved, _rebind_fallback_credential_pool,
         _reresolve_fallback_reasoning_config, _rescope_fallback_extra_body, _update_fallback_context_compressor,
     )
     # raw_codex=True: the main agent needs direct responses.stream() access for Codex providers.
-    route = resolve_route_entry_client(entry, provider, model, commit_pool_pick=True)
+    route = resolve_route_entry_client(entry, provider, model)
     client, model, api_mode_explicit, api_mode = route.client, route.model, route.api_mode_explicit, route.api_mode
     if client is None:
         return None
@@ -154,7 +104,8 @@ def bind_route_entry(agent: Any, entry: dict[str, Any], provider: str, model: st
     reset_route_verdicts(agent)
     agent._fallback_activated = True
 
-    _rebind_fallback_credential_pool(agent, provider, model, route.pool)
+    choice = agent._route_pool_choice = route.pool_choice
+    _rebind_fallback_credential_pool(agent, provider, model, choice.pool if choice is not None else None)
     if provider == "moa":
         from agent.moa_loop import bind_moa_runtime
         bind_moa_runtime(agent, model)
@@ -171,6 +122,8 @@ def bind_route_entry(agent: Any, entry: dict[str, Any], provider: str, model: st
     _update_fallback_context_compressor(agent)
     _reresolve_fallback_reasoning_config(agent)
     _rescope_fallback_extra_body(agent, old_model, old_provider, old_base_url)
+    if commit_pool_choice and choice is not None:
+        choice.commit()
     return old_model, old_provider
 
 

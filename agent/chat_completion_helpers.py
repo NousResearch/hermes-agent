@@ -1855,15 +1855,15 @@ def _fallback_api_mode_resolved(agent, fb_provider: str, fb_model: str, fb_base_
 
 def _rebind_fallback_credential_pool(agent, fb_provider: str, fb_model: str, prefetched_pool=None) -> None:
     """Rebind the credential pool when the provider changes (else rate_limit/billing/auth recovery
-    mutates the wrong credentials and overwrites the fallback's base_url). Same-provider pool: kept."""
-    existing_pool = getattr(agent, "_credential_pool", None)
-    if existing_pool is not None:
-        pool_provider = (getattr(existing_pool, "provider", "") or "").strip().lower()
-        if pool_provider and pool_provider != fb_provider:
+    mutates the wrong credentials and overwrites the fallback's base_url); a same-provider pool is
+    kept. ``prefetched_pool``, the pool the fallback's key came from, is always the one bound."""
+    pool_provider = (getattr(getattr(agent, "_credential_pool", None), "provider", "") or "").strip().lower()
+    if prefetched_pool is not None or pool_provider not in ("", fb_provider):
+        if prefetched_pool is None:
             logger.info(
                 "Fallback to %s/%s: clearing primary credential pool (pool_provider=%s) to prevent cross-provider contamination",
                 fb_provider, fb_model, pool_provider)
-            agent._credential_pool = agent._credential_pool_entry_id = None
+        agent._credential_pool = agent._credential_pool_entry_id = None
     if getattr(agent, "_credential_pool", None) is None:
         try:
             from agent.custom_entry_pool import load_route_pool

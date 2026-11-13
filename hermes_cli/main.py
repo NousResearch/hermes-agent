@@ -784,6 +784,7 @@ from hermes_cli.old_updater_main import (
     _write_web_ui_build_stamp,
 )
 from hermes_cli.main_install_repair import _cleanup_quarantined_exes, _recover_update_debts_on_startup
+from hermes_cli.main_plugin_cli import register_plugin_cli_commands as _register_plugin_cli_commands
 from hermes_cli.main_install_repair import (  # frozen updater surface: update_cmd*.py resolve these via _m()
     _UPDATE_REEXEC_ENV,
     _clear_lazy_refresh_incomplete_marker,
@@ -2655,7 +2656,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "model", "monitoring", "pairing", "pause", "peer", "pets", "plugins", "portal", "profile",
         "project", "proxy", "prompt-size", "resume", "send", "sessions", "setup",
         "skin", "skills", "slack", "status", "tools", "uninstall", "update",
-        "usage", "vault",
+        "usage", "vault", "webapp",
         "webhook", "whatsapp", "whatsapp-cloud", "worktree", "chat", "secrets", "security",
         "browser",
         "verify",
@@ -3130,50 +3131,6 @@ def _advertise_agent_env() -> None:
     os.environ.setdefault("HERMES_AGENT", "true")
 
 
-def _attach_plugin_cli_command(subparsers, cmd_info) -> None:
-    """Register one plugin-provided top-level command from its descriptor."""
-    plugin_parser = subparsers.add_parser(
-        cmd_info["name"],
-        help=cmd_info["help"],
-        description=cmd_info.get("description", ""),
-        formatter_class=__import__("argparse").RawDescriptionHelpFormatter,
-    )
-    cmd_info["setup_fn"](plugin_parser)
-    if cmd_info.get("handler_fn") is not None:
-        plugin_parser.set_defaults(func=cmd_info["handler_fn"])
-
-
-def _register_plugin_cli_commands(subparsers) -> None:
-    """Register plugin-provided top-level commands (each plugin builds its own argparse tree).
-
-    Skipped when the invocation targets a known built-in — eagerly importing
-    every bundled plugin module costs 500-650ms.
-    """
-    if not _plugin_cli_discovery_needed():
-        return
-    try:
-        from plugins.memory import discover_plugin_cli_commands
-        from hermes_cli.plugins import discover_plugins, get_plugin_manager
-        from hermes_cli.left_core_migration import recover_for_command
-
-        recover_for_command(_first_positional_argv())
-        seen_plugin_commands = set()
-        for cmd_info in discover_plugin_cli_commands():
-            _attach_plugin_cli_command(subparsers, cmd_info)
-            seen_plugin_commands.add(cmd_info["name"])
-
-        discover_plugins()
-        # The invoked platform may still be a deferred entry; import it so its
-        # register_cli_command side effect runs before we read _cli_commands.
-        # See #54678.
-        _resolve_deferred_platform_cli_command(_first_positional_argv())
-        for cmd_info in get_plugin_manager()._cli_commands.values():
-            if cmd_info["name"] not in seen_plugin_commands:
-                _attach_plugin_cli_command(subparsers, cmd_info)
-    except Exception as _exc:
-        logging.getLogger(__name__).debug("Plugin CLI discovery failed: %s", _exc)
-
-
 def _build_cli_parser():
     """Build the full ``hermes`` argparse tree -> ``(parser, subparsers)``.
 
@@ -3253,8 +3210,6 @@ def _build_cli_parser():
     build_bundles_parser(subparsers)
     build_plugins_parser(subparsers, cmd_plugins=cmd_plugins)
 
-    _register_plugin_cli_commands(subparsers)
-
     build_curator_parser(subparsers)
     build_pets_parser(subparsers)
     build_clipboard_parser(subparsers)
@@ -3282,6 +3237,12 @@ def _build_cli_parser():
     build_gui_parser(subparsers, cmd_gui=cmd_gui)
     build_logs_parser(subparsers, cmd_logs=cmd_logs)
     build_prompt_size_parser(subparsers, cmd_prompt_size=cmd_prompt_size)
+
+    # Plugin commands go last, on purpose: a plugin that claims a built-in's name must lose to it
+    # inside the guarded registration loop rather than raising ArgumentError out of this builder and
+    # taking every `hermes` invocation on the host down with it.
+    _register_plugin_cli_commands(subparsers)
+
     return parser, subparsers
 
 

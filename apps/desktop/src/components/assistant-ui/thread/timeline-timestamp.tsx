@@ -2,20 +2,11 @@ import { useAuiState } from '@assistant-ui/react'
 import { useStore } from '@nanostores/react'
 import type { FC } from 'react'
 
+import { $timestampHourCycle, formatPreciseDateTime } from '@/lib/time'
 import { cn } from '@/lib/utils'
 import { $displayTimestamps } from '@/store/display-timestamps'
 
 import { formatTimelineRange } from './timestamp'
-
-const preciseDateTime = new Intl.DateTimeFormat(undefined, {
-  day: 'numeric',
-  fractionalSecondDigits: 3,
-  hour: 'numeric',
-  minute: '2-digit',
-  month: 'short',
-  second: '2-digit',
-  year: 'numeric'
-})
 
 const validUnixSeconds = (value: unknown): value is number =>
   typeof value === 'number' && Number.isFinite(value) && value > 0
@@ -39,6 +30,7 @@ export const TimelineTimestamp: FC<{
   // gates transcript timestamps here exactly as it gates the classic CLI's
   // [HH:MM] labels. Display-only, so toggling never touches model context.
   const enabled = useStore($displayTimestamps)
+  const hourCycle = useStore($timestampHourCycle)
   const started = unixDate(timestamp)
 
   if (!enabled || !started || !validUnixSeconds(timestamp)) {
@@ -48,12 +40,12 @@ export const TimelineTimestamp: FC<{
   const completed = validUnixSeconds(completedAt) && completedAt > timestamp ? unixDate(completedAt) : null
 
   const validCompletedAt = completed && validUnixSeconds(completedAt) ? completedAt : undefined
-  const startLabel = formatTimelineRange(timestamp, undefined)
-  const completedLabel = validCompletedAt === undefined ? '' : formatTimelineRange(validCompletedAt, undefined)
+  const startLabel = formatTimelineRange(timestamp, undefined, hourCycle)
+  const completedLabel = validCompletedAt === undefined ? '' : formatTimelineRange(validCompletedAt, undefined, hourCycle)
 
   const title = completed
-    ? `${preciseDateTime.format(started)} → ${preciseDateTime.format(completed)}`
-    : preciseDateTime.format(started)
+    ? `${formatPreciseDateTime(started, hourCycle)} → ${formatPreciseDateTime(completed, hourCycle)}`
+    : formatPreciseDateTime(started, hourCycle)
 
   return (
     <span

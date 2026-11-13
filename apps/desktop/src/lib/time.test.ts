@@ -1,16 +1,22 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 
 import {
   calendarBucket,
   DAY,
+  fmtClock,
+  fmtDateTime,
+  fmtDayTime,
+  fmtFullDateTime,
   fmtMonth,
   fmtMonthYear,
+  fmtTimelineClock,
   formatAgo,
   HOUR,
   MINUTE,
   nominalDayStart,
   SECOND,
-  sessionBucketLabel
+  sessionBucketLabel,
+  setTimestampFormatFromConfig
 } from './time'
 
 const labels = {
@@ -23,6 +29,37 @@ const labels = {
 
 const now = 1_000 * DAY
 const ago = (delta: number) => formatAgo(now - delta, labels, now)
+
+afterEach(() => setTimestampFormatFromConfig(undefined))
+
+describe('setTimestampFormatFromConfig', () => {
+  const afternoon = new Date(2026, 4, 1, 20, 2, 3, 456)
+
+  it('uses a 24-hour cycle everywhere when the configured strftime format contains %H', () => {
+    setTimestampFormatFromConfig('%H:%M')
+
+    for (const formatter of [fmtClock, fmtDayTime, fmtDateTime, fmtFullDateTime, fmtTimelineClock]) {
+      expect(formatter.resolvedOptions().hourCycle).toBe('h23')
+      expect(formatter.format(afternoon)).not.toMatch(/AM|PM/i)
+    }
+  })
+
+  it('uses a 12-hour cycle everywhere when the configured strftime format contains %I', () => {
+    setTimestampFormatFromConfig('%I:%M %p')
+
+    for (const formatter of [fmtClock, fmtDayTime, fmtDateTime, fmtFullDateTime, fmtTimelineClock]) {
+      expect(formatter.resolvedOptions().hourCycle).toBe('h12')
+    }
+  })
+
+  it('ignores escaped percent directives and follows the first real hour directive', () => {
+    setTimestampFormatFromConfig('literal %%H, then %I:%M %p')
+    expect(fmtClock.resolvedOptions().hourCycle).toBe('h12')
+
+    setTimestampFormatFromConfig('literal %%I, then %H:%M')
+    expect(fmtClock.resolvedOptions().hourCycle).toBe('h23')
+  })
+})
 
 describe('formatAgo', () => {
   it('reads "now" under two seconds, then seconds', () => {

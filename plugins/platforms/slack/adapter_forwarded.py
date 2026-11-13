@@ -10,7 +10,7 @@ discriminator here and the unfurl skip stays as it was.
 """
 
 import re
-from typing import Any, Callable
+from typing import Any, Callable, Collection
 
 from agent.compression_marker import ELISION_MARKER_MAX_LEN, elide
 
@@ -21,6 +21,7 @@ SLACK_FORWARDS_MAX_CHARS = 8000
 #: already carries the forward, and dropping it silently is the bug this module fixes.
 _DEDUPE_MIN_CHARS = 20
 _FILE_URL_KEYS = ("url_private_download", "url_private")
+_QUOTED_NOTE = "(content quoted in the message above)"
 _ENTITIES = {"&lt;": "<", "&gt;": ">", "&amp;": "&"}
 
 RenderBlocks = Callable[[list], str]
@@ -42,7 +43,14 @@ def is_forward(att: Any) -> bool:
     return isinstance(att, dict) and bool(att.get("is_share"))
 
 
-def is_linked_message(att: Any, bot_uid: str = "") -> bool:
+def own_bot_ids(primary: str | None, per_team: dict[str, str]) -> frozenset[str]:
+    """Every bot user id this adapter posts as: a multi-workspace install (and an Enterprise Grid
+    workspace installed separately) has a different bot user per team, and a permalink to the
+    bot's message in one workspace can be pasted into another."""
+    return frozenset(uid for uid in (primary, *per_team.values()) if uid)
+
+
+def is_linked_message(att: Any, own_ids: Collection[str] = ()) -> bool:
     """A pasted permalink's unfurl of someone else's message. Slack ships the linked message's
     content even when the bot cannot read the source conversation, so it is the only copy the
     agent gets. An unfurl of this bot's own message, or one Slack does not attribute, is treated
@@ -50,12 +58,12 @@ def is_linked_message(att: Any, bot_uid: str = "") -> bool:
     if not isinstance(att, dict) or att.get("is_share") or not att.get("is_msg_unfurl"):
         return False
     author = str(att.get("author_id") or "")
-    return bool(author) and author != bot_uid
+    return bool(author) and author not in own_ids
 
 
-def is_shared_message(att: Any, bot_uid: str = "") -> bool:
+def is_shared_message(att: Any, own_ids: Collection[str] = ()) -> bool:
     """A forward or a linked message: content the user is pointing the agent at."""
-    return is_forward(att) or is_linked_message(att, bot_uid)
+    return is_forward(att) or is_linked_message(att, own_ids)
 
 
 def files_with_forwarded(files: Any, attachments: Any) -> list[dict]:
@@ -86,23 +94,20 @@ def _forward_blocks(att: dict) -> list[dict]:
     return blocks
 
 
-def _layout_texts(blocks: list[dict]) -> list[str]:
-    """Text of ``section``/``header``/``context`` blocks: an app's post keeps its body there."""
-    out: list[str] = []
-    for block in blocks:
-        if block.get("type") not in ("section", "header", "context"):
-            continue
-        items = [block.get("text")] + list(block.get("fields") or []) + list(block.get("elements") or [])
-        out += [i["text"].strip() for i in items if isinstance(i, dict) and isinstance(i.get("text"), str)
-                and i["text"].strip()]
-    return out
+def _block_text(block: dict, render_blocks: RenderBlocks) -> str:
+    """One block's text. ``section``/``header``/``context`` carry an app post's body; rich_text
+    and tables go through the adapter's renderer."""
+    if block.get("type") not in ("section", "header", "context"):
+        return render_blocks([block]).strip()
+    items = [block.get("text")] + list(block.get("fields") or []) + list(block.get("elements") or [])
+    return "\n".join(i["text"].strip() for i in items
+                     if isinstance(i, dict) and isinstance(i.get("text"), str) and i["text"].strip())
 
 
 def forward_body(att: dict, render_blocks: RenderBlocks) -> str:
-    """The original's content: its blocks through the adapter's renderer, else ``text``, else
-    Slack's own ``fallback`` rendering."""
-    blocks = _forward_blocks(att)
-    body = "\n".join(p for p in [render_blocks(blocks).strip(), *_layout_texts(blocks)] if p)
+    """The original's content: its blocks in their original order, else ``text``, else Slack's
+    own ``fallback`` rendering."""
+    body = "\n".join(t for t in (_block_text(b, render_blocks) for b in _forward_blocks(att)) if t)
     if not body:
         body = re.sub(r"&(lt|gt|amp);", lambda m: _ENTITIES[m.group(0)], str(att.get("text") or "")).strip()
     return body or str(att.get("fallback") or "").strip()
@@ -135,19 +140,40 @@ def forward_section(att: dict, render_blocks: RenderBlocks, limit: int = SLACK_F
     return "\n".join(line for line in lines if line)
 
 
-def append_forwards(text: str, attachments: Any, render_blocks: RenderBlocks, bot_uid: str = "") -> str:
+def _message_refs(att: dict) -> set[str]:
+    """Ways to name the shared message: its permalink (query dropped) and channel + ts."""
+    refs = {str(att.get("from_url") or "").split("?", 1)[0]}
+    if att.get("channel_id") and att.get("ts"):
+        refs.add(f"{att['channel_id']}/{att['ts']}")
+    return refs - {""}
+
+
+def shared_message_sections(attachments: Any, render_blocks: RenderBlocks, own_ids: Collection[str] = (),
+                             seen_text: str = "") -> list[str]:
+    """Every forward and linked message in ``attachments``, rendered under ONE body budget. A
+    linked message that is also forwarded in the same post renders once, as the forward (which
+    also carries its files). A body already quoted in ``seen_text`` keeps its source line
+    and files but is not repeated."""
+    atts = [a for a in attachments or [] if is_forward(a)]
+    atts += [a for a in attachments or [] if is_linked_message(a, own_ids)]
+    budget, flat_seen = SLACK_FORWARDS_MAX_CHARS, " ".join((seen_text or "").split())
+    seen_refs: set[str] = set()
+    sections: list[str] = []
+    for att in atts:
+        if is_forward(att):
+            seen_refs |= _message_refs(att)
+        elif _message_refs(att) & seen_refs:
+            continue  # the same message is already here as a forward
+        body = forward_body(att, render_blocks)
+        if len(body) >= _DEDUPE_MIN_CHARS and " ".join(body.split()) in flat_seen:
+            body = _QUOTED_NOTE
+        sections.append(forward_section(att, render_blocks, limit=budget, body=body))
+        budget = max(budget - len(body), 0)
+    return sections
+
+
+def append_forwards(text: str, attachments: Any, render_blocks: RenderBlocks, own_ids: Collection[str] = ()) -> str:
     """Append every forward and linked message in ``attachments`` to ``text`` (the user's own
     words stay first)."""
-    budget = SLACK_FORWARDS_MAX_CHARS
-    flat_text = " ".join((text or "").split())
-    sections: list[str] = []
-    for att in attachments or []:
-        if not is_shared_message(att, bot_uid):
-            continue
-        body = forward_body(att, render_blocks)
-        if len(body) >= _DEDUPE_MIN_CHARS and " ".join(body.split()) in flat_text:
-            continue  # already quoted in the message itself
-        section = forward_section(att, render_blocks, limit=budget, body=body)
-        budget = max(budget - len(body), 0)
-        sections.append(section)
+    sections = shared_message_sections(attachments, render_blocks, own_ids, text)
     return (text.strip() + "\n\n" + "\n\n".join(sections)).strip() if sections else text

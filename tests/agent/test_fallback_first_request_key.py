@@ -138,6 +138,23 @@ class TestFallbackFirstRequestKey:
         assert agent.api_key == _ENV_KEY
         assert agent.base_url.rstrip("/") == "https://relay.example/v1"
 
+    def test_mixed_endpoint_pool_uses_healthy_matching_key(self):
+        # A key for a different endpoint may sort ahead of the healthy key for this route.
+        # Filtering only after select() would reject the wrong key and resend the spent env key.
+        _write_env(ALIBABA_TOKEN_PLAN_API_KEY=_ENV_KEY)
+        _add_pool_key(_TOKEN_PLAN, "other-endpoint", "sk-other-endpoint-key",
+                      "https://relay.example/v1", priority=1)
+        _add_pool_key(_TOKEN_PLAN, "matching-endpoint", _POOL_KEY, _TOKEN_PLAN_URL, priority=10)
+        _bench(_TOKEN_PLAN, _ENV_KEY)
+
+        agent = _activate({"provider": _TOKEN_PLAN, "model": "qwen3.8-max"})
+
+        assert agent.api_key == _POOL_KEY
+        assert agent.client.api_key == _POOL_KEY
+        assert agent._credential_pool.current().id == "matching-endpoint"
+        assert agent._credential_pool_entry_id == "matching-endpoint"
+        assert agent.base_url.rstrip("/") == _TOKEN_PLAN_URL
+
     def test_minimax_keeps_the_resolvers_route(self):
         # MiniMax pool rows store the /anthropic URL; the resolver builds /v1 for chat completions.
         _write_env(MINIMAX_API_KEY=_ENV_KEY, MINIMAX_API_KEY_2=_POOL_KEY)

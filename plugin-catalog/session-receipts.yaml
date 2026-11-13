@@ -17,9 +17,9 @@ description: >-
   guarantee), and shared copies should be reviewed before they leave the machine.
 maintainer: Ryan O'Mara
 tier: community
-category: observability
+category: tools
 docs_url: https://github.com/ryanomara/hermes-plugin-receipts#readme
-version: "1.2.0"
+version: "1.2.1"
 platforms: []
 capabilities:
   provides_tools:
@@ -27,3 +27,4 @@ capabilities:
   provides_hooks: []
   provides_middleware: []
   requires_env: []
+requires_hermes: ">=0.21.5"

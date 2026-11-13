@@ -201,6 +201,20 @@ class TestChatCompletionsBasic:
         msgs = [{"role": "user", "content": "hi"}]
         assert transport.convert_messages(msgs) is msgs
 
+    def test_omits_empty_tool_call_content_on_wire(self, transport):
+        """Strict OpenAI-compatible gateways reject empty content on an assistant
+        tool-call turn; the stored transcript stays unchanged."""
+        msgs = [{"role": "assistant", "content": "", "tool_calls": [
+            {"id": "call_1", "type": "function", "function": {"name": "setup_beat", "arguments": "{}"}},
+        ]}]
+        for provider in ("custom", "openai-api", "groq", None):
+            result = transport.convert_messages(msgs, provider=provider)
+            assert "content" not in result[0]
+        assert msgs[0]["content"] == ""
+        assert transport.convert_messages([{"role": "assistant", "content": ""}])[0]["content"] == ""
+        already_valid = [{"role": "assistant", "tool_calls": msgs[0]["tool_calls"]}]
+        assert transport.convert_messages(already_valid) is already_valid
+
     def test_convert_messages_strips_internal_scaffolding_markers(self, transport):
         """Hermes-internal ``_``-prefixed markers must never reach the wire.
 

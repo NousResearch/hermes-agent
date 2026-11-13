@@ -303,6 +303,10 @@ function PreviewOnlyMarkdownLink({ children, className, href }: ComponentProps<'
   return <ExternalLink className={cn('wrap-anywhere', className)} href={target.href}>{children}</ExternalLink>
 }
 
+function isTelHref(href: null | string | undefined): href is string {
+  return /^tel:/i.test(href ?? '')
+}
+
 function MarkdownLink({ children, className, href, ...props }: ComponentProps<'a'>) {
   const mediaPath = mediaPathFromMarkdownHref(href)
 
@@ -342,6 +346,22 @@ function MarkdownLink({ children, className, href, ...props }: ComponentProps<'a
   }
 
   const target = href ? normalizeExternalUrl(href) : href
+
+  if (isTelHref(target)) {
+    return (
+      <ExternalLink
+        className={cn(
+          'font-semibold text-foreground underline underline-offset-4 decoration-current/20 wrap-anywhere',
+          className
+        )}
+        href={target}
+        showExternalIcon={false}
+        {...props}
+      >
+        {children}
+      </ExternalLink>
+    )
+  }
 
   if (!target || !/^https?:\/\//i.test(target)) {
     // A plain filesystem href (`[report](/home/user/report.md)`, `file://…`,

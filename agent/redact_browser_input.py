@@ -4,25 +4,22 @@ A password from a vault or the user lands in the snippet as a plain string liter
 (``fill_input('#pass', 'hunter2')``) that matches no secret-shape pattern, so the
 progress line, verbose args and callbacks would show it in chat (#72298). Typed
 values are masked whatever they look like; selectors, URLs and the rest of the code
-stay readable. A typed value passed as a name (``pw = 'x'; fill_input(sel, pw)``) has
-the literal assigned to that name masked instead. Values typed one key at a time
-(``Input.dispatchKeyEvent`` in a loop) are not recognised. The tool itself always
-receives the untouched code.
+stay readable. The snippet is parsed as Python, so the typed argument is found by
+keyword or position whatever its spelling (``('pw')``, ``'' 'pw'``, ``text=..., selector=...``,
+f-strings, ``'a' + pw``); a name it uses (``pw = 'x'; fill_input(sel, pw)``) has the literals
+bound to that name masked too. Code that does not parse masks every literal inside each typing
+call (fail closed). Values typed one key at a time (``Input.dispatchKeyEvent`` in a loop) are
+not recognised. The tool itself always receives the untouched code.
 """
+import ast
 import re
 
-_FILL_INPUT = re.compile(r"\bfill_input\s*\(\s*")
-_FILL_INPUT_BARE_SELECTOR = re.compile(r"[^,()\n]+?(?=,)")
-_FILL_INPUT_VALUE = re.compile(r"\s*,\s*(?:text\s*=\s*)?")
-_TYPE_TEXT = re.compile(r"\btype_text\s*\(\s*(?:text\s*=\s*)?")
+# helper -> position of its typed value when passed positionally
+_TYPING_CALLS = {"fill_input": 1, "type_text": 0}
+_TYPING_CALL_RE = re.compile(r"\b(?:fill_input|type_text)\s*\(|insertText")
+_MASK = "'***'"
 # el.value = "value" (JS), the generic way a snippet sets an input; never a == / === comparison
 _VALUE_ASSIGN = re.compile(r"\.value\s*=(?!=)\s*")
-# CDP Input.insertText {"text": "value"} / text="value", read inside that call only
-_INSERT_TEXT = re.compile(r"insertText")
-_TEXT_KEY = re.compile(r"""(?:\\?["']text\\?["']\s*:\s*|\btext\s*=\s*)""")
-_NAME_ARG = re.compile(r"[A-Za-z_]\w*(?=\s*[,)])")
-# a pre-built dict handed to insertText: **params, {**params} or a positional params
-_DICT_ARG = re.compile(r"(?:\*\*\s*|,\s*)([A-Za-z_]\w*)(?=\s*[,)}])")
 _STR_PREFIX = re.compile(r"[fFrRbBuU]{1,2}(?=[\"'`\\])")
 _QUOTES = ("'''", '"""', "\\'", '\\"', "\\`", "'", '"', "`")
 
@@ -47,19 +44,12 @@ def _literal_end(code: str, start: int) -> tuple[str, str, int] | None:
     return prefix, "", i
 
 
-def _fill_input_values(code: str):
-    for m in _FILL_INPUT.finditer(code):
-        sel = _literal_end(code, m.end())
-        if sel is not None:
-            sel_end = sel[2]
-        else:
-            bare = _FILL_INPUT_BARE_SELECTOR.match(code, m.end())
-            if bare is None:
-                continue
-            sel_end = bare.end()
-        sep = _FILL_INPUT_VALUE.match(code, sel_end)
-        if sep is not None:
-            yield sep.end()
+def _literal_mask(code: str, start: int) -> tuple[int, int, str] | None:
+    lit = _literal_end(code, start)
+    if lit is None:
+        return None
+    prefix, quote, end = lit
+    return start, end, f"{prefix}{quote}***{quote}"
 
 
 def _call_end(code: str, i: int, pair: str = "()") -> int:
@@ -78,45 +68,122 @@ def _call_end(code: str, i: int, pair: str = "()") -> int:
     return i
 
 
-def _insert_text_values(code: str):
-    for m in _INSERT_TEXT.finditer(code):
-        start = m.end()
-        while start < len(code) and code[start] in "'\"`\\":
-            start += 1  # the quote closing the 'Input.insertText' method literal
-        window = code[:_call_end(code, start)]
-        yield from (k.end() for k in _TEXT_KEY.finditer(window, start))
-        args = _DICT_ARG.finditer(code, start, len(window) + 1)  # + the closing ")"
-        for name in {a.group(1) for a in args}:
-            yield from _dict_text_values(code, name)
+class _Spans:
+    """Char offsets of AST nodes in ``code`` (AST columns count UTF-8 bytes)."""
+
+    def __init__(self, code: str):
+        self.lines = [line + "\n" for line in code.split("\n")]
+        self.starts = [0]
+        for line in self.lines:
+            self.starts.append(self.starts[-1] + len(line))
+
+    def _offset(self, lineno: int, col: int) -> int:
+        return self.starts[lineno - 1] + len(self.lines[lineno - 1].encode()[:col].decode(errors="ignore"))
+
+    def of(self, node: ast.AST) -> tuple[int, int]:
+        return (self._offset(node.lineno, node.col_offset),
+                self._offset(node.end_lineno, node.end_col_offset))
 
 
-def _dict_text_values(code: str, name: str):
-    """Value starts of the ``text`` keys in each dict literal assigned to ``name``."""
-    assign = re.compile(rf"(?<![\w.]){re.escape(name)}\s*=(?!=)\s*\{{")
-    for m in assign.finditer(code):
-        window = code[:_call_end(code, m.end(), "{}")]
-        yield from (k.end() for k in _TEXT_KEY.finditer(window, m.end()))
+def _name_bindings(tree: ast.AST) -> dict[str, list[ast.AST]]:
+    """Every value assigned to each plain name anywhere in the snippet."""
+    out: dict[str, list[ast.AST]] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            targets = node.targets
+        elif isinstance(node, (ast.AnnAssign, ast.AugAssign, ast.NamedExpr)):
+            targets = [node.target]
+        else:
+            continue
+        for target in targets:
+            if isinstance(target, ast.Name) and node.value is not None:
+                out.setdefault(target.id, []).append(node.value)
+    return out
 
 
-def _typed_value_starts(code: str) -> list[int]:
-    starts = list(_fill_input_values(code))
-    starts += [m.end() for pat in (_TYPE_TEXT, _VALUE_ASSIGN) for m in pat.finditer(code)]
-    starts += _insert_text_values(code)
-    names = {n.group(0) for s in starts if (n := _NAME_ARG.match(code, s))}
-    for name in names:
-        assign = re.compile(rf"(?<![\w.]){re.escape(name)}\s*=(?!=)\s*")
-        starts += [m.end() for m in assign.finditer(code)]
-    return sorted(set(starts))
+def _is_insert_text(node: ast.Call) -> bool:
+    return any(isinstance(a, ast.Constant) and isinstance(a.value, str) and a.value.endswith("insertText")
+               for a in [*node.args, *(kw.value for kw in node.keywords)])
+
+
+class _TypedValues(ast.NodeVisitor):
+    """The source spans of every string a parsed snippet types into a page."""
+
+    def __init__(self, tree: ast.AST, code: str):
+        self.spans, self.bindings = _Spans(code), _name_bindings(tree)
+        self.out: list[tuple[int, int, str]] = []
+        self._followed: set[str] = set()
+
+    def _strings(self, expr: ast.AST) -> None:
+        """Mask each string constant in *expr* (an f-string whole); a name has its bound values masked."""
+        for node in ast.walk(expr):
+            if isinstance(node, ast.JoinedStr) or (isinstance(node, ast.Constant) and isinstance(node.value, str)):
+                self.out.append((*self.spans.of(node), _MASK))
+            elif isinstance(node, ast.Name) and node.id not in self._followed:
+                self._followed.add(node.id)
+                for bound in self.bindings.get(node.id, ()):
+                    self._strings(bound)
+
+    def _dict_text(self, expr: ast.AST) -> None:
+        """Mask the ``text`` entry of a params dict given literally, by name or spread."""
+        if isinstance(expr, ast.Dict):
+            for key, value in zip(expr.keys, expr.values):
+                if key is None:
+                    self._dict_text(value)
+                elif isinstance(key, ast.Constant) and key.value == "text":
+                    self._strings(value)
+        elif isinstance(expr, ast.Name):
+            for bound in self.bindings.get(expr.id, ()):
+                self._dict_text(bound)
+
+    def visit_Call(self, node: ast.Call) -> None:
+        func = node.func
+        name = func.id if isinstance(func, ast.Name) else getattr(func, "attr", "")
+        if name in _TYPING_CALLS:
+            pos = _TYPING_CALLS[name]
+            if len(node.args) > pos:
+                self._strings(node.args[pos])
+            for kw in node.keywords:
+                if kw.arg == "text":
+                    self._strings(kw.value)
+        elif _is_insert_text(node):
+            for kw in node.keywords:
+                (self._strings if kw.arg == "text" else self._dict_text)(kw.value)
+            for arg in node.args:
+                self._dict_text(arg)
+        self.generic_visit(node)
+
+
+def _unparsed_masks(code: str) -> list[tuple[int, int, str]]:
+    """Every literal inside each typing call region of a snippet that does not parse."""
+    out = []
+    for m in _TYPING_CALL_RE.finditer(code):
+        i, end = m.end(), _call_end(code, m.end())
+        while i < end:
+            lit = _literal_mask(code, i)
+            if lit is None:
+                i += 1
+                continue
+            out.append(lit)
+            i = max(lit[1], i + 1)
+    return out
 
 
 def mask_typed_browser_text(code: str) -> str:
     """``code`` with every value it types into a page replaced by ``***``."""
+    try:
+        tree = ast.parse(code)
+    except (SyntaxError, ValueError):
+        masks = _unparsed_masks(code)
+    else:
+        visitor = _TypedValues(tree, code)
+        visitor.visit(tree)
+        masks = visitor.out
+    masks += [lit for m in _VALUE_ASSIGN.finditer(code) if (lit := _literal_mask(code, m.end()))]
     out, pos = [], 0
-    for start in _typed_value_starts(code):
-        lit = None if start < pos else _literal_end(code, start)
-        if lit is None:
+    for start, end, replacement in sorted(masks, key=lambda s: (s[0], -s[1])):
+        if start < pos:  # inside a span already masked
             continue
-        prefix, quote, end = lit
-        out.append(f"{code[pos:start]}{prefix}{quote}***{quote}")
+        out.append(code[pos:start] + replacement)
         pos = end
     return "".join(out) + code[pos:]

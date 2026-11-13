@@ -10,6 +10,7 @@ import {
   setTreePaneHidden
 } from '@/components/pane-shell/tree/store'
 import { Codecs, persistentAtom } from '@/lib/persisted'
+import { CHAT_ITEMS_PANE_ID } from '@/store/chat-items'
 import { $paneStates, setPaneWidthOverride } from '@/store/panes'
 import { PREVIEW_TILE_PREFIX } from '@/store/preview-explicit'
 import { $portalShell } from '@/store/shell-variant'
@@ -30,7 +31,9 @@ export const $developerToolPanelWidth = persistentAtom<null | number>(
 /** The width every tool pane declares in the redesign. */
 export const DEVELOPER_TOOL_PANEL_WIDTH = `var(${WIDTH_PROPERTY}, var(--portal-tool-panel-width))`
 
-const isTool = (paneId: string) => TOOLS.includes(paneId) || paneId.startsWith(`${PREVIEW_TILE_PREFIX}:`)
+// The chat's items ride the same panel and width as a tool, like a preview tile.
+const isTool = (paneId: string) =>
+  TOOLS.includes(paneId) || paneId === CHAT_ITEMS_PANE_ID || paneId.startsWith(`${PREVIEW_TILE_PREFIX}:`)
 
 /** A tool pane's sizing in the redesign: the shared width, never under the tool's own minimum (the
  *  terminal and the browser need more room than the file tree). Classic keeps each pane's own. */

@@ -10,6 +10,7 @@ import { useStore } from '@nanostores/react'
 import { atom, computed } from 'nanostores'
 import type { CSSProperties, ReactElement, PointerEvent as ReactPointerEvent } from 'react'
 
+import { chatItemsCopy } from '@/app/chat/items/chat-items-copy'
 import { SessionDraftTitle } from '@/app/chat/session-draft-title'
 import { SessionStatusDot } from '@/app/chat/session-status-dot'
 import { PALETTE_AREA, type PaletteContribution, paletteToggle } from '@/app/command-palette/contrib'
@@ -50,6 +51,7 @@ import { Slot } from '@/contrib/react/slot'
 import { registry } from '@/contrib/registry'
 import { discoverRuntimePlugins } from '@/contrib/runtime-loader'
 import { LocalizedTabTitle, translateNow } from '@/i18n'
+import { getRuntimeI18nLocale } from '@/i18n/runtime'
 import { NEW_SESSION_TITLE, sessionTitle as storedSessionTitle } from '@/lib/chat-runtime'
 import {
   Download,
@@ -65,6 +67,7 @@ import {
 import { type KeybindContribution, KEYBINDS_AREA } from '@/lib/keybinds/actions'
 import { TRANSCRIPT_DIRECTIVE_AREA, type TranscriptDirectiveContribution } from '@/lib/transcript-directives'
 import { setYoloEnabled } from '@/lib/yolo-session'
+import { $chatItemsOpen, CHAT_ITEMS_PANE_ID, closeChatItems, openChatItems } from '@/store/chat-items'
 import { $connectionsRegistry } from '@/store/connection-registry-state'
 import { watchDeadSessionPrune } from '@/store/dead-session-prune'
 import { $interfaceMode, setModeContext, toggleSimpleMode } from '@/store/interface-mode'
@@ -135,7 +138,7 @@ import { bindBotsPaneToShell } from './bots-pane-shell'
 import { DeveloperRail } from './developer-rail'
 import { BASIC_TREE, DEFAULT_TREE, registerLayoutPresets } from './layout-presets'
 import { bindLayoutSides } from './layout-sides'
-import { FilesPane, LogsPane, ReviewPaneContent } from './panes'
+import { ChatItemsPane, ChatItemsTabTitle, FilesPane, LogsPane, ReviewPaneContent } from './panes'
 import { PluginPreviewConsentDialog } from './plugin-preview-consent-dialog'
 import { LayoutTreeCover } from './route-cover'
 import { ContribWiring, WiredPane } from './wiring'
@@ -263,6 +266,7 @@ registry.registerMany([
 const renderTerminalPane = () => <WiredPane part="terminal" />
 const renderFilesPane = () => idle(<FilesPane />)
 const renderReviewPane = () => idle(<ReviewPaneContent />)
+const renderChatItemsPane = () => idle(<ChatItemsPane />)
 
 const toolPanes = (portal: boolean) => [
   {
@@ -325,6 +329,24 @@ const toolPanes = (portal: boolean) => [
       tabTitleText: () => translateNow('sidebar.review')
     },
     render: renderReviewPane
+  },
+  {
+    id: CHAT_ITEMS_PANE_ID,
+    area: 'panes',
+    title: chatItemsCopy(getRuntimeI18nLocale()).pane,
+    // The chat's artifacts, files and links (redesign only: bound hidden in classic below). It
+    // docks beside the chat and joins the tools' one panel and width when revealed.
+    data: {
+      placement: 'right',
+      collapsible: true,
+      dock: { pane: 'workspace', pos: 'right' },
+      ...(portal
+        ? developerToolSizing(FILE_BROWSER_MIN_WIDTH)
+        : { width: FILE_BROWSER_DEFAULT_WIDTH, minWidth: FILE_BROWSER_MIN_WIDTH, maxWidth: FILE_BROWSER_MAX_WIDTH }),
+      tabTitle: () => <ChatItemsTabTitle />,
+      tabTitleText: () => chatItemsCopy(getRuntimeI18nLocale()).pane
+    },
+    render: renderChatItemsPane
   }
 ]
 
@@ -641,6 +663,13 @@ bindPaneVisibility(
   computed([$reviewOpen, $hasWorkspace], (open, workspace) => open && workspace),
   closeReview,
   () => openReview($reviewScopeCwd.get(), $reviewScopeTarget.get())
+)
+// The chat's items: the redesign's, shown when asked for (the rail, simple mode's "N items").
+bindPaneVisibility(
+  CHAT_ITEMS_PANE_ID,
+  computed([$chatItemsOpen, $portalShell], (open, portal) => open && portal),
+  closeChatItems,
+  openChatItems
 )
 // Classic Advanced keeps a collapsed terminal rail; the redesign and Simple
 // hide it completely. PersistentTerminal keeps the shells alive in either case.

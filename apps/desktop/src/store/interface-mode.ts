@@ -100,6 +100,7 @@ export interface ModeContext {
 }
 
 export interface ModePolicy {
+  chatItemsOpen: boolean
   fileBrowserOpen: boolean
   hideCodeDiffs: boolean
   profileRailVisible: boolean
@@ -118,6 +119,8 @@ type PolicyEntry<K extends ModePolicyKey> = ((context: ModeContext) => ModePolic
 type PolicyTable = { readonly [K in ModePolicyKey]?: PolicyEntry<K> }
 
 const SIMPLE_POLICY: PolicyTable = {
+  // The chat's items open on click (its "N items" button), never by default.
+  chatItemsOpen: false,
   // Hide-style panes rest closed; their keybinds and the agent still reveal them.
   fileBrowserOpen: false,
   // Inline diffs are the review pane's job; the changed-files summary stays.

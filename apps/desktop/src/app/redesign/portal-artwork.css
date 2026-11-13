@@ -199,7 +199,8 @@
   [data-tree-group][data-window-top]:not(
     [data-zone-pane='sessions'],
     [data-zone-pane='files'],
-    [data-zone-pane='review']
+    [data-zone-pane='review'],
+    [data-zone-pane='chat-items']
   )
   > [data-panel-header]::before,
 :root[data-shell='portal'] [data-overlay-surface][data-page-surface] [data-glass-raised],
@@ -209,11 +210,15 @@
   background-blend-mode: normal, normal, var(--artwork-blend);
 }
 
-/* A page's nav panel (Settings 16292:19818) and the side tool panes (Files, Review: the sidebar's
+/* A page's nav panel (Settings 16292:19818) and the side tool panes (Files, Review, Items: the sidebar's
    kind, Brand rev 491:40755) are the sidebar's veil over the full-strength art. */
 :root[data-shell='portal'] [data-page-surface] :is([data-tour='overlay-nav'], .page-sidebar-panel),
 :root[data-shell='portal']
-  [data-tree-group][data-window-top]:is([data-zone-pane='files'], [data-zone-pane='review'])
+  [data-tree-group][data-window-top]:is(
+    [data-zone-pane='files'],
+    [data-zone-pane='review'],
+    [data-zone-pane='chat-items']
+  )
   > [data-panel-header]::before {
   background: var(--artwork-panel-noise), linear-gradient(var(--portal-sidebar-panel-background)), var(--artwork-paint);
   background-color: var(--portal-surface-canvas);

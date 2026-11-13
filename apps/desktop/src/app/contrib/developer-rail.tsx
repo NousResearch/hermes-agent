@@ -8,6 +8,7 @@ import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { Tip, TipKeybindLabel } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
+import { CHAT_ITEMS_PANE_ID } from '@/store/chat-items'
 import { $showsAdvancedChrome } from '@/store/interface-mode'
 import { $rightRailActiveTabId, setFileBrowserOpen } from '@/store/layout'
 import { $visiblePreviewTabs, browserTabFor, toggleBrowserTab } from '@/store/preview'
@@ -17,6 +18,7 @@ import { $focusedSessionIsTile, $focusedStoredSessionId } from '@/store/session-
 import { $focusedWorkspaceCwd } from '@/store/session-states'
 import { usePortalShell } from '@/store/shell-variant'
 
+import { useChatItemsCopy } from '../chat/items/chat-items-copy'
 import { hideDeveloperToolPanel, prepareDeveloperToolPanel } from '../redesign/developer-tool-panel'
 import { toggleTerminalPane } from '../right-sidebar/terminal/reveal-focus'
 import { appViewForPath } from '../routes'
@@ -44,6 +46,8 @@ function DeveloperTools() {
   const activeTabId = useStore($rightRailActiveTabId)
   const browserTab = browserTabFor(previewTabs, activeTabId)
   const browser = useStore($paneVisible(`${PREVIEW_TILE_PREFIX}:${browserTab?.id ?? ''}`))
+  const items = useStore($paneVisible(CHAT_ITEMS_PANE_ID))
+  const itemsLabel = useChatItemsCopy().pane
 
   const tools = [
     {
@@ -80,6 +84,14 @@ function DeveloperTools() {
       action: 'view.showBrowser',
       active: browser,
       run: toggleBrowserTab
+    },
+    {
+      paneId: CHAT_ITEMS_PANE_ID,
+      label: itemsLabel,
+      icon: 'folder-library',
+      action: undefined,
+      active: items,
+      run: () => togglePaneVisible(CHAT_ITEMS_PANE_ID)
     }
   ]
 
@@ -93,8 +105,8 @@ function DeveloperTools() {
       <div className="portal-rail-group min-h-0 overflow-y-auto">
         {tools.map(tool => (
           <Tip
-            key={tool.action}
-            label={<TipKeybindLabel actionId={tool.action} text={tool.label} />}
+            key={tool.paneId}
+            label={tool.action ? <TipKeybindLabel actionId={tool.action} text={tool.label} /> : tool.label}
             placement="right-rail"
           >
             <Button

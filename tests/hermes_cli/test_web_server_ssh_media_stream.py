@@ -30,6 +30,9 @@ class FakeSshWorkspace:
         data = self.files[path]
         return data[:read_limit] if read_limit else data, len(data), path
 
+    def normalize(self, path):
+        return path
+
     def write_text(self, path, text, max_bytes=None):
         self.writes.append((path, text))
         return path, len(text.encode("utf-8"))

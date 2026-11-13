@@ -15,8 +15,12 @@
   --portal-conversation-turn-gap: 1.875rem;
   --portal-conversation-prompt-clearance: 0.75rem;
   --portal-conversation-fill: var(--portal-raw-ink-5);
-  /* The tool-steps row takes the same fill under its dashed edge (1089:8401: light/5). */
+  /* The tool-steps row takes the same fill under its dashed edge (1089:8401: light/5). Figma draws the
+     dash at light/10 (16292:16175), about 1.3:1 on the navy stage: the row is a control, so its edge
+     takes ink .4 to hold the 3:1 a control's boundary needs, in both modes. Rules and table lines
+     keep the quiet dash. */
   --portal-conversation-tool-fill: var(--portal-raw-ink-5);
+  --portal-conversation-tool-dash: var(--portal-raw-ink-40);
   --portal-conversation-dash: var(--portal-raw-ink-10);
   --portal-conversation-done: color-mix(in srgb, var(--portal-raw-green) 50%, transparent);
   --dt-user-bubble: var(--portal-conversation-fill);
@@ -264,8 +268,8 @@
   --conversation-tool-font-size: var(--conversation-caption-font-size);
   --conversation-line-height: calc(1.05rem * var(--chat-text-scale, 1));
   --disclosure-caret-rest: 0.6;
-  --dash-x: repeating-linear-gradient(to right, var(--portal-conversation-dash) 0 2px, transparent 2px 6px);
-  --dash-y: repeating-linear-gradient(to bottom, var(--portal-conversation-dash) 0 2px, transparent 2px 6px);
+  --dash-x: repeating-linear-gradient(to right, var(--portal-conversation-tool-dash) 0 2px, transparent 2px 6px);
+  --dash-y: repeating-linear-gradient(to bottom, var(--portal-conversation-tool-dash) 0 2px, transparent 2px 6px);
   padding: 0.5rem 0.625rem;
   border: 0;
   border-radius: var(--portal-radius-surface);

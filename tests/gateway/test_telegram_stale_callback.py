@@ -66,6 +66,8 @@ def _picker_state() -> dict:
     return {
         "providers": [{"slug": "acme", "name": "Acme", "models": [{"id": "acme/big"}]}],
         "model_list": [{"id": "acme/big"}],
+        "full_model_list": [{"id": "acme/big"}],
+        "listing": 1,
         "current_model": "acme/small",
         "current_provider": "acme",
         "selected_provider": "acme",
@@ -81,7 +83,7 @@ class TestExpiredCallbackAnswer:
         adapter = _adapter()
         query = _RefusingQuery()
 
-        await adapter._handle_model_picker_callback(query, "mc:0", "12345")
+        await adapter._handle_model_picker_callback(query, "mc:1:0", "12345")
 
         # The tap can no longer be acked as a toast; the toast text is still a usable next step.
         notes = _notes(adapter)
@@ -95,7 +97,7 @@ class TestExpiredCallbackAnswer:
         adapter = _adapter()
         query = _RefusingQuery(thread_id=77, is_topic_message=True)
 
-        await adapter._handle_model_picker_callback(query, "mc:0", "12345")
+        await adapter._handle_model_picker_callback(query, "mc:1:0", "12345")
 
         notes = _notes(adapter)
         assert len(notes) == 1
@@ -117,7 +119,7 @@ class TestExpiredCallbackAnswer:
         adapter._model_picker_state["12345"] = state
         query = _RefusingQuery()
 
-        await adapter._handle_model_picker_callback(query, "mc:0", "12345")
+        await adapter._handle_model_picker_callback(query, "mc:1:0", "12345")
 
         state["on_model_selected"].assert_awaited_once()
         assert "12345" not in adapter._model_picker_state
@@ -130,7 +132,7 @@ class TestExpiredCallbackAnswer:
         query = _RefusingQuery(EDIT_GONE)
 
         with pytest.raises(Exception, match="message to edit not found"):
-            await adapter._handle_model_picker_callback(query, "mc:0", "12345")
+            await adapter._handle_model_picker_callback(query, "mc:1:0", "12345")
 
     @pytest.mark.asyncio
     async def test_answer_callback_reports_whether_the_answer_landed(self):

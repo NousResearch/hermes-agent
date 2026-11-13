@@ -265,7 +265,7 @@ def _smart_verdict(command: str, description: str, pattern_key: str,
         payload = None
     else:
         _ctx._fire_approval_hook("pre_approval_request", **payload)
-    verdict = _smart_approve(command, description, session_key=session_key)
+    verdict = _smart_approve(command, description, session_key)
     if payload is not None and verdict in {"approve", "deny"}:
         _ctx._fire_approval_hook("post_approval_response", **payload, choice=f"smart_{verdict}", decided_by="aux_llm")
     return verdict

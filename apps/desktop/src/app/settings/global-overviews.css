@@ -250,11 +250,6 @@
   outline-offset: var(--portal-focus-ring-offset);
 }
 
-.settings-agent-link-icon {
-  margin-top: 1px;
-  opacity: 0.6;
-}
-
 .settings-agent-link-text {
   display: grid;
   min-width: 0;
@@ -536,4 +531,153 @@
   letter-spacing: var(--portal-tracking-caption);
   line-height: 1.4;
   text-transform: uppercase;
+}
+
+/* ── Global Settings ("Prod - Desktop" 06 · Settings/Account, 16292:16447) ──
+   Only Settings renders the overlay split's main column in the redesign. Its header, section heads
+   and card rows share one 32px text inset inside the centred column; cards lift off the page with no
+   stroke, radius 15, 16px over and under their rows; row labels in the 16px body, descriptions in
+   the mono signal font. */
+:root[data-shell='portal'] [data-page-surface] [data-slot='overlay-main'] :is(.portal-page-header, [data-slot='page-description']) {
+  padding-inline: var(--portal-settings-inset);
+}
+
+:root[data-shell='portal'] [data-page-surface] [data-slot='overlay-main'] .portal-page-header-title > h1 {
+  letter-spacing: var(--portal-settings-h1-tracking);
+  line-height: var(--portal-settings-h1-line);
+}
+
+:root[data-shell='portal']
+  [data-page-surface]
+  [data-slot='overlay-main']
+  :is(.portal-page-header-description, [data-slot='page-description']) {
+  color: var(--ui-text-quaternary);
+  font-family: var(--portal-settings-meta-font);
+}
+
+:root[data-shell='portal'] [data-page-surface] [data-slot='overlay-main'] .global-settings-section-head {
+  padding-inline: var(--portal-settings-inset);
+}
+
+:root[data-shell='portal'] [data-page-surface] [data-slot='overlay-main'] .global-settings-section-head h3 {
+  color: var(--portal-settings-section-ink);
+  font-size: var(--portal-type-ui-size);
+  font-weight: 600;
+  line-height: var(--portal-settings-section-line);
+}
+
+:root[data-shell='portal']
+  [data-page-surface]
+  [data-slot='overlay-main']
+  :is(.global-settings-card, .global-settings-disclosure) {
+  border: 0;
+  border-radius: var(--portal-radius-settings-card);
+  background: var(--portal-settings-card);
+}
+
+:root[data-shell='portal'] [data-page-surface] [data-slot='overlay-main'] .global-settings-card {
+  padding-block: var(--portal-settings-card-pad);
+}
+
+:root[data-shell='portal'] [data-page-surface] [data-slot='overlay-main'] .global-settings-card [data-slot='settings-row'],
+:root[data-shell='portal'] [data-page-surface] [data-slot='overlay-main'] .global-settings-disclosure > summary {
+  padding-inline: var(--portal-settings-inset);
+}
+
+:root[data-shell='portal']
+  [data-page-surface]
+  [data-slot='overlay-main']
+  :is(.global-settings-card, .global-settings-disclosure-body)
+  [data-slot='settings-row']
+  > div {
+  min-height: 0;
+  padding-block: var(--portal-settings-row-pad);
+}
+
+:root[data-shell='portal']
+  [data-page-surface]
+  [data-slot='overlay-main']
+  :is(.global-settings-card, .global-settings-disclosure-body)
+  [data-slot='settings-row']
+  > div
+  > div:first-child
+  > div:first-child {
+  font-size: var(--portal-settings-row-label-size);
+  font-weight: 400;
+  line-height: var(--portal-settings-row-label-line);
+}
+
+:root[data-shell='portal']
+  [data-page-surface]
+  [data-slot='overlay-main']
+  :is(.global-settings-card, .global-settings-disclosure-body)
+  [data-slot='settings-row']
+  > div
+  > div:first-child
+  > div:nth-child(2) {
+  font-family: var(--portal-settings-meta-font);
+}
+
+:root[data-shell='portal']
+  [data-page-surface]
+  [data-slot='overlay-main']
+  .global-settings-card
+  :is([data-slot='settings-row'] + [data-slot='settings-row'], > div + div) {
+  border-top-color: var(--portal-settings-divider);
+}
+
+/* The Agent settings card (16292:16428): borderless light/5, radius 9, a soft drop shadow, the lattice
+   art masked in from its leading edge; 20px under the rows, on the title's inset. */
+:root[data-shell='portal'] [data-page-surface] [data-slot='overlay-nav-related'] {
+  margin-top: var(--portal-settings-related-gap);
+  padding: 0 0 0 calc(var(--portal-settings-nav-inset) - var(--page-panel-inset));
+  border: 0;
+}
+
+:root[data-shell='portal'] [data-page-surface] .settings-agent-link {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  align-items: center;
+  gap: 0.75rem;
+  max-width: var(--portal-settings-link-width);
+  padding: 1rem 1rem 1rem 3rem;
+  border: 0;
+  border-radius: var(--portal-radius-settings-link);
+  /* Opaque over the panel's own fill, so the art's lighten blend reads the card, not a hole. */
+  background:
+    linear-gradient(var(--portal-settings-link), var(--portal-settings-link)),
+    var(--portal-page-sidebar-background);
+  box-shadow: var(--portal-shadow-settings-link);
+}
+
+:root[data-shell='portal'] [data-page-surface] .settings-agent-link:hover {
+  background:
+    linear-gradient(var(--portal-surface-row-hover), var(--portal-surface-row-hover)),
+    linear-gradient(var(--portal-settings-link), var(--portal-settings-link)),
+    var(--portal-page-sidebar-background);
+}
+
+:root[data-shell='portal'] [data-page-surface] .settings-agent-link::before {
+  content: '';
+  position: absolute;
+  z-index: -1;
+  inset: 0;
+  background: url('../../assets/settings-agent-lattice.avif') -9.55rem 50% / 18.175rem no-repeat;
+  mix-blend-mode: lighten;
+  opacity: 0.8;
+  mask-image: linear-gradient(to right, var(--portal-raw-black) 18%, transparent 56%);
+  pointer-events: none;
+}
+
+:root[data-shell='portal'] [data-page-surface] .settings-agent-link-text {
+  gap: 0.375rem;
+}
+
+:root[data-shell='portal'] [data-page-surface] .settings-agent-link-text > span:first-child {
+  font-weight: 500;
+}
+
+:root[data-shell='portal'] [data-page-surface] .settings-agent-link-text > span + span {
+  font-family: var(--portal-settings-meta-font);
 }

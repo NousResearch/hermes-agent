@@ -399,7 +399,16 @@ starts `--portal-stage-inset` (Figma 919: x 150 at 1280) into the stage. Columns
 left-anchored at every window width, never centred, with one max width per page kind:
 `--portal-column-form` (840) for forms and details, `--portal-column-catalog` (980) for
 catalogs, lists and tables. Every H1 (or agent hero) tops out at the same y; header actions end
-at the column's right edge.
+at the column's right edge. Global Settings is the exception ("Prod - Desktop" 06 · Settings/Account,
+16292:16447): a 640px column centred in the stage, its H1 (Oswald Light 40/48, -1px) 104px under the
+stage's top with a mono description; the header, section heads (14 SemiBold at .8) and card rows
+share a 32px text inset; cards are radius 15, borderless, white .02 / black .50 / blue .10, 16px over
+and under their rows, rows 12px with 16px Regular labels and mono descriptions. Its panel (16292:16359)
+titles "Settings" on a 30px inset with the settings search at its end (the band's pill is gone; typing
+and ⌘K still open the palette), 40px rows 4px apart in SemiBold with no stroke on the selected one, and
+the Agent settings card 20px under them: radius 9, borderless, the lattice art masked in from its
+leading edge. Figma's "// META INFO" caption (placeholder copy) and its Help & Feedback entry (no
+destination yet) are not built; Advanced and the Documentation link stay, though Figma omits them.
 An agent's page has one vertical menu (Figma 1036:7189). On Overview and History the
 page sidebar panel lists the agents; on the Settings tab the same panel swaps to
 "← Back to agents" (a history step back to the Overview), the agent's own row, and the
@@ -656,6 +665,10 @@ The tables below are generated from the CSS; do not edit them by hand.
 | `--portal-page-sidebar-background` | `var(--portal-sidebar-background)` | ″ |  |
 | `--portal-surface-elevated` | `var(--ui-bg-elevated)` | ″ | Menus, popovers, dialogs, drawers, toasts: the solid floating fill (878:6044 #0D0D1E on dark). |
 | `--portal-surface-card` | `var(--portal-raw-ink-2)` | ″ | Cards of grouped rows (1036:7576, 1038:7803). |
+| `--portal-settings-card` | `color-mix( in srgb, var(--portal-raw-pure-white) 2%, color-mix(in srgb, var(--portal-raw-black) 50%, var(--portal-raw-brand-10)) )` | `color-mix(in srgb, var(--portal-raw-pure-white) 70%, transparent)` | Global Settings' cards lift off the page with no stroke (Card 16292:16456): white .02 / black .50 / blue .10 (#1A1A30 where solid); their dividers light/5. Section heads at .8 ink. |
+| `--portal-settings-divider` | `var(--portal-raw-ink-5)` | ″ |  |
+| `--portal-settings-section-ink` | `color-mix(in srgb, var(--ui-base) 80%, transparent)` | ″ |  |
+| `--portal-settings-link` | `var(--portal-raw-ink-5)` | ″ | The column's Agent settings card (16292:16428): light/5. |
 | `--portal-surface-selected` | `var(--portal-raw-ink-5)` | ″ | Neutral selection: list rows, nav rows (1036:7409), with --portal-stroke-selected. |
 | `--portal-surface-row-hover` | `var(--portal-raw-ink-3)` | ″ | A row under the pointer on a panel, the stage or a card: one ink step over its rest. |
 | `--portal-surface-skeleton` | `var(--portal-raw-ink-8)` | ″ | Content still loading (skeleton bars, tiles and rows): one quiet ink block on any surface. |
@@ -734,6 +747,12 @@ The tables below are generated from the CSS; do not edit them by hand.
 | `--portal-type-caption-size` | `0.625rem` | ″ | UPPERCASE group labels, table headers, stat labels, menu labels (1036:7408). |
 | `--portal-type-chip-size` | `0.5625rem` | ″ | UPPERCASE DEFAULT / RUNNING / EMPTY chips (1036:7318). |
 | `--portal-type-field-touch-min` | `16px` | ″ | The smallest text a field may use on a coarse pointer in the browser: iOS Safari zooms into any focused field under 16px (px, not rem: the zoom rule reads CSS pixels). |
+| `--portal-settings-h1-line` | `3rem` | ″ | Global Settings (16292:16447): the H1 at Figma's 48px line and -1px tracking; row labels in the 16px body (Nous/Body 22.4 line); descriptions in the mono signal font. |
+| `--portal-settings-h1-tracking` | `-1px` | ″ |  |
+| `--portal-settings-row-label-size` | `1rem` | ″ |  |
+| `--portal-settings-row-label-line` | `1.4` | ″ |  |
+| `--portal-settings-section-line` | `1.25rem` | ″ | Section heads: Nous/Compact SemiBold on a 20px line, at the UI step (Figma's 13 drawn at 14). |
+| `--portal-settings-meta-font` | `var(--portal-font-mono)` | ″ |  |
 | `--portal-tracking-display` | `-0.01em` | ″ | Tracking per role: display titles tighten, small UI opens up, captions and chips open most. |
 | `--portal-tracking-ui` | `0.01em` | ″ |  |
 | `--portal-tracking-chip` | `0.04em` | ″ |  |
@@ -790,6 +809,17 @@ The tables below are generated from the CSS; do not edit them by hand.
 | `--portal-page-rhythm` | `2rem` | ″ |  |
 | `--portal-page-tab-height` | `2rem` | ″ |  |
 | `--portal-page-tab-inset` | `0.75rem` | ″ |  |
+| `--portal-settings-column` | `40rem` | ″ | Global Settings ("Prod - Desktop" 06 · Settings/Account, Panel/flexible 16292:16447): a 640px column centred in the stage, its header 104px under the stage's top; the header, section heads and card rows share a 32px text inset; cards pad 16px over and under their rows, rows 12px. |
+| `--portal-settings-top` | `var(--portal-page-top)` | ″ |  |
+| `--portal-settings-inset` | `1rem` | ″ |  |
+| `--portal-settings-card-pad` | `1rem` | ″ |  |
+| `--portal-settings-row-pad` | `0.75rem` | ″ |  |
+| `--portal-settings-nav-inset` | `1.875rem` | ″ | The column's panel (Panel 16292:16359): the title on a 30px inset, 30px down, 20px over 40px rows 4px apart; the Agent settings card 20px under them (16292:16428). |
+| `--portal-settings-nav-gap` | `0.25rem` | ″ |  |
+| `--portal-settings-related-gap` | `1.25rem` | ″ |  |
+| `--portal-settings-link-width` | `17.125rem` | ″ |  |
+| `--portal-settings-nav-title-line` | `2.25rem` | ″ | Its title is Nous/Identity: 30px on a 36px line (16292:16363). The rows start 122px down: Figma's "// META INFO" caption under the title is placeholder copy and not built, its room is kept. |
+| `--portal-settings-nav-head-gap` | `3.5rem` | ″ |  |
 | `--portal-dialog-action-height` | `2.75rem` | ″ | The actions of a dialog or drawer footer (1038:7792): taller than the page's 36px buttons. |
 | `--portal-session-tab-inset` | `1.5625rem` | ″ | The band's title pill starts 25px past the stage's leading edge (tab 16292:15297 at x 425, the stage at 400), after the Back/Forward group. |
 | `--portal-band-trail-inset` | `0.8125rem` | ″ | The band's trailing Agent settings ends 15px inside the workspace frame (settings-2 16292:15303): the trailing cluster stands 12px off the window, the frame 10px, so the button steps 13px in. |
@@ -812,7 +842,10 @@ The tables below are generated from the CSS; do not edit them by hand.
 | `--portal-radius-surface` | `6px` | ″ | Chat content (bubble, tool row, code card) and chat-sidebar rows (491:40655, 147:7470). |
 | `--portal-radius-floating` | `8px` | ″ | Popovers, dialogs, choice tiles (616:1685). |
 | `--portal-radius-panel` | `9px` | ″ | The outer top corner of panels, the stage and the composer (906:19804). |
-| `--portal-radius-frame` | `15px` | ″ | The workspace frame: the one card the chat sidebar and the stage (or a page's nav and body) sit in, inset from the window (Content 16292:14463). |
+| `--portal-radius-frame` | `15px` | ″ | The workspace frame: the one card the chat sidebar and the stage (or a page's nav and body) sit in, inset from the window (Content 16292:14463). Global Settings' cards round the same (Card 16292:16456). |
+| `--portal-radius-settings-card` | `var(--portal-radius-frame)` | ″ |  |
+| `--portal-radius-settings-link` | `9px` | ″ | The Settings column's Agent settings card (16292:16428). |
+| `--portal-shadow-settings-link` | `0 1px 4px var(--portal-raw-shadow-20)` | ″ |  |
 | `--portal-radius-round` | `999px` | ″ | Switch tracks, swatches, dots. |
 | `--portal-focus-ring-width` | `2px` | ″ | The one focus ring: 2px of brand ink as an outline, so it never replaces a control's own stroke shadow. Outset by default; a context whose scroller or overflow would clip an outset ring (sidebar, page nav) sets --portal-focus-ring-offset to the inset value on its container and every control inside follows. |
 | `--portal-focus-ring-outset` | `1px` | ″ |  |

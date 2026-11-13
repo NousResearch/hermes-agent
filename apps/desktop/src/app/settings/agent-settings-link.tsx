@@ -10,7 +10,6 @@ interface AgentSettingsLinkProps {
 export function AgentSettingsLink({ label, description, onOpen }: AgentSettingsLinkProps) {
   return (
     <button className="settings-agent-link" data-tour="nav-agent-settings" onClick={onOpen} type="button">
-      <Codicon aria-hidden className="settings-agent-link-icon" name="robot" />
       <span className="settings-agent-link-text">
         <span>{label}</span>
         <span>{description}</span>

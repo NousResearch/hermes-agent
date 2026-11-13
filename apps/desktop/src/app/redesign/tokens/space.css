@@ -105,6 +105,24 @@
   --portal-page-rhythm: 2rem;
   --portal-page-tab-height: 2rem;
   --portal-page-tab-inset: 0.75rem;
+  /* Global Settings ("Prod - Desktop" 06 · Settings/Account, Panel/flexible 16292:16447): a 640px
+     column centred in the stage, its header 104px under the stage's top; the header, section heads
+     and card rows share a 32px text inset; cards pad 16px over and under their rows, rows 12px. */
+  --portal-settings-column: 40rem;
+  --portal-settings-top: 6.5rem;
+  --portal-settings-inset: 2rem;
+  --portal-settings-card-pad: 1rem;
+  --portal-settings-row-pad: 0.75rem;
+  /* The column's panel (Panel 16292:16359): the title on a 30px inset, 30px down, 20px over 40px rows
+     4px apart; the Agent settings card 20px under them (16292:16428). */
+  --portal-settings-nav-inset: 1.875rem;
+  --portal-settings-nav-gap: 0.25rem;
+  --portal-settings-related-gap: 1.25rem;
+  --portal-settings-link-width: 17.125rem;
+  /* Its title is Nous/Identity: 30px on a 36px line (16292:16363). The rows start 122px down: Figma's
+     "// META INFO" caption under the title is placeholder copy and not built, its room is kept. */
+  --portal-settings-nav-title-line: 2.25rem;
+  --portal-settings-nav-head-gap: 3.5rem;
   /* The actions of a dialog or drawer footer (1038:7792): taller than the page's 36px buttons. */
   --portal-dialog-action-height: 2.75rem;
   /* The band's title pill starts 25px past the stage's leading edge (tab 16292:15297 at x 425, the
@@ -131,6 +149,7 @@
 @media (max-width: 1023.98px) {
   :root[data-shell='portal'] {
     --portal-stage-inset: var(--portal-frame-inset);
+    --portal-settings-top: var(--portal-page-top);
   }
 }
 
@@ -143,6 +162,7 @@
     --portal-frame-inset: 1rem;
     --portal-stage-inset: 1rem;
     --page-content-inset: 1rem;
+    --portal-settings-inset: 1rem;
   }
 }
 

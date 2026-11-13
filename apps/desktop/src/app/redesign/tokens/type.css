@@ -50,6 +50,16 @@
      focused field under 16px (px, not rem: the zoom rule reads CSS pixels). */
   --portal-type-field-touch-min: 16px;
 
+  /* Global Settings (16292:16447): the H1 at Figma's 48px line and -1px tracking; row labels in the
+     16px body (Nous/Body 22.4 line); descriptions in the mono signal font. */
+  --portal-settings-h1-line: 3rem;
+  --portal-settings-h1-tracking: -1px;
+  --portal-settings-row-label-size: 1rem;
+  --portal-settings-row-label-line: 1.4;
+  /* Section heads: Nous/Compact SemiBold on a 20px line, at the UI step (Figma's 13 drawn at 14). */
+  --portal-settings-section-line: 1.25rem;
+  --portal-settings-meta-font: var(--portal-font-mono);
+
   /* Tracking per role: display titles tighten, small UI opens up, captions and chips open most. */
   --portal-tracking-display: -0.01em;
   --portal-tracking-ui: 0.01em;

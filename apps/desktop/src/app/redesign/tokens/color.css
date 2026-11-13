@@ -108,6 +108,17 @@
   --portal-surface-elevated: var(--ui-bg-elevated);
   /* Cards of grouped rows (1036:7576, 1038:7803). */
   --portal-surface-card: var(--portal-raw-ink-2);
+  /* Global Settings' cards lift off the page with no stroke (Card 16292:16456): white .02 / black .50 /
+     blue .10 (#1A1A30 where solid); their dividers light/5. Section heads at .8 ink. */
+  --portal-settings-card: color-mix(
+    in srgb,
+    var(--portal-raw-pure-white) 2%,
+    color-mix(in srgb, var(--portal-raw-black) 50%, var(--portal-raw-brand-10))
+  );
+  --portal-settings-divider: var(--portal-raw-ink-5);
+  --portal-settings-section-ink: color-mix(in srgb, var(--ui-base) 80%, transparent);
+  /* The column's Agent settings card (16292:16428): light/5. */
+  --portal-settings-link: var(--portal-raw-ink-5);
   /* Neutral selection: list rows, nav rows (1036:7409), with --portal-stroke-selected. */
   --portal-surface-selected: var(--portal-raw-ink-5);
   /* A row under the pointer on a panel, the stage or a card: one ink step over its rest. */
@@ -267,6 +278,8 @@
   --portal-surface-chrome-hover: var(--portal-raw-ink-5);
   --portal-surface-chrome-pressed: var(--portal-raw-ink-10);
   --portal-text-chrome: color-mix(in srgb, var(--ui-base) 48%, transparent);
+  /* Light's settings cards are near-white on the page (#F9F9FA, 16292:26032). */
+  --portal-settings-card: color-mix(in srgb, var(--portal-raw-pure-white) 70%, transparent);
   --portal-surface-control: var(--portal-raw-ink-3);
   --portal-surface-control-hover: var(--portal-raw-ink-5);
   --portal-surface-control-pressed: var(--portal-raw-ink-8);

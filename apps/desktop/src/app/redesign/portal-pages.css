@@ -320,27 +320,40 @@
 /* ── Page navigation column (856:2764): 40px rows, 13px +1% labels, 16px icons at .4 ── */
 
 :root[data-shell='portal'] [data-page-surface] [data-tour='overlay-nav'] {
-  /* Title glyphs land where Figma's 76px title band puts them (856:2741), as on the Agents panel. */
-  padding: 1.4375rem 1.25rem 1rem;
-  gap: 0;
+  /* Settings' column (Panel 16292:16359): the title 30px in and down, the rows on the 20px inset,
+     4px apart. */
+  padding: var(--portal-settings-nav-inset) var(--page-panel-inset) 1rem;
+  gap: var(--portal-settings-nav-gap);
+}
+
+/* The title on its 30px inset with the search button at the panel's end (Top 16292:16360). */
+:root[data-shell='portal'] [data-page-surface] [data-tour='overlay-nav'] .page-sidebar-head {
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin: 0 0 calc(var(--portal-settings-nav-head-gap) - var(--portal-settings-nav-gap))
+    calc(var(--portal-settings-nav-inset) - var(--page-panel-inset));
+}
+
+:root[data-shell='portal'] [data-page-surface] [data-tour='overlay-nav'] .page-sidebar-head .page-nav-title {
+  line-height: var(--portal-settings-nav-title-line);
 }
 
 :root[data-shell='portal']
   [data-page-surface]
   [data-tour='overlay-nav']
-  button[data-tour^='nav-']:not([data-tour^='nav-toggle-']) {
-  gap: 0.625rem;
-  padding-inline: 0.625rem;
-  border-radius: var(--portal-radius-surface);
+  button[data-tour^='nav-']:not([data-tour^='nav-toggle-'], [data-tour='nav-agent-settings']) {
+  gap: 0.75rem;
+  padding-inline: 0.75rem;
+  border-radius: var(--portal-radius-control);
   font-size: var(--portal-type-ui-size);
-  letter-spacing: var(--portal-tracking-ui);
+  font-weight: 600;
 }
 
 :root[data-shell='portal'] [data-page-surface] [data-tour='overlay-nav'] button[data-tour^='nav-'] > svg {
   opacity: 0.5;
 }
 
-:root[data-shell='portal'] [data-page-surface] [data-tour='overlay-nav'] button[data-tour^='nav-']:hover {
+:root[data-shell='portal'] [data-page-surface] [data-tour='overlay-nav'] button[data-tour^='nav-']:not([data-tour='nav-agent-settings']):hover {
   background: var(--portal-surface-row-hover);
 }
 
@@ -349,12 +362,11 @@
   outline-offset: var(--portal-focus-ring-inset);
 }
 
-/* Selected (856:3214): neutral 5% fill, 0.5px 5% stroke, Medium label, full-strength icon. */
+/* Selected (16292:16373): a light/5 fill, no stroke, full-strength icon. */
 :root[data-shell='portal'] [data-page-surface] [data-tour='overlay-nav'] [aria-current='page'] {
   background: var(--portal-neutral-selection-background);
   border-color: transparent;
-  box-shadow: inset 0 0 0 0.5px var(--portal-neutral-selection-stroke);
-  font-weight: 500;
+  box-shadow: none;
 }
 
 :root[data-shell='portal'] [data-page-surface] [data-tour='overlay-nav'] [aria-current='page'] > svg {
@@ -427,52 +439,6 @@
 
 :root[data-shell='portal'] :is([data-page-surface], [data-slot='dialog-content']) [data-slot='empty-state-action'] {
   margin-top: 1rem;
-}
-
-/* ── Settings search in the band (856:2713) ──
-   The band carries chrome only, so the classic floating pill becomes a band plate (the session
-   pill's recipe: 30px, r3, 2% ink, 13px tertiary label with its key hints) at the stage's leading
-   edge, where the session pill sits on the chat. Type-to-search and ⌘K are unchanged. */
-@media (min-width: 1024px) {
-  /* Wide (breakpoints.ts): the pill rides the stage's leading edge past the page column; below wide
-     there is no column, and it sits in the band's own flow. */
-  :root[data-shell='portal'] [data-slot='page-toolbar'] [data-slot='settings-search-pill'] {
-    position: absolute;
-    inset-inline-start: var(--page-nav-width);
-  }
-}
-
-:root[data-shell='portal'] [data-slot='page-toolbar'] [data-slot='settings-search-pill'] {
-  height: var(--portal-chrome-button-size);
-  gap: 0.5rem;
-  padding-inline: 0.625rem;
-  border: 0;
-  border-radius: var(--portal-radius-control);
-  background-color: var(--portal-surface-chrome);
-  box-shadow: none;
-  color: var(--ui-text-tertiary);
-}
-
-:root[data-shell='portal'] [data-slot='page-toolbar'] [data-slot='settings-search-pill']:hover {
-  background-color: var(--portal-surface-chrome-hover);
-  color: var(--ui-text-primary);
-}
-
-:root[data-shell='portal'] [data-slot='page-toolbar'] [data-slot='settings-search-pill'] > span {
-  font-size: var(--portal-type-ui-size);
-}
-
-/* Compact (breakpoints.ts: max-width 639.98px): a phone has no ⌘K to press, and the band has no room
-   for a hint it cannot use; the pill keeps its label. */
-@media (max-width: 639.98px) {
-  :root[data-shell='portal'] [data-slot='page-toolbar'] [data-slot='settings-search-shortcut'] {
-    display: none;
-  }
-}
-
-:root[data-shell='portal'] [data-slot='page-toolbar'] [data-slot='settings-search-pill']:focus-visible {
-  outline: var(--portal-focus-ring-width) solid var(--portal-focus-ring-color);
-  outline-offset: var(--portal-focus-ring-offset);
 }
 
 /* ── Sideways scrollers: an edge fade says more follows ──

@@ -1,19 +1,17 @@
-/* The page frame (tokens/space.css): beside a sidebar panel the column starts at the frame inset,
-   without one at the stage inset; both hold the form width. */
+/* Global Settings' column (Panel/flexible 16292:16447): 640px centred in the stage, its header
+   --portal-settings-top under the stage's top; a stage narrower than the column keeps the panel
+   inset on both sides. */
 :root[data-shell='portal'] [data-page-surface] [data-slot='overlay-main'] {
-  /* The form column at the panel inset. */
-  max-width: calc(var(--page-panel-inset) + var(--page-form-max-width) + var(--page-panel-inset));
+  max-width: none;
   margin-inline: 0;
-  padding: var(--portal-page-top) var(--page-panel-inset) 0;
+  padding: var(--portal-settings-top)
+    max(var(--page-panel-inset), (100% - var(--portal-settings-column)) / 2) 0;
 }
 
-/* Navigation folded away: the column spans the whole stage (not the empty nav track) and starts at
-   the stage inset, as a page without a panel does (919). */
+/* Navigation folded away: the column centres in the whole stage, not the empty nav track. */
 @media (min-width: 47.5rem) {
   :root[data-shell='portal'] [data-page-surface] [data-tour='overlay-nav'].hidden ~ [data-slot='overlay-main'] {
     grid-column: 1 / -1;
-    max-width: calc(var(--page-stage-inset) + var(--page-form-max-width) + var(--page-panel-inset));
-    padding-inline-start: var(--page-stage-inset);
   }
 }
 

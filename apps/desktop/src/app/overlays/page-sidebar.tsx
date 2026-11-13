@@ -49,12 +49,14 @@ export const PAGE_SIDEBAR_NARROW = BELOW_WIDE_QUERY
 /** A page with a sidebar panel is showing. */
 export const $pageHasSidebar = computed($pagePanels, count => count > 0)
 
-/** The panel's title row (895:8991 "Agents", 856:2741 "Settings"): the display title at the
- *  panel's 20px inset. The panel folds from its rail destination, never from a button of its own. */
-export function PageSidebarHead({ title }: { title: string }) {
+/** The panel's title row (895:8991 "Agents", 16292:16360 "Settings"): the display title at the
+ *  panel's inset, an optional action at its end. The panel folds from its rail destination, never
+ *  from a button of its own. */
+export function PageSidebarHead({ action, title }: { action?: ReactNode; title: string }) {
   return (
     <div className="page-sidebar-head">
       <h2 className="page-nav-title">{title}</h2>
+      {action}
     </div>
   )
 }

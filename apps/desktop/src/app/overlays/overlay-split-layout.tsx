@@ -203,9 +203,11 @@ interface OverlayNavProps {
   title?: string
   /** A related destination outside this rail (Settings → Agent settings), set off by a divider. */
   related?: ReactNode
+  /** A control at the title's end (the redesign's settings search, 16292:16369). */
+  titleAction?: ReactNode
 }
 
-export function OverlayNav({ footer, groups, related, title }: OverlayNavProps) {
+export function OverlayNav({ footer, groups, related, title, titleAction }: OverlayNavProps) {
   const { t } = useI18n()
   const navId = useId()
   const [disclosures, setDisclosures] = useState<Record<string, boolean>>({})
@@ -238,7 +240,7 @@ export function OverlayNav({ footer, groups, related, title }: OverlayNavProps) 
   return (
     <>
       <OverlaySidebar className={cn(RAIL_HIDDEN, title && !panelOpen && 'hidden')} docked={Boolean(title) && panelOpen}>
-        {title && <PageSidebarHead title={title} />}
+        {title && <PageSidebarHead action={titleAction} title={title} />}
         {groups.map(group => {
           const hasChildren = Boolean(group.children?.length)
           const expanded = disclosures[group.id] ?? group.active
@@ -328,7 +330,11 @@ export function OverlayNav({ footer, groups, related, title }: OverlayNavProps) 
             </Fragment>
           )
         })}
-        {related && <div className="mt-3 border-t border-(--ui-stroke-tertiary) pt-3">{related}</div>}
+        {related && (
+          <div className="mt-3 border-t border-(--ui-stroke-tertiary) pt-3" data-slot="overlay-nav-related">
+            {related}
+          </div>
+        )}
         {footer && <div className="mt-auto flex items-center gap-1 pt-2">{footer}</div>}
       </OverlaySidebar>
 

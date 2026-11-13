@@ -168,6 +168,30 @@ function SettingsSearchPill() {
   )
 }
 
+/** The redesign's settings search: a 30px button at the end of the column's title (16292:16369) in
+ *  place of the band's pill; it opens the same palette, and typing or ⌘K still do from anywhere. */
+function SettingsSearchButton() {
+  const { t } = useI18n()
+
+  return (
+    <Tip label={t.settings.search.pill} placement="toolbar">
+      <Button
+        aria-label={t.settings.search.pill}
+        className="portal-chrome-button"
+        onClick={() => {
+          triggerHaptic('open')
+          openCommandPalettePage('settings')
+        }}
+        size="icon-titlebar"
+        type="button"
+        variant="ghost"
+      >
+        <Search />
+      </Button>
+    </Tip>
+  )
+}
+
 export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: SettingsPageProps) {
   const simplified = usePortalShell()
   const scopeProfile = useStore($settingsScopeProfile)
@@ -603,7 +627,11 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
   )
 
   return (
-    <OverlayView closeLabel={t.settings.closeSettings} edgeBadge={<SettingsSearchPill />} onClose={onClose}>
+    <OverlayView
+      closeLabel={t.settings.closeSettings}
+      edgeBadge={simplified ? undefined : <SettingsSearchPill />}
+      onClose={onClose}
+    >
       <OverlaySplitLayout>
         <OverlayNav
           footer={navFooter}
@@ -618,6 +646,7 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
             )
           }
           title={simplified ? t.commandCenter.settings : undefined}
+          titleAction={<SettingsSearchButton />}
         />
 
         <OverlayMain className="px-0 pb-0">

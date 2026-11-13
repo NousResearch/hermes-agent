@@ -15,8 +15,13 @@
   /* The outer top corner of panels, the stage and the composer (906:19804). */
   --portal-radius-panel: 9px;
   /* The workspace frame: the one card the chat sidebar and the stage (or a page's nav and body) sit
-     in, inset from the window (Content 16292:14463). */
+     in, inset from the window (Content 16292:14463). Global Settings' cards round the same
+     (Card 16292:16456). */
   --portal-radius-frame: 15px;
+  --portal-radius-settings-card: var(--portal-radius-frame);
+  /* The Settings column's Agent settings card (16292:16428). */
+  --portal-radius-settings-link: 9px;
+  --portal-shadow-settings-link: 0 1px 4px var(--portal-raw-shadow-20);
   /* Switch tracks, swatches, dots. */
   --portal-radius-round: 999px;
 

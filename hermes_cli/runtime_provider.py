@@ -417,7 +417,8 @@ def _anthropic_token_or_raise(*, model: str | None = None) -> str:
         # user to re-authenticate would send them chasing a cooldown that lifts on its own.
         if model and resolve_anthropic_token():
             raise AuthError(f"Anthropic credentials are rate-limited for {model}; "
-                            "other Claude models remain available (see `hermes auth list`).")
+                            "other Claude models remain available (see `hermes auth list`).",
+                            provider="anthropic", code="model_rate_limited")
         raise AuthError(_NO_ANTHROPIC_CREDENTIALS_MSG)
     return token
 

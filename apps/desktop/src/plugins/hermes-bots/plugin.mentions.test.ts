@@ -299,6 +299,17 @@ describe('@-mention completions', () => {
     expect(provide('').map(item => item.insert)).toEqual(['@default-vera'])
   })
 
+  it('offers every bot on a bare @, however large the roster (#144086)', async () => {
+    const names = Array.from({ length: 15 }, (_, index) => `bot${String(index + 1).padStart(2, '0')}`)
+
+    const { provide } = await contributions({
+      focused: 'default',
+      profiles: [{ name: 'default' }, ...names.map(name => ({ name }))]
+    })
+
+    expect(provide('').map(item => item.insert)).toEqual(names.map(name => `@${name}`))
+  })
+
   it('narrows on the typed prefix and labels the source device', async () => {
     const { provide } = await contributions()
 

@@ -1118,9 +1118,7 @@ def _apply_external_secret_sources(home_path: Path) -> None:
     _record_secret_source_writes(home_key, report, supplied, environ_before)
     if values:
         _SECRET_SOURCE_VALUES_BY_HOME[home_key] = values
-        from agent.redact_secret_sources import publish_secret_source_values
-
-        publish_secret_source_values(home_path, values)
+    _publish_live_source_values(home_key, home_path, values)
     _SECRET_SOURCE_RESTORE_BY_HOME[home_key] = {
         n: values[n] for n, a in report.provenance.items() if a.authoritative and n in values}
 
@@ -1152,6 +1150,20 @@ def _record_released_bridge_claims(home_key: str, report, supplied: set[str], en
             claims[name] = (owner[name], marker)
     if not claims:
         _RELEASED_BRIDGE_CLAIMS_BY_HOME.pop(home_key, None)
+
+
+def _publish_live_source_values(home_key: str, home_path: Path, values: dict[str, str]) -> None:
+    """Hand the redactor every source value live in ``os.environ`` for this home. A source whose re-pull
+    FAILED keeps its earlier write (not a revocation), so its value must stay masked: publish every
+    recorded write still holding its value, not only this pass's supplied names. Revoked writes were
+    already dropped from the record, so they unregister here."""
+    live = {name: rec[1] for name, rec in _SECRET_SOURCE_WRITES_BY_HOME.get(home_key, {}).items()
+            if os.environ.get(name) == rec[1]}
+    live.update(values)
+    if live:
+        from agent.redact_secret_sources import publish_secret_source_values
+
+        publish_secret_source_values(home_path, live)
 
 
 def _record_secret_source_writes(home_key: str, report, supplied: set[str], environ_before: dict) -> None:

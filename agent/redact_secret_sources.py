@@ -14,25 +14,30 @@ evicted while it is still applied. Memory only: never persisted or logged.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 REDACTED_SECRET_SOURCE_VALUE = "«redacted:secret-source»"
 
-# Mundane values a bulk source also supplies (``DEBUG=true``, ``LOG_LEVEL=info``) must not become
-# unanchored substring scrubs over every later tool result, so a single-line value registers only
-# when it is non-trivial and either looks like a credential or sits under a secret-named variable.
+# A bulk source also supplies ordinary config (``AWS_REGION=eu-central-1``, ``PROJECT_DIR=/srv/app``),
+# and a registered value becomes an unanchored substring scrub over every later tool result and file
+# read of the profile — a masked path breaks navigation. So a value registers only when its variable
+# is secret-named (the redactor's own key predicate), it has a credential shape the redactor already
+# masks, or it is multi-line (keys, certificates, service-account JSON). Values under 8 characters
+# never register: a short secret-named value echoed bare is left to the ``KEY=VALUE`` pattern pass.
 _MIN_VALUE_CHARS = 8
 
 _VALUES_BY_HOME: dict[str, tuple[str, ...]] = {}
 
 
 def _worth_registering(name: str, value: str) -> bool:
-    from agent.redact import _key_has_secret_keyword, _looks_like_opaque_credential
+    from agent.redact import _key_has_secret_keyword, redact_sensitive_text
 
     stripped = value.strip()
     if len(stripped) < _MIN_VALUE_CHARS:
         return False
-    return "\n" in stripped or _looks_like_opaque_credential(stripped) or _key_has_secret_keyword(name)
+    return ("\n" in stripped or _key_has_secret_keyword(name)
+            or redact_sensitive_text(stripped, force=True) != stripped)
 
 
 def publish_secret_source_values(hermes_home: str | Path, values: dict[str, str]) -> None:
@@ -44,6 +49,9 @@ def publish_secret_source_values(hermes_home: str | Path, values: dict[str, str]
         if isinstance(value, str) and _worth_registering(name, value):
             exact[value] = None
             exact[value.strip()] = None  # what a shell prints after word splitting / echo
+            # How a tool that serialises its result as JSON (MCP, read_file of a .json) carries it.
+            exact[json.dumps(value)[1:-1]] = None
+            exact[json.dumps(value, ensure_ascii=False)[1:-1]] = None
     # Longest first, so a value that is a substring of another never shadows its superstring.
     _VALUES_BY_HOME[hermes_home_key(hermes_home)] = tuple(sorted(exact, key=len, reverse=True))
 

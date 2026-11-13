@@ -1561,6 +1561,8 @@ class CheckpointManager:
 
     def _take(self, working_dir: str, reason: str, *, prune: bool = True) -> bool:
         """Take a snapshot.  Returns True on success."""
+        # Lazy import: the maintenance module imports this one at module level.
+        from tools.checkpoint_maintenance import clear_skip_reason, record_skip_reason
         store = _store_path()
 
         err = _init_store(store, working_dir)
@@ -1572,8 +1574,9 @@ class CheckpointManager:
 
         # Quick size guard — don't try to snapshot enormous directories
         if _dir_file_count(working_dir) > _MAX_FILES:
-            logger.debug("Checkpoint skipped: >%d files in %s", _MAX_FILES, working_dir)
+            record_skip_reason(store, working_dir, f"file_count>{_MAX_FILES}")
             return False
+        clear_skip_reason(store, working_dir)
 
         dir_hash = _project_hash(working_dir)
         index_file = _index_path(store, dir_hash)

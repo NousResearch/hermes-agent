@@ -1,5 +1,6 @@
 """Checkpoint store retention, orphan pruning, status and cleanup."""
 
+import json
 import logging
 import os
 import time
@@ -10,9 +11,9 @@ from hermes_cli.gitlock import clear_stale_tmp_packs
 from utils import rmtree_readonly
 from tools.checkpoint_manager import (
     _GIT_TIMEOUT, _LEGACY_PREFIX, _PRUNE_MARKER_NAME, _REFS_PREFIX, _STORE_DIRNAME,
-    _dir_size_bytes, _index_path, _list_projects, _pre_v2_shadow_repos,
-    _project_meta_path, _ref_name, _resolve_checkpoint_base, _run_git, _store_has_head,
-    _store_path,
+    _dir_size_bytes, _index_path, _list_projects, _normalize_path, _pre_v2_shadow_repos,
+    _project_hash, _project_meta_path, _ref_name, _resolve_checkpoint_base, _run_git,
+    _store_has_head, _store_path,
 )
 
 logger = logging.getLogger(__name__)
@@ -474,6 +475,118 @@ def checkpoint_footprint_notice() -> Optional[str]:
 
 
 # ---------------------------------------------------------------------------
+# Recorded skip reasons
+# ---------------------------------------------------------------------------
+#
+# A skipped snapshot cannot reach the user from the snapshot path: ``_take``
+# writes the project record and only then refuses the workdir, so the store
+# lists a project whose ``last_touch`` advances while ``refs/hermes/<hash>``
+# never exists. Recording the reason on that record is what lets
+# ``hermes checkpoints`` and the doctor say why the history is empty (#154876).
+
+SKIP_REASON_KEY = "skip_reason"
+_SKIP_AT_KEY = "skip_reason_at"
+# A skipped workdir is retried on every turn — an unthrottled warning would
+# drown the log of anyone whose project simply is that big.
+_SKIP_WARN_INTERVAL = 600.0
+_skip_warned: dict[str, float] = {}
+
+
+def _skip_warning_due(workdir: str) -> bool:
+    """True at most once per ``_SKIP_WARN_INTERVAL`` for *workdir*, per process."""
+    now = time.monotonic()
+    last = _skip_warned.get(workdir)
+    if last is not None and now - last < _SKIP_WARN_INTERVAL:
+        return False
+    _skip_warned[workdir] = now
+    return True
+
+
+def _read_project_record(store: Path, working_dir: str) -> tuple[Path, dict]:
+    """``(meta_path, meta)`` for *working_dir*; an unreadable record reads as empty."""
+    workdir = str(_normalize_path(working_dir))
+    meta_path = _project_meta_path(store, _project_hash(workdir))
+    try:
+        meta = json.loads(meta_path.read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        meta = {}
+    return meta_path, meta if isinstance(meta, dict) else {}
+
+
+def _write_project_record(meta_path: Path, meta: dict) -> None:
+    try:
+        meta_path.parent.mkdir(parents=True, exist_ok=True)
+        meta_path.write_text(json.dumps(meta), encoding="utf-8")
+    except OSError as exc:
+        logger.debug("Could not write project metadata %s: %s", meta_path, exc)
+
+
+def record_skip_reason(store: Path, working_dir: str, reason: str) -> None:
+    """Record why *working_dir* gets no checkpoint, and warn once in a while.
+
+    ``reason`` is a short machine-readable phrase (``file_count>50000``) so the
+    listing can print it verbatim. Never raises: bookkeeping must not turn a
+    skipped snapshot into a failed tool call.
+    """
+    workdir = str(_normalize_path(working_dir))
+    if _skip_warning_due(workdir):
+        logger.warning(
+            "Checkpoint skipped for %s (%s): no rollback point is kept for this "
+            "directory. `hermes checkpoints` lists skipped projects.",
+            workdir, reason,
+        )
+    meta_path, meta = _read_project_record(store, workdir)
+    meta["workdir"] = workdir
+    meta[SKIP_REASON_KEY] = reason
+    meta[_SKIP_AT_KEY] = time.time()
+    meta.setdefault("last_touch", meta[_SKIP_AT_KEY])
+    _write_project_record(meta_path, meta)
+
+
+def clear_skip_reason(store: Path, working_dir: str) -> None:
+    """Drop a previously recorded skip reason — the next snapshot succeeded.
+
+    Reads first and writes only when the key is present: this runs on every
+    successful snapshot, and the record almost never carries a reason.
+    """
+    meta_path, meta = _read_project_record(store, working_dir)
+    if SKIP_REASON_KEY not in meta and _SKIP_AT_KEY not in meta:
+        return
+    meta.pop(SKIP_REASON_KEY, None)
+    meta.pop(_SKIP_AT_KEY, None)
+    _write_project_record(meta_path, meta)
+
+
+def skipped_projects_notice(limit: int = 3) -> Optional[str]:
+    """One line naming projects whose checkpoints are refused, and why.
+
+    Read from the project records only — no Git, so ``hermes doctor`` can call
+    it on every run. None when nothing is skipped.
+    """
+    try:
+        store = _store_path()
+        if not _store_has_head(store):
+            return None
+        skipped = [
+            (row.get("workdir") or "", row[SKIP_REASON_KEY])
+            for row in _list_projects(store)
+            if row.get(SKIP_REASON_KEY)
+        ]
+    except (OSError, ValueError, RuntimeError) as exc:
+        logger.debug("skipped projects notice unavailable: %s", exc)
+        return None
+    if not skipped:
+        return None
+    shown = ", ".join(f"{workdir or '(unknown)'} ({reason})" for workdir, reason in skipped[:limit])
+    more = f" and {len(skipped) - limit} more" if len(skipped) > limit else ""
+    noun = "working directory" if len(skipped) == 1 else "working directories"
+    return (
+        f"Checkpoints are disabled for {len(skipped)} {noun}: {shown}{more}. No rollback "
+        f"point is kept there — `hermes checkpoints` lists the same rows."
+    )
+
+
+# ---------------------------------------------------------------------------
 # Public helpers for `hermes checkpoints` CLI
 # ---------------------------------------------------------------------------
 
@@ -528,6 +641,9 @@ def store_status(checkpoint_base: Optional[Path] = None) -> dict:
                     "created_at": meta.get("created_at"),
                     "last_touch": meta.get("last_touch"),
                     "commits": commits,
+                    # Present only when a snapshot was refused: the listing shows
+                    # why this project has no history instead of an empty column.
+                    "skip_reason": meta.get(SKIP_REASON_KEY),
                 })
     out["project_count"] = len(out["projects"])
 

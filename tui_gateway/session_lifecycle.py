@@ -60,20 +60,26 @@ _SESSION_OWNERSHIP_UNAVAILABLE = "Hermes could not safely reserve this session. 
 _AUTOMATIC_SESSION_END_REASONS = frozenset({"ws_orphan_reap", "ws_disconnect", "idle_timeout", "lru_evict", "tui_shutdown"})
 
 
-def _lease_metadata(live_session_id: str) -> dict:
-    """Writer identity for a lease: ``live_session_id`` is half of ``_is_same_writer``. Bot Chat delivery is
-    admitted by the session authority (gateway/session_bot), never gated on a lease flag."""
-    return {"live_session_id": live_session_id}
+def _lease_metadata(live_session_id: str, *, cwd: str | None = None) -> dict:
+    """Writer identity and per-conversation checkout; bot delivery is admitted by the session authority."""
+    metadata = {"live_session_id": live_session_id}
+    if cwd:
+        from pathlib import Path
+        from hermes_cli.active_sessions import current_repo_root
+        # An explicitly chosen non-git cwd must not inherit the daemon's checkout.
+        metadata["repo_root"] = current_repo_root(Path(cwd)) or ""
+    return metadata
 
 
 def _claim_active_session_slot(
-    session_key: str, *, live_session_id: str, surface: str = "tui", profile_home: str | Path | None = None
+    session_key: str, *, live_session_id: str, surface: str = "tui",
+    profile_home: str | Path | None = None, cwd: str | None = None,
 ) -> tuple[Any, str | None]:
     try:
         from hermes_cli.active_sessions import try_acquire_active_session
         return try_acquire_active_session(
             session_id=session_key, surface=surface, config=_load_cfg(), registry_home=profile_home,
-            metadata=_lease_metadata(live_session_id),
+            metadata=_lease_metadata(live_session_id, cwd=cwd),
             track_liveness=str(surface or "").strip().lower() == "desktop")
     except Exception as exc:
         logger.warning("Failed to claim active session slot: %s", exc)
@@ -129,7 +135,8 @@ def _ensure_active_session_slot(sid: str, session: dict) -> str | None:
         return None
     key = str(session.get("session_key") or "")
     lease, limit_message = _claim_active_session_slot(
-        key, live_session_id=sid, surface=_session_source(session), profile_home=session.get("profile_home"))
+        key, live_session_id=sid, surface=_session_source(session), profile_home=session.get("profile_home"),
+        cwd=session.get("cwd"))
     if limit_message is None:
         _attach_lease(session, lease)
         return None
@@ -250,7 +257,7 @@ def _take_over_detached_runtime_lease(sid: str, session: dict, key: str) -> bool
             return False
         other_sid, other = found
         lease = other["active_session_lease"]
-        if not transfer_active_session(lease, session_id=key, metadata=_lease_metadata(sid)):
+        if not transfer_active_session(lease, session_id=key, metadata=_lease_metadata(sid, cwd=session.get("cwd"))):
             return False
         del other["active_session_lease"]
         other["_lease_taken_over"] = True
@@ -362,7 +369,7 @@ def _transfer_active_session_slot(sid: str, session: dict, *, new_session_id: st
         return True
     try:
         from hermes_cli.active_sessions import transfer_active_session
-        if transfer_active_session(lease, session_id=new_session_id, metadata=_lease_metadata(sid)):
+        if transfer_active_session(lease, session_id=new_session_id, metadata=_lease_metadata(sid, cwd=session.get("cwd"))):
             return True
     except Exception:
         logger.debug("Failed to transfer active session slot", exc_info=True)
@@ -372,7 +379,8 @@ def _transfer_active_session_slot(sid: str, session: dict, *, new_session_id: st
     # a gateway at the cap can't grab the freed slot and leave this session lease-less; on failure KEEP the old lease.
     # See #49041.
     new_lease, limit_message = _claim_active_session_slot(
-        new_session_id, live_session_id=sid, surface=_session_source(session), profile_home=session.get("profile_home"))
+        new_session_id, live_session_id=sid, surface=_session_source(session),
+        profile_home=session.get("profile_home"), cwd=session.get("cwd"))
     if new_lease is None:
         if limit_message:
             logger.warning("Compression session lease re-anchor failed (kept old lease): sid=%s new_session_id=%s reason=%s",

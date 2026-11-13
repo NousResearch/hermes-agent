@@ -432,6 +432,33 @@ def test_tick_that_fails_past_the_gates_consumes_the_monitor_change(hermes_env, 
     assert (success, final, error) == (True, SILENT_MARKER, None)
 
 
+def test_wake_gate_skip_keeps_monitor_change_pending(hermes_env, monkeypatch):
+    """Regression for #154959: a ``wakeAgent=false`` tick must not mark the monitor change as seen.
+    The next woken tick runs the agent on it, although the monitor output is unchanged by then."""
+    from cron.jobs import create_job, get_job
+    from cron.scheduler import SILENT_MARKER, run_job
+
+    _write_script(hermes_env, "mon.sh", "echo 'state A'\n")
+    _write_script(hermes_env, "gate.sh", "echo '{\"wakeAgent\": true}'\n")
+    job = create_job(
+        prompt="Summarize what changed", model="test-model", schedule="every 5m",
+        monitor_script="mon.sh", script="gate.sh", deliver="local",
+    )
+    observed: dict = {}
+    _install_agent_stubs(monkeypatch, observed)
+    run_job(job)  # baseline: the agent has seen state A
+
+    _write_script(hermes_env, "mon.sh", "echo 'state B'\n")
+    _write_script(hermes_env, "gate.sh", "echo '{\"wakeAgent\": false}'\n")
+    _success, doc, final, _error = run_job(get_job(job["id"]))
+    assert final == SILENT_MARKER and "wakeAgent=false" in doc and observed["agent_runs"] == 1
+
+    _write_script(hermes_env, "gate.sh", "echo '{\"wakeAgent\": true}'\n")
+    success, _doc, _final, error = run_job(get_job(job["id"]))
+    assert (success, error, observed["agent_runs"]) == (True, None, 2)
+    assert "+state B" in observed["prompts"][1]
+
+
 def test_hash_persists_across_scheduler_restart(hermes_env, monkeypatch):
     """Suppression state must survive a scheduler restart (module reload)."""
     import importlib

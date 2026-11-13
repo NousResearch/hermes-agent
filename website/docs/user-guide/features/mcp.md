@@ -617,6 +617,65 @@ These utility tools are now capability-aware:
 
 So a server that exposes callable tools but no resources/prompts will not get those extra wrappers.
 
+### Skills over MCP
+
+Hermes supports the [Skills extension](https://modelcontextprotocol.io/extensions/skills/overview)
+(`io.modelcontextprotocol/skills`). A server that advertises both this extension and the
+`resources` capability contributes two utilities to its existing MCP toolset:
+
+- `mcp__<server>__list_skills` discovers skill metadata with `skills/list`, following
+  all protocol pages without downloading skill files.
+- `mcp__<server>__skill_view` loads a skill by its full `SKILL.md` URI using
+  `skills/get` and `resources/read`. This also works for skills omitted from a listing.
+
+For a configured server named `docs`, the agent can call:
+
+```text
+mcp__docs__list_skills()
+mcp__docs__skill_view(uri="skill://code-review/SKILL.md")
+```
+
+Before loading, Hermes asks you to approve that specific skill, its complete file
+manifest, and any local code execution its instructions request. The approval does
+not bypass normal tool approvals. Remote frontmatter cannot grant tool permissions,
+install dependencies, or trigger automatic shell preprocessing.
+Loading requires a session where you can answer approval prompts; one-shot and
+unattended runs decline the load.
+
+The load returns the server label, skill URI, and a `revision`. Use all three when
+reading supporting files. Relative paths resolve against the skill's own directory:
+
+```text
+mcp__docs__skill_view(uri="skill://code-review/SKILL.md", revision="<returned revision>",
+                      file_path="references/checklist.md")
+mcp__docs__skill_view(uri="skill://code-review/SKILL.md", revision="<returned revision>",
+                      file_path="references/")
+```
+
+Directory listings come from the retained manifest, so they need no optional
+`resources/directory/read` support. Hermes verifies every retrieved file's byte size
+and SHA-256 digest, and compares `SKILL.md` frontmatter with the entry before loading
+it. A mismatch or unlisted file is rejected. Omit `revision` and `file_path` to refresh
+the entry; a changed manifest requires fresh approval. Nested skills need separate
+approval to activate, even if their files were read as supporting data.
+
+Skills stay associated with their configured server and full URI, so identical names
+and URIs on different servers remain distinct from each other and from local skills.
+Generic resource reads do not activate skills. While a remote skill is loaded, its
+files must use the verified skill reader; reads from another server require consent
+for each call. Skill content remains untrusted model input.
+
+No remote files are installed into local skill directories or eagerly downloaded.
+Loaded manifests and consent are retained for the conversation in memory; after a
+restart, reload a skill before reading its supporting files. Dynamic skills without
+stable manifests are listed but cannot be loaded. Hermes accepts manifests with up
+to 512 files and 16 MiB in total.
+
+To disable these utilities for one server, set `mcp_servers.<server>.tools.skills: false`.
+Setting `tools.resources: false` also disables Skills utilities. Existing servers
+without the extension keep their existing tool surface. These settings take effect
+on the next MCP connection; a loaded conversation's prompt is not rebuilt.
+
 ## Per-server filtering
 
 You can control which tools each MCP server contributes to Hermes, allowing fine-grained management of your tool namespace.

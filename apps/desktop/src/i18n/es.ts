@@ -9,6 +9,7 @@ import { esConnectorCard } from './es_connector_card'
 import { esCronControl } from './es_cron_control'
 import { esErrorCodes } from './es_error_codes'
 import { esErrorLayers } from './es_error_layers'
+import { esFileMenu } from './es_file_menu'
 import { esFirstRun } from './es_first_run'
 import { esGatewayHost } from './es_gateway_host'
 import { esLocalModels } from './es_local_models'
@@ -387,27 +388,7 @@ export const esOverrides = {
     on: 'Activado',
     off: 'Desactivado'
   },
-  fileMenu: {
-    revealFinder: 'Mostrar en Finder',
-    revealExplorer: 'Mostrar en el Explorador de archivos',
-    revealFileManager: 'Abrir carpeta contenedora',
-    revealInSidebar: 'Mostrar en el árbol de archivos',
-    copyPath: 'Copiar ruta',
-    copyRelativePath: 'Copiar ruta relativa',
-    download: 'Descargar',
-    downloadSaved: 'Guardado',
-    downloadFailed: 'Error al descargar',
-    rename: 'Cambiar nombre…',
-    delete: 'Eliminar',
-    renameTitle: 'Cambiar nombre',
-    renameLabel: 'Nuevo nombre',
-    deleteTitle: name => `¿Eliminar ${name}?`,
-    deleteBody: 'Se moverá a la Papelera; podrás restaurarlo desde allí.',
-    pathCopied: 'Ruta copiada',
-    revealMissing: 'Esa carpeta no está en este equipo',
-    revealUnavailable:
-      'Esa ruta no está en este equipo: está en la máquina del backend. Usa “Mostrar en el árbol de archivos”.'
-  },
+  fileMenu: esFileMenu,
   boot: esBoot.boot,
   notifications: {
     region: 'Notificaciones',

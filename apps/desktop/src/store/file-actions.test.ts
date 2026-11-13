@@ -1,8 +1,21 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import type { HermesConnection } from '@/global'
+import { desktopFsCacheKey } from '@/lib/desktop-fs'
 import { $notifications, clearNotifications } from '@/store/notifications'
+import { $connection } from '@/store/session'
 
-import { downloadRemoteFile, shouldOfferLocalReveal, shouldOfferRemoteFileDownload } from './file-actions'
+const {
+  downloadRemoteFile,
+  shouldOfferLocalReveal,
+  shouldOfferRemoteFileDownload,
+  $fileActionDialog,
+  $renamingPath,
+  $creatingEntry,
+  requestFileDelete,
+  beginInlineRename,
+  requestNewEntry
+} = await import('./file-actions')
 
 describe('shouldOfferRemoteFileDownload', () => {
   it('is only for files on a remote backend', () => {
@@ -65,5 +78,94 @@ describe('downloadRemoteFile', () => {
 
     expect($notifications.get()[0]?.kind).toBe('error')
     expect($notifications.get()[0]?.title).toBe('Download failed')
+  })
+})
+
+describe('pending file actions cancel on connection-scope change', () => {
+  function connection(
+    overrides: Partial<Record<'connectionId' | 'mode' | 'profile' | 'baseUrl' | 'remoteIdentity', string>>
+  ): HermesConnection {
+    return {
+      mode: (overrides.mode as 'remote' | 'local' | undefined) ?? 'remote',
+      baseUrl: overrides.baseUrl ?? 'https://gw.example',
+      profile: overrides.profile,
+      remoteIdentity: overrides.remoteIdentity,
+      connectionId: overrides.connectionId,
+      token: 't',
+      wsUrl: 'wss://gw/ws',
+      logs: [] as string[],
+      isFullscreen: false,
+      nativeOverlayWidth: 0,
+      windowButtonPosition: null
+    }
+  }
+
+  beforeEach(() => {
+    $connection.set(null)
+    $fileActionDialog.set(null)
+    $renamingPath.set(null)
+    $creatingEntry.set(null)
+  })
+
+  it('keeps a pending action alive when the connection is unchanged (no false cancel)', () => {
+    $connection.set(connection({ connectionId: 'g1', profile: 'alice' }))
+    $creatingEntry.set({ directory: false, parentDir: '/home/alice/p' })
+
+    // Re-emit the SAME connection descriptor (e.g. a refresh) — same scope key.
+    $connection.set(connection({ connectionId: 'g1', profile: 'alice' }))
+
+    expect($creatingEntry.get()).toEqual({ directory: false, parentDir: '/home/alice/p' })
+  })
+
+  it('cancels pending create, rename, and delete when the registered connection changes mode', async () => {
+    const remote = connection({ connectionId: 'g1', profile: 'alice', mode: 'remote' })
+    const local = connection({ connectionId: 'g1', profile: 'alice', mode: 'local' })
+    expect(desktopFsCacheKey(remote)).not.toBe(desktopFsCacheKey(local))
+
+    $connection.set(remote)
+    await requestNewEntry({ directory: false, parentDir: '/home/alice' })
+    beginInlineRename('/home/alice/old.txt')
+    requestFileDelete({ path: '/home/alice/gone.txt', name: 'gone.txt', isDirectory: false })
+
+    $connection.set(local)
+
+    expect($creatingEntry.get()).toBeNull()
+    expect($renamingPath.get()).toBeNull()
+    expect($fileActionDialog.get()).toBeNull()
+  })
+
+  it('cancels pending actions when local/remote routing changes even if gateway fields match', () => {
+    const remote = connection({ profile: 'alice', remoteIdentity: 'legacy-host', mode: 'remote' })
+    const local = connection({ profile: 'alice', remoteIdentity: 'legacy-host', mode: 'local' })
+    expect(desktopFsCacheKey(remote)).not.toBe(desktopFsCacheKey(local))
+    $connection.set(remote)
+    $creatingEntry.set({ directory: false, parentDir: '/home/alice/p' })
+
+    // The active backend changed; a duplicated partial key must not preserve an editor.
+    $connection.set(local)
+
+    expect($creatingEntry.get()).toBeNull()
+  })
+
+  it('cancels pending create when the active PROFILE changes on the same gateway', () => {
+    $connection.set(connection({ connectionId: 'g1', profile: 'alice' }))
+    $creatingEntry.set({ directory: false, parentDir: '/home/alice/p' })
+
+    // Same gateway, different profile: the filesystem root and auth differ, so
+    // an old absolute path must not commit through the new profile.
+    $connection.set(connection({ connectionId: 'g1', profile: 'bob' }))
+
+    expect($creatingEntry.get()).toBeNull()
+  })
+
+  it('cancels pending rename and delete dialogs when the scope changes', () => {
+    $connection.set(connection({ connectionId: 'g1', profile: 'alice' }))
+    $renamingPath.set('/home/alice/a.txt')
+    requestFileDelete({ path: '/home/alice/a.txt', name: 'a.txt', isDirectory: false })
+
+    $connection.set(connection({ baseUrl: 'https://other-gateway' }))
+
+    expect($renamingPath.get()).toBeNull()
+    expect($fileActionDialog.get()).toBeNull()
   })
 })

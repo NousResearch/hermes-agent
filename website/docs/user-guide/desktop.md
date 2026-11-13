@@ -300,7 +300,13 @@ Provider and model changes remain a local draft until you click **Apply**. **Can
 
 ### File browser
 
-Explore and preview the working directory without leaving the app — useful for following along as the agent reads, writes, and edits files. Set the initial project directory with `hermes desktop --cwd <path>` (or the `HERMES_DESKTOP_CWD` environment variable).
+Explore, preview, and manage the working directory without leaving the app — useful for following along as the agent reads, writes, and edits files. Set the initial project directory with `hermes desktop --cwd <path>` (or the `HERMES_DESKTOP_CWD` environment variable).
+
+Right-click a row for **Reveal** (local), **Copy path**, **Download** (remote files), **Rename** (F2), and **Delete**; folders also offer **New File** and **New Folder**. On a remote gateway, mutations use the window profile's filesystem: the gateway host for a local terminal backend, or the SSH workspace for an SSH backend. A local delete moves the file to the OS trash (recoverable), while a remote delete is **permanent** — the confirm dialog says which one you're getting. Local **New File** and **New Folder** use exclusive creation: an existing name is refused.
+
+The Files and review trees list the window's connection and profile, but session-owned previews can use the focused bot, pooled, or cross-connection session instead. To prevent mutations against a different owner, **New File**, **New Folder**, **Rename**, and **Delete** are refused with a visible reason when the focused session's owner differs from the window tree's owner. Pending actions are canceled when the focused session, its owner resolution, or the window connection or profile changes. This does not change the existing preview/list discrepancy.
+
+On an SSH-backed gateway profile, create, delete, and text saves require Python 3 on the SSH host. Rename additionally requires Linux and a filesystem that supports atomic no-replace rename (`renameat2`); otherwise it fails rather than overwriting an entry. Docker and other non-local, non-SSH remote terminal backends do not support tree create, rename, or delete; they fail explicitly rather than falling back to the gateway host. In particular, the tree is host-scoped while a preview may be in the session's Docker sandbox. A locked hosted files root also constrains create, rename, and delete; SSH mutations are refused when that gateway-local root cannot authorize the SSH filesystem.
 
 ### Artifacts
 

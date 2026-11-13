@@ -9,6 +9,7 @@ import { frConnectorCard } from './fr_connector_card'
 import { frCronControl } from './fr_cron_control'
 import { frErrorCodes } from './fr_error_codes'
 import { frErrorLayers } from './fr_error_layers'
+import { frFileMenu } from './fr_file_menu'
 import { frFirstRun } from './fr_first_run'
 import { frGatewayHost } from './fr_gateway_host'
 import { frLocalModels } from './fr_local_models'
@@ -385,27 +386,7 @@ export const frOverrides = {
     on: 'Activé',
     off: 'Désactivé'
   },
-  fileMenu: {
-    revealFinder: 'Afficher dans le Finder',
-    revealExplorer: "Afficher dans l'Explorateur de fichiers",
-    revealFileManager: 'Ouvrir le dossier parent',
-    revealInSidebar: "Afficher dans l'arborescence",
-    copyPath: 'Copier le chemin',
-    copyRelativePath: 'Copier le chemin relatif',
-    download: 'Télécharger',
-    downloadSaved: 'Enregistré',
-    downloadFailed: 'Échec du téléchargement',
-    rename: 'Renommer…',
-    delete: 'Supprimer',
-    renameTitle: 'Renommer',
-    renameLabel: 'Nouveau nom',
-    deleteTitle: name => `Supprimer ${name} ?`,
-    deleteBody: 'Il sera déplacé dans la Corbeille — vous pourrez le restaurer depuis là.',
-    pathCopied: 'Chemin copié',
-    revealMissing: "Ce dossier n'est pas sur cet ordinateur",
-    revealUnavailable:
-      "Ce chemin n'est pas sur cet ordinateur : il se trouve sur la machine du backend. Utilisez « Afficher dans l'arborescence »."
-  },
+  fileMenu: frFileMenu,
   boot: frBoot.boot,
   notifications: {
     region: 'Notifications',

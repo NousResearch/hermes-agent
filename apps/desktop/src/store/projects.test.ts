@@ -50,7 +50,8 @@ vi.mock('@/store/notifications', () => ({
   notify: vi.fn()
 }))
 
-vi.mock('@/lib/desktop-fs', () => ({
+vi.mock('@/lib/desktop-fs', async importOriginal => ({
+  ...((await importOriginal()) as Record<string, unknown>),
   desktopDefaultCwd: vi.fn(),
   isDesktopFsRemoteMode: vi.fn(),
   selectDesktopPaths: vi.fn(),

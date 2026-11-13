@@ -187,6 +187,18 @@ class FsWriteText(BaseModel):
     #: The session the file was read for: its /workspace is that session's sandbox.
     session_id: Optional[str] = None
 
+class FsRename(BaseModel):
+    path: str
+    name: str
+
+class FsCreate(BaseModel):
+    path: str
+    directory: bool = False
+
+class FsDelete(BaseModel):
+    path: str
+    recursive: bool = False
+
 class GitPathBody(BaseModel):
     path: str
 

@@ -550,6 +550,12 @@ declare global {
       renamePath?: (path: string, newName: string) => Promise<{ path: string }>
       // Write a small UTF-8 text file (hardened path, parent must exist).
       writeTextFile?: (path: string, content: string) => Promise<{ path: string }>
+      // Create an EMPTY file, refusing to clobber an existing one (atomic
+      // exclusive create, `O_EXCL`) — the local twin of POST /api/fs/create's
+      // 409 collision guard.
+      createTextFileExclusive?: (path: string) => Promise<{ path: string }>
+      // Create one local directory atomically, refusing existing entries.
+      createDirectoryExclusive?: (path: string) => Promise<{ path: string }>
       // Move a file/folder to the OS trash (recoverable).
       trashPath?: (path: string) => Promise<boolean>
       /** The plugin SDK's folder-scoped file door (`ctx.files`). Main owns

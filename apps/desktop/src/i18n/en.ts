@@ -14,6 +14,7 @@ import { enGatewayGroupOpen, enSkillDeepLink } from './en_deep_links'
 import { enErrorCodes } from './en_error_codes'
 import { enErrorLayers } from './en_error_layers'
 import { enExternalOpenFailed } from './en_external_open'
+import { enFileMenu } from './en_file_menu'
 import { enFirstRun } from './en_first_run'
 import { enGatewayHost } from './en_gateway_host'
 import { enLocalModels } from './en_local_models'
@@ -366,27 +367,8 @@ export const en: Translations = {
     off: 'Off'
   },
 
-  fileMenu: {
-    revealFinder: 'Reveal in Finder',
-    revealExplorer: 'Reveal in File Explorer',
-    revealFileManager: 'Open containing folder',
-    revealInSidebar: 'Reveal in filetree',
-    copyPath: 'Copy path',
-    copyRelativePath: 'Copy relative path',
-    download: 'Download',
-    downloadSaved: 'Saved',
-    downloadFailed: 'Download failed',
-    rename: 'Rename…',
-    delete: 'Delete',
-    renameTitle: 'Rename',
-    renameLabel: 'New name',
-    deleteTitle: name => `Delete ${name}?`,
-    deleteBody: 'It will be moved to the Trash — you can restore it from there.',
-    pathCopied: 'Path copied',
-    revealMissing: 'That folder is not on this computer',
-    revealUnavailable: 'That path is not on this computer — it lives on the backend machine. Use “Reveal in filetree”.'
-  },
 
+  fileMenu: enFileMenu,
   boot: enBoot.boot,
 
   notifications: {

@@ -19,6 +19,7 @@ import type { ConnectorAccountsTranslations, ConnectorCardTranslations } from '.
 import type { CronControlCopy } from './types_cron_control'
 import type { GatewayGroupOpenCopy, SkillDeepLinkCopy } from './types_deep_links'
 import type { ExternalOpenFailedCopy } from './types_external_open'
+import type { FileMenuTranslations } from './types_file_menu'
 import type { FirstRunCopy } from './types_first_run'
 import type { GatewayHostTranslations } from './types_gateway_host'
 import type { MemoryLayersTranslations } from './types_memory_layers'
@@ -400,27 +401,8 @@ export interface Translations extends NoticeTranslations {
     on: string
     off: string
   }
+  fileMenu: FileMenuTranslations
 
-  fileMenu: {
-    revealFinder: string
-    revealExplorer: string
-    revealFileManager: string
-    revealInSidebar: string
-    copyPath: string
-    copyRelativePath: string
-    download: string
-    downloadSaved: string
-    downloadFailed: string
-    rename: string
-    delete: string
-    renameTitle: string
-    renameLabel: string
-    deleteTitle: (name: string) => string
-    deleteBody: string
-    pathCopied: string
-    revealMissing: string
-    revealUnavailable: string
-  }
 
   boot: BootTranslations
 

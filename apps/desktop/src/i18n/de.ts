@@ -8,6 +8,7 @@ import { deConnectorCard } from './de_connector_card'
 import { deCronControl } from './de_cron_control'
 import { deErrorCodes } from './de_error_codes'
 import { deErrorLayers } from './de_error_layers'
+import { deFileMenu } from './de_file_menu'
 import { deFirstRun } from './de_first_run'
 import { deGatewayHost } from './de_gateway_host'
 import { deLocalModels } from './de_local_models'
@@ -384,27 +385,7 @@ export const deOverrides = {
     on: 'An',
     off: 'Aus'
   },
-  fileMenu: {
-    revealFinder: 'Im Finder anzeigen',
-    revealExplorer: 'Im Datei-Explorer anzeigen',
-    revealFileManager: 'Enthaltenden Ordner öffnen',
-    revealInSidebar: 'In Dateibaum anzeigen',
-    copyPath: 'Pfad kopieren',
-    copyRelativePath: 'Relativen Pfad kopieren',
-    download: 'Herunterladen',
-    downloadSaved: 'Gespeichert',
-    downloadFailed: 'Download fehlgeschlagen',
-    rename: 'Umbenennen…',
-    delete: 'Löschen',
-    renameTitle: 'Umbenennen',
-    renameLabel: 'Neuer Name',
-    deleteTitle: name => `„${name}“ löschen?`,
-    deleteBody: 'Es wird in den Papierkorb verschoben – von dort können Sie es wiederherstellen.',
-    pathCopied: 'Pfad kopiert',
-    revealMissing: 'Dieser Ordner befindet sich nicht auf diesem Computer',
-    revealUnavailable:
-      'Dieser Pfad befindet sich nicht auf diesem Computer, sondern auf dem Backend-Rechner. Verwenden Sie „Im Dateibaum anzeigen“.'
-  },
+  fileMenu: deFileMenu,
   boot: deBoot.boot,
   notifications: {
     region: 'Benachrichtigungen',

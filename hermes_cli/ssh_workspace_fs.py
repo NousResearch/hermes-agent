@@ -4,16 +4,101 @@ from __future__ import annotations
 
 import base64
 import binascii
+import json
 import posixpath
 import shlex
 import subprocess
 import threading
-import uuid
 from dataclasses import dataclass
 from typing import Any, Iterator
 
 from hermes_cli._subprocess_compat import windows_hide_flags
 from tools.environments.ssh import SSHEnvironment
+
+
+# This worker runs on the execution target, never against the agent host's filesystem.
+# It inspects names/metadata only; the local live-SQLite registry is process-local and cannot
+# establish whether another process on the SSH host has a database open.
+_REMOTE_MUTATION_GUARD = r'''
+import json, os, stat, sys
+
+
+def fail(code):
+    print('__HERMES_FS_ERROR__:' + code)
+    sys.exit(1)
+
+
+def sensitive(path):
+    for part in path.split('/'):
+        lowered = part.lower()
+        if lowered in names or lowered in directories or lowered in {'.env', '.envrc'} or lowered.startswith('.env.'):
+            return True
+    return False
+
+
+def check_policy(path):
+    if sensitive(path):
+        fail('EACCES')
+    for root in roots:
+        if path == root or root.startswith(path.rstrip('/') + '/'):
+            fail('EINVAL')
+    for prefix in protected:
+        if path == prefix or path.startswith(prefix + '/'):
+            fail('EACCES')
+
+
+def check(path):
+    check_policy(path)
+    # Keep the final component: rename/unlink/replace act on the entry, not its referent.
+    parent = os.path.dirname(path)
+    current = parent
+    while current != '/':
+        if stat.S_ISLNK(os.lstat(current).st_mode):
+            fail('EINVAL')
+        current = os.path.dirname(current)
+    entry = os.path.join(os.path.realpath(parent), os.path.basename(path))
+    check_policy(entry)
+    return entry
+
+
+try:
+    policy = json.loads(sys.argv[1])
+    names, directories = set(policy['names']), set(policy['directories'])
+    roots = {'/'}
+    for root in policy['roots'] + [os.path.expanduser('~')]:
+        if not root or not os.path.isabs(root):
+            fail('EINVAL')
+        os.stat(root)  # Require an inspectable root, including on older remote Python versions.
+        roots.update((os.path.normpath(root), os.path.realpath(root)))
+    protected = []
+    for home in policy['homes'] + [os.path.expanduser('~')]:
+        for location in {os.path.normpath(home), os.path.realpath(home)}:
+            protected.extend(os.path.join(location, p) for p in policy['home_directories'])
+    targets = policy['targets']
+    entries = [check(target) for target in targets]
+    source = targets[0]
+    if policy['scan'] and stat.S_ISDIR(os.lstat(source).st_mode):
+        # scandir/lstat raise on unreadable or vanished entries: never silently skip a subtree.
+        pending = [source]
+        while pending:
+            parent = pending.pop()
+            with os.scandir(parent) as children:
+                for child in children:
+                    check(child.path)
+                    if len(targets) > 1:
+                        relative = os.path.relpath(child.path, source)
+                        # The destination subtree does not exist yet; inspect policy only.
+                        check_policy(os.path.join(targets[1], relative))
+                        check_policy(os.path.join(entries[1], relative))
+                    if stat.S_ISDIR(child.stat(follow_symlinks=False).st_mode):
+                        pending.append(child.path)
+except FileNotFoundError:
+    fail('ENOENT')
+except PermissionError:
+    fail('EACCES')
+except (OSError, ValueError, RuntimeError):
+    fail('EIO')
+'''
 
 
 class SshWorkspaceFsError(RuntimeError):
@@ -237,25 +322,163 @@ printf '__HERMES_FS_SIZE__:%s\\n' "$size"
                 process.terminate()
             process.wait()
 
+    def _mutation_guard(self, *targets: str, scan: bool = False) -> str:
+        # Reuse the browser's canonical name policy without resolving remote paths on this host.
+        # Import late: the router imports this adapter, and its policy can grow independently.
+        from agent.file_safety import HOME_CREDENTIAL_DIRS, _READ_DENIED_DIRS
+        from hermes_cli.web_routers.files import (
+            _SENSITIVE_MANAGED_DIR_NAMES, _SENSITIVE_MANAGED_FILE_BASENAMES,
+        )
+
+        policy = json.dumps({
+            "names": sorted(_SENSITIVE_MANAGED_FILE_BASENAMES),
+            "directories": sorted(_SENSITIVE_MANAGED_DIR_NAMES | {name for name, _, _ in _READ_DENIED_DIRS}),
+            "home_directories": list(HOME_CREDENTIAL_DIRS),
+            "roots": [self.cwd, self._env._remote_home],
+            "homes": [self._env._remote_home],
+            "targets": list(targets),
+            "scan": scan,
+        })
+        return (
+            "command -v python3 >/dev/null 2>&1 || { printf '__HERMES_FS_ERROR__:EUNSUPPORTED\\n'; exit 1; }\n"
+            f"python3 -c {shlex.quote(_REMOTE_MUTATION_GUARD)} {shlex.quote(policy)} || exit $?\n"
+        )
+
+    def create(self, path: str, *, directory: bool) -> str:
+        target = self._mutation_path(path)
+        parent = posixpath.dirname(target) or "/"
+        worker = "import os, sys; fd = os.open(sys.argv[1], os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o666); os.close(fd)"
+        command = self._mutation_guard(target) + self._safe_parent_function() + f"""
+parent_dir={shlex.quote(parent)}
+target={shlex.quote(target)}
+if [ ! -d "$parent_dir" ]; then printf '__HERMES_FS_ERROR__:ENOENT\\n'; exit 44; fi
+if ! hermes_fs_safe_parent "$parent_dir"; then printf '__HERMES_FS_ERROR__:EINVAL\\n'; exit 45; fi
+""" + ("""
+if mkdir -- "$target" 2>/dev/null; then exit 0; fi
+if [ -e "$target" ] || [ -L "$target" ]; then printf '__HERMES_FS_ERROR__:EEXIST\\n'; else printf '__HERMES_FS_ERROR__:EACCES\\n'; fi
+exit 46
+""" if directory else f"""
+if python3 -c {shlex.quote(worker)} "$target" 2>/dev/null; then exit 0; fi
+if [ -e "$target" ] || [ -L "$target" ]; then printf '__HERMES_FS_ERROR__:EEXIST\\n'; else printf '__HERMES_FS_ERROR__:EACCES\\n'; fi
+exit 46
+""")
+        result = self._execute(command)
+        if result.get("returncode") != 0:
+            raise SshWorkspaceFsError(self._error_code(result.get("output", "")))
+        return target
+
+    def _mutation_path(self, path: str) -> str:
+        raw = str(path or "").strip()
+        if not raw or raw.lower().startswith("file:") or "\0" in raw:
+            raise SshWorkspaceFsError("EINVAL", "Invalid path")
+        if any(part in (".", "..") for part in raw.split("/")):
+            raise SshWorkspaceFsError("EINVAL", "Invalid path")
+        return "/" + self._normalize(raw).lstrip("/")
+
+    @staticmethod
+    def _safe_parent_function() -> str:
+        return '''
+hermes_fs_safe_parent() {
+  local p=$1
+  while :; do
+    [ ! -L "$p" ] || return 1
+    [ "$p" = / ] && break
+    p=${p%/*}; [ -n "$p" ] || p=/
+  done
+}
+'''
+
+    def rename(self, path: str, name: str) -> str:
+        source = self._mutation_path(path)
+        if not name or name in {".", ".."} or "/" in name or "\\" in name or "\0" in name:
+            raise SshWorkspaceFsError("EINVAL", "Invalid name")
+        destination = posixpath.join(posixpath.dirname(source), name)
+        if source == destination:
+            # Ensure a no-op isn't reported as success for a missing source.
+            command = f"p={shlex.quote(source)}; [ -e \"$p\" ] || [ -L \"$p\" ] || {{ printf '__HERMES_FS_ERROR__:ENOENT\\n'; exit 44; }}"
+        else:
+            worker = "import ctypes, errno, os, sys; src, dst = sys.argv[1:3]; libc = ctypes.CDLL(None, use_errno=True); fn = getattr(libc, 'renameat2', None); rc = fn(-100, ctypes.c_char_p(os.fsencode(src)), -100, ctypes.c_char_p(os.fsencode(dst)), 1) if fn else -1; e = ctypes.get_errno() if rc else 0; print('__HERMES_FS_ERROR__:' + ('EUNSUPPORTED' if not fn else 'EEXIST' if e == 17 else 'ENOENT' if e == 2 else 'EACCES' if e in (errno.EPERM, errno.EACCES) else 'EUNSUPPORTED' if e in (errno.ENOSYS, errno.EINVAL, errno.ENOTSUP, errno.EOPNOTSUPP) else 'EIO') if rc else ''); sys.exit(1 if rc else 0)"
+            command = self._safe_parent_function() + f"""
+src={shlex.quote(source)}
+dst={shlex.quote(destination)}
+parent={shlex.quote(posixpath.dirname(source) or '/')}
+if [ ! -e "$src" ] && [ ! -L "$src" ]; then printf '__HERMES_FS_ERROR__:ENOENT\\n'; exit 44; fi
+if ! hermes_fs_safe_parent "$parent"; then printf '__HERMES_FS_ERROR__:EINVAL\\n'; exit 45; fi
+python3 -c {shlex.quote(worker)} "$src" "$dst" || {{
+  rc=$?
+  [ "$rc" -eq 0 ] || {{ [ -n "$(command -v python3 2>/dev/null)" ] || printf '__HERMES_FS_ERROR__:EUNSUPPORTED\\n'; exit "$rc"; }}
+}}
+"""
+        result = self._execute(self._mutation_guard(source, destination, scan=True) + command)
+        if result.get("returncode") != 0:
+            raise SshWorkspaceFsError(self._error_code(result.get("output", "")))
+        return destination
+
+    def delete(self, path: str, *, recursive: bool) -> str:
+        target = self._mutation_path(path)
+        if target == "/" or target == self.cwd or self.cwd.startswith(target.rstrip("/") + "/"):
+            raise SshWorkspaceFsError("EINVAL", "Cannot delete a workspace root or its ancestor")
+        parent = posixpath.dirname(target) or "/"
+        command = self._mutation_guard(target, scan=True) + self._safe_parent_function() + f"""
+target={shlex.quote(target)}
+parent={shlex.quote(parent)}
+if [ ! -e "$target" ] && [ ! -L "$target" ]; then printf '__HERMES_FS_ERROR__:ENOENT\\n'; exit 44; fi
+if ! hermes_fs_safe_parent "$parent"; then printf '__HERMES_FS_ERROR__:EINVAL\\n'; exit 45; fi
+if [ -L "$target" ] || [ ! -d "$target" ]; then
+  rm -- "$target" || {{ printf '__HERMES_FS_ERROR__:EACCES\\n'; exit 46; }}
+  exit 0
+fi
+""" + ("""
+rm -rf -- "$target" || { printf '__HERMES_FS_ERROR__:EACCES\\n'; exit 46; }
+""" if recursive else """
+rmdir -- "$target" 2>/dev/null || { printf '__HERMES_FS_ERROR__:ENOTEMPTY\\n'; exit 47; }
+""")
+        result = self._execute(command)
+        if result.get("returncode") != 0:
+            raise SshWorkspaceFsError(self._error_code(result.get("output", "")))
+        return target
+
     def write_text(self, path: str, content: str, *, max_bytes: int) -> tuple[str, int]:
-        target = self._normalize(path)
+        target = self._mutation_path(path)
         encoded_size = len(content.encode("utf-8"))
         if encoded_size > max_bytes:
             raise SshWorkspaceFsError("EFBIG")
-        parent = posixpath.dirname(target) or "/"
-        temp_path = posixpath.join(parent, f".{posixpath.basename(target)}.hermes-tmp-{uuid.uuid4().hex[:12]}")
-        q_target = shlex.quote(target)
-        q_parent = shlex.quote(parent)
-        q_temp = shlex.quote(temp_path)
-        command = f"""
-target={q_target}
-parent={q_parent}
-tmp={q_temp}
-if [ ! -d "$parent" ]; then printf '__HERMES_FS_ERROR__:ENOENT\\n'; exit 44; fi
-if [ -e "$target" ] && [ ! -f "$target" ]; then printf '__HERMES_FS_ERROR__:ENOTREG\\n'; exit 45; fi
-trap 'rm -f "$tmp"' EXIT HUP INT TERM
-cat > "$tmp" && mv -f "$tmp" "$target"
-"""
+        # os.replace acts on the final entry even for a link to a directory; plain mv can
+        # instead move the temporary file INTO that directory. Never write through the link.
+        # Atomic replacement preserves regular-file mode, not ownership or ACLs. New files
+        # and replaced links use 0666 masked by the remote process umask.
+        worker = r'''
+import os, stat, sys, tempfile
+path = sys.argv[1]
+tmp = None
+try:
+    try:
+        existing = os.lstat(path)
+    except FileNotFoundError:
+        existing = None
+    if existing is not None and not (stat.S_ISREG(existing.st_mode) or stat.S_ISLNK(existing.st_mode)):
+        print('__HERMES_FS_ERROR__:ENOTREG')
+        sys.exit(1)
+    if existing is not None and stat.S_ISREG(existing.st_mode):
+        mode = stat.S_IMODE(existing.st_mode)
+    else:
+        mask = os.umask(0)
+        os.umask(mask)
+        mode = 0o666 & ~mask
+    fd, tmp = tempfile.mkstemp(prefix='.hermes-tmp-', dir=os.path.dirname(path))
+    with os.fdopen(fd, 'wb') as output:
+        output.write(sys.stdin.buffer.read())
+        output.flush()
+        os.fchmod(output.fileno(), mode)
+    os.replace(tmp, path)
+except OSError as exc:
+    print('__HERMES_FS_ERROR__:' + ('ENOENT' if isinstance(exc, FileNotFoundError) else 'EACCES'))
+    sys.exit(1)
+finally:
+    if tmp is not None and os.path.lexists(tmp):
+        os.unlink(tmp)
+'''
+        command = self._mutation_guard(target) + f"python3 -c {shlex.quote(worker)} {shlex.quote(target)}"
         result = self._execute(command, stdin_data=content)
         if result.get("returncode") != 0 or result.get("stdin_error"):
             raise SshWorkspaceFsError(self._error_code(result.get("output", "")))

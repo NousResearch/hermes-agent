@@ -8,6 +8,7 @@ import { ruClarify } from './ru_clarify'
 import { ruConnectors } from './ru_connectors'
 import { ruCronControl } from './ru_cron_control'
 import { ruErrorCodes } from './ru_error_codes'
+import { ruFileMenu } from './ru_file_menu'
 import { ruFirstRun } from './ru_first_run'
 import { ruGatewayHost } from './ru_gateway_host'
 import { ruMemoryLayers } from './ru_memory_layers'
@@ -79,25 +80,7 @@ export const ruOverrides = {
     on: 'Вкл',
     off: 'Выкл'
   },
-  fileMenu: {
-    revealFinder: 'Показать в Finder',
-    revealExplorer: 'Показать в Проводнике',
-    revealFileManager: 'Открыть содержащую папку',
-    revealInSidebar: 'Показать в дереве файлов',
-    copyPath: 'Копировать путь',
-    copyRelativePath: 'Копировать относительный путь',
-    download: 'Скачать',
-    downloadSaved: 'Сохранено',
-    downloadFailed: 'Не удалось скачать',
-    rename: 'Переименовать…',
-    delete: 'Удалить',
-    renameTitle: 'Переименование',
-    renameLabel: 'Новое имя',
-    deleteTitle: name => `Удалить ${name}?`,
-    deleteBody: 'Элемент будет перемещён в корзину — его можно восстановить оттуда.',
-    pathCopied: 'Путь скопирован',
-    revealMissing: 'Этой папки нет на этом компьютере'
-  },
+  fileMenu: ruFileMenu,
   boot: ruBoot.boot,
   notifications: {
     sharedProfileWarning:

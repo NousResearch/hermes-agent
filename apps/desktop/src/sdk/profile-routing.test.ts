@@ -40,7 +40,9 @@ vi.mock('@/store/session', async () => {
     $messages: atom([]),
     $messagingSessions: atom([]),
     $selectedStoredSessionId: atom(null),
+    $sessionOwnerRevision: atom(0),
     $sessions: atom([]),
+    $unlistedSessionOwnerRows: atom([]),
     $unreadFinishedSessionIds: atom([]),
     lineageAliases: (storedId: string) => [storedId],
     rememberedSessionProfile: (_sessions: unknown, _sessionId: null | string, activeProfile: null | string) =>
@@ -73,6 +75,7 @@ vi.mock('@/store/session-states', async () => {
     $stalledSessionIds: atom([]),
     $workingSessionIds: atom([]),
     dropTilesForProfile: vi.fn(),
+    knownOwnerForSession: vi.fn(() => undefined),
     sessionTileDelegate: vi.fn(() => null)
   }
 })

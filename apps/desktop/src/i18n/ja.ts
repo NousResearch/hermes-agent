@@ -10,6 +10,7 @@ import { jaConnectors } from './ja_connectors'
 import { jaCronControl } from './ja_cron_control'
 import { jaErrorCodes } from './ja_error_codes'
 import { jaErrorLayers } from './ja_error_layers'
+import { jaFileMenu } from './ja_file_menu'
 import { jaFirstRun } from './ja_first_run'
 import { jaGatewayHost } from './ja_gateway_host'
 import { jaLocalModels } from './ja_local_models'
@@ -89,26 +90,8 @@ export const jaOverrides = {
     off: 'オフ'
   },
 
-  fileMenu: {
-    revealFinder: 'Finder で表示',
-    revealExplorer: 'エクスプローラーで表示',
-    revealFileManager: '格納フォルダーを開く',
-    revealInSidebar: 'ファイルツリーで表示',
-    copyPath: 'パスをコピー',
-    copyRelativePath: '相対パスをコピー',
-    download: 'ダウンロード',
-    downloadSaved: '保存しました',
-    downloadFailed: 'ダウンロードに失敗しました',
-    rename: '名前を変更…',
-    delete: '削除',
-    renameTitle: '名前を変更',
-    renameLabel: '新しい名前',
-    deleteTitle: name => `${name} を削除しますか？`,
-    deleteBody: 'ゴミ箱に移動します。そこから復元できます。',
-    pathCopied: 'パスをコピーしました',
-    revealMissing: 'そのフォルダーはこのコンピューターにありません'
-  },
 
+  fileMenu: jaFileMenu,
   boot: jaBoot.boot,
 
   notifications: {

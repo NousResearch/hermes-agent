@@ -1,0 +1,16 @@
+name: local-scout
+repo: https://github.com/Angerosteles/local-scout
+sha: c07b21503013b4f841c3f5a396346c77c1c12aa3
+description: "Local privacy and safety layer for Hermes. Detected personal data and secrets (e-mails, phones, cards and CVVs, IBANs, SSNs, PESEL numbers, addresses, API keys, and passwords, 2FA codes and PINs without a known format; person names in prompts) are replaced with one-way placeholders on your machine before Hermes sends a request to a model: user prompts, file and terminal output, MCP tool results, tool-call arguments and auxiliary calls such as title generation, in CLI and gateway sessions. Also flags prompt injection in what the agent reads (flagged, not blocked), offers optional calibrated local triage that can answer routine tickets with no main model call, an optional basal method through a basal engine you run locally, and local Insights. Disclosure — off until you grant consent with the `scout` CLI; with masking on it rewrites every outgoing model request, tool-call arguments and tool/terminal/MCP results to replace detected personal data and secrets with one-way placeholders and appends a LOCAL_SCOUT_ALERT line, and replaces a user message (or, if the whole scan fails, the entire request) with a withheld notice unless you set `scout configure --guard-mode open` for that profile; with the optional answer grant it answers confident triage tickets locally and makes no main model call for them; the optional basal engine is reached on loopback only and receives unmasked candidate lines for password checks; it reads the profile config.yaml (title-generation setting only) and the history/dataset files you name in the CLI; state stays in its plugin-data directory and Insights export is a local file you name; no other network calls, shell commands, background processes or stored credentials."
+maintainer: Angerosteles
+tier: community
+category: tools
+requires_hermes: ">=0.23.0,<0.24.0"
+platforms: [linux, macos]
+docs_url: https://github.com/Angerosteles/local-scout#readme
+version: "1.7.5"
+capabilities:
+  provides_tools: [scout_handle, scout_calibrate, scout_inspect, scout_recipes, scout_choose, scout_train, scout_predict, scout_report, scout_calculate]
+  provides_hooks: [post_tool_call, pre_api_request, pre_auxiliary_call, post_api_request, post_auxiliary_call, transform_llm_output, transform_tool_result, transform_terminal_output]
+  provides_middleware: [llm_request, llm_execution]
+  requires_env: []

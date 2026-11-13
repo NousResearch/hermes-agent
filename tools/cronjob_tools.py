@@ -544,7 +544,12 @@ def _manual_run_completion(
     ]
     if refreshed.get("next_run_at"):
         lines.append(f"Next scheduled run: {refreshed['next_run_at']}")
-    excerpt = _latest_job_output_excerpt(job_id)
+    # This completion re-enters the session that invoked action='run', not the job's delivery
+    # target. Repeating an externally delivered payload here leaks it into a second, possibly
+    # unrelated chat/thread. Keep it only when nobody else got it: a local job, or a delivery that
+    # failed on EVERY target (a partial failure already posted the output somewhere).
+    reached_nobody = not deliver or deliver == "local" or refreshed.get("last_delivery_reached_none")
+    excerpt = _latest_job_output_excerpt(job_id) if reached_nobody else None
     if excerpt:
         lines += ["--- JOB OUTPUT ---", excerpt]
     return {

@@ -434,7 +434,7 @@ from typing import TYPE_CHECKING, Dict, List, Optional, Any, Callable, Awaitable
 if (_checkout_root := str(Path(__file__).resolve().parents[2])) not in sys.path:
     sys.path.append(_checkout_root)  # append, never prepend: never shadow same-named installed packages
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.helpers import fence_state_after, typing_metadata_for_turn, typing_pause_key
+from gateway.platforms.helpers import fence_state_after, reply_file_off, try_reply_file, typing_metadata_for_turn, typing_pause_key
 from gateway.platforms.base_post_delivery import run_post_delivery_callback
 from gateway.platforms.base_delivery_ledger import (
     finalize_final_obligation, ledger_attempted, ledger_bracket, record_final_obligation)
@@ -3527,7 +3527,10 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
         failures fall back to a plain-text send, exhausted retries notify the user."""
         async def _send(text: str) -> SendResult:
             return await self.send(chat_id=chat_id, content=text, reply_to=reply_to, metadata=metadata)
-
+        tried, as_file = await try_reply_file(self, chat_id, content, reply_to=reply_to, metadata=metadata)
+        if as_file or tried:  # past MAX_SPLIT_MESSAGES: one file; a failed upload never retried as a file (#152012)
+            with reply_file_off():
+                return as_file or await self._send_with_retry(chat_id, content, reply_to, metadata, max_retries, base_delay)
         async def _send_again(previous: SendResult) -> Optional[SendResult]:
             """Retry: the whole payload normally; only the undelivered remainder after a partial split
             delivery (``raw_response["partial_overflow"]``). ``None`` when the adapter cannot resume — the
@@ -3540,12 +3543,9 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
         if result.success or self._send_retry_is_final(result):
             return result
         error_str = result.error or ""
-        # A rate-limited / flood-capped send is transient: it should back off
-        # (honoring the server's retry_after when present) rather than fall
-        # through to the plain-text fallback, which re-enters the ban and can
-        # truncate content.  Gate on the platform-neutral classifier as well so
-        # platforms that surface a rate limit without a retry_after field
-        # (e.g. Weixin raising a bare RuntimeError) get the same treatment.
+        # A rate-limited / flood-capped send is transient: back off (honoring the server's retry_after) rather
+        # than fall through to the plain-text fallback, which re-enters the ban and can truncate content. The
+        # platform-neutral classifier also matches a rate limit with no retry_after (Weixin's bare RuntimeError).
         is_rate_limited = self._is_rate_limited_error(error_str)
         is_network = (
             result.retryable

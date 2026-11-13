@@ -677,7 +677,12 @@ declare global {
         callback: (payload: { kind: string; name: string; params: Record<string, string> }) => void
       ) => () => void
       signalDeepLinkReady?: () => Promise<{ ok: boolean }>
-      probePluginRepo?: (payload: { identifier?: string; repo?: string }) => Promise<{
+      probePluginRepo?: (payload: {
+        identifier?: string
+        repo?: string
+        /** A catalog pick's pin: the repository is read at that commit, not its default branch. */
+        ref?: string
+      }) => Promise<{
         ok: boolean
         agent: boolean
         desktop: boolean

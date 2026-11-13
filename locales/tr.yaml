@@ -980,6 +980,7 @@ platform:
     denied: "❌ Reddedildi."
     approval_expired: "⌛ Onay süresi doldu — komut çalıştırılmadı (zaten zaman aşımına uğradı veya başka bir yerde sonuçlandı)."
   shared:
+    response_as_file: "📎 Uzun yanıt: metnin tamamı ekte."
     truncated_suffix: "\n...(kısaltıldı)"
     unknown: "bilinmiyor"
     approval_expired: "⌛ Onay süresi doldu — komut çalıştırılmadı (zaten zaman aşımına uğradı veya başka bir yerde sonuçlandı)."
@@ -1170,8 +1171,6 @@ platform:
         unknown: "Bilinmeyen skill: `{name}`. Otomatik tamamlama önerileri için yazmaya başlayın."
       auto_args_description: "Argümanlar: {args_hint}"
       auto_description_fallback: "/{name} komutunu çalıştır"
-    limits:
-      response_truncated: "⚠️ **Yanıt kısaltıldı** — bu yanıt teslim sınırını ({max_messages} mesaj) aştı. {dropped_chars} karakter teslim edilmedi; yanıtın tamamı oturum günlüklerinde."
     forum:
       default_title: "Yeni Gönderi"
     voice:

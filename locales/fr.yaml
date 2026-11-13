@@ -1168,6 +1168,7 @@ platform:
     denied: "❌ Refusé."
     approval_expired: "⌛ Approbation expirée — la commande n'a pas été exécutée (délai dépassé ou déjà résolue ailleurs)."
   shared:
+    response_as_file: "📎 Réponse longue : le texte complet est en pièce jointe."
     truncated_suffix: |2-
 
       ...(tronqué)
@@ -1369,8 +1370,6 @@ platform:
         unknown: "Skill inconnue : `{name}`. Commencez à taper pour obtenir des suggestions."
       auto_args_description: "Arguments : {args_hint}"
       auto_description_fallback: "Exécuter /{name}"
-    limits:
-      response_truncated: "⚠️ **Réponse tronquée** — cette réponse a dépassé la limite d'envoi ({max_messages} messages). {dropped_chars} caractères n'ont pas été transmis ; la réponse complète se trouve dans les journaux de la session."
     forum:
       default_title: "Nouvelle publication"
     voice:

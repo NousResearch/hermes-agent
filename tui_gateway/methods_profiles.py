@@ -7,6 +7,7 @@ onto server.py, so they must not collide with its globals.
 import logging
 import sqlite3
 
+from hermes_cli.profiles_cache import yaml_scalar_to_json as _yaml_scalar_to_json
 from .method_ctx import HandlerRegistry, bind_module
 
 _registry = HandlerRegistry()
@@ -86,12 +87,6 @@ def _read_profile_yaml(profile_dir) -> dict:
         return (yaml.safe_load(meta_path.read_text(encoding="utf-8")) or {}) if meta_path.is_file() else {}
     loaded = _try(load, {})
     return loaded if isinstance(loaded, dict) else {}
-
-
-def _yaml_scalar_to_json(value):
-    """``json.dumps`` default for YAML-only scalars (datetime/date → ISO 8601, else ``str``)."""
-    isoformat = getattr(value, "isoformat", None)
-    return isoformat() if callable(isoformat) else str(value)
 
 
 def _clean_revisions(raw: dict) -> dict:

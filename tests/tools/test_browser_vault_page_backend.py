@@ -73,6 +73,37 @@ def test_fill_runs_on_the_page_backend_and_refuses_another_origin(page):
     assert not any(SECRET in expr for expr, _ in fake.calls)
 
 
+@pytest.mark.parametrize("probe_result", [False, None, [], "false"])
+def test_plugin_otp_refuses_before_vault_lookup(page, monkeypatch, probe_result):
+    from tools import browser_vault_tool as tool
+    fake, meta = page
+    monkeypatch.setattr(fake, "evaluate", lambda *args, **kwargs: probe_result)
+    def unexpected(*args):
+        raise AssertionError("ineligible plugin page must not resolve saved login")
+    monkeypatch.setattr(tool, "_saved_login", unexpected)
+    out = json.loads(tool.browser_vault_enter_code(meta.id))
+    assert out["error_type"] == "no_code_field"
+
+
+def test_plugin_otp_probe_accepts_before_inspection(page, monkeypatch):
+    from tools import browser_vault_tool as tool
+    fake, meta = page
+    calls = []
+    def evaluate(task_id, expression, *, secret):
+        calls.append((expression, secret))
+        if expression == tool._TAB_PROBES["otp"]:
+            return True
+        if "location.href" in expression:
+            return fake.url
+        return json.dumps([])
+    monkeypatch.setattr(fake, "evaluate", evaluate)
+    monkeypatch.setattr(tool, "_saved_login", lambda handle: (None, None))
+    out = json.loads(tool.browser_vault_enter_code())
+    assert out["error_type"] == "no_code_field"  # inspection revalidates before any code prompt
+    assert calls[0] == (tool._TAB_PROBES["otp"], False)
+    assert len(calls) == 3
+
+
 def test_secret_failure_never_echoes_the_script(page):
     from tools import browser_vault_tool
 

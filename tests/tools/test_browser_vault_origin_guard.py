@@ -50,8 +50,8 @@ class _FakePage:
     def __init__(self, href: str, controls: list[dict]):
         self.href, self.controls, self.writes = href, controls, []
 
-    def focus_page(self, origin: str, accept=None) -> dict:
-        return {"ok": bool(origin) and normalize_origin(self.href) == origin, "url": self.href}
+    def focus_page(self, origin, *, accept=None, unique=False):
+        return {"ok": not origin or normalize_origin(self.href) == origin, "url": self.href}
 
     def evaluate_runtime(self, expression: str) -> dict:
         if expression.strip() == "window.location.href":

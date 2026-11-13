@@ -57,6 +57,8 @@ vi.mock('@/hermes', async importOriginal => ({
 }))
 
 const destination = '/settings?agentProfile=research&connection=local&panel=settings&tab=agent%3Ageneral'
+// Another machine's agent still waits for "Open agent"; this window's machine renders in place.
+const remoteDestination = destination.replace('connection=local', 'connection=remote')
 
 function Harness() {
   const location = useLocation()
@@ -66,7 +68,9 @@ function Harness() {
       navigate('/')
     }
   })
-  const profile = new URLSearchParams(location.search).get('agentProfile') ?? 'default'
+  const params = new URLSearchParams(location.search)
+  const profile = params.get('agentProfile') ?? 'default'
+  const connectionId = params.get('connection') ?? 'local'
 
   return (
     <>
@@ -81,15 +85,15 @@ function Harness() {
         Refresh route state
       </button>
       {location.pathname === '/settings' && (
-        <AgentSettingsView key={profile} onClose={() => navigate('/')} owner={{ connectionId: 'local', profile }} />
+        <AgentSettingsView key={profile} onClose={() => navigate('/')} owner={{ connectionId, profile }} />
       )}
     </>
   )
 }
 
-function mount() {
+function mount(entry = destination) {
   render(
-    <MemoryRouter initialEntries={[destination]}>
+    <MemoryRouter initialEntries={[entry]}>
       <Harness />
     </MemoryRouter>
   )
@@ -100,13 +104,17 @@ beforeEach(() => {
   $apiRequestScope.set({ connectionId: 'local', profile: 'default' })
   $activeGatewayProfile.set('default')
   $connectionsRegistry.set({
-    connections: [{ id: 'local', kind: 'local', label: 'This device', tokenPreview: null, tokenSet: false }],
+    connections: [
+      { id: 'local', kind: 'local', label: 'This device', tokenPreview: null, tokenSet: false },
+      { id: 'remote', kind: 'remote', label: 'Remote', tokenPreview: null, tokenSet: false }
+    ],
     primary: 'local',
     secureTokenStorage: true,
     version: 2
   })
-  vi.mocked(selectConnection).mockImplementation(async (_connection, options) => {
+  vi.mocked(selectConnection).mockImplementation(async (connection, options) => {
     requestFreshSession({ preserveRoute: options?.preserveRoute })
+    $apiRequestScope.setKey('connectionId', connection)
     $activeGatewayProfile.set(options?.profile ?? 'default')
   })
 })
@@ -121,12 +129,13 @@ afterEach(() => {
 
 it.each([false, true])('keeps the requested panel without overriding later navigation (leave=%s)', async leave => {
   const activation = deferred<void>()
-  vi.mocked(selectConnection).mockImplementation(async (_connection, options) => {
+  vi.mocked(selectConnection).mockImplementation(async (connection, options) => {
     await activation.promise
     requestFreshSession({ preserveRoute: options?.preserveRoute })
+    $apiRequestScope.setKey('connectionId', connection)
     $activeGatewayProfile.set(options?.profile ?? 'default')
   })
-  mount()
+  mount(remoteDestination)
   fireEvent.click(screen.getByRole('button', { name: 'Open agent' }))
 
   if (leave) {
@@ -137,7 +146,7 @@ it.each([false, true])('keeps the requested panel without overriding later navig
     activation.resolve()
     await activation.promise
   })
-  expect(screen.getByTestId('route').textContent).toBe(leave ? '/elsewhere' : destination)
+  expect(screen.getByTestId('route').textContent).toBe(leave ? '/elsewhere' : remoteDestination)
 
   if (!leave) {
     expect(screen.queryByRole('button', { name: 'Open agent' })).toBeNull()
@@ -163,12 +172,15 @@ it.each(['stay', 'leave', 'refresh'] as const)(
     fireEvent.change(screen.getByLabelText(/new name/i), { target: { value: 'renamed' } })
     fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Rename' }))
     await waitFor(() => expect(renameProfile).toHaveBeenCalled())
-    expect(screen.getByRole('button', { name: 'Open agent' })).toBeTruthy()
+    // Retirement moved the window to the default agent; the page keeps showing its owner.
+    expect($activeGatewayProfile.get()).toBe('default')
+    expect(screen.queryByRole('button', { name: 'Open agent' })).toBeNull()
 
+    // The rename dialog is still open over the page, so the harness controls sit behind it.
     if (navigation === 'leave') {
-      fireEvent.click(screen.getByRole('button', { name: 'Leave settings' }))
+      fireEvent.click(screen.getByRole('button', { hidden: true, name: 'Leave settings' }))
     } else if (navigation === 'refresh') {
-      fireEvent.click(screen.getByRole('button', { name: 'Refresh route state' }))
+      fireEvent.click(screen.getByRole('button', { hidden: true, name: 'Refresh route state' }))
     }
 
     await act(async () => {
@@ -191,3 +203,16 @@ it.each(['stay', 'leave', 'refresh'] as const)(
     }
   }
 )
+
+it('follows a renamed agent the window was only viewing without activating it', async () => {
+  vi.mocked(renameProfile).mockResolvedValueOnce({ name: 'renamed', ok: true, path: '/tmp/renamed' })
+  mount()
+  fireEvent.click(screen.getByRole('button', { name: /^Rename: / }))
+  fireEvent.change(screen.getByLabelText(/new name/i), { target: { value: 'renamed' } })
+  fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Rename' }))
+  await waitFor(() =>
+    expect(screen.getByTestId('route').textContent).toBe(destination.replace('agentProfile=research', 'agentProfile=renamed'))
+  )
+  expect(selectConnection).not.toHaveBeenCalled()
+  expect($activeGatewayProfile.get()).toBe('default')
+})

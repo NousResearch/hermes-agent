@@ -17,7 +17,6 @@ import { useI18n } from '@/i18n'
 import { pathLabel, sessionTitle } from '@/lib/chat-runtime'
 import { Pin } from '@/lib/icons'
 import { $activeConnectionId } from '@/store/connections'
-import { $activeGatewayProfile } from '@/store/profile'
 import type { PaginatedSessions, SessionInfo } from '@/types/hermes'
 
 import { openSession } from '../open-session'
@@ -88,12 +87,13 @@ function AgentHistoryContent({ owner, onClose }: AgentHistoryProps) {
     }
   }, [])
 
+  // Every request here is pinned to the owner, so the active agent may differ; a switch of the
+  // window's machine still ends an operation, since the page then no longer shows this owner.
   const current = useCallback(
     () =>
       mounted.current &&
-      ($apiRequestScope.get().connectionId ?? $activeConnectionId.get() ?? 'local') === owner.connectionId &&
-      $activeGatewayProfile.get() === owner.profile,
-    [owner.connectionId, owner.profile]
+      ($apiRequestScope.get().connectionId ?? $activeConnectionId.get() ?? 'local') === owner.connectionId,
+    [owner.connectionId]
   )
 
   const historyKey = [...agentSettingsKey(owner), 'history']

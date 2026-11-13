@@ -15,6 +15,7 @@ import { invalidateSlashCompletions } from '@/lib/slash-completion-cache'
 import { useStoreSelector } from '@/lib/use-session-slice'
 import { $gateway, activeGatewayConnectionId } from '@/store/gateway'
 import { OFFICIAL_SKILLS_KEY } from '@/store/hub-actions'
+import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
 import { $capabilitiesManagedPerAgent } from '@/store/shell-policy'
 import { usePortalShell } from '@/store/shell-variant'
 
@@ -23,6 +24,7 @@ import { useRouteEnumParam } from '../hooks/use-route-enum-param'
 import { PanelEmpty } from '../overlays/panel'
 import { PageSearchShell, type PageShellTab } from '../page-search-shell'
 import { SETTINGS_ROUTE } from '../routes'
+import { useSettingsOwner } from '../settings/profile-scope'
 import type { SetStatusbarItemGroup } from '../shell/statusbar-controls'
 
 import { useConnectorsCount, usePluginsCount } from './capability-counts'
@@ -92,6 +94,11 @@ export function CapabilitiesView({
   const [selectedMode, setMode] = embedded ? localTab : routeTab
   const mode = fixedMode ?? selectedMode
   const gateway = useStoreSelector($gateway, g => (mode === 'connectors' ? g : null))
+  // `reload.mcp` reloads the window's chat, which is the ACTIVE agent's: an agent page showing
+  // another agent leaves its MCP edits to that agent's next session instead.
+  const owner = useSettingsOwner()
+  const activeProfile = useStore($activeGatewayProfile)
+  const reloadsOwnerChat = !owner || normalizeProfileKey(owner.profile) === normalizeProfileKey(activeProfile)
 
   const [query, setQuery] = useState('')
 
@@ -143,7 +150,7 @@ export function CapabilitiesView({
       <ConnectorsTab
         agentControls={agentControls}
         agentLayout={presentation.agentLayout}
-        gateway={scope.crossBackend ? null : gateway}
+        gateway={scope.crossBackend || !reloadsOwnerChat ? null : gateway}
         key={`connectors-${scope.key}`}
         profile={scope.profile}
       />

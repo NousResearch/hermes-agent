@@ -85,20 +85,23 @@ export function resolveConfigWriteScope(
   return capabilityScoped(requestScope)
 }
 
-export function getStatus(): Promise<StatusResponse> {
+export function getStatus(profile?: string): Promise<StatusResponse> {
   return hermesApi<StatusResponse>({
-    ...profileScoped(),
+    ...profileScoped(profile),
     path: '/api/status'
   })
 }
 
-export function getLogs(params: {
-  component?: string
-  file?: string
-  level?: string
-  lines?: number
-  search?: string
-}): Promise<LogsResponse> {
+export function getLogs(
+  params: {
+    component?: string
+    file?: string
+    level?: string
+    lines?: number
+    search?: string
+  },
+  profile?: ProfileScope
+): Promise<LogsResponse> {
   const query = new URLSearchParams()
 
   if (params.file) {
@@ -124,7 +127,7 @@ export function getLogs(params: {
   const suffix = query.toString()
 
   return hermesApi<LogsResponse>({
-    ...profileScoped(),
+    ...capabilityScoped(profile),
     path: suffix ? `/api/logs?${suffix}` : '/api/logs'
   })
 }

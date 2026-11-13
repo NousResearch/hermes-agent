@@ -81,18 +81,19 @@ async function awaitAction(name: string, profile?: string): Promise<void> {
 // backends that do not report `gateway_shared_with`) keep the silent restart.
 // Resolves the served list when the user confirmed, `null` when nothing is
 // shared, `false` when they cancelled.
-export async function confirmSharedGatewayRestart(): Promise<false | null | string[]> {
+export async function confirmSharedGatewayRestart(profile?: string): Promise<false | null | string[]> {
   let shared: null | string[] = null
 
   try {
-    let status = await getStatus()
+    // The gateway being restarted is the one to ask about: `profile`'s, else the active one.
+    let status = await getStatus(profile)
 
     // A Webapp tab whose access token expired since its last gated request reads the signed-out
     // body, which omits the served set. A gated read rotates the cookies; then ask again, so a
     // restart of the shared multiplexer still asks first.
     if (isSignedOutStatus(status)) {
       await hermesApi({ path: '/api/auth/me' })
-      status = await getStatus()
+      status = await getStatus(profile)
     }
 
     shared = sharedGatewayProfiles(status)
@@ -125,7 +126,7 @@ export async function confirmSharedGatewayRestart(): Promise<false | null | stri
 // pin both the restart request and its status polls to one backend owner; the
 // ambient scope serves callers without an owner (#71352).
 export async function runGatewayRestart(profile?: string): Promise<boolean> {
-  const shared = await confirmSharedGatewayRestart()
+  const shared = await confirmSharedGatewayRestart(profile)
 
   if (shared === false) {
     return false
@@ -166,11 +167,11 @@ export async function runGatewayRestart(profile?: string): Promise<boolean> {
 // Watch a restart the BACKEND spawned (e.g. after Telegram QR onboarding writes
 // credentials) instead of one this app requested. Same indicator, same bounded
 // poll, same restart-window tolerance and reconnect follow-through.
-export async function watchGatewayRestartOutcome(): Promise<boolean> {
+export async function watchGatewayRestartOutcome(profile?: string): Promise<boolean> {
   $gatewayRestarting.set(true)
 
   try {
-    await awaitAction(GATEWAY_RESTART_ACTION)
+    await awaitAction(GATEWAY_RESTART_ACTION, profile)
 
     return true
   } catch {

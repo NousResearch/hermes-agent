@@ -37,12 +37,11 @@ import { gatewayLabel } from '../chat/sidebar/gateway-group-model'
 import { useSimplifiedAgents } from '../chat/sidebar/use-simplified-agents'
 import { useHermesConfigRecord } from '../hooks/use-config-record'
 import { openSession } from '../open-session'
-import { PageFrameFallback } from '../overlays/page-frame-fallback'
 import { Panel, PanelHeader } from '../overlays/panel'
 import { PageHeader, PageTabs } from '../redesign/page-header'
 import { PROFILES_ROUTE, SETTINGS_ROUTE } from '../routes'
 import { getNested, toolNames } from '../settings/helpers'
-import { settingsScopeLabel } from '../settings/profile-scope'
+import { SettingsOwnerContext, settingsScopeLabel } from '../settings/profile-scope'
 import type { SettingsPageProps } from '../settings/types'
 
 import { AgentChannelWarnings } from './channel-warning'
@@ -65,7 +64,10 @@ interface AgentSettingsViewProps extends SettingsPageProps {
   classic?: boolean
 }
 
-/** Existing editors use the active gateway. Gate them before rendering, never silently retarget. */
+/** The redesign's page pins every read and write to its owner (SettingsOwnerContext, owner-scoped
+ *  helpers, requestGatewayForAgent), so any agent on this window's machine renders without being
+ *  activated. Another machine, and the classic shell's editors (which still follow the active
+ *  gateway), stay gated behind an explicit "Open agent": never silently retarget. */
 export function AgentSettingsView(props: AgentSettingsViewProps) {
   const c = useAgentSettingsCopy()
   const { t } = useI18n()
@@ -89,16 +91,28 @@ export function AgentSettingsView(props: AgentSettingsViewProps) {
   const [opening, setOpening] = useState(false)
   const [scopeReady, setScopeReady] = useState(false)
 
-  const matches =
-    (props.owner.connectionId ?? null) === (apiScope.connectionId ?? active) && profile === props.owner.profile
+  const sameConnection = (props.owner.connectionId ?? null) === (apiScope.connectionId ?? active)
+  const ownerActive = sameConnection && profile === props.owner.profile
+  const matches = props.classic ? ownerActive : sameConnection
+  const ownerConnectionId = props.owner.connectionId ?? apiScope.connectionId ?? active ?? 'local'
 
+  // The whole page, not just the editor, sits in the owner's context: its counts (plugins,
+  // connectors) dial the owner's socket instead of the window's.
+  const pageOwner = useMemo(
+    () => ({ connectionId: ownerConnectionId, profile: props.owner.profile }),
+    [ownerConnectionId, props.owner.profile]
+  )
+
+  // The classic editors read the shared "Applies to" scope, so they wait for it to name the owner.
+  // The redesign's never read it and never write it: an override left behind would retarget the
+  // classic Settings pages after the user leaves this one.
   useEffect(() => {
-    if (matches) {
+    if (props.classic && matches) {
       setSettingsScope(props.owner.profile)
     }
 
     setScopeReady(matches)
-  }, [matches, props.owner.profile])
+  }, [matches, props.classic, props.owner.profile])
 
   async function activate(targetProfile = props.owner.profile) {
     setOpening(true)
@@ -155,13 +169,22 @@ export function AgentSettingsView(props: AgentSettingsViewProps) {
     )
   }
 
-  if (!scopeReady) {
-    return props.classic ? <PageLoader /> : <PageFrameFallback frame="agent" onClose={props.onClose} />
+  if (props.classic && !scopeReady) {
+    return <PageLoader />
   }
+
+  // Captured when the rename starts (the dialog holds this render's callback): a local rename
+  // retires the old name's gateway, so a window that was ON this agent reopens it under the new
+  // name. An agent the window was only viewing is followed by route alone, never activated.
+  const reopenAfterRename = props.classic || ownerActive
 
   async function onProfileRenamed(name: string) {
     // Only the route that initiated the rename may follow the new owner.
-    if (activeRoute.current !== route || !(await activate(name)) || activeRoute.current !== route) {
+    if (activeRoute.current !== route || (reopenAfterRename && !(await activate(name)))) {
+      return
+    }
+
+    if (activeRoute.current !== route) {
       return
     }
 
@@ -173,7 +196,14 @@ export function AgentSettingsView(props: AgentSettingsViewProps) {
   return props.classic ? (
     <ClassicAgentSettings {...props} onProfileRenamed={onProfileRenamed} />
   ) : (
-    <AgentSettingsContent {...props} onProfileRenamed={onProfileRenamed} />
+    <SettingsOwnerContext.Provider value={pageOwner}>
+      <AgentSettingsContent
+        {...props}
+        // The composer shows the ACTIVE agent's model: another agent's model change must not repaint it.
+        onMainModelChanged={ownerActive ? props.onMainModelChanged : undefined}
+        onProfileRenamed={onProfileRenamed}
+      />
+    </SettingsOwnerContext.Provider>
   )
 }
 
@@ -403,7 +433,6 @@ function AgentSettingsContent({
   const value = (path: string) => pending(config.isError, config.isPending, configText(path) || '—')
 
   function openPanel(next: string | null, tab?: string, page?: string) {
-    setSettingsScope(owner.profile)
     navigate(agentPanelHref(owner, { panel: next, tab, page }))
   }
 

@@ -319,6 +319,8 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
   const pinnedOwner = useSettingsOwner()
   const agentLayout = usePortalShell() && Boolean(pinnedOwner)
   const scopeProfile = pinnedOwner ?? requestedProfile
+  // An agent page restarts (and watches) its owner's messaging gateway; classic keeps the active one.
+  const restartProfile = pinnedOwner?.profile
   const [platforms, setPlatforms] = useState<MessagingPlatformInfo[] | null>(null)
   // A saved credential/toggle only takes effect on the next gateway start, so a
   // vanishing toast is not enough: the page keeps a banner up until a restart
@@ -344,13 +346,13 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
   const restartGatewayNow = useCallback(async () => {
     // runGatewayRestart never rejects: it toasts the failure and settles the
     // statusbar indicator; the banner stays if the restart did not complete.
-    const ok = await runGatewayRestart()
+    const ok = await runGatewayRestart(restartProfile)
 
     if (ok) {
       setRestartNeeded(false)
       window.setTimeout(() => void refreshPlatformsRef.current(true), 4000)
     }
-  }, [])
+  }, [restartProfile])
 
   // A multiplexed named profile is re-served from its new config at once (`hot_served`): no restart
   // banner; re-read status once the adapter had a moment to connect. Anything else needs a restart.
@@ -633,7 +635,7 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
         message: [connectedBot, m.telegramQr.savedRestarting].filter(Boolean).join(' · ')
       })
       setRestartNeeded(false)
-      const ok = await watchGatewayRestartOutcome()
+      const ok = await watchGatewayRestartOutcome(restartProfile)
 
       if (!ok) {
         setRestartNeeded(true)
@@ -641,7 +643,7 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
           kind: 'error',
           title: m.restartFailedManual,
           message: m.restartFailedManualDetail,
-          action: { label: m.restartAgain, onClick: () => void runGatewayRestart() },
+          action: { label: m.restartAgain, onClick: () => void runGatewayRestart(restartProfile) },
           secondaryAction: {
             label: m.openLogs,
             onClick: () => void window.hermesDesktop?.revealLogs?.().catch(() => undefined)

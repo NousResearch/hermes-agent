@@ -623,7 +623,7 @@ export const host = {
   // rejection a plugin's .catch() sees, never an error-boundary crash.
 
   /** Tail an app log file (`agent` / `errors` / `gateway` / `gui` / …). */
-  logs: async (...args: Parameters<typeof getLogs>) => getLogs(...args),
+  logs: async (params: Parameters<typeof getLogs>[0]) => getLogs(params),
 
   /** Complete client-local MCP sign-in for a pinned bot profile, optionally
    *  installing its catalog entry first. Uses the same OAuth flow as Settings. */

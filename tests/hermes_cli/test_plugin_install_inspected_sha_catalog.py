@@ -189,3 +189,29 @@ def test_a_tree_a_refused_default_left_is_enabled_by_the_retry(world, monkeypatc
         home, entries=[PluginCatalogEntry(name="demo", repo=URL, sha=sha, description="d", maintainer="m")])
 
     assert out == {"installed": ["demo"], "owed": []}
+
+
+def test_a_leftover_default_whose_replacement_failed_is_retried(world, monkeypatch):
+    """The retry removes the leftover tree before installing. When that install fails (offline), the next
+    pass retries: the missing tree is this attempt's removal, not the user's."""
+    from hermes_cli import default_plugins, plugins_cmd
+    from hermes_cli.memory_provider_migration import _note_failure
+    from hermes_cli.plugin_catalog import PluginCatalogEntry
+    home, repo, pin = world
+    monkeypatch.delenv("HERMES_DISABLE_LAZY_INSTALLS", raising=False)
+    entry = PluginCatalogEntry(name="demo", repo=URL, sha=_commit(repo, "first"), description="d", maintainer="m")
+    pin(entry.sha)
+    assert _rpc("install", enable=False)["result"]["ok"] is True
+    # What a refused enable by the default pass leaves: its failure stamp and the placed marker.
+    _note_failure(home, "default-demo")
+    default_plugins._placed(home, entry).parent.mkdir(parents=True, exist_ok=True)
+    default_plugins._placed(home, entry).touch()
+    clone = plugins_cmd._clone_plugin_repo
+
+    def offline(*args, **kwargs):
+        raise OSError("fatal: unable to access 'https://example.invalid/'")
+    monkeypatch.setattr(plugins_cmd, "_clone_plugin_repo", offline)
+    assert default_plugins.install_defaults(home, entries=[entry])["owed"] == ["demo"]
+    monkeypatch.setattr(plugins_cmd, "_clone_plugin_repo", clone)
+
+    assert default_plugins.install_defaults(home, entries=[entry]) == {"installed": ["demo"], "owed": []}

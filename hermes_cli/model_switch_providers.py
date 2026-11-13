@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from typing import Any, List, Optional
 from agent.command_token_source import build_command_token_provider, materialize_probe_api_key
 from hermes_cli.providers import custom_provider_aliases, custom_provider_slug, get_label
-from utils import base_url_host_matches
+from utils import base_url_host_matches, same_base_url_origin
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("hermes_cli.model_switch")
@@ -33,7 +33,6 @@ def _save_discovered_models_to_config(
 
     Matches by base_url (slash-normalised), api_mode and headers. A failed config write is
     swallowed — the picker still shows the live models for this session."""
-    from hermes_cli.model_switch import _extra_headers_from_config
     if not api_url or not model_ids:
         return
     try:
@@ -994,7 +993,7 @@ def _lap_user_provider_rows(b: _PickerBuild, user_providers: dict) -> None:
     extra_headers) so keyed providers on one endpoint with the same wire protocol collapse into
     one row (two Palantir Claude entries -> one "Palantir Claude" row); a different
     key_env/api_mode/headers keeps distinct rows since the wire protocol or tenant differs."""
-    from hermes_cli.model_switch import _extra_headers_from_config, _scoped_key_env
+    from hermes_cli.model_switch import _scoped_key_env
     from hermes_cli.config import coerce_provider_id, is_provider_enabled
     ep_groups: dict[tuple, dict] = {}
     for ep_name, ep_cfg in user_providers.items():
@@ -1107,7 +1106,7 @@ def _lap_custom_provider_rows(b: _PickerBuild, custom_providers: list) -> None:
     (endpoint, credential identity, api_mode, extra_headers, display prefix). Four "Ollama — X"
     entries on one host become one "Ollama" row; distinct prefixes sharing a proxy URL keep
     their own rows."""
-    from hermes_cli.model_switch import _extra_headers_from_config, _scoped_key_env
+    from hermes_cli.model_switch import _scoped_key_env
     from hermes_cli.config import coerce_provider_id
     groups: dict[tuple, dict] = {}
     for entry in custom_providers:
@@ -1440,3 +1439,22 @@ def _attach_window_model_notes(providers: list[dict]) -> None:
             nous["plan_line"] = line
     except Exception:
         logger.debug("window model notes failed", exc_info=True)
+
+
+def _saved_entry_on_other_origin(name: str, base_url: str) -> bool:
+    """True when the saved ``providers.<name>`` points at another origin than *base_url*."""
+    from hermes_cli.config import load_config
+    from hermes_cli.config_providers import ENDPOINT_ADDRESS_FIELDS
+
+    saved = (load_config().get("providers") or {}).get(name)
+    if not isinstance(saved, dict):
+        return False
+    old_urls = (str(saved.get(field) or "").strip() for field in ENDPOINT_ADDRESS_FIELDS)
+    return any(url and not same_base_url_origin(url, base_url) for url in old_urls)
+
+
+def _extra_headers_from_config(entry: Any) -> dict[str, str]:
+    if not isinstance(entry, dict):
+        return {}
+    from hermes_cli.config import normalize_extra_headers
+    return normalize_extra_headers(entry.get("extra_headers"))

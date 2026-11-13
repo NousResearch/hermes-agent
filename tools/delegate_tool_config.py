@@ -324,7 +324,15 @@ def _resolve_child_credential_pool(
             # owns, or a fixed entry credential becomes the built-in's account on a shared endpoint.
             from agent.custom_entry_pool import custom_entry_for_endpoint, entry_scoped_pool
             owner = custom_entry_for_endpoint(effective_base_url, effective_requested_provider)
-            return entry_scoped_pool(_loaded_pool(child_key), child_key, owner[1] if owner else None)
+            return entry_scoped_pool(_loaded_pool(child_key), child_key, owner[1] if owner else None, effective_base_url)
+        from agent.custom_entry_pool import is_custom_runtime, load_runtime_pool
+        if is_custom_runtime(effective_provider, effective_requested_provider, effective_base_url):
+            # A bare slug naming a custom entry (``delegation.provider: deepseek`` with a
+            # ``providers.deepseek`` proxy) shares its slug with the built-in's pool: take the entry's
+            # origin-bound view the main resolver takes, never the raw pool, whose unrecorded rows
+            # would pass the endpoint check and lease the built-in's key to the entry's host.
+            pool = load_runtime_pool(effective_provider, effective_base_url, effective_requested_provider)
+            return pool if pool is not None and pool.has_credentials() else None
         if effective_provider == parent_provider:
             # A same-provider parent with no pool is using a fixed credential.
             # Loading a separate provider pool here can replace the inherited

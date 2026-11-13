@@ -3535,15 +3535,15 @@ def _recoverable_pool_provider(
 
 
 def _recover_provider_pool(provider: str, exc: Exception, *, failed_api_key: str = "",
-                           verdict: Optional[aux_errors.ClassifiedError] = None) -> bool:
+                           verdict: Optional[aux_errors.ClassifiedError] = None, base_url: str = "") -> bool:
     """Try same-provider credential-pool recovery for auxiliary calls.
 
-    ``failed_api_key`` lets mark_exhausted_and_rotate identify the right pool entry even if
-    another process already rotated (current() would be None).
+    ``failed_api_key`` lets mark_exhausted_and_rotate identify the right pool entry even if another process already
+    rotated (current() would be None). ``base_url``: where the failed request went (a custom entry rotates its rows bound there).
     """
     normalized = _normalize_aux_provider(provider)
     try:
-        pool = pool_for_aux_provider(provider, normalized, load_pool)
+        pool = pool_for_aux_provider(provider, normalized, load_pool, base_url)
     except Exception as load_exc:
         logger.debug("Auxiliary client: could not load pool for %s recovery: %s", normalized, load_exc)
         return False
@@ -4632,7 +4632,7 @@ def _named_custom_api_key(custom_entry: dict[str, Any], provider: str, custom_ba
                     pool = load_pool(pool_key)
                 except Exception:
                     continue
-                if (pool := entry_scoped_pool(pool, pool_key, custom_entry)) is None or not pool.has_credentials():
+                if (pool := entry_scoped_pool(pool, pool_key, custom_entry, custom_base)) is None or not pool.has_credentials():
                     continue
                 if (pool_entry := pool.select(model=model)) is None:
                     continue
@@ -5886,10 +5886,10 @@ def _get_cached_client(
             del _client_cache[cache_key]
     # Build outside the lock. For pool-backed providers derive the key from the pool entry:
     # resolve_api_key_provider_credentials prefers env vars, which would bypass pool rotation
-    # and retry an exhausted key. A pinned ``custom:<name>`` peeks only its entry's rows.
+    # and retry an exhausted key. A custom entry peeks only its rows bound to the address called.
     effective_api_key = api_key
     if not effective_api_key:
-        _pool = pool_for_aux_provider(provider, _normalize_aux_provider(provider), lambda k: _load_pool_with_credentials(k, " (peek)"))
+        _pool = pool_for_aux_provider(provider, _normalize_aux_provider(provider), lambda k: _load_pool_with_credentials(k, " (peek)"), base_url)
         if _pool is not None and (_pe := _peek_pool_entry(provider, _pool, model)) is not None:
             effective_api_key = _pool_runtime_api_key(_pe) or api_key
     client, default_model = resolve_provider_client(
@@ -7630,7 +7630,7 @@ def _failure_pool(route: _LadderRoute, failure: aux_errors.Failure) -> tuple[Opt
 def _recover_failure_pool(route: _LadderRoute, failure: aux_errors.Failure) -> bool:
     pool_provider, failed_api_key = _failure_pool(route, failure)
     return bool(pool_provider) and _recover_provider_pool(
-        pool_provider, failure.error, failed_api_key=failed_api_key, verdict=failure.verdict)
+        pool_provider, failure.error, failed_api_key=failed_api_key, verdict=failure.verdict, base_url=str(getattr(_failure_sender(route, failure), "base_url", "") or ""))
 
 
 def _ladder_credential_rungs(

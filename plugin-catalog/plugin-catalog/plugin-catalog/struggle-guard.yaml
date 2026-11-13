@@ -1,0 +1,22 @@
+name: struggle-guard
+title: Make It Harder
+repo: https://github.com/gisc/make-it-harder
+sha: "fbc315abc33da811c6b513bab4a47b290dae6542"
+description: 'Socratic tutor guardrail for teachers - deterministic hint ladder
+  gated on observed student attempts (SQLite state, anti-farming dedupe),
+  heuristic response screening with measured and published misses,
+  teacher-console identity bound to configured runtime session ids, and a local
+  learning trail. The plugin adds no network calls, credentials or telemetry of
+  its own (Hermes still sends guarded chat content to the operator-configured
+  model provider); all state on-device.'
+maintainer: gisc
+tier: community
+category: tools
+docs_url: https://github.com/gisc/make-it-harder
+version: "0.1.0"
+requires_hermes: ">=0.21.5"
+capabilities:
+  provides_tools: [struggle_guard_start, struggle_guard_status, struggle_guard_report, struggle_guard_stop]
+  provides_hooks: [post_api_request]
+  provides_middleware: [llm_request, llm_execution]
+  requires_env: []

@@ -2,6 +2,7 @@
 compatibility, mcp__server__tool naming, utility-tool schemas, include/exclude filters and
 description injection scanning."""
 
+import copy
 import logging
 import hashlib
 import fnmatch
@@ -42,6 +43,108 @@ def _scan_mcp_description(server_name: str, tool_name: str, description: str) ->
 
 
 _EMPTY_OBJECT_SCHEMA = {"type": "object", "properties": {}}
+
+
+_REF_SCHEMA_KEYS = {"additionalProperties", "additionalItems", "unevaluatedProperties",
+                    "unevaluatedItems", "propertyNames", "contains", "not", "if", "then", "else", "contentSchema"}
+_REF_ARRAY_KEYS = {"allOf", "anyOf", "oneOf", "prefixItems"}
+_REF_ANNOTATION_KEYS = {"title", "description", "default", "examples", "$comment", "deprecated", "readOnly", "writeOnly"}
+_MAX_MCP_REF_EXPANSIONS = 256
+
+
+def _dereference_local_defs(schema):
+    """Inline document-local pointers for MCP declarations and describe (including proxies).
+
+    Walk schema positions, not arbitrary JSON data or property-name maps. Like native Gemini,
+    fail atomically: unresolved/circular/resource-scoped refs or exhausted limits retain the
+    original document. Identity signals that fallback to the normalization caller; never mutate
+    either result. Definitions are removed only from successfully expanded schema nodes.
+    """
+    from urllib.parse import unquote
+
+    budget = _MAX_MCP_REF_EXPANSIONS
+    resolved = {}
+
+    def resolve(ref):
+        if not isinstance(ref, str) or not ref.startswith("#"):
+            raise ValueError("non-local reference")
+        pointer = unquote(ref[1:])
+        if pointer and not pointer.startswith("/"):
+            raise ValueError("anchor reference")
+        target = schema
+        for raw in pointer.split("/")[1:]:
+            if isinstance(target, dict) and target is not schema and "$id" in target:
+                raise ValueError("nested schema resource")
+            if re.search(r"~(?![01])", raw):
+                raise ValueError("malformed JSON pointer")
+            token = raw.replace("~1", "/").replace("~0", "~")
+            if isinstance(target, dict) and token in target:
+                target = target[token]
+            elif isinstance(target, list) and re.fullmatch(r"0|[1-9][0-9]*", token) and int(token) < len(target):
+                target = target[int(token)]
+            else:
+                raise ValueError("dangling JSON pointer")
+        if not isinstance(target, (dict, bool)):
+            raise ValueError("reference target is not a schema")
+        return target
+
+    def expand(node, stack=()):
+        nonlocal budget
+        if not isinstance(node, dict):
+            return copy.deepcopy(node)
+        if ((node is not schema and "$id" in node)
+                or "$dynamicRef" in node or "$recursiveRef" in node):
+            raise ValueError("resource-scoped reference semantics")
+        out = {}
+        for key, value in node.items():
+            if key == "$ref":
+                continue
+            if key in {"$defs", "definitions"} and isinstance(value, dict):
+                # Validate even unused definitions before dropping them, so a hidden cycle
+                # or dangling ref cannot turn into a silently truncated document.
+                for child in value.values():
+                    expand(child, stack)
+                continue
+            if key in _SCHEMA_MAP_KEYS + ("dependencies",) and isinstance(value, dict):
+                out[key] = {name: expand(child, stack) for name, child in value.items()}
+            elif key in _REF_ARRAY_KEYS and isinstance(value, list):
+                out[key] = [expand(child, stack) for child in value]
+            elif key == "items":
+                out[key] = ([expand(child, stack) for child in value] if isinstance(value, list)
+                            else expand(value, stack))
+            elif key in _REF_SCHEMA_KEYS:
+                out[key] = expand(value, stack)
+            else:
+                out[key] = copy.deepcopy(value)
+        if "$ref" not in node:
+            return out
+        budget -= 1
+        if budget < 0:
+            raise ValueError("reference expansion budget exhausted")
+        target = resolve(node["$ref"])
+        if id(target) in stack:
+            raise ValueError("circular reference")
+        if id(target) not in resolved:
+            resolved[id(target)] = expand(target, stack + (id(target),))
+        inlined = copy.deepcopy(resolved[id(target)])
+        if not out:
+            return inlined
+        # Annotation siblings override, as in native Gemini. Conflicting assertions must
+        # BOTH survive (a shallow override would silently widen the accepted arguments).
+        if not isinstance(inlined, dict) or any(
+                key in inlined and inlined[key] != value and key not in _REF_ANNOTATION_KEYS
+                for key, value in out.items()):
+            return {"allOf": [inlined, out]}
+        return {**inlined, **out}
+
+    try:
+        expanded = expand(schema)
+        # A ref-free schema needs no portability change; preserve existing normalization
+        # behaviour (including otherwise harmless definition maps).
+        return copy.deepcopy(schema) if budget == _MAX_MCP_REF_EXPANSIONS else expanded
+    except (ValueError, RecursionError) as exc:
+        logger.debug("MCP schema kept as-is ($ref inlining skipped): %s", exc)
+        return schema
 
 
 def _rewrite_local_refs(node):
@@ -133,7 +236,11 @@ def _normalize_mcp_input_schema(schema: dict | None) -> dict:
     if not schema:
         return dict(_EMPTY_OBJECT_SCHEMA)
     from tools.schema_sanitizer import collapse_const_unions, strip_nullable_unions
-    normalized = _rewrite_local_refs(schema)
+    normalized = _dereference_local_defs(schema)
+    if normalized is schema:
+        # Rewriting/repairing a failed expansion can orphan refs or alter resource scopes.
+        return copy.deepcopy(schema)
+    normalized = _rewrite_local_refs(normalized)
     normalized = strip_nullable_unions(normalized, keep_nullable_hint=True)
     normalized = collapse_const_unions(normalized)
     normalized = _repair_object_shape(normalized, _object_root=True)

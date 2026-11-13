@@ -6596,7 +6596,7 @@ def _build_call_kwargs(
             extra_body.pop("reasoning")
             if reasoning_config is None:
                 reasoning_config = task_reasoning
-    reasoning_config = clamp_reasoning_config(known_reasoning_floor(reasoning_config, provider_norm, effective_base, model, task), chat_endpoint_efforts(model, effective_base))
+    reasoning_config = clamp_reasoning_config(known_reasoning_floor(reasoning_config, provider_norm, effective_base, model, task), chat_endpoint_efforts(model, effective_base, provider=provider))
     projection = _project_provider_profile(provider, provider_norm, model, effective_base, reasoning_config, data_use_requirement(messages))
     kwargs.update(projection.top_level)
     merged_extra = _merge_aux_extra_body(extra_body, projection, reasoning_config, provider_norm)

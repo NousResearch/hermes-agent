@@ -452,12 +452,18 @@ def _content_cache_key(instructions: str, tools: Optional[list[dict[str, Any]]],
 def _profile_declared_efforts(provider: Any, model: Optional[str], base_url: Any = None) -> Optional[tuple]:
     """Provider-profile-declared reasoning-effort vocabulary, or None (fail-open).
 
-    Resolves by endpoint host first, then by provider name: a ``custom:<name>`` entry pointed
+    An explicit ``model_overrides`` declaration for the provider+model wins (#154352). Otherwise
+    resolves by endpoint host first, then by provider name: a ``custom:<name>`` entry pointed
     at a host with a registered profile must follow that host's vocabulary, not the generic
     custom declaration. Lazy import: provider plugins import this transport during registry
     discovery.
     """
     try:
+        from agent.models_dev import declared_supported_efforts
+
+        configured = declared_supported_efforts(str(provider or ""), model or "")
+        if configured:
+            return configured
         from providers import get_provider_profile
 
         name = str(provider or "").strip().lower()

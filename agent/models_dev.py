@@ -667,11 +667,11 @@ def lookup_models_dev_context(provider: str, model: str, *, allow_network: bool 
 
 # Per-model overrides (config.yaml → model_overrides). Canonical schema (the ONLY key space consumers
 # accept): context_window, supports_tools, supports_vision, supports_reasoning,
-# model_family. ``<provider>.<model_id>`` is an explicit partial patch that always wins over the
-# catalog. ``<provider>._default`` / top-level ``_default`` are FILL-GAP defaults: they apply ONLY to
-# models the catalog does not know and never displace catalog data. Provider keys accept the Hermes
-# or models.dev id; model ids match exactly, then case-insensitively (mirroring catalog lookup).
-# Resolution semantics: 1. 2. See #84482, #8731.
+# supported_reasoning_efforts, model_family. ``<provider>.<model_id>`` is an explicit partial patch
+# that always wins over the catalog. ``<provider>._default`` / top-level ``_default`` are FILL-GAP
+# defaults: they apply ONLY to models the catalog does not know and never displace catalog data.
+# Provider keys accept the Hermes or models.dev id; model ids match exactly, then case-insensitively
+# (mirroring catalog lookup). Resolution semantics: 1. 2. See #84482, #8731.
 _OVERRIDE_WARNED_KEYS: set = set()
 # Safe defaults for models absent from the catalog (tools on, 200K context). Capability fields and the
 # output limit stay absent so consumers see them as unknown instead of a synthesized value.
@@ -791,6 +791,44 @@ def _override_context_window(provider: str, model: str) -> Optional[int]:
     ``_default`` must not preempt more specific sources; fill-gap defaults apply in ``lookup_models_dev_context``."""
     ov = _explicit_model_override(provider, model)
     return _override_int(ov, "context_window") if ov is not None else None
+
+
+def _override_effort_list(override: dict[str, Any], key: str) -> Optional[tuple[str, ...]]:
+    """Coerce an override field to a non-empty tuple of effort-ladder levels, warning once on garbage."""
+    raw = override.get(key)
+    if raw is None:
+        return None
+    from agent.reasoning_effort import EFFORT_LADDER
+
+    if isinstance(raw, (list, tuple)):
+        levels = tuple(dict.fromkeys(str(lv).strip().lower() for lv in raw if str(lv).strip()))
+        if levels and all(lv in EFFORT_LADDER for lv in levels):
+            return levels
+    warn_key = (key, repr(raw))
+    if warn_key not in _OVERRIDE_WARNED_KEYS:
+        _OVERRIDE_WARNED_KEYS.add(warn_key)
+        logger.warning(
+            "model_overrides: ignoring invalid %s value %r (expected a non-empty list from: %s)",
+            key, raw, ", ".join(EFFORT_LADDER),
+        )
+    return None
+
+
+def declared_supported_efforts(
+    provider: str, model: str, *, config: Optional[dict[str, Any]] = None,
+) -> Optional[tuple[str, ...]]:
+    """EXPLICITLY declared per-model reasoning-effort vocabulary, or None (no declaration).
+
+    Explicit-only, mirroring ``_override_context_window``: a ``_default`` fill-gap must not silently
+    cap every catalog-unknown model's reasoning vocabulary. A ``custom:<name>`` provider id also
+    matches a section keyed by the bare ``<name>`` — surfaces pass the prefixed form while users key
+    the name they gave the provider (the general fix for that mismatch is #102428)."""
+    ov = _explicit_model_override(provider, model, config=config)
+    if ov is None:
+        bare = (provider or "").strip()
+        if bare.lower().startswith("custom:"):
+            ov = _explicit_model_override(bare.split(":", 1)[1], model, config=config)
+    return _override_effort_list(ov, "supported_reasoning_efforts") if ov is not None else None
 
 
 # Catalog miss — a _default override may fill the gap (#84482).

@@ -1385,6 +1385,17 @@ Older configs used a top-level `custom_providers:` list instead. It still works 
 
 **Reasoning effort on custom endpoints.** The configured `reasoning_effort` (`/reasoning max`, `agent.reasoning_effort`) reaches a custom endpoint unchanged on both the `chat_completions` and the `codex_responses` transport — up to `max`; only the Hermes-internal `ultra` is clamped to `max`. Two exceptions follow the host rather than the entry: a custom entry pointed at `api.openai.com` keeps OpenAI's per-model ladder (`max` is a gpt-5.6-only level there), and an entry pointed at a provider whose profile publishes a per-model vocabulary (Ramp Router) is clamped to that catalog. An endpoint that rejects the level answers with an HTTP 400 instead of Hermes silently downgrading it. When no effort is configured at all, `chat_completions` requests carry `reasoning_effort: medium` — the same default the Nous Portal and OpenRouter routes apply — rather than leaving the endpoint's own default in charge (kimi-k3's is `max`, about 3x the reasoning tokens of `medium`); models marked `supports_reasoning: false` in the catalog or `model_overrides`, and Ollama models without the `thinking` capability, keep the field off.
 
+**Declaring a narrower per-model vocabulary.** A relay's model may reject levels the widest set allows (`max` on a Qwen3.x relay, for example). Declare the model's real vocabulary under `model_overrides` and the entry clamp sends the nearest level the declaration supports — the picker's `(sends <level> on this route)` label follows the same declaration:
+
+```yaml
+model_overrides:
+  my-relay:                        # named custom provider id (a `custom:my-relay` route also matches)
+    qwen3.6-plus:
+      supported_reasoning_efforts: [low, medium, high, xhigh]
+```
+
+The declaration must be a non-empty list of ladder levels (`none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`); anything else logs a warning and is ignored. Consistent with the rest of `model_overrides`, an explicit declaration wins over built-in ladders and wire defaults — and `_default` entries never apply: the vocabulary is per model.
+
 Some OpenAI-compatible endpoints need provider-specific request body fields. Add an `extra_body` map to the matching custom provider and Hermes will merge it into each chat-completions request for that endpoint:
 
 ```yaml

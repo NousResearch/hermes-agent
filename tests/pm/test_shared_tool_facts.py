@@ -84,7 +84,8 @@ def test_upgrade_releases_the_old_entry_and_a_deleted_install_releases_its_pins(
     cli._gc_store(store, Facts(root / "facts.json"))
     assert not old.exists() and new.is_dir() and other.is_dir()
 
-    # Once A's checkout is gone, its pin no longer holds 1.1 in the store.
-    alive.discard("A")
+    # Once B's checkout is gone, its pin no longer holds 2.0, though B recorded last.
+    alive.discard("B")
     cli._gc_store(store, Facts(root / "facts.json"))
-    assert not new.exists() and other.is_dir()
+    assert not other.exists() and new.is_dir()
+    assert Facts(root / "facts.json").get("uv")["version"] == "1.1"

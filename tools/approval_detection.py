@@ -391,7 +391,8 @@ def _hardline_detection_variants(command: str):
     stripped = strip_wrapper_prefixes(masked)
     # The peeled command gets the full variant set, not just normalization: a quoted verb behind a
     # wrapper (`nice "reboot"`) needs the same dequoting the bare `"reboot"` gets.
-    peeled = _command_detection_variants(stripped) if stripped != masked else ()
+    # Its carried payloads too: `xargs sh -c 'nice reboot'` only exposes `sh -c` once peeled.
+    peeled = itertools.chain(_command_detection_variants(stripped), carried_command_variants(stripped)) if stripped != masked else ()
     for variant in itertools.chain(_command_detection_variants(command), peeled, carried_command_variants(command)):
         if variant not in seen:
             seen.add(variant)

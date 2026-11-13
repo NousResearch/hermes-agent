@@ -15,6 +15,7 @@ platforms:
   - windows
 capabilities:
   provides_tools: []
-  provides_hooks: []
+  provides_hooks:
+    - post_api_request
   provides_middleware: []
   requires_env: []

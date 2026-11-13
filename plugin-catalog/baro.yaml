@@ -9,8 +9,6 @@ category: tools
 requires_hermes: ">=0.22.7"
 docs_url: https://github.com/jigjoy-ai/hermes-baro/blob/b8555ac81564f9b153489c64c0106674dd6ebcfc/README.md
 version: "0.1.1"
-image: ""
-screenshots: []
 readme: true
 platforms: []
 title: "Baro"

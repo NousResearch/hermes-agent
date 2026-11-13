@@ -1,0 +1,17 @@
+name: image-hash-memory
+repo: https://github.com/Haoduo9/image-hash-memory
+sha: f768e9eb4b425cffa95f085f4c774501f3af6c9e
+version: "1.0.0"
+description: "Perceptual image hash memory & auto-recall for multimodal chat images. Eliminates visual amnesia across turns with zero token cost."
+maintainer: Haoduo9
+tier: community
+category: memory
+platforms: [linux, macos, windows]
+docs_url: https://github.com/Haoduo9/image-hash-memory#readme
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_llm_call
+    - post_llm_call
+  provides_middleware: []
+  requires_env: []

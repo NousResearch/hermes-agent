@@ -1,0 +1,35 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: taskaid
+description: Manage Taskaid tasks, lists and daily plans that you and your agents share.
+source: https://taskaid.ai/docs/mcp
+
+# Official vendor-hosted remote MCP (URL-only — Hermes never spawns a local
+# process for this entry). Native OAuth 2.1 (verified live: RFC 9728
+# protected-resource metadata -> AS metadata advertising Client ID Metadata
+# Documents and a registration_endpoint); Hermes signs in with its Client ID
+# Metadata Document, and its MCP client + mcp_oauth_manager handle discovery,
+# PKCE, token exchange, and refresh.
+
+transport:
+  type: http
+  url: https://taskaid.ai/mcp
+
+auth:
+  type: oauth
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - taskaid
+    - tasks
+    - day planning
+  hosts:
+    - taskaid.ai
+
+post_install: |
+  On first connection Hermes opens a browser to sign in to Taskaid
+  (or run `hermes mcp login taskaid`). Approve access, then restart
+  the session so tools load.

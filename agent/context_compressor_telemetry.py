@@ -76,11 +76,14 @@ class CompressionTelemetryMixin:
         self, *, prompt_messages: list[dict[str, Any]], max_tokens: int | None, duration_ms: int,
         aux_provider: str | None = None, aux_model: str | None = None,
         effective_aux_context: int | None = None, phase_timings: dict[str, Any] | None = None,
+        prompt_tokens_estimate: int | None = None,
     ) -> None:
         telemetry = getattr(self, "_active_compression_telemetry", None)
         if not isinstance(telemetry, dict):
             return
-        telemetry["aux_prompt_tokens"] = estimate_messages_tokens_rough(prompt_messages)
+        telemetry["aux_prompt_tokens"] = (
+            prompt_tokens_estimate if prompt_tokens_estimate is not None else estimate_messages_tokens_rough(prompt_messages)
+        )
         # The summary prompt is built fresh per attempt and never estimated again; don't let the memo pin it.
         forget_message_token_memo(prompt_messages)
         telemetry["aux_output_reservation"] = _safe_int(max_tokens)

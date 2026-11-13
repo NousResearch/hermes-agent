@@ -62,10 +62,10 @@ Adding one: register in that table (no `if name == ...` chain); `tools/todo_tool
   (`agent/subdirectory_hints.py`) append to the tool result (head+tail truncated past `_MAX_HINT_CHARS = 32_000`;
   the truncation is logged, never queued as a chat status warning — `context_file_max_chars` does not raise that cap).
 - **Strict role alternation.** Never two same-role messages in a row; never a synthetic user
-  message injected mid-loop. The one exception is `/steer`, delivered as a standalone user row
+  message injected mid-loop. The exception is active-turn steering (`/steer` and negotiated ACP guidance), delivered as a standalone user row
   after a tool result (`assistant(tool_calls) → tool → user` is legal on every provider path) —
   never smeared onto the already-persisted tool row, which append-only persistence would leave
-  divergent from the live request. Cron deliveries live in their own session for this reason.
+  divergent from the live request. ACP guidance waits for another legal boundary when a native steer already owns the new user row. Cron deliveries live in their own session for this reason.
 - **Context files** (`agent/prompt_builder.py`) load from the CWD only at startup and are capped
   (`CONTEXT_FILE_MAX_CHARS` / dynamic cap from the context window / `context_file_max_chars`).
   Never load an install-tree `AGENTS.md` as project context (PR #64611); subdirectory hints reject

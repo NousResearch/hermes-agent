@@ -26,7 +26,7 @@ async def test_a_drain_cancelled_during_the_review_cancel_clears_the_executing_s
     live = LiveSession(SimpleNamespace(chat_id=ref.session_id), 'route')
     run = prepare_background_review_run(live.review)  # a review still in its request phase
     owner = SimpleNamespace(executing={ref.session_id: 7})  # as _stamp_claim left it
-    task = asyncio.ensure_future(SessionAuthority._execute_claimed(owner, ref, live, {'admission_id': 'a'}))
+    task = asyncio.ensure_future(SessionAuthority._execute_claimed(owner, ref, live, {'admission_id': 'a', 'generation': 7}))
     try:
         # The canceller has fenced the review and now waits (off-loop) for its acknowledgement.
         assert await asyncio.to_thread(run.cancel_requested.wait, 10), 'the turn never cancelled the review'

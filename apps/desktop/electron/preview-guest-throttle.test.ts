@@ -30,6 +30,22 @@ describe('applyPreviewGuestUserAgent', () => {
     )
   })
 
+  it.each([
+    ['Hermes', 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Hermes/0.0.0 Chrome/152.0.7977.167 Safari/537.36'],
+    ['Electron', 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.7977.167 Electron/44.9.3 Safari/537.36']
+  ])('normalizes when only the %s product token remains', (_token, userAgent) => {
+    const session = {
+      getUserAgent: vi.fn(() => userAgent),
+      setUserAgent: vi.fn()
+    }
+
+    applyPreviewGuestUserAgent(session, 'persist:hermes-preview')
+
+    expect(session.setUserAgent).toHaveBeenCalledExactlyOnceWith(
+      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.7977.167 Safari/537.36'
+    )
+  })
+
   it('leaves sessions outside the preview partition untouched', () => {
     const session = {
       getUserAgent: vi.fn(),

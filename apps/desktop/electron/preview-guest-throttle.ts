@@ -109,7 +109,7 @@ export function applyPreviewGuestUserAgent(
 
   const current = previewSession.getUserAgent()
 
-  if (!/\sChrome\/\d+(?:\.\d+)+\s/.test(current) || !/\sElectron\/[^\s]+/.test(current)) {
+  if (!/\sChrome\/\d+(?:\.\d+)+\s/.test(current) || !/\s(?:Hermes|Electron)\/[^\s]+/.test(current)) {
     return
   }
 

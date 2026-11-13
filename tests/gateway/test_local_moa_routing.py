@@ -171,3 +171,46 @@ async def test_a_safe_mode_session_refuses_slash_moa_instead_of_sending_it_to_it
     assert refused == {'type': 'exec', 'output': t('gateway.moa.managed_session')}, refused
     assert '/moa' in refused['output'], refused  # the sentence itself, not its missing key
     assert _rows(authority, sid) == []
+
+
+async def _safe_session(authority, connection, cwd):
+    from gateway.session_local import create_local_session
+    sid = create_local_session(authority, connection.actor, {
+        'request_id': 'safe', 'source': 'gui', 'cwd': str(cwd), 'toolsets': [], 'safe_mode': True,
+        'provider': 'custom', 'model': 'session-model', 'base_url': 'http://127.0.0.1:9/v1'}).session_id
+    await _call(connection, 'session.resume', session_id=sid)
+    return sid
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('finite', [False, True])
+async def test_raw_moa_on_a_managed_session_is_refused_before_its_worker(owner, monkeypatch, finite):
+    """Every route into a managed worker refuses ``/moa``, not only ``slash.exec``: a raw ``prompt.submit``
+    (ordinary or finite ``chat -q``) used to reach the worker as literal text and run on the session's
+    own model (kvnloo's managed-path report). Only the worker spawn is a recording seam."""
+    from agent.i18n import t
+    from gateway import session_managed_worker as mw
+    authority, connection, cwd = owner
+    sid = await _safe_session(authority, connection, cwd)
+    executed = []
+
+    async def record_execute(authority, ref, row, policy):
+        executed.append(row['payload']['text'])
+        authority.pending_results[row['admission_id']] = {
+            'result': {'final_response': 'ran', 'messages': []}, 'usage': {}}
+        return 'ran'
+    monkeypatch.setattr(mw, 'execute_managed', record_execute)
+    frames = []
+    authority.sessions[sid].event_stream.observers.add(frames.append)
+
+    await _submit(connection, sid, 'moa', '/moa compare', finite=finite)
+    await _settled(authority, sid, 1)
+    await _submit(connection, sid, 'plain', 'compare', finite=finite)
+    await _settled(authority, sid, 2)
+
+    assert executed == ['compare'], 'unsupported /moa reached the single-model worker'
+    moa_row, plain_row = _rows(authority, sid)
+    assert moa_row['outcome'] == ('failed' if finite else 'completed'), moa_row  # finite: exit code fails
+    assert plain_row['outcome'] == 'completed', plain_row
+    complete = [f['params']['payload'] for f in frames if f['params']['type'] == 'message.complete']
+    assert t('gateway.moa.managed_session') in str(complete[0]), complete[0]

@@ -21,7 +21,7 @@ const MIN_WIDTH = 64
 const MAX_WIDTH = 128
 const TITLE_MAX = 64
 
-const STATUS_GLYPH: Record<string, string> = {
+export const STATUS_GLYPH: Record<string, string> = {
   idle: '✓',
   starting: '…',
   waiting: '?',
@@ -38,7 +38,7 @@ export const sessionStatusLabel = (status: string): string => {
 
 const CTRL_OFFSET = 96
 
-const shortModel = (model = '') => model.replace(/^.*\//, '') || messages().pickers.session.modelUnknown
+export const shortModel = (model = '') => model.replace(/^.*\//, '') || messages().pickers.session.modelUnknown
 const ctrlChar = (letter: string) => String.fromCharCode(letter.charCodeAt(0) - CTRL_OFFSET)
 
 export const fixedSessionColumnStyle = () => ({ flexShrink: 0 })

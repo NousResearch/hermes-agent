@@ -315,9 +315,10 @@ function extractThemes(vsixBuffer) {
   }
 
   const themes = []
+  let attempts = 0
 
   for (const entry of contributed) {
-    if (themes.length >= MAX_THEMES || remaining <= 0) {
+    if (attempts >= MAX_THEMES || remaining <= 0) {
       break
     }
 
@@ -331,8 +332,13 @@ function extractThemes(vsixBuffer) {
       continue
     }
 
+    // Count attempts, not successes, and charge a failed entry its full cap:
+    // otherwise one bomb listed many times is re-inflated on every listing.
+    attempts += 1
+    const cap = Math.min(MAX_ENTRY_BYTES, remaining)
+
     try {
-      const bytes = extractEntryBytes(vsixBuffer, record, Math.min(MAX_ENTRY_BYTES, remaining))
+      const bytes = extractEntryBytes(vsixBuffer, record, cap)
       remaining -= bytes.length
       themes.push({
         label: entry.label || entry.id || pkg.displayName || pkg.name || 'VS Code Theme',
@@ -341,6 +347,7 @@ function extractThemes(vsixBuffer) {
       })
     } catch {
       // Skip an entry we can't inflate rather than failing the whole install.
+      remaining -= cap
     }
   }
 

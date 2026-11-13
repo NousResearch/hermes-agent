@@ -15,6 +15,10 @@ def _publish(root, name, version, sha, target, *, digest=False):
     """A real store entry with an executable binary, recorded like an install does."""
     package = get_package(name)
     entry = root / package.store_entry(version, target)
+    if name == "chromium":  # its binary is found inside the entry, behind its completion marker
+        (entry / "chrome-linux64").mkdir(parents=True)
+        (entry / "chrome-linux64" / "chrome").write_bytes(b"fixture")
+        (entry / "INSTALLATION_COMPLETE").write_text("")
     binary = package.binary(entry, target)
     assert binary is not None
     binary.parent.mkdir(parents=True, exist_ok=True)
@@ -189,3 +193,38 @@ def test_claiming_a_found_pin_keeps_the_callers_view_on_its_own_pin(tmp_path, mo
     claimed = [row["version"] for row in Facts(root / "facts.json").variants("python")
                if "A" in (row.get("owners") or ())]
     assert claimed == ["1.0"]
+
+
+def test_update_claims_a_default_tool_another_checkout_installed(tmp_path, monkeypatch):
+    """The gateway's update finds the Chromium a worktree installed on the same pin: it must claim
+    that row, or the worktree's next upgrade drops it and gc deletes the gateway's browser."""
+    from hermes_cli.update_cmd_maint import _install_default_tools_after_update
+    from pm import client
+
+    root = tmp_path / "tools"
+    root.mkdir()
+    target = current_target()
+    monkeypatch.setattr(paths, "store_root", lambda: root)
+    monkeypatch.setattr(paths, "writable_store_root", lambda: root)
+    monkeypatch.setattr(environments, "installs_root", lambda: tmp_path / "installs")
+    monkeypatch.setattr(client, "is_runtime", lambda: True)
+    monkeypatch.setattr(install, "lazy_installs_allowed", lambda: True)
+    for owner in ("gateway", "worktree"):
+        (tmp_path / "installs" / owner).mkdir(parents=True)
+    lock = _pin(tmp_path / "gateway.json", "chromium", "1248", "1" * 64, target)
+    lock.save()  # the update step reads the defaults from this checkout's lockfile on disk
+    monkeypatch.setattr(install, "_lockfile", lambda: lock)
+    monkeypatch.setattr(paths, "lockfile_path", lambda: tmp_path / "gateway.json")
+
+    monkeypatch.setattr(pm_lock, "install_owner", lambda: "worktree")
+    entry, _ = _publish(root, "chromium", "1248", "1" * 64, target, digest=True)
+    monkeypatch.setattr(pm_lock, "install_owner", lambda: "gateway")
+    _install_default_tools_after_update()
+
+    monkeypatch.setattr(pm_lock, "install_owner", lambda: "worktree")
+    _publish(root, "chromium", "1300", "2" * 64, target, digest=True)
+    cli._gc_store(Store(root), Facts(root / "facts.json"))
+    monkeypatch.setattr(pm_lock, "install_owner", lambda: "gateway")
+    assert entry.is_dir()
+    found = install.installed_package("chromium")
+    assert found is not None and found.version == "1248"

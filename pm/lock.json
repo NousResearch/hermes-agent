@@ -535,43 +535,43 @@
     "node": {
       "artifacts": {
         "darwin-arm64": {
-          "sha256": "18830bf448fe187c650dc28c98aa8c968ed1d40b6dd032c081e70a384a1bf660",
-          "url": "https://nodejs.org/dist/v26.12.1/node-v26.12.1-darwin-arm64.tar.xz"
+          "sha256": "af6202f5370a3a5209e85dc543758dfd9f44c8726626a236730cd603a67a8559",
+          "url": "https://nodejs.org/dist/v26.13.1/node-v26.13.1-darwin-arm64.tar.xz"
         },
         "darwin-x64": {
-          "sha256": "69316aaafb4dfcb25ac7b9a460f5c60928a37580284fde410144d0e6c8672d0f",
-          "url": "https://nodejs.org/dist/v26.12.1/node-v26.12.1-darwin-x64.tar.xz"
+          "sha256": "2693310b2820f9350d29524f21344e1c623875bab773457d55b2aceb9670716f",
+          "url": "https://nodejs.org/dist/v26.13.1/node-v26.13.1-darwin-x64.tar.xz"
         },
         "linux-arm64": {
-          "sha256": "42aa04922591ee5d4dbc7740d452621acf28508239daa512f5ee8c47ee224fdb",
-          "url": "https://nodejs.org/dist/v26.12.1/node-v26.12.1-linux-arm64.tar.xz"
+          "sha256": "89e1853138db51e8b82d3e98ba9c0d3f2956a28e5e55ea1b7e12d25aae92d5dd",
+          "url": "https://nodejs.org/dist/v26.13.1/node-v26.13.1-linux-arm64.tar.xz"
         },
         "linux-arm64-bionic": {
           "sha256": "eaf3ed8a6e4b72ebaa8c2cb3bad778c577cdf9ea87ca91761213d8a3940fc090",
           "url": "https://packages.termux.dev/apt/termux-main/pool/main/n/nodejs/nodejs_26.4.0-1_aarch64.deb"
         },
         "linux-arm64-musl": {
-          "sha256": "87d822005776f222f2964c93df055f926d80595a63442b891d3aafe1f0a1dc67",
-          "url": "https://unofficial-builds.nodejs.org/download/release/v26.12.1/node-v26.12.1-linux-arm64-musl.tar.xz"
+          "sha256": "8cc9e687c32c40d6d849a4058fdf4ab8a1248a95b5758fa22eaf1b7069869b76",
+          "url": "https://unofficial-builds.nodejs.org/download/release/v26.13.1/node-v26.13.1-linux-arm64-musl.tar.xz"
         },
         "linux-x64": {
-          "sha256": "6170b2d474e1c626f43cff3adc118df9fe3b573258a4fc3d850c8dbc6b079bbd",
-          "url": "https://nodejs.org/dist/v26.12.1/node-v26.12.1-linux-x64.tar.xz"
+          "sha256": "5c063e46bab0fbc1c17cc445d7ff129cbdcd0471be6ed83b6ab864f8143bc864",
+          "url": "https://nodejs.org/dist/v26.13.1/node-v26.13.1-linux-x64.tar.xz"
         },
         "linux-x64-musl": {
-          "sha256": "5c3834652a0fb8f204e6df76be1469aa99a9d18011fb79cc85d97c822184d976",
-          "url": "https://unofficial-builds.nodejs.org/download/release/v26.12.1/node-v26.12.1-linux-x64-musl.tar.xz"
+          "sha256": "1b8a8a393c7fa5b2f66eaf0314aaa23c2f3cd3a3be14d5c7bac011bf9de236ea",
+          "url": "https://unofficial-builds.nodejs.org/download/release/v26.13.1/node-v26.13.1-linux-x64-musl.tar.xz"
         },
         "win32-arm64": {
-          "sha256": "34567581ee63967b37afb6b7a0cc63a2d550a43d5d838adb75982d7e356f2e2c",
-          "url": "https://nodejs.org/dist/v26.12.1/node-v26.12.1-win-arm64.zip"
+          "sha256": "181ebe431b90787113a9e4fc80d38ce86d37888a353a0386de44d2872e48cb97",
+          "url": "https://nodejs.org/dist/v26.13.1/node-v26.13.1-win-arm64.zip"
         },
         "win32-x64": {
-          "sha256": "b3efd5c70cba3308ed46e7e699a9b8aac075bbc6b027fcb39c84c31acc25e2b4",
-          "url": "https://nodejs.org/dist/v26.12.1/node-v26.12.1-win-x64.zip"
+          "sha256": "e2edda75bfb089654705cf65a13b58933bfd5f57148e8ebda916f58a2474f1f7",
+          "url": "https://nodejs.org/dist/v26.13.1/node-v26.13.1-win-x64.zip"
         }
       },
-      "version": "26.12.1"
+      "version": "26.13.1"
     },
     "npm": {
       "artifacts": {
@@ -586,96 +586,96 @@
       "artifacts": {
         "darwin-arm64": [
           {
-            "sha256": "fab38e479012776fa3810313bd8c7e1fd39f883f915c111ca980112f0695515e",
-            "url": "https://registry.npmjs.org/@pnpm/exe.darwin-arm64/-/exe.darwin-arm64-12.15.0.tgz"
+            "sha256": "755615cb521051e182a8c1eb80478466b72d0652b2baa36515c99089daabc82e",
+            "url": "https://registry.npmjs.org/@pnpm/exe.darwin-arm64/-/exe.darwin-arm64-12.18.0.tgz"
           },
           {
-            "sha256": "f5173f6127cc505cdb36ec17719fe54a8511c6fd8560c7ceb4bf7c73e3b4458b",
-            "url": "https://registry.npmjs.org/pnpm/-/pnpm-12.15.0.tgz"
+            "sha256": "29d1d7d99bf6ec6d0a3dbb0ec5656f0d16e997e8be676ca45c581d11cb71f753",
+            "url": "https://registry.npmjs.org/pnpm/-/pnpm-12.18.0.tgz"
           }
         ],
         "darwin-x64": [
           {
-            "sha256": "22ed4197d26923300ccda62b12a3d4b27ed00cd7996cde416883c6b81359eda6",
-            "url": "https://registry.npmjs.org/@pnpm/exe.darwin-x64/-/exe.darwin-x64-12.15.0.tgz"
+            "sha256": "0c27f789778383d617abec146293db8ad871de119d1747c6177c06363d9bc8fe",
+            "url": "https://registry.npmjs.org/@pnpm/exe.darwin-x64/-/exe.darwin-x64-12.18.0.tgz"
           },
           {
-            "sha256": "f5173f6127cc505cdb36ec17719fe54a8511c6fd8560c7ceb4bf7c73e3b4458b",
-            "url": "https://registry.npmjs.org/pnpm/-/pnpm-12.15.0.tgz"
+            "sha256": "29d1d7d99bf6ec6d0a3dbb0ec5656f0d16e997e8be676ca45c581d11cb71f753",
+            "url": "https://registry.npmjs.org/pnpm/-/pnpm-12.18.0.tgz"
           }
         ],
         "linux-arm64": [
           {
-            "sha256": "8117d65f28e627e949d5fc65d63342266326826a56fa374317bf13fe1166a50e",
-            "url": "https://registry.npmjs.org/@pnpm/exe.linux-arm64/-/exe.linux-arm64-12.15.0.tgz"
+            "sha256": "2e326930b9b670712df1c93849d725c85f6b897cdf9239ee724b587c50ddd5bc",
+            "url": "https://registry.npmjs.org/@pnpm/exe.linux-arm64/-/exe.linux-arm64-12.18.0.tgz"
           },
           {
-            "sha256": "f5173f6127cc505cdb36ec17719fe54a8511c6fd8560c7ceb4bf7c73e3b4458b",
-            "url": "https://registry.npmjs.org/pnpm/-/pnpm-12.15.0.tgz"
+            "sha256": "29d1d7d99bf6ec6d0a3dbb0ec5656f0d16e997e8be676ca45c581d11cb71f753",
+            "url": "https://registry.npmjs.org/pnpm/-/pnpm-12.18.0.tgz"
           }
         ],
         "linux-arm64-bionic": [
           {
-            "sha256": "3356eb9f4552e2299464c843447fdae01c80dde10436af046fae6b443c7c186d",
-            "url": "https://registry.npmjs.org/@pnpm/exe.android-arm64/-/exe.android-arm64-12.15.0.tgz"
+            "sha256": "ffb6a33d3db886a4c14657dc821bbbc4046cfe6fa25059288e9e757bb865e815",
+            "url": "https://registry.npmjs.org/@pnpm/exe.android-arm64/-/exe.android-arm64-12.18.0.tgz"
           },
           {
-            "sha256": "f5173f6127cc505cdb36ec17719fe54a8511c6fd8560c7ceb4bf7c73e3b4458b",
-            "url": "https://registry.npmjs.org/pnpm/-/pnpm-12.15.0.tgz"
+            "sha256": "29d1d7d99bf6ec6d0a3dbb0ec5656f0d16e997e8be676ca45c581d11cb71f753",
+            "url": "https://registry.npmjs.org/pnpm/-/pnpm-12.18.0.tgz"
           }
         ],
         "linux-arm64-musl": [
           {
-            "sha256": "cf6d6d7a08107743ef0c768389c2935c1ffb7002b02ab00682d2ee5650e0483d",
-            "url": "https://registry.npmjs.org/@pnpm/exe.linux-arm64-musl/-/exe.linux-arm64-musl-12.15.0.tgz"
+            "sha256": "0edc51075ea98d9b2a64206256eb1c396f3064b8c3acfcc9590a387179c0d9b0",
+            "url": "https://registry.npmjs.org/@pnpm/exe.linux-arm64-musl/-/exe.linux-arm64-musl-12.18.0.tgz"
           },
           {
-            "sha256": "f5173f6127cc505cdb36ec17719fe54a8511c6fd8560c7ceb4bf7c73e3b4458b",
-            "url": "https://registry.npmjs.org/pnpm/-/pnpm-12.15.0.tgz"
+            "sha256": "29d1d7d99bf6ec6d0a3dbb0ec5656f0d16e997e8be676ca45c581d11cb71f753",
+            "url": "https://registry.npmjs.org/pnpm/-/pnpm-12.18.0.tgz"
           }
         ],
         "linux-x64": [
           {
-            "sha256": "402f7045b1e0587acb1542f18d38afbccb6babf3c7451394e6fb3d9f0160c6ca",
-            "url": "https://registry.npmjs.org/@pnpm/exe.linux-x64/-/exe.linux-x64-12.15.0.tgz"
+            "sha256": "679df2eedf158f639db6d1f00e713d766d0d7afc6a931bc51497a625d1e1bdf7",
+            "url": "https://registry.npmjs.org/@pnpm/exe.linux-x64/-/exe.linux-x64-12.18.0.tgz"
           },
           {
-            "sha256": "f5173f6127cc505cdb36ec17719fe54a8511c6fd8560c7ceb4bf7c73e3b4458b",
-            "url": "https://registry.npmjs.org/pnpm/-/pnpm-12.15.0.tgz"
+            "sha256": "29d1d7d99bf6ec6d0a3dbb0ec5656f0d16e997e8be676ca45c581d11cb71f753",
+            "url": "https://registry.npmjs.org/pnpm/-/pnpm-12.18.0.tgz"
           }
         ],
         "linux-x64-musl": [
           {
-            "sha256": "f1a7ff47e20ad534f0cea26709b9ca7cc24b15ec66151dfb915271e546ae4e08",
-            "url": "https://registry.npmjs.org/@pnpm/exe.linux-x64-musl/-/exe.linux-x64-musl-12.15.0.tgz"
+            "sha256": "a62664a5b69b3eabedf1d8971eb5e54818cfe04550f26dcc6ac6b563530cdc1d",
+            "url": "https://registry.npmjs.org/@pnpm/exe.linux-x64-musl/-/exe.linux-x64-musl-12.18.0.tgz"
           },
           {
-            "sha256": "f5173f6127cc505cdb36ec17719fe54a8511c6fd8560c7ceb4bf7c73e3b4458b",
-            "url": "https://registry.npmjs.org/pnpm/-/pnpm-12.15.0.tgz"
+            "sha256": "29d1d7d99bf6ec6d0a3dbb0ec5656f0d16e997e8be676ca45c581d11cb71f753",
+            "url": "https://registry.npmjs.org/pnpm/-/pnpm-12.18.0.tgz"
           }
         ],
         "win32-arm64": [
           {
-            "sha256": "6b33bef9e52268c8d3f98fb8018a0c66e3c4d565209d6aacd4851239554f359a",
-            "url": "https://registry.npmjs.org/@pnpm/exe.win32-arm64/-/exe.win32-arm64-12.15.0.tgz"
+            "sha256": "3df31e477305717b457653738a61bc02f5c843b69c13e01ff36873f892b25377",
+            "url": "https://registry.npmjs.org/@pnpm/exe.win32-arm64/-/exe.win32-arm64-12.18.0.tgz"
           },
           {
-            "sha256": "f5173f6127cc505cdb36ec17719fe54a8511c6fd8560c7ceb4bf7c73e3b4458b",
-            "url": "https://registry.npmjs.org/pnpm/-/pnpm-12.15.0.tgz"
+            "sha256": "29d1d7d99bf6ec6d0a3dbb0ec5656f0d16e997e8be676ca45c581d11cb71f753",
+            "url": "https://registry.npmjs.org/pnpm/-/pnpm-12.18.0.tgz"
           }
         ],
         "win32-x64": [
           {
-            "sha256": "330357f1c8227b90fb016d28713b024318c60ef06ef97aa38e81394823c47556",
-            "url": "https://registry.npmjs.org/@pnpm/exe.win32-x64/-/exe.win32-x64-12.15.0.tgz"
+            "sha256": "492a9087c3489069727f7ba03c95faf41651a39f60872c9b4542397b48c45738",
+            "url": "https://registry.npmjs.org/@pnpm/exe.win32-x64/-/exe.win32-x64-12.18.0.tgz"
           },
           {
-            "sha256": "f5173f6127cc505cdb36ec17719fe54a8511c6fd8560c7ceb4bf7c73e3b4458b",
-            "url": "https://registry.npmjs.org/pnpm/-/pnpm-12.15.0.tgz"
+            "sha256": "29d1d7d99bf6ec6d0a3dbb0ec5656f0d16e997e8be676ca45c581d11cb71f753",
+            "url": "https://registry.npmjs.org/pnpm/-/pnpm-12.18.0.tgz"
           }
         ]
       },
-      "version": "12.15.0"
+      "version": "12.18.0"
     },
     "python": {
       "artifacts": {

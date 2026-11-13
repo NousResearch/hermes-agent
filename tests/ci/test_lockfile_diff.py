@@ -168,6 +168,7 @@ def test_pnpm_repin_through_peer_suffixes_and_other_dependency_fields_is_reporte
     # optionalDependencies. Here the consumer's own peer moves too (8 -> 9).
     def variant(lock: str, peer: str) -> str:
         for old, new in (("\n  pkg:\n    dependencies:\n", "\n  pkg:\n    devDependencies:\n"),
+                         ("\n  .:\n    dependencies:\n", "\n  .:\n    optionalDependencies:\n"),
                          ("  debug@4.3.4:\n    dependencies:\n", f"  debug@4.3.4(supports-color@{peer}):\n"
                                                                 "    optionalDependencies:\n")):
             assert lock.count(old) == 1
@@ -266,6 +267,8 @@ def test_pnpm_section_reads_an_explicit_key():
     assert _mod.diff_pnpm_locks(REPIN_BASE, explicit) == _mod.diff_pnpm_locks(REPIN_BASE, REPIN_HEAD)
     with pytest.raises(ValueError, match="unreadable snapshots line"):
         section(explicit.replace("  : dependencies:", "    dependencies:"), "snapshots")
+    with pytest.raises(ValueError, match="unreadable snapshots line"):  # a value line with no key line
+        section(REPIN_HEAD.replace("  ms@2.1.3: {}", "  ms@2.1.3:\n  : {}"), "snapshots")
 
 
 def test_pnpm_explicit_quoted_file_key_preserves_embedded_colon_space():
@@ -282,6 +285,9 @@ def test_pnpm_explicit_quoted_file_key_preserves_embedded_colon_space():
 
     assert key in section(explicit, "packages")
     assert key in section_keys(explicit, "packages")
+    # Below the threshold pnpm writes the same quoted key as an ordinary ``'key':`` line.
+    short = REPIN_HEAD.replace(old, "  'ms@file:vendor/package: with space':\n    resolution:", 1)
+    assert "ms@file:vendor/package: with space" in section_keys(short, "packages")
 
 
 @pytest.mark.parametrize(("old", "new"), [

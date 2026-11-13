@@ -1009,6 +1009,9 @@ export const deOverrides = {
         'Dateiänderungen als Tool-Zeilen mit Anzahl hinzugefügter/entfernter Zeilen anzeigen, ohne den Code.',
       hideThreadTimelineTitle: 'Zeitleistenbalken ausblenden',
       hideThreadTimelineDesc: 'Blendet die Navigationsbalken am rechten Rand jeder Unterhaltung aus.',
+      stickyUserMessageTitle: 'Eigene Nachrichten beim Scrollen anheften',
+      stickyUserMessageDesc:
+        'Hefet jede deiner Nachrichten am oberen Rand der Unterhaltung an, solange ihr Zug sichtbar ist. Ausschalten, damit sie wie alle anderen Nachrichten scrollen.',
       reasoningCollapsedTitle: 'Gedanken standardmäßig einklappen',
       reasoningCollapsedDesc: 'Gestreamte Gedankengänge verfügbar halten, ohne sie aufzuklappen, bis Sie sie öffnen.',
       uiScaleTitle: 'UI-Skalierung',

@@ -521,6 +521,9 @@ export const jaOverrides = {
       hideCodeDiffsDesc: 'ファイル編集は追加・削除行数付きのインラインツール行で表示し、コードは表示しません。',
       hideThreadTimelineTitle: 'スレッドのタイムラインバーを非表示',
       hideThreadTimelineDesc: '各会話の右端にあるナビゲーションバーを非表示にします。',
+      stickyUserMessageTitle: 'スクロール中もメッセージを固定',
+      stickyUserMessageDesc:
+        '自分の各メッセージを、そのターンが画面にある間は会話の上部に固定します。オフにすると他のメッセージと同じようにスクロールします。',
       reasoningCollapsedTitle: '思考ブロックをデフォルトで折りたたむ',
       reasoningCollapsedDesc: 'ストリーミング中の推論を、開くまで折りたたんだまま利用できるようにします。',
       uiScaleTitle: 'UI スケール',

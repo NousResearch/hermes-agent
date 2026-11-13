@@ -28,6 +28,7 @@ import { LruCache } from '@/lib/lru-cache'
 import { $touchPointer, isTouchInteraction } from '@/lib/touch-interaction'
 import { cn } from '@/lib/utils'
 import { $gateway } from '@/store/gateway'
+import { $stickyUserMessage } from '@/store/sticky-user-message'
 import { notifyThreadEditOpen } from '@/store/thread-scroll'
 import { isWatchWindow } from '@/store/windows'
 
@@ -47,6 +48,11 @@ export function StickyHumanMessageContainer({
   children: ReactNode
   messageId?: string
 }) {
+  // The one sticky gate: the container that applies it decides off the shared
+  // switch, so every pinnable user surface (#145785: clarify answers next)
+  // inherits the toggle instead of special-casing its own call site.
+  const sticky = useStore($stickyUserMessage)
+
   return (
     // Fragment, not a wrapper: a wrapping element becomes the sticky's
     // containing block (it'd stick within its own height = never). The bubble
@@ -54,7 +60,10 @@ export function StickyHumanMessageContainer({
     // while attachments below it scroll away.
     <>
       <div
-        className="group/user-message sticky z-40 -mx-4 flex w-[calc(100%+2rem)] min-w-0 max-w-none flex-col items-stretch gap-0 self-end overflow-visible px-4 pb-(--conversation-turn-gap) pt-1"
+        className={cn(
+          'group/user-message -mx-4 flex w-[calc(100%+2rem)] min-w-0 max-w-none flex-col items-stretch gap-0 self-end overflow-visible px-4 pb-(--conversation-turn-gap) pt-1',
+          sticky && 'sticky z-40'
+        )}
         data-message-id={messageId}
         data-role="user"
         data-slot="aui_user-message-root"
@@ -75,7 +84,9 @@ export function StickyHumanMessageContainer({
 // titlebar's [-webkit-app-region:drag] strips (app-shell.tsx). Electron resolves
 // drag regions at the compositor level — z-index and pointer-events don't help —
 // so without the carve-out, clicking a stuck bubble drags the window instead of
-// opening the edit composer.
+// opening the edit composer. Sticky is a preference (display.sticky_user_message):
+// with the switch off bubbles scroll normally, and the exemption on a
+// non-pinned bubble is inert, so the base class keeps it either way.
 export const USER_BUBBLE_BASE_CLASS =
   'composer-human-message standalone-glass relative flex w-full min-w-0 max-w-full flex-col gap-1.5 overflow-y-auto rounded-xl border bg-(--dt-user-bubble) px-3 py-2 text-left [-webkit-app-region:no-drag]'
 

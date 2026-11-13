@@ -34,6 +34,7 @@ import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/p
 import { $reactionsEnabled, setReactionsEnabled } from '@/store/reactions-enabled'
 import { $reasoningCollapsedByDefault, setReasoningCollapsedByDefault } from '@/store/reasoning-disclosure'
 import { $sessionListDensity, type SessionListDensity, setSessionListDensity } from '@/store/session-list-density'
+import { $stickyUserMessage, setStickyUserMessage } from '@/store/sticky-user-message'
 import { $tabStripDefault, setTabStripDefault, type TabStripDefault } from '@/store/tabstrip-prefs'
 import { $textDirection, setTextDirection, TEXT_DIRECTIONS, type TextDirection } from '@/store/text-direction'
 import { $hideThreadTimeline, setHideThreadTimeline } from '@/store/thread-timeline'
@@ -418,6 +419,7 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
   const hideCodeDiffs = useStore($hideCodeDiffs)
   const hideCodeDiffsShadowed = useStore($modeShadowed('hideCodeDiffs'))
   const hideThreadTimeline = useStore($hideThreadTimeline)
+  const stickyUserMessage = useStore($stickyUserMessage)
   const reasoningCollapsedByDefault = useStore($reasoningCollapsedByDefault)
   const reasoningCollapsedShadowed = useStore($modeShadowed('reasoningCollapsedByDefault'))
   const interfaceMode = useStore($interfaceMode)
@@ -919,6 +921,16 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
               id={settingElementId(ids.backdrop)}
               label={a.backdropTitle}
               onChange={setBackdrop}
+            />
+          )}
+
+          {show('chat-display') && (
+            <ToggleRow
+              checked={stickyUserMessage}
+              description={a.stickyUserMessageDesc}
+              id={settingElementId(ids.stickyUserMessage)}
+              label={a.stickyUserMessageTitle}
+              onChange={setStickyUserMessage}
             />
           )}
 

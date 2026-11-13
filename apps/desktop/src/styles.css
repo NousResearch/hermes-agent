@@ -3480,8 +3480,9 @@ button[data-slot='aui_msg-reactions'] svg {
   background: transparent !important;
   /* Not sticky in HUD mode: the band is a short log, and a pinned bubble
      spends a third of it on a line you already read. Static rows scroll away
-     like everything else (the app keeps its sticky behavior — this is the
-     HUD's call, not a global one). */
+     like everything else. (The transcript pins only while the sticky switch
+     is on — display.sticky_user_message; the HUD's static rows are its own
+     call either way, not something that switch governs.) */
   position: static !important;
 }
 

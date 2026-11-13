@@ -1,4 +1,7 @@
+import { useStore } from '@nanostores/react'
 import { type ReactNode, type RefObject, useLayoutEffect, useRef } from 'react'
+
+import { $stickyUserMessage } from '@/store/sticky-user-message'
 
 const GROUP = '[data-slot="aui_message-group"]'
 const PROMPT = '[data-slot="aui_user-message-root"]'
@@ -18,24 +21,27 @@ interface StickyPromptClipOptions {
 /** Clip covered content instead of painting a solid rectangle over the glass. */
 export function useStickyPromptClip({ contentRef, scrollRef, paneVisible, rows }: StickyPromptClipOptions) {
   const controller = useRef<ReturnType<typeof observeStickyPromptClip> | null>(null)
+  // Nothing pins when the sticky switch is off, so the observer measures
+  // nothing and its per-frame reconciles are pure cost — tear it down instead.
+  const sticky = useStore($stickyUserMessage)
 
   useLayoutEffect(() => {
     const viewport = scrollRef.current
     const content = contentRef.current
     const previous = controller.current
 
-    if (!paneVisible || previous?.viewport !== viewport || previous?.content !== content) {
+    if (!sticky || !paneVisible || previous?.viewport !== viewport || previous?.content !== content) {
       previous?.dispose()
       controller.current = null
     }
 
-    if (paneVisible && viewport && content) {
+    if (sticky && paneVisible && viewport && content) {
       controller.current ??= observeStickyPromptClip(viewport, content)
       // Reconcile before paint without tearing down surviving clips when a
       // stream appends a message or the history window changes its rows.
       controller.current.reconcile()
     }
-  }, [contentRef, scrollRef, paneVisible, rows])
+  }, [sticky, contentRef, scrollRef, paneVisible, rows])
 
   useLayoutEffect(
     () => () => {

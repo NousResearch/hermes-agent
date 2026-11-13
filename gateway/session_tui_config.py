@@ -180,7 +180,10 @@ def _authorize_write(connection, ref, params):
 
 # Profile settings main's sidecar wrote for Desktop's toggles (``tui_gateway/server.py::_DISPLAY_TOGGLE_KEYS``)
 # and its voice-engine pick: config.yaml leaves with main's validation.
-_DISPLAY_TOGGLE_KEYS = frozenset({'display.message_reactions', 'display.in_app_tips', 'display.in_app_tours'})
+# ``display.sticky_user_message`` is persisted only — the renderer's presentation
+# switch (#80146), mirrored so the preference is inspectable on the backend too.
+_DISPLAY_TOGGLE_KEYS = frozenset({'display.message_reactions', 'display.in_app_tips', 'display.in_app_tours',
+                                  'display.sticky_user_message'})
 _VOICE_CHAT_MODES = frozenset({'chained', 'gpt-live'})
 
 

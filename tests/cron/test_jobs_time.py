@@ -41,6 +41,11 @@ class TestNormalizeTimezone:
 class TestGraceMinutesNormalization:
     """The ``0 == False`` trap: 0 must survive as a real override."""
 
+    @pytest.mark.parametrize("value", [float("inf"), float("-inf"), float("nan")])
+    def test_non_finite_minutes_are_rejected(self, value):
+        with pytest.raises(ValueError, match="grace_minutes"):
+            jobs_time.normalize_grace_minutes(value)
+
     @pytest.mark.parametrize("value", [None, "", "  "])
     def test_empty_means_use_the_computed_window(self, value):
         assert jobs_time.normalize_grace_minutes(value) is None
@@ -105,6 +110,14 @@ class TestZoneForJob:
 
 
 class TestGraceSecondsOverride:
+    @pytest.mark.parametrize("value", [float("inf"), float("-inf"), float("nan")])
+    def test_non_finite_override_falls_back_and_warns_once(self, value, caplog):
+        jobs_time.reset_warning_state()
+        assert jobs_time.grace_seconds_override(value) is None
+        assert jobs_time.grace_seconds_override(value) is None
+        assert len(caplog.records) == 1
+        assert "grace_minutes" in caplog.text
+
     def test_absent_override_defers_to_the_cadence_window(self):
         assert jobs_time.grace_seconds_override(None) is None
 

@@ -98,7 +98,7 @@ def normalize_grace_minutes(value: Any) -> Optional[int]:
                 f"grace_minutes must be a whole number of minutes, not {value!r}.")
     try:
         minutes = int(value)
-    except (TypeError, ValueError) as exc:
+    except (TypeError, ValueError, OverflowError) as exc:
         raise ValueError(
             f"grace_minutes must be a whole number of minutes, not {value!r}.") from exc
     if isinstance(value, float) and value != minutes:

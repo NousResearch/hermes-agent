@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { CanonicalDesktopProtocol } from '@/api/canonical-protocol'
 import { en } from '@/i18n/en'
-import { textPart } from '@/lib/chat-messages'
+import { type ChatMessage, textPart } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { resolveDesktopCommand } from '@/lib/desktop-slash-commands'
 import { $composerDraft, setComposerDraft } from '@/store/composer'
@@ -60,10 +60,15 @@ function gateway(respond: Responder) {
   )
 }
 
-async function mount(requestGateway: ReturnType<typeof gateway>) {
+async function mount(requestGateway: ReturnType<typeof gateway>, seedMessages?: ChatMessage[]) {
   let handle: HarnessHandle | null = null
   await actRender(
-    <Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />
+    <Harness
+      onReady={h => (handle = h)}
+      refreshSessions={async () => undefined}
+      requestGateway={requestGateway}
+      seedMessages={seedMessages}
+    />
   )
 
   return handle!
@@ -209,6 +214,58 @@ describe('/undo on a canonical session', () => {
     expect(callsOf(requestGateway, 'session.interrupt')).toEqual([])
     expect(callsOf(requestGateway, 'prompt.submit')).toEqual([])
     expect(queuedTexts()).toEqual([])
+  })
+})
+
+describe('/undo on a remote legacy gateway', () => {
+  // No owner route: /undo falls through to command.dispatch, which soft-deletes the rows server-side
+  // and answers with a prefill directive that carries no row ids.
+  const TRANSCRIPT: ChatMessage[] = [
+    { id: 'u1', role: 'user', parts: [textPart('first question')] },
+    { id: 'a1', role: 'assistant', parts: [textPart('first answer')] },
+    { id: 'u2', role: 'user', parts: [textPart('second question')] },
+    { id: 'a2', role: 'assistant', parts: [textPart('second answer')] }
+  ]
+
+  const legacyGateway = (message: string, notice: string) =>
+    gateway(method => {
+      if (method === 'slash.exec') {
+        throw new Error('pending-input command')
+      }
+
+      if (method === 'command.dispatch') {
+        return { type: 'prefill', message, notice }
+      }
+    })
+
+  it('drops the undone exchange from the transcript and keeps the notice and prefill', async () => {
+    const notice = '↶ Undid 1 turn (2 message(s)). Edit and resubmit, or send a new message.'
+    const handle = await mount(legacyGateway('second question', notice), TRANSCRIPT)
+    await handle.submitText('/undo')
+
+    expect(
+      handle
+        .state()
+        .messages.filter(message => message.role !== 'system')
+        .map(message => message.id)
+    ).toEqual(['u1', 'a1'])
+    expect(renderedText(handle)).toContain(notice)
+    expect($composerDraft.get()).toBe('second question')
+  })
+
+  it('/undo N drops the N newest exchanges', async () => {
+    const handle = await mount(legacyGateway('first question', '↶ Undid 2 turns (4 message(s)).'), TRANSCRIPT)
+    await handle.submitText('/undo 2')
+
+    expect(handle.state().messages.filter(message => message.role !== 'system')).toEqual([])
+    expect($composerDraft.get()).toBe('first question')
+  })
+
+  it('/undo N past the rendered turns clears every exchange on screen', async () => {
+    const handle = await mount(legacyGateway('first question', '↶ Undid 2 turns (4 message(s)).'), TRANSCRIPT)
+    await handle.submitText('/undo 5')
+
+    expect(handle.state().messages.filter(message => message.role !== 'system')).toEqual([])
   })
 })
 

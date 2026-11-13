@@ -12,6 +12,8 @@ from contextlib import redirect_stdout
 TICKETS_PROTOCOL = 1
 # What ``--serve`` mints. The WebSocket's ``interactive`` ticket stays with ``hermes gateway attach``.
 TICKET_PURPOSES = ("native-http",)
+# Longest request line ``--serve`` reads, newline excluded. A longer one is refused unread.
+MAX_REQUEST_LINE_BYTES = 64 * 1024
 
 
 def _write(out, payload) -> None:
@@ -19,7 +21,19 @@ def _write(out, payload) -> None:
     out.flush()
 
 
-def _reply(line: bytes, mint) -> dict:
+def _request_lines(stream):
+    """Each stdin line; None stands for one over the limit, dropped as it is read, never held."""
+    limit = MAX_REQUEST_LINE_BYTES + 1  # room for the newline
+    while line := stream.readline(limit):
+        if len(line) < limit or line.endswith(b"\n"):
+            yield line
+            continue
+        while (rest := stream.readline(limit)) and not rest.endswith(b"\n"):
+            pass
+        yield None
+
+
+def _reply(line: bytes | None, mint) -> dict:
     """The one reply to a request line; ``mint(purpose)`` returns a ticket or raises TicketUnavailable."""
     from gateway.runtime_bootstrap import TicketStore
     from hermes_cli.gateway_runtime_attach import TicketUnavailable
@@ -27,9 +41,11 @@ def _reply(line: bytes, mint) -> dict:
     def refuse(request_id, code, message):
         return {"id": request_id, "ok": False, "error": {"code": code, "message": message}}
 
+    if line is None:
+        return refuse(None, "invalid_request", f"request line is longer than {MAX_REQUEST_LINE_BYTES} bytes")
     try:
         request = json.loads(line)
-    except ValueError:
+    except (ValueError, RecursionError):  # RecursionError: nesting too deep for the decoder
         return refuse(None, "invalid_request", "request line is not JSON")
     if not isinstance(request, dict):
         return refuse(None, "invalid_request", "request must be a JSON object")
@@ -68,7 +84,7 @@ def cmd_gateway_tickets(args) -> None:
         try:
             _write(out, {"type": "hello", "protocol": TICKETS_PROTOCOL,
                          "endpoint": _verdict_payload(receipt)["endpoint"]})
-            for line in iter(sys.stdin.buffer.readline, b""):
+            for line in _request_lines(sys.stdin.buffer):
                 _write(out, _reply(line, lambda purpose: mint_ticket(home, receipt.endpoint, purpose=purpose)))
         except BrokenPipeError:
             # The client closed the channel; nothing is left to answer.

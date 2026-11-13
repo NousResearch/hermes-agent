@@ -70,8 +70,9 @@ the exit code `hermes gateway ensure` gives that verdict (`5` when absent):
 {"id": 7, "purpose": "native-http"}
 ```
 
-`id` is an integer or a string of your choice. Each request line gets exactly one reply line,
-in order, carrying your `id`:
+`id` is an integer or a string of your choice. A request line may be at most 65536 bytes (64 KiB),
+not counting its newline; a longer line is discarded as it is read and gets one `invalid_request`
+reply. Each request line gets exactly one reply line, in order, carrying your `id`:
 
 ```json
 {"id": 7, "ok": true, "ticket": "<ticket>", "expires_in": 30}
@@ -80,7 +81,7 @@ in order, carrying your `id`:
 
 | `error.code` | Meaning |
 |--------------|---------|
-| `invalid_request` | The line is not a JSON object with an integer or string `id`. The reply's `id` is `null`. The channel stays open. |
+| `invalid_request` | The line is not a JSON object with an integer or string `id`, is nested too deeply to parse, or is longer than 65536 bytes (64 KiB, newline excluded). The reply's `id` is `null`. The channel stays open. |
 | `unsupported_purpose` | `purpose` is missing or not in the probe's `purposes`. |
 | `ticket_unavailable` | The gateway did not mint the ticket: it stopped, was replaced, or refused. Close the channel, run `attach` again and open a new one. |
 

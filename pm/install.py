@@ -95,6 +95,9 @@ def _installed_location(package: Package, lockfile: Lockfile, target: str, *,
     for root in search_roots:
         store = Store(root)
         facts = _facts() if root == paths.store_root() else Facts(root / "facts.json")
+        # The selected row comes first: an outdated fallback is this store's selection, never an
+        # older pin another install keeps; a later root's fallback still replaces it, as before.
+        outdated = None
         for fact in facts.variants(package.name):
             chosen = facts.selected(package.name, fact)
             if not chosen.installed(package.name, None, store.root):
@@ -111,8 +114,8 @@ def _installed_location(package: Package, lockfile: Lockfile, target: str, *,
                 return chosen, store
             if (allow_outdated and fact.get("target") == target
                     and fact.get("artifacts") and fact.get("digest")):
-                if fallback is None:
-                    fallback = chosen, store
+                outdated = outdated or (chosen, store)
+        fallback = outdated or fallback
     return fallback
 
 

@@ -515,6 +515,16 @@ def _doctor_uv_cache(*, repair: bool) -> int:
     return 0
 
 
+def _install_alive(store):
+    """An install still pins its tools while its state dir exists (orphan gc removes it)."""
+    from pm.environments import installs_root
+    from pm.lock import install_owner
+
+    roots = {installs_root(), store.root.parent / "installs"}
+    own = install_owner()
+    return lambda key: key == own or any((root / key).is_dir() for root in roots)
+
+
 def _gc_store(store, facts) -> tuple[int, int]:
     """The sweep core shared by `pm gc` and `pm bundle`.
 
@@ -536,7 +546,7 @@ def _gc_store(store, facts) -> tuple[int, int]:
         from pm.defaults import RETIRED_DEFAULTS
 
         facts.forget(RETIRED_DEFAULTS)
-        facts.reload()
+        facts.drop_dead_history(_install_alive(store))
         keep = facts.entries_in_use()
         collect_partials(partials_dir)
         removed += _reclaim_set_aside(store)
@@ -563,6 +573,10 @@ def cmd_gc(args) -> int:
     from pm.store import Store
     store = Store(writable_store_root())
     facts = _facts() if store.root == _store().root else Facts(store.root / "facts.json")
+    from pm.environments import installs_root
+    from pm.install_states import collect_orphan_install_states
+    # Orphans first: a deleted checkout's tool pins are released in this same pass.
+    orphans = collect_orphan_install_states(installs_root())
     removed, kept = _gc_store(store, facts)
     from hermes_cli.runtime_state import collect_generations
     from pm.environments import install_state_dir
@@ -570,9 +584,6 @@ def cmd_gc(args) -> int:
     from pm.runtime import collect_runtime_generations
     generations = collect_generations(repo_root())
     runtimes = collect_runtime_generations(install_state_dir(repo_root()) / "pm-runtime")
-    from pm.environments import installs_root
-    from pm.install_states import collect_orphan_install_states
-    orphans = collect_orphan_install_states(installs_root())
     print(f"gc: removed {removed}, kept {kept}; removed {len(generations)} dependency generations, "
           f"{len(runtimes)} PM runtime generations, {len(orphans)} install state dir(s) of deleted checkouts")
     return 0

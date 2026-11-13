@@ -1,0 +1,16 @@
+name: doop
+repo: https://github.com/J182Razor/hermes-doop-plugin
+sha: 0164a9828b562de2c8b5995af0014c9078969b5e
+description: 'Multiplayer design canvas (doop) integration: Hermes designs UIs on a live doop canvas through doop MCP server. Portable Agent Plugins v1 package (mcp.json + skills/). Requires a running doop instance and Node.js. Disclosure - sends design prompts and canvas content to your doop instance; write-capable calls require approval (trust: untrusted).'
+maintainer: J182Razor
+tier: community
+category: tools
+requires_hermes: ">=0.22.0"
+version: "1.0.0"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []
+docs_url: https://github.com/J182Razor/hermes-doop-plugin

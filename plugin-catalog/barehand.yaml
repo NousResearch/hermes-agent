@@ -57,9 +57,9 @@ known_issues:
 - 'The flight recorder is on by default: screenshots and key chords under the plugin data dir (mode 0600). Typed
   text is off by default (length only). `record: false` disables the recorder and `hermes barehand recordings purge
   --yes` deletes recordings.'
-- One pre_tool_call hook only escalates reset, power_off, eject_media, send_ctrl_alt_del, snapshot_load and snapshot_delete
-  to Hermes' approval prompt. status, snapshot_list, snapshot_save, calibrate_text (types the 94 printable ASCII
-  characters at a Linux prompt) and wait_for_text do not ask.
+- One pre_tool_call hook only escalates reset, power_off, eject_media, send_ctrl_alt_del, snapshot_load, snapshot_delete
+  and a snapshot_save that overwrites an existing snapshot to Hermes' approval prompt. status, snapshot_list, snapshot_save
+  under a new name, calibrate_text (types the 94 printable ASCII characters at a Linux prompt) and wait_for_text do not ask.
 capabilities:
   provides_tools:
   - barehand_machine

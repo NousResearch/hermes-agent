@@ -4,6 +4,7 @@ import shutil
 
 import pytest
 
+from tools.environments.local import LocalEnvironment
 from tools.file_operations import ShellFileOperations
 from tests.tools.test_file_operations import make_real_subprocess_env
 
@@ -50,3 +51,20 @@ def test_recursive_basename_glob_without_ripgrep(tmp_path, monkeypatch):
     result = ops._search_files("**/*.py", str(tmp_path), limit=50, offset=0)
     assert result.error is None
     assert set(result.files) == {str(file) for file in wanted}
+
+
+@pytest.mark.parametrize("native", ["1", "0"])
+def test_folder_glob_matches_from_the_search_root_not_the_cwd(tmp_path, monkeypatch, native):
+    """rg matches a glob naming folders against paths relative to ITS cwd; a search
+    rooted elsewhere found nothing (content) or matched outside the folder (files)."""
+    assert shutil.which("rg"), "This integration regression requires ripgrep"
+    monkeypatch.setenv("HERMES_NATIVE_FILE_READ", native)
+    for name in ("repo/migrations/main/a.js", "repo/lib/b.js", "repo/main/c.js"):
+        (tmp_path / name).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / name).write_text("hello\n", encoding="utf-8")
+    ops = ShellFileOperations(LocalEnvironment(cwd=str(tmp_path)))
+    content = ops.search("hello", path="repo", file_glob="migrations/main/*.js")
+    assert [m.path for m in content.matches] == ["repo/migrations/main/a.js"]
+    files = ops.search("main/*.js", path="repo", target="files")
+    assert files.files == ["repo/main/c.js"]
+    assert ops._exec("pwd").stdout.strip() == str(tmp_path)

@@ -183,8 +183,10 @@ def test_cached_client_lookup_never_selects_from_the_entry_pool(tmp_path, monkey
     selects = []
 
     class _Pool:
-        def entries(self):
-            return [SimpleNamespace(source="manual")]  # an `hermes auth add` row the entry owns
+        provider = "custom:my-litellm"
+
+        def entries(self):  # an `hermes auth add` row the entry owns, bound to its origin (#130410)
+            return [SimpleNamespace(source="manual", base_url="https://proxy.example.test/v1")]
 
         def has_credentials(self):
             return True

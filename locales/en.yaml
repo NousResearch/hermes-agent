@@ -51,6 +51,12 @@ gateway:
   no_active_goal: "No active goal."
   config_read_failed: "⚠️ Could not read config.yaml: {error}"
   config_save_failed: "⚠️ Could not save config: {error}"
+  refresh:
+    queued: "✓ Refresh requested for {scope} ({count} session(s) with a stored prompt)."
+    how: "Its prompt rebuilds from the current SOUL.md, skills and context files on its next turn (one prompt-cache miss per session); conversation history is kept."
+    no_match: "No session matches {arg!r}."
+    scope_profile: "every session in this profile"
+    all_detail: "Refresh every session in this profile with a stored prompt ({count} session(s)). Each pays one prompt-cache break on its next turn."
   model:
     error_prefix: "Error: {error}"
     switched: "Model switched to `{model}`"

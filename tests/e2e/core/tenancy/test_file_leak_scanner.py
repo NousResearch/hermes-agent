@@ -20,12 +20,15 @@ def _tenants(tmp_path: Path) -> dict[str, H.Tenant]:
 
 
 def _write_launch_home(t: dict[str, H.Tenant], *, own_row_cwd: str, own_route_cwd: str,
-                       alpha_route_cwd: str | None = None) -> None:
+                       alpha_route_cwd: str | None = None, alpha_route_key: str | None = None,
+                       own_route_key: str | None = None) -> None:
     home = t["default"].home
     (home / "sessions").mkdir(parents=True)
     alpha_cwd = alpha_route_cwd or str(t["alpha"].workdir)
-    routes = {"agent:alpha:api_server:dm:a": {"metadata": {"terminal_cwd": alpha_cwd}},
-              "agent:main:api_server:dm:m": {"metadata": {"terminal_cwd": own_route_cwd}}}
+    alpha_meta = {"terminal_cwd": alpha_cwd, **({"api_key": alpha_route_key} if alpha_route_key else {})}
+    routes = {"agent:alpha:api_server:dm:a": {"metadata": alpha_meta},
+              "agent:main:api_server:dm:m": {"metadata": {"terminal_cwd": own_route_cwd,
+                                                          **({"api_key": own_route_key} if own_route_key else {})}}}
     (home / "sessions" / "sessions.json").write_text(json.dumps(routes), encoding="utf-8")
     conn = sqlite3.connect(home / "state.db")
     conn.executescript("CREATE TABLE sessions (id TEXT, cwd TEXT);"
@@ -57,6 +60,22 @@ def test_a_third_profiles_workdir_in_another_profiles_routing_row_is_a_leak(tmp_
     _write_launch_home(t, own_row_cwd=own, own_route_cwd=own, alpha_route_cwd=str(t["beta"].workdir))
     assert set(H.file_leaks(t)) == {"default: alpha's routing row in state.db contains beta's workdir",
                                     "default: alpha's routing row in sessions/sessions.json contains beta's workdir"}
+
+
+def test_the_launch_profiles_secret_in_another_profiles_routing_row_is_a_leak(tmp_path: Path) -> None:
+    t = _tenants(tmp_path)
+    own = str(t["default"].workdir)
+    _write_launch_home(t, own_row_cwd=own, own_route_cwd=own, alpha_route_key=t["default"].provider_key)
+    assert set(H.file_leaks(t)) == {
+        "default: alpha's routing row in state.db contains default's provider_key",
+        "default: alpha's routing row in sessions/sessions.json contains default's provider_key"}
+
+
+def test_the_launch_profiles_secret_in_its_own_routing_row_is_not_a_leak(tmp_path: Path) -> None:
+    t = _tenants(tmp_path)
+    own = str(t["default"].workdir)
+    _write_launch_home(t, own_row_cwd=own, own_route_cwd=own, own_route_key=t["default"].provider_key)
+    assert H.file_leaks(t) == []
 
 
 def test_a_deleted_foreign_credential_still_in_the_wal_is_a_leak(tmp_path: Path) -> None:

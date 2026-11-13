@@ -86,12 +86,22 @@ def streaming_config_for_source(runner, source):
     return getattr(config, "streaming", None) or StreamingConfig()
 
 
-def _effective_allow_silence(platform_config, source: SessionSource) -> Optional[bool]:
-    """``allow_silence`` for ``source``: the nearest room entry that sets it, else the platform's.
+def _allow_silence_value(value: Any) -> Optional[bool]:
+    """One parse for a room's and a platform's ``allow_silence``: a bool as is; a falsy token
+    (a quoted ``"false"``) is False at both levels; anything else, a quoted ``"true"`` included,
+    is None: opting in to silence takes a real boolean."""
+    from gateway.config import _bool_token
+    if isinstance(value, bool):
+        return value
+    return False if isinstance(value, str) and _bool_token(value) is False else None
 
-    Rooms are looked up chat -> thread -> parent like every channel override; an entry that sets
-    only ``model``/``provider``/``system_prompt`` does not stop the walk. A platform value that is
-    not a bool is ignored, so a quoted ``"true"`` opts nothing in.
+
+def _effective_allow_silence(platform_config, source: SessionSource) -> Optional[bool]:
+    """``allow_silence`` for ``source``: the room entry's, else the platform's.
+
+    The room entry is the first ``channel_overrides`` match along chat -> thread -> parent, as for
+    every channel override; an entry that sets only ``model``/``provider``/``system_prompt`` still
+    matches first, so its unset ``allow_silence`` falls to the platform, not to a parent entry.
     """
     if platform_config is None:
         return None
@@ -100,10 +110,12 @@ def _effective_allow_silence(platform_config, source: SessionSource) -> Optional
     for key in _channel_override_lookup_keys(
             source.chat_id, thread_id=source.thread_id, parent_id=source.parent_chat_id):
         entry = overrides.get(key)
-        if entry is not None and entry.allow_silence is not None:
-            return entry.allow_silence
-    value = (platform_config.extra or {}).get("allow_silence")
-    return value if isinstance(value, bool) else None
+        if entry is not None:
+            allow = _allow_silence_value(entry.allow_silence)
+            if allow is not None:
+                return allow
+            break
+    return _allow_silence_value((platform_config.extra or {}).get("allow_silence"))
 
 
 # "" = an unclassified source: treated as a DM, where a question must get a visible answer.
@@ -234,9 +246,9 @@ class GatewayConfigLoadersMixin:
     def _room_allow_silence(self, source: SessionSource) -> Optional[bool]:
         """Resolve ``allow_silence`` in the serving profile, never the launch snapshot for a route.
 
-        The first ``channel_overrides`` entry along chat -> thread -> parent that sets it (true or
-        false) wins; an entry that sets only other keys inherits. Otherwise the platform's own
-        ``platforms.<platform>.allow_silence`` applies, else None (the default reply rule).
+        The first ``channel_overrides`` entry along chat -> thread -> parent decides when it sets
+        it (true or false); otherwise the platform's own ``platforms.<platform>.allow_silence``
+        applies, else None (the default reply rule).
         """
         try:
             config = self._serving_channel_config(source, unbound_reads_home=True)

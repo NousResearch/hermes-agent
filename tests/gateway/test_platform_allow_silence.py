@@ -1,7 +1,8 @@
 """``platforms.<platform>.allow_silence`` is the parent of every room's ``allow_silence``.
 
-A room entry that sets ``allow_silence`` (true or false) wins along chat -> thread -> parent; an
-entry that sets only other keys inherits; otherwise the platform value applies. Driven through the
+The first room entry along chat -> thread -> parent decides when it sets ``allow_silence`` (true or
+false); an entry that sets only other keys still matches first (as on main), so it falls to the
+platform value, not to a parent entry. Driven through the
 real config loader and the real turn path (live, queued first response, crash recovery), with the
 real Slack, WhatsApp and relay inbound builders where they decide ``reply_expected``.
 """
@@ -199,13 +200,13 @@ async def test_relay_block_does_not_opt_in_the_chats_platform(monkeypatch, tmp_p
     (True, {CHANNEL_ID: {"allow_silence": False}}, False),
     (True, {CHANNEL_ID: {"model": "openai/gpt-5-mini"}}, True),
     (True, {THREAD: {"system_prompt": "be brief"}, CHANNEL_ID: {"allow_silence": False}}, False),
-    (None, {THREAD: {"model": "m"}, "C_PARENT": {"allow_silence": True}}, True),
+    (None, {THREAD: {"model": "m"}, "C_PARENT": {"allow_silence": True}}, None),
     (False, {CHANNEL_ID: {"allow_silence": True}}, True),
     (True, {CHANNEL_ID: {"allow_silence": None}}, True),
     (None, {CHANNEL_ID: {"model": "m"}}, None),
     (None, {}, None),
 ], ids=["channel-false-beats-platform-true", "model-only-entry-inherits", "chat-entry-wins-over-thread",
-        "model-only-thread-inherits-parent", "channel-true-beats-platform-false", "null-inherits",
+        "model-only-thread-matches-first", "channel-true-beats-platform-false", "null-inherits",
         "unconfigured-with-model-entry", "unconfigured"])
 def test_first_entry_that_sets_allow_silence_wins_then_the_platform(
         monkeypatch, tmp_path, platform_value, overrides, expected):

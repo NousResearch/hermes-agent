@@ -50,9 +50,8 @@ def _configure(runner, tmp_path, *, setting=True, other_profile=False):
     (True, False, True, False, True),
     (True, False, None, False, True),
     (False, False, True, False, False),
-    # An entry without ``allow_silence`` (absent or null) inherits the parent's opt-in.
-    (None, False, None, False, True),
-    ("null", False, True, False, True),
+    (None, False, None, False, False),
+    ("null", False, True, False, False),
     ("thread", False, True, False, True),
     ("parent", False, True, False, True),
     (True, True, True, False, False),

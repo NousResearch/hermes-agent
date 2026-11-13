@@ -210,6 +210,8 @@ class GatewayTurnPrepareMixin:
         override = _override_state.conversation.model_override if _override_state else None
         managed_oauth = _session_override_uses_managed_oauth(override)
         if override:
+            from gateway.run_turn_oauth import refresh_xai_session_override
+            refresh_xai_session_override(override)
             override_model = override.get("model", model)
             override_runtime = _session_override_snapshot(override)
             if override_runtime.get("api_key") and not managed_oauth:

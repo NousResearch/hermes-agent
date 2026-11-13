@@ -104,6 +104,17 @@ class TestBuildToolPreview:
         "fill_input('#p', f'{1}Hunter2Correct!')",
         "pw = ('Hunter2Correct!')\nfill_input('#p', pw)",
         "fill_input('#p', ('Hunter2Correct!'",
+        # the parser ends a line at \r and \r\n as well as \n: spans must count the same lines
+        "x = 1\rfill_input('#p', 'Hunter2Correct!')",
+        "x = 1\r\nfill_input('#p', 'Hunter2Correct!')",
+        "x = 1\rfill_input('#p', 'Hunter2Correct!')\nprint('hello world, a longer line here')",
+        "s = '''a\rb'''\r\nfill_input('#p', 'Hunter2Correct!')\rprint('kept')\n",
+        # names bound by unpacking, loops, splats and calls to a function the snippet defines
+        "sel, pw = '#p', 'Hunter2Correct!'\nfill_input(sel, pw)",
+        "fill_input(*('#p', 'Hunter2Correct!'))",
+        "fill_input(**{'selector': '#p', 'text': 'Hunter2Correct!'})",
+        "for pw in ['Hunter2Correct!']:\n    fill_input('#p', pw)",
+        "def go(pw):\n    fill_input('#p', pw)\ngo('Hunter2Correct!')",
     ])
     def test_browser_exec_typed_password_never_reaches_display(self, code):
         """#72298: an ordinary password typed by a browser_exec snippet matches no secret shape,

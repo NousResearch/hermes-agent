@@ -119,4 +119,24 @@ describe('registerSaveDialogIpc', () => {
     expect(await handlers.get('hermes:saveTextFileAs')!(null, { content: '{}' })).toEqual({ saved: true, path: target })
     expect(fs.readFileSync(target, 'utf8')).toBe('{}')
   })
+
+  it('forwards the resolved parent window to the save dialog', async () => {
+    const handlers = new Map<string, (event: unknown, ...args: any[]) => unknown>()
+    const fakeWindow = { id: 42 }
+    let seenWindow: unknown = null
+    registerSaveDialogIpc(
+      { handle: (channel, listener) => void handlers.set(channel, listener) },
+      {
+        defaultDir: () => '/dir',
+        showSaveDialog: async (_opts, win) => {
+          seenWindow = win
+          return { canceled: true }
+        }
+      },
+      () => fakeWindow
+    )
+
+    await handlers.get('hermes:selectSavePath')!({ sender: {} }, { title: 'Export' })
+    expect(seenWindow).toBe(fakeWindow)
+  })
 })

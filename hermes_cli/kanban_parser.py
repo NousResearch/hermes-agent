@@ -273,6 +273,15 @@ _SPECS = [
     ], aliases=["diag"], help="List active diagnostics on the current board"),
     _cmd("link", [_arg("parent_id"), _arg("child_id")], help="Add a parent->child dependency"),
     _cmd("unlink", [_arg("parent_id"), _arg("child_id")], help="Remove a parent->child dependency"),
+    _cmd("resume-triage", [
+        _TASK_ID,
+        _arg("--expected-owner", required=True, help="Must match assignee and acting profile"),
+        _arg("--expected-body-sha256", required=True, help="Exact UTF-8 body SHA-256"),
+        _arg("--reason", required=True, help="Changed executable prerequisite; retained in history"),
+        _arg("--claim", action="store_true", help="Atomically claim in the continuation transaction"),
+        _arg("--ttl", type=int, default=kb.DEFAULT_CLAIM_TTL_SECONDS),
+        _json_flag(),
+    ], help="Resume exactly one idle, specified triage task without generation or guard resets"),
     _cmd("claim", [
         _TASK_ID,
         _arg("--ttl", type=int, default=kb.DEFAULT_CLAIM_TTL_SECONDS, help="Claim TTL in seconds (default: 900)"),

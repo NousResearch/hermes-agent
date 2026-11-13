@@ -5842,6 +5842,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         # counted as incoming unread in the Hermes inbox (#52363). Otherwise a BotFather rename leaves the
         # stale handle in place and the exclusive-mention gate reads a message addressed to us as one
         # addressed to some other bot.
+        refresh_telegram_gates(self)  # commands reach this gate before the auth prefilter's refresh
         self._observe_bot_identity_from_message(message)
         if self._is_own_message(message):
             return False

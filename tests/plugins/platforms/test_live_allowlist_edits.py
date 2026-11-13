@@ -204,6 +204,19 @@ def test_telegram_allow_from_edit_applies_to_the_next_message(_home):
     assert adapter.config.extra.get("allow_from") == ["111"]
 
 
+def test_a_command_in_a_newly_allowed_telegram_chat_is_processed(_home):
+    """Commands meet the allowed_chats gate in _should_process_message before any auth check runs."""
+    from gateway.platforms._shared import mark_live_gate_baseline
+    from plugins.platforms.telegram.adapter import TelegramAdapter
+    from tests.gateway.test_telegram_group_gating import _group_message
+
+    _write(_home, telegram_cfg={"allowed_chats": ["-100"], "require_mention": False})
+    adapter = TelegramAdapter(load_gateway_config().platforms[Platform.TELEGRAM])
+    adapter._bot = SimpleNamespace(id=999, username="hermes_bot")
+    mark_live_gate_baseline(adapter)
+    _write(_home, telegram_cfg={"allowed_chats": ["-100", "-200"], "require_mention": False})
+    assert adapter._should_process_message(_group_message("/status", chat_id=-200), is_command=True) is True
+
 def test_unchanged_config_costs_no_reload(_home, monkeypatch):
     import gateway.config as gateway_config
 

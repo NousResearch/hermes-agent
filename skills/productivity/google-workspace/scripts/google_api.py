@@ -252,7 +252,19 @@ def get_credentials():
 
     creds = Credentials.from_authorized_user_file(str(TOKEN_PATH), _stored_token_scopes())
     if creds.expired and creds.refresh_token:
-        creds.refresh(Request())
+        try:
+            from google.auth.exceptions import RefreshError
+        except ImportError:
+            RefreshError = ()
+        try:
+            creds.refresh(Request())
+        except RefreshError as exc:
+            # A revoked or expired refresh token, or a deleted/disabled OAuth client: retrying
+            # cannot help, so say what to do instead of dumping a traceback.
+            print(f"Google token refresh failed: {exc}", file=sys.stderr)
+            print("Re-run the setup script to sign in again:", file=sys.stderr)
+            print(f"  python {Path(__file__).parent / 'setup.py'}", file=sys.stderr)
+            sys.exit(1)
         TOKEN_PATH.write_text(
             json.dumps(
                 _normalize_authorized_user_payload(json.loads(creds.to_json())),

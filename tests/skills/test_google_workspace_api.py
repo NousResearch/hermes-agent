@@ -197,6 +197,46 @@ def test_api_get_credentials_refresh_persists_authorized_user_type(api_module, m
     assert saved["type"] == "authorized_user"
 
 
+def test_api_get_credentials_refresh_failure_names_the_setup_script(api_module, monkeypatch, capsys):
+    _write_token(api_module.TOKEN_PATH, token="ya29.old")
+
+    class RefreshError(Exception):
+        pass
+
+    class FakeCredentials:
+        expired = True
+        refresh_token = "1//revoked"
+        valid = False
+
+        def refresh(self, request):
+            raise RefreshError("invalid_grant: Token has been expired or revoked.")
+
+    credentials_module = types.ModuleType("google.oauth2.credentials")
+    credentials_module.Credentials = types.SimpleNamespace(
+        from_authorized_user_file=lambda filename, scopes: FakeCredentials())
+    exceptions_module = types.ModuleType("google.auth.exceptions")
+    exceptions_module.RefreshError = RefreshError
+    requests_module = types.ModuleType("google.auth.transport.requests")
+    requests_module.Request = lambda: object()
+
+    monkeypatch.setitem(sys.modules, "google", types.ModuleType("google"))
+    monkeypatch.setitem(sys.modules, "google.oauth2", types.ModuleType("google.oauth2"))
+    monkeypatch.setitem(sys.modules, "google.oauth2.credentials", credentials_module)
+    monkeypatch.setitem(sys.modules, "google.auth", types.ModuleType("google.auth"))
+    monkeypatch.setitem(sys.modules, "google.auth.exceptions", exceptions_module)
+    monkeypatch.setitem(sys.modules, "google.auth.transport", types.ModuleType("google.auth.transport"))
+    monkeypatch.setitem(sys.modules, "google.auth.transport.requests", requests_module)
+
+    with pytest.raises(SystemExit) as excinfo:
+        api_module.get_credentials()
+
+    assert excinfo.value.code == 1
+    err = capsys.readouterr().err
+    assert "Google token refresh failed: invalid_grant" in err
+    assert "setup.py" in err
+    assert json.loads(api_module.TOKEN_PATH.read_text(encoding="utf-8"))["token"] == "ya29.old"
+
+
 def test_gmail_search_empty_result_prints_json_array(
     api_module: types.ModuleType,
     monkeypatch: pytest.MonkeyPatch,

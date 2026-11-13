@@ -109,6 +109,13 @@ export interface RemoteBootRetryContext {
    * `desktop.ssh_path` (#103288).
    */
   isSshClientFailed?: boolean
+  /**
+   * True when the remote has no usable `hermes` executable (`hermes-not-found`
+   * from locateHermes, or the Windows remote's "not installed" message). The
+   * same probe answers the same way until the user installs Hermes on the
+   * remote or fixes the connection's Hermes path: terminal, not connectivity.
+   */
+  isHermesNotFound?: boolean
 }
 
 /**
@@ -191,6 +198,34 @@ export function shouldLatchSshClientFailure(context: RemoteBootRetryContext): bo
 }
 
 /**
+ * A remote with no usable Hermes install is identifiable by the
+ * `hermes-not-found` kind locateHermes puts on the error (`sshError` once the
+ * SSH bootstrap re-wraps it) and, for errors that crossed a stringifying
+ * boundary or come from the Windows remote, by the message.
+ */
+export function isHermesNotFoundBootFailure(error: unknown): boolean {
+  const tagged = error as { kind?: string; sshError?: string } | null | undefined
+  if (tagged?.kind === 'hermes-not-found' || tagged?.sshError === 'hermes-not-found') {
+    return true
+  }
+  const message = error instanceof Error ? error.message : String(error ?? '')
+  return /Hermes is not installed on the remote|The Hermes path you set is not an executable on the remote host|The configured Hermes path is not an executable file/i.test(
+    message
+  )
+}
+
+/**
+ * Whether a failed remote boot should latch because the remote has no Hermes
+ * install. Same rationale as the ssh-client latch: unlatched, every
+ * `getConnection`/api call re-drives boot, and each attempt is several fresh
+ * SSH logins (no multiplexing on Windows), so an unused SSH connection to a
+ * host without Hermes logged in about 25 times a minute until the app closed.
+ */
+export function shouldLatchHermesNotFoundFailure(context: RemoteBootRetryContext): boolean {
+  return context.attemptedRemote && context.isHermesNotFound === true
+}
+
+/**
  * Whether a failed remote boot should latch (into `backendStartFailure`)
  * because SSH rejected the credentials (#72698). Unlatched, every
  * `getConnection`/api call re-runs startHermes, re-emits `running: true` and
@@ -212,6 +247,35 @@ export function shouldLatchSshAuthFailure(context: RemoteBootRetryContext): bool
  */
 export function shouldLatchHostKeyChangedFailure(context: RemoteBootRetryContext): boolean {
   return context.attemptedRemote && context.isHostKeyChanged === true
+}
+
+export type TerminalRemoteBootFlags = Pick<
+  RemoteBootRetryContext,
+  'isHostKeyChanged' | 'isSshAuthFailed' | 'isSshClientFailed' | 'isHermesNotFound'
+>
+
+/** Every terminal remote-failure kind of a boot error, for the latch and the retry contract. */
+export function classifyTerminalRemoteBootFailure(error: unknown): TerminalRemoteBootFlags {
+  return {
+    isHostKeyChanged: isHostKeyChangedBootFailure(error),
+    isSshAuthFailed: isSshAuthFailedBootFailure(error),
+    isSshClientFailed: isSshClientFailedBootFailure(error),
+    isHermesNotFound: isHermesNotFoundBootFailure(error)
+  }
+}
+
+/**
+ * Whether a failed remote boot hit any terminal kind that latches into
+ * `backendStartFailure`: a changed host key, rejected SSH credentials (#72698),
+ * a dead local ssh client (#103288), or a remote with no Hermes install.
+ */
+export function shouldLatchTerminalRemoteBootFailure(context: RemoteBootRetryContext): boolean {
+  return (
+    shouldLatchHostKeyChangedFailure(context) ||
+    shouldLatchSshAuthFailure(context) ||
+    shouldLatchSshClientFailure(context) ||
+    shouldLatchHermesNotFoundFailure(context)
+  )
 }
 
 /**
@@ -236,7 +300,8 @@ export function isRetryableRemoteBootFailure(context: RemoteBootRetryContext): b
     !context.isReauth &&
     context.isHostKeyChanged !== true &&
     context.isSshAuthFailed !== true &&
-    context.isSshClientFailed !== true
+    context.isSshClientFailed !== true &&
+    context.isHermesNotFound !== true
   )
 }
 

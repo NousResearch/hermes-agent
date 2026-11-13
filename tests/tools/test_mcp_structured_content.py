@@ -406,7 +406,7 @@ class TestContentStructuredArbitration:
         table, out = _call(60_000)
         spilled = trs.maybe_persist_tool_result(out, "mcp_test_server_my_tool", "tc_spill", config=DEFAULT_BUDGET)
         assert trs.PERSISTED_OUTPUT_TAG in spilled
-        assert (trs.get_spillover_dir() / "tc_spill.txt").read_text(encoding="utf-8") == table
+        assert (trs.get_spillover_dir() / "tc_spill.txt").read_text(encoding="utf-8-sig") == table
 
     def test_whitespace_only_content_falls_back(self, _patch_mcp_server):
         """Whitespace-only text is not usable content — fallback fires."""

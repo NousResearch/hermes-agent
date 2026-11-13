@@ -92,6 +92,18 @@ def test_refused_bot_messages_do_not_extend_chain_cooldown(clock, reason, window
     assert guard.chain_admit(CHAT, PEER, text, is_bot=True) == (True, "ok")
 
 
+def test_a_delivered_reply_refreshes_chain_cooldown(clock):
+    """Regression for #154840: a slow reply gets the full default cooldown after delivery."""
+    guard = BotLoopGuard(settings=BotLoopGuardSettings, clock=clock.now)
+    assert guard.chain_admit(CHAT, PEER, "please review", is_bot=True) == (True, "ok")
+    clock.advance(240)  # The agent spent four minutes preparing its delivered answer.
+    guard.note_reply(CHAT, PEER)
+    clock.advance(361)  # Past admission + 600, but only 361 s since delivery.
+    assert guard.chain_admit(CHAT, PEER, "thanks", is_bot=True) == (False, "reply_to_reply")
+    clock.advance(240)  # Past delivery + 600; that refusal must not extend the chain.
+    assert guard.chain_admit(CHAT, PEER, "new PR ready", is_bot=True) == (True, "ok")
+
+
 def test_an_admitted_bot_message_refreshes_chain_cooldown(clock):
     guard = _guard(clock, max_hops=2, bot_replies_expect_reply=True)
     assert guard.chain_admit(CHAT, PEER, "first", is_bot=True) == (True, "ok")

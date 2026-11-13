@@ -244,7 +244,9 @@ def post_callback(url: str, body: bytes, headers: dict, *, localhost_mode: bool,
     Redirects are not followed: the check covered this URL only, and a 302 from a public host
     would otherwise land the request on metadata or an internal service. Non-loopback targets go
     through ``create_ssrf_safe_client``, which re-resolves and validates at connect time and dials
-    the vetted IP, so a name cannot answer public for the check and loopback for the socket."""
+    the vetted IP, so a name cannot answer public for the check and loopback for the socket. With
+    ``HTTP(S)_PROXY`` set, the operator's proxy resolves and dials the target instead, as for the
+    other callers of the shared guard."""
     import httpx
     from tools.url_safety import create_ssrf_safe_client
 

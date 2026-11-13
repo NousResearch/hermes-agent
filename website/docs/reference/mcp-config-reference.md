@@ -111,6 +111,28 @@ mcp_servers:
 
 Any other `${...}` reference falls through to the env-var lookup above.
 
+### Version-agnostic paths: `${latest:<glob>}`
+
+Servers installed from version-keyed directories (Claude Code plugin caches, vendored `node_modules`, toolchains under `~/.local/lib/<pkg>/<version>/`) delete the old version on upgrade, so an entry pinned to an absolute versioned path silently stops spawning. The `${latest:<glob>}` reference resolves to the newest existing path matching the glob:
+
+```yaml
+mcp_servers:
+  claude-mem:
+    command: "/usr/bin/node"
+    args:
+      - "${latest:~/.claude/plugins/cache/thedotmack/claude-mem/*/scripts/mcp-server.cjs}"
+    enabled: true
+```
+
+Semantics:
+
+- **Newest = highest version when the candidates' digit runs differ** (`sort -V` order: `15.13.0 < 15.15.2 < 15.100.0`, `v2 < v10`; mtime only breaks ties within one version). Non-versioned names (`snapshot-a`, `release`) are ordered by newest mtime.
+- **Resolved at render time, re-rendered at every connect** — so each new connection picks up whatever version is currently installed, and a plugin upgrade takes effect on the next connect without a config edit. Env vars inside the pattern are not expanded (write the glob literally or with `~`), and `**` recursive globs are not enabled.
+- **No match keeps the literal placeholder** — the server fails to spawn with the unresolved pattern in the error, and the pattern is logged once (`${latest:...} matched no existing path`) instead of the server silently vanishing from the toolset. A later install recovers on the next connect, no restart needed.
+
+Security note: when a `${latest:...}` pattern matches, it spawns whatever version the plugin/cache ecosystem last installed, **unsigned, with no human decision between release and execution** — the same auto-update-to-newest pattern as a package manager pointing at a moving origin, one hop downstream of the usual `mcp_servers` trust boundary. Only point it at ecosystems you already trust to install code on your machine.
+
+
 ## `tools` policy keys
 
 | Key | Type | Meaning |

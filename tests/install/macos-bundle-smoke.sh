@@ -75,3 +75,5 @@ cmp "$out/artifact-before.sha256" "$out/artifact-after.sha256"
 cd "$work"
 "$node" "$assets/desktop-smoke.ts" --exe "$exe" --root "$root" --origin bundled \
   --home "$work/home" --user-data "$work/user-data" --out "$out" --phase installed --expect-commit "$commit"
+# The chat ran the bundle's own Python: a pyc written into the app breaks its seal, and Gatekeeper holds the next update.
+/usr/bin/codesign --verify --deep --strict --verbose=2 "${apps[0]}" || fail 'The app modified its own signed bundle while it ran'

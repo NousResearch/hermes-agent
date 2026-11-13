@@ -230,6 +230,8 @@ def test_link_shaped_text_inside_a_code_span_stays_verbatim(span):
     "http://h.example/p?t=a*b*c",
     "https://x.example/a~~b~~c",
     "http://h.example/x||y||z",
+    "https://example.com/a*;b*c",
+    "https://example.com/a**,b**c",
 ])
 def test_bare_url_reaches_the_chat_as_literal_text(adapter, url):
     """Every char of a bare URL is escaped, so * ~ || inside it never become italic/strike/spoiler."""

@@ -1,6 +1,6 @@
 name: chereda
 repo: https://github.com/kostyk348/chereda-hermes-plugin
-sha: f4b5b8274cd1eb3229992ec23d397e541063e78c
+sha: d35609db99bf019ac283d77efe729347df021e12
 description: >-
   Череда in the Hermes desktop app — obligation loops instead of status cards. Each
   loop shows whose move it is (customer or performer), the clock and deadline, the
@@ -12,7 +12,11 @@ description: >-
   escalation) stay in one place and cannot drift between CLI and UI. A loop also
   carries a feed for participant reports and notes that do not move the turn, and a
   “write as” switch so the owner speaks as themselves rather than as the bot.
-  Read-only apart from those verbs, loopback only, no self-update. The interface
+  Read-only apart from those verbs, loopback only, no self-update. Model-written
+  evidence is never executed on its own: the bridge runs a proof command only when
+  the owner has approved it in advance (.bridge-allow.txt or --approve); anything
+  else is recorded in the loop feed as “awaiting approval” and the turn stays with
+  the performer. The interface
   ships in English and Russian with a glossary explaining every verb. Requires the
   `череда` binary in PATH (cargo install --path . from github.com/kostyk348/chereda);
   without it the plugin answers 503 with the exact install instruction instead of an
@@ -21,7 +25,7 @@ maintainer: kostyk348
 tier: community
 category: desktop
 docs_url: https://github.com/kostyk348/chereda-hermes-plugin#readme
-version: "0.1.0"
+version: "0.1.1"
 platforms: []
 capabilities:
   provides_tools: []

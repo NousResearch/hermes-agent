@@ -41,11 +41,12 @@ logger = logging.getLogger("gateway.run")
 _TIER_FROM_RUNNER = object()
 
 
-def _resolve_policy_agent_runtime(runner, policy, *, fallback=True) -> tuple[str, dict]:
+def _resolve_policy_agent_runtime(runner, policy, *, fallback=True, record_notice=True) -> tuple[str, dict]:
     """``_resolve_session_agent_runtime`` for a session bound to a launch policy: the route's FROZEN
     config and launch credential, walking its own fallback chain on an AuthError unless
     ``fallback=False`` (a session control asking which route the session itself runs). Module-level
-    so tests that bind the method onto bare namespaces still reach it."""
+    so tests that bind the method onto bare namespaces still reach it. ``record_notice=False``
+    leaves the runner's one-shot fallback notice alone (see ``_resolve_session_agent_runtime``)."""
     from gateway.run import _runtime_agent_kwargs
     from gateway.session_policy import route_launch_key
     from gateway.session_worker_construct import route_runtime
@@ -58,10 +59,12 @@ def _resolve_policy_agent_runtime(runner, policy, *, fallback=True) -> tuple[str
                                             fallback=fallback)
     if fallback_entry is not None:
         from hermes_cli.fallback_config import pre_agent_fallback_notice
-        runner._pre_agent_fallback_notice = pre_agent_fallback_notice(
+        notice = pre_agent_fallback_notice(
             provider or '', model or '',
             runtime.get('provider') or fallback_entry.get('provider') or 'unknown',
             fallback_entry.get('model') or 'default')
+        if record_notice:
+            runner._pre_agent_fallback_notice = notice
         return fallback_entry['model'], _runtime_agent_kwargs(runtime)
     return model, _runtime_agent_kwargs(runtime)
 
@@ -185,23 +188,28 @@ def _resolve_channel_runtime(runner, source, model, runtime_kwargs) -> tuple[str
 class GatewayTurnPrepareMixin:
     def _resolve_session_agent_runtime(
         self, *, source: Optional[SessionSource] = None, session_key: Optional[str] = None,
-        user_config: Optional[dict] = None, fallback: bool = True,
+        user_config: Optional[dict] = None, fallback: bool = True, record_notice: bool = True,
     ) -> tuple[str, dict]:
         """Resolve model/runtime for a session.
 
         Priority (highest first): session ``/model`` → ``channel_overrides`` → global config/env
         (``_resolve_gateway_model(user_config)`` and default provider resolution). ``fallback=False``
-        keeps a launch-policy session on its own route (see ``_resolve_policy_agent_runtime``)."""
+        keeps a launch-policy session on its own route (see ``_resolve_policy_agent_runtime``).
+
+        ``record_notice=False`` is for read-only lookups (``/status``) from any thread: the runner-wide
+        ``_pre_agent_fallback_notice`` is one turn's one-shot slot, so such a lookup must neither clear
+        another chat's pending notice nor leave one of its own for the next turn to consume."""
         from gateway.run import (
             _credential_pool_for_provider, _resolve_gateway_model, _resolve_runtime_agent_kwargs,
         )
         from gateway.session_policy import policy_for_source
         # Every exit path starts clean: a stale notice must never attach to another session's next
         # turn (#74349). Set again below only when THIS resolution fell back.
-        self._pre_agent_fallback_notice = None
+        if record_notice:
+            self._pre_agent_fallback_notice = None
         policy = policy_for_source(self, source) if source is not None else None
         if policy is not None:
-            return _resolve_policy_agent_runtime(self, policy, fallback=fallback)
+            return _resolve_policy_agent_runtime(self, policy, fallback=fallback, record_notice=record_notice)
         skey = self._resolve_session_key_or_none(source, session_key)
         model = _resolve_gateway_model(user_config)
         if skey:
@@ -259,15 +267,17 @@ class GatewayTurnPrepareMixin:
             runtime_kwargs = _resolve_runtime_agent_kwargs()
         # Private notice metadata must never reach an ``AIAgent(**runtime_kwargs)`` spread; the turn
         # runner surfaces it through the agent's one-shot fallback notice (#74349).
-        self._pre_agent_fallback_notice = runtime_kwargs.pop("_fallback_notice", None)
+        notice = runtime_kwargs.pop("_fallback_notice", None)
         runtime_model = runtime_kwargs.pop("model", None)
         if runtime_model:
             logger.info("Runtime provider supplied explicit model override: %s -> %s", model, runtime_model)
             model = runtime_model
-        if unavailable_override and not self._pre_agent_fallback_notice:
+        if unavailable_override and not notice:
             from hermes_cli.fallback_config import pre_agent_fallback_notice
-            self._pre_agent_fallback_notice = pre_agent_fallback_notice(
+            notice = pre_agent_fallback_notice(
                 unavailable_override["provider"], unavailable_override.get("model"), runtime_kwargs.get("provider"), model)
+        if record_notice:
+            self._pre_agent_fallback_notice = notice
 
         model, runtime_kwargs = _resolve_channel_runtime(self, source, model, runtime_kwargs)
 

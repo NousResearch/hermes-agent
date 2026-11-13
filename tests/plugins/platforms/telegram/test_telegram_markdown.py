@@ -238,3 +238,5 @@ def test_bare_url_reaches_the_chat_as_literal_text(adapter, url):
     assert mdv2_error(out) is None
     assert re.sub(r"\\(.)", r"\1", out) == f"Open {url} now"
     assert re.search(r"(?<!\\)[*_~|]", out) is None
+    italic = adapter.format_message(f"*Open {url} now*")
+    assert mdv2_error(italic) is None and url in re.sub(r"\\(.)", r"\1", italic[1:-1])

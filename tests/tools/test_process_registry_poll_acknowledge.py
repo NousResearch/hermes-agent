@@ -3,11 +3,11 @@ handled the result inline, so the gateway watcher must not inject a stale comple
 poll stays read-only, so a status check still gets its autonomous turn (#10156)."""
 import asyncio
 import json
-import time
 
 import pytest
 
 import tools.process_registry as pr_module
+from tests.waiting import wait_until
 from tools.process_registry import ProcessRegistry
 
 
@@ -46,10 +46,8 @@ def _watcher_turns(session_id: str) -> list:
 def _exited_process(registry, tmp_path):
     session = registry.spawn_local("echo DONE", cwd=str(tmp_path), session_key="agent:main:telegram:dm:1")
     session.notify_on_complete = True
-    deadline = time.time() + 10
-    while not (session.exited and not registry._reader_finalizing(session)) and time.time() < deadline:
-        time.sleep(0.02)
-    assert session.exited
+    wait_until(lambda: session.exited and not registry._reader_finalizing(session), timeout=10,
+               what="background process exit and final output drain")
     return session
 
 

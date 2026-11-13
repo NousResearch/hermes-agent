@@ -85,6 +85,9 @@ class TestBuildToolPreview:
         "fill_input('input[type=password]', 'Hunter2Correct!')",
         "js(\"document.querySelector('#pwd').value='Hunter2Correct!'\")",
         "cdp('Input.insertText', text='Hunter2Correct!')",
+        "fill_input('#p', 'abc\\'Hunter2Correct!')",
+        "fill_input('#p', \"\"\"Hunter2Correct!\"\"\")",
+        "fill_input('#p', 'Hunter2Correct!",
     ])
     def test_browser_exec_typed_password_never_reaches_display(self, code):
         """#72298: an ordinary password typed by a browser_exec snippet matches no secret shape,

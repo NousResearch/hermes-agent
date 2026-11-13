@@ -13,6 +13,7 @@ import time
 
 import pytest
 
+from tools import approval
 from tools.approval import detect_dangerous_command, detect_hardline_command
 
 
@@ -243,6 +244,11 @@ class TestDriveLetterRoots:
         "rm -rf 'D:/'",
         "rm -rf C:/ *",
         "sudo rm -rf C:/./",
+        # Backslash root after a separator: only the marked Windows-path variant keeps both the
+        # command start and the root slash.
+        r"echo ready && rm -rf C:\*",
+        r"echo ready; rm -rf C:\ ",
+        r"(rm -rf C:\)",
     ])
     def test_drive_root_wipe_is_hardline(self, cmd):
         assert detect_hardline_command(cmd) == (True, "recursive delete of drive root"), cmd
@@ -254,6 +260,13 @@ class TestDriveLetterRoots:
     ])
     def test_drive_subdirectory_or_prose_is_not_hardline(self, cmd):
         assert detect_hardline_command(cmd) == (False, None), cmd
+
+    def test_pre_drive_letter_root_approval_key_still_matches(self, monkeypatch):
+        """An "always" saved under the old regex-derived key keeps approving `rm /tmp/file`."""
+        monkeypatch.setattr(approval, "_permanent_approved", set())
+        approval.load_permanent({"rm" + r"\s+(-[^\s]*\s+)*/"})
+        _, key, _ = detect_dangerous_command("rm /tmp/file")
+        assert approval.is_approved("drive-root-legacy", key)
 
     @pytest.mark.parametrize("cmd", ["rm build/C:/x", "rm foo:/bar", "rm a:b"])
     def test_relative_paths_with_colons_stay_quiet(self, cmd):

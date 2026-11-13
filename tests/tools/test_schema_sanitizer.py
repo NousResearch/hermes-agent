@@ -576,6 +576,66 @@ def test_normalize_mcp_input_schema_still_repairs_declared_objects():
     assert bare["properties"] == {} and bare["required"] == []
 
 
+def test_normalize_mcp_input_schema_preserves_typed_object_branches():
+    """``oneOf`` branches that say ``"type": "object"`` but declare no ``properties`` are still
+    constraint fragments: the names they require are declared on the parent.
+
+    Regression: 2Do's ``query_tasks`` advertises ``oneOf: [default-scope branch with
+    not/anyOf, {"type": "object", "required": ["list_id"]}, ... {"required": ["focus"]}]``.
+    The typed branches entered the object-repair path, got ``properties: {}`` and lost every
+    ``required`` name, so all four scope branches matched every payload and Hermes rejected
+    each call ("is valid under each of") before 2Do was invoked.
+    """
+    from jsonschema.validators import Draft202012Validator
+    from tools.mcp_tool_schema import _normalize_mcp_input_schema
+
+    scopes = ["list_id", "list_group_id", "smart_list_id", "focus"]
+    out = _normalize_mcp_input_schema({
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "list_id": {"type": "string"}, "list_group_id": {"type": "string"},
+            "smart_list_id": {"type": "string"},
+            "focus": {"type": "string", "enum": ["all", "today", "starred", "scheduled", "done"]},
+            "limit": {"type": "integer", "minimum": 1},
+        },
+        "oneOf": [
+            {"type": "object", "description": "default scope",
+             "not": {"anyOf": [{"required": [s], "type": "object"} for s in scopes]}},
+            *({"type": "object", "required": [s], "description": "explicit scope"} for s in scopes),
+        ],
+    })
+    assert out["oneOf"][1] == {"type": "object", "required": ["list_id"], "description": "explicit scope"}
+    assert out["oneOf"][0]["not"]["anyOf"][3] == {"required": ["focus"], "type": "object"}
+
+    valid = Draft202012Validator(out).is_valid
+    assert valid({"focus": "today", "limit": 3})
+    assert valid({"list_id": "L1"})
+    assert valid({})  # default All focus scope
+    assert not valid({"list_id": "L1", "focus": "today"})  # at most one target
+    assert not valid({"focus": "today", "bogus": 1})  # parent additionalProperties kept
+
+
+def test_normalize_mcp_input_schema_preserves_typed_dependent_schemas():
+    """``dependentSchemas`` entries constrain the SAME instance as their parent, so a typed
+    entry that only requires parent-declared names is a constraint fragment too. A typed
+    child under ``properties`` is a different instance and is still repaired."""
+    from jsonschema.validators import Draft202012Validator
+    from tools.mcp_tool_schema import _normalize_mcp_input_schema
+
+    out = _normalize_mcp_input_schema({
+        "type": "object",
+        "properties": {"scope": {"type": "string"}, "list_id": {"type": "string"},
+                       "child": {"type": "object", "required": ["ghost"]}},
+        "dependentSchemas": {"scope": {"type": "object", "required": ["list_id"]}},
+    })
+    assert out["dependentSchemas"]["scope"] == {"type": "object", "required": ["list_id"]}
+    assert out["properties"]["child"] == {"type": "object", "properties": {}, "required": []}
+
+    valid = Draft202012Validator(out).is_valid
+    assert valid({})
+    assert valid({"scope": "x", "list_id": "L1"})
+    assert not valid({"scope": "x"})  # scope depends on list_id
 
 
 def test_builtin_tool_without_required_gets_empty_required_list():

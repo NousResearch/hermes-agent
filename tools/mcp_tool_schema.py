@@ -70,8 +70,12 @@ def _rewrite_local_refs(node):
 # schema node itself. Repair must recurse into the map's values only (#110530).
 _SCHEMA_MAP_KEYS = ("properties", "patternProperties", "$defs", "definitions", "dependentSchemas")
 
+# Composition keywords whose values are constraint branches applied to the SAME instance as
+# their parent. A branch may require names that only the parent declares in ``properties``.
+_BRANCH_KEYS = ("allOf", "anyOf", "oneOf", "not", "if", "then", "else")
 
-def _repair_object_shape(node, *, _object_root=False):
+
+def _repair_object_shape(node, *, _object_root=False, _branch=False):
     """Recursively fill a missing object ``type``, ensure ``properties`` (so ``required``
     can't dangle) and prune ``required`` to names present in ``properties`` (Gemini 400s
     otherwise).
@@ -85,9 +89,13 @@ def _repair_object_shape(node, *, _object_root=False):
     the server-side tool itself is fine. Only the parameters-schema ROOT still gets the
     dangling-``required`` repair (``_object_root``), because that is the single node handed
     to providers as the function's argument object.
+
+    A composition branch (``_branch``) that repeats ``"type": "object"`` next to its
+    ``required`` is the same fragment: the names it requires are declared on the parent
+    (2Do's ``query_tasks``: ``oneOf: [{"type": "object", "required": ["focus"]}, ...]``).
     """
     if isinstance(node, list):
-        return [_repair_object_shape(item) for item in node]
+        return [_repair_object_shape(item, _branch=_branch) for item in node]
     if not isinstance(node, dict):
         return node
     repaired = {}
@@ -95,12 +103,15 @@ def _repair_object_shape(node, *, _object_root=False):
         if key in _SCHEMA_MAP_KEYS and isinstance(value, dict):
             # A schema map (entry name -> schema), never a schema node itself: recursing over
             # the whole map would inject a bogus ``"type": "object"`` *entry* when one of its
-            # keys is literally named ``properties``/``required`` (#110530).
-            repaired[key] = {name: _repair_object_shape(schema) for name, schema in value.items()}
+            # keys is literally named ``properties``/``required`` (#110530). ``dependentSchemas``
+            # entries constrain the same instance as their parent, so they are branches.
+            repaired[key] = {name: _repair_object_shape(schema, _branch=key == "dependentSchemas")
+                             for name, schema in value.items()}
         else:
-            repaired[key] = _repair_object_shape(value)
+            repaired[key] = _repair_object_shape(value, _branch=key in _BRANCH_KEYS)
     # Constraint fragments are returned untouched: repairing them is what destroys them.
-    if _object_root or "properties" in repaired or "type" in node:
+    fragment = "properties" not in node and ("type" not in node or (_branch and "required" in node))
+    if _object_root or not fragment:
         if not repaired.get("type") and ("properties" in repaired or "required" in repaired):
             repaired["type"] = "object"
         if repaired.get("type") == "object":

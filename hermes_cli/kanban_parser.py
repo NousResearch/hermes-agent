@@ -122,6 +122,12 @@ _BOARD_SPECS = [
         _SLUG,
         _arg("path", nargs="?", help="Absolute path to use as default workdir. Omit to clear."),
     ], help="Set the default workspace path for tasks on a board"),
+    _cmd("set-orchestrator", [
+        _SLUG,
+        _arg("profile", nargs="?",
+             help="Profile that owns decomposed roots on this board. Omit to clear."),
+    ], help="Set this board's orchestrator profile, overriding the global "
+            "kanban.orchestrator_profile"),
     _cmd("export", [
         _arg("slug", nargs="?", help="Board to export (default: the current board)"),
         _arg("-o", "--output", help="Archive path (default: ./<slug>.tar.gz)"),

@@ -132,8 +132,11 @@ _HARDLINE_DRIVE_ROOT = r'[a-z]:/+(?:\*(?:\.\*)?)?'
 _PS_RECURSE_HL = r'-r(?:e(?:c(?:u(?:r(?:s(?:e)?)?)?)?)?)?\b'
 # _CMDPOS, optionally followed by a powershell/pwsh/cmd launcher and its switches (a switch may
 # take one bare value: `-ExecutionPolicy Bypass`) and an opening quote around the script.
+# `-File` is not skipped: its operand is a script path (`pwsh -File Stop-Computer.ps1`), not code.
 _WIN_CMDPOS = (_CMDPOS + r'(?:(?:[^\s;&|"\'`]*[\\/])?(?:powershell|pwsh|cmd)(?:\.exe)?'
-               r'(?:\s+[-/][^\s"\']+(?:\s+\w+(?=\s+[-/"\']))?)*\s+["\']?)?')
+               r'(?:\s+(?:-(?!f(?:i(?:le?)?)?(?:[\s:]|$))|/)[^\s"\']+(?:\s+\w+(?=\s+[-/"\']))?)*\s+["\']?)?')
+# A cmdlet name ends its token: `Stop-Computer.ps1` / `Clear-Disk-Report` name other commands.
+_CMDLET_END = r'(?![\w.\\/-])'
 # Package-manager global options, each optionally taking ONE non-dash operand.
 _PKG_OPTS = r'(?:-[^\s]+(?:\s+[^-\s][^\s]*)?\s+)*'
 
@@ -173,15 +176,16 @@ HARDLINE_PATTERNS = [
     # Windows analogues of the shutdown / mkfs / dd / root-rm rules. Command-position anchored like
     # the POSIX rules (#93392), also behind a powershell/pwsh/cmd launcher because cmdlets are
     # only reachable that way from git-bash, so `git commit -m "never format c:"` stays runnable.
-    (_WIN_CMDPOS + r'(?:restart|stop)-computer\b', "system shutdown/reboot (PowerShell)"),
-    (_WIN_CMDPOS + r'format-volume\b', "format filesystem (Format-Volume)"),
+    (_WIN_CMDPOS + r'(?:restart|stop)-computer' + _CMDLET_END, "system shutdown/reboot (PowerShell)"),
+    (_WIN_CMDPOS + r'format-volume' + _CMDLET_END, "format filesystem (Format-Volume)"),
     (_WIN_CMDPOS + r'format(?:\.com)?\s+[a-z]:', "format drive (format.com)"),
-    (_WIN_CMDPOS + r'clear-disk\b', "wipe disk (Clear-Disk)"),
+    (_WIN_CMDPOS + r'clear-disk' + _CMDLET_END, "wipe disk (Clear-Disk)"),
     # Recursive delete whose target is a drive ROOT (`C:\`, `C:\*`, `C:/*.*`); `C:\build` and
     # `C:` (the drive's current directory) fall through to the DANGEROUS tier.
     (_WIN_CMDPOS + r'(?:remove-item|ri|rm|rd|rmdir|del|erase)\b(?=[^\n;&|]*\s(?:/s\b|' + _PS_RECURSE_HL + r'))'
-     r'[^\n;&|]*\s' + _hardline_rm_path(_HARDLINE_DRIVE_ROOT, r'(?:\s|$|[)`;|&"\'])'), "recursive delete of drive root"),
-    (_RM_FLAG_PREFIX + _hardline_rm_path(_HARDLINE_DRIVE_ROOT), "recursive delete of drive root"),
+     r'[^\n;&|]*\s' + _hardline_rm_path(_HARDLINE_DRIVE_ROOT, r'(?:\s|$|[)`;|&"\'<>])'), "recursive delete of drive root"),
+    # An attached redirect (`C:\>nul`) ends the operand too.
+    (_RM_FLAG_PREFIX + _hardline_rm_path(_HARDLINE_DRIVE_ROOT, r'(?:\s|$|[)`;|&<>])'), "recursive delete of drive root"),
 ]
 
 # Pre-compiled at module load so the hot-path matcher never pays the cold re.compile fan-out
@@ -1258,6 +1262,23 @@ def _read_tool_exec_flag(tool: str, args: list[str]) -> tuple[str, str] | None:
     return None
 
 
+def _powershell_command_payload(args: list[str]) -> str | None:
+    """The script text ``-Command``/``-c`` runs (every remaining argument, joined as PowerShell does),
+    so commands after its first one reach the command-position rules. ``-File`` runs a path."""
+    skip_value = False
+    for index, token in enumerate(args):
+        if skip_value:
+            skip_value = False
+            continue
+        option = token.lower()
+        if option in ("-command", "-c"):
+            return " ".join(args[index + 1:]) or None
+        if option in ("-file", "-f") or not option.startswith("-"):
+            return None
+        skip_value = option in _INTERPRETER_WITH_ARG["powershell"]
+    return None
+
+
 def _execution_flag_findings(command: str):
     """Yield scoped execution mechanisms and any executable payloads."""
     for segment in _iter_top_level_shell_segments(command):
@@ -1274,7 +1295,8 @@ def _execution_flag_findings(command: str):
                 continue
             args = tokens[1:]
             if family and _interpreter_exec_flag(family, args):
-                yield ("script execution via -e/-c flag", None)
+                yield ("script execution via -e/-c flag",
+                       _powershell_command_payload(args) if family == "powershell" else None)
             elif family and any(token.startswith("<<") for token in args):
                 yield ("script execution via heredoc", None)
             else:
@@ -1714,17 +1736,19 @@ def _command_detection_variants(command: str):
     # path, also yield a variant with backslashes flattened to `/` BEFORE normalization. Gated on a real path shape so
     # POSIX escape semantics (`echo a\"b`) are untouched elsewhere.
     # See #69472.
+    pending = [normalized]
     if re.search(r"(?:[A-Za-z]:|\\\\)[\\\\]", command) or re.search(r"[A-Za-z]:\\", command):
         win_variant = _normalize_command_for_detection(_mask_quoted_newlines(command.replace("\\", "/")))
         if fresh(win_variant):
             yield win_variant
+            # Its payloads too: from the normalized text `pwsh -c "ls; ri -r C:\\"` loses the root's slash.
+            pending.append(win_variant)
             # Its command starts too, so `Get-Date; rd /s /q C:\` reaches the _CMDPOS drive-root rules.
             marked_win = _mark_command_starts(win_variant)
             if fresh(marked_win):
                 yield marked_win
     # Program-bearing options are parsed in their owning command's context; surfacing only the payload lets the
     # hardline floor inspect what will actually run without promoting similar flags or quoted prose.
-    pending = [normalized]
     while pending:
         for _, payload in _execution_flag_findings(pending.pop()):
             if fresh(payload):

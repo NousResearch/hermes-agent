@@ -1,0 +1,40 @@
+"""Windows hardline rules inside PowerShell -Command scripts and around attached redirects (#87419)."""
+
+import pytest
+
+from tools.approval import detect_dangerous_command, detect_hardline_command
+
+
+@pytest.mark.parametrize("cmd", [
+    # A later command of an inline -Command / -c script is a command start too.
+    'pwsh -c "Get-Date; Stop-Computer"',
+    'powershell -NoProfile -Command "Get-Date; Format-Volume -DriveLetter D"',
+    "pwsh -c Get-Date; Clear-Disk -Number 0 -RemoveData",
+    'pwsh -ExecutionPolicy Bypass -c "ls; Remove-Item -Recurse C:\\"',
+    # A redirect glued to the drive root still ends the root operand.
+    "rd /s /q C:\\>nul",
+    "rd /s /q C:\\<nul",
+    "rm -rf C:/>/dev/null",
+])
+def test_later_script_commands_and_redirected_roots_are_hardline(cmd):
+    assert detect_hardline_command(cmd)[0], cmd
+
+
+@pytest.mark.parametrize("cmd", [
+    # -File runs a script path; its name is not PowerShell code.
+    "pwsh -File Stop-Computer.ps1",
+    "pwsh -NoProfile -File ./Format-Volume.ps1",
+    "powershell -f Clear-Disk.ps1",
+    "Stop-Computer.ps1",
+    # A cmdlet-looking prefix of a longer name is another command.
+    "Clear-Disk-Report -Path out.txt",
+    # Script text after -Command that only mentions a cmdlet as data.
+    'pwsh -c "Write-Output Stop-Computer"',
+])
+def test_script_paths_and_longer_names_are_not_hardline(cmd):
+    assert not detect_hardline_command(cmd)[0], cmd
+
+
+def test_script_files_still_need_approval():
+    # Not hardline, but running a PowerShell script is still gated as script execution.
+    assert detect_dangerous_command("pwsh -File Stop-Computer.ps1")[0]

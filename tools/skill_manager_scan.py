@@ -25,10 +25,12 @@ def _background_origin() -> bool:
     return _is_background_review() or _replaying_background_write.get()
 
 
-def _finding_keys(skill_dir: Path, findings) -> list[tuple[str, str, str]]:
-    """(file, pattern_id, sha256 of the full source line) per finding. Not the line number (an edit
-    above a finding moves it) and not ``f.match``, which the scanner truncates on long lines, so a
-    kept prefix with a new tail would match. Findings without a source line key on their match."""
+def _finding_keys(skill_dir: Path, findings) -> list[tuple[str, str, str, str]]:
+    """(file, pattern_id, severity, sha256 of the full source line) per finding. Not the line number
+    (an edit above a finding moves it) and not ``f.match``, which the scanner truncates on long lines,
+    so a kept prefix with a new tail would match. Severity is part of the key because the scanner
+    derives it from context (an unchanged line under a renamed denylist owner escalates), so an
+    escalated finding counts as introduced. Findings without a source line key on their match."""
     lines: dict[str, list[bytes]] = {}
     keys = []
     for f in findings:
@@ -39,7 +41,7 @@ def _finding_keys(skill_dir: Path, findings) -> list[tuple[str, str, str]]:
                 lines[f.file] = []
         src = lines.get(f.file, [])
         text = src[f.line - 1].strip() if 0 < f.line <= len(src) else f.match.encode("utf-8", "replace")
-        keys.append((f.file, f.pattern_id, hashlib.sha256(text).hexdigest()))
+        keys.append((f.file, f.pattern_id, f.severity, hashlib.sha256(text).hexdigest()))
     return keys
 
 

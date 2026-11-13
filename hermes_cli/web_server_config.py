@@ -140,6 +140,8 @@ _SCHEMA_OVERRIDES: dict[str, dict[str, Any]] = {
     ),
     "display.resume_display": _select("How resumed sessions display history", "minimal", "full", "off"),
     "display.busy_input_mode": _select("Input behavior while agent is running", "interrupt", "queue", "steer"),
+    "gateway.bot_loop_guard.chain_scope": _select(
+        "Bot exchange scope (traffic budgets and cooldowns always cover the channel)", "channel", "thread"),
     "approvals.mode": _select("Dangerous command approval mode", "manual", "smart", "off"),
     "context.engine": _select("Context management engine", "default", "custom"),
     "human_delay.mode": _select("Simulated typing delay mode", "off", "typing", "fixed"),

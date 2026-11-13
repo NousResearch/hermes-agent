@@ -761,9 +761,12 @@ The same block also ends a bot-to-bot exchange long before that budget. Your mes
 ```yaml
 gateway:
   bot_loop_guard:
+    chain_scope: channel  # thread isolates exchanges per forum topic
     max_hops: 4
     bot_replies_expect_reply: false
 ```
+
+With `chain_scope: thread`, each forum topic has its own hop count, repeated-message detection, delivered-reply tracking, and human-message reset. Messages without a topic share the chat's chain. The default `channel` scope shares all of these across the chat. The traffic budget and cooldown remain chat-wide in both modes; see [bot-to-bot exchanges](./index.md) for live configuration behavior.
 
 Group conversation text and media captions keep every mention when the message names other participants too (`@research_bot , @ops_bot are you both listening?` reaches `research_bot` verbatim); when this bot is the only one addressed, its own handle is still stripped so short answers such as `@hermes_bot 2` keep working. Group turns also carry the bot's own Telegram username in the per-channel context so the model can tell which retained mentions are for it. Slash commands still use the normal command-trigger cleanup.
 

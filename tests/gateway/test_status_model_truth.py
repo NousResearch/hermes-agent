@@ -59,6 +59,7 @@ def _fallback_agent():
     agent.get_rate_limit_state.return_value = None
     agent._credits_state = None
     agent._fallback_activated = True
+    agent._provider_fallback_active = True
     agent._primary_runtime = {"model": "dots-studio/dots-3-note-preview:free", "provider": "openrouter"}
     return agent
 
@@ -80,5 +81,36 @@ async def test_status_and_usage_label_a_fallback_route_with_the_primary(tmp_path
         for out in (status, usage):
             model_line = next(line for line in out.splitlines() if "minimax/minimax-m3:free" in line)
             assert "dots-studio/dots-3-note-preview:free" in model_line
+    finally:
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_status_reports_channel_override_over_stale_usage_route(tmp_path):
+    """A channel_overrides model is the chat default the next turn runs, not the global config model."""
+    from types import SimpleNamespace
+    runner, db = _runner_with_old_usage(tmp_path)
+    runner._channel_override_for = lambda _source: SimpleNamespace(model="channel/model-b", provider="openrouter")
+    try:
+        with patch("gateway.run._load_gateway_config", return_value=_CONFIG):
+            status = await runner._handle_message(_make_event("/status"))
+        assert "**Model:** `channel/model-b` (openrouter)" in status
+    finally:
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_status_does_not_label_a_planned_route_change_as_fallback(tmp_path):
+    """A voice-note turn binds its route with ``_fallback_activated`` but no provider failed."""
+    import threading
+    runner, db = _runner_with_old_usage(tmp_path)
+    runner._agent_cache_lock = threading.Lock()
+    agent = _fallback_agent()
+    agent._provider_fallback_active = False
+    runner._agent_cache[build_session_key(_make_source())] = (agent, "sig")
+    try:
+        with patch("gateway.run._load_gateway_config", return_value=_CONFIG):
+            status = await runner._handle_message(_make_event("/status"))
+        assert "**Model:** `minimax/minimax-m3:free` (openrouter)\n" in status
     finally:
         db.close()

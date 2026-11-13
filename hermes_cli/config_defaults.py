@@ -71,6 +71,10 @@ DEFAULT_CONFIG = {
         # elapsed; implicit provider stale timeouts capped to remaining budget. CLI equivalent:
         # `hermes chat --run-budget N`.
         "run_budget_seconds": None,
+        # Model-name markers (e.g. ["gpt-oss"]) whose chat template takes one tool call per assistant
+        # turn: the request copy splits a parallel batch into one assistant message per call, each with
+        # its result. Empty = unchanged. Stored history is never rewritten.
+        "single_tool_call_models": [],
         # Gateway inactivity timeout (seconds). Only fires when the agent is completely idle — not
         # while calling tools or receiving API responses. 0 = unlimited.
         "gateway_timeout": 1800,

@@ -8,7 +8,7 @@ stay readable. The snippet is parsed as Python, so the typed argument is found b
 keyword or position whatever its spelling (``('pw')``, ``'' 'pw'``, ``text=..., selector=...``,
 f-strings, ``'a' + pw``); a name it uses (``pw = 'x'; fill_input(sel, pw)``) has the literals
 bound to that name masked too. Code that does not parse masks every literal inside each typing
-call (fail closed). Values typed one key at a time (``Input.dispatchKeyEvent`` in a loop) are
+call (fail closed), and a snippet the walk cannot finish has every string literal masked. Values typed one key at a time (``Input.dispatchKeyEvent`` in a loop) are
 not recognised. The tool itself always receives the untouched code.
 """
 import ast
@@ -113,6 +113,7 @@ class _TypedValues(ast.NodeVisitor):
         self.spans, self.bindings = _Spans(code), _name_bindings(tree)
         self.out: list[tuple[int, int, str]] = []
         self._followed: set[str] = set()
+        self._dict_followed: set[str] = set()  # params = {**params} rebinds a name to itself
 
     def _strings(self, expr: ast.AST) -> None:
         """Mask each string constant in *expr* (an f-string whole); a name has its bound values masked."""
@@ -132,7 +133,8 @@ class _TypedValues(ast.NodeVisitor):
                     self._dict_text(value)
                 elif isinstance(key, ast.Constant) and key.value == "text":
                     self._strings(value)
-        elif isinstance(expr, ast.Name):
+        elif isinstance(expr, ast.Name) and expr.id not in self._dict_followed:
+            self._dict_followed.add(expr.id)
             for bound in self.bindings.get(expr.id, ()):
                 self._dict_text(bound)
 
@@ -169,16 +171,27 @@ def _unparsed_masks(code: str) -> list[tuple[int, int, str]]:
     return out
 
 
+def _parsed_masks(tree: ast.AST, code: str) -> list[tuple[int, int, str]]:
+    """The typed values of a parsed snippet; every string literal in it when the walk fails, so a
+    shape the walk mishandles fails closed instead of raising before the browser call dispatches."""
+    try:
+        visitor = _TypedValues(tree, code)
+        visitor.visit(tree)
+        return visitor.out
+    except Exception:  # health: allow BLE001 -- display masking must never block the call; mask everything
+        spans = _Spans(code)
+        return [(*spans.of(n), _MASK) for n in ast.walk(tree)
+                if isinstance(n, ast.JoinedStr) or (isinstance(n, ast.Constant) and isinstance(n.value, str))]
+
+
 def mask_typed_browser_text(code: str) -> str:
     """``code`` with every value it types into a page replaced by ``***``."""
     try:
         tree = ast.parse(code)
-    except (SyntaxError, ValueError):
+    except (SyntaxError, ValueError, RecursionError):
         masks = _unparsed_masks(code)
     else:
-        visitor = _TypedValues(tree, code)
-        visitor.visit(tree)
-        masks = visitor.out
+        masks = _parsed_masks(tree, code)
     masks += [lit for m in _VALUE_ASSIGN.finditer(code) if (lit := _literal_mask(code, m.end()))]
     out, pos = [], 0
     for start, end, replacement in sorted(masks, key=lambda s: (s[0], -s[1])):

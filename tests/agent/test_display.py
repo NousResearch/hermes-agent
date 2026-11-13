@@ -97,6 +97,7 @@ class TestBuildToolPreview:
         "params = {'text': 'Hunter2Correct!'}\ncdp('Input.insertText', **params)",
         "params = {\"text\": \"Hunter2Correct!\"}\ncdp('Input.insertText', params)",
         "params = {'text': 'Hunter2Correct!'}\ncdp('Input.insertText', {**params})",
+        "params = {'text': 'Hunter2Correct!'}\nparams = {**params}\ncdp('Input.insertText', **params)",
         "fill_input('#p', ('Hunter2Correct!'))",
         "fill_input('#p', '' 'Hunter2Correct!')",
         "fill_input(text='Hunter2Correct!', selector='#p')",

@@ -22,7 +22,7 @@ TICKETS_PROTOCOL = 1
 # for ``POST /api/profiles``, ``native-profile-registry`` for ``PATCH``/``DELETE /api/profiles/<name>``
 # (hermes_cli/dashboard_auth/native_http.py decides what each one may do).
 TICKET_PURPOSES = ("native-http", "native-profile-create", "native-profile-registry")
-# Longest request line ``--serve`` reads, newline excluded. A longer one is refused unread.
+# Longest request line ``--serve`` reads, its LF or CRLF excluded. A longer one is refused unread.
 MAX_REQUEST_LINE_BYTES = 64 * 1024
 PROFILE_NOT_SERVED = "profile_not_served"
 
@@ -34,14 +34,13 @@ def _write(out, payload) -> None:
 
 def _request_lines(stream):
     """Each stdin line; None stands for one over the limit, dropped as it is read, never held."""
-    limit = MAX_REQUEST_LINE_BYTES + 1  # room for the newline
+    limit = MAX_REQUEST_LINE_BYTES + 2  # room for CRLF
     while line := stream.readline(limit):
-        if len(line) < limit or line.endswith(b"\n"):
-            yield line
-            continue
-        while (rest := stream.readline(limit)) and not rest.endswith(b"\n"):
-            pass
-        yield None
+        over = False
+        while len(line) == limit and not line.endswith(b"\n"):
+            over, line = True, stream.readline(limit)  # the rest of an over-long line
+        body = line.removesuffix(b"\n").removesuffix(b"\r")
+        yield None if over or len(body) > MAX_REQUEST_LINE_BYTES else body
 
 
 def _profile_home(name: str) -> Path | None:
@@ -53,17 +52,24 @@ def _profile_home(name: str) -> Path | None:
     return profiles.get_profile_dir(name).resolve() if profiles.profile_exists(name) else None
 
 
-def _gateway_lacks(control_home: str, instance_id: str, profile_home: Path) -> bool:
-    """The same gateway instance is still answering and does not list *profile_home* as served.
-    Any doubt is False: the refusal then stays the generic ``ticket_unavailable``."""
+def _gateway_lacks(endpoint, profile_home: Path) -> bool:
+    """The same gateway instance is still answering, ready, with a well-formed served list that has
+    the launch profile and not *profile_home*. Any doubt (another instance, draining, a list that
+    is not one) is False: the refusal then stays the generic ``ticket_unavailable``."""
     from hermes_cli.gateway_runtime_attach import DISCOVER_TIMEOUT
     from hermes_cli.gateway_runtime_discovery import query_identify
     try:
-        payload = query_identify(Path(control_home), timeout=DISCOVER_TIMEOUT)
-        served = {entry["profile_id"] for entry in payload["served_profiles"]}
-    except (OSError, ValueError, TypeError, KeyError):
+        payload = query_identify(Path(endpoint.control_home), timeout=DISCOVER_TIMEOUT)
+    except (OSError, ValueError):
         return False
-    return payload.get("instance_id") == instance_id and str(profile_home) not in served
+    entries = payload.get("served_profiles")
+    if payload.get("instance_id") != endpoint.instance_id or payload.get("state") != "ready" \
+            or not isinstance(entries, list):
+        return False
+    served = [entry.get("profile_id") if isinstance(entry, dict) else None for entry in entries]
+    if not all(isinstance(profile_id, str) and profile_id for profile_id in served):
+        return False
+    return endpoint.profile_id in served and str(profile_home) not in served
 
 
 def _reply(line: bytes | None, mint) -> dict:
@@ -89,12 +95,12 @@ def _reply(line: bytes | None, mint) -> dict:
     purpose = request.get("purpose")
     if not isinstance(purpose, str) or purpose not in TICKET_PURPOSES:
         return refuse(request_id, "unsupported_purpose", "purpose must be one of: " + ", ".join(TICKET_PURPOSES))
-    profile, profile_home = request.get("profile"), None
-    if profile is not None:
+    profile_home = None
+    if "profile" in request:  # present, even as null, is a request for that profile
         try:
-            if not isinstance(profile, str):
+            if not isinstance(request["profile"], str):
                 raise ValueError
-            profile_home = _profile_home(profile)
+            profile_home = _profile_home(request["profile"])
         except ValueError:
             return refuse(request_id, "invalid_request", "profile must be a profile name")
         if profile_home is None:
@@ -140,7 +146,7 @@ def cmd_gateway_tickets(args) -> None:
             try:
                 return mint_ticket(home, routed, purpose=purpose)
             except TicketUnavailable as exc:
-                if _gateway_lacks(routed.control_home, endpoint.instance_id, profile_home):
+                if _gateway_lacks(replace(endpoint, control_home=routed.control_home), profile_home):
                     raise TicketUnavailable(PROFILE_NOT_SERVED) from exc
                 raise
 

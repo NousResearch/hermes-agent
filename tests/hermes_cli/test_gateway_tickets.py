@@ -180,7 +180,9 @@ def test_a_deeply_nested_or_oversized_line_gets_one_error_reply_and_the_channel_
 
 
 @pytest.mark.platforms("linux", "macos")
-def test_a_request_line_of_exactly_the_length_limit_is_still_answered(home):
+@pytest.mark.parametrize("carriage_return", ["", "\r"], ids=["lf", "crlf"])
+def test_a_request_line_of_exactly_the_length_limit_is_still_answered(home, carriage_return):
+    """The limit counts the line, not its terminator: LF and CRLF lines have the same boundary."""
     tickets = TicketStore("owner", frozenset({str(home)}))
     stop = _serve(home, tickets)
     try:
@@ -188,9 +190,12 @@ def test_a_request_line_of_exactly_the_length_limit_is_still_answered(home):
             request = '{"id":1,"purpose":"native-http","pad":""}'
             line = request.replace('""', json.dumps("x" * (64 * 1024 - len(request))))
             assert len(line) == 64 * 1024
-            assert ask(line)["ok"] is True
-            assert ask(line + " ")["error"]["code"] == "invalid_request"
-            assert ask('{"id":7,"purpose":"native-http"}')["id"] == 7
+            assert ask(line + carriage_return)["ok"] is True
+            over = ask(line + " " + carriage_return)
+            assert (over["id"], over["error"]["code"]) == (None, "invalid_request") and "ticket" not in over
+            # One reply each: the next line read back is the next request's own.
+            following = ask('{"id":7,"purpose":"native-http"}' + carriage_return)
+            assert (following["id"], following["ok"]) == (7, True)
     finally:
         stop()
 
@@ -278,6 +283,7 @@ def test_serve_mints_the_profile_management_purposes_for_the_named_profile(home,
     ("unserved", "profile_not_served"),    # exists on disk; this gateway does not serve it
     ("../beta", "invalid_request"), ("", "invalid_request"), ("Beta", "invalid_request"),
     (7, "invalid_request"), (["beta"], "invalid_request"), (True, "invalid_request"),
+    (None, "invalid_request"),             # `"profile": null` is a present profile, not an absent one
 ])
 def test_a_profile_the_gateway_cannot_ticket_is_an_error_reply_and_the_channel_stays_open(home, profile, code):
     beta = _named(home, "beta")
@@ -298,29 +304,71 @@ def test_a_profile_the_gateway_cannot_ticket_is_an_error_reply_and_the_channel_s
     assert "Traceback" not in done["stderr"]
 
 
-@pytest.mark.platforms("linux", "macos")
-def test_a_served_profiles_refused_ticket_is_not_reported_as_an_unserved_profile(home):
-    """The owner lists beta as served but mints nothing (no ticket store)."""
+@contextmanager
+def _owner(home, served, tickets=None):
+    """A ready owner whose identify answer the test can change; yields that answer (a dict)."""
     import asyncio
     import threading
     from gateway.control_socket import GatewayControlServer
 
-    beta = _named(home, "beta")
     identify = {"runtime_protocol": 1, "state": "ready", "capabilities": ["session-authority-v1"],
-                "served_profiles": [{"home": str(h), "profile_id": str(h)} for h in (home, beta)],
+                "served_profiles": [{"home": str(h), "profile_id": str(h)} for h in served],
                 "authority_epoch": 1, "instance_id": "owner", "api_origin": "http://127.0.0.1:8765",
                 "supervisor": "none"}
     server = GatewayControlServer(home, verb_handlers={"identify": lambda: identify})
+    server.ticket_store = tickets
     loop = asyncio.new_event_loop()
     threading.Thread(target=loop.run_forever, daemon=True).start()
     assert asyncio.run_coroutine_threadsafe(server.start(), loop).result(10)
     try:
-        with _channel(home) as (_hello, ask, done):
-            reply = ask('{"id":1,"purpose":"native-http","profile":"beta"}')
-            assert (reply["id"], reply["ok"], reply["error"]["code"]) == (1, False, "ticket_unavailable")
+        yield identify
     finally:
         asyncio.run_coroutine_threadsafe(server.stop(), loop).result(10)
         loop.call_soon_threadsafe(loop.stop)
+
+
+@pytest.mark.platforms("linux", "macos")
+def test_a_served_profiles_refused_ticket_is_not_reported_as_an_unserved_profile(home):
+    """The owner lists beta as served but mints nothing (no ticket store)."""
+    beta = _named(home, "beta")
+    with _owner(home, (home, beta)), _channel(home) as (_hello, ask, done):
+        reply = ask('{"id":1,"purpose":"native-http","profile":"beta"}')
+        assert (reply["id"], reply["ok"], reply["error"]["code"]) == (1, False, "ticket_unavailable")
+    assert "Traceback" not in done["stderr"]
+
+
+def _entry(home):
+    return {"home": str(home), "profile_id": str(home)}
+
+
+@pytest.mark.platforms("linux", "macos")
+@pytest.mark.parametrize("change", [
+    lambda home: {"served_profiles": {}},
+    lambda home: {"served_profiles": None},
+    lambda home: {"served_profiles": []},                      # not even the launch profile
+    lambda home: {"served_profiles": [], "state": "draining"},
+    lambda home: {"state": "draining"},
+    lambda home: {"state": "starting"},
+    lambda home: {"state": None},
+    lambda home: {"served_profiles": [_entry(home), {"home": "x", "profile_id": 7}]},
+    lambda home: {"served_profiles": [_entry(home), {"home": "x"}]},
+    lambda home: {"served_profiles": [_entry(home), "beta"]},
+    lambda home: {"served_profiles": [str(home)]},
+    lambda home: {"instance_id": "replacement"},
+], ids=["served-object", "served-null", "served-empty", "served-empty-draining", "draining", "starting",
+        "no-state", "profile-id-not-a-string", "entry-without-profile-id", "entry-not-an-object",
+        "bare-names", "replaced-instance"])
+def test_an_identify_answer_that_does_not_prove_absence_stays_ticket_unavailable(home, change):
+    """`profile_not_served` needs the same ready gateway to list its profiles properly without this one."""
+    _named(home, "unserved")
+    tickets = TicketStore("owner", frozenset({str(home)}))
+    with _owner(home, (home,), tickets) as identify, _channel(home) as (_hello, ask, done):
+        request = '{"id":1,"purpose":"native-http","profile":"unserved"}'
+        assert ask(request)["error"]["code"] == "profile_not_served"
+        identify.update(change(home))
+        reply = ask(request)
+        assert (reply["id"], reply["ok"], reply["error"]["code"]) == (1, False, "ticket_unavailable")
+        assert not tickets.outstanding()
     assert "Traceback" not in done["stderr"]
 
 

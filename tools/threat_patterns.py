@@ -27,8 +27,11 @@ _CHUNK_OVERLAP = 4096
 _FILLER = r"(?:\w{1,64}\s{1,64}){0,8}"
 # Env var reference ending in a secret-ish suffix (see exfil comment below).
 _SECRET_VAR = r"\$\{?\w{0,256}(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)S?\b"
-# "forget your original instructions" (#26977); shared with tools/skills_guard.py.
-FORGET_RULES_RE = (r"(?<!n[’']t\s)(?<!nt\s)(?<!not\s)(?<!never\s)\bforget\s{1,64}(?:about\s{1,64})?(your|all|any|previous|prior|above|earlier)"
+# "forget your original instructions" (#26977); shared with tools/skills_guard.py. The word before `forget` is
+# consumed rather than looked behind so the "don't / never / do not forget" exclusion holds across any run of
+# whitespace (fixed-width lookbehinds missed `Never  forget` and a line break).
+FORGET_RULES_RE = (r"(?:(?<![\w’'])(?!(?:\w*(?:n[’']?t|not)|never)\s)[\w’']{1,64}\s{1,64}|(?:^|[^\w\s’']|(?<!\w)[’'])\s{0,64})"
+                   r"forget\s{1,64}(?:about\s{1,64})?(your|all|any|previous|prior|above|earlier)"
                    r"\s{1,64}(?:\w{1,64}\s{1,64}){0,3}(instructions|rules|guidelines)\b")
 # Verb prefix for "modify agent config" patterns.
 _MODIFY = r"(update|modify|edit|write|change|append|add\s{1,64}to)\s{1,64}[^\n]{0,2048}"

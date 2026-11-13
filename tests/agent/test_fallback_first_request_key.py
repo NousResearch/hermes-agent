@@ -94,3 +94,19 @@ def test_a_pick_that_is_not_sent_leaves_the_pool_unchanged(monkeypatch):
     voice.begin_voice_turn_route(agent, [{"role": "user", "content": "hi"}], "system")
 
     assert auth.read_bytes() == before
+
+
+def test_a_provider_whose_endpoint_follows_from_the_key_keeps_its_env_key():
+    """kimi-coding picks its endpoint from the ``.env`` key (Moonshot for a legacy key); a Kimi Code key from
+    the pool only works on its own endpoint, so even with the ``.env`` key benched the fallback keeps the
+    key the endpoint was derived from, as on main."""
+    from agent.route_binding import resolve_route_entry_client
+
+    Path(os.environ["HERMES_HOME"], ".env").write_text(f"KIMI_API_KEY={_ENV_KEY}\n")
+    _add_pool_key("kimi-coding", "kimi-code", "sk-kimi-pooled-key", "https://api.moonshot.ai/v1", priority=0)
+    load_pool("kimi-coding").mark_exhausted_and_rotate(
+        status_code=429, api_key_hint=_ENV_KEY, failure_reason="insufficient_quota")
+
+    route = resolve_route_entry_client({"provider": "kimi-coding", "model": "kimi-k2"}, "kimi-coding", "kimi-k2")
+
+    assert route.client.api_key == _ENV_KEY

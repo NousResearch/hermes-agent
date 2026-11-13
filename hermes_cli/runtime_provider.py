@@ -747,8 +747,15 @@ class PoolChoice:
 
     def choose(self, pool_name: str, provider: str, model: Optional[str], endpoint_url: str) -> Optional[PoolKey]:
         """The pool entry for ``endpoint_url`` a direct pick would send. ``pool_name`` is the provider as
-        the caller named it (an alias keeps its own pool, which recovery after a 429 matches against)."""
+        the caller named it (an alias keeps its own pool, which recovery after a 429 matches against).
+        Providers whose endpoint follows from the key, or whose profile resolves its own secret, keep
+        the resolver's key: a pool row's key would go to the endpoint derived from another key."""
         from agent.auxiliary_client import _to_openai_base_url
+        from hermes_cli.auth import _API_KEY_BASE_URL_RESOLVERS
+        from providers import get_provider_profile
+        profile = get_provider_profile(provider)
+        if provider in _API_KEY_BASE_URL_RESOLVERS or (profile is not None and profile.resolve_api_key_secret() is not None):
+            return None
         try:
             pool = load_pool(pool_name)
         except Exception as exc:  # health: allow BLE001 -- an unreadable pool leaves the resolver's own key

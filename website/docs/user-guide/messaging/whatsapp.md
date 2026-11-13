@@ -401,8 +401,9 @@ platforms:
 
 - **`tool_progress`** defaults to `new` on WhatsApp, so customers see each tool the agent runs.
 - **`interim_assistant_messages`** defaults to `true`, so customers see the agent's mid-turn commentary.
-- **Home channel:** without one, the first sender gets a one-time "type /sethome" prompt, and
-  any sender who runs `/sethome` takes over cron and notification delivery. Set it to your own chat.
+- **Home channel:** without one, every sender's first message in a new session (a new customer, or
+  anyone after `/new`) gets a "type /sethome" prompt, and any sender who runs `/sethome` takes over
+  cron and notification delivery. Set it to your own chat.
 - **`allow_admin_from`** (DMs) and **`group_allow_admin_from`** (groups) turn on [slash-command access control](../../reference/slash-commands.md#permissions-and-adminuser-split):
   customers keep only `/help` and `/whoami` (plus anything in `user_allowed_commands`), can't run
   `/sethome`, and never get the `/sethome` prompt. Send `/whoami` from your own phone to get the

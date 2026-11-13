@@ -227,8 +227,8 @@ platforms:
 
 - **`tool_progress`** 在 WhatsApp 上默认为 `new`，客户会看到 Agent 运行的每个工具。
 - **`interim_assistant_messages`** 默认为 `true`，客户会看到 Agent 轮次中的中间评论。
-- **主频道：** 未设置时，第一个发送者会收到一次性的"输入 /sethome"提示，任何运行 `/sethome`
-  的发送者都会接管定时任务和通知的投递。请将其设为你自己的聊天。
+- **主频道：** 未设置时，每个发送者在新会话中的第一条消息（新客户，或任何人执行 `/new` 之后）都会收到"输入 /sethome"提示，
+  任何运行 `/sethome` 的发送者都会接管定时任务和通知的投递。请将其设为你自己的聊天。
 - **`allow_admin_from`**（私聊）和 **`group_allow_admin_from`**（群聊）会启用[斜杠命令访问控制](../../reference/slash-commands.md#权限与管理员用户分级)：
   客户只保留 `/help` 和 `/whoami`（以及 `user_allowed_commands` 中列出的命令），无法运行 `/sethome`，
   也不会收到 `/sethome` 提示。用你自己的手机发送 `/whoami` 获取要填写的准确 ID。

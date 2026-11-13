@@ -16,7 +16,7 @@ from hermes_cli.web_server_config import (
     _AUX_TASK_SLOTS, _UNSET, _apply_model_assignment_sync, _dashboard_code_skew_guard,
     _plugin_aux_tasks, _prepare_main_assignment,
 )
-from agent.model_metadata import is_local_endpoint
+from agent.model_metadata import is_local_endpoint, resolve_route_provider
 from starlette.concurrency import run_in_threadpool
 from hermes_cli.web_models import ModelAssignment, MoaConfigPayload, MoaModelSlot
 from hermes_cli.config_backend import CONFIG_MUTATION_LOCK
@@ -51,6 +51,24 @@ def _main_model_fields(model_cfg) -> tuple[str, str]:
 def _load_config_scoped(profile: Optional[str]) -> dict:
     with _profile_scope(profile):
         return load_config()
+
+
+def _named_entry_base_url(config: dict, provider: str) -> str:
+    """The endpoint a ``custom:<name>`` route owns when the ``model`` section omits its URL.
+
+    That picker id names a ``providers.<name>`` row (or a legacy ``custom_providers`` entry),
+    which the runtime resolves before every turn; the dashboard's metadata lookups must read the
+    same endpoint. Without it they probe nothing, so an endpoint whose own catalog publishes the
+    model's window still reported the hardcoded family default and no capabilities. Credential
+    reads are skipped — only the URL is needed here.
+    """
+    label = str(provider or "").strip()
+    if not label.lower().startswith("custom:"):
+        return ""
+    from hermes_cli.runtime_provider_custom import _get_named_custom_provider
+
+    entry = _get_named_custom_provider(label, config=config, resolve_credentials=False)
+    return str((entry or {}).get("base_url") or "").strip()
 
 
 # Blocking budget for /api/model/info's context-length resolution. The resolver
@@ -94,9 +112,12 @@ def get_model_info(profile: Optional[str] = None):
     context length (so the UI can show "Auto-detected: 200K" beside the
     override) plus models.dev capabilities when available."""
     try:
-        model_cfg = _load_config_scoped(profile).get("model", "")
+        config = _load_config_scoped(profile)
+        model_cfg = config.get("model", "")
         model_name, provider = _main_model_fields(model_cfg)
         base_url = model_cfg.get("base_url", "") if isinstance(model_cfg, dict) else ""
+        # A ``custom:<name>`` route may carry its endpoint only in the providers entry it names.
+        base_url = base_url or _named_entry_base_url(config, provider)
         config_ctx = model_cfg.get("context_length") if isinstance(model_cfg, dict) else None
 
         if not model_name:
@@ -115,7 +136,9 @@ def get_model_info(profile: Optional[str] = None):
         caps = {}
         try:
             from agent.models_dev import get_model_capabilities
-            mc = get_model_capabilities(provider=provider, model=model_name)
+            # Same route normalization as the resolver: a ``custom:<name>`` picker id is
+            # config, so the endpoint's host decides which catalog owns the model.
+            mc = get_model_capabilities(provider=resolve_route_provider(provider, base_url), model=model_name)
             if mc is not None:
                 caps = {name: getattr(mc, name) for name in _CAPABILITY_FIELDS}
         except Exception:

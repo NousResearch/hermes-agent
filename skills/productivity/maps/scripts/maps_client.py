@@ -16,8 +16,10 @@ Commands:
 """
 
 import argparse
+import hashlib
 import json
 import math
+import os
 import sys
 import time
 import urllib.error
@@ -33,14 +35,26 @@ DATA_SOURCE = "OpenStreetMap/Nominatim"
 
 NOMINATIM_SEARCH  = "https://nominatim.openstreetmap.org/search"
 NOMINATIM_REVERSE = "https://nominatim.openstreetmap.org/reverse"
-# Public Overpass endpoints. We try them in order so a single server
-# outage doesn't break the skill — kumi.systems is a well-known mirror.
-OVERPASS_URLS = [
+# Public Overpass endpoints, tried in order with one attempt each.
+# MAPS_OVERPASS_URLS (comma-separated) replaces the list, e.g. with a mirror
+# closer to the user.
+DEFAULT_OVERPASS_URLS = [
     "https://overpass-api.de/api/interpreter",
     "https://overpass.kumi.systems/api/interpreter",
 ]
+OVERPASS_URLS = [u.strip() for u in os.environ.get("MAPS_OVERPASS_URLS", "").split(",")
+                 if u.strip()] or DEFAULT_OVERPASS_URLS
 # Backward-compat alias for any caller that imports OVERPASS_API directly.
 OVERPASS_API      = OVERPASS_URLS[0]
+# A busy mirror needs 20-40 s for a small query; the old 30 s socket timeout
+# cut answers that the 25 s [timeout:] inside the query would have allowed.
+OVERPASS_SOCKET_TIMEOUT = 60
+OVERPASS_QUERY_TIMEOUT  = 50
+OVERPASS_CACHE_TTL      = 24 * 3600
+CACHE_DIR = os.path.join(
+    os.environ.get("XDG_CACHE_HOME") or os.path.join(os.path.expanduser("~"), ".cache"),
+    "maps_client",
+)
 OSRM_BASE         = "https://router.project-osrm.org/route/v1"
 TIMEAPI_BASE      = "https://timeapi.io/api/timezone/coordinate"
 
@@ -232,65 +246,115 @@ def http_get_text(url, params=None, retries=MAX_RETRIES, silent=False):
     error_exit(msg)
 
 
-def http_post(url, data_str, retries=MAX_RETRIES):
-    """
-    Perform an HTTP POST with a plain-text body (for Overpass QL).
-    Returns parsed JSON.
-    """
-    encoded = data_str.encode("utf-8")
-    req = urllib.request.Request(
-        url,
-        data=encoded,
-        headers={
-            "User-Agent": USER_AGENT,
-            "Content-Type": "application/x-www-form-urlencoded",
-        },
-    )
+# ---------------------------------------------------------------------------
+# Overpass: one attempt per mirror, no retries, 24 h cache
+# ---------------------------------------------------------------------------
 
-    last_error = None
-    for attempt in range(1, retries + 1):
-        try:
-            with urllib.request.urlopen(req, timeout=30) as resp:
-                raw = resp.read().decode("utf-8")
-                return json.loads(raw)
-        except urllib.error.HTTPError as exc:
-            last_error = f"HTTP {exc.code}: {exc.reason}"
-            if exc.code in {429, 503, 502, 504}:
-                time.sleep(RETRY_DELAY * attempt)
-            else:
-                error_exit(last_error)
-        except urllib.error.URLError as exc:
-            last_error = f"URL error: {exc.reason}"
-            time.sleep(RETRY_DELAY * attempt)
-        except json.JSONDecodeError as exc:
-            last_error = f"JSON parse error: {exc}"
-            time.sleep(RETRY_DELAY * attempt)
+class OverpassError(Exception):
+    """Every mirror failed. ``tried`` lists {url, result} per attempt."""
 
-    error_exit(f"POST failed after {retries} attempts. Last error: {last_error}")
+    def __init__(self, tried):
+        super().__init__("overpass unavailable")
+        self.tried = tried
+
+
+# Mirrors that answered 406/429 in this run: the Overpass usage policy says
+# back off, so they are not asked again until the process exits.
+_OVERPASS_BLOCKED = {}
+
+
+def _overpass_cache_path(query):
+    key = hashlib.sha256(query.encode("utf-8")).hexdigest()
+    return os.path.join(CACHE_DIR, "overpass", key + ".json")
+
+
+def _overpass_cache_get(query):
+    path = _overpass_cache_path(query)
+    try:
+        if time.time() - os.path.getmtime(path) > OVERPASS_CACHE_TTL:
+            return None
+        with open(path, encoding="utf-8") as fh:
+            return json.load(fh)
+    except (OSError, ValueError):
+        return None
+
+
+def _overpass_cache_put(query, data):
+    path = _overpass_cache_path(query)
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = f"{path}.{os.getpid()}.tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(data, fh, ensure_ascii=False)
+        os.replace(tmp, path)
+    except OSError:
+        pass  # read-only or missing home: work without cache, silently
+
+
+def _overpass_try(url, query):
+    """One POST to one mirror. Returns (data, None) or (None, result_text)."""
+    body = urllib.parse.urlencode({"data": query}).encode("utf-8")
+    req = urllib.request.Request(url, data=body, headers={
+        "User-Agent": USER_AGENT,
+        "Content-Type": "application/x-www-form-urlencoded",
+        "Accept": "application/json",
+    })
+    start = time.monotonic()
+
+    def took():
+        return f"{time.monotonic() - start:.1f}s"
+
+    try:
+        with urllib.request.urlopen(req, timeout=OVERPASS_SOCKET_TIMEOUT) as resp:
+            raw = resp.read().decode("utf-8", errors="replace")
+    except urllib.error.HTTPError as exc:
+        if exc.code in (406, 429):
+            _OVERPASS_BLOCKED[url] = exc.code
+        return None, f"{exc.code} after {took()}"
+    except urllib.error.URLError as exc:
+        reason = exc.reason
+        if isinstance(reason, TimeoutError):
+            return None, f"timeout after {took()}"
+        return None, f"{reason} after {took()}"
+    except TimeoutError:
+        return None, f"timeout after {took()}"
+    except OSError as exc:
+        return None, f"{exc} after {took()}"
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        return None, f"non-JSON answer after {took()}"
+    remark = str(data.get("remark") or "")
+    if "runtime error" in remark.lower() or "timed out" in remark.lower():
+        return None, f"server remark '{remark[:120]}' after {took()}"
+    return data, None
 
 
 def overpass_query(query):
-    """POST an Overpass QL query, trying each URL in OVERPASS_URLS in turn.
+    """Run an Overpass QL query: cache first, then each mirror once, in order.
 
-    A single public Overpass mirror can be rate-limited or down; trying the
-    next mirror before giving up turns a flaky outage into a retry. Returns
-    parsed JSON. Falls through to error_exit if every mirror fails.
+    Raises OverpassError with the list of attempts when every mirror fails.
     """
-    post_data = "data=" + urllib.parse.quote(query)
-    last_error = None
+    cached = _overpass_cache_get(query)
+    if cached is not None:
+        return cached
+    tried = []
     for url in OVERPASS_URLS:
-        try:
-            return http_post(url, post_data, retries=1)
-        except SystemExit:
-            # error_exit inside http_post — keep trying the next mirror.
-            last_error = f"mirror {url} exhausted retries"
+        if url in _OVERPASS_BLOCKED:
+            tried.append({"url": url,
+                          "result": f"skipped: answered {_OVERPASS_BLOCKED[url]} earlier in this run"})
             continue
-        except Exception as exc:
-            last_error = f"{url}: {exc}"
-            continue
-    error_exit(
-        f"All Overpass mirrors failed. Last error: {last_error or 'unknown'}"
-    )
+        data, result = _overpass_try(url, query)
+        if data is not None:
+            _overpass_cache_put(query, data)
+            return data
+        tried.append({"url": url, "result": result})
+    raise OverpassError(tried)
+
+
+def overpass_error_exit(exc):
+    print_json({"status": "error", "error": "overpass unavailable", "tried": exc.tried})
+    sys.exit(1)
 
 
 # ---------------------------------------------------------------------------
@@ -378,7 +442,7 @@ def build_overpass_nearby(tag_key, tag_val, lat, lon, radius, limit,
         )
     body = "\n".join(body_lines)
     return (
-        f'[out:json][timeout:25];\n'
+        f'[out:json][timeout:{OVERPASS_QUERY_TIMEOUT}];\n'
         f'(\n'
         f'{body}\n'
         f');\n'
@@ -408,7 +472,7 @@ def build_overpass_bbox(tag_key, tag_val, south, west, north, east, limit,
         )
     body = "\n".join(body_lines)
     return (
-        f'[out:json][timeout:25];\n'
+        f'[out:json][timeout:{OVERPASS_QUERY_TIMEOUT}];\n'
         f'(\n'
         f'{body}\n'
         f');\n'
@@ -647,12 +711,18 @@ def cmd_nearby(args):
     # dedupe by OSM identity so POIs tagged under multiple categories don't
     # appear twice.
     merged = {}
+    failed = []
     for category in categories:
         tag_pairs = _tags_for(category)
         religion = RELIGION_FILTER.get(category)
         query = build_overpass_nearby(None, None, lat, lon, radius, limit,
                                       religion=religion, tag_pairs=tag_pairs)
-        raw = overpass_query(query)
+        try:
+            raw = overpass_query(query)
+        except OverpassError as exc:
+            # One failed category must not wipe out the others.
+            failed.append({"category": category, "tried": exc.tried})
+            continue
         elements = raw.get("elements", [])
         for place in parse_overpass_elements(elements, ref_lat=lat, ref_lon=lon):
             place["category"] = category
@@ -668,7 +738,13 @@ def cmd_nearby(args):
         key=lambda p: p.get("distance_m", float("inf")),
     )[:limit]
 
-    print_json({
+    if failed and len(failed) == len(categories):
+        print_json({"status": "error", "error": "overpass unavailable",
+                    "tried": [t for f in failed for t in f["tried"]]})
+        sys.exit(1)
+
+    out = {
+        "status":      "partial" if failed else "ok",
         "center_lat":  lat,
         "center_lon":  lon,
         "categories":  categories,
@@ -676,7 +752,10 @@ def cmd_nearby(args):
         "count":       len(places),
         "results":     places,
         "data_source": DATA_SOURCE,
-    })
+    }
+    if failed:
+        out["failed_categories"] = failed
+    print_json(out)
 
 
 # ---------------------------------------------------------------------------
@@ -998,7 +1077,10 @@ def cmd_bbox(args):
     query = build_overpass_bbox(None, None, south, west, north, east,
                                 limit, religion=religion, tag_pairs=tag_pairs)
 
-    raw = overpass_query(query)
+    try:
+        raw = overpass_query(query)
+    except OverpassError as exc:
+        overpass_error_exit(exc)
 
     elements = raw.get("elements", [])
 

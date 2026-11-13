@@ -326,13 +326,15 @@ def replace_bridged_env(name: str, value: str) -> None:
 _LIVE_GATE_LOCK = threading.RLock()
 
 
-def gate_config_version() -> tuple:
-    """Change signature of the active home's config.yaml plus the managed overlay's."""
+def gate_config_version(home: Any = None) -> tuple:
+    """Change signature of *home*'s config.yaml (default: the active home) plus the managed overlay's."""
+    from pathlib import Path
+
     from hermes_cli.config_backend import config_cache_version_or_none, config_version_or_none, get_config_backend
     from hermes_cli.managed_scope import get_managed_dir
     from hermes_constants import get_hermes_home
 
-    home = get_hermes_home()
+    home = get_hermes_home() if home is None else Path(home)
     managed = get_managed_dir()
     managed_sig = None
     if managed is not None and get_config_backend().honors_managed_config():
@@ -342,46 +344,75 @@ def gate_config_version() -> tuple:
 
 def mark_live_gate_baseline(adapter: Any) -> None:
     """Record, on the adapter's first connect, which config the connect-time gate copy came from.
-    A reconnect keeps the first baseline so an edit made before it is still picked up."""
+    A reconnect keeps the first baseline so an edit made before it is still picked up. The
+    baseline's home is the adapter's OWNING profile: every later refresh reads that home."""
     if getattr(adapter, "_live_gate_version", None) is None:
         loaded = getattr(getattr(adapter, "config", None), "loaded_version", None)
         adapter._live_gate_version = loaded if loaded is not None else gate_config_version()
 
 
-def refresh_live_gate_extra(adapter: Any, keys: Iterable[str]) -> bool:
-    """Bring ``adapter.config.extra[keys]`` up to date with the profile's config.yaml when it changed.
+@contextlib.contextmanager
+def _owner_scope(home: str):
+    """Bind the owning profile's scope when the ambient one is another home's: a routed command
+    (``/voice join`` served by another profile's runtime) starts adapter tasks in that runtime's
+    scope, and its home's lists and .env must never become this adapter's gate."""
+    from hermes_constants import get_hermes_home
 
-    Must run in the owning profile's scope (adapter event tasks inherit it), so a multiplexed profile
-    reads its own file and never another profile's process env. Returns True when the config was
-    reloaded; the adapter then re-derives its gate sets. An adapter that never connected keeps its
-    state. A config that fails to parse keeps the last good lists rather than dropping them.
+    if str(get_hermes_home()) == home:
+        yield
+        return
+    from pathlib import Path
+
+    from gateway.run import _profile_runtime_scope
+    with _profile_runtime_scope(Path(home)):
+        yield
+
+
+def refresh_live_gate_extra(adapter: Any, keys: Iterable[str], on_reload: Optional[Callable[[], None]] = None) -> bool:
+    """Bring ``adapter.config.extra[keys]`` up to date with the OWNING profile's config.yaml when it changed.
+
+    The owner is the home the connect-time baseline was read from, never the ambient scope: a task
+    started under another profile's scope still reads (and re-derives from) the owner's file and
+    .env, bound for the reload; ``on_reload`` re-derives the adapter's gate sets inside that bind.
+    Returns True when the config was reloaded. An adapter that never connected (owner unknown)
+    keeps its state. A config that fails to parse keeps the last good lists rather than dropping them.
     """
-    if getattr(adapter, "_live_gate_version", None) is None:
+    baseline = getattr(adapter, "_live_gate_version", None)
+    if not baseline or not baseline[0]:
         return False
-    version = gate_config_version()
+    home = baseline[0]
+    version = gate_config_version(home)
     if version == adapter._live_gate_version:
         return False
     with _LIVE_GATE_LOCK:
         if version == adapter._live_gate_version:
             return False
-        from gateway.config import PlatformConfig, load_gateway_config
-        try:  # ONE checked load: the fallback env-only config would drop the YAML-held lists
-            loaded = load_gateway_config(strict=True)
-        except Exception:
-            if getattr(adapter, "_live_gate_failed_version", None) != version:  # once per edit, not per event
-                adapter._live_gate_failed_version = version
-                logger.warning("[%s] config.yaml changed but cannot be loaded; keeping the current allowlists",
-                               getattr(adapter, "name", "?"), exc_info=True)
-            return False
-        current = loaded.platforms.get(adapter.platform) or PlatformConfig()
-        extra = adapter.config.extra
-        for key in keys:
-            if key in current.extra:
-                extra[key] = current.extra[key]
-            else:
-                extra.pop(key, None)
-        # Retry this same edit after a transient read failure, without requiring a second write.
-        adapter._live_gate_version = version
+        with _owner_scope(home):
+            return _reload_live_gate_extra(adapter, keys, version, on_reload)
+
+
+def _reload_live_gate_extra(adapter: Any, keys: Iterable[str], version: tuple,
+                            on_reload: Optional[Callable[[], None]]) -> bool:
+    from gateway.config import PlatformConfig, load_gateway_config
+    try:  # ONE checked load: the fallback env-only config would drop the YAML-held lists
+        loaded = load_gateway_config(strict=True)
+    except Exception:
+        if getattr(adapter, "_live_gate_failed_version", None) != version:  # once per edit, not per event
+            adapter._live_gate_failed_version = version
+            logger.warning("[%s] config.yaml changed but cannot be loaded; keeping the current allowlists",
+                           getattr(adapter, "name", "?"), exc_info=True)
+        return False
+    current = loaded.platforms.get(adapter.platform) or PlatformConfig()
+    extra = adapter.config.extra
+    for key in keys:
+        if key in current.extra:
+            extra[key] = current.extra[key]
+        else:
+            extra.pop(key, None)
+    if on_reload is not None:
+        on_reload()
+    # Retry this same edit after a transient read failure, without requiring a second write.
+    adapter._live_gate_version = version
     return True
 
 

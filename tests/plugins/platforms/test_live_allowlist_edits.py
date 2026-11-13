@@ -133,6 +133,32 @@ def test_multiplexed_profiles_refresh_only_their_own_lists(tmp_path):
     assert os.environ.get("DISCORD_ALLOWED_ROLES") is None
 
 
+def test_a_gate_checked_under_another_profiles_scope_keeps_its_own_lists(tmp_path):
+    """A routed ``/voice join`` runs the receiving bot's voice loop in the ROUTED profile's scope;
+    the gate check there must not adopt that profile's lists as the receiving bot's own."""
+    from agent.secret_scope import reset_multiplex_context, set_multiplex_context
+    from gateway.run import _profile_runtime_scope
+
+    homes = {name: tmp_path / name for name in ("a", "b")}
+    for home, roles in zip(homes.values(), (["2"], ["9"])):
+        home.mkdir()
+        _write(home, {"allowed_roles": roles})
+    token = set_multiplex_context(True)
+    try:
+        with _profile_runtime_scope(homes["a"]):
+            adapter, guild, member = _connected_discord(roles=(9,))
+        with _profile_runtime_scope(homes["b"]):
+            verdict = _allowed(adapter, guild, member)
+        roles_after = adapter._allowed_role_ids
+        _write(homes["a"], {"allowed_roles": ["2", "9"]})
+        with _profile_runtime_scope(homes["a"]):
+            owner_verdict = _allowed(adapter, guild, member)
+    finally:
+        reset_multiplex_context(token)
+    assert (verdict, roles_after) == (False, {2})
+    assert owner_verdict is True  # the owner's own edit still applies live
+
+
 def test_unreadable_edit_keeps_the_last_good_lists(_home, caplog):
     _write(_home, {"allowed_roles": ["2"]})
     adapter, guild, member = _connected_discord()

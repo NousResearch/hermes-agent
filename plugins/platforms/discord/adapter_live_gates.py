@@ -51,8 +51,10 @@ class DiscordLiveGatesMixin:
 
     def _refresh_live_gates(self) -> None:
         """Re-derive the gate when the owning profile's config.yaml changed (a stat otherwise)."""
-        if not refresh_live_gate_extra(self, _LIVE_GATE_EXTRA_KEYS):
-            return
+        refresh_live_gate_extra(self, _LIVE_GATE_EXTRA_KEYS, on_reload=self._rederive_live_gates)
+
+    def _rederive_live_gates(self) -> None:
+        """Runs inside the owning profile's scope, so the env snapshot is the owner's."""
         self._snapshot_gate_env()
         self._allowed_user_ids = self._get_allowed_users()
         self._allowed_role_ids = self._get_allowed_roles()

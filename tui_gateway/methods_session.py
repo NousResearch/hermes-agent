@@ -2221,7 +2221,7 @@ def _(rid, params: dict) -> dict:
     owner_id = _str_param(params, "session_id")
     transport, owner = _current_session_steer_authority(owner_id)
     queued = transport is not None and owner is not None and steer_subagent(
-        subagent_id, text, owner_session_id=owner_id, owner_transport=transport, owner_session_record=owner)
+        subagent_id, text, owner_session_id=owner_id, owner_transport=transport, owner_session_record=owner) or _steer_in_gateway(owner, subagent_id, text)
     return _ok(rid, {"status": "queued" if queued else "rejected", "subagent_id": subagent_id, "text": text})
 
 

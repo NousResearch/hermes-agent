@@ -177,6 +177,55 @@ def _end_unless_ledger_busy(db, session_id: str, session_key, end_reason: str) -
     return False
 
 
+def _live_gateway_pids(profile_home) -> set:
+    """PIDs of the live gateways that may serve ``profile_home``: its own (``gateway.standalone``) and the
+    default home's multiplexer."""
+    from pathlib import Path
+    from gateway.status import live_gateway_pid_for_home
+    from hermes_constants import get_default_hermes_root, get_hermes_home
+    homes = {Path(profile_home or get_hermes_home()), Path(get_default_hermes_root())}
+    return {pid for pid in map(live_gateway_pid_for_home, homes) if pid}
+
+
+def _gateway_owned_delegations(session: dict, conn, key: str) -> list:
+    """Background delegations this conversation dispatched that a live gateway serving it still runs.
+
+    The child, and the only registry that can list, steer or stop it and deliver its result, live in
+    that gateway's memory; a legacy turn here would run the parent with none of them (``delegate_task
+    list`` says nothing is running and the agent re-dispatches the work). Another owner (a CLI, a second
+    standalone backend) has no FIFO to forward to, so its children never refuse a turn. Best-effort:
+    any failure answers ``[]``, the behaviour before this check."""
+    try:
+        from hermes_state_local import local_conversation_ids
+        from tools.async_delegation import live_delegations_in_other_processes
+        live = live_delegations_in_other_processes(conn, {key, *local_conversation_ids(conn, key)})
+        if not live:
+            return []
+        gateways = _live_gateway_pids(session.get("profile_home"))
+        return [d for d in live if d["owner_pid"] in gateways]
+    except Exception:
+        logger.debug("gateway delegation check failed for %s", key, exc_info=True)
+        return []
+
+
+def gateway_runs_delegations(session: dict) -> bool:
+    """Whether the live gateway serving this stored session runs background subagents it dispatched, so
+    the subagent panel's reads and controls belong to that gateway (``methods_subagents``)."""
+    key = str(session.get("session_key") or "")
+    if not key:
+        return False
+    try:
+        with _session_db(session) as db:
+            read_ctx = getattr(db, "_read_ctx", None)
+            if read_ctx is None:
+                return False
+            with read_ctx() as conn:
+                return bool(_gateway_owned_delegations(session, conn, key))
+    except Exception:
+        logger.debug("gateway delegation check failed for %s", key, exc_info=True)
+        return False
+
+
 def _canonical_ledger_refusal(session: dict):
     """Refusal when the gateway's durable ledger still holds work for this stored session, else None.
 
@@ -198,9 +247,19 @@ def _canonical_ledger_refusal(session: dict):
                 return None
             with read_ctx() as conn:
                 row = next(iter(conn.execute(_CANONICAL_PENDING_SQL, (key, key))), None)
+                delegations = _gateway_owned_delegations(session, conn, key) if row is None else []
     except sqlite3.Error:
         logger.warning("canonical ledger read failed for %s", key, exc_info=True)
         return ActiveSessionRefusal(_SESSION_OWNERSHIP_UNAVAILABLE, SESSION_COORDINATION_UNAVAILABLE)
+    if row is None and delegations:
+        logger.info("Routing legacy turn for %s to the gateway: it runs this chat's background delegation(s) %s",
+                    key, ", ".join(d["delegation_id"] for d in delegations))
+        refusal = ActiveSessionRefusal(
+            f"Session {key} has a background subagent running in the gateway that serves it. Continue it through "
+            "the gateway (hermes chat --resume, Desktop or the TUI on that machine) or after the subagent "
+            "finishes; nothing was run here.", SESSION_NOT_OWNED)
+        refusal.ledger_status = "running"
+        return refusal
     if row is None:
         return None
     logger.info("Refusing legacy turn for %s: canonical ledger holds %s work", key, row[0])

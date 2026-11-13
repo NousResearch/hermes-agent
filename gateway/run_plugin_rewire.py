@@ -42,8 +42,11 @@ class GatewayPluginRewireMixin:
             subs = self._plugin_rewire_unsubscribe
             if subs is None:
                 subs = self._plugin_rewire_unsubscribe = {}
-            if scope in subs:
+            previous = subs.get(scope)
+            if previous is not None and previous.manager is manager and not manager._retired:
                 return
+            if previous is not None:
+                previous()
         active = [True]
 
         def _on_loaded(source, _names) -> None:
@@ -63,6 +66,7 @@ class GatewayPluginRewireMixin:
                 if subs.get(scope) is unsubscribe:
                     subs.pop(scope)
 
+        unsubscribe.manager = cancel.manager
         with _subscription_lock:
             existing = subs.setdefault(scope, unsubscribe)
         if existing is not unsubscribe:

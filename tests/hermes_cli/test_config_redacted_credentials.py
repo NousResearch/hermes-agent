@@ -28,10 +28,42 @@ def home(tmp_path, monkeypatch):
     return home
 
 
+_SAMPLES = {
+    "OPENAI_API_KEY": REAL,
+    "TELEGRAM_BOT_TOKEN": "123456789:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw",
+    "SLACK_BOT_TOKEN": "xo" + "xb-1234567890-1234567890-abcdefghijABCDEFGHIJ",
+    "GITHUB_TOKEN": "ghp_" + "abcdefghij" * 3 + "abcdef",
+}
+
+
+def _redactor_values():
+    """Every value Hermes's own redactor/maskers show the agent for the sample credentials."""
+    from agent.redact import _mask_token, _mask_token_nonreusable, mask_secret, redact_sensitive_text
+    shown = {"***", "sk-...", "****redacted****", "[REDACTED]"}
+    for name, secret in _SAMPLES.items():
+        shown |= {mask_secret(secret), _mask_token(secret), _mask_token_nonreusable(secret),
+                  "Bearer " + _mask_token(secret)}
+        for mode in ({}, {"file_read": True}):
+            for doc, sep in ((f"{name}={secret}", "="), (f"token: {secret}", ": "),
+                             (f"Authorization: Bearer {secret}", ": ")):
+                out = redact_sensitive_text(doc, force=True, **mode)
+                assert secret not in out
+                shown.add(out.split(sep, 1)[1])
+    return sorted(shown)
+
+
 def _masks():
-    from agent.redact import _mask_token, _mask_token_nonreusable, mask_secret
-    return ["***", "sk-...", "****redacted****", "[REDACTED]", mask_secret(REAL),
-            _mask_token(REAL), _mask_token_nonreusable(REAL)]
+    masks = _redactor_values()
+    # The shapes that slipped past the first predicate; pinned so a redactor change can't drop them.
+    assert {"Bearer ***", "123456789:***"} <= set(masks)
+    return masks + ["xoxb-***", "Bearer sk-pro...WXYZ", "********"]
+
+
+def test_human_passwords_are_not_masks():
+    from hermes_cli.config_credential_values import is_redacted_credential_value
+    for pw in ("Hello...World1", "a.b.c...defgh", "correct horse battery", "Bearer-token-2024!",
+               "123456789:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw", "${OPENAI_API_KEY}", REAL):
+        assert not is_redacted_credential_value(pw), pw
 
 
 @pytest.mark.parametrize("key", ["OPENAI_API_KEY", "FAL_KEY"])
@@ -85,3 +117,18 @@ def test_config_set_refuses_masks(home, key):
     with pytest.raises((SystemExit, ConfigWriteError)):
         set_config_value(key, "sk-pro...aaaa")
     assert ((home / "config.yaml").read_text(), (home / ".env").read_text()) == before
+
+
+def test_save_config_allows_deleting_entry_beside_preexisting_mask(home):
+    from hermes_cli.config import read_raw_config, save_config
+    (home / "config.yaml").write_text(yaml.safe_dump({"custom_providers": [
+        {"name": "a", "api_key": REAL}, {"name": "b", "api_key": "***"}]}))
+    cfg = read_raw_config()
+    del cfg["custom_providers"][0]  # the old mask moves from index 1 to 0
+    save_config(cfg)
+    assert yaml.safe_load((home / "config.yaml").read_text())["custom_providers"] == [
+        {"name": "b", "api_key": "***"}]
+    cfg["custom_providers"].append({"name": "c", "api_key": "sk-pro...aaaa"})
+    from hermes_cli.config_backend import ConfigValueError
+    with pytest.raises(ConfigValueError, match="custom_providers.1.api_key"):
+        save_config(cfg)

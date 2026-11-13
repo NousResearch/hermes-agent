@@ -14,11 +14,25 @@ import re
 import sys
 from typing import Any, Callable, Iterator
 
-# ``mask_secret`` (``sk-p...7890``, ``_mask_token``'s ``sk-pro...WXYZ``) and hand-truncated
-# previews of it (``sk-...``). Short on purpose: no real key is a few chars around ``...``.
-_ELLIPSIS_MASK_RE = re.compile(r"\S{0,8}(?:\.\.\.|…)\S{0,8}")
-_BARE_MASKS = frozenset({"***", "[redacted]", "<redacted>", "(redacted)", "redacted"})
+# ``mask_secret`` (``sk-p...7890``, ``_mask_token``'s ``sk-pro...WXYZ``: a short head, ``...``,
+# then exactly four tail chars) and hand-truncated previews of it (``sk-...``).
+_ELLIPSIS_MASK_RE = re.compile(r"\S{0,8}(?:\.\.\.|…)(?:\S{4})?")
+_STARS_RE = re.compile(r"\*{3,}")
+_BARE_MASKS = frozenset({"[redacted]", "<redacted>", "(redacted)", "redacted"})
 _ENV_REF_RE = re.compile(r"\$\{[^}]+\}")
+# The redactor keeps context around the masked part: ``Bearer ***`` (auth header), ``123456789:***``
+# (Telegram bot id in file_read mode), ``xoxb-***`` (vendor prefix). Strip it before matching.
+_AUTH_SCHEME_RE = re.compile(r"(?i)(?:bearer|basic|token|digest)\s+")
+_KEPT_PREFIX_RE = re.compile(r"\d+:|[A-Za-z][A-Za-z0-9]{0,7}[-_]")
+
+
+def _is_bare_mask(candidate: str) -> bool:
+    lowered = candidate.lower()
+    if lowered in _BARE_MASKS or lowered.startswith(("«redacted", "[redacted")):
+        return True
+    if "redacted" in lowered and len(candidate) <= 40:  # ``****redacted****`` and kin
+        return True
+    return bool(_STARS_RE.fullmatch(candidate) or _ELLIPSIS_MASK_RE.fullmatch(candidate))
 
 
 def is_redacted_credential_value(value: Any) -> bool:
@@ -26,14 +40,15 @@ def is_redacted_credential_value(value: Any) -> bool:
     if not isinstance(value, str):
         return False
     candidate = value.strip().strip("\"'")
+    scheme = _AUTH_SCHEME_RE.match(candidate)
+    if scheme:
+        candidate = candidate[scheme.end():]
     if not candidate or _ENV_REF_RE.fullmatch(candidate):
         return False
-    lowered = candidate.lower()
-    if lowered in _BARE_MASKS or lowered.startswith(("«redacted", "[redacted")):
+    if _is_bare_mask(candidate):
         return True
-    if "redacted" in lowered and len(candidate) <= 40:  # ``****redacted****`` and kin
-        return True
-    return _ELLIPSIS_MASK_RE.fullmatch(candidate) is not None
+    prefix = _KEPT_PREFIX_RE.match(candidate)
+    return bool(prefix) and _is_bare_mask(candidate[prefix.end():])
 
 
 def _is_credential_env_name(key: str) -> bool:
@@ -51,30 +66,33 @@ def refuse_redacted_env_value(key: str, value: Any) -> None:
             "credential. Enter the real secret (or leave it unchanged).")
 
 
-def _redacted_credential_paths(new: Any, old: Any, path: tuple[str, ...] = ()) -> Iterator[str]:
+def _masked_credential_leaves(doc: Any, path: tuple[str, ...] = ()) -> Iterator[tuple[str, str]]:
     from hermes_cli.config import _is_secret_config_key
 
-    if isinstance(new, dict):
-        items = ((str(k), v, old.get(k) if isinstance(old, dict) else None) for k, v in new.items())
-    elif isinstance(new, list):
-        items = ((str(i), v, old[i] if isinstance(old, list) and i < len(old) else None)
-                 for i, v in enumerate(new))
+    if isinstance(doc, dict):
+        items = ((str(k), v) for k, v in doc.items())
+    elif isinstance(doc, list):
+        items = ((str(i), v) for i, v in enumerate(doc))
     else:
         return
-    for key, child, prior in items:
-        # A mask already on disk is reported by the reader, not re-refused on every unrelated save.
-        if _is_secret_config_key(key) and child != prior and is_redacted_credential_value(child):
-            yield ".".join(path + (key,))
+    for key, child in items:
+        if _is_secret_config_key(key) and is_redacted_credential_value(child):
+            yield ".".join(path + (key,)), child
         else:
-            yield from _redacted_credential_paths(child, prior, path + (key,))
+            yield from _masked_credential_leaves(child, path + (key,))
 
 
 def refuse_redacted_config_credentials(new: Any, read_old: Callable[[], Any]) -> None:
     """Raise ``ConfigValueError`` when ``new`` sets a credential key to a redacted mask that the
-    config on disk (``read_old()``, read only when a mask is present) did not already hold."""
-    if not any(_redacted_credential_paths(new, None)):
+    config on disk (``read_old()``, read only when a mask is present) did not already hold.
+
+    Pre-existing masks are matched by value, not position: deleting or reordering a list entry
+    (``custom_providers``) moves an old mask to a new index without it being newly written."""
+    masked = list(_masked_credential_leaves(new))
+    if not masked:
         return
-    bad = list(_redacted_credential_paths(new, read_old()))
+    on_disk = {value for _, value in _masked_credential_leaves(read_old())}
+    bad = [path for path, value in masked if value not in on_disk]
     if bad:
         from hermes_cli.config_backend import ConfigValueError
 

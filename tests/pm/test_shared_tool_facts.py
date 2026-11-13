@@ -72,6 +72,9 @@ def test_two_installs_keep_independent_tool_pins_and_gc_roots(tmp_path, monkeypa
     assert install._installed_location(get_package("uv"), repinned, target) is None
     fallback = install._installed_location(get_package("uv"), repinned, target, allow_outdated=True)
     assert fallback is not None and fallback[0].get("uv")["version"] == "1.0"
+    # With the selected entry broken, the outdated read finds nothing, never B's 2.0 pin.
+    binaries[("1.0", "uv")].unlink()
+    assert install._installed_location(get_package("uv"), repinned, target, allow_outdated=True) is None
 
 
 def test_gc_reclaims_pins_no_live_checkout_holds(tmp_path, monkeypatch):

@@ -1899,7 +1899,7 @@ def _emit_feasibility_notice(agent: Any, msg: str) -> None:
         return
     agent._last_feasibility_notice = msg
     agent._compression_warning = msg
-    agent._emit_diagnostic_status(msg)
+    agent._emit_warning(msg)
 
 
 def _lower_threshold_to_aux_context(
@@ -3368,8 +3368,7 @@ def _finish_compaction_boundary(
                 agent.session_id or "", parent_session_id=_boundary_parent, reset=False, reason="compression"
             )
 
-    # Route via _emit_status so the warning reaches gateway platforms; store it on
-    # _compression_warning so a late-bound status_callback can replay it.
+    # A warning, not progress: store it on _compression_warning so a late-bound status_callback can replay it.
     compressor = agent.context_compressor
     _cc = compressor.compression_count
     if _cc >= 2:
@@ -3377,7 +3376,7 @@ def _finish_compaction_boundary(
             f"{agent.log_prefix}⚠️  Session compressed {_cc} times — accuracy may degrade. Consider /new to start fresh."
         )
         agent._compression_warning = _cc_msg
-        agent._emit_diagnostic_status(_cc_msg)
+        agent._emit_warning(_cc_msg)
 
     # session:compress lets hooks ingest the old session before it's lost;
     # in_place=True tells them the same id was compacted rather than rotated.

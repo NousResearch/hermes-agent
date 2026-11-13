@@ -32,6 +32,27 @@ function dataUrlReadMaxBytesFromMb(maxMb) {
 const SAFE_ENV_SUFFIXES = new Set(['dist', 'example', 'sample', 'template'])
 const SENSITIVE_EXTENSIONS = new Set(['.kdbx', '.p12', '.pem', '.pfx'])
 
+// Credential stores under a Hermes home or a profile home, relative POSIX paths.
+// Mirrors agent/file_safety.py _CREDENTIAL_FILE_NAMES / _READ_DENIED_DIRS (the
+// canonical read guard) plus hermes_cli/home_data_layout.py SECRET_CACHE_STORES.
+const HERMES_CREDENTIAL_FILES = new Set([
+  'auth.json',
+  'auth.lock',
+  '.anthropic_oauth.json',
+  'webhook_subscriptions.json',
+  'auth/google_oauth.json',
+  'bws_cache.json',
+  'bws_cache.enc.json',
+  'op_cache.json',
+  'photon-sidecar.json',
+  'cache/bws_cache.json',
+  'cache/bws_cache.enc.json',
+  'cache/op_cache.json',
+  'runtime/photon-sidecar.json'
+])
+
+const HERMES_CREDENTIAL_DIRS = ['mcp-tokens', 'browser-profile', 'vault', 'webapp']
+
 // Owner-only mode for userData files that carry credentials (the encrypted
 // gateway token in connection.json, and the URL/SSH fields alongside it).
 // connection.json was the odd one out: its two credential-bearing neighbours
@@ -287,10 +308,57 @@ function resolveRemoteTokenPlainText({ envOverride, token, secureTokenStorage }:
   return token?.encoding === 'plain' && secureTokenStorage === false
 }
 
-function sensitiveFileBlockReason(filePath) {
-  const normalized = String(filePath || '')
+function normalizeSensitivePath(filePath) {
+  return String(filePath || '')
     .replace(/\\/g, '/')
     .toLowerCase()
+}
+
+let hermesHomeRoots: string[] = []
+
+/** Register the Hermes home whose credential stores (and every profile's under
+ *  `profiles/<name>/`) preview reads must refuse. Both the given spelling and
+ *  its realpath are kept, since callers check the requested and the real path. */
+function setSensitiveHermesHome(hermesHome: null | string | undefined) {
+  if (!hermesHome) {
+    hermesHomeRoots = []
+
+    return
+  }
+
+  const roots = [path.resolve(hermesHome)]
+
+  try {
+    roots.push(fs.realpathSync.native(hermesHome))
+  } catch {
+    // Not created yet: the lexical spelling is all a request can use.
+  }
+
+  hermesHomeRoots = [...new Set(roots.map(root => normalizeSensitivePath(root).replace(/\/+$/, '')))]
+}
+
+function hermesCredentialStoreReason(normalized: string): null | string {
+  for (const root of hermesHomeRoots) {
+    if (!normalized.startsWith(`${root}/`)) {
+      continue
+    }
+
+    const fromRoot = normalized.slice(root.length + 1)
+    const rel = fromRoot.match(/^profiles\/[^/]+\/(.+)$/)?.[1] ?? fromRoot
+
+    if (
+      HERMES_CREDENTIAL_FILES.has(rel) ||
+      HERMES_CREDENTIAL_DIRS.some(dir => rel === dir || rel.startsWith(`${dir}/`))
+    ) {
+      return 'Hermes credential stores are blocked.'
+    }
+  }
+
+  return null
+}
+
+function sensitiveFileBlockReason(filePath) {
+  const normalized = normalizeSensitivePath(filePath)
 
   const basename = path.basename(normalized)
   const ext = path.extname(basename)
@@ -335,7 +403,7 @@ function sensitiveFileBlockReason(filePath) {
     return `${basename} is blocked because it may include auth credentials.`
   }
 
-  return null
+  return hermesCredentialStoreReason(normalized)
 }
 
 function ipcPathError(code: any, message: string): Error & { code: any } {
@@ -698,6 +766,7 @@ export {
   SAFE_STORAGE_ENCODING,
   SECRET_FILE_MODE,
   sensitiveFileBlockReason,
+  setSensitiveHermesHome,
   TEXT_PREVIEW_SOURCE_MAX_BYTES,
   tightenSecretFileMode,
   writeSecretFileAtomic

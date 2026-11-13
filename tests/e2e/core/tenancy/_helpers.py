@@ -308,7 +308,7 @@ def _launch_index_view(path: Path, rel: Path, tenants: dict[str, Tenant]) -> lis
         data = json.loads(path.read_text(encoding="utf-8"))
         return split((k, json.dumps({k: v})) for k, v in data.items())
     if rel.name in ("state.db-wal", "state.db-shm") and rel.parent == Path("."):
-        return []  # read through the database below, which sees committed WAL frames
+        return []  # non-secret canaries are read through the database's current rows below
     if rel != Path("state.db"):
         return None
     import sqlite3
@@ -327,11 +327,13 @@ def _launch_index_view(path: Path, rel: Path, tenants: dict[str, Tenant]) -> lis
 
 def file_leaks(tenants: dict[str, Tenant], launch: str = "default") -> list[str]:
     """Byte-scan every file of every tenant home (state.db + WAL, logs, sessions, config, .env,
-    memories, cron output) for any other tenant's canary. The launch home's ``profiles/`` subtree
-    belongs to those tenants; its routing-index rows are each checked against their own profile."""
-    def foreign_to(owner: str) -> list[tuple[str, str, bytes]]:
+    memories, cron output) for any other tenant's canary. A foreign secret anywhere in the raw bytes
+    is a leak, deleted SQLite pages still in the WAL included. The launch home's ``profiles/`` subtree
+    belongs to those tenants, and the launch index's routing rows are each checked against their own
+    profile for the non-secret canaries (a secondary profile's routing row carries its own workdir)."""
+    def foreign_to(owner: str, *, secret: bool) -> list[tuple[str, str, bytes]]:
         return [(u.name, kind, value.encode()) for u in tenants.values() if u.name != owner
-                for kind, value in u.canaries().items()]
+                for kind, value in u.canaries().items() if (kind in u.secrets()) == secret]
 
     problems: list[str] = []
     for t in tenants.values():
@@ -340,14 +342,16 @@ def file_leaks(tenants: dict[str, Tenant], launch: str = "default") -> list[str]
             if not path.is_file() or (t.name == launch and "profiles" in rel.parts[:1]):
                 continue
             try:
+                raw = path.read_bytes()
                 parts = _launch_index_view(path, rel, tenants) if t.name == launch else None
-                parts = [(None, path.read_bytes())] if parts is None else parts
             except OSError:
                 continue
-            for owner, data in parts:
+            problems += [f"{t.name}: {rel} contains {who}'s {kind}"
+                         for who, kind, value in foreign_to(t.name, secret=True) if value in raw]
+            for owner, data in [(None, raw)] if parts is None else parts:
                 where = f"{t.name}: {rel}" if owner in (None, t.name) else f"{t.name}: {owner}'s routing row in {rel}"
                 problems += [f"{where} contains {who}'s {kind}"
-                             for who, kind, value in foreign_to(owner or t.name) if value in data]
+                             for who, kind, value in foreign_to(owner or t.name, secret=False) if value in data]
     return list(dict.fromkeys(problems))
 
 

@@ -3665,6 +3665,7 @@ export const frOverrides = {
     profileRail: 'Barre des profils',
     nav: {
       'new-session': 'Nouvelle session',
+      'drag-hint': "Fais-le glisser sur une barre d'onglets pour empiler, ou sur un bord pour diviser.",
       capabilities: 'Capacités',
       messaging: 'Messagerie',
       artifacts: 'Artefacts',

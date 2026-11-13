@@ -9,7 +9,16 @@ const startNewSessionDrag = vi.hoisted(() => vi.fn())
 vi.mock('@/app/chat/new-session-drag', () => ({ startNewProjectDrag, startNewSessionDrag }))
 
 vi.mock('@/i18n', () => ({
-  useI18n: () => ({ t: { sidebar: { nav: { 'new-session': 'New session' } } } })
+  useI18n: () => ({
+    t: {
+      sidebar: {
+        nav: {
+          'drag-hint': 'Drag this onto a tab strip to stack, or onto an edge to split.',
+          'new-session': 'New session'
+        }
+      }
+    }
+  })
 }))
 
 vi.mock('@/lib/keybinds/use-keybind-hint', () => ({ useKeybindHint: () => null }))
@@ -68,6 +77,41 @@ describe('SidebarSectionAddButton', () => {
 
     expect(onNewSessionSplit).toHaveBeenCalledWith('right', { anchor: 'session-tile:abc', before: null })
     expect(onPlainClick).not.toHaveBeenCalled()
+  })
+
+  it('reveals the drag affordance in the hover tooltip when the button is a drag source', async () => {
+    render(
+      <SidebarSectionAddButton
+        ariaLabel="New session"
+        onNewSessionSplit={vi.fn()}
+        onPlainClick={vi.fn()}
+      />
+    )
+
+    const button = screen.getByRole('button', { name: 'New session' })
+
+    fireEvent.pointerEnter(button)
+    fireEvent.pointerMove(button, { pointerType: 'mouse' })
+
+    const tooltip = await screen.findByRole('tooltip')
+
+    // The undiscoverable gesture is now spelled out: drag to stack, drag to split.
+    expect(tooltip.textContent).toContain('New session')
+    expect(tooltip.textContent).toContain('Drag this onto a tab strip to stack, or onto an edge to split.')
+  })
+
+  it('keeps the click-only button tooltip free of the drag hint', async () => {
+    render(<SidebarSectionAddButton ariaLabel="New project" onPlainClick={vi.fn()} />)
+
+    const button = screen.getByRole('button', { name: 'New project' })
+
+    fireEvent.pointerEnter(button)
+    fireEvent.pointerMove(button, { pointerType: 'mouse' })
+
+    const tooltip = await screen.findByRole('tooltip')
+
+    // No drag handler -> the tooltip must not advertise a gesture that does nothing.
+    expect(tooltip.textContent).toBe('New project')
   })
 
   it('stays click-only without either drag handler', () => {

@@ -315,24 +315,25 @@ def build_write_approval_paths(home: str) -> set[str]:
     """Paths that need human APPROVAL to write but are not hard-denied credentials.
 
     ``~/.ssh/config`` is routine to edit and holds no key bytes, but can carry
-    ``ProxyCommand`` / ``Match exec``. Interactive file tools prompt
+    ``ProxyCommand`` / ``Match exec``; shell rc files run at login. Interactive file tools prompt
     (approve-once/session/always, like the terminal tool's ``~/.ssh`` gate);
     non-interactive callers (ACP shims, background jobs) fail closed.
     """
-    return {
-        os.path.realpath(p)
-        for p in [
-            os.path.join(home, ".ssh", "config"),
-            # Pair write_file/patch with the terminal shell-rc gate (#85321).
-            # These files are routinely edited, but they run at login — same
-            # approval contract as ~/.ssh/config, not a hard credential deny.
-            os.path.join(home, ".bashrc"),
-            os.path.join(home, ".zshrc"),
-            os.path.join(home, ".profile"),
-            os.path.join(home, ".bash_profile"),
-            os.path.join(home, ".zprofile"),
-        ]
-    }
+    return set(_approval_paths_by_key(home))
+
+
+# Login shell startup files: approval-gated for the file tools and, via
+# tools.approval_detection._SHELL_RC_FILES, for terminal writes. One inventory so the two
+# gates cannot drift apart (#85321).
+SHELL_RC_FILES: tuple[str, ...] = (".bashrc", ".zshrc", ".profile", ".bash_profile", ".zprofile")
+
+
+def _approval_paths_by_key(home: str) -> dict[str, str]:
+    """Approval-gated path -> the approval key that gates it. Each class has its own key so an
+    approve-always answer for ``~/.ssh/config`` never authorizes ``~/.bashrc`` (or vice versa)."""
+    paths = {os.path.realpath(os.path.join(home, ".ssh", "config")): "ssh_config_write"}
+    paths.update({os.path.realpath(os.path.join(home, name)): "shell_rc_write" for name in SHELL_RC_FILES})
+    return paths
 
 
 # HERMES_HOME / root subpaths that the agent's generic file tools must not
@@ -436,8 +437,14 @@ def is_write_approval_required(path: str) -> bool:
     an interactive/gateway channel should prompt; callers without one
     should treat this as a block (fail closed).
     """
+    return write_approval_key(path) is not None
+
+
+def write_approval_key(path: str) -> Optional[str]:
+    """Approval key gating a write to ``path`` (``ssh_config_write`` / ``shell_rc_write``), or None."""
     homes, resolved = _homes_and_resolved(local_drive_spelling(path))
-    return any(deny_key(resolved) in map(deny_key, build_write_approval_paths(home)) for home in homes)
+    key = deny_key(resolved)
+    return next((k for home in homes for p, k in _approval_paths_by_key(home).items() if deny_key(p) == key), None)
 
 
 # Secret-bearing project-local env file basenames, blocked anywhere on disk.

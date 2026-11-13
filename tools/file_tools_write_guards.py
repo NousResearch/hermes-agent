@@ -381,53 +381,62 @@ def _check_protected_instruction_write(paths: list[str], task_id: str = "default
     return _request_protected_instruction_approval(reasons, task_id)
 
 
+# Approval key -> (prompt noun, why it is gated). One key per class so an approve-always for one
+# class never authorizes the other.
+_APPROVAL_WRITE_CLASSES = {
+    "ssh_config_write": ("SSH client config file(s)",
+                         "The SSH config can carry ProxyCommand / Match exec directives that run commands"),
+    "shell_rc_write": ("shell startup file(s)", "Shell startup files run their commands in every new login shell"),
+}
+
+
 def _check_approval_required_write(paths: list[str], task_id: str = "default") -> str | None:
-    """Gate a write/patch touching an approval-required path (``~/.ssh/config``
-    can steer execution via ``ProxyCommand``; login shell rc files run at
-    login). Routine gate: once/session/always, honors --yolo, fail-closed
-    without an interactive/gateway channel."""
+    """Gate a write/patch touching an approval-required path (``~/.ssh/config`` can steer
+    execution via ``ProxyCommand``; shell rc files run at login). Routine gate: once/session/always,
+    honors --yolo, fail-closed without an interactive/gateway channel. Each class is gated under
+    its own key, so a batch spanning both classes must pass both gates."""
     try:
-        from agent.file_safety import is_write_approval_required
+        from agent.file_safety import write_approval_key
     except Exception:
         return None
 
     # Resolve against the task's cwd, not the process's: a gateway-hosted turn runs in a
     # process whose cwd is not the session workspace, so a relative path would miss the gate.
-    targets = [p for p in paths if is_write_approval_required(_resolved_or_raw(p, task_id))]
-    if not targets:
-        return None
+    by_key: dict[str, list[str]] = {}
+    for p in paths:
+        if key := write_approval_key(_resolved_or_raw(p, task_id)):
+            by_key.setdefault(key, []).append(p)
 
-    display_targets = ", ".join(dict.fromkeys(targets))
-    description = (
-        f"Write to approval-gated file(s): {display_targets}. "
-        "SSH client config and login shell rc files can run commands, "
-        "so writes require your approval.")
-    blocked = (
-        f"BLOCKED: write to approval-gated file(s) ({display_targets}) "
-        "{why} Do NOT retry it via another path (terminal, execute_code) "
-        "without the user's explicit consent.")
+    for pattern_key, targets in by_key.items():
+        noun, why_gated = _APPROVAL_WRITE_CLASSES[pattern_key]
+        display_targets = ", ".join(dict.fromkeys(targets))
+        description = f"Write to {noun}: {display_targets}. {why_gated}, so writes require your approval."
+        blocked = (
+            f"BLOCKED: write to {noun} ({display_targets}) "
+            "{why} Do NOT retry it via another path (terminal, execute_code) "
+            "without the user's explicit consent.")
 
-    try:
-        import tools.approval as _approval
-    except Exception:
-        return blocked.format(why=_APPROVAL_UNAVAILABLE)
+        try:
+            import tools.approval as _approval
+        except Exception:
+            return blocked.format(why=_APPROVAL_UNAVAILABLE)
 
-    result = _approval._run_approval_gate(
-        pattern_key="ssh_config_write",
-        description=description,
-        display_target=f"<write to {display_targets}>",
-        cron_deny_message=blocked.format(why="requires approval but this cron session denies it."),
-        single_query_deny_message=blocked.format(
-            why="requires approval but single-query (-q) sessions run "
-                "without a user present to approve it. To allow flagged "
-                "actions in single-query mode, set approvals.single_query_mode: "
-                "approve in config.yaml."),
-        autoapprove_log_prefix="ssh_config_write",
-        fail_closed_when_no_human=True,
-        no_human_block_message=blocked.format(why=_NO_HUMAN))
-    if result.get("approved"):
-        return None
-    return result.get("message") or blocked.format(why="was denied.")
+        result = _approval._run_approval_gate(
+            pattern_key=pattern_key,
+            description=description,
+            display_target=f"<write to {display_targets}>",
+            cron_deny_message=blocked.format(why="requires approval but this cron session denies it."),
+            single_query_deny_message=blocked.format(
+                why="requires approval but single-query (-q) sessions run "
+                    "without a user present to approve it. To allow flagged "
+                    "actions in single-query mode, set approvals.single_query_mode: "
+                    "approve in config.yaml."),
+            autoapprove_log_prefix=pattern_key,
+            fail_closed_when_no_human=True,
+            no_human_block_message=blocked.format(why=_NO_HUMAN))
+        if not result.get("approved"):
+            return result.get("message") or blocked.format(why="was denied.")
+    return None
 
 
 def _get_container_mirror_prefix_for_task(task_id: str = "default") -> str | None:

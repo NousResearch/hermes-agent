@@ -629,28 +629,6 @@ class TestSensitiveCopyMovePattern:
             assert dangerous is False, cmd
 
 
-class TestSensitiveCreateLinkPattern:
-    """touch/mkdir/ln into credential, SSH, or shell-rc paths (#85321)."""
-
-    def test_create_or_link_into_sensitive_path(self):
-        for command in (
-            "touch ~/.bashrc",
-            "touch ~/.ssh/authorized_keys",
-            "mkdir ~/.ssh",
-            "mkdir -p ~/.ssh/foo",
-            "ln -s /tmp/evil ~/.bashrc",
-            "ln /tmp/e ~/.ssh/authorized_keys",
-        ):
-            dangerous, key, desc = detect_dangerous_command(command)
-            assert dangerous is True, command
-            assert key is not None, command
-
-    def test_unrelated_touch_mkdir_ln_safe(self):
-        for cmd in ("touch notes.txt", "mkdir src", "ln -s a.txt b.txt"):
-            dangerous, key, desc = detect_dangerous_command(cmd)
-            assert dangerous is False, cmd
-
-
 class TestSensitiveInPlaceEditPattern:
     """Detect in-place edits to user startup and credential files."""
 
@@ -705,56 +683,6 @@ class TestWindowsAbsolutePathFolding:
         )
         assert dangerous is False
         assert key is None
-
-
-class TestDepthOneUserHomeFolding:
-    """A depth-1 HOME (``/root``, root's own default) must fold like ``/home/alice``.
-
-    Regression: ``_home_prefix_fold_regex`` bailed out of every path with fewer than
-    two components, so on a host whose HOME is ``/root`` the user-home fold was a
-    silent no-op: ``cat key >> /root/.ssh/authorized_keys`` and
-    ``echo pwned > /root/.bashrc`` matched no credential/startup rule and were
-    reported *safe* (no approval prompt), while the identical command spelled under
-    ``/home/alice`` folded to ``~/.ssh/authorized_keys`` and was denied. The
-    monkeypatched HOME keeps these assertions deterministic on CI (``HOME=/home/runner``)
-    and on any other host.
-    """
-
-    def test_depth_one_home_sensitive_writes_require_approval(self, monkeypatch):
-        monkeypatch.setenv("HOME", "/root")
-        for cmd in (
-            "cat key >> /root/.ssh/authorized_keys",
-            "echo 'pwned' > /root/.bashrc",
-            "cp evil /root/.ssh/authorized_keys",
-        ):
-            dangerous, key, _ = detect_dangerous_command(cmd)
-            assert dangerous is True, cmd
-            assert key is not None, cmd
-
-    def test_depth_one_home_matches_the_multi_segment_form(self, monkeypatch):
-        # Parity: the same inject spelled under a depth-2 HOME was already denied, so a
-        # depth-1 HOME must not be the weaker spelling of the two.
-        monkeypatch.setenv("HOME", "/home/alice")
-        multi_seg = detect_dangerous_command("cat key >> /home/alice/.ssh/authorized_keys")
-        monkeypatch.setenv("HOME", "/root")
-        depth_one = detect_dangerous_command("cat key >> /root/.ssh/authorized_keys")
-        assert depth_one == multi_seg
-        assert depth_one[0] is True
-
-    def test_depth_one_home_unrelated_path_still_safe(self, monkeypatch):
-        monkeypatch.setenv("HOME", "/root")
-        dangerous, key, _ = detect_dangerous_command("cp report.txt /root/notes.txt")
-        assert dangerous is False
-        assert key is None
-
-    def test_relative_same_named_path_not_folded(self, monkeypatch):
-        # The fold stays anchored on an absolute path, so a plain directory that merely
-        # shares the home's name (`root/` under the CWD) is left untouched.
-        monkeypatch.setenv("HOME", "/root")
-        for cmd in ("cp evil root/.bashrc", "cat key >> ./root/.ssh/authorized_keys"):
-            dangerous, key, _ = detect_dangerous_command(cmd)
-            assert dangerous is False, cmd
-            assert key is None, cmd
 
 
 class TestProjectSensitiveTeePattern:

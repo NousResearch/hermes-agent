@@ -11,14 +11,19 @@ SCAN_ROOT_FILES = ("cli.py", "run_agent.py", "hermes_state.py", "utils.py", "her
 SKIP_PARTS = {"tests", "__pycache__", "evals", "node_modules"}
 
 def comment_lines(text: str, marker: str) -> set[int]:
+    if marker not in text:
+        return set()
     pattern = re.compile(re.escape(marker) + r"\s*(?:—|-+)\s*\S")
     return {token.start[0] for token in tokenize.generate_tokens(io.StringIO(text).readline)
             if token.type == tokenize.COMMENT and pattern.search(token.string)}
 
 
-def marked(src_lines: list[str], lineno: int, marker: str) -> bool:
-    comments = comment_lines('\n'.join(src_lines), marker)
-    return lineno in comments or (lineno - 1 in comments and src_lines[lineno - 2].lstrip().startswith("#"))
+def marked(src_lines: list[str], lineno: int, marker: str, *, comments: set[int] | None = None,
+           standalone_previous: bool = True) -> bool:
+    if comments is None:
+        comments = comment_lines('\n'.join(src_lines), marker)
+    return lineno in comments or (lineno > 1 and lineno - 1 in comments and
+                                 (not standalone_previous or src_lines[lineno - 2].lstrip().startswith("#")))
 
 
 def tracked_files(root: Path) -> list[Path]:

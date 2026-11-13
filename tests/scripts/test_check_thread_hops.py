@@ -114,3 +114,49 @@ def test_malformed_source_and_baseline_fail_closed(tmp_path, monkeypatch):
     git(tmp_path, 'init', '-q')
     put(tmp_path, 'scripts/ci/thread_hops_baseline.json', '{broken')
     assert guard.main([]) == 2
+
+
+def test_worktree_add_delete_and_exact_tree(tmp_path):
+    git(tmp_path, 'init', '-q')
+    put(tmp_path, 'tools/old.py', 'x.submit(old)\n')
+    head = commit(tmp_path, 'initial')
+    expected = guard.sites('tools/old.py', 'x.submit(old)\n')
+    (tmp_path / 'tools/old.py').unlink()
+    put(tmp_path, 'tools/new.py', 'x.submit(new)\n')
+    put(tmp_path, '.gitignore', 'tools/ignored.py\n')
+    put(tmp_path, 'tools/ignored.py', 'x.submit(ignored)\n')
+    assert guard.scan(root=tmp_path) == guard.sites('tools/new.py', 'x.submit(new)\n')
+    assert guard.scan(root=tmp_path, tree=head) == expected
+
+
+def test_revision_sources_use_one_batch_process(tmp_path, monkeypatch):
+    git(tmp_path, 'init', '-q')
+    for name in ('a', 'b', 'has space', 'line\nbreak'):
+        put(tmp_path, f'tools/{name}.py', 'x.submit(f)\n')
+    head = commit(tmp_path, 'initial')
+    calls = []
+    original = subprocess.run
+
+    def recording(argv, *args, **kwargs):
+        calls.append(argv)
+        return original(argv, *args, **kwargs)
+
+    monkeypatch.setattr(subprocess, 'run', recording)
+    assert len(guard.scan(root=tmp_path, tree=head)) == 4
+    assert sum('cat-file' in command for command in calls) == 1
+    assert not any('show' in command for command in calls)
+
+
+def test_shared_comment_predicate_and_detached_legacy_parity(monkeypatch):
+    from scripts.ci import production_scan
+    from scripts import check_detached_spawns as detached
+    source = 'x = 1  # detached-spawn: ok - independent preceding statement\nsubprocess.Popen(cmd, start_new_session=True)\n'
+    assert detached._marked(source.splitlines(), 2)
+    assert not production_scan.marked(source.splitlines(), 2, detached.MARKER)
+    comments = production_scan.comment_lines(source, detached.MARKER)
+    assert production_scan.marked(source.splitlines(), 2, detached.MARKER,
+                                  comments=comments, standalone_previous=False)
+    assert not detached._marked(['x = "detached-spawn: ok - fake"', 'pass'], 2)
+    monkeypatch.setattr(production_scan.tokenize, 'generate_tokens',
+                        lambda _: pytest.fail('marker-free source must not be tokenized'))
+    assert production_scan.comment_lines('x.submit(f)\n', guard.MARKER) == set()

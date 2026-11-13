@@ -21,12 +21,13 @@ import inspect
 import json
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 if __package__ in (None, ""):
     sys.path.insert(0, str(ROOT))
-from scripts.ci.production_scan import SCAN_ROOT_FILES, SCAN_TREES, in_scope, comment_lines
+from scripts.ci.production_scan import SCAN_ROOT_FILES, SCAN_TREES, in_scope, comment_lines, marked
 from scripts.code_health import gitio
 
 BASELINE = ROOT / 'scripts/ci/thread_hops_baseline.json'
@@ -116,7 +117,7 @@ class Visitor(ast.NodeVisitor):
             hit |= fn.attr in ('submit', 'run_in_executor')
             hit |= fn.attr == 'map' and (self.pool_call(fn.value) or
                                            isinstance(fn.value, ast.Name) and fn.value.id in self.instances)
-        if hit and node.lineno not in self.comments and not (node.lineno - 1 in self.comments and self.lines[node.lineno - 2].lstrip().startswith("#")):
+        if hit and not marked(self.lines, node.lineno, MARKER, comments=self.comments):
             identity = json.dumps([self.path, '.'.join(self.scope), ast.dump(node, include_attributes=False, **DUMP_OPTIONS)], ensure_ascii=True, separators=(',', ':'))
             self.counts[identity] += 1
             fingerprint = hashlib.sha256((identity + '#' + str(self.counts[identity])).encode()).hexdigest()
@@ -131,9 +132,44 @@ def sites(path, text):
     return visitor.hits
 
 
+def source_texts(root, tree, paths):
+    """Read one exact tree with one Git process and a disk-backed bounded spool."""
+    if tree is None:
+        for rel in paths:
+            yield rel, (root / rel).read_text(encoding='utf-8-sig')
+        return
+    if not paths:
+        return
+    requests = b''.join(f'{tree}:{rel}'.encode() + b'\0' for rel in paths)
+    # cat-file -z NUL-delimits input only; blob output is size-framed, not line-delimited.
+    with tempfile.TemporaryFile() as spool:
+        subprocess.run(['git', 'cat-file', '--batch', '-z'], cwd=root, input=requests,
+                       stdout=spool, stderr=subprocess.PIPE, timeout=60, check=True)
+        spool.seek(0)
+        for rel in paths:
+            header = spool.readline().split()
+            if len(header) != 3 or header[1] != b'blob':
+                raise ValueError(f'cannot read {rel} from judged tree')
+            size = int(header[2])
+            data = spool.read(size)
+            if len(data) != size or spool.read(1) != b'\n':
+                raise ValueError(f'truncated blob for {rel}')
+            yield rel, data.decode('utf-8-sig')
+        if spool.read(1):
+            raise ValueError('unexpected trailing tree data')
+
+
 def scan(paths=None, root=ROOT, tree=None):
     hits = {}
-    files = paths if paths is not None else gitio.tracked_files(root, tree)
+    if paths is not None:
+        files = paths
+    elif tree is not None:
+        files = gitio.tracked_files(root, tree)
+    else:
+        # Include new nonignored files, but do not mistake an unstaged removal for unreadable source.
+        files = set(gitio.git(root, 'ls-files', '--cached', '--others', '--exclude-standard', '-z').split('\0'))
+        files -= set(gitio.git(root, 'ls-files', '--deleted', '-z').split('\0'))
+    selected = []
     for path in files:
         path = Path(path)
         if path.is_absolute():
@@ -144,10 +180,9 @@ def scan(paths=None, root=ROOT, tree=None):
         else:
             rel = path.as_posix()
         if path.suffix == '.py' and in_scope(rel) and (paths is not None or rel.split('/')[0] in (*SCAN_TREES, *SCAN_ROOT_FILES)):
-            text = gitio.read_file(root, tree, rel)
-            if text is None:
-                raise ValueError(f'cannot read {rel} from judged tree')
-            hits.update(sites(rel, text))
+            selected.append(rel)
+    for rel, text in source_texts(root, tree, sorted(set(selected))):
+        hits.update(sites(rel, text))
     return hits
 
 

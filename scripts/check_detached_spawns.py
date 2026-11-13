@@ -108,7 +108,7 @@ def detach_lines(text: str) -> list[int]:
 
 
 def _marked(src_lines: list[str], lineno: int) -> bool:
-    return marked(src_lines, lineno, MARKER)
+    return marked(src_lines, lineno, MARKER, standalone_previous=False)
 
 
 def _in_scope(rel: str) -> bool:
@@ -133,7 +133,7 @@ def scan(paths=None, root: Path | None = None) -> dict[str, list[tuple[int, str]
             continue
         src = text.splitlines()
         comments = comment_lines(text, MARKER)
-        found = [(n, src[n - 1]) for n in detach_lines(text) if n not in comments and not (n - 1 in comments and src[n - 2].lstrip().startswith("#"))]
+        found = [(n, src[n - 1]) for n in detach_lines(text) if not marked(src, n, MARKER, comments=comments, standalone_previous=False)]
         if found:
             hits[rel] = found
     return hits

@@ -46,6 +46,32 @@ def _transport_auth_user_id(transport) -> str | None:
     return None
 
 
+def _transport_owner_stamp(transport) -> str | None:
+    """The owner a Desktop row records (``user_id``) for ``transport``'s login. An issuer-less login keeps its
+    ``<provider>:<user>`` label, which ``_login_label`` maps its subject back to. The label drops the issuer, so
+    ``_login_label`` refuses issuer-bearing subjects, and a row an OIDC login stamped with it had no owner who
+    could edit it (#140183 review F1 keeps that refusal). Such a login stamps its full authenticated subject:
+    only the same (provider, issuer, user) spells it. The agent keeps the label (``_transport_auth_user_id``)."""
+    label = _transport_auth_user_id(transport)
+    identity = getattr(transport, "auth_identity", None)
+    if label is None or not str(identity.get("issuer") or "").strip():
+        return label
+    from gateway.session_identity import authenticated_subject
+    return authenticated_subject({key: identity[key] for key in ("provider", "issuer", "user_id")})
+
+
+def _session_owner_stamp(session: dict | None) -> str | None:
+    """``_transport_owner_stamp`` of the login ``session`` was created under (``auth_owner``, set beside
+    ``auth_user_id``); a record without it, e.g. one relayed by an older host, stamps the label as before."""
+    if not session:
+        return None
+    if "auth_owner" in session:
+        return session["auth_owner"]
+    if "auth_user_id" in session:
+        return session["auth_user_id"]
+    return _transport_owner_stamp(session.get("transport"))
+
+
 def _session_auth_user_id(session: dict | None) -> str | None:
     """The login ``session`` was created under, stamped on the record as ``auth_user_id``. A second window turns
     the transport slot into a FanoutTransport, which names no login, so only a record without the slot reads

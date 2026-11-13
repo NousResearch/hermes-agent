@@ -444,6 +444,9 @@ class PlatformConfig:
     # Runtime-only, never serialized: set when the GATEWAY_RELAY_URL relay-exclusive rule
     # (config_env._relay) switched an enabled platform off, so surfaces can say why (#141175).
     disabled_by_relay: bool = False
+    # Runtime-only: the config.yaml version this copy was loaded from (taken before the read), so the
+    # live-allowlist baseline names the file that produced the adapter's gates, not a later edit.
+    loaded_version: Optional[tuple] = field(default=None, compare=False, repr=False)
 
     def to_dict(self) -> dict[str, Any]:
         result = {
@@ -853,8 +856,10 @@ def load_gateway_config(*, strict: bool = False) -> GatewayConfig:
     ``strict=True`` raises a config.yaml failure instead of falling back to env + gateway.json: a live
     allowlist refresh keeps its last good lists rather than apply an env-only config."""
     from gateway import config_loader
+    from gateway.platforms._shared import gate_config_version
 
     _home = get_hermes_home()
+    version = gate_config_version()
     gw_data = config_loader.load_legacy_gateway_json(_home)
     try:
         config_loader.load_yaml_layer(_home, gw_data)
@@ -878,6 +883,8 @@ def load_gateway_config(*, strict: bool = False) -> GatewayConfig:
     config = GatewayConfig.from_dict(gw_data)
     _apply_env_overrides(config)
     _validate_gateway_config(config)
+    for platform_config in config.platforms.values():
+        platform_config.loaded_version = version
     return config
 
 

@@ -326,7 +326,7 @@ def replace_bridged_env(name: str, value: str) -> None:
 _LIVE_GATE_LOCK = threading.RLock()
 
 
-def _gate_config_version() -> tuple:
+def gate_config_version() -> tuple:
     """Change signature of the active home's config.yaml plus the managed overlay's."""
     from hermes_cli.config_backend import config_cache_version_or_none, config_version_or_none, get_config_backend
     from hermes_cli.managed_scope import get_managed_dir
@@ -344,7 +344,8 @@ def mark_live_gate_baseline(adapter: Any) -> None:
     """Record, on the adapter's first connect, which config the connect-time gate copy came from.
     A reconnect keeps the first baseline so an edit made before it is still picked up."""
     if getattr(adapter, "_live_gate_version", None) is None:
-        adapter._live_gate_version = _gate_config_version()
+        loaded = getattr(getattr(adapter, "config", None), "loaded_version", None)
+        adapter._live_gate_version = loaded if loaded is not None else gate_config_version()
 
 
 def refresh_live_gate_extra(adapter: Any, keys: Iterable[str]) -> bool:
@@ -357,7 +358,7 @@ def refresh_live_gate_extra(adapter: Any, keys: Iterable[str]) -> bool:
     """
     if getattr(adapter, "_live_gate_version", None) is None:
         return False
-    version = _gate_config_version()
+    version = gate_config_version()
     if version == adapter._live_gate_version:
         return False
     with _LIVE_GATE_LOCK:

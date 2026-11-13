@@ -313,3 +313,20 @@ def test_a_load_that_raises_leaves_the_bridged_env_as_it_was(_home):
     with pytest.raises(TypeError):
         load_gateway_config(strict=True)
     assert os.environ["DISCORD_ALLOWED_USERS"] == "111"
+
+
+def test_an_edit_made_while_the_adapter_starts_up_still_applies(_home):
+    """Startup loads the config, then spends time on dependencies before connect marks the baseline;
+    a role removed in that gap must be refused, so the baseline is the version that built the gates."""
+    _write(_home, {"allowed_roles": ["2"]})
+    adapter = DiscordAdapter(load_gateway_config().platforms[Platform.DISCORD])
+    _write(_home, {"allowed_roles": ["9"]})  # edited before connect
+    adapter._snapshot_gate_env()
+    adapter._allowed_user_ids = adapter._get_allowed_users()
+    adapter._allowed_role_ids = adapter._get_allowed_roles()
+    adapter._mark_live_gate_baseline()
+    guild = SimpleNamespace(id=GUILD_ID)
+    member = SimpleNamespace(id=USER_ID, roles=[SimpleNamespace(id=2)], guild=guild)
+    guild.get_member = lambda uid: member if uid == USER_ID else None
+    adapter._client = SimpleNamespace(get_guild=lambda gid: guild if gid == GUILD_ID else None)
+    assert _allowed(adapter, guild, member) is False

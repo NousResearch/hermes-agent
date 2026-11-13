@@ -15,6 +15,7 @@ import { $panesFlipped } from '@/store/layout'
 import { notifyError } from '@/store/notifications'
 import { openPreview } from '@/store/preview'
 import { openFolderAsProject } from '@/store/projects'
+import { $focusedStoredSessionId } from '@/store/session-focus'
 import { $focusedWorkspaceCwd } from '@/store/session-states'
 
 import { SidebarPanelLabel } from '../shell/sidebar-label'
@@ -32,6 +33,9 @@ export function RightSidebarPane({ onActivateFile, onActivateFolder }: RightSide
   const r = t.rightSidebar
   const panesFlipped = useStore($panesFlipped)
   const targetCwd = useStore($focusedWorkspaceCwd)
+  // The session $focusedWorkspaceCwd reads its cwd from: a Bot chat's workspace is
+  // browsed as that Bot's profile, not the window's.
+  const targetSessionId = useStore($focusedStoredSessionId)
   const hasWorkspace = Boolean(targetCwd)
 
   const {
@@ -47,7 +51,7 @@ export function RightSidebarPane({ onActivateFile, onActivateFolder }: RightSide
     setNodeOpen,
     setShowIgnored,
     showIgnored
-  } = useProjectTree(hasWorkspace ? targetCwd : '')
+  } = useProjectTree(hasWorkspace ? targetCwd : '', targetSessionId)
 
   useEffect(() => {
     const activeCwd = effectiveCwd || (hasWorkspace ? targetCwd : '')

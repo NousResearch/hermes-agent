@@ -216,7 +216,8 @@ def _published(env: Any, rdir: str) -> dict[str, str]:
 
 
 # The keys launcher.sh writes into the env file (its `printf "DISPLAY=%s...` line inside the
-# dbus-run-session block); a test parses that line so the two stay in step. Only these keys are read back.
+# dbus-run-session block); a test runs the launcher and reads its file back, so the two stay in step.
+# Only these keys are read back.
 PUBLISHED_KEYS = ("DISPLAY", "XAUTHORITY", "DBUS_SESSION_BUS_ADDRESS", "XDG_CONFIG_HOME", "XDG_CACHE_HOME",
                   "XDG_DATA_HOME")
 _X_DISPLAY = re.compile(r":[0-9]+(\.[0-9]+)?")

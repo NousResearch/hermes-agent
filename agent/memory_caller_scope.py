@@ -31,6 +31,9 @@ SHARED_INSTANCE_REFUSAL = "memory_provider_instance_shared"
 # by the provider's own __hash__/__eq__: an unhashable or value-equal provider is still tracked.
 _claims: dict[int, tuple[weakref.ref, str]] = {}
 _claims_lock = threading.RLock()  # reentrant: a weakref callback can fire from GC inside the lock
+# A no-weakref provider is kept alive by its managers. Weak manager refs keep its home
+# claim until the last live manager is gone, without pinning the provider itself.
+_no_weakref_claims: dict[int, tuple[str, list[weakref.ref]]] = {}
 
 
 def refused_tool_message(tool_name: str) -> str:
@@ -108,10 +111,27 @@ def _forget(pid: int, ref: weakref.ref) -> None:
             del _claims[pid]
 
 
-def claim_instance(provider: Any, home: Any) -> bool:
-    """Record that ``provider`` (the instance) is bound to ``home``. False on a multiplexed process
-    when another profile already bound this same instance (initializing it again would rebind the
-    other profile's store), or when the instance can't be tracked at all (no weak reference)."""
+def _forget_no_weakref(pid: int, dead: weakref.ref) -> None:
+    with _claims_lock:
+        entry = _no_weakref_claims.get(pid)
+        if entry is None or not any(ref is dead for ref in entry[1]):
+            return
+        live = [ref for ref in entry[1] if ref is not dead and ref() is not None]
+        if live:
+            _no_weakref_claims[pid] = (entry[0], live)
+        else:
+            del _no_weakref_claims[pid]
+
+
+def claim_instance(provider: Any, home: Any, *, manager: Any = None) -> bool:
+    """Record that ``provider`` (the instance) is bound to ``home``. False when another profile
+    already bound this same live instance — whatever the multiplex flag says (#146293).
+    No-weakref instances can be tracked through a live manager that holds them.
+
+    Rebinding was only ever guarded on the multiplex flag, so a multi-profile host with
+    multiplexing off (WebUI, desktop, an embedding app) silently re-pointed an instance another
+    live agent was still using: cross-profile memory reads/writes with nothing logged. A
+    single-profile process names the same home on every claim, so it is unaffected."""
     from agent.secret_scope import is_multiplex_active
     key = _home_key(home) or str(home)
     multiplexed = is_multiplex_active()
@@ -119,7 +139,7 @@ def claim_instance(provider: Any, home: Any) -> bool:
     with _claims_lock:
         entry = _claims.get(pid)
         owner = entry[1] if entry is not None and entry[0]() is provider else None
-        if owner is not None and owner != key and multiplexed:
+        if owner is not None and owner != key:
             logger.warning("Memory provider '%s' refused for profile home %r (%s): this same provider instance "
                            "is already bound to %r; a provider must give every agent its own instance",
                            getattr(provider, "name", "?"), str(home), SHARED_INSTANCE_REFUSAL, owner)
@@ -132,6 +152,20 @@ def claim_instance(provider: Any, home: Any) -> bool:
                                "tracked (no weak reference support), so sharing it can't be ruled out",
                                getattr(provider, "name", "?"), str(home), SHARED_INSTANCE_REFUSAL)
                 return False
+            # In non-multiplexed hosts, a manager can anchor a claim even when the
+            # provider has no weakref slot. This also covers hosts serving multiple homes.
+            if manager is not None:
+                previous = _no_weakref_claims.get(pid)
+                live = [ref for ref in previous[1] if ref() is not None] if previous else []
+                if live and previous[0] != key:
+                    logger.warning("Memory provider '%s' refused for profile home %r (%s): this same provider "
+                                   "instance is already bound to %r; a provider must give every agent its own "
+                                   "instance", getattr(provider, "name", "?"), str(home),
+                                   SHARED_INSTANCE_REFUSAL, previous[0])
+                    return False
+                ref = weakref.ref(manager, lambda dead, pid=pid: _forget_no_weakref(pid, dead))
+                _no_weakref_claims[pid] = (key, [*live, ref])
+            # Preserve the historical direct-call fallback without an owning manager.
             return True
         _claims[pid] = (ref, key)
     return True

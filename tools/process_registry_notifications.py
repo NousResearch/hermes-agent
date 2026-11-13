@@ -428,7 +428,8 @@ def process_completion_display_text(events: list) -> str:
     evt = events[0]
     reason, exit_code = evt.get("completion_reason") or "exited", evt.get("exit_code", "?")
     if reason == "killed":
-        outcome = "Terminated"
+        from tools.process_registry_results import INTERRUPT_KILL_SOURCES
+        outcome = "Interrupted" if evt.get("termination_source") in INTERRUPT_KILL_SOURCES else "Terminated"
     elif reason in _REASON_STATUS:
         outcome = "Lost" if reason == "lost" else "Failed to Start"
     else:
@@ -521,10 +522,27 @@ def _delegation_attribution_line(evt: dict) -> str | None:
 
 
 def _completion_status(evt: dict) -> str:
+    from tools.process_registry_results import INTERRUPT_KILL_SOURCES
     reason = evt.get("completion_reason") or "exited"
     if reason == "killed":
-        return f"terminated by {evt.get('termination_source') or 'Hermes'}"
+        source = evt.get("termination_source") or "Hermes"
+        if source in INTERRUPT_KILL_SOURCES:
+            # A lifecycle kill interrupted a completion contract: say so, with the cause
+            # and the time, never as a plain "terminated" the owner may never read.
+            return ("task interrupted — killed by "
+                    f"{source}{_at_suffix(evt)}")
+        return f"terminated by {source}"
+    if reason == "lost" and evt.get("termination_source") == "gateway_downtime":
+        return ("task interrupted — the process was gone when the gateway came back "
+                "(died during a gateway restart/downtime); outcome unknown")
     return _REASON_STATUS.get(reason) or ("completed normally" if evt.get("exit_code", "?") == 0 else "exited")
+
+
+def _at_suffix(evt: dict) -> str:
+    when = evt.get("exited_at")
+    if not isinstance(when, (int, float)) or when <= 0:
+        return ""
+    return f" at {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(when))}"
 
 
 def format_process_notification(evt: dict) -> str | None:
@@ -557,6 +575,7 @@ def format_process_notification(evt: dict) -> str | None:
     _exit = evt.get("exit_code", "?")
     _out = evt.get("output", "")
     _signal = ", SIGTERM" if _exit in {-15, 143, "-15", "143"} else ""
+    interrupted = _completion_status(evt).startswith("task interrupted")
     # A subagent-owned process's full output belongs in the child's transcript, not as
     # a raw wall in the parent — trim hard but keep enough tail to recognise failures.
     if _attribution and isinstance(_out, str) and len(_out) > 600:
@@ -568,6 +587,9 @@ def format_process_notification(evt: dict) -> str | None:
         # Say so where the output is the payload (a teammate's reply): a silent tail reads as whole.
         _out = (f"...(first {evt['output_cut']} characters cut — process(action=\"log\", "
                 f"session_id=\"{_sid}\") has the full output)\n{_out}")
+    _exit_part = f" (exit code {_exit}{_signal})" if (not interrupted or isinstance(_exit, int)) else ""
+    _output_part = f"Output:\n{_out}" if _out else (
+        "Output: none captured (the process died while the gateway was down)" if interrupted else "Output:\n")
     return (
-        f"[IMPORTANT: Background process {_sid} {_completion_status(evt)} (exit code {_exit}{_signal}).\n"
-        f"{attribution}Command: {_cmd}\nOutput:\n{_out}]")
+        f"[IMPORTANT: Background process {_sid} {_completion_status(evt)}{_exit_part}.\n"
+        f"{attribution}Command: {_cmd}\n{_output_part}]")

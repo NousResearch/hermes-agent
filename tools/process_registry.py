@@ -688,6 +688,10 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
 
     # Class default so registries built via __new__ (tests) still restore on first drain.
     _completions_restored = False
+    # Interruption notices already armed this process (lazy per instance; see arm_interrupt_notices).
+    _interrupt_notices_armed = None
+    # Whether this process already scanned the receipt ledger for pending interruption notices.
+    _interrupt_notices_scanned = False
 
     def __init__(self):
         self._running: dict[str, ProcessSession] = {}
@@ -1603,6 +1607,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
             "exit_code": session.exit_code,
             "completion_reason": session.completion_reason,
             "termination_source": session.termination_source,
+            "exited_at": session.exited_at or None,
         }
 
     def _release_finished_handles(self, session: ProcessSession):
@@ -1818,6 +1823,60 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
             return 0
         finally:
             reset_hermes_home_override(token)
+
+    def arm_interrupt_notices(self, *, rescan: bool = False) -> int:
+        """Arm one death-notice watcher per undelivered interruption record.
+
+        A process killed by lifecycle cleanup (``agent_close`` / ``kill_all`` /
+        ``gateway_shutdown``) or found dead at boot carried a completion
+        contract (``notify_on_complete`` / ``persist_on_release``): its death must reach the agent
+        instead of silently disappearing with the killed watcher. Each pending receipt becomes a
+        one-shot synthetic watcher (``interrupted_death`` + ``dead_session``) that delivers through
+        the SAME wake chain as a completion notification, then stamps the receipt delivered so no
+        later boot replays it. Idempotent per session id within the process; the receipt scan runs
+        once per process unless ``rescan`` (a recovery pass just recorded new downtime deaths)."""
+        if self._interrupt_notices_scanned and not rescan:
+            return 0
+        self._interrupt_notices_scanned = True
+        from tools.process_registry_results import pending_interrupt_notices, session_from_result_record
+        try:
+            records = pending_interrupt_notices()
+        except Exception:
+            logger.warning("Could not load pending process interruption notices", exc_info=True)
+            return 0
+        armed = 0
+        for record in records:
+            session_id = str(record.get("id") or "")
+            if not session_id:
+                continue
+            with self._lock:
+                if self._interrupt_notices_armed is None:
+                    self._interrupt_notices_armed = set()
+                if session_id in self._interrupt_notices_armed:
+                    continue
+                self._interrupt_notices_armed.add(session_id)
+            session = session_from_result_record(record)
+            if session is None:
+                continue
+            self.pending_watchers.append({
+                "session_id": session_id,
+                "check_interval": 1,
+                "session_key": session.session_key,
+                "platform": session.watcher_platform,
+                "chat_id": session.watcher_chat_id,
+                "user_id": session.watcher_user_id,
+                "user_name": session.watcher_user_name,
+                "thread_id": session.watcher_thread_id,
+                "message_id": session.watcher_message_id,
+                "notify_on_complete": True,
+                "parent_session_id": session.parent_session_id,
+                "interrupted_death": True,
+                "dead_session": session,
+            })
+            armed += 1
+            logger.info("Armed interruption notice replay for %s (killed by %s)", session_id,
+                        session.termination_source or "lifecycle cleanup")
+        return armed
 
     def drain_notifications(
         self, session_key: str = "", owns_event=None, *, skip_poll_observed: bool = True,
@@ -2499,9 +2558,9 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         return frozenset(s.id for s in self.running_owned_by(task_id))
 
     # Kill sources that are agent-lifecycle cleanup (session end / compression / error
-    # recovery / turn abandon), not a deliberate stop: those must skip persist_on_release
-    # sessions. An explicit stop (process_manage kill, CLI /stop) passes its own source
-    # string and still reaches them.
+    # recovery / turn abandon / gateway restart), not a deliberate stop: those must skip
+    # persist_on_release sessions. An explicit stop (process_manage kill, CLI /stop) passes
+    # its own source string and still reaches them.
     _LIFECYCLE_KILL_SOURCES = frozenset({"kill_all", "gateway_turn_timeout", "agent_close"})
 
     def kill_started_since(self, task_id: str, baseline_ids, *, source: str) -> int:

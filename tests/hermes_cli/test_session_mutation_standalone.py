@@ -1,8 +1,10 @@
 """Standalone ``hermes serve``/``dashboard`` (no gateway authority) keeps session edits.
 
 The edit runs the gateway's receipt transaction on the process's single writer under the
-exact owner lock: revision/retry/idle guards hold, an owner discovery cannot reach answers 503
-and one that wins the lock after discovery refuses with 409.
+exact owner lock: revision/retry/idle guards hold, and an ``OwnershipConflict`` always
+answers the named, retryable ``owner_unavailable`` 503 regardless of what the discovery
+snapshot said — the conflict itself is the evidence an owner is on record, and the
+snapshot can be seconds stale either way.
 """
 import httpx
 import pytest
@@ -76,15 +78,20 @@ async def test_standalone_edit_refuses_while_a_gateway_owns_the_store(tmp_path, 
                                               json={'request_id': 'r1', 'expected_revision': 0, 'title': 'X'})
                 assert starting.status_code == 503, starting.text
                 assert starting.json()['detail'].startswith('owner_unavailable: starting: Exclusive maintenance refused')
-                assert 'gateway owner not reachable (starting)' in caplog.text
-                # An owner that reserves after discovery read absent still wins the offline reservation.
+                assert 'gateway owner not reachable (probed starting, discovery starting)' in caplog.text
+                # A stale snapshot never re-shapes the refusal: an owner that
+                # reserved after discovery read absent still loses the offline
+                # reservation, and the refusal is the SAME named, retryable
+                # 503 — with the reason re-probed from the live lock instead
+                # of the snapshot's word.
                 monkeypatch.setattr('hermes_cli.gateway_runtime.discover_gateway_endpoint',
                                     lambda home, timeout=2.0: GatewayDiscovery('absent'))
                 refused = await client.patch('/api/sessions/owned',
                                              json={'request_id': 'r1', 'expected_revision': 0, 'title': 'X'})
-                assert refused.status_code == 409, refused.text
+                assert refused.status_code == 503, refused.text
+                assert refused.json()['detail'].startswith('owner_unavailable: starting: Exclusive maintenance refused')
                 # uvicorn logs no handled 4xx: the refusal itself must leave a server-side trace (#138915).
-                assert 'session write refused' in caplog.text
+                assert 'probed starting, discovery absent' in caplog.text
                 # A composed gateway whose authority is not up yet never falls back to a writer.
                 app.state.gateway_runner = object()
                 pending = await client.patch('/api/sessions/owned',

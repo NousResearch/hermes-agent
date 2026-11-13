@@ -28,6 +28,7 @@ const localSkin = ipcRenderer.sendSync('hermes:skin:local')
 const uiPreferencesSnapshot = ipcRenderer.sendSync('hermes:ui-preferences:snapshot')
 
 import { unwrapExpectedNotFound } from './api-expected-404'
+import { unwrapOwnerUnavailable } from './api-owner-unavailable'
 
 contextBridge.exposeInMainWorld('hermesDesktop', {
   glassSupported: translucencySupport?.glass === true,
@@ -354,8 +355,9 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   },
   // The handler resolves an expected 404 with a sentinel instead of rejecting
   // (Electron logs a stack for every rejected invoke). Turn it back into the
-  // rejection the renderer expects — see electron/api-expected-404.ts.
-  api: request => ipcRenderer.invoke('hermes:api', request).then(unwrapExpectedNotFound),
+  // rejection the renderer expects — see electron/api-expected-404.ts and
+  // electron/api-owner-unavailable.ts.
+  api: request => ipcRenderer.invoke('hermes:api', request).then(unwrapExpectedNotFound).then(unwrapOwnerUnavailable),
   notify: payload => ipcRenderer.invoke('hermes:notify', payload),
   claimStartupLatency: () => ipcRenderer.invoke('hermes:startup-latency:claim'),
   requestMicrophoneAccess: () => ipcRenderer.invoke('hermes:requestMicrophoneAccess'),

@@ -33,7 +33,7 @@ import {
   ROSTER_KEY,
   saveBotMeta
 } from './data'
-import { aliasLookFor, botConnectionRoute, botRouteKey, requestForBot } from './routing'
+import { aliasIdentityFor, botConnectionRoute, botRouteKey, requestForBot } from './routing'
 import { getPluginCtx } from './shared'
 import type { BotMeta, RosterRow } from './types'
 
@@ -233,6 +233,15 @@ function serverReportedTitle(bot: RosterRow, server: BotMeta | null): string | u
   return typeof bot.title === 'string' ? bot.title.trim() : undefined
 }
 
+/** The latest local write to this row's record or to the alias claiming it.
+ *  An alias save lands on the same backend profile, so a snapshot issued
+ *  before it still carries the old look and must not overlay the row. */
+function lastMetaWrite(bot: RosterRow, key: string): number {
+  const keys = [key, ...(aliasIdentityFor(bot)?.metaKeys || [])]
+
+  return Math.max(...keys.map(written => botMetaWriteAt.get(written) || 0))
+}
+
 /** Server ui_meta (per roster row) beats local storage for the compact
  *  fields it carries; local-only fields (avatar image data URL, extracted
  *  pet icon) are PRESERVED — the server copy never includes them, so a
@@ -269,7 +278,7 @@ export function mergeServerMeta(roster: RosterRow[], fetchedAt = 0) {
     if (server || title !== undefined) {
       const key = botMetaKey(bot)
 
-      if (fetchedAt && fetchedAt < (botMetaWriteAt.get(key) || 0)) {
+      if (fetchedAt && fetchedAt < lastMetaWrite(bot, key)) {
         continue
       }
 
@@ -388,11 +397,8 @@ export async function duplicateBot(source: RosterRow, roster: RosterRow[]) {
 
   // Same look: avatar shape/color/image and a "(copy)" title so the two
   // are tellable apart in the roster until the user renames. Do not copy
-  // chat or created. Those belong to the original bot. A configured alias's
-  // look carries over too: the row shows it without its own record holding it.
-  const own = $botMeta.get()[botMetaKey(bot)]
-  const aliasLook = aliasLookFor(bot, $botMeta.get())
-  const meta = own || Object.keys(aliasLook).length ? { ...aliasLook, ...own } : undefined
+  // chat or created. Those belong to the original bot.
+  const meta = $botMeta.get()[botMetaKey(bot)]
 
   if (meta) {
     const { chat, created, ...look } = meta

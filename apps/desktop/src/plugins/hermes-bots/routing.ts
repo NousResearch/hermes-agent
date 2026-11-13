@@ -418,9 +418,13 @@ export function aliasMetaFor<T extends BotMeta>(
  *  carries an alias-only value to that backend. */
 const ALIAS_LOOK_FIELDS = ['color', 'custom', 'image', 'imageKind', 'shape'] as const
 
-/** The look the configured alias claiming this row gives it ({} when none). */
-export function aliasLookFor(bot: Partial<RosterRow> | null | undefined, metaByName: Record<string, BotMeta>): BotMeta {
-  const alias = aliasMetaFor(bot, metaByName)
+/** A row's own record with its alias's look underneath, read at lookup time and
+ *  never copied into the own record: a copy would freeze the alias's look and
+ *  outlive the alias. The look moves as one unit: when the own record carries
+ *  any look field it is the row's own look, and mixing in alias fields would
+ *  let the alias's `custom` vouch for colors it never chose. */
+function withAliasLook<T extends BotMeta>(bot: RosterRow, own: T, metaByName: Record<string, BotMeta>): T {
+  const alias = ALIAS_LOOK_FIELDS.some(field => own[field] !== undefined) ? undefined : aliasMetaFor(bot, metaByName)
   const look: BotMeta = {}
 
   for (const field of ALIAS_LOOK_FIELDS) {
@@ -428,15 +432,6 @@ export function aliasLookFor(bot: Partial<RosterRow> | null | undefined, metaByN
       Object.assign(look, { [field]: alias[field] })
     }
   }
-
-  return look
-}
-
-/** A row's own record with its alias's look underneath, read at lookup time and
- *  never copied into the own record: a copy would freeze the alias's look and
- *  outlive the alias. Own fields win. */
-function withAliasLook<T extends BotMeta>(bot: RosterRow, own: T, metaByName: Record<string, BotMeta>): T {
-  const look = aliasLookFor(bot, metaByName)
 
   return Object.keys(look).length ? { ...look, ...own } : own
 }

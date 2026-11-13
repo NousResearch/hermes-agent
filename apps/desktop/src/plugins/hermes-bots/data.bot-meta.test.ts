@@ -543,6 +543,37 @@ describe("a bot is named by its own backend, never by another bot's cached recor
     }
   })
 
+  it('a roster answer issued before an alias save never overlays the old look onto the row', () => {
+    indexAliasRoutes([{ connectionId: 'vps', mode: 'remote', profile: 'kody', targetProfile: 'default' }])
+
+    try {
+      const issuedAt = Date.now() - 1_000
+      $botMeta.set({ 'vps::kody': { color: '#0000ff' } })
+      botMetaWriteAt.set('vps::kody', Date.now())
+      mergeServerMeta([{ ...vps, ui_meta: { 'hermes-bots': { color: '#00ff00' } } } as RosterRow], issuedAt)
+
+      expect($botMeta.get()['vps::default']).toBeUndefined()
+      expect(botRosterMeta(vps, $botMeta.get())).toMatchObject({ color: '#0000ff' })
+    } finally {
+      indexAliasRoutes([])
+    }
+  })
+
+  it("a row with a look of its own never mixes in the alias's look fields", () => {
+    indexAliasRoutes([{ connectionId: 'vps', mode: 'remote', profile: 'kody', targetProfile: 'default' }])
+
+    try {
+      $botMeta.set({
+        'vps::default': { color: '#123456', sectionId: 's1' },
+        'vps::kody': { custom: true, image: 'data:image/png;base64,AA', shape: 'square' }
+      })
+
+      expect(botRosterMeta(vps, $botMeta.get())).toEqual({ color: '#123456', sectionId: 's1' })
+    } finally {
+      indexAliasRoutes([])
+    }
+  })
+
   it("only an alias's look shows through a row's own record, never its groups, pin or hide", () => {
     indexAliasRoutes([{ connectionId: 'vps', mode: 'remote', profile: 'kody', targetProfile: 'default' }])
 

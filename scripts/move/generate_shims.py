@@ -71,7 +71,7 @@ TEMPLATE = '''try:  {header}
     try:
         _module = _forward()
     except Exception:
-        if sys.argv[:1] != ["-m"]:  # only while Python locates a module under this one for `python -m`
+        if sys.argv[:1] != ["-m"] and __name__ != "__main__":  # an entry launch; a plain import stays light
             raise
         import hermes_bootstrap  # repairs a killed update and relaunches when it restored something
         _module = _forward()

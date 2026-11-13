@@ -90,6 +90,7 @@ def test_old_name_launch_repairs_a_torn_update_before_importing_hermes_agent(rep
     # hermes_agent/ must not stop `python -m <old name>` from reaching it.
     (repo / "hermes_agent/compat/__init__.py").write_text("def install(", encoding="utf-8")
     assert "bootstrap ran" in _run(repo, "-m", "oldpkg.tool").stderr
+    assert "bootstrap ran" in _run(repo, "oldpkg/tool.py").stderr  # `python cli.py` is an entry launch too
     plain = _run(repo, "-c", "import oldpkg")  # a plain import stays light and shows the real damage
     assert "bootstrap ran" not in plain.stderr and "SyntaxError" in plain.stderr
 

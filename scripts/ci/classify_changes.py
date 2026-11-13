@@ -147,6 +147,8 @@ _PY_RELEVANT_CONTRACT_FILES = {
     "apps/desktop/src/lib/desktop-slash-registry.json",
     # tests/tui_gateway/test_show_reasoning_display_gate.py (card-tool names vs the gateway lifecycle set)
     "apps/desktop/src/lib/tool-render-class.ts",
+    # tests/tui_gateway/test_projects_rpc.py (the project tree drops exactly these messaging sources)
+    "apps/desktop/src/lib/messaging-session-sources.json",
     # tests/website/test_catalog_rules_mirror.py (docs page mirrors the canonical rules)
     "plugin-catalog/README.md",
     # tests/hermes_cli/test_plugin_docs_public_imports.py (its examples import only the plugin API)

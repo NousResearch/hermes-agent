@@ -158,6 +158,10 @@ CASES = {
         ["apps/desktop/src/lib/tool-render-class.ts"],
         _lanes(python=True, frontend=True),
     ),
+    "desktop messaging-source list → python + frontend": (
+        ["apps/desktop/src/lib/messaging-session-sources.json"],
+        _lanes(python=True, frontend=True),
+    ),
     # The published CIMD document is asserted about by the Python suite, so a
     # lone edit there must not skip the lane that would catch a bad edit.
     "cimd document → python + site": (

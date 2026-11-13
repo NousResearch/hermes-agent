@@ -1,0 +1,42 @@
+name: forgebruecke
+title: Forgebrücke
+repo: https://github.com/studioluftbruecke/hermes-forgebruecke
+sha: f01d5dae2b643ef2a2efffbdccaea7d9417632cf
+description: >-
+  A bridge between Hermes and your self-hosted Forgejo: Hermes works as its own account, writes
+  follow Hermes' approval setting, and a desk in Hermes Desktop shows the pull requests that wait for you.
+maintainer: studioluftbruecke
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+docs_url: https://forgebruecke.luftbruecke.studio
+version: "0.0.22"
+image: https://raw.githubusercontent.com/studioluftbruecke/hermes-forgebruecke/f01d5dae2b643ef2a2efffbdccaea7d9417632cf/docs/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/studioluftbruecke/hermes-forgebruecke/f01d5dae2b643ef2a2efffbdccaea7d9417632cf/docs/screenshot-1.png
+  - https://raw.githubusercontent.com/studioluftbruecke/hermes-forgebruecke/f01d5dae2b643ef2a2efffbdccaea7d9417632cf/docs/screenshot-2.png
+  - https://raw.githubusercontent.com/studioluftbruecke/hermes-forgebruecke/f01d5dae2b643ef2a2efffbdccaea7d9417632cf/docs/screenshot-3.png
+  - https://raw.githubusercontent.com/studioluftbruecke/hermes-forgebruecke/f01d5dae2b643ef2a2efffbdccaea7d9417632cf/docs/screenshot-4.png
+  - https://raw.githubusercontent.com/studioluftbruecke/hermes-forgebruecke/f01d5dae2b643ef2a2efffbdccaea7d9417632cf/docs/screenshot-5.png
+readme: true
+platforms: [linux, macos]
+known_issues:
+  - "Needs a Forgejo account for Hermes, added as a collaborator on each repo, with a token for read:notification, write:issue, write:repository and read:user."
+  - "A new setup only previews writes. Switch on \"Let Hermes write\" in Settings, Plugins, Forgebrücke."
+  - "With Hermes on a server, install the plugin on the Desktop computer too, on the same version: Desktop loads the desk from its own computer."
+capabilities:
+  provides_tools:
+    - forgejo_doctor
+    - forgejo_get
+    - forgejo_list
+    - forgejo_comment
+    - forgejo_create_pr
+    - forgejo_status
+    - forgejo_flows
+    - forgejo_repos
+  provides_hooks:
+    - pre_tool_call
+    - post_approval_response
+    - transform_llm_output
+  provides_middleware: []
+  requires_env: []

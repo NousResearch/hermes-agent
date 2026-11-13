@@ -27,6 +27,9 @@ _CHUNK_OVERLAP = 4096
 _FILLER = r"(?:\w{1,64}\s{1,64}){0,8}"
 # Env var reference ending in a secret-ish suffix (see exfil comment below).
 _SECRET_VAR = r"\$\{?\w{0,256}(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)S?\b"
+# "forget your original instructions" (#26977); shared with tools/skills_guard.py.
+FORGET_RULES_RE = (r"(?<!n't\s)(?<!not\s)(?<!never\s)\bforget\s{1,64}(?:about\s{1,64})?(your|all|any|previous|prior|above|earlier)"
+                   r"\s{1,64}(?:\w{1,64}\s{1,64}){0,3}(instructions|rules|guidelines)\b")
 # Verb prefix for "modify agent config" patterns.
 _MODIFY = r"(update|modify|edit|write|change|append|add\s{1,64}to)\s{1,64}[^\n]{0,2048}"
 # (regex, pattern_id, scope); scope ∈ {"all", "context", "strict"}
@@ -35,6 +38,9 @@ _PATTERNS: list[tuple[str, str, str]] = [
     (rf'ignore\s{{1,64}}{_FILLER}(previous|all|above|prior)\s{{1,64}}{_FILLER}instructions', "prompt_injection", "all"),
     (r'system\s{1,64}prompt\s{1,64}override', "sys_prompt_override", "all"),
     (rf'disregard\s{{1,64}}{_FILLER}(your|all|any)\s{{1,64}}{_FILLER}(instructions|rules|guidelines)', "disregard_rules", "all"),
+    # The determiner must follow `forget` directly and the filler is short, so docs like "don't forget to
+    # follow all the setup instructions" or "forget your password? follow the reset instructions" pass.
+    (FORGET_RULES_RE, "forget_rules", "all"),
     (rf'act\s{{1,64}}as\s{{1,64}}(if|though)\s{{1,64}}{_FILLER}you\s{{1,64}}{_FILLER}(have\s{{1,64}}no|don\'t\s{{1,64}}have)\s{{1,64}}{_FILLER}(restrictions|limits|rules)', "bypass_restrictions", "all"),
     (r'<!--[^>]{0,512}(?:ignore|override|system|secret|hidden)[^>]{0,512}-->', "html_comment_injection", "all"),
     (r'<\s{0,64}div\s{1,64}style\s{0,64}=\s{0,64}["\'][^>]{0,2048}display\s{0,64}:\s{0,64}none', "hidden_div", "all"),

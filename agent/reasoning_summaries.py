@@ -34,6 +34,8 @@ def separate_glued_reasoning_blocks(previous: str, delta: Any) -> str:
 # reasoning_details entry types whose consecutive fragments are ONE logical block.
 _MERGEABLE_DETAIL_TEXT_KEYS = {"reasoning.text": "text", "reasoning.summary": "summary"}
 _BACKFILL_DETAIL_KEYS = ("signature", "id", "format", "index")
+# Bedrock Converse persists unsigned reasoning (non-Claude models) as Anthropic-shape ``thinking``.
+_REDACTABLE_DETAIL_TEXT_KEYS = {**_MERGEABLE_DETAIL_TEXT_KEYS, "thinking": "thinking"}
 
 
 def streamed_reasoning_detail_text(detail: Any) -> str:
@@ -76,11 +78,12 @@ def append_streamed_reasoning_detail(details_acc: list, detail: Any) -> None:
 
 
 def _redact_unsigned_detail(detail: Any) -> Any:
-    """Copy of an unsigned ``reasoning.text`` / ``reasoning.summary`` entry with its text redacted."""
-    if not isinstance(detail, dict) or detail.get("signature") or detail.get("encrypted_content"):
+    """Copy of an unsigned ``reasoning.text`` / ``reasoning.summary`` / ``thinking`` entry with its
+    text redacted."""
+    if not isinstance(detail, dict) or any(detail.get(k) for k in ("signature", "encrypted_content", "data")):
         return detail
     dtype = detail.get("type")
-    key = _MERGEABLE_DETAIL_TEXT_KEYS.get(dtype) if isinstance(dtype, str) else None
+    key = _REDACTABLE_DETAIL_TEXT_KEYS.get(dtype) if isinstance(dtype, str) else None
     text = detail.get(key) if key else None
     if not isinstance(text, str) or not text:
         return detail

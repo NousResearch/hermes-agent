@@ -19,12 +19,13 @@ import {
   CHAT_EMPTY_AREA,
   COMPOSER_AREAS,
   host,
+  KEYBINDS_AREA,
   LocalizedTabTitle,
   PALETTE_AREA,
   SIDEBAR_PROFILE_GROUP_HEADER_AREA,
   translateNow
 } from '@hermes/plugin-sdk'
-import type { ChatEmptyProps, PluginContext, ProfileGroupRoute } from '@hermes/plugin-sdk'
+import type { ChatEmptyProps, PluginContext, PluginContribution, ProfileGroupRoute } from '@hermes/plugin-sdk'
 
 import { startFaceClock, stopFaceClock } from './avatar'
 import {
@@ -82,7 +83,9 @@ import {
 } from './roster-pane'
 import { botRosterMeta, botWorkspaceOwnerKey, setBotsWorkspaceOwner } from './routing'
 import { startScreenAutoRaise } from './screen-autoraise'
+import { openBotScreen } from './screen-open'
 import { ProfileGroupScreenPortal } from './screen-portal'
+import { pickScreenBot } from './screen-target'
 import { startHideSweepScheduler } from './session-sweep'
 import { bumpBotOpenGeneration, getBotOpenGeneration, ID, setPluginCtx } from './shared'
 import type { GroupChat, RosterRow } from './types'
@@ -750,6 +753,197 @@ export default {
         }
       }
     })
+
+    // Screen from ⌘K, for ANY bot: one palette entry per roster row ("<name> · Open
+    // Screen"), so typing a bot's name opens exactly that bot's Screen — no detour
+    // through the Bots pane. The entries follow the live roster, and each opens the
+    // built-in pane (interactive, take-over included) via the same `openBotScreen`.
+    const screenCommandFor = (bot: RosterRow): PluginContribution => {
+      const key = botSelectionKey(bot) ?? bot.name
+      const meta = botRosterMeta(bot, $botMeta.get())
+
+      return {
+        id: `open-screen:${key}`,
+        area: PALETTE_AREA,
+        data: {
+          id: `${ID}.open-screen:${key}`,
+          label: `${displayName(bot, meta)} · ${ctx.i18n.t('screen.menu')}`,
+          keywords: ['screen', 'bot', 'desktop', 'vnc', 'open', bot.name, displayName(bot, meta)],
+          // By NAME, not by this row: the row that exists at click time is the one
+          // with the live connection binding (see `openBotByName`).
+          run: () => openBotByName(bot.name)
+        }
+      }
+    }
+
+    // Until the roster lands (or if it never does), the command still works for
+    // whatever chat is on screen.
+    const openFocusedBotScreen = () => {
+      const roster = Array.isArray($lastRoster.get()) ? $lastRoster.get() : []
+      const owner = $focusedBotOwner.get()
+      const focusedProfile = String(owner?.profile || host.state.profile?.get?.() || '').trim() || 'default'
+      const legacySelection = String($selectedBot.get() || '').trim()
+      const bot =
+        selectedRosterBot(roster, $selectedRosterKey.get()) ||
+        roster.find(row => botSelectionKey(row) === focusedProfile) ||
+        roster.find(row => botSelectionKey(row) === legacySelection) ||
+        null
+
+      if (!bot) {
+        host.notify({ kind: 'info', message: ctx.i18n.t('screen.paletteNoBot') })
+
+        return
+      }
+
+      openBotScreen(bot, botRosterMeta(bot, $botMeta.get()))
+    }
+
+    // Resolve the row AT CLICK TIME, not at registration: a row captured early (from
+    // `profiles.list`, before the Bots pane ever published its snapshot) carries no
+    // connection binding, and a screen pane opened with one builds its ws URL with a
+    // null connectionId — it connects, receives nothing, and paints black. The live
+    // roster the Bots pane publishes is the one the pane's own routing is proven on,
+    // so read it here; registration only remembers the bot's name.
+    const openBotByName = (name: string) => {
+      const rowsNow = Array.isArray($lastRoster.get()) ? $lastRoster.get() : []
+      const pick = (rows: readonly RosterRow[] | null | undefined) => pickScreenBot(rows, name)
+      const open = (row: RosterRow | null) => {
+        if (!row) {
+          host.notify({ kind: 'info', message: ctx.i18n.t('screen.paletteNoBot') })
+
+          return
+        }
+
+        openBotScreen(row, botRosterMeta(row, $botMeta.get()))
+      }
+      const live = pick(rowsNow)
+
+      if (live) {
+        open(live)
+
+        return
+      }
+
+      const cached = cachedUnionRoster()
+
+      void (async () => {
+        const fromCache = pick(Array.isArray(cached?.profiles) ? cached.profiles : [])
+
+        if (fromCache) {
+          open(fromCache)
+
+          return
+        }
+
+        await primeRoster()
+
+        const primed = pick(Array.isArray(cachedUnionRoster()?.profiles) ? cachedUnionRoster()!.profiles! : [])
+
+        if (primed) {
+          open(primed)
+
+          return
+        }
+
+        open(pick(await loadRoster()))
+      })()
+    }
+
+    // The Bots pane publishes `$lastRoster` from a React effect, so a launch that
+    // never opened that pane has no roster here — and that is exactly the case for
+    // "⌘K → open a bot's Screen" (the point is to skip the pane). Fall back to the
+    // roster cache, then to `profiles.list`, so the per-bot entries always exist.
+    const loadRoster = async (): Promise<RosterRow[]> => {
+      const cached = cachedUnionRoster()
+
+      if (Array.isArray(cached?.profiles) && cached.profiles.length) {
+        return cached.profiles
+      }
+
+      try {
+        await primeRoster()
+      } catch {
+        /* no gateway yet — profiles.list below is the last rung */
+      }
+
+      const primed = cachedUnionRoster()
+
+      if (Array.isArray(primed?.profiles) && primed.profiles.length) {
+        return primed.profiles
+      }
+
+      try {
+        const res = await host.request<{ profiles?: RosterRow[] }>('profiles.list', { include_sessions: false })
+
+        return res?.profiles ?? []
+      } catch {
+        return []
+      }
+    }
+
+    let disposeScreenCommands = () => {}
+    let syncToken = 0
+
+    const applyScreenCommands = (rows: RosterRow[]) => {
+      disposeScreenCommands()
+
+      disposeScreenCommands = rows.length
+        ? ctx.registerMany(rows.map(screenCommandFor))
+        : ctx.register({
+            id: 'open-screen',
+            area: PALETTE_AREA,
+            data: {
+              id: `${ID}.open-screen`,
+              label: ctx.i18n.t('screen.menu'),
+              keywords: ['screen', 'bot', 'desktop', 'view', 'open', 'vnc'],
+              run: openFocusedBotScreen
+            }
+          })
+    }
+
+    const syncScreenCommands = () => {
+      const token = ++syncToken
+      const rows = Array.isArray($lastRoster.get()) ? $lastRoster.get() : []
+
+      // One command right away (the fallback), then the per-bot set as soon as a
+      // roster is known — the palette must never be empty for this action.
+      applyScreenCommands(rows)
+
+      if (rows.length) {
+        return
+      }
+
+      void loadRoster()
+        .then(live => {
+          if (token === syncToken && live.length) {
+            applyScreenCommands(live)
+          }
+        })
+        .catch(() => undefined)
+    }
+
+    // A bot's name is not a keybind's business: this one action opens the Screen of
+    // whatever bot chat is on screen, and is left unbound so it takes no key from
+    // the user (it is listed under Settings → Keybinds to assign one).
+    ctx.register({
+      id: 'open-screen-keybind',
+      area: KEYBINDS_AREA,
+      data: {
+        id: `${ID}.open-screen`,
+        category: 'view',
+        defaults: [],
+        label: ctx.i18n.t('screen.menu'),
+        run: openFocusedBotScreen
+      }
+    })
+
+    syncScreenCommands()
+    const unbindScreenRoster = $lastRoster.listen(syncScreenCommands)
+
+    if (typeof ctx.onDispose === 'function') {
+      ctx.onDispose(unbindScreenRoster)
+      ctx.onDispose(() => disposeScreenCommands())
+    }
 
     // @-mention middleware: "@<bot> do the thing" in any chat gets an
     // IDENTIFICATION note — who the user is referring to, resolved against

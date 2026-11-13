@@ -603,12 +603,14 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
             if rendered == self._reasoning_last_sent_content:
                 return
             try:
+                edit_meta = dict(self._metadata_for_send(final=False) or {})
+                edit_meta["markdown_preview"] = True
                 eres = await self.adapter.edit_message(
                     chat_id=self.chat_id,
                     message_id=self._reasoning_live_msg_id,
                     content=rendered,
                     finalize=seal,
-                    metadata=self._metadata_for_send(final=False),
+                    metadata=edit_meta,
                 )
             except Exception as e:
                 logger.debug("Live reasoning edit failed: %s", e)

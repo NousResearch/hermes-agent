@@ -12,6 +12,7 @@ keeps resolving.
 import functools
 import json
 import logging
+import os
 import re
 import shlex
 import stat
@@ -616,6 +617,7 @@ def gateway_lifecycle_block(
     unsafe, refusal = scan_gateway_lifecycle(
         command,
         cwd=guard_cwd,
+        gateway_pid=os.getpid() if env_type == "local" else None,
         read_remote_script=lambda p: _read_script_for_guard(env, guard_cwd, p, _MAX_REFERENCED_SCRIPT_BYTES),
     )
     if unsafe and refusal:

@@ -50,6 +50,19 @@ function Get-WinEvent { [CmdletBinding()] param([hashtable]$FilterHashtable)
 }
 """.replace("IDENTITY", IDENTITY)
 
+# The real Get-WinEvent for two channels: one that does not exist, one with nothing in the window.
+MISSING_AND_EMPTY_CHANNEL = FAKE_HOST + r"""
+function Get-WinEvent { [CmdletBinding()] param([hashtable]$FilterHashtable)
+    $filter = $FilterHashtable.Clone()
+    switch ($filter.LogName) {
+        'Microsoft-Windows-AppXDeploymentServer/Operational' { $filter.LogName = 'Microsoft-Windows-HermesEvidenceTest-Missing/Operational' }
+        'Microsoft-Windows-AppXDeployment/Operational' { $filter.StartTime = (Get-Date).AddDays(1) }
+        default { return $fixtureEvents[$filter.LogName] }
+    }
+    Microsoft.PowerShell.Diagnostics\Get-WinEvent -FilterHashtable $filter
+}
+"""
+
 
 def _collect(tmp_path: Path, fakes: str = "") -> tuple[subprocess.CompletedProcess, Path]:
     """Run the collector in the e2e script's context: Stop, StrictMode Latest, inside its try."""
@@ -108,3 +121,18 @@ def test_saves_package_process_and_event_records_and_logs_only_relevant_problems
     assert f"69 Warning: {IDENTITY} could not be activated" in result.stdout
     assert "Microsoft.WindowsStore" not in result.stdout
     assert "Started deployment" not in result.stdout
+
+
+def test_a_missing_channel_is_saved_as_unread_and_the_other_logs_are_still_read(tmp_path):
+    result, out = _collect(tmp_path, MISSING_AND_EMPTY_CHANNEL)
+
+    unread = _lines(out, "AppXDeploymentServer_Operational")
+    assert len(unread) == 1 and unread[0].startswith("could not read: "), unread
+    assert "Microsoft-Windows-AppXDeploymentServer/Operational: could not read: " in result.stdout
+    # A window with no events is not a read failure.
+    assert _lines(out, "AppXDeployment_Operational") == []
+    assert "Microsoft-Windows-AppXDeployment/Operational: 0 events" in result.stdout
+    assert len(_lines(out, "AppxPackaging_Operational")) == 3
+    assert _lines(out, "AppModel-Runtime_Admin") == [
+        f"2026-11-13T09:05:00.0000000Z 69 Warning {IDENTITY} could not be activated"]
+    assert f"69 Warning: {IDENTITY} could not be activated" in result.stdout

@@ -24,12 +24,21 @@ $logs = @(
     'Microsoft-Windows-AppModel-Runtime/Admin'
 )
 foreach ($log in $logs) {
-    $events = @(Get-WinEvent -FilterHashtable @{ LogName = $log; StartTime = $Since } -ErrorAction SilentlyContinue | Sort-Object TimeCreated)
+    # Get-WinEvent reports an empty window as an error too. Any other error (a missing channel
+    # throws) is saved, so an unread log never looks empty and the remaining logs are still read.
+    $events = @()
+    $unread = $null
+    try {
+        $events = @(Get-WinEvent -FilterHashtable @{ LogName = $log; StartTime = $Since } -ErrorAction Stop | Sort-Object TimeCreated)
+    } catch {
+        if ($_.FullyQualifiedErrorId -notlike 'NoMatchingEventsFound,*') { $unread = "could not read: $($_.Exception.Message)" }
+    }
     $lines = @($events | ForEach-Object {
         '{0:o} {1} {2} {3}' -f $_.TimeCreated.ToUniversalTime(), $_.Id, $_.LevelDisplayName, ($_.Message -replace '\s+', ' ')
     })
+    if ($unread) { $lines = @($unread) }
     Set-Content -LiteralPath (Join-Path $OutDir (($log -replace '[/\\]', '_') + '.txt')) -Value $lines -Encoding UTF8
-    Write-Host "  [evidence] $($log): $($events.Count) events"
+    if ($unread) { Write-Host "  [evidence] $($log): $unread" } else { Write-Host "  [evidence] $($log): $($events.Count) events" }
     foreach ($record in @($events | Where-Object { $_.Level -in 1, 2, 3 -and $_.Message -match $ours })) {
         $text = ($record.Message -replace '\s+', ' ')
         Write-Host "    $($record.TimeCreated.ToUniversalTime().ToString('o')) $($record.Id) $($record.LevelDisplayName): $($text.Substring(0, [Math]::Min(300, $text.Length)))"

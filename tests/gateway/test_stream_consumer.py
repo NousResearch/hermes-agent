@@ -219,6 +219,80 @@ class TestSendOrEditMediaStripping:
 # ── Integration: full stream run ─────────────────────────────────────────
 
 
+@pytest.mark.asyncio
+async def test_held_first_send_does_not_start_edit_interval(monkeypatch):
+    """Held fragments stay responsive; real sends and edits retain their pacing."""
+    now = 100.0
+    deliveries = []
+    snapshots = []
+    adapter = MagicMock()
+    adapter.MAX_MESSAGE_LENGTH = 4096
+    adapter.REQUIRES_EDIT_FINALIZE = False
+
+    def deliver(kind, **kwargs):
+        deliveries.append((kind, now, kwargs["content"]))
+        return SimpleNamespace(success=True, message_id="msg_1")
+
+    adapter.send = AsyncMock(side_effect=lambda **kw: deliver("send", **kw))
+    adapter.edit_message = AsyncMock(side_effect=lambda **kw: deliver("edit", **kw))
+    consumer = GatewayStreamConsumer(
+        adapter, "chat_123",
+        StreamConsumerConfig(edit_interval=3.0, buffer_threshold=10_000, cursor=" ▉"),
+    )
+    clock = SimpleNamespace(monotonic=lambda: now)
+    monkeypatch.setattr("gateway.stream_consumer.time", clock)
+    monkeypatch.setattr("gateway.stream_consumer_transport.time", clock)
+    steps = iter([(100.1, "t works"), (100.2, " again"), (103.09, None), (103.11, None)])
+
+    async def advance(_delay):
+        nonlocal now
+        snapshots.append((now, adapter.send.call_count, adapter.edit_message.call_count))
+        step = next(steps, None)
+        if step is None:
+            consumer.finish()
+        else:
+            now, delta = step
+            if delta:
+                consumer.on_delta(delta)
+
+    monkeypatch.setattr("gateway.stream_consumer.asyncio", SimpleNamespace(
+        sleep=advance, CancelledError=asyncio.CancelledError,
+    ))
+    consumer.on_delta("I")
+    await consumer.run()
+
+    assert snapshots == [
+        (100.0, 0, 0),
+        (100.1, 1, 0),
+        (100.2, 1, 0),
+        (103.09, 1, 0),
+        (103.11, 1, 1),
+    ]
+    assert deliveries[:2] == [
+        ("send", 100.1, "It works ▉"),
+        ("edit", 103.11, "It works again ▉"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_failed_first_send_still_paces_retries(monkeypatch):
+    """Only a held fragment skips the pacing stamp; a refused send waits out the interval."""
+    monkeypatch.setattr("gateway.stream_consumer.time", SimpleNamespace(monotonic=lambda: 100.0))
+    adapter = MagicMock()
+    adapter.MAX_MESSAGE_LENGTH = 4096
+    adapter.send = AsyncMock(return_value=SimpleNamespace(success=False, message_id=None))
+    consumer = GatewayStreamConsumer(
+        adapter, "chat_123", StreamConsumerConfig(edit_interval=3.0, buffer_threshold=10_000),
+    )
+    consumer.on_delta("Hello there")
+    tick = consumer._drain_queue()
+    await consumer._push_update(tick)
+
+    assert tick.update_visible is False
+    assert consumer._last_edit_time == 100.0
+    assert consumer._should_edit(consumer._drain_queue()) is False
+
+
 class TestStreamRunMediaStripping:
     """End-to-end: deltas with MEDIA: produce clean visible text."""
 
@@ -814,7 +888,10 @@ class TestEditOverflowSplitAndDeliver:
     below the new visible message."""
 
     @pytest.mark.asyncio
-    async def test_consumer_advances_message_id_on_split_and_deliver(self):
+    async def test_consumer_advances_message_id_on_split_and_deliver(self, monkeypatch):
+        monkeypatch.setattr(
+            "gateway.stream_consumer.time", SimpleNamespace(monotonic=lambda: 100.0),
+        )
         adapter = MagicMock()
         # Simulate edit_message split-and-deliver: success=True with the
         # final continuation's id and a populated continuation_message_ids
@@ -830,7 +907,7 @@ class TestEditOverflowSplitAndDeliver:
         adapter.MAX_MESSAGE_LENGTH = 4096
 
         config = StreamConsumerConfig(
-            edit_interval=0.01, buffer_threshold=5, cursor="",
+            edit_interval=3.0, buffer_threshold=10_000, cursor="",
         )
         consumer = GatewayStreamConsumer(adapter, "chat_999", config)
 
@@ -844,13 +921,16 @@ class TestEditOverflowSplitAndDeliver:
         consumer._already_sent = True
 
         # Drive an edit that the adapter "split and delivers".
-        ok = await consumer._send_or_edit("new full text after overflow")
+        consumer.on_delta("new full text after overflow")
+        tick = consumer._drain_queue()
+        await consumer._push_update(tick)
 
-        assert ok is True
+        assert tick.update_visible is True
         # Consumer advanced to the latest continuation id.
         assert consumer._message_id == "msg_continuation_2"
         # Skip-if-same cache reset so the next edit doesn't false-positive.
         assert consumer._last_sent_text == ""
+        assert consumer._should_edit(consumer._drain_queue()) is False
         # on_new_message fired so the tool-progress bubble breaks below
         # the new continuation (per the openclaw #32535 lesson).
         assert new_msg_count[0] == 1

@@ -563,21 +563,15 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         return selected
 
     def _render_reasoning_quote(self, lines: list[str], *, streaming: bool) -> str:
-        """Render reasoning lines as a Telegram blue blockquote.
+        """Render reasoning lines as a plain (non-collapsible) Telegram blue blockquote.
 
-        During live streaming (``streaming=True``), omit the ``||`` collapse mark so
-        newly typed lines stay visible in real time. When sealing (``streaming=False``),
-        emit an expandable blockquote (``**>`` + trailing ``||``).
+        Uses ``> `` lines both while streaming (with ``▉`` cursor) and when sealed
+        (cursor removed) so the thinking bubble stays expanded cleanly until pruned.
         """
         windowed = self._window_reasoning_lines(lines)
-        if streaming:
-            all_lines = ["💭 thinking... ▉"] + windowed
-            return "\n".join(f"> {ln}" for ln in all_lines)
-        all_lines = ["💭 thinking..."] + windowed
-        return "\n".join(
-            (f"**> {ln}" if i == 0 else f"> {ln}") + ("||" if i == len(all_lines) - 1 else "")
-            for i, ln in enumerate(all_lines)
-        )
+        header = "💭 thinking... ▉" if streaming else "💭 thinking..."
+        all_lines = [header] + windowed
+        return "\n".join(f"> {ln}" for ln in all_lines)
 
     def _prepare_reasoning_lines(self, raw_text: str) -> list[str]:
         """Sanitize and normalize accumulated phase text into non-empty quote lines."""

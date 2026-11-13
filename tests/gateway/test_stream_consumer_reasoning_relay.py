@@ -182,8 +182,9 @@ class TestReasoningEntitySafety:
         assert bubbles, "expected at least one 💭 bubble"
         content = bubbles[0][1]
         assert "|\\|" in content, f"expected escaped pipe |\\| in bubble, got: {content}"
-        assert content.startswith("**> 💭 thinking..."), f"expected leading **>, got: {content}"
-        assert content.endswith("||"), f"expected trailing ||, got: {content}"
+        assert content.startswith("> 💭 thinking..."), f"expected plain blue quote >, got: {content}"
+        assert not content.startswith("**>"), f"should not be collapsible **>, got: {content}"
+        assert not content.endswith("||"), f"should not end with ||, got: {content}"
 
     def test_large_reasoning_is_windowed_into_single_safe_bubble(self, monkeypatch, tmp_path):
         """Long reasoning (>3200 chars) stays in one live bubble via sliding window and seals cleanly."""
@@ -210,8 +211,10 @@ class TestReasoningEntitySafety:
         assert len(send_bubbles) == 1, f"expected a single live reasoning bubble, got {len(send_bubbles)}"
         final_kind, final_content = all_bubbles[-1]
         assert final_kind == "edit"
-        assert final_content.startswith("**> 💭 thinking..."), f"expected sealed header, got: {final_content[:40]}"
-        assert final_content.endswith("||"), f"expected sealed || ending, got: {final_content[-20:]}"
+        assert final_content.startswith("> 💭 thinking...\n"), f"expected plain sealed header, got: {final_content[:40]}"
+        assert not final_content.startswith("**>"), f"should not be collapsible **>, got: {final_content[:40]}"
+        assert not final_content.endswith("||"), f"should not end with ||, got: {final_content[-20:]}"
+        assert "▉" not in final_content
         assert "earlier thinking omitted" in final_content
         assert len(final_content) <= 3800
 
@@ -242,8 +245,9 @@ class TestReasoningEntitySafety:
         assert len(edits) >= 2, f"expected >=2 edits (live update + seal), got {len(edits)}"
         assert not sends[0][2].endswith("||")
         assert "▉" in sends[0][2]
-        assert edits[-1][2].startswith("**> 💭 thinking...")
-        assert edits[-1][2].endswith("||")
+        assert edits[-1][2].startswith("> 💭 thinking...\n")
+        assert "▉" not in edits[-1][2]
+        assert not edits[-1][2].endswith("||")
 
     def test_retains_up_to_three_bubbles_and_vaporizes_oldest(self, monkeypatch, tmp_path):
         """When >3 thinking bubbles accumulate for a chat, the oldest ones are deleted."""

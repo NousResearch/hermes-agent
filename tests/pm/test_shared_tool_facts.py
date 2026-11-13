@@ -1,6 +1,8 @@
 """Regression for NousResearch/hermes-agent#149497: shared tool-store pins stay usable."""
 
-from pm import cli, install, lock as pm_lock, paths
+import shutil
+
+from pm import cli, environments, install, lock as pm_lock, paths
 from pm._uv import _toolchain
 from pm.lock import Facts, Lockfile
 from pm.registry import get_package
@@ -72,6 +74,7 @@ def test_gc_reclaims_pins_no_live_checkout_holds(tmp_path, monkeypatch):
     root.mkdir()
     target = current_target()
     store = Store(root)
+    monkeypatch.setattr(environments, "installs_root", lambda: tmp_path / "installs")
     for owner in ("A", "B"):
         (tmp_path / "installs" / owner).mkdir(parents=True)
 
@@ -86,10 +89,27 @@ def test_gc_reclaims_pins_no_live_checkout_holds(tmp_path, monkeypatch):
     cli._gc_store(store, Facts(root / "facts.json"))
     assert not old.exists() and new.is_dir() and other.is_dir() and solo.is_dir()
 
-    # Once B's checkout is gone, its pins no longer hold 2.0 (though B recorded last)
-    # nor the python entry B alone recorded.
-    (tmp_path / "installs" / "B").rmdir()
+    # Once B's checkout is gone (the orphan sweep removed its state), its pins no longer hold
+    # 2.0 (though B recorded last) nor the python entry B alone recorded.
+    shutil.rmtree(tmp_path / "installs" / "B")
     cli._gc_store(store, Facts(root / "facts.json"))
     assert not other.exists() and not solo.exists() and new.is_dir()
     facts = Facts(root / "facts.json")
     assert facts.get("uv")["version"] == "1.1" and facts.get("python") is None
+
+
+def test_gc_keeps_pins_of_a_checkout_that_only_recorded_them(tmp_path, monkeypatch):
+    """A checkout that never committed dependency state (a sealed or resident runtime that only
+    ran ``ensure``) still owns the pin it recorded: another checkout's gc must not reclaim it."""
+    root = tmp_path / "tools"
+    root.mkdir()
+    target = current_target()
+    monkeypatch.setattr(environments, "installs_root", lambda: tmp_path / "installs")
+    monkeypatch.setattr(pm_lock, "install_owner", lambda: "A")
+    pinned, _ = _publish(root, "uv", "1.0", "1" * 64, target)
+    monkeypatch.setattr(pm_lock, "install_owner", lambda: "B")
+    _publish(root, "uv", "2.0", "2" * 64, target)
+
+    cli._gc_store(Store(root), Facts(root / "facts.json"))
+    assert pinned.is_dir()
+

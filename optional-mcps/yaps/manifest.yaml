@@ -1,0 +1,54 @@
+manifest_version: 1
+name: yaps
+description: Transcribe recordings, create subtitles and voice-overs, translate, and edit media with the
+  local Yaps app.
+source: https://github.com/richawo/yaps-plugins/blob/main/integrations/README.md
+transport:
+  type: stdio
+  command: npx
+  args:
+  - --yes
+  - --package
+  - https://codeload.github.com/richawo/yaps-plugins/tar.gz/c96839613550a79bc7b805285b700b8c681fffd4
+  - yaps-plugin-media
+  env:
+    YAPS_PLUGIN_ID: yaps-all
+    YAPS_PLUGIN_VERSION: 1.1.0
+    YAPS_PLUGIN_HOST: hermes
+    YAPS_PLUGIN_TRANSPORT: mcp
+auth:
+  type: none
+tools:
+  default_enabled:
+  - yaps_status
+  - transcribe_media
+  - srt_generate
+  - text_to_speech
+  - tts_voices
+  - translate_text
+  - translate_languages
+  - audio_clean
+  - image_remove_background
+  - video_extract_audio
+suggest:
+  keywords:
+  - yaps
+  - transcription
+  - subtitles
+  - voice-over
+  hosts:
+  - yaps.ai
+  applications:
+  - Yaps
+  requires_app: true
+  examples:
+  - Transcribe this recording.
+  - Extract audio from this video.
+post_install: |-
+  Install Yaps from https://www.yaps.ai/download on the computer running Hermes, open it, and sign in. New users need a Yaps account. Gated features require an active free trial or Yaps Pro; the plugin itself is free.
+
+  Node.js 22 or newer is required. No API key is needed. First connection downloads a pinned Yaps MCP runtime from GitHub and dependencies from npm. Feature models are separate downloads that require user approval.
+
+  Start a new session and ask Hermes to check Yaps, then process a selected file. Files are processed on that computer; requested results enter Hermes' context. A remote Hermes host cannot reach your desktop through this local server.
+
+  This entry exposes media tools. Optional private-vault access and the focused skills are documented at https://github.com/richawo/yaps-plugins.

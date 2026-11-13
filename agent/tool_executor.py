@@ -1080,8 +1080,13 @@ def _emit_tool_complete_and_risk(agent, ref: _ToolCallRef, result, risk_metadata
 
 def _result_storage_env(task_id: str, *, needs_persistence: bool):
     """Active sandbox for a spill; started only when a spill is needed (a remote reader can't open host paths)."""
-    env = get_active_env(task_id)
-    return ensure_task_env(task_id) if env is None and needs_persistence else env
+    if (env := get_active_env(task_id)) is not None or not needs_persistence:
+        return env
+    try:
+        return ensure_task_env(task_id)
+    except Exception:  # health: allow BLE001 -- a bad terminal config must not lose a finished result; storage then truncates inline
+        logger.warning("Sandbox start for tool-result spill failed", exc_info=True)
+        return None
 
 
 def _commit_tool_result(
@@ -1144,8 +1149,7 @@ def _commit_tool_result(
     multimodal = _is_multimodal_tool_result(persisted_result)
     texts = [p.get("text") for p in (persisted_result.get("content") or []) if isinstance(p, dict)] if multimodal else [persisted_result]
     threshold = budget.resolve_threshold(function_name)
-    storage_env = _result_storage_env(effective_task_id, needs_persistence=any(
-        isinstance(t, str) and len(t) > threshold for t in texts))
+    storage_env = _result_storage_env(effective_task_id, needs_persistence=any(isinstance(t, str) and len(t) > threshold for t in texts))
     if multimodal:
         persisted_result = _persist_multimodal_text_parts(
             persisted_result, function_name, tool_call_id, storage_env, budget,

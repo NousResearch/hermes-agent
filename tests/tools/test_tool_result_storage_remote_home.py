@@ -56,3 +56,16 @@ def test_home_relative_backend_spill_names_the_synced_spillover_path(tmp_path, m
     assert "hermes-results" not in result
     # The named path is readable where the agent's tools run (the backend's own ~).
     assert (remote_home / ".hermes" / "cache" / "spillover" / "tc_ssh_1.txt").read_text() == content
+
+
+def test_sandbox_start_error_keeps_the_finished_result(monkeypatch):
+    """A terminal config that raises while starting the sandbox for a spill (bad TERMINAL_TIMEOUT)
+    must not lose the completed tool result: storage gets env=None and decides from there."""
+    from agent import tool_executor
+
+    def broken(_task_id):
+        raise ValueError("invalid TERMINAL_TIMEOUT")
+
+    monkeypatch.setattr(tool_executor, "get_active_env", lambda _task_id: None)
+    monkeypatch.setattr(tool_executor, "ensure_task_env", broken)
+    assert tool_executor._result_storage_env("t1", needs_persistence=True) is None

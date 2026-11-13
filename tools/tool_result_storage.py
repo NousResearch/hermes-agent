@@ -235,30 +235,6 @@ def _write_to_spillover(content: str, filename: str):
     return str(path)
 
 
-def _sandbox_visible_spillover_path(host_path: str, env) -> str | None:
-    """Path where a remote backend can read *host_path*, or None. Translates via the image
-    tools' helper, forces a sync for synced backends, then PROBES readability — a persistent
-    container created before spillover joined the mount list lacks the bind mount and must
-    fall back to the in-sandbox write."""
-    try:
-        from tools.credential_files import to_agent_visible_cache_path
-        visible = to_agent_visible_cache_path(host_path)
-    except Exception as exc:
-        logger.debug("Spillover path translation failed: %s", exc)
-        return None
-    try:
-        if (sync_manager := getattr(env, "_sync_manager", None)) is not None:
-            sync_manager.sync(force=True)
-    except Exception as exc:
-        logger.debug("Spillover sync failed: %s", exc)
-    try:
-        if env.execute(f"test -r {_sandbox_shell_path(visible)}", timeout=15).get("returncode", 1) == 0:
-            return visible
-    except Exception as exc:
-        logger.debug("Spillover readability probe failed: %s", exc)
-    return None
-
-
 def _sandbox_shell_path(path: str) -> str:
     """Shell word for *path* in the sandbox. ssh/daytona/vercel paths are ``~/.hermes/...`` (#154749):
     a quoted ``~`` never expands, so the readability probe always failed and every spill fell back to
@@ -268,23 +244,27 @@ def _sandbox_shell_path(path: str) -> str:
     return shlex.quote(path)
 
 
-def _sandbox_spillover_copy(content: str, host_path: str | None, filename: str, env) -> str | None:
-    """Write an in-sandbox copy at the spillover path the backend maps (``~/.hermes/cache/spillover``,
-    ``/root/.hermes/cache/spillover``), so the model sees one spill location; None when the backend
-    maps no path or the write fails."""
+def _sandbox_spillover_path(content: str, host_path: str, env) -> str | None:
+    """The ONE spill path a remote backend reads (``~/.hermes/cache/spillover/<id>.txt`` on
+    ssh/daytona/vercel, ``/root/.hermes/...`` on docker/modal), or None.
+    Translated once: force a sync and PROBE readability (a persistent container created before
+    spillover joined the mount list lacks the bind mount); if the file isn't there, write the
+    sandbox copy at that same path. None sends the caller to the temp-dir copy."""
     from tools.credential_files import to_agent_visible_cache_path
     from tools.terminal_scope import TerminalPolicyUnavailable
-    source = host_path or str(get_spillover_dir() / filename)
     try:
-        target = to_agent_visible_cache_path(source)
+        visible = to_agent_visible_cache_path(host_path)
     except TerminalPolicyUnavailable:
         return None
-    if target == source or not target.endswith("/" + filename):
-        return None
     try:
-        return target if _write_to_sandbox(content, target, env) else None
-    except Exception:  # health: allow BLE001 -- any backend exec failure falls back to the temp-dir copy, logged with its traceback
-        logger.warning("Sandbox spillover copy failed for %s", target, exc_info=True)
+        if (sync_manager := getattr(env, "_sync_manager", None)) is not None:
+            sync_manager.sync(force=True)
+        if env.execute(f"test -r {_sandbox_shell_path(visible)}", timeout=15).get("returncode", 1) == 0:
+            return visible
+        # An untranslated (host) path is no sandbox location to write to.
+        return visible if visible != host_path and _write_to_sandbox(content, visible, env) else None
+    except Exception:  # health: allow BLE001 -- any backend sync/exec failure falls back to the temp-dir copy, logged with its traceback
+        logger.warning("Sandbox spillover path unavailable: %s", visible, exc_info=True)
         return None
 
 
@@ -493,11 +473,9 @@ def maybe_persist_tool_result(content: str, tool_name: str, tool_use_id: str, en
     if not host_side and env is not None:
         # Remote backend: reference the mounted/synced path when the sandbox can actually read
         # it, else write into the sandbox temp dir (containers without the spillover mount).
-        visible = _sandbox_visible_spillover_path(host_path, env) if host_path else None
+        visible = _sandbox_spillover_path(persisted_content, host_path, env) if host_path else None
         if visible is not None:
             return _persisted(visible, f" [host: {host_path}]")
-        if (copied := _sandbox_spillover_copy(persisted_content, host_path, filename, env)) is not None:
-            return _persisted(copied, f" [host: {host_path}]")
         remote_path = f"{_resolve_storage_dir(env)}/{filename}"
         try:
             if _write_to_sandbox(persisted_content, remote_path, env):

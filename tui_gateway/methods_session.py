@@ -705,33 +705,6 @@ def _find_live_unpersisted(needle: str, home) -> str:
         and (str(record.get("session_key") or "") == needle or (record.get("pending_title") or "") == needle)), "")
 
 
-def _resume_live_unpersisted(ctx: _Resume, live_sid: str, live: dict) -> dict:
-    """Reattach a LIVE lazy session with no state.db row yet (every fresh Bot Chat; a 404 here killed messaging
-    for never-spoken bots). Attach the transport and cancel the armed orphan-reap Timer (a WS drop may have
-    sentinel-parked the record) or it fires against this client."""
-    if ctx.owns_db:
-        _release_db(ctx.db)
-    with _session_resume_lock:
-        if (refusal := _reattach_refusal(ctx.rid, live_sid, live)) is not None:
-            return refusal
-        live["last_active"] = time.time()
-        if (transport := current_transport()) is not None:
-            with live.setdefault("history_lock", threading.Lock()):
-                _rebind_live_transport(live_sid, live, transport)
-        else:
-            _cancel_ws_orphan_reap(live_sid)
-    messages = ctx.messages(live.get("history") or [])  # count the wire, as every other resume path does
-    # The chat's own pick, not the profile default: a warm reattach that reported `_resolve_model()` flipped the
-    # Desktop picker on every reload while the session was still live, and back once it had been dropped.
-    model, provider = _live_session_identity(live)
-    return _ok(ctx.rid, _attach_todo_state({
-        "session_id": live_sid, "stored_session_id": str(live.get("session_key") or ""),
-        "message_count": len(messages), "messages": messages,
-        "info": {"model": model, "provider": provider, "lazy": True,
-                 "desktop_contract": DESKTOP_BACKEND_CONTRACT,
-                 "profile_name": profile_name_for_home(live.get("profile_home")) or _response_profile_name(ctx.profile)}}, live))
-
-
 def _resume_adopt_stranded(ctx: _Resume) -> None:
     """Adopt a lineage stranded in the DEFAULT store (older builds ran a profile bot's turns on the focused
     tile's backend; unadopted it 4001s forever). Exact-id ONLY — bot titles collide; never a retired donor."""
@@ -860,32 +833,6 @@ def _resume_guard(ctx: _Resume) -> dict | None:
     return None
 
 
-def _resume_reuse_live(ctx: _Resume, sid: str, session: dict) -> dict:
-    """Reattach an already-live session under the resume lock (held across the client-gone check,
-    transport attach and reap cancel so grace expiry is atomic). _live_session_payload ATTACHES this
-    caller alongside the client(s) already streaming instead of taking the slot from them."""
-    with _session_resume_lock:
-        return _resume_reuse_live_locked(ctx, sid, session)
-
-
-def _resume_reuse_live_locked(ctx: _Resume, sid: str, session: dict) -> dict:
-    """Reuse with _session_resume_lock already held (including the eager double-check)."""
-    if (refusal := _reattach_refusal(ctx.rid, sid, session)) is not None:
-        return refusal
-    _cancel_ws_orphan_reap(sid)  # unconditionally: the fast path must never race the reap Timer
-    payload = _live_session_payload(sid, session, cols=ctx.cols, touch=True, omit_messages=ctx.omit_messages,
-                                    transport=current_transport() or _stdio_transport,
-                                    inline_images=ctx.inline_images)
-    payload["resumed"] = ctx.target
-    if ctx.defer_history:
-        payload.update(messages=[], hydrating=bool(session.get("resume_hydrating")),
-                       message_count=int(session.get("resume_message_count") or payload["message_count"]))
-    # A lazy watch session never owns a run loop — overlay the child-run registry.
-    if session.get("agent") is None and _child_run_active(ctx.target, ctx.profile_home):
-        payload.update(running=True, status="streaming")
-    return _ok(ctx.rid, payload)
-
-
 def _resume_response(
     ctx: _Resume, sid: str, record: dict, *, info: dict, display: list = (), count_source: list | None = None,
     messages: list | None = None, message_count: int | None = None, running: bool = False,
@@ -1002,39 +949,42 @@ def _resume_eager(ctx: _Resume) -> dict:
         if live is not None:
             with contextlib.suppress(Exception):
                 agent.close()
-            return _resume_reuse_live_locked(ctx, *live)
-        try:
-            with _profile_build_scope(ctx.profile_home):
-                _init_session(sid, ctx.target, agent, history, cols=ctx.cols, cwd=ctx.profile_resume_cwd, session_db=ctx.db,
-                              source=source, profile_home=ctx.profile_home, explicit_cwd=bool(ctx.profile_resume_cwd))
-                # Ownership TRANSFER: the agent holds the handle for life (AIAgent.close() releases it). The
-                # owns_db drop is UNCONDITIONAL — the session is registered against the handle, so the finally
-                # must not close it even if the transfer was refused (a leak beats "closed database" every
-                # turn). Gated on owns_db: the SHARED launch handle must never move onto one session.
+            refusal = _resume_attach_live_locked(ctx, *live)
+        else:
+            try:
+                with _profile_build_scope(ctx.profile_home):
+                    _init_session(sid, ctx.target, agent, history, cols=ctx.cols, cwd=ctx.profile_resume_cwd, session_db=ctx.db,
+                                  source=source, profile_home=ctx.profile_home, explicit_cwd=bool(ctx.profile_resume_cwd))
+                    # Ownership TRANSFER: the agent holds the handle for life (AIAgent.close() releases it). The
+                    # owns_db drop is UNCONDITIONAL — the session is registered against the handle, so the finally
+                    # must not close it even if the transfer was refused (a leak beats "closed database" every
+                    # turn). Gated on owns_db: the SHARED launch handle must never move onto one session.
+                    if ctx.owns_db:
+                        _transfer_db_to_agent(agent, ctx.db)
+                    ctx.owns_db = False
+                if (session := _sessions.get(sid)) is not None:
+                    if stored_runtime_overrides.get("model_override") is not None:
+                        session["model_override"] = stored_runtime_overrides["model_override"]
+                    model_config = _parse_model_config(ctx.found.get("model_config"), quiet=True)
+                    if _row_follows_profile(ctx.found):
+                        session["follow_profile_config"] = True
+                        session["composer_override_profile"] = (
+                            model_config.get("composer_override_profile")
+                            if stored_runtime_overrides.get("model_override") else None)
+                    # Each turn re-binds HERMES_HOME (mid-turn memory/skills reads); lease claimed lazily on turn 1.
+                    if ctx.profile_home is not None:
+                        session["profile_home"] = str(ctx.profile_home)
+                    session.update(display_history_prefix=display_history_prefix, active_session_lease=None)
+            except Exception as e:
+                # _init_session registers _sessions[sid] BEFORE its first db read; left in place the fast path
+                # would serve that dead session forever.
                 if ctx.owns_db:
-                    _transfer_db_to_agent(agent, ctx.db)
-                ctx.owns_db = False
-            if (session := _sessions.get(sid)) is not None:
-                if stored_runtime_overrides.get("model_override") is not None:
-                    session["model_override"] = stored_runtime_overrides["model_override"]
-                model_config = _parse_model_config(ctx.found.get("model_config"), quiet=True)
-                if _row_follows_profile(ctx.found):
-                    session["follow_profile_config"] = True
-                    session["composer_override_profile"] = (
-                        model_config.get("composer_override_profile")
-                        if stored_runtime_overrides.get("model_override") else None)
-                # Each turn re-binds HERMES_HOME (mid-turn memory/skills reads); lease claimed lazily on turn 1.
-                if ctx.profile_home is not None:
-                    session["profile_home"] = str(ctx.profile_home)
-                session.update(display_history_prefix=display_history_prefix, active_session_lease=None)
-        except Exception as e:
-            # _init_session registers _sessions[sid] BEFORE its first db read; left in place the fast path
-            # would serve that dead session forever.
-            if ctx.owns_db:
-                with _sessions_lock:
-                    _sessions.pop(sid, None)
-            return _err(ctx.rid, 5000, resume_failed_message(e))
-        session = _sessions.get(sid) or {}
+                    with _sessions_lock:
+                        _sessions.pop(sid, None)
+                return _err(ctx.rid, 5000, resume_failed_message(e))
+            session = _sessions.get(sid) or {}
+    if live is not None:
+        return refusal or _resume_reuse_payload(ctx, *live)
     return _resume_response(
         ctx, sid, session, info=_session_info(agent, session), display=display_history, count_source=raw_history,
         started_at=float(session.get("created_at") or time.time()),
@@ -1158,8 +1108,7 @@ def _(rid, params: dict, session: dict) -> dict:
     with _session_resume_lock:
         if (refusal := _reattach_refusal(rid, sid, session)) is not None:
             return refusal
-        with session["history_lock"]:
-            _rebind_live_transport(sid, session, current_transport() or _stdio_transport)
+        _rebind_live_transport(sid, session, current_transport() or _stdio_transport)
     return _ok(rid, _live_session_payload(
         sid, session, touch=True, omit_messages=is_truthy_value(params.get("omit_messages", False))))
 
@@ -2337,3 +2286,5 @@ def register(server) -> None:
     methods_session_branch.register(server)
     from . import methods_session_interrupt
     methods_session_interrupt.register(server)
+    from . import methods_session_resume
+    methods_session_resume.register(server)

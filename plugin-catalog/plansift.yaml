@@ -1,0 +1,34 @@
+name: plansift
+repo: https://github.com/rodricksz4h5/plansift
+sha: efb88654ea4e00236102e2083621f8c739a351c6
+version: "1.0.0"
+title: Plansift
+description: >-
+  Exact, local review of OpenTofu and Terraform plans before apply, from the
+  JSON of a saved plan (`tofu show -json` / `terraform show -json`).
+  tf_plan_summary gives exact counts per action, every delete, replace and
+  forget with the plan's reason and the attributes forcing the replacement,
+  drift detected outside the tool, changed outputs, failing checks and the
+  modules and resource types with the most changes; tf_plan_changes gives an
+  attribute-level before/after diff (JSON policies stored in strings are
+  diffed inside), filterable by action and address and paged; tf_plan_check
+  gates the plan on denied actions for address patterns, a change budget,
+  drift and failing checks. Sensitive values, text under secret-like
+  attribute names, variable values and output values are never returned.
+  Standard library only: no network, no credentials, no subprocess (never runs
+  tofu or terraform), no third-party dependencies, no self-update.
+  Disclosure: reads the local plan file you pass it (read-only), only regular
+  files, and honours Hermes' core read denylist.
+maintainer: rodricksz4h5
+tier: community
+category: tools
+requires_hermes: ">=0.22.0"
+docs_url: https://github.com/rodricksz4h5/plansift/tree/efb88654ea4e00236102e2083621f8c739a351c6
+capabilities:
+  provides_tools:
+    - tf_plan_summary
+    - tf_plan_changes
+    - tf_plan_check
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

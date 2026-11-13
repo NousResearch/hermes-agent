@@ -52,3 +52,37 @@ class TestFailureStreakNudge:
         job = {"id": "old", "schedule": {"kind": "interval"}}  # pre-field job
         with patch("cron.scheduler.load_config", return_value={}):
             assert _failure_streak_nudge(job) == ""
+
+
+class TestCronTitleFallbacks:
+    """Recovery candidates never raise and keep the non-blank guarantee (#146855)."""
+
+    def test_lineage_candidate_wins_when_available(self):
+        from cron.scheduler import _cron_title_fallbacks
+        db = MagicMock()
+        db.get_next_title_in_lineage.return_value = "Nightly Synthesis #2"
+        out = _cron_title_fallbacks(db, "j1", "sess-1")
+        assert out == ["Nightly Synthesis #2", "cron j1 sess-1", "cron j1"]
+
+    def test_raising_lineage_lookup_does_not_propagate(self):
+        # The lineage lookup shares the bounded DB with the write that just failed and can
+        # raise; recovery must survive it instead of aborting run_job's cleanup.
+        from cron.scheduler import _cron_title_fallbacks
+        db = MagicMock()
+        db.get_next_title_in_lineage.side_effect = RuntimeError("session finalization disabled")
+        out = _cron_title_fallbacks(db, "j1", "sess-1")
+        assert out == ["cron j1 sess-1", "cron j1"]
+
+    def test_missing_lineage_support_still_yields_candidates(self):
+        from cron.scheduler import _cron_title_fallbacks
+        db = MagicMock(spec=[])  # no get_next_title_in_lineage at all
+        out = _cron_title_fallbacks(db, "j1", "sess-1")
+        assert out == ["cron j1 sess-1", "cron j1"]
+
+    def test_unset_session_id_still_guarantees_nonblank(self):
+        from cron.scheduler import _cron_title_fallbacks
+        db = MagicMock()
+        db.get_next_title_in_lineage.side_effect = RuntimeError("session finalization disabled")
+        out = _cron_title_fallbacks(db, "j1", None)
+        assert out == ["cron j1"]
+        assert all(candidate.strip() for candidate in out)

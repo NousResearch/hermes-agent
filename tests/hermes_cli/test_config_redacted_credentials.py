@@ -56,7 +56,7 @@ def _masks():
     masks = _redactor_values()
     # The shapes that slipped past the first predicate; pinned so a redactor change can't drop them.
     assert {"Bearer ***", "123456789:***"} <= set(masks)
-    return masks + ["xoxb-***", "Bearer sk-pro...WXYZ", "********"]
+    return masks + ["xoxb-***", "Bearer sk-pro...WXYZ", "********", "sk-****WXYZ"]
 
 
 def test_human_passwords_are_not_masks():
@@ -132,3 +132,32 @@ def test_save_config_allows_deleting_entry_beside_preexisting_mask(home):
     from hermes_cli.config_backend import ConfigValueError
     with pytest.raises(ConfigValueError, match="custom_providers.1.api_key"):
         save_config(cfg)
+
+
+@pytest.mark.parametrize("target", ["model", "provider_a", "auxiliary"])
+def test_stale_mask_elsewhere_does_not_exempt_a_new_mask(home, target):
+    """A ``***`` already on disk at one credential path must not let ``***`` overwrite another."""
+    from hermes_cli.config import read_raw_config, save_config
+    from hermes_cli.config_backend import ConfigValueError
+    (home / "config.yaml").write_text(yaml.safe_dump({
+        "model": {"api_key": REAL},
+        "auxiliary": {"vision": {"api_key": REAL}},
+        "custom_providers": [{"name": "a", "api_key": REAL}, {"name": "b", "api_key": "***"}]}))
+    before = (home / "config.yaml").read_text()
+    cfg = read_raw_config()
+    {"model": lambda: cfg["model"].__setitem__("api_key", "***"),
+     "provider_a": lambda: cfg["custom_providers"][0].__setitem__("api_key", "***"),
+     "auxiliary": lambda: cfg["auxiliary"]["vision"].__setitem__("api_key", "***")}[target]()
+    with pytest.raises(ConfigValueError):
+        save_config(cfg)
+    assert (home / "config.yaml").read_text() == before
+
+
+def test_save_config_allows_reordering_entries_beside_preexisting_mask(home):
+    from hermes_cli.config import read_raw_config, save_config
+    (home / "config.yaml").write_text(yaml.safe_dump({"custom_providers": [
+        {"name": "a", "api_key": REAL}, {"name": "b", "api_key": "***"}]}))
+    cfg = read_raw_config()
+    cfg["custom_providers"].reverse()
+    save_config(cfg)
+    assert [p["name"] for p in yaml.safe_load((home / "config.yaml").read_text())["custom_providers"]] == ["b", "a"]

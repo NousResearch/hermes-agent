@@ -17,7 +17,7 @@ from typing import Any, Callable, Iterator
 # ``mask_secret`` (``sk-p...7890``, ``_mask_token``'s ``sk-pro...WXYZ``: a short head, ``...``,
 # then exactly four tail chars) and hand-truncated previews of it (``sk-...``).
 _ELLIPSIS_MASK_RE = re.compile(r"\S{0,8}(?:\.\.\.|…)(?:\S{4})?")
-_STARS_RE = re.compile(r"\*{3,}")
+_STARS_RE = re.compile(r"\*{3,}\S{0,4}")  # ``***``, ``sk-****WXYZ`` after the prefix strip
 _BARE_MASKS = frozenset({"[redacted]", "<redacted>", "(redacted)", "redacted"})
 _ENV_REF_RE = re.compile(r"\$\{[^}]+\}")
 # The redactor keeps context around the masked part: ``Bearer ***`` (auth header), ``123456789:***``
@@ -66,33 +66,46 @@ def refuse_redacted_env_value(key: str, value: Any) -> None:
             "credential. Enter the real secret (or leave it unchanged).")
 
 
-def _masked_credential_leaves(doc: Any, path: tuple[str, ...] = ()) -> Iterator[tuple[str, str]]:
+def _list_item_identity(item: Any) -> str:
+    """A list entry's location, stable across deletes/reorders: its ``name``/``id``/``key``."""
+    if isinstance(item, dict):
+        for field in ("name", "id", "key"):
+            if isinstance(item.get(field), (str, int)):
+                return f"[{field}={item[field]}]"
+    return "[*]"
+
+
+def _masked_credential_leaves(doc: Any, path: tuple[str, ...] = (),
+                              where: tuple[str, ...] = ()) -> Iterator[tuple[str, tuple[str, ...], str]]:
+    """Yield ``(display_path, location, value)`` for each credential leaf holding a mask, where
+    ``location`` replaces list indexes with the entry's identity."""
     from hermes_cli.config import _is_secret_config_key
 
     if isinstance(doc, dict):
-        items = ((str(k), v) for k, v in doc.items())
+        items = ((str(k), str(k), v) for k, v in doc.items())
     elif isinstance(doc, list):
-        items = ((str(i), v) for i, v in enumerate(doc))
+        items = ((str(i), _list_item_identity(v), v) for i, v in enumerate(doc))
     else:
         return
-    for key, child in items:
+    for key, loc, child in items:
         if _is_secret_config_key(key) and is_redacted_credential_value(child):
-            yield ".".join(path + (key,)), child
+            yield ".".join(path + (key,)), where + (loc,), child
         else:
-            yield from _masked_credential_leaves(child, path + (key,))
+            yield from _masked_credential_leaves(child, path + (key,), where + (loc,))
 
 
 def refuse_redacted_config_credentials(new: Any, read_old: Callable[[], Any]) -> None:
     """Raise ``ConfigValueError`` when ``new`` sets a credential key to a redacted mask that the
-    config on disk (``read_old()``, read only when a mask is present) did not already hold.
+    config on disk (``read_old()``, read only when a mask is present) did not already hold there.
 
-    Pre-existing masks are matched by value, not position: deleting or reordering a list entry
-    (``custom_providers``) moves an old mask to a new index without it being newly written."""
+    Pre-existing masks are matched by (location, value), with list indexes replaced by the entry's
+    ``name``/``id``/``key``: deleting or reordering ``custom_providers`` keeps an old mask's
+    location, while the same mask string at any other credential path is still a new write."""
     masked = list(_masked_credential_leaves(new))
     if not masked:
         return
-    on_disk = {value for _, value in _masked_credential_leaves(read_old())}
-    bad = [path for path, value in masked if value not in on_disk]
+    on_disk = {(where, value) for _, where, value in _masked_credential_leaves(read_old())}
+    bad = [path for path, where, value in masked if (where, value) not in on_disk]
     if bad:
         from hermes_cli.config_backend import ConfigValueError
 

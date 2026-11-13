@@ -197,6 +197,28 @@ def run_tool_round(
                     agent.stream_delta_callback(None)
         return _verdict("break")
 
+    # A terminal board call that LANDED ends this worker's ownership of the card: the
+    # dispatcher has already handed it to whoever owns it next (or respawned a fresh
+    # worker). Falling through here does not just waste a turn — the live process keeps
+    # implementing a task it no longer holds, and any card it files lands on someone
+    # else's run. Scoped to the dispatcher-owned worker; a REFUSED call stays retryable.
+    from agent.kanban_stop import kanban_stop_nudge_enabled, terminal_handoff_status
+
+    if kanban_stop_nudge_enabled():
+        _handoff_status = terminal_handoff_status(messages, assistant_message.tool_calls)
+        if _handoff_status is not None:
+            _turn_exit_reason = "kanban_terminal_handoff"
+            final_response = (
+                f"Task handed off: {_handoff_status}." if _handoff_status else "Task handed off."
+            )
+            append_message(messages, {"role": "assistant", "content": final_response})
+            agent._safe_print(f"\n{final_response}\n")
+            if agent.stream_delta_callback:
+                with suppress(Exception):
+                    agent.stream_delta_callback(final_response)
+                    agent.stream_delta_callback(None)
+            return _verdict("break")
+
     # Reset per-turn retry counters so one truncation can't poison the turn.
     truncated_tool_call_retries = 0
     # Defer the paragraph break: _fire_stream_delta() prepends one "\n\n" when real

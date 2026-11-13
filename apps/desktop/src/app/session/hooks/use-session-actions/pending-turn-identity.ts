@@ -8,6 +8,11 @@ export function transcriptRowIds(message: ChatMessage): number[] {
   return message.rowId === undefined ? ids : [message.rowId, ...ids]
 }
 
+/** A reply preserveLocalPendingTurnMessages pairs with its stored copy: still streaming, or the stream's own row. */
+export function isLocalPendingReply(message: ChatMessage): boolean {
+  return message.role === 'assistant' && (message.pending === true || message.id.startsWith('assistant-stream-'))
+}
+
 /** Unknown identity is not a match, but remains eligible for legacy live projection. */
 export function conflictingTranscriptIdentity(local: ChatMessage, authoritative: ChatMessage): boolean {
   const localIds = transcriptRowIds(local)

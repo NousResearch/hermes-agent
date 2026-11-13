@@ -15,9 +15,7 @@ const HERMES_RUNTIME_BASENAME = /^hermes(?:-agent|-acp)?(?:\.exe|\.cmd)?$/i
 /** Tokenize a raw command line: `/proc/<pid>/cmdline` is NUL-separated, `ps -o args=`
  *  is whitespace-separated. Either way, split on both so one matcher serves both. */
 function commandLineTokens(raw: string): string[] {
-  return raw
-    .split(/[\0\s]+/)
-    .filter(token => token.length > 0)
+  return raw.split(/[\0\s]+/).filter(token => token.length > 0)
 }
 
 /** The basename of an argv token, `/`- and `\`-separated. */

@@ -34,7 +34,9 @@ export function captureDestination(): SubmissionDestination {
   // An explicit HERMES_TUI_GATEWAY_URL may serve another home or machine: its receipts name the
   // owner's profile_id (from the session snapshot), not this client's HERMES_HOME (C22). The local
   // home still keys the offline journal and image cache.
-  const owner = process.env.HERMES_TUI_GATEWAY_URL?.trim() ? (info as { profile_id?: unknown } | null)?.profile_id : undefined
+  const owner = process.env.HERMES_TUI_GATEWAY_URL?.trim()
+    ? (info as { profile_id?: unknown } | null)?.profile_id
+    : undefined
 
   return Object.freeze({
     sid,

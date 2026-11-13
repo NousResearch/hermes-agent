@@ -23,16 +23,23 @@ function wireKey(source: null | string | undefined | WireSource): string {
   const id = typeof source === 'object' && source ? source.connectionId : source
   const named = id?.trim()
 
-  if (named) { return named }
+  if (named) {
+    return named
+  }
 
   return typeof source === 'object' && source?.mode === 'remote' ? UNNAMED_REMOTE_WIRE_KEY : LOCAL_CONNECTION_ID
 }
 
 /** Published from each socket's `gateway.ready`, after the client latched the frame's wire. */
-export function recordConnectionWire(source: null | string | undefined | WireSource, wire: GatewaySessionWire | null): void {
+export function recordConnectionWire(
+  source: null | string | undefined | WireSource,
+  wire: GatewaySessionWire | null
+): void {
   const key = wireKey(source)
 
-  if (wire && $connectionWires.get()[key] !== wire) { $connectionWires.setKey(key, wire) }
+  if (wire && $connectionWires.get()[key] !== wire) {
+    $connectionWires.setKey(key, wire)
+  }
 }
 
 /** Null until a socket to that connection has become ready. */
@@ -45,7 +52,10 @@ export function connectionWire(source: null | string | undefined | WireSource): 
  *  foregrounded secondary keeps `$connection` while the primary reconnects in the background. Only
  *  a route not yet recorded (both fields null, between a gateway swap and its descriptor) falls
  *  back to the window's connection. */
-export function primaryWireSource(route: PrimaryGatewayRoute, windowConnection: null | undefined | WireSource): null | undefined | WireSource {
+export function primaryWireSource(
+  route: PrimaryGatewayRoute,
+  windowConnection: null | undefined | WireSource
+): null | undefined | WireSource {
   return route.mode || route.connectionId ? route : windowConnection
 }
 
@@ -53,8 +63,14 @@ export function primaryWireSource(route: PrimaryGatewayRoute, windowConnection: 
  *  id, else the one its profile's descriptor resolved to (a profile's remote override resolves to
  *  that remote, not the local source). A resolved remote without a registry id has no key of its
  *  own, so it publishes nothing rather than overwrite the local source's wire. */
-export function recordSecondaryWire(connectionId: null | string, resolved: null | Pick<HermesConnection, 'connectionId' | 'mode'>, wire: GatewaySessionWire | null): void {
+export function recordSecondaryWire(
+  connectionId: null | string,
+  resolved: null | Pick<HermesConnection, 'connectionId' | 'mode'>,
+  wire: GatewaySessionWire | null
+): void {
   const key = connectionId || resolved?.connectionId || (resolved?.mode === 'local' ? LOCAL_CONNECTION_ID : null)
 
-  if (key) { recordConnectionWire(key, wire) }
+  if (key) {
+    recordConnectionWire(key, wire)
+  }
 }

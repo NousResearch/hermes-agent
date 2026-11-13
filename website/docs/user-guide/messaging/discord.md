@@ -473,7 +473,7 @@ Messages sent in existing threads or DMs are unaffected by this setting. Channel
 
 **Type:** boolean — **Default:** `true`
 
-Whether interactive prompt messages (such as clarification buttons, exec command approvals, and slash confirmations) repeat the prompt title header in plain text message content alongside the embed. Defaults to `true` for maximum compatibility on clients where embeds do not render. Set to `false` (or set `DISCORD_PROMPT_HEADER_IN_CONTENT=false`) to avoid duplicate titles when cards and embeds are displayed.
+Whether interactive prompt messages (such as clarification buttons, exec command approvals, and slash confirmations) repeat the prompt title header in plain text message content alongside the embed. Defaults to `true` for maximum compatibility on clients where embeds do not render. Set `discord.prompt_header_in_content: false` in `config.yaml` to avoid duplicate titles when cards and embeds are displayed. This is a config-only setting; it has no environment variable.
 
 ```yaml
 discord:

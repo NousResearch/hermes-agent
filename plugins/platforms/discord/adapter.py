@@ -4826,9 +4826,10 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
     def _discord_prompt_header_in_content(self) -> bool:
         """Whether interactive prompt content prefixes the header/title when embeds render it.
         Defaults to True for backwards compatibility; when False, avoids duplicate titles."""
-        return self._extra_or_env_flag(
-            "prompt_header_in_content", "DISCORD_PROMPT_HEADER_IN_CONTENT", "true", truthy=False,
-        )
+        configured = self.config.extra.get("prompt_header_in_content", True)
+        if isinstance(configured, bool):
+            return configured
+        return str(configured).strip().lower() not in {"false", "0", "no", "off"}
 
     def _discord_max_attachment_bytes(self) -> int:
         """Per-attachment byte cap; 0 = unlimited (whole attachment is held in memory). Default 32 MiB."""

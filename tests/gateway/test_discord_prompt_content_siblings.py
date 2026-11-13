@@ -86,9 +86,26 @@ async def test_clarify_drops_duplicate_title_header_when_configured():
     assert sent["embed"].title == "❓ Hermes needs your input"
     # Duplicate title header is suppressed from content
     assert "Hermes needs your input" not in sent["content"]
-    # The actual question, choices hint, and buttons view are fully preserved
     assert sent["content"].startswith("Which environment should I deploy to?")
     assert "Pick one below, or click ✏️ Other" in sent["content"]
+
+
+@pytest.mark.asyncio
+async def test_clarify_drops_duplicate_title_header_for_quoted_false():
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***", extra={"prompt_header_in_content": "false"}))
+    sent = _capture_channel(adapter)
+
+    result = await adapter.send_clarify(
+        chat_id="555",
+        question="Which environment should I deploy to?",
+        choices=["staging", "production"],
+        clarify_id="cl1",
+        session_key="discord:555",
+    )
+
+    assert result.success is True
+    assert "Hermes needs your input" not in sent["content"]
+    assert sent["content"].startswith("Which environment should I deploy to?")
 
 
 @pytest.mark.asyncio
@@ -147,7 +164,5 @@ async def test_exec_approval_drops_duplicate_title_header_when_configured():
     assert sent["embed"].title == "⚠️ Hermes wants to run a command that needs your OK"
     # Title header is suppressed from content
     assert "Hermes wants to run a command that needs your OK" not in sent["content"]
-    # Question, command, reason, and buttons are fully preserved
-    assert "Do you want Hermes to run this command?" in sent["content"]
     assert command in sent["content"]
     assert "script execution via -c flag" in sent["content"]

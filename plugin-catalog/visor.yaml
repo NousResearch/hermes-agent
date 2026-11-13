@@ -1,6 +1,6 @@
 name: visor
 repo: https://github.com/samundra0/visor
-sha: 17a8ba5f24030e8a04f6676168f7f594f46db53c
+sha: 5c89350e5bd51599c160e5add5926cdac23d86e4
 subdir: hermes/plugin
 version: "1.9.0"
 title: Visor

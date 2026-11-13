@@ -55,16 +55,20 @@ def _recorded(home: Path) -> set[str]:
 
 
 def _record(home: Path, names: set[str]) -> None:
+    """Set only the marker key: a one-key write re-reads the file as it writes, so another process's
+    edit to the rest of *home*'s config (a running gateway, the user) is never overwritten."""
     from hermes_cli.config import atomic_config_write, read_user_config_raw
-    from hermes_cli.config_backend import config_exists
+    from hermes_cli.config_backend import config_exists, write_config_key
     from hermes_cli.left_core_migration import _stamp_created
     path = home / "config.yaml"
-    created = not config_exists(path)
+    done = _recorded(home)
+    marker = sorted(done | names)
+    if config_exists(path):
+        write_config_key(path, _INSTALLED_KEY, marker)
+        return
     config = read_user_config_raw(path)
-    done = config.get(_INSTALLED_KEY)
-    config[_INSTALLED_KEY] = sorted({*(map(str, done) if isinstance(done, list) else ()), *names})
-    if created:
-        _stamp_created(home, config)
+    config[_INSTALLED_KEY] = marker
+    _stamp_created(home, config)
     atomic_config_write(path, config)
 
 

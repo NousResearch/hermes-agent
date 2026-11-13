@@ -1,22 +1,22 @@
 name: stoa
 title: Stoa
 repo: https://github.com/jarrett-del/hermes-stoa
-sha: 0177c92643e5f7a1de65896c6a36bcf054403ed5
+sha: 9215f6ba5b6df357f0d41faeb49d89e8924342bd
 description: "The CRM for Hermes Agent, a lightweight one you talk to: map a market, find the leads, run the pipeline and see it through to cash. Hermes runs it and you approve: what it finds waits for your yes or no, and every change can be taken back. Optional paid lookups and network calls happen only with your own keys; the README's Disclosure section lists everything it reads, writes and sends."
 maintainer: jarrett-del
 tier: community
 category: tools
 requires_hermes: ">=0.23.0"
-version: "0.13.2"
+version: "0.15.0"
 platforms: [linux, macos]
-image: https://raw.githubusercontent.com/jarrett-del/hermes-stoa/0177c92643e5f7a1de65896c6a36bcf054403ed5/docs/banner.jpg
+image: https://raw.githubusercontent.com/jarrett-del/hermes-stoa/9215f6ba5b6df357f0d41faeb49d89e8924342bd/docs/banner.jpg
 screenshots:
-  - https://raw.githubusercontent.com/jarrett-del/hermes-stoa/0177c92643e5f7a1de65896c6a36bcf054403ed5/docs/desktop-today.jpg
-  - https://raw.githubusercontent.com/jarrett-del/hermes-stoa/0177c92643e5f7a1de65896c6a36bcf054403ed5/docs/desktop-pipeline.jpg
-  - https://raw.githubusercontent.com/jarrett-del/hermes-stoa/0177c92643e5f7a1de65896c6a36bcf054403ed5/docs/desktop-cash.jpg
-  - https://raw.githubusercontent.com/jarrett-del/hermes-stoa/0177c92643e5f7a1de65896c6a36bcf054403ed5/docs/desktop-undo.jpg
-  - https://raw.githubusercontent.com/jarrett-del/hermes-stoa/0177c92643e5f7a1de65896c6a36bcf054403ed5/docs/desktop-market.jpg
-  - https://raw.githubusercontent.com/jarrett-del/hermes-stoa/0177c92643e5f7a1de65896c6a36bcf054403ed5/docs/desktop-pane.jpg
+  - https://raw.githubusercontent.com/jarrett-del/hermes-stoa/9215f6ba5b6df357f0d41faeb49d89e8924342bd/docs/desktop-today.jpg
+  - https://raw.githubusercontent.com/jarrett-del/hermes-stoa/9215f6ba5b6df357f0d41faeb49d89e8924342bd/docs/desktop-pipeline.jpg
+  - https://raw.githubusercontent.com/jarrett-del/hermes-stoa/9215f6ba5b6df357f0d41faeb49d89e8924342bd/docs/desktop-searches.jpg
+  - https://raw.githubusercontent.com/jarrett-del/hermes-stoa/9215f6ba5b6df357f0d41faeb49d89e8924342bd/docs/desktop-cash.jpg
+  - https://raw.githubusercontent.com/jarrett-del/hermes-stoa/9215f6ba5b6df357f0d41faeb49d89e8924342bd/docs/desktop-undo.jpg
+  - https://raw.githubusercontent.com/jarrett-del/hermes-stoa/9215f6ba5b6df357f0d41faeb49d89e8924342bd/docs/desktop-market.jpg
 capabilities:
   provides_tools:
     - gtm_pipeline
@@ -30,6 +30,7 @@ capabilities:
     - gtm_intake
     - gtm_contact
     - gtm_invoice
+    - gtm_group
   provides_hooks: []
   provides_middleware: []
   requires_env: []

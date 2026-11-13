@@ -213,3 +213,33 @@ def test_dashboard_config_form_owner_of_carried_url_keeps_its_key(home):
     _put_config({"auxiliary": {"vision": {"provider": "openrouter", "model": "m", "base_url": "https://openrouter.ai/api/v1"}}})
 
     assert _resolved_vision()[2:4] == ("https://openrouter.ai/api/v1", "a-key")
+
+
+def test_dashboard_config_form_round_trip_drops_referenced_key(home):
+    """The settings form PUTs back what GET returned, and GET expands a ``${VAR}`` key (aux keys
+    are stored as ``${AUXILIARY_<TASK>_API_KEY}``): the re-sent expansion is the old route's key."""
+    import asyncio
+    from hermes_cli.web_routers.config_env import get_config
+    (home / ".env").write_text(f"AUXILIARY_VISION_API_KEY={OLD_SECRET}\n")
+    _seed(home, {"provider": "custom", "model": "m", "base_url": "https://a.example/v1",
+                 "api_key": "${AUXILIARY_VISION_API_KEY}"})
+    form = asyncio.run(get_config())
+    form["auxiliary"]["vision"]["provider"] = "anthropic"
+
+    _put_config(form)
+
+    assert _resolved_vision() == ("anthropic", "m", None, None, None)
+
+
+def test_dashboard_config_form_round_trip_keeps_typed_key(home):
+    import asyncio
+    from hermes_cli.web_routers.config_env import get_config
+    (home / ".env").write_text(f"AUXILIARY_VISION_API_KEY={OLD_SECRET}\n")
+    _seed(home, {"provider": "custom", "model": "m", "base_url": "https://a.example/v1",
+                 "api_key": "${AUXILIARY_VISION_API_KEY}"})
+    form = asyncio.run(get_config())
+    form["auxiliary"]["vision"].update(provider="anthropic", api_key="typed-key")
+
+    _put_config(form)
+
+    assert _resolved_vision()[3] == "typed-key"

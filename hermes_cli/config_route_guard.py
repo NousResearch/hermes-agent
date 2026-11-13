@@ -68,8 +68,11 @@ def drop_carried_route_state(old: Any, new: Any, config: dict) -> None:
     if carried_url:
         return  # same endpoint: its credentials stay paired with it
     fields = _CARRIED_CREDENTIAL_FIELDS[2:] if old_route == ("", "") else _CARRIED_CREDENTIAL_FIELDS
+    from hermes_cli.config import _expand_env_vars
     for key in fields:
-        if key in new and new[key] == old.get(key):
+        # GET hands the form a ``${VAR}`` key expanded (aux keys are stored that way), so the old
+        # key comes back as its expansion, not as the reference.
+        if key in new and new[key] in (old.get(key), _expand_env_vars(old.get(key))):
             new.pop(key)
 
 

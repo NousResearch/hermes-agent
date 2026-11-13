@@ -360,6 +360,24 @@ def install_owner() -> str:
     return install_key(repo_root())
 
 
+def _record_install_state() -> None:
+    """Leave this checkout's ``installs/<key>`` state record behind every pin it claims.
+
+    gc keeps a claimed pin while that state dir exists, and only the orphan sweep removes it,
+    once it proves the checkout deleted. A checkout that only ever ran ``ensure`` (a sealed or
+    resident runtime commits no dependency state) would otherwise own pins no state dir backs,
+    and another checkout's gc reclaimed them while it still ran on them."""
+    from pm.environments import installs_root
+    from pm.paths import repo_root
+
+    record = installs_root() / install_owner() / "inputs" / ".project-root"
+    if record.is_file():
+        os.utime(record.parent)  # a use, for the orphan sweep's retention clock
+    else:
+        record.parent.mkdir(parents=True, exist_ok=True)
+        record.write_text(str(repo_root().resolve()), encoding="utf-8")
+
+
 def _with_history(fact: dict, old) -> dict:
     """Keep other installs' pins beside the new selection; drop this install's superseded one.
 
@@ -368,6 +386,7 @@ def _with_history(fact: dict, old) -> dict:
     (#149497). Each row names the checkouts that pinned it: re-recording moves this checkout's
     claim, so its own upgrade leaves no history behind and gc can reclaim the old entry."""
     owner = install_owner()
+    _record_install_state()
     rows = [old, *(old.get("previous") or [])] if isinstance(old, dict) and "entry" in old else []
     owners: list[str] = [owner]
     history: dict[str, dict] = {}

@@ -170,6 +170,14 @@ def _generate_pyproject(plugin_dirs: list[Path] | Mapping[Path, Path], root: Pat
         # names a workspace member, which uv refuses without a source; root sources apply
         # to every member, renamed virtual ones included.
         uv_policy.setdefault("sources", {})[document["project"]["name"]] = {"workspace": True}
+        # Selected plugins can depend on each other's buildable distributions too.
+        # uv requires explicit workspace sources even when the member is present.
+        metadata_by_member = [tomllib.loads((root / member / "pyproject.toml").read_text(encoding="utf-8-sig"))
+                              for member in members]
+        for metadata in metadata_by_member:
+            if "build-system" in metadata or metadata.get("tool", {}).get("uv", {}).get("package") is True:
+                uv_policy["sources"].setdefault(metadata["project"]["name"], {"workspace": True})
+        _check_member_versions(metadata_by_member, extras, target)
         _solve_only_for(uv_policy, target)
         text = tomli_w.dumps(document)
     else:
@@ -179,6 +187,33 @@ def _generate_pyproject(plugin_dirs: list[Path] | Mapping[Path, Path], root: Pat
     text = _without_release_age(text)
     _copy_core_inputs(source, root)
     target.write_text(text, encoding="utf-8")
+
+
+def _check_member_versions(documents, extras, target):
+    """uv workspace sources ignore specifiers, so check known member versions first."""
+    from packaging.requirements import Requirement
+    from packaging.utils import canonicalize_name
+    from packaging.version import Version
+
+    from pm.install import _extra_key
+
+    versions = {canonicalize_name(document["project"]["name"]): document["project"]["version"]
+                for document in documents if "version" in document["project"]}
+    for document in documents:
+        project = document["project"]
+        selected, _named = _selected_member_extras(document, extras, target)
+        specs = list(project.get("dependencies", []))
+        specs += [spec for extra, values in project.get("optional-dependencies", {}).items()
+                  if _extra_key(extra) in selected for spec in values]
+        for spec in specs:
+            requirement = Requirement(spec)
+            current = versions.get(canonicalize_name(requirement.name))
+            if (current is not None and requirement.specifier
+                    and _reference_active(requirement, ("", *sorted(selected)), target)
+                    and not requirement.specifier.contains(Version(current), prereleases=True)):
+                raise ResolutionConflict(
+                    "venv",
+                    f"plugin {project['name']} requires {requirement}, but the selected plugin is {current}")
 
 
 def _without_release_age(text: str) -> str:

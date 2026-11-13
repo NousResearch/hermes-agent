@@ -387,3 +387,52 @@ def test_each_packaging_file_is_part_of_the_environment_stamp(tmp_path, monkeypa
     with (root / name).open("a", encoding="utf-8") as handle:
         handle.write("# packaging edit\n")
     assert Venv(root).expected_stamp([], plugin_dirs=[]) != before
+
+
+@pytest.mark.parametrize("authored", [False, True])
+@pytest.mark.parametrize("version", ["1.0", "2.0"])
+@pytest.mark.parametrize("inactive", [False, True])
+def test_plugin_dependency_uses_another_selected_buildable_plugin(tmp_path, authored, version, inactive):
+    """A selected plugin may depend on another selected plugin's Python distribution."""
+    import os
+
+    from pm.environment import PythonEnvironment
+
+    core, provider, consumer = (tmp_path / name for name in ("core", "provider", "consumer"))
+    core.mkdir()
+    consumer.mkdir()
+    (core / "pyproject.toml").write_text(
+        '[project]\nname="core-fixture"\nversion="1"\nrequires-python=">=3.11"\n'
+        '[tool.uv]\npackage=false\nno-index=true\n', encoding="utf-8",
+    )
+    _buildable_source(provider)
+    requirement = f"replay-plugin=={version}" + ('; python_version < "0"' if inactive else "")
+    if authored:
+        (consumer / "pyproject.toml").write_text(
+            '[project]\nname="consumer"\nversion="1"\nrequires-python=">=3.11"\n'
+            f'dependencies={json.dumps([requirement])}\n', encoding="utf-8",
+        )
+    else:
+        (consumer / "plugin.yaml").write_text(
+            f'name: consumer\npython_dependencies: {json.dumps([requirement])}\n', encoding="utf-8",
+        )
+    original = {p: p.read_bytes() for parent in (core, provider, consumer) for p in parent.rglob("*") if p.is_file()}
+    uv = shutil.which("uv")
+    assert uv is not None
+    environment = PythonEnvironment(
+        uv=Path(uv), python=Path(sys.executable), destination=tmp_path / "venv",
+        cache=tmp_path / "cache", env=dict(os.environ), offline=True,
+    )
+    generated = tmp_path / "generated"
+    if version == "2.0" and not inactive:
+        with pytest.raises(workspace.ResolutionConflict):
+            workspace.lock_and_sync([provider, consumer], [], root=generated, source=core,
+                                    seed_lock=None, environment=environment)
+    else:
+        workspace.lock_and_sync([provider, consumer], [], root=generated, source=core,
+                                seed_lock=None, environment=environment)
+        python = environment.destination / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
+        result = subprocess.run([str(python), "-c", "import replay_plugin; print(replay_plugin.VALUE)"],
+                                cwd=tmp_path, capture_output=True, text=True, check=True, timeout=30)
+        assert result.stdout.strip() == "recorded plugin bytes"
+    assert all(p.read_bytes() == data for p, data in original.items())

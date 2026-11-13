@@ -490,5 +490,5 @@ def test_fallback_handoff_anchors_reach_the_next_summarizer():
     with patch("agent.context_compressor.call_llm", return_value=_response("THIRD summary")) as mock_call:
         compressor.compress(messages)
 
-    prompt = mock_call.call_args.kwargs["messages"][0]["content"]
+    prompt = "\n".join(m["content"] for m in mock_call.call_args.kwargs["messages"])
     assert "FALLBACK-ANCHOR-ASK" in prompt

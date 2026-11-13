@@ -50,7 +50,7 @@ def compressor() -> ContextCompressor:
     return instance
 
 
-def _captured_prompt(compressor: ContextCompressor) -> str:
+def _captured_prompt(compressor: ContextCompressor) -> tuple[str, str]:
     captured: dict = {}
 
     def _capture(*args, **kwargs):
@@ -63,19 +63,19 @@ def _captured_prompt(compressor: ContextCompressor) -> str:
         captured["prompt"] = "\n".join(
             str(m.get("content", "")) for m in (messages or []) if isinstance(m, dict)
         )
+        captured["system"] = str((messages or [{}])[0].get("content", ""))
         return _response("## Goal\nStub summary.")
 
     with patch("agent.context_compressor.call_llm", side_effect=_capture):
         compressor._generate_summary(_user_turns())
-    return captured.get("prompt", "")
+    return captured.get("prompt", ""), captured.get("system", "")
 
 
 @pytest.mark.parametrize("previous_summary", [None, "## Goal\nEarlier summary."], ids=["first", "iterative"])
 def test_summary_prompt_carries_stance_rule_and_section(compressor, previous_summary):
-    # Wiring, not wording: the rule sits in the preamble (ahead of the turns) and the section in the
-    # output template (after them), on both prompt forms.
+    # Wiring, not wording: the rule sits in the preamble ahead of the output template's section, both
+    # in the summarizer's system instructions (never mixed into the turns), on both prompt forms.
     compressor._previous_summary = previous_summary
-    prompt = _captured_prompt(compressor)
-    turns_at = prompt.index(_user_turns()[0]["content"])
-    assert 0 <= prompt.find(EPISTEMIC_STANCE_RULE) < turns_at
-    assert prompt.find(UNVERIFIED_HYPOTHESES_SECTION) > turns_at
+    prompt, system = _captured_prompt(compressor)
+    assert _user_turns()[0]["content"] in prompt and _user_turns()[0]["content"] not in system
+    assert 0 <= system.find(EPISTEMIC_STANCE_RULE) < system.find(UNVERIFIED_HYPOTHESES_SECTION)

@@ -1,0 +1,19 @@
+name: ilang
+title: iLang
+repo: https://github.com/ilang-ai/ilang
+sha: 65af1680433476044e7fb0b5f8bd9b184dea20e9
+subdir: hermes
+version: "1.0.6"
+description: "iLang, the native language of AI, through iLang Inc.'s official MCP server (Streamable HTTP at https://mcp.ilang.ai/mcp, no sign-in, no keys in config): the official runtime verified against the canon's sha256, a lite runtime, sections of the full specification, the canon grammar validator, dictionary and FAQ lookup, SOUL 2.0 and Source Book 2.9, and the engineering-book check. Bundles one workflow skill. Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only. Disclosure: hosted-only connector with no local code; every tool call goes to mcp.ilang.ai, which fetches the canon files it serves from runtime.ilang.app and does not store, log or reuse submitted content. The package holds no credentials. All nine tools are annotated read-only; the package still marks the server untrusted. The tool set is served by the remote server at runtime and is not covered by the pinned sha."
+maintainer: iLang Inc.
+tier: community
+category: tools
+docs_url: https://ilang.ai/
+requires_hermes: ">=0.21.6"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

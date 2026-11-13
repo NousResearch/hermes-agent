@@ -38,10 +38,13 @@ _OPTED_IN_PROVIDERS = [
 ]
 
 
-def _build_agent(tmp_path, monkeypatch):
+def _build_agent(tmp_path, monkeypatch, *, show_reasoning=True):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     (tmp_path / ".env").write_text("", encoding="utf-8")
-    (tmp_path / "config.yaml").write_text("{}\n", encoding="utf-8")
+    (tmp_path / "config.yaml").write_text(
+        f"display:\n  show_reasoning: {str(show_reasoning).lower()}\n",
+        encoding="utf-8",
+    )
     from run_agent import AIAgent
 
     agent = AIAgent(
@@ -131,6 +134,38 @@ def test_clean_stop_reasoning_only_returns_on_first_call(tmp_path, monkeypatch):
     assert row["role"] == "assistant"
     assert not row.get("content")
     assert row["api_content"] == "The answer is 42 because of the calculation above."
+
+
+def test_clean_stop_reasoning_hidden_runs_recovery_ladder(tmp_path, monkeypatch):
+    """Hidden reasoning remains model-facing but never becomes the visible reply."""
+    agent = _build_agent(tmp_path, monkeypatch, show_reasoning=False)
+    responses = [
+        _reasoning_only_response(),
+        SimpleNamespace(
+            choices=[SimpleNamespace(
+                message=SimpleNamespace(
+                    content="The visible answer is 42.",
+                    reasoning=None,
+                    reasoning_content=None,
+                    reasoning_details=None,
+                    tool_calls=None,
+                ),
+                finish_reason="stop",
+            )],
+            usage=None,
+            model="test-model",
+        ),
+    ]
+    monkeypatch.setattr(agent, "_interruptible_api_call", lambda api_kwargs: responses.pop(0))
+
+    result = agent.run_conversation("what is the answer?")
+
+    assert result["final_response"] == "The visible answer is 42."
+    assert result["api_calls"] == 2
+    assert all(
+        "The answer is 42 because" not in str(message.get("content", ""))
+        for message in result["messages"]
+    )
 
 
 def test_exhausted_truly_empty_keeps_existing_behavior(tmp_path, monkeypatch):

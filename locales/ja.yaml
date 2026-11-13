@@ -1171,8 +1171,6 @@ platform:
         unknown: "不明なスキル: `{name}`。入力を始めると自動補完の候補が表示されます。"
       auto_args_description: "引数: {args_hint}"
       auto_description_fallback: "/{name} を実行"
-    limits:
-      response_truncated: "⚠️ **応答を省略しました** — この返信は配信上限 ({max_messages} メッセージ) を超えました。{dropped_chars} 文字が配信されていません。完全な応答はセッションログにあります。"
     forum:
       default_title: "新しい投稿"
     voice:

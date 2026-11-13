@@ -1171,8 +1171,6 @@ platform:
         unknown: "Skill desconhecida: `{name}`. Comece a digitar para ver sugestões de preenchimento automático."
       auto_args_description: "Argumentos: {args_hint}"
       auto_description_fallback: "Executar /{name}"
-    limits:
-      response_truncated: "⚠️ **Resposta truncada** — esta resposta excedeu o limite de entrega ({max_messages} mensagens). {dropped_chars} caracteres não foram entregues; a resposta completa está nos logs da sessão."
     forum:
       default_title: "Nova publicação"
     voice:

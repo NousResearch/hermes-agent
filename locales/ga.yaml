@@ -1171,8 +1171,6 @@ platform:
         unknown: "Scil anaithnid: `{name}`. Tosaigh ag clóscríobh le haghaidh moltaí uathchríochnaithe."
       auto_args_description: "Argóintí: {args_hint}"
       auto_description_fallback: "Rith /{name}"
-    limits:
-      response_truncated: "⚠️ **Freagra giorraithe** — sháraigh an freagra seo an teorainn seachadta ({max_messages} teachtaireacht). Níor seachadadh {dropped_chars} carachtar; tá an freagra iomlán i logaí an tseisiúin."
     forum:
       default_title: "Postáil Nua"
     voice:

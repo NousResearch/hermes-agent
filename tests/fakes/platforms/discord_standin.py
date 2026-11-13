@@ -107,6 +107,11 @@ class DiscordStandin(StandinServer):
         self.files: dict[str, bytes] = {}
         self._visible: dict[tuple[str, str], Visible] = {}
         self.guild = {"id": GUILD_ID, "name": "Standin Guild", "owner_id": "1", "channels": []}
+        # Opt-in per-channel ``create_message`` bucket as (limit, window seconds), e.g. Discord's (5, 5.0):
+        # each answer carries the ``X-RateLimit-*`` headers discord.py paces by, and a send past the
+        # limit is refused with a 429 ``retry_after``. None (the default) answers without limits.
+        self.message_bucket: Optional[tuple[int, float]] = None
+        self._bucket_sends: dict[str, list[float]] = {}
 
     # ids / shapes ----------------------------------------------------------------------------
     def snowflake(self) -> str:
@@ -245,9 +250,16 @@ class DiscordStandin(StandinServer):
         fault = self.take_fault(name, params)
         if fault is not None:
             self.record(name, params, fault.body, faulted=True)
-            headers = {"Retry-After": str(fault.body.get("retry_after", 1)), "X-RateLimit-Scope": "user"} \
-                if fault.status == 429 and isinstance(fault.body, dict) else None
+            # Discord's 429 arrives through its proxy (``Via``): discord.py treats a 429 without one as a
+            # Cloudflare ban and raises instead of sleeping ``retry_after`` and retrying.
+            headers = {"Retry-After": str(fault.body.get("retry_after", 1)), "X-RateLimit-Scope": "user",
+                       "Via": "1.1 google"} if fault.status == 429 and isinstance(fault.body, dict) else None
             return _json(fault.body, status=fault.status, headers=headers)
+        limited = self._bucket_headers(name, params)
+        if limited is not None and limited[0] is not None:
+            body = {"message": "You are being rate limited.", "retry_after": limited[0], "global": False}
+            self.record(name, params, body, faulted=True)
+            return _json(body, status=429, headers=limited[1])
         try:
             status, result = getattr(self, f"_r_{name}")(params)
         except Exception as exc:  # a stand-in bug must be loud in describe(), not a silent 5xx retry loop
@@ -257,7 +269,27 @@ class DiscordStandin(StandinServer):
         self.record(name, params, result, faulted=status >= 400)
         if status == 204:
             return web.Response(status=204)
-        return _json(result, status=status)
+        return _json(result, status=status, headers=limited[1] if limited else None)
+
+    def _bucket_headers(self, name: str, params: dict[str, Any]) -> Optional[tuple[Optional[float], dict[str, str]]]:
+        """``(retry_after or None, X-RateLimit headers)`` for a ``create_message`` under ``message_bucket``."""
+        if name != "create_message" or self.message_bucket is None:
+            return None
+        limit, window = self.message_bucket
+        now = time.monotonic()
+        with self._lock:
+            sends = [t for t in self._bucket_sends.get(str(params.get("channel_id")), []) if now - t < window]
+            retry_after = round(window - (now - sends[0]), 3) if len(sends) >= limit else None
+            if retry_after is None:
+                sends.append(now)
+            self._bucket_sends[str(params.get("channel_id"))] = sends
+        reset_after = round(window - (now - sends[0]), 3) if sends else window
+        headers = {"X-RateLimit-Limit": str(limit), "X-RateLimit-Remaining": str(max(0, limit - len(sends))),
+                   "X-RateLimit-Reset-After": str(reset_after), "X-RateLimit-Reset": str(time.time() + reset_after),
+                   "X-RateLimit-Bucket": "standin-create-message"}
+        if retry_after is not None:
+            headers.update({"Retry-After": str(retry_after), "X-RateLimit-Scope": "user", "Via": "1.1 google"})
+        return retry_after, headers
 
     # REST handlers: each returns (status, json) -------------------------------------------------
     def _r_get_me(self, _p: dict[str, Any]) -> tuple[int, Any]:

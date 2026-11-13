@@ -1,5 +1,5 @@
 import { defaultNewSessionTarget } from '@/app/session/new-session-route'
-import { noteActiveTreeGroup, revealTreePane } from '@/components/pane-shell/tree/store'
+import { focusedSessionTabAnchor, noteActiveTreeGroup, revealTreePane } from '@/components/pane-shell/tree/store'
 import { freshDraftScope, requestComposerDraftSync, takeSessionDraft } from '@/store/composer'
 import { $queuedPromptsBySession } from '@/store/composer-queue'
 import {
@@ -16,10 +16,19 @@ import {
   getSessionOwnerHints,
   sessionMatchesStoredId
 } from '@/store/session'
-import { $sessionStates, $sessionTiles, focusOpenSession, type SessionTile } from '@/store/session-states'
+import { TILE_PANE_PREFIX } from '@/store/session-focus'
+import {
+  $sessionStates,
+  $sessionTiles,
+  discardSessionTile,
+  focusOpenSession,
+  openSessionTile,
+  type SessionTile
+} from '@/store/session-states'
 
-import { mainChatOccupied } from '../open-session'
 import { $workspaceIsPage } from '../routes'
+
+import { mainChatOccupied } from './main-occupancy'
 
 const hasQueued = (...keys: (string | undefined)[]): boolean => {
   const queues = $queuedPromptsBySession.get()
@@ -117,4 +126,48 @@ export function frontUntouchedDraftTab(): boolean {
   const tile = $sessionTiles.get().find(isUntouchedDraftTile)
 
   return Boolean(tile && focusOpenSession(tile.storedSessionId) === 'tile')
+}
+
+/** The untouched "New session" tab the person is LOOKING at, if any. Only the
+ *  tab in front counts: a blank tab left open behind another chat is not the
+ *  one a click was aimed at, so it must not swallow the chat. */
+export function focusedDraftTile(): null | SessionTile {
+  const anchor = focusedSessionTabAnchor()
+
+  if (!anchor?.startsWith(TILE_PANE_PREFIX)) {
+    return null
+  }
+
+  const tile = $sessionTiles
+    .get()
+    .find(candidate => candidate.storedSessionId === anchor.slice(TILE_PANE_PREFIX.length))
+
+  return tile && isUntouchedDraftTile(tile) ? tile : null
+}
+
+/**
+ * Hand a chat picked from the sessions list to the untouched draft tab in
+ * front, keeping its slot — the browser's new-tab page: click a session while
+ * an empty tab holds focus and THAT tab fills. Without this the sidebar's
+ * in-place open spends main, whose chat sits in the first tab and is replaced
+ * even though the person was looking at the empty one.
+ *
+ * False when the tab in front is anything else (an ordinary chat, a Bot tab, a
+ * draft with typing in it), so the caller keeps main as its destination.
+ */
+export function reuseFocusedDraftTile(storedSessionId: string): boolean {
+  const tile = focusedDraftTile()
+
+  if (!tile || tile.storedSessionId === storedSessionId) {
+    return false
+  }
+
+  // Same spend as reuseBlankDraftTile: the draft is DISCARDED (it never held a
+  // conversation, so ⌘⇧T resurrecting it would only restore an empty tab) and
+  // the chat takes its place in the strip.
+  discardSessionTile(tile.storedSessionId)
+  openSessionTile(storedSessionId, tile.dir, tile.anchor, tile.before, { workspaceMode: 'sessions' })
+  revealTreePane(`${TILE_PANE_PREFIX}${storedSessionId}`)
+
+  return true
 }

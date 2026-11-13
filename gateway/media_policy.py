@@ -39,7 +39,7 @@ def _flag_value(value: Any, *, default: bool) -> bool:
     """One reading per flag, shared by the config path, the env readers and the bridge: a known
     truthy value is on, a known falsy one is off, anything else returns ``default``. A
     hand-edited config.yaml spells flags as strings (``strict: "false"``), where ``bool()``
-    would read the quoted "false" as True. Quotes inside the string are dropped: before the CLI
+    would read the quoted "false" as True. Leading and trailing quotes are dropped: before the CLI
     coerced them, ``hermes config set gateway.strict '"true"'`` stored ``'"true"'``."""
     if value is None:
         return default

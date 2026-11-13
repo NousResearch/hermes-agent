@@ -1825,6 +1825,10 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
     # adapters (API server). Propagated to ``HERMES_SESSION_ASYNC_DELIVERY`` so tools never promise
     # a delivery they can't keep.
     supports_async_delivery: bool = True
+    # Each inbound event gets its own session, closed when its turn ends (webhook). The adapter can
+    # still be woken, but a later turn starts with no history, so tools run their work inside the turn
+    # (``HERMES_SESSION_ASYNC_DELIVERY`` off) instead of handing it to a continuation.
+    session_ends_with_turn: bool = False
     # ``send()`` chunks natively via ``truncate_message()`` -> the router skips its truncation.
     splits_long_messages: bool = False
     # Prefix users can always TYPE for Hermes commands ("!" where the client eats a leading "/").

@@ -3913,9 +3913,11 @@ class GatewayRunner(
         from gateway.session_context import set_session_vars
         from gateway.session_detached import session_env_source
         source = session_env_source(self, context.source)
-        # Can async tools wake a later turn here? Default True (CLI/unknown); api_server declares False.
+        # Can async tools wake a later turn here? Default True (CLI/unknown); api_server declares False,
+        # and a webhook's per-delivery session ends with the turn, so its continuation has no history.
         _adapter = (getattr(self, "adapters", None) or {}).get(source.platform)
-        _async_delivery = getattr(_adapter, "supports_async_delivery", True)
+        _async_delivery = (getattr(_adapter, "supports_async_delivery", True)
+                           and not getattr(_adapter, "session_ends_with_turn", False))
         # #98619: an admitted API turn carries its session-id provenance; other platforms leave it unset.
         from gateway.session_api_turn import api_session_vars
         _history_delivery = api_session_vars().get("session_history_delivery")

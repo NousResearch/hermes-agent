@@ -155,6 +155,28 @@ class TestStatelessChannelForcesSyncDelegation:
 
 class TestAdapterCapabilityFlag:
 
+    def test_webhook_turn_keeps_async_work_in_turn_but_stays_wakeable(self):
+        """A webhook delivery's session ends with its turn, so a detached completion would wake
+        a fresh session with no history: its turns bind async_delivery=False, while Kanban and
+        process wakes still push into the route."""
+        from gateway.config import Platform
+        from gateway.platforms.webhook import WebhookAdapter
+        from gateway.run import GatewayRunner
+        from gateway.session import SessionContext, SessionSource
+        from gateway.wake import adapter_supports_push
+
+        runner = object.__new__(GatewayRunner)
+        adapter = object.__new__(WebhookAdapter)
+        runner.adapters = {Platform.WEBHOOK: adapter}
+        source = SessionSource(platform=Platform.WEBHOOK, chat_id="webhook:v2:d1", chat_type="webhook")
+        tokens = runner._set_session_env(
+            SessionContext(source=source, connected_platforms=[], home_channels={}))
+        try:
+            assert async_delivery_supported() is False
+        finally:
+            clear_session_vars(tokens)
+        assert adapter_supports_push(adapter) is True
+
 
     def test_api_server_bind_chokepoint_hardwires_no_delivery(self):
         """Every API-server agent-entry path binds through

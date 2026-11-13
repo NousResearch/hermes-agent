@@ -255,37 +255,11 @@ def _strip_python_launcher(args: list[str]) -> list[str]:
     return args
 
 
-def _gateway_run_no_supervise(args: Sequence[str]) -> bool:
-    """True when the CLI would parse ``args`` as ``gateway run --no-supervise``: the real parsers
-    decide, so accepted abbreviations (``--no-supervis``) and flag placement match what the
-    container actually runs."""
-    import contextlib
-    import io
-
-    from hermes_cli._parser import build_top_level_parser, scan_profile_flag
-    from hermes_cli.subcommands.gateway import build_gateway_parser
-
-    args = list(args)
-    _, consumed, index = scan_profile_flag(args)
-    if index is not None:  # stripped before argparse, as main._apply_profile_override does
-        args = args[:index] + args[index + consumed:]
-
-    parser, subparsers, _ = build_top_level_parser()
-    build_gateway_parser(subparsers, cmd_gateway=None, cmd_proxy=None, cmd_gateway_enroll=None)
-    sink = io.StringIO()
-    try:  # an invalid CMD (or --help) exits without running a gateway
-        with contextlib.redirect_stdout(sink), contextlib.redirect_stderr(sink):
-            parsed = parser.parse_args(list(args))
-    except SystemExit:
-        return False
-    return (parsed.command == "gateway" and getattr(parsed, "gateway_command", None) == "run"
-            and bool(getattr(parsed, "no_supervise", False)))
-
-
 def _is_legacy_gateway_run_request(argv: Sequence[str]) -> bool:
     """True for Docker commands equivalent to `gateway run`."""
+    from hermes_cli._parser import gateway_run_no_supervise
     args = _strip_container_argv_prefix(argv)
-    if _gateway_run_no_supervise(args):
+    if gateway_run_no_supervise(args):
         return False
     return len(args) >= 2 and args[0] == "gateway" and args[1] == "run"
 
@@ -298,7 +272,7 @@ def _foreground_gateway_profile(argv: Sequence[str], hermes_home: Path) -> str |
     import shlex
 
     from gateway.status import looks_like_gateway_command_line
-    from hermes_cli._parser import scan_profile_flag
+    from hermes_cli._parser import gateway_run_no_supervise, scan_profile_flag
     args = _strip_container_argv_prefix(argv)
     if not looks_like_gateway_command_line(shlex.join(["hermes", *args])):
         return None
@@ -306,7 +280,7 @@ def _foreground_gateway_profile(argv: Sequence[str], hermes_home: Path) -> str |
     if index is not None:  # stripped before argparse, as main._apply_profile_override does
         args = args[:index] + args[index + consumed:]
     # Bare `gateway` also runs, but only `gateway run` takes `--no-supervise`.
-    if not _gateway_run_no_supervise(args) and os.environ.get("HERMES_GATEWAY_NO_SUPERVISE", "").lower() not in ("1", "true", "yes"):
+    if not gateway_run_no_supervise(args) and os.environ.get("HERMES_GATEWAY_NO_SUPERVISE", "").lower() not in ("1", "true", "yes"):
         return None
     if profile is not None:
         return profile

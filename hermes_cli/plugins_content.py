@@ -58,13 +58,31 @@ def register_skill(
     if existing and (self.manifest.portable
                      or (existing.get("portable") and existing.get("plugin_key") != self.plugin_id)):
         raise ValueError(f"Plugin skill '{qualified}' is already registered by plugin '{existing.get('plugin_key')}'")
+    # The documented two-argument form — ctx.register_skill(name, skill_md) — is what the
+    # developer guide shows and what the shipped plugins call, so a plugin that omits
+    # `description`/`frontmatter` has no text of its own to register. Without this the
+    # registry stored description="" / frontmatter={} and the skill surfaced in the
+    # <available_skills> index with no routing signal at all. Read the SKILL.md's own
+    # frontmatter once; explicit arguments still win.
+    if not description or not frontmatter:
+        try:
+            from agent.skill_utils import parse_frontmatter
+            parsed, _ = parse_frontmatter(path.read_text(encoding="utf-8-sig", errors="replace"))
+        except Exception as exc:  # health: allow BLE001 -- a malformed SKILL.md must not abort plugin load; the skill still registers
+            logger.warning("Plugin skill %s: could not read frontmatter from %s: %s",
+                           name, path, exc, exc_info=True)
+            parsed = {}
+        if not frontmatter:
+            frontmatter = dict(parsed)
+        if not description:
+            description = str(parsed.get("description") or "").strip()
     entry = {
         "path": path, "plugin": namespace, "plugin_key": self.plugin_id, "plugin_name": self.manifest.name,
         "portable": self.manifest.portable, "bare_name": name,
         "description": description, "frontmatter": dict(frontmatter or {}),
     }
     return self._register_entry("skill", qualified, self._manager._plugin_skills, entry,
-                                "Plugin %s registered skill: %s", qualified)
+                                "Plugin %s registered skill: %s", qualified, name)
 
 def register_automation_blueprint(
     self, key: str, *, title: str, description: str, schedule_template: str,

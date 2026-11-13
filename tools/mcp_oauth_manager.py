@@ -64,6 +64,57 @@ class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
         self._hermes_home = ""
         # A config-supplied client_id rejected as invalid_client means the *config* is wrong — only DCR clients auto-heal.
         self._hermes_preregistered = preregistered
+        # Explicit ``oauth.scope`` from config, bound by ``_hermes_bind_configured_scope()``.
+        # Empty = nothing pinned and the SDK's discovery-based scope selection stands (#142477).
+        self._hermes_configured_scope = ""
+
+    def _hermes_bind_configured_scope(self, cfg: Optional[dict]) -> None:
+        """Pin an explicitly configured ``oauth.scope`` against the SDK's scope selection.
+
+        The SDK's 401-discovery branch (mcp 2.0 ``oauth2.py`` Step 3) assigns
+        ``context.client_metadata.scope`` from the WWW-Authenticate hint, else PRM
+        ``scopes_supported``, else the AS-wide ``scopes_supported``, with no case for a scope the
+        client already set. An authorization server that advertises more scopes than its clients
+        may present then fails every authorization with ``invalid_scope`` and ``oauth.scope`` is
+        dead weight (issue #142477). Re-applying the configured scope immediately before each
+        authorization-code grant — after discovery has run, before the URL is built — restores the
+        config's precedence. No-op when ``oauth.scope`` is unset.
+        """
+        self._hermes_configured_scope = str((cfg or {}).get("scope") or "").strip()
+        if not self._hermes_configured_scope or getattr(self, "_hermes_scope_pin_installed", False):
+            return  # nothing to pin; never stack wrappers on a re-bind
+        base = _SDK_BASES[0] if _SDK_BASES else None
+        if base is None or not hasattr(base, "_perform_authorization_code_grant"):
+            logger.warning(
+                "MCP OAuth '%s': configured oauth.scope cannot be pinned on this MCP SDK version; "
+                "the SDK's discovered scope selection will be used instead", self._hermes_server_name)
+            self._hermes_configured_scope = ""
+            return
+        original = self._perform_authorization_code_grant
+
+        async def _grant_with_pinned_scope():
+            self._pin_configured_scope()
+            return await original()
+
+        self._perform_authorization_code_grant = _grant_with_pinned_scope  # type: ignore[method-assign]
+        self._hermes_scope_pin_installed = True
+
+    def _pin_configured_scope(self) -> None:
+        """Re-assert ``_hermes_configured_scope`` on the SDK client metadata. The authorization-URL
+        builder reads exactly this attribute after discovery has replaced it; the token request is
+        scope-less, so this covers the whole grant."""
+        if not self._hermes_configured_scope:
+            return
+        try:
+            if self.context.client_metadata.scope != self._hermes_configured_scope:
+                logger.info(
+                    "MCP OAuth '%s': SDK scope selection %r replaced by the configured oauth.scope %r",
+                    self._hermes_server_name, self.context.client_metadata.scope,
+                    self._hermes_configured_scope)
+                self.context.client_metadata.scope = self._hermes_configured_scope
+        except (AttributeError, TypeError, ValueError) as exc:
+            # A metadata object that refuses the write must not break auth; fall back to SDK selection.
+            self._log_nonfatal("configured-scope pin", exc)
 
     def _hermes_storage(self):
         """The context storage when it is a ``HermesTokenStorage``, else None."""
@@ -356,9 +407,13 @@ class MCPOAuthManager:
             raise OAuthNonInteractiveError(
                 f"MCP OAuth for '{server_name}': non-interactive environment and no cached tokens found. "
                 f"Run `hermes mcp login {server_name}` interactively first to complete initial authorization.")
-        return _HERMES_PROVIDER_CLS(
+        provider = _HERMES_PROVIDER_CLS(
             server_name=server_name, preregistered=bool(cfg.get("client_id")), server_url=entry.server_url,
             **build_provider_kwargs(cfg, storage, ssh_proxy_hint=False))
+        # An explicit oauth.scope must outrank the SDK's discovery-based selection, which
+        # overwrites client_metadata.scope mid-flow (#142477).
+        provider._hermes_bind_configured_scope(cfg)
+        return provider
 
     def remove(self, server_name: str, *, hermes_home: str | Path | None = None) -> _ProviderEntry | None:
         """Evict the provider from cache AND delete tokens from disk (``hermes mcp remove`` / forced re-auth)."""

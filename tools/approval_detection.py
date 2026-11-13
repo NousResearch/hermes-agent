@@ -538,9 +538,9 @@ DANGEROUS_PATTERNS = [
     # Reverse shells (parity with Skills Guard's network rows). The /dev/tcp redirect has no command word to
     # anchor, so it scans the quote-masked variant; nc/socat are command-position anchored.
     (r'[<>]&?\s*/dev/(?:tcp|udp)/', _DEV_TCP_REDIRECT_DESCRIPTION),
-    (_CMDPOS + r'(?:\S*/)?(?:nc|ncat|netcat)(?:\.\w+)?\b[^\n]*\s(?:-[a-z]*[ec]\b|--(?:sh-)?exec\b)',
+    (_CMDPOS + r'(?:\S*/)?(?:nc|ncat|netcat)(?:\.\w+)?\b[^\n;&|]*\s(?:-[a-z]*[ec]\b|--(?:sh-)?exec\b)',
      "reverse shell via netcat -e/-c"),
-    (_CMDPOS + r'(?:\S*/)?socat\b[^\n]*\b(?:exec|system):', "reverse shell via socat EXEC:/SYSTEM:"),
+    (_CMDPOS + r'(?:\S*/)?socat\b[^\n;&|]*\b(?:exec|system):', "reverse shell via socat EXEC:/SYSTEM:"),
     # Cloud instance-metadata (IMDS) credential endpoints — deterministic containment-escape
     # detection. On a cloud VM these serve live IAM/service-account credentials to ANY local
     # process with no auth, so a fetch is credential exfiltration unless the operator expects it.

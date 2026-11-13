@@ -41,7 +41,10 @@ OVERPASS_URLS = [
 ]
 # Backward-compat alias for any caller that imports OVERPASS_API directly.
 OVERPASS_API      = OVERPASS_URLS[0]
-OSRM_BASE         = "https://router.project-osrm.org/route/v1"
+# FOSSGIS runs one OSRM server per profile. The project-osrm.org demo server
+# only has the car profile and silently answers foot/bike requests with car
+# routes, so walking and cycling times came back as driving times.
+OSRM_BASE         = "https://routing.openstreetmap.de"
 TIMEAPI_BASE      = "https://timeapi.io/api/timezone/coordinate"
 
 # Seconds to sleep between Nominatim requests (ToS requirement)
@@ -136,11 +139,21 @@ def _tags_for(category):
         return list(entry)
     return [entry]
 
+# mode -> (FOSSGIS server path, OSRM profile)
 OSRM_PROFILES = {
-    "driving": "driving",
-    "walking": "foot",
-    "cycling": "bike",
+    "driving": ("routed-car",  "driving"),
+    "walking": ("routed-foot", "foot"),
+    "cycling": ("routed-bike", "bike"),
 }
+
+
+def osrm_route_url(mode, o_lat, o_lon, d_lat, d_lon, steps):
+    server, profile = OSRM_PROFILES[mode]
+    return (
+        f"{OSRM_BASE}/{server}/route/v1/{profile}/"
+        f"{o_lon},{o_lat};{d_lon},{d_lat}"
+        f"?overview=false&steps={'true' if steps else 'false'}"
+    )
 
 # ---------------------------------------------------------------------------
 # Output helpers
@@ -696,12 +709,7 @@ def cmd_distance(args):
     o_lat, o_lon, o_name = geocode_single(origin_query)
     d_lat, d_lon, d_name = geocode_single(destination_query)
 
-    profile = OSRM_PROFILES[mode]
-    url = (
-        f"{OSRM_BASE}/{profile}/"
-        f"{o_lon},{o_lat};{d_lon},{d_lat}"
-        f"?overview=false&steps=false"
-    )
+    url = osrm_route_url(mode, o_lat, o_lon, d_lat, d_lon, steps=False)
 
     osrm_data = http_get(url)
 
@@ -783,12 +791,7 @@ def cmd_directions(args):
     o_lat, o_lon, o_name = geocode_single(origin_query)
     d_lat, d_lon, d_name = geocode_single(destination_query)
 
-    profile = OSRM_PROFILES[mode]
-    url = (
-        f"{OSRM_BASE}/{profile}/"
-        f"{o_lon},{o_lat};{d_lon},{d_lat}"
-        f"?overview=false&steps=true"
-    )
+    url = osrm_route_url(mode, o_lat, o_lon, d_lat, d_lon, steps=True)
 
     osrm_data = http_get(url)
 

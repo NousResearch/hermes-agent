@@ -178,7 +178,9 @@ current.
 
 - Nominatim ToS: max 1 req/s (handled automatically by the script)
 - `nearby` requires lat/lon OR `--near "<address>"` — one of the two is needed
-- OSRM routing coverage is best for Europe and North America
+- OSRM routing coverage is best for Europe and North America. Routing uses
+  the FOSSGIS servers (routing.openstreetmap.de), one per mode: the
+  project-osrm.org demo only routes cars, whatever mode is asked
 - Overpass API can be slow during peak hours; the script automatically
   falls back between mirrors (overpass-api.de → overpass.kumi.systems)
 - `distance` and `directions` use `--to` flag for the destination (not positional)

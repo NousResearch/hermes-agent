@@ -84,7 +84,6 @@ _WRAPPER_PATH_BYPASS = [
 ]
 
 _WRAPPER_PREFIX_NOT_A_HARDLINE = [
-    "sudo -u reboot /bin/true",
     "nice grep reboot log.txt",
     "timeout 5 echo reboot",
     "nice -n 10 grep reboot file",

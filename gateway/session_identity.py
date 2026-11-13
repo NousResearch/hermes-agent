@@ -138,6 +138,34 @@ def _name(value: Any) -> Optional[str]:
     return text or None
 
 
+def _runtime_home_for_identity(
+    source: SessionSource, *, runner: Any, runtime_name: str, transport_name: str,
+    primary_profile: str, authorization_home: Path, where: str,
+) -> Path:
+    """Return the canonical runtime home or reject an unavailable named profile.
+
+    ``GatewayRunner._resolve_profile_home_for_source`` deliberately preserves a legacy fallback
+    for callers that did not canonicalize an event. A canonical identity cannot use that fallback:
+    it would bind an explicitly named runtime to the process home. The process's own primary
+    profile remains valid by construction, including custom launch homes.
+    """
+    named_runtime = runtime_name != primary_profile
+    runtime_is_available = True
+    if named_runtime:
+        from hermes_cli.profiles import profile_exists, profile_matches_home
+        runtime_is_available = profile_exists(runtime_name)
+    if runtime_name == transport_name:
+        runtime_home = authorization_home
+    else:
+        runtime_home = Path(runner._resolve_profile_home_for_source(source))
+    if named_runtime and (
+        not runtime_is_available or not profile_matches_home(runtime_name, runtime_home)
+    ):
+        source.profile_route_rejected = True
+        raise IdentityUnresolved(f"{where}: runtime profile {runtime_name!r} is unavailable")
+    return runtime_home
+
+
 def canonical_identity(
     source: SessionSource, *, runner: Any, adapter: Any = None,
     transport_profile: Optional[str] = None, primary_home: Optional[Path] = None,
@@ -167,8 +195,9 @@ def restore_identity(
 
     *transport_profile* is what the routing index persisted at ingress (``SessionEntry.transport_profile``);
     ``None`` = a row written before the column existed, whose transport is unknown → nothing is pinned
-    and the legacy heuristics (``_is_shared_bot_satellite``) keep deciding. Standalone gateways have
-    nothing to restore (one bot, one home).
+    and the legacy heuristics (``_is_shared_bot_satellite``) keep deciding. An explicit named
+    runtime that is unavailable or falls back to another home is refused by marking
+    ``source.profile_route_rejected``; standalone gateways have nothing to restore (one bot, one home).
     """
     transport_name = _name(transport_profile)
     if transport_name is None:
@@ -186,9 +215,14 @@ def restore_identity(
     authorization_home = (
         Path(get_process_hermes_home()) if transport_name == primary_profile
         else get_profile_dir(transport_name))
-    runtime_home = (
-        authorization_home if runtime_name == transport_name
-        else Path(runner._resolve_profile_home_for_source(source)))
+    platform = getattr(source, "platform", None)
+    where = f"{getattr(platform, 'value', platform)}/{getattr(source, 'chat_id', '')}"
+    try:
+        runtime_home = _runtime_home_for_identity(
+            source, runner=runner, runtime_name=runtime_name, transport_name=transport_name,
+            primary_profile=primary_profile, authorization_home=authorization_home, where=where)
+    except IdentityUnresolved:
+        return None
     source._authorization_profile_home = authorization_home
     identity = RoutingIdentity(
         transport_profile=transport_name, runtime_profile=runtime_name,
@@ -271,11 +305,9 @@ def resolve_identity(
         source.profile = routed or adapter_profile
 
     runtime_name = _name(source.profile) or primary_profile
-    # A routed runtime goes through the runner's resolver (missing-profile fallback + warning);
-    # a bot serving its own profile runs where it authorizes.
-    runtime_home = (
-        authorization_home if runtime_name == transport_name
-        else Path(runner._resolve_profile_home_for_source(source)))
+    runtime_home = _runtime_home_for_identity(
+        source, runner=runner, runtime_name=runtime_name, transport_name=transport_name,
+        primary_profile=primary_profile, authorization_home=authorization_home, where=where)
     identity = RoutingIdentity(
         transport_profile=transport_name, runtime_profile=runtime_name,
         authorization_home=authorization_home, runtime_home=runtime_home,

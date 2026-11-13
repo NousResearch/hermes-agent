@@ -15,13 +15,13 @@ import { $commandPaletteOpen } from '@/store/command-palette'
 import {
   bindDesktopMetrics,
   cancelPendingBackendDrop,
+  captureDesktopMetricsGate,
   noteInteraction,
   recordFeatureUse,
   recordFriction,
   recordLongFrames,
   routeArea,
   setDesktopBotCount,
-  setDesktopMetricsGate,
   slowFrameBucket,
   tickDesktopMetrics,
   trackArea,
@@ -36,7 +36,6 @@ import { $profiles, $profilesByConnection, normalizeProfileKey } from '@/store/p
 import { $modelPickerOpen, $sessionPickerOpen } from '@/store/session'
 import { $switcherOpen } from '@/store/session-switcher'
 import {
-  $sharedMetricsConsent,
   readSharedMetricsConsent,
   type SharedMetricsConsent,
   sharedMetricsProfileRequester
@@ -142,16 +141,20 @@ export function useDesktopMetrics({
     }
 
     let cancelled = false
+    const profileScope = `${connectionId ?? ''}|${profileKey}`
 
-    const refresh = () =>
-      void readSharedMetricsConsent(request).then(consent => {
-        // An unreadable answer (older backend, flap) keeps the last known gate.
-        if (!cancelled && consent) {
-          setDesktopMetricsGate(gateFor(consent), consent.decided)
+    const refresh = () => {
+      void captureDesktopMetricsGate(profileScope).then(async applyGate => {
+        const consent = await readSharedMetricsConsent(request)
+
+        // A delayed withdrawal still revokes its original cohort after a switch or rename.
+        if (consent && (!cancelled || !consent.enabled)) {
+          await applyGate(gateFor(consent), consent.decided)
         }
       })
+    }
 
-    bindDesktopMetrics(request, `${connectionId ?? ''}|${profileKey}`)
+    bindDesktopMetrics(request, profileScope)
     refresh()
     window.addEventListener('focus', refresh)
 
@@ -161,18 +164,6 @@ export function useDesktopMetrics({
     }
   }, [connectionId, enabled, gatewayOpen, profileKey, request])
 
-  // A first-run answer or a Settings change lands in the consent atom.
-  useEffect(() => {
-    if (!enabled) {
-      return
-    }
-
-    return $sharedMetricsConsent.listen(consent => {
-      if (consent) {
-        setDesktopMetricsGate(gateFor(consent), consent.decided)
-      }
-    })
-  }, [enabled])
 
   useEffect(() => {
     const area = enabled

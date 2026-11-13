@@ -264,7 +264,7 @@ export const ruOverrides = {
       'composer.dictate': 'Начать / остановить диктовку',
       'composer.reasoningUp': 'Повысить уровень размышлений',
       'composer.reasoningDown': 'Понизить уровень размышлений',
-      'view.toggleSidebar': 'Показать / скрыть панель сеансов',
+      'view.toggleSidebar': 'Показать / скрыть левую панель',
       'view.toggleRightSidebar': 'Показать / скрыть браузер файлов',
       'view.toggleReview': 'Показать / скрыть панель ревью',
       'view.toggleStatusbar': 'Показать / скрыть строку состояния',

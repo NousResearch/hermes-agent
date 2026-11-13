@@ -605,7 +605,7 @@ export const frOverrides = {
       'composer.voice': 'Démarrer / arrêter la conversation vocale',
       'composer.reasoningUp': 'Augmenter le niveau de raisonnement',
       'composer.reasoningDown': 'Réduire le niveau de raisonnement',
-      'view.toggleSidebar': 'Basculer la barre latérale des sessions',
+      'view.toggleSidebar': 'Basculer la barre latérale gauche',
       'view.cycleSidebarGrouping': 'Changer le regroupement des sessions',
       'view.toggleRightSidebar': "Basculer l'explorateur de fichiers",
       'view.toggleReview': 'Basculer le panneau de révision',

@@ -6,11 +6,9 @@ import '@/store/layout'
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-// An edge belongs to the pane that sits on it. Mirrored (⌘\ or the Simple
-// "Sidebar right" layout), the sessions sidebar is on the RIGHT — ⌘B must
-// still mean the sidebar and ⌘J the file tree, or a resting file tree folds
-// the sidebar away with it. Regression for the "Sidebar right" layout
-// rendering only the chat.
+// Pane-owned visibility follows the flip, independently of positional
+// keyboard/titlebar toggles. Closing files in the "Sidebar right" layout
+// must not hide sessions too. Regression for that layout rendering only chat.
 
 describe('side toggles follow the flip', () => {
   beforeEach(() => {

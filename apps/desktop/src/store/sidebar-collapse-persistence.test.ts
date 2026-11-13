@@ -38,7 +38,7 @@ describe('sidebar collapse persistence', () => {
 
   // The reported repro: a sidebar HIDDEN before a reset must be reopened by the
   // reset ("restore everything"); otherwise the stale-hidden state flips the
-  // next ⌘B into a SHOW, and the user's hide never persists.
+  // next sidebar toggle into a SHOW, and the user's hide never persists.
   it('reset reopens a hidden sidebar, so a later hide persists across reload', async () => {
     const s1 = await loadStores()
     const { group, split } = await import('@/components/pane-shell/tree/model')
@@ -52,7 +52,7 @@ describe('sidebar collapse persistence', () => {
     expect(s1.layout.$sidebarOpen.get()).toBe(true)
     expect(s1.leftCollapsed()).toBe(false)
 
-    s1.layout.toggleSidebarOpen() // ⌘B now genuinely hides
+    s1.layout.toggleSidebarOpen() // the pane-owned toggle now genuinely hides
     expect(s1.layout.$sidebarOpen.get()).toBe(false)
 
     reload()

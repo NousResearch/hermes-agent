@@ -221,7 +221,8 @@ _POSITIONAL_OPERAND = {
     "timeout": None,
     "timelimit": r"\d+(?:\.\d+)?",
     "chrt": r"\d+",
-    "taskset": r"(?:0x)?[0-9a-fA-F]+",
+    # mask (0x3, ff) or cpu list (-c 0-3,8:2)
+    "taskset": r"[0-9a-fA-FxX,:\-]+",
 }
 
 def _is_positional_operand(wrapper: str, token: str) -> bool:

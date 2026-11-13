@@ -78,6 +78,18 @@ def test_a_refused_message_does_not_extend_the_exchange(clock):
     assert guard.chain_admit(CHAT, PEER, "PR #1234 is ready for review", is_bot=True) == (True, "ok")
 
 
+def test_a_delivered_reply_gets_the_full_default_cooldown(clock):
+    """Regression for #154840: a slow delivered reply restarts the 600-second cooldown."""
+    guard = BotLoopGuard(settings=BotLoopGuardSettings, clock=clock.now)
+    assert guard.chain_admit(CHAT, PEER, "please review", is_bot=True) == (True, "ok")
+    clock.advance(240)  # The reply takes four minutes to compose.
+    guard.note_reply(CHAT, PEER)
+    clock.advance(361)  # Admission +601s, but delivery +361s.
+    assert guard.chain_admit(CHAT, PEER, "thanks", is_bot=True) == (False, "reply_to_reply")
+    clock.advance(240)  # Delivery +601s; the refusal must not refresh the window.
+    assert guard.chain_admit(CHAT, PEER, "new PR ready", is_bot=True) == (True, "ok")
+
+
 def test_the_same_ask_repeated_inside_one_chain_is_one_hop(clock):
     guard = _guard(clock, bot_replies_expect_reply=True)
     assert guard.chain_admit(CHAT, PEER, "Interrupting current task", is_bot=True) == (True, "ok")

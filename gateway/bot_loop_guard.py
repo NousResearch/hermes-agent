@@ -195,6 +195,8 @@ class BotLoopGuard:
             chain = self._chains.get(conversation)
             if chain is not None:
                 chain.replied_to = recipient
+                # A delivered reply starts its own cooldown window, unlike a refusal.
+                chain.updated = self._clock()
 
     def _sweep(self, now: float, settings: BotLoopGuardSettings) -> None:
         """Drop idle conversations at most once per window so memory stays bounded."""

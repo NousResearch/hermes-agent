@@ -483,6 +483,19 @@ def scan_profile_flag(argv: list) -> tuple:
     return None, 0, None
 
 
+def scan_profile_flag_quietly(argv: list) -> tuple | None:
+    """``scan_profile_flag`` for callers that only inspect a command line (the container boot
+    reconciler): None where the CLI would reject the ``-p`` value and exit, never printing or exiting."""
+    import contextlib
+    import io
+
+    try:
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            return scan_profile_flag(argv)
+    except SystemExit:
+        return None
+
+
 def gateway_run_no_supervise(argv) -> bool:
     """True when the CLI would parse ``argv`` (no program name) as ``gateway run --no-supervise``.
 
@@ -497,7 +510,10 @@ def gateway_run_no_supervise(argv) -> bool:
     from hermes_cli.subcommands.gateway import build_gateway_parser
 
     args = list(argv)
-    _, consumed, index = scan_profile_flag(args)
+    scanned = scan_profile_flag_quietly(args)
+    if scanned is None:  # the CLI rejects this -p value and runs nothing
+        return False
+    _, consumed, index = scanned
     if index is not None:  # stripped before argparse, as main._apply_profile_override does
         args = args[:index] + args[index + consumed:]
 

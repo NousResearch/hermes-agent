@@ -72,3 +72,24 @@ def test_boot_notice_says_the_foreground_gateway_serves_folded_profiles(tmp_path
     assert actions[0].action == "registered"
     assert "foreground gateway (the container CMD) serves them" in caplog.text
     assert "was started instead" not in caplog.text
+
+
+def test_invalid_profile_in_foreground_cmd_does_not_exit_the_boot_reconciler(tmp_path, monkeypatch, capsys):
+    """cont-init runs container_boot.py as argv[0]: an invalid `-p` in the CMD (which exits 2 by
+    itself) must not abort the reconciler before the other profiles' slots are registered."""
+    home = tmp_path / "data"
+    coder = home / "profiles" / "coder"
+    coder.mkdir(parents=True)
+    (coder / "SOUL.md").write_text("x", encoding="utf-8")
+    (coder / "gateway_state.json").write_text(json.dumps({"desired_state": "running"}), encoding="utf-8")
+    (home / "gateway_state.json").write_text(
+        json.dumps({"gateway_state": "stopped", "desired_state": "running"}), encoding="utf-8")
+    monkeypatch.delenv("HERMES_GATEWAY_NO_SUPERVISE", raising=False)
+    monkeypatch.setattr("sys.argv", ["/opt/hermes/hermes_cli/container_boot.py"])
+
+    actions = reconcile_profile_gateways(
+        hermes_home=home, scandir=tmp_path / "scan",
+        container_argv=_WRAPPER + ["-p", "Work Bot", "gateway", "run", "--no-supervise"])
+
+    assert {a.profile: a.action for a in actions} == {"default": "started", "coder": "registered"}
+    assert capsys.readouterr().err == ""

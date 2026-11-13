@@ -1,6 +1,6 @@
 name: hermes-reading
 repo: https://github.com/forgoneops/hermes-reading
-sha: f198041a115ae15bb48da79c6c46cdabcc771ddf
+sha: 32d273f0c5d9e301e09414f23bb62c7606be9d36
 description: "Discover public feeds and GitHub projects; read articles, PDFs and YouTube transcripts. On request, source text is sent to the configured Hermes model for summaries and Q&A."
 maintainer: forgoneops
 tier: community

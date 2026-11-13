@@ -1417,7 +1417,6 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordAuthorizationMixin, DiscordMe
             # Snapshot this profile's gate env vars inside its runtime scope (#72348): immune to the
             # first-writer-wins process-global env bridge under multiplex.
             self._snapshot_gate_env()
-            self._username_to_id = {}  # on_ready re-resolves usernames for this connection
             self._allowed_user_ids = self._get_allowed_users()
             # DISCORD_ALLOWED_ROLES: comma-separated role IDs; ANY match grants access.
             self._allowed_role_ids = self._get_allowed_roles()
@@ -4307,13 +4306,18 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordAuthorizationMixin, DiscordMe
         Only the account username is matched: it is unique, while a display name or server nickname is
         chosen by the member and can copy an allowlisted name.
         """
-        self._username_resolved_ids = set()
-        self._username_to_id = {}
-        if not self._allowed_user_ids or not self._client:
+        # A re-IDENTIFY (or connect()) after a resolution sees the IDs that resolution wrote into the
+        # snapshot/env; keep the username each still stands for, or the next refresh reads the
+        # configured username and can no longer map it (#154562).
+        prior = getattr(self, "_username_to_id", None) or {}
+        entries = self._allowed_user_ids or set()
+        self._username_to_id = {name: uid for name, uid in prior.items() if uid in entries}
+        self._username_resolved_ids = set(self._username_to_id.values())
+        if not entries or not self._client:
             return
         numeric_ids = set()
         to_resolve = set()
-        for entry in self._allowed_user_ids:
+        for entry in entries:
             if entry.isdigit():
                 numeric_ids.add(entry)
             elif entry == "*":

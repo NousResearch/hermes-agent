@@ -367,3 +367,20 @@ def test_an_edit_made_while_the_adapter_starts_up_still_applies(_home):
     guild.get_member = lambda uid: member if uid == USER_ID else None
     adapter._client = SimpleNamespace(get_guild=lambda gid: guild if gid == GUILD_ID else None)
     assert _allowed(adapter, guild, member) is False
+
+
+def test_a_resolved_username_survives_a_second_on_ready_and_a_later_edit(_home):
+    """discord.py fires ``on_ready`` again on a re-IDENTIFY without a new connect(): the resolver
+    then sees only numeric IDs, and must still map the configured username for the next refresh."""
+    import asyncio
+
+    _write(_home, {"allow_from": ["alice"]})
+    adapter, guild, _member = _connected_discord(roles=())
+    alice = SimpleNamespace(id=111, name="alice", display_name="alice", global_name="alice", discriminator="0")
+    guild.members, guild.member_count, guild.name = [alice], 1, "g"
+    adapter._client.guilds = [guild]
+    for _ in range(2):  # first on_ready, then the reconnect's
+        asyncio.run(adapter._resolve_allowed_usernames())
+    _write(_home, {"allow_from": ["alice"], "allowed_channels": ["555"]})  # an unrelated edit
+    assert adapter._is_allowed_user("111", alice, guild=guild, is_dm=False) is True
+    assert adapter.resolved_allowlist_user_ids() == {"111"}

@@ -2,7 +2,7 @@ name: ai-lab
 title: Hermes AI Lab
 repo: https://github.com/BZK-kais/hermes-ai-lab
 sha: b830d8adba81af0820fae2bbeb5b86bdb7fcc9f5
-description: Prepare experiments, compare local models and activate qualified configurations in Hermes.
+description: "Prepare experiments, compare local models and activate qualified configurations in Hermes. Disclosure — Runs local training, conversion, serving and evaluation jobs (up to 24 hours) with the tools you configure; the model can read your configured RunPod, Hugging Face, S3 and GCS connections and export a redacted Hermes session into the AI Lab workspace, while creating, stopping or deleting paid cloud resources, uploads, and upstream MCP tool calls run only from the `hermes ai-lab` / `ailab` operator CLI. Remote inference through a configured connection may incur charges."
 maintainer: BZK-kais
 tier: community
 category: models

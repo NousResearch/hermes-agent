@@ -420,9 +420,12 @@ def _hardline_detection_variants(command: str, capped: list[str] | None = None):
     from tools.approval_wrappers import carried_command_variants, strip_wrapper_prefixes
 
     seen = set()
-    stripped = strip_wrapper_prefixes(_mask_quoted_newlines(command))
-    peeled = _normalize_command_for_detection(_mark_command_starts(stripped, marker=" \n"))
-    for variant in itertools.chain(_command_detection_variants(command, capped=capped), (peeled,), carried_command_variants(command)):
+    masked = _mask_quoted_newlines(command)
+    stripped = strip_wrapper_prefixes(masked)
+    # The peeled command gets the full variant set, not just normalization: a quoted verb behind a
+    # wrapper (`nice "reboot"`) needs the same dequoting the bare `"reboot"` gets.
+    peeled = _command_detection_variants(stripped, capped=capped) if stripped != masked else ()
+    for variant in itertools.chain(_command_detection_variants(command, capped=capped), peeled, carried_command_variants(command)):
         if variant not in seen:
             seen.add(variant)
             yield variant
@@ -1829,6 +1832,10 @@ def _command_detection_variants(command: str, eval_depth: int = 0, capped: list[
         variant = _splice(normalized, applied)
         if fresh(variant):
             yield variant
+        # A dequoted verb after a separator (`ls; "reboot"`) reaches _CMDPOS only once its start is marked.
+        marked_variant = _mark_command_starts(variant)
+        if fresh(marked_variant):
+            yield marked_variant
         pending = carry
 
 

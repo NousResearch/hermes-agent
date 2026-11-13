@@ -199,7 +199,7 @@ def _carried_payloads(command: str):
 def carried_command_variants(command: str):
     """Detection variants for literal carried command strings, recursing a bounded depth; each is
     wrapper-peeled and command-start marked like the top-level command."""
-    from tools.approval_detection import _mark_command_starts, _normalize_command_for_detection
+    from tools.approval_detection import _command_detection_variants
 
     seen, frontier = {command}, [command]
     for _ in range(_MAX_CARRIER_DEPTH):
@@ -210,7 +210,6 @@ def carried_command_variants(command: str):
                     continue
                 seen.add(payload)
                 nested.append(payload)
-                yield _normalize_command_for_detection(payload)
-                yield _normalize_command_for_detection(
-                    _mark_command_starts(strip_wrapper_prefixes(payload), marker=" \n"))
+                yield from _command_detection_variants(payload)
+                yield from _command_detection_variants(strip_wrapper_prefixes(payload))
         frontier = nested

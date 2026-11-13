@@ -167,7 +167,8 @@ def _save_aux_choice(task: str, *, provider: str, model: str = "", base_url: str
     entry["provider"] = provider
     entry["model"] = model or ""
     entry["base_url"] = base_url or ""
-    entry["api_key"] = api_key or ""
+    from hermes_cli.config_secret_refs import aux_api_key_env, secret_ref_for
+    entry["api_key"] = secret_ref_for(aux_api_key_env(task), api_key or "")
     if reasoning_effort is not None and _aux_task_takes_reasoning(task):
         entry["reasoning_effort"] = reasoning_effort
     save_config(cfg)
@@ -492,7 +493,10 @@ def _save_custom_provider(base_url, api_key="", model="", context_length=None, n
                           key_env=""):
     """Save a custom endpoint to ``custom_providers`` in config.yaml, deduplicated by base_url (an
     existing entry gets model / context_length / api_mode updated). *key_env* set means the caller
-    already wrote the key to ``.env``; the entry references it instead of inlining the secret.
+    already wrote the key to ``.env``; the entry references it instead of inlining the secret. A
+    literal *api_key* for a NEW entry is written to ``.env`` under the endpoint's name and the entry
+    gets ``key_env`` (#77471); a ``${VAR}`` reference is kept as given and existing entries are
+    never migrated.
 
     See #69449.
     """
@@ -529,6 +533,9 @@ def _save_custom_provider(base_url, api_key="", model="", context_length=None, n
 
     name = name or _auto_provider_name(base_url)
     entry = {"name": name, "base_url": base_url}
+    if api_key and not key_env:
+        from hermes_cli.config_secret_refs import endpoint_api_key_env, secret_key_env_for
+        key_env = secret_key_env_for(endpoint_api_key_env(base_url), api_key, base_url)
     if key_env:
         entry["key_env"] = key_env
     elif api_key:

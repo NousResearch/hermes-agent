@@ -207,6 +207,7 @@ readme: true                # optional, default true; the README at the PINNED S
 platforms: []               # optional, e.g. [linux, macos]; empty = all
 title: ""                   # optional human name on cards ("NVIDIA App"); default = name
 onboarding: false           # optional; offered on the Desktop onboarding card (official or verified entries only)
+default: false              # optional; installed and enabled once in every home (official or verified entries only)
 known_issues: []            # optional strings shown at the install prompt; informational, never blocks
 capabilities:
   provides_tools: []
@@ -221,6 +222,15 @@ the plugin integrates into Hermes, and that company is well known or reputable.
 `community`: everything else. Only Nous maintainers set `official` or
 `verified`; a contributor PR that sets either is changed to `community` in
 review (maintainer review is the gate; no CI check inspects the tier value).
+
+`default: true` ships an entry to every Hermes home: it is installed at its pin
+and enabled at the end of every install (source installer, Desktop, Docker, Nix,
+Termux: on first start where the installer runs no Hermes code), again by
+`hermes update` for a default added since, and when a profile is created. Each
+home gets it once: a user who removes or disables it keeps that choice through
+every later update. Only `official` and `verified` entries may set it; the
+validator refuses it elsewhere and Hermes ignores it on any other tier. Homes
+with `security.allow_lazy_installs: false` fetch nothing.
 
 `version`, `image`, `screenshots` and `readme` are cosmetic: none is parsed or
 used to pick what installs. The sha stays the release; bump `version` in the
@@ -255,6 +265,10 @@ file removal, users who already installed it are unaffected). It is welcome back
 problem is fixed; a name squatter comes back under a distinct name. When a new rule affects
 entries that are already listed, their authors get an issue on their repository explaining
 the change and time to update before anything is delisted.
+
+Entries whose repository was deleted, or whose pinned commit no longer exists (force-pushed
+away), are delisted automatically: `.github/workflows/catalog-dead-repos.yml` checks every entry
+each week and opens one PR deleting the dead ones, for a maintainer to review.
 
 ## Names
 

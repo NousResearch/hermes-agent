@@ -163,8 +163,8 @@ def _session_override_snapshot(override: dict) -> dict:
 def _resolve_channel_runtime(runner, source, model, runtime_kwargs) -> tuple[str, dict]:
     from gateway.run import _get_channel_override, _resolve_runtime_agent_kwargs_for_provider
 
-    cfg = getattr(runner, "config", None)
-    if cfg and source is not None:
+    cfg = runner._serving_channel_config(source) if source is not None else None
+    if cfg:
         ch = _get_channel_override(
             cfg, source.platform, str(source.chat_id) if source.chat_id else "",
             thread_id=str(source.thread_id) if getattr(source, "thread_id", None) else None,
@@ -665,6 +665,11 @@ class GatewayTurnPrepareMixin:
 
         # One-time prompt if no home channel is set (webhooks deliver to configured targets instead).
         if not human_platform:
+            return
+        # Under allow_admin_from gating a non-admin can't run /sethome; on a customer-facing bot
+        # the nudge would only leak operator setup to the customer.
+        from gateway.slash_access import policy_for_runner_source
+        if not policy_for_runner_source(self, source).can_run(source.user_id, "sethome"):
             return
         platform_name = source.platform.value
         env_key = _home_target_env_var(platform_name)

@@ -676,6 +676,28 @@ def is_shared_multi_user_session(
     return not (thread_sessions_per_user if source.thread_id else group_sessions_per_user)
 
 
+def label_shared_sender(
+    source: SessionSource, text: str, *, group_sessions_per_user: bool = True,
+    thread_sessions_per_user: bool = False,
+) -> str:
+    """``[Name] text`` in a session shared across participants, so the agent can tell who spoke; the
+    same label whether the message opens a turn or lands mid-turn (steer / redirect). Display names
+    are attacker-influenceable: newlines and control characters are neutralized, or a hostile name
+    masquerades as a markdown section. On Slack the speaker's verifiable ``<@U…>`` id rides along, a
+    trusted target for "mention me" (#17916)."""
+    if not (source.user_name and is_shared_multi_user_session(
+            source, group_sessions_per_user=group_sessions_per_user,
+            thread_sessions_per_user=thread_sessions_per_user)):
+        return text
+    # The tag's own delimiters are dropped too, so a name can neither end the [Name] prefix early,
+    # forge bracketed structure, nor a second "| Slack user <@id>" span (#127053).
+    from gateway.platforms.helpers import tag_safe_display_name
+    name = tag_safe_display_name(source.user_name)
+    if source.platform == Platform.SLACK and source.user_id:
+        name = f"{name} | Slack user <@{source.user_id}>"
+    return f"[{name}] {text}"
+
+
 def _session_key_namespace(profile: Optional[str]) -> str:
     """``agent:<ns>`` prefix for a session key: default/None profile → ``agent:main``
     (BYTE-IDENTICAL to every historical key); named profile → ``agent:<name>`` so two
@@ -1363,6 +1385,12 @@ class SessionStore(
                     prompt_pin=(
                         dict(old_entry.prompt_pin)
                         if preserve_prompt_pin and old_entry.prompt_pin is not None else None
+                    ),
+                    # Keep this chat's terminal cwd over non-boundary repoints (e.g. compression-tip
+                    # binding heals). An explicit /resume opts out, and /new takes the reset path.
+                    metadata=(
+                        {"terminal_cwd": old_entry.metadata["terminal_cwd"]}
+                        if preserve_prompt_pin and "terminal_cwd" in old_entry.metadata else {}
                     ),
                 )
         if refused:

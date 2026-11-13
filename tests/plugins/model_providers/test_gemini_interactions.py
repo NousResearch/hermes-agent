@@ -53,6 +53,14 @@ HISTORY = [
 ]
 
 
+def test_xhigh_thinking_level_reaches_the_request(gemini):
+    _, wire = gemini
+    request = wire.build_interactions_request(
+        model="gemini-4-hydrogen", messages=[{"role": "user", "content": "hi"}],
+        thinking_config={"thinkingLevel": "xhigh", "includeThoughts": True})
+    assert request["generation_config"]["thinking_level"] == "xhigh"
+
+
 def test_request_is_stateless_typed_steps_with_signatures_replayed_as_thought_steps(gemini):
     _, wire = gemini
     request = wire.build_interactions_request(
@@ -91,10 +99,32 @@ def test_tool_results_schema_text_images_and_foreign_turns(gemini):
         {"role": "tool", "tool_call_id": "a", "content": '{"$ref": "#/$defs/x", "$defs": {"x": {}}}'},
         {"role": "tool", "tool_call_id": "b", "content": [{"type": "text", "text": "here"}, {"type": "image_url", "image_url": {"url": PNG}}]},
     ])
-    assert [s["type"] for s in steps] == ["function_call", "function_call", "function_result", "function_result"]
-    assert isinstance(steps[2]["result"], str)  # a JSON Schema result goes as text
-    assert steps[3]["result"] == [{"type": "text", "text": "here"}, {"type": "image", "mime_type": "image/png", "data": "iVBORw0KGgo="}]
-    assert steps[3]["name"] == "shot"
+    # An unsigned tool-calling turn opens with one placeholder thought: Google rejects it otherwise.
+    assert [s["type"] for s in steps] == ["thought", "function_call", "function_call", "function_result", "function_result"]
+    assert steps[0]["signature"] == "skip_thought_signature_validator"
+    assert isinstance(steps[3]["result"], str)  # a JSON Schema result goes as text
+    assert steps[4]["result"] == [{"type": "text", "text": "here"}, {"type": "image", "mime_type": "image/png", "data": "iVBORw0KGgo="}]
+    assert steps[4]["name"] == "shot"
+
+
+def test_tool_calling_turn_always_opens_with_a_thought_step(gemini):
+    _, wire = gemini
+    call = {"id": "c", "type": "function", "function": {"name": "read", "arguments": "{}"}}
+    signed = {**call, "extra_content": {"google": {"thought_signature": SIG_B}}}
+
+    def shape(message):
+        steps, _ = wire.build_input_steps([message])
+        return [(s["type"], s.get("signature")) for s in steps]
+
+    placeholder = ("thought", "skip_thought_signature_validator")
+    # Unsigned text ahead of the call: the placeholder leads the turn, not the call.
+    assert shape({"role": "assistant", "content": "checking", "tool_calls": [call]}) == [placeholder, ("model_output", None), ("function_call", None)]
+    # Unsigned text ahead of a signed call: the real signature stays with its call.
+    assert shape({"role": "assistant", "content": "checking", "tool_calls": [signed]}) == [
+        placeholder, ("model_output", None), ("thought", SIG_B), ("function_call", None)]
+    # A turn that already opens with its own signature, and a text-only turn, get no placeholder.
+    assert shape({"role": "assistant", "content": None, "tool_calls": [signed]}) == [("thought", SIG_B), ("function_call", None)]
+    assert shape({"role": "assistant", "content": "hello"}) == [("model_output", None)]
 
 
 def test_named_tool_choice_json_schema_and_long_decode_store(gemini):

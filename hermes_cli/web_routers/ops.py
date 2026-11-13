@@ -149,6 +149,7 @@ def _webhook_route_summary(name: str, route: dict[str, Any], base_url: str) -> d
         "skills": list(route.get("skills") or []),
         "created_at": route.get("created_at"),
         "url": f"{base_url}/webhooks/{name}",
+        "signature": route.get("signature"),
         "secret_set": bool(route.get("secret")),
         # Default-enabled; only an explicit enabled:false turns a route off.
         "enabled": route.get("enabled", True) is not False,
@@ -191,6 +192,18 @@ async def enable_webhooks(profile: Optional[str] = None):
     }
 
 
+def _dashboard_route_signature(requested: Optional[str], expected: object) -> dict[str, str]:
+    """The saved route's ``signature`` key (#84265). An unpinned route accepts every scheme, so
+    body-only GitHub/Linear MACs replay a captured V1 request; new routes are pinned to generic.
+    A re-POST replaces the record, so an omitted field keeps the stored pin verbatim (even one the
+    gateway refuses, like ``False``); an explicit pick replaces it."""
+    if requested is not None:
+        return {"signature": requested}
+    if not isinstance(expected, dict):
+        return {"signature": "generic"}
+    return {"signature": expected["signature"]} if "signature" in expected else {}
+
+
 @router.post("/api/webhooks")
 async def create_webhook(body: WebhookCreate, profile: Optional[str] = None):
     import hermes_cli.webhook as wh
@@ -227,6 +240,7 @@ async def create_webhook(body: WebhookCreate, profile: Optional[str] = None):
         "skills": [s.strip() for s in body.skills if s.strip()],
         "deliver": body.deliver or "log",
         "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        **_dashboard_route_signature(body.signature, expected),
     }
     if body.script and body.script.strip():
         route["script"] = body.script.strip()
@@ -388,6 +402,8 @@ async def add_credential_pool_entry(body: CredentialPoolAdd, profile: Optional[s
         load_pool,
     )
 
+    from hermes_cli.auth_commands import _provider_base_url
+
     provider = (body.provider or "").strip().lower()
     api_key = (body.api_key or "").strip()
     if not provider or not api_key:
@@ -412,6 +428,8 @@ async def add_credential_pool_entry(body: CredentialPoolAdd, profile: Optional[s
                 priority=0,
                 source=SOURCE_MANUAL,
                 access_token=api_key,
+                # The key is bound to the address it was entered for (#130410), as `hermes auth add` does.
+                base_url=_provider_base_url(provider) or None,
             ))
             # Re-adding is an explicit re-engagement signal: lift every suppression
             # for this provider so a source deleted earlier can seed again

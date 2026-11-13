@@ -262,7 +262,7 @@ class SmsAdapter(BasePlatformAdapter):
         if from_number == self._from_number:  # echo prevention
             logger.debug("[sms] ignoring echo from own number %s", redact_phone(from_number))
             return _twiml_response()
-        logger.info("[sms] inbound from %s -> %s: %s", redact_phone(from_number), redact_phone(to_number), text[:80])
+        logger.info("[sms] inbound from %s -> %s (%d chars)", redact_phone(from_number), redact_phone(to_number), len(text))
         source = self.build_source(
             chat_id=from_number, chat_name=from_number, chat_type="dm", user_id=from_number, user_name=from_number,
             message_id=message_sid)

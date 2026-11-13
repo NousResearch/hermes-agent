@@ -50,6 +50,16 @@ _CARD_DESTINATION_REFUSALS = {
 }
 
 
+def _settled_result(fut, outcome: str):
+    """The send's result for the receipt log; None when it never resolved or raised."""
+    if outcome == "ambiguous":
+        return None
+    try:
+        return fut.result(timeout=0)
+    except Exception:  # health: allow BLE001 -- already classified and logged by _approval_send_outcome
+        return None
+
+
 def _renders_exec_approval_buttons(adapter_cls: type) -> bool:
     """True when the adapter class renders native approval buttons. BasePlatformAdapter subclasses
     say so through ``supports_exec_approval_buttons``; anything else (test doubles, relay-style
@@ -278,10 +288,8 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         # The streaming-TTS consumer is created on the outer loop thread before run_sync launches;
         # run_sync only reads it via the holder for delta-callback wiring.
         stts = ctx.streaming_tts_consumer_holder[0]
-        scfg = getattr(getattr(self._runner, 'config', None), 'streaming', None)
-        if scfg is None:
-            from gateway.config import StreamingConfig
-            scfg = StreamingConfig()
+        from gateway.run_config_loaders import streaming_config_for_source
+        scfg = streaming_config_for_source(self._runner, ctx.source)
         # display.platforms.<plat>.streaming may disable streaming per platform; None = follow global.
         plat_streaming = ctx.resolve_display_setting(ctx.user_config, platform_key, "streaming")
         # A loaded ``hold_stream`` transform rewrites this session's reply before the user may see it:
@@ -377,7 +385,14 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             if unseen:
                 return
             if stream_consumer is not None:
-                stream_consumer.on_segment_break() if already_streamed else stream_consumer.on_commentary(text)
+                # The agent's own streaming may be feeding an execution observer rather than this
+                # adapter, so ``already_streamed`` alone does not mean the consumer saw the deltas.
+                # Deduplicate only against deltas this consumer actually accepted; otherwise the
+                # commentary would be dropped (``on_segment_break`` carries no text).
+                if already_streamed and stream_consumer.stream_deltas_enabled:
+                    stream_consumer.on_segment_break()
+                else:
+                    stream_consumer.on_commentary(text)
             elif not already_streamed and ctx._status_adapter and str(text or "").strip():
                 self._send_status_text(text, ctx._status_thread_metadata, "interim_assistant_callback scheduling error")
 
@@ -555,6 +570,8 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             mem_notif = "on" if mem_notif else "off"
         agent.memory_notifications = str(mem_notif).lower() if mem_notif else "on"
         agent.clarify_callback = self._clarify_callback_sync
+        from gateway.run_turn_runner_clarify_delivery import clarify_context_sink
+        agent.clarify_context_callback = None if want_interim_messages else clarify_context_sink(self)
         # Thinking between tool calls is independent of tool_progress mode (Mattermost opts in
         # per platform so global scratch-text doesn't leak into threads).
         agent.thinking_progress = ctx._thinking_enabled
@@ -567,6 +584,7 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             # Keep diagnostic observers installed; concrete sinks veto display.
             agent.stream_delta_callback = None
             agent.interim_assistant_callback = None
+            agent.clarify_context_callback = None
             agent.thinking_progress = False
         ctx.agent_holder[0] = agent  # interrupt support
         if self._approval_owner is not None:
@@ -610,6 +628,11 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             return False
 
     async def _send_shared_clarify(self, entry, **kwargs):
+        from gateway.run_turn_runner_clarify_delivery import (
+            await_clarify_context, clarify_card_still_wanted, withdrawn_result)
+        await await_clarify_context(self)
+        if not clarify_card_still_wanted(self, entry):
+            return withdrawn_result()  # cancelled or reset while the explanation was sending
         result = await self._ctx._status_adapter.send_clarify(**kwargs)
         if self._approval_owner is not None and result.success:
             authority, session_id, generation = self._approval_owner
@@ -753,7 +776,7 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             authority.register_approval(session_id, generation, self._ctx.session_key, approval_data,
                                         timeout_s=local_viewer_events.prompt_timeout_s(self, "approval"))
 
-    def _render_approval_sync(self, approval_data: dict) -> None:
+    def _render_approval_sync(self, approval_data: dict, *, background=False) -> None:
         """Send the approval request from the agent thread: the adapter's interactive button
         approvals (``send_exec_approval``) when available, else plain text with ``/approve`` steps."""
         from gateway.run import _approval_send_outcome, _interim_metadata, _redact_approval_command
@@ -764,8 +787,9 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         # Slack's assistant_threads_setStatus disables the compose box, so the user can't type
         # /approve while "is thinking..." shows. Pausing stops _keep_typing re-setting it; resumed
         # in approve/deny.
-        adapter.pause_typing_for_chat(ctx._status_chat_id)
-        self._close_native_stream_boundary("Approval")
+        if not background:
+            adapter.pause_typing_for_chat(ctx._status_chat_id)
+            self._close_native_stream_boundary("Approval")
         # Redact credentials before display: the raw command string can carry secrets. Both the button and plain-text paths use this value.
         cmd = _redact_approval_command(approval_data.get("command", ""))
         desc = _redact_approval_command(approval_data.get("description")) or ea_default_reason_text()
@@ -850,18 +874,26 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             fut = self._schedule(
                 adapter.send(ctx._status_chat_id, msg, metadata=_interim_metadata(metadata)), "Approval text-send scheduling error",
             )
+            # A receipt that times out (or a lost ack) is AMBIGUOUS, not a failure: the prompt may be
+            # on screen, so it stays armed for a typed /approve, exactly like the card path above.
+            outcome = _approval_send_outcome(fut, timeout=15)
             if fut is not None:
-                res = fut.result(timeout=15)
+                res = _settled_result(fut, outcome)
                 # Text-lane receipt (#138133): a card failure lands here, and a failed fallback was silent too.
-                logger.log(logging.INFO if getattr(res, "success", False) else logging.WARNING,
-                           "Exec approval text prompt send (success=%s, message_id=%s, error=%s, request_id=%s, session=%s)",
-                           getattr(res, "success", None), getattr(res, "message_id", None), getattr(res, "error", None),
+                logger.log(logging.INFO if outcome == "sent" else logging.WARNING,
+                           "Exec approval text prompt send (success=%s, outcome=%s, message_id=%s, error=%s, request_id=%s, session=%s)",
+                           getattr(res, "success", None), outcome, getattr(res, "message_id", None), getattr(res, "error", None),
                            approval_data.get("request_id"), ctx.session_key)
                 # No card to edit on the text path: the prompt has no buttons to drop and carries
                 # the /approve instructions, so the timeout notice is posted as a new message.
                 register_timeout_notice(self, approval_data, command=cmd, card_message_id=None)
+            if background and outcome not in ("sent", "ambiguous"):
+                # Nobody else can still show a background child's prompt: undelivered fails it closed.
+                raise RuntimeError("Approval notification was not delivered")
         except Exception as e:
             logger.error("Failed to send approval request: %s", e)
+            if background:
+                raise
 
     # ── run_sync phases ─────────────────────────────────────────────────────────────────────
 
@@ -1032,7 +1064,8 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         ctx = self._ctx
         session_key = ctx.session_key or ""
         token = set_current_session_key(session_key)
-        register_gateway_notify(session_key, self._approval_notify_sync)
+        from gateway.run_turn_runner_approval_transport import approval_transport
+        register_gateway_notify(session_key, approval_transport(self))
         try:
             run_message = self._native_image_run_message()
             api_message = _wrap_current_message_with_observed_context(run_message, observed_group_context)
@@ -1226,7 +1259,7 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             (ctx.channel_prompt or "").strip(),
             self._runner._get_system_prompt_for_channel(
                 ctx.source.platform, ctx.source.chat_id or "", thread_id=getattr(ctx.source, "thread_id", None),
-                parent_id=getattr(ctx.source, "parent_chat_id", None),
+                parent_id=getattr(ctx.source, "parent_chat_id", None), source=ctx.source,
             ),
         ):
             if extra:
@@ -1279,7 +1312,12 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             else:
                 scope.enter_context(api_policy_scope())
                 bind_turn_workspace(policy, self._ctx.session_id)
-                result = self._run_sync_scoped()
+                from gateway.session_terminal_cwd import persist_turn_cwd, restore_turn_cwd
+                cwd_owner = restore_turn_cwd(self._runner, self._ctx.session_key, policy)
+                try:
+                    result = self._run_sync_scoped()
+                finally:
+                    persist_turn_cwd(self._runner, self._ctx.session_key, cwd_owner)
             from gateway.session_results import execution_result
             captured = execution_result.get()
             if captured is not None:
@@ -1493,7 +1531,11 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
                 **({"billing_block": result["billing_block"]} if isinstance(result.get("billing_block"), dict) else {}),
                 **({"warning": result["warning"]} if isinstance(result.get("warning"), str) and result["warning"] else {}),
             }
-        if not final_response:
+        from gateway.response_filters import is_intentional_silence_agent_result
+        # A machinery turn the model chose to leave unanswered (``notification_no_reply``) stays
+        # empty: the delivery seam gates that silence by turn kind, and a "no response" notice
+        # filled in here would reach the chat for a turn no human started (#135816).
+        if not final_response and not is_intentional_silence_agent_result(result, final_response):
             final_response = _normalize_empty_agent_response(result, final_response or "", history_len=len(agent_history))
             final_response = _sanitize_gateway_final_response(ctx.source.platform, final_response)
             if not final_response:

@@ -158,7 +158,14 @@ def detect_unclean_exit(home: Optional[Path] = None) -> Optional[dict[str, Any]]
     sentinel = _read_json(get_lifecycle_sentinel_path(home))
     if not sentinel or sentinel.get("phase") != "running":
         return None
-    if _pid_is_sentinel_owner(sentinel.get("pid"), sentinel.get("start_time"), sentinel.get("create_time")):
+    from hermes_state_pidns import persistent_record_pidns_checkable
+    if not persistent_record_pidns_checkable(sentinel.get("pidns")):
+        # Written in another PID namespace, so its pid means nothing here (#123081). The home's
+        # gateway.lock flock does: held by another process = that life is still running.
+        from gateway.runtime_ownership import runtime_lock_held_elsewhere
+        if runtime_lock_held_elsewhere(_home_path(home)):
+            return None
+    elif _pid_is_sentinel_owner(sentinel.get("pid"), sentinel.get("start_time"), sentinel.get("create_time")):
         return None  # live owner — planned takeover in flight, not a death
     evidence: dict[str, Any] = {
         "prior_pid": sentinel.get("pid"), "prior_started_at": sentinel.get("started_at"),
@@ -329,7 +336,9 @@ def record_startup(home: Optional[Path] = None, *, defer_integrity_check: bool =
     except Exception:
         logger.debug("Unclean-exit detection failed", exc_info=True)
     try:
-        claim: dict[str, Any] = {"phase": "running", "pid": os.getpid(), "start_time": time.time(), "started_at": _now_iso()}
+        from hermes_state_pidns import pid_namespace_id
+        claim: dict[str, Any] = {"phase": "running", "pid": os.getpid(), "pidns": pid_namespace_id(),
+                                 "start_time": time.time(), "started_at": _now_iso()}
         # Process birth (psutil), distinct from ``start_time`` (the ledger claim, seconds later once
         # imports finish): the Windows start attestation binds PIDs to birth time (#110020 review).
         from hermes_cli.process_identity import _process_create_time

@@ -21,7 +21,8 @@ from agent.models_dev import (
     ModelCapabilities, ModelInfo, get_model_capabilities, get_model_info, list_provider_models)
 from utils import base_url_host_matches, base_url_hostname, base_url_origin
 # Re-exported: callers/tests patch hermes_cli.model_switch.<name>.
-from hermes_cli.model_switch_providers import list_authenticated_providers
+from hermes_cli.model_switch_providers import (
+    _extra_headers_from_config, _saved_entry_on_other_origin, list_authenticated_providers)
 
 
 logger = logging.getLogger(__name__)
@@ -1478,16 +1479,22 @@ def _creds_for_switched_provider(st: _Switch) -> Optional[ModelSwitchResult]:
         user_pdef = (resolve_user_provider(explicit_norm, st.user_providers)
                      or resolve_user_provider(st.target_provider, st.user_providers))
     if user_pdef is not None and user_pdef.base_url:
-        ucfg = st.user_providers.get(explicit_norm) or st.user_providers.get(st.target_provider) or {}
+        entry_name = explicit_norm if st.user_providers.get(explicit_norm) else st.target_provider
+        ucfg = st.user_providers.get(entry_name) or {}
         # Key reads go through the per-profile secret scope (multiplexed gateway).
         ukey = _entry_configured_key(ucfg, _scoped_key_env)
-        st.validation_headers = _extra_headers_from_config(ucfg)
         try:
             st.resolve_runtime(
                 requested=st.target_provider, explicit_api_key=ukey or None, explicit_base_url=user_pdef.base_url)
-            st.api_key, st.base_url = st.api_key or ukey, st.base_url or user_pdef.base_url
+            # A keyless entry whose saved copy is for another origin (an unsaved edit moved it): the key
+            # the resolver read from disk belongs to the previous host, so this one is probed keyless.
+            moved = not ukey and _saved_entry_on_other_origin(entry_name, user_pdef.base_url)
+            st.api_key, st.base_url = "" if moved else st.api_key or ukey, st.base_url or user_pdef.base_url
         except Exception:
             st.api_key, st.base_url, st.api_mode = ukey, user_pdef.base_url, ""
+        # The entry's own headers, not the resolver's: it reads the on-disk copy, which an unsaved
+        # edit may have moved to a new host (those headers belong to the previous one).
+        st.validation_headers = _extra_headers_from_config(ucfg)
     elif st.target_provider == "custom" and st.current_base_url:
         # A bare-custom session switching models stays on its endpoint (#45597). Arriving from
         # ANOTHER provider (the per-turn config sync adopting ``provider: custom``) the configured
@@ -1836,22 +1843,22 @@ def model_selection_config_updates(result: ModelSwitchResult, current_model_cfg:
     var, but a same-provider same-base_url model re-pick keeps it whatever the provider is. The
     dashboard re-adds an explicitly submitted key / the target provider's own pointer after this
     (``model_assignment.apply_main_model_assignment`` / ``_resolve_assignment_credentials``)."""
+    from hermes_cli.route_identity import ENDPOINT_CREDENTIAL_KEYS, ENDPOINT_KEY_POINTER_KEYS, should_clear_context_pin
     model_cfg = current_model_cfg if isinstance(current_model_cfg, dict) else {}
     updates: dict[str, Any] = {
         "default": result.new_model, "provider": result.target_provider,
         "base_url": result.base_url or None, "api_mode": result.api_mode or None,
     }
     if "context_length" in model_cfg:
-        from hermes_cli.route_identity import should_clear_context_pin
         if should_clear_context_pin(
                 model_cfg.get("default") or model_cfg.get("model"), result.new_model,
                 model_cfg.get("base_url"), result.base_url, model_cfg.get("provider"), result.target_provider):
             updates["context_length"] = None
     target = str(result.target_provider or "").strip().lower()
     route_changed = selection_route_changed(model_cfg, result)
-    stale = ["api_key", "api"] if (not target.startswith("custom") or route_changed) else []
+    stale = list(ENDPOINT_CREDENTIAL_KEYS) if (not target.startswith("custom") or route_changed) else []
     if route_changed:
-        stale += ["key_env", "api_key_env"]
+        stale += ENDPOINT_KEY_POINTER_KEYS
     for key in stale:
         if key in model_cfg:
             updates[key] = None
@@ -1966,13 +1973,6 @@ def persist_model_selection(result: ModelSwitchResult, config_path: Any = None) 
         os.chmod(path, 0o600)
     except (OSError, NotImplementedError):
         pass
-
-
-def _extra_headers_from_config(entry: Any) -> dict[str, str]:
-    if not isinstance(entry, dict):
-        return {}
-    from hermes_cli.config import normalize_extra_headers
-    return normalize_extra_headers(entry.get("extra_headers"))
 
 
 def _scoped_key_env(name: str) -> str:

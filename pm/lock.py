@@ -97,7 +97,19 @@ class Lockfile:
             found = artifacts.get("any")
         if found is None:
             return []
-        return list(found) if isinstance(found, list) else [found]
+        entries = list(found) if isinstance(found, list) else [found]
+        for artifact in entries:
+            # Only termux-docker's docker:// registry digest has no archive
+            # bytes. Other rows must have a sha256 before install reads it
+            # as a store-cache key (#138359).
+            if (not isinstance(artifact, dict) or not isinstance(artifact.get("url"), str)
+                    or not artifact["url"]
+                    or ("sha256" not in artifact
+                        and not (name == "termux-docker" and artifact["url"].startswith("docker://")))
+                    or ("sha256" in artifact and (not isinstance(artifact["sha256"], str)
+                                                  or not re.fullmatch(r"[a-f0-9]{64}", artifact["sha256"])))):
+                raise ValueError(f"malformed artifact pin for {name}/{target}: {artifact!r}")
+        return entries
 
     def pinned_artifacts(self, name: str) -> dict:
         """Return the complete pin table, including targets without discovery."""

@@ -9246,6 +9246,30 @@
             "default": false,
             "title": "Picker",
             "type": "boolean"
+          },
+          "query": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Query"
+          },
+          "cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Cursor"
           }
         },
         "title": "CanonicalListParams",
@@ -9268,6 +9292,18 @@
             ],
             "title": "Scope",
             "type": "string"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Next Cursor"
           }
         },
         "required": [

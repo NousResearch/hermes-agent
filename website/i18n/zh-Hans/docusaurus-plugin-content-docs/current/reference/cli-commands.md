@@ -478,6 +478,7 @@ hermes webhook subscribe <name> [options]
 | `--deliver` | 投递目标：`log`（默认）、`telegram`、`discord`、`slack`、`github_comment`。 |
 | `--deliver-chat-id` | 跨平台投递的目标聊天/频道 ID。 |
 | `--secret` | 自定义 HMAC 密钥。省略时自动生成。 |
+| `--signature` | 路由接受的签名方案：`generic`（新路由默认；`X-Webhook-Signature-V2` + `X-Webhook-Timestamp` 或 Standard Webhooks）、`github`、`gitlab` 或 `linear`。其他请求头一律拒绝。更新时省略则保留原值。参见[固定签名方案](../user-guide/messaging/webhooks.md#pin-the-signature-scheme)。 |
 | `--deliver-only` | 跳过 agent——将渲染后的 `--prompt` 作为字面消息投递。零 LLM 成本，亚秒级投递。要求 `--deliver` 为真实目标（非 `log`）。 |
 | `--script` | 位于 `~/.hermes/scripts/` 下的过滤/转换脚本。webhook payload 以 JSON 形式通过 stdin 传入；JSON stdout 会替换 payload，空 stdout、`[SILENT]` 或非零退出码会忽略该 webhook。参见[脚本过滤与转换](../user-guide/messaging/webhooks.md#script-filters-and-transforms)。 |
 
@@ -1156,6 +1157,7 @@ hermes dashboard [options]
 | `--host` | `127.0.0.1` | 绑定地址 |
 | `--no-open` | — | 不自动打开浏览器 |
 | `--insecure` | 关闭 | **已弃用 / 无实际作用。** 此参数曾用于在非回环绑定上绕过鉴权；自 2026 年 6 月安全加固后，公网绑定始终需要用户名/密码或 OAuth 鉴权提供方。若需保持仅本地访问，请绑定 `127.0.0.1` 并通过隧道连接。 |
+| `--isolated` | 关闭 | 从具名 profile 启动时（`worker dashboard`），运行该 profile 专用的服务器，而不是路由到本机 Dashboard。它只列出该 profile。这只是路由/运维便利，**不是**安全边界：同一操作系统用户下的 profile 可以互相读取（接受 profile 选择参数的路由、`/api/fs/*` 以及 agent 自身的工具仍可访问同级 profile）；要隔离租户，请使用不同的操作系统用户或容器。 |
 | `--stop` | — | 停止正在运行的 `hermes dashboard` 进程并退出。 |
 | `--status` | — | 列出正在运行的 `hermes dashboard` 进程并退出。 |
 

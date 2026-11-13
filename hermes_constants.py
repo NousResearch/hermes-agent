@@ -774,6 +774,18 @@ _HOME_MODE_ALIASES = {"isolated": "profile", "profile_home": "profile", "profile
                       "host": "real", "user": "real", "real_home": "real", "real-home": "real"}
 
 
+def _bound_terminal_home_mode() -> str | None:
+    """The bound profile's ``TERMINAL_HOME_MODE``, or ``None`` with no terminal scope bound or a policy
+    without the key: a session policy frozen before ``home_mode`` was projected keeps the process value
+    it ran with, not ``auto``. A served profile's turn must not read the LAUNCH profile's bridged value
+    from ``os.environ`` (#146103). Read through ``sys.modules`` for the same boot-path reason as
+    ``get_hermes_home_override``: no scope can be bound before ``tools.terminal_scope`` is imported."""
+    get_terminal_scope = getattr(sys.modules.get("tools.terminal_scope"), "get_terminal_scope", None)
+    policy = get_terminal_scope() if get_terminal_scope is not None else None
+    mode = None if policy is None else policy.get("TERMINAL_HOME_MODE")
+    return None if mode is None else str(mode).strip() or "auto"
+
+
 def get_subprocess_home(env: dict[str, str] | None = None) -> str | None:
     """Subprocess ``HOME`` override, or ``None``.
 
@@ -782,7 +794,7 @@ def get_subprocess_home(env: dict[str, str] | None = None) -> str | None:
     """
     env = env or {}
     profile_home = _profile_home_path(env)
-    mode = _env_get(env, "TERMINAL_HOME_MODE", "auto").lower() or "auto"
+    mode = (_bound_terminal_home_mode() or _env_get(env, "TERMINAL_HOME_MODE", "auto")).lower() or "auto"
     mode = _HOME_MODE_ALIASES.get(mode, mode)
 
     if mode == "profile":
@@ -846,6 +858,27 @@ def socket_safe_tmpdir() -> str:
     if len(candidate) <= SOCKET_TMPDIR_MAX_LEN or not os.path.isdir("/tmp"):  # no-tmp: ok — probe, not a write target
         return candidate
     return "/tmp"  # no-tmp: ok — AF_UNIX 108-byte socket path limit on Linux
+
+
+# ---- Launch-only env vars ----
+# Only the real launch environment (service unit ``Environment=``, container image, operator
+# export) may set these. Every Hermes user-writable layer skips them, so a user ``.env`` or a
+# user-configured secret source cannot repoint a deployment bootstrap value. ``HERMES_MANAGED_DIR``
+# would void administrator policy at a directory the user controls (#135200); ``HERMES_HOME``
+# moves identity, policy and plugin scope wholesale — one write to ``~/.hermes/.env`` would
+# otherwise relocate SOUL.md, config.yaml, plugins, skills and cron on the next start (#144685).
+# Skipped by ``hermes_cli.env_loader._load_dotenv_with_fallback``,
+# ``hermes_cli.config.reload_env``, ``agent.secret_sources.registry.apply_all`` (reported as
+# ``skipped_protected``) and ``onepassword.apply_onepassword_secrets``; refused by the ``.env``
+# writers (``validate_env_var_name_for_write``) and never mirrored by ``_publish_env_value``.
+LAUNCH_ONLY_ENV_KEYS = frozenset({"HERMES_MANAGED_DIR", "HERMES_HOME"})
+
+
+def is_launch_only_env_key(name: str) -> bool:
+    """True when ``name`` is a launch-only key in any letter case. Windows env names are
+    case-insensitive, so ``hermes_managed_dir=`` in a ``.env`` would set ``HERMES_MANAGED_DIR``;
+    folding on POSIX too is harmless (a lowercase name there is a distinct var nothing reads)."""
+    return name.upper() in LAUNCH_ONLY_ENV_KEYS
 
 
 # ---- Managed mode (NixOS declarative config) ----
@@ -969,6 +1002,29 @@ def apply_secure_dir_policy(path, *, home: str | Path | None = None) -> None:
     except (OSError, NotImplementedError):
         pass
     _chown_to_hermes_uid(path)
+
+
+def ensure_private_store(path: str | Path, *, home: str | Path | None = None) -> int:
+    """Create *path* (parents too) as an owner-only ``0700`` credential store and return the
+    ``subprocess`` ``umask`` for a child that writes secrets into it: ``0o077``, so files the child
+    creates land ``0600`` (a child's own ``writeFile`` takes the process umask, which this caller
+    cannot otherwise reach). An existing store is tightened too: files written before this policy
+    keep their mode, so the directory is what closes them off.
+
+    Managed installs (group-share by design, #77579) and containers / ``HERMES_SKIP_CHMOD``
+    (mounts shared across UIDs) keep the inherited modes and get ``-1`` (inherit the umask): the
+    carve-outs ``hermes_cli.config._secure_file`` makes. ``HERMES_HOME_MODE`` is not applied: it
+    opens the home for traversal to a served subdirectory, never to a credential store.
+    """
+    from hermes_dir_acl import make_user_dir
+
+    private = get_managed_system(home) is None and not _container_or_chmod_skipped()
+    target = make_user_dir(path, mode=0o700 if private else 0o777, parents=True, exist_ok=True)
+    if not private:
+        return -1
+    with contextlib.suppress(OSError, NotImplementedError):
+        os.chmod(target, 0o700)
+    return 0o077
 
 
 def get_scratch_dir(home: str | Path | None = None, *, prune: bool = True) -> Path:

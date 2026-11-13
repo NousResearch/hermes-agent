@@ -259,6 +259,11 @@ changed or removed, open a PR on its file. Owners keep control of their entries.
   fixed. When a new rule affects plugins that are already listed, their
   authors get an issue on their repository explaining the change and time to
   update before anything is removed.
+- **Dead entries are delisted automatically.** If your repository is deleted,
+  or the commit your entry pins disappears (a force-push that drops it), a
+  weekly check opens a PR deleting the entry, since it can no longer be
+  installed. Keep the pinned commit reachable; to come back, resubmit with a
+  live repository and pin.
 - **Removal** adds the plugin to
   [`removed.yaml`](https://github.com/NousResearch/hermes-agent/blob/main/plugin-catalog/README.md#removedyaml--the-blocklist),
   which is reserved for security and policy incidents. Installers refuse

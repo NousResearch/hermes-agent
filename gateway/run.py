@@ -37,7 +37,7 @@ from agent.conversation_compression import (
     COMPRESSION_REFUSED_WOULD_GROW_WARNING, COMPRESSION_RETRY_MESSAGES_STATUS_TEMPLATE, COMPRESSION_RETRY_TOKENS_STATUS_TEMPLATE,
     COMPRESSION_RETRY_TOO_LARGE_STATUS_TEMPLATE, IDLE_COMPACTION_STATUS_TEMPLATE,
     PRE_API_COMPRESSION_STATUS_TEMPLATE, PREFLIGHT_COMPRESSION_STATUS_TEMPLATE)
-from gateway.run_status_filter import _status_template_to_regex, hidden_outside_dm, is_terminal_failure_status
+from gateway.run_status_filter import EMPTY_LADDER_STATUS_PATTERN, _status_template_to_regex, hidden_outside_dm, is_terminal_failure_status
 from agent.conversation_compression_archive import MERGED_DURABLE_ROWS, RETIRED_DURABLE_ROWS, UNNAMED_DURABLE_ROWS
 from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
 from agent.interrupt_compat import request_hard_interrupt
@@ -100,7 +100,7 @@ _TELEGRAM_NOISY_STATUS_RE = re.compile(
     r"|context\s+reduced\s+to\s+[\d,]+\s+tokens\s+\(was\s+[\d,]+\),\s+retrying"
     r"|session\s+compressed\s+\d+\s+times"
     r"|rate\s+limited\.\s+waiting\s+\d"
-    r"|retrying\s+in\s+\d"
+    rf"|retrying(?:\s+\(\d+/\d+\))?\s+in\s+\d|{EMPTY_LADDER_STATUS_PATTERN}"  # + counted '(1/3) in 6s'
     r"|max\s+retries\s+\(\d+\).*(?:trying\s+fallback|exhausted|invalid\s+responses)"
     r"|stream\s+(?:drop|drop\s+mid\s+tool-call).+retry\s+\d"
     r"|stale\s+connections\s+from\s+a\s+previous\s+provider\s+issue"
@@ -1566,7 +1566,7 @@ from hermes_constants import get_hermes_home, get_hermes_home_override, get_proc
 _hermes_home = get_process_hermes_home()
 
 # Load ~/.hermes/.env first: user-managed env files must override stale shell exports on restart.
-from hermes_cli.env_loader import load_hermes_dotenv
+from hermes_cli.env_loader import bridge_config_scalars, load_hermes_dotenv
 _env_path = _hermes_home / '.env'
 load_hermes_dotenv(hermes_home=_hermes_home, project_env=Path(__file__).resolve().parents[1] / '.env')
 
@@ -2042,9 +2042,7 @@ def _bridge_auxiliary_config_to_env(_auxiliary_cfg: dict) -> None:
 
 def _bridge_config_to_env(_cfg: dict) -> None:
     """Export config.yaml settings to the env vars os.getenv() consumers read."""
-    for _key, _val in _cfg.items():  # top-level scalars: fallback only, never override .env
-        if isinstance(_val, (str, int, float, bool)) and _key not in os.environ:
-            os.environ[_key] = str(_val)
+    bridge_config_scalars(_cfg, os.environ)  # top-level scalars: fallback only, never override .env
     _terminal_cfg = _cfg.get("terminal", {})
     if _terminal_cfg and isinstance(_terminal_cfg, dict):
         _bridge_terminal_config_to_env(_terminal_cfg)
@@ -2471,11 +2469,11 @@ def _event_media_is_audio(event, index: int) -> bool:
 
 
 def _event_media_is_stt_input(event, index: int) -> bool:
-    """True when an audio attachment should enter the automatic STT pipeline."""
-    message_type = getattr(event, "message_type", None)
-    if message_type in {MessageType.AUDIO, MessageType.DOCUMENT}:
+    """Audio entering auto-STT; a VOICE message's photo/PDF never does (unknown/octet-stream MIME follows VOICE)."""
+    mtype, mime = getattr(event, "message_type", None), _event_media_type_at(event, index).lower()
+    if mtype in {MessageType.AUDIO, MessageType.DOCUMENT}:
         return False
-    return message_type == MessageType.VOICE or _event_media_type_at(event, index).startswith("audio/")
+    return mime.startswith("audio/") or (mtype == MessageType.VOICE and mime in {"", "application/octet-stream"})
 
 
 def _event_media_is_video(event, index: int) -> bool:
@@ -2622,9 +2620,8 @@ def _reap_gateway_turn_processes(
     return killed
 
 
-_TURN_STACK_DUMP_FRAME_MARKERS = (
-    "run_conversation", "run_sync", "_run_sync_with_timeout_lifecycle",
-    "finalize_turn", "end_turn", "run_in_session")
+_TURN_STACK_DUMP_FRAME_MARKERS = ("run_conversation", "run_sync", "_run_sync_with_timeout_lifecycle", "finalize_turn",
+    "end_turn", "run_in_session", "_hmwa_resolve_session", "_hmwa_prepare_turn", "_handle_message_with_agent")
 
 
 def _dump_wedged_turn_stacks(task_id: str) -> None:
@@ -4426,9 +4423,9 @@ def _drain_restart_safe_cron_deliveries(adapters, loop, runner=None) -> None:
             owned = (getattr(runner, "_profile_bot_platforms", None) or {}).get(profile_name)
             if (profile_name is not None and adapters
                     and not sched_preflight.has_credential_platform(profile_adapters, owned)):
-                routes = sched_preflight._primary_profile_routes_for_current_home()
-                if routes:
-                    profile_adapters = sched_preflight.SharedRouteAdapters(adapters, routes)
+                shared = sched_preflight.shared_route_adapters_for_current_home(adapters)
+                if shared:
+                    profile_adapters = shared
             cron_scheduler.drain_delivery_queue(profile_adapters, loop)
 
 

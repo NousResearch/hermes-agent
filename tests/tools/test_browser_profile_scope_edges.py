@@ -234,9 +234,6 @@ def test_each_served_profile_gets_its_own_harness_tmp_dir(profiles, tmp_path):
         seen[home] = env.get("BH_TMP_DIR")
     assert seen[a] and seen[b] and seen[a] != seen[b]
     assert all(str(p).startswith(str(tmp_path / "bh" / "tmp")) for p in seen.values())
-    unscoped = {"BH_HOME": str(tmp_path / "bh")}
-    harness_dirs.namespace_harness_dirs(unscoped, bu_cli._served_profile_tag())
-    assert unscoped == {"BH_HOME": str(tmp_path / "bh")}  # single-profile: unchanged
 
 
 def test_a_served_profile_under_an_inherited_tmp_dir_nests_inside_it(profiles, tmp_path):

@@ -1154,11 +1154,10 @@ class TestChildCredentialPoolResolution(unittest.TestCase):
         parent.provider, parent.base_url, parent.requested_provider = "custom", url, "custom:open-ai"
         parent._credential_pool = None
 
-        with patch("tools.delegate_tool_config._loaded_pool", side_effect=lambda key: key) as loaded:
-            key = _resolve_child_credential_pool("custom", parent, url, effective_requested_provider="custom:open-ai")
-        loaded.assert_called_once()
-        self.assertIn("open-ai", key)
-        self.assertNotIn("claude", key)
+        with patch("tools.delegate_tool_config._loaded_pool", return_value=None) as loaded:
+            _resolve_child_credential_pool("custom", parent, url, effective_requested_provider="custom:open-ai")
+        (key,) = loaded.assert_called_once() or loaded.call_args.args
+        self.assertTrue("open-ai" in key and "claude" not in key)
 
 
     @patch(

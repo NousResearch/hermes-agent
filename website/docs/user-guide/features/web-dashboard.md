@@ -28,7 +28,7 @@ This starts a local web server and opens `http://127.0.0.1:9119` in your browser
 | `--host` | `127.0.0.1` | Bind address |
 | `--no-open` | — | Don't auto-open the browser |
 | `--insecure` | off | **Deprecated / no-op.** Formerly bypassed auth on a non-loopback bind; it no longer disables authentication — a public bind always requires an auth provider (password or OAuth) |
-| `--isolated` | off | When launched from a named profile (`worker dashboard`), run a dedicated per-profile server instead of routing to the machine dashboard |
+| `--isolated` | off | When launched from a named profile (`worker dashboard`), run a dedicated per-profile server instead of routing to the machine dashboard. It lists only that profile; this is not a security boundary (see [Managing multiple profiles](#managing-multiple-profiles)) |
 
 ```bash
 # Custom port
@@ -70,9 +70,21 @@ whole server lifetime: a deep link that omits `?profile=` (for example a
 sees that profile's MCP servers, model and skills. An explicit `?profile=`
 in the URL always wins.
 
-Pass `--isolated` to opt out and run a dedicated server scoped to that
-profile (the pre-unification behavior — useful if you deliberately expose
-different profiles' dashboards with different auth).
+Pass `--isolated` to opt out and run a dedicated server for that profile
+(the pre-unification behavior). Its profile list, `/api/status` profile
+names, unified session sidebar and the Desktop profile rail (and so its
+SOUL editor) show only the launch profile.
+
+:::warning `--isolated` is not a security boundary
+`--isolated` is a routing and operations convenience, not tenant isolation.
+Every profile under one OS user can read every other profile's files: on
+the dedicated server, routes that take a profile selector, `/api/fs/*` and
+the agent's own terminal and file tools can still reach sibling profiles
+(`~/.hermes/profiles/*`). Different auth per profile's server
+does not change that. To keep people's data apart (family members,
+customers, teams), run each tenant's Hermes as a **separate OS user** or in
+a **separate container**. See [SECURITY.md](https://github.com/NousResearch/hermes-agent/blob/main/SECURITY.md) §2.2.
+:::
 
 The **Chat** tab follows the switcher too: a scoped chat spawns its PTY
 child with the selected profile's `HERMES_HOME`, so the conversation runs
@@ -670,6 +682,7 @@ same auth gate as the rest of `/api/`.
 | `GET /api/curator` · `PUT .../paused` · `POST .../run` | Skill-curator status + pause/resume + run |
 | `GET /api/portal` | Nous Portal auth + Tool Gateway routing (read-only) |
 | `POST /api/ops/prompt-size` · `/dump` · `/config-migrate` | Diagnostics (backgrounded) |
+| `POST /api/ops/debug-share` | Upload a redacted debug report + full logs to a public paste and return the URLs (synchronous). Body: `{consent: true, redact?, lines?}`; without `"consent": true` it returns `400` and uploads nothing |
 | `PUT /api/webhooks/{name}/enabled` | Enable / disable a webhook route |
 | `POST /api/skills/hub/install` · `/uninstall` · `/update` | Skills hub actions (backgrounded) |
 | `GET /api/skills/hub/search` | Search the skill hub across all sources |
@@ -804,7 +817,7 @@ curl -s http://<host>:9119/api/status | jq '.auth_required, .auth_providers'
 
 If you don't want to wire up an OAuth identity provider — a self-hosted "just put a password on my dashboard" deployment — the bundled `plugins/dashboard_auth/basic` plugin registers a `DashboardAuthProvider` named `basic` that authenticates with a **username and password** instead of an OAuth redirect.
 
-It plugs into the same gate as the OAuth provider: the gate engages on a non-loopback bind, the login page renders a credential form for this provider (instead of a "Log in with X" button), and everything downstream of login — session cookies, transparent refresh, WS tickets, logout, the audit log — is identical to the OAuth path. Sessions are stateless HMAC-signed tokens the provider mints itself, so there's **no database and no external IDP**. Password hashing uses stdlib `scrypt` (no third-party dependency).
+It plugs into the same gate as the OAuth provider: the gate engages on a non-loopback bind, the login page renders a credential form for this provider (instead of a "Log in with X" button), and everything downstream of login — session cookies, transparent refresh, WS tickets, logout, the audit log — is identical to the OAuth path. Sessions are HMAC-signed tokens the provider mints itself, so there's **no database and no external IDP**. The signing key is bound to the configured username and password, so changing either ends every existing session; logout revokes that login (and its renewals) via a small `dashboard_auth/basic-revoked-sessions.json` file in the Hermes home. Password hashing uses stdlib `scrypt` (no third-party dependency).
 
 :::warning Use this on trusted networks only — not the public internet
 The username/password provider is intended for self-hosted / on-prem / homelab dashboards on a **trusted network**, or reachable only over a **VPN**. It protects a single shared credential with no external identity provider, MFA, or per-user accounts behind it, so it is **not suitable for exposing a dashboard directly to the public internet**. For an internet-facing dashboard, use the [Nous Research provider](#default-provider-nous-research) (or your own [self-hosted OIDC](#self-hosted-oidc-provider) / [custom OAuth](#custom-providers) provider) instead.
@@ -1169,6 +1182,8 @@ def register(ctx):
 ```
 
 The login page lists all registered providers; multiple providers can be stacked and the user picks one at `/login`.
+
+Two optional hooks cover logout for providers whose tokens are not revoked at the IdP: override `revoke_access_session(access_token=...)` when an access token can outlive its refresh token (logout passes the access-token cookie too), and set `refresh_reuse_detection = False` when a used refresh token stays valid, so the gate's 30-second refresh replay cache never serves a rotation that a logout has since revoked.
 
 ### Non-interactive (bearer-token) auth
 

@@ -20,7 +20,7 @@ def build_auth_parser(subparsers, *, cmd_auth: Callable) -> None:
         "--priority", type=int,
         help="Place the new credential at this priority (0 = tried first under fill_first); "
              "appends last when omitted")
-    auth_add.add_argument("--api-key", help="API key value (otherwise prompted securely)")
+    auth_add.add_argument("--api-key", help="API key value; '-' reads it from stdin (otherwise prompted securely)")
     auth_add.add_argument("--portal-url", help="Nous portal base URL")
     auth_add.add_argument("--inference-url", help="Nous inference base URL")
     auth_add.add_argument("--client-id", help="OAuth client id")

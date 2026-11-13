@@ -118,11 +118,16 @@ def cmd_gateway_enroll(args) -> None:
             "  The relay gateway secret is provisioned by the hosting platform."
         )
 
-    enrollment_token = (getattr(args, "token", None) or os.environ.get("GATEWAY_RELAY_ENROLL_TOKEN", "")).strip()
+    from hermes_cli.secret_prompt import resolve_secret_arg
+
+    enrollment_token = resolve_secret_arg(
+        getattr(args, "token", None) or os.environ.get("GATEWAY_RELAY_ENROLL_TOKEN", ""),
+        "Enrollment token: ",
+    )
     if not enrollment_token:
         _fail(
-            "✗ No enrollment token. Pass --token <token> (or set "
-            "GATEWAY_RELAY_ENROLL_TOKEN).\n"
+            "✗ No enrollment token. Run on a terminal to be prompted, pass --token - to read "
+            "it from stdin, or set GATEWAY_RELAY_ENROLL_TOKEN.\n"
             "  The connector mints this single-use token when your tenant's route "
             "is provisioned; it is delivered with your gateway config."
         )

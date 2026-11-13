@@ -42,6 +42,17 @@ hermes [global-options] <command> [subcommand/options]
 
 The install also ships `hermes-agent`, a minimal runner that sends one query and exits: `hermes-agent --query "summarize README.md"` (or `hermes-agent "summarize README.md"`). `hermes-agent --help` lists its options (`--model`, `--base-url`, `--max-turns`, `--enabled-toolsets`, `--disabled-toolsets`, `--list-tools`, `--save-trajectories`, …) and `hermes-agent --version` prints the version; neither starts the agent. Run with no query, it prints the same help and exits. For anything else use `hermes` (`hermes -z <prompt>` is the scripted one-shot).
 
+### Passing secrets to commands
+
+A secret typed as a flag value (`--key sk-…`) is visible to every local user through `ps` and stays in your shell history. Every secret-taking flag (`hermes auth add --api-key`, `hermes peer add --key`, `hermes gateway enroll --token`, `hermes webhook subscribe --secret`, and the `hermes secrets bitwarden|onepassword` token flags) therefore accepts `-`, which reads the value from the first line of stdin instead:
+
+```bash
+hermes peer add spark --url http://spark.lan:8377 --key - < ~/peer-key.txt
+pass show relay/enroll | hermes gateway enroll --token - --connector-url wss://connector.example.com/relay
+```
+
+Run interactively without the flag and the command prompts for the value with masked input.
+
 ## Top-level commands
 
 | Command | Purpose |
@@ -351,7 +362,7 @@ relaunch the gateway after that nonzero exit. For systemd, use
 unsuccessful exits. Without that policy, a requested restart leaves the gateway
 stopped.
 
-`hermes gateway enroll` accepts `--token`, `--connector-url`, `--gateway-id`, and `--wake-url`. It exchanges the enrollment token with the connector and writes the resulting `GATEWAY_RELAY_ID`, `GATEWAY_RELAY_SECRET`, `GATEWAY_RELAY_DELIVERY_KEY`, optional `GATEWAY_RELAY_URL`, and (when `--wake-url` is given) `GATEWAY_RELAY_WAKE_URL` values to the active profile's `.env`.
+`hermes gateway enroll` accepts `--token`, `--connector-url`, `--gateway-id`, and `--wake-url`. Omit `--token` on a terminal to be prompted for it (masked), or pass `--token -` to read it from stdin. It exchanges the enrollment token with the connector and writes the resulting `GATEWAY_RELAY_ID`, `GATEWAY_RELAY_SECRET`, `GATEWAY_RELAY_DELIVERY_KEY`, optional `GATEWAY_RELAY_URL`, and (when `--wake-url` is given) `GATEWAY_RELAY_WAKE_URL` values to the active profile's `.env`.
 
 :::tip WSL users
 Use `hermes gateway run` instead of `hermes gateway start` — WSL's systemd support is unreliable. Wrap it in tmux for persistence: `tmux new -s hermes 'hermes gateway run'`. See [WSL FAQ](./faq.md#wsl-gateway-keeps-disconnecting-or-hermes-gateway-start-fails) for details.
@@ -554,7 +565,7 @@ hermes send --list telegram         # filter by platform
 ## `hermes peer`
 
 ```bash
-hermes peer add <name> --url http://host:port --key <API_SERVER_KEY>
+hermes peer add <name> --url http://host:port [--key - < keyfile]   # no --key: masked prompt
 hermes peer list
 hermes peer dm <peer>[/<agent>] "message"
 hermes peer run <peer>[/<agent>] --idempotency-key <key> "message"

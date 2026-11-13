@@ -248,7 +248,8 @@ def build_gateway_parser(
             "Requires being logged in (hermes setup). Not available in managed installs.")
     gateway_enroll.add_argument("--token", default=None,
         help="The single-use enrollment token from the connector (delivered with "
-            "your gateway config). Also settable via GATEWAY_RELAY_ENROLL_TOKEN.")
+            "your gateway config). Omit to be prompted (masked); '-' reads it from stdin. "
+            "Also settable via GATEWAY_RELAY_ENROLL_TOKEN.")
     gateway_enroll.add_argument("--connector-url", dest="connector_url", default=None,
         help="The connector base/relay URL, e.g. wss://connector.example.com/relay "
             "or https://connector.example.com. Also settable via GATEWAY_RELAY_URL "

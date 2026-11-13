@@ -263,10 +263,10 @@ Every gateway you register in **Settings → Connections** — local, remote URL
 
 ### Bot-initiated DMs across machines (`hermes peer`)
 
-Bots on one machine can message Bots on **another machine's gateway** without any desktop in the loop. Register the other gateway as a *peer* (its API server URL + `API_SERVER_KEY`):
+Bots on one machine can message Bots on **another machine's gateway** without any desktop in the loop. Register the other gateway as a *peer* (its API server URL + `API_SERVER_KEY`). The key is prompted for with masked input; in scripts pass `--key -` and pipe it in (`--key - < keyfile`) so it never appears in `ps` output or shell history:
 
 ```bash
-hermes peer add spark --url http://spark.lan:8377 --key <API_SERVER_KEY>
+hermes peer add spark --url http://spark.lan:8377   # prompts (masked) for the peer's API_SERVER_KEY
 hermes peer list
 hermes peer dm spark < ~/.hermes/cache/scratch/dm.txt        # message body from a file (nothing shell-interpreted)
 hermes peer dm spark/researcher < ~/.hermes/cache/scratch/dm.txt   # named profile on a multiplexed peer

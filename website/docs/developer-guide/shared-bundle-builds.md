@@ -324,7 +324,11 @@ consumers. They are not interchangeable cleanup targets.
   excludes cached sdist `src/` trees (including Rust `target/` outputs) before
   copying. On macOS and Linux, uv's wheel entries stay relative symlinks into
   `archive-v0/`, so each unpacked wheel ships once; on Windows uv writes
-  pointer files instead. The provider cache is unchanged; native
+  pointer files instead. Off Windows, each `archive-v0/` file the payload venv
+  holds byte for byte is then replaced by a relative link to the venv copy.
+  That shrinks the macOS update ZIP, which Squirrel.Mac before Electron 44.7
+  cannot download at 1 GiB or more. The first-use seed copies those links'
+  bytes into the machine cache. The provider cache is unchanged; native
   signing reaches the extracted binaries without scanning build-only artifacts.
 - PM-runtime and application builds share the provider's persistent uv cache.
   CI restores/saves that cache, not the temporary build HOME. Failed builds

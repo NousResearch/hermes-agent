@@ -99,7 +99,7 @@ def test_read_only_fetch_routes_to_entries_own_host_and_parses(monkeypatch, tmp_
 
     assert snapshot is not None
     assert [(w.label, w.used_percent, w.scope) for w in snapshot.windows] == [
-        ("Session", 44.0, "account"), ("Weekly", 5.0, "account")]
+        ("5-hour block", 44.0, "account"), ("Weekly", 5.0, "account")]
     assert snapshot.identity == "codex:acct-9:user-9"
     assert server.requests[0]["path"].endswith("/wham/usage"), \
         "a /backend-api base routes to the ChatGPT wham usage path"

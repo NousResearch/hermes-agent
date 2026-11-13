@@ -6,6 +6,7 @@ LAZILY inside each method (``from cli import ...``) — never at module load (im
 from __future__ import annotations
 
 import errno
+import logging
 import json
 import os
 import queue
@@ -409,7 +410,10 @@ class CLITuiMixin:
                 continue
             monitor = getattr(self, "_subagent_monitor", None)
             if monitor is not None:
-                monitor.tick()
+                try:
+                    monitor.tick()
+                except Exception:  # a dropped gateway socket must not kill the spinner thread
+                    logging.getLogger(__name__).debug("subagent monitor tick failed", exc_info=True)
             if self._command_running:
                 self._invalidate(min_interval=0.1)
                 time.sleep(0.1)

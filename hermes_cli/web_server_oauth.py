@@ -101,7 +101,7 @@ def _external_process_cli_command(provider_id: str, default: str) -> str:
     <slug>``; swapping its first token mints a command neither CLI understands (``agy auth add
     <slug>``), so a ``hermes``-led default survives verbatim when the plugin ships an
     ``auth_handler`` and otherwise becomes the re-login every other surface names for these
-    plugins (#136071)."""
+    plugins: the CLI login the plugin declares, which changes no Hermes config (#136071)."""
     try:
         from hermes_cli.auth import PROVIDER_REGISTRY, get_external_process_provider_status
         pconfig = PROVIDER_REGISTRY.get(provider_id)

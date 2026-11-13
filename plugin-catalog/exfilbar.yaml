@@ -1,0 +1,24 @@
+name: exfilbar
+repo: https://github.com/quotumorg/exfilbar
+sha: 76e924641a5e508fbcc3ee31cadacad7a14ee353
+title: Exfilbar
+description: "Per-file transfer routes for Hermes: you list which workspace paths may go to which hosts, and a pre_tool_call hook blocks recognized uploads from terminal and execute_code that leave those routes (curl, wget, scp, rsync, nc, socat, ssh, sftp, mail, HTTPie, git push by opt-in, Python requests/httpx/urllib and more). Protected globs (default private/**, *.env) are never routed. Desktop page shows your routes and an allowed/blocked feed per session; /exfil check explains a dry run. Disclosure: static recognition only, not an egress sandbox; scripts, browser and MCP tools and sibling-hook modifications can bypass it, and unresolved recognized transfers block by default. Stores bounded transfer metadata (paths, scheme and host, decision) and a routes summary in its own plugin data folder; never reads file contents or full commands. No network calls, subprocesses, credentials or telemetry."
+maintainer: quotumorg
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+version: "0.5.4"
+docs_url: https://github.com/quotumorg/exfilbar/blob/76e924641a5e508fbcc3ee31cadacad7a14ee353/README.md
+readme: true
+platforms: [linux, macos]
+known_issues:
+  - "Static recognition of a bounded command and Python subset; not an egress sandbox or DLP. Uncovered tools (browser, MCP, messaging) and later sibling-hook argument changes can bypass it."
+  - "Unresolved recognized transfers block by default (block_unresolved: true), and commands over the parse budget block; both can reject legitimate work."
+  - "Paths resolve lexically against the working directory; symlinks are never resolved."
+  - "Tested on Hermes v0.23.0 at 2bd378ed1b8d6bf2192cb26e0a55ff3091e6bd19 with Desktop built from source; the floor does not establish later compatibility."
+capabilities:
+  provides_tools: []
+  provides_hooks: [pre_tool_call]
+  provides_middleware: []
+  requires_env: []
+# No catalog keys for commands: slash exfil (check, routes, demo, status); dashboard API /feed, /sessions, /routes (read-only).

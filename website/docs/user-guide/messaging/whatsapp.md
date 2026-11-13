@@ -80,6 +80,32 @@ override `session_path`, keep it distinct per profile, or the profiles share one
 WhatsApp login. Bridges started by an older Hermes report no session directory
 and are restarted once, as after a bridge update.
 
+A bridge left running by a crashed gateway is adopted only when it was started
+with the settings this gateway would start one with: DM and group policy,
+allowlists, mode, reply prefix, read receipts and the other bridge settings,
+plus the bridge's `package.json`. Otherwise it is restarted, without
+re-pairing. A bridge with no such record (one started by an older Hermes) is
+restarted once.
+
+### Bridge API authentication
+
+The bridge listens on loopback only, but loopback does not identify the caller:
+any process on the same machine could otherwise read every inbound message
+(`GET /messages`) or send as you (`POST /send`). Each session therefore has a
+secret, `platforms/whatsapp/session/.bridge-token` (owner-only, created by the
+gateway on first start), and the bridge requires it as a bearer token on every
+route. Before adopting a bridge that is already running, the gateway first sends
+a challenge to `GET /auth-proof` and adopts the listener only when it proves it
+holds the secret, so an impostor that bound the port first never learns the
+token. A listener that fails the proof (another profile's bridge, which holds
+its own token, or an impostor) is never stopped by port: once this session's
+own bridge has been stopped by its pidfile, a listener still holding the port
+fails WhatsApp with `whatsapp_bridge_foreign_session`. Every newly spawned
+bridge gets a fresh secret. Cron and `hermes send` deliveries read the same
+file; they never create it, and a session that has not yet been started by the
+gateway reports `No WhatsApp bridge token`. A bridge launched by hand without
+`HERMES_WHATSAPP_BRIDGE_TOKEN` refuses to serve.
+
 ## Two Modes
 
 | Mode | How it works | Best for |
@@ -239,6 +265,7 @@ The Baileys bridge saves its session under `~/.hermes/platforms/whatsapp/session
 - **Sessions survive restarts** — you don't need to re-scan the QR code every time
 - The session data includes encryption keys and device credentials
 - **Do not share or commit this session directory** — it grants full access to the WhatsApp account
+- Hermes keeps the directory owner-only (`0700`) and has the bridge write its key files and `bridge.log` (which carries the QR pairing payloads) as `0600`. Managed (NixOS/systemd) installs and containers keep the modes their service umask or mount sets, so restrict those yourself
 
 ---
 
@@ -273,7 +300,7 @@ whatsapp:
   send_read_receipts: false                 # Mark accepted inbound messages as read (blue ticks)
 ```
 
-When `send_read_receipts` is `true`, the adapter marks policy-accepted inbound messages as read after DM/group/mention filtering passes. Rejected messages (e.g., from non-allowlisted senders) are not marked read. Disabled by default for privacy. Changing this setting automatically restarts the bridge subprocess on the next connection.
+When `send_read_receipts` is `true`, the adapter marks policy-accepted inbound messages as read after DM/group/mention filtering passes. Rejected messages (e.g., from non-allowlisted senders) are not marked read. Disabled by default for privacy. Changing this setting, like any other bridge setting (DM and group policy, allowlists, mention settings, mode, `reply_prefix`, debug, owner-message forwarding, message length, chunk delay, send timeout, the media cache directories) or the bridge's `package.json`, restarts the bridge subprocess on the next connection, without re-pairing.
 
 Delivery and read status of the messages Hermes sends is logged to `gateway.log`, one line per status change (`server_ack`, `delivered`, `read`, `played`, or `error` with WhatsApp's error code). In groups, each recipient's receipt is its own line with `recipient=`. Messages typed by a person on the linked phone are not logged.
 

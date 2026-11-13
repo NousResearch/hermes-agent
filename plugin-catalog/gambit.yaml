@@ -1,0 +1,40 @@
+name: gambit
+title: Gambit for Hermes
+repo: "https://github.com/itsflownium/gambit-hackathon"
+sha: "9c725ad0b04c2bc32f16efd00dfc1b4d421360cb"
+description: "Play chess in a Hermes terminal or Desktop pane, understand mistakes, and replay or practice public Chess.com and Lichess matches. Disclosure — runs a locally installed Stockfish executable (the path you set in plugin settings, or one found on PATH) as a subprocess that inherits Hermes' environment; fetches public games for a username you enter from api.chess.com and lichess.org; uses your configured Hermes model for each opponent move; and in Coach mode the Desktop pane automatically sends coaching requests into the bound chat when it is idle, each starting a model turn."
+maintainer: itsflownium
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+version: "0.3.0"
+readme: true
+platforms: [macos]
+docs_url: "https://github.com/itsflownium/gambit-hackathon/blob/9c725ad0b04c2bc32f16efd00dfc1b4d421360cb/README.md"
+screenshots:
+  - "https://raw.githubusercontent.com/itsflownium/gambit-hackathon/9c725ad0b04c2bc32f16efd00dfc1b4d421360cb/docs/terminal-preview.png"
+  - "https://raw.githubusercontent.com/itsflownium/gambit-hackathon/9c725ad0b04c2bc32f16efd00dfc1b4d421360cb/docs/import-preview.png"
+known_issues:
+  - Requires a separately installed local Stockfish executable; it is not bundled or downloaded automatically. Hermes Desktop is optional for the graphical pane.
+  - The standalone terminal board requires an interactive terminal with Python curses support and uses a separate Gambit session in the active profile.
+  - Hermes skips standalone CLI command registration with plugins.isolation set to host; /chess remains available in a Hermes conversation.
+  - Slash shortcuts return direct board or local engine evidence; use ordinary chat or the standalone coaching pane for model explanations.
+  - Full-match recap completion is announced through Desktop only. CLI/TUI chat can retrieve the result on a later request; the standalone dashboard has no summary command.
+  - Imports completed public standard-chess games only; source publication delays and rate limits may apply. Chess.com Bot and Coach games are unavailable through public username lookup.
+  - Uses the configured Hermes provider for moves and coaching; normal provider usage applies, and legal engine fallback is labelled when used.
+  - The 60-second deadline covers board replies; separate explanations have their own provider response time.
+  - Verified platform scope is macOS only; Linux, Windows and another physical computer have not been verified.
+capabilities:
+  provides_tools:
+    - chess_state
+    - chess_start
+    - chess_move
+    - chess_games
+    - chess_replay
+    - chess_review
+    - chess_hint
+    - chess_action
+  provides_hooks:
+    - pre_llm_call
+  provides_middleware: []
+  requires_env: []

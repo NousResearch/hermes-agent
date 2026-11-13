@@ -149,9 +149,10 @@ async def _resolve_slack_user_target(token, chat_id):
     except ImportError:
         return None, {"error": "aiohttp not installed. Run: "
                       f"{install_hint('messaging')}"}
+    from gateway.platforms.base import describe_proxy_error, resolve_proxy_url, proxy_kwargs_for_aiohttp
+    proxy = resolve_proxy_url()
     try:
-        from gateway.platforms.base import resolve_proxy_url, proxy_kwargs_for_aiohttp
-        _sess_kw, _req_kw = proxy_kwargs_for_aiohttp(resolve_proxy_url())
+        _sess_kw, _req_kw = proxy_kwargs_for_aiohttp(proxy)
         headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30), **_sess_kw) as session:
             async def post_api(method, payload):
@@ -185,7 +186,8 @@ async def _resolve_slack_user_target(token, chat_id):
             dm_id = (opened.get("channel") or {}).get("id")
             return (dm_id, None) if dm_id else (None, _error("Slack conversations.open did not return a DM channel ID"))
     except Exception as e:
-        return None, _error(f"Slack DM resolution failed: {e}")
+        # aiohttp echoes a malformed proxy URL (password included) as the InvalidURL text.
+        return None, _error(f"Slack DM resolution failed: {describe_proxy_error(e, proxy) or e}")
 
 
 # "ephemeral connect (may re-init E2EE per send, see #46310)",

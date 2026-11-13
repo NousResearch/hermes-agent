@@ -60,10 +60,10 @@ jobs:
       # node-pty's native build is needed for the terminal pane.
       - uses: ./.github/actions/retry
         with:
-          command: pnpm install --frozen-lockfile
+          command: just js-install
 
       - name: Prepare locked Electron runtime
-        run: node scripts/build/electron-runtime.mjs --source .
+        run: just electron-runtime
 
       # ── Build desktop app ─────────────────────────────────────────────
       # The Playwright step below runs `pnpm run build` before testing so
@@ -96,11 +96,11 @@ jobs:
           # A stable run is on main too, but it tests a candidate. It compares and never rewrites baselines.
           if [ "${{ github.ref_name }}" = "main" ] && [ -z "${{ inputs.commit }}" ]; then
             echo "On main — generating/updating baseline screenshots"
-            pnpm run build && xvfb-run -a --server-args="-screen 0 1280x1024x24" \
+            just desktop-build && xvfb-run -a --server-args="-screen 0 1280x1024x24" \
               pnpm exec playwright test --reporter=list --update-snapshots
           else
             echo "On PR — comparing against cached baselines"
-            pnpm run build && xvfb-run -a --server-args="-screen 0 1280x1024x24" \
+            just desktop-build && xvfb-run -a --server-args="-screen 0 1280x1024x24" \
               pnpm exec playwright test --reporter=list
           fi
         env:

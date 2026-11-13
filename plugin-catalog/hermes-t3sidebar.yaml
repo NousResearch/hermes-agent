@@ -1,0 +1,28 @@
+name: hermes-t3sidebar
+repo: https://github.com/V1rgul/hermes-plugin-t3sidebar
+sha: 5989b1d88ff6061204df2d0807363f69ae576c56
+version: "0.2.2"
+title: T3 Sidebar
+description: "T3 Code-style session sidebar for Hermes Desktop: Input/Done/Woke badges, Pinned/Working/Snoozed/Archived shelves, unsent drafts synced across Desktops, project picker and filter, AutoTitler rename, a token/cost Usage page, and a Codex/Claude Limits page that pools accounts by plan, forecasts run-outs and wasted quota, and redeems banked Codex resets. Disclosure — The Limits page reads Hermes's credential pool and, every 5 minutes, fetches rate limits for every openai-codex and anthropic pool account with that account's own token through Hermes's read-only usage fetch (chatgpt.com, api.anthropic.com). At most hourly it lists the active Codex sign-in's banked reset credits through Hermes's signed request, and a user-confirmed button redeems one banked Codex reset. When the anthropic pool is empty it reads Claude Code's login ($CLAUDE_CONFIG_DIR or ~/.claude/.credentials.json) and sends that token to api.anthropic.com (/api/oauth/usage, /api/oauth/profile). An expired login is refreshed by Hermes's Claude Code resolver, which writes the new token pair back to that file. Unsent composer drafts (text and folder) are stored in the plugin's data on the Hermes host and synced to every connected Desktop. A resumed turn un-archives its session's compression lineage in state.db. The backend reads private Hermes internals (live session registry, session DB and pool-routing helpers) and can break on a Hermes update."
+maintainer: V1rgul
+tier: community
+category: desktop
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/V1rgul/hermes-plugin-t3sidebar/blob/5989b1d88ff6061204df2d0807363f69ae576c56/README.md
+screenshots:
+  - https://raw.githubusercontent.com/V1rgul/hermes-plugin-t3sidebar/5989b1d88ff6061204df2d0807363f69ae576c56/docs/images/draft.png
+  - https://raw.githubusercontent.com/V1rgul/hermes-plugin-t3sidebar/5989b1d88ff6061204df2d0807363f69ae576c56/docs/images/limits.png
+  - https://raw.githubusercontent.com/V1rgul/hermes-plugin-t3sidebar/5989b1d88ff6061204df2d0807363f69ae576c56/docs/images/usage.png
+  - https://raw.githubusercontent.com/V1rgul/hermes-plugin-t3sidebar/5989b1d88ff6061204df2d0807363f69ae576c56/docs/images/working.png
+  - https://raw.githubusercontent.com/V1rgul/hermes-plugin-t3sidebar/5989b1d88ff6061204df2d0807363f69ae576c56/docs/images/session-project.png
+  - https://raw.githubusercontent.com/V1rgul/hermes-plugin-t3sidebar/5989b1d88ff6061204df2d0807363f69ae576c56/docs/images/settings.png
+known_issues:
+  - "Limits page: the backend samples every openai-codex and anthropic pool account every 5 minutes with each account's own token from Hermes's pool, through Hermes's read-only usage fetch (no refresh on 401). At most hourly it lists the banked reset credits of the Codex account Hermes currently uses, sent by Hermes with its own sign-in. No token is stored or logged."
+  - "Limits page: when Hermes's anthropic pool is empty, it reads Claude Code's login ($CLAUDE_CONFIG_DIR or ~/.claude/.credentials.json) to show that account's limits and plan (api.anthropic.com/api/oauth/usage and /api/oauth/profile). An expired token is refreshed by Hermes's own Claude Code resolver, reached through Hermes's public usage fetch, which writes it back for Claude Code."
+  - "Unsent draft text, with its session's folder, is stored in the plugin's own data on the Hermes host so every Desktop connected to it can restore the draft; a cleared draft leaves a marker without text for 30 days."
+  - "The backend uses Hermes internals (session DB, live session registry and mutation helpers, pool account routing helpers); a Hermes release that moves them can break the sidebar, Usage or Limits page until the plugin is updated."
+capabilities:
+  provides_tools: []
+  provides_hooks: [pre_llm_call, on_session_end]
+  provides_middleware: []
+  requires_env: []

@@ -51,6 +51,8 @@ cd ui-tui
 pnpm install
 ```
 
+`just tui` runs `pnpm run dev` here from the repository root.
+
 Local package commands:
 
 ```bash

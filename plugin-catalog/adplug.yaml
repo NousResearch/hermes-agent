@@ -1,0 +1,21 @@
+name: adplug
+title: AdPlug
+repo: https://github.com/adplug-app/adplug-hermes-plugin
+sha: 7d3a8e7119c3988876b2f6962a3a3d6549d73228
+description: "Manage Google Ads, Meta Ads, LinkedIn Ads, Microsoft Ads and Reddit Ads in Hermes Agent. Analyse performance, find wasted spend and build or optimise campaigns with your approval. Agent Plugins v1 package: 16 PPC skills, one per platform plus 11 for jobs like client briefs, audits, ad copy and routines. The skills were written and are used by a PPC expert with 12 years in the field and $100M+ in ad spend managed. Sign-in is Hermes' own OAuth 2.1 through one hermes mcp add command: no Node.js, npx or API keys. On a paid plan, add HubSpot and the agent judges lead quality and sends qualified leads back to Google, Microsoft, LinkedIn and Reddit as offline conversions. Disclosure — creates and edits real ad campaigns that spend real money through AdPlug's hosted server (api.adplug.app); the skills preview each change and wait for an explicit yes, but Hermes itself does not prompt before AdPlug tools unless `trust: untrusted` is set on each AdPlug server in config.yaml."
+maintainer: AdPlug
+tier: community
+category: tools
+requires_hermes: ">=0.21.6"
+docs_url: https://github.com/adplug-app/adplug-hermes-plugin#readme
+version: "1.0.1"
+image: https://raw.githubusercontent.com/adplug-app/adplug-hermes-plugin/7d3a8e7119c3988876b2f6962a3a3d6549d73228/assets/banner.png
+readme: true
+platforms: []
+known_issues:
+  - "Add AdPlug's server once after installing: hermes mcp add adplug --url https://api.adplug.app/mcp --auth oauth --connect-timeout 300, sign in when the browser opens, then run /reload-mcp."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

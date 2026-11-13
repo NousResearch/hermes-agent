@@ -1,0 +1,26 @@
+name: agentpay-guard
+title: AgentPay Guard
+repo: https://github.com/tmdry4530/hermes-guard-plugin
+sha: 84c44e53ec43d3bac2c1a43d6a21aea0d58d4051
+subdir: ""
+version: "0.3.0"
+description: "Deterministic spend and risk policy for any Hermes tool call. A pre_tool_call hook reads the tool name and arguments, finds amount, currency and payee, and applies per-call and daily limits, a payee allowlist, a currency list and an approval threshold. Hard-limit violations are blocked; over-threshold calls go to Hermes's own approval prompt (escalate mode) or are blocked into a local approval queue that only a person can release with /guard approve <id> as a single-use, exact-call, expiring grant with limits rechecked (strict mode). Executed spend is recorded in a local ledger from post_tool_call; /guard status|queue|ledger|policy|kill and a read-only guard_check dry-run tool. Disclosure — no network calls, no shell commands, no subprocesses, no background process, no credentials, no Python dependencies; writes queue, ledger, grants and kill switch only under <HERMES_HOME>/plugin-data/agentpay-guard (argument hashes, not raw arguments); reads an optional policy.json from that same directory."
+maintainer: tmdry4530
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/tmdry4530/hermes-guard-plugin/blob/84c44e53ec43d3bac2c1a43d6a21aea0d58d4051/README.md
+readme: true
+platforms: []
+known_issues:
+  - "Classification is heuristic: a value-moving tool with an unrelated name and no recognized amount field is not treated as spending."
+  - "In escalate mode, Hermes decides escalations; with --yolo or approvals.mode smart Hermes may approve without a person. Use mode: strict for person-only grants."
+capabilities:
+  provides_tools:
+    - guard_check
+  provides_hooks:
+    - pre_tool_call
+    - post_tool_call
+    - post_approval_response
+  provides_middleware: []
+  requires_env: []

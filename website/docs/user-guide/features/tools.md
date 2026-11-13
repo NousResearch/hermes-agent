@@ -302,7 +302,7 @@ it does not keep unfinished children alive after a timeout or crash.
 
 ## Sudo Support
 
-On an interactive parent session, supported sudo commands use the masked password prompt (cached for the session). This includes literal absolute or quoted executable paths and `env` prefixes with ordinary options and assignments, such as `env -u UNUSED /usr/bin/sudo id`. Passwordless sudo does not need a prompt. You can also configure `SUDO_PASSWORD` in your profile's `.env` file on the agent machine.
+On an interactive parent session, supported sudo commands use the masked password prompt (cached for the session). This includes literal absolute or quoted executable paths and `env` prefixes with ordinary options and assignments, such as `env -u UNUSED /usr/bin/sudo id`. Passwordless sudo does not need a prompt. You can also configure `SUDO_PASSWORD` in your profile's `.env` file on the agent machine. It is sent to whichever terminal backend runs the command, so set it to the sudo password of that backend (the remote host for SSH, the container user for Docker), not to a password that belongs to a different machine.
 
 Shell payloads such as `bash -c 'sudo id'`, `env -S` split strings, dynamic executable paths, and unrecognized `env` options are not interpreted by the password rewriter. Invoke sudo directly when you need the interactive prompt. This handling does not change approval rules or the guard against agent-supplied sudo passwords.
 

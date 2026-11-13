@@ -140,31 +140,58 @@ class _ErrorCallback:
         return await self.__wrapped__(update, context)
 
 
+def _topic_lane(message):
+    """Forum/DM topic id that gets its own FIFO lane, else None (the chat's shared lane).
+
+    Only real topic messages split off: a plain group reply's ``message_thread_id`` is a reply
+    anchor, not a topic, and a ``forum_topic_created`` service message stays on the chat lane so
+    the thread-less opener that follows it is still processed after it (telegram_topic_routing).
+    """
+    if getattr(message, "is_topic_message", False) is not True or getattr(message, "forum_topic_created", None):
+        return None
+    return getattr(message, "message_thread_id", None)
+
+
 class PerChatUpdateProcessor(SimpleUpdateProcessor):
-    """Concurrent across chats, FIFO within one chat.
+    """Concurrent across chats and Telegram topics, FIFO within one topic.
 
     PTB's default processor (max_concurrent_updates=1) awaits every update inline, so one slow
     handler deafens all chats; plain concurrency fixes that but lets a chat's second update finish
-    before its first. Each update here waits for the previous update of the same chat; updates
+    before its first. Each update here waits for the previous update in the same ``(chat, thread)`` lane; updates
     without a chat (inline queries) run unchained.
     """
 
-    __slots__ = ("_tails",)
+    __slots__ = ("_adopt", "_tails")
 
-    def __init__(self, max_concurrent_updates: int):
+    def __init__(self, max_concurrent_updates: int, adopt=None):
         super().__init__(max_concurrent_updates)
-        self._tails: dict[int, asyncio.Future] = {}
+        self._tails: dict[tuple, asyncio.Future] = {}
+        # The adapter's _admit_topic_follow: called here, in arrival order, it is the single decision
+        # on which client-created DM topic a thread-less opener belongs to (telegram_topic_routing).
+        self._adopt = adopt
+
+    def _lane_keys(self, chat, message) -> tuple:
+        """FIFO lanes this update waits on and holds. A thread-less private-chat message adopted into a
+        just-created topic holds the chat lane (behind the creation service message) AND that topic's
+        lane, so a later explicitly-threaded message cannot overtake a slow opener."""
+        lane = _topic_lane(message)
+        adopted = self._adopt(message) if self._adopt is not None and message is not None else None
+        if adopted is not None:
+            return ((chat.id, None), (chat.id, adopted))
+        return ((chat.id, None if lane is None else str(lane)),)
 
     async def do_process_update(self, update, coroutine) -> None:
         chat = getattr(update, "effective_chat", None)
         if chat is None:
             await coroutine
             return
-        prev = self._tails.get(chat.id)
+        keys = self._lane_keys(chat, getattr(update, "effective_message", None))
+        prevs = [prev for prev in (self._tails.get(key) for key in keys) if prev is not None]
         done = asyncio.get_running_loop().create_future()
-        self._tails[chat.id] = done
+        for key in keys:
+            self._tails[key] = done
         try:
-            if prev is not None:
+            for prev in prevs:
                 # shield: cancelling this waiter must not cancel the predecessor's tail future.
                 try:
                     await asyncio.shield(prev)
@@ -175,27 +202,33 @@ class PerChatUpdateProcessor(SimpleUpdateProcessor):
                     raise
             await coroutine
         finally:
-            def release(_prev=None):
-                done.set_result(None)
-                if self._tails.get(chat.id) is done:
-                    del self._tails[chat.id]
+            waiting = [prev for prev in prevs if not prev.done()]
 
-            # A cancelled waiter hands its turn on only once its predecessor finishes (per-chat FIFO).
-            if prev is None or prev.done():
+            def release(_prev=None):
+                if done.done() or any(not prev.done() for prev in waiting):
+                    return
+                done.set_result(None)
+                for key in keys:
+                    if self._tails.get(key) is done:
+                        del self._tails[key]
+
+            # A cancelled waiter hands its turn on only once its predecessors finish (per-lane FIFO).
+            if not waiting:
                 release()
-            else:
+            for prev in waiting:
                 prev.add_done_callback(release)
 
 
-def build_update_processor(extra, name: str) -> PerChatUpdateProcessor:
+def build_update_processor(adapter) -> PerChatUpdateProcessor:
     """``platforms.telegram.extra.max_concurrent_updates`` (default 32); bad values warn and fall back."""
-    raw = extra.get("max_concurrent_updates", DEFAULT_MAX_CONCURRENT_UPDATES)
+    name = adapter.name
+    raw = adapter.config.extra.get("max_concurrent_updates", DEFAULT_MAX_CONCURRENT_UPDATES)
     limit = coerce_port(raw, 0)
     if limit < 1:
         logger.warning("[%s] Invalid max_concurrent_updates=%r; using %d",
                        name, raw, DEFAULT_MAX_CONCURRENT_UPDATES)
         limit = DEFAULT_MAX_CONCURRENT_UPDATES
-    return PerChatUpdateProcessor(limit)
+    return PerChatUpdateProcessor(limit, adopt=adapter._admit_topic_follow)
 
 
 class TelegramApplication(Application):

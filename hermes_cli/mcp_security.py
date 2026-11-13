@@ -114,10 +114,8 @@ def _is_env_assignment(token: str) -> bool:
     """True for ``NAME=value`` tokens that ``env`` accepts before the command."""
     if not token or token.startswith("-") or "=" not in token:
         return False
-    name, _sep, _val = token.partition("=")
-    if not name:
-        return False
-    return name.replace("_", "").isalnum()
+    # env treats every pre-command word containing "=" as an assignment.
+    return not token.startswith("=")
 
 _WRAPPER_OPTIONS_STR_ARG = {
     "sudo": {
@@ -158,52 +156,105 @@ def _wrapper_option_takes_operand(wrapper: str, option: str, operand: str) -> bo
         return True
     return False
 
+def _option_has_operand(wrapper: str, option: str) -> bool:
+    return (
+        option in _WRAPPER_OPTIONS_STR_ARG.get(wrapper, ())
+        or option in _WRAPPER_OPTIONS_NUM_ARG.get(wrapper, ())
+        or (wrapper == "ionice" and option in _IONICE_CLASS_OPTIONS)
+    )
+
+def _is_command_word(token: str) -> bool:
+    base = _token_basename(token)
+    return base in _SHELL_INTERPRETERS or base in _EXEC_WRAPPERS
+
+_NEEDS_SHLEX = re.compile(r"[\\'\"#]")
+
+def _split_env_string(argv: list[str], idx: int, consumed: int, value: str) -> bool:
+    """Replace env's ``-S`` option token(s) with the split string's words."""
+    if not _NEEDS_SHLEX.search(value):
+        argv[idx:idx + consumed] = value.split()  # same words, without shlex's per-char cost
+        return True
+    try:
+        argv[idx:idx + consumed] = shlex.split(value)
+    except ValueError:
+        return False  # env itself refuses an unterminated split string
+    return True
+
+def _skip_option(argv: list[str], idx: int, wrapper: str) -> int | None:
+    """Consume the option at ``argv[idx]``; return the next index, None = argv ends.
+
+    Short-option bundles are walked like getopt: an operand-taking letter
+    takes the rest of the token, or the next token when it is last, so
+    ``sudo -Eu root`` and ``env -iS 'bash -c ...'`` peel like ``-u root`` / ``-S``.
+    """
+    token = argv[idx]
+    if token.startswith("--"):
+        option, has_value, value = token.partition("=")
+        if wrapper == "env" and option == "--split-string":
+            if has_value:
+                return idx if _split_env_string(argv, idx, 1, value) else None
+            if idx + 1 < len(argv):
+                return idx if _split_env_string(argv, idx, 2, argv[idx + 1]) else None
+        if not has_value and idx + 1 < len(argv) and _wrapper_option_takes_operand(wrapper, option, argv[idx + 1]):
+            return idx + 2
+        return idx + 1
+    for pos in range(1, len(token)):
+        option = "-" + token[pos]
+        if not _option_has_operand(wrapper, option):
+            continue
+        rest = token[pos + 1:]
+        if rest:
+            value, consumed = rest, 1
+        elif idx + 1 < len(argv) and _wrapper_option_takes_operand(wrapper, option, argv[idx + 1]):
+            value, consumed = argv[idx + 1], 2
+        else:
+            return idx + 1
+        if wrapper == "env" and option == "-S":
+            return idx if _split_env_string(argv, idx, consumed, value) else None
+        return idx + consumed
+    return idx + 1
+
+# Wrappers whose first bare word is a positional operand, not the command.
+# GNU timeout parses DURATION with xstrtod (inf, .5, 1e3 ...), so any first
+# bare word is the duration; a wrong guess only shifts the peel by one token.
+_POSITIONAL_OPERAND = {
+    "timeout": None,
+    "timelimit": r"\d+(?:\.\d+)?",
+    "chrt": r"\d+",
+    "taskset": r"(?:0x)?[0-9a-fA-F]+",
+}
+
 def _skip_wrapper_args(argv: list[str], idx: int, wrapper: str) -> int:
     """Consume wrapper operands by arity, expanding env's command-bearing -S."""
+    after_option = False  # previous token was a flag that took no operand
     while idx < len(argv):
         token = argv[idx]
         if token == "--":
             return idx + 1
         if token in {"--help", "--version"}:
             return len(argv)
-        if wrapper == "env":
-            if _is_env_assignment(token) or token == "-":
-                idx += 1
-                continue
-            split_value = None
-            consumed = 1
-            if token in {"-S", "--split-string"} and idx + 1 < len(argv):
-                split_value, consumed = argv[idx + 1], 2
-            elif token.startswith("--split-string="):
-                split_value = token.partition("=")[2]
-            elif token.startswith("-S") and len(token) > 2:
-                split_value = token[2:]
-            if split_value is not None:
-                try:
-                    expanded = shlex.split(split_value)
-                except ValueError:
-                    return len(argv)  # env itself refuses an unterminated split string
-                argv[idx:idx + consumed] = expanded
-                continue
-        if token.startswith("-") and token != "-":
-            option = token.partition("=")[0]
-            idx += 1
-            if "=" not in token and idx < len(argv) and _wrapper_option_takes_operand(wrapper, option, argv[idx]):
-                idx += 1
+        if wrapper == "env" and (_is_env_assignment(token) or token == "-"):
+            idx, after_option = idx + 1, False
             continue
-        # Only wrappers with a positional operand consume it. Nice/ionice
-        # adjustments are option operands; their first bare word is a command.
-        positional = {
-            "timeout": r"\d+(?:\.\d+)?(?:[smhd]|ms)?",
-            "timelimit": r"\d+(?:\.\d+)?",
-            "chrt": r"\d+",
-            "taskset": r"(?:0x)?[0-9a-fA-F]+",
-        }.get(wrapper)
-        if positional and re.fullmatch(positional, token):
+        if token.startswith("-") and token != "-":
+            nxt = _skip_option(argv, idx, wrapper)
+            if nxt is None:
+                return len(argv)
+            # Only a lone flag may have left an operand of unknown arity behind.
+            after_option = nxt == idx + 1
+            idx = nxt
+            continue
+        if wrapper in _POSITIONAL_OPERAND:
+            pattern = _POSITIONAL_OPERAND[wrapper]
+            if pattern is None or re.fullmatch(pattern, token):
+                return idx + 1
+        # An option of unknown arity (``time -f FMT``, ``env -P DIR``) left its
+        # operand here; skip it when a shell or wrapper follows rather than
+        # treating the operand as the wrapped command.
+        if after_option and idx + 1 < len(argv) and _is_command_word(argv[idx + 1]):
             return idx + 1
         return idx
     return idx
-
 
 def _shell_and_script(command: Any, args: Any) -> tuple[str | None, str]:
     """Locate a shell interpreter in the entry argv after peeling wrappers.

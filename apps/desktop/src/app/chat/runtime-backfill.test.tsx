@@ -4,11 +4,15 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { stubThreadEnvironment } from '@/components/assistant-ui/test-utils'
 import { type TranscriptWindowValue, useTranscriptWindow } from '@/components/assistant-ui/thread/transcript-window'
+import { setWorkspaceScope } from '@/components/pane-shell/workspace-scope'
 import type * as HermesApi from '@/hermes'
 import type { ChatMessage } from '@/lib/chat-messages'
+import { $activeGatewayProfile } from '@/store/profile'
+import { $connection, _resetSessionOwnerHintsForTests, setSessionOwnerHint } from '@/store/session'
 import type * as SessionStates from '@/store/session-states'
 import { $transcriptTailBySessionId, recordTranscriptTail } from '@/store/transcript-tail'
 
+import { ComposerScopeProvider, MAIN_COMPOSER_SCOPE, useComposerScope } from './composer/scope'
 import { PRIMARY_SESSION_VIEW, SessionViewProvider } from './session-view'
 import { _resetTranscriptBackfillForTests } from './transcript-backfill'
 
@@ -29,9 +33,104 @@ stubThreadEnvironment()
 const message = (id: string): ChatMessage => ({ id, role: 'user', parts: [{ type: 'text', text: id }] })
 
 beforeEach(() => {
+  _resetSessionOwnerHintsForTests({ storage: true })
+  $connection.set({ mode: 'local' } as NonNullable<ReturnType<typeof $connection.get>>)
+  $activeGatewayProfile.set('default')
+  setWorkspaceScope('sessions')
   $transcriptTailBySessionId.set({})
   _resetTranscriptBackfillForTests()
   vi.mocked(getOlderSessionMessages).mockReset()
+})
+
+it('publishes the explicit workspace owner when the same stored id exists on two gateways', () => {
+  const view = {
+    ...PRIMARY_SESSION_VIEW,
+    $messages: atom<ChatMessage[]>([]),
+    $runtimeId: atom<string | null>('runtime'),
+    $storedId: atom<string | null>('stored-remote')
+  }
+
+  setSessionOwnerHint('stored-remote', { connectionId: 'local', mode: 'local', profile: 'default' })
+
+  const remoteOwner = {
+    connectionId: 'remote',
+    mode: 'remote' as const,
+    profile: 'writer',
+    targetProfile: 'catalog-writer'
+  }
+
+  setSessionOwnerHint('stored-remote', remoteOwner)
+  setWorkspaceScope('bots', 'remote::writer', { kind: 'route', route: remoteOwner })
+  let owner: { connectionId?: null | string; profile?: null | string } = {}
+
+  function ObserveOwner() {
+    const scope = useComposerScope()
+    owner = { connectionId: scope.connectionId, profile: scope.profile }
+
+    return null
+  }
+
+  render(
+    <SessionViewProvider value={view}>
+      <ChatRuntimeBoundary
+        busy={false}
+        onCancel={() => {}}
+        onEdit={async () => {}}
+        onReload={async () => {}}
+        onThreadMessagesChange={() => {}}
+        suppressMessages={false}
+      >
+        <ObserveOwner />
+      </ChatRuntimeBoundary>
+    </SessionViewProvider>
+  )
+
+  expect(owner).toEqual({ connectionId: 'remote', profile: 'catalog-writer' })
+})
+
+it('keeps a retained tile owner when its stored id also exists in the active Bot workspace', () => {
+  const remoteOwner = { connectionId: 'remote', mode: 'remote' as const, profile: 'writer' }
+  const localOwner = { connectionId: 'local', mode: 'local' as const, profile: 'default' }
+
+  setWorkspaceScope('bots', 'remote::writer', { kind: 'route', route: remoteOwner })
+  setSessionOwnerHint('stored-local', localOwner)
+  setSessionOwnerHint('stored-local', remoteOwner)
+
+  const view = {
+    ...PRIMARY_SESSION_VIEW,
+    kind: 'tile' as const,
+    $messages: atom<ChatMessage[]>([]),
+    $runtimeId: atom<string | null>('runtime-local'),
+    $storedId: atom<string | null>('stored-local')
+  }
+
+  let owner: { connectionId?: null | string; profile?: null | string } = {}
+
+  function ObserveOwner() {
+    const scope = useComposerScope()
+    owner = { connectionId: scope.connectionId, profile: scope.profile }
+
+    return null
+  }
+
+  render(
+    <ComposerScopeProvider value={{ ...MAIN_COMPOSER_SCOPE, connectionId: 'local', profile: 'default' }}>
+      <SessionViewProvider value={view}>
+        <ChatRuntimeBoundary
+          busy={false}
+          onCancel={() => {}}
+          onEdit={async () => {}}
+          onReload={async () => {}}
+          onThreadMessagesChange={() => {}}
+          suppressMessages={false}
+        >
+          <ObserveOwner />
+        </ChatRuntimeBoundary>
+      </SessionViewProvider>
+    </ComposerScopeProvider>
+  )
+
+  expect(owner).toEqual({ connectionId: 'local', profile: 'default' })
 })
 
 describe('runtime older-page expansion', () => {

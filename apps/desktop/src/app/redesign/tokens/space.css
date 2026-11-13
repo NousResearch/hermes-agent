@@ -36,9 +36,9 @@
      comment naming the class; these two document it. */
   --portal-breakpoint-medium: 640px;
   --portal-breakpoint-wide: 1024px;
-  /* Below wide the chat sidebar and page panels are sheets over the stage: the panel's width, leaving
+  /* Below wide the chat sidebar and page panels are sheets over the stage: the sidebar's width, leaving
      a 56px strip of scrim to tap. */
-  --portal-sheet-width: min(20rem, 100vw - 3.5rem);
+  --portal-sheet-width: min(var(--sessions-pane-width), 100vw - 3.5rem);
   /* The sheet's panel past the rail: the whole sheet on medium (the rail stays in the layout), the
      sheet less the rail on compact (the rail rides the sheet). */
   --portal-sheet-panel-width: calc(var(--portal-sheet-width) - var(--portal-rail-width) + var(--portal-rail-reserve));

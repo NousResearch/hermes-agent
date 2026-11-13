@@ -58,6 +58,8 @@
   --portal-raw-brand-10: color-mix(in srgb, var(--portal-raw-blue) 10%, transparent);
   --portal-raw-brand-12: color-mix(in srgb, var(--portal-raw-blue) 12%, transparent);
   --portal-raw-brand-25: color-mix(in srgb, var(--portal-raw-blue) 25%, transparent);
+  /* The blue under a sidebar agent card (16292:15630). */
+  --portal-raw-brand-30: color-mix(in srgb, var(--portal-raw-blue) 30%, transparent);
   --portal-raw-brand-60: color-mix(in srgb, var(--portal-raw-blue) 60%, transparent);
   /* Danger tints (1038:7836): the tint 8, its hover and pressed steps 14 and 20, the stroke 50. */
   --portal-raw-danger-8: color-mix(in srgb, var(--portal-raw-danger) 8%, transparent);

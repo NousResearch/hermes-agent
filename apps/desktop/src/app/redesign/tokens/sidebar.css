@@ -1,91 +1,157 @@
-/* The chat sidebar (app/chat/sidebar/portal/**): a deliberate variant of the page language. The owner
-   chose Figma's "Variation 1: Flattened gateway/host" (147:7470) for it and it is matched to that frame,
-   so where Variation 1 draws a state differently from the pages (row hover, the open chat's pill,
-   captions, the count pill, keycaps) the sidebar keeps its own named roles here instead of the page
-   roles (DESIGN.md › The chat sidebar is a variant). Change these to change the sidebar alone. */
+/* The chat sidebar (app/chat/sidebar/portal/**), matched to "Prod - Desktop" (Panel 16292:15497,
+   04 · Workspace/Agent; light 16292:25093). Where the sidebar draws a state differently from the pages
+   (row hover, the open chat, captions, the count pill, keycaps, agent cards) it keeps its own named
+   roles here instead of the page roles (DESIGN.md › The chat sidebar is a variant). Change these to
+   change the sidebar alone. */
 :root[data-shell='portal'] {
-  --sessions-pane-width: 20rem;
-  /* Below this the New-session split and the agents' two-line rows start to truncate (sash drags). */
-  --sessions-pane-min-width: 16.25rem;
+  --sessions-pane-width: 21.25rem;
+  /* Below this the New-chat split and the agent cards start to truncate (sash drags); the sash
+     reaches 40px past the default. */
+  --sessions-pane-min-width: 17.5rem;
+  --sessions-pane-max-width: 23.75rem;
   /* Dragging the sash this far under the minimum folds the sidebar away (1054:22350), as ⌘B does; a
      drag that stops short of it rests at the minimum. Classic has no such width, so it never folds. */
   --sessions-pane-collapse-width: calc(var(--sessions-pane-min-width) - 4.5rem);
-  /* The session actions (New session, Search: 1056:7628) and the list sit on the 20px inset, 22px
-     under the panel's top edge; below them the list follows Figma 147:7470: sections padded 12px (the
-     gutter), rows bleeding 8px past the caption. */
-  --portal-sidebar-top: 1.375rem;
-  --portal-sidebar-actions-gap: 0.5rem;
-  --portal-sidebar-inset: 1.25rem;
-  --portal-sidebar-bleed: 0.5rem;
+  /* The header (Top 16292:15498): the wordmark and its caption on a 30px inset, 30px under the
+     panel's top edge, the search button 28px from its end edge; 30px over New chat (its own 20 plus
+     the list's 10px top pad). */
+  --portal-sidebar-head-top: 1.875rem;
+  --portal-sidebar-head-bottom: 1.875rem;
+  --portal-sidebar-head-start: 1.875rem;
+  --portal-sidebar-head-end: 1.75rem;
+  --portal-sidebar-wordmark-size: 1.875rem;
+  --portal-sidebar-wordmark-line: 2.25rem;
+  --portal-sidebar-wordmark-tracking: -1px;
+  --portal-sidebar-wordmark-gap: 0.625rem;
+  /* The list (Centre 16292:15509): section captions and row text on a 32px inset; New chat and row
+     fills bleed 12px past it (the 300px New chat in a 340px panel); 16px between the actions and
+     the first section. */
+  --portal-sidebar-inset: 2rem;
+  --portal-sidebar-bleed: 0.75rem;
   --portal-sidebar-gutter: calc(var(--portal-sidebar-inset) - var(--portal-sidebar-bleed));
+  --portal-sidebar-actions-gap: 1rem;
+  /* A caption sits 10px under what precedes it and 16px over its first row's text; rows are 20px of
+     text 16px apart (36 pitch, 04 · Workspace/Agent); an agent's chats are 40px (16292:15602). */
   --portal-sidebar-row: 2rem;
-  --portal-sidebar-pin-row: 1.875rem;
-  --portal-sidebar-machine-row: 2.5rem;
-  --portal-sidebar-chat-row: 2.125rem;
-  --portal-sidebar-row-gap: 1px;
-  /* Section to section: 12px bottom pad, a 1px slot, 12px top pad (143:6237 → 143:6256). */
-  --portal-sidebar-section-gap: 1.5625rem;
-  /* Captions, meta, tags and ages: Figma's 10px. */
+  --portal-sidebar-pin-row: 2.25rem;
+  --portal-sidebar-machine-row: 2.25rem;
+  --portal-sidebar-chat-row: 2.5rem;
+  --portal-sidebar-row-gap: 0px;
+  --portal-sidebar-section-gap: 0.5rem;
+  --portal-sidebar-label-top: 0.625rem;
+  --portal-sidebar-label-bottom: 0.5rem;
+  /* The 5px leading dot, 12px before the title (16px past its box in Figma's item). */
+  --portal-sidebar-dot: 0.3125rem;
+  --portal-sidebar-dot-gap: 0.75rem;
+  /* Tags, ages and statuses: Figma's Nous/Uppercase, the mono signal font at 10px, 0.6px tracking. */
   --portal-sidebar-caption: 0.625rem;
+  --portal-sidebar-caption-tracking: 0.06em;
+  --portal-sidebar-meta-font: var(--portal-font-mono);
+  /* Section captions: Nous/Metadata, the mono signal font in sentence case (16292:15526); 14px where
+     Figma draws 13, as every 13px UI step (type.css › --portal-type-ui-size). */
+  --portal-sidebar-label-font: var(--portal-font-mono);
+  --portal-sidebar-label-size: var(--portal-type-ui-size);
+  --portal-sidebar-label-line: 1rem;
+  --portal-sidebar-label-glyph: 1rem;
+  /* Row titles: Nous/Compact SemiBold at 20px line (16292:15538). */
+  --portal-sidebar-row-weight: 600;
+  --portal-sidebar-row-line: 1.25rem;
   --portal-sidebar-hover: var(--portal-raw-ink-4);
   --portal-sidebar-press: color-mix(in srgb, var(--ui-base) 7%, transparent);
-  --portal-sidebar-agent-hover: var(--portal-raw-ink-2);
-  /* Session rows (1089:7972): the open chat is a square, full-bleed brand ramp from a 1px brand rule at
-     its leading edge (32% → 14% at the middle → clear at the end) with its title in full ink; a row
-     under the pointer or keyboard focus wears the same ramp and rule in grayscale and keeps its muted
-     title. Ages stay muted in both. Light keeps the ramp's shape at strengths that read on #f2f2f2. */
-  --portal-sidebar-row-selected-start: color-mix(in srgb, var(--portal-raw-blue) 32%, transparent);
-  --portal-sidebar-row-selected-mid: color-mix(in srgb, var(--portal-raw-blue) 14%, transparent);
-  --portal-sidebar-row-selected-rule: var(--portal-raw-blue);
+  /* Rows carry no fill for the open chat (16292:15602): ink tells it, full for the open chat and the
+     flat rows, the floor for an agent's other chats (Figma's .4 fails AA). A row under the pointer
+     takes the hover fill. */
+  --portal-sidebar-row-radius: var(--portal-radius-control);
+  --portal-sidebar-row-ink: var(--ui-text-primary);
+  --portal-sidebar-chat-ink: var(--ui-text-quaternary);
   --portal-sidebar-row-selected-ink: var(--ui-text-primary);
-  --portal-sidebar-row-hover-start: color-mix(in srgb, var(--portal-raw-gray) 22%, transparent);
-  --portal-sidebar-row-hover-mid: color-mix(in srgb, var(--portal-raw-gray) 10%, transparent);
-  --portal-sidebar-row-hover-rule: var(--portal-raw-gray);
-  --portal-sidebar-row-rule-width: 1px;
   --portal-sidebar-card: var(--portal-raw-ink-5);
-  /* The session actions (1056:7628): New session on a light/5 fill, Search on a light/10 rim, both
-     with light/5 keycaps on a light/10 rim; Brand rev light draws dark/2 fills on a dark/5 rim. */
+  /* New chat (16292:15511): 40px, radius 3, light/5 (dark/2 on light), 12px sides, 10px gap, a 16px
+     glyph; rimless light/5 keycaps (16292:15520) in the mono font at 11px, 60% ink. The search
+     button (16292:15507) is a 30px square on the same fill. */
   --portal-sidebar-action: var(--portal-raw-ink-2);
-  --portal-sidebar-action-key: var(--portal-raw-ink-2);
-  --portal-sidebar-action-rim: var(--portal-raw-ink-5);
-  --portal-sidebar-machine-fill: var(--portal-raw-ink-5);
-  --portal-sidebar-machine-head: color-mix(in srgb, var(--ui-base) 7%, transparent);
-  --portal-sidebar-guide: color-mix(in srgb, var(--ui-base) 20%, transparent);
-  /* A settled pinned row's dot wears the row's own ink (Var1 147:7470). */
-  --portal-sidebar-dot: var(--ui-text-secondary);
-  /* Captions at Var1's ~.65 (light: Brand rev's .6, the ladder's floor); tags, subtitles and ages
-     take the floor where Figma's .3-.5 fail AA at 10px; machine names keep Figma's .8. */
+  --portal-sidebar-action-key: var(--portal-raw-ink-5);
+  --portal-sidebar-action-rim: var(--portal-raw-ink-10);
+  --portal-sidebar-action-pad: 0.75rem;
+  --portal-sidebar-action-gap: 0.625rem;
+  --portal-sidebar-action-weight: 500;
+  --portal-sidebar-key-font: var(--portal-font-mono);
+  --portal-sidebar-key-ink: var(--ui-text-tertiary);
+  --portal-sidebar-search-button: var(--portal-row-chrome);
+  /* An open machine is one card (set 16292:15581): radius 12, light/2, 5px in from the rows on each
+     side, its header 16px over and under its name; its agents 6px inside it. */
+  --portal-sidebar-machine-fill: var(--portal-raw-ink-2);
+  --portal-sidebar-machine-radius: 12px;
+  --portal-sidebar-machine-pad: 0.3125rem;
+  --portal-sidebar-machine-head: 3.25rem;
+  --portal-sidebar-machine-ink: color-mix(in srgb, var(--ui-base) 80%, transparent);
+  /* Agent cards (16292:15592): radius 9, 6px leading pad (12 to the name past the 32px tile), 16px
+     trailing, 12px over and under, a soft drop shadow. The open agent is the brand slab, white .10 /
+     black .40 / blue (#2E2EA8); the others white .10 / black .60 / blue .30 (16292:15630). Both carry
+     the CRT texture at 5% colour-dodge. Light draws both as blue .10 on white .80 under a 1px brand
+     rule, the open one solid brand, the others brand .10 (16292:25188, 16292:25226), the texture at 90%. */
+  --portal-sidebar-agent-inset: 0.375rem;
+  --portal-sidebar-agent-radius: 9px;
+  --portal-sidebar-agent-pad-block: 0.75rem;
+  --portal-sidebar-agent-pad-start: 0.375rem;
+  --portal-sidebar-agent-pad-end: 1rem;
+  --portal-sidebar-agent-gap: 0.75rem;
+  --portal-sidebar-agent-avatar: 2rem;
+  --portal-sidebar-agent-avatar-radius: var(--portal-radius-surface);
+  --portal-sidebar-agent-shadow: 0 1px 4px var(--portal-raw-shadow-20);
+  --portal-sidebar-agent-fill: color-mix(
+    in srgb,
+    var(--portal-raw-pure-white) 10%,
+    color-mix(in srgb, var(--portal-raw-black) 60%, var(--portal-raw-brand-30))
+  );
+  --portal-sidebar-agent-fill-open: color-mix(
+    in srgb,
+    var(--portal-raw-pure-white) 10%,
+    color-mix(in srgb, var(--portal-raw-black) 40%, var(--portal-raw-blue))
+  );
+  --portal-sidebar-agent-rule: transparent;
+  --portal-sidebar-agent-rule-open: transparent;
+  --portal-sidebar-agent-hover: var(--portal-raw-ink-4);
+  --portal-sidebar-agent-texture-opacity: 0.05;
+  --portal-sidebar-agent-subtitle: var(--ui-text-quaternary);
+  /* On the open agent's brand slab the floor needs .7 to hold 4.5:1. */
+  --portal-sidebar-agent-subtitle-open: var(--ui-text-secondary);
+  /* An agent's chats (list 16292:15601): 6px over and under, the dot 30px into the card, the title
+     22px after it, the age 20px from the card's end. */
+  --portal-sidebar-chats-pad: 0.375rem;
+  --portal-sidebar-chat-start: 1.875rem;
+  --portal-sidebar-chat-end: 1.25rem;
+  --portal-sidebar-chat-dot-gap: 1.375rem;
+  --portal-sidebar-chat-title: calc(
+    var(--portal-sidebar-chat-start) + var(--portal-sidebar-dot) + var(--portal-sidebar-chat-dot-gap)
+  );
+  /* A settled row's dot: the row's ink, quieter than its title; the open chat's in full ink. */
+  --portal-sidebar-dot-ink: var(--ui-text-quaternary);
+  /* Captions, tags, subtitles and ages take the ladder's floor where Figma's .3-.4 fail AA. */
   --portal-sidebar-label: var(--ui-text-quaternary);
   --portal-sidebar-meta: var(--ui-text-quaternary);
-  /* On the expanded machine's 12% header bar the floor needs .55 to hold 4.5:1. */
-  --portal-sidebar-head-meta: color-mix(in srgb, var(--ui-base) 70%, transparent);
-  --portal-sidebar-machine-ink: color-mix(in srgb, var(--ui-base) 80%, transparent);
   --portal-sidebar-green: var(--portal-status-online);
   --portal-sidebar-orange: var(--portal-status-pending);
-  /* Section captions track at the chip's 0.04em, weight 500 (147:7470). */
-  --portal-sidebar-caption-tracking: 0.04em;
   /* The Agents count: a brand-tinted pill (147:6260), lighter on light. */
   --portal-sidebar-count-fill: var(--portal-raw-brand-25);
   --portal-sidebar-count-radius: 10px;
 }
 
 :root[data-shell='portal']:not(.dark) {
-  --portal-sidebar-row-selected-start: color-mix(in srgb, var(--portal-raw-blue) 16%, transparent);
-  --portal-sidebar-row-selected-mid: color-mix(in srgb, var(--portal-raw-blue) 7%, transparent);
-  --portal-sidebar-row-hover-start: var(--portal-raw-ink-8);
-  --portal-sidebar-row-hover-mid: var(--portal-raw-ink-3);
-  --portal-sidebar-row-hover-rule: var(--portal-raw-ink-40);
-  /* Brand rev light steps the machine card in black 2% / 4%: a quiet card with a header a shade
-     deeper, never a grey slab. */
-  --portal-sidebar-machine-fill: var(--portal-raw-ink-2);
-  --portal-sidebar-machine-head: var(--portal-raw-ink-4);
+  --portal-sidebar-agent-fill: color-mix(
+    in srgb,
+    var(--portal-raw-blue) 10%,
+    color-mix(in srgb, var(--portal-raw-pure-white) 80%, transparent)
+  );
+  --portal-sidebar-agent-fill-open: var(--portal-sidebar-agent-fill);
+  --portal-sidebar-agent-rule: var(--portal-raw-brand-10);
+  --portal-sidebar-agent-rule-open: var(--portal-raw-blue);
+  --portal-sidebar-agent-shadow: 0 0 transparent;
+  --portal-sidebar-agent-texture-opacity: 0.9;
+  --portal-sidebar-agent-subtitle-open: var(--ui-text-quaternary);
   --portal-sidebar-count-fill: var(--portal-raw-brand-10);
 }
 
 :root.dark[data-shell='portal'] {
   --portal-sidebar-action: var(--portal-raw-ink-5);
-  --portal-sidebar-action-key: var(--portal-raw-ink-5);
-  --portal-sidebar-action-rim: var(--portal-raw-ink-10);
-  --portal-sidebar-label: color-mix(in srgb, var(--ui-base) 65%, transparent);
-  --portal-sidebar-head-meta: color-mix(in srgb, var(--ui-base) 55%, transparent);
 }

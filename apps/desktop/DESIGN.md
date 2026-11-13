@@ -302,44 +302,46 @@ in both LTR and RTL layouts.
 Checked switches use the brand-blue track and light thumb across settings
 and the capability catalog; unchecked tracks are neutral 14% fills.
 
-The redesigned chat sidebar has no header of its own (Figma 906:19396, "Polish" 1040:17965): the
-brand badge heads the global rail instead, at the window top on every destination (20px down, 40×56;
+The brand badge heads the global rail, at the window top on every destination (20px down, 40×56;
 below the band where macOS traffic lights sit in the rail column, `data-portal-window-lights`), over
-40px destinations on a 55px pitch; the rail never moves between states. The sidebar opens with the
-session actions (1056:7628): New session (its agent picker and shortcut keycaps) and a rimmed Search
-row with the session-search shortcut's keycaps (hidden on touch, where the field takes the row). The
-open destination's rail button folds its panel and brings it back: Chats folds the chat sidebar
+40px destinations on a 55px pitch; the rail never moves between states. The redesigned chat sidebar
+(340px, "Prod - Desktop" Panel 16292:15497) opens with its header (Top 16292:15498): the "Hermes"
+wordmark in Oswald Light 30 over a mono "// NOUS RESEARCH" caption (brand marks, never translated),
+and at its end a 30px search button. Search lives behind that button: it brings out a rimmed field
+under New chat with the session-search shortcut's keycaps (hidden on touch), and the shortcut or the
+command palette bring it out too; Escape on an empty field or the button again puts it away and ends
+the search. New chat (16292:15511) is a 40px radius-3 slab with rimless mono keycaps and keeps its
+agent picker at the end. The open destination's rail button folds its panel and brings it back: Chats folds the chat sidebar
 ("Hide chats" / "Show chats", `aria-expanded`), Agents, Schedules and Settings their page panel
 ("Hide panel" / "Show panel"); it stays the open destination either way, and ⌘B does the same. Picking
 a destination with a panel from elsewhere shows it whole; a destination without one leaves a folded
 panel alone. Page panels carry no fold button of their own. While a panel is folded on a wide window,
 Simple mode brings it back from one floating 44×40 button at the stage's top-leading corner, under the
 band (1061:7816, `app/shell/panel-reveal.tsx`), and Advanced from the band's sidebar button; below wide
-the band's button is the sheet's menu in both. Dragging the sidebar's sash 72px under its 260px minimum
+the band's button is the sheet's menu in both. Dragging the sidebar's sash 72px under its 280px minimum
 (`--sessions-pane-collapse-width`) folds it live as the pointer crosses and on release, writing no
 width, so it returns at the width it had; a drag that stops short rests at the minimum. Classic defines
 no fold width, so its sash never folds.
 
-Below the session actions, the redesigned sidebar follows Figma 147:7470
-("Variation 1: Flattened gateway/host"): sections under 10px uppercase captions
-separated by whitespace (Agents carries a brand count badge), pinned rows of 30px
-with a 7px leading dot (row ink at rest, brand for the open chat or unread news, the
-status tones while a turn runs or waits), machines as 40px rows (name, inline
-organisation tag, status dot and label at the end), an expanded machine as one 5%
-container under a 7% header bar, agents as a 20px solid tile in the agent's snapped
-Figma primary (`lib/portal-profile-color.ts`) over a name and a second line (roster
-description, else the chat count), and an agent's chats on a 34px pitch under a 1px
-guide, a live chat's mark after its age on the age's own line (centred on its x-height). An agent's
-card lists its three most recent chats (plus the open one and any running or unread)
-over a "Show all (N)" / "Show less" row remembered per agent; search lists every match. The open
-machine's header bar sticks to the top of the list while its card scrolls under it. Session rows
-(pinned, under an agent, search results, group chats; 1089:7972) are square and full bleed: the open
-chat is a brand ramp from a 1px brand rule at its leading edge (32% → 14% at the middle → clear),
-its title in full ink and its leading dot in that ink; a row under the pointer or keyboard focus
-wears the same ramp and rule in grayscale with its title still muted; ages stay muted, and the ramp
-clears before the age, status mark and actions. Under an agent the rule stands on the guide. Light
-keeps the ramp's shape at lighter strengths (`tokens/sidebar.css` `--portal-sidebar-row-*`). Machine
-rows keep a 4% hover fill (2% on agents). A chat row resolves the click and its title is the one focusable button, as in classic, so
+Below New chat the sidebar follows the same panel (Centre 16292:15509): sections under sentence-case
+mono captions with the disclosure chevron right after the label (Agents keeps its brand count badge at
+the end), separated by whitespace only, on a 32px text inset with row fills bleeding 12px past it.
+Pinned and group-chat rows are 20px of SemiBold title on a 36px pitch after a 5px leading dot (row ink
+at rest, full ink for the open chat, brand for unread news, the status tones while a turn runs or
+waits), their tags, ages and statuses in the mono font, 10px uppercase. Machines are rows like them,
+their dot in the machine's status tone and the status label at the end; an open machine is one radius-12
+card at 2% ink (set 16292:15581) whose header sticks to the top of the list while its agents scroll
+under it. Agents are cards inside it (16292:15592): radius 9, the agent's 32px colour tile (in its
+snapped Figma primary, `lib/portal-profile-color.ts`; Figma's character avatars are not adopted) over
+the name and a mono second line (roster description, else the chat count), the caret at the end and the
+CRT texture dodged into the fill. The open agent is the brand slab (white .10 / black .40 / blue), the
+others a navy card; light draws both as a pale brand card under a 1px brand rule, solid for the open
+one. An agent's chats are 40px rows across the machine card with the dot 30px in; no fill marks the
+open chat, its title and dot take full ink while the agent's other chats sit at the ladder's floor.
+An agent's card lists its three most recent chats (plus the open one and any running or unread)
+over a "Show all (N)" / "Show less" row remembered per agent; search lists every match. A row under
+the pointer or keyboard focus takes a 4% fill. Figma's "Recent" list is not built: it would repeat the
+chats the agent cards already list. A chat row resolves the click and its title is the one focusable button, as in classic, so
 plugin row decorations (`sessionRow.leading` before the title, `.trailing` before the age) and an
 agent card's `sidebar.profileGroup.header` contributions sit beside that button, never in it. Row and
 agent actions (ellipsis, caret, kebab) are bare glyphs that appear on hover, keyboard
@@ -613,6 +615,7 @@ The tables below are generated from the CSS; do not edit them by hand.
 | `--portal-raw-brand-10` | `color-mix(in srgb, var(--portal-raw-blue) 10%, transparent)` | ″ |  |
 | `--portal-raw-brand-12` | `color-mix(in srgb, var(--portal-raw-blue) 12%, transparent)` | ″ |  |
 | `--portal-raw-brand-25` | `color-mix(in srgb, var(--portal-raw-blue) 25%, transparent)` | ″ |  |
+| `--portal-raw-brand-30` | `color-mix(in srgb, var(--portal-raw-blue) 30%, transparent)` | ″ | The blue under a sidebar agent card (16292:15630). |
 | `--portal-raw-brand-60` | `color-mix(in srgb, var(--portal-raw-blue) 60%, transparent)` | ″ |  |
 | `--portal-raw-danger-8` | `color-mix(in srgb, var(--portal-raw-danger) 8%, transparent)` | ″ | Danger tints (1038:7836): the tint 8, its hover and pressed steps 14 and 20, the stroke 50. |
 | `--portal-raw-danger-14` | `color-mix(in srgb, var(--portal-raw-danger) 14%, transparent)` | ″ |  |
@@ -744,7 +747,7 @@ The tables below are generated from the CSS; do not edit them by hand.
 | `--portal-panel-reveal-glyph` | `1.125rem` | ″ |  |
 | `--portal-breakpoint-medium` | `640px` | ″ | The responsive model (app/redesign/breakpoints.ts, DESIGN.md › Responsive): compact below the medium breakpoint, medium below the wide one, wide from there. A custom property cannot feed a media query, so every redesign query repeats the literal (max-width: 639.98px / 1023.98px) with a comment naming the class; these two document it. |
 | `--portal-breakpoint-wide` | `1024px` | ″ |  |
-| `--portal-sheet-width` | `min(20rem, 100vw - 3.5rem)` | ″ | Below wide the chat sidebar and page panels are sheets over the stage: the panel's width, leaving a 56px strip of scrim to tap. |
+| `--portal-sheet-width` | `min(var(--sessions-pane-width), 100vw - 3.5rem)` | ″ | Below wide the chat sidebar and page panels are sheets over the stage: the sidebar's width, leaving a 56px strip of scrim to tap. |
 | `--portal-sheet-panel-width` | `calc(var(--portal-sheet-width) - var(--portal-rail-width) + var(--portal-rail-reserve))` | ″ | The sheet's panel past the rail: the whole sheet on medium (the rail stays in the layout), the sheet less the rail on compact (the rail rides the sheet). |
 | `--portal-sheet-panel-max-width` | `calc(100vw - 3.5rem - var(--portal-rail-width))` | ″ | The widest a sheet's panel may be: from the rail's edge to the scrim strip. A plugin pane's sheet keeps the width the pane declares, up to this. |
 | `--portal-touch-target` | `2.75rem` | ″ | The smallest hit area on a coarse pointer (WCAG 2.5.5); a control's visual may stay smaller. |
@@ -873,47 +876,89 @@ The tables below are generated from the CSS; do not edit them by hand.
 
 | Token | Dark | Light | Note |
 |---|---|---|---|
-| `--sessions-pane-width` | `20rem` | ″ |  |
-| `--sessions-pane-min-width` | `16.25rem` | ″ | Below this the New-session split and the agents' two-line rows start to truncate (sash drags). |
+| `--sessions-pane-width` | `21.25rem` | ″ |  |
+| `--sessions-pane-min-width` | `17.5rem` | ″ | Below this the New-chat split and the agent cards start to truncate (sash drags); the sash reaches 40px past the default. |
+| `--sessions-pane-max-width` | `23.75rem` | ″ |  |
 | `--sessions-pane-collapse-width` | `calc(var(--sessions-pane-min-width) - 4.5rem)` | ″ | Dragging the sash this far under the minimum folds the sidebar away (1054:22350), as ⌘B does; a drag that stops short of it rests at the minimum. Classic has no such width, so it never folds. |
-| `--portal-sidebar-top` | `1.375rem` | ″ | The session actions (New session, Search: 1056:7628) and the list sit on the 20px inset, 22px under the panel's top edge; below them the list follows Figma 147:7470: sections padded 12px (the gutter), rows bleeding 8px past the caption. |
-| `--portal-sidebar-actions-gap` | `0.5rem` | ″ |  |
-| `--portal-sidebar-inset` | `1.25rem` | ″ |  |
-| `--portal-sidebar-bleed` | `0.5rem` | ″ |  |
+| `--portal-sidebar-head-top` | `1.875rem` | ″ | The header (Top 16292:15498): the wordmark and its caption on a 30px inset, 30px under the panel's top edge, the search button 28px from its end edge; 30px over New chat (its own 20 plus the list's 10px top pad). |
+| `--portal-sidebar-head-bottom` | `1.875rem` | ″ |  |
+| `--portal-sidebar-head-start` | `1.875rem` | ″ |  |
+| `--portal-sidebar-head-end` | `1.75rem` | ″ |  |
+| `--portal-sidebar-wordmark-size` | `1.875rem` | ″ |  |
+| `--portal-sidebar-wordmark-line` | `2.25rem` | ″ |  |
+| `--portal-sidebar-wordmark-tracking` | `-1px` | ″ |  |
+| `--portal-sidebar-wordmark-gap` | `0.625rem` | ″ |  |
+| `--portal-sidebar-inset` | `2rem` | ″ | The list (Centre 16292:15509): section captions and row text on a 32px inset; New chat and row fills bleed 12px past it (the 300px New chat in a 340px panel); 16px between the actions and the first section. |
+| `--portal-sidebar-bleed` | `0.75rem` | ″ |  |
 | `--portal-sidebar-gutter` | `calc(var(--portal-sidebar-inset) - var(--portal-sidebar-bleed))` | ″ |  |
-| `--portal-sidebar-row` | `2rem` | ″ |  |
-| `--portal-sidebar-pin-row` | `1.875rem` | ″ |  |
-| `--portal-sidebar-machine-row` | `2.5rem` | ″ |  |
-| `--portal-sidebar-chat-row` | `2.125rem` | ″ |  |
-| `--portal-sidebar-row-gap` | `1px` | ″ |  |
-| `--portal-sidebar-section-gap` | `1.5625rem` | ″ | Section to section: 12px bottom pad, a 1px slot, 12px top pad (143:6237 → 143:6256). |
-| `--portal-sidebar-caption` | `0.625rem` | ″ | Captions, meta, tags and ages: Figma's 10px. |
+| `--portal-sidebar-actions-gap` | `1rem` | ″ |  |
+| `--portal-sidebar-row` | `2rem` | ″ | A caption sits 10px under what precedes it and 16px over its first row's text; rows are 20px of text 16px apart (36 pitch, 04 · Workspace/Agent); an agent's chats are 40px (16292:15602). |
+| `--portal-sidebar-pin-row` | `2.25rem` | ″ |  |
+| `--portal-sidebar-machine-row` | `2.25rem` | ″ |  |
+| `--portal-sidebar-chat-row` | `2.5rem` | ″ |  |
+| `--portal-sidebar-row-gap` | `0px` | ″ |  |
+| `--portal-sidebar-section-gap` | `0.5rem` | ″ |  |
+| `--portal-sidebar-label-top` | `0.625rem` | ″ |  |
+| `--portal-sidebar-label-bottom` | `0.5rem` | ″ |  |
+| `--portal-sidebar-dot` | `0.3125rem` | ″ | The 5px leading dot, 12px before the title (16px past its box in Figma's item). |
+| `--portal-sidebar-dot-gap` | `0.75rem` | ″ |  |
+| `--portal-sidebar-caption` | `0.625rem` | ″ | Tags, ages and statuses: Figma's Nous/Uppercase, the mono signal font at 10px, 0.6px tracking. |
+| `--portal-sidebar-caption-tracking` | `0.06em` | ″ |  |
+| `--portal-sidebar-meta-font` | `var(--portal-font-mono)` | ″ |  |
+| `--portal-sidebar-label-font` | `var(--portal-font-mono)` | ″ | Section captions: Nous/Metadata, the mono signal font in sentence case (16292:15526); 14px where Figma draws 13, as every 13px UI step (type.css › --portal-type-ui-size). |
+| `--portal-sidebar-label-size` | `var(--portal-type-ui-size)` | ″ |  |
+| `--portal-sidebar-label-line` | `1rem` | ″ |  |
+| `--portal-sidebar-label-glyph` | `1rem` | ″ |  |
+| `--portal-sidebar-row-weight` | `600` | ″ | Row titles: Nous/Compact SemiBold at 20px line (16292:15538). |
+| `--portal-sidebar-row-line` | `1.25rem` | ″ |  |
 | `--portal-sidebar-hover` | `var(--portal-raw-ink-4)` | ″ |  |
 | `--portal-sidebar-press` | `color-mix(in srgb, var(--ui-base) 7%, transparent)` | ″ |  |
-| `--portal-sidebar-agent-hover` | `var(--portal-raw-ink-2)` | ″ |  |
-| `--portal-sidebar-row-selected-start` | `color-mix(in srgb, var(--portal-raw-blue) 32%, transparent)` | `color-mix(in srgb, var(--portal-raw-blue) 16%, transparent)` | Session rows (1089:7972): the open chat is a square, full-bleed brand ramp from a 1px brand rule at its leading edge (32% → 14% at the middle → clear at the end) with its title in full ink; a row under the pointer or keyboard focus wears the same ramp and rule in grayscale and keeps its muted title. Ages stay muted in both. Light keeps the ramp's shape at strengths that read on #f2f2f2. |
-| `--portal-sidebar-row-selected-mid` | `color-mix(in srgb, var(--portal-raw-blue) 14%, transparent)` | `color-mix(in srgb, var(--portal-raw-blue) 7%, transparent)` |  |
-| `--portal-sidebar-row-selected-rule` | `var(--portal-raw-blue)` | ″ |  |
+| `--portal-sidebar-row-radius` | `var(--portal-radius-control)` | ″ | Rows carry no fill for the open chat (16292:15602): ink tells it, full for the open chat and the flat rows, the floor for an agent's other chats (Figma's .4 fails AA). A row under the pointer takes the hover fill. |
+| `--portal-sidebar-row-ink` | `var(--ui-text-primary)` | ″ |  |
+| `--portal-sidebar-chat-ink` | `var(--ui-text-quaternary)` | ″ |  |
 | `--portal-sidebar-row-selected-ink` | `var(--ui-text-primary)` | ″ |  |
-| `--portal-sidebar-row-hover-start` | `color-mix(in srgb, var(--portal-raw-gray) 22%, transparent)` | `var(--portal-raw-ink-8)` |  |
-| `--portal-sidebar-row-hover-mid` | `color-mix(in srgb, var(--portal-raw-gray) 10%, transparent)` | `var(--portal-raw-ink-3)` |  |
-| `--portal-sidebar-row-hover-rule` | `var(--portal-raw-gray)` | `var(--portal-raw-ink-40)` |  |
-| `--portal-sidebar-row-rule-width` | `1px` | ″ |  |
 | `--portal-sidebar-card` | `var(--portal-raw-ink-5)` | ″ |  |
-| `--portal-sidebar-action` | `var(--portal-raw-ink-5)` | ″ | The session actions (1056:7628): New session on a light/5 fill, Search on a light/10 rim, both with light/5 keycaps on a light/10 rim; Brand rev light draws dark/2 fills on a dark/5 rim. |
+| `--portal-sidebar-action` | `var(--portal-raw-ink-5)` | ″ | New chat (16292:15511): 40px, radius 3, light/5 (dark/2 on light), 12px sides, 10px gap, a 16px glyph; rimless light/5 keycaps (16292:15520) in the mono font at 11px, 60% ink. The search button (16292:15507) is a 30px square on the same fill. |
 | `--portal-sidebar-action-key` | `var(--portal-raw-ink-5)` | ″ |  |
 | `--portal-sidebar-action-rim` | `var(--portal-raw-ink-10)` | ″ |  |
-| `--portal-sidebar-machine-fill` | `var(--portal-raw-ink-5)` | `var(--portal-raw-ink-2)` | Brand rev light steps the machine card in black 2% / 4%: a quiet card with a header a shade deeper, never a grey slab. |
-| `--portal-sidebar-machine-head` | `color-mix(in srgb, var(--ui-base) 7%, transparent)` | `var(--portal-raw-ink-4)` |  |
-| `--portal-sidebar-guide` | `color-mix(in srgb, var(--ui-base) 20%, transparent)` | ″ |  |
-| `--portal-sidebar-dot` | `var(--ui-text-secondary)` | ″ | A settled pinned row's dot wears the row's own ink (Var1 147:7470). |
-| `--portal-sidebar-label` | `color-mix(in srgb, var(--ui-base) 65%, transparent)` | ″ | Captions at Var1's ~.65 (light: Brand rev's .6, the ladder's floor); tags, subtitles and ages take the floor where Figma's .3-.5 fail AA at 10px; machine names keep Figma's .8. |
-| `--portal-sidebar-meta` | `var(--ui-text-quaternary)` | ″ |  |
-| `--portal-sidebar-head-meta` | `color-mix(in srgb, var(--ui-base) 55%, transparent)` | ″ | On the expanded machine's 12% header bar the floor needs .55 to hold 4.5:1. |
+| `--portal-sidebar-action-pad` | `0.75rem` | ″ |  |
+| `--portal-sidebar-action-gap` | `0.625rem` | ″ |  |
+| `--portal-sidebar-action-weight` | `500` | ″ |  |
+| `--portal-sidebar-key-font` | `var(--portal-font-mono)` | ″ |  |
+| `--portal-sidebar-key-ink` | `var(--ui-text-tertiary)` | ″ |  |
+| `--portal-sidebar-search-button` | `var(--portal-row-chrome)` | ″ |  |
+| `--portal-sidebar-machine-fill` | `var(--portal-raw-ink-2)` | ″ | An open machine is one card (set 16292:15581): radius 12, light/2, 5px in from the rows on each side, its header 16px over and under its name; its agents 6px inside it. |
+| `--portal-sidebar-machine-radius` | `12px` | ″ |  |
+| `--portal-sidebar-machine-pad` | `0.3125rem` | ″ |  |
+| `--portal-sidebar-machine-head` | `3.25rem` | ″ |  |
 | `--portal-sidebar-machine-ink` | `color-mix(in srgb, var(--ui-base) 80%, transparent)` | ″ |  |
+| `--portal-sidebar-agent-inset` | `0.375rem` | ″ | Agent cards (16292:15592): radius 9, 6px leading pad (12 to the name past the 32px tile), 16px trailing, 12px over and under, a soft drop shadow. The open agent is the brand slab, white .10 / black .40 / blue (#2E2EA8); the others white .10 / black .60 / blue .30 (16292:15630). Both carry the CRT texture at 5% colour-dodge. Light draws both as blue .10 on white .80 under a 1px brand rule, the open one solid brand, the others brand .10 (16292:25188, 16292:25226), the texture at 90%. |
+| `--portal-sidebar-agent-radius` | `9px` | ″ |  |
+| `--portal-sidebar-agent-pad-block` | `0.75rem` | ″ |  |
+| `--portal-sidebar-agent-pad-start` | `0.375rem` | ″ |  |
+| `--portal-sidebar-agent-pad-end` | `1rem` | ″ |  |
+| `--portal-sidebar-agent-gap` | `0.75rem` | ″ |  |
+| `--portal-sidebar-agent-avatar` | `2rem` | ″ |  |
+| `--portal-sidebar-agent-avatar-radius` | `var(--portal-radius-surface)` | ″ |  |
+| `--portal-sidebar-agent-shadow` | `0 1px 4px var(--portal-raw-shadow-20)` | `0 0 transparent` |  |
+| `--portal-sidebar-agent-fill` | `color-mix( in srgb, var(--portal-raw-pure-white) 10%, color-mix(in srgb, var(--portal-raw-black) 60%, var(--portal-raw-brand-30)) )` | `color-mix( in srgb, var(--portal-raw-blue) 10%, color-mix(in srgb, var(--portal-raw-pure-white) 80%, transparent) )` |  |
+| `--portal-sidebar-agent-fill-open` | `color-mix( in srgb, var(--portal-raw-pure-white) 10%, color-mix(in srgb, var(--portal-raw-black) 40%, var(--portal-raw-blue)) )` | `var(--portal-sidebar-agent-fill)` |  |
+| `--portal-sidebar-agent-rule` | `transparent` | `var(--portal-raw-brand-10)` |  |
+| `--portal-sidebar-agent-rule-open` | `transparent` | `var(--portal-raw-blue)` |  |
+| `--portal-sidebar-agent-hover` | `var(--portal-raw-ink-4)` | ″ |  |
+| `--portal-sidebar-agent-texture-opacity` | `0.05` | `0.9` |  |
+| `--portal-sidebar-agent-subtitle` | `var(--ui-text-quaternary)` | ″ |  |
+| `--portal-sidebar-agent-subtitle-open` | `var(--ui-text-secondary)` | `var(--ui-text-quaternary)` | On the open agent's brand slab the floor needs .7 to hold 4.5:1. |
+| `--portal-sidebar-chats-pad` | `0.375rem` | ″ | An agent's chats (list 16292:15601): 6px over and under, the dot 30px into the card, the title 22px after it, the age 20px from the card's end. |
+| `--portal-sidebar-chat-start` | `1.875rem` | ″ |  |
+| `--portal-sidebar-chat-end` | `1.25rem` | ″ |  |
+| `--portal-sidebar-chat-dot-gap` | `1.375rem` | ″ |  |
+| `--portal-sidebar-chat-title` | `calc( var(--portal-sidebar-chat-start) + var(--portal-sidebar-dot) + var(--portal-sidebar-chat-dot-gap) )` | ″ |  |
+| `--portal-sidebar-dot-ink` | `var(--ui-text-quaternary)` | ″ | A settled row's dot: the row's ink, quieter than its title; the open chat's in full ink. |
+| `--portal-sidebar-label` | `var(--ui-text-quaternary)` | ″ | Captions, tags, subtitles and ages take the ladder's floor where Figma's .3-.4 fail AA. |
+| `--portal-sidebar-meta` | `var(--ui-text-quaternary)` | ″ |  |
 | `--portal-sidebar-green` | `var(--portal-status-online)` | ″ |  |
 | `--portal-sidebar-orange` | `var(--portal-status-pending)` | ″ |  |
-| `--portal-sidebar-caption-tracking` | `0.04em` | ″ | Section captions track at the chip's 0.04em, weight 500 (147:7470). |
 | `--portal-sidebar-count-fill` | `var(--portal-raw-brand-25)` | `var(--portal-raw-brand-10)` | The Agents count: a brand-tinted pill (147:6260), lighter on light. |
 | `--portal-sidebar-count-radius` | `10px` | ″ |  |
 
@@ -968,12 +1013,11 @@ section and the statusbar's Cron item are classic only.
 
 ### The chat sidebar is a variant
 
-The owner chose Figma's "Variation 1: Flattened gateway/host" (147:7470) for the chat sidebar
-(`app/chat/sidebar/portal/**`), and it is matched to that frame. Where Variation 1 draws a state
-differently from the page language (row hover ink 4, the open chat's ink 7 pill without a stroke,
-500-weight captions at 0.04em, the r10 brand count pill, the 20% keycaps, its inset focus rings), the
-sidebar keeps those values as its own named roles in `tokens/sidebar.css` (`--portal-sidebar-*`)
-instead of the page roles. That is deliberate, not drift: change the sidebar there, and never point
+The chat sidebar (`app/chat/sidebar/portal/**`) is matched to "Prod - Desktop" (Panel 16292:15497).
+Where it draws a state differently from the page language (row hover ink 4, the open chat marked by ink
+alone, mono sentence-case captions, the r10 brand count pill, rimless mono keycaps, agent cards, its
+inset focus rings), the sidebar keeps those values as its own named roles in `tokens/sidebar.css`
+(`--portal-sidebar-*`) instead of the page roles. That is deliberate, not drift: change the sidebar there, and never point
 page components at `--portal-sidebar-*`.
 
 ### Still to unify

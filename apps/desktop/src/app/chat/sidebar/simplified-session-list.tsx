@@ -67,19 +67,19 @@ const PIN_METRIC = {
   agent: 'ia.pin.agent_request'
 } as const
 
-/** Live status marks the row. Pinned rows lead with a quiet dot even when settled (Figma 147:7470),
- *  so their titles share one inset; agent chats carry a mark after their age only for news. */
-function SessionRowMark({ row, always }: { row: SessionInfo; always: boolean }) {
+/** Live status marks the row. Every row leads with a dot, quiet when settled (notif 16292:15533,
+ *  16292:15604), so the titles of a list share one inset. */
+function SessionRowMark({ row }: { row: SessionInfo }) {
   const state = useStoreSelector($sessionDotStateById, states => states[row.id] ?? 'idle')
 
   if (state === 'idle') {
-    return always ? (
+    return (
       <span aria-hidden className="portal-row-mark" data-slot="session-status" data-state="idle">
         <span>
           <span />
         </span>
       </span>
-    ) : null
+    )
   }
 
   return (
@@ -161,7 +161,7 @@ function SessionRow({ row, selected, surface, meta, ...props }: SessionRowProps)
         }
       }}
     >
-      {surface === 'pinned' && <SessionRowMark always row={row} />}
+      <SessionRowMark row={row} />
       {/* Wrappers with no box: a row no plugin decorates (or one it declines) keeps its geometry. */}
       <span className="contents" data-slot="session-row-leading">
         <SessionRowSlot area={SESSION_ROW_AREAS.leading} sessionId={sessionPinId(row)} />
@@ -176,10 +176,8 @@ function SessionRow({ row, selected, surface, meta, ...props }: SessionRowProps)
       <span className="contents" data-slot="session-row-trailing">
         <SessionRowSlot area={SESSION_ROW_AREAS.trailing} sessionId={sessionPinId(row)} />
       </span>
-      {/* An agent's chat carries its mark after its age, on the age's own line (147:7470). */}
       <span className="portal-session-meta" data-slot="session-meta">
         {meta}
-        {surface !== 'pinned' && <SessionRowMark always={false} row={row} />}
       </span>
     </div>
   )

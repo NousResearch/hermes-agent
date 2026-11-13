@@ -13,17 +13,17 @@ interface PortalSectionHeaderProps {
   action?: ReactNode
 }
 
-/** Figma 147:7470's section label: an uppercase caption on the row inset, then at the end an
- *  optional count badge, the disclosure chevron and a trailing action. */
+/** A section's caption (label 16292:15524): the label on the row inset with the disclosure chevron
+ *  right after it, then at the end an optional count badge and a trailing action. */
 export function PortalSectionHeader({ label, open, onToggle, count, action }: PortalSectionHeaderProps) {
   const trailing = (
     <>
+      {onToggle && <ChevronDown aria-hidden className="portal-section-chevron" />}
       {count !== undefined && count > 0 && (
         <span aria-hidden className="portal-section-count">
           {count}
         </span>
       )}
-      {onToggle && <ChevronDown aria-hidden className="portal-section-chevron" />}
     </>
   )
 

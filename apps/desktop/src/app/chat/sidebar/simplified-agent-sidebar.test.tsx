@@ -111,6 +111,15 @@ describe('Portal sidebar', () => {
     )
   }
 
+  /** Types into session search, bringing the field out from the header's search button first. */
+  function searchFor(value: string) {
+    if (!screen.queryByRole('textbox', { name: 'Search sessions' })) {
+      fireEvent.click(screen.getByRole('button', { name: 'Search sessions' }))
+    }
+
+    fireEvent.change(screen.getByRole('textbox', { name: 'Search sessions' }), { target: { value } })
+  }
+
   beforeEach(() => {
     $hiddenSidebarAgents.set([])
     $hiddenSidebarAgentsExpanded.set(false)
@@ -178,6 +187,29 @@ describe('Portal sidebar', () => {
     }
   })
 
+  it('keeps search behind the header button: it reveals and focuses the field, and Escape or the button puts it away', async () => {
+    mount()
+    const toggle = screen.getByRole('button', { name: 'Search sessions' })
+    expect(screen.queryByRole('textbox', { name: 'Search sessions' })).toBeNull()
+    expect(toggle.getAttribute('aria-expanded')).toBe('false')
+
+    fireEvent.click(toggle)
+    const field = screen.getByRole('textbox', { name: 'Search sessions' })
+    await waitFor(() => expect(document.activeElement).toBe(field))
+    expect(toggle.getAttribute('aria-expanded')).toBe('true')
+
+    fireEvent.keyDown(field, { key: 'Escape' })
+    expect(screen.queryByRole('textbox', { name: 'Search sessions' })).toBeNull()
+    expect(document.activeElement).toBe(toggle)
+
+    // Putting the search away ends it: it comes back empty.
+    searchFor('missing')
+    fireEvent.click(toggle)
+    expect(screen.queryByRole('textbox', { name: 'Search sessions' })).toBeNull()
+    fireEvent.click(toggle)
+    expect((screen.getByRole('textbox', { name: 'Search sessions' }) as HTMLInputElement).value).toBe('')
+  })
+
   it('highlights the focused chat owner without switching the ambient agent', () => {
     $activeGatewayProfile.set('default')
     $selectedStoredSessionId.set('pinned')
@@ -234,7 +266,7 @@ describe('Portal sidebar', () => {
     expect(screen.queryByText('Alpha notes')).toBeNull()
     expect(screen.getByText('Beta notes')).toBeTruthy()
     expect($sessions.get()).toBe(original)
-    fireEvent.change(screen.getByRole('textbox', { name: 'Search sessions' }), { target: { value: 'Alpha notes' } })
+    searchFor('Alpha notes')
     fireEvent.click(screen.getAllByText('Alpha notes')[0])
     expect(resume).toHaveBeenCalledWith('a', expect.objectContaining({ connection_id: 'alpha', profile: 'research' }))
     view.unmount()
@@ -274,9 +306,9 @@ describe('Portal sidebar', () => {
     })
     expect(guidance()).toBeNull()
     act(() => $sessionsLoadError.set(false))
-    fireEvent.change(screen.getByRole('textbox', { name: 'Search sessions' }), { target: { value: 'missing' } })
+    searchFor('missing')
     expect(guidance()).toBeNull()
-    fireEvent.change(screen.getByRole('textbox', { name: 'Search sessions' }), { target: { value: '' } })
+    searchFor('')
     expect(guidance()).not.toBeNull()
     act(() => $sessions.set([makeSessionInfo({ id: 'pinned', title: 'Pinned plan', pinned: true })]))
     expect(guidance()).toBeNull()
@@ -664,7 +696,7 @@ describe('Portal sidebar', () => {
       ]
     })
     mount()
-    fireEvent.change(screen.getByRole('textbox', { name: 'Search sessions' }), { target: { value: 'remote' } })
+    searchFor('remote')
     fireEvent.click(await screen.findByText('Remote search result'), { ctrlKey: true })
     expect($sessions.get().some(row => row.id === 'search-only-remote')).toBe(false)
     expect($sessionTiles.get()).toMatchObject([
@@ -681,9 +713,7 @@ describe('Portal sidebar', () => {
 
     try {
       mount()
-      fireEvent.change(screen.getByRole('textbox', { name: 'Search sessions' }), {
-        target: { value: 'not loaded yet' }
-      })
+      searchFor('not loaded yet')
       expect(screen.getByText('Loading…', { selector: '[role=status]' }).getAttribute('role')).toBe('status')
       expect(screen.queryByText(/No sessions match/)).toBeNull()
     } finally {
@@ -698,12 +728,12 @@ describe('Portal sidebar', () => {
         results: [{ session_id: 'regular', title: 'Other owner chat', snippet: 'other', session_started: 1 }]
       })
     mount()
-    fireEvent.change(screen.getByRole('textbox', { name: 'Search sessions' }), { target: { value: 'other' } })
+    searchFor('other')
     await screen.findByText('Other owner chat')
     expect(screen.queryByRole('button', { name: 'Session actions: Other owner chat' })).toBeNull()
     fireEvent.click(screen.getByText('Other owner chat'))
     expect(resume).toHaveBeenCalledWith('regular', expect.objectContaining({ profile: 'research' }))
-    fireEvent.change(screen.getByRole('textbox', { name: 'Search sessions' }), { target: { value: '' } })
+    searchFor('')
     expect(screen.getByRole('button', { name: 'Session actions: Regular chat' })).toBeTruthy()
   })
 
@@ -723,7 +753,7 @@ describe('Portal sidebar', () => {
 
     try {
       mount()
-      fireEvent.change(screen.getByRole('textbox', { name: 'Search sessions' }), { target: { value: 'older' } })
+      searchFor('older')
       await screen.findByText('Older plan')
 
       const research = screen.getByRole('group', { name: /^Research ·/ })
@@ -731,7 +761,7 @@ describe('Portal sidebar', () => {
       fireEvent.keyDown(within(research).getByRole('button', { name: /^Session actions:/ }), { key: 'Enter' })
       fireEvent.click(await screen.findByRole('menuitem', { name: /^Pin$/ }))
       expect(screen.getAllByText('Older plan')).toHaveLength(2)
-      fireEvent.change(screen.getByRole('textbox', { name: 'Search sessions' }), { target: { value: '' } })
+      searchFor('')
       expect(screen.getAllByText('Older plan')).toHaveLength(2)
       await act(async () => {
         resolve({ ok: true })
@@ -769,12 +799,12 @@ describe('Portal sidebar', () => {
     expect(pins.getAllByText(/^Saved /)).toHaveLength(9)
     expect(agent.getAllByText(/^Saved /)).toHaveLength(3)
     expect(screen.queryByRole('button', { name: /^Show .* more/ })).toBeNull()
-    fireEvent.change(screen.getByRole('textbox', { name: 'Search sessions' }), { target: { value: 'Saved 8' } })
+    searchFor('Saved 8')
     expect(pins.getAllByText(/^Saved /)).toHaveLength(1)
     expect(agent.getByText('Saved 8')).toBeTruthy()
     fireEvent.click(pins.getByText('Saved 8'))
     expect(resume).toHaveBeenCalledWith('saved-8', expect.objectContaining({ profile: 'research' }))
-    fireEvent.change(screen.getByRole('textbox', { name: 'Search sessions' }), { target: { value: '' } })
+    searchFor('')
     expect(agent.getAllByText(/^Saved /)).toHaveLength(3)
     fireEvent.click(agent.getByRole('button', { name: 'Show all (9)' }))
     expect(agent.getAllByText(/^Saved /)).toHaveLength(9)

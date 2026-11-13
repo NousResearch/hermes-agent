@@ -1,18 +1,13 @@
 import './portal-sidebar.css'
 
 import { useStore } from '@nanostores/react'
-import { type ComponentProps, type KeyboardEvent, useEffect, useRef } from 'react'
+import { type ComponentProps, type KeyboardEvent } from 'react'
 
-import { KbdCombo } from '@/components/ui/kbd'
-import { SearchField } from '@/components/ui/search-field'
 import { Sidebar, SidebarContent } from '@/components/ui/sidebar'
 import { $pluginRecords } from '@/contrib/plugins-store'
 import { useI18n } from '@/i18n'
 import { ID as BOT_MODE_ID } from '@/plugins/hermes-bots/shared'
 import { agentSidebarKey } from '@/store/agent-sidebar-preferences'
-import { recordIaAction } from '@/store/ia-metrics'
-import { $bindings, bindingsFor } from '@/store/keybinds'
-import { SESSION_SEARCH_FOCUS_EVENT } from '@/store/layout'
 import { $newChatProfile } from '@/store/profile'
 
 import type { ChatSidebar } from '../index'
@@ -27,6 +22,7 @@ import { useAgentSidebar } from '../use-agent-sidebar'
 import { AGENT_CHAT_CAP, agentShowAllKey } from './agent-chat-cap'
 import { PortalGroupChats } from './portal-group-chats'
 import { PortalPinnedEmpty } from './portal-pinned-empty'
+import { PortalSidebarHead, PortalSidebarSearchField, usePortalSidebarSearch } from './portal-sidebar-head'
 
 const ROW_STEP: Record<string, (index: number, count: number) => number> = {
   ArrowDown: (index, count) => Math.min(index + 1, count - 1),
@@ -111,27 +107,18 @@ export function PortalSidebar(props: ComponentProps<typeof ChatSidebar>) {
     hasMore
   } = useAgentSidebar(props)
 
-  const searchInputRef = useRef<HTMLInputElement>(null)
-  const bindings = useStore($bindings)
+  const searchBox = usePortalSidebarSearch(setQuery)
   // Group chats are Bot Mode's: a disabled or failed plugin leaves no section behind.
   const botModeLoaded = useStore($pluginRecords)[BOT_MODE_ID]?.status === 'loaded'
-  // The keycaps name the shortcut while the field rests; typing hands the end of the row to Clear.
-  const searchShortcut = query ? undefined : bindingsFor('session.focusSearch', bindings)[0]
   const searching = Boolean(query.trim())
   // Nothing in flight: a settled list may show its empty notes.
   const quiet = !loading && !search.pending && !search.failed
   const settled = quiet && rows.length === 0
 
-  useEffect(() => {
-    const onFocus = () => searchInputRef.current?.focus({ preventScroll: true })
-    window.addEventListener(SESSION_SEARCH_FOCUS_EVENT, onFocus)
-
-    return () => window.removeEventListener(SESSION_SEARCH_FOCUS_EVENT, onFocus)
-  }, [])
-
   return (
     <Sidebar className="portal-sidebar" collapsible="none" data-tour="sessions-sidebar">
       <SidebarContent className="portal-sidebar-content">
+        <PortalSidebarHead search={searchBox} />
         <SimplifiedNewSession
           onFallback={() => {
             $newChatProfile.set(null)
@@ -145,22 +132,9 @@ export function PortalSidebar(props: ComponentProps<typeof ChatSidebar>) {
           }}
           sessions={all}
         />
-        <SearchField
-          aria-label={t.sidebar.searchAria}
-          containerClassName="portal-sidebar-search"
-          escapeClears
-          inputRef={searchInputRef}
-          loading={search.pending}
-          onChange={setQuery}
-          onFocus={() => recordIaAction('ia.search.opened')}
-          placeholder={t.sidebar.searchPlaceholder}
-          trailingAction={
-            searchShortcut && (
-              <KbdCombo aria-hidden className="portal-kbd" combo={searchShortcut} data-slot="session-search-shortcut" />
-            )
-          }
-          value={query}
-        />
+        {searchBox.open && (
+          <PortalSidebarSearchField onChange={setQuery} pending={search.pending} query={query} search={searchBox} />
+        )}
         <SidebarStorageCorruptNotice />
         {search.failed && (
           <p className="text-xs text-destructive" role="alert">

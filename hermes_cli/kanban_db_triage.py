@@ -1,4 +1,20 @@
-"""Transaction-bound Triage release contracts for the Kanban database facade."""
+"""Transaction-bound Triage release contracts for the Kanban database facade.
+
+Trust model
+-----------
+A release guard is **trusted first-party code**. The only caller today is the
+Office's fixed guard in ``server/collect.mjs`` (writerflow/hermes-office). The
+scoped SQLite authorizer and the read-only connection facade are defence in depth
+against *mistakes* in such a guard (an accidental write, commit or DDL); they are
+**not a sandbox** against a hostile callable. A guard that deliberately reaches
+past the Hermes wrapper (for example ``sqlite3.Connection.set_authorizer(conn,
+None)`` through the base descriptor) can lift the policy; the post-guard
+change/transaction checks then roll the release back, but that is a backstop, not
+isolation. Never pass a guard that is untrusted or not fixed in source. Running
+guards out of process is deliberately out of scope; the follow-up is
+``FOLLOWUP_REF`` below, and it triggers if any caller ever passes an untrusted or
+non-fixed guard.
+"""
 
 from __future__ import annotations
 
@@ -7,6 +23,8 @@ import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any, Callable, Iterator, Optional, Protocol
+
+FOLLOWUP_REF = "https://linear.app/writerflow/issue/WRI-2435"
 
 
 @dataclass(frozen=True)
@@ -163,7 +181,6 @@ _GUARD_DENIED_ACTIONS = frozenset(
         "SQLITE_DROP_TRIGGER",
         "SQLITE_DROP_VIEW",
         "SQLITE_DROP_VTABLE",
-        "SQLITE_FUNCTION",
         "SQLITE_INSERT",
         "SQLITE_PRAGMA",
         "SQLITE_REINDEX",
@@ -174,32 +191,60 @@ _GUARD_DENIED_ACTIONS = frozenset(
 )
 
 
+# Built-in, side-effect-free SQL functions a read-only guard may call. Any other
+# function (user-defined ones registered with ``create_function`` included) stays
+# denied, since a user function could run arbitrary Python inside the transaction.
+_GUARD_ALLOWED_FUNCTIONS = frozenset(
+    {
+        "abs", "avg", "coalesce", "count", "glob", "group_concat", "ifnull", "iif",
+        "instr", "length", "like", "lower", "ltrim", "max", "min", "nullif",
+        "replace", "round", "rtrim", "substr", "substring", "sum", "total",
+        "trim", "typeof", "upper",
+    }
+)
+
+
+def _require_known_authorizer(conn: sqlite3.Connection) -> None:
+    """Refuse connections whose current authorizer cannot be read back.
+
+    SQLite exposes no getter, so the prior authorizer can only be restored when the
+    connection records it (``TrackedConnection`` from ``kanban_db_connect.connect``).
+    On a plain ``sqlite3.Connection`` the call would replace the caller's authorizer
+    with no way to put it back (failing open), so it is refused before ``BEGIN``.
+    """
+    if not hasattr(conn, "_hermes_authorizer_locked"):
+        raise TypeError(
+            "guarded_specify_triage_task needs a connection that records its authorizer "
+            "(use hermes_cli.kanban_db_connect.connect); a plain sqlite3.Connection's "
+            "existing authorizer could not be restored"
+        )
+
+
 @contextmanager
 def _guard_authorizer(conn: sqlite3.Connection) -> Iterator[None]:
-    """Deny recursive writes/txn control during a guard, then restore policy."""
-    previous = getattr(conn, "_hermes_authorizer_callback", None)
-    tracked_policy = hasattr(conn, "_hermes_authorizer_locked")
+    """Deny recursive writes/txn control during a guard, then restore the exact prior policy."""
+    previous = conn._hermes_authorizer_callback  # type: ignore[attr-defined]
 
-    def authorize(action, _arg1, _arg2, _database, _source):
+    def authorize(action, _arg1, arg2, _database, _source):
+        if action == sqlite3.SQLITE_FUNCTION:
+            if isinstance(arg2, str) and arg2.lower() in _GUARD_ALLOWED_FUNCTIONS:
+                return sqlite3.SQLITE_OK
+            return sqlite3.SQLITE_DENY
         if action in _GUARD_DENIED_ACTIONS:
             return sqlite3.SQLITE_DENY
         return sqlite3.SQLITE_OK
 
-    if tracked_policy:
-        sqlite3.Connection.set_authorizer(conn, authorize)
-        conn._hermes_authorizer_callback = authorize  # type: ignore[attr-defined]
-        conn._hermes_authorizer_locked = True  # type: ignore[attr-defined]
-    else:
-        conn.set_authorizer(authorize)
+    sqlite3.Connection.set_authorizer(conn, authorize)
+    conn._hermes_authorizer_callback = authorize  # type: ignore[attr-defined]
+    conn._hermes_authorizer_locked = True  # type: ignore[attr-defined]
     try:
         yield
     finally:
-        if tracked_policy:
+        try:
             sqlite3.Connection.set_authorizer(conn, previous)
+        finally:
             conn._hermes_authorizer_callback = previous  # type: ignore[attr-defined]
             conn._hermes_authorizer_locked = False  # type: ignore[attr-defined]
-        else:
-            conn.set_authorizer(previous)
 
 
 def guarded_specify_triage_task(
@@ -217,7 +262,49 @@ def guarded_specify_triage_task(
     The callback receives the transaction-bound connection for read-only precondition
     checks. Returning a denial rolls the transaction back before returning its receipt.
     Callback exceptions and malformed results propagate with the transaction rolled back.
+    After a released outcome the global ``recompute_ready`` pass runs, as the unguarded
+    path always did, so dependents of already-finished parents are promoted.
+
+    Trust model: ``guard`` must be trusted first-party code (the only caller is the
+    Office's fixed guard in ``server/collect.mjs``). The scoped authorizer and read-only
+    facade protect against accidental writes; they are defence in depth, not a sandbox
+    against a hostile callable, and a guard can lift the policy through the base
+    ``sqlite3.Connection.set_authorizer`` descriptor. Never pass an untrusted or
+    non-fixed guard. Out-of-process isolation is a tracked follow-up
+    (``FOLLOWUP_REF`` in this module), triggered by any such caller.
+
+    Authorizer: while the guard runs, a scoped authorizer denies writes, DDL, PRAGMA,
+    transaction control and non-allow-listed SQL functions (built-in aggregates and
+    scalars such as ``count`` and ``max`` are allowed). On exit, including on error, the
+    caller's previous authorizer is restored exactly. That requires a connection that
+    records its authorizer (``kanban_db_connect.connect``); any other connection is
+    refused with ``TypeError`` before ``BEGIN``, with nothing written, because its
+    authorizer could not be restored. An authorizer installed through the base
+    ``sqlite3.Connection.set_authorizer`` descriptor bypasses that record and cannot be
+    detected or restored (the same trusted-caller boundary).
     """
+    _require_known_authorizer(conn)
+    receipt = _release_triage_task(
+        conn, task_id, guard=guard, title=title, body=body, assignee=assignee, author=author
+    )
+    if receipt.released:
+        from hermes_cli import kanban_db as kb
+
+        kb.recompute_ready(conn)
+    return receipt
+
+
+def _release_triage_task(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    guard: Optional[Callable[[TriageReleaseGuardConnection, str], TriageReleaseGuardResult]],
+    title: Optional[str] = None,
+    body: Optional[str] = None,
+    assignee: Optional[str] = None,
+    author: Optional[str] = None,
+) -> TriageReleaseReceipt:
+    """Release one Triage task; run ``guard`` (when given) inside the write transaction."""
     from hermes_cli import kanban_db as kb
 
     if title is not None and not title.strip():
@@ -233,24 +320,25 @@ def guarded_specify_triage_task(
                 status = kb._task_status(conn, task_id)
                 return TriageReleaseReceipt(False, "not_in_triage", status)
 
-            changes_before_guard = conn.total_changes
-            with _guard_authorizer(conn):
-                decision = guard(_ReadOnlyConnection(conn), task_id)
-            if not conn.in_transaction:
-                raise RuntimeError("Triage release guard ended its transaction")
-            if conn.total_changes != changes_before_guard:
-                raise RuntimeError("Triage release guard must be read-only")
-            if not isinstance(decision, TriageReleaseGuardResult):
-                raise TypeError("guard must return TriageReleaseGuardResult")
-            reason = (decision.reason or "").strip() or None
-            if not decision.allowed:
-                if reason is None:
-                    raise ValueError("denied Triage release guard requires a reason")
-                raise _GuardDenied(
-                    TriageReleaseReceipt(
-                        False, "precondition_failed", "triage", guard_reason=reason,
+            if guard is not None:
+                changes_before_guard = conn.total_changes
+                with _guard_authorizer(conn):
+                    decision = guard(_ReadOnlyConnection(conn), task_id)
+                if not conn.in_transaction:
+                    raise RuntimeError("Triage release guard ended its transaction")
+                if conn.total_changes != changes_before_guard:
+                    raise RuntimeError("Triage release guard must be read-only")
+                if not isinstance(decision, TriageReleaseGuardResult):
+                    raise TypeError("guard must return TriageReleaseGuardResult")
+                reason = (decision.reason or "").strip() or None
+                if not decision.allowed:
+                    if reason is None:
+                        raise ValueError("denied Triage release guard requires a reason")
+                    raise _GuardDenied(
+                        TriageReleaseReceipt(
+                            False, "precondition_failed", "triage", guard_reason=reason,
+                        )
                     )
-                )
 
             sets: list[str] = ["status = 'todo'"]
             params: list[object] = []

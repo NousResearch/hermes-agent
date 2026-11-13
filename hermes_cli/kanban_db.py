@@ -3733,6 +3733,7 @@ from hermes_cli.kanban_db_triage import (
     TriageReleaseGuardConnection,
     TriageReleaseGuardResult,
     TriageReleaseReceipt,
+    _release_triage_task,
     guarded_specify_triage_task,
 )
 
@@ -3742,15 +3743,15 @@ def specify_triage_task(
     body: Optional[str] = None, assignee: Optional[str] = None, author: Optional[str] = None,
 ) -> bool:
     """Backward-compatible unguarded specification and Triage release."""
-    receipt = guarded_specify_triage_task(
-        conn,
-        task_id,
-        guard=lambda _conn, _task_id: TriageReleaseGuardResult(allowed=True),
-        title=title,
-        body=body,
-        assignee=assignee,
-        author=author,
+    # No guard, so no scoped authorizer: any connection kind works and its own
+    # authorizer is left untouched.
+    receipt = _release_triage_task(
+        conn, task_id, guard=None, title=title, body=body, assignee=assignee, author=author,
     )
+    if receipt.released:
+        # Own IMMEDIATE txn (outside the release one): a parent-free specified task
+        # flips to 'ready' now instead of idling until the next tick.
+        recompute_ready(conn)
     return receipt.released
 
 

@@ -23,7 +23,7 @@ def test_hosted_reader_uses_existing_own_sandbox_and_rejects_foreign_handle(monk
         return {"output": "remote bytes", "returncode": 0}
 
     inner = SimpleNamespace(cwd="/workspace", timeout=10, _remote_home="/workspace",
-                            execute_read_only=read)
+                            execute=read)
     own_env = ScopedEnvironment(inner, sandbox_identity(owner), owner=owner)
     foreign_env = ScopedEnvironment(inner, sandbox_identity(other), owner=other)
     key = sandbox_identity(owner).key

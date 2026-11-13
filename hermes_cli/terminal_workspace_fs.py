@@ -22,10 +22,6 @@ class TerminalWorkspaceFs(SshWorkspaceFs):
 
     def __init__(self, env: BaseEnvironment, *, env_key=None):
         super().__init__(env)
-        # _mark_recreated runs before the replacement is attached. Do not mint a
-        # reader in that interval; only a completed normal execute clears it.
-        if getattr(env, "_recreated_notice_pending", False):
-            raise TerminalWorkspaceFsError("ECONN", "Terminal environment is unavailable")
         self._env_key = env_key
         if not getattr(env, "_hermes_file_read_token", None):
             env._hermes_file_read_token = uuid.uuid4().hex
@@ -37,8 +33,7 @@ class TerminalWorkspaceFs(SshWorkspaceFs):
         with terminal_tool._env_lock:
             if self._env_key is not None and resolve(self._env_key) is not self._env:
                 raise TerminalWorkspaceFsError("ECONN", "Terminal environment is unavailable")
-        if (getattr(self._env, "_recreated_notice_pending", False)
-                or self._env._hermes_file_read_token != self._generation):
+        if self._env._hermes_file_read_token != self._generation:
             raise TerminalWorkspaceFsError("ECONN", "Terminal environment is unavailable")
 
     def _execute(self, command, **kwargs):
@@ -48,7 +43,7 @@ class TerminalWorkspaceFs(SshWorkspaceFs):
             with terminal_tool._call_in_flight(self._env_key):
                 kwargs["timeout"] = min(kwargs.get("timeout") or self._env.timeout, 10)
                 self._validate_generation()
-                result = self._env.execute_read_only(command, **kwargs)
+                result = self._env.execute(command, **kwargs)
                 self._validate_generation()
                 return result
         except Exception as exc:

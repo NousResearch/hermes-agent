@@ -680,16 +680,6 @@ class BaseEnvironment(LongLivedProcessMixin, ABC):
         self._recreated_notice_pending = True
         self._hermes_file_read_token = uuid.uuid4().hex
 
-    def execute_read_only(self, command: str, **kwargs) -> dict:
-        """Internal file-protocol transport, not an arbitrary-command RPC.
-
-        Skip sync/recovery hooks, login scripts and shell snapshot writes. Backends'
-        _run_bash must dispatch only to their attached resource (never create/recover).
-        The built-in SDK backends and SSH-derived plugins inherit this path; execute
-        overrides must honor read_only without recovery, as Docker does.
-        """
-        return self.execute(command, read_only=True, **kwargs)
-
     # --- Unified execute() ---
     def execute(
         self,
@@ -700,7 +690,6 @@ class BaseEnvironment(LongLivedProcessMixin, ABC):
         stdin_data: str | None = None,
         rewrite_compound_background: bool = True,
         bounded_capture: bool = False,
-        read_only: bool = False,
         yield_handler: Callable[[ProcessHandle, str], dict] | None = None) -> dict:
         """Execute a command, return {"output": str, "returncode": int}. ``bounded_capture=True``
         caps retention at ``tool_output.max_bytes`` WHILE draining; only the foreground terminal
@@ -713,8 +702,7 @@ class BaseEnvironment(LongLivedProcessMixin, ABC):
         is drained (head/tail window) instead of holding the full output in memory (#64435).
         See #94285.
         """
-        if not read_only:
-            self._before_execute()
+        self._before_execute()
 
         exec_command, sudo_stdin = self._prepare_command(command)
         # Guard against the `A && B &` subshell-wait trap by default; callers
@@ -732,12 +720,11 @@ class BaseEnvironment(LongLivedProcessMixin, ABC):
             exec_command = self._embed_stdin_heredoc(exec_command, effective_stdin)
             effective_stdin = None
 
-        wrapped = (f"cd -- {self._quote_cwd_for_cd(effective_cwd)} && {exec_command}"
-                   if read_only else self._wrap_command(exec_command, effective_cwd))
+        wrapped = self._wrap_command(exec_command, effective_cwd)
 
         # Login shell if the snapshot failed (so the user's profile still
         # loads), unless login itself is broken — then non-login is the only path.
-        login = not read_only and not self._snapshot_ready and not self._prefer_nonlogin
+        login = not self._snapshot_ready and not self._prefer_nonlogin
 
         parent_tid = threading.current_thread().ident
         # The activity callback is thread-local and the wait runs on the
@@ -805,9 +792,8 @@ class BaseEnvironment(LongLivedProcessMixin, ABC):
             result["hermes_timed_out"] = True
         else:
             result = bounded.value
-        if not read_only:
-            self._update_cwd(result)
-        if not read_only and getattr(self, "_recreated_notice_pending", False):
+        self._update_cwd(result)
+        if getattr(self, "_recreated_notice_pending", False):
             self._recreated_notice_pending = False
             result["environment_recreated"] = True
         return result

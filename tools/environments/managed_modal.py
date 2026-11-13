@@ -75,13 +75,12 @@ class ManagedModalEnvironment(BaseEnvironment):
         self._sandbox_id = self._create_sandbox()
 
     def execute(self, command: str, cwd: str = "", *, timeout: int | None = None, stdin_data: str | None = None,
-                rewrite_compound_background: bool = True, bounded_capture: bool = False,
-                read_only: bool = False) -> dict:
+                rewrite_compound_background: bool = True, bounded_capture: bool = False) -> dict:
         # Signature parity with BaseEnvironment.execute only: the gateway runs commands
         # explicitly (no shell background rewriting) and returns the remote result in one
         # payload, so streaming-time bounding does not apply (the terminal tool's final
         # truncation still caps it).
-        del rewrite_compound_background, bounded_capture, read_only
+        del rewrite_compound_background, bounded_capture
         exec_command, sudo_stdin = self._prepare_command(command)
         if sudo_stdin is not None:
             # Password lines lead the request's stdin, merged as in BaseEnvironment.execute.

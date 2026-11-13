@@ -213,15 +213,18 @@ def _cmd_subscribe(args):
         if not profile_exists(profile):
             print(f"Error: Profile '{profile}' does not exist.")
             return 1
+    from hermes_cli.secret_prompt import resolve_secret_arg
+
+    given_secret = resolve_secret_arg(args.secret)
     existing_profile = existing.get("profile", "default")
     profile_changed = is_update and profile != existing_profile
-    if profile_changed and args.secret and args.secret == existing.get("secret"):
+    if profile_changed and given_secret and given_secret == existing.get("secret"):
         print(
             "Error: Rebinding a webhook route requires a new HMAC secret. "
             "Omit --secret to generate one automatically, or provide a different secret."
         )
         return 1
-    secret = args.secret or (None if profile_changed else existing.get("secret")) or secrets.token_urlsafe(32)
+    secret = given_secret or (None if profile_changed else existing.get("secret")) or secrets.token_urlsafe(32)
     events = [e.strip() for e in args.events.split(",")] if args.events else []
     route = {
         "description": args.description or f"Agent-created subscription: {name}",

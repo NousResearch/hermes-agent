@@ -22,7 +22,7 @@ from hermes_cli._secrets_common import (
     yn,
 )
 from hermes_cli.config import get_env_path, load_config, save_config, save_env_value
-from hermes_cli.secret_prompt import masked_secret_prompt
+from hermes_cli.secret_prompt import masked_secret_prompt, resolve_secret_arg
 
 # Old names kept bound: tests monkeypatch ``secrets_cli._bws_version``.
 _bws_version = cli_version
@@ -67,7 +67,7 @@ def register_cli(parent_parser: argparse.ArgumentParser) -> None:
     register_subcommands(parent_parser, "secrets_bw_command", (
         ("setup", "Interactive wizard: install bws, store access token, pick project", cmd_setup, (
             arg("--project-id", "Pre-select a project UUID instead of prompting"),
-            arg("--access-token", "Provide the access token non-interactively (will be stored in .env)"),
+            arg("--access-token", "Provide the access token non-interactively (stored in .env; '-' reads it from stdin)"),
             arg("--server-url", (
                 "Bitwarden region / self-hosted endpoint. Examples: "
                 "https://vault.bitwarden.com (US, default), "
@@ -77,7 +77,7 @@ def register_cli(parent_parser: argparse.ArgumentParser) -> None:
         )),
         ("status", "Show config + binary + token validation status", cmd_status, ()),
         ("token", "Rotate the access token: validate a new one and store it in .env", cmd_token, (
-            arg("--access-token", "Provide the new token non-interactively (default: masked prompt)"),
+            arg("--access-token", "Provide the new token non-interactively; '-' reads it from stdin (default: masked prompt)"),
             flag("--no-verify", "Store without probing Bitwarden first (not recommended)"),
         )),
         ("sync", "Fetch secrets now and report what changed", cmd_sync, (
@@ -126,7 +126,7 @@ def _missing_noninteractive_flags(args: argparse.Namespace) -> list[str]:
 def _setup_token(args: argparse.Namespace, console: Console, token_env: str) -> Optional[str]:
     """Step 2: take the token from ``--access-token`` or a masked prompt and persist it."""
     _step(console, 2, "Provide your access token")
-    token = (args.access_token or "").strip() or masked_secret_prompt(f"  Paste access token ({token_env}): ").strip()
+    token = resolve_secret_arg(args.access_token) or masked_secret_prompt(f"  Paste access token ({token_env}): ").strip()
     if not token:
         console.print("  [red]Empty token, aborting.[/red]")
         return None

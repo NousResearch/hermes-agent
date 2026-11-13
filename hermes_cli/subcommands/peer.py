@@ -282,7 +282,9 @@ def _peer_add(args) -> int:
     peers = _load_peers()
     peers[name] = {"url": url.rstrip("/"), **({"note": args.note.strip()} if getattr(args, "note", "") else {})}
     _save_peers(peers)
-    key = (getattr(args, "key", "") or "").strip()
+    from hermes_cli.secret_prompt import resolve_secret_arg
+
+    key = resolve_secret_arg(getattr(args, "key", ""), f"Peer '{name}' API_SERVER_KEY (Enter to skip): ")
     if key:
         from hermes_cli.config import save_env_value
 
@@ -291,7 +293,7 @@ def _peer_add(args) -> int:
     else:
         print(
             f"Peer '{name}' saved ({url}). No key given — set the peer's API_SERVER_KEY with:\n"
-            f"  hermes peer add {name} --url {url} --key <key>\n"
+            f"  hermes peer add {name} --url {url}   (prompts for it; or --key - < keyfile)\n"
             f"  (or add {_peer_key_env(name)}=<key> to ~/.hermes/.env)")
     return 0
 
@@ -311,7 +313,7 @@ def _peer_remove(args) -> int:
 def _peer_list(args) -> int:
     peers = _load_peers()
     if not peers:
-        print("No peers registered. Add one: hermes peer add <name> --url http://host:port --key <API_SERVER_KEY>")
+        print("No peers registered. Add one: hermes peer add <name> --url http://host:port (prompts for its API_SERVER_KEY)")
         return 0
     for name in sorted(peers):
         entry = peers[name] if isinstance(peers[name], dict) else {}
@@ -499,7 +501,8 @@ def build_peer_parser(subparsers) -> None:
     add_p = peer_sub.add_parser("add", aliases=["set"], help="Register (or update) a peer gateway")
     add_p.add_argument("name", help="Peer name (lowercase slug, e.g. spark, homelab)")
     add_p.add_argument("--url", required=True, help="Peer gateway base URL, e.g. http://spark.lan:8377")
-    add_p.add_argument("--key", default="", help="The peer's API_SERVER_KEY (stored in ~/.hermes/.env)")
+    add_p.add_argument("--key", default="", help="The peer's API_SERVER_KEY, stored in ~/.hermes/.env. Omit to be prompted "
+                       "(masked); '-' reads it from stdin so it stays out of ps and shell history")
     add_p.add_argument("--note", default="", help="Optional description")
 
     peer_sub.add_parser("list", aliases=["ls"], help="List registered peers")

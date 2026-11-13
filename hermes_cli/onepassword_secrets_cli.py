@@ -33,6 +33,7 @@ from hermes_cli._secrets_common import (
     yn,
 )
 from hermes_cli.config import get_env_path, load_config, save_config, save_env_value
+from hermes_cli.secret_prompt import resolve_secret_arg
 
 _DEFAULT_TOKEN_ENV = "OP_SERVICE_ACCOUNT_TOKEN"
 _DOCS_URL = "https://developer.1password.com/docs/cli/get-started/"
@@ -61,12 +62,12 @@ def register_cli(parent_parser: argparse.ArgumentParser) -> None:
         ("setup", "Verify the op CLI, set account / token env var, and enable", cmd_setup, (
             arg("--account", "1Password account shorthand or sign-in address (op --account)"),
             arg("--token-env", f"Env var holding a service-account token (default {_DEFAULT_TOKEN_ENV})"),
-            arg("--token", "Service-account token to store in .env non-interactively"),
+            arg("--token", "Service-account token to store in .env non-interactively ('-' reads it from stdin)"),
             arg("--binary-path", "Absolute path to the op binary (skips PATH lookup)"),
         )),
         ("status", "Show config + op binary + references", cmd_status, ()),
         ("token", "Rotate the service-account token: validate and store it in .env", cmd_token, (
-            arg("--token", "Provide the new token non-interactively (default: masked prompt)"),
+            arg("--token", "Provide the new token non-interactively; '-' reads it from stdin (default: masked prompt)"),
             flag("--no-verify", "Store without probing 1Password first (not recommended)"),
         )),
         ("set", "Map an env var to an op:// reference", cmd_set, (
@@ -123,7 +124,7 @@ def cmd_setup(args: argparse.Namespace) -> int:
     token_env = (args.token_env or op_cfg.get("service_account_token_env") or _DEFAULT_TOKEN_ENV).strip()
     op_cfg["service_account_token_env"] = token_env
 
-    token = (args.token or "").strip()
+    token = resolve_secret_arg(args.token)
     if token:
         save_env_value(token_env, token)
         os.environ[token_env] = token

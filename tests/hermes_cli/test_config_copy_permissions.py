@@ -81,3 +81,32 @@ def test_distribution_install(home, tmp_path):
     plan = install_distribution(str(staged), name="dist")
 
     assert _mode(plan.target_dir / "config.yaml") == 0o660
+
+
+def test_snapshot_restore_env_is_owner_only(home):
+    from hermes_cli.backup import create_quick_snapshot, restore_quick_snapshot
+    (home / ".env").write_text("OPENAI_API_KEY=" + "sk-" + "fake\n", encoding="utf-8")
+    snap_id = create_quick_snapshot(hermes_home=home)
+    os.chmod(home / "state-snapshots" / snap_id / ".env", 0o666)
+
+    assert restore_quick_snapshot(snap_id, hermes_home=home)
+
+    assert _mode(home / ".env") == 0o600
+
+
+def test_profile_import(home, tmp_path):
+    import tarfile
+    from hermes_cli.profiles import import_profile
+    src = tmp_path / "src" / "evil"
+    src.mkdir(parents=True)
+    for name, body in (("config.yaml", "model:\n  default: x\n"), (".env", "A=" + "b\n")):
+        (src / name).write_text(body, encoding="utf-8")
+        os.chmod(src / name, 0o666)
+    archive = tmp_path / "evil.tar.gz"
+    with tarfile.open(archive, "w:gz") as tf:
+        tf.add(src, arcname="evil")
+
+    profile_dir = import_profile(str(archive))
+
+    assert _mode(profile_dir / "config.yaml") == 0o660
+    assert _mode(profile_dir / ".env") == 0o600

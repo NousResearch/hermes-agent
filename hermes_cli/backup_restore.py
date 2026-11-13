@@ -396,6 +396,8 @@ def _restore_snapshot_entry(rel: str, src: Path, dst: Path) -> bool:
             shutil.copy2(src, dst)
             if dst.name == "config.yaml":  # the snapshot copy carries the mode it was taken with
                 drop_other_access(dst)
+            elif dst.name == ".env":  # secrets file: owner-only, as `hermes import` leaves it
+                os.chmod(dst, 0o600)
         return True
     except (OSError, PermissionError) as exc:
         logger.error("Failed to restore %s: %s", rel, exc)

@@ -30,3 +30,33 @@ def test_result_record_rejects_tui_selected_by_configuration(monkeypatch, capsys
 
     assert exc.value.code == 2
     assert "classic CLI" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("quiet", "query"),
+    [
+        (False, "machine task"),
+        (True, None),
+    ],
+)
+def test_result_record_rejects_invalid_classic_mode_with_usage_exit(
+    monkeypatch, capsys, quiet, query
+):
+    args = SimpleNamespace(
+        emit_result_record=True,
+        quiet=quiet,
+        query=query,
+        model=None,
+        toolsets=None,
+    )
+    monkeypatch.setattr(main_mod, "_resolve_use_tui", lambda _args: False)
+    monkeypatch.setattr(main_mod, "_has_any_provider_configured", lambda: True)
+    monkeypatch.setattr(main_mod, "_termux_should_prefetch_update_check", lambda: False)
+    monkeypatch.setattr(main_mod, "_sync_bundled_skills_for_startup", lambda: None)
+    monkeypatch.setattr(main_mod, "_pin_kanban_board_env", lambda: None)
+
+    with pytest.raises(SystemExit) as exc:
+        main_mod.cmd_chat(args)
+
+    assert exc.value.code == 2
+    assert "quiet single-query mode" in capsys.readouterr().err

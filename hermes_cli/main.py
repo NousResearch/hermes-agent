@@ -2224,6 +2224,16 @@ def cmd_chat(args):
         )
         raise SystemExit(2)
 
+    if getattr(args, "emit_result_record", False) and (
+        not getattr(args, "quiet", False) or not getattr(args, "query", None)
+    ):
+        print(
+            "Error: --emit-result-record requires quiet single-query mode "
+            "(-q/--query with -Q/--quiet)",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+
     _apply_safe_mode(args)
 
     # Resolve --continue into --resume with the latest session or by name

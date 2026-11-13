@@ -132,6 +132,29 @@ models** section on the same page searches all of Hugging Face:
   your library without copying it (the original stays where it is), and
   it's usable immediately.
 
+### Derivatives of catalog models
+
+A fine-tune, abliteration or re-quant of a catalog model is the same
+architecture with the same companions, but its file name matches no catalog
+build, so Hermes launches it on the generic path: no MTP draft head, no vision
+projector, generic buffers and a more pessimistic memory estimate. To have it
+inherit the catalog build's launch policy instead, declare the relationship in
+`<hermes home>/runtimes/llamacpp/catalog_aliases.json`:
+
+```json
+{
+  "Huihui-Qwen3.8-Flash-Next-abliterated-v2-UD-IQ4_XS": "Qwen3.8-Flash-Next-UD-IQ4_XS"
+}
+```
+
+Keys are the staged model id (the file stem without its `-00001-of-00003`
+part); values are the catalog model id the derivative should launch like. The
+derivative's own weights are still read from its own file — only the policy is
+inherited — and the base's companion assets must already be downloaded. The
+file is machine-scoped (like the window overrides beside it) and read on each
+runtime start; a malformed entry is logged and ignored rather than guessed at.
+Deleting the derivative never removes the base's assets.
+
 ## Using your own llama-server
 
 If a llama-server is already running on your machine, Hermes detects it

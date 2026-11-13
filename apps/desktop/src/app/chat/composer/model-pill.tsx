@@ -15,6 +15,7 @@ import { useI18n } from '@/i18n'
 import { ChevronDown } from '@/lib/icons'
 import { formatModelPillLabel, providerDisplayName } from '@/lib/model-status-label'
 import { cn } from '@/lib/utils'
+import { $modelSwitchPending } from '@/store/model-switch-pending'
 import { $currentModelSource, setModelPickerOpen } from '@/store/session'
 
 import { useComposerModelPillLabel } from './contrib'
@@ -68,10 +69,14 @@ export function ModelPill({
   const reasoningEffort = useStore(view.$reasoningEffort)
   const modelSource = useStore($currentModelSource)
   const runtimeId = useStore(view.$runtimeId)
+  const switchPendingBySession = useStore($modelSwitchPending)
   const [open, setOpen] = useState(false)
   const restoreSelection = useRef<(() => void) | null>(null)
   const scope = useComposerScope()
   const hasLiveMenu = Boolean(model.modelMenuContent)
+  // A live `config.set model` round trip: the name is not settled yet, so it
+  // gives way to a spinner. A draft pick never waits on the gateway.
+  const switchPending = Boolean(runtimeId && switchPendingBySession[runtimeId])
 
   // The `composer.modelPicker` hotkey, routed to exactly one surface (the pane
   // under the pointer, else the active composer — see requestModelMenuToggle).
@@ -143,10 +148,10 @@ export function ModelPill({
     <ChevronDown className="size-3.5 shrink-0 opacity-70" />
   ) : (
     <>
-      {currentModel.trim() ? (
-        <span className="truncate">{pillLabel ?? formatModelPillLabel(currentModel, { fastMode, serviceTier })}</span>
-      ) : (
+      {switchPending || !currentModel.trim() ? (
         <GlyphSpinner className="opacity-50" spinner="braille" />
+      ) : (
+        <span className="truncate">{pillLabel ?? formatModelPillLabel(currentModel, { fastMode, serviceTier })}</span>
       )}
       {pinnedOverride && (
         <span
@@ -169,9 +174,13 @@ export function ModelPill({
       )
     : PILL
 
-  const baseTitle = currentProvider
-    ? copy.modelTitle(providerDisplayName(currentProvider), currentModel || copy.modelNone)
-    : copy.switchModel
+  // While pending, neither the tooltip nor the accessible name may name the
+  // model the switch is replacing.
+  const baseTitle = switchPending
+    ? copy.switchModel
+    : currentProvider
+      ? copy.modelTitle(providerDisplayName(currentProvider), currentModel || copy.modelNone)
+      : copy.switchModel
 
   const title = pinnedOverride ? `${baseTitle} — ${copy.modelPinned}` : baseTitle
 

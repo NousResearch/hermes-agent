@@ -54,3 +54,30 @@ class TestContextRouteMismatchNamedCustomProvider:
             )
             is True
         )
+
+
+class TestContextRouteMismatchCopilotHosts:
+    """The Copilot token exchange swaps api.githubcopilot.com for the account's host."""
+
+    def test_exchanged_copilot_host_keeps_pin(self):
+        for host in ("individual", "business", "enterprise"):
+            assert (
+                _context_route_mismatch(
+                    "https://api.githubcopilot.com",
+                    f"https://api.{host}.githubcopilot.com",
+                    "copilot",
+                    "copilot",
+                )
+                is False
+            )
+
+    def test_copilot_to_other_host_still_clears_pin(self):
+        assert (
+            _context_route_mismatch(
+                "https://api.githubcopilot.com",
+                "https://api.openai.com/v1",
+                "copilot",
+                "openai",
+            )
+            is True
+        )

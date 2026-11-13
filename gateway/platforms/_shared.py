@@ -407,7 +407,11 @@ def refresh_live_gate_extra(adapter: Any, keys: Iterable[str], on_reload: Option
         if version == adapter._live_gate_version:
             return False
         with _owner_scope(home) as own_scope:
-            return _reload_live_gate_extra(adapter, keys, version, on_reload, acknowledge=own_scope)
+            # Provisional only for the LAUNCH profile bound from another scope: its YAML lists live in the
+            # process env, which a bound scope's bridge skips. A secondary owner's load is complete.
+            from hermes_constants import get_routing_process_hermes_home
+            final = own_scope or str(get_routing_process_hermes_home()) != home
+            return _reload_live_gate_extra(adapter, keys, version, on_reload, acknowledge=final)
 
 
 def _reload_live_gate_extra(adapter: Any, keys: Iterable[str], version: tuple,

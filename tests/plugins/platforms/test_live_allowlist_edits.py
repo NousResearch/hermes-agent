@@ -159,6 +159,35 @@ def test_a_gate_checked_under_another_profiles_scope_keeps_its_own_lists(tmp_pat
     assert owner_verdict is True  # the owner's own edit still applies live
 
 
+def test_a_secondary_owners_edit_seen_under_a_routed_scope_is_loaded_once(tmp_path, monkeypatch):
+    """A routed voice loop gates the secondary owner's bot under another scope on every utterance; once
+    an edit is loaded there, later checks must not reload the unchanged file each time."""
+    import gateway.config as gateway_config
+    from agent.secret_scope import reset_multiplex_context, set_multiplex_context
+    from gateway.run import _profile_runtime_scope
+
+    launch, owner, routed = (tmp_path / n for n in ("default", "a", "b"))
+    for home in (launch, owner, routed):
+        home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(launch))
+    _write(owner, {"allowed_roles": ["2"]})
+    _write(routed, {"allowed_roles": ["7"]})
+    token = set_multiplex_context(True)
+    try:
+        with _profile_runtime_scope(owner):
+            adapter, guild, member = _connected_discord(roles=(9,))
+        _write(owner, {"allowed_roles": ["9"]})
+        calls = []
+        real = gateway_config.load_gateway_config
+        monkeypatch.setattr(gateway_config, "load_gateway_config", lambda **kw: calls.append(1) or real(**kw))
+        with _profile_runtime_scope(routed):
+            verdicts = [_allowed(adapter, guild, member) for _ in range(5)]
+    finally:
+        reset_multiplex_context(token)
+    assert verdicts == [True] * 5
+    assert len(calls) == 1
+
+
 def test_unreadable_edit_keeps_the_last_good_lists(_home, caplog):
     _write(_home, {"allowed_roles": ["2"]})
     adapter, guild, member = _connected_discord()

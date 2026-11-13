@@ -1258,6 +1258,7 @@ platform:
       send: "✅ Invia"
       selected_count: "Selezionate: {count}"
       select_one: "Seleziona prima almeno un'opzione."
+      toggle_failed: "Impossibile aggiornare la selezione: tocca di nuovo."
       expired_toast: "⚠️ Questa richiesta è scaduta — usa /retry."
       expired_body: "⚠️ Questa domanda è scaduta o la sessione è stata reimpostata — usa /retry."
       type_answer: "✏️ Digita la tua risposta nella chat."

@@ -52,16 +52,18 @@ async def handle_multi_token(adapter: Any, query: Any, clarify_id: str, token: s
     if not is_toggle and token != "go":
         return False
     entry = pending_multi_entry(clarify_id)
+    if entry is None:  # timed out, answered by text, or reset: retire the card instead of a dead keyboard
+        adapter._clarify_state.pop(clarify_id, None)
+        adapter._clarify_multi.pop(clarify_id, None)
+        await adapter._notify_clarify_expired(query, user_display)
+        return True
     idx = int(token[1:]) if is_toggle else -1
-    if entry is None or (is_toggle and not 0 <= idx < len(entry.choices)):
+    if is_toggle and not 0 <= idx < len(entry.choices):
         await answer_callback(query, _toast("platform.telegram.prompt.invalid_choice"))
         return True
     selected = adapter._clarify_multi.setdefault(clarify_id, set())
     if is_toggle:
-        selected.symmetric_difference_update({idx})
-        await query.edit_message_reply_markup(
-            reply_markup=multi_keyboard(adapter, clarify_id, len(entry.choices), selected))
-        await answer_callback(query, _toast("platform.telegram.prompt.selected_count", count=len(selected)))
+        await _toggle(adapter, query, clarify_id, len(entry.choices), selected, idx)
         return True
     # The tool strips the "(Recommended)" display label per item when it decodes the array.
     labels = [str(entry.choices[i]).strip() for i in sorted(selected) if i < len(entry.choices)]
@@ -71,6 +73,23 @@ async def handle_multi_token(adapter: Any, query: Any, clarify_id: str, token: s
     await resolve_clarify_choice(adapter, query, clarify_id, prompt, json.dumps(labels, ensure_ascii=False),
                                  user_display, shown=", ".join(labels))
     return True
+
+
+async def _toggle(adapter: Any, query: Any, clarify_id: str, count: int, selected: set[int], idx: int) -> None:
+    """Flip *idx* only once Telegram shows the new ticks, so Send never submits a pick the card hides."""
+    from telegram.error import BadRequest, NetworkError
+    from plugins.platforms.telegram.adapter import _toast
+    from plugins.platforms.telegram.callback_answer import answer_callback
+    try:
+        await query.edit_message_reply_markup(reply_markup=multi_keyboard(adapter, clarify_id, count, selected ^ {idx}))
+    except BadRequest as exc:  # refused: the card still shows the old ticks, so keep the old selection
+        logger.warning("Telegram clarify toggle refused (id=%s): %s", clarify_id, exc)
+        await answer_callback(query, _toast("platform.telegram.prompt.toggle_failed"))
+        return
+    except NetworkError as exc:  # a timeout may still have landed the edit: keep the flip, answer the tap
+        logger.warning("Telegram clarify toggle edit unconfirmed (id=%s): %s", clarify_id, exc)
+    selected.symmetric_difference_update({idx})
+    await answer_callback(query, _toast("platform.telegram.prompt.selected_count", count=len(selected)))
 
 
 async def resolve_clarify_choice(adapter: Any, query: Any, clarify_id: str, prompt: Any, resolved_text: str,

@@ -1275,6 +1275,7 @@ platform:
       send: "✅ Küldés"
       selected_count: "Kiválasztva: {count}"
       select_one: "Előbb válassz legalább egy lehetőséget."
+      toggle_failed: "Nem sikerült frissíteni a kijelölést — koppints újra."
       expired_toast: "⚠️ Ez a kérdés lejárt — kérd újra: /retry."
       expired_body: "⚠️ Ez a kérdés lejárt vagy a munkamenet alaphelyzetbe állt — kérd újra: /retry."
       type_answer: "✏️ Írd be a választ a csevegésbe."

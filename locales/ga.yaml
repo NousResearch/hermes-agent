@@ -1258,6 +1258,7 @@ platform:
       send: "✅ Seol"
       selected_count: "Roghnaithe: {count}"
       select_one: "Roghnaigh rogha amháin ar a laghad ar dtús."
+      toggle_failed: "Níorbh fhéidir an rogha a nuashonrú — tapáil arís."
       expired_toast: "⚠️ Tá an leid seo imithe in éag — rith /retry le do thoil."
       expired_body: "⚠️ Tá an cheist seo imithe in éag nó athshocraíodh an seisiún — rith /retry le do thoil."
       type_answer: "✏️ Clóscríobh do fhreagra sa chomhrá."

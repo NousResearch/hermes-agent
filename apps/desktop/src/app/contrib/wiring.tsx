@@ -65,6 +65,7 @@ import {
   newSessionInProfile,
   normalizeProfileKey
 } from '@/store/profile'
+import { cancelProfileNavigationRestore } from '@/store/profile-navigation'
 import { $newProjectSessionRequest, $startWorkSessionRequest, followActiveSessionCwd } from '@/store/projects'
 import { $backendRestartRequest, $routeRequest } from '@/store/recovery-requests'
 import {
@@ -171,6 +172,7 @@ import { useDesktopIntegrations } from './hooks/use-desktop-integrations'
 import { useDesktopMetrics } from './hooks/use-desktop-metrics'
 import { usePetBridge } from './hooks/use-pet-bridge'
 import { PreviewSigninsBoot } from './hooks/use-preview-signins-boot'
+import { useProfileNavigationRestore } from './hooks/use-profile-navigation-restore'
 import { useQuickEntryBridge } from './hooks/use-quick-entry-bridge'
 import { useSessionTileDelegate } from './hooks/use-session-tile-delegate'
 import { McpInstallDeepLinkDialog } from './mcp-install-deeplink-dialog'
@@ -831,6 +833,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
       emitGatewayEvent(event)
 
       if (event.type === 'wake.detected') {
+        cancelProfileNavigationRestore()
         const payload = event.payload as { profile?: null | string; start_new_session?: boolean } | undefined
 
         // Free the Mac mic so voice conversation can open getUserMedia.
@@ -963,6 +966,15 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   const resumeLastSession = configRecord.isPending
     ? undefined
     : (configRecord.data?.display as { resume_last_session?: unknown } | undefined)?.resume_last_session !== false
+
+  useProfileNavigationRestore({
+    activeProfile: normalizeProfileKey(activeGatewayProfile),
+    locationPathname: location.pathname,
+    navigate,
+    profileReady: boot.phase === 'renderer.ready',
+    sessions,
+    resumeExhaustedSessionId
+  })
 
   useDesktopIntegrations({
     activeProfile: normalizeProfileKey(activeGatewayProfile),

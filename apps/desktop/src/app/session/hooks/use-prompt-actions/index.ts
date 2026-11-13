@@ -28,6 +28,7 @@ import { resetSessionBackground } from '@/store/composer-status'
 import { confirm } from '@/store/confirm'
 import { clearNotifications, notify, notifyError } from '@/store/notifications'
 import { clearPreviewArtifacts } from '@/store/preview-status'
+import { cancelProfileNavigationRestore } from '@/store/profile-navigation'
 import { clearAllPrompts } from '@/store/prompts'
 import {
   $busy,
@@ -696,6 +697,7 @@ export function usePromptActions({
 
   const submitText = useCallback(
     async (rawText: string, options?: SubmitTextOptions) => {
+      cancelProfileNavigationRestore()
       const visibleText = sanitizeComposerInput(rawText).trim()
       const attachments = options?.attachments ?? $composerAttachments.get()
 

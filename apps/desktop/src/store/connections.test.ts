@@ -194,6 +194,17 @@ describe('connection registry cache', () => {
     expect(setLastUsed).toHaveBeenCalledWith('homelab')
   })
 
+  it('yields the boot registry restore to the fresh-session bump from a profile rail pick', async () => {
+    const pending = deferred<DesktopConnectionsRegistry>()
+    list.mockReturnValueOnce(pending.promise)
+    $connection.set({ connectionId: 'local', mode: 'local' })
+    const boot = initializeConnectionsRegistry()
+    $freshSessionRequest.set($freshSessionRequest.get() + 1)
+    pending.resolve({ ...registry, lastUsed: 'homelab', launchMode: 'last-used' })
+    await boot
+    expect(ensureGatewayAgent).not.toHaveBeenCalled()
+  })
+
   it('preserves the established Primary-source launch behavior by default', async () => {
     list.mockResolvedValueOnce({ ...registry, lastUsed: 'homelab', launchMode: 'primary' })
     $connection.set({ connectionId: 'local', mode: 'local' })

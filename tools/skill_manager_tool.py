@@ -15,7 +15,6 @@ import logging
 import re
 import shutil
 from collections import Counter
-from dataclasses import replace
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -35,7 +34,9 @@ from tools.skill_manager_guards import (
     _validate_delete_target, _is_background_review, _refusal as _err)
 from tools.skill_manager_batch import (
     _PATCH_EITHER_OR, _PATCH_NEEDS_NEW_STRING, _PATCH_NEEDS_OLD_STRING, _op_shape_error, _skill_manage_batch)
-from tools.skills_guard import _determine_verdict, scan_skill, should_allow_install, format_scan_report
+from tools.skill_manager_scan import (
+    _background_origin, _introduced_findings, _replaying_background_write, _scan_baseline)
+from tools.skills_guard import scan_skill, should_allow_install, format_scan_report
 
 logger = logging.getLogger(__name__)
 
@@ -49,60 +50,10 @@ def _guard_agent_created_enabled() -> bool:
         return False
 
 
-# Set while replaying an approved write that the background-review fork staged.
-_replaying_background_write: _ctxvars.ContextVar[bool] = _ctxvars.ContextVar(
-    "replaying_background_write", default=False)
-
-
-def _background_origin() -> bool:
-    return _is_background_review() or _replaying_background_write.get()
-
-
 def _scan_required() -> bool:
     """Opt-in for foreground writes, always on for the background-review fork: the fork's whitelist
     is memory+skills, so the terminal() rationale for the opt-in does not apply to it."""
     return _guard_agent_created_enabled() or _background_origin()
-
-
-def _finding_keys(skill_dir: Path, findings) -> list[tuple[str, str, str]]:
-    """(file, pattern_id, sha256 of the full source line) per finding. Not the line number (an edit
-    above a finding moves it) and not ``f.match``, which the scanner truncates on long lines, so a
-    kept prefix with a new tail would match. Findings without a source line key on their match."""
-    lines: dict[str, list[bytes]] = {}
-    keys = []
-    for f in findings:
-        if f.line > 0 and f.file not in lines:
-            try:
-                lines[f.file] = re.split(rb"\r\n|\r|\n", (skill_dir / f.file).read_bytes())
-            except OSError:
-                lines[f.file] = []
-        src = lines.get(f.file, [])
-        text = src[f.line - 1].strip() if 0 < f.line <= len(src) else f.match.encode("utf-8", "replace")
-        keys.append((f.file, f.pattern_id, hashlib.sha256(text).hexdigest()))
-    return keys
-
-
-def _scan_baseline(skill_dir: Path) -> tuple[Optional[Counter], Optional[str]]:
-    """Pre-write findings for a background-origin write, so only findings the write introduces block
-    it (bundled skills already carry flagged examples the fork did not write). (baseline, error)."""
-    if not _background_origin():
-        return None, None
-    try:
-        return Counter(_finding_keys(skill_dir, scan_skill(skill_dir, source="agent-created").findings)), None
-    except Exception as e:  # a required scan that cannot finish must not allow the write
-        logger.warning("Security scan failed for %s: %s", skill_dir, e, exc_info=True)
-        return None, f"Security scan could not complete, so this skill was blocked: {e}"
-
-
-def _introduced_findings(skill_dir: Path, result, baseline: Counter):
-    remaining = Counter(baseline)
-    new = []
-    for f, key in zip(result.findings, _finding_keys(skill_dir, result.findings)):
-        if remaining[key] > 0:
-            remaining[key] -= 1
-        else:
-            new.append(f)
-    return replace(result, findings=new, verdict=_determine_verdict(new))
 
 
 def _security_scan_skill(skill_dir: Path, baseline: Optional[Counter] = None) -> Optional[str]:

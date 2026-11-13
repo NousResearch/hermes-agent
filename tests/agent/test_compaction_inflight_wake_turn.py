@@ -98,3 +98,15 @@ def test_compress_restates_the_live_wake_not_an_older_row():
         _text(m) for m in compressed[idx + 1:] if m.get("role") == "user")
     assert LIVE_WAKE in restated
     assert OLD_WAKE not in restated and HUMAN_ASK not in restated
+
+def test_live_wake_survives_later_synthetic_todo_snapshot():
+    """A post-compaction TODO snapshot is not a newer real user task."""
+    messages = _transcript()
+    messages.append({
+        "role": "user",
+        "content": "[ACTIVE TODOS] Continue the wake task.",
+        "_todo_snapshot_synthetic": True,
+    })
+    messages.extend(_tool_pairs(1, start=40))
+    picked = ContextCompressor._find_inflight_user_task(messages)
+    assert picked is not None and LIVE_WAKE in _text(picked)

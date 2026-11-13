@@ -4715,6 +4715,7 @@ Write only the summary body. Do not include any preamble or prefix."""
                 not newest_user_seen
                 and isinstance(msg, dict)
                 and msg.get("role") == "user"
+                and _is_real_user_message(msg)
             ):
                 newest_user_seen = True
                 # A machinery wake turn (kanban/background-process/delegation
@@ -4723,9 +4724,9 @@ Write only the summary body. Do not include any preamble or prefix."""
                 # so without this the scan skipped the live wake and restated an
                 # OLDER user row (an earlier human ask or a stale notification)
                 # as "the active request" -- the model then resumed the wrong
-                # task. Only the newest user row qualifies: older notifications
+                # task. Only the newest real user row qualifies: older notifications
                 # stay excluded exactly as before.
-                if msg.get("display_kind") in _MACHINERY_DISPLAY_KINDS and _is_real_user_message(msg):
+                if msg.get("display_kind") in _MACHINERY_DISPLAY_KINDS:
                     last_user_idx = i
                     break
             # _is_real_user_message also rejects metadata-flagged scaffolding

@@ -50,6 +50,12 @@ _DOCKER_SEARCH_PATHS = [
 _docker_executable: Optional[str] = None  # resolved once, cached
 _ENV_VAR_NAME_RE = _SHELL_ENV_NAME_RE
 _ENVIRONMENT_LABEL_KEY = "hermes-environment"
+# Seconds a `docker version` liveness probe may take. 5 s was too tight for Docker Desktop on
+# Windows: the CLI cold start plus the Desktop named-pipe proxy routinely exceeded it, the probe
+# then killed the client mid-request and, on Desktop releases before 4.97, that wedged the pipe for
+# every later client. A stopped daemon still fails fast with a non-zero exit, so the longer cap only
+# matters when the daemon is slow, not when it is absent.
+DOCKER_PROBE_TIMEOUT = 20
 # Stamped at create time on per-workspace persistent containers (task key ``<base>:ws:<digest>``)
 # with the digest as its value. The orphan reaper reads it to spare a container the idle reaper
 # stopped on purpose; ``hermes-task-id`` cannot serve, it is truncated to 63 chars.
@@ -510,7 +516,7 @@ def _ensure_docker_available() -> None:
                   "Install Docker and ensure the 'docker' command is available.",
             hint="Install Docker (or fix PATH) and retry, or run `hermes setup terminal` to switch to Local.")
     try:
-        result = run_capture([docker_exe, "version"], timeout=5)
+        result = run_capture([docker_exe, "version"], timeout=DOCKER_PROBE_TIMEOUT)
     except FileNotFoundError:
         raise _docker_unavailable(
             "Docker backend selected but the resolved docker executable '%s' could not be executed.",

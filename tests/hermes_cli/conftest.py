@@ -5,6 +5,19 @@ from __future__ import annotations
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _disable_gateway_job_handoff(monkeypatch):
+    """Keep unrelated tests out of the real Task Scheduler.
+
+    The #127089 gateway handoff delegates to Task Scheduler whenever the test
+    process is inside a Windows Job Object (common on Windows CI). Tests that
+    exercise the handoff explicitly delete this env var (or monkeypatch
+    ``process_is_in_job``); everything else keeps the legacy in-process watcher
+    so its mocks stay meaningful.
+    """
+    monkeypatch.setenv("HERMES_GATEWAY_DISABLE_JOB_HANDOFF", "1")
+
+
 @pytest.fixture
 def all_assignees_spawnable(monkeypatch):
     """Pretend every assignee maps to a real Hermes profile.

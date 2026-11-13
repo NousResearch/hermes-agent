@@ -28,6 +28,7 @@ __all__ = [
     "noninteractive_repo_git_env",
     "pid_exists_stdlib",
     "pid_is_hermes",
+    "process_is_in_job",
     "resolve_node_command",
     "restore_ambient_pythonpath",
     "selected_git_env",
@@ -273,6 +274,46 @@ def windows_detach_popen_kwargs() -> dict:
         return {"creationflags": windows_detach_flags()}
     # detached-spawn: ok — the detach helper itself; every call site is checked on its own
     return {"start_new_session": True}
+
+
+def process_is_in_job() -> bool:
+    """True when this process sits inside any Windows Job Object; False elsewhere.
+
+    Used by the gateway start/restart paths to decide whether a plain ``Popen`` can be
+    trusted. ``CREATE_BREAKAWAY_FROM_JOB`` is rejected when the enclosing job forbids
+    breakaway, and the current fallback then leaves the child inside a job that the
+    updater/desktop tears down (#127089). Task Scheduler starts processes outside the
+    caller's job, so those paths can hand the spawn to a transient task instead.
+
+    ``IsProcessInJob(GetCurrentProcess(), NULL, &result)`` with a NULL job handle
+    answers "in any job". Any probe failure returns False (keep the existing behavior).
+    """
+    if not IS_WINDOWS:
+        return False
+    try:
+        import contextlib
+        import ctypes
+
+        windll = getattr(ctypes, "windll", None)
+        if windll is None:
+            return False
+        kernel32 = getattr(windll, "kernel32", None)
+        if kernel32 is None:
+            return False
+        # Pin signatures best-effort: test fakes may be plain Python callables.
+        with contextlib.suppress(Exception):
+            kernel32.GetCurrentProcess.restype = ctypes.c_void_p
+        with contextlib.suppress(Exception):
+            kernel32.IsProcessInJob.argtypes = [
+                ctypes.c_void_p, ctypes.c_void_p, ctypes.POINTER(ctypes.c_int),
+            ]
+        with contextlib.suppress(Exception):
+            kernel32.IsProcessInJob.restype = ctypes.c_int
+        inside = ctypes.c_int(0)
+        ok = kernel32.IsProcessInJob(kernel32.GetCurrentProcess(), None, ctypes.byref(inside))
+        return bool(ok) and bool(inside.value)
+    except Exception:
+        return False
 
 
 # Read-only probes must never lazy-fetch. In a partial (blobless/treeless) clone a missing object makes

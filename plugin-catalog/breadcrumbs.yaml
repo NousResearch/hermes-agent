@@ -3,30 +3,7 @@ title: breadcrumbs
 repo: https://github.com/breadcrumbs-agency/hermes-breadcrumb-plugin
 sha: "9992474031cc633cfb93ac9fbd8d0da742073b9f"
 version: "0.4.2"
-description: >-
-  Memory and a context engine in which every line has an address. Each turn,
-  tool step and tool result is a crumb in a content-addressed, append-only
-  store (CRC32C ids, Merkle commits). One tool, crumb(id, level), shows any
-  memory from a one-line handle (0) to its exact bytes (1). crumb_find searches
-  with BM25: no vectors, no model. Each recall, find, open and fold writes a
-  record of what the model saw. With context.engine breadcrumbs, a long chat
-  folds into a layer of crumbs with no model call, and the model opens any
-  folded turn by its id. /island gives each codebase its own profile. A
-  read-only explorer shows the sessions, the zoom and the context of each turn.
-  Disclosure: the data stays in $HERMES_HOME/breadcrumbs/; each turn is kept
-  word for word, append-only. No network calls, no credentials and no telemetry
-  by default (the hive sends crumb_find queries only to peers that config.json
-  lists). An optional background thread runs the user's local llama-completion
-  on a local GGUF model after a span or a session closes
-  (BREADCRUMBS_SUMMARIZE=0 turns it off). /island, after a Yes, runs
-  `hermes profile create --clone-from` and `hermes config set terminal.cwd` as
-  a child process (stdin closed, 300 s) and asks Hermes to /quit; the clone
-  copies the profile's keys, plugins and memory files. The dashboard API and
-  the log views read config.yaml and state.db of profiles, read-only.
-  transform_llm_output adds one offer line to a reply when a chat mixes
-  codebases. CLI commands that the user runs: serve (a read-only page on
-  127.0.0.1 with a token), ingest-hermes (reads state.db read-only), push and
-  pull (the local ipfs binary). One dependency: google-crc32c.
+description: "Memory and a context engine in which every line has an address. Each turn, tool step and tool result is a crumb in a content-addressed, append-only store (CRC32C ids, Merkle commits). One tool, crumb(id, level), shows any memory from a one-line handle (0) to its exact bytes (1). crumb_find searches with BM25: no vectors, no model. Each recall, find, open and fold writes a record of what the model saw. With context.engine breadcrumbs, a long chat folds into a layer of crumbs with no model call, and the model opens any folded turn by its id. /island gives each codebase its own profile. A read-only explorer shows the sessions, the zoom and the context of each turn. Disclosure — Every turn, tool step and tool result is stored word for word, append-only, in $HERMES_HOME/breadcrumbs/. When config.json lists hive peers, crumb_find queries go to those peers and crumb fetches blobs from them. An optional background thread runs your local llama-completion binary on a local GGUF model after a span or session closes, with a minimal environment (BREADCRUMBS_SUMMARIZE=0 turns it off). /island, after you confirm, runs `hermes profile create --clone-from` (copying the profile's keys, plugins and memory) and `hermes config set terminal.cwd`, then ends the chat. The dashboard and log views read config.yaml and state.db of your profiles read-only, and the memory slot setup writes non-secret values to config.yaml."
 maintainer: jnorthrup
 tier: community
 category: memory

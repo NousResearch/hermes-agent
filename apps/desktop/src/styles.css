@@ -61,14 +61,28 @@
   *::after {
     backdrop-filter: none !important;
     -webkit-backdrop-filter: none !important;
-    /* Static mask-image fades (scroll edges, HUD viewport, streaming code
-       cards, clamped text, pane tabs, shimmer text) each build a
-       CoreAnimation filter layer (ImagingNode). WindowServer re-walks and
-       re-renders that nested chain every display refresh — measured
-       ~10-15% of a core at 120 Hz on the built-in panel, independent of
-       pixel count, window count, or app count. The fade is a texture, not
-       the content: every masked surface keeps its own background, so the
-       ramp disappears but nothing becomes unreadable. */
+  }
+
+  /* Static mask-image fades (scroll edges, HUD viewport, streaming code
+     cards, clamped text, pane tabs, shimmer text) each build a
+     CoreAnimation filter layer (ImagingNode). WindowServer re-walks and
+     re-renders that nested chain every display refresh — measured
+     ~10-15% of a core at 120 Hz on the built-in panel, independent of
+     pixel count, window count, or app count. The fade is a texture, not
+     the content: every masked surface keeps its own background, so the
+     ramp disappears but nothing becomes unreadable.
+
+     Only the fade rules are listed. Structural masks — the ring cut-outs in
+     .arc-border, .kanban-arc and the tour highlight — use
+     `mask-composite: exclude` with a content-box gradient; a blanket
+     `mask-image: none` would fill the ring and break them. */
+  .scroll-fade-y,
+  [data-hud-shell] [data-slot='aui_thread-viewport'],
+  [data-slot='aui_assistant-message-content'] .aui-md [data-slot='code-card'][data-streaming='true'] [data-slot='code-card-body'],
+  .sticky-human-clamp[data-clamped='true'],
+  [data-slot='pane-tab'][data-closeable]:hover > .pane-tab-content,
+  .shimmer,
+  .shimmer::before {
     mask-image: none !important;
     -webkit-mask-image: none !important;
   }

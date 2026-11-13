@@ -29,10 +29,15 @@ function blockBody(css: string, open: number): string {
 
 describe('reduced-transparency gate', () => {
   // Static mask-image fades build CoreAnimation filter layers (ImagingNode) that
-  // WindowServer re-renders every display refresh. The blanket gate must drop
-  // them alongside backdrop-filter, or the compositor keeps paying for the
-  // nested chain on a static scene.
-  it('drops backdrop-filter and mask-image on the OS reduce-transparency signal', () => {
+  // WindowServer re-renders every display refresh. The gate must drop them
+  // alongside backdrop-filter, or the compositor keeps paying for the nested
+  // chain on a static scene.
+  //
+  // Structural masks — the ring cut-outs in .arc-border, .kanban-arc and the
+  // tour highlight — use `mask-composite: exclude` with a content-box gradient.
+  // A blanket `* { mask-image: none }` would fill those rings, so the gate
+  // lists fade selectors instead.
+  it('drops backdrop-filter everywhere and mask-image only on fade rules', () => {
     const blocks = [...STYLES.matchAll(REDUCED_TRANSPARENCY_MEDIA)].map(match =>
       blockBody(STYLES, match.index + match[0].length - 1)
     )
@@ -42,7 +47,15 @@ describe('reduced-transparency gate', () => {
 
     expect(body).toContain('backdrop-filter: none')
     expect(body).toContain('-webkit-backdrop-filter: none')
-    expect(body).toContain('mask-image: none')
-    expect(body).toContain('-webkit-mask-image: none')
+
+    // The blanket rule resets only the frost, not masks…
+    const blanketRule = body.slice(0, body.indexOf('}'))
+    expect(blanketRule).not.toContain('mask-image')
+
+    // …only the fade rules are cleared, and the structural ones are untouched.
+    for (const selector of ['.scroll-fade-y', '.shimmer', '.shimmer::before', '.sticky-human-clamp']) {
+      expect(body).toContain(selector)
+    }
+    expect(body).not.toContain('.arc-border')
   })
 })

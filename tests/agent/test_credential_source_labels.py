@@ -116,3 +116,18 @@ def test_both_surfaces_share_one_source_table():
 
 def test_string_keys_keep_the_masked_form(capsys):
     assert _banner(capsys, "sk-live-abcdefghijklmnop3456").strip() == "🔑 Using API key: sk-live-...3456"
+
+
+@pytest.mark.parametrize(("build", "label_key"), CASES[1:])
+def test_anthropic_401_diagnostics_labels_callable_source(monkeypatch, build, label_key):
+    """The 401 help uses the same source label as the banner, without minting a credential."""
+    from agent import turn_recovery
+
+    lines = []
+    monkeypatch.setattr(turn_recovery, "_plines", lambda _agent, *messages: lines.extend(messages))
+    turn_recovery._print_anthropic_401_diagnostics(SimpleNamespace(), build(monkeypatch))
+    diagnostics = "\n".join(lines)
+
+    assert f"Auth method: {t(label_key)}" in diagnostics
+    assert ("az login" in diagnostics) == (label_key == "cli.config.microsoft_entra_id")
+    assert ("Run the configured `key_cmd` manually" in diagnostics) == (label_key == "cli.config.key_cmd_token")

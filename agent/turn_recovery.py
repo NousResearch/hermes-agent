@@ -369,10 +369,11 @@ def _print_nous_401_diagnostics(agent: Any, api_error: Exception) -> None:
 def _print_anthropic_401_diagnostics(agent: Any, key: Any) -> None:
     """Anthropic 401 that survived a credential refresh: show auth method + fixes."""
     from agent.anthropic_credentials import _is_oauth_token
-    from agent.credential_source import ENTRA_ID, credential_label, credential_source
+    from agent.credential_source import ENTRA_ID, KEY_CMD, credential_label, credential_source
     from hermes_constants import display_hermes_home
     _plines(agent, "🔐 Anthropic 401 — authentication failed.")
-    if credential_source(key) == ENTRA_ID:
+    source = credential_source(key)
+    if source == ENTRA_ID:
         # Azure Foundry Entra ID: JWT minted per-request by an httpx hook; 401 = Azure
         # rejected it (RBAC, az login, IMDS).
         _plines(
@@ -388,6 +389,8 @@ def _print_anthropic_401_diagnostics(agent: Any, key: Any) -> None:
         if label is not None:
             # Callable key minted at request time: name its source, never mask it.
             _plines(agent, f"   Auth method: {label}")
+            if source == KEY_CMD:
+                _plines(agent, "   Run the configured `key_cmd` manually and verify the token it prints.")
         else:
             auth_method = "Bearer (OAuth/setup-token)" if _is_oauth_token(key) else "x-api-key (API key)"
             _plines(

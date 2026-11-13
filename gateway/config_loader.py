@@ -549,8 +549,11 @@ def _load_yaml_layer(home: Path, gw_data: dict) -> None:
     entries = None
     if registry is not None:
         from gateway.platform_activation import activation_predicate
-        entries = registry.configured_entries(activation_predicate(
+        entries, unresolved = registry.configured_load(activation_predicate(
             yaml_cfg=yaml_cfg, platform_names=platforms_data, home=home, registry=registry))
+        if unresolved:  # a configured platform that did not load has not had its settings deleted
+            from gateway.platforms._shared import cancel_yaml_env_refresh
+            cancel_yaml_env_refresh()
     targets = shared_loop_targets(registry, None if entries is None else [e for e in entries if e.source == "plugin"])
     # "Authored" is config.yaml only: a scratch merge leaves out the legacy gateway.json extra
     # already in ``platforms_data``, which stays the base layer every config.yaml key overrides.

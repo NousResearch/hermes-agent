@@ -408,6 +408,12 @@ class PlatformRegistry:
         actually configures; importing every bundled adapter (~20 SDKs) just to read metadata cost
         every cold start ~0.5 s. *wanted* is :func:`gateway.platform_activation.has_activation_evidence`
         (or a test stub); entries that are already loaded are always returned."""
+        return self.configured_load(wanted)[0]
+
+    def configured_load(self, wanted: Callable[[str], bool]) -> tuple[list[PlatformEntry], bool]:
+        """``configured_entries`` plus whether a *wanted* platform failed to load (now or on an earlier
+        pass: a failed lazy loader stays consumed). The caller decides what that absence means; to the
+        YAML loader it is not evidence that the platform's settings were deleted."""
         self._resolve_all(wanted)
         with self._lock:
             scope = self.current_scope_key()
@@ -415,11 +421,7 @@ class PlatformRegistry:
             unresolved = {name for (owner, name) in self._consumed_loaders if owner in (None, scope)}
             unresolved.update(name for (owner, name) in self._failed_loads if owner in (None, scope))
             unresolved.difference_update(entry.name for entry in entries)
-        if any(wanted(name) for name in unresolved):
-            # Failed lazy loaders stay consumed on later passes; absence is not key deletion.
-            from gateway.platforms._shared import cancel_yaml_env_refresh
-            cancel_yaml_env_refresh()
-        return entries
+        return entries, any(wanted(name) for name in unresolved)
 
     def loaded_entries(self) -> list[PlatformEntry]:
         """Entries already materialized (never imports a deferred adapter)."""

@@ -341,9 +341,14 @@ def test_wrong_password_text_is_judged_the_same_for_both_forms(monkeypatch):
 # --- live: real bash, fake sudo --------------------------------------------------------------------
 
 _LIVE_TOOLS = ("bash", "mkfifo", "mktemp")
-_needs_posix_shell = pytest.mark.skipif(
-    sys.platform == "win32" or not all(shutil.which(tool) for tool in _LIVE_TOOLS),
-    reason="needs a POSIX bash with mkfifo and mktemp")
+
+
+def _needs_posix_shell(test):
+    """Linux and macOS (the macOS lane imports this file through the marker), with bash, mkfifo, mktemp."""
+    test = pytest.mark.skipif(not all(shutil.which(tool) for tool in _LIVE_TOOLS),
+                              reason="needs bash with mkfifo and mktemp")(test)
+    return pytest.mark.platforms("posix")(test)
+
 
 # Emulates sudo's password handling: ``-A`` asks $SUDO_ASKPASS, ``-S`` reads one stdin line, and
 # a ticket file stands in for sudo's timestamp (a later sudo does not ask again).
@@ -429,6 +434,7 @@ def _run(env, command, stdin=None):
     return result["returncode"], result["output"]
 
 
+@_needs_posix_shell
 def test_live_earlier_stdin_reader_gets_caller_stdin_not_password(live_env):
     env, sudo, _ = live_env
     rc, output = _run(env, f'read -r p; echo "got:$p"; {sudo} true', "line1\n")
@@ -437,6 +443,7 @@ def test_live_earlier_stdin_reader_gets_caller_stdin_not_password(live_env):
     assert PW not in output
 
 
+@_needs_posix_shell
 @pytest.mark.parametrize("form", [
     "{sudo} > {out} -S true",
     "{sudo} 2>&1 -S true",
@@ -450,6 +457,7 @@ def test_live_own_stdin_option_after_a_redirection_keeps_the_stdin_form(live_env
     assert "may not be used together" not in output
 
 
+@_needs_posix_shell
 def test_live_leftover_password_line_reaches_later_reader_only_in_stdin_form(live_env):
     env, sudo, _ = live_env
     command = f"{sudo} true && {sudo} true; cat"
@@ -465,6 +473,7 @@ def test_live_leftover_password_line_reaches_later_reader_only_in_stdin_form(liv
     assert output.split() == [PW, "rest"]
 
 
+@_needs_posix_shell
 def test_live_xtrace_never_shows_password(live_env):
     env, sudo, _ = live_env
     rc, output = _run(env, f"set -x; {sudo} true; echo after")
@@ -473,6 +482,7 @@ def test_live_xtrace_never_shows_password(live_env):
     assert PW not in output
 
 
+@_needs_posix_shell
 def test_live_no_temp_dir_or_process_left_after_return(live_env):
     env, sudo, temp_dir = live_env
     for command in (f"{sudo} true", f"false && {sudo} true; echo done", f"{sudo} true && {sudo} true"):
@@ -489,6 +499,7 @@ def test_live_no_temp_dir_or_process_left_after_return(live_env):
         assert left == [] and procs == [], (left, procs)
 
 
+@_needs_posix_shell
 def test_live_timeout_kill_leaves_no_temp_dir(live_env):
     env, sudo, temp_dir = live_env
     result = env.execute(f"sleep 20; {sudo} true", timeout=2)
@@ -499,6 +510,7 @@ def test_live_timeout_kill_leaves_no_temp_dir(live_env):
     assert list(temp_dir.glob("hermes-sudo.*")) == []
 
 
+@_needs_posix_shell
 def test_live_background_sudo_and_wait_return_promptly(live_env):
     env, sudo, _ = live_env
     started = time.monotonic()
@@ -509,6 +521,7 @@ def test_live_background_sudo_and_wait_return_promptly(live_env):
     assert elapsed < 8, elapsed  # the watchdog's own limit here is 40 s
 
 
+@_needs_posix_shell
 def test_live_snapshot_holds_neither_password_nor_prologue_names(live_env):
     env, sudo, _ = live_env
     assert env._snapshot_ready

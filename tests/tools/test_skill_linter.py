@@ -1,5 +1,6 @@
 """Tests for tools/skill_linter.py — the advisory SKILL.md convention linter."""
 
+import pytest
 
 from tools.skill_linter import (
     ERROR,
@@ -94,6 +95,33 @@ def test_missing_when_to_use_section_warns():
     content = CLEAN.replace("## When to Use\n- When the user wants X.\n", "")
     findings = lint_content(content)
     assert "missing-section" in _rules(findings)
+
+
+@pytest.mark.parametrize(
+    "section",
+    (
+        "## When To Use This Skill",
+        "## When to Trigger",
+        "## When to use AudioCraft",
+        "## When This Skill Activates",
+        "## 触发条件",
+        "## 触发场景",
+        "## 适用场景",
+        "## 用途",
+        "## 1. When to Use（触发条件）",
+    ),
+)
+def test_localized_when_to_use_section_is_recognized(section):
+    content = CLEAN.replace("## When to Use", section)
+    assert "missing-section" not in _rules(lint_content(content))
+
+
+def test_explicit_description_trigger_is_recognized_without_section():
+    content = CLEAN.replace("## When to Use\n- When the user wants X.\n", "").replace(
+        "description: Search arXiv papers by keyword, author, or ID.",
+        "description: Use when the user asks to search arXiv papers.",
+    )
+    assert "missing-section" not in _rules(lint_content(content))
 
 
 def test_bad_name_format_is_error():

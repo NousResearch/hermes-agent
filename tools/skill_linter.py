@@ -40,8 +40,16 @@ _POSIX_PRIMITIVES = (
 # Scaffolding files a skill should not ship (noise, not skill content).
 _FORBIDDEN_FILES = ("README.md", "CHANGELOG.md", "install.sh", ".env", ".env.example", ".gitignore")
 # Presence of the load-bearing section is checked, not exact ordering, so the
-# linter is not a change-detector.
-_EXPECTED_SECTIONS = ("When to Use", "When to use")
+# linter is not a change-detector. Skills are authored in multiple languages;
+# accept precise Chinese equivalents rather than telling authors to duplicate
+# their trigger conditions solely for the linter.
+_WHEN_TO_USE_SECTION_PATTERN = re.compile(
+    r"^#+\s+(?:"
+    r"(?:\d+[.、]\s*)?(?:when\s+to\s+(?:use|trigger)(?:\s+[^（(].*?)?|"
+    r"when\s+this\s+skill\s+activates|触发(?:条件|场景)?|适用场景|用途)"
+    r")(?:\s*[（(].*[）)])?\s*$",
+    re.IGNORECASE | re.MULTILINE,
+)
 # incident-log-shape: at least this many PR/issue refs AND this density (per 1k chars of prose).
 _INCIDENT_REF_MIN = 4
 _INCIDENT_REF_PER_KCHAR = 0.5  # the 100k incident-log SKILL.md this targets sat at ~0.7
@@ -124,7 +132,18 @@ def _check_frontmatter(frontmatter: dict[str, Any], skill_dir: Optional[Path]) -
                         f"expected a subset of {sorted(valid)}.")
 
 
-def _check_body(body: str, skill_dir: Optional[Path]) -> Iterator[LintFinding]:
+def _has_explicit_description_trigger(frontmatter: dict[str, Any]) -> bool:
+    """Return whether the frontmatter description itself supplies a trigger."""
+    description = str(frontmatter.get("description", "")).strip().strip("'\"")
+    return bool(re.match(r"use(?:\s+this\s+skill)?\s+when\b", description, re.IGNORECASE))
+
+
+def _check_body(
+    body: str,
+    skill_dir: Optional[Path],
+    *,
+    has_description_trigger: bool = False,
+) -> Iterator[LintFinding]:
     if len(body) > _BODY_SOFT_BUDGET_CHARS:
         yield _warn("oversized-body",
                     f"SKILL.md body is {len(body):,} chars (~{len(body) // 4:,} tokens); skill_view loads "
@@ -137,9 +156,9 @@ def _check_body(body: str, skill_dir: Optional[Path]) -> Iterator[LintFinding]:
         if re.search(rf"`{re.escape(util)}`", prose):
             yield _warn("shell-utility-reference",
                         f"prose references `{util}`; name the native tool `{tool}` instead.")
-    if not any(re.search(rf"^#+\s+{re.escape(s)}", body, re.MULTILINE) for s in _EXPECTED_SECTIONS):
-        yield _warn("missing-section", "no '## When to Use' section found; skills need explicit "
-                    "trigger conditions near the top.")
+    if not has_description_trigger and not _WHEN_TO_USE_SECTION_PATTERN.search(body):
+        yield _warn("missing-section", "no trigger section found; add '## When to Use', a precise "
+                    "localized equivalent, or an explicit 'Use when …' description.")
     # Incident-log shape: a skill body dense in PR/issue numbers is narrating history instead of
     # stating rules. Threshold is per 1k chars so a long body with one citation is fine.
     refs = len(re.findall(r"(?<![\w/])#\d{3,6}\b|\b(?:PR|issue)\s*#?\d{3,6}\b", prose))
@@ -202,7 +221,13 @@ def lint_content(content: str, *, skill_dir: Optional[Path] = None) -> list[Lint
     the create path needs before the file exists.
     """
     frontmatter, body = parse_frontmatter(content)
-    findings = list(_check_frontmatter(frontmatter, skill_dir)) + list(_check_body(body, skill_dir))
+    findings = list(_check_frontmatter(frontmatter, skill_dir)) + list(
+        _check_body(
+            body,
+            skill_dir,
+            has_description_trigger=_has_explicit_description_trigger(frontmatter),
+        )
+    )
     if skill_dir is not None:
         findings += _check_files(frontmatter, skill_dir)
     return findings

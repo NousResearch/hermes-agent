@@ -6,9 +6,11 @@ its artifact held neither App Installer's version nor the AppX event that names 
 """
 import base64
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
+import time
 
 import pytest
 
@@ -136,3 +138,24 @@ def test_a_missing_channel_is_saved_as_unread_and_the_other_logs_are_still_read(
     assert _lines(out, "AppModel-Runtime_Admin") == [
         f"2026-11-13T09:05:00.0000000Z 69 Warning {IDENTITY} could not be activated"]
     assert f"69 Warning: {IDENTITY} could not be activated" in result.stdout
+
+
+def test_keeps_app_installer_diagnostics_written_since_the_leg_began(tmp_path):
+    local = tmp_path / "localappdata"
+    diag = local / "Packages" / "Microsoft.DesktopAppInstaller_8wekyb3d8bbwe" / "LocalState" / "DiagOutputDir"
+    diag.mkdir(parents=True)
+    older = diag / "WinGetCOM-before.log"
+    older.write_text("before the leg\n", encoding="utf-8")
+    os.utime(older, (time.time() - 7200, time.time() - 7200))
+    log = ("[2026/11/13 14:34:07.537] GoToState -> LoadingState\n"
+           "[2026/11/13 14:34:07.602] ERROR: AppsInfo -> Error: [0x8051100f]\n")
+    (diag / "AppInstaller-during.log").write_text(log, encoding="utf-8")
+
+    result, out = _collect(tmp_path, f"$env:LOCALAPPDATA = '{local}'\n" + FAKE_HOST)
+
+    saved = out / "appinstaller-diagnostics"
+    assert [p.name for p in saved.iterdir()] == ["AppInstaller-during.log"]
+    assert (saved / "AppInstaller-during.log").read_text(encoding="utf-8") == log
+    assert "App Installer diagnostics: 1 files since the leg began" in result.stdout
+    assert "    [2026/11/13 14:34:07.602] ERROR: AppsInfo -> Error: [0x8051100f]" in result.stdout
+    assert "GoToState" not in result.stdout

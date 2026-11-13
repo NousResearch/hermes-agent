@@ -1,6 +1,6 @@
 # Save what tells a failed Windows App Installer update apart: App Installer's own
-# version, the installed package, App Installer processes and the AppX event logs
-# since the leg began. It only reads. The job log gets each AppX warning or error
+# version, the installed package, App Installer processes, its diagnostic logs and the
+# AppX event logs since the leg began. It only reads. The job log gets each AppX warning or error
 # that names this package, a bundle, a descriptor or the loopback feed.
 param(
     [Parameter(Mandatory = $true)][string]$OutDir,
@@ -17,6 +17,19 @@ ConvertTo-Json -InputObject $packages -Depth 3 | Set-Content -LiteralPath (Join-
 $installers = @(Get-Process -Name AppInstaller -ErrorAction SilentlyContinue | Select-Object Id, StartTime, Path)
 ConvertTo-Json -InputObject $installers | Set-Content -LiteralPath (Join-Path $OutDir 'appinstaller-processes.json') -Encoding UTF8
 foreach ($package in $packages) { Write-Host "  [evidence] $($package.Name) $($package.Version) $($package.Architecture) $($package.Status)" }
+# App Installer's own log names the HRESULT behind its dialogs. A bundle it cannot parse
+# leaves that only there, not in the AppX logs. Keep the files it wrote since the leg began.
+$diag = Join-Path $env:LOCALAPPDATA 'Packages\Microsoft.DesktopAppInstaller_8wekyb3d8bbwe\LocalState\DiagOutputDir'
+if (Test-Path -LiteralPath $diag) {
+    $diagFiles = @(Get-ChildItem -LiteralPath $diag -File | Where-Object { $_.LastWriteTime -ge $Since })
+    $diagOut = New-Item -ItemType Directory -Force -Path (Join-Path $OutDir 'appinstaller-diagnostics')
+    $diagFiles | Copy-Item -Destination $diagOut.FullName
+    Write-Host "  [evidence] App Installer diagnostics: $($diagFiles.Count) files since the leg began"
+    $errors = @($diagFiles | Where-Object Name -like 'AppInstaller-*' | Get-Content | Where-Object { $_ -match '\] ERROR: ' })
+    foreach ($line in @($errors | Select-Object -First 20)) { Write-Host "    $line" }
+} else {
+    Write-Host "  [evidence] App Installer diagnostics: $diag does not exist"
+}
 $logs = @(
     'Microsoft-Windows-AppxPackaging/Operational',
     'Microsoft-Windows-AppXDeploymentServer/Operational',

@@ -200,3 +200,20 @@ def test_source_history_the_launch_home_no_longer_owns_does_not_block_a_yaml_edi
     load_yaml_layer(tmp_path, {})
 
     assert os.environ.get("TELEGRAM_PROXY") == "http://other:3128"
+
+
+def test_a_dotenv_value_equal_to_an_earlier_bridged_one_reaches_child_programs(tmp_path):
+    """Moving TELEGRAM_REACTIONS=false from config.yaml into .env: the operator's value must survive
+    the child-env scrub, which drops any value still matching a bridge marker's digest."""
+    from gateway.bridged_env import drop_bridge_markers
+    from hermes_cli.env_loader import load_hermes_dotenv
+
+    (tmp_path / "config.yaml").write_text("telegram:\n  reactions: false\n", encoding="utf-8")
+    load_yaml_layer(tmp_path, {})
+    assert os.environ.get(bridged_env_marker("TELEGRAM_REACTIONS")) == bridged_env_digest("false")
+    (tmp_path / ".env").write_text("TELEGRAM_REACTIONS=false\n", encoding="utf-8")
+    (tmp_path / "config.yaml").write_text("{}\n", encoding="utf-8")
+    load_hermes_dotenv(hermes_home=tmp_path, load_external_secrets=False)
+    load_yaml_layer(tmp_path, {})
+
+    assert drop_bridge_markers(dict(os.environ)).get("TELEGRAM_REACTIONS") == "false"

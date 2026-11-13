@@ -454,6 +454,14 @@ def resolve_home_dotenv(home: Path, *, lookup_env: dict[str, str] | None = None)
     return out
 
 
+def _release_bridge_claim(name: str) -> None:
+    """An operator source now owns *name*: drop the YAML bridge's marker for it, or a value equal to an
+    earlier bridged one would still read as the bridge's and be scrubbed from child envs."""
+    from gateway.bridged_env import BRIDGED_ENV_MARKER_PREFIX
+
+    os.environ.pop(BRIDGED_ENV_MARKER_PREFIX + name, None)
+
+
 def _load_dotenv_with_fallback(
     path: Path, *, override: bool, load_pass: int | None = None, managed: bool = False,
 ) -> None:
@@ -481,6 +489,8 @@ def _load_dotenv_with_fallback(
             baseline = record[0] if ours else current
             os.environ[name] = value
             _DOTENV_PUBLISHED[name] = (baseline, value, load_pass)
+            if value.strip():
+                _release_bridge_claim(name)
     # Every key this file defines, for the launch-residue strip: dotenv never unsets, so a key later
     # removed from the launch .env stays in os.environ and a re-parse of the file no longer names it.
     # Managed keys are recorded separately: they are administrator policy, not launch-profile residue.
@@ -950,6 +960,7 @@ def _publish_staged_env(staged: dict, environ_before: dict) -> None:
     for name, value in staged.items():
         if environ_before.get(name) != value:
             os.environ[name] = value
+            _release_bridge_claim(name)
 
 
 def _apply_external_secret_sources(home_path: Path) -> None:

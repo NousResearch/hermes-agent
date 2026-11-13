@@ -55,9 +55,9 @@ hidden: false
 # --- official site showcase (optional; pinned to the same commit) ---
 image: https://raw.githubusercontent.com/LuuMoss/video-xray/v0.2.2/docs/screenshots/banner.png
 screenshots:
-  - https://raw.githubusercontent.com/LuuMoss/video-xray/v0.2.2/docs/screenshots/01-analysis-panel.png
-  - https://raw.githubusercontent.com/LuuMoss/video-xray/v0.2.2/docs/screenshots/03-params-dialog.png
+  - https://raw.githubusercontent.com/LuuMoss/video-xray/v0.2.2/docs/screenshots/02-panel-main.png
+  - https://raw.githubusercontent.com/LuuMoss/video-xray/v0.2.2/docs/screenshots/03-panel-presets.png
   - https://raw.githubusercontent.com/LuuMoss/video-xray/v0.2.2/docs/screenshots/11-gallery-frames-strip.png
-  - https://raw.githubusercontent.com/LuuMoss/video-xray/v0.2.2/docs/screenshots/10-asr-settings-dialog.png
-  - https://raw.githubusercontent.com/LuuMoss/video-xray/v0.2.2/docs/screenshots/04-job-detail.png
-  - https://raw.githubusercontent.com/LuuMoss/video-xray/v0.2.2/docs/screenshots/07-report-md.png
+  - https://raw.githubusercontent.com/LuuMoss/video-xray/v0.2.2/docs/screenshots/06-r2t2-settings.png
+  - https://raw.githubusercontent.com/LuuMoss/video-xray/v0.2.2/docs/screenshots/10-cloud-asr.png
+  - https://raw.githubusercontent.com/LuuMoss/video-xray/v0.2.2/docs/screenshots/11-gallery-frames-strip.png

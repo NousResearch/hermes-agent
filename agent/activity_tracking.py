@@ -3,6 +3,7 @@
 ``_touch_activity`` is the single write path; persistence is rate-limited and never raises.
 Extracted from ``run_agent.py``; every method resolves through ``AIAgent``'s MRO unchanged.
 """
+import asyncio
 import logging
 import os
 import threading
@@ -23,6 +24,45 @@ def _activity_lock(obj) -> threading.Lock:
         _lock = threading.Lock()
         obj._turn_liveness_activity_lock = _lock
     return _lock
+
+
+def _run_activity_write(obj, fn, *args, **kwargs) -> None:
+    """Serialize best-effort activity writes without waiting on the gateway loop."""
+    from agent.runtime_session_store import call_off_event_loop
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+    if loop is None:
+        try:
+            call_off_event_loop(fn, *args, **kwargs)
+        except Exception:
+            logger.debug("session activity write failed (ignored)", exc_info=True)
+        return
+
+    # A compression transaction may hold SessionDB's write lock for longer than
+    # the gateway watchdog budget. Keep the loop free and preserve write order.
+    previous = getattr(obj, "_session_activity_persist_task", None)
+
+    async def persist():
+        if previous is not None:
+            try:
+                await previous
+            except (Exception, asyncio.CancelledError):
+                # A failed earlier heartbeat must not suppress this one.
+                logger.debug("earlier session activity write failed (ignored)", exc_info=True)
+        await asyncio.to_thread(fn, *args, **kwargs)
+
+    task = loop.create_task(persist())
+    obj._session_activity_persist_task = task
+
+    def finished(done):
+        try:
+            done.result()
+        except (Exception, asyncio.CancelledError):
+            logger.debug("session activity write failed (ignored)", exc_info=True)
+
+    task.add_done_callback(finished)
 
 
 class ActivityTrackingMixin:
@@ -112,20 +152,14 @@ class ActivityTrackingMixin:
         if last_mono and (now_mono - last_mono) < SESSION_ACTIVITY_HEARTBEAT_MIN_INTERVAL_SECONDS:
             return
         self._session_activity_last_persist_mono = now_mono
-        from agent.runtime_session_store import call_off_event_loop  # Relay callbacks run on a loop (#139029)
-        try:
-            call_off_event_loop(
-                touch,
-                session_id,
-                getattr(self, "_last_activity_ts", None),
-                description=getattr(self, "_last_activity_desc", None),
-                provenance=normalize_activity_provenance(
-                    getattr(self, "_last_activity_provenance", None)
-                ),
-            )
-        except Exception:
-            # Heartbeat is observation-only; never let its I/O break the loop.
-            logger.debug("session activity heartbeat write failed (ignored)", exc_info=True)
+        args = (session_id, getattr(self, "_last_activity_ts", None))
+        kwargs = {
+            "description": getattr(self, "_last_activity_desc", None),
+            "provenance": normalize_activity_provenance(
+                getattr(self, "_last_activity_provenance", None)
+            ),
+        }
+        _run_activity_write(self, touch, *args, **kwargs)
 
     def _reset_activity_labels_after_turn(self) -> None:
         """Drop mid-turn activity labels once the turn is no longer running.
@@ -144,6 +178,4 @@ class ActivityTrackingMixin:
         clear = getattr(session_db, "clear_session_activity_labels", None)
         if not callable(clear):
             return
-        from agent.runtime_session_store import call_off_event_loop
-        with suppress(Exception):  # never let durable cleanup I/O break turn teardown
-            call_off_event_loop(clear, session_id)
+        _run_activity_write(self, clear, session_id)

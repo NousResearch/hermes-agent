@@ -126,6 +126,11 @@ def reconcile_profile_gateways(
     fold = fold_named_slot_intent(
         default_prior_state, ((name, prior) for name, _dir, prior in named if name not in standalone))
     folded, default_should_start = list(fold.folded), fold.root_should_start
+    # A foreground `gateway run --no-supervise` CMD IS the container's one gateway; booting the
+    # s6 root slot from persisted intent as well puts two pollers on one bot token (#152152).
+    if _is_foreground_gateway_run_request(
+            tuple(container_argv) if container_argv is not None else _read_container_argv()):
+        default_should_start = False
     if folded and default_prior_state not in _AUTOSTART_STATES:
         log.warning("%s", boot_notice(folded))
     if not dry_run:
@@ -229,6 +234,16 @@ def _is_legacy_gateway_run_request(argv: Sequence[str]) -> bool:
     if "--no-supervise" in args:
         return False
     return len(args) >= 2 and args[0] == "gateway" and args[1] == "run"
+
+
+def _is_foreground_gateway_run_request(argv: Sequence[str]) -> bool:
+    """True when the container CMD runs the gateway itself, outside s6 (``--no-supervise`` or
+    HERMES_GATEWAY_NO_SUPERVISE), including behind global flags like ``-p <profile>``."""
+    args = _strip_container_argv_prefix(argv)
+    if not any(args[i:i + 2] == ["gateway", "run"] for i in range(len(args))):
+        return False
+    return "--no-supervise" in args or \
+        os.environ.get("HERMES_GATEWAY_NO_SUPERVISE", "").lower() in ("1", "true", "yes")
 
 
 def _is_dashboard_container(argv: Sequence[str]) -> bool:

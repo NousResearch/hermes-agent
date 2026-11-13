@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Any, Iterable, Optional
 
 from hermes_cli.kanban_workflow import DEFAULT_STATUSES as VALID_STATUSES
+AUTO_ESTIMATE_STATUSES = frozenset({"triage", "todo", "scheduled", "ready", "running"})
 from toolsets import get_toolset_names
 from utils import unlink_files_older_than
 
@@ -638,6 +639,7 @@ class Task:
     block_kind: Optional[str] = None
     block_recurrences: int = 0               # unblock-loop counter, see BLOCK_RECURRENCE_LIMIT
     completion_contract: Optional[str] = None
+    estimate: Optional[dict] = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> Task:
@@ -654,6 +656,7 @@ class Task:
             consecutive_failures=g("consecutive_failures", g("spawn_failures", 0)),
             last_failure_error=g("last_failure_error", g("last_spawn_error")),
             skills=skills_value,
+            estimate=_json_dict(g("estimate")) or None,
             goal_mode=bool(g("goal_mode")),
             block_recurrences=int(g("block_recurrences") or 0),
         )
@@ -874,7 +877,8 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- ``blocked`` so a cron can't spin it forever. Reset to 0 only on a
     -- successful completion — NOT on unblock (resetting on unblock is exactly
     -- the amnesia that let the loop run unbounded).
-    block_recurrences    INTEGER NOT NULL DEFAULT 0
+    block_recurrences    INTEGER NOT NULL DEFAULT 0,
+    estimate             TEXT
 );
 
 CREATE TABLE IF NOT EXISTS task_links (
@@ -1323,6 +1327,12 @@ def create_task(
                 # ACK-edge: the originating channel hears a child BLOCK, not just the fan-in.
                 inherit_creator_origin(conn, task_id, creator_task_id, created_at=now)
                 _inherit_notify_subs(conn, task_id, parents, created_at=now)
+            if _board_meta_for(board).get("auto_estimate_enabled", False) and task_status in AUTO_ESTIMATE_STATUSES:
+                try:
+                    from hermes_cli.kanban_estimate import schedule_task_estimate
+                    schedule_task_estimate(task_id, board=board or get_current_board())
+                except Exception as exc:
+                    _log.debug("kanban auto-estimate scheduling failed for %s: %s", task_id, exc)
             return task_id
         except sqlite3.IntegrityError:
             if attempt == 1:

@@ -170,7 +170,10 @@ gateway:
     full_logs_hint: "For full log uploads, use `hermes debug share` from the CLI."
     share_hint: "Share these links with the Hermes team for support."
     report_label: "Report"
-    local_refused: "`/debug local` keeps the report on the machine running Hermes, so it isn't available from a chat. Send `/debug` to upload the summary report."
+    local_refused: "`/debug local` keeps the report on the machine running Hermes, so it isn't available from a chat. Send `/debug upload` to upload the summary report."
+    upload_hint: "Nothing was uploaded. Send `/debug upload` to upload the summary report."
+    upload_hint_local: "Nothing was uploaded. Send `/debug upload` to upload the summary report, or `/debug local` to view it here."
+    nous_refused: "Nothing was uploaded. Private Nous uploads aren't available from here: run `hermes debug share --nous` in a terminal, or use Send diagnostics in the desktop app. `/debug upload` uploads the summary to a public paste instead."
   deny:
     stale: "❌ Command denied (approval was stale)."
     no_pending: "No pending command to deny."
@@ -1777,7 +1780,7 @@ slash:
   version:
     description: "Show Hermes Agent version"
   debug:
-    description: "Upload debug report (system info + logs) and get shareable links"
+    description: "Debug report (system info + logs): shows the privacy notice; /debug upload shares links"
   quit:
     description: "Exit the CLI (use --delete to also remove session history)"
 cli:

@@ -443,8 +443,8 @@ def _bridge_token_lock(lock_path: Path):
 def _load_or_create_bridge_token(session_path: Path, *, rotate: bool = False) -> str:
     """Per-session secret shared by the adapter, the bridge it spawns and standalone (cron) senders; 0600 beside creds.json.
 
-    Created once under an exclusive lock so two first-use callers (gateway start + a cron delivery) agree on one
-    value; a short or unreadable file is replaced. ``rotate`` mints a fresh one regardless (each new bridge spawn),
+    Created once under an exclusive lock so concurrent first-use callers agree on one value (standalone senders
+    only read it via ``_read_bridge_token``); a short or unreadable file is replaced. ``rotate`` mints a fresh one regardless (each new bridge spawn),
     so a token that leaked to whoever held the port of a dead bridge dies with it. Raises OSError when the session
     dir cannot be written."""
     import secrets
@@ -932,6 +932,18 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         logger.info("[%s] Bridge found at %s", self.name, bridge_path)
         return True
 
+    async def _mint_bridge_token(self, *, rotate: bool = False) -> str:
+        """Keep session ownership until a cancelled mint worker finishes writing."""
+        mint_task = asyncio.get_running_loop().create_task(
+            asyncio.to_thread(_load_or_create_bridge_token, self._session_path, rotate=rotate))
+        try:
+            return await asyncio.shield(mint_task)
+        except asyncio.CancelledError:
+            # Cancellation does not stop the thread: drain it before connect() releases the session lock.
+            await asyncio.wait({mint_task})
+            mint_task.exception()  # consume any worker error; the caller was cancelled
+            raise
+
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         """Start (or adopt) the Node.js bridge and wait for it to be ready."""
         if find_node_executable("node") is None:
@@ -970,7 +982,8 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 return False
             # The session holds the account's keys and bridge.log its QR pairing payloads (#80090).
             store_umask = ensure_private_store(self._session_path, home=self._profile_home)
-            self._bridge_token = _load_or_create_bridge_token(self._session_path)
+            # Minting writes and fsyncs the token file under a file lock: keep that disk wait off the loop.
+            self._bridge_token = await self._mint_bridge_token()
             _tighten_bridge_log(self._session_path.parent / "bridge.log", private=store_umask >= 0)
             # A secondary adopts or reaps only a bridge its own pidfile identifies; the default keeps
             # its historical adopt-or-clear-the-port path. A bridge this version started dies with
@@ -1005,7 +1018,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             # A secondary that skipped the kills found the port free, so this returns at once on that path.
             if not await self._wait_bridge_port_free():
                 return False
-            self._bridge_token = _load_or_create_bridge_token(self._session_path, rotate=True)
+            self._bridge_token = await self._mint_bridge_token(rotate=True)
             # Bridge output goes to a log file so QR codes, errors, and reconnection messages survive for troubleshooting.
             self._bridge_log = self._session_path.parent / "bridge.log"
             self._bridge_log_fh = bridge_log_fh = _open_bridge_log(self._bridge_log, private=store_umask >= 0)

@@ -99,6 +99,7 @@ with a name allows that one name only.
 | `tools.clarify_gateway` | `SKIPPED` | adding-platform-adapters.md § Public helpers for platform plugins |
 | `tools.url_safety` | `is_safe_url` | adding-platform-adapters.md § Public helpers for platform plugins |
 | `tools.url_safety` | `create_ssrf_safe_async_client` | adding-platform-adapters.md § Public helpers for platform plugins |
+| `tools.url_safety` | `create_ssrf_safe_client` | adding-platform-adapters.md § Public helpers for platform plugins |
 | `gateway.platforms._http_client_limits` | `platform_httpx_limits` | adding-platform-adapters.md § Public helpers for platform plugins |
 | `hermes_cli.gateway_setup_wizard` | `print_setup_header` | adding-platform-adapters.md § Public helpers for platform plugins |
 | `hermes_cli.gateway_setup_wizard` | `confirm_reconfigure` | adding-platform-adapters.md § Public helpers for platform plugins |

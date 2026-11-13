@@ -36,6 +36,9 @@ _STATIC_PROVIDER_ENV_BLOCKLIST = frozenset({
     "SIGNAL_HOME_CHANNEL_NAME", "SIGNAL_IGNORE_STORIES",
     "EMAIL_ADDRESS", "EMAIL_PASSWORD", "EMAIL_IMAP_HOST", "EMAIL_SMTP_HOST",
     "EMAIL_HOME_ADDRESS", "EMAIL_HOME_ADDRESS_NAME", "HERMES_DASHBOARD_SESSION_TOKEN",
+    # The dashboard PTY child's WS URLs carry that token (or the gated internal
+    # credential) in their query string; the TUI reads them at start-up, no child does.
+    "HERMES_TUI_SIDECAR_URL", "HERMES_TUI_GATEWAY_URL",
     "GATEWAY_ALLOWED_USERS", "GH_TOKEN", "GITHUB_APP_ID", "GITHUB_APP_PRIVATE_KEY_PATH",
     "GITHUB_APP_INSTALLATION_ID", "MODAL_TOKEN_ID", "MODAL_TOKEN_SECRET",
     "DAYTONA_API_KEY", "GATEWAY_RELAY_ID", "GATEWAY_RELAY_SECRET",
@@ -53,6 +56,15 @@ _STATIC_PROVIDER_ENV_BLOCKLIST = frozenset({
 })
 
 
+def _secret_source_bootstrap_env() -> frozenset[str]:
+    """Env names holding a secret source's bootstrap credential (``BWS_ACCESS_TOKEN``,
+    ``OP_SERVICE_ACCOUNT_TOKEN``, ...): the one token that unlocks every other secret.
+    No spawned child needs it; each source hands it to its own CLI explicitly
+    (``_run_bws_list``, ``_op_child_env``), so it is Tier 1 on every spawn path."""
+    from agent.secret_sources.registry import list_sources
+    return frozenset(name for source in list_sources() if (name := source.token_env({})))
+
+
 def _left_core_env(*, secrets_only: bool) -> frozenset:
     """Env of features that left core for a catalog plugin (``hermes_cli.left_core_migration``):
     stripped exactly as when core shipped them, plugin installed or not."""
@@ -63,7 +75,8 @@ def _left_core_env(*, secrets_only: bool) -> frozenset:
 
 def _build_provider_env_blocklist() -> frozenset:
     """Derive the blocklist from provider, tool, and gateway config."""
-    blocked: set[str] = set(_STATIC_PROVIDER_ENV_BLOCKLIST) | _left_core_env(secrets_only=False)
+    blocked: set[str] = (set(_STATIC_PROVIDER_ENV_BLOCKLIST) | _left_core_env(secrets_only=False)
+                         | _secret_source_bootstrap_env())
     try:
         from hermes_cli.auth import PROVIDER_REGISTRY
         for pconfig in PROVIDER_REGISTRY.values():
@@ -553,7 +566,7 @@ _ALWAYS_STRIP_KEYS: frozenset[str] = frozenset({
     # _is_hermes_internal_secret, but _ID has no secret suffix, so it must be
     # enumerated here to stay stripped on the inherit_credentials=True path.
     "GATEWAY_RELAY_ID", "GATEWAY_RELAY_SECRET", "GATEWAY_RELAY_DELIVERY_KEY",
-    "EMAIL_PASSWORD", "HERMES_DASHBOARD_SESSION_TOKEN",
+    "EMAIL_PASSWORD", "HERMES_DASHBOARD_SESSION_TOKEN", "HERMES_TUI_SIDECAR_URL", "HERMES_TUI_GATEWAY_URL",
     # Dashboard auth: the basic-auth password and session-signing secret, the OIDC client
     # secret and the drain bearer. They let a holder mint or forge dashboard sessions, and no
     # child (credentialed CLIs included) consumes them.
@@ -561,5 +574,6 @@ _ALWAYS_STRIP_KEYS: frozenset[str] = frozenset({
     "HERMES_DASHBOARD_OIDC_CLIENT_SECRET", "HERMES_DASHBOARD_DRAIN_SECRET",
     # Remote-compute / infrastructure secrets
     "MODAL_TOKEN_ID", "MODAL_TOKEN_SECRET", "DAYTONA_API_KEY",
-}) | _ADAPTER_SECRET_ENV | _left_core_env(secrets_only=True)  # every declared adapter secret is Tier 1
+}) | _ADAPTER_SECRET_ENV | _left_core_env(secrets_only=True) | _secret_source_bootstrap_env()
+# ^ every declared adapter secret and every secret source's bootstrap token is Tier 1
 _ALWAYS_STRIP_FOLDED: frozenset[str] = frozenset(k.upper() for k in _ALWAYS_STRIP_KEYS)

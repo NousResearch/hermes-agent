@@ -26,7 +26,8 @@ from hermes_cli.config_read_errors import _warn_config_parse_failure
 # path -> raw user mapping from the last successful parse in this process; served (through the
 # normal pipeline) when the file is later found mid-edit as broken YAML.
 _LAST_GOOD_USER_RAW: dict[str, dict[str, Any]] = {}
-# path -> (*user_signature, *managed_signature, effective, env_snapshot); see utils.file_signature.
+# path -> (*user_signature, *managed_signature, effective, env_snapshot, root_is_mapping);
+# see utils.file_signature.
 _EFFECTIVE_CACHE: dict[str, tuple[Any, ...]] = {}
 
 
@@ -55,8 +56,9 @@ def load_user_config_effective(config_path: Optional[Path] = None, *, fail_close
     here, so ``{}`` sentinels and presence-sensitive bridges keep working. An absent file is an
     empty user layer (the managed layer still applies). Returns a fresh deepcopy.
 
-    Broken YAML: ``fail_closed=True`` raises the parse error (for callers that keep their own
-    last-good state); otherwise the last successfully parsed user file — in-process first, then
+    Broken YAML: ``fail_closed=True`` raises the parse error, including a non-mapping YAML root
+    (for callers that keep their own last-good state); otherwise the last successfully parsed
+    user file — in-process first, then
     the newest ``backups/config/*.good.*`` copy — is served through the same pipeline, so a
     mid-edit torn write never silently drops user overrides (same contract as ``load_config``).
     Cached on the user + managed file signatures and the values of every referenced env var."""
@@ -76,10 +78,17 @@ def load_user_config_effective(config_path: Optional[Path] = None, *, fail_close
         n = len(cache_sig) if cache_sig is not None else 0
         if cached is not None and cache_sig is not None and cached[:n] == cache_sig:
             if all(_config._env_ref_lookup(k) == v for k, v in cached[n + 1].items()):
+                if fail_closed and cached[n + 2] is not True:
+                    # A previous non-strict read may have erased an invalid YAML root.
+                    loaded = read_config_doc(config_path)
+                    if loaded is not None and not isinstance(loaded, dict):
+                        raise TypeError("config.yaml root is not a mapping")
+                    _EFFECTIVE_CACHE[path_key] = (*cached[:n + 2], True)
                 return copy.deepcopy(cached[n])
 
         raw: dict[str, Any] = {}
         recovered = False
+        root_is_mapping: Optional[bool] = True if user_sig is None else None
         raw_hit = _config._raw_config_cache_hit(path_key, user_sig) if user_sig is not None else None
         if raw_hit is not None:
             raw = copy.deepcopy(raw_hit)  # one parse per process, shared with read_raw_config()
@@ -92,6 +101,9 @@ def load_user_config_effective(config_path: Optional[Path] = None, *, fail_close
                     raise
                 raw, recovered = _recover_user_raw(config_path, path_key, exc), True
             else:
+                root_is_mapping = loaded is None or isinstance(loaded, dict)
+                if fail_closed and not root_is_mapping:
+                    raise TypeError("config.yaml root is not a mapping")
                 raw = loaded if isinstance(loaded, dict) else {}
                 _config._raw_config_cache_store(path_key, user_sig, copy.deepcopy(raw))
                 _LAST_GOOD_USER_RAW[path_key] = copy.deepcopy(raw)
@@ -102,6 +114,13 @@ def load_user_config_effective(config_path: Optional[Path] = None, *, fail_close
                     from hermes_cli.config_backups import backup_config
                     backup_config(config_path, "good")
 
+        if fail_closed and root_is_mapping is None:
+            # Raw-config cache hits contain only normalized dicts, not the root shape.
+            loaded = read_config_doc(config_path)
+            if loaded is not None and not isinstance(loaded, dict):
+                raise TypeError("config.yaml root is not a mapping")
+            root_is_mapping = True
+
         env_snapshot = _config._env_ref_snapshot(raw)
         managed = managed_scope.load_managed_config()
         if managed:
@@ -110,7 +129,9 @@ def load_user_config_effective(config_path: Optional[Path] = None, *, fail_close
         # A recovered result is never cached under the corrupt file's signature: a later
         # ``fail_closed`` caller must still see the parse error, not a cache hit.
         if cache_sig is not None and not recovered:
-            _EFFECTIVE_CACHE[path_key] = (*cache_sig, copy.deepcopy(effective), env_snapshot)
+            _EFFECTIVE_CACHE[path_key] = (
+                *cache_sig, copy.deepcopy(effective), env_snapshot, root_is_mapping,
+            )
         else:
             _EFFECTIVE_CACHE.pop(path_key, None)
         return effective

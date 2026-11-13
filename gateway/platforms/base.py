@@ -2896,8 +2896,8 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
             if human_delay > 0:
                 await asyncio.sleep(human_delay)
             try:
-                logger.info("[%s] Sending image: %s (alt=%s)", self.name,
-                            safe_url_for_log(image_url), alt_text[:30] if alt_text else "")
+                logger.info("[%s] Sending image: %s (alt=%d chars)", self.name,
+                            safe_url_for_log(image_url), len(alt_text or ""))
                 if image_url.startswith("file://"):
                     from urllib.request import url2pathname
                     sender, url_kw = self.send_image_file, {"image_path": url2pathname(image_url[7:])}

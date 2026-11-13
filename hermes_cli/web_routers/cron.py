@@ -20,6 +20,7 @@ from fastapi.responses import JSONResponse
 
 from hermes_cli.web_deps import late
 from hermes_cli.config import cfg_get
+from hermes_cli.isolated_scope import scope_to_launch_profile
 from hermes_cli.web_server_cron import (
     _create_cron_job_sync, _cron_optional_text, _cron_string_list, _mutate_cron_for_profile, _normalize_dashboard_cron_script, _raise_if_cron_registration_error, _run_cron_dashboard_io, _validate_dashboard_cron_context_from, _validate_dashboard_cron_effective_job,
 )
@@ -125,7 +126,7 @@ def _list_cron_jobs_sync(profile: str = "all"):
     # then resolve duplicates by id with default-profile priority, rather than
     # keeping whichever copy happened to be seen first during the profile loop.
     all_jobs: list[dict[str, Any]] = []
-    for item in _cron_profile_dicts():
+    for item in scope_to_launch_profile(_cron_profile_dicts(), lambda row: row.get("name")):
         name = str(item.get("name") or "")
         if not name:
             continue

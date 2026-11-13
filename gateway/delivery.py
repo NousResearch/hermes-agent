@@ -318,8 +318,8 @@ class DeliveryRouter:
         # See #77763.
         is_cron_artifact = "job_id" in (metadata or {})
         if self._filter_silence_narration_enabled() and not is_cron_artifact and _is_silence_narration(content):
-            logger.warning("Dropped silence-narration outbound to %s (chat=%s): %r",
-                           target.platform.value, target.chat_id, content[:40])
+            logger.warning("Dropped silence-narration outbound to %s (chat=%s, %d chars)",
+                           target.platform.value, target.chat_id, len(content))
             return {"success": True, "filtered": "silence_narration", "delivered": False}
 
         send_metadata = dict(metadata or {})

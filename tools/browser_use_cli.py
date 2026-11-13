@@ -26,8 +26,7 @@ from typing import Any, Callable, Dict, List, NamedTuple, Optional
 from hermes_cli.process_identity import (
     own_process_groups, register_child, release_process_group_once_empty, spawn_env, spawned_by_this_process)
 from hermes_constants import get_hermes_home, hermes_home_key
-from tools.browser_harness_dirs import (daemon_env, daemon_identity, fit_default_socket_dir, harness_pid_file,
-                                        namespace_harness_dirs)
+from tools.browser_harness_dirs import daemon_env, daemon_identity, harness_pid_file, namespace_harness_dirs
 from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
@@ -197,7 +196,9 @@ def _base_subprocess_env() -> dict:
         env.pop("PYTHONPATH", None)
     env["PATH"] = _floor_subprocess_path(env.get("PATH", ""))
     env.setdefault("ANONYMIZED_TELEMETRY", "false")
-    namespace_harness_dirs(env, _served_profile_tag())  # a served profile's own harness runtime/tmp dirs
+    # The harness reuses any live daemon of a BU_NAME in its runtime dir, and that dir is per OS user:
+    # every profile (served, CLI, cron) gets its own, or one drives another's attached browser (#149829).
+    namespace_harness_dirs(env, hermes_home_key())
     # A daemon the CLI starts inherits this tag; _own_harness_daemon owns only one that names us.
     env.update(spawn_env("browser-harness-daemon"))
     return env
@@ -816,7 +817,6 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
         return tool_error(route_err)
     if local_sidecar:
         env["BU_NAME"] = _sidecar_daemon_name(session)
-    fit_default_socket_dir(env)  # BU_NAME is final: a deep HOME's socket would overflow sun_path
     _exec_route_is_sidecar[route_key] = local_sidecar
     local_engine = env.pop(_BOT_DESKTOP_BROWSER_SENTINEL, None)
     bot_desktop_browser = bool(local_engine)

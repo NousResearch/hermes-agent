@@ -1172,7 +1172,7 @@ def _env_bool(name: str, default: bool = False) -> bool:
 from plugins.platforms.discord.adapter_media import DiscordMediaMixin
 from plugins.platforms.discord.standalone_rest import api_url as _rest_url, post_paced as _post_paced
 from plugins.platforms.discord.adapter_opus import load_opus_codec
-from plugins.platforms.discord.adapter_authorization import DiscordAuthorizationMixin
+from plugins.platforms.discord.adapter_authorization import DiscordAuthorizationMixin, is_automated_message
 from plugins.platforms.discord.adapter_slash_auth import DiscordSlashAuthMixin
 from plugins.platforms.discord.adapter_thread_titles import DiscordThreadTitlesMixin, SemanticThreadRenames
 from plugins.platforms.discord.adapter_voice_info import DiscordVoiceInfoMixin
@@ -1528,8 +1528,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                 )
                 if joined or left or switched:
                     logger.info(
-                        "Voice state: %s (%d) %s (guild %d)",
-                        member.display_name,
+                        "Voice state: member %d %s (guild %d)",
                         member.id,
                         "joined " + after.channel.name if joined
                         else "left " + before.channel.name if left
@@ -1639,7 +1638,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         if message.type not in {discord.MessageType.default, discord.MessageType.reply}:
             return False, False
         role_authorized = False
-        if getattr(message.author, "bot", False):
+        if is_automated_message(message):
             allow_bots = self._get_allow_bots()
             bot_tag_continuation = self._is_bot_tag_debounce_continuation(message)
             if allow_bots == "none":
@@ -1782,7 +1781,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
     def _message_event_parts(self, message, extra_payload):
         """Shared normalizer for message edit/delete: (payload, source kwargs) or None."""
         author = getattr(message, "author", None)
-        if author is not None and getattr(author, "bot", False):
+        if is_automated_message(message):
             return None  # bot's own progressive edits are noise, not user events
         thread_id, chat_id = self._thread_id_and_chat_for_channel(getattr(message, "channel", None))
         message_id = getattr(message, "id", None)
@@ -3944,7 +3943,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
             transcript = result.get("transcript", "").strip()
             if not transcript or is_whisper_hallucination(transcript):
                 return
-            logger.info("Voice input from user %d: %s", user_id, transcript[:100])
+            logger.info("Voice input from user %d (%d chars)", user_id, len(transcript))
             if getattr(self, "_voice_text_channels", {}).get(guild_id) != captured_for:
                 logger.info("Dropping voice input from user %d: binding moved during transcription", user_id)
                 return
@@ -4113,9 +4112,8 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         )
         guild_id = getattr(interaction, "guild_id", None)
         logger.warning(
-            "[Discord] Unauthorized slash attempt: user=%s id=%s channel=%s "
-            "guild=%s cmd=%r reason=%r",
-            user_name, user_id, chan_id, guild_id, command_text, reason,
+            "[Discord] Unauthorized slash attempt: id=%s channel=%s guild=%s cmd=%r reason=%r",
+            user_id, chan_id, guild_id, command_text.split(" ", 1)[0], reason,
         )
         try:
             await interaction.response.send_message(
@@ -4390,8 +4388,8 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
             _user = interaction.user
             _chan_id = getattr(interaction.channel, "id", None) or getattr(interaction, "channel_id", None)
             logger.info(
-                "[Discord] slash '%s' invoked by user=%s id=%s channel=%s guild=%s", command_text,
-                getattr(_user, "name", "?"), getattr(_user, "id", "?"), _chan_id,
+                "[Discord] slash '%s' invoked by id=%s channel=%s guild=%s", command_text.split(" ", 1)[0],
+                getattr(_user, "id", "?"), _chan_id,
                 getattr(interaction, "guild_id", None),
             )
         except Exception:
@@ -4402,7 +4400,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         deferred_response = await self._defer_unless_expired(
             interaction,
             "[Discord] slash %s: interaction expired before defer. "
-            "Executing command anyway, skipping interaction followup.", command_text,
+            "Executing command anyway, skipping interaction followup.", command_text.split(" ", 1)[0],
         )
         event = self._build_slash_event(interaction, command_text)
         await self.handle_message(event)
@@ -4976,7 +4974,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         """Open a short continuation window after a bot-authored tag."""
         if (
             self._text_batch_delay_seconds <= 0
-            or not getattr(message.author, "bot", False)
+            or not is_automated_message(message)
             or not self._self_is_explicitly_mentioned(message)
         ):
             return
@@ -4991,7 +4989,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         second, so chunk N of a long handoff lands well after the tag itself; each
         admitted chunk therefore vouches for the next one. The gateway bot loop
         guard bounds a bot that never stops talking."""
-        if self._text_batch_delay_seconds <= 0 or not getattr(message.author, "bot", False):
+        if self._text_batch_delay_seconds <= 0 or not is_automated_message(message):
             return False
         key = self._bot_tag_debounce_key(message)
         now = time.monotonic()
@@ -5138,7 +5136,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                 ):
                     return None
                 # DISCORD_ALLOW_BOTS: for history, "mentions" counts as "all" (context, not response).
-                is_bot_author = getattr(msg.author, "bot", False)
+                is_bot_author = is_automated_message(msg)
                 if (is_bot_author and msg.author != self._client.user and not include_other_bots):
                     return None
                 if not content and msg.attachments:
@@ -6157,7 +6155,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
             user_name=message.author.display_name,
             thread_id=thread_id,
             chat_topic=chat_topic,
-            is_bot=getattr(message.author, "bot", False),
+            is_bot=is_automated_message(message),
             guild_id=str(guild.id) if guild else None,
             parent_chat_id=parent_channel_id,
             message_id=str(message.id),
@@ -6195,7 +6193,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
             if (mention_prefix and not media_urls and not pending_text_injection):
                 logger.info(
                     "[%s] Ignoring mention-only message from %s in %s", self.name,
-                    getattr(message.author, "display_name", getattr(message.author, "name", "unknown")),
+                    getattr(message.author, "id", "unknown"),
                     getattr(message.channel, "id", "unknown"),
                 )
                 return False
@@ -6219,10 +6217,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
             timestamp=message.created_at, auto_skill=_skills, channel_prompt=_channel_prompt,
             channel_context=_channel_context,
         )
-        if (
-            getattr(getattr(message, "author", None), "bot", False)
-            and self._is_bot_tag_debounce_continuation(message)
-        ):
+        if is_automated_message(message) and self._is_bot_tag_debounce_continuation(message):
             event._bot_tag_debounce = True  # type: ignore[attr-defined]
 
         # Track participation so follow-ups in this thread don't need @mention.
@@ -6380,7 +6375,7 @@ def _define_discord_view_classes() -> None:
                 logger.info(
                     "Discord button resolved slash-confirm for session %s "
                     "(choice=%s, user=%s)",
-                    self.session_key, choice, interaction.user.display_name,
+                    self.session_key, choice, getattr(interaction.user, "id", "?"),
                 )
             except Exception as exc:
                 logger.error("Discord slash-confirm resolve failed: %s", exc, exc_info=True)
@@ -6420,7 +6415,7 @@ def _define_discord_view_classes() -> None:
                 tmp = response_path.with_suffix(".tmp")
                 tmp.write_text(answer, encoding="utf-8")
                 tmp.replace(response_path)
-                logger.info("Discord update prompt answered '%s' by %s", answer, interaction.user.display_name)
+                logger.info("Discord update prompt answered '%s' by %s", answer, getattr(interaction.user, "id", "?"))
             except Exception as exc:
                 logger.error("Failed to write update response: %s", exc)
 
@@ -6777,10 +6772,10 @@ def _define_discord_view_classes() -> None:
                 from tools.clarify_gateway import resolve_gateway_clarify
                 resolved = resolve_gateway_clarify(self.clarify_id, resolved_text)
                 logger.info(
-                    "Discord clarify button resolved (id=%s, choice=%r, user=%s, ok=%s)",
-                    self.clarify_id, resolved_text,
-                    getattr(getattr(interaction, "user", None), "display_name", "?"), resolved,
+                    "Discord clarify button resolved (id=%s, choice_index=%d, user=%s, ok=%s)",
+                    self.clarify_id, index, getattr(getattr(interaction, "user", None), "id", "?"), resolved,
                 )
+                logger.debug("Discord clarify choice text (id=%s): %.100r", self.clarify_id, resolved_text)
             except Exception as exc:
                 logger.error("Discord clarify resolve_gateway_clarify failed (id=%s): %s", self.clarify_id, exc)
 

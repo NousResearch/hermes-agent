@@ -166,6 +166,12 @@ RULES: tuple[Rule, ...] = (
     Rule("HX014", "private API-error predicate", "use `classify_api_error` (`agent.auxiliary_error_policy`"
          " on the aux path); add the phrasing to its pattern tables", "ast",
          include=("agent/auxiliary*.py", "agent/context_compressor*.py", "agent/turn_*.py")),
+    # Logs reach `hermes debug share` and bug reports: user content and identities stay out of INFO+.
+    Rule("HX017", "user content or identity logged at INFO+", "log the metadata, not the value:"
+         " `len(text)`, an id or a short hash (`gateway.platforms.helpers.hash_for_log`), or a"
+         " redacted form (`redact_phone`); the verbatim value goes to `logger.debug`. A content-named"
+         " value that holds no user data (a config string) takes `# health: allow HX017 -- <why>`",
+         "ast", include=("gateway/*", "plugins/platforms/*")),
 )
 
 RULES_BY_ID = {rule.id: rule for rule in RULES}

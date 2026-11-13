@@ -2894,6 +2894,9 @@ export const esOverrides = {
       debugShare: 'Compartir datos de depuración',
       debugShareDesc:
         'Sube un informe y registros con datos sensibles ocultos y obtén enlaces para compartir (se eliminan automáticamente en 6 h)',
+      debugShareConfirm: '¿Subir el informe de depuración a un paste público?',
+      debugShareConfirmDesc:
+        'Sube información del sistema + registros completos a un servicio de paste público. Los secretos se ocultan, pero tus mensajes recientes, la salida de herramientas y las rutas y nombres de archivo permanecen en los registros y cualquiera con el enlace puede leerlos. Los pastes se eliminan automáticamente a las 6 horas; si paste.rs no está disponible, la alternativa dpaste.com los mantiene públicos 1 día y no se pueden eliminar antes.',
       debugShareRunning: 'Subiendo informe de depuración…',
       debugShareLinks: 'Enlaces para compartir',
       debugShareFailed: 'No se pudieron compartir los datos de depuración',
@@ -3920,7 +3923,7 @@ export const esOverrides = {
       '/topup': 'Mostrar tu saldo de Nous y gestionar la facturación en el portal',
       '/platform': 'Pausar, reanudar o listar una plataforma del gateway que falla',
       '/version': 'Mostrar la versión de Hermes Agent',
-      '/debug': 'Subir un informe de depuración (información del sistema + registros) y obtener enlaces para compartir',
+      '/debug': 'Informe de depuración (info del sistema + registros): muestra primero el aviso de privacidad; /debug upload comparte enlaces',
       '/model': 'Cambiar el modelo de esta sesión'
     },
     hotkeyDescs: {

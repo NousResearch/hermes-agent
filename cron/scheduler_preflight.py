@@ -166,7 +166,18 @@ def _primary_profile_routes_for_current_home() -> list:
         # (/etc/hermes/config.yaml) never reached the raw user-file read (#121212), so preflight
         # false-blocked and routed delivery failed closed on centrally-managed installs.
         from gateway.config_loader import read_yaml_layers
-        layered = read_yaml_layers(primary_home.expanduser())
+        # The caller runs inside the SATELLITE's secret scope (the gateway drain walks satellites under
+        # their own profile scope), and ``${env:...}`` refs resolve through whatever scope is bound,
+        # fail-closed. Expanding the primary's YAML there resolved its refs against the satellite's
+        # .env: unresolved refs re-logged "keeping the literal placeholder" every housekeeping tick, and
+        # a satellite key of the same name was substituted into the primary's config (#148606).
+        # Bind only home + secrets: the terminal policy is not read here, and hydrating external
+        # secret sources every housekeeping tick is the primary's boot job, not this read's.
+        from agent.runtime_scope import bind_state, scope_for_profile
+        from agent.secret_scope import _is_process_home
+        with bind_state(scope_for_profile(primary_home), hydrate_secrets=False, terminal=False,
+                        stamp_home=not _is_process_home(primary_home)):
+            layered = read_yaml_layers(primary_home.expanduser())
         routes_raw = layered.get("profile_routes")
         if routes_raw is None and isinstance(layered.get("gateway"), dict):
             routes_raw = layered["gateway"].get("profile_routes")

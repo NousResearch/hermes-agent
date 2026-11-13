@@ -27,6 +27,7 @@ from typing import Any, Dict, Optional
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 
+from agent.file_safety import get_nt_namespace_error, get_write_denied_error, is_write_approval_required
 from hermes_cli import web_server_file_tickets as file_tickets
 from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.home_data_layout import SECRET_CACHE_STORES
@@ -53,6 +54,7 @@ logger = logging.getLogger(__name__)
 
 # Late-bound so a test's monkeypatch on the owning module wins at call time.
 _profile_scope = late("_profile_scope", "hermes_cli.web_server_profiles")
+_config_profile_scope = late("_config_profile_scope", "hermes_cli.web_server_profiles")
 get_hermes_home = late("get_hermes_home", "hermes_cli.config")
 load_config = late("load_config", "hermes_cli.config")
 load_env = late("load_env", "hermes_cli.config")
@@ -1135,17 +1137,36 @@ async def fs_write_text(payload: FsWriteText, profile: Optional[str] = None):
     temp file and ``os.replace``-d so a crash can't truncate the original.
     Stale-on-disk detection is the client's job (re-read before save). The
     target resolves as ``read-text`` resolves it, ``session_id`` included, so a
-    file saves to the same place it was read from.
+    file saves to the same place it was read from, behind the same guards: the
+    sensitive-file denylist and a locked managed-files root (#95306).
     """
     text = payload.content or ""
+    # Refuse NT namespace paths on raw input: resolving them can initiate SMB auth. Judge the path as
+    # the resolvers read it: stripped, and a file: URL by the path it decodes to.
+    raw = payload.path.strip()
+    if raw.lower().startswith("file:"):
+        with contextlib.suppress(ValueError, OSError):
+            raw = _file_url_path(raw)
+    if get_nt_namespace_error(raw, verb="Write"):
+        raise HTTPException(status_code=403, detail="Access to sensitive files is not allowed")
     session = await _fs_owned_session(payload.session_id, profile)
     # Save where read-text read: a staged paste or pick on this host, all else on the SSH machine.
     backend = await asyncio.to_thread(_remote_fs_backend, payload.path, profile)
     if backend is not None:
+        # The SSH write replaces the lexical path (mv onto a link swaps the link), so judge that
+        # path exactly as the adapter writes it: stripped, ``~`` and cwd expanded, ``..`` folded.
+        from hermes_cli.ssh_workspace_fs import SshWorkspaceFsError
+
+        try:
+            target = backend.normalize(payload.path)
+        except SshWorkspaceFsError as exc:
+            _raise_fs_backend_error(exc)
+        if _is_sensitive_path(Path(target)):
+            raise HTTPException(status_code=403, detail="Access to sensitive files is not allowed")
         try:
             target, byte_size = await asyncio.to_thread(
                 backend.write_text,
-                payload.path,
+                target,
                 text,
                 max_bytes=_FS_TEXT_WRITE_MAX_BYTES,
             )
@@ -1159,6 +1180,15 @@ async def fs_write_text(payload: FsWriteText, profile: Optional[str] = None):
     # A relative path resolved against the session's cwd (else the process's), so walk its chain from there.
     cwd = (session or {}).get("cwd") or "" if payload.session_id is not None else os.getcwd()
     _refuse_sensitive_write(target, payload.path, Path(cwd))
+    # The agent's own write denylist (SSH keys, cloud credential dirs, the runtime's venv) applies here too,
+    # under the requested profile's scope so its own state.db / sessions/ count as protected. A save has
+    # no approval channel, so a path the file tools gate on approval (~/.ssh/config) fails closed.
+    with _config_profile_scope(profile):
+        denied = get_write_denied_error(str(target)) or is_write_approval_required(str(target))
+    if denied:
+        raise HTTPException(status_code=403, detail="Access to sensitive files is not allowed")
+    if not await asyncio.to_thread(_is_host_file, str(target), profile):
+        _hosted_fs_read_guard(target)
     if len(text.encode("utf-8")) > _FS_TEXT_WRITE_MAX_BYTES:
         raise HTTPException(status_code=413, detail="Content too large")
 

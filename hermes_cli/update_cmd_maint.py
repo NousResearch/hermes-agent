@@ -1061,6 +1061,11 @@ def _run_post_update_maintenance(
     owed_step("config_migration", lambda: _check_and_apply_config_migration(
         assume_yes=assume_yes, gateway_mode=gateway_mode, pre_update_snapshot_id=pre_update_snapshot_id,
     ))
+    # Catalog plugins marked ``default: true`` that a profile never had: a fresh install's home, or a
+    # default added since the last update. A failed fetch is retried from a later boot, so nothing is owed.
+    with _best_effort('Default plugin install failed: %s'):
+        from hermes_cli.default_plugins import install_and_record
+        install_and_record()
 
     print()
     update_complete = _print_verified_update_completion(completion_message or _update_complete_message(pre_update_version))

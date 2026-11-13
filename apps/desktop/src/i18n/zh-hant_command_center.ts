@@ -135,7 +135,12 @@ export const zhHantCommandCenter = {
     noModelUsage: '暫無模型使用量。',
     topSkills: '常用技能',
     noSkillActivity: '暫無技能活動。',
-    actions: count => `${count} 次動作`
+    actions: count => `${count} 次動作`,
+    maintenance: {
+      debugShareConfirm: '要將偵錯報告上傳到公開貼上服務嗎？',
+      debugShareConfirmDesc:
+        '將系統資訊與完整日誌上傳到公開貼上服務。密鑰會被遮蔽，但你最近的訊息、工具輸出、檔案路徑與名稱仍保留在日誌中，任何持有連結的人都能讀取。貼上內容會在 6 小時後自動刪除；若 paste.rs 無法連線，備援的 dpaste.com 會將其公開保留 1 天，且無法提前刪除。'
+    }
   },
 
   messaging: {

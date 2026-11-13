@@ -167,7 +167,10 @@ gateway:
     full_logs_hint: "Para subir registros completos, usa `hermes debug share` desde la CLI."
     share_hint: "Comparte estos enlaces con el equipo de Hermes para obtener soporte."
     report_label: "Informe"
-    local_refused: "`/debug local` mantiene el informe en la máquina donde se ejecuta Hermes, así que no está disponible desde un chat. Envía `/debug` para subir el informe resumido."
+    local_refused: "`/debug local` mantiene el informe en la máquina donde se ejecuta Hermes, así que no está disponible desde un chat. Envía `/debug upload` para subir el informe resumido."
+    upload_hint: "No se subió nada. Envía `/debug upload` para subir el informe resumido."
+    upload_hint_local: "No se subió nada. Envía `/debug upload` para subir el informe resumido, o `/debug local` para verlo aquí."
+    nous_refused: "No se subió nada. Las subidas privadas a Nous no están disponibles desde aquí: ejecuta `hermes debug share --nous` en una terminal o usa Send diagnostics en la app de escritorio. `/debug upload` sube el resumen a un paste público en su lugar."
   deny:
     stale: "❌ Comando denegado (la aprobación había caducado)."
     no_pending: "No hay ningún comando pendiente que denegar."
@@ -1706,7 +1709,7 @@ slash:
   version:
     description: "Mostrar la versión de Hermes Agent"
   debug:
-    description: "Subir un informe de depuración (info del sistema + registros) y obtener enlaces compartibles"
+    description: "Informe de depuración (info del sistema + registros): muestra primero el aviso de privacidad; /debug upload comparte enlaces"
   quit:
     description: "Salir de la CLI (usa --delete para eliminar también el historial de la sesión)"
 cli:

@@ -104,8 +104,10 @@ class RelayDiscordInteractionMixin:
                 event = self._discord_interaction_to_event(forward)
                 if event is not None:
                     self._capture_ingress_scope(event)
-                    # A prompt-token component press is consumed (same gate as _on_inbound).
-                    if await self._consume_prompt_response(event):
+                    # A prompt-token component press is consumed (same gate as _on_inbound). The
+                    # connector forwards it to every gateway of the tenant without its per-author
+                    # check, so the sender is not admitted.
+                    if await self._consume_prompt_response(event, author_admitted=False):
                         return
                     src = event.source
                     src.chat_name, src.chat_topic = await self._discord_chat_labels_for(

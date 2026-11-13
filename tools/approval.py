@@ -201,7 +201,8 @@ def restrict_gateway_approval_card_to_deny(session_key: str, request_id: Optiona
 
 
 def resolve_gateway_approval_card(session_key: str, choice: str, request_id: Optional[str], *,
-                                  actor_id: Any = None, admin_ids: Any = (), extra: Any = None) -> int:
+                                  actor_id: Any = None, admin_ids: Any = (), extra: Any = None,
+                                  admitted: bool = True) -> int:
     """Resolve the approval a native button card was rendered for.
 
     Only the card's own request can resolve: a card whose request already settled (timed out, answered
@@ -213,8 +214,8 @@ def resolve_gateway_approval_card(session_key: str, choice: str, request_id: Opt
 
     With *actor_id* the clicker's authority (``gateway.approval_actor.may_answer``, with the platform
     *extra* / *admin_ids*, and the chat's slash policy for the answer's own ``/approve`` or ``/deny``)
-    is checked against that same entry. The Deny-only check, the authority check
-    and the settle are one critical section."""
+    is checked against that same entry (*admitted* as there). The Deny-only check, the authority
+    check and the settle are one critical section."""
     if not request_id:
         return 0
     with _lock:  # re-entrant: the settle below takes it again
@@ -224,7 +225,8 @@ def resolve_gateway_approval_card(session_key: str, choice: str, request_id: Opt
         if target is not None and actor_id is not None:
             from gateway.approval_actor import may_answer
             from gateway.approval_actor import approval_commands
-            if not may_answer(target.authority, actor_id, admin_ids, extra, approval_commands(choice)):
+            if not may_answer(target.authority, actor_id, admin_ids, extra, approval_commands(choice),
+                              admitted=admitted):
                 return 0
         return resolve_gateway_approval(session_key, choice, request_id=request_id)
 

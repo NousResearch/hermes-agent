@@ -77,6 +77,7 @@ async def worker_request(connection, ref, params, *, operation):
     claim = await asyncio.to_thread(_claim, connection, ref, params)
     authority = connection.authority
     if operation == 'register':
+        require_serving(authority)  # the claim leg yielded; a retirement during it must refuse the write
         authority._require_admission_open()
     scope = {key: params[key] for key in ('execution_id', 'session_id', 'generation')}
     if operation == 'register':
@@ -90,6 +91,7 @@ async def worker_request(connection, ref, params, *, operation):
     if 'worker:adopt' not in connection.actor.capabilities:
         raise RuntimeStoreError('permission_denied')
     await asyncio.to_thread(_verify, connection, ref, params, claim)
+    require_serving(authority)  # claim/verify ran off-loop: re-check serving before the adopt/mutate write
     if operation == 'adopt':
         return await asyncio.to_thread(adopt_worker_execution, authority.db, epoch=authority.epoch,
                                        **scope, adoption_secret=claim)

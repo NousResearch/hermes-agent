@@ -75,6 +75,23 @@ for depth in (33, 240, 2000):
 ''')
 
 
+def test_deep_substitution_hidden_from_a_naive_count_fails_closed_quickly():
+    # A quoted `)` does not close a level (the parser skips it), and NFKC folds fullwidth `$（`
+    # into `$(` after the raw text was counted; both reached the cubic path at depth 120 (~5 s).
+    _run_bounded('''
+import time
+from tools.approval_detection import detect_dangerous_command, _PARSER_LIMIT_DESCRIPTION
+for command in (
+    "echo " + "$(printf ')'; " * 120 + "true" + ")" * 120,
+    "echo " + '$(printf ")"; ' * 120 + "true" + ")" * 120,
+    "echo " + "$\\uff08" * 120 + "x" + "\\uff09" * 120,
+):
+    started = time.perf_counter()
+    assert detect_dangerous_command(command)[1] == _PARSER_LIMIT_DESCRIPTION, command[:40]
+    assert time.perf_counter() - started < 3.0, command[:40]
+''')
+
+
 def test_shallow_and_sequential_substitutions_are_still_scanned():
     from tools.approval_detection import detect_dangerous_command
 

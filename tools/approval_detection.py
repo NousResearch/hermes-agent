@@ -965,14 +965,23 @@ def _command_parser_limit_exceeded(command: str) -> bool:
     # Every nested `$(` level adds a command word whose literal-substitution pass rescans the rest of
     # the nesting, so detection cost grows ~cubically with depth (306 chars at depth 100 took ~4 s,
     # depth 240 ~50 s). No real command nests this deep; crossing the ceiling fails closed.
-    if _max_substitution_depth(command) > _MAX_SUBSTITUTION_DEPTH:
+    # Normalization can mint nesting the raw text hides (fullwidth `$（` folds to `$(` under NFKC).
+    if any(_max_substitution_depth(text) > _MAX_SUBSTITUTION_DEPTH
+           for text in (command, _normalize_command_for_detection(command))):
         return True
     return sum(command.count(char) for char in ";&|\n") >= _MAX_DETECTION_SEGMENTS
 
 
 def _max_substitution_depth(command: str) -> int:
-    """Deepest `$(` nesting, in one linear pass. Quote-blind on purpose: over-counting only fails
-    closed. Sequential substitutions stay flat, so ordinary automation is unaffected."""
+    """Deepest `$(` nesting, in linear passes. Taking the max of a quote-blind count and quote-aware
+    ones (each `$(` opens a fresh quote context, as in the shell) only over-counts, which fails
+    closed: a quoted `)` cannot close a level, and single-quoted text that a `-c` payload later
+    runs is counted too. Sequential substitutions stay flat, so ordinary automation is unaffected."""
+    return max(_quote_blind_substitution_depth(command), _quoted_substitution_depth(command, True),
+               _quoted_substitution_depth(command, False))
+
+
+def _quote_blind_substitution_depth(command: str) -> int:
     depth = deepest = 0
     for index, char in enumerate(command):
         if char == "(" and index and command[index - 1] == "$":
@@ -980,6 +989,34 @@ def _max_substitution_depth(command: str) -> int:
             deepest = max(deepest, depth)
         elif char == ")" and depth:
             depth -= 1
+    return deepest
+
+
+def _quoted_substitution_depth(command: str, honor_single_quotes: bool) -> int:
+    frames = [[None, 0]]  # per open `$(`: [quote state, unquoted `(` count]
+    deepest, i, n = 0, 0, len(command)
+    while i < n:
+        char, frame = command[i], frames[-1]
+        if frame[0] == "'":
+            frame[0] = None if char == "'" else "'"
+        elif char == "\\":
+            i += 1
+        elif char == "$" and command.startswith("(", i + 1):
+            frames.append([None, 0])
+            deepest = max(deepest, len(frames) - 1)
+            i += 1
+        elif frame[0] == '"':
+            frame[0] = None if char == '"' else '"'
+        elif char == '"' or (char == "'" and honor_single_quotes):
+            frame[0] = char
+        elif char == "(":
+            frame[1] += 1
+        elif char == ")":
+            if frame[1]:
+                frame[1] -= 1
+            elif len(frames) > 1:
+                frames.pop()
+        i += 1
     return deepest
 
 

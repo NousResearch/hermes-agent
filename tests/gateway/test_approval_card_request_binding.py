@@ -16,7 +16,11 @@ import pytest
 from gateway.config import PlatformConfig
 from gateway.platforms.base import SendResult
 
-if importlib.util.find_spec("lark_oapi") is None and "lark_oapi" not in sys.modules:
+# sys.modules must be checked FIRST: find_spec() raises ValueError
+# ("<name>.__spec__ is not set") once another test module has registered a
+# spec-less MagicMock stub, so a find_spec-first guard never reaches its own
+# "already stubbed" condition (``and`` short-circuits left to right).
+if "lark_oapi" not in sys.modules and importlib.util.find_spec("lark_oapi") is None:
     _lark = MagicMock()
     for _name in ("lark_oapi", "lark_oapi.api.im.v1", "lark_oapi.event", "lark_oapi.event.callback_type"):
         sys.modules.setdefault(_name, _lark)

@@ -23,15 +23,21 @@ if _repo not in sys.path:
 # Minimal Feishu mock so FeishuAdapter can be imported without lark-oapi
 # ---------------------------------------------------------------------------
 def _ensure_feishu_mocks():
-    """Provide stubs for lark-oapi / aiohttp.web so the import succeeds."""
-    if importlib.util.find_spec("lark_oapi") is None and "lark_oapi" not in sys.modules:
+    """Provide stubs for lark-oapi / aiohttp.web so the import succeeds.
+
+    ``sys.modules`` is checked BEFORE ``find_spec`` on purpose: find_spec raises
+    ``ValueError("<name>.__spec__ is not set")`` when an earlier test module already
+    registered a spec-less MagicMock stub, and ``and`` short-circuits left to right —
+    a find_spec-first guard dies instead of reaching its own "already stubbed" check.
+    """
+    if "lark_oapi" not in sys.modules and importlib.util.find_spec("lark_oapi") is None:
         mod = MagicMock()
         for name in (
             "lark_oapi", "lark_oapi.api.im.v1",
             "lark_oapi.event", "lark_oapi.event.callback_type",
         ):
             sys.modules.setdefault(name, mod)
-    if importlib.util.find_spec("aiohttp") is None and "aiohttp" not in sys.modules:
+    if "aiohttp" not in sys.modules and importlib.util.find_spec("aiohttp") is None:
         aio = MagicMock()
         sys.modules.setdefault("aiohttp", aio)
         sys.modules.setdefault("aiohttp.web", aio.web)

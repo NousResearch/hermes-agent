@@ -731,6 +731,23 @@ class TestBuildMessageEvent:
         assert adapter._download_attachment.await_count == fetched
         assert len(event.media_urls) == fetched  # still built so the runner can deny/pair
 
+    @pytest.mark.asyncio
+    async def test_attachment_check_carries_the_dispatched_thread(self, adapter):
+        """A thread-scoped multiplex route must resolve the same profile for the attachment gate as for
+        dispatch, so the check sees the source's thread_id."""
+        seen = []
+        adapter.set_authorization_check(lambda *args, **kwargs: seen.append(kwargs.get("thread_id")) or True)
+        adapter._download_attachment = AsyncMock(return_value=("/tmp/cached.pdf", "application/pdf"))
+        env = _make_chat_envelope(text="see attached", thread_name="spaces/G/threads/T1",
+                                  attachments=[{"contentName": "x.pdf"}])
+        env["chat"]["messagePayload"]["space"]["spaceType"] = "SPACE"
+        env["chat"]["messagePayload"]["message"]["space"]["spaceType"] = "SPACE"
+        msg = env["chat"]["messagePayload"]["message"]
+
+        event = await adapter._build_message_event(msg, env)
+
+        assert seen == [event.source.thread_id] == ["spaces/G/threads/T1"]
+
 
 # ===========================================================================
 # send() — text, patch-in-place, chunking, error handling

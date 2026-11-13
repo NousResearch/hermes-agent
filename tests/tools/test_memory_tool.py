@@ -1050,3 +1050,9 @@ class TestBackgroundReviewDeleteGate:
             reset_current_write_origin(token)
         assert result["success"] is True
         assert "rewritten by refine" in store._entries_for("memory")
+
+
+def test_batch_op_line_tolerates_non_dict_operation():
+    from tools.memory_tool import _batch_op_line
+    assert _batch_op_line("stray string") == "- stray string"
+    assert _batch_op_line({"action": "add", "content": "y"}) == "- add: y"

@@ -402,7 +402,8 @@ def _run_task_turns(agent, frame, history, context):
     from agent.skill_commands import build_preloaded_skills_prompt
     from hermes_cli import kanban_db as kb
     skills, loaded, missing = build_preloaded_skills_prompt(context['skills'], task_id=agent.session_id)
-    if missing and not loaded:
+    if missing and (not loaded or 'sdlc-review' in missing):
+        # A required review skill must not be silently skipped when a sibling skill loads.
         # Last-line gate: the create/dispatch/admission checks normally prevent this,
         # but a skill can vanish between claim and turn. Name the dead pins instead of
         # a bare code the submitter can only echo — the owning seat, too, so a misroute

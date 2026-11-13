@@ -54,7 +54,11 @@ _WRAPPER_QUERY_OPTIONS = {
     "sudo": {"-l", "--list", "-v", "--validate", "-k", "-K", "--reset-timestamp", "--remove-timestamp"},
 }
 
-_WRAPPER_DURATION_RE = re.compile(r"[+-]?\d+(?:\.\d+)?[A-Za-z]*")
+# GNU timeout parses its duration with strtod (`.5`, `1e3`, `0x10`, `inf`, `infinity`) plus one
+# s/m/h/d suffix; the numeric options (nice -n, ionice -n, sudo -C) take a plain integer.
+_WRAPPER_DURATION_RE = re.compile(
+    r"(?:(?i:inf(?:inity)?)|0[xX][0-9a-fA-F]+|(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)[smhd]?")
+_WRAPPER_NUMBER_RE = re.compile(r"[+-]?\d+")
 
 # su / runuser: options that take a separate value (util-linux su-common.c), and the command option.
 _SU_VALUE_SHORT = frozenset("sgGwu")
@@ -64,23 +68,44 @@ _SU_COMMAND_LONG = frozenset({"--command", "--session-command"})
 _MAX_CARRIER_DEPTH = 3
 
 
+def _short_bundle(base: str, word: str) -> tuple[str, str | None, str]:
+    """getopt walk of a short-option bundle: (leading flags, first option owning a value, the rest of
+    the word). The rest is that option's attached value (`xargs -IfooI` sets -I to `fooI`)."""
+    valued = _WRAPPER_STR_OPERAND.get(base, set()) | _WRAPPER_NUM_OPERAND.get(base, set())
+    for index, char in enumerate(word[1:], start=2):
+        if "-" + char in valued:
+            return word[1:index - 1], "-" + char, word[index:]
+    return word[1:], None, ""
+
+
 def _option_kind(base: str, word: str) -> str | None:
     """'str' / 'num' when *word* is an option of *base* owning the NEXT word, else None."""
-    str_opts = _WRAPPER_STR_OPERAND.get(base, ())
-    num_opts = _WRAPPER_NUM_OPERAND.get(base, ())
-    if word in str_opts or (re.fullmatch(r"-[a-zA-Z]+", word) and "-" + word[-1] in str_opts):
+    option = word
+    if not word.startswith("--"):
+        _, option, attached = _short_bundle(base, word)
+        if option is None or attached:
+            return None
+    if option in _WRAPPER_STR_OPERAND.get(base, ()):
         return "str"
-    if word in num_opts or (re.fullmatch(r"-[a-zA-Z]+", word) and "-" + word[-1] in num_opts):
-        return "num"
-    return None
+    return "num" if option in _WRAPPER_NUM_OPERAND.get(base, ()) else None
 
 
 def _is_query_option(base: str, word: str) -> bool:
     queries = _WRAPPER_QUERY_OPTIONS.get(base, set())
-    if word.split("=", 1)[0] in queries:
-        return True
-    # Short bundles: `command -pv reboot` still only looks reboot up.
-    return bool(re.fullmatch(r"-[a-zA-Z]+", word)) and any("-" + ch in queries for ch in word[1:])
+    if word.startswith("--"):
+        return word.split("=", 1)[0] in queries
+    # Short bundles: `command -pv reboot` still only looks reboot up, but in `sudo -ul reboot` the
+    # `l` is -u's value and reboot runs.
+    flags, option, _ = _short_bundle(base, word)
+    return option in queries or any("-" + char in queries for char in flags)
+
+
+def _is_env_split_option(base: str, word: str) -> bool:
+    if base != "env":
+        return False
+    if word.startswith("--"):
+        return word.split("=", 1)[0] == "--split-string"
+    return _short_bundle(base, word)[1] == "-S"
 
 
 def _wrapper_prefix_end(command: str, start: int) -> int:
@@ -109,6 +134,7 @@ def _wrapper_prefix_end(command: str, start: int) -> int:
             continue
         if base not in _WRAPPER_WORDS:
             return ws if seen_prefix else start
+        wrapper_start = ws if seen_prefix else start
         seen_prefix, pos = True, we
         while True:  # this wrapper's options / assignments / leading positional
             ows, owe, oword = _read_shell_word(command, pos)
@@ -118,6 +144,10 @@ def _wrapper_prefix_end(command: str, start: int) -> int:
             if oword.startswith("-") and oword != "-":
                 if _is_query_option(base, oword):
                     return start
+                if _is_env_split_option(base, oword):
+                    # The split string is the program AND its leading args (`env -S 'echo' reboot`
+                    # prints): keep env as the program; carried_command_variants scans the payload.
+                    return wrapper_start
                 if "=" in oword:
                     pos = owe  # --opt=value carries its own operand
                     continue
@@ -129,7 +159,7 @@ def _wrapper_prefix_end(command: str, start: int) -> int:
                 if vws == vwe:
                     pos = owe
                     continue
-                if kind == "num" and not _WRAPPER_DURATION_RE.fullmatch(value):
+                if kind == "num" and not _WRAPPER_NUMBER_RE.fullmatch(value):
                     return start  # invalid operand: the wrapper errors here
                 pos = vwe
                 continue
@@ -144,17 +174,20 @@ def _wrapper_prefix_end(command: str, start: int) -> int:
 
 def strip_wrapper_prefixes(command: str) -> str:
     """Blank every leading wrapper chain so the real verb sits at the ``_CMDPOS`` anchor."""
-    from tools.approval_detection import _iter_shell_command_starts
+    from tools.approval_detection import _iter_shell_command_starts, _splice
 
-    cuts = []
-    for start in _iter_shell_command_starts(command):
-        end = _wrapper_prefix_end(command, start)
-        if end > start:
-            cuts.append((start, end))
-    out = command
-    for s, e in reversed(cuts):
-        out = out[:s] + " " + out[e:]
-    return out
+    # Starts are not discovered in offset order (`if` bodies come after later commands), so sort
+    # and drop overlaps before splicing against the original offsets.
+    cuts = sorted(
+        (start, end) for start in _iter_shell_command_starts(command)
+        if (end := _wrapper_prefix_end(command, start)) > start
+    )
+    edits, last_end = [], -1
+    for start, end in cuts:
+        if start >= last_end:
+            edits.append((start, end, " "))
+            last_end = end
+    return _splice(command, edits)
 
 
 def _su_command_payload(args: list[str]) -> str | None:
@@ -221,5 +254,10 @@ def carried_command_variants(command: str):
                 seen.add(payload)
                 nested.append(payload)
                 yield from _command_detection_variants(payload)
-                yield from _command_detection_variants(strip_wrapper_prefixes(payload))
+                peeled = strip_wrapper_prefixes(payload)
+                yield from _command_detection_variants(peeled)
+                # The peeled form can expose a carrier the raw walk stops before (`xargs su -c ...`).
+                if peeled not in seen:
+                    seen.add(peeled)
+                    nested.append(peeled)
         frontier = nested

@@ -486,9 +486,19 @@ def declared_login_command(profile: Any) -> str:
         return ""
     if not login:
         return ""
+    if not isinstance(login, (list, tuple)):
+        return str(login)
+    argv = [str(part) for part in login]
+    import sys
+
+    if sys.platform == "win32":
+        # cmd.exe and PowerShell do not read POSIX single quotes; list2cmdline double-quotes a path with spaces.
+        import subprocess
+
+        return subprocess.list2cmdline(argv)
     import shlex
 
-    return shlex.join(str(part) for part in login) if isinstance(login, (list, tuple)) else str(login)
+    return shlex.join(argv)
 
 
 def _login_owned_by_external_cli(slug: str) -> bool:

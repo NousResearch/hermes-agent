@@ -320,7 +320,8 @@ def extract_cache_put(
         if len(content) > MAX_STORED_TEXT_CHARS or file_path is None:
             return False
         from tools.spill_safety import write_text_exclusive
-        write_text_exclusive(file_path, content, private=False, overwrite=True)
+        # Windows text writes would expand an existing CRLF to CRCRLF, breaking the body digest.
+        write_text_exclusive(file_path, content, private=False, overwrite=True, newline="")
         with _index_lock:
             index = _load_index()
             index[_url_digest(url, format, provider)] = {

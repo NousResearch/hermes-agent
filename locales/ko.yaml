@@ -3830,7 +3830,7 @@ tips:
   t246: "HERMES_HOME_MODE 환경 변수(8진수, 예: 0701)는 웹 서버 접근을 위한 사용자 정의 디렉터리 권한을 설정해요."
   t247: "컨테이너 모드: HERMES_HOME에 .container-mode를 두면 호스트 CLI가 자동으로 컨테이너 안에서 실행돼요."
   t248: "Ctrl+C에는 5단계 우선순위가 있어요: 녹음 취소 → 프롬프트 취소 → 선택기 취소 → 에이전트 중단 → 종료."
-  t249: "에이전트 실행 중 발생한 모든 중단은 타임스탬프와 함께 ~/.hermes/interrupt_debug.log에 기록돼요."
+  t249: "에이전트 실행 중 발생한 중단은 agent.log에 기록돼요(`hermes logs`로 확인). 자세한 추적이 필요하면 HERMES_DEBUG_INTERRUPT=1을 설정하세요."
   t250: "BROWSER_CDP_URL은 브라우저 도구를 실행 중인 어떤 Chromium 계열 브라우저에든 연결해요 — WebSocket, HTTP, host:port 형식을 받아요."
   t251: "BROWSERBASE_ADVANCED_STEALTH=true는 사용자 정의 Chromium 기반의 고급 탐지 회피를 켜요 (Scale Plan)."
   t252: "CLI는 폭이 80열보다 좁은 터미널에서 자동으로 컴팩트 모드로 전환돼요."

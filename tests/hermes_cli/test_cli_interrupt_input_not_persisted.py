@@ -58,3 +58,14 @@ def test_enter_while_busy_interrupt_does_not_persist_the_message(tmp_path):
 
     assert shell._interrupt_queue.get_nowait() == SECRET
     assert _files_containing(tmp_path, SECRET) == []
+
+
+def test_no_tip_points_users_at_the_removed_debug_file():
+    """The startup tips must not send users to ``interrupt_debug.log``: nothing writes it now."""
+    from agent import i18n
+    from agent.i18n import t
+    from hermes_cli import tips
+
+    stale = [(lang, key) for lang in i18n.supported_languages() for key in tips.tip_keys()
+             if "interrupt_debug.log" in t(key, lang=lang)]
+    assert stale == []

@@ -3944,7 +3944,7 @@ tips:
   t246: "HERMES_HOME_MODE env var (octal, e.g. 0701) sets custom directory permissions for web server traversal."
   t247: "Container mode: place .container-mode in HERMES_HOME and the host CLI auto-execs into the container."
   t248: "Ctrl+C has 5 priority tiers: cancel recording → cancel prompts → cancel picker → interrupt agent → exit."
-  t249: "Every interrupt during an agent run is logged to ~/.hermes/interrupt_debug.log with timestamps."
+  t249: "Interrupts during an agent run are logged to agent.log (view with `hermes logs`); set HERMES_DEBUG_INTERRUPT=1 for a detailed trace."
   t250: "BROWSER_CDP_URL connects browser tools to any running Chromium-family browser — accepts WebSocket, HTTP, or host:port."
   t251: "BROWSERBASE_ADVANCED_STEALTH=true enables advanced anti-detection with custom Chromium (Scale Plan)."
   t252: "The CLI auto-switches to compact mode in terminals narrower than 80 columns."

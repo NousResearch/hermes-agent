@@ -3830,7 +3830,7 @@ tips:
   t246: "HERMES_HOME_MODE 环境变量（八进制，如 0701）为 Web 服务器遍历设置自定义目录权限。"
   t247: "容器模式：在 HERMES_HOME 中放置 .container-mode，主机 CLI 就会自动切换到容器内执行。"
   t248: "Ctrl+C 有 5 个优先级层级：取消录音 → 取消提示 → 取消选择器 → 中断代理 → 退出。"
-  t249: "代理运行期间的每次中断都会带时间戳记录到 ~/.hermes/interrupt_debug.log。"
+  t249: "代理运行期间的中断会记录到 agent.log（使用 `hermes logs` 查看）；设置 HERMES_DEBUG_INTERRUPT=1 可获取详细跟踪。"
   t250: "BROWSER_CDP_URL 可把浏览器工具连接到任何运行中的 Chromium 系浏览器——支持 WebSocket、HTTP 或 host:port。"
   t251: "BROWSERBASE_ADVANCED_STEALTH=true 启用基于自定义 Chromium 的高级反检测（Scale 套餐）。"
   t252: "终端宽度不足 80 列时，CLI 会自动切换到紧凑模式。"

@@ -3830,7 +3830,7 @@ tips:
   t246: "Die Umgebungsvariable HERMES_HOME_MODE (oktal, z. B. 0701) setzt eigene Verzeichnisrechte für den Zugriff durch Webserver."
   t247: "Container-Modus: Legen Sie .container-mode in HERMES_HOME ab, und die Host-CLI wechselt automatisch per exec in den Container."
   t248: "Ctrl+C hat 5 Prioritätsstufen: Aufnahme abbrechen → Eingabeaufforderungen abbrechen → Auswahl abbrechen → Agent unterbrechen → beenden."
-  t249: "Jede Unterbrechung während eines Agentenlaufs wird mit Zeitstempel in ~/.hermes/interrupt_debug.log protokolliert."
+  t249: "Unterbrechungen während eines Agentenlaufs werden in agent.log protokolliert (anzeigen mit `hermes logs`); setze HERMES_DEBUG_INTERRUPT=1 für eine detaillierte Ablaufverfolgung."
   t250: "BROWSER_CDP_URL verbindet die Browser-Tools mit jedem laufenden Browser der Chromium-Familie — akzeptiert WebSocket, HTTP oder host:port."
   t251: "BROWSERBASE_ADVANCED_STEALTH=true aktiviert erweiterte Anti-Erkennung mit angepasstem Chromium (Scale Plan)."
   t252: "Die CLI wechselt in Terminals mit weniger als 80 Spalten automatisch in den Kompaktmodus."

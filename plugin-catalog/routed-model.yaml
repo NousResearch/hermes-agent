@@ -1,0 +1,20 @@
+# Owner-submitted community plugin. New pin: draft pending catalog maturity review.
+# Capture requires explicit post_api_request shell-hook setup; register() is a no-op.
+name: routed-model
+repo: https://github.com/ErtzFiend/hermes-routed-model
+sha: "e19617ce872b6b67a2d1bbd565d14c80e0fd0ae3"
+version: "0.2.0"
+description: "Shows captured served-model metadata for routed requests in the Desktop status bar, with session details and settings. Requires manual shell-hook setup; missing upstream metadata remains unknown."
+maintainer: ErtzFiend
+tier: community
+category: desktop
+requires_hermes: ">=0.20.0"
+docs_url: https://github.com/ErtzFiend/hermes-routed-model#readme
+platforms:
+  - linux
+  - windows
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

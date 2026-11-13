@@ -301,7 +301,8 @@ hermes-agent/
 ├── model_tools.py            # Tool orchestration (thin layer over tools/registry.py)
 ├── toolsets.py               # Tool groupings and presets (hermes-cli, hermes-telegram, etc.)
 ├── hermes_state.py           # SessionDB facade (~1.4k LOC); implementation in hermes_state_*.py (21 siblings) — FTS5 search, session titles
-├── batch_runner.py           # Parallel batch processing for trajectory generation
+├── hermes_agent/             # the Python package
+│   └── batch_runner.py           # Parallel batch processing for trajectory generation
 │
 ├── agent/                    # Agent internals (extracted modules)
 │   ├── conversation_loop.py      # run_conversation() — the agent turn loop (phases in turn_*.py)

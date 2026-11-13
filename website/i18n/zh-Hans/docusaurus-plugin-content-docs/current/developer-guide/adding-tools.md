@@ -205,5 +205,5 @@ OPTIONAL_ENV_VARS = {
 - [ ] 已确认该工具确实应为内置/核心工具而非插件
 - [ ] Handler 返回 JSON 字符串，错误以 `{"error": "..."}` 形式返回
 - [ ] 可选：已将 API 密钥添加到 `hermes_cli/config.py` 的 `OPTIONAL_ENV_VARS`
-- [ ] 可选：已添加到 `toolset_distributions.py` 以支持批量处理
+- [ ] 可选：已添加到 `hermes_agent/toolset_distributions.py` 以支持批量处理
 - [ ] 已通过 `hermes chat -q "Use the weather tool for London"` 测试

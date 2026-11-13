@@ -44,11 +44,11 @@ class TestWebBackendNullGuard:
 # ── Trajectory compressor ─────────────────────────────────────────────────
 
 class TestTrajectoryCompressorNullGuard:
-    """trajectory_compressor.py — _detect_provider() and config loading"""
+    """hermes_agent/trajectory_compressor.py — _detect_provider() and config loading"""
 
     def test_null_base_url_does_not_crash(self):
         """base_url=None should not crash _detect_provider()."""
-        from trajectory_compressor import CompressionConfig, TrajectoryCompressor
+        from hermes_agent.trajectory_compressor import CompressionConfig, TrajectoryCompressor
 
         config = CompressionConfig()
         config.base_url = None

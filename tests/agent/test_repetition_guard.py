@@ -6,11 +6,17 @@ import random
 
 import pytest
 
-from agent.repetition_guard import MIN_FRAGMENT_LENGTH, is_repetition_dominated
+from agent.repetition_guard import MIN_FRAGMENT_LENGTH, is_repetition_dominated, is_runaway_repetition
 
 # The exact sentence from the #86581 incident (echoed hundreds of times by
 # the model before the provider cut it off at finish_reason=length).
 _INCIDENT_ECHO = "好，你幫我更改成 Google Gemini 4 31B。"
+
+# Ordinary reasoning: distinct lines, written before a loop starts.
+_DISTINCT_LINES = "".join(
+    f"Check {i}: service {i} answers on port {8000 + i}, its config parses and the redirect for host-{i} is in place.\n"
+    for i in range(16)
+)
 
 
 class TestRepetitionGuard:
@@ -86,3 +92,35 @@ class TestRepetitionGuard:
         assert is_repetition_dominated("") is False
         assert is_repetition_dominated(None) is False
         assert is_repetition_dominated(12345) is False
+
+
+class TestRunawayRepetition:
+    def test_loop_without_newlines_after_distinct_lines_is_runaway(self):
+        # A GLM-5.3-Flash thinking turn: distinct lines, then " hmm —" x890 and one 8-char token
+        # repeated without a newline. The distinct lines before the loop must not veto the cut.
+        loop_line = " hmm —" * 890 + " a" + "aaaaaaaa" * 5000
+        text = _DISTINCT_LINES + loop_line
+
+        assert len(text.splitlines()) > 5
+        assert is_runaway_repetition(text) is True
+
+    def test_distinct_rows_sharing_a_suffix_are_not_runaway(self):
+        # Batch output: the shared suffix trips the window scan, but every row differs.
+        text = "".join(
+            f"| {i:05d} | status: pending review by the on-call engineer before the next release window |\n"
+            for i in range(500)
+        )
+
+        assert is_repetition_dominated(text) is True
+        assert is_runaway_repetition(text) is False
+
+    def test_one_long_line_of_distinct_records_is_not_runaway(self):
+        # Minified JSON after a few lines: one long line of records that differ only by their id.
+        records = "".join(
+            f'{{"id": {i}, "status": "pending review by the on-call engineer before the next release"}}, '
+            for i in range(600)
+        )
+        text = _DISTINCT_LINES + "[" + records + "]\n"
+
+        assert is_repetition_dominated(text) is True
+        assert is_runaway_repetition(text) is False

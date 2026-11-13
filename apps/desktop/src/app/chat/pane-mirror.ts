@@ -48,6 +48,10 @@ export interface PaneMirror<T> {
    *  self-subscribing component (e.g. a session's status dot) so the strip needn't
    *  re-sync on status/color change — only `title` drives re-registration. */
   tabLead?: (key: string) => ReactNode
+  /** Owner mark for the tile's tab, rendered between the lead node and the
+   *  label (see PaneChrome.tabBadge). A session tile passes its profile's
+   *  glyph so a tab in the strip says whose agent answers it. */
+  tabBadge?: (key: string) => ReactNode
   /** Custom label NODE for the tile's tab, self-subscribing for the same reason
    *  as `tabLead` — a name that moves faster than re-registration (see
    *  PaneChrome.tabTitle). Falls back to `title`. */
@@ -102,6 +106,7 @@ export function paneMirror<T>(cfg: PaneMirror<T>): () => void {
       ? (event: ReactPointerEvent<HTMLElement>, onTap: () => void) => cfg.tabDrag!(key, event, onTap)
       : undefined,
     tabLead: cfg.tabLead ? () => cfg.tabLead!(key) : undefined,
+    tabBadge: cfg.tabBadge ? () => cfg.tabBadge!(key) : undefined,
     tabTitle: cfg.tabTitle ? () => cfg.tabTitle!(key) : undefined,
     tabWrap: cfg.tabWrap ? (tab: ReactElement) => cfg.tabWrap!(key, tab) : undefined
   })

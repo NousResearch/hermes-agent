@@ -225,6 +225,7 @@ if barrier_dir:
 
 home = Path(os.environ["HERMES_HOME"])
 runner = object.__new__(GatewayRunner)
+runner.config = GatewayConfig()
 runner.adapters = {Platform.TELEGRAM: JournalAdapter()}
 runner._profile_adapters = {}
 runner.session_store = SessionStore(home / "sessions", GatewayConfig())

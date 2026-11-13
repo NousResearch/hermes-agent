@@ -108,6 +108,9 @@ def refresh_dependencies(project_root: Path) -> str:
     root = Path(project_root).resolve()
     if root != repo_root().resolve():
         raise InstallError("venv", "refresh root does not match this PM installation")
+    from pm.generation_lifecycle import collect_unused
+
+    collect_unused(root)
     if not runtime_facts_path(root).is_file():
         return "base"
     missing = _baseline_gaps(root)

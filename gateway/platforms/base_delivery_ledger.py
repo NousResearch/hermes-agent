@@ -93,12 +93,9 @@ async def finalize_final_obligation(adapter: Any, obligation_id: str, result: An
         error = str(getattr(result, "error", "") or "")
         await asyncio.to_thread(mark_failed, obligation_id, error)
         if is_reconnect_only(error):
-            redeliver = getattr(
-                adapter.gateway_runner, "_redeliver_failed_obligations_for_platform", None)
-            live = adapter._final_delivery_adapter(event.source)
-            if live is not delivery_adapter and callable(redeliver):
-                await redeliver(event.source.platform,
-                                profile=getattr(delivery_adapter, "_owner_profile", None))
+            from gateway.run_delivery_recovery import recover_after_reconnect_failure
+
+            await recover_after_reconnect_failure(adapter, event, delivery_adapter, error)
         elif classify_dead_error(error) is None:  # a dead chat is never retried: no timer to wake
             schedule = getattr(adapter.gateway_runner, "_schedule_flood_redelivery", None)
             if callable(schedule):

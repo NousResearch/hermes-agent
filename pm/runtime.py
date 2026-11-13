@@ -201,9 +201,13 @@ def collect_runtime_generations(root: Path) -> list[Path]:
         if not lock_fd(lock.fileno(), wait=False):
             return removed  # a stage is in flight; maintenance skips rather than queues
         try:
-            selected = json.loads((root / "selected.json").read_text(encoding="utf-8-sig")).get("generation", "")
+            record = json.loads((root / "selected.json").read_text(encoding="utf-8-sig"))
         except FileNotFoundError:
-            selected = ""
+            record = {}
+        selected = record.get("generation", "") if isinstance(record, dict) else None
+        if not isinstance(selected, str):
+            # An unknown selection authorizes nothing; malformed like unparseable JSON.
+            raise ValueError(f"unreadable PM runtime selection in {root / 'selected.json'}")
         for generation in sorted(generations.iterdir()):
             if not generation.is_dir() or generation.is_symlink() or generation == root / selected:
                 continue

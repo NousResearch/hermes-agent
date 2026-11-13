@@ -389,10 +389,11 @@ class TestGatewayRedeliverySweep:
 
     @staticmethod
     def _runner(adapter=None):
-        from gateway.config import Platform
+        from gateway.config import GatewayConfig, Platform
         from gateway.run import GatewayRunner
 
         runner = object.__new__(GatewayRunner)
+        runner.config = GatewayConfig()
         runner.adapters = {Platform.SLACK: adapter} if adapter else {}
         runner._profile_adapters = {}
         runner._active_profile_name = lambda: "default"

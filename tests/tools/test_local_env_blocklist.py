@@ -440,6 +440,39 @@ def test_builders_strip_runtime_markers_and_owned_paths(child_env, monkeypatch, 
     assert dict(os.environ) == before
 
 
+@pytest.mark.usefixtures("child_env")
+@pytest.mark.parametrize("builder", ["foreground", "background", "factory"])
+def test_inherited_git_repo_location_does_not_pin_child_git(tmp_path, monkeypatch, builder):
+    """A launcher's GIT_DIR/GIT_WORK_TREE must not aim a child's ``git`` at the launcher's repo;
+    the caller's explicit env still can, and unrelated GIT_* preferences pass through."""
+    repos = {}
+    for name in ("launcher", "target"):
+        repos[name] = tmp_path / name
+        subprocess.run(["git", "init", "-q", str(repos[name])], check=True, stdin=subprocess.DEVNULL)
+    launcher_git = str(repos["launcher"] / ".git")
+    for k in ("GIT_DIR", "GIT_COMMON_DIR", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY"):
+        monkeypatch.setenv(k, launcher_git if k != "GIT_INDEX_FILE" else launcher_git + "/index")
+    monkeypatch.setenv("GIT_WORK_TREE", str(repos["launcher"]))
+    monkeypatch.setenv("GIT_ALTERNATE_OBJECT_DIRECTORIES", launcher_git + "/objects")
+    monkeypatch.setenv("GIT_EDITOR", "true")
+    factories = {
+        "foreground": lambda extra: local._make_run_env(extra),
+        "background": lambda extra: local._sanitize_subprocess_env(dict(os.environ), extra),
+        "factory": lambda extra: local.build_subprocess_env(extra=extra),
+    }
+
+    def toplevel(env):
+        out = subprocess.run(["git", "rev-parse", "--show-toplevel"], cwd=repos["target"], env=env,
+                             stdin=subprocess.DEVNULL, capture_output=True, text=True, encoding="utf-8", check=True)
+        return Path(out.stdout.strip()).resolve()
+
+    inherited = factories[builder]({})
+    assert toplevel(inherited) == repos["target"].resolve()
+    assert inherited.get("GIT_EDITOR") == "true"
+    explicit = factories[builder]({"GIT_DIR": launcher_git, "GIT_WORK_TREE": str(repos["launcher"])})
+    assert toplevel(explicit) == repos["launcher"].resolve()
+
+
 @pytest.mark.parametrize("builder,base_force,extra_force", [
     ("foreground", "base-forced", "extra-forced"),
     ("background", None, "extra-forced"),

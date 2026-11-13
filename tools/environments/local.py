@@ -27,7 +27,7 @@ from tools.environments.local_env_policy import (
     _is_hermes_internal_secret, _is_provider_env_blocklisted, _is_terminal_first_party_env,
     _home_adapter_secret_env, _matches_terminal_first_party_prefix, _plugin_terminal_env_strip_keys,
     _registered_adapter_secret_env, _registry_adapter_secret_env,
-    strip_profile_gate_env, strip_supervised_process_identity)
+    strip_git_repo_location_env, strip_profile_gate_env, strip_supervised_process_identity)
 from tools.environments.local_pythonpath import (
     _build_hermes_repo_root_aliases, _strip_hermes_owned_pythonpath_and_runtime_markers)
 
@@ -344,7 +344,7 @@ def _scrubbed_env(parts, plugin_strip: frozenset, fix_path) -> dict:
 def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = None) -> dict:
     """Filter Hermes-managed secrets from a subprocess environment (background/PTY
     spawn path, search workers, computer-use driver, user-script runners)."""
-    return _scrubbed_env([(base_env or {}, False), (extra_env or {}, True)],
+    return _scrubbed_env([(strip_git_repo_location_env(dict(base_env or {})), False), (extra_env or {}, True)],
                          _plugin_terminal_env_strip_keys(), lambda p: p)
 
 
@@ -793,7 +793,7 @@ def _make_run_env(env: dict) -> dict:
     beneath the backend's own ``env``."""
     from agent.session_client_env import toolchain_environ
     run_env = _scrubbed_env(
-        [(dict(toolchain_environ(strip_launch_profile_env(os.environ.copy())) | env), True)],
+        [(strip_git_repo_location_env(toolchain_environ(strip_launch_profile_env(os.environ.copy()))) | env, True)],
         frozenset(),
         lambda p: _user_tools_first(_append_missing_sane_path_entries(p)),
     )

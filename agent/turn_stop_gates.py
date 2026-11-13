@@ -143,6 +143,21 @@ def apply_stop_gates(
 
     def _continue(nudge: str, flag: str) -> StopGateVerdict:
         """Append the synthetic nudge row and hand the turn back to the loop."""
+        # Quiet gateways have no interim sink. The candidate remains in model history,
+        # but a receipt-only continuation would be the user's entire answer.
+        if flag in {"_verification_stop_synthetic", "_pre_verify_synthetic"} and not (
+            agent._interim_text_was_delivered(final_response or "")
+            or agent._interim_content_fully_streamed(final_response or "")
+        ):
+            nudge += (
+                "\n\n[Delivery: The preceding answer has not been delivered to the user. "
+                "After verification, return a complete, self-contained answer to the user's "
+                "original request, including the substantive findings or deliverable. "
+                "Use the verification results to correct any claims in the preceding draft. "
+                "Do not reply only with a testing receipt or refer to an answer 'above' "
+                "that the user has not seen. If verification is blocked, still provide "
+                "the supported findings and clearly identify what remains unverified.]"
+            )
         append_message(messages, {"role": "user", "content": nudge, flag: True})
         agent._session_messages = messages
         # Keep the answer only as a budget-exhaustion fallback; clear ``final_response`` so

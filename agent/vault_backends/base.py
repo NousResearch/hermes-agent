@@ -18,12 +18,18 @@ from typing import Dict, List, Optional, Sequence
 from agent.vault_store import VaultItemMeta
 
 
+LOCKED_BY_USER = "locked_by_user"
+EXTERNAL_SESSION_UNAVAILABLE = "external_session_unavailable"
+EXTERNAL_SESSION_REJECTED = "external_session_rejected"
+
+
 class UnlockRequired(Exception):
     """The backend is locked for this session; the surface must prompt for the master password."""
 
-    def __init__(self, backend: LoginBackend):
+    def __init__(self, backend: LoginBackend, reason: Optional[str] = None):
         super().__init__(f"{backend.display_name} is locked")
         self.backend = backend
+        self.reason = reason
 
 
 class LoginBackend(ABC):
@@ -31,6 +37,7 @@ class LoginBackend(ABC):
     display_name: str        # user-facing
     prefix: str              # handle prefix ("vault_", "op:", "bw:")
     needs_unlock: bool = False
+    lock_reason: Optional[str] = None
 
     def owns(self, handle: str) -> bool:
         return handle.startswith(self.prefix)

@@ -18,8 +18,16 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from agent.secret_sources.base import run_cli, scrub_ansi
+from agent.vault_backends import session_file as _session_file
 from agent.vault_backends import unlock as _unlock
-from agent.vault_backends.base import LoginBackend, UnlockRequired, run_with_secret_env
+from agent.vault_backends.base import (
+    EXTERNAL_SESSION_REJECTED,
+    EXTERNAL_SESSION_UNAVAILABLE,
+    LOCKED_BY_USER,
+    LoginBackend,
+    UnlockRequired,
+    run_with_secret_env,
+)
 from agent.vault_store import VaultItemMeta, normalize_origin
 
 logger = logging.getLogger(__name__)
@@ -53,7 +61,48 @@ class BitwardenLoginBackend(LoginBackend):
         return env
 
     def is_unlocked(self) -> bool:
-        return _unlock.is_unlocked(self.name)
+        self.lock_reason = None
+        if _unlock.is_unlocked(self.name):
+            return True
+        session_key, self.lock_reason = self._external_session()
+        return session_key is not None
+
+    def _external_session(self) -> tuple[Optional[str], Optional[str]]:
+        """(key, None) or (None, public lock reason). Returned rather than stored, so callers sharing this
+        instance cannot swap each other's reason between the check and the UnlockRequired."""
+        path = str(self.cfg.get("session_file") or "")
+        if not path:
+            return None, None
+        if _unlock.is_fenced(self.name):
+            return None, LOCKED_BY_USER
+        try:
+            session = _session_file.read_session_file(path)
+        except _session_file.SessionFileUnavailable as exc:
+            _session_file.forget(path)
+            logger.debug("Bitwarden %s: %s", EXTERNAL_SESSION_UNAVAILABLE, exc.detail)
+            return None, EXTERNAL_SESSION_UNAVAILABLE
+        reason = None if _session_file.is_verified(path, session.fingerprint) else self._verify_session(path, session)
+        return (None, reason) if reason else (session.token, None)
+
+    def _verify_session(self, path: str, session: _session_file.SessionFileRead) -> Optional[str]:
+        """None when ``bw status`` confirms the key unlocks the vault, else the public lock reason."""
+        try:
+            proc = run_cli([str(self._bw()), "status", "--nointeraction"], env=self._env(session.token),
+                           timeout=_TIMEOUT, label="bw", timeout_message="bw timed out", stdin=subprocess.DEVNULL)
+        except (RuntimeError, ValueError):  # missing / unspawnable / timed out; ValueError: NUL in binary_path
+            reason = EXTERNAL_SESSION_UNAVAILABLE
+        else:
+            try:
+                status = json.loads(proc.stdout or "")
+            except ValueError:
+                status = None
+            if proc.returncode == 0 and isinstance(status, dict) and status.get("status") == "unlocked":
+                _session_file.mark_verified(path, session.fingerprint)
+                return None
+            reason = EXTERNAL_SESSION_REJECTED
+        _session_file.forget(path)
+        logger.debug("Bitwarden %s", reason)
+        return reason
 
     def unlock(self, master_password: str) -> None:
         # bw refuses a piped password ("Master password is required"); its non-interactive contract is
@@ -73,15 +122,25 @@ class BitwardenLoginBackend(LoginBackend):
 
     def _run(self, *args: str) -> str:
         token = _unlock.get_session_token(self.name)
+        interactive = token is not None
+        reason = None
+        if not interactive:
+            token, reason = self._external_session()
+        self.lock_reason = reason
         if not token:
-            raise UnlockRequired(self)
+            raise UnlockRequired(self, reason)
         proc = run_cli([str(self._bw()), *args, "--nointeraction"], env=self._env(token), timeout=_TIMEOUT,
                        label="bw", timeout_message="bw timed out", stdin=subprocess.DEVNULL)
         if proc.returncode != 0:
             err = scrub_ansi(proc.stderr or "")
             if "locked" in err.lower() or "session" in err.lower():
-                _unlock.lock(self.name)
-                raise UnlockRequired(self)
+                if interactive:
+                    _unlock.invalidate_session_token(self.name, token)
+                    raise UnlockRequired(self)
+                _session_file.forget(str(self.cfg["session_file"]))
+                self.lock_reason = EXTERNAL_SESSION_REJECTED
+                raise UnlockRequired(self, EXTERNAL_SESSION_REJECTED)
+            err = err.replace(token, "[REDACTED]")
             raise RuntimeError(f"bw failed: {err[:200]}")
         return proc.stdout or ""
 

@@ -57,6 +57,14 @@ def may_answer(authority: dict, actor_id: Any, admin_ids: Any = (), extra: Any =
     ``admitted=False`` marks an answer whose sender no allowlist admitted (a relayed Discord sender the
     connector never delivered a message from, ``gateway.relay.admitted_authors``): under ``"*"`` the
     sender must then pass the slash floor AND be the requester or an admin, as with ``approvers`` narrowed."""
+    return _refusal(authority, actor_id, admin_ids, extra, commands, admitted) is None
+
+
+def _refusal(authority: dict, actor_id: Any, admin_ids: Any, extra: Any, commands: tuple[str, ...],
+             admitted: bool) -> Optional[str]:
+    """:func:`may_answer`'s decision: ``None`` when allowed, else what the refusal names, taken from
+    the check that failed: the answer's admin-only command when the slash policy refused it, else the
+    requester."""
     from gateway.slash_access import SlashAccessPolicy, _coerce_id_list, policy_for_chat_type
 
     actor = str(actor_id or "").strip()
@@ -68,11 +76,14 @@ def may_answer(authority: dict, actor_id: Any, admin_ids: Any = (), extra: Any =
         policy = SlashAccessPolicy(False, frozenset(str(a) for a in admin_ids), frozenset())
     approvers = _coerce_id_list(authority.get("approvers"))
     if "*" in approvers:
-        allowed = not (commands and policy.enabled) or any(policy.can_run(actor or None, c) for c in commands)
-        if admitted or not allowed:
-            return allowed
+        if commands and policy.enabled and not any(policy.can_run(actor or None, c) for c in commands):
+            return _ADMIN_ONLY + commands[0]
+        if admitted:
+            return None
     requester = str(authority.get("requester_id") or "")
-    return bool(actor) and (actor == requester or actor in approvers or actor in policy.admin_user_ids)
+    if actor and (actor == requester or actor in approvers or actor in policy.admin_user_ids):
+        return None
+    return str(authority.get("requester_name") or requester or _NO_REQUESTER)
 
 
 def approval_commands(choice: Optional[str] = None) -> tuple[str, ...]:
@@ -82,16 +93,6 @@ def approval_commands(choice: Optional[str] = None) -> tuple[str, ...]:
     if choice is None:
         return ("approve", "deny")
     return ("deny",) if choice == "deny" else ("approve",)
-
-
-def _refusal_name(authority: dict, commands: tuple[str, ...], admitted: bool = True) -> str:
-    """What a refusal names: the answer's admin-only command under ``approvers: ["*"]`` (the slash
-    policy refused it), else the requester."""
-    from gateway.slash_access import _coerce_id_list
-
-    if admitted and commands and "*" in _coerce_id_list(authority.get("approvers")):
-        return _ADMIN_ONLY + commands[0]
-    return str(authority.get("requester_name") or authority.get("requester_id") or _NO_REQUESTER)
 
 
 def runner_answer_policy(source: Any):
@@ -121,8 +122,9 @@ def answerable_request_ids(session_key: str, actor_id: Any, *, admin_ids: Any = 
         pending = pending[:1]
     commands = approval_commands(choice)
     for entry in pending:
-        if not may_answer(entry, actor_id, admin_ids, extra, commands, admitted=admitted):
-            return [], _refusal_name(entry, commands, admitted)
+        refused = _refusal(entry, actor_id, admin_ids, extra, commands, admitted)
+        if refused is not None:
+            return [], refused
     return [str(p.get("request_id")) for p in pending], None
 
 
@@ -144,9 +146,7 @@ def _authority_refusal(authority: Any, actor_id: Any, admin_ids: Any, extra: Any
     # unadmitted sender (``may_answer``'s ``admitted``) needs a recorded requester to match.
     if not authority or not isinstance(authority, dict):
         return None if admitted else _NO_REQUESTER
-    if may_answer(authority, actor_id, admin_ids, extra, commands, admitted=admitted):
-        return None
-    return _refusal_name(authority, commands, admitted)
+    return _refusal(authority, actor_id, admin_ids, extra, commands, admitted)
 
 
 def slash_confirm_refusal(session_key: str, confirm_id: str, actor_id: Any, *, admin_ids: Any = (),

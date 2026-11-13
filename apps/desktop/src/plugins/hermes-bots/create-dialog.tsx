@@ -118,7 +118,7 @@ export function singleFlight<T>(ref: { current: null | Promise<T> }, start: () =
 
 /** The clone source's capability catalog, staged before the profile exists. */
 interface CapabilityCatalog {
-  mcp: CapabilityEntry[]
+  mcp: (CapabilityEntry & { installedInDraft?: boolean })[]
   skills: CapabilityEntry[]
   source: string
   toolsets: CapabilityEntry[]
@@ -256,11 +256,13 @@ function slugTaken(roster: RosterRow[], slug: string, target: string, draft: nul
  *  and the dialog unmounting, bumps `draftGenRef` so an in-flight create
  *  deletes its own draft and configures nothing. */
 function useDraftProfile() {
+  const [caps, setCaps] = useState<CapabilityCatalog | null>(null)
   const createdRef = useRef<null | string>(null)
   const flightRef = useRef<Promise<null | string> | null>(null)
   const [createdForCaps, setCreatedForCaps] = useState<null | string>(null)
   const draftGenRef = useRef(0)
   const draftTargetRef = useRef('')
+  const draftOwnerRef = useRef('')
   const draftWarningRef = useRef<{ generation: number; message: string; title: string } | null>(null)
 
   const discardDraft = () => {
@@ -269,6 +271,13 @@ function useDraftProfile() {
     draftWarningRef.current = null
     createdRef.current = flightRef.current = null
     setCreatedForCaps(null)
+    // Completed setup belongs to the deleted draft, not its replacement.
+    setCaps(prev => prev && {
+      ...prev,
+      mcp: prev.mcp.map(m => m.installedInDraft
+        ? { ...m, installed: false, enabled: false, installedInDraft: false }
+        : m)
+    })
 
     if (draft) {
       discardDraftProfile(draft, draftTargetRef.current)
@@ -291,7 +300,7 @@ function useDraftProfile() {
     setName(next)
   }
 
-  return { createdRef, flightRef, createdForCaps, setCreatedForCaps, discardDraft, renameDraft, draftGenRef, draftTargetRef, draftWarningRef }
+  return { caps, setCaps, createdRef, flightRef, createdForCaps, setCreatedForCaps, discardDraft, renameDraft, draftGenRef, draftTargetRef, draftOwnerRef, draftWarningRef }
 }
 
 export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: CreateAgentDialogProps) {
@@ -299,7 +308,7 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
   const b = useBots()
   const [name, setName] = useState('')
 
-  const { createdRef, flightRef, createdForCaps, setCreatedForCaps, discardDraft, renameDraft, draftGenRef, draftTargetRef, draftWarningRef } = useDraftProfile()
+  const { caps, setCaps, createdRef, flightRef, createdForCaps, setCreatedForCaps, discardDraft, renameDraft, draftGenRef, draftTargetRef, draftOwnerRef, draftWarningRef } = useDraftProfile()
 
   const [title, setTitle] = useState('')
   const [description, setDescription] = useState('')
@@ -360,7 +369,6 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
   const requestForTarget = <T,>(method: string, params: Record<string, unknown> = {}): Promise<T> =>
     requestOnTarget<T>(createTarget, method, params)
 
-  const [caps, setCaps] = useState<CapabilityCatalog | null>(null)
   const [capsFailed, setCapsFailed] = useState(false)
 
   const [dirtyCaps, setDirtyCaps] = useState({
@@ -572,6 +580,7 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
 
       createdRef.current = slug
       draftTargetRef.current = target
+      draftOwnerRef.current = targetId
 
       // Apply capability picks from the Advanced tabs (best-effort; the
       // profile exists either way and Edit Profile can finish the job).
@@ -692,7 +701,9 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
         name: slugCreated,
         description: descriptionText,
         title: botTitle,
-        ...(remoteTarget ? { connectionId: targetConnection, remoteSource: true } : {})
+        connectionId: draftOwnerRef.current,
+        sourceScoped: true,
+        ...(remoteTarget ? { remoteSource: true } : {})
       }
 
       const warning = draftWarningRef.current
@@ -1125,6 +1136,7 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
                                                 ? {
                                                     ...x,
                                                     installed: true,
+                                                    installedInDraft: true,
                                                     enabled: true
                                                   }
                                                 : x

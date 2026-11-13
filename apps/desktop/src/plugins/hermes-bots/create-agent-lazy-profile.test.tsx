@@ -28,6 +28,7 @@ interface CapabilitiesViewProps {
 }
 
 const mocks = vi.hoisted(() => ({
+  activeConnection: { value: 'local' },
   completeMcpOAuth: vi.fn(),
   connections: vi.fn(async () => [] as { id: string; label: string }[]),
   createCanonicalChat: vi.fn(async () => 'session-1'),
@@ -60,6 +61,10 @@ vi.mock('@hermes/plugin-sdk', async importOriginal => {
     ...original,
     host: {
       ...original.host,
+      state: {
+        ...original.host.state,
+        connectionId: { ...original.host.state.connectionId, get: () => mocks.activeConnection.value }
+      },
       completeMcpOAuth: mocks.completeMcpOAuth,
       connections: mocks.connections,
       dropLeftoverProfilePrefs: mocks.dropLeftoverProfilePrefs,
@@ -145,6 +150,7 @@ beforeAll(async () => {
 
 beforeEach(() => {
   vi.clearAllMocks()
+  mocks.activeConnection.value = 'local'
   mocks.notify.mockReset()
   mocks.skillsView.length = 0
   mocks.connections.mockResolvedValue([])
@@ -822,6 +828,31 @@ describe('profile creation warnings', () => {
     }))
   })
 
+  it('keeps the persistent model action on its creation connection after switching gateways', async () => {
+    mocks.activeConnection.value = 'gateway-a'
+    const base = mocks.request.getMockImplementation()!
+    mocks.request.mockImplementation(async (method: string, params?: unknown) => method === 'setup.runtime_check'
+      ? { ok: false, error: 'No credentials.' } : base(method, params))
+    const configure = vi.fn(async (bot: RosterRow) => {
+      const { requestForBot } = await import('./routing')
+      await requestForBot(bot, 'profiles.configure', { name: bot.name, model: 'picked-model' })
+    })
+    const dialog = await renderDialog(true, configure)
+    await showNotifications()
+    fireEvent.click(screen.getByRole('button', { name: 'Create bot' }))
+    await waitFor(() => expect(mocks.createCanonicalChat).toHaveBeenCalled())
+    dialog.unmount()
+    mocks.activeConnection.value = 'gateway-b'
+    const { clearResumeToasts } = await import('@/app/session/hooks/use-session-actions/resume-latches')
+    await act(async () => clearResumeToasts(undefined))
+    fireEvent.click(await screen.findByRole('button', { name: 'Configure model' }))
+    await waitFor(() => expect(mocks.requestProfile).toHaveBeenCalledWith(
+      expect.objectContaining({ connectionId: 'gateway-a', profile: 'inbox-triage', targetProfile: 'inbox-triage' }),
+      'profiles.configure', expect.objectContaining({ name: 'inbox-triage' }), undefined, { spawnPriority: 'foreground' }
+    ))
+    expect(mocks.request.mock.calls.filter(([method]) => method === 'profiles.configure')).toEqual([])
+  })
+
   it('explicit Clear all dismisses persistent creation and needs-model cards', async () => {
     const base = mocks.request.getMockImplementation()!
     mocks.request.mockImplementation(async (method: string, params?: unknown) => method === 'profiles.create'
@@ -946,6 +977,46 @@ describe('retired staged MCP owners', () => {
     expect(mocks.request.mock.calls.filter(([method]) => method === 'mcp.servers.set_api_key')).toEqual([
       ['mcp.servers.set_api_key', { name: 'linear', profile: 'replacement', env_var: 'LINEAR_API_KEY', value: 'new-key' }]
     ])
+  })
+
+  it.each(['key', 'oauth'])('retires completed %s setup on rename without dropping source installations', async auth => {
+    const base = mocks.request.getMockImplementation()!
+    mocks.request.mockImplementation(async (method: string, params?: unknown) => method === 'mcp.catalog'
+      ? { servers: [{ ...catalog, auth: auth === 'oauth' ? 'oauth' : null }] }
+      : method === 'profiles.describe'
+        ? { mcp_servers: [{ name: 'source-server', enabled: true, installed: true }], skills: [], toolsets: [] }
+        : base(method, params))
+    mocks.completeMcpOAuth.mockResolvedValue(undefined)
+    await openSetup()
+    if (auth === 'key') {
+      fireEvent.change(await screen.findByPlaceholderText('LINEAR_API_KEY'), { target: { value: 'old-draft-key' } })
+      fireEvent.click(screen.getByRole('button', { name: /Save.*test/i }))
+    }
+    await waitFor(() => expect(screen.queryByRole('button', { name: /Set up|Sign in/ })).toBeNull())
+    expect(screen.getByRole('checkbox', { name: /linear/ }).getAttribute('data-state')).toBe('checked')
+
+    rename()
+    expect(screen.getByRole('checkbox', { name: /linear/ }).getAttribute('data-state')).toBe('unchecked')
+    expect(screen.getByRole('checkbox', { name: /linear/ }).hasAttribute('disabled')).toBe(true)
+    expect(screen.getByRole('checkbox', { name: /source-server/ }).getAttribute('data-state')).toBe('checked')
+    fireEvent.click(await screen.findByRole('button', { name: /Set up|Sign in/ }))
+    await waitFor(() => expect(mocks.request).toHaveBeenCalledWith('profiles.configure', {
+      name: 'replacement', enabled_mcp_servers: ['source-server']
+    }))
+    if (auth === 'key') {
+      const key = await screen.findByPlaceholderText('LINEAR_API_KEY') as HTMLInputElement
+      expect(key.value).toBe('')
+      fireEvent.change(key, { target: { value: 'replacement-key' } })
+      fireEvent.click(screen.getByRole('button', { name: /Save.*test/i }))
+      await waitFor(() => expect(mocks.request).toHaveBeenCalledWith('mcp.servers.set_api_key', {
+        name: 'linear', profile: 'replacement', env_var: 'LINEAR_API_KEY', value: 'replacement-key'
+      }))
+      expect(mocks.request.mock.calls.filter(([method, params]) => method === 'mcp.servers.set_api_key'
+        && params.profile === 'replacement' && params.value === 'old-draft-key')).toEqual([])
+    } else {
+      await waitFor(() => expect(mocks.completeMcpOAuth).toHaveBeenCalledTimes(2))
+      expect(mocks.completeMcpOAuth.mock.calls.at(-1)![0]).toMatchObject({ profile: { profile: 'replacement' } })
+    }
   })
 
   it.each(['profiles.create', 'mcp.servers.add', 'mcp.servers.set_api_key', 'mcp.servers.test'].flatMap(pending =>

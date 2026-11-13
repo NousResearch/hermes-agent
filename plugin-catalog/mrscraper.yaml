@@ -1,12 +1,12 @@
 name: mrscraper
 repo: https://github.com/ai-mrscraper/hermes-mrscraper-plugin
-sha: 7871647176d7db84ab3156ad4605a89162a2c6d4
-description: "MrScraper page retrieval, Google search, and account usage via direct HTTP APIs. Disclosure — page and search requests can consume paid account tokens; target URLs, search queries, and request options are sent to MrScraper."
+sha: 63059eb6c2c166a18d892791c54237408e11f36a
+description: "MrScraper GET page retrieval, unified Web Search, and account usage via direct HTTP APIs. Disclosure — page and search requests can consume paid account tokens; target URLs, search queries, and request options are sent to MrScraper."
 maintainer: ai-mrscraper
 tier: community
 category: web
 docs_url: https://github.com/ai-mrscraper/hermes-mrscraper-plugin#readme
-version: "2.0.0"
+version: "3.0.0"
 capabilities:
   provides_tools:
     - mrscraper_scraper_api

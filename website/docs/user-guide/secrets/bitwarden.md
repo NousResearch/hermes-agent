@@ -146,6 +146,7 @@ Startup warnings now include a `→` remediation line telling you exactly which 
 
 - The bootstrap token (`BWS_ACCESS_TOKEN`) is itself sensitive — anyone with it can read every secret the machine account has access to. Treat it the same as any other API key.
 - Hermes will refuse to let Bitwarden overwrite the bootstrap token itself, even with `override_existing: true`. If you store `BWS_ACCESS_TOKEN` as a secret inside the project, it's silently skipped during apply.
+- `BWS_ACCESS_TOKEN` is stripped from the processes the agent and its tools spawn (terminal, `execute_code`, background processes, cron scripts, CLI helpers). `terminal.env_passthrough` and skill `required_environment_variables` cannot re-allow it, so `bws` run by the agent never sees the token. Hermes's own processes for the same profile still get it: its `bws` child, a gateway it starts or restarts, and `key_cmd` helpers. Run `bws` yourself from your own shell.
 - PM checks the managed archive against its SHA-256 hash in `pm/lock.json`. A mismatch aborts installation.
 - The same lock declares the version. First use does not resolve a "latest" release. External binaries remain outside these PM checks.
 

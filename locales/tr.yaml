@@ -167,7 +167,10 @@ gateway:
     full_logs_hint: "Tam günlük yüklemeleri için CLI'dan `hermes debug share` kullanın."
     share_hint: "Destek için bu bağlantıları Hermes ekibiyle paylaşın."
     report_label: "Rapor"
-    local_refused: "`/debug local` raporu Hermes'in çalıştığı makinede tutar, bu yüzden sohbetten kullanılamaz. Özet raporu yüklemek için `/debug` gönderin."
+    local_refused: "`/debug local` raporu Hermes'in çalıştığı makinede tutar, bu yüzden sohbetten kullanılamaz. Özet raporu yüklemek için `/debug upload` gönderin."
+    upload_hint: "Hiçbir şey yüklenmedi. Özet raporu yüklemek için `/debug upload` gönderin."
+    upload_hint_local: "Hiçbir şey yüklenmedi. Özet raporu yüklemek için `/debug upload`, burada görüntülemek için `/debug local` gönderin."
+    nous_refused: "Hiçbir şey yüklenmedi. Özel Nous yüklemeleri buradan kullanılamaz: bir terminalde `hermes debug share --nous` çalıştırın veya masaüstü uygulamasındaki Send diagnostics seçeneğini kullanın. `/debug upload` bunun yerine özeti herkese açık bir paste'e yükler."
   deny:
     stale: "❌ Komut reddedildi (onay geçersizdi)."
     no_pending: "Reddedilecek bekleyen komut yok."
@@ -1706,7 +1709,7 @@ slash:
   version:
     description: "Hermes Agent sürümünü göster"
   debug:
-    description: "Hata ayıklama raporunu (sistem bilgisi + günlükler) yükle ve paylaşılabilir bağlantılar al"
+    description: "Hata ayıklama raporu (sistem bilgisi + günlükler): önce gizlilik bildirimini gösterir; /debug upload bağlantı paylaşır"
   quit:
     description: "CLI'dan çık (oturum geçmişini de silmek için --delete kullanın)"
 cli:

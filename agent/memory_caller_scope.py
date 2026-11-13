@@ -137,6 +137,31 @@ def claim_instance(provider: Any, home: Any) -> bool:
     return True
 
 
+def serves_caller(provider: Any, label: str) -> bool:
+    """False when ``provider`` (the instance) is bound to a profile other than the caller's: a
+    profile whose manager was refused this instance must get no service from it on any other
+    route either (the tools its plugin registered through ``ctx``), never the owner's store (#147659).
+    An instance nobody has claimed yet is not refused here; its manager's own checks still run."""
+    pid = id(provider)
+    with _claims_lock:
+        entry = _claims.get(pid)
+        owner = entry[1] if entry is not None and entry[0]() is provider else None
+    if owner is None:
+        return True
+    from agent.secret_scope import is_multiplex_active
+    from hermes_constants import get_hermes_home
+    multiplexed = is_multiplex_active()
+    caller_home = _explicit_caller_home()
+    if caller_home is None and multiplexed:
+        _refuse(label, "the caller names no profile on a process serving several", None, owner, multiplexed)
+        return False
+    caller_home = caller_home or str(get_hermes_home())
+    if _home_key(caller_home) == owner:
+        return True
+    _refuse(label, "the provider instance is bound to another profile", caller_home, owner, multiplexed)
+    return False
+
+
 def in_owner_home(bound: Optional[dict[str, Any]], fn: Callable[[], Any]) -> Callable[[], Any]:
     """``fn`` run under the owning profile's HERMES_HOME override, set explicitly: a background
     worker must not depend on the submitter's context having carried it."""

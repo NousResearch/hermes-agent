@@ -1172,7 +1172,7 @@ def _env_bool(name: str, default: bool = False) -> bool:
 from plugins.platforms.discord.adapter_media import DiscordMediaMixin
 from plugins.platforms.discord.standalone_rest import api_url as _rest_url, post_paced as _post_paced
 from plugins.platforms.discord.adapter_opus import load_opus_codec
-from plugins.platforms.discord.adapter_authorization import DiscordAuthorizationMixin
+from plugins.platforms.discord.adapter_authorization import DiscordAuthorizationMixin, is_automated_message
 from plugins.platforms.discord.adapter_slash_auth import DiscordSlashAuthMixin
 from plugins.platforms.discord.adapter_live_gates import DiscordLiveGatesMixin
 from plugins.platforms.discord.adapter_thread_titles import DiscordThreadTitlesMixin, SemanticThreadRenames
@@ -1639,7 +1639,7 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordAuthorizationMixin, DiscordMe
             return False, False
         self._refresh_live_gates()  # the bot branch never reaches _is_allowed_user's refresh
         role_authorized = False
-        if getattr(message.author, "bot", False):
+        if is_automated_message(message):
             allow_bots = self._get_allow_bots()
             bot_tag_continuation = self._is_bot_tag_debounce_continuation(message)
             if allow_bots == "none":
@@ -1782,7 +1782,7 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordAuthorizationMixin, DiscordMe
     def _message_event_parts(self, message, extra_payload):
         """Shared normalizer for message edit/delete: (payload, source kwargs) or None."""
         author = getattr(message, "author", None)
-        if author is not None and getattr(author, "bot", False):
+        if is_automated_message(message):
             return None  # bot's own progressive edits are noise, not user events
         thread_id, chat_id = self._thread_id_and_chat_for_channel(getattr(message, "channel", None))
         message_id = getattr(message, "id", None)
@@ -4963,7 +4963,7 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordAuthorizationMixin, DiscordMe
         """Open a short continuation window after a bot-authored tag."""
         if (
             self._text_batch_delay_seconds <= 0
-            or not getattr(message.author, "bot", False)
+            or not is_automated_message(message)
             or not self._self_is_explicitly_mentioned(message)
         ):
             return
@@ -4978,7 +4978,7 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordAuthorizationMixin, DiscordMe
         second, so chunk N of a long handoff lands well after the tag itself; each
         admitted chunk therefore vouches for the next one. The gateway bot loop
         guard bounds a bot that never stops talking."""
-        if self._text_batch_delay_seconds <= 0 or not getattr(message.author, "bot", False):
+        if self._text_batch_delay_seconds <= 0 or not is_automated_message(message):
             return False
         key = self._bot_tag_debounce_key(message)
         now = time.monotonic()
@@ -5125,7 +5125,7 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordAuthorizationMixin, DiscordMe
                 ):
                     return None
                 # DISCORD_ALLOW_BOTS: for history, "mentions" counts as "all" (context, not response).
-                is_bot_author = getattr(msg.author, "bot", False)
+                is_bot_author = is_automated_message(msg)
                 if (is_bot_author and msg.author != self._client.user and not include_other_bots):
                     return None
                 if not content and msg.attachments:
@@ -6145,7 +6145,7 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordAuthorizationMixin, DiscordMe
             user_name=message.author.display_name,
             thread_id=thread_id,
             chat_topic=chat_topic,
-            is_bot=getattr(message.author, "bot", False),
+            is_bot=is_automated_message(message),
             guild_id=str(guild.id) if guild else None,
             parent_chat_id=parent_channel_id,
             message_id=str(message.id),
@@ -6207,10 +6207,7 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordAuthorizationMixin, DiscordMe
             timestamp=message.created_at, auto_skill=_skills, channel_prompt=_channel_prompt,
             channel_context=_channel_context,
         )
-        if (
-            getattr(getattr(message, "author", None), "bot", False)
-            and self._is_bot_tag_debounce_continuation(message)
-        ):
+        if is_automated_message(message) and self._is_bot_tag_debounce_continuation(message):
             event._bot_tag_debounce = True  # type: ignore[attr-defined]
 
         # Track participation so follow-ups in this thread don't need @mention.

@@ -1,7 +1,7 @@
 name: whiteboard
 title: Hermes Whiteboard
 repo: https://github.com/Adolanium/hermes-whiteboard
-sha: 9151ee902ae7008d1ab47f9398ea7667c569bf2f
+sha: 2d50c6124e993834b6c7d912082725a97ea4e814
 description: >-
   An agentic whiteboard. Say what you're planning and Hermes lays it out as a
   route, columns or a map, with hand-drawn stickers. Add rough notes and
@@ -18,7 +18,12 @@ description: >-
   are denied; export writes the one Markdown or CSV file you name in the
   system dialog, through the plugin's own backend; boards live in Desktop
   plugin storage, with a copy under plugin-data/whiteboard/ only after you
-  turn on chat access, which starts off; no telemetry, no credentials, no
+  turn on chat access, which starts off, and each Hermes profile that has the plugin keeps
+  its own copy; a Planning model and an Agent model in Settings name a model you are
+  signed in to in Hermes when a session is created, and a refused model stops
+  the run; with the Sheets or Data plugin
+  installed, a click on that page pins notes to the open board through a
+  window event, with no file, backend or model involved; no telemetry, no credentials, no
   shell commands or background processes of its own. Independent community
   project, not affiliated with Nous Research.
 maintainer: Adolanium
@@ -26,11 +31,11 @@ tier: community
 category: desktop
 requires_hermes: ">=0.22.6"
 docs_url: https://github.com/Adolanium/hermes-whiteboard#readme
-version: "0.1.0"
-image: https://raw.githubusercontent.com/Adolanium/hermes-whiteboard/9151ee902ae7008d1ab47f9398ea7667c569bf2f/docs/assets/catalog.png
+version: "0.1.7"
+image: https://raw.githubusercontent.com/Adolanium/hermes-whiteboard/2d50c6124e993834b6c7d912082725a97ea4e814/docs/assets/catalog.png
 screenshots:
-  - https://raw.githubusercontent.com/Adolanium/hermes-whiteboard/9151ee902ae7008d1ab47f9398ea7667c569bf2f/docs/assets/route.jpg
-  - https://raw.githubusercontent.com/Adolanium/hermes-whiteboard/9151ee902ae7008d1ab47f9398ea7667c569bf2f/docs/assets/delivered.jpg
+  - https://raw.githubusercontent.com/Adolanium/hermes-whiteboard/2d50c6124e993834b6c7d912082725a97ea4e814/docs/assets/route.jpg
+  - https://raw.githubusercontent.com/Adolanium/hermes-whiteboard/2d50c6124e993834b6c7d912082725a97ea4e814/docs/assets/delivered.jpg
 capabilities:
   provides_tools:
     - whiteboard_list

@@ -428,3 +428,40 @@ def test_google_chat_space_top_level_refused_when_another_profile_owns_a_thread(
     finally:
         if tokens is not None:
             clear_session_vars(tokens)
+
+
+@pytest.mark.parametrize("platform_name,routes,chat", [
+    # A Telegram DM's chat id is its sender's id: dispatch hands U's DM to the ``user_id`` route.
+    ("telegram", [{"name": "dm", "platform": "telegram", "chat_id": "4242", "profile": "sec"},
+                  {"name": "u", "platform": "telegram", "user_id": "4242", "profile": "other"}], "4242"),
+    # A ``guild_id + chat_id`` route outranks a bare ``chat_id`` route on the same channel.
+    ("discord", [{"name": "c", "platform": "discord", "chat_id": "111", "profile": "sec"},
+                 {"name": "gc", "platform": "discord", "guild_id": "900", "chat_id": "111", "profile": "other"}],
+     "111"),
+], ids=["telegram-dm-user-route", "discord-guild-chat-route"])
+def test_more_specific_route_of_another_profile_wins_without_an_origin(satellite, platform_name, routes, chat):
+    """No origin bound (cron, webhook): the satellite's chat route lends the shared bot only where
+    dispatch would also pick it."""
+    from gateway.profile_routing import match_profile_route
+
+    satellite.runner.config.profile_routes = parse_profile_routes(routes)
+    inbound = {"user_id": chat} if platform_name == "telegram" else {"guild_id": "900"}
+    assert match_profile_route(satellite.runner.config.profile_routes, platform_name,
+                               chat_id=chat, **inbound).profile == "other"
+    assert satellite.runner._shared_bot_target_allowed(Platform(platform_name), "sec", chat, None) is False
+
+
+def test_google_chat_space_guard_ignores_own_threads_and_matches_thread_only_routes(satellite):
+    """The satellite's own thread routes don't close its space's top level; another profile's
+    ``thread_id``-only route (no ``chat_id``) does."""
+    gchat = Platform("google_chat")
+    allowed = satellite.runner._shared_bot_target_allowed
+    satellite.runner.config.profile_routes = parse_profile_routes([
+        {"name": "s", "platform": "google_chat", "chat_id": "spaces/AAA", "profile": "sec"},
+        {"name": "st", "platform": "google_chat", "chat_id": "spaces/AAA",
+         "thread_id": "spaces/AAA/threads/T1", "profile": "sec"}])
+    assert allowed(gchat, "sec", "spaces/AAA", None) is True
+    satellite.runner.config.profile_routes = parse_profile_routes([
+        {"name": "s", "platform": "google_chat", "chat_id": "spaces/AAA", "profile": "sec"},
+        {"name": "t", "platform": "google_chat", "thread_id": "spaces/AAA/threads/T2", "profile": "other"}])
+    assert allowed(gchat, "sec", "spaces/AAA", None) is False

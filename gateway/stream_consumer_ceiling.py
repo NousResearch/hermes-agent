@@ -166,6 +166,9 @@ class StreamCeilingMixin:
         self._already_sent = True
         self._mark_final_delivered()
         self._delivered_final_text = self._display_payload(text)
+        # Durable record: a segment reset clears the final flags, and a final equal to this file must
+        # still read as delivered (else the gateway's fallback uploads it a second time).
+        self._delivered_segment_texts.append(self._delivered_final_text)
         return True
 
     async def _handoff_at_final(self, tick: Any) -> bool:

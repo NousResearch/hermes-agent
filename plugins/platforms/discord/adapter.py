@@ -1170,6 +1170,7 @@ def _env_bool(name: str, default: bool = False) -> bool:
 
 
 from plugins.platforms.discord.adapter_media import DiscordMediaMixin
+from plugins.platforms.discord.standalone_rest import api_url as _rest_url, post_paced as _post_paced
 from plugins.platforms.discord.adapter_opus import load_opus_codec
 from plugins.platforms.discord.adapter_authorization import DiscordAuthorizationMixin
 from plugins.platforms.discord.adapter_slash_auth import DiscordSlashAuthMixin
@@ -6926,7 +6927,7 @@ async def _standalone_is_forum(aiohttp, chat_id: str, json_headers: dict, sess_k
         return cached
     is_forum = False
     try:
-        info_url = f"https://discord.com/api/v10/channels/{chat_id}"
+        info_url = _rest_url(f"channels/{chat_id}")
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15), **sess_kw) as info_sess:
             async with info_sess.get(info_url, headers=json_headers, **req_kw) as info_resp:
                 if info_resp.status == 200:
@@ -6942,10 +6943,9 @@ async def _standalone_send(
     pconfig, chat_id: str, message: str, *, thread_id: Optional[str] = None,
     media_files: Optional[list] = None, force_document: bool = False, caption: Optional[str] = None,
 ) -> dict[str, Any]:
-    """Send via Discord REST without a live gateway adapter (token: ``pconfig.token`` then env var).
-    Forum channels (type 15) reject ``POST /messages``, so a thread post is created via
-    ``POST /channels/{id}/threads`` with media as multipart attachments. Channel type: directory
-    cache → process-local probe cache → memoized GET. ``force_document`` accepted but unused."""
+    """Send via Discord REST without a live gateway adapter (token: ``pconfig.token`` then env var). Forum
+    channels (type 15) reject ``POST /messages``: a thread post is created via ``POST /channels/{id}/threads``
+    (media as multipart). Channel type: directory → probe cache → memoized GET. ``force_document`` unused."""
     try:
         import aiohttp
     except ImportError:
@@ -6966,12 +6966,12 @@ async def _standalone_send(
         media_files = media_files or []
         warnings = []
         if thread_id:
-            url = f"https://discord.com/api/v10/channels/{thread_id}/messages"
+            url = _rest_url(f"channels/{thread_id}/messages")
         else:
             # Forum channels (type 15) reject POST /messages — create a thread post.
             if await _standalone_is_forum(aiohttp, chat_id, json_headers, _sess_kw, _req_kw):
                 thread_name = _derive_forum_thread_name(message)
-                thread_url = f"https://discord.com/api/v10/channels/{chat_id}/threads"
+                thread_url = _rest_url(f"channels/{chat_id}/threads")
                 # Filter readable media first to pick JSON vs multipart before opening a session.
                 valid_media = []
                 for media_path, _is_voice in media_files:
@@ -7020,13 +7020,13 @@ async def _standalone_send(
                 if warnings:
                     result["warnings"] = warnings
                 return result
-            url = f"https://discord.com/api/v10/channels/{chat_id}/messages"
+            url = _rest_url(f"channels/{chat_id}/messages")
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30), **_sess_kw) as session:
             if message.strip() or not media_files:
-                async with session.post(url, headers=json_headers, json={"content": message}, **_req_kw) as resp:
-                    last_data, err = await _standalone_response_json_or_error(resp, "Discord API error")
-                    if err:
-                        return err
+                last_data, err = await _post_paced(session, url, _standalone_response_json_or_error, "Discord API error",
+                                                   headers=json_headers, json={"content": message}, **_req_kw)
+                if err:  # paced: a 429 waits retry_after and retries, so a long split never floods (#152012)
+                    return err
             # One multipart upload per file; a MEDIA:<path> caption rides as the attachment message's
             # content, and caption_pending makes a missing file fall back to a plain message.
             caption_pending = bool(caption)

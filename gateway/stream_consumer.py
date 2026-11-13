@@ -38,6 +38,7 @@ from gateway.stream_consumer_transport import StreamTransportMixin
 from gateway.stream_consumer_fallback import StreamFallbackMixin
 from gateway.stream_consumer_think import StreamThinkFilterMixin
 from gateway.stream_consumer_ceiling import StreamCeilingMixin
+from gateway.platforms.helpers import reply_file_off
 
 logger = logging.getLogger("gateway.stream_consumer")
 
@@ -570,7 +571,12 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         self._queue.put(_DONE)
 
     async def run(self) -> None:
-        """Async task that drains the queue and edits the platform message."""
+        """Async task that drains the queue and edits the platform message. Its sends are pieces of
+        one reply the consumer counts itself, so the adapter never files one on its own."""
+        with reply_file_off():
+            await self._run_loop()
+
+    async def _run_loop(self) -> None:
         self._len_fn, self._safe_limit = self._resolve_length_budget()
         await self._start_transports()
         try:
@@ -645,7 +651,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
 
         except asyncio.CancelledError:
             await self._on_cancelled()
-        except Exception as e:
+        except Exception as e:  # health: allow BLE001 -- the run loop's existing boundary, moved into _run_loop
             logger.error("Stream consumer error: %s", e)
         finally:
             self._wake_flush_waiters()

@@ -78,6 +78,7 @@ MOVES: dict[str, str] = {
     "hermes_state_worker_context": "hermes_agent.hermes_state_worker_context",
     "hermes_state_worker_lifecycle": "hermes_agent.hermes_state_worker_lifecycle",
     "model_tools": "hermes_agent.model_tools",
+    "providers": "hermes_agent.providers",
     "registration_lifecycle": "hermes_agent.registration_lifecycle",
     "run_agent": "hermes_agent.run_agent",
     "tools": "hermes_agent.tools",

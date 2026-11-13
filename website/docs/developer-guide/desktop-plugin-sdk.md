@@ -251,6 +251,7 @@ Import the area constants from the SDK; each area has its own `data` payload.
 | Model menu rows | `MODEL_MENU_ROW_AREA` | `data: ModelMenuRowContribution` — a leading icon / trailing badge per model |
 | Kanban card badges | `KANBAN_CARD_AREAS.badges` | `data: KanbanCardBadgeContribution` — short text labels per card, painted by the board |
 | Appearance settings | `APPEARANCE_AREAS.extra` | `render` — controls appended to Settings → Appearance |
+| Ordinary tool headers | `TOOL_ACTIVITY_HEADER_AREA` (`'chat.toolActivity.header'`) | `data: ToolActivityHeaderContribution` — passive inline annotations; native rows and disclosure stay intact ([Tool activity headers](#tool-activity-headers)) |
 | Tool media | `TOOL_MEDIA_RENDERER_AREA` (`'transcript.toolMedia'`) | `data: { tools, render }` — draw the `MEDIA:` files your package's own tools produced ([Tool media renderers](#tool-media-renderers)) |
 | Plugin settings page | `SETTINGS_PLUGINS_AREA` (`'settings.plugins'`) | Use `ctx.registerSettingsPage({ id, title, render, icon?, order?, children? })` — your own entry (with sub-pages) under Settings → Plugins |
 
@@ -1177,6 +1178,81 @@ prompt reaches the chat's composer, or `{ ok: false, error }` where `error` is
 `too_long` (with `maxLength`), `throttled` (with `retryAfterMs`), `invalid`,
 or `undelivered` (no visible composer took it). Check it before showing a
 widget as saved.
+
+### Tool activity headers — annotate ordinary tool rows {#tool-activity-headers}
+
+`TOOL_ACTIVITY_HEADER_AREA` adds passive inline content at the end of an ordinary
+conversation tool row's header label, **inside the existing disclosure button**.
+It is not a replacement renderer, a pane, a transcript directive, or the tool-media
+hook. Core keeps its label, status glyph, timers, grouping, dismissal, output,
+copy controls and keyboard interaction. Specialized cards (including file edits,
+approvals and clarification) are not decorated. A collapsed run stays collapsed;
+decorations mount only when its native rows mount. Existing activity visibility
+settings still apply.
+
+```javascript
+import * as sdk from '@hermes/plugin-sdk'
+import { jsx } from 'react/jsx-runtime'
+
+export default {
+  id: 'tool-annotation',
+  register(ctx) {
+    // Namespace import permits feature detection on older Desktop builds.
+    if (sdk.TOOL_ACTIVITY_HEADER_API_VERSION !== 1 || !sdk.TOOL_ACTIVITY_HEADER_AREA) return
+    ctx.register({
+      id: 'annotation',
+      area: sdk.TOOL_ACTIVITY_HEADER_AREA,
+      order: 10,
+      data: {
+        apiVersion: sdk.TOOL_ACTIVITY_HEADER_API_VERSION,
+        render: ({ toolName, status }) => jsx('span', {
+          style: { color: 'var(--ui-text-tertiary)' },
+          children: `${toolName}: ${status}`
+        })
+      }
+    })
+  }
+}
+```
+
+TypeScript authors can use `satisfies ToolActivityHeaderContribution` for `data`;
+its `render` receives a `ToolActivityHeaderContext`. API version **1** requires
+`apiVersion: TOOL_ACTIVITY_HEADER_API_VERSION`; incompatible versions or malformed
+payloads render nothing. Hosts without these exports do not provide this hook;
+feature detection, not a guessed application version, is the compatibility gate.
+
+| Context field | Meaning |
+| --- | --- |
+| `toolName: string` | The host's tool name, preserved as supplied. |
+| `innerToolName?: string` | Known inner tool name for a bridged call. |
+| `status` | Native presentation status: `running`, `success`, `error`, `notice`, or `warning`. Not a new execution outcome classifier. |
+| `hasResult: boolean` | Whether the host actually has a result. A stopped turn does not imply success. |
+| `interrupted?: boolean` | Host interruption flag, if present. |
+| `startedAt?: number`, `completedAt?: number` | Recorded Unix timestamps **in seconds**, not milliseconds. Missing live/history timing remains `undefined`; no mount-time or completion-time estimate is substituted. |
+| `exitCode?: number` | Reported terminal exit code, when available. Informational: nonzero does not necessarily mean the native row is an error. |
+| `hasDetails: boolean`, `expanded: boolean` | Whether the native row can expand and whether it currently is expanded. No toggle callback is exposed. |
+
+The context is a frozen, read-only, scalar-only snapshot; updates produce a new
+snapshot without remounting the decoration. Raw arguments, output, paths, result
+metadata and transcript references are not passed. There is no progress percentage
+or inferred duration. Missing timing must not be displayed as zero duration.
+
+**Composition and cleanup:** every compatible registration renders, in ascending
+`order` (default `0`), with ties in registration order. Return `null` for tools you
+do not annotate. Same-id registration replaces the entry and takes a new tie
+position. As in other registry areas, disposers address the id: dispose an old
+registration before reusing its id. `ctx.register` tracks disposal on disable,
+unload and reload; removing the final contribution leaves the native row alone.
+A rendering exception removes only the failed decoration,
+not native content or other contributions. Normal state updates do not retry it;
+re-registration or remount does. Use normal React hooks in a stable `render`
+function if needed, and clean up effects on unmount.
+
+Render compact **non-interactive inline content** only: no buttons, links, portals,
+DOM manipulation or styles that hide/replace native controls. The host owns the
+surrounding button and all execution/approval behavior. This display contract and
+its error boundary are not a sandbox; Desktop plugins remain trusted renderer code
+with the rest of the SDK's existing capabilities.
 
 ### Tool media renderers — draw the files your own tools produce {#tool-media-renderers}
 

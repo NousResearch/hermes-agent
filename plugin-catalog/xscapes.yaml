@@ -10,6 +10,13 @@ category: general
 requires_hermes: ">=0.23.0"
 docs_url: https://donlucasx.github.io/xscapes/
 version: "0.2.1"
+image: https://raw.githubusercontent.com/donlucasx/xscapes/26d14fc7c8d673849fe954d8172dc151c898d78d/assets/hermes/banner-nous.gif
+screenshots:
+  - https://raw.githubusercontent.com/donlucasx/xscapes/26d14fc7c8d673849fe954d8172dc151c898d78d/assets/hermes/reveal.gif
+  - https://raw.githubusercontent.com/donlucasx/xscapes/26d14fc7c8d673849fe954d8172dc151c898d78d/assets/hermes/owlets.gif
+  - https://raw.githubusercontent.com/donlucasx/xscapes/26d14fc7c8d673849fe954d8172dc151c898d78d/assets/hermes/think.gif
+  - https://raw.githubusercontent.com/donlucasx/xscapes/26d14fc7c8d673849fe954d8172dc151c898d78d/assets/hermes/ask.gif
+  - https://raw.githubusercontent.com/donlucasx/xscapes/26d14fc7c8d673849fe954d8172dc151c898d78d/assets/hermes/scenes.gif
 platforms: [linux, macos]
 capabilities:
   provides_tools: []

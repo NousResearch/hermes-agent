@@ -10,6 +10,7 @@ category: tools
 docs_url: https://github.com/ShinjukuStaition/hermes-shinjuku
 requires_hermes: ">=0.23.1"
 readme: true
+image: https://raw.githubusercontent.com/ShinjukuStaition/shinjuku-shield/c1f14362c33c844759afeb51fd696f4b28ee75d2/docs/hermes/shinjuku-hermes-card.png
 screenshots:
   - https://raw.githubusercontent.com/ShinjukuStaition/shinjuku-shield/f1e63ac0134a6da00f671cf0542177551fbfddb2/docs/hermes/hermes-install-from-git.png
   - https://raw.githubusercontent.com/ShinjukuStaition/shinjuku-shield/f1e63ac0134a6da00f671cf0542177551fbfddb2/docs/hermes/hermes-price-and-approval.png

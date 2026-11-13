@@ -441,13 +441,40 @@ _READ_DENIED_DIRS = (
 )
 
 
+# Device/fd paths whose reads hang the process. Checked by path only — no I/O.
+_BLOCKED_DEVICE_PATHS = frozenset({
+    "/dev/zero", "/dev/random", "/dev/urandom", "/dev/full",     # never reach EOF
+    "/dev/stdin", "/dev/tty", "/dev/console",                    # block on input
+    "/dev/stdout", "/dev/stderr",                                # nonsensical to read
+    "/dev/fd/0", "/dev/fd/1", "/dev/fd/2",                       # fd aliases
+})
+# /proc/<pid>/... (and /proc/<pid>/task/<tid>/...) files that leak secrets,
+# argv, memory layout (ASLR oracle: maps family, auxv, pagemap) or raw memory.
+_BLOCKED_PROC_SUFFIXES = (
+    "/fd/0", "/fd/1", "/fd/2",  # stdio aliases
+    "/environ", "/cmdline", "/maps", "/smaps", "/smaps_rollup", "/numa_maps",
+    "/mem", "/auxv", "/pagemap")
+
+
+def is_blocked_device_path(path: str) -> bool:
+    """True for a concrete device/fd/proc path that can hang reads or leak process state.
+
+    Path-only (no I/O, no ``~`` expansion): callers pass an expanded path. POSIX spellings only, so
+    after ``normpath`` a Windows path never matches."""
+    normalized = os.path.normpath(path)
+    if normalized in _BLOCKED_DEVICE_PATHS:
+        return True
+    return normalized.startswith("/proc/") and normalized.endswith(_BLOCKED_PROC_SUFFIXES)
+
+
 def get_read_block_error(path: str) -> Optional[str]:
     """Return an error message when a read targets a denied Hermes path.
 
-    Blocked: internal skill-hub caches (prompt-injection carriers), credential
-    stores under HERMES_HOME, every profile home and the global root (exact files, plus anything
-    under ``mcp-tokens/``, ``browser-profile/``, ``vault/`` and ``webapp/``), and project-local ``.env``
-    files anywhere on disk (``.env.example`` is the documented-shape substitute).
+    Blocked: device/fd/proc files that hang reads or leak process state (``/dev/zero``,
+    ``/proc/<pid>/environ``; the literal path and the one it resolves to), internal skill-hub
+    caches (prompt-injection carriers), credential stores under HERMES_HOME, every profile home and
+    the global root (exact files, plus anything under ``mcp-tokens/``, ``browser-profile/``,
+    ``vault/`` and ``webapp/``), and project-local ``.env`` files anywhere on disk (``.env.example`` is the documented-shape substitute).
 
     Callers that resolve relative paths against a non-process cwd (e.g.
     ``TERMINAL_CWD``) MUST pass an absolute path: ``resolve()`` here anchors at
@@ -467,7 +494,12 @@ def get_read_block_error(path: str) -> Optional[str]:
     resolved = Path(lexical) if lexical is not None else Path(local).expanduser().resolve()
     hermes_dirs = _credential_store_dirs()
     reason = None
-    if any(_is_under(resolved, hd / "skills" / ".hub") for hd in hermes_dirs):
+    if is_blocked_device_path(os.path.expanduser(local)) or is_blocked_device_path(str(resolved)):
+        reason = (
+            "is a device or process file: reading it can hang or leak process state "
+            "(environment, command line, memory layout)." + _DID_SUFFIX
+        )
+    elif any(_is_under(resolved, hd / "skills" / ".hub") for hd in hermes_dirs):
         reason = (
             "is an internal Hermes cache file and cannot be read directly to prevent "
             "prompt injection. Use the skills_list or skill_view tools instead."

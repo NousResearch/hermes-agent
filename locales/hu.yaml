@@ -994,6 +994,7 @@ platform:
     denied: "❌ Elutasítva."
     approval_expired: "⌛ A jóváhagyás lejárt — a parancs nem futott le (időtúllépés, vagy máshol már eldőlt)."
   shared:
+    response_as_file: "📎 Hosszú válasz: a teljes szöveg csatolva."
     truncated_suffix: "\n...(csonkolva)"
     unknown: "ismeretlen"
     approval_expired: "⌛ A jóváhagyás lejárt — a parancs nem futott le (időtúllépés, vagy máshol már eldőlt)."
@@ -1187,8 +1188,6 @@ platform:
         unknown: "Ismeretlen skill: `{name}`. Kezdj el gépelni az automatikus kiegészítéshez."
       auto_args_description: "Argumentumok: {args_hint}"
       auto_description_fallback: "/{name} futtatása"
-    limits:
-      response_truncated: "⚠️ **A válasz csonkolva** — ez a válasz túllépte a kézbesítési limitet ({max_messages} üzenet). {dropped_chars} karakter nem lett kézbesítve; a teljes válasz a munkamenet naplóiban található."
     forum:
       default_title: "Új bejegyzés"
     voice:

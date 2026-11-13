@@ -980,6 +980,7 @@ platform:
     denied: "❌ 已拒絕。"
     approval_expired: "⌛ 批准已逾期 — 指令未執行（已逾時或已在其他地方處理）。"
   shared:
+    response_as_file: "📎 回覆較長：完整內容已附為檔案。"
     truncated_suffix: "\n...（已截斷）"
     unknown: "未知"
     approval_expired: "⌛ 批准已逾期 — 指令未執行（已逾時或已在其他地方處理）。"
@@ -1170,8 +1171,6 @@ platform:
         unknown: "未知技能：`{name}`。開始輸入即可取得自動完成建議。"
       auto_args_description: "引數：{args_hint}"
       auto_description_fallback: "執行 /{name}"
-    limits:
-      response_truncated: "⚠️ **回應已截斷** — 此回覆超過傳送上限（{max_messages} 則訊息）。有 {dropped_chars} 個字元未送達；完整回應請見工作階段記錄。"
     forum:
       default_title: "新貼文"
     voice:

@@ -1836,22 +1836,22 @@ def model_selection_config_updates(result: ModelSwitchResult, current_model_cfg:
     var, but a same-provider same-base_url model re-pick keeps it whatever the provider is. The
     dashboard re-adds an explicitly submitted key / the target provider's own pointer after this
     (``model_assignment.apply_main_model_assignment`` / ``_resolve_assignment_credentials``)."""
+    from hermes_cli.route_identity import ENDPOINT_CREDENTIAL_KEYS, ENDPOINT_KEY_POINTER_KEYS, should_clear_context_pin
     model_cfg = current_model_cfg if isinstance(current_model_cfg, dict) else {}
     updates: dict[str, Any] = {
         "default": result.new_model, "provider": result.target_provider,
         "base_url": result.base_url or None, "api_mode": result.api_mode or None,
     }
     if "context_length" in model_cfg:
-        from hermes_cli.route_identity import should_clear_context_pin
         if should_clear_context_pin(
                 model_cfg.get("default") or model_cfg.get("model"), result.new_model,
                 model_cfg.get("base_url"), result.base_url, model_cfg.get("provider"), result.target_provider):
             updates["context_length"] = None
     target = str(result.target_provider or "").strip().lower()
     route_changed = selection_route_changed(model_cfg, result)
-    stale = ["api_key", "api"] if (not target.startswith("custom") or route_changed) else []
+    stale = list(ENDPOINT_CREDENTIAL_KEYS) if (not target.startswith("custom") or route_changed) else []
     if route_changed:
-        stale += ["key_env", "api_key_env"]
+        stale += ENDPOINT_KEY_POINTER_KEYS
     for key in stale:
         if key in model_cfg:
             updates[key] = None

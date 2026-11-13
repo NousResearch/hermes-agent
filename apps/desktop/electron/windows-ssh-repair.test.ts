@@ -7,10 +7,19 @@ import path from 'node:path'
 import { test } from 'vitest'
 
 import { listRemoteHermesProfiles, readRemoteInstallId } from './remote-lifecycle'
-import { assertWindowsRemoteInstallUpdateClear, connectWindowsRemote, decodePowerShellCommand, probeWindowsFiles, probeWindowsRemote, windowsHelperOwnsRuntime } from './windows-remote-lifecycle'
+import {
+  assertWindowsRemoteInstallUpdateClear,
+  connectWindowsRemote,
+  decodePowerShellCommand,
+  probeWindowsFiles,
+  probeWindowsRemote,
+  windowsHelperOwnsRuntime
+} from './windows-remote-lifecycle'
 
 const runtime = {
-  os: 'Windows', arch: 'AMD64', hermesHome: 'C:\\Users\\A\\AppData\\Local\\hermes',
+  os: 'Windows',
+  arch: 'AMD64',
+  hermesHome: 'C:\\Users\\A\\AppData\\Local\\hermes',
   hermesPath: 'C:\\Users\\A\\AppData\\Local\\hermes\\bin\\hermes.exe',
   python: 'C:\\Python\\python.exe'
 }
@@ -24,11 +33,13 @@ function decode(command: string) {
 test('platform and marker scripts survive outer-shell parsing as one compressed argument without stdin', async () => {
   const calls: Array<{ command: string; options: { stdinData?: string } }> = []
 
-  const ssh = { exec: async (command: string, options: { stdinData?: string } = {}) => {
-    calls.push({ command, options })
+  const ssh = {
+    exec: async (command: string, options: { stdinData?: string } = {}) => {
+      calls.push({ command, options })
 
-    return calls.length === 1 ? JSON.stringify(runtime) : 'CLEAR'
-  } }
+      return calls.length === 1 ? JSON.stringify(runtime) : 'CLEAR'
+    }
+  }
 
   await probeWindowsRemote(ssh, 'C:\\用户\\Hermes\\hermes.exe')
   await assertWindowsRemoteInstallUpdateClear(ssh, runtime.hermesHome, runtime.python)
@@ -45,29 +56,42 @@ test('platform and marker scripts survive outer-shell parsing as one compressed 
 test('Windows roster and install id never dispatch POSIX syntax or hide a failed read', async () => {
   const calls: string[] = []
 
-  const ssh = { exec: async (command: string) => {
-    calls.push(command)
-    assert.doesNotMatch(command, /^echo|^if \[/)
-    const script = decode(command)
+  const ssh = {
+    exec: async (command: string) => {
+      calls.push(command)
+      assert.doesNotMatch(command, /^echo|^if \[/)
+      const script = decode(command)
 
-    if (script.includes('.hermes-update-in-progress')) {return 'CLEAR'}
+      if (script.includes('.hermes-update-in-progress')) {
+        return 'CLEAR'
+      }
 
-    return JSON.stringify({ profiles: ['default', 'bob', 'not legal', '.rollback', 'bob'], installId: 'a'.repeat(32) })
-  } }
+      return JSON.stringify({
+        profiles: ['default', 'bob', 'not legal', '.rollback', 'bob'],
+        installId: 'a'.repeat(32)
+      })
+    }
+  }
 
   assert.deepEqual(await listRemoteHermesProfiles(ssh, runtime), ['default', 'bob'])
   assert.equal(await readRemoteInstallId(ssh, runtime), 'a'.repeat(32))
   assert.ok(calls.length > 0)
-  const failed = { exec: async () => { throw new Error('fixture disconnected') } }
+  const failed = {
+    exec: async () => {
+      throw new Error('fixture disconnected')
+    }
+  }
   await assert.rejects(() => listRemoteHermesProfiles(failed, runtime))
 })
 
 test('Windows inventory rejects malformed helper output instead of fabricating default', async () => {
-  const ssh = { exec: async (command: string) => {
-    const script = decodePowerShellCommand(command)
+  const ssh = {
+    exec: async (command: string) => {
+      const script = decodePowerShellCommand(command)
 
-    return script.includes('.hermes-update-in-progress') ? 'CLEAR' : '{}'
-  } }
+      return script.includes('.hermes-update-in-progress') ? 'CLEAR' : '{}'
+    }
+  }
 
   await assert.rejects(() => listRemoteHermesProfiles(ssh, runtime))
 })
@@ -75,15 +99,21 @@ test('Windows inventory rejects malformed helper output instead of fabricating d
 test('a bin launcher does not require a nonexistent sibling Python and resolves after the update gate', async () => {
   const bootstrap = "import os, sys, runpy; runpy.run_module('hermes_cli.main', run_name='__main__', alter_sys=True)"
 
-  const ssh = { exec: async (command: string) => {
-    const script = decodePowerShellCommand(command)
+  const ssh = {
+    exec: async (command: string) => {
+      const script = decodePowerShellCommand(command)
 
-    if (script.includes('Get-Command hermes -CommandType Application')) {return JSON.stringify({ ...runtime, python: '', launcherPath: runtime.hermesPath })}
+      if (script.includes('Get-Command hermes -CommandType Application')) {
+        return JSON.stringify({ ...runtime, python: '', launcherPath: runtime.hermesPath })
+      }
 
-    if (script.includes('.hermes-update-in-progress')) {return 'CLEAR'}
+      if (script.includes('.hermes-update-in-progress')) {
+        return 'CLEAR'
+      }
 
-    return JSON.stringify({ python: runtime.python, runtimeCommand: [runtime.python, '-I', '-c', bootstrap] })
-  } }
+      return JSON.stringify({ python: runtime.python, runtimeCommand: [runtime.python, '-I', '-c', bootstrap] })
+    }
+  }
 
   const result = await probeWindowsRemote(ssh)
 
@@ -94,37 +124,57 @@ test('a bin launcher does not require a nonexistent sibling Python and resolves 
 test('the complete connect path keeps atomic spawn off argv and delivers the explicit caller JSON', async () => {
   let spawned = false
 
-  const ssh = { exec: async (command: string, options: { stdinData?: string } = {}) => {
-    const script = decodePowerShellCommand(command) || ''
+  const ssh = {
+    exec: async (command: string, options: { stdinData?: string } = {}) => {
+      const script = decodePowerShellCommand(command) || ''
 
-    if (script.includes('Get-Command hermes -CommandType Application')) {return JSON.stringify(runtime)}
+      if (script.includes('Get-Command hermes -CommandType Application')) {
+        return JSON.stringify(runtime)
+      }
 
-    if (script.includes("'spawn'")) {
-      assert.ok(command.length < 8191, "Connect's atomic spawn command must fit cmd.exe's limit")
-      assert.equal(options.stdinData, undefined)
-      assert.ok(script.includes('"profile":"bob"'), 'the caller JSON travels inside the spawn script')
-      assert.match(script, /' \| & /)
-      spawned = true
+      if (script.includes("'spawn'")) {
+        assert.ok(command.length < 8191, "Connect's atomic spawn command must fit cmd.exe's limit")
+        assert.equal(options.stdinData, undefined)
+        assert.ok(script.includes('"profile":"bob"'), 'the caller JSON travels inside the spawn script')
+        assert.match(script, /' \| & /)
+        spawned = true
 
-      return JSON.stringify({ pid: 42, creationTimeNs: '1234567890123456789' })
+        return JSON.stringify({ pid: 42, creationTimeNs: '1234567890123456789' })
+      }
+
+      if (script.includes('.hermes-update-in-progress')) {
+        return 'CLEAR'
+      }
+
+      if (script.includes("'inspect'")) {
+        return JSON.stringify({ supported: true, path: runtime.hermesPath, version: 'fixture' })
+      }
+
+      if (script.includes("'read-lock'")) {
+        return 'null'
+      }
+
+      if (script.includes("'process-state'")) {
+        return JSON.stringify({ alive: true, owned: true, indeterminate: false })
+      }
+
+      if (script.includes("'read-log'")) {
+        return JSON.stringify({ content: 'HERMES_BACKEND_READY port=5555' })
+      }
+
+      return '{"ok":true}'
     }
-
-    if (script.includes('.hermes-update-in-progress')) {return 'CLEAR'}
-
-    if (script.includes("'inspect'")) {return JSON.stringify({ supported: true, path: runtime.hermesPath, version: 'fixture' })}
-
-    if (script.includes("'read-lock'")) {return 'null'}
-
-    if (script.includes("'process-state'")) {return JSON.stringify({ alive: true, owned: true, indeterminate: false })}
-
-    if (script.includes("'read-log'")) {return JSON.stringify({ content: 'HERMES_BACKEND_READY port=5555' })}
-
-    return '{"ok":true}'
-  } }
+  }
 
   const result = await connectWindowsRemote({
-    ssh, profile: 'bob', ownershipId: 'a'.repeat(32), pickLocalPort: async () => 4444,
-    forward: async () => {}, cancelForward: async () => {}, waitForHermes: async () => {}, probeReuseProof: async () => 'authenticated-ok'
+    ssh,
+    profile: 'bob',
+    ownershipId: 'a'.repeat(32),
+    pickLocalPort: async () => 4444,
+    forward: async () => {},
+    cancelForward: async () => {},
+    waitForHermes: async () => {},
+    probeReuseProof: async () => 'authenticated-ok'
   })
 
   assert.equal(spawned, true)
@@ -139,28 +189,39 @@ test('Test and Connect share one verdict on a helper too old for a boot-selected
   assert.equal(windowsHelperOwnsRuntime(runtime, { supported: true }), true)
 })
 
-test.runIf(process.platform === 'win32')('the real Windows probe finds a .cmd-only launcher in the Hermes home off PATH', async () => {
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-probe-home-'))
-  fs.mkdirSync(path.join(home, 'bin'))
-  fs.writeFileSync(path.join(home, 'bin', 'hermes.cmd'), '@echo off\r\n')
-  const system = process.env.SystemRoot || 'C:\\Windows'
-  const env = { ...process.env, HERMES_HOME: home, PATH: [path.join(system, 'System32'), system, path.join(system, 'System32', 'WindowsPowerShell', 'v1.0')].join(';') }
+test.runIf(process.platform === 'win32')(
+  'the real Windows probe finds a .cmd-only launcher in the Hermes home off PATH',
+  async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-probe-home-'))
+    fs.mkdirSync(path.join(home, 'bin'))
+    fs.writeFileSync(path.join(home, 'bin', 'hermes.cmd'), '@echo off\r\n')
+    const system = process.env.SystemRoot || 'C:\\Windows'
+    const env = {
+      ...process.env,
+      HERMES_HOME: home,
+      PATH: [path.join(system, 'System32'), system, path.join(system, 'System32', 'WindowsPowerShell', 'v1.0')].join(
+        ';'
+      )
+    }
 
-  const ssh = {
-    exec: async (command: string, options: { stdinData?: string } = {}) => {
-      const [exe, ...args] = command.split(' ')
-      const result = spawnSync(exe, args, { input: options.stdinData, encoding: 'utf8', env })
+    const ssh = {
+      exec: async (command: string, options: { stdinData?: string } = {}) => {
+        const [exe, ...args] = command.split(' ')
+        const result = spawnSync(exe, args, { input: options.stdinData, encoding: 'utf8', env })
 
-      if (result.status !== 0) {throw new Error(result.stderr)}
+        if (result.status !== 0) {
+          throw new Error(result.stderr)
+        }
 
-      return result.stdout
+        return result.stdout
+      }
+    }
+
+    try {
+      const parsed = await probeWindowsFiles(ssh, '')
+      assert.equal(parsed.hermesPath.toLowerCase(), path.join(home, 'bin', 'hermes.cmd').toLowerCase())
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true })
     }
   }
-
-  try {
-    const parsed = await probeWindowsFiles(ssh, '')
-    assert.equal(parsed.hermesPath.toLowerCase(), path.join(home, 'bin', 'hermes.cmd').toLowerCase())
-  } finally {
-    fs.rmSync(home, { recursive: true, force: true })
-  }
-})
+)

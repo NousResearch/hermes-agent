@@ -61,7 +61,9 @@ $connectionsRegistry.subscribe(registry => {
 })
 
 export const terminalGatewayOf = (term: TerminalEntry | undefined): TerminalGateway | undefined =>
-  term?.connectionId ? { connectionId: term.connectionId, ...(term.profile ? { profile: term.profile } : {}) } : undefined
+  term?.connectionId
+    ? { connectionId: term.connectionId, ...(term.profile ? { profile: term.profile } : {}) }
+    : undefined
 
 /** SSH gateways a terminal can be opened on, beside This device. */
 export const $terminalShellGateways = computed($connectionsRegistry, registry =>

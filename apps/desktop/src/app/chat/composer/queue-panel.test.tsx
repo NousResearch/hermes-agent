@@ -88,7 +88,10 @@ describe('QueuePanel expandable previews', () => {
 describe('QueuePanel lost turn', () => {
   it('shows the lost turn and its Discard without expanding, and names the pause', async () => {
     const onDiscardLost = vi.fn()
-    renderPanel([{ ...entry('lost', 'doomed turn'), serverStatus: 'unknown' }, entry('next', 'follow up')], onDiscardLost)
+    renderPanel(
+      [{ ...entry('lost', 'doomed turn'), serverStatus: 'unknown' }, entry('next', 'follow up')],
+      onDiscardLost
+    )
 
     expect(await screen.findByText('Turn lost during restart')).toBeTruthy()
     expect(screen.getByRole('button', { name: /2 queued — paused/i })).toBeTruthy()

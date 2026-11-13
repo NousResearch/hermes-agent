@@ -5,23 +5,38 @@ import { t } from './i18n/runtime.js'
 
 export function localCreationOptions(env = process.env): Record<string, unknown> {
   const fields: Record<string, string | undefined> = {
-    model: env.HERMES_MODEL, provider: env.HERMES_TUI_PROVIDER, cwd: env.HERMES_CWD
+    model: env.HERMES_MODEL,
+    provider: env.HERMES_TUI_PROVIDER,
+    cwd: env.HERMES_CWD
   }
 
   const options: Record<string, unknown> = Object.fromEntries(Object.entries(fields).filter(([, value]) => value))
 
-  if (env.HERMES_TUI_TOOLSETS) { options.toolsets = env.HERMES_TUI_TOOLSETS.split(',') }
+  if (env.HERMES_TUI_TOOLSETS) {
+    options.toolsets = env.HERMES_TUI_TOOLSETS.split(',')
+  }
 
   // `hermes --tui -s a,b`: the owner renders these into the session's frozen prompt.
-  const skills = [...new Set((env.HERMES_TUI_SKILLS ?? '').split(/[,\n]/).map(name => name.trim()).filter(Boolean))]
+  const skills = [
+    ...new Set(
+      (env.HERMES_TUI_SKILLS ?? '')
+        .split(/[,\n]/)
+        .map(name => name.trim())
+        .filter(Boolean)
+    )
+  ]
 
-  if (skills.length) { options.skills = skills }
+  if (skills.length) {
+    options.skills = skills
+  }
 
   // The launcher's shell environment (allowlisted by `hermes --tui`): this session's HERMES_* behaviour
   // values and tool PATH/venv on the shared gateway, as main's own process had them.
   const clientEnv = parseClientEnv(env.HERMES_TUI_CLIENT_ENV)
 
-  if (clientEnv) { options.client_env = clientEnv }
+  if (clientEnv) {
+    options.client_env = clientEnv
+  }
 
   // The launcher exports `--max-turns 5` as the string "5": numbers ride as
   // ints (0 / -1 = unlimited), and a word ("none", "unlimited") stays text
@@ -39,12 +54,17 @@ export function localCreationOptions(env = process.env): Record<string, unknown>
   // `--checkpoints` / `--pass-session-id` / `--accept-hooks` (and an exported HERMES_ACCEPT_HOOKS=1)
   // are this session's creation policy too: the owner applies them, nothing reads them in-process.
   for (const [field, value] of [
-    ['yolo', env.HERMES_YOLO_MODE], ['ignore_rules', env.HERMES_IGNORE_RULES],
-    ['safe_mode', env.HERMES_SAFE_MODE], ['ignore_user_config', env.HERMES_IGNORE_USER_CONFIG],
-    ['checkpoints', env.HERMES_TUI_CHECKPOINTS], ['pass_session_id', env.HERMES_TUI_PASS_SESSION_ID],
+    ['yolo', env.HERMES_YOLO_MODE],
+    ['ignore_rules', env.HERMES_IGNORE_RULES],
+    ['safe_mode', env.HERMES_SAFE_MODE],
+    ['ignore_user_config', env.HERMES_IGNORE_USER_CONFIG],
+    ['checkpoints', env.HERMES_TUI_CHECKPOINTS],
+    ['pass_session_id', env.HERMES_TUI_PASS_SESSION_ID],
     ['accept_hooks', env.HERMES_ACCEPT_HOOKS]
   ] as const) {
-    if (truthy(value)) { options[field] = true }
+    if (truthy(value)) {
+      options[field] = true
+    }
   }
 
   return options
@@ -57,7 +77,9 @@ export function localCreationOptions(env = process.env): Record<string, unknown>
 export async function launchRouteServes(rpc: GatewayRpc, env = process.env): Promise<boolean> {
   const { model, provider } = localCreationOptions(env)
 
-  if (!provider) { return false }
+  if (!provider) {
+    return false
+  }
 
   const check = await rpc<{ model?: null | string; ok?: boolean }>('setup.runtime_check', { provider })
 
@@ -65,13 +87,19 @@ export async function launchRouteServes(rpc: GatewayRpc, env = process.env): Pro
 }
 
 function parseClientEnv(raw?: string): Record<string, string> | undefined {
-  if (!raw) { return undefined }
+  if (!raw) {
+    return undefined
+  }
 
   try {
     const value: unknown = JSON.parse(raw)
 
-    if (value && typeof value === 'object' && !Array.isArray(value)
-      && Object.values(value).every(item => typeof item === 'string')) {
+    if (
+      value &&
+      typeof value === 'object' &&
+      !Array.isArray(value) &&
+      Object.values(value).every(item => typeof item === 'string')
+    ) {
       return value as Record<string, string>
     }
   } catch {
@@ -89,9 +117,13 @@ const TOOL_PROGRESS_MODES = new Set(['off', 'new', 'all', 'verbose'])
 export function launchToolProgress(env = process.env): string | undefined {
   const raw = env.HERMES_TUI_TOOL_PROGRESS?.trim().toLowerCase()
 
-  if (!raw) { return undefined }
+  if (!raw) {
+    return undefined
+  }
 
-  if (!TOOL_PROGRESS_MODES.has(raw)) { throw new Error(t('canonical.launch.invalidToolProgress', raw)) }
+  if (!TOOL_PROGRESS_MODES.has(raw)) {
+    throw new Error(t('canonical.launch.invalidToolProgress', raw))
+  }
 
   return raw
 }

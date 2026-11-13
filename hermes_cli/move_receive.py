@@ -349,7 +349,7 @@ def _apply_config(home: Path, zf: zipfile.ZipFile, _ctx: dict[str, Any]) -> dict
     from hermes_cli.config import require_readable_config_before_write, save_config
     from agent.runtime_scope import bind_profile_scope
     try:
-        incoming = yaml.safe_load(zf.read("config.yaml")) or {}
+        incoming = yaml.safe_load(zf.read("config.yaml")) or {}  # config-reader: ok — the bundle member, not this home's config
     except KeyError:
         return {"keys_added": []}
     if not isinstance(incoming, dict):

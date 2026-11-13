@@ -367,18 +367,20 @@ RUN mkdir -p /opt/hermes/node_modules/.bin && \
 # ---------- Photon iMessage sidecar deps (baked, NS-606) ----------
 # The photon plugin's Node sidecar needs its own node_modules
 # (spectrum-ts). The install tree is immutable at runtime, so a lazy
-# `npm ci` on first connect would hit EROFS — bake the deps here instead
+# `pnpm install` on first connect would hit EROFS — bake the deps here instead
 # (deterministic installs, NS-559). The patch script is copied alongside
 # the manifests because package.json's postinstall runs it, which also
 # means the spectrum-ts patch is applied at build time. Layer-cached:
 # only re-runs when the sidecar manifests/patch change.
 COPY plugins/platforms/photon/sidecar/package.json \
-     plugins/platforms/photon/sidecar/package-lock.json \
+     plugins/platforms/photon/sidecar/pnpm-lock.yaml \
+     plugins/platforms/photon/sidecar/pnpm-workspace.yaml \
      plugins/platforms/photon/sidecar/patch-spectrum-mixed-attachments.mjs \
      plugins/platforms/photon/sidecar/
-RUN cd plugins/platforms/photon/sidecar && \
-    npm ci --no-audit --fetch-retries=5 && \
-    npm cache clean --force
+RUN python3 -c 'from pathlib import Path; from pm import ensure, installed_package; ensure("pnpm", explicit=True); Path("/usr/local/bin/pnpm").symlink_to(installed_package("pnpm").binary)' && \
+    pnpm --version && \
+    cd plugins/platforms/photon/sidecar && \
+    pnpm install --frozen-lockfile
 
 # Shared product outputs are independent of application dependency assembly.
 COPY --from=frontend_build /opt/products/tui /opt/hermes/ui-tui

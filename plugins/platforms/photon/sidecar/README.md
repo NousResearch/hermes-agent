@@ -17,10 +17,10 @@ The sidecar:
 
 ```bash
 cd plugins/platforms/photon/sidecar
-npm install
+pnpm install
 ```
 
-The Hermes plugin's `hermes photon setup` command runs `npm install`
+The Hermes plugin's `hermes photon setup` command runs `pnpm install`
 here automatically.
 
 ## Run standalone

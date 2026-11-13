@@ -22,7 +22,7 @@ def _seed_source(source: Path, *, with_node_modules: bool = False) -> None:
         (source / name).write_text(f"// {name}\n", encoding="utf-8")
     if with_node_modules:
         (source / "node_modules").mkdir()
-        (source / "node_modules" / ".package-lock.json").write_text(
+        (source / "node_modules" / ".modules.yaml").write_text(
             "{}", encoding="utf-8"
         )
 
@@ -54,8 +54,8 @@ def test_readonly_source_with_baked_fresh_deps_runs_in_place(
     source = tmp_path / "src"
     _seed_source(source, with_node_modules=True)
     # Marker newer than lockfile == fresh install.
-    lock = source / "package-lock.json"
-    marker = source / "node_modules" / ".package-lock.json"
+    lock = source / "pnpm-lock.yaml"
+    marker = source / "node_modules" / ".modules.yaml"
     os.utime(lock, (1000.0, 1000.0))
     os.utime(marker, (2000.0, 2000.0))
     _freeze_writability(monkeypatch, writable=False)
@@ -133,7 +133,7 @@ def test_adapter_import_does_not_resolve_sidecar_dir(monkeypatch) -> None:
         monkeypatch.setattr(sidecar_paths, "_SIDECAR_DIR", Path("/tmp/x"))
         assert photon_adapter._sidecar_dir() == Path("/tmp/x")
         assert photon_cli._sidecar_dir() == Path("/tmp/x")
-        assert photon_adapter._npm_error_log() == Path("/tmp/x/.photon-npm-error.log")
+        assert photon_adapter._pnpm_error_log() == Path("/tmp/x/.photon-pnpm-error.log")
     finally:
         # Restore real bindings for any later test importing these modules.
         monkeypatch.undo()

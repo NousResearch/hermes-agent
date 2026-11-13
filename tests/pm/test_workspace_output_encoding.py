@@ -73,53 +73,53 @@ def test_uv_failure_retains_utf8_build_diagnostic(
     assert getattr(completed[-1], stream) == expected + "\n"
 
 
-@pytest.mark.parametrize("install_cmd", ["ci", "install"])
+@pytest.mark.parametrize("install_cmd", [["install", "--frozen-lockfile"], ["install"]])
 @pytest.mark.parametrize("stream", ["stdout", "stderr"])
 @pytest.mark.parametrize("returncode", [0, 17])
 def test_node_sidecar_retains_output_and_exit_status(
     tmp_path, monkeypatch, legacy_locale_child, install_cmd, stream, returncode
 ):
     (tmp_path / "package.json").write_text("{}", encoding="utf-8")
-    if install_cmd == "ci":
-        (tmp_path / "package-lock.json").write_text("{}", encoding="utf-8")
+    if install_cmd == ["install", "--frozen-lockfile"]:
+        (tmp_path / "pnpm-lock.yaml").write_text("{}", encoding="utf-8")
     monkeypatch.setattr(
         importlib.import_module("pm.install"), "lazy_installs_allowed", lambda: True
     )
     diagnostic = "🔍 node-gyp: build toolchain unavailable"
     raw = diagnostic.encode("utf-8") + b"\xff\n"
     completed = []
-    npm_dir = tmp_path / "pm-bin"
-    npm_dir.mkdir()
-    npm = npm_dir / ("npm.cmd" if os.name == "nt" else "npm")
-    npm.write_text("process boundary fixture", encoding="utf-8")
-    npm.chmod(0o755)
-    context = Runner("npm", dict(os.environ, PATH=str(npm_dir)))
+    pnpm_dir = tmp_path / "pm-bin"
+    pnpm_dir.mkdir()
+    pnpm = pnpm_dir / ("pnpm.cmd" if os.name == "nt" else "pnpm")
+    pnpm.write_text("process boundary fixture", encoding="utf-8")
+    pnpm.chmod(0o755)
+    context = Runner("pnpm", dict(os.environ, PATH=str(pnpm_dir)))
     acquisitions = []
 
     def acquire(name, **kwargs):
         acquisitions.append((name, kwargs))
         return context
 
-    def run_npm(cmd, **kwargs):
-        assert cmd == [str(npm), install_cmd, "--no-audit", "--no-fund"]
+    def run_pnpm(cmd, **kwargs):
+        assert cmd == [str(pnpm), *install_cmd]
         assert kwargs["env"] == context.env
         assert kwargs["cwd"] == str(tmp_path)
-        # Keep the real Runner and decoding path; only replace npm's process
+        # Keep the real Runner and decoding path; only replace pnpm's process
         # with a Python child that emits controlled bytes and an exit status.
         result = legacy_locale_child(**{stream: raw}, returncode=returncode, **kwargs)
         completed.append(result)
         return result
 
     monkeypatch.setattr(pm, "ensure", acquire)
-    monkeypatch.setattr("pm.package.subprocess.run", run_npm)
+    monkeypatch.setattr("pm.package.subprocess.run", run_pnpm)
     error = ws.install_node_sidecar(tmp_path)
 
-    assert acquisitions == [("npm", {"explicit": False})]
+    assert acquisitions == [("pnpm", {"explicit": False})]
     assert len(completed) == 1
     assert completed[0].returncode == returncode
     expected = diagnostic + "�"
     if returncode:
-        assert error == f"npm {install_cmd} exited {returncode}: {expected}"
+        assert error == f"pnpm {install_cmd[0]} exited {returncode}: {expected}"
     else:
         assert error is None
     assert getattr(completed[-1], stream) == expected + "\n"

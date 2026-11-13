@@ -1,5 +1,5 @@
 """``hermes photon ...`` CLI subcommands (registered via ``ctx.register_cli_command()``):
-setup (device login + project + user + sidecar), status, install-sidecar (npm install in
+setup (device login + project + user + sidecar), status, install-sidecar (pnpm install in
 the sidecar dir), telemetry [on|off]. Device login is the first step of ``setup`` (no
 standalone ``login`` verb); inbound is the gRPC stream, so there are no webhook subcommands.
 """
@@ -17,7 +17,7 @@ from hermes_cli.colors import Colors, color
 from . import auth as photon_auth
 from .adapter import sidecar_deps_installed
 from hermes_constants import find_node_executable, with_hermes_node_path
-from .sidecar_paths import _NPM_ERROR_LOG_MAX_CHARS, _npm_error_log, _sidecar_dir
+from .sidecar_paths import _PNPM_ERROR_LOG_MAX_CHARS, _pnpm_error_log, _sidecar_dir
 import contextlib
 
 
@@ -33,9 +33,9 @@ def register_cli(parser: argparse.ArgumentParser) -> None:
     p_setup.add_argument("--no-browser", action="store_true",
                          help="Don't try to open a browser for device login; print the URL only")
     p_setup.add_argument("--skip-sidecar-install", action="store_true",
-                         help="Skip `npm install` inside the sidecar directory")
+                         help="Skip `pnpm install` inside the sidecar directory")
     subs.add_parser("status", help="Show login + project + sidecar dep state")
-    subs.add_parser("install-sidecar", help="Run npm install inside the sidecar directory")
+    subs.add_parser("install-sidecar", help="Run pnpm install inside the sidecar directory")
     p_telemetry = subs.add_parser("telemetry", help="Show or toggle Spectrum SDK telemetry (on/off)")
     p_telemetry.add_argument(
         "state", nargs="?", choices=("on", "off"),
@@ -218,7 +218,7 @@ def _cmd_setup(args: argparse.Namespace) -> int:
             print(f"      (could not save Photon status metadata: {e})", file=sys.stderr)
     # 6. Sidecar deps (spectrum-ts).
     if args.skip_sidecar_install:
-        print("[5/5] Skipping sidecar npm install (--skip-sidecar-install)")
+        print("[5/5] Skipping sidecar pnpm install (--skip-sidecar-install)")
     else:
         print("[5/5] Installing Node sidecar deps (spectrum-ts)...")
         rc = _install_sidecar()
@@ -358,42 +358,42 @@ def _install_sidecar() -> int:
     import pm
 
     try:
-        npm = find_node_executable("npm")
+        pnpm = find_node_executable("pnpm")
         env = with_hermes_node_path()
-        if npm is None:
-            env = pm.ensure("npm", explicit=True).env
-            installed = pm.installed_package("npm")
+        if pnpm is None:
+            env = pm.ensure("pnpm", explicit=True).env
+            installed = pm.installed_package("pnpm")
             if installed is None or installed.binary is None:
-                raise pm.InstallError("npm", "ensured but no selected binary was recorded")
-            npm = str(installed.binary)
+                raise pm.InstallError("pnpm", "ensured but no selected binary was recorded")
+            pnpm = str(installed.binary)
     except pm.InstallError as exc:
         print(f"Could not prepare Photon dependencies: {exc}", file=sys.stderr)
         return 1
     # spectrum-ts is pinned exactly (the SDK ships breaking majors); upgrades are deliberate —
-    # never `@latest` (see README "Upgrading spectrum-ts"). `npm ci` installs the lockfile
-    # verbatim; `npm install` is the fallback for a missing/drifted lockfile.
-    print(f"  $ cd {_sidecar_dir()} && {npm} ci")
+    # never `@latest` (see README "Upgrading spectrum-ts"). `pnpm install --frozen-lockfile`
+    # installs the lockfile verbatim; `pnpm install` is the fallback for a missing/drifted lockfile.
+    print(f"  $ cd {_sidecar_dir()} && {pnpm} install --frozen-lockfile")
 
-    def _run(verb: str) -> subprocess.CompletedProcess:
+    def _run(*args: str) -> subprocess.CompletedProcess:
         # stdout streams to the terminal; stderr is captured so the failure reason can be
         # persisted for check_requirements() to surface later.
         proc = subprocess.run(
-            [npm, verb], stdin=subprocess.DEVNULL, cwd=str(_sidecar_dir()), check=False, stderr=subprocess.PIPE, text=True, env=env)
+            [pnpm, *args], stdin=subprocess.DEVNULL, cwd=str(_sidecar_dir()), check=False, stderr=subprocess.PIPE, text=True, env=env)
         if proc.stderr:
             print(proc.stderr, end="", file=sys.stderr)
         return proc
-    proc = _run("ci")
+    proc = _run("install", "--frozen-lockfile")
     if proc.returncode != 0:
-        print(f"  npm ci failed — falling back to:  {npm} install")
+        print(f"  pnpm install --frozen-lockfile failed — falling back to:  {pnpm} install")
         proc = _run("install")
-    error = (proc.stderr or "").strip()[:_NPM_ERROR_LOG_MAX_CHARS]  # bounded to what check_requirements surfaces
+    error = (proc.stderr or "").strip()[:_PNPM_ERROR_LOG_MAX_CHARS]  # bounded to what check_requirements surfaces
     if proc.returncode != 0:
-        print("npm install failed", file=sys.stderr)
+        print("pnpm install failed", file=sys.stderr)
     with contextlib.suppress(OSError):
         if proc.returncode == 0:
-            _npm_error_log().unlink()
+            _pnpm_error_log().unlink()
         elif error:
-            _npm_error_log().write_text(error, encoding="utf-8")
+            _pnpm_error_log().write_text(error, encoding="utf-8")
     return proc.returncode
 
 

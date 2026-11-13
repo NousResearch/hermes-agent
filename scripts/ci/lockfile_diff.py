@@ -9,8 +9,8 @@ to ``{package: version}`` and set-diffs the two dicts. Reordering and hash
 churn vanish; what's left is the actual dependency change.
 
 pnpm locks the workspace (``pnpm-lock.yaml``, lockfileVersion 9.0); the
-remaining standalone npm project (the Photon sidecar) keeps a ``package-lock.json``
-(lockfileVersion 2/3). A pnpm lock has no install paths, so besides its
+standalone projects (the Photon sidecar, the WhatsApp bridge) keep their own
+``pnpm-lock.yaml`` (lockfileVersion 9.0). A pnpm lock has no install paths, so besides its
 ``{package: versions}`` rows the report lists a project's direct dependency
 (``semver *(web)*``) or a package's dependency (``semver *(via node-gyp@10.3.1)*``)
 that moved, appeared or went between versions locked on both sides, which the

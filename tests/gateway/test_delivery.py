@@ -339,6 +339,54 @@ async def test_long_output_truncated_for_non_chunking_adapter(tmp_path, monkeypa
     assert saved_files[0].read_text() == long_content
 
 
+@pytest.mark.asyncio
+async def test_long_cron_output_reaches_email_whole_in_plain_and_html(tmp_path, monkeypatch):
+    """One mail carries any length: cron output far over MAX_PLATFORM_OUTPUT reaches the real email
+    adapter with no truncation footer, as ONE mail whose text/plain part and rendered text/html part
+    both hold the whole report. The audit copy is still saved."""
+    from unittest.mock import patch
+
+    import plugins.platforms.email.adapter as email_adapter
+    from gateway.delivery import MAX_PLATFORM_OUTPUT
+
+    monkeypatch.setattr("gateway.delivery.get_hermes_home", lambda: tmp_path)
+    monkeypatch.setattr(email_adapter, "_MD_RENDERER", None)
+    for key, value in {"EMAIL_ADDRESS": "hermes@test.com", "EMAIL_PASSWORD": "secret",
+                       "EMAIL_IMAP_HOST": "imap.test.com", "EMAIL_SMTP_HOST": "smtp.test.com"}.items():
+        monkeypatch.setenv(key, value)
+    adapter = email_adapter.EmailAdapter(PlatformConfig(enabled=True, extra={"html": True}))
+    # Cron's way: a minted thread root rides on the target, the job id in the metadata.
+    root = await adapter.create_handoff_thread("user@test.com", "Hermes — Weekly digest")
+    body = "\n\n".join(
+        f"## Section {i}\n\n" + "\n".join(f"- item {i}.{j}: " + "detail " * 20 for j in range(8))
+        for i in range(25)
+    ) + "\n\nEnd of the report."
+    content = "Subject: Weekly digest — Nov 10\n\n" + body
+    assert len(content) > 6 * MAX_PLATFORM_OUTPUT
+    router = DeliveryRouter(GatewayConfig(), adapters={Platform.EMAIL: adapter})
+    target = DeliveryTarget(platform=Platform.EMAIL, chat_id="user@test.com", thread_id=root, is_explicit=True)
+
+    with patch("smtplib.SMTP") as smtp:
+        result = await router._deliver_to_platform(target, content, metadata={"job_id": "digest"})
+
+    assert result.success is True
+    assert smtp.return_value.send_message.call_count == 1
+    msg = smtp.return_value.send_message.call_args[0][0]
+    assert msg["Subject"] == "Weekly digest — Nov 10"
+    assert [p.get_content_type() for p in msg.walk()] == [
+        "multipart/mixed", "multipart/alternative", "text/plain", "text/html"]
+    plain, html = (p.get_payload(decode=True).decode("utf-8") for p in msg.walk() if not p.is_multipart())
+    assert plain == body
+    assert "truncated" not in plain and "truncated" not in html
+    for i in range(25):
+        assert f"<h2>Section {i}</h2>" in html
+    assert "<li>item 24.7: " in html
+    assert html.rstrip().endswith("<p>End of the report.</p>\n</body></html>")
+    saved_files = list(tmp_path.glob("cron/output/digest_*.txt"))
+    assert len(saved_files) == 1
+    assert saved_files[0].read_text(encoding="utf-8") == content
+
+
 def _simulate_windows_codepage_write(monkeypatch):
     """Make ``Path.write_text`` behave like a non-UTF-8 Windows console.
 

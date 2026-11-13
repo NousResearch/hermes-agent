@@ -236,8 +236,9 @@ def _maybe_mirror_cron_delivery(
 # chat_type slot a platform's adapter puts on a NON-DM in-thread reply. Discord (and the default)
 # key the shared "thread" lane; Slack, Matrix and Telegram (forum topics: ``_build_message_event``
 # types every supergroup "group") keep the parent channel/room's "group" — a seed on the wrong slot
-# is a row no reply ever resolves to (#111896, #112918).
-_THREAD_REPLY_CHAT_TYPE = {"slack": "group", "matrix": "group", "telegram": "group"}
+# is a row no reply ever resolves to (#111896, #112918). Email builds every inbound source "dm",
+# from the lowercased sender, so an email target resolves lowercase too.
+_THREAD_REPLY_CHAT_TYPE = {"slack": "group", "matrix": "group", "telegram": "group", "email": "dm"}
 
 
 def _open_continuable_cron_thread(job: dict, adapter, chat_id: str, loop) -> Optional[str]:
@@ -583,7 +584,7 @@ def _home_target(platform_name: str, chat_id: str, resolved_from: Optional[str] 
     """Target dict for a platform's configured home channel (+ optional mirror provenance)."""
     target = {
         "platform": platform_name,
-        "chat_id": chat_id,
+        "chat_id": chat_id.strip().lower() if platform_name.lower() == "email" else chat_id,
         "thread_id": _get_home_target_thread_id(platform_name)}
     if resolved_from:
         target["_resolved_from"] = resolved_from
@@ -653,7 +654,7 @@ def _resolve_single_delivery_target(
             thread_id = origin.get("thread_id")
         return {
             "platform": platform_name,
-            "chat_id": chat_id,
+            "chat_id": str(chat_id).strip().lower() if platform_key == "email" else chat_id,
             "thread_id": thread_id,
             "_resolved_from": "explicit",  # mirror-eligible only under attach_to_session opt-in
         }

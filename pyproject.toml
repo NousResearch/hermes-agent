@@ -51,6 +51,9 @@ dependencies = [
   "fire==0.7.1; python_version >= '3.14'",
   "httpx[socks]==0.28.1; python_version >= '3.14'",
   "rich==14.3.4; python_version >= '3.14'",
+  # Markdown -> HTML for the email platform's opt-in ``html`` part (raw HTML and images off).
+  # Already a core transitive via rich; declared because the email adapter imports it.
+  "markdown-it-py==4.2.0; python_version >= '3.14'",
   "tomli-w==1.2.0; python_version >= '3.14'",  # Preserve relative dependency paths in staged plugin metadata.
   # 0.18.17 requires ruamel.yaml.clib on 3.14, which has no Windows ARM64 wheel.
   "ruamel.yaml==0.18.16; python_version >= '3.14'",

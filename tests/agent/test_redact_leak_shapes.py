@@ -201,13 +201,14 @@ class TestGoogleOAuthCredentials:
     ACCESS = "ya29." + "a0AfH6SMBq7z_P2mX9vLk4n-Rt8wYb1cDf6gHj3sA0"
     SA_ACCESS = "ya29.c." + "c0ASRK0GaPq7z_P2mX9vLk4n-Rt8wYb1cDf6gHj3sA0"  # service account / GCE metadata
     STS_ACCESS = "ya29.d." + "c0AZ4bNpq7z_P2mX9vLk4n-Rt8wYb1cDf6gHj3sA0"  # workload identity federation (STS)
+    REFRESH = "1//0" + "gLx7z_P2mX9vLk4n-Rt8wYb1cDf6gHj3sA0qWeRtYuIoP"  # #39654
 
     @pytest.mark.parametrize("template", [
         "msg='client_secret\":\"{}\",\"redirect_uris\":[\"http://localhost\"]}}}}'",  # cut mid-JSON
         "here is my secret {} thanks", "[\"{}\"]", "Authorization: {}",
     ])
     def test_masked_without_a_secret_key_name(self, template):
-        for secret in (self.SECRET, self.ACCESS, self.SA_ACCESS, self.STS_ACCESS):
+        for secret in (self.SECRET, self.ACCESS, self.SA_ACCESS, self.STS_ACCESS, self.REFRESH):
             _assert_masked(template.format(secret), secret)
 
     def test_client_secret_fragment_cut_by_the_preview_is_masked(self):
@@ -227,4 +228,9 @@ class TestGoogleOAuthCredentials:
 
     @pytest.mark.parametrize("text", ["GOCSPX-short", "ya29.short", "ya29.c.short", "notGOCSPX-" + "A" * 24, "mya29." + "A" * 24])
     def test_short_or_embedded_lookalikes_kept(self, text):
+        _assert_unchanged(text)
+
+    @pytest.mark.parametrize("text", ["1//refresh", "1//rt-0", "page 1//0 of 3", "a1//0" + "A" * 24,
+                                      "https://example.com/v1//api/" + "a" * 24, "x = 1//2 // floor division"])
+    def test_refresh_token_lookalikes_kept(self, text):
         _assert_unchanged(text)

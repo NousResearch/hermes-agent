@@ -1,0 +1,23 @@
+name: agentmail-frontdoor
+repo: https://github.com/tylerjharden/hermes-hackathon-ipp
+sha: 3e2feea4b1216a6b2343b18a6de710ae5b126c46
+subdir: plugins/agentmail-frontdoor
+description: Claim, classify, and route AgentMail threads. Create drafts only.
+maintainer: tylerjharden
+tier: community
+category: tools
+requires_hermes: ">=0.22.0"
+version: "1.0.0"
+capabilities:
+  provides_tools:
+    - am_claim_thread
+    - am_classify
+    - am_route
+    - am_draft_reply
+    - am_ledger_upsert
+    - am_ledger_get
+  provides_hooks:
+    - pre_tool_call
+  provides_middleware: []
+  requires_env:
+    - AGENTMAIL_API_KEY

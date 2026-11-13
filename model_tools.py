@@ -197,6 +197,9 @@ _LEGACY_TOOLSET_MAP = {
 # the earliest check_fn verdict it was filtered on (registry.check_fn_verdict_window):
 # a hit never re-runs the checks, so without that expiry an MCP server that dropped
 # and reconnected without re-registering would stay hidden for the life of the process.
+# The key intentionally does not include environment state: callers that
+# reload environment files in a long-lived process, such as cron, must
+# explicitly call _clear_tool_defs_cache() after the reload.
 _tool_defs_cache: dict[tuple, list[dict[str, Any]]] = {}
 _tool_defs_expiry: dict[tuple, float] = {}  # cache key -> time.monotonic() deadline
 _tool_defs_cache_lock = threading.Lock()
@@ -210,7 +213,11 @@ _TOOL_DEFS_CACHE_MAX = 8
 
 
 def _clear_tool_defs_cache() -> None:
-    """Drop memoized results when a dynamic-schema dependency changes (discord caps, sandbox mode)."""
+    """Drop memoized results when a dynamic-schema dependency changes (discord caps, sandbox mode).
+
+    Callers that also changed environment-backed availability probes must
+    invalidate the registry's separate check-function cache explicitly.
+    """
     with _tool_defs_cache_lock:
         _tool_defs_cache.clear()
         _tool_defs_expiry.clear()

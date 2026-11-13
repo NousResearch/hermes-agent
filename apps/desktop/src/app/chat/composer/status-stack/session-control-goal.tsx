@@ -34,6 +34,7 @@ import {
 import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { writeClipboardText } from '@/lib/clipboard'
+import { openAutomationComposerForEdit } from '@/store/automation-composer'
 import {
   runSessionControlAction,
   type SessionControlAction,
@@ -230,6 +231,10 @@ export const SessionControlGoalSection = memo(function SessionControlGoalSection
 
     return (
       <>
+        <Item disabled={isBusy} onSelect={() => openAutomationComposerForEdit('goal', sessionId)}>
+          <Codicon name="edit" size="0.8rem" />
+          <span>{ctrl.editGoal}</span>
+        </Item>
         {hasDetails && (
           <Item disabled={isBusy} onSelect={() => setDetailsOpen(true)}>
             <Codicon name="eye" size="0.8rem" />

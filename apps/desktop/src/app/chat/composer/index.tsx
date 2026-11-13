@@ -2,6 +2,7 @@ import { ComposerPrimitive } from '@assistant-ui/react'
 import { useStore } from '@nanostores/react'
 import {
   type ClipboardEvent,
+  type ComponentProps,
   type FormEvent,
   type KeyboardEvent,
   useCallback,
@@ -26,6 +27,7 @@ import { triggerHaptic } from '@/lib/haptics'
 import { $touchPointer } from '@/lib/touch-interaction'
 import { useStoreSelector, useStoresSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
+import { openAutomationComposer } from '@/store/automation-composer'
 import { sessionCompacting } from '@/store/compaction'
 import { draftRetry } from '@/store/composer-draft-retry'
 import { browseBackward, browseForward, deriveUserHistory, isBrowsingHistory } from '@/store/composer-input-history'
@@ -44,6 +46,7 @@ import { $autoSpeakReplies } from '@/store/voice-prefs'
 import { useTheme } from '@/themes'
 
 import { AttachmentList } from './attachments'
+import { AutomationComposerMount } from './automation-composer-mount'
 import { deriveBusySubmitState } from './busy-submit-state'
 import { ComposerDockGlow, QueuedEditBanner } from './chat-bar-parts'
 import {
@@ -128,6 +131,11 @@ function controlRowGridClass(singleColumn: boolean, stacked: boolean): string {
   return stacked
     ? 'grid-cols-[auto_1fr] gap-(--composer-row-gap) [grid-template-areas:"input_input"_"menu_controls"]'
     : 'grid-cols-[auto_1fr_auto] items-center gap-(--composer-control-gap) [grid-template-areas:"menu_input_controls"]'
+}
+
+/** The URL dialog's six props travel as one object, so the composer body stays about the turn. */
+function ComposerUrlDialog({ dialog }: { dialog: Omit<ComponentProps<typeof UrlDialog>, 'children'> }) {
+  return <UrlDialog {...dialog} />
 }
 
 export function ChatBar({
@@ -1114,6 +1122,7 @@ export function ChatBar({
 
   const contextMenu = (
     <ContextMenu
+      onCreateAutomation={() => openAutomationComposer('goal', sessionId)}
       onInsertText={insertText}
       onOpenUrlDialog={openUrlDialog}
       onPasteClipboardImage={onPasteClipboardImage}
@@ -1534,14 +1543,10 @@ export function ChatBar({
         </div>
       </ComposerPrimitive.Unstable_TriggerPopoverRoot>
 
-      <UrlDialog
-        inputRef={urlInputRef}
-        onChange={setUrlValue}
-        onOpenChange={setUrlOpen}
-        onSubmit={submitUrl}
-        open={urlOpen}
-        value={urlValue}
+      <ComposerUrlDialog
+        dialog={{ inputRef: urlInputRef, onChange: setUrlValue, onOpenChange: setUrlOpen, onSubmit: submitUrl, open: urlOpen, value: urlValue }}
       />
+      <AutomationComposerMount onSubmitText={onSubmit} sessionId={sessionId} />
     </>
   )
 }

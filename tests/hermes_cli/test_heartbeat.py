@@ -166,12 +166,17 @@ def test_a_heartbeat_stopped_during_a_claim_stays_stopped(stop, stored, monkeypa
     other = HeartbeatManager(session_id=sid)
     reread, release = threading.Event(), threading.Event()
 
-    def load(session_id):  # the claim's compare-and-set reread, held open before its write
-        state = load_heartbeat(session_id)
-        reread.set()
-        release.wait(5)
-        return state
-    monkeypatch.setattr(heartbeat, "load_heartbeat", load)
+    db = heartbeat._get_session_db()
+    assert db is not None
+    mutate = db.mutate_meta
+
+    def mutate_while_held(key, mutator):
+        def held(current_json):
+            reread.set()
+            assert release.wait(5)
+            return mutator(current_json)
+        return mutate(key, held)
+    monkeypatch.setattr(db, "mutate_meta", mutate_while_held)
     claim = threading.Thread(target=mgr.due_prompt)
     claim.start()
     assert reread.wait(5)

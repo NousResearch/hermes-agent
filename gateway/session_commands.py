@@ -394,6 +394,25 @@ def _accepting(before):
         BUSY_ACCEPTED.reset(token)
 
 
+def session_route(source) -> dict:
+    """A source's routing fields, for state a restarted scheduler must fire back here.
+
+    Best-effort and empty fields dropped: a loop created from any surface carries the route its
+    wakeup watcher injects through, pinned to this session's own bot under multiplex.
+    """
+    route: dict = {}
+    try:
+        if source is not None:
+            platform = getattr(source, "platform", "")
+            route = {"platform": str(getattr(platform, "value", platform) or "")}
+            for key in ("chat_id", "chat_type", "thread_id", "user_id", "user_name", "profile"):
+                route[key] = str(getattr(source, key, "") or "")
+            route = {key: value for key, value in route.items() if value}
+    except Exception:  # health: allow BLE001 -- a missing route field must not refuse the command
+        route = {}
+    return route
+
+
 @contextmanager
 def _session_workspace(runner, source):
     """The session's frozen terminal policy (``TERMINAL_CWD`` = its launch cwd), so ``/diff``

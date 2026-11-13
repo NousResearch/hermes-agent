@@ -399,8 +399,8 @@ class TestUpdatePublication:
         emitted = self._capture(server, monkeypatch)
         read, release, real_snapshot = threading.Event(), threading.Event(), server._snapshot_control
 
-        def snapshot_then_stall(session_key):  # scheduling only: the tool thread stalls after its read
-            control = real_snapshot(session_key)
+        def snapshot_then_stall(session_key, **kwargs):  # scheduling only: the tool thread stalls after its read
+            control = real_snapshot(session_key, **kwargs)
             if threading.current_thread().name == "tool":
                 read.set()
                 release.wait(5)
@@ -410,16 +410,22 @@ class TestUpdatePublication:
                                 args=(sid, "call", "terminal", {"command": "true"}, '{"exit_code": 0}'))
         tool.start()
         assert read.wait(5)
-        user = threading.Thread(target=_call, args=(server, "session.control"),
+        reply: dict = {}
+
+        def user_change(**kwargs):
+            reply.update(_call(server, "session.control", **kwargs))
+        user = threading.Thread(target=user_change,
                                 kwargs={"session_id": sid, "action": "subgoal.add", "args": {"text": "newer criterion"}})
         user.start()
         user.join(0.5)
         release.set()
         tool.join(5)
         user.join(5)
+        # The user's action itself must land: the seam is a scheduling double, not a refusal.
+        assert reply["result"]["control"]["goal"]["subgoals"] == ["newer criterion"], reply
         updates = [payload["control"]["goal"]["subgoals"] for event, _sid, payload in emitted
                    if event == "session.control.update"]
-        assert updates[-1] == ["newer criterion"]
+        assert updates == [["newer criterion"]], updates
 
     def test_a_stalled_client_write_never_delays_another_sessions_publish(self, server, session, monkeypatch):
         """Ordering is per session: while one session's socket write stalls (up to the transport's write

@@ -2,6 +2,9 @@ import type { TranslationOverrides } from './define-locale'
 
 export const zhHantChat = {
   composer: {
+    addFilesAndActions: '新增檔案與動作',
+    actionsLabel: '動作',
+    createAutomation: '建立自動化…',
     message: '訊息',
     wakingProfile: profile => `正在喚醒 ${profile}…`,
     placeholderStarting: '正在啟動 Hermes...',
@@ -233,6 +236,9 @@ export const zhHantChat = {
     dismiss: '關閉',
     exit: code => `結束碼 ${code}`,
     control: {
+      editGoal: '編輯目標',
+      editLoop: '編輯迴圈',
+      editHeartbeat: '編輯心跳',
       goalActiveTurns: (turn, maxTurns) => `第 ${turn}/${maxTurns} 輪`,
       goalDoneTurns: turns => `共 ${turns} 輪`,
       goalTurn: turn => `第 ${turn} 輪`,

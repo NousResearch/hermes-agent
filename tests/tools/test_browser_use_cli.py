@@ -768,7 +768,10 @@ class TestSkillTextDescription:
         assert overrides["description"].startswith(bu_cli._HEADER_BASE)
         assert overrides["description"].endswith(bu_cli._HELPERS_DIGEST)
 
-
+    def test_description_tells_model_to_close_its_own_tab(self):
+        description = bu_cli._dynamic_schema_overrides()["description"]
+        assert "close_tab(" in description
+        assert "never close tabs you did not open" in description
 
 
 class TestBrowserExec:

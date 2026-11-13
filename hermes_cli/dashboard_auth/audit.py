@@ -48,6 +48,8 @@ class AuditEvent(enum.Enum):
     WS_TICKET_REJECTED = "ws_ticket_rejected"
     TOKEN_AUTH_SUCCESS = "token_auth_success"
     TOKEN_AUTH_FAILURE = "token_auth_failure"
+    # A peer pass holder's control action forwarded by ``/api/peer``, with the Portal user.
+    PEER_CONTROL = "peer_control"
     # RFC 8252 native-app (system-browser + loopback + PKCE) flow.
     NATIVE_AUTHORIZE_START = "native_authorize_start"
     NATIVE_CODE_ISSUED = "native_code_issued"

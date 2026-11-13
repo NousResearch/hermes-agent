@@ -599,6 +599,11 @@ def noninteractive_repo_git_env(
 
     start = int(env["GIT_CONFIG_COUNT"])  # always set by noninteractive_git_env
     overrides = [(key, "") for key in keys] + [(key, "false") for key in required]
+    if keys:
+        # With the filters emptied a stat refresh hashes raw bytes: `status` and `diff` must not write
+        # it back to the index, or a file that only the clean filter changes reads clean to the user.
+        env["GIT_OPTIONAL_LOCKS"] = "0"
+        overrides.append(("diff.autoRefreshIndex", "false"))
     for offset, (key, value) in enumerate(overrides):
         env[f"GIT_CONFIG_KEY_{start + offset}"] = key
         env[f"GIT_CONFIG_VALUE_{start + offset}"] = value

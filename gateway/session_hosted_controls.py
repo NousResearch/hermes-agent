@@ -161,20 +161,18 @@ class HostedControls:
             raise RuntimeStoreError(
                 exc.error_code if exc.error_code in _GRANT_ERRORS else 'peer_unreachable') from exc
 
-    def status(self, room_id=None):
-        result = super().status(room_id)
-        if room_id is None:
-            return result
-        actions = [a for a in result['pending_actions']
-                   if a['kind'] != 'retry' or str(a.get('task_id', '')).startswith(RETRY_TASK_PREFIX)]
-        for task in tasks.list_tasks(self.db_path, room_id=room_id):
+    def _attempt_actions(self, room_id, tasks_shown):
+        """Exact controls on this gateway: Discard an unknown attempt, Retry a deferred one. A peer
+        member's unknown attempt is the peer's to control; its deferred one offers Retry and Discard.
+        Reads only the rows ``status`` already selected."""
+        actions = []
+        for task in tasks_shown:
             if task['status'] not in {'indeterminate', 'deferred'}:
                 continue
             peer = self._member_is_peer(room_id, task_member_id(task))
             if task['status'] == 'indeterminate' and peer:
                 continue
-            actions.append(attempt_action(
-                'discard' if task['status'] == 'indeterminate' else 'retry', task))
+            actions.append(attempt_action('discard' if task['status'] == 'indeterminate' else 'retry', task))
             if peer:
                 actions.append(attempt_action('discard', task))
-        return {**result, 'pending_actions': actions}
+        return actions

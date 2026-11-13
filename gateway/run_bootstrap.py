@@ -205,6 +205,9 @@ def _start_gateway_make_shutdown_signal_handler(runner, _signal_initiated_shutdo
         sig_name = _shutdown_ctx["signal"] if _shutdown_ctx else None
 
         if planned_takeover:
+            # The replacing gateway serves this home on: telling its home chats "shutting down" is
+            # false, and two services fighting over one home would repeat it every few seconds.
+            runner._planned_takeover_shutdown = True
             logger.info("Received %s as a planned --replace takeover — exiting cleanly", sig_name or "SIGTERM")
         elif planned_stop:
             logger.info("Received %s as a planned gateway stop — exiting cleanly", sig_name or "SIGTERM/SIGINT")
@@ -730,6 +733,15 @@ def _start_gateway_early_environment_probe() -> None:
 
 async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = False,
                         verbosity: Optional[int] = 0, force: bool = False, idle_exit: bool = False) -> bool:
+    """Run the gateway without ever turning an inherited daemon TTY (tmux respawn loop, hidden
+    Windows console) into a lazy-install ``input()`` prompt that blocks the event loop (#125607)."""
+    from pm.extras import suppress_interactive_install_prompts
+    with suppress_interactive_install_prompts():
+        return await _start_gateway_runtime(config, replace, verbosity, force, idle_exit)
+
+
+async def _start_gateway_runtime(config: Optional[GatewayConfig] = None, replace: bool = False,
+                                 verbosity: Optional[int] = 0, force: bool = False, idle_exit: bool = False) -> bool:
     """Start the gateway and run until interrupted; False if it failed to start (non-zero exit so
     systemd can auto-restart). ``replace`` kills any existing instance first (avoids restart-loop
     deadlocks); ``force`` starts without consulting the host owner at all; ``idle_exit`` arms the

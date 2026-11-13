@@ -1,0 +1,24 @@
+name: margin
+repo: https://github.com/pratikpoddar/hermes-margin
+sha: 29a84672f49fdf295e6a27af1bbcd27a14e0c47a
+version: "0.1.0"
+requires_hermes: ">=0.22.7"
+title: Margin
+description: "Comment @hermes on highlighted text in Google Docs, Slides or Sheets and Hermes answers in the comment thread. A gateway platform: each Drive comment thread is its own Hermes session with the document text and the highlighted text as context; follow-ups in the thread continue it, Hermes's status reply is edited in place into the answer, and replying \"apply\" replaces the highlighted text with the proposed wording (Docs and Slides, only when the text occurs exactly once). Watch files with /margin watch or hermes margin watch. Disclosure — sends the text of each watched file (up to MARGIN_MAX_DOC_CHARS, default 60,000 characters), the highlighted text and the comment thread to the user's configured model provider at the start of each thread; signs in with the user's own Google Cloud OAuth client through Hermes (`hermes auth add margin:google`, scopes drive, documents, presentations) and calls only www.googleapis.com, docs.googleapis.com and slides.googleapis.com through credentialed_provider_request, never holding the token; polls Drive comments.list every 10 s per watched file from a background loop inside the gateway; posts and edits its own comment replies and edits document text only on an explicit \"apply\" reply; by default only the signed-in Google account can trigger it (MARGIN_ALLOWED_USERS / MARGIN_ALLOW_ALL_USERS widen that); stores the watch list, poll cursors, handled comment ids and per-thread highlighted text and last proposal in Hermes plugin state under HERMES_HOME (no document text, no credentials); no shell commands, no telemetry, no self-update."
+maintainer: pratikpoddar
+tier: community
+category: platform
+docs_url: https://github.com/pratikpoddar/hermes-margin#readme
+readme: true
+platforms: []
+known_issues:
+  - "Needs the user's own Google Cloud OAuth client (Desktop app) with the Drive, Docs and Slides APIs enabled; sign in once with hermes auth add margin:google."
+  - "Google may show an unverified-app warning for a personal OAuth client in testing mode, and testing-mode refresh tokens expire after 7 days."
+  - "Polling, not push: replies arrive within about one poll interval (10 s) plus model time."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - MARGIN_GOOGLE_CLIENT_ID
+    - MARGIN_GOOGLE_CLIENT_SECRET

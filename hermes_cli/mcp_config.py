@@ -783,6 +783,10 @@ def cmd_mcp_list(args=None):
 
         enabled = mcp_server_enabled(cfg)
         status = color("✓ enabled", Colors.GREEN) if enabled else color("✗ disabled", Colors.DIM)
+        if not enabled and mcp_server_enabled({k: v for k, v in cfg.items() if k != "disabled"}):
+            escaped = str(name).replace(".", "\\.")
+            status += color(f" (legacy `disabled` key; `hermes config set mcp_servers.{escaped}.enabled true` "
+                            "clears it)", Colors.DIM)
         print(f"  {name:<16} {transport:<30} {tools_str:<12} {status}")
     print()
 

@@ -926,7 +926,10 @@ export const jaOverrides = {
       keepAwakeAlways: '常に',
       voiceShortcutHintTitle: '音声録音ショートカット',
       voiceShortcutHintDesc:
-        '「設定 → キーボードショートカット」で音声録音ショートカット（「Start / stop voice conversation」）を設定します。voice.record_key は CLI と TUI 専用です。'
+        '「設定 → キーボードショートカット」で音声録音ショートカット（「Start / stop voice conversation」）を設定します。voice.record_key は CLI と TUI 専用です。',
+      desktopReadAloudTitle: 'このアプリで応答を読み上げる',
+      desktopReadAloudDesc:
+        'Desktop で完了した各応答を読み上げます。入力欄のボタンと同じスイッチで、開いているすべてのウィンドウに適用され、オフにすると読み上げ中の応答も止まります。下の「応答を読み上げる」はメッセージングと CLI 用です。'
     },
     hudModifier: {
       title: 'キーをタップして HUD を呼び出す',

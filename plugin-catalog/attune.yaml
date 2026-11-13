@@ -1,0 +1,32 @@
+name: attune
+repo: https://github.com/five0nit/hermes-attune
+sha: 17cecdd354dbe2c3fca6d2a505ff6cd44c94a17c
+description: "Daily learning that drives evidence-linked, permission-bound project build previews. Disclosure — after you approve a proposal (/attune approve) or grant a standing preview window (/attune project-mode … preview, up to 30 days and 3 builds/day, which also applies to unattended cron runs), it runs your selected project's unit tests together with model-written code changes on this machine inside a Bubblewrap sandbox (Linux only; no network, cleared environment, read-only copy; the original project is never modified)."
+maintainer: five0nit
+tier: community
+category: automation
+requires_hermes: ">=0.22.5"
+version: "0.3.1"
+title: Attune
+docs_url: https://github.com/five0nit/hermes-attune#readme
+readme: true
+known_issues:
+  - "Code previews require Linux, Bubblewrap, util-linux prlimit and /usr/bin/python3; other platforms retain learning/drafting only."
+  - "The fixed 1024-task UID-wide ceiling can reject previews on busy shared hosts. Daily scheduled model operation remains unverified."
+capabilities:
+  provides_tools:
+    - attune_goal
+    - attune_checkin
+    - attune_answer
+    - attune_work
+    - attune_deliver
+    - attune_status
+    - attune_projects
+    - attune_project
+    - attune_propose
+    - attune_build
+    - attune_build_result
+  provides_hooks:
+    - pre_llm_call
+  provides_middleware: []
+  requires_env: []

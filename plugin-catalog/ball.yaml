@@ -1,0 +1,27 @@
+name: ball
+repo: https://github.com/getaskclaw/hermes-ball
+sha: 17b15ee957355a287d17c58e9ba1640844684535
+description: >-
+  Estimates which Hermes chats are waiting on you and what the AI asked (/ball; Matrix: !ball). Heuristic; misses happen. Reads inbound messages (never stored) and, read-only, Hermes' state.db (non-public schema); stores short AI-reply excerpts in local SQLite. Optional LLM judge sends reply tails to your active model.
+maintainer: getaskclaw
+tier: community
+category: general
+docs_url: https://github.com/getaskclaw/hermes-ball#readme
+version: "0.1.3"
+requires_hermes: ">=0.23.1"
+platforms: [linux]
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_gateway_dispatch
+    - post_gateway_admission
+    - post_llm_call
+    - on_human_input_request
+    - on_human_input_resolved
+    - agent_loop_stopped
+  provides_middleware: []
+  requires_env: []
+screenshots:
+  - https://raw.githubusercontent.com/getaskclaw/hermes-ball/17b15ee957355a287d17c58e9ba1640844684535/demo/screens/ball.png
+  - https://raw.githubusercontent.com/getaskclaw/hermes-ball/17b15ee957355a287d17c58e9ba1640844684535/demo/screens/ball-all.png
+  - https://raw.githubusercontent.com/getaskclaw/hermes-ball/17b15ee957355a287d17c58e9ba1640844684535/demo/screens/ball-done.png

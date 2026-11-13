@@ -1,0 +1,30 @@
+name: timeline-replay
+title: Timeline Replay
+version: "0.5.4"
+repo: https://github.com/firetussin/hermes-timeline-replay
+sha: 612216da84791aee7b8bae6a7f91bec2e7a846fa
+description: "Animated replays of recorded Hermes activity across the profiles you select: Social, Balanced and Linear paces with up to 16 profiles stacked on one screen, or nine canvas styles: Orbit (a turning ring where every event shoots out as a ray), Galaxy (a spiral with one arm per profile), Skyline (an isometric city of activity), Flow river (profiles to models to tools), Pulse (a heart-monitor trace per profile), Day clock (events at their time of day), Neural net (sessions firing into tools and models), Code rain and Ridgelines; tool calls, sessions, delegations, model/provider switches and token totals. Preview the private HTML player in Desktop or the Webapp (loop or play once), then export MP4 at 720p, 1080p, 1440p or 4K on the Hermes host, with live progress and an ETA learned on that host. Settings → Plugins holds per-user defaults; `hermes replay` adds the same options in the CLI plus a live terminal HUD. Disclosure — observer hooks only (on_session_start, on_session_end, pre_llm_call, post_llm_call, post_tool_call, post_api_request, subagent_start, subagent_stop); they record metadata, never block or change a turn and never return directives. Prompts, tool arguments, results, command lines and credentials are discarded; session IDs are hashed. Reads outside its own data: the active profile's profile.yaml (display name only) and the state.db of this profile and of profile homes the operator explicitly enrolls, read-only (SQLite mode=ro, query_only) and metadata columns only. Writes only under <HERMES_HOME>/plugin-data/timeline-replay/. Exports show profile labels, timestamps, tool/model labels and totals, so choose neutral labels before sharing. Rendering starts only when the user asks: it runs the preinstalled HyperFrames CLI (Node.js, driving Chromium/chrome-headless-shell) and FFmpeg/ffprobe as argument-list subprocesses with a limited environment (no provider or bot credentials), as a background thread in the gateway process; HyperFrames telemetry and update checks are turned off. No network calls of its own, no telemetry, no installs (video setup only drafts a chat request for the user to review and send), no credentials. When the Desktop page and the plugin on the Hermes host differ, the page shows both versions, a button to Hermes' Capabilities → Plugins tab, and copy buttons for the host command (hermes plugins update timeline-replay && hermes gateway restart) and Hermes' catalog install link (hermes://plugin/install?catalog=timeline-replay), both of which stay on the reviewed build; nothing installs unless the user acts in Hermes, and the plugin never checks for updates online or downloads or replaces its own files. Readiness runs the configured HyperFrames CLI with --version (same limited environment) to report its version. Desktop uses the SDK surface only (routes, sidebar nav, settings page, SandboxedFrame, the MEDIA player, captureGatewayFileDownload)."
+maintainer: firetussin
+tier: community
+category: desktop
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/firetussin/hermes-timeline-replay/blob/612216da84791aee7b8bae6a7f91bec2e7a846fa/README.md
+image: https://raw.githubusercontent.com/firetussin/hermes-timeline-replay/612216da84791aee7b8bae6a7f91bec2e7a846fa/docs/media/banner.jpg
+screenshots:
+  - https://raw.githubusercontent.com/firetussin/hermes-timeline-replay/612216da84791aee7b8bae6a7f91bec2e7a846fa/docs/media/screenshots/01-replay-early-model-switch.png
+  - https://raw.githubusercontent.com/firetussin/hermes-timeline-replay/612216da84791aee7b8bae6a7f91bec2e7a846fa/docs/media/screenshots/02-replay-mid-11-profiles.png
+  - https://raw.githubusercontent.com/firetussin/hermes-timeline-replay/612216da84791aee7b8bae6a7f91bec2e7a846fa/docs/media/screenshots/03-replay-busy-all-lanes.png
+  - https://raw.githubusercontent.com/firetussin/hermes-timeline-replay/612216da84791aee7b8bae6a7f91bec2e7a846fa/docs/media/screenshots/04-finale-totals-models.png
+capabilities:
+  provides_tools: [timeline_replay]
+  provides_hooks:
+    - on_session_start
+    - on_session_end
+    - pre_llm_call
+    - post_llm_call
+    - post_tool_call
+    - post_api_request
+    - subagent_start
+    - subagent_stop
+  provides_middleware: []
+  requires_env: []

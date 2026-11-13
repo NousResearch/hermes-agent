@@ -47,6 +47,7 @@ def _make_adapter():
     adapter._bridge_port = 19876
     adapter._bridge_script = "/tmp/test-bridge.js"
     adapter._session_path = Path("/tmp/test-wa-session")
+    adapter._profile_home = adapter._session_path.parent  # mirror __init__
     adapter._bridge_log_fh = None
     adapter._bridge_log = None
     adapter._bridge_process = None
@@ -78,6 +79,7 @@ def _connect_patches(mock_proc, mock_fh):
         patch("subprocess.run", return_value=MagicMock(returncode=0)),
         patch("plugins.platforms.whatsapp.adapter.spawn_owned", return_value=mock_proc),
         patch("builtins.open", return_value=mock_fh),
+        patch("plugins.platforms.whatsapp.adapter._load_or_create_bridge_token", return_value="t" * 43),
         patch("plugins.platforms.whatsapp.adapter.asyncio.sleep", new_callable=AsyncMock),
         patch("plugins.platforms.whatsapp.adapter.asyncio.create_task"),
     ]
@@ -150,7 +152,7 @@ class TestFileHandleClosedOnError:
         patches = _connect_patches(mock_proc, mock_fh)
 
         with patches[0], patches[1], patches[2], patches[3], patches[4], \
-             patches[5], patches[6], patches[7]:
+             patches[5], patches[6], patches[7], patches[8]:
             result = await adapter.connect()
 
         assert result is False

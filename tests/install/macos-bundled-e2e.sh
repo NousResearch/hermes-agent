@@ -414,6 +414,12 @@ phase_update() {
     --out "$LOG_DIR" --phase new --expect-commit "$new_commit" --mock-url "$HERMES_E2E_MOCK_URL" \
     2>&1 | ts_prefix | tee "$LOG_DIR/desktop-chat-new.log"
 
+  # The check right after relaunch can win the race against the app's first payload-Python spawn.
+  step "re-verifying the NEW bundle's signature after it ran a chat"
+  codesign --verify --deep --strict --verbose=2 "$old_app" 2>&1 | ts_prefix | tee "$LOG_DIR/new-bundle-seal-after-chat.log" \
+    || fail "the NEW bundle modified its own signed files while it ran (new-bundle-seal-after-chat.log)"
+  ok "NEW bundle still satisfies its code signature after the chat"
+
   step "PASS: packaged $(manifest_side old tag) -> $new_tag via the real About -> Update now route"
 }
 

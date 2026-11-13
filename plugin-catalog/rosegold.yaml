@@ -1,0 +1,18 @@
+name: rosegold
+repo: https://github.com/rosegold-app/hermes-plugin
+sha: f7b0822e5f9d0060338eb8c998964ce535882257
+description: "Get offers and rewards matched to what you buy on Amazon, including discount codes, promo codes and influencer codes. Hermes shares the order details in your Amazon order confirmations with rosegold, then looks up the offers, creator codes and spending rosegold has for you. rosegold reads order confirmations from Amazon, limited to order number, email id, date, total, and each item's title, quantity and price; it does not read your address, payment details or any other emails. Portable Agent Plugins v1 package (mcp.json only); hosted MCP server with three tools, sign-in by emailed code over OAuth, no API key; one command after install (see known issues). Disclosure — every tool call goes to rosegold.app, and the remote tools are not covered by the pin; the tools ask the agent to search the user's Gmail, with Hermes's own Gmail tool, for Amazon order confirmations, and to send rosegold each email's id and date and each order's number, items and prices; a look-up brings the user's offers and spending into the chat, and rosegold keeps any brand named; under the default trust the tools run without an approval prompt; Hermes keeps the OAuth token."
+maintainer: rosegold
+tier: community
+category: tools
+docs_url: https://rosegold.app/?utm_source=hermes_catalog&utm_campaign=listing
+version: "1.0.0"
+image: https://raw.githubusercontent.com/rosegold-app/hermes-plugin/f7b0822e5f9d0060338eb8c998964ce535882257/assets/banner.png
+platforms: []
+known_issues:
+  - "Sign in once after installing, because a portable plugin can't declare an OAuth MCP server: hermes mcp add rosegold --url https://rosegold.app/mcp/v1 --auth oauth --connect-timeout 300"
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

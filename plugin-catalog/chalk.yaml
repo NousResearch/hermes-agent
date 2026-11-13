@@ -1,0 +1,36 @@
+name: chalk
+repo: https://github.com/Nnadijoshuac/Hermes-chalk
+sha: 05a66d02b830ddb255315a0df9ff527f9a82992c
+description: >-
+  Hermes teaches on a chalkboard. Ask it to explain something and Hermes Desktop draws the lesson
+  inline in the chat, stroke by stroke in chalk, while the narration plays; replay it or save it
+  as an MP4. The agent's chalk_teach tool sends only structure (flow, list, compare, equation,
+  graph, cycle, tree, note, circle/underline, clear) and the board lays itself out, so small
+  models produce clean boards; full boards are wiped by an eraser and continue on a fresh one.
+  Other surfaces receive the narration as one audio file. Disclosure: narration text goes to the
+  user's configured TTS provider through Hermes' own text_to_speech tool (ctx.dispatch_tool);
+  lessons and audio are stored under $HERMES_HOME/plugin-data/chalk; Save video uploads the
+  recording to the plugin over plugin RPC and writes it to ~/Videos/Chalk (or ~/Downloads/Chalk
+  when the OS blocks Videos), converting with ffmpeg when it is on PATH (fixed argument lists).
+  A transform_llm_output hook appends the lesson's MEDIA line once if the reply left it out.
+  Graph expressions are parsed by a small parser, never evaluated as code. No network calls of
+  its own, no telemetry, no background processes.
+maintainer: Nnadijoshuac
+tier: community
+category: desktop
+requires_hermes: ">=0.23.1"
+docs_url: https://github.com/Nnadijoshuac/Hermes-chalk#readme
+version: "0.1.0"
+title: "Chalk"
+image: https://raw.githubusercontent.com/Nnadijoshuac/Hermes-chalk/05a66d02b830ddb255315a0df9ff527f9a82992c/docs/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/Nnadijoshuac/Hermes-chalk/05a66d02b830ddb255315a0df9ff527f9a82992c/docs/desktop.png
+  - https://raw.githubusercontent.com/Nnadijoshuac/Hermes-chalk/05a66d02b830ddb255315a0df9ff527f9a82992c/docs/board.png
+platforms: []
+capabilities:
+  provides_tools:
+    - chalk_teach
+  provides_hooks:
+    - transform_llm_output
+  provides_middleware: []
+  requires_env: []

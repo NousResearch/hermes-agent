@@ -198,7 +198,7 @@ WORKDIR /opt/hermes
 # which fetched whatever revision the npm-resolved playwright wanted,
 # unverified, and recorded no fact. The resolved browser binary path is
 # baked to /etc/hermes/chromium-executable-path: the layout differs per
-# arch (chrome-linux64/chrome on amd64, chromium-linux-arm64/chromium on
+# arch (chrome-linux64/chrome on amd64, chrome-linux-arm64/chrome on
 # arm64), so it is resolved at build time and never hunted at boot.
 # hermes_cli/browser_runtime.py reads it when a volume over the runtime dir
 # hides pm's facts; stage2-hook.sh checks it still names a binary.
@@ -324,7 +324,7 @@ COPY web/package.json web/
 COPY ui-tui/package.json ui-tui/
 COPY ui-tui/packages/hermes-ink/ ui-tui/packages/hermes-ink/
 COPY apps/shared/ apps/shared/
-COPY scripts/build/node-deps.mjs scripts/build/electron-runtime.mjs scripts/build/pnpm-lock.mjs scripts/build/
+COPY scripts/build/node-deps*.mjs scripts/build/electron-runtime.mjs scripts/build/pnpm-lock.mjs scripts/build/
 # Root node_modules/typescript is a link into pnpm's virtual store, which never
 # reaches the runtime image: stage a dereferenced copy for it.
 RUN node scripts/build/node-deps.mjs --source /opt/hermes --workspace ui-tui --workspace web && \

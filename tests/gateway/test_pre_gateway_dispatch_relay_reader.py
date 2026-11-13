@@ -13,6 +13,8 @@ import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 
+pytestmark = pytest.mark.usefixtures("authority_cwd_in_tmp")  # symbolic profile ids are relative homes
+
 
 def _hook(callback):
     from hermes_cli.plugins import get_plugin_manager

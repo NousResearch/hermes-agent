@@ -335,8 +335,11 @@ def _apply_personality_to_session(
     return False, info
 
 
-def _cfg_max_turns(cfg: dict, default: int) -> int:
-    from hermes_cli.config import resolve_turn_limit as _resolve_turn_limit
+def _cfg_max_turns(cfg: dict, default: int | None = None) -> int:
+    """Foreground agents use the shared default; background tasks pass their separate 25-turn budget."""
+    from hermes_cli.config import DEFAULT_CONFIG, cfg_get, resolve_turn_limit as _resolve_turn_limit
+    if default is None:
+        default = _resolve_turn_limit(cfg_get(DEFAULT_CONFIG, "agent", "max_turns"))
     # Env override wins; resolve_turn_limit makes "none"/"unlimited"/0 first-class spellings.
     if env_val := os.environ.get("HERMES_TUI_MAX_TURNS"):
         return _resolve_turn_limit(env_val, default=default)

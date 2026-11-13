@@ -152,7 +152,7 @@ def _export_on_gateway(connection, session_id, fmt, filename, redact):
         content = (connection.call("session.export", session_id=session_id, format=fmt,
                                    redact=redact) or {}).get("content")
     except GatewayClientError as e:
-        if not (isinstance(e, GatewayRPCError) and (e.code == -32601 or str(e) == "unknown_method")):
+        if not (isinstance(e, GatewayRPCError) and e.unknown_method):
             _print_save_refusal(e)
             return None
         _save_on_older_gateway(connection, session_id, fmt, filename, redact)

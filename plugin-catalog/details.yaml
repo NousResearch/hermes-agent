@@ -1,0 +1,18 @@
+name: details
+title: Details
+repo: https://github.com/koppkvn/details-plugin
+sha: ba7651d28bdbecb0e82f431b0c8d6dbc169ad3e0
+version: "1.2.0"
+description: "Find curated website design references, inspect motion and implementation evidence, and retrieve reusable Vault components. Includes the details-design skill. Every tool call sends its arguments to https://api.details.so/mcp using the connected member's account. Available tools depend on that account's plan. The hosted tool set can change independently of the pinned plugin. Searches and inspections record usage and can consume Details credits. The package runs mcp-remote@0.1.49 through npx (Node.js 20.18.1+ and npm) for browser OAuth, opens a local callback on first use, and stores tokens locally under ~/.mcp-auth. The server is marked untrusted so Hermes asks before write-capable calls. Disclosure — every tool call sends its arguments to Details' hosted server (api.details.so) and acts on the user's Details account; the tool set is served by that server at runtime and is not covered by the pinned sha, and searches and inspections record usage and can consume Details credits. Sign-in runs the pinned mcp-remote@0.1.49 through npx (Node.js 20.18.1+ and npm required; its own npm dependencies resolve at first run), which opens a browser and a local callback port on first use and stores OAuth tokens under ~/.mcp-auth. The package marks the server untrusted, so Hermes asks before every tool the server does not mark read-only and refuses them in unattended runs."
+maintainer: koppkvn
+tier: community
+category: tools
+docs_url: https://github.com/koppkvn/details-plugin#hermes-agent
+requires_hermes: ">=0.21.6"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

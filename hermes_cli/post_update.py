@@ -63,6 +63,9 @@ def step_migrate_config() -> dict:
 
     Same shape as scripts/docker_config_migrate.py: back up config + .env,
     migrate, verify the version advanced, restore the backups on failure.
+    A pass that stopped at a failing step is partial progress, not a failure
+    to undo: the file keeps the steps before it (stamped at the last one) and
+    the result carries ``failed_step`` so boot retries it on the next start.
     No-op when the on-disk version is current (the 99% case).
     """
     from hermes_cli.config import (
@@ -94,12 +97,13 @@ def step_migrate_config() -> dict:
 
     backups = _backup_existing((get_config_path(), get_env_path()))
     try:
-        results = migrate_config(interactive=False, quiet=True)
+        results = migrate_config(interactive=False, quiet=True) or {}
     except Exception:
         _restore_backups(backups)
         raise
     post_ver, _ = check_config_version()
-    if post_ver < latest_ver:
+    failed = results.get("failed_step")
+    if post_ver < latest_ver and failed is None:
         restored = _restore_backups(backups)
         raise RuntimeError(
             f"migration did not advance config version to {latest_ver} "
@@ -110,7 +114,26 @@ def step_migrate_config() -> dict:
     from hermes_cli.left_core_migration import defer_startup_notice
     for notice in results.get("notices") or ():
         defer_startup_notice(notice)
+    if failed is not None:
+        # A step raised: the file is stamped at the last step that succeeded, and those steps
+        # stay (restoring would undo them). Boot retries the rest on every start
+        # (boot_bootstrap); a retry that changed nothing leaves no backup behind.
+        _drop_unchanged_backups(backups)
+        defer_startup_notice(results["failed_warning"], log=False)
+        return {"ok": False, "failed_step": failed, "failed_warning": results["failed_warning"],
+                "migrated": f"{current_ver}->{post_ver}",
+                "error": f"config migration to v{failed} failed; kept v{current_ver}->v{post_ver}, "
+                         "retried on the next start"}
     return {"ok": True, "migrated": f"{current_ver}->{latest_ver}"}
+
+
+def _drop_unchanged_backups(backups: dict) -> None:
+    for original, backup in backups.items():
+        try:
+            if original.read_bytes() == backup.read_bytes():
+                backup.unlink()
+        except OSError:
+            logger.debug("could not compare %s with its backup", original, exc_info=True)
 
 
 # ---------------------------------------------------------------------------

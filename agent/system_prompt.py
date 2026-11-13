@@ -316,8 +316,17 @@ def _skills_prompt(agent: Any) -> str:
         _compact_cats = coding_compact_skill_categories(platform=agent.platform, cwd=resolve_context_cwd())
     except Exception:
         _compact_cats = frozenset()
+    _index_mode = None
+    try:
+        from hermes_cli.config import load_config_readonly
+        _skills_cfg = load_config_readonly().get("skills")
+        if isinstance(_skills_cfg, dict) and _skills_cfg.get("index") in ("names", "full"):
+            _index_mode = _skills_cfg["index"]
+    except Exception:
+        pass                                            # a config hiccup never blocks prompt assembly
     return _pb.build_skills_system_prompt(available_tools=agent.valid_tool_names, available_toolsets=avail_toolsets,
-                                         compact_categories=_compact_cats or None, skills_dir_override=_agent_skills_dir(agent))
+                                         compact_categories=_compact_cats or None, skills_dir_override=_agent_skills_dir(agent),
+                                         index_mode=_index_mode)
 
 
 def _auto_load_parts(agent: Any) -> list[str]:

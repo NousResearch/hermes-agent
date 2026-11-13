@@ -40,7 +40,7 @@ def is_whisper_hallucination(transcript: str) -> bool:
             or bool(_HALLUCINATION_REPEAT_RE.match(cleaned)))
 
 
-DEFAULT_VOICE_STOP_PHRASES = ("stop",)
+DEFAULT_VOICE_STOP_PHRASES = ("stop", "cancel")
 
 
 def _load_voice_stop_phrases() -> tuple:
@@ -62,6 +62,56 @@ def is_voice_stop_phrase(transcript: str, stop_phrases: Optional[tuple] = None) 
     that and try again" still reaches the agent. ``voice.stop_phrases: []`` disables."""
     cleaned = transcript.strip().lower().strip(".,!?;: \t\n\"'") if transcript else ""
     return bool(cleaned) and cleaned in (_load_voice_stop_phrases() if stop_phrases is None else stop_phrases)
+
+
+# The assistant's own sign-off: a spoken phrase the model puts at the END of a reply to declare
+# the conversation complete, so a session-mode client stops listening (goes back to the wake
+# word) without waiting for the VAD to detect silence — which a noisy room (a TV) never does.
+DEFAULT_VOICE_END_PHRASES = ("over and out",)
+
+
+def _load_voice_end_phrases() -> tuple:
+    """Configured ``voice.end_phrases`` (default ``("over and out",)``); an empty tuple disables
+    the feature. Malformed config falls back to the default rather than crashing the voice loop."""
+    with suppress(Exception):
+        raw = _voice_config().get("end_phrases", DEFAULT_VOICE_END_PHRASES)
+        if isinstance(raw, str):
+            raw = [raw]
+        if isinstance(raw, (list, tuple)):
+            return tuple(str(p).strip().lower() for p in raw if isinstance(p, (str, int, float)) and str(p).strip())
+    return DEFAULT_VOICE_END_PHRASES
+
+
+def is_voice_end_phrase(reply: str, end_phrases: Optional[tuple] = None) -> bool:
+    """True when the assistant's *reply* ENDS with a sign-off phrase (e.g. "over and out"). Unlike
+    a stop phrase this is a TRAILING match — the model naturally speaks it as the last thing in a
+    reply ("…lights are on. Over and out.") — lowercased with trailing punctuation stripped.
+    ``voice.end_phrases: []`` disables."""
+    cleaned = reply.strip().lower().rstrip(".,!?;: \t\n\"'") if reply else ""
+    if not cleaned:
+        return False
+    phrases = _load_voice_end_phrases() if end_phrases is None else end_phrases
+    return any(cleaned.endswith(p) for p in phrases if p)
+
+
+def strip_voice_end_phrase(text: str, end_phrases: Optional[tuple] = None) -> str:
+    """Remove a TRAILING sign-off phrase (with its adjacent punctuation) from *text* so it is used
+    only as an end-of-conversation SIGNAL, not spoken aloud. "Give me a shout. Over and out." ->
+    "Give me a shout." Returns *text* unchanged when it doesn't end with a phrase (so mid-text
+    mentions are untouched). Applied to the TTS text only; the full reply still drives detection."""
+    if not text:
+        return text
+    phrases = _load_voice_end_phrases() if end_phrases is None else end_phrases
+    for p in phrases:
+        if not p:
+            continue
+        # Leading class strips only the separator before the phrase (whitespace, comma, dash) —
+        # NOT a period, which terminates the previous sentence and must be kept ("shout. Over
+        # and out." -> "shout.").
+        m = re.search(r"[\s\-—,;:]*" + re.escape(p) + r"[\s.!?,]*$", text, flags=re.IGNORECASE)
+        if m:
+            return text[:m.start()].rstrip()
+    return text
 
 
 # Similarity ratio (difflib.SequenceMatcher) above which a playback-phase barge transcript

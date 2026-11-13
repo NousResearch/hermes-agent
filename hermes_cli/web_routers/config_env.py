@@ -124,8 +124,13 @@ def _drop_carried_route_state(existing: dict, merged: dict) -> None:
     """The form never sends key_env/api_mode and re-sends base_url unchanged, so the merge keeps
     the old route's under a new ``model``/``auxiliary.<task>``/``delegation`` provider (#141832)."""
     from hermes_cli.config_route_guard import drop_carried_route_state
-    for section in ("model", "delegation"):
-        drop_carried_route_state(existing.get(section), merged.get(section), merged)
+    drop_carried_route_state(existing.get("model"), merged.get("model"), merged)
+    deleg = merged.get("delegation")
+    # A keyless delegation.base_url runs on the PARENT's key (_resolve_delegation_credentials), so a drop
+    # there sends the main model's key to the new URL; only a named provider resolves its own key.
+    if not (isinstance(deleg, dict) and deleg.get("base_url")
+            and str(deleg.get("provider") or "").strip().lower() in ("", "custom", "auto")):
+        drop_carried_route_state(existing.get("delegation"), deleg, merged)
     old_aux, new_aux = existing.get("auxiliary"), merged.get("auxiliary")
     if isinstance(old_aux, dict) and isinstance(new_aux, dict):
         for task, block in new_aux.items():

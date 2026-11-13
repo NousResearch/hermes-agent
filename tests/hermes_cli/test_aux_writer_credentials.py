@@ -245,12 +245,8 @@ def test_dashboard_config_form_round_trip_keeps_typed_key(home):
     assert _resolved_vision()[3] == "typed-key"
 
 
-@pytest.mark.parametrize("change", [{"base_url": "https://b.example/v1"}, {"provider": "anthropic"}],
-                         ids=["new_base_url", "new_provider"])
-def test_dashboard_config_form_delegation_route_change_drops_old_key(home, change):
-    """``delegation`` sits in the same form; its resolver posts ``api_key`` to ``base_url``."""
+def _delegation_form_change(home, change: dict) -> None:
     import asyncio
-    from hermes_cli.config import read_raw_config
     from hermes_cli.web_routers.config_env import get_config
     (home / ".env").write_text(f"HERMES_DELEGATION_API_KEY={OLD_SECRET}\n")
     (home / "config.yaml").write_text(yaml.safe_dump({"delegation": {
@@ -258,7 +254,31 @@ def test_dashboard_config_form_delegation_route_change_drops_old_key(home, chang
         "api_key": "${HERMES_DELEGATION_API_KEY}"}}))
     form = asyncio.run(get_config())
     form["delegation"].update(change)
-
     _put_config(form)
 
+
+def test_dashboard_config_form_delegation_provider_change_drops_old_key(home):
+    """``delegation`` sits in the same form; its resolver posts ``api_key`` to ``base_url``."""
+    from hermes_cli.config import read_raw_config
+    _delegation_form_change(home, {"provider": "anthropic"})
+
     assert not read_raw_config()["delegation"].get("api_key")
+
+
+def test_dashboard_config_form_delegation_url_change_never_runs_on_parent_key(home):
+    """A keyless ``delegation.base_url`` inherits the parent's key: a URL change must not leave one."""
+    from types import SimpleNamespace
+    from hermes_cli.env_loader import load_hermes_dotenv
+    from tools.delegate_tool_config import _load_config, _resolve_child_runtime, _resolve_delegation_credentials
+    _delegation_form_change(home, {"base_url": "https://b.example/v1"})
+    load_hermes_dotenv(hermes_home=home)
+    parent = SimpleNamespace(model="p", provider="anthropic", base_url="https://api.anthropic.com",
+                             api_key="parent-key", api_mode="anthropic_messages", acp_command=None, acp_args=[])
+    creds = _resolve_delegation_credentials(_load_config(), parent)
+
+    runtime = _resolve_child_runtime(
+        parent, _load_config(), parent.api_key, model=creds["model"], override_provider=creds["provider"],
+        override_base_url=creds["base_url"], override_api_key=creds["api_key"],
+        override_api_mode=creds["api_mode"], override_acp_command=None, override_acp_args=None)
+
+    assert (runtime["base_url"], runtime["api_key"]) != ("https://b.example/v1", "parent-key")

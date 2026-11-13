@@ -4,10 +4,7 @@ repo: https://github.com/e-shizz/wings
 sha: ddeabd4e581b9f97eb5f77de430f7a43649a8025
 subdir: plugin
 version: "0.3.1"
-description: >-
-  A private WireGuard network between every Hermes you own and your phone. Two devices are enough: run setup
-  on a computer, scan one code on the phone. Bots and sessions from all your machines in Desktop, the terminal
-  and the Hermes app. Computers link directly when they can. No account, no coordination server, no third party.
+description: "A private WireGuard network between every Hermes you own and your phone. Two devices are enough: run setup on a computer, scan one code on the phone. Bots and sessions from all your machines in Desktop, the terminal and the Hermes app. Computers link directly when they can. No account, no coordination server, no third party. Disclosure — Wings asks for admin rights once per machine and installs a root helper (/usr/local/libexec/wings-root) with always-on systemd units (wings-sync, wings-watch, wings-relay, wings-address, wings-dns), a WireGuard interface wings0, an nftables table, firewalld/ufw rules, a wings-net system user, a marked /etc/hosts line and a private certificate authority trusted system-wide but limited to .wings names; it may install wireguard-tools and nftables from your package manager and downloads wstunnel 11.1.0 from its official GitHub release (checksum-pinned). It also adds a per-user wings-upkeep timer that runs every minute, installs and starts the Hermes gateway service, and sets webapp.enabled and webapp.public_url in config.yaml. Every device you pair can sign in to Hermes on every machine in your wing net without a password (full dashboard and terminal access), and every joined computer holds the shared wing-net key; turn this off per machine with `hermes wings trust off`. The Wings page lists the bots and recent session titles of every Hermes profile on each of your machines. A hub opens one UDP port (plus TCP 443 for the optional HTTPS relay), and `hermes wings router open` asks your router over UPnP to forward it."
 maintainer: e-shizz
 tier: community
 category: tools

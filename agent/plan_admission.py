@@ -1,21 +1,24 @@
-"""Host-wide one-at-a-time admission for the shared Z.ai GLM Coding Plan route.
+"""Host-wide admission (up to 3 concurrent project workers) for the shared Z.ai
+GLM Coding Plan route.
 
-Owner rule: one GLM-backed bot actively working at a time. Dispatcher-local
-locks do not reach CLI one-shots, cron children or helper launches, so
-admission is enforced at the chat-completions transport seam: every request
-whose base_url is an official Z.ai coding endpoint holds an exclusive
-host-wide flock for the duration of the request / stream attempt. Non-plan
-routes pass through untouched. Fail-closed: a caller that cannot acquire
-within the bounded wait raises PlanAdmissionBusy instead of proceeding
-unlocked. Re-entry inside the same process (auxiliary calls during a turn)
-reuses the outer hold. The append-only log records acquisition timings and
-route metadata only - never message content, keys or responses.
+Owner rule (amended 2026-11-08): up to 3 projects may run at once, one bot per
+project, so the gate rotates across SLOT_COUNT slot files instead of a single
+lock; per-project single-bot fairness is enforced by orchestration (the
+transport layer is project-blind). Other details unchanged: every request
+whose base_url is an official Z.ai coding endpoint holds an exclusive slot
+flock for the duration of the request / stream attempt. Non-plan routes pass
+through untouched. Fail-closed: a caller that cannot acquire a slot within the
+bounded wait raises PlanAdmissionBusy instead of proceeding unlocked. Re-entry
+inside the same process (auxiliary calls during a turn) reuses the outer hold.
+The append-only log records acquisition timings and route metadata only - never
+message content, keys or responses.
 """
 from __future__ import annotations
 
 import asyncio
 import contextlib
 import fcntl
+import itertools
 import json
 import os
 import pwd
@@ -35,8 +38,35 @@ def _admission_dir() -> str:
     return os.path.join(pwd.getpwuid(os.getuid()).pw_dir, ".hermes", "admission")
 
 
+def slot_path(n: int) -> str:
+    return os.path.join(_admission_dir(), f"zai-plan-slot-{n}.lock")
+
+
 def lock_path() -> str:
-    return os.path.join(_admission_dir(), "zai-plan.lock")
+    # Legacy single-lock name kept for compatibility with older probes; the
+    # gate now rotates across SLOT_COUNT slot files.
+    return slot_path(0)
+
+
+SLOT_COUNT = 3  # owner rule 2026-11-08: up to 3 concurrent project workers, max 1 per project
+_slot_rr = itertools.count()
+
+
+def _try_slots(admission_dir: str):
+    """One non-blocking sweep over the slot files; returns (fd, slot) or None.
+
+    The start index rotates per sweep so concurrent waiters scatter across
+    slots instead of queueing on the same file."""
+    start = next(_slot_rr) % SLOT_COUNT
+    for offset in range(SLOT_COUNT):
+        n = (start + offset) % SLOT_COUNT
+        fd = os.open(os.path.join(admission_dir, f"zai-plan-slot-{n}.lock"), os.O_CREAT | os.O_RDWR, 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return fd, n
+        except OSError:
+            os.close(fd)
+    return None
 
 
 def log_path() -> str:
@@ -99,7 +129,7 @@ def _nest_depth(ident: int) -> int:
         return rec["count"] if rec else 0
 
 
-def _log(event: str, *, wait_s: float, base_url, model, purpose: str) -> None:
+def _log(event: str, *, wait_s: float, base_url, model, purpose: str, slot: int | None = None) -> None:
     try:
         host = urllib.parse.urlparse(base_url or "").hostname or ""
         os.makedirs(_admission_dir(), mode=0o700, exist_ok=True)
@@ -112,6 +142,7 @@ def _log(event: str, *, wait_s: float, base_url, model, purpose: str) -> None:
             "host": host,
             "model": str(model or ""),
             "purpose": purpose,
+            "slot": slot,
         }
         with open(log_path(), "a", encoding="utf-8") as fh:
             fh.write(json.dumps(row, sort_keys=True) + "\n")
@@ -139,40 +170,40 @@ def plan_admission(base_url, *, model=None, purpose: str = "chat", wait_seconds:
         finally:
             _nest_release(ident)
         return
-    os.makedirs(_admission_dir(), mode=0o700, exist_ok=True)
-    fd = os.open(lock_path(), os.O_CREAT | os.O_RDWR, 0o600)
-    acquired = False
+    admission_dir = _admission_dir()
+    os.makedirs(admission_dir, mode=0o700, exist_ok=True)
+    fd = None
+    slot = None
     t0 = time.monotonic()
     waited = 0.0
     try:
         while True:
-            try:
-                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                acquired = True
+            got = _try_slots(admission_dir)
+            if got is not None:
+                fd, slot = got
                 break
-            except OSError:
-                waited = time.monotonic() - t0
-                if waited >= (DEFAULT_WAIT_SECONDS if wait_seconds is None else wait_seconds):
-                    _log("busy", wait_s=waited, base_url=base_url, model=model, purpose=purpose)
-                    raise PlanAdmissionBusy(
-                        "plan admission busy: another process holds the Z.ai GLM Coding Plan slot"
-                    ) from None
-                time.sleep(0.25)
+            waited = time.monotonic() - t0
+            if waited >= (DEFAULT_WAIT_SECONDS if wait_seconds is None else wait_seconds):
+                _log("busy", wait_s=waited, base_url=base_url, model=model, purpose=purpose, slot=None)
+                raise PlanAdmissionBusy(
+                    "plan admission busy: all 3 project slots hold the Z.ai GLM Coding Plan route"
+                ) from None
+            time.sleep(0.25)
         waited = time.monotonic() - t0
-        _log("acquire", wait_s=waited, base_url=base_url, model=model, purpose=purpose)
+        _log("acquire", wait_s=waited, base_url=base_url, model=model, purpose=purpose, slot=slot)
         _nest_acquire(ident, fd=fd)
         try:
             yield None
         finally:
             if _nest_release(ident) == 0:
-                _log("release", wait_s=0.0, base_url=base_url, model=model, purpose=purpose)
+                _log("release", wait_s=0.0, base_url=base_url, model=model, purpose=purpose, slot=slot)
     finally:
-        if acquired:
+        if fd is not None:
             try:
                 fcntl.flock(fd, fcntl.LOCK_UN)
             except OSError:
                 pass
-        os.close(fd)
+            os.close(fd)
 
 
 @contextlib.asynccontextmanager
@@ -196,37 +227,37 @@ async def plan_admission_async(base_url, *, model=None, purpose: str = "chat", w
         finally:
             _nest_release(ident)
         return
-    os.makedirs(_admission_dir(), mode=0o700, exist_ok=True)
-    fd = os.open(lock_path(), os.O_CREAT | os.O_RDWR, 0o600)
-    acquired = False
+    admission_dir = _admission_dir()
+    os.makedirs(admission_dir, mode=0o700, exist_ok=True)
+    fd = None
+    slot = None
     t0 = time.monotonic()
     waited = 0.0
     try:
         while True:
-            try:
-                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                acquired = True
+            got = _try_slots(admission_dir)
+            if got is not None:
+                fd, slot = got
                 break
-            except OSError:
-                waited = time.monotonic() - t0
-                if waited >= (DEFAULT_WAIT_SECONDS if wait_seconds is None else wait_seconds):
-                    _log("busy", wait_s=waited, base_url=base_url, model=model, purpose=purpose)
-                    raise PlanAdmissionBusy(
-                        "plan admission busy: another process holds the Z.ai GLM Coding Plan slot"
-                    ) from None
-                await asyncio.sleep(0.25)
+            waited = time.monotonic() - t0
+            if waited >= (DEFAULT_WAIT_SECONDS if wait_seconds is None else wait_seconds):
+                _log("busy", wait_s=waited, base_url=base_url, model=model, purpose=purpose, slot=None)
+                raise PlanAdmissionBusy(
+                    "plan admission busy: all 3 project slots hold the Z.ai GLM Coding Plan route"
+                ) from None
+            await asyncio.sleep(0.25)
         waited = time.monotonic() - t0
-        _log("acquire", wait_s=waited, base_url=base_url, model=model, purpose=purpose)
+        _log("acquire", wait_s=waited, base_url=base_url, model=model, purpose=purpose, slot=slot)
         _nest_acquire(ident, fd=fd)
         try:
             yield None
         finally:
             if _nest_release(ident) == 0:
-                _log("release", wait_s=0.0, base_url=base_url, model=model, purpose=purpose)
+                _log("release", wait_s=0.0, base_url=base_url, model=model, purpose=purpose, slot=slot)
     finally:
-        if acquired:
+        if fd is not None:
             try:
                 fcntl.flock(fd, fcntl.LOCK_UN)
             except OSError:
                 pass
-        os.close(fd)
+            os.close(fd)

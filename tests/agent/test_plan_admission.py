@@ -1,10 +1,11 @@
 """Tests for agent.plan_admission and its transport wiring.
 
-Behavioural process-level tests prove host-wide serialisation on the Z.ai
-GLM Coding Plan route, fail-closed busy behaviour, same-process re-entry
-reuse, kernel-released stale holders and untouched non-plan routes. Wiring
-tests prove both transport choke points carry the gate. Invented data only;
-no network, no real provider calls.
+Behavioural process-level tests prove host-wide admission on the Z.ai GLM
+Coding Plan route under the owner rule amended 2026-11-08: up to 3 concurrent
+project workers (one per project), a 4th concurrent caller fails closed with
+PlanAdmissionBusy, same-process re-entry reuse, kernel-released stale holders
+and untouched non-plan routes. Wiring tests prove both transport choke points
+carry the gate. Invented data only; no network, no real provider calls.
 """
 import json
 import os
@@ -58,8 +59,17 @@ def _run(script: str, **kw) -> subprocess.CompletedProcess:
     return subprocess.run([sys.executable, "-c", script.format(**kw)], capture_output=True, text=True, timeout=60, check=False)
 
 
+def _spawn_holder(admission_dir, hold=6, base_url=PLAN_A):
+    root = str(Path(pa.__file__).resolve().parents[1])
+    holder = subprocess.Popen(
+        [sys.executable, "-c", HOLDER.format(root=root, adir=admission_dir, base_url=base_url, wait=5, hold=hold)],
+        stdout=subprocess.PIPE, text=True,
+    )
+    assert holder.stdout.readline().strip() == "HELD"
+    return holder
+
+
 def _log_rows(dirname) -> list:
-    import os
     lp = os.path.join(str(dirname), "log.jsonl")
     if not os.path.exists(lp):
         return []
@@ -78,25 +88,38 @@ def test_route_predicate_official_plan_hosts_only():
     assert not pa.is_plan_route("")
 
 
-def test_second_process_fails_closed_while_first_holds(admission_dir):
-    root = str(Path(pa.__file__).resolve().parents[1])
-    holder = subprocess.Popen(
-        [sys.executable, "-c", HOLDER.format(root=root, adir=admission_dir, base_url=PLAN_A, wait=5, hold=3)],
-        stdout=subprocess.PIPE, text=True,
-    )
+def test_three_workers_run_concurrently_and_fourth_fails_closed(admission_dir):
+    holders = []
+    holder_pids = set()
     try:
-        assert holder.stdout.readline().strip() == "HELD"  # holder is inside the gate
-        contender = _run(CONTENDER, root=root, adir=admission_dir, base_url=PLAN_A, wait=1)
+        for _ in range(pa.SLOT_COUNT):
+            holder = _spawn_holder(admission_dir, hold=6)
+            holders.append(holder)
+            holder_pids.add(holder.pid)
+        contender = _run(CONTENDER, root=str(Path(pa.__file__).resolve().parents[1]),
+                         adir=admission_dir, base_url=PLAN_A, wait=1)
         assert "BUSY" in contender.stdout and "ACQUIRED" not in contender.stdout
         rows = _log_rows(admission_dir)
         busy = [r for r in rows if r["event"] == "busy"]
-        assert busy and busy[-1]["pid"] != holder.pid  # contender logged busy, never acquired
-        assert not [r for r in rows if r["event"] == "acquire" and r["pid"] not in (holder.pid,)]
+        assert busy and busy[-1]["pid"] not in holder_pids  # contender logged busy, never acquired
+        assert not [r for r in rows if r["event"] == "acquire" and r["pid"] not in holder_pids]
     finally:
-        holder.wait(timeout=30)
+        for h in holders:
+            h.wait(timeout=30)
     # after release a fresh process acquires
-    again = _run(CONTENDER, root=root, adir=admission_dir, base_url=PLAN_A, wait=10)
+    again = _run(CONTENDER, root=str(Path(pa.__file__).resolve().parents[1]),
+                 adir=admission_dir, base_url=PLAN_A, wait=10)
     assert "ACQUIRED" in again.stdout
+
+
+def test_two_workers_hold_distinct_slots_concurrently(admission_dir):
+    a = _spawn_holder(admission_dir, hold=3)
+    try:
+        contender = _run(CONTENDER, root=str(Path(pa.__file__).resolve().parents[1]),
+                         adir=admission_dir, base_url=PLAN_A, wait=5)
+        assert "ACQUIRED" in contender.stdout  # second worker takes another slot
+    finally:
+        a.wait(timeout=30)
 
 
 def test_same_process_reentry_reuses_outer_hold(admission_dir):
@@ -114,9 +137,9 @@ def test_same_process_reentry_reuses_outer_hold(admission_dir):
 def test_non_plan_route_never_touches_the_lock(admission_dir):
     with pa.plan_admission("https://api.openai.com/v1", model="gpt-x", purpose="other"):
         pass
-    import os
     assert not os.path.exists(os.path.join(str(admission_dir), "log.jsonl"))
-    assert not os.path.exists(os.path.join(str(admission_dir), "zai-plan.lock"))
+    for n in range(pa.SLOT_COUNT):
+        assert not os.path.exists(pa.slot_path(n))
 
 
 def test_kernel_releases_lock_when_holder_dies_hard(admission_dir):
@@ -132,11 +155,12 @@ def test_kernel_releases_lock_when_holder_dies_hard(admission_dir):
             os._exit(9)
         """
     )
-    dead = subprocess.run([sys.executable, "-c", die.format(root=root, adir=admission_dir, base_url=PLAN_A)],
-                          capture_output=True, text=True, timeout=30, check=False)
-    assert "HELD" in dead.stdout and dead.returncode == 9
+    for _ in range(pa.SLOT_COUNT):  # exhaust every slot with hard-killed holders
+        dead = subprocess.run([sys.executable, "-c", die.format(root=root, adir=admission_dir, base_url=PLAN_A)],
+                              capture_output=True, text=True, timeout=30, check=False)
+        assert "HELD" in dead.stdout and dead.returncode == 9
     survivor = _run(CONTENDER, root=root, adir=admission_dir, base_url=PLAN_A, wait=10)
-    assert "ACQUIRED" in survivor.stdout  # flock died with the process
+    assert "ACQUIRED" in survivor.stdout  # every flock died with its process
 
 
 def test_wiring_covers_both_transport_choke_points():

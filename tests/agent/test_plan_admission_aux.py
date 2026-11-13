@@ -1,10 +1,11 @@
 """Auxiliary/MoA seam gating for agent.plan_admission (rebase follow-up commit).
 
 The main-transport gate (tests/agent/test_plan_admission.py) proves the two
-chat-completion choke points. This module proves the auxiliary and MoA seams
-hold the SAME host-wide slot: an async admission twin that waits cooperatively
-(never blocking the event loop), fail-closed bounded waits, cross-thread
-serialisation behind a sync holder, same-thread re-entry, and wiring coverage
+chat-completion choke points and the 3-slot worker pool (owner rule amended
+2026-11-08). This module proves the auxiliary and MoA seams draw from the SAME
+slot pool: an async admission twin that waits cooperatively (never blocking
+the event loop), fail-closed bounded waits once all slots are busy, distinct
+slots for cross-thread callers, same-thread re-entry, and wiring coverage
 for every aux/MoA call site. Invented data only; no network, no real provider
 calls.
 """
@@ -91,25 +92,26 @@ def test_async_admission_noop_for_non_plan_route(admission_dir):
     asyncio.run(run())
 
 
-def test_async_admission_fail_closed_while_held(admission_dir):
-    holder = _spawn_holder(admission_dir, hold=3.0)
+def test_async_admission_fail_closed_while_all_slots_held(admission_dir):
+    holders = [_spawn_holder(admission_dir, hold=6.0) for _ in range(pa.SLOT_COUNT)]
 
     async def run():
         with pytest.raises(pa.PlanAdmissionBusy):
             async with pa.plan_admission_async(PLAN_A, model="glm-5.3", purpose="contender", wait_seconds=0.8):
-                pytest.fail("contender acquired while a holder owns the slot")
+                pytest.fail("contender acquired while every slot is owned")
 
     try:
         asyncio.run(run())
     finally:
-        holder.kill()
-        holder.wait()
+        for holder in holders:
+            holder.kill()
+            holder.wait()
     busy = [r for r in _log_rows(admission_dir) if r["event"] == "busy"]
     assert busy and busy[-1]["purpose"] == "contender"
 
 
 def test_async_admission_waits_then_acquires_after_release(admission_dir):
-    holder = _spawn_holder(admission_dir, hold=1.2)
+    holders = [_spawn_holder(admission_dir, hold=1.2) for _ in range(pa.SLOT_COUNT)]
 
     async def run():
         t0 = time.monotonic()
@@ -120,17 +122,18 @@ def test_async_admission_waits_then_acquires_after_release(admission_dir):
     try:
         elapsed = asyncio.run(run())
     finally:
-        if holder.poll() is None:
-            holder.kill()
-            holder.wait()
-    assert elapsed >= 1.0, "contender acquired before the holder released"
+        for holder in holders:
+            if holder.poll() is None:
+                holder.kill()
+                holder.wait()
+    assert elapsed >= 1.0, "contender acquired before the holders released"
     acquire = [r for r in _log_rows(admission_dir) if r["event"] == "acquire" and r["purpose"] == "late"]
     assert acquire and acquire[-1]["wait_s"] >= 1.0
 
 
 def test_event_loop_stays_responsive_while_contending(admission_dir):
     """The whole point of the async twin: waiting must not freeze the loop."""
-    holder = _spawn_holder(admission_dir, hold=1.5)
+    holders = [_spawn_holder(admission_dir, hold=1.5) for _ in range(pa.SLOT_COUNT)]
 
     async def run():
         ticks = 0
@@ -155,9 +158,10 @@ def test_event_loop_stays_responsive_while_contending(admission_dir):
     try:
         ticks, elapsed = asyncio.run(run())
     finally:
-        if holder.poll() is None:
-            holder.kill()
-            holder.wait()
+        for holder in holders:
+            if holder.poll() is None:
+                holder.kill()
+                holder.wait()
     assert elapsed >= 1.0
     assert ticks >= 10, f"event loop starved during contended wait (only {{ticks}} ticks)".format(ticks=ticks)
 
@@ -165,8 +169,11 @@ def test_event_loop_stays_responsive_while_contending(admission_dir):
 # ------------------------------------------------------- cross-thread + re-entry
 
 
-def test_async_contender_serialises_behind_sync_holder_same_process(admission_dir):
-    """A sync hold in a worker thread must gate an async contender on the loop."""
+def test_cross_thread_calls_hold_distinct_slots_concurrently(admission_dir):
+    """Under the 3-slot rule, callers on different threads are distinct workers:
+    a sync hold in a worker thread and an async contender on the loop hold
+    different slots at the same time (per-project fairness is orchestration's
+    job, not the transport's)."""
     release = threading.Event()
 
     def sync_holder():
@@ -175,7 +182,7 @@ def test_async_contender_serialises_behind_sync_holder_same_process(admission_di
 
     worker = threading.Thread(target=sync_holder)
     worker.start()
-    time.sleep(0.3)  # let the worker take the slot
+    time.sleep(0.3)  # let the worker take a slot
 
     async def run():
         async def contender():
@@ -183,10 +190,10 @@ def test_async_contender_serialises_behind_sync_holder_same_process(admission_di
                 return time.monotonic()
 
         task = asyncio.ensure_future(contender())
-        await asyncio.sleep(0.6)  # contender is now polling behind the worker's hold
-        assert not task.done(), "async contender must not acquire while the sync holder owns the slot"
+        await asyncio.sleep(0.6)
+        assert task.done(), "async contender should have acquired a distinct slot promptly"
+        acquired_at = task.result()
         release.set()
-        acquired_at = await task
         return acquired_at
 
     try:
@@ -195,8 +202,8 @@ def test_async_contender_serialises_behind_sync_holder_same_process(admission_di
         release.set()
         worker.join(6)
     assert time.monotonic() - acquired_at < 2.0
-    purposes = [r["purpose"] for r in _log_rows(admission_dir) if r["event"] == "acquire"]
-    assert purposes == ["sync_holder", "async_contender"]  # strict order: holder first
+    purposes = sorted(r["purpose"] for r in _log_rows(admission_dir) if r["event"] == "acquire")
+    assert purposes == ["async_contender", "sync_holder"]  # both acquired distinct slots
 
 
 def test_sync_and_async_share_thread_local_reentry(admission_dir):
@@ -287,21 +294,22 @@ class _LazyPlanStream:
         self.closed = True
 
 
-def _lock_probe(adir):
-    """Return a probe that records whether the host slot is FREE at call time."""
+def slots_free(dirname) -> int:
+    """How many of the SLOT_COUNT slot files are acquirable right now."""
     import fcntl
 
-    def probe(_i):
-        fd = os.open(pa.lock_path(), os.O_CREAT | os.O_RDWR, 0o600)
+    free = 0
+    for n in range(pa.SLOT_COUNT):
+        fd = os.open(pa.slot_path(n), os.O_CREAT | os.O_RDWR, 0o600)
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
             fcntl.flock(fd, fcntl.LOCK_UN)
-            return "free"
+            free += 1
         except OSError:
-            return "held"
+            pass
         finally:
             os.close(fd)
-    return probe
+    return free
 
 
 def _relay_with_stub_stream(admission_dir, monkeypatch, stream):
@@ -317,15 +325,14 @@ def _relay_with_stub_stream(admission_dir, monkeypatch, stream):
 
 def test_aux_relay_holds_slot_across_stream_consumption(admission_dir, monkeypatch):
     import agent.auxiliary_client as ac  # noqa: F401
-    probe = _lock_probe(admission_dir)
     states = []
-    stream = _LazyPlanStream(probe=lambda i: states.append(probe(i)))
+    stream = _LazyPlanStream(probe=lambda i: states.append(slots_free(admission_dir)))
     out = _relay_with_stub_stream(admission_dir, monkeypatch, stream)
     chunks = list(out)
     assert chunks == ["chunk1", "chunk2", "chunk3"]
-    assert states == ["held", "held", "held"], f"slot freed mid-consume: {states}"
-    # After exhaustion the slot is free again for the next process.
-    assert probe(0) == "free"
+    assert states == [2, 2, 2], f"slot freed mid-consume: {states}"  # wrapper holds exactly one of 3 slots
+    # After exhaustion the whole pool is free again for the next processes.
+    assert slots_free(admission_dir) == 3
 
 
 def test_aux_relay_complete_object_releases_before_return(admission_dir, monkeypatch):
@@ -333,7 +340,7 @@ def test_aux_relay_complete_object_releases_before_return(admission_dir, monkeyp
     complete = types.SimpleNamespace(choices=[])
     out = _relay_with_stub_stream(admission_dir, monkeypatch, complete)
     assert out is complete  # raw object back, not a proxy
-    assert _lock_probe(admission_dir)(0) == "free"
+    assert slots_free(admission_dir) == 3
 
 
 def test_aux_relay_close_releases_and_delegates(admission_dir, monkeypatch):
@@ -343,19 +350,18 @@ def test_aux_relay_close_releases_and_delegates(admission_dir, monkeypatch):
     assert not stream.closed
     out.close()
     assert stream.closed  # delegated to the inner stream
-    assert _lock_probe(admission_dir)(0) == "free"
+    assert slots_free(admission_dir) == 3
 
 
 def test_aux_relay_error_mid_consume_releases(admission_dir, monkeypatch):
     import agent.auxiliary_client as ac  # noqa: F401
-    probe = _lock_probe(admission_dir)
     states = []
-    stream = _LazyPlanStream(probe=lambda i: states.append(probe(i)), fail_on=2)
+    stream = _LazyPlanStream(probe=lambda i: states.append(slots_free(admission_dir)), fail_on=2)
     out = _relay_with_stub_stream(admission_dir, monkeypatch, stream)
     with pytest.raises(RuntimeError):
         list(out)
-    assert states[0] == "held"
-    assert _lock_probe(admission_dir)(0) == "free"  # released despite the error
+    assert states[0] == 2  # wrapper's slot held during consumption
+    assert slots_free(admission_dir) == 3  # released despite the error
 
 
 # ------------------------------------------------- stranger-thread release
@@ -365,8 +371,6 @@ def test_aux_relay_error_mid_consume_releases(admission_dir, monkeypatch):
 # registry-based nesting makes release thread-agnostic; this test pins it.
 
 def test_stranger_thread_close_does_not_poison_opener(admission_dir, monkeypatch):
-    import fcntl
-
     import agent.auxiliary_client as ac  # noqa: F401
 
     stream = _LazyPlanStream()
@@ -381,27 +385,33 @@ def test_stranger_thread_close_does_not_poison_opener(admission_dir, monkeypatch
     worker.start()
     worker.join(5)
     assert closed_from_stranger.is_set() and stream.closed
-    assert _lock_probe(admission_dir)(0) == "free"  # slot genuinely released
+    assert slots_free(admission_dir) == 3  # slot genuinely released
 
-    # The opener thread's NEXT gated call must truly acquire the flock again:
-    # while it holds, a second fd must be refused (a depth-poisoned thread
-    # would pass through with no lock and this probe would see "free").
+    # The opener thread's NEXT gated call must truly acquire a slot: two filler
+    # holders occupy the other slots, so during opener_next the pool must be
+    # fully occupied (a depth-poisoned thread would pass through with no lock
+    # and one slot would stay free).
+    fillers = []
     probe_states = []
+    try:
+        for _ in range(2):
+            fillers.append(_spawn_holder(admission_dir, hold=8.0))
+        assert slots_free(admission_dir) == 1  # 2 fillers hold; one slot left
 
-    def opener_next():
-        with pa.plan_admission(PLAN_A, model="glm-5.3", purpose="opener_next", wait_seconds=3):
-            fd = os.open(pa.lock_path(), os.O_CREAT | os.O_RDWR, 0o600)
-            try:
-                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                fcntl.flock(fd, fcntl.LOCK_UN)
-                probe_states.append("free")
-            except OSError:
-                probe_states.append("held")
-            finally:
-                os.close(fd)
+        def opener_next():
+            with pa.plan_admission(PLAN_A, model="glm-5.3", purpose="opener_next", wait_seconds=3):
+                probe_states.append(slots_free(admission_dir))
 
-    opener_next()
-    assert probe_states == ["held"], f"opener thread not re-acquiring: {probe_states}"
+        opener_next()
+        assert probe_states == [0], f"opener thread not re-acquiring: {probe_states}"
+        for f in fillers:
+            f.wait(timeout=20)
+    finally:
+        for f in fillers:
+            if f.poll() is None:
+                f.kill()
+                f.wait()
+    assert slots_free(admission_dir) == 3
 
     # And the registry must be clean afterwards (no phantom holds).
     assert pa._nest_depth(threading.get_ident()) == 0

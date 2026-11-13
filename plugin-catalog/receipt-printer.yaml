@@ -2,32 +2,7 @@ name: receipt-printer
 repo: https://github.com/thedavidmurray/hermes-receipts
 sha: 99ba291aecc69345db6cb0d1f536a6246d4a399d
 title: Receipts
-description: >-
-  Your agent says it's done. Get the receipt. Receipts detects action and completion
-  claims and checks observed tool history or explicit local task evidence. Each
-  claim is supported, contradicted, unverified or not evaluable; missing evidence
-  is never called a lie. Output: PNG, ASCII, Desktop pane or optional USB printer.
-  Configure kits, fields, five styles, paper, branding and automatic triggers;
-  verdicts cannot be hidden or recolored. Chat requests stay in the caller's
-  session. Disclosure: reads the active profile's state.db history and kanban.db
-  goal-mode metadata read-only; explicit local fleet scans may read chosen other
-  profiles. Stores a private tool-name/argument-hash ledger and PNGs under
-  plugin-data/receipt-printer; configuration and trigger state/PNGs live under the
-  active profile's receipt-printer directory (or its legacy receipts directory).
-  Files remain until manually deleted. Private v1 receipts need review before
-  sharing. Deterministic checks make no network or model calls or telemetry;
-  runtime.jev is off by default and uses an external model API with heuristically
-  redacted inputs. A task manifest CLI hashes named files and checks a named local bare Git
-  remote; it refuses test criteria and never runs manifest test commands.
-  Subprocesses: git -C <plugin-root> rev-parse --short=12 HEAD for version display
-  (3 s); git --git-dir <path> rev-parse --is-bare-repository (5 s) and rev-list --all
-  (10 s) for explicit local bare-remote checks, without fetch. The library-only
-  run_bound_test accepts trusted in-process argv, not a manifest or agent shell
-  string, with no shell, a 120 s timeout, captured/discarded output and matching
-  artifact bytes before/after. Chat/printer delivery requires configured
-  destinations. USB requires explicit device IDs, permissions and separately
-  installed python-escpos; submission does not prove paper. Legacy stamp/blocking
-  are off by default, and nothing approves tools or schedules a digest.
+description: "Your agent says it's done. Get the receipt. Receipts detects action and completion claims and checks observed tool history or explicit local task evidence. Each claim is supported, contradicted, unverified or not evaluable; missing evidence is never called a lie. Output: PNG, ASCII, Desktop pane or optional USB printer. Configure kits, fields, five styles, paper, branding and automatic triggers; verdicts cannot be hidden or recolored. Chat requests stay in the caller's session. Disclosure — Reads this profile's state.db conversation history and kanban.db read-only; an explicit local `hermes receipt fleet --roots` scan can read other profiles' state.db files you choose. Stores a tool-name/argument-hash ledger and receipt PNGs (containing answer excerpts, private, review before sharing) under the profile's plugin data and receipt-printer directories until you delete them. The optional `runtime.jev` classifier, off by default, sends redacted conversation context to OpenRouter; the optional USB printer path uses separately installed python-escpos."
 maintainer: thedavidmurray
 tier: community
 category: desktop

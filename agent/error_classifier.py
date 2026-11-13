@@ -1449,12 +1449,56 @@ def _classify_image_tool_422(c: _Ctx) -> Verdict:
     return _first_match(c.msg, _IMAGE_TOOL_RULES) or _V_FORMAT_ERROR
 
 
-# 401 not retryable on its own: rotation/refresh run before the retryability
-# check, then the client-error abort path (fallback first) is correct. 408 is
-# retry-safe (RFC 9110 §15.5.9; proxies emit it when generation outruns the
-# read window). Unlisted 4xx → format_error, 5xx → server_error.
+# A self-hosted proxy that cannot reach its upstream relays the TCP connect failure with a
+# *client*-auth status. Observed verbatim from a LiteLLM proxy whose deployment was down:
+#   401 {"error": {"message": "Authentication Error, All connection attempts failed",
+#                  "type": "auth_error", "code": "401"}}
+# The credential was never evaluated here, but the 401 status handler looks only at the status,
+# so this reads as a rejected credential: the key gets rotated/benched and the caller is told to
+# sign in again, while the same outage reported as a plain connect error retries.
+# A genuine bad credential from the SAME proxy is worded differently ("Invalid proxy server
+# token passed", "No api key passed in.", "Malformed API Key passed in."), so the wording below
+# is narrow on purpose: it is the only evidence that the refusal is a route failure. Self-contained
+# connect wording only — the broad _CONNECTION_MESSAGE_PATTERNS family includes DNS and
+# "fetch failed" wording a credential refusal can legitimately echo.
+_CONNECT_REFUSAL_PATTERNS = (
+    "all connection attempts failed", "connection refused", "connectionrefused", "econnrefused",
+    "cannot connect to", "unable to connect", "could not connect", "failed to connect",
+    "connection aborted", "connection reset by peer", "no route to host",
+    "network is unreachable", "network unreachable",
+)
+
+
+def _is_connect_flavored_refusal(msg: str) -> bool:
+    """Whether an auth-flavored refusal is actually a TCP connect failure relayed by a proxy."""
+    return any(p in msg for p in _CONNECT_REFUSAL_PATTERNS)
+
+
+# Connection wording inside a 401 means the proxy never reached its upstream, so the credential
+# was never judged: retrying is right, rotating/benching on a blip would not be.
+def _status_401(c: _Ctx) -> Verdict:
+    if _is_connect_flavored_refusal(c.msg):
+        # No credential rotation and no bench: the key was never tested. ``timeout`` is retryable
+        # and in turn_recovery._TRANSPORT_FAILURE_REASONS, so the loop backs off on the jittered
+        # ladder and defers to the fallback chain like any transport failure. ``status_code``
+        # stays 401 on the ClassifiedError, so credential_auth_recovery (which backs off only on
+        # Nous 401s) still refuses to bench this route's pool entry.
+        logger.info(
+            "401 with connect wording from %s is a relayed upstream connection failure, not an "
+            "auth refusal — classifying as timeout (retryable)",
+            c.provider_slug or c.base_url or "provider",
+        )
+        return _V_TIMEOUT
+    return _V_AUTH_ROTATE
+
+
+# 401 not retryable on its own: rotation/refresh run before the retryability check, then the
+# client-error abort path (fallback first) is correct — EXCEPT when the body's wording names a
+# TCP connect failure (see ``_status_401``): that is a proxy that could not reach its upstream,
+# and it takes the transport retry ladder instead. 408 is retry-safe (RFC 9110 §15.5.9; proxies
+# emit it when generation outruns the read window). Unlisted 4xx → format_error, 5xx → server_error.
 _STATUS_HANDLERS: dict[int, Callable[[_Ctx], Verdict]] = {
-    400: _classify_400, 401: lambda c: _V_AUTH_ROTATE,
+    400: _classify_400, 401: _status_401,
     402: lambda c: _classify_402(c.msg, dict, c.code if _is_nous_route(c) else "", c.body),
     403: _status_403, 404: _status_404, 408: lambda c: _V_TIMEOUT, 413: lambda c: _V_PAYLOAD_TOO_LARGE,
     422: lambda c: _classify_image_tool_422(c),

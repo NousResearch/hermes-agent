@@ -231,3 +231,33 @@ def test_registered_pattern_no_prose_false_positive(tmp_path):
     register_redaction_patterns([demo.NVAPI_PATTERN], source="test")
     prose = "the nvapi-endpoint docs describe rate limits"
     assert redact_sensitive_text(prose, force=True) == prose
+
+
+def test_builtin_prefixes_cover_oauth_client_secret():
+    """GOCSPX- (Google OAuth client secret) must be redacted by the built-in
+    vendor patterns: request-dump redaction ran with it absent and full
+    35-char client secrets landed in cleartext debug dumps (2026-09-12)."""
+    fake = "GOCSPX-" + "a" * 29  # real GOCSPX secrets are 35 chars total
+    out = redact_sensitive_text(f'"client_secret": "{fake}"', force=True)
+    assert fake not in out
+    assert "GOCSPX" in out or "«" in out  # kind label stays debuggable
+    # escaped json-in-json shape (how tool output carries nested JSON)
+    out2 = redact_sensitive_text(
+        '{"output": "{\\"client_secret\\": \\"' + fake + '\\"}"}', force=True
+    )
+    assert fake not in out2
+
+
+def test_builtin_prefixes_cover_google_refresh_token():
+    """Raw Google OAuth refresh tokens start "1//" and must be redacted by the
+    built-in prefix patterns: a subagent echoing a full Authorization header
+    built from google_token.json leaked live refresh tokens into session
+    history. The {35,} floor keeps the short "1//refresh" placeholder used
+    elsewhere in the test suite from matching."""
+    fake = "1//" + "a" * 38  # real raw refresh tokens are 60-103 chars total
+    out = redact_sensitive_text(f'"refresh_token": "{fake}"', force=True)
+    assert fake not in out
+    # short placeholder stays untouched outside secret-key contexts (the
+    # key-value rule still redacts "refresh_token": "..." by key name alone)
+    out2 = redact_sensitive_text("the fake was 1//refresh in the log line", force=True)
+    assert "1//refresh" in out2

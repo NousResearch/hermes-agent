@@ -276,7 +276,7 @@ def _protected_instruction_reason(filepath: str, task_id: str = "default",
         # behavior too. Only the IMMEDIATE parent counts — matching any ancestor
         # would gate every write inside a checkout living under ~/.hermes.
         parts = candidate.replace("\\", "/").rstrip("/").split("/")
-        if len(parts) >= 2 and parts[-2] == ".hermes":
+        if len(parts) >= 2 and deny_key(parts[-2]) == ".hermes":
             return candidate
     return None
 

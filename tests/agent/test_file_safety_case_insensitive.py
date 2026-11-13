@@ -12,6 +12,8 @@ from pathlib import Path
 import pytest
 
 import agent.file_safety as fs
+import tools.file_tools_write_guards as write_guards
+from agent.context_references import _ensure_reference_path_allowed
 from gateway.platforms import base as gateway_base
 
 
@@ -69,3 +71,26 @@ def test_case_variants_are_distinct_files_on_linux(hermes_layout):
     assert fs.is_write_denied(str(profile / "MCP-TOKENS" / "new.json")) is False
     assert fs.is_write_denied(str(user_home / ".SSH" / "authorized_keys")) is False
     assert fs.is_write_denied(str(user_home / ".ssh" / "authorized_keys")) is True
+
+
+@pytest.mark.platforms("macos", "windows")
+def test_case_variant_of_home_credential_is_not_attachable_as_context_reference(hermes_layout, monkeypatch):
+    """@file:/@folder: refs arrive in untrusted gateway text; a case variant must not inline the key."""
+    _root, profile, user_home = hermes_layout
+    monkeypatch.setenv("HERMES_HOME", str(profile))
+    (user_home / "docs").mkdir()
+    for variant in (user_home / ".SSH" / "id_ed25519", user_home / ".SSH" / "ID_RSA",
+                    user_home / ".Aws" / "credentials", user_home / ".NETRC"):
+        with pytest.raises(ValueError):
+            _ensure_reference_path_allowed(variant.resolve())
+    _ensure_reference_path_allowed((user_home / "docs").resolve())
+
+
+@pytest.mark.platforms("macos", "windows")
+def test_case_variant_of_project_hermes_config_still_needs_approval(tmp_path, hermes_layout, monkeypatch):
+    _root, profile, _home = hermes_layout
+    monkeypatch.setenv("HERMES_HOME", str(profile))
+    repo = tmp_path.resolve() / "repo"
+    (repo / ".hermes").mkdir(parents=True)
+    target = str(repo / ".HERMES" / "config.yaml")
+    assert write_guards._protected_instruction_reason(target, enabled=True, extra_patterns=[])

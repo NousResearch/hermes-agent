@@ -132,23 +132,33 @@ event("notice", NoticePayload, doc="Informational one-liner for the session (cap
 # ── turn stream ───────────────────────────────────────────────────────────────────────────────
 
 
+class AdmittedInput(Payload):
+    """What someone typed into the surface that sent the turn (``gateway/session_display.admitted_input``)."""
+
+    text: str
+    #: The admission's ``request_id``: the window that sent it already shows ``user-<submission_id>``.
+    submission_id: str
+
+
 class MessageStartPayload(Payload):
-    """``message.start``. Empty from the TUI gateway's emitters and for an ordinary admission;
-    ``gateway/session_authority._stamp_claim`` adds an automation admission's async-result card
-    (``session_automation.admission_display``: a background-process completion) and its model
-    text, so a viewer that did not submit the turn paints the same header the submitter would."""
+    """``message.start``. Empty from the TUI gateway's emitters; ``gateway/session_authority._stamp_claim``
+    adds an automation admission's async-result card (``session_automation.admission_display``: a
+    background-process completion) and its model text, or else the admission's typed ``input``, so a
+    viewer that did not submit the turn paints the same header the submitter would."""
 
     display_kind: str | None = None
     display_text: str | None = None
     notification_category: str | None = None
     text: str | None = None
+    #: Absent for hidden sends and for automation, Kanban and messaging turns.
+    input: AdmittedInput | None = None
     #: ``stream_segments.TurnSegments`` identity of the prompt turn; a client that sees the same id again is
     #: looking at a re-sent frame of the turn it already has, not a new turn.
     turn_id: str | None = None
 
 
 event("message.start", MessageStartPayload,
-      doc="A turn began streaming; an automation turn carries its async-result card.")
+      doc="A turn began streaming; a claimed turn carries its typed input or an automation's async-result card.")
 
 
 class StreamDeltaPayload(Payload):

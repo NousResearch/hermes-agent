@@ -70,7 +70,9 @@ describe('findProducingToolCall', () => {
     }
 
     // Stored again as an object (a reloaded transcript), the same holds.
-    expect(findProducingToolCall(turn(call('mcp__meshy__download', JSON.parse(result))), 'a', '/out/a.glb')).not.toBeNull()
+    expect(
+      findProducingToolCall(turn(call('mcp__meshy__download', JSON.parse(result))), 'a', '/out/a.glb')
+    ).not.toBeNull()
   })
 
   it('keeps a core tool the producer when its output names the file before a newline', () => {
@@ -112,7 +114,9 @@ describe('findProducingToolCall', () => {
     expect(findProducingToolCall(turn(call('sfx', 'saved c:/users/ME/out/clip.wav')), 'a', win)?.toolName).toBe('sfx')
     expect(findProducingToolCall(turn(call('sfx', { win })), 'a', 'file:///C:/Users/me/out/clip.wav')).not.toBeNull()
     // Python's json.dumps escapes non-ASCII by default.
-    expect(findProducingToolCall(turn(call('sfx', '{"path": "/out/caf\\u00e9.wav"}')), 'a', '/out/café.wav')).not.toBeNull()
+    expect(
+      findProducingToolCall(turn(call('sfx', '{"path": "/out/caf\\u00e9.wav"}')), 'a', '/out/café.wav')
+    ).not.toBeNull()
     expect(findProducingToolCall(turn(call('sfx', { win })), 'missing', win)).toBeNull()
   })
 })

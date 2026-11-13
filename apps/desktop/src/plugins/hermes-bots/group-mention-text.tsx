@@ -84,7 +84,9 @@ export function renderGroupMentionText(text: string, members: GroupMember[], lab
 }
 
 function mapTextChildren(children: ReactNode, members: GroupMember[], labels: MentionLabels): ReactNode {
-  return Children.map(children, child => (typeof child === 'string' ? renderGroupMentionText(child, members, labels) : child))
+  return Children.map(children, child =>
+    typeof child === 'string' ? renderGroupMentionText(child, members, labels) : child
+  )
 }
 
 /** `decorateText` hook for the shell's `MessageTextContent`: the same
@@ -101,8 +103,12 @@ export function groupMentionText(members: GroupMember[], labels: MentionLabels) 
  *  mention inside a backtick span is left literal on purpose. */
 export function groupMentionComponents(members: GroupMember[], labels: MentionLabels) {
   return {
-    li: ({ children, ...props }: ComponentProps<'li'>) => <li {...props}>{mapTextChildren(children, members, labels)}</li>,
+    li: ({ children, ...props }: ComponentProps<'li'>) => (
+      <li {...props}>{mapTextChildren(children, members, labels)}</li>
+    ),
     p: ({ children, ...props }: ComponentProps<'p'>) => <p {...props}>{mapTextChildren(children, members, labels)}</p>,
-    td: ({ children, ...props }: ComponentProps<'td'>) => <td {...props}>{mapTextChildren(children, members, labels)}</td>
+    td: ({ children, ...props }: ComponentProps<'td'>) => (
+      <td {...props}>{mapTextChildren(children, members, labels)}</td>
+    )
   }
 }

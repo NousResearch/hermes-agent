@@ -50,7 +50,11 @@ it('keeps @default and @hermes apart in a room whose live roster rows are gone',
     const header = (viewer: number) =>
       buildGroupChatTurnPrompt({ groupName: 'g', members, viewer: members[viewer], deltaLines: [] }).split('\n')[0]
 
-    expect(header(0)).toMatch(/You are @default, one participant in a group chat with @hermes \[on local\], @researcher/)
-    expect(header(1)).toMatch(/You are @hermes, one participant in a group chat with @default \[on local\], @researcher/)
+    expect(header(0)).toMatch(
+      /You are @default, one participant in a group chat with @hermes \[on local\], @researcher/
+    )
+    expect(header(1)).toMatch(
+      /You are @hermes, one participant in a group chat with @default \[on local\], @researcher/
+    )
   }
 })

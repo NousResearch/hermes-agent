@@ -20,14 +20,18 @@ export function createBrowserClipboardBridge({
         read?: () => Promise<ClipboardItems>
       }
 
-      if (!clipboard?.read) {return ''}
+      if (!clipboard?.read) {
+        return ''
+      }
 
       const items = await clipboard.read()
 
       for (const item of items) {
         const mimeType = item.types.find(type => type.startsWith('image/'))
 
-        if (!mimeType) {continue}
+        if (!mimeType) {
+          continue
+        }
 
         const blob = await item.getType(mimeType)
         const extension = IMAGE_EXTENSION_BY_MIME[mimeType] || '.png'
@@ -39,7 +43,9 @@ export function createBrowserClipboardBridge({
     },
     writeClipboard: async (text: string) => {
       // No Clipboard API on an insecure origin: the same selection copy as writeClipboardText.
-      if (!nativeWriteClipboard) {return copyTextThroughSelection(text)}
+      if (!nativeWriteClipboard) {
+        return copyTextThroughSelection(text)
+      }
 
       await nativeWriteClipboard(text)
 

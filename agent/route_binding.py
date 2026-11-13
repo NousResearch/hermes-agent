@@ -66,7 +66,7 @@ def _select_pool_key(provider: str, model: str, base_url: Optional[str], *, comm
         pool = load_pool(pool_key)
         if not pool.has_credentials() or not any(serves(e, url) for e in pool.entries()):
             return None, None
-        entry = (pool.select if commit else pool.peek)(model=model or None)
+        entry = (pool.select if commit else pool.peek)(model=model or None, endpoint_url=url)
         key = (getattr(entry, "runtime_api_key", None) or getattr(entry, "access_token", "")) if entry else ""
     except Exception as exc:  # health: allow BLE001 -- the resolver's own key still applies
         logger.debug("Fallback to %s: could not pick a pool key: %s", provider, exc)

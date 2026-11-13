@@ -1933,20 +1933,22 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
 
     # ---- selection ---------------------------------------------------------
 
-    def select(self, *, model: Optional[str] = None) -> Optional[PooledCredential]:
-        entry, pending_refresh = self._select_under_lock(model=model)
+    def select(self, *, model: Optional[str] = None, endpoint_url: Optional[str] = None) -> Optional[PooledCredential]:
+        entry, pending_refresh = self._select_under_lock(model=model, endpoint_url=endpoint_url)
         if pending_refresh:
             self._refresh_pending_entries(pending_refresh)
             # Re-select now that the refreshed entries are back in the pool.
             if entry is None:
-                entry, _ = self._select_under_lock(model=model)
+                entry, _ = self._select_under_lock(model=model, endpoint_url=endpoint_url)
         if entry is not None:
             self._unmatched_rotation_streak = 0
         return entry
 
-    def _select_under_lock(self, *, model: Optional[str] = None) -> tuple[Optional[PooledCredential], list[PooledCredential]]:
+    def _select_under_lock(
+        self, *, model: Optional[str] = None, endpoint_url: Optional[str] = None,
+    ) -> tuple[Optional[PooledCredential], list[PooledCredential]]:
         with self._lock:
-            return self._select_unlocked(model=model)
+            return self._select_unlocked(model=model, endpoint_url=endpoint_url)
 
     def _refresh_pending_entries(self, pending: list[PooledCredential]) -> None:
         """Refresh deferred single-use-token entries OUTSIDE the pool lock.
@@ -2100,6 +2102,7 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
 
     def _select_unlocked(
         self, *, refresh: bool = True, count: bool = True, model: Optional[str] = None,
+        endpoint_url: Optional[str] = None,
     ) -> tuple[Optional[PooledCredential], list[PooledCredential]]:
         """Select the best available entry; returns ``(entry, pending_refresh)``.
 
@@ -2107,6 +2110,8 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
         not going to serve a request (a forced-refresh target lookup).
         """
         available, pending_refresh = self._available_entries(clear_expired=True, refresh=refresh, model=model)
+        if endpoint_url is not None:
+            available = [e for e in available if credential_pool_entry_serves_endpoint(e, endpoint_url)]
         if not available:
             self._current_id = None
             self._log_no_available_entries()
@@ -2136,12 +2141,16 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
         self._current_id = entry.id
         return entry, pending_refresh
 
-    def peek(self, *, model: Optional[str] = None) -> Optional[PooledCredential]:
+    def peek(self, *, model: Optional[str] = None, endpoint_url: Optional[str] = None) -> Optional[PooledCredential]:
         with self._lock:  # the current entry, else the first available; with ``model``: the current one if available
             current = self._current_unlocked()
-            if current is not None and model is None:
+            if current is not None and model is None and (
+                endpoint_url is None or credential_pool_entry_serves_endpoint(current, endpoint_url)
+            ):
                 return current
             available = self._available_entries(model=model)[0]
+            if endpoint_url is not None:
+                available = [e for e in available if credential_pool_entry_serves_endpoint(e, endpoint_url)]
             return next((e for e in available if current and e.id == current.id), next(iter(available), None))
 
     def reclaim(self, credential_id: str, *, model: Optional[str] = None) -> Optional[PooledCredential]:

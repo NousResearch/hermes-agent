@@ -4,7 +4,7 @@ import {
   beginCronJobsRequest,
   commitCronJobsRequest,
   type CronJobsRequest,
-  isCronJobsRequestCurrent,
+  failCronJobsRequest,
   isCronJobsScopeCurrent
 } from '@/store/cron'
 
@@ -32,7 +32,7 @@ async function refreshForGeneration(profile: string, request: CronJobsRequest): 
 
     return { jobs, refreshError: null, stale: false }
   } catch (refreshError) {
-    if (!isCronJobsRequestCurrent(request)) {
+    if (!failCronJobsRequest(request)) {
       return { jobs: null, refreshError: null, stale: true }
     }
 

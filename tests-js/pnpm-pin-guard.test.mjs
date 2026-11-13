@@ -75,7 +75,7 @@ function install(dir, cwd, args, userAgent) {
   try {
     execFileSync(pnpmCommand(), ['install', ...args], {
       cwd, encoding: 'utf8', stdio: 'pipe',
-      env: { ...process.env, CI: '1', pnpm_config_offline: 'true', pnpm_config_user_agent: userAgent,
+      env: { ...process.env, CI: '1', pnpm_config_ignore_scripts: 'false', pnpm_config_offline: 'true', pnpm_config_user_agent: userAgent,
         pnpm_config_store_dir: join(dir, '.store'), pnpm_config_cache_dir: join(dir, '.cache'), pnpm_config_state_dir: join(dir, '.state') },
     })
     return { status: 0, output: '' }

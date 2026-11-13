@@ -331,3 +331,114 @@ async def test_many_long_choices_fit_content_and_render_literally():
     content = channel.send.call_args.kwargs["content"]
     assert len(content) <= 2000 and all(f"TARGET={env}" in content for env in ("staging", "canary", "prod", "sandbox"))
 
+
+# ===========================================================================
+# multi_select → multi-value select menu
+# ===========================================================================
+
+def _view_cls(name):
+    # Resolve from the globals send_clarify actually uses: another test can reload the adapter
+    # module, leaving a fresh class object under the same import path.
+    return DiscordAdapter.send_clarify.__globals__[name]
+
+
+def _adapter_with_channel():
+    adapter = _make_adapter(allowed_users={"42"})
+    channel = MagicMock()
+    sent_msg = MagicMock()
+    sent_msg.id = 777
+    channel.send = AsyncMock(return_value=sent_msg)
+    adapter._client.get_channel = MagicMock(return_value=channel)
+    return adapter, channel
+
+
+class TestClarifyMultiSelect:
+    def setup_method(self):
+        _clear_clarify_state()
+
+    @pytest.mark.asyncio
+    async def test_multi_select_entry_renders_multi_value_select(self, monkeypatch):
+        import discord
+        from tools import clarify_gateway as cm
+        captured = {}
+        real_select = discord.ui.Select
+
+        class _SpySelect(real_select):
+            def __init__(self, **kw):
+                captured.update(kw)
+                super().__init__(**kw)
+        monkeypatch.setattr(discord.ui, "Select", _SpySelect)
+        cm.register("cidMS", "sk-MS", "Which apply?", ["a", "b", "c"], multi_select=True)
+        adapter, channel = _adapter_with_channel()
+        await adapter.send_clarify(chat_id="9001", question="Which apply?", choices=["a", "b", "c"],
+                                   clarify_id="cidMS", session_key="sk-MS")
+        view = channel.send.call_args.kwargs["view"]
+        assert isinstance(view, _view_cls("ClarifyMultiSelectView"))
+        assert len(view.children) == 2  # select + Other
+        assert [o.value for o in view.children[0].options] == ["0", "1", "2"]
+        assert captured["min_values"] == 1 and captured["max_values"] == 3
+        assert view.children[1].custom_id == "clarify:cidMS:other"
+
+    @pytest.mark.asyncio
+    async def test_single_select_entry_keeps_buttons(self):
+        from tools import clarify_gateway as cm
+        cm.register("cidSS", "sk-SS", "One?", ["a", "b"], multi_select=False)
+        adapter, channel = _adapter_with_channel()
+        await adapter.send_clarify(chat_id="9001", question="One?", choices=["a", "b"],
+                                   clarify_id="cidSS", session_key="sk-SS")
+        view = channel.send.call_args.kwargs["view"]
+        assert not isinstance(view, _view_cls("ClarifyMultiSelectView"))
+        assert isinstance(view, _view_cls("ClarifyChoiceView"))
+
+    @pytest.mark.asyncio
+    async def test_select_resolves_json_array_of_canonical_choices(self):
+        import json
+        from tools import clarify_gateway as cm
+        cm.register("cidR", "sk-R", "Which?", ["alpha (Recommended)", "beta", "gamma"], multi_select=True)
+        view = _view_cls("ClarifyMultiSelectView")(
+            choices=["alpha (Recommended)", "beta", "gamma"], clarify_id="cidR", allowed_user_ids={"42"})
+        interaction = _make_interaction(user_id="42")
+        interaction.data = {"values": ["2", "0", "9", "x"]}
+        await view._on_select(interaction)
+        with cm._lock:
+            entry = cm._entries["cidR"]
+        assert entry.event.is_set()
+        assert json.loads(entry.response) == ["alpha (Recommended)", "gamma"]
+        assert view.resolved is True
+        interaction.response.edit_message.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_select_unauthorized_rejected(self):
+        from tools import clarify_gateway as cm
+        cm.register("cidU", "sk-U", "Which?", ["a", "b"], multi_select=True)
+        view = _view_cls("ClarifyMultiSelectView")(choices=["a", "b"], clarify_id="cidU", allowed_user_ids={"99999"})
+        interaction = _make_interaction(user_id="42")
+        interaction.data = {"values": ["0"]}
+        await view._on_select(interaction)
+        assert interaction.response.send_message.call_args.kwargs.get("ephemeral") is True
+        with cm._lock:
+            assert not cm._entries["cidU"].event.is_set()
+
+    @pytest.mark.asyncio
+    async def test_select_option_numbers_match_numbered_body_lines(self):
+        from tools import clarify_gateway as cm
+        choices = [
+            f"Plan {n}: refactor the auth module and keep the exports stable for callers " + "x" * 40
+            for n in (1, 2, 3)
+        ]
+        cm.register("cidN", "sk-N", "Which plan?", choices, multi_select=True)
+        adapter, channel = _adapter_with_channel()
+        await adapter.send_clarify(chat_id="9001", question="Which plan?", choices=choices,
+                                   clarify_id="cidN", session_key="sk-N")
+        view = channel.send.call_args.kwargs["view"]
+        content = channel.send.call_args.kwargs["content"]
+        body_lines = [ln for ln in content.splitlines() if ln[:1].isdigit() and ". " in ln]
+        assert len(body_lines) == len(choices)
+        options = view.children[0].options
+        assert len(options) == len(choices)
+        for option, body_line in zip(options, body_lines):
+            number = option.label.split(". ", 1)[0]
+            assert option.label.startswith(f"{number}. ")
+            assert body_line.startswith(f"{number}. ")
+        assert [o.label.split(". ", 1)[0] for o in options] == [str(n) for n in range(1, 4)]
+

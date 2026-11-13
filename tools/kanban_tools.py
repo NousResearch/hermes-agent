@@ -705,9 +705,13 @@ def _handle_list(args: dict, **kw) -> str:
     _check(limit >= 1, "limit must be >= 1")
     _check(limit <= KANBAN_LIST_MAX_LIMIT, f"limit must be <= {KANBAN_LIST_MAX_LIMIT}")
     with _board(args.get("board")) as (kb, conn):
+        from hermes_cli import kanban_db_connect as kbc
+
         # Match CLI list: dependencies cleared since the last dispatcher tick
-        # should be visible to orchestrators immediately.
-        promoted = kb.recompute_ready(conn)
+        # should be visible to orchestrators immediately. Best-effort: a
+        # fenced/delegate_task context can't mutate, and this read-only tool
+        # must not fail just because the tidy-up can't run (#ba635639).
+        promoted = kbc.recompute_ready_best_effort(conn)
         # One extra row lets the output report truncation without dumping the board.
         rows = kb.list_tasks(
             conn, assignee=args.get("assignee"), status=args.get("status"),

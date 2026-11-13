@@ -1291,6 +1291,24 @@ def write_txn(conn: sqlite3.Connection, *, allow_nested: bool = False):
         _check_file_length_invariant(conn)
 
 
+def recompute_ready_best_effort(conn: sqlite3.Connection, failure_limit: int | None = None) -> int:
+    """``kanban_db.recompute_ready``, but a no-op (returns 0) in a
+    delegate_task child / fenced context instead of raising.
+
+    For read-only entry points (``kanban list``, the ``kanban_list`` tool)
+    that call ``recompute_ready`` purely as a "show freshest state" nicety:
+    a caller that merely wants to *read* the board must not fail just
+    because the board can't be opportunistically tidied first via
+    ``write_txn``'s ``_assert_not_delegated_child_mutation`` guard
+    (t_ba635639). Mutating callers must keep calling ``recompute_ready``
+    directly so a real mutation still fails closed in a fenced context.
+    """
+    try:
+        return _kb.recompute_ready(conn, failure_limit)
+    except PermissionError:
+        return 0
+
+
 # Late-bound origin namespace (see module docstring); imported LAST so this
 # module is fully populated before ``kanban_db`` imports from it.
 from hermes_cli import kanban_db as _kb

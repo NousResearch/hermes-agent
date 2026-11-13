@@ -8,7 +8,6 @@ import { Codicon } from '@/components/ui/codicon'
 import { Tip } from '@/components/ui/tooltip'
 import { useDelayedTrue } from '@/hooks/use-delayed-true'
 import { useI18n } from '@/i18n'
-import { isDesktopFsRemoteMode } from '@/lib/desktop-fs'
 import { normalizeOrLocalPreviewTarget } from '@/lib/local-preview'
 import { cn } from '@/lib/utils'
 import { refreshRepoStatus, registerRepoStatusCwd } from '@/store/coding-status'
@@ -227,7 +226,11 @@ function FilesystemTab({
             size="icon-xs"
             variant="ghost"
           >
-            <Codicon name="collapse-all" size="0.8125rem" />
+            {/* #55358: `collapse-all` draws two offset rounded squares — at
+                13px its top edge reads as an asymmetric hamburger line.
+                `three-bars` is the symmetric three-line glyph from the same
+                codicon vocabulary, matching the eye/refresh siblings. */}
+            <Codicon name="three-bars" size="0.8125rem" />
           </Button>
         </Tip>
       </RightSidebarSectionHeader>
@@ -294,8 +297,7 @@ function RootNewEntryInput({ cwd }: { cwd: string }) {
           <Codicon name="new-file" size="0.8125rem" />
         </Button>
       </Tip>
-      {isDesktopFsRemoteMode() && (
-        <Tip label={m.newFolder}>
+      <Tip label={m.newFolder}>
           <Button
             aria-label={m.newFolder}
             className={HEADER_ACTION_LABEL_REVEAL}
@@ -305,8 +307,7 @@ function RootNewEntryInput({ cwd }: { cwd: string }) {
           >
             <Codicon name="new-folder" size="0.8125rem" />
           </Button>
-        </Tip>
-      )}
+      </Tip>
     </>
   )
 }

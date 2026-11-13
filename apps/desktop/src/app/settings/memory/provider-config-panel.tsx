@@ -5,6 +5,7 @@ import { Button } from '@/components/ui/button'
 import { DisclosureCaret } from '@/components/ui/disclosure-caret'
 import { getMemoryProviderConfig, saveMemoryProviderConfig } from '@/hermes'
 import { SlidersHorizontal } from '@/lib/icons'
+import { refreshMemoryStatus } from '@/store/memory-status'
 import { notifyError } from '@/store/notifications'
 import type { MemoryProviderConfig, MemoryProviderField } from '@/types/hermes'
 
@@ -47,6 +48,11 @@ export function ProviderConfigPanel({ profile, provider }: { profile?: string; p
     void refresh()
   }, [refresh])
 
+  const onModalSaved = useCallback(async () => {
+    refreshMemoryStatus()
+    await refresh()
+  }, [refresh])
+
   // Autosave, matching the settings page around the panel: one-key partial PUT
   // on commit, silent on success, no full refresh (it would reset sibling drafts).
   const commitField = useCallback(
@@ -57,6 +63,7 @@ export function ProviderConfigPanel({ profile, provider }: { profile?: string; p
 
       try {
         await saveMemoryProviderConfig(provider, { [field.key]: value }, profile)
+        refreshMemoryStatus()
 
         if (field.kind === 'secret') {
           setValues(current => ({ ...current, [field.key]: '' }))
@@ -153,7 +160,7 @@ export function ProviderConfigPanel({ profile, provider }: { profile?: string; p
         <ProviderConfigModal
           config={config}
           onOpenChange={setShowModal}
-          onSaved={refresh}
+          onSaved={onModalSaved}
           open={showModal}
           profile={profile}
           provider={provider}

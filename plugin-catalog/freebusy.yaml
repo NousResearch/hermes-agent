@@ -1,0 +1,21 @@
+name: freebusy
+title: Freebusy
+repo: https://github.com/hmnvcb/freebusy
+sha: "71998d63d430b80915482799168b90617222721d"
+description: "Schedules meetings by email for its owner without revealing a calendar or inventing a time zone: offers come from free/busy only, every slot is held before it is offered and never offered twice, and a time is never shown in a zone the other person did not give. Replies in a compact lettered format, books and sends the invite, and tells the owner only when something is booked, nothing fits, or a person is needed. Universal rules for everyone, plus a personal profile with groups (Work 9 to 5, Family full availability), autonomy tiers starting with a Trial tier, optional travel buffers, owner-only reminders and a day-before briefing. A policy gate blocks any of the plugin's own sends or calendar writes that lack a held slot, a known zone, the right authority, or that target anyone off the thread or any calendar but the one configured. Disclosure — In its default fixture mode it makes no network calls and reads only bundled demo data. It keeps holds, settings and an audit log (secrets redacted) under its own plugin data directory, and adds a short freebusy context block (owner time zone, open holds with thread ids and times, group tiers, people's stated zones, items waiting on the owner) to every turn. Its pre_tool_call hook can block or escalate the plugin's own schedule_send, schedule_book, schedule_remind and schedule_resume actions; other plugins' send_email, email_send, gmail_send, mail_send, reply_email, calendar_create_event, create_event, calendar_write and book_event tools are vetted only if the owner turns on vet_other_tools (off by default), and post_approval_response records an owner's approval for a held action. Reminders and the day-before briefing are one-time jobs created through Hermes's cronjob_manage tool and delivered only to the owner over the owner's chosen Hermes channel; inside a cron run no job is created unless cron.allow_agent_scheduling is true. The Google Workspace adapter is inert in this version: every call raises NotImplementedError and nothing is dispatched or run."
+maintainer: hmnvcb
+tier: community
+category: automation
+requires_hermes: ">=0.22.5"
+docs_url: https://github.com/hmnvcb/freebusy/blob/71998d63d430b80915482799168b90617222721d/README.md
+version: "0.2.0"
+readme: true
+platforms: [linux, macos]
+known_issues:
+  - "This version runs in fixture mode: live Google Calendar and live mail are documented next steps, not wired yet. python -m freebusy.demo shows the full flow on demo data."
+  - "Reminder texts and the briefing are tested against a stubbed scheduler and fixture outbox, not yet against a running Hermes gateway."
+capabilities:
+  provides_tools: [schedule_parse, schedule_offer, schedule_check, schedule_book, schedule_holds, schedule_resume]
+  provides_hooks: [pre_tool_call, post_tool_call, pre_llm_call, post_approval_response]
+  provides_middleware: []
+  requires_env: []

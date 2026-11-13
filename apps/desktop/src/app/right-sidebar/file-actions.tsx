@@ -10,13 +10,14 @@ import {
   ContextMenuTrigger
 } from '@/components/ui/context-menu'
 import { translateNow, useI18n } from '@/i18n'
-import { isDesktopFsRemoteMode } from '@/lib/desktop-fs'
+import { type DesktopFsOperationScope, isDesktopFsRemoteMode } from '@/lib/desktop-fs'
 import { isSubmitEnter } from '@/lib/ime'
 import { IS_MAC } from '@/lib/keybinds/combo'
 import { cn } from '@/lib/utils'
 import {
   $creatingEntry,
   $fileActionDialog,
+  $renamingPath,
   $renamingScope,
   beginInlineRename,
   cancelInlineRename,
@@ -27,6 +28,7 @@ import {
   executeEntryCreate,
   executeFileDelete,
   executeFileRename,
+  type FileActionDialog,
   type FileActionTarget,
   requestFileDelete,
   requestNewEntry,
@@ -86,7 +88,7 @@ export function FileEntryContextMenu({ children, isDirectory, name, path, relati
             <ContextMenuSeparator />
           </>
         )}
-        {isDirectory && !localFs && (
+        {isDirectory && (
           <ContextMenuItem onSelect={() => void requestNewEntry({ directory: true, parentDir: path })}>
             {m.newFolder}
           </ContextMenuItem>
@@ -123,26 +125,38 @@ export function FileEntryContextMenu({ children, isDirectory, name, path, relati
 
 /** Mounted once near the app root: the delete confirm dialog for shared file
  *  actions. Rename is inline (see {@link InlineRenameInput}). */
+const dialogKeys = new WeakMap<FileActionDialog, number>()
+let nextDialogKey = 0
+
 export function FileActionDialogs() {
-  const { t } = useI18n()
   const dialog = useStore($fileActionDialog)
-  const deleting = dialog?.kind === 'delete'
-  // Keep the confirmation wording and backend pinned to the row's original scope.
-  const remoteDelete = dialog?.scope.mode === 'remote'
+
+  if (!dialog) {return null}
+
+  if (!dialogKeys.has(dialog)) {dialogKeys.set(dialog, ++nextDialogKey)}
+
+  return <FileDeleteDialog dialog={dialog} key={dialogKeys.get(dialog)} />
+}
+
+function FileDeleteDialog({ dialog }: { dialog: FileActionDialog }) {
+  const { t } = useI18n()
+  const remoteDelete = dialog.scope.mode === 'remote'
 
   return (
     <ConfirmDialog
       confirmLabel={t.fileMenu.delete}
       description={remoteDelete ? t.fileMenu.deleteRemoteBody : t.fileMenu.deleteBody}
       destructive
-      onClose={closeFileActionDialog}
-      onConfirm={() => {
-        if (deleting) {
-          return executeFileDelete(dialog.path, dialog.scope)
-        }
+      onClose={() => {
+        if ($fileActionDialog.get() === dialog) {closeFileActionDialog()}
       }}
-      open={deleting}
-      title={deleting ? t.fileMenu.deleteTitle(dialog.name) : ''}
+      onConfirm={() => {
+        if ($fileActionDialog.get() !== dialog) {throw new Error('File deletion was canceled')}
+
+        return executeFileDelete(dialog.path, dialog.scope)
+      }}
+      open
+      title={t.fileMenu.deleteTitle(dialog.name)}
     />
   )
 }
@@ -160,10 +174,29 @@ interface InlineRenameInputProps {
  *  row's label when `$renamingPath === path`, or — for the new-file/new-folder
  *  flow — when `$creatingEntry` targets this folder row (empty seed, no stem
  *  pre-select, and a first-tab-all select). */
-export function InlineRenameInput({ className, name, path }: InlineRenameInputProps) {
+const editorKeys = new WeakMap<object, number>()
+let nextEditorKey = 0
+
+export function InlineRenameInput(props: InlineRenameInputProps) {
+  const creating = useStore($creatingEntry)
+  const scope = useStore($renamingScope)
+  const owner = creating?.parentDir === props.path ? creating : scope
+
+  if (owner && !editorKeys.has(owner)) {editorKeys.set(owner, ++nextEditorKey)}
+
+  return <OwnedInlineRenameInput {...props} key={owner ? editorKeys.get(owner) : 0} />
+}
+
+function ownsInlineRename(path: string, scope: DesktopFsOperationScope | null): boolean {
+  return scope !== null && $renamingPath.get() === path && $renamingScope.get() === scope
+}
+
+function OwnedInlineRenameInput({ className, name, path }: InlineRenameInputProps) {
   const creating = useStore($creatingEntry)
   const renamingScope = useStore($renamingScope)
   const creatingHere = creating && creating.parentDir === path
+  // Bind the editor to the request that mounted it, not a later request for the same row.
+  const owner = useRef({ creating: creatingHere ? creating : null, scope: renamingScope }).current
   const seedName = creatingHere ? '' : name
   const [value, setValue] = useState(seedName)
   // Enter then the resulting blur must not both commit; latch on first finish.
@@ -179,29 +212,28 @@ export function InlineRenameInput({ className, name, path }: InlineRenameInputPr
     }
 
     done.current = true
-    const creatingHere = creating && creating.parentDir === path
-    const next = value.trim()
+    const ownsCreate = owner.creating !== null && $creatingEntry.get() === owner.creating
+    const ownsRename = !owner.creating && ownsInlineRename(path, owner.scope)
 
-    if (commit && next) {
+    if (!ownsCreate && !ownsRename) {return}
+
+    if (commit && value.trim()) {
       try {
-        if (creatingHere) {
-          await executeEntryCreate(creating, next)
-        } else if (next !== name) {
-          await executeFileRename(path, next, renamingScope || undefined)
+        if (ownsCreate && owner.creating) {
+          await executeEntryCreate(owner.creating, value)
+        } else if (ownsRename && value !== name) {
+          await executeFileRename(path, value, owner.scope || undefined)
         }
       } catch (error) {
-        // Caller-owned failure toast (the store functions no longer notify);
-        // a create failure keeps the generic message, rename keeps its own.
         notifyError(error, translateNow('errors.genericFailure'))
       }
-    } else if (creatingHere) {
-      // Esc / empty-blur cancel of a NEW-ENTRY flow: only executeEntryCreate's
-      // finally clears $creatingEntry on the commit path, so the non-commit
-      // path must clear it here too or the inline row can't be dismissed.
+    } else if (ownsCreate && $creatingEntry.get() === owner.creating) {
       cancelNewEntry()
     }
 
-    cancelInlineRename()
+    if (ownsRename && ownsInlineRename(path, owner.scope)) {
+      cancelInlineRename()
+    }
   }
 
   return (
@@ -216,7 +248,7 @@ export function InlineRenameInput({ className, name, path }: InlineRenameInputPr
       autoCorrect="off"
       autoFocus
       className={cn(
-        'min-w-0 flex-1 rounded-sm border border-[color-mix(in_srgb,var(--dt-composer-ring)_55%,transparent)] bg-(--ui-bg-elevated) px-1 py-0 text-xs text-foreground outline-none',
+        'min-w-0 flex-1 rounded-sm border border-[color-mix(in_srgb,var(--dt-composer-ring)_55%,transparent)] bg-(--ui-bg-elevated) px-1 py-0 text-xs text-foreground',
         className
       )}
       onBlur={event => {

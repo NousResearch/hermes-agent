@@ -21,6 +21,11 @@ from cron.executions import touch_execution_progress
 
 logger = logging.getLogger(__name__)
 
+# execution id -> wall time of the stamper's last progress verdict. A canonical cron run executes in
+# the gateway owner, but its ledger row belongs to the firer (an external worker), so the owner's own
+# stamp is fenced off it; ``cron.status`` reports this and the firer stamps its row itself.
+owner_progress: dict[str, float] = {}
+
 
 def _inactivity_watchdog_loop(
     *, get_idle_seconds: Callable[[], float], limit_s: float, poll_s: float, stop: threading.Event,
@@ -71,6 +76,7 @@ class ExecutionProgressStamper:
         if self._idle_seconds() >= self._every:
             return
         self._last = now
+        owner_progress[self._execution_id] = time.time()
         try:
             touch_execution_progress(self._execution_id)
         except Exception:

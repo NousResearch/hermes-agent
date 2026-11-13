@@ -18,6 +18,9 @@ class _OneTickStopEvent:
 
 
 def test_gateway_housekeeping_calls_periodic_memory_trim(monkeypatch):
+    """The tick must ask for the allocator trim only: this lane fires every cooldown, and a forced
+    full ``gc.collect()`` here (400-600ms with the GIL held on a live gateway) froze every thread in
+    the process once a minute (#139763)."""
     from hermes_cli import mem_trim
 
     calls = []
@@ -29,4 +32,5 @@ def test_gateway_housekeeping_calls_periodic_memory_trim(monkeypatch):
 
     gateway_run._start_gateway_housekeeping(_OneTickStopEvent(), interval=0)
 
-    assert calls == [{"reason": "messaging gateway housekeeping"}]
+    assert [call.get("reason") for call in calls] == ["messaging gateway housekeeping"]
+    assert calls[0].get("collect") is False

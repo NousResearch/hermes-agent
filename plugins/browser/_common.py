@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Optional
 import requests
 
 from agent.browser_provider import BrowserProvider
+from agent.ssl_verify import requests_verify
 
 _CLOSE_OK = {200, 201, 204}
 
@@ -65,7 +66,13 @@ class CloudBrowserProvider(BrowserProvider):
         return None
 
     def _release(self, config: dict[str, Any], session_id: str, timeout: int) -> requests.Response:
-        kwargs: dict[str, Any] = {"headers": self._release_headers(config), "timeout": timeout}
+        # requests resolves verify=True through a bundle path frozen at its own import,
+        # which a replaced install environment leaves dangling; hand it a live one.
+        kwargs: dict[str, Any] = {
+            "headers": self._release_headers(config),
+            "timeout": timeout,
+            "verify": requests_verify(),
+        }
         body = self._release_body(config)
         if body is not None:
             kwargs["json"] = body
@@ -82,7 +89,7 @@ class CloudBrowserProvider(BrowserProvider):
         """POST the create request; network failures → RuntimeError unless the managed gateway
         caller needs the raw exception to retry."""
         try:
-            return requests.post(url, headers=headers, json=payload, timeout=30)
+            return requests.post(url, headers=headers, json=payload, timeout=30, verify=requests_verify())
         except requests.RequestException as exc:
             if not wrap_errors:
                 raise
@@ -133,6 +140,4 @@ class CloudBrowserProvider(BrowserProvider):
             "badge": "paid",
             "tag": self.setup_tag,
             "env_vars": [dict(v) for v in self.setup_env_vars],
-            # Cloud-scoped hook: installs the agent-browser CLI only (the vendor hosts Chromium).
-            "post_setup": "browserbase",
         }

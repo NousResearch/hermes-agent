@@ -75,6 +75,34 @@ export async function installDuplicateSampler(page: Page): Promise<void> {
     // "x|y": x has been seen above y. A later frame with y above x is a flip.
     const above = new Set<string>()
     let scheduled = false
+    // The last few bubble layouts (newest bubbles: id = markers), so a red
+    // says which rows drew the copy and what the view showed just before.
+    const timeline: { at: number; route: string; layout: string[] }[] = []
+    let lastLayout = ''
+
+    const seen = (text: string) => {
+      const flat = text.replace(/\s+/g, ' ')
+
+      return flat.length > 600 ? `${flat.slice(0, 150)} … ${flat.slice(-450)}` : flat
+    }
+
+    const recordLayout = (viewport: HTMLElement) => {
+      const layout = (
+        [
+          ...viewport.querySelectorAll('[data-slot="aui_user-message-root"], [data-slot="aui_assistant-message-root"]')
+        ] as HTMLElement[]
+      )
+        .slice(-6)
+        .map(el => `${el.getAttribute('data-message-id') ?? '?'}=${[...new Set(el.innerText.match(re) ?? [])].join('+')}`)
+
+      const key = `${location.hash}|${layout.join('|')}`
+
+      if (key !== lastLayout) {
+        lastLayout = key
+        timeline.push({ at: Math.round(performance.now()), route: location.hash, layout })
+        timeline.splice(0, Math.max(0, timeline.length - 8))
+      }
+    }
 
     const orderViolation = (detail: string, text: string) => {
       if (w.__coreSampler.order.length < 20) {
@@ -82,7 +110,8 @@ export async function installDuplicateSampler(page: Page): Promise<void> {
           detail,
           at: Math.round(performance.now()),
           route: location.hash,
-          text: text.replace(/\s+/g, ' ').slice(0, 600)
+          text: seen(text),
+          ...(w.__coreSampler.order.length === 0 ? { timeline: [...timeline] } : {})
         })
       }
     }
@@ -98,6 +127,7 @@ export async function installDuplicateSampler(page: Page): Promise<void> {
 
         const text = viewport.innerText
         w.__coreSampler.samples++
+        recordLayout(viewport)
         const counts = new Map<string, number>()
 
         for (const match of text.match(re) ?? []) {
@@ -143,7 +173,8 @@ export async function installDuplicateSampler(page: Page): Promise<void> {
               at: Math.round(performance.now()),
               route: location.hash,
               bubbles,
-              text: text.replace(/\s+/g, ' ').slice(0, 600)
+              text: seen(text),
+              ...(w.__coreSampler.violations.length === 0 ? { timeline: [...timeline] } : {})
             })
           }
         }

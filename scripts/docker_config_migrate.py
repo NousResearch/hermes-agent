@@ -13,7 +13,7 @@ from hermes_cli.config import (
     get_env_path,
     migrate_config,
 )
-from hermes_cli.config_version_stamp import check_config_version, read_config_version_stamp
+from hermes_cli.config_version_stamp import check_config_version, read_config_version_stamp, stamp_missing_config
 from hermes_cli.config_backups import backup_config, list_config_backups
 from hermes_cli.config_migrations import (
     SUPPORT_FLOOR_VERSION,
@@ -50,7 +50,9 @@ def main() -> int:
 
     # Strict read: malformed YAML or a non-mapping root is left alone with a warning and the
     # boot continues, instead of running the backup/migrate dance that migrate_config() would
-    # refuse anyway.
+    # refuse anyway. A missing config.yaml reads as current, so its legacy browser settings get their
+    # first stamp before that read.
+    stamp_missing_config()
     try:
         stamp, latest_ver = read_config_version_stamp(raise_on_parse_error=True)
     except InvalidUserConfigError as exc:
@@ -80,7 +82,7 @@ def main() -> int:
         f"backups: {backup_text}"
     )
     try:
-        migrate_config(interactive=False, quiet=False)
+        results = migrate_config(interactive=False, quiet=False) or {}
     except Exception:
         restored = _restore_backups(backups)
         if restored:
@@ -91,6 +93,12 @@ def main() -> int:
         raise
 
     post_ver, _ = check_config_version()
+    failed = results.get("failed_step")
+    if failed is not None:
+        # The steps before it stay; the next container start retries the rest.
+        print(f"[config-migrate] WARNING: migration stopped at v{failed}; kept {current_ver} -> {post_ver}",
+              file=sys.stderr)
+        return 0
     if post_ver < latest_ver:
         restored = _restore_backups(backups)
         restored_text = ", ".join(str(path) for path in restored) if restored else "none"

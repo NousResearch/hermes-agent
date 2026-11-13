@@ -33,6 +33,13 @@ def test_shipped_catalog_entries_are_all_valid_and_pinned():
     assert all(e.install_identifier.startswith(e.repo) for e in entries)
 
 
+
+def test_verified_tier_survives_load_and_unknown_tier_is_rejected(tmp_path):
+    """``tier`` is official/verified/community (Nous-granted badges); anything else skips the entry."""
+    (tmp_path / "a.yaml").write_text(yaml.safe_dump(_entry("vendor", tier="verified")))
+    (tmp_path / "b.yaml").write_text(yaml.safe_dump(_entry("bogus", tier="platinum")))
+    assert {e.name: e.tier for e in pc.load_catalog(tmp_path)} == {"vendor": "verified"}
+
 def test_category_defaults_to_other_and_unknown_category_is_rejected(tmp_path):
     """``category`` is the browse shelf: absent → ``desktop``; a value outside CATALOG_CATEGORIES is an
     invalid entry (skipped with a warning) so a typo cannot create a phantom shelf on the site."""
@@ -56,6 +63,19 @@ def test_version_and_image_are_cosmetic_and_offhost_images_are_dropped(tmp_path)
     assert entries["labelled"].version == "1.4.0" and entries["labelled"].image == "https://raw.githubusercontent.com/owner/repo/38fe0fb53eff98d477f807432e965429e665ca33/banner.png"
     assert entries["offhost"].version == "" and entries["offhost"].image == ""
     assert entries["labelled"].to_dict()["version"] == "1.4.0"
+
+
+def test_non_https_docs_url_is_dropped_on_load_and_live_parse(tmp_path):
+    """docs_url becomes the dashboard's docs <a href>; the live catalog JSON is raw mappings the client
+    re-validates, so a javascript:/data: value must be dropped here (the entry itself survives)."""
+    (tmp_path / "a.yaml").write_text(yaml.safe_dump(_entry("scripted", docs_url="javascript:alert(document.domain)")))
+    (tmp_path / "b.yaml").write_text(yaml.safe_dump(_entry("linked", docs_url="https://example.com/docs")))
+    entries = {e.name: e for e in pc.load_catalog(tmp_path)}
+    assert entries["scripted"].docs_url == "" and entries["scripted"].to_dict()["docs_url"] == ""
+    assert entries["linked"].docs_url == "https://example.com/docs"
+    for bad in ("data:text/html,<script>alert(1)</script>", " JavaScript:alert(1)", "http://example.com/docs", "https://["):
+        entry = pc.entry_from_mapping(_entry("live", docs_url=bad), "live#0")
+        assert entry is not None and entry.docs_url == ""
 
 
 def test_screenshots_and_readme_are_parsed_and_readme_defaults_on(tmp_path):
@@ -183,6 +203,41 @@ def test_live_cache_write_never_truncates_the_previous_copy(tmp_path, monkeypatc
     pc.fetch_live_catalog(force=True)  # the failed write is swallowed like any other fetch failure
     assert cache.read_text() == previous
     assert not list(cache.parent.glob("*.tmp*"))  # no leftover temp file either
+
+
+def _serve(monkeypatch, doc: dict):
+    class _Resp:
+        content = json.dumps(doc).encode()
+        def raise_for_status(self): pass
+        def json(self): return json.loads(self.content)
+
+    import httpx
+    monkeypatch.setattr(httpx, "get", lambda *a, **k: _Resp())
+    monkeypatch.setattr(pc, "_live_fetch_failed_until", 0.0)
+
+
+def test_a_catalog_doc_past_two_mib_is_still_accepted(tmp_path, monkeypatch):
+    """The published doc crossed 2 MiB on 2026-11-09 (1,268 entries). A 2 MiB cap made every client drop
+    the live doc and install its in-tree pin instead, so catalog bumps merged after the client's own copy
+    never reached `hermes plugins install <name>`. A doc of today's size and shape must be taken and cached."""
+    cache = _fresh_cache(tmp_path, monkeypatch, {"entries": [], "removed": []})
+    cache.unlink()
+    entries = [_entry(f"plugin-{i}", description="x" * 1600, version="1.0.0") for i in range(1400)]
+    _serve(monkeypatch, {"generated_at": "2026-11-09T10:18:17Z", "entries": entries, "removed": []})
+    doc = pc.fetch_live_catalog(force=True)
+    assert doc is not None and len(doc["entries"]) == 1400
+    assert len(json.dumps(doc).encode()) > 2 * 1024 * 1024
+    assert json.loads(cache.read_text())["generated_at"] == "2026-11-09T10:18:17Z"
+
+
+def test_a_catalog_doc_over_the_cap_is_refused(tmp_path, monkeypatch):
+    """The cap still bounds a broken or hostile response: an oversized doc reads as a failed fetch."""
+    cache = _fresh_cache(tmp_path, monkeypatch, {"entries": [], "removed": []})
+    cache.unlink()
+    _serve(monkeypatch, {"entries": [_entry("big", description="x" * 4096)], "removed": []})
+    monkeypatch.setattr(pc, "_MAX_LIVE_BYTES", 1024)
+    assert pc.fetch_live_catalog(force=True) is None
+    assert not cache.exists()
 
 
 def test_curated_fields_the_published_doc_lacks_come_from_the_checkout(tmp_path, monkeypatch):

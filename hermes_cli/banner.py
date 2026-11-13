@@ -128,8 +128,8 @@ def get_available_skills() -> dict[str, list[str]]:
     ``prefetch_banner_data()`` pays it off-thread. A failed scan yields ``{}`` and is not cached.
     """
     def _scan():
-        from tools.skills_tool import _find_all_skills
-        return _find_all_skills()  # already filtered
+        from tools.skills_tool import find_all_skills
+        return find_all_skills()  # already filtered
 
     def _compute():
         all_skills = _quiet(_scan)
@@ -596,30 +596,18 @@ def _active_profile_name() -> Optional[str]:
     return get_active_profile_name()
 
 
-def _route_model_for_banner(provider: Any) -> str:
-    """The model the resolved route will actually serve when config names none: today only the Nous
-    free tier (welcome host -> ``nous/welcome``). Read from the boot record and local auth state;
-    no network. Empty when nothing resolves, so the caller keeps its "no model configured" line."""
-    if (provider or "auto").strip().lower() not in ("auto", "nous"):
-        return ""
-    from hermes_cli.anon_auth import GUEST_MODEL, free_tier_route
-    return GUEST_MODEL if free_tier_route() else ""
-
-
 def _banner_left_lines(model: str, cwd: str, session_id, context_length, provider, *, accent: str, dim: str,
-                       context_pinned: bool = False) -> list:
+                       context_pinned: bool = False, context_marker: str = "") -> list:
     """Model / cwd / session lines under the hero art. ``context_pinned`` marks a
-    ``model.context_length`` pin so the user can tell it apart from provider metadata (#66168)."""
+    ``model.context_length`` pin so the user can tell it apart from provider metadata (#66168);
+    ``context_marker`` (``"pinned"`` / ``"fallback"``, agent.context_pin) also marks a defaulted window."""
     def _dim_sep(label: str) -> str:
         return f" [dim {dim}]·[/] [dim {dim}]{label}[/]"
     lines = []
-    pin = " (pinned)" if context_pinned else ""
+    marker = context_marker or ("pinned" if context_pinned else "")
+    pin = f" ({marker})" if marker else ""
     ctx_str = _dim_sep(f"{_format_context_length(context_length)} context{pin}") if context_length else ""
     nous_str = _dim_sep("Nous Research")
-    if not (model or "").strip():
-        # Credentials resolve lazily on the first message; the banner prints first. Ask the route
-        # the same question so a fresh free-tier install shows its model, not a red "unconfigured".
-        model = _quiet(lambda: _route_model_for_banner(provider), "") or model
     if (provider or "").strip().lower() == "moa":
         # MoA virtual provider: ``model`` is a preset name; show it with its aggregator.
         agg_label = _quiet(lambda: _moa_aggregator_label(model), "")
@@ -688,7 +676,7 @@ def build_welcome_banner(
     console: "Console", model: str, cwd: str, tools: list[dict] | None = None, enabled_toolsets: list[str] | None = None,
     session_id: str | None = None, get_toolset_for_tool=None, context_length: int | None = None, provider: str | None = None,
     availability: dict[str, Any] | None = None, skills_by_category: dict[str, list[str]] | None = None,
-    context_pinned: bool = False,
+    context_pinned: bool = False, context_marker: str = "",
 ):
     """Build and print a welcome banner with caduceus on left and info on right.
 
@@ -713,7 +701,7 @@ def build_welcome_banner(
     _bskin = _quiet(_active_skin)
     left_lines = ["", getattr(_bskin, "banner_hero", None) or HERMES_CADUCEUS, ""]
     left_lines += _banner_left_lines(model, cwd, session_id, context_length, provider, accent=accent, dim=dim,
-                                     context_pinned=context_pinned)
+                                     context_pinned=context_pinned, context_marker=context_marker)
     right_lines = _banner_tool_lines(
         tools, availability.get("unavailable_toolsets", []), get_toolset_for_tool,
         lazy_tools=set(availability.get("lazy_tools", [])), disabled_tools=set(availability.get("disabled_tools", [])),

@@ -686,6 +686,18 @@ def _counts_as_holder(args: list[str], any_git: bool) -> bool:
     return sub not in _NEVER_LOCKS and (any_git or sub not in _READER_GIT)
 
 
+def _exited(pid_dir: Path) -> bool:
+    """The process has released its memory (exiting, or a zombie) or is gone.
+
+    The kernel drops its fds before its cwd, and refuses its cwd/environ once it is exiting, so an
+    unreadable cwd there is not a hidden git: counting it made any git exiting anywhere on a busy
+    machine postpone the repair. A live process keeps a non-empty argv."""
+    try:
+        return not (pid_dir / "cmdline").read_bytes()
+    except OSError:
+        return not pid_dir.exists()
+
+
 def _held_open_proc(path: Path, root: Path | None, any_git: bool) -> _Holder | bool | None:
     proc = Path("/proc")
     target = os.path.realpath(path)
@@ -734,6 +746,8 @@ def _held_open_proc(path: Path, root: Path | None, any_git: bool) -> _Holder | b
             env = dict(entry.decode("utf-8", "replace").partition("=")[::2]
                        for entry in (pid_dir / "environ").read_bytes().split(b"\0") if entry)
         except OSError:
+            if _exited(pid_dir):
+                continue  # exited since its argv was read: no cwd/environ left, and it holds nothing
             if git_works_in(args, None, None, places):
                 return _Holder(f"pid {pid_dir.name} ({name(args, pid_dir)})")
             if pid_dir.exists() and _could_write(uid, path.parent):
@@ -857,14 +871,13 @@ def _index_lock_holder(git_dir: Path, root: Path | None) -> str:
     return f"a running git ({held})" if isinstance(held, _Holder) else "a running git"
 
 
-def _release_dead_index_lock(git_dir: Path, root: Path | None = None, *, any_git: bool = False) -> bool:
-    """Drop a killed git's ``index.lock`` (it refuses every git command) once its owner is PROVEN gone.
+def _release_dead_lock(lock: Path, root: Path | None = None, *, any_git: bool = False) -> bool:
+    """Drop a killed git's ``lock`` (``index.lock`` refuses every git command) once its owner is PROVEN gone.
 
     False while a live git may hold it, or when this platform cannot prove it dead: the caller then
     keeps the interrupted-pull marker, so the next launch tries again instead of a rollback being lost.
     ``any_git``: every git working in ``root`` keeps it, readers included (:func:`_held_open`).
     """
-    lock = git_dir / "index.lock"
     deadline = time.monotonic() + 5
     while lock.exists():
         held = None if sys.platform == "win32" else _held_open(lock, root, any_git=any_git)
@@ -1121,7 +1134,7 @@ def _judge_index_lock(fields: dict[str, str], marker: Path, root: Path, *,
     # a live `git commit` in the editor holds it with its fd closed, which only Linux can still see.
     known_foreign = bool(fields.get("foreign_lock", "").strip()) and \
         fields["foreign_lock"].strip() == _lock_identity(lock)
-    index_free = foreign_lock or (not known_foreign and _release_dead_index_lock(git_dir, root))
+    index_free = foreign_lock or (not known_foreign and _release_dead_lock(lock, root))
     return foreign_lock, known_foreign, index_free
 
 
@@ -1266,7 +1279,7 @@ def _redo_rollback_head(git, git_dir: Path, root: Path, pre: str, mode: str, *, 
     git that exited in this very process (``after_failure``) a lock is never ours to judge.
     """
     lock = git_dir / "index.lock"
-    if lock.exists() and (after_failure or not _release_dead_index_lock(git_dir, root)):
+    if lock.exists() and (after_failure or not _release_dead_lock(lock, root)):
         return f"{_index_lock_holder(git_dir, root)} may still hold .git/index.lock"
     if mode == "detach":
         moved = git("update-ref", "--no-deref", "HEAD", pre)

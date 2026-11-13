@@ -13,6 +13,8 @@ except ImportError:
 
 from gateway.platforms.api_server_room_grants import _json_error
 
+_ROOM_ONLY_FIELDS = frozenset({"hosted_room_dispatch", "_room_execution_policy"})
+
 
 async def _ensure_hosted_member_session(self, dispatch: Any) -> str:
     """Create or verify the target's canonical hidden group session. The ``Group: <room_id>``
@@ -26,6 +28,18 @@ async def _ensure_hosted_member_session(self, dispatch: Any) -> str:
         f"{dispatch.home_install_id}\0{dispatch.room_id}\0"
         f"{dispatch.member_id}\0{dispatch.target_profile}")
     session_id = f"room_{hashlib.sha256(seed.encode()).hexdigest()[:32]}"
+    from gateway.session_authorities import active_authority
+    authority = active_authority(self.gateway_runner)
+    if authority is not None:
+        from gateway.session_api import bind_api_steps, hosted_member_session, run_steps_off_loop
+        if db is not authority.db:
+            raise RuntimeError('profile_mismatch')
+        # A member session the user deleted stays deleted: the room moves to its next generation.
+        identity = [dispatch.home_install_id, dispatch.room_id, dispatch.member_id, dispatch.target_profile]
+        session_id = (await asyncio.to_thread(hosted_member_session, authority.db, identity))[1]
+        # The binding transaction runs off the owner loop, in admission order (as API admission does).
+        return (await run_steps_off_loop(authority, bind_api_steps(
+            authority, session_id, hosted_dispatch=dispatch.as_mapping()))).session_id
 
     def atomic(conn):
         row = conn.execute("SELECT id, title, source FROM sessions WHERE id=?", (session_id,)).fetchone()
@@ -65,6 +79,12 @@ async def _normalize_room_dispatch(
     """Validate and normalize a scoped RoomLink dispatch request."""
     _openai_error, room_token = _api_server._openai_error, self._room_grant_token(request)
     if not room_token:
+        # Room fields are server-built from a verified grant; a caller-supplied copy would let an
+        # API key choose its own toolsets, approval mode and turn limit.
+        if isinstance(body, dict) and _ROOM_ONLY_FIELDS & set(body):
+            return body, _json_error(
+                _openai_error, "hosted_room_dispatch and _room_execution_policy require a room grant.",
+                code="room_grant_required", status=403)
         return body, None
     if not isinstance(body, dict) or set(body) - {"input", "hosted_room_dispatch"}:
         return body, _json_error(
@@ -74,10 +94,10 @@ async def _normalize_room_dispatch(
         from gateway import hosted_rooms
         from gateway.hosted_room_peer import GatewayRoomCatalog, HostedMemberDispatch, verify_room_grant
         from gateway.hosted_room_execution_policy import RoomExecutionPolicy
-        from gateway.platforms.api_server_room_grants import _local_room_catalog
+        from gateway.platforms.api_server_room_grants import _local_room_catalog, request_target_profile
         dispatch = HostedMemberDispatch.from_mapping(body.get("hosted_room_dispatch"))
         verify_room_grant(self._room_grant_secret(), room_token, dispatch, permission="dispatch")
-        active_profile = _api_server._api_request_profile.get() or "default"
+        active_profile = request_target_profile(_api_server._api_request_profile)
         local_install = hosted_rooms.local_authority_gateway_id()
         if dispatch.target_profile != active_profile or dispatch.target_install_id != local_install:
             raise ValueError("room dispatch target does not match this profile")

@@ -20,7 +20,7 @@ def _context(
     *, name: str = "fixture-plugin", key: str = "", namespace: str = ""
 ) -> PluginContext:
     return PluginContext(
-        PluginManifest(name=name, key=key, skill_namespace=namespace),
+        PluginManifest(name=name, key=key, data_namespace=namespace),
         PluginManager(),
     )
 

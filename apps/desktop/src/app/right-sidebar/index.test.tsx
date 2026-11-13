@@ -66,7 +66,7 @@ describe('RightSidebarPane', () => {
     render(<RightSidebarPane onActivateFile={vi.fn()} onActivateFolder={vi.fn()} />)
 
     expect(await screen.findByRole('button', { name: /^New File/ })).toBeTruthy()
-    expect(screen.queryByRole('button', { name: /^New Folder/ })).toBeNull()
+    expect(screen.getByRole('button', { name: /^New Folder/ })).toBeTruthy()
   })
 
   it('does not read a retained cwd while it belongs to a previous session', async () => {
@@ -142,5 +142,22 @@ describe('RightSidebarPane', () => {
       expect(readDir).toHaveBeenCalledWith('/repo-tile')
       expect(repoStatus).toHaveBeenCalledWith('/repo-tile')
     })
+  })
+
+  // #55358: the collapse-all glyph must be the symmetric three-line one from
+  // the codicon vocabulary. `collapse-all` draws two offset rounded squares —
+  // at 13px its top edge reads as an asymmetric hamburger line. The header
+  // action group must also stay on the shared Codicon primitive (DESIGN.md
+  // iconography: no third icon set / hand-rolled SVGs inside a control group).
+  it('renders the collapse-all affordance with the symmetric three-bars glyph', async () => {
+    setCurrentCwd('/repo')
+
+    render(<RightSidebarPane onActivateFile={vi.fn()} onActivateFolder={vi.fn()} />)
+
+    const collapse = await screen.findByRole('button', { name: 'Collapse all folders' })
+    const glyph = collapse.querySelector('.codicon')
+    expect(glyph).not.toBeNull()
+    expect(glyph?.classList.contains('codicon-three-bars')).toBe(true)
+    expect(collapse.querySelector('svg')).toBeNull()
   })
 })

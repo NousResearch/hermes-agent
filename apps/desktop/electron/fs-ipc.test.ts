@@ -8,7 +8,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterAll, afterEach, describe, expect, it, vi } from 'vitest'
 
 const electron = vi.hoisted(() => ({
   handlers: new Map<string, (...args: unknown[]) => unknown>(),
@@ -16,6 +16,9 @@ const electron = vi.hoisted(() => ({
 }))
 
 vi.mock('electron', () => ({
+  app: { getPath: () => os.tmpdir() },
+  BrowserWindow: { fromWebContents: () => null },
+  dialog: { showOpenDialog: vi.fn() },
   ipcMain: {
     handle: (channel: string, handler: (...args: unknown[]) => unknown) => electron.handlers.set(channel, handler)
   },
@@ -34,6 +37,7 @@ vi.mock('./desktop-plugins-root', () => ({
 }))
 
 import { registerFsIpc } from './fs-ipc'
+import { resolveRequestedPathForIpc } from './hardening'
 
 const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-fs-ipc-'))
 
@@ -42,12 +46,70 @@ registerFsIpc({
   readActiveDesktopProfile: () => 'launch-profile',
   // `~/` resolves under the scratch dir so tilde paths can be exercised.
   expandUserPath: value => (value.startsWith('~/') ? path.join(scratch, value.slice(2)) : value),
-  resolveRequestedPathForIpc: value => value,
+  resolveRequestedPathForIpc,
   directoryExists: value => fs.existsSync(value),
   resolveGitBinary: () => 'git'
 })
 
 const reveal = (target: string) => electron.handlers.get('hermes:fs:reveal')!({}, target)
+
+afterAll(() => fs.rmSync(scratch, { recursive: true, force: true }))
+
+describe('hermes:fs:createDirectoryExclusive', () => {
+  const create = (target: unknown) => electron.handlers.get('hermes:fs:createDirectoryExclusive')!({}, target)
+
+  it('creates exactly one directory, including tilde and file URL paths', async () => {
+    const target = path.join(scratch, 'new folder')
+    await expect(create('~/new folder')).resolves.toEqual({ path: target })
+    expect(fs.statSync(target).isDirectory()).toBe(true)
+    const { pathToFileURL } = await import('node:url')
+    const urlTarget = path.join(scratch, 'url folder')
+    await expect(create(pathToFileURL(urlTarget).href)).resolves.toEqual({ path: urlTarget })
+  })
+
+  it('never replaces existing directories, files or symlinks, and never creates parents', async () => {
+    const dir = path.join(scratch, 'existing-dir')
+    const file = path.join(scratch, 'existing-file')
+    fs.mkdirSync(dir)
+    fs.writeFileSync(file, 'keep')
+
+    for (const target of [dir, file]) {await expect(create(target)).rejects.toThrow(/already exists/)}
+    expect(fs.readFileSync(file, 'utf8')).toBe('keep')
+    await expect(create(path.join(scratch, 'missing', 'child'))).rejects.toThrow()
+    expect(fs.existsSync(path.join(scratch, 'missing'))).toBe(false)
+
+    if (process.platform !== 'win32') {
+      const link = path.join(scratch, 'dangling-link')
+      fs.symlinkSync(path.join(scratch, 'nowhere'), link)
+      await expect(create(link)).rejects.toThrow(/already exists/)
+      expect(fs.lstatSync(link).isSymbolicLink()).toBe(true)
+    }
+  })
+
+  it('rejects invalid inputs and device paths without creating anything', async () => {
+    for (const target of ['', '  ', null, '\\\\?\\C:\\secret']) {
+      await expect(create(target)).rejects.toThrow()
+    }
+  })
+
+  it('propagates filesystem errors other than collisions', async () => {
+    const failure = Object.assign(new Error('permission denied'), { code: 'EACCES' })
+    const mkdir = vi.spyOn(fs.promises, 'mkdir').mockRejectedValueOnce(failure)
+
+    try {
+      await expect(create(path.join(scratch, 'denied'))).rejects.toBe(failure)
+    } finally {
+      mkdir.mockRestore()
+    }
+  })
+
+  it('lets only one concurrent creator succeed', async () => {
+    const target = path.join(scratch, 'raced')
+    const results = await Promise.allSettled([create(target), create(target)])
+    expect(results.filter(result => result.status === 'fulfilled')).toHaveLength(1)
+    expect(results.filter(result => result.status === 'rejected')).toHaveLength(1)
+  })
+})
 
 afterEach(() => {
   electron.showItemInFolder.mockClear()

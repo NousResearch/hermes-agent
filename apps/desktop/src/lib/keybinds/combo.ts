@@ -139,6 +139,14 @@ export function comboFromEvent(event: KeyboardEvent): string | null {
     return null
   }
 
+  // AltGr typing a character. Windows reports it as Ctrl+Alt; Linux can
+  // report Alt with AltGraph but no Ctrl, which must not read as a plain
+  // Alt chord (the browser-tab defaults are Alt+letter off macOS). Firefox on
+  // macOS reports every Option press as AltGraph, so Option chords stay chords.
+  if (!IS_MAC && event.altKey && !event.ctrlKey && !event.metaKey && event.getModifierState?.('AltGraph')) {
+    return null
+  }
+
   const base = baseKeyFromEventKey(event.key, event.shiftKey) ?? baseKeyFromCode(event.code)
 
   if (!base) {
@@ -230,6 +238,11 @@ export function formatModifierToken(mod: string): string {
 export function comboTokens(combo: string): string[] {
   const parts = combo.split('+')
   const base = parts.pop() ?? ''
+
+  // Canonical order keeps `mod` first; macOS writes Control before Command (⌃⌘N).
+  if (IS_MAC && parts[0] === 'mod' && parts[1] === 'ctrl') {
+    parts.splice(0, 2, 'ctrl', 'mod')
+  }
 
   return [...parts.map(formatModifierToken), labelForBase(base)]
 }

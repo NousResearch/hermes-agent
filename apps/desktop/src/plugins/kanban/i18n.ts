@@ -174,6 +174,11 @@ type KanbanMessages = {
   /** Tooltip on the page-header trigger — names the ACTION, since the visible
    *  text is the board's own name and reads as a static label otherwise. */
   switchBoard: string
+  pinBoard: string
+  unpinBoard: string
+  /** Accessible name of the pinned-tab strip. */
+  pinnedBoards: string
+  pinnedBoardsHint: string
   newBoardDots: string
   // Menu labels are bare verbs — the board they act on is the one named in the
   // switcher's trigger. The nouns come back for the native file-dialog and
@@ -406,6 +411,10 @@ export const en: KanbanMessages = {
   board: 'Board',
   newBoard: 'New board',
   switchBoard: 'Switch board',
+  pinBoard: 'Pin board',
+  unpinBoard: 'Unpin board',
+  pinnedBoards: 'Pinned boards',
+  pinnedBoardsHint: 'Drag to reorder, or press Alt + Left/Right',
   newBoardDots: 'New board…',
   exportDots: 'Export…',
   importDots: 'Import…',
@@ -633,6 +642,10 @@ const ja: KanbanMessages = {
   board: 'ボード',
   newBoard: '新しいボード',
   switchBoard: 'ボードを切り替え',
+  pinBoard: 'ボードを固定',
+  unpinBoard: 'ボードの固定を解除',
+  pinnedBoards: '固定したボード',
+  pinnedBoardsHint: 'ドラッグ、または Alt + 左右キーで並べ替え',
   newBoardDots: '新しいボード…',
   exportDots: 'エクスポート…',
   importDots: 'インポート…',
@@ -858,6 +871,10 @@ const zh: KanbanMessages = {
   board: '面板',
   newBoard: '新建面板',
   switchBoard: '切换面板',
+  pinBoard: '固定面板',
+  unpinBoard: '取消固定面板',
+  pinnedBoards: '已固定面板',
+  pinnedBoardsHint: '拖动或按 Alt + 左/右方向键重新排序',
   newBoardDots: '新建面板…',
   exportDots: '导出…',
   importDots: '导入…',
@@ -1082,6 +1099,10 @@ const zhHant: KanbanMessages = {
   board: '面板',
   newBoard: '新增面板',
   switchBoard: '切換面板',
+  pinBoard: '釘選面板',
+  unpinBoard: '取消釘選面板',
+  pinnedBoards: '已釘選面板',
+  pinnedBoardsHint: '拖曳或按 Alt + 左/右方向鍵重新排序',
   newBoardDots: '新增面板…',
   exportDots: '匯出…',
   importDots: '匯入…',

@@ -1,11 +1,9 @@
-// Type declarations for the get-windows optionalDependency.
+// Type declarations for get-windows.
 //
-// get-windows ships no bundled types and is an optionalDependency. `npm ci`
-// can skip it when its native install fails, including Linux and Windows ARM64
-// where 9.3.0 has no prebuilt, so it can legitimately be absent from
-// node_modules. Declaring the module here keeps typecheck independent of
-// whether the package installed. The runtime import in window-below.ts
-// degrades to null when it is absent.
+// get-windows ships no bundled types. An interrupted install can still leave it
+// absent or half-extracted, so declaring the module here keeps typecheck
+// independent of whether the package installed. The runtime import in
+// window-below.ts degrades to a failure note when it is absent.
 
 declare module 'get-windows' {
   export interface GetWindowsWindow {

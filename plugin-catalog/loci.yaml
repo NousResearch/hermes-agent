@@ -1,0 +1,19 @@
+name: loci
+title: Loci
+repo: https://github.com/AskLoci/loci-plugins
+sha: 51dca9ab524b7a7953292d2d70ace87bf97ed5ec
+subdir: loci-hermes
+version: "0.1.0"
+description: "Local models on your Mac for file summaries, document extraction, folder search, audio transcription and batch processing alongside Hermes. Disclosure — connects to the separately installed Loci Mac app's local MCP server (127.0.0.1:5624) using the token Hermes reads from Loci's discovery file (~/Library/Application Support/LociRust/agent-api.json); the live tool set is served by the app and is not covered by the pinned sha. Loci tools read the files and folders you authorize, write extraction outputs, keep a persistent local search index, and can download models; the setup skill can guide downloading and installing the Loci app (askloci.ai DMG, SHA-256 pinned). The server is marked untrusted, so Hermes asks before write-capable tools and refuses them in unattended runs."
+maintainer: AskLoci
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+platforms: [macos]
+docs_url: https://github.com/AskLoci/loci-plugins/tree/51dca9ab524b7a7953292d2d70ace87bf97ed5ec/loci-hermes
+readme: true
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

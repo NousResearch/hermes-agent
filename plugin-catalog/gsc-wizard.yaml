@@ -1,0 +1,18 @@
+name: gsc-wizard
+title: GSC Wizard
+repo: https://github.com/gscwizard/hermes-plugin
+sha: eea7aceb947cbe503cfe1b495e5e6765d265b8be
+version: "1.1.2"
+description: "Google Search Console, Bing Webmaster, Google Analytics 4, Merchant Center and Yandex Webmaster through GSC Wizard's hosted MCP server (Streamable HTTP at https://mcp.gscwizard.com/mcp, OAuth sign-in, no keys in config): 130+ tools for search analytics, ranking changes, anomaly and change-point detection, content decay, cannibalization, CTR curves, URL inspection and indexing tracking, sitemaps, IndexNow, Core Web Vitals, migrations, forecasts, GA4 reports and Merchant Center listings. Bundles 34 workflow skills (site audit, traffic drop, weekly report, quick wins, content decay, indexing health and more). Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only. Disclosure — every tool call goes to GSC Wizard's hosted MCP server (mcp.gscwizard.com), which reads the Google Search Console, GA4, Merchant Center, Bing Webmaster and Yandex Webmaster accounts you connected to GSC Wizard and logs each call (tool, property, status, duration; arguments of write calls only) for 7 days; the tool set is served by that server at runtime and is not covered by the pinned commit. Write tools (site/tag management, IndexNow and sitemap submission, URL inspection batches, shared reports and client access, redirect mappings, deletes) exist; the package marks the server untrusted, so Hermes asks before every tool the server does not mark read-only and refuses them in unattended runs. Sign-in runs the pinned mcp-remote@0.15.2 through npx (Node.js 20.18.1+), which opens a browser and a localhost callback port on first use and stores OAuth tokens under ~/.mcp-auth. Requires a GSC Wizard paid plan or trial."
+maintainer: GSC Wizard
+tier: community
+category: tools
+docs_url: https://github.com/gscwizard/hermes-plugin#readme
+requires_hermes: ">=0.21.6"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

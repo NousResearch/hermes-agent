@@ -6,8 +6,9 @@
  * shows through:
  *
  * - 'clear' — the main process maps the lever to native window opacity
- *   (`setOpacity`), so the whole window fades, text included. macOS + Windows;
- *   `setOpacity` is a no-op on Linux.
+ *   (`setOpacity`), so the whole window fades, text included. macOS + Windows
+ *   only: Linux hides the setting, so it must never fade a Linux window, even
+ *   though Electron 44 does honour `setOpacity` there.
  * - 'glass' — the window stays fully opaque at the native level and the
  *   renderer thins its page surfaces instead, letting a platform material
  *   read as a matte blur while text keeps full contrast. macOS rides
@@ -194,10 +195,9 @@ export function clampIntensity(value: unknown): number {
 }
 
 /**
- * Whether this OS can do ANY translucency. Clear rides `setOpacity`, which
- * Electron documents as doing nothing on Linux, and glass needs a native
- * material Linux does not have — so the whole setting is dead there and the
- * row should not be shown at all.
+ * Whether this OS offers translucency at all. Glass needs a native material
+ * Linux does not have, so Settings hides the row there — and a hidden setting
+ * must also have no effect, so both processes resolve it to off on Linux.
  */
 export function translucencySupportedOn(platform: string): boolean {
   return platform === 'darwin' || platform === 'win32'

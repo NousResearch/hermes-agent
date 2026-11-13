@@ -1,6 +1,6 @@
 // Replay scheduling pressure without changing Date.now() results:
 // NODE_OPTIONS="--require=$PWD/evals/desktop-reap-clock-pressure.cjs" \
-//   npm run test:desktop:platforms -w apps/desktop -- electron/backend-ownership.test.ts
+//   pnpm --dir apps/desktop run test:desktop:platforms electron/backend-ownership.test.ts
 // The old 1ms fixtures can expire before their first record is processed.
 const now = Date.now.bind(Date)
 const gate = new Int32Array(new SharedArrayBuffer(4))

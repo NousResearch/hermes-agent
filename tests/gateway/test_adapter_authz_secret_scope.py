@@ -98,7 +98,7 @@ _GATES = [
      lambda: _email()._sender_accepted("bot2-admin@example.org", {"sender_authenticated": True}),
      False, True),
     ("qqbot.open_dm", {"QQ_ALLOW_ALL_USERS": "true"},
-     lambda: __import__("gateway.platforms.qqbot.adapter", fromlist=["QQAdapter"]).QQAdapter._open_dm_opted_in(object.__new__(__import__("gateway.platforms.qqbot.adapter", fromlist=["QQAdapter"]).QQAdapter)),
+     lambda: __import__("plugins.platforms.qqbot.adapter", fromlist=["QQAdapter"]).QQAdapter._open_dm_opted_in(object.__new__(__import__("plugins.platforms.qqbot.adapter", fromlist=["QQAdapter"]).QQAdapter)),
      False, True),
     ("whatsapp.open_dm", {"GATEWAY_ALLOW_ALL_USERS": "true"},
      lambda: __import__("gateway.platforms.whatsapp_common", fromlist=["WhatsAppBehaviorMixin"]).WhatsAppBehaviorMixin._open_dm_opted_in(_whatsapp()),

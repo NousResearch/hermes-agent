@@ -364,7 +364,7 @@ export async function openLogDir(): Promise<void> {
 // Dev-only isolated preview ("fake boot")
 //
 // Synthesises the manifest + stage/log events Rust normally streams, so the
-// whole reskin can be reviewed in a plain browser (`npm run dev`):
+// whole reskin can be reviewed in a plain browser (`pnpm run dev`):
 //   ?fake=install   welcome → [ INSTALL ] → success
 //   ?fake=update    auto-runs the granular update flow
 //   ?fake=failure   install that fails partway

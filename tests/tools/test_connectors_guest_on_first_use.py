@@ -19,9 +19,7 @@ from tests.hermes_cli.anon_portal import install_portal
 
 @pytest.fixture
 def nas(monkeypatch, tmp_path):
-    fake = install_portal(monkeypatch, tmp_path)
-    monkeypatch.delenv("HERMES_GUEST_ONBOARDING")
-    return fake
+    return install_portal(monkeypatch, tmp_path)
 
 
 def test_first_hosted_action_creates_one_connectors_only_guest(nas, monkeypatch):

@@ -343,9 +343,9 @@ def test_search_limit_caps_the_group_across_both_legs_and_counts_total():
     matches = out["results"][0]["matches"]
     assert len(matches) == 3  # limit is the per-query cap across BOTH legs
     assert all(m.startswith("connectors__") for m in matches)
-    # total_available counts returned remote tools on top of the local catalog
-    # (empty here: the fake def is not registry-backed in this test env).
-    assert out["total_available"] == 3
+    # total_available counts returned remote tools on top of the local catalog, which holds
+    # manage_connections (deferred by default); the fake MCP def is not registry-backed here.
+    assert out["total_available"] == len(matches) + 1
 
 
 def test_search_drops_remote_group_with_mismatched_use_case_echo():
@@ -602,6 +602,8 @@ class _RecordingTransport:
 
     def request(self, method, url, *, headers=None, json=None, timeout=None):
         self.requests.append({"method": method, "url": url, "json": json})
+        if url.endswith("/schemas"):  # the file-input lookup on a schema-cache miss
+            return _FakeResponse({"schemas": {}})
         call = (json or {}).get("call") or {}
         return _FakeResponse(
             {"result": {"connector": call.get("connector"), "tool": call.get("tool"), "data": "ok"}})
@@ -618,7 +620,7 @@ def _recording_client_factory(transport):
 
 
 def _sent_tools(transport):
-    return [request["json"]["call"] for request in transport.requests]
+    return [request["json"]["call"] for request in transport.requests if request["url"].endswith("/execute")]
 
 
 def test_hook_rewrite_and_restored_vendor_slug_reach_the_gateway_request_body(monkeypatch):
@@ -637,7 +639,7 @@ def test_hook_rewrite_and_restored_vendor_slug_reach_the_gateway_request_body(mo
         {"connector": "gmail", "tool": "GMAIL_SEND_EMAIL",
          "arguments": {"to": "x@example.com", "body": "[REDACTED]"}},
     ]
-    assert "sk-secret" not in json.dumps(transport.requests[0]["json"])
+    assert "sk-secret" not in json.dumps([request["json"] for request in transport.requests])
     assert out["results"][0]["response"] == "ok"  # correlation survives the rewrite
 
 

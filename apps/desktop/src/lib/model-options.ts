@@ -170,7 +170,11 @@ export async function requestModelOptions({
 
     const profileKey = (profile ?? '').trim()
 
-    if (profileKey) {
+    // An owner-routed session read is scoped by its session_id. The backend lets
+    // an explicit `profile` override that, and callers hand in the window's
+    // ambient profile, so sending it built the launch profile's catalog; the
+    // router adds the owner's own profile where its socket needs one.
+    if (profileKey && !(request && sessionId)) {
       params.profile = profileKey
     }
 

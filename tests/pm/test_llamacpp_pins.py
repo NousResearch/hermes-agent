@@ -1,9 +1,20 @@
 """Every supported local engine backend installs only reviewed PM artifacts."""
 
+import pytest
+
 import pm
 from pm import paths
 from pm.lock import Lockfile
 from pm.store import ALL_TARGETS
+
+
+@pytest.mark.parametrize(("version", "toolkit"), [("11671", "13.4"), ("12167", "13.4"), ("12170", "13.5")])
+def test_cuda_archives_name_the_toolkit_upstream_built_that_tag_with(version, toolkit):
+    """Upstream moved its CUDA builds from 13.4 to 13.5 at b12170. An engine installed before the
+    package manager is adopted by its own tag's archive names, so an older tag keeps 13.4."""
+    package = pm.get_package("llamacpp-cuda")
+    for target in package.assets:
+        assert all(f"-cuda-{toolkit}-" in name for name in package._asset_names(version, target))
 
 
 def test_llamacpp_backends_have_pins_for_their_supported_targets():

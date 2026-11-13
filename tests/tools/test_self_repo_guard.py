@@ -409,9 +409,11 @@ class TestBlockMessageGuidance:
 
 
 
-    def test_scratch_hint_honors_hermes_home(self, repo, monkeypatch, tmp_path):
+    def test_scratch_hint_names_the_pruned_scratch_dir(self, repo, monkeypatch, tmp_path):
+        from hermes_constants import get_scratch_dir
+
         home = tmp_path / "custom" / "hermes-home"
         monkeypatch.setenv("HERMES_HOME", str(home))
         hit, msg = _detect("git rebase origin/main", repo, repo)
         assert hit is True
-        assert str(home / "scratch") in msg
+        assert f"{get_scratch_dir(prune=False)}/<task>" in msg

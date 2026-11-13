@@ -449,7 +449,6 @@ export default function ProfilesPage() {
       return;
     }
     setCreating(true);
-    setCreationReceipt(null);
     try {
       const cloning = cloneFrom !== null;
       const picked = modelChoice
@@ -468,8 +467,9 @@ export default function ProfilesPage() {
       });
       const title = `${t.profiles.created}: ${name}`;
       const receipt = creationReceiptFor(title, res.warnings, Boolean(picked) && res.model_set === false);
-      if (receipt) setCreationReceipt(receipt);
-      else showToast(title, "success");
+      // Replaced only by a successful create: a failed retry keeps the last receipt.
+      setCreationReceipt(receipt);
+      if (!receipt) showToast(title, "success");
       setNewName("");
       setNewDescription("");
       setNoSkills(false);

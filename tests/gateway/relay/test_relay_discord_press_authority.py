@@ -133,11 +133,18 @@ async def test_discord_press_with_an_admin_list_follows_the_slash_policy(relay, 
     for the requester too (their typed ``/approve`` is refused); a clarify answer runs no command."""
     adapter, stub = relay
     prompt_id, option, answered = await _raise_as_alice(adapter, stub, kind)
+    acks = []
+    adapter._send_lifecycle_ack = lambda chat_id, text, meta: acks.append(text)
 
     await _discord_press(adapter, clicker, prompt_id, option)
 
     expected = clicker == "owner-admin" or (clicker == "alice" and kind == "clarify")
     assert answered() is expected
+    # The refusal names the check that failed: the slash policy (admin-only) before the requester.
+    if kind != "clarify" and clicker != "owner-admin":
+        assert "admin-only" in acks[0] and "alice" not in acks[0].lower()
+    elif not expected:
+        assert "alice" in acks[0].lower()
 
 
 @pytest.mark.asyncio

@@ -33,7 +33,7 @@ import {
   ROSTER_KEY,
   saveBotMeta
 } from './data'
-import { aliasIdentityFor, botConnectionRoute, botRouteKey, requestForBot } from './routing'
+import { aliasMetaFor, botConnectionRoute, botRouteKey, requestForBot } from './routing'
 import { getPluginCtx } from './shared'
 import type { BotMeta, RosterRow } from './types'
 
@@ -233,13 +233,11 @@ function serverReportedTitle(bot: RosterRow, server: BotMeta | null): string | u
   return typeof bot.title === 'string' ? bot.title.trim() : undefined
 }
 
-/** The record a bot's first server overlay starts from. botRosterMeta prefers
- *  the direct key that overlay mints, so a configured alias's look seeds it, or
- *  the alias's avatar and color would vanish once the server answers. */
-function aliasSeedMeta(bot: RosterRow, meta: Record<string, BotMeta>): BotMeta {
-  const aliasKey = aliasIdentityFor(bot)?.metaKeys.find(key => meta[key])
-
-  return aliasKey ? meta[aliasKey] : {}
+/** The record a server overlay starts from. A first record for a configured
+ *  alias's row starts from the alias's record: botRosterMeta prefers the direct
+ *  key once it exists, so a server-only record would hide the alias's look. */
+function overlayBase<T extends BotMeta>(bot: RosterRow, key: string, meta: Record<string, T>): Partial<T> {
+  return meta[key] || aliasMetaFor(bot, meta) || {}
 }
 
 /** Server ui_meta (per roster row) beats local storage for the compact
@@ -289,7 +287,7 @@ export function mergeServerMeta(roster: RosterRow[], fetchedAt = 0) {
         continue
       }
 
-      const mine = next[key] || aliasSeedMeta(bot, next)
+      const mine = overlayBase(bot, key, next)
 
       const merged = {
         ...mine,

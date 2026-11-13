@@ -20,13 +20,13 @@ from ._nas_client import NasCronClientError
 logger = logging.getLogger("cron.chronos")
 
 
-def _cfg(*keys: str, default: Any = "") -> Any:
-    """Read a cron.chronos.* config value (no network)."""
+def _cfg(key: str) -> Any:
+    """Read ``cron.chronos.<key>`` from the ROOT config (no network; see ``settings.py``)."""
     try:
-        from hermes_cli.config import cfg_get, load_config
-        return cfg_get(load_config(), *keys, default=default)
+        from .settings import chronos_settings
+        return chronos_settings().get(key) or ""
     except Exception:
-        return default
+        return ""
 
 
 class ChronosCronScheduler(CronScheduler):
@@ -51,7 +51,7 @@ class ChronosCronScheduler(CronScheduler):
     def is_available(self) -> bool:
         """Config presence only — NO network: portal URL, publicly reachable callback URL and a
         Nous login; otherwise the resolver falls back to the built-in ticker."""
-        if not (_cfg("cron", "chronos", "portal_url") and _cfg("cron", "chronos", "callback_url")):
+        if not (_cfg("portal_url") and _cfg("callback_url")):
             return False
         # Stored-token presence only (no refresh); refresh-aware token resolved at provision time.
         try:
@@ -63,7 +63,7 @@ class ChronosCronScheduler(CronScheduler):
     def _get_client(self):
         if self._client is None:
             from ._nas_client import NasCronClient
-            self._client = NasCronClient(_cfg("cron", "chronos", "portal_url"))
+            self._client = NasCronClient(_cfg("portal_url"))
         return self._client
 
     def _reconcile_logged(self, log, what: str) -> None:
@@ -109,7 +109,7 @@ class ChronosCronScheduler(CronScheduler):
             return
         self._get_client().provision(
             job_id=job_id, fire_at=fire_at, dedup_key=f"{job_id}:{fire_at}",
-            agent_callback_url=str(_cfg("cron", "chronos", "callback_url") or ""))
+            agent_callback_url=str(_cfg("callback_url")))
         with self._lock:
             self._armed[job_id] = fire_at
 

@@ -70,6 +70,29 @@ def verify_nas_fire_token(*, token: str, expected_audience: str, jwks_or_key: Op
     return claims
 
 
+def fire_verification_settings() -> dict[str, Any]:
+    """Verifier kwargs (``expected_audience``, ``jwks_or_key``, ``issuer``) read from the ROOT
+    config's Chronos keys (``settings.py``), whatever profile scope or launch profile is current.
+
+    The fire token's audience and signing keys identify the instance, not a profile: NAS writes
+    ``cron.chronos.*`` into the root config only. A multiplexed gateway serves
+    ``/p/<profile>/api/cron/fire`` inside that profile's scope, and a gateway or dashboard launched
+    as a profile has that profile as its own home; a plain ``load_config()`` returns the profile's
+    config in both, which has no JWKS (every fire got a 401) or another agent's copied keys.
+    There is deliberately no fallback to the profile's own values: a profile config must not be able
+    to widen which issuer or audience this instance accepts. Both fire handlers (gateway and
+    dashboard) call this, so they cannot disagree about where the settings live.
+    """
+    from .settings import chronos_settings
+
+    settings = chronos_settings()
+    return {
+        "expected_audience": settings.get("expected_audience") or "",
+        "jwks_or_key": settings.get("nas_jwks_url") or None,
+        "issuer": settings.get("portal_url") or None,
+    }
+
+
 def get_fire_verifier() -> Callable[..., Optional[dict[str, Any]]]:
     """Return the active inbound-fire verifier (default: the NAS-JWT verifier)."""
     return verify_nas_fire_token

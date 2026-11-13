@@ -3,13 +3,17 @@
 All NAS calls are mocked — ZERO live network. These prove:
   - is_available is config-only (no network), false without config.
   - one-shot arming sends the right provision payload (incl. sub-minute fires —
-    the agent owns the time, so there's no 1-minute floor).
+    the agent owns the time, so there's no 1-minute floor), with the ROOT config's
+    callback_url over a named profile's stale copy.
   - reconcile arms missing, cancels orphaned, skips paused.
   - fire_due re-arms the next one-shot after a successful run, and repeat-N
     (job gone) stops re-arming.
 """
 
 import pytest
+
+from tests.chronos_fixtures import (
+    ROOT_CHRONOS, STALE_CHRONOS, enter_stale_profile, root_and_stale_profile, write_chronos_config)
 
 
 @pytest.fixture
@@ -18,30 +22,33 @@ def temp_home(tmp_path, monkeypatch):
     yield tmp_path
 
 
+class FakeClient:
+    """Stands in for the NAS client, capturing calls."""
+
+    def __init__(self):
+        self.provisions = []
+        self.cancels = []
+        self._armed = []
+
+    def provision(self, *, job_id, fire_at, agent_callback_url, dedup_key):
+        self.provisions.append({
+            "job_id": job_id, "fire_at": fire_at,
+            "agent_callback_url": agent_callback_url, "dedup_key": dedup_key,
+        })
+        return {"schedule_id": f"sched-{job_id}"}
+
+    def cancel(self, *, job_id):
+        self.cancels.append(job_id)
+        return {}
+
+    def list_armed(self):
+        return list(self._armed)
+
+
 @pytest.fixture
 def chronos(monkeypatch):
     """A ChronosCronScheduler with a fake NAS client capturing calls."""
     from plugins.cron_providers.chronos import ChronosCronScheduler
-
-    class FakeClient:
-        def __init__(self):
-            self.provisions = []
-            self.cancels = []
-            self._armed = []
-
-        def provision(self, *, job_id, fire_at, agent_callback_url, dedup_key):
-            self.provisions.append({
-                "job_id": job_id, "fire_at": fire_at,
-                "agent_callback_url": agent_callback_url, "dedup_key": dedup_key,
-            })
-            return {"schedule_id": f"sched-{job_id}"}
-
-        def cancel(self, *, job_id):
-            self.cancels.append(job_id)
-            return {}
-
-        def list_armed(self):
-            return list(self._armed)
 
     prov = ChronosCronScheduler()
     fake = FakeClient()
@@ -73,6 +80,46 @@ def test_arm_one_shot_sends_provision(chronos):
     assert p["fire_at"] == "2026-06-18T12:00:00+00:00"
     assert p["dedup_key"] == "j1:2026-06-18T12:00:00+00:00"
     assert p["agent_callback_url"] == "https://agent.example/"
+
+
+def _arm_from_config():
+    """Arm one job through the real config read (no ``_cfg`` patch); returns the provision sent."""
+    from plugins.cron_providers.chronos import ChronosCronScheduler
+
+    prov = ChronosCronScheduler()
+    prov._client = fake = FakeClient()
+    prov._arm_one_shot({"id": "j1", "next_run_at": "2026-11-03T09:00:00+00:00"})
+    return fake.provisions[0]
+
+
+def test_profile_arms_with_the_root_callback_url_not_its_stale_copy(tmp_path, monkeypatch):
+    """A profile copied from another agent (or from before a host move) must present THIS
+    machine's dashboard URL, which NAS seeds into the root config; NAS 400s any other URL."""
+    enter_stale_profile(tmp_path, monkeypatch)
+
+    assert _arm_from_config()["agent_callback_url"] == ROOT_CHRONOS["callback_url"]
+
+
+def test_root_config_refs_expand_from_the_root_secrets_inside_a_profile_scope(tmp_path, monkeypatch):
+    """A multiplexed request for a profile binds that profile's home AND its secret scope; a
+    ``${VAR}`` in the root config must still expand from the root's ``.env``, not the profile's."""
+    from agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_secret_scope
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    root, profile = root_and_stale_profile(tmp_path)
+    write_chronos_config(root, {**ROOT_CHRONOS, "callback_url": "${CHRONOS_CALLBACK_URL}"})
+    (root / ".env").write_text(f"CHRONOS_CALLBACK_URL={ROOT_CHRONOS['callback_url']}\n", encoding="utf-8")
+    (profile / ".env").write_text(f"CHRONOS_CALLBACK_URL={STALE_CHRONOS['callback_url']}\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(root))  # the multiplexed gateway's launch home
+
+    home_token = set_hermes_home_override(str(profile))
+    secret_token = set_secret_scope(build_profile_secret_scope(profile), profile_home=str(profile))
+    try:
+        provision = _arm_from_config()
+    finally:
+        reset_secret_scope(secret_token)
+        reset_hermes_home_override(home_token)
+    assert provision["agent_callback_url"] == ROOT_CHRONOS["callback_url"]
 
 
 def test_register_job_arms_only_the_created_job(chronos):

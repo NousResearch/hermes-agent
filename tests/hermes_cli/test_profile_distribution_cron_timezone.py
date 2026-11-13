@@ -46,8 +46,8 @@ def _ship(root, records):
     """A distribution whose ``cron/jobs.json`` holds *records* exactly as an operator wrote them."""
     staged = root / "dist"
     (staged / "cron").mkdir(parents=True)
-    (staged / "SOUL.md").write_text("Desk agent.\n")
-    (staged / "cron" / "jobs.json").write_text(json.dumps({"jobs": records}))
+    (staged / "SOUL.md").write_text("Desk agent.\n", encoding="utf-8")
+    (staged / "cron" / "jobs.json").write_text(json.dumps({"jobs": records}), encoding="utf-8")
     write_manifest(staged, DistributionManifest(name="desk", version="1.0.0"))
     return staged
 
@@ -79,7 +79,7 @@ class TestShippedTimezoneIsValidated:
         staged = _ship(operator_env, [_pre_market()])
         plan = install_distribution(str(staged), name="desk")
         store = staged / "cron" / "jobs.json"
-        store.write_text(json.dumps({"jobs": [_pre_market(timezone="US/NewYork")]}))
+        store.write_text(json.dumps({"jobs": [_pre_market(timezone="US/NewYork")]}), encoding="utf-8")
         with pytest.raises(DistributionError, match="US/NewYork"):
             update_distribution("desk")
         assert _installed(plan)["premarket0001"]["timezone"] == "America/New_York"
@@ -104,7 +104,7 @@ def test_a_shipped_pin_fires_on_new_york_time_for_every_user(operator_env, user_
         {"id": "morningbrf01", "name": "morning-brief", "prompt": "Brief", "schedule": "0 7 * * *",
          "deliver": "local"}])
     plan = install_distribution(str(staged), name="desk")
-    (plan.target_dir / "config.yaml").write_text(f"timezone: {user_zone}\n")
+    (plan.target_dir / "config.yaml").write_text(f"timezone: {user_zone}\n", encoding="utf-8")
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
     token = set_hermes_home_override(str(plan.target_dir))
     try:

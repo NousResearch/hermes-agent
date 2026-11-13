@@ -95,17 +95,21 @@ def _whatsapp_allowed_users(wa_mode: str, get_env_value, save_env_value) -> None
 
 
 def _whatsapp_warn_customer_facing(wa_mode: str, get_env_value) -> None:
-    """A bot number open to anyone with no home channel: the first sender gets the /sethome nudge
-    and every sender sees tool progress, so point the operator at the hardening recipe."""
+    """A bot number open to anyone with no home channel: every new session's first message gets the
+    /sethome nudge and every sender sees tool progress, so point the operator at the hardening recipe."""
     from gateway.config import Platform, load_gateway_config
+    from gateway.platforms.whatsapp_common import WhatsAppBehaviorMixin as _wa
     from utils import is_truthy_value
 
-    allowed = (get_env_value("WHATSAPP_ALLOWED_USERS") or "").split(",")
-    allow_all = "*" in (entry.strip() for entry in allowed) or is_truthy_value(
-        get_env_value("WHATSAPP_ALLOW_ALL_USERS"))
-    if wa_mode != "bot" or not allow_all:
+    if wa_mode != "bot":
         return
-    if (get_env_value("WHATSAPP_HOME_CHANNEL") or "").strip() or load_gateway_config().get_home_channel(Platform.WHATSAPP):
+    config = load_gateway_config()
+    extra = getattr(config.platforms.get(Platform.WHATSAPP), "extra", None) or {}
+    # The adapter's own precedence: a config.yaml allow_from beats WHATSAPP_ALLOWED_USERS.
+    _, raw = _wa._select_allowlist(extra, ("allow_from", "allowFrom"), ("WHATSAPP_ALLOWED_USERS",), get_env_value)
+    if "*" not in _wa._coerce_allow_list(raw) and not is_truthy_value(get_env_value("WHATSAPP_ALLOW_ALL_USERS")):
+        return
+    if (get_env_value("WHATSAPP_HOME_CHANNEL") or "").strip() or config.get_home_channel(Platform.WHATSAPP):
         return
     _say("", "  ⚠ This bot answers anyone and has no home channel. Before opening it to customers, see",
          "    https://hermes-agent.nousresearch.com/docs/user-guide/messaging/whatsapp/#customer-facing-bot")

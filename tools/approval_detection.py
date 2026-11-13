@@ -14,6 +14,9 @@ import shlex
 import tempfile
 import unicodedata
 
+from tools.approval_detection_deny import (
+    _command_word_may_vanish, _eval_payload, _split_env_string_unresolved)
+
 logger = logging.getLogger("tools.approval")
 
 # Sensitive write targets, matched via ~ / $HOME / $HERMES_HOME spellings. The resolved absolute
@@ -1613,9 +1616,18 @@ def _env_split_payload(tokens: list[str]) -> str | None:
             payload = (value if option == "--split-string" else token[2:]) if attached else (
                 tokens[index] if index < len(tokens) else "")
             args = _split_env_string(payload)
+            if args is None:
+                # A ${NAME} expansion cannot be resolved here. env still splits an
+                # argv (separators stay data), including the executable that
+                # remains when its unresolved expansions are empty.
+                args = _split_env_string_unresolved(payload)
+                if args is None:
+                    return None
+                argv = args + tokens[index + 1:]
+                return shlex.join(argv) if argv else None
             # Protect literal separators when reusing command-position detection;
             # only a real shell -c carrier may turn these argv bytes into code.
-            return shlex.join(args + tokens[index + 1:]) if args is not None else None
+            return shlex.join(args + tokens[index + 1:])
         index += 2 if not equals and option in _COMMAND_WRAPPER_OPTIONS_WITH_ARG["env"] else 1
     return None
 
@@ -1653,10 +1665,18 @@ def _deny_command_variants(command: str):
                 # Apply the existing text matching semantics only AFTER locating
                 # executable positions; never parse its rewritten quotes again.
                 yield _normalize_command_for_detection(candidate)
-            if os.path.basename(executable) == "env":
+            carrier = os.path.basename(executable)
+            if tail.strip() and _command_word_may_vanish(word):
+                # A command word that is only an unquoted expansion or command
+                # substitution may expand to nothing and run its argument tail
+                # (`$SUDO rm ...`, `$(true) rm ...`): project the tail. A quoted,
+                # escaped or literal-prefixed word cannot vanish.
+                pending.append(tail.strip())
+            if carrier in ("env", "eval"):
                 tokens = _shell_segment_tokens(segment, 0)
                 if tokens:
-                    payload = _env_split_payload(tokens)
+                    # eval parses its joined arguments as shell code, like `sh -c`.
+                    payload = _env_split_payload(tokens) if carrier == "env" else _eval_payload(tokens[1:])
                     if payload:
                         pending.append(payload)
         for _, payload in _execution_flag_findings(source):

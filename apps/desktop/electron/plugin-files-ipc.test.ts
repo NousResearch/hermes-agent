@@ -74,21 +74,20 @@ describe('hermes:pluginFiles:request', () => {
     expect(granted.folder.path).toBe(vault)
   })
 
-  it('ignores an invalid starting folder instead of failing the picker', async () => {
+  it('ignores blank and null-byte starting folders instead of failing the picker', async () => {
     showOpenDialog.mockResolvedValueOnce({ canceled: true, filePaths: [] })
-
     await call('hermes:pluginFiles:request', 'plexus', { defaultPath: '   ' })
+    expect(showOpenDialog.mock.calls.at(-1)?.[1]).not.toHaveProperty('defaultPath')
 
-    expect(showOpenDialog).toHaveBeenLastCalledWith(
-      window,
-      expect.not.objectContaining({ defaultPath: '   ' })
-    )
+    showOpenDialog.mockResolvedValueOnce({ canceled: true, filePaths: [] })
+    await call('hermes:pluginFiles:request', 'plexus', { defaultPath: '\0' })
+    expect(showOpenDialog.mock.calls.at(-1)?.[1]).not.toHaveProperty('defaultPath')
   })
 
   it('the Hermes home is refused even when the user picks it', async () => {
     showOpenDialog.mockResolvedValueOnce({ canceled: false, filePaths: [hermesHome] })
 
-    expect(await call('hermes:pluginFiles:request', 'plexus')).toMatchObject({ ok: false, error: 'protected' })
+    expect(await call('hermes:pluginFiles:request', 'plexus', { defaultPath: hermesHome })).toMatchObject({ ok: false, error: 'protected' })
     expect(await call('hermes:pluginFiles:grants', 'plexus')).toEqual([])
   })
 

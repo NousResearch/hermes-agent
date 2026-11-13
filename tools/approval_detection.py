@@ -134,6 +134,8 @@ HARDLINE_PATTERNS = [
     # or "..", so "/tmp", "/.ssh", even "/..." are literal dirs that fall through to the softer
     # DANGEROUS rules. The "/ \*" alt covers `rm -rf / *` (two args: "/" plus the glob).
     (_RM_FLAG_PREFIX + _hardline_rm_path(r'/(?:(?:\.\.?)?/)*(?:\.\.?)?\**|/ \*'), "recursive delete of root filesystem"),
+    # Drive-letter root (`C:/`, `c:/*`; `C:\` reaches here as `C:/` via the Windows-path variant): same floor as "/".
+    (_RM_FLAG_PREFIX + _hardline_rm_path(r'[a-z]:/(?:(?:\.\.?)?/)*(?:\.\.?)?\**|[a-z]:/ \*'), "recursive delete of drive root"),
     (_RM_FLAG_PREFIX + _hardline_rm_path(_HARDLINE_SYSTEM_DIRS), "recursive delete of system directory"),
     (_RM_FLAG_PREFIX + _hardline_rm_path(r'(?:~|\$\{?HOME\}?)(?:/?|/\*)?'), "recursive delete of home directory"),
     # Command-name rules (mkfs, dd, kill, shutdown...) are _CMDPOS-anchored so quoted prose
@@ -421,7 +423,8 @@ _PS_EXE_AT_COMMAND_POSITION = (
 )
 
 DANGEROUS_PATTERNS = [
-    (r'\brm\s+(-[^\s]*\s+)*/', "delete in root path"),
+    # A drive letter is a root too (`rm X:/f`; `X:\f` arrives as `X:/f` via the Windows-path variant).
+    (r'\brm\s+(-[^\s]*\s+)*(?:[a-z]:)?/', "delete in root path"),
     (r'\brm\s+-[^\s]*r', "recursive delete"),
     (r'\brm\s+--recursive\b', "recursive delete (long flag)"),
     # GNU rm permutes options, so flags may FOLLOW operands (`rm build/ -rf`). The operand run

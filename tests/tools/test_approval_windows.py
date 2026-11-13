@@ -13,7 +13,7 @@ import time
 
 import pytest
 
-from tools.approval import detect_dangerous_command
+from tools.approval import detect_dangerous_command, detect_hardline_command
 
 
 def _is_dangerous(cmd: str) -> bool:
@@ -223,3 +223,38 @@ class TestPowerShellPositionalScriptAndAbbreviatedSwitches:
         start = time.perf_counter()
         assert not _is_dangerous(command)
         assert time.perf_counter() - start < 2, command[:30]
+
+
+class TestDriveLetterRoots:
+    """A drive letter is a filesystem root: `rm X:/f` and `rm -rf C:\\` must gate like `rm /f` / `rm -rf /` (#38964)."""
+
+    @pytest.mark.parametrize("cmd", [
+        "rm X:/PROJECTs/test/test.txt",
+        r"rm X:\test.txt",
+        "rm -f c:/notes.txt",
+    ])
+    def test_delete_under_drive_root_needs_approval(self, cmd):
+        assert detect_dangerous_command(cmd)[2] == "delete in root path", cmd
+
+    @pytest.mark.parametrize("cmd", [
+        "rm -rf C:/",
+        "rm -rf C:\\",
+        "rm -rf c:/*",
+        "rm -rf 'D:/'",
+        "rm -rf C:/ *",
+        "sudo rm -rf C:/./",
+    ])
+    def test_drive_root_wipe_is_hardline(self, cmd):
+        assert detect_hardline_command(cmd) == (True, "recursive delete of drive root"), cmd
+
+    @pytest.mark.parametrize("cmd", [
+        "rm -rf C:/Users/me/build",
+        "rm -rf c:",
+        "git commit -m 'rm -rf C:/'",
+    ])
+    def test_drive_subdirectory_or_prose_is_not_hardline(self, cmd):
+        assert detect_hardline_command(cmd) == (False, None), cmd
+
+    @pytest.mark.parametrize("cmd", ["rm build/C:/x", "rm foo:/bar", "rm a:b"])
+    def test_relative_paths_with_colons_stay_quiet(self, cmd):
+        assert not _is_dangerous(cmd), cmd

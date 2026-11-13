@@ -355,4 +355,51 @@ describe('retired staged MCP owners', () => {
     await screen.findByPlaceholderText('LINEAR_API_KEY')
     expect(mocks.request.mock.calls.filter(([method]) => method === 'mcp.servers.add')).toHaveLength(2)
   })
+
+  it('drops a late add for a draft that was replaced and recreated under the same name', async () => {
+    const base = mocks.request.getMockImplementation()!
+    let finishAdd!: () => void
+    let triageAdds = 0
+
+    const adds = () => mocks.request.mock.calls.filter(([method, p]) =>
+      method === 'mcp.servers.add' && (p as { profile: string }).profile === 'inbox-triage')
+
+    mocks.request.mockImplementation((method: string, params?: unknown) => {
+      if (method === 'mcp.servers.add' && (params as { profile: string }).profile === 'inbox-triage') {
+        triageAdds += 1
+
+        // The first draft's add is held; the recreated draft's own add fails.
+        return triageAdds === 1
+          ? new Promise(resolve => { finishAdd = () => resolve({ ok: true }) })
+          : Promise.reject(new Error('add failed'))
+      }
+
+      return base(method, params)
+    })
+    await openSetup()
+    await waitFor(() => expect(finishAdd).toBeTypeOf('function'))
+    fireEvent.change(screen.getByPlaceholderText('inbox-triage'), { target: { value: 'other-bot' } })
+    fireEvent.click(await screen.findByRole('button', { name: /Set up/ }))
+    await screen.findByPlaceholderText('LINEAR_API_KEY')
+    fireEvent.change(screen.getByPlaceholderText('inbox-triage'), { target: { value: 'inbox-triage' } })
+    fireEvent.click(await screen.findByRole('button', { name: /Set up/ }))
+    await waitFor(() => expect(adds()).toHaveLength(2))
+    await act(async () => finishAdd())
+    rename()
+    fireEvent.change(screen.getByPlaceholderText('inbox-triage'), { target: { value: 'inbox-triage' } })
+    fireEvent.click(await screen.findByRole('button', { name: /Set up/ }))
+    // The recreated draft never got the server, so its setup must add it.
+    await waitFor(() => expect(adds()).toHaveLength(3))
+  })
+
+  it('completes setup under StrictMode, as the app root renders it', async () => {
+    await renderDialog(false, undefined, true)
+    fireEvent.click(screen.getByRole('button', { name: 'MCP' }))
+    fireEvent.click(await screen.findByRole('button', { name: /Set up/ }))
+    fireEvent.change(await screen.findByPlaceholderText('LINEAR_API_KEY'), { target: { value: 'strict' } })
+    fireEvent.click(screen.getByRole('button', { name: /Save.*test/i }))
+    await waitFor(() => expect(mocks.request).toHaveBeenCalledWith('mcp.servers.test', { name: 'linear', profile: 'inbox-triage' }))
+    await waitFor(() => expect(screen.queryByRole('button', { name: /Set up/ })).toBeNull())
+    expect(screen.getByRole('checkbox', { name: /linear/ }).getAttribute('data-state')).toBe('checked')
+  })
 })

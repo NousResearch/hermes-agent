@@ -5,11 +5,13 @@ import { Fragment, type ReactNode, useEffect, useMemo, useState } from 'react'
 import { useElapsedSeconds } from '@/components/chat/activity-timer'
 import { ActivityTimerText } from '@/components/chat/activity-timer-text'
 import { usePaneVisible } from '@/components/pane-shell/pane-visibility'
+import { Badge, type BadgeProps } from '@/components/ui/badge'
 import { Codicon } from '@/components/ui/codicon'
 import { FadeText } from '@/components/ui/fade-text'
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
+import { RowButton } from '@/components/ui/row-button'
 import { type Translations, useI18n } from '@/i18n'
-import { AlertCircle, CheckCircle2 } from '@/lib/icons'
+import { AlertCircle, CheckCircle2, ChevronDown } from '@/lib/icons'
 import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
 import { $activeSessionId } from '@/store/session'
@@ -127,6 +129,34 @@ const fmtDuration = (seconds: number | undefined, a: Translations['agents']) => 
 
 const fmtTokens = (value: number | undefined, a: Translations['agents']) =>
   value ? a.tokens(compactNumber(value)) : ''
+
+interface StatusPresentation {
+  label: (a: Translations['agents']) => string
+  variant: BadgeProps['variant']
+}
+
+const STATUS_PRESENTATION: Record<SubagentStatus, StatusPresentation> = {
+  completed: {
+    label: a => a.done,
+    variant: 'success'
+  },
+  failed: {
+    label: a => a.failed,
+    variant: 'destructive'
+  },
+  interrupted: {
+    label: a => a.failed,
+    variant: 'destructive'
+  },
+  queued: {
+    label: a => a.queued,
+    variant: 'warn'
+  },
+  running: {
+    label: a => a.running,
+    variant: 'default'
+  }
+}
 
 // Distinct contract from coarseElapsed: rounds to the second (this ticks live),
 // and hours are unbounded ("25h", never "1d"). Kept local on purpose.
@@ -284,7 +314,7 @@ function DelegationGroup({ group, nowMs }: { group: RootGroup; nowMs: number }) 
   const { t } = useI18n()
 
   if (group.nodes.length === 1 && group.taskCount <= 1) {
-    return <SubagentRow node={group.nodes[0]!} nowMs={nowMs} />
+    return <SubagentRow node={group.nodes[0]!} nowMs={nowMs} presentation="card" />
   }
 
   const activeWorkers = group.nodes.filter(n => n.status === 'running' || n.status === 'queued').length
@@ -298,7 +328,7 @@ function DelegationGroup({ group, nowMs }: { group: RootGroup; nowMs: number }) 
       </p>
       <div className="grid min-w-0 gap-4">
         {group.nodes.map(node => (
-          <SubagentRow key={node.id} node={node} nowMs={nowMs} />
+          <SubagentRow key={node.id} node={node} nowMs={nowMs} presentation="card" />
         ))}
       </div>
     </section>
@@ -339,40 +369,92 @@ function StreamLine({
   )
 }
 
-export function SubagentRow({ node, depth = 0, nowMs }: { node: SubagentNode; depth?: number; nowMs: number }) {
+interface SubagentPresentationProps {
+  activity: ReactNode
+  files: ReactNode
+  node: SubagentNode
+  onToggle: () => void
+  open: boolean
+}
+
+function AgentCard({
+  activity,
+  files,
+  node,
+  onToggle,
+  open,
+  metadata
+}: SubagentPresentationProps & { metadata: string[] }) {
   const { t } = useI18n()
-  const running = node.status === 'running' || node.status === 'queued'
-  const elapsed = useElapsedSeconds(running, `subagent:${node.id}`, node.startedAt)
-
-  const durationSeconds =
-    typeof node.durationSeconds === 'number' ? Math.max(0, Math.round(node.durationSeconds)) : elapsed
-
-  const [open, setOpen] = useState(() => running || depth < 2)
-  const enterRef = useEnterAnimation(true, `subagent-row:${node.id}`)
-
-  useEffect(() => {
-    if (running) {
-      setOpen(true)
-    }
-  }, [running])
-
-  const visibleRows = open ? node.stream.slice(-10) : node.stream.slice(-2)
-  const fileLines = [...node.filesWritten.map(p => `+ ${p}`), ...node.filesRead.map(p => `· ${p}`)]
-
-  const subtitle = [
-    node.model,
-    fmtDuration(durationSeconds, t.agents),
-    node.toolCount ? t.agents.toolsCount(node.toolCount) : '',
-    fmtTokens((node.inputTokens ?? 0) + (node.outputTokens ?? 0), t.agents),
-    t.agents.updatedAgo(fmtAge(node.updatedAt, nowMs, t.agents))
-  ].filter(Boolean)
+  const status = STATUS_PRESENTATION[node.status]
 
   return (
-    <div className={cn('grid min-w-0 max-w-full gap-2', depth > 0 && 'pl-4')} data-slot="tool-block" ref={enterRef}>
+    <article
+      className="grid min-w-0 rounded-lg bg-(--ui-bg-quaternary) ring-1 ring-inset ring-(--ui-stroke-tertiary)"
+      data-slot="agent-card"
+    >
+      <RowButton
+        aria-expanded={open}
+        className="group flex w-full min-w-0 items-start gap-2.5 px-3 pb-2 pt-3 text-left"
+        onClick={onToggle}
+      >
+        <span aria-hidden className="mt-0.5 flex h-[1.1rem] shrink-0 items-center">
+          {statusGlyph(node.status, t.agents)}
+        </span>
+        <span className="flex min-w-0 flex-1 flex-col gap-1">
+          <span className="flex min-w-0 flex-wrap items-start gap-2">
+            <span className="min-w-0 flex-1 wrap-anywhere text-[0.82rem] font-medium leading-[1.1rem] text-foreground/90 transition-colors duration-100 group-hover:text-foreground group-hover:transition-none">
+              {node.goal}
+            </span>
+            <Badge size="xs" variant={status.variant}>
+              {status.label(t.agents)}
+            </Badge>
+          </span>
+          {metadata.length > 0 ? (
+            <span className="flex min-w-0 flex-wrap gap-x-1.5 gap-y-0.5 text-[0.66rem] leading-[1.05rem] text-muted-foreground/70">
+              {metadata.map((item, index) => (
+                <Fragment key={`${index}:${item}`}>
+                  {index > 0 ? <span className="text-muted-foreground/40">·</span> : null}
+                  <span className="wrap-anywhere">{item}</span>
+                </Fragment>
+              ))}
+            </span>
+          ) : null}
+        </span>
+        <ChevronDown
+          aria-hidden
+          className={cn(
+            'mt-0.5 size-3.5 shrink-0 text-muted-foreground/55 transition-transform duration-100 motion-reduce:transition-none',
+            open && 'rotate-180'
+          )}
+        />
+      </RowButton>
+      <div className="grid min-w-0 gap-2 px-3 pb-3 pl-9">
+        {activity}
+        {files}
+      </div>
+    </article>
+  )
+}
+
+function SubagentDetailRow({
+  activity,
+  durationSeconds,
+  files,
+  node,
+  onToggle,
+  open,
+  running,
+  subtitle
+}: SubagentPresentationProps & { durationSeconds: number; running: boolean; subtitle: string[] }) {
+  const { t } = useI18n()
+
+  return (
+    <>
       <button
         aria-expanded={open}
         className="group flex w-full min-w-0 items-start gap-2.5 text-left"
-        onClick={() => setOpen(v => !v)}
+        onClick={onToggle}
         type="button"
       >
         <span className="mt-0.5 flex h-[1.1rem] shrink-0 items-center">{statusGlyph(node.status, t.agents)}</span>
@@ -393,43 +475,165 @@ export function SubagentRow({ node, depth = 0, nowMs }: { node: SubagentNode; de
         </span>
         {running ? <ActivityTimerText className="mt-1 shrink-0 text-[0.6rem]" seconds={durationSeconds} /> : null}
       </button>
+      {activity}
+      {files}
+    </>
+  )
+}
 
-      {visibleRows.length > 0 ? (
-        <div className="grid min-w-0 gap-1 pl-6" data-selectable-text="true">
-          {visibleRows.map((entry, i) => (
-            <StreamLine
-              active={running && i === visibleRows.length - 1}
-              entry={entry}
-              key={`${entry.kind}:${entry.at}:${i}`}
-              parentRunning={running}
-              rowKey={`${node.id}:${entry.kind}:${entry.at}`}
-            />
-          ))}
-        </div>
-      ) : null}
+function SubagentActivity({
+  node,
+  open,
+  presentation,
+  running
+}: {
+  node: SubagentNode
+  open: boolean
+  presentation: SubagentPresentation
+  running: boolean
+}) {
+  const { t } = useI18n()
+  const visibleRows = open ? node.stream.slice(-10) : node.stream.slice(-2)
 
-      {open && fileLines.length > 0 ? (
-        <div className="grid min-w-0 gap-0.5 pl-6" data-selectable-text="true">
-          <p className="text-[0.58rem] font-medium tracking-wider text-muted-foreground/60 uppercase">
-            {t.agents.files}
-          </p>
-          {fileLines.slice(0, 8).map(line => (
-            <p className="wrap-break-word font-mono text-[0.67rem] leading-relaxed text-muted-foreground/80" key={line}>
-              {line}
-            </p>
-          ))}
-          {fileLines.length > 8 ? (
-            <p className="font-mono text-[0.67rem] leading-relaxed text-muted-foreground/65">
-              {t.agents.moreFiles(fileLines.length - 8)}
-            </p>
-          ) : null}
-        </div>
+  if (visibleRows.length === 0) {
+    return presentation === 'card' && running ? (
+      <p className="text-[0.7rem] text-muted-foreground/65">{t.agents.waitingActivity}</p>
+    ) : null
+  }
+
+  return (
+    <div className={cn('grid min-w-0 gap-1', presentation === 'row' && 'pl-6')} data-selectable-text="true">
+      {visibleRows.map((entry, i) => (
+        <StreamLine
+          active={running && i === visibleRows.length - 1}
+          entry={entry}
+          key={`${entry.kind}:${entry.at}:${i}`}
+          parentRunning={running}
+          rowKey={`${node.id}:${entry.kind}:${entry.at}`}
+        />
+      ))}
+    </div>
+  )
+}
+
+function SubagentFiles({
+  fileLines,
+  open,
+  presentation
+}: {
+  fileLines: string[]
+  open: boolean
+  presentation: SubagentPresentation
+}) {
+  const { t } = useI18n()
+
+  if (!open || fileLines.length === 0) {
+    return null
+  }
+
+  return (
+    <div
+      className={cn(
+        'grid min-w-0 gap-0.5',
+        presentation === 'card' ? 'border-t border-(--ui-stroke-tertiary) pt-2' : 'pl-6'
+      )}
+      data-selectable-text="true"
+    >
+      <p className="text-[0.58rem] font-medium tracking-wider text-muted-foreground/60 uppercase">{t.agents.files}</p>
+      {fileLines.slice(0, 8).map(line => (
+        <p className="wrap-break-word font-mono text-[0.67rem] leading-relaxed text-muted-foreground/80" key={line}>
+          {line}
+        </p>
+      ))}
+      {fileLines.length > 8 ? (
+        <p className="font-mono text-[0.67rem] leading-relaxed text-muted-foreground/65">
+          {t.agents.moreFiles(fileLines.length - 8)}
+        </p>
       ) : null}
+    </div>
+  )
+}
+
+type SubagentPresentation = 'card' | 'row'
+
+export function SubagentRow({
+  node,
+  depth = 0,
+  nowMs,
+  presentation = 'row'
+}: {
+  node: SubagentNode
+  depth?: number
+  nowMs: number
+  presentation?: SubagentPresentation
+}) {
+  const { t } = useI18n()
+  const running = node.status === 'running' || node.status === 'queued'
+  const elapsed = useElapsedSeconds(running, `subagent:${node.id}`, node.startedAt)
+
+  const durationSeconds =
+    typeof node.durationSeconds === 'number' ? Math.max(0, Math.round(node.durationSeconds)) : elapsed
+
+  const [open, setOpen] = useState(() => (presentation === 'card' ? false : running || depth < 2))
+  const enterRef = useEnterAnimation(true, `subagent-row:${node.id}`)
+
+  useEffect(() => {
+    if (presentation === 'row' && running) {
+      setOpen(true)
+    }
+  }, [presentation, running])
+
+  const fileLines = [...node.filesWritten.map(p => `+ ${p}`), ...node.filesRead.map(p => `· ${p}`)]
+
+  const baseMetadata = [
+    node.model,
+    fmtDuration(durationSeconds, t.agents),
+    node.toolCount ? t.agents.toolsCount(node.toolCount) : '',
+    fmtTokens((node.inputTokens ?? 0) + (node.outputTokens ?? 0), t.agents)
+  ].filter((item): item is string => Boolean(item))
+
+  const recency = t.agents.updatedAgo(fmtAge(node.updatedAt, nowMs, t.agents))
+  const subtitle = [...baseMetadata, recency]
+
+  const metadata = [
+    ...baseMetadata,
+    fileLines.length ? t.agents.filesCount(fileLines.length) : '',
+    node.costUsd ? `$${node.costUsd.toFixed(2)}` : '',
+    recency
+  ].filter((item): item is string => Boolean(item))
+
+  const activity = <SubagentActivity node={node} open={open} presentation={presentation} running={running} />
+  const files = <SubagentFiles fileLines={fileLines} open={open} presentation={presentation} />
+  const onToggle = () => setOpen(value => !value)
+
+  const content =
+    presentation === 'card' ? (
+      <AgentCard activity={activity} files={files} metadata={metadata} node={node} onToggle={onToggle} open={open} />
+    ) : (
+      <SubagentDetailRow
+        activity={activity}
+        durationSeconds={durationSeconds}
+        files={files}
+        node={node}
+        onToggle={onToggle}
+        open={open}
+        running={running}
+        subtitle={subtitle}
+      />
+    )
+
+  return (
+    <div
+      className={cn('grid min-w-0 max-w-full', presentation === 'card' ? 'gap-3' : 'gap-2', depth > 0 && 'pl-4')}
+      data-slot="tool-block"
+      ref={enterRef}
+    >
+      {content}
 
       {node.children.length > 0 ? (
         <div className="grid min-w-0 gap-3 pl-6">
           {node.children.map(child => (
-            <SubagentRow depth={depth + 1} key={child.id} node={child} nowMs={nowMs} />
+            <SubagentRow depth={depth + 1} key={child.id} node={child} nowMs={nowMs} presentation={presentation} />
           ))}
         </div>
       ) : null}

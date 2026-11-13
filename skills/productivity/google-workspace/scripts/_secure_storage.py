@@ -11,7 +11,7 @@ from typing import Any
 
 
 def write_private_json(path: Path, data: Any) -> None:
-    """Atomically write JSON with owner-only permissions."""
+    """Atomically write JSON that only the owner can read (mode 0600 from creation)."""
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = path.with_suffix(f".tmp.{os.getpid()}.{secrets.token_hex(4)}")
     try:
@@ -24,15 +24,10 @@ def write_private_json(path: Path, data: Any) -> None:
             json.dump(data, file, indent=2)
             file.flush()
             os.fsync(file.fileno())
+        # The replaced file keeps the temp file's 0600 mode, so it is never
+        # readable by others, even for an instant, and an existing file with
+        # looser permissions is fixed as a side effect.
         os.replace(tmp_path, path)
-
-        # Windows does not enforce the creation mode in the same way as
-        # POSIX. This also repairs the final mode if a platform altered it
-        # during replacement.
-        try:
-            path.chmod(stat.S_IRUSR | stat.S_IWUSR)
-        except OSError:
-            pass
     finally:
         try:
             tmp_path.unlink(missing_ok=True)

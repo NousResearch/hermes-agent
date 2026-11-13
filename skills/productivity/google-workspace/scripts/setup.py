@@ -234,21 +234,19 @@ def store_client_secret(path: str):
         print("Download the correct file from: https://console.cloud.google.com/apis/credentials")
         sys.exit(1)
 
-    CLIENT_SECRET_PATH.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    write_private_json(CLIENT_SECRET_PATH, data)
     print(f"OK: Client secret saved to {CLIENT_SECRET_PATH}")
 
 
 def _save_pending_auth(*, state: str, code_verifier: str):
     """Persist the OAuth session bits needed for a later token exchange."""
-    PENDING_AUTH_PATH.write_text(
-        json.dumps(
-            {
-                "state": state,
-                "code_verifier": code_verifier,
-                "redirect_uri": REDIRECT_URI,
-            },
-            indent=2,
-        ), encoding="utf-8"
+    write_private_json(
+        PENDING_AUTH_PATH,
+        {
+            "state": state,
+            "code_verifier": code_verifier,
+            "redirect_uri": REDIRECT_URI,
+        },
     )
 
 

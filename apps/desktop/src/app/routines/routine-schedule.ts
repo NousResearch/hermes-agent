@@ -232,9 +232,41 @@ export function describePick(pick: SchedulePick, words: ScheduleWords): null | s
   return null
 }
 
+// Presets whose sentence names a wall-clock time on the machine. Once is an instant, hourly has no clock.
+const WALL_CLOCK: ReadonlySet<Frequency> = new Set(['daily', 'weekdays', 'weekly', 'monthly'])
+const STAMP_OFFSET = /(Z|[+-]\d{2}:?\d{2})$/
+
+/** "UTC−6" when a machine stamp's own offset is not the viewer's at that instant, else null. A
+ *  schedule's clock is the machine's wall time; every moment beside it is shown in the viewer's. */
+export function machineZoneNote(stamp: null | string | undefined): null | string {
+  const raw = stamp?.match(STAMP_OFFSET)?.[1]
+  const at = raw ? new Date(stamp!) : null
+
+  if (!raw || !at || Number.isNaN(at.valueOf())) {
+    return null
+  }
+
+  const digits = raw === 'Z' ? '+0000' : raw.replace(':', '')
+  const minutes = (digits.startsWith('-') ? -1 : 1) * (Number(digits.slice(1, 3)) * 60 + Number(digits.slice(3)))
+
+  if (minutes === -at.getTimezoneOffset()) {
+    return null
+  }
+
+  const rest = Math.abs(minutes) % 60
+
+  return `UTC${minutes < 0 ? '−' : '+'}${Math.floor(Math.abs(minutes) / 60)}${rest ? `:${String(rest).padStart(2, '0')}` : ''}`
+}
+
 /** A stored schedule in plain words. Falls back to the generic "custom schedule" phrase, so a simple
- *  surface never shows a raw expression (developer mode shows it beside this). */
-export function describeSchedule(schedule: CronJobSchedule | null | undefined, words: ScheduleWords): string {
+ *  surface never shows a raw expression (developer mode shows it beside this). `machineStamp` is any
+ *  stamp the machine wrote for this job (its next run): a clock time is marked with the machine's
+ *  zone when that is not the viewer's. */
+export function describeSchedule(
+  schedule: CronJobSchedule | null | undefined,
+  words: ScheduleWords,
+  machineStamp?: null | string
+): string {
   if (schedule?.kind === 'interval' && schedule.minutes) {
     return describeInterval(schedule.minutes, words.copy)
   }
@@ -242,7 +274,10 @@ export function describeSchedule(schedule: CronJobSchedule | null | undefined, w
   const pick = pickForSchedule(schedule, '')
 
   if (pick.frequency !== 'custom') {
-    return describePick(pick, words) ?? words.copy.schedule.custom
+    const text = describePick(pick, words)
+    const zone = text && WALL_CLOCK.has(pick.frequency) ? machineZoneNote(machineStamp) : null
+
+    return text ? (zone ? `${text} (${zone})` : text) : words.copy.schedule.custom
   }
 
   if (schedule?.kind === 'cron' && schedule.expr) {

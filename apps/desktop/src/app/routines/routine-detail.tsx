@@ -194,7 +194,7 @@ function RoutineSummary({ edit, job }: { edit: RoutineEdit; job: CronJob }) {
   const deliveryLabel = useDeliveryLabel()
   const words = { copy, dayName: (day: string) => t.cron.days[day] ?? day, locale }
   const next = job.next_run_at && jobState(job) !== 'paused' ? copy.nextRun(formatMoment(job.next_run_at, locale)) : ''
-  const when = [describeSchedule(job.schedule, words), next].filter(Boolean).join(' · ')
+  const when = [describeSchedule(job.schedule, words, job.next_run_at), next].filter(Boolean).join(' · ')
 
   const change = edit.inPlace ? (
     <Button onClick={() => edit.open(job)} variant="secondary">

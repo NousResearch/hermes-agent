@@ -7,6 +7,7 @@ import {
   defaultPick,
   describePick,
   describeSchedule,
+  machineZoneNote,
   pickForSchedule,
   type SchedulePick
 } from './routine-schedule'
@@ -89,5 +90,39 @@ describe('the plain-words read-back', () => {
 
   it('leaves Custom words unread rather than guessing', () => {
     expect(describePick(pick({ custom: 'every 2h', frequency: 'custom' }), words)).toBeNull()
+  })
+})
+
+describe('A schedule read on a machine in another time zone', () => {
+  // A stamp for one instant, written with an offset `shift` minutes away from the viewer's own.
+  const stamp = (shift: number) => {
+    const at = new Date(2026, 10, 13, 7, 0)
+    const offset = -at.getTimezoneOffset() + shift
+    const wall = new Date(at.getTime() + offset * 60_000).toISOString().slice(0, 19)
+    const abs = Math.abs(offset)
+
+    return `${wall}${offset < 0 ? '-' : '+'}${String(Math.floor(abs / 60)).padStart(2, '0')}:${String(abs % 60).padStart(2, '0')}`
+  }
+
+  const daily = { expr: '0 7 * * *', kind: 'cron' as const }
+
+  it('reads plainly when the machine keeps the viewer’s time', () => {
+    expect(describeSchedule(daily, words, stamp(0))).toBe('Every day at 7:00 AM')
+    expect(describeSchedule(daily, words, null)).toBe('Every day at 7:00 AM')
+  })
+
+  it('names the machine’s zone beside a clock time that is not the viewer’s', () => {
+    expect(describeSchedule(daily, words, stamp(-60))).toMatch(/^Every day at 7:00 AM \(UTC[+−]\d+(:\d\d)?\)$/)
+    expect(machineZoneNote('2026-11-13T07:00:00-06:00')).toBe(
+      new Date('2026-11-13T07:00:00-06:00').getTimezoneOffset() === 360 ? null : 'UTC−6'
+    )
+    expect(machineZoneNote('2026-11-13T07:00:00+05:30')).toBe(
+      new Date('2026-11-13T07:00:00+05:30').getTimezoneOffset() === -330 ? null : 'UTC+5:30'
+    )
+  })
+
+  it('leaves schedules without a wall-clock time alone', () => {
+    expect(describeSchedule({ kind: 'interval', minutes: 30 }, words, stamp(-60))).toBe('Every 30 minutes')
+    expect(describeSchedule({ expr: '*/15 * * * *', kind: 'cron' }, words, stamp(-60))).toBe('Every 15 minutes')
   })
 })

@@ -172,14 +172,14 @@ function RoutinesTable({ actions, agentScoped, edit, jobs, onOpen }: RoutinesTab
                 <button className="routines-table-open" onClick={() => onOpen(job)} type="button">
                   {routineTitle(job)}
                 </button>
-                <span className="routines-table-sub">{describeSchedule(job.schedule, words)}</span>
+                <span className="routines-table-sub">{describeSchedule(job.schedule, words, job.next_run_at)}</span>
               </td>
               {!agentScoped && (
                 <td data-column="agent">
                   <AgentTag label={agentLabel(job.profile ?? '')} />
                 </td>
               )}
-              <td data-column="when">{describeSchedule(job.schedule, words)}</td>
+              <td data-column="when">{describeSchedule(job.schedule, words, job.next_run_at)}</td>
               <td data-column="last-run">
                 {live
                   ? copy.runningNow

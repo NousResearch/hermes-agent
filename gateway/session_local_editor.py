@@ -54,7 +54,7 @@ def request_editor_edit(proposal):
 def _policy_requester(policy):
     """The session's edit approval policy in front of the editor's consent (main's ACP modes): Accept
     Edits / Don't Ask let an edit run unasked; sensitive paths and everything else still ask."""
-    from acp_adapter.edit_approval import should_auto_approve_edit
+    from hermes_agent.acp_adapter.edit_approval import should_auto_approve_edit
     if policy.edit_approval_policy == 'ask':
         return request_editor_edit
 
@@ -67,7 +67,7 @@ def _policy_requester(policy):
 
 @contextmanager
 def editor_scope(policy):
-    from acp_adapter.edit_approval import set_edit_approval_requester, reset_edit_approval_requester
+    from hermes_agent.acp_adapter.edit_approval import set_edit_approval_requester, reset_edit_approval_requester
     token = set_edit_approval_requester(_policy_requester(policy) if policy.source == 'acp' else None)
     try:
         yield

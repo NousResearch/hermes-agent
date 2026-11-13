@@ -1,6 +1,6 @@
 """ACP-7: an ACP session's edit-approval policy (Default / Accept Edits / Don't Ask) is owner data.
 
-Main's in-process ACP kept the mode on its own session (``acp_adapter/server.py`` ``_MODES``). On the
+Main's in-process ACP kept the mode on its own session (``hermes_agent/acp_adapter/server.py`` ``_MODES``). On the
 shared owner it is a field of the session's frozen LocalSessionPolicy, written by a revision-fenced
 ``session.mutate edit_policy``, read back by every viewer's ``session.info``, restored after an owner
 restart, and enforced where the edit runs (``gateway/session_local_editor.py``): sensitive paths ask.
@@ -174,7 +174,7 @@ def test_a_policy_stored_before_the_field_restores_as_ask_with_its_identity_unch
     ('.git/config', 'session', True),             # ... a sensitive path still asks
 ])
 async def test_the_owners_edit_guard_enforces_the_sessions_policy(tmp_path, name, policy, asks):
-    from acp_adapter.edit_approval import maybe_require_edit_approval
+    from hermes_agent.acp_adapter.edit_approval import maybe_require_edit_approval
     from gateway.session_policy import build_policy, policy_scope
     from tools.approval import register_gateway_notify, unregister_gateway_notify
     from tools.approval_context import reset_current_session_key, set_current_session_key

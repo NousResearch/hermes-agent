@@ -12,7 +12,7 @@ from unittest.mock import MagicMock
 
 
 from hermes_state import SessionDB
-from acp_adapter.session import SessionManager
+from hermes_agent.acp_adapter.session import SessionManager
 
 
 def _tmp_db(tmp_path):

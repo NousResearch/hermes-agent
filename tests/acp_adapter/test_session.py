@@ -1,4 +1,4 @@
-"""Tests for acp_adapter.session — SessionManager and SessionState."""
+"""Tests for hermes_agent.acp_adapter.session — SessionManager and SessionState."""
 
 import contextlib
 import io
@@ -8,8 +8,8 @@ from types import SimpleNamespace
 import pytest
 from unittest.mock import MagicMock, patch
 
-from acp_adapter import session as acp_session
-from acp_adapter.session import SessionManager, SessionState
+from hermes_agent.acp_adapter import session as acp_session
+from hermes_agent.acp_adapter.session import SessionManager, SessionState
 from hermes_state import SessionDB
 
 
@@ -78,7 +78,7 @@ class TestCreateSession:
 
         monkeypatch.setattr("run_agent.AIAgent", FakeAgent)
         monkeypatch.setattr(
-            "acp_adapter.session.load_config",
+            "hermes_agent.acp_adapter.session.load_config",
             lambda: {
                 "model": {
                     "default": "fake-model",
@@ -107,7 +107,7 @@ class TestCreateSession:
                 "api_key": "test-key",
             },
         )
-        monkeypatch.setattr("acp_adapter.session._register_task_cwd", lambda task_id, cwd: None)
+        monkeypatch.setattr("hermes_agent.acp_adapter.session._register_task_cwd", lambda task_id, cwd: None)
         monkeypatch.setattr("hermes_cli.mcp_startup.ensure_mcp_discovery_before_agent_build", lambda **_kw: None)
 
         SessionManager(db=None).create_session(cwd=str(workspace))
@@ -128,7 +128,7 @@ class TestCreateSession:
         monkeypatch.setattr("hermes_cli.config.load_config", lambda: config)
         monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", lambda **_kw: {})
         monkeypatch.setattr("hermes_cli.mcp_startup.ensure_mcp_discovery_before_agent_build", lambda **_kw: None)
-        monkeypatch.setattr("acp_adapter.session._register_task_cwd", lambda task_id, cwd: None)
+        monkeypatch.setattr("hermes_agent.acp_adapter.session._register_task_cwd", lambda task_id, cwd: None)
         manager = SessionManager(db=None)
 
         manager._make_agent(session_id="fresh", cwd=".")
@@ -161,7 +161,7 @@ class TestCreateSession:
         monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"model": {"default": "m"}, **config})
         monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", lambda **_kw: {})
         monkeypatch.setattr("hermes_cli.mcp_startup.ensure_mcp_discovery_before_agent_build", lambda **_kw: None)
-        monkeypatch.setattr("acp_adapter.session._register_task_cwd", lambda task_id, cwd: None)
+        monkeypatch.setattr("hermes_agent.acp_adapter.session._register_task_cwd", lambda task_id, cwd: None)
 
         SessionManager(db=None)._make_agent(session_id="fresh", cwd=".")
 
@@ -196,7 +196,7 @@ class TestCreateSession:
         monkeypatch.setattr("hermes_cli.config.load_config", lambda: config)
         monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", lambda **_kw: {})
         monkeypatch.setattr("hermes_cli.mcp_startup.ensure_mcp_discovery_before_agent_build", lambda **_kw: None)
-        monkeypatch.setattr("acp_adapter.session._register_task_cwd", lambda task_id, cwd: None)
+        monkeypatch.setattr("hermes_agent.acp_adapter.session._register_task_cwd", lambda task_id, cwd: None)
 
         SessionManager(db=None)._make_agent(session_id="fresh", cwd=".")
 
@@ -222,7 +222,7 @@ class TestCreateSession:
         monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"model": {"default": "m", "provider": "openai-codex"}})
         monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", _no_creds)
         monkeypatch.setattr("hermes_cli.mcp_startup.ensure_mcp_discovery_before_agent_build", lambda **_kw: None)
-        monkeypatch.setattr("acp_adapter.session._register_task_cwd", lambda task_id, cwd: None)
+        monkeypatch.setattr("hermes_agent.acp_adapter.session._register_task_cwd", lambda task_id, cwd: None)
         manager = SessionManager(db=None)
 
         monkeypatch.setattr("run_agent.AIAgent", BareFails)
@@ -250,7 +250,7 @@ class TestCreateSession:
             "provider": "openai-codex", "api_mode": "codex_app_server", "api_key": "test-key", "credential_pool": sentinel_pool,
         })
         monkeypatch.setattr("hermes_cli.mcp_startup.ensure_mcp_discovery_before_agent_build", lambda **_kw: None)
-        monkeypatch.setattr("acp_adapter.session._register_task_cwd", lambda task_id, cwd: None)
+        monkeypatch.setattr("hermes_agent.acp_adapter.session._register_task_cwd", lambda task_id, cwd: None)
 
         SessionManager(db=None)._make_agent(session_id="s", cwd=".")
 

@@ -1,4 +1,4 @@
-"""Tests for acp_adapter.server — HermesACPAgent ACP server."""
+"""Tests for hermes_agent.acp_adapter.server — HermesACPAgent ACP server."""
 
 import asyncio
 from pathlib import Path
@@ -24,11 +24,11 @@ from acp.schema import (
     UsageUpdate,
     UserMessageChunk,
 )
-from acp_adapter.auth import TERMINAL_SETUP_AUTH_METHOD_ID
-from acp_adapter.server import (
+from hermes_agent.acp_adapter.auth import TERMINAL_SETUP_AUTH_METHOD_ID
+from hermes_agent.acp_adapter.server import (
     HermesACPAgent,
 )
-from acp_adapter.session import SessionManager
+from hermes_agent.acp_adapter.session import SessionManager
 
 
 @pytest.fixture()
@@ -89,8 +89,8 @@ class TestInitialize:
 
     @pytest.mark.asyncio
     async def test_initialize_advertises_provider_and_terminal_auth_methods(self, agent, monkeypatch):
-        monkeypatch.setattr("acp_adapter.auth.detect_provider", lambda: "openrouter")
-        monkeypatch.setattr("acp_adapter.server.detect_provider", lambda: "openrouter")
+        monkeypatch.setattr("hermes_agent.acp_adapter.auth.detect_provider", lambda: "openrouter")
+        monkeypatch.setattr("hermes_agent.acp_adapter.server.detect_provider", lambda: "openrouter")
 
         resp = await agent.initialize(protocol_version=1)
         payloads = [method.model_dump(by_alias=True, exclude_none=True) for method in resp.auth_methods]
@@ -111,7 +111,7 @@ class TestAuthenticate:
     @pytest.mark.asyncio
     async def test_authenticate_with_matching_method_id(self, agent, monkeypatch):
         monkeypatch.setattr(
-            "acp_adapter.server.detect_provider",
+            "hermes_agent.acp_adapter.server.detect_provider",
             lambda: "openrouter",
         )
         resp = await agent.authenticate(method_id="openrouter")
@@ -120,7 +120,7 @@ class TestAuthenticate:
     @pytest.mark.asyncio
     async def test_authenticate_is_case_insensitive(self, agent, monkeypatch):
         monkeypatch.setattr(
-            "acp_adapter.server.detect_provider",
+            "hermes_agent.acp_adapter.server.detect_provider",
             lambda: "openrouter",
         )
         resp = await agent.authenticate(method_id="OpenRouter")
@@ -129,7 +129,7 @@ class TestAuthenticate:
     @pytest.mark.asyncio
     async def test_authenticate_rejects_mismatched_method_id(self, agent, monkeypatch):
         monkeypatch.setattr(
-            "acp_adapter.server.detect_provider",
+            "hermes_agent.acp_adapter.server.detect_provider",
             lambda: "openrouter",
         )
         resp = await agent.authenticate(method_id="totally-invalid-method")
@@ -138,7 +138,7 @@ class TestAuthenticate:
     @pytest.mark.asyncio
     async def test_authenticate_without_provider(self, agent, monkeypatch):
         monkeypatch.setattr(
-            "acp_adapter.server.detect_provider",
+            "hermes_agent.acp_adapter.server.detect_provider",
             lambda: None,
         )
         resp = await agent.authenticate(method_id="openrouter")
@@ -147,7 +147,7 @@ class TestAuthenticate:
     @pytest.mark.asyncio
     async def test_authenticate_accepts_terminal_setup_after_provider_configured(self, agent, monkeypatch):
         monkeypatch.setattr(
-            "acp_adapter.server.detect_provider",
+            "hermes_agent.acp_adapter.server.detect_provider",
             lambda: "openrouter",
         )
         resp = await agent.authenticate(method_id=TERMINAL_SETUP_AUTH_METHOD_ID)

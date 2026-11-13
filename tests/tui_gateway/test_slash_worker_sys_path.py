@@ -6,7 +6,7 @@ the installed hermes ``utils`` module and crashes the worker on ``import cli``
 (``ImportError: cannot import name 'atomic_replace' from 'utils'``).
 
 #51693 added this guard to the sibling entrypoints ``tui_gateway/entry.py`` and
-``acp_adapter/entry.py`` (via the shared ``hermes_bootstrap.harden_import_path``
+``hermes_agent/acp_adapter/entry.py`` (via the shared ``hermes_bootstrap.harden_import_path``
 helper) but missed this child, so the crash still reproduced. slash_worker.py
 must run the guard before its first non-stdlib import.
 """

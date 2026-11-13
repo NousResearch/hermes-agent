@@ -307,7 +307,7 @@ def local_conversation_ids(conn, session_id):
 
 def local_lineage_index(conn):
     """``(superseded, heads)`` for listing a local conversation as one row, as
-    ``acp_adapter.catalog`` does: a canonical reset keeps the creation id as the owner and moves the
+    ``hermes_agent.acp_adapter.catalog`` does: a canonical reset keeps the creation id as the owner and moves the
     transcript to a child, so every segment is one conversation. ``superseded`` holds the listable
     roots of earlier reset segments (filtered in SQL, before paging); ``heads`` maps the latest
     reset segment to ``(owner, lineage)`` for the row that represents the conversation. A delete

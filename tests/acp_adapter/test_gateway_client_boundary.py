@@ -1,11 +1,11 @@
 """The normal ACP constructor is a transport client, not an embedded owner."""
 import pytest
 
-from acp_adapter.server import HermesACPAgent
+from hermes_agent.acp_adapter.server import HermesACPAgent
 
 
 def test_default_acp_does_not_construct_an_embedded_session_manager(monkeypatch):
-    from acp_adapter import server
+    from hermes_agent.acp_adapter import server
 
     def forbidden(*args, **kwargs):
         raise AssertionError("ACP constructed an independent session owner")

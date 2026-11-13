@@ -1,6 +1,6 @@
-"""Tests for acp_adapter.auth — provider detection."""
+"""Tests for hermes_agent.acp_adapter.auth — provider detection."""
 
-from acp_adapter.auth import (
+from hermes_agent.acp_adapter.auth import (
     detect_provider,
 )
 

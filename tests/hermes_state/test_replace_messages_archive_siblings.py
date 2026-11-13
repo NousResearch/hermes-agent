@@ -5,7 +5,7 @@ in-place-compaction rows because ``rewrite_transcript`` defaulted to a
 destructive full ``replace_messages``.  The same class existed at two more
 sites, fixed here:
 
-- ``acp_adapter/session.py`` ``_persist`` (non-owned-agent branch): probed
+- ``hermes_agent/acp_adapter/session.py`` ``_persist`` (non-owned-agent branch): probed
   ``has_archived_messages`` and FAILED OPEN into the destructive replace on
   any probe error (and could race a concurrent ``archive_and_compact``).
   Now passes ``active_only=True`` unconditionally.

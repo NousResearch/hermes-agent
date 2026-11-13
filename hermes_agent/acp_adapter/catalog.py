@@ -3,7 +3,7 @@ import json
 from pathlib import Path
 
 from hermes_state import SessionDB
-from acp_adapter.session import (
+from hermes_agent.acp_adapter.session import (
     _normalize_cwd_for_compare, _parse_model_config, _session_info, _updated_at_sort_key,
 )
 

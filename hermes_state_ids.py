@@ -34,7 +34,7 @@ SESSION_ID_RECOGNIZERS = (
     re.compile(r"^api-[0-9a-f]{16}$"),
     # gateway/platforms/api_server_runs.py: /v1/runs falls back to its f"run_{uuid4().hex}".
     re.compile(r"^run_[0-9a-f]{32}$"),
-    # acp_adapter/session.py and /v1/responses: str(uuid4()).
+    # hermes_agent/acp_adapter/session.py and /v1/responses: str(uuid4()).
     re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"),
 )
 

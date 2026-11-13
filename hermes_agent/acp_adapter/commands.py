@@ -9,9 +9,9 @@ from typing import Any
 
 from acp.schema import AvailableCommand, AvailableCommandsUpdate, UnstructuredCommandInput
 
-from acp_adapter.session import SessionState, _expand_acp_enabled_toolsets
+from hermes_agent.acp_adapter.session import SessionState, _expand_acp_enabled_toolsets
 
-logger = logging.getLogger("acp_adapter.server")
+logger = logging.getLogger("hermes_agent.acp_adapter.server")
 
 
 def _estimate_tokens(history: list, agent: Any, system_prompt: str | None = None, tools: Any = None) -> int:

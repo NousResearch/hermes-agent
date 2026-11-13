@@ -60,7 +60,7 @@ async def test_resume_answer_behind_a_burst_stays_reachable(monkeypatch, consume
             pump = asyncio.create_task(view.render())
             failure = lambda: view.failure
         else:
-            from acp_adapter.gateway_server import GatewayACPAgent
+            from hermes_agent.acp_adapter.gateway_server import GatewayACPAgent
             view = GatewayACPAgent()
             view._gateway, view._conn = client, AsyncMock()
             view._snapshots['s'] = {'replay_epoch': 'e', 'last_sequence': 0}
@@ -114,7 +114,7 @@ class PostAckWire:
 async def test_a_full_queue_never_drops_a_post_ack_recovery():
     """Session t fills the queue while session s's ack lands after a gap re-attach covering it."""
     import acp
-    from acp_adapter.gateway_server import GatewayACPAgent
+    from hermes_agent.acp_adapter.gateway_server import GatewayACPAgent
     from hermes_cli.gateway_client import GatewayClient
     from tests.waiting import async_wait_until
 

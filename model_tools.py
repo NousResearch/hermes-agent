@@ -159,7 +159,7 @@ try:  # plugin tool discovery (user/project/pip plugins)
     # wait, and the gateway lazy-imports this module from inside the asyncio event loop on the first user
     # message — freezing Discord/Telegram heartbeats for up to 120s whenever any configured MCP server was
     # slow or unreachable (#16856). - gateway/run.py            -> start_gateway() uses run_in_executor -
-    # acp_adapter/server.py     -> asyncio.to_thread on session init
+    # hermes_agent/acp_adapter/server.py     -> asyncio.to_thread on session init
     from hermes_cli.plugins import discover_plugins
     discover_plugins()
 except Exception as e:
@@ -818,7 +818,7 @@ def _pre_dispatch_guards(function_name: str, function_args: dict[str, Any], skip
     # ACP/Zed edit approval before any file mutation. The requester is bound
     # via ContextVar only for ACP sessions, so CLI/gateway paths are unaffected.
     try:
-        from acp_adapter.edit_approval import maybe_require_edit_approval
+        from hermes_agent.acp_adapter.edit_approval import maybe_require_edit_approval
         edit_block_message = maybe_require_edit_approval(function_name, function_args)
         if edit_block_message is not None:
             return function_args, (edit_block_message, "edit_approval_denied", None)

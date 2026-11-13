@@ -12,7 +12,7 @@ adapter simply never passed them.
 import json
 from types import SimpleNamespace
 
-from acp_adapter.session import SessionManager
+from hermes_agent.acp_adapter.session import SessionManager
 from hermes_state import SessionDB
 
 

@@ -87,7 +87,7 @@ async def owner(tmp_path, monkeypatch):
 
 
 async def _acp(owner):
-    from acp_adapter.gateway_server import GatewayACPAgent
+    from hermes_agent.acp_adapter.gateway_server import GatewayACPAgent
     agent = GatewayACPAgent()
     agent._gateway = owner.wire
     agent._conn = SimpleNamespace(session_update=lambda **kwargs: asyncio.sleep(0))

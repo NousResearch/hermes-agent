@@ -4,7 +4,7 @@ import base64
 import pytest
 from acp.schema import ImageContentBlock, ResourceContentBlock, TextContentBlock
 
-from acp_adapter.gateway_server import GatewayACPAgent
+from hermes_agent.acp_adapter.gateway_server import GatewayACPAgent
 
 PNG = b"\x89PNG\r\n\x1a\n" + b"0" * 32
 BMP = b"BM" + b"0" * 64

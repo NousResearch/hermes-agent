@@ -1,4 +1,4 @@
-"""Tests for acp_adapter.permissions."""
+"""Tests for hermes_agent.acp_adapter.permissions."""
 
 import asyncio
 import inspect
@@ -13,7 +13,7 @@ from acp.schema import (
     RequestPermissionResponse,
 )
 
-from acp_adapter.permissions import make_approval_callback
+from hermes_agent.acp_adapter.permissions import make_approval_callback
 from tools.approval import prompt_dangerous_approval
 
 
@@ -233,7 +233,7 @@ class TestPermissionRequestToolCallReachesATerminalStatus:
         assert [(u.tool_call_id, u.status) for u in sent] == [(requested.tool_call_id, status)]
 
     def test_denied_edit_approval_request_is_closed_as_failed(self):
-        from acp_adapter.edit_approval import EditProposal, make_acp_edit_approval_requester
+        from hermes_agent.acp_adapter.edit_approval import EditProposal, make_acp_edit_approval_requester
 
         proposal = EditProposal(tool_name="write_file", path="/tmp/x", old_text="", new_text="y", arguments={})
         requested, sent = self._run(
@@ -244,7 +244,7 @@ class TestPermissionRequestToolCallReachesATerminalStatus:
     def test_allowed_edit_approval_request_is_closed_as_completed_once(self):
         """Live regression: a client answering with a plain ``selected`` outcome (not the SDK
         ``AllowedOutcome`` class) had the edit applied but the bubble closed ``failed``."""
-        from acp_adapter.edit_approval import EditProposal, make_acp_edit_approval_requester
+        from hermes_agent.acp_adapter.edit_approval import EditProposal, make_acp_edit_approval_requester
 
         proposal = EditProposal(tool_name="write_file", path="/tmp/x", old_text="", new_text="y", arguments={})
         decisions = []
@@ -266,7 +266,7 @@ class TestPermissionRequestToolCallReachesATerminalStatus:
 def test_default_permission_timeout_follows_approvals_config(monkeypatch):
     """No explicit timeout → the ACP bridge waits ``approvals.timeout`` like every other
     surface, instead of a hardcoded 60 s the host cannot raise (#73403)."""
-    from acp_adapter import permissions
+    from hermes_agent.acp_adapter import permissions
     from tools import approval_context
 
     monkeypatch.setattr(approval_context, "_get_approval_config", lambda: {"timeout": 900})

@@ -8,7 +8,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import pytest
 from acp.schema import ImageContentBlock, TextContentBlock
 
-from acp_adapter.gateway_server import GatewayACPAgent
+from hermes_agent.acp_adapter.gateway_server import GatewayACPAgent
 from hermes_cli.gateway_client import GatewayClientError
 from tests.acp_adapter.test_gateway_prompt_content import _ONE_PX_PNG, _allow_loopback
 

@@ -88,7 +88,7 @@ def test_model_receipt_changes_next_wire_and_branch_keeps_independent_history(tm
             params = dict(session_id=sid, request_id='switch', operation='model', payload={'model': 'switched'},
                 expected_revision=before['revision'], expected_generation=before['execution_generation'])
             from hermes_cli.gateway_chat_view import GatewayChatView
-            from acp_adapter.gateway_server import GatewayACPAgent
+            from hermes_agent.acp_adapter.gateway_server import GatewayACPAgent
             class Client:
                 async def rpc(self, method, _timeout=None, **kwargs):  # the client budget is never on the wire
                     return await call(method, **kwargs)

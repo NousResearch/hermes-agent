@@ -1,4 +1,4 @@
-"""Tests for acp_adapter.entry._BenignProbeMethodFilter.
+"""Tests for hermes_agent.acp_adapter.entry._BenignProbeMethodFilter.
 
 Covers both the isolated filter logic and the full end-to-end path where a
 client sends a bare JSON-RPC ``ping`` request over stdio and the acp runtime
@@ -18,7 +18,7 @@ import pytest
 
 from acp.exceptions import RequestError
 
-from acp_adapter.entry import _BenignProbeMethodFilter
+from hermes_agent.acp_adapter.entry import _BenignProbeMethodFilter
 
 
 # -- Unit tests on the filter itself ----------------------------------------

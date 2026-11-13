@@ -5,9 +5,9 @@ from typing import cast
 
 import pytest
 
-from acp_adapter import entry
-from acp_adapter.server import HermesACPAgent
-from acp_adapter.session import SessionState
+from hermes_agent.acp_adapter import entry
+from hermes_agent.acp_adapter.server import HermesACPAgent
+from hermes_agent.acp_adapter.session import SessionState
 
 
 def test_version_flag_displays_derived_version(monkeypatch, capsys):

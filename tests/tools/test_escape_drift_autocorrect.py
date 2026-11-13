@@ -102,7 +102,7 @@ def test_shared_correction_policy_across_tools(workdir, monkeypatch, engine, con
 @pytest.mark.parametrize("content,old,new,expected", _SHARED_CASES,
                          ids=["backslash_free", "quote", "ambiguous"])
 def test_approval_preview_agrees_with_patch(workdir, content, old, new, expected):
-    from acp_adapter.edit_approval import build_edit_proposal
+    from hermes_agent.acp_adapter.edit_approval import build_edit_proposal
     target = workdir / "preview.txt"
     target.write_text(content)
     arguments = dict(path=str(target), old_string=old, new_string=new)

@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock
 import pytest
 from acp.schema import TextContentBlock
 
-from acp_adapter.gateway_server import GatewayACPAgent
+from hermes_agent.acp_adapter.gateway_server import GatewayACPAgent
 from hermes_cli.gateway_client import GatewayClientError
 
 

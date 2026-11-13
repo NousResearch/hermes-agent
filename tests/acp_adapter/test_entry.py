@@ -1,4 +1,4 @@
-"""Tests for acp_adapter.entry startup wiring."""
+"""Tests for hermes_agent.acp_adapter.entry startup wiring."""
 
 import sys
 from pathlib import Path
@@ -6,7 +6,7 @@ from pathlib import Path
 import acp
 import pytest
 
-from acp_adapter import entry
+from hermes_agent.acp_adapter import entry
 
 
 def test_main_enables_unstable_protocol(monkeypatch):
@@ -126,7 +126,7 @@ def test_console_script_runs_in_the_selected_profile(tmp_path, flags, profile):
         "    print('SERVED', get_hermes_home())\n"
         "acp.run_agent = fake_run_agent\n"
         f"sys.argv = ['hermes-acp', *{flags!r}]\n"
-        "from acp_adapter.entry import main\n"
+        "from hermes_agent.acp_adapter.entry import main\n"
         "main()\n"
     )
     env = {k: v for k, v in os.environ.items() if k not in ("HERMES_HOME", "HERMES_DATA_DIR_SUFFIX")}

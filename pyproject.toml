@@ -593,7 +593,7 @@ build-backend = "setuptools.build_meta"
 [project.scripts]
 hermes = "hermes_cli.main:main"
 hermes-agent = "agent.legacy_cli:main"
-hermes-acp = "acp_adapter.entry:main"
+hermes-acp = "hermes_agent.acp_adapter.entry:main"
 
 [tool.hermes]
 # Extras that only an explicit selection installs (setup, sync_venv). Bundles

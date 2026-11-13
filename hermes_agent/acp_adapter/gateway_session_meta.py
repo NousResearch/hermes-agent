@@ -16,7 +16,7 @@ from acp.schema import (
     SessionInfoUpdate, SessionMode, SessionModeState, SessionModelState, UnstructuredCommandInput, Usage, UsageUpdate,
 )
 
-from acp_adapter.modes import (
+from hermes_agent.acp_adapter.modes import (
     DEFAULT_EDIT_APPROVAL_POLICY, DEFAULT_MODE, EDIT_APPROVAL_POLICY_CONFIG_ID, EDIT_APPROVAL_POLICY_TO_MODE, MODES,
 )
 
@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 
 # Advertised name -> (description, input hint). ``prompt`` serves each through a gateway verb
-# (``acp_adapter/gateway_commands.py``); ``/reset`` is the registry's alias of ``/new``.
+# (``hermes_agent/acp_adapter/gateway_commands.py``); ``/reset`` is the registry's alias of ``/new``.
 COMMANDS: dict[str, tuple[str, str | None]] = {
     "help": ("List available commands", None),
     "model": ("Show current model and provider, or switch models", "model name to switch to"),
@@ -128,8 +128,8 @@ async def session_config_options(client, session_id, models, info, mode_id):
 def model_state(info: dict) -> SessionModelState | None:
     """The picker for the session's model (``session.info``), from the shared inventory; a single
     current-model row when nothing is listable, as main's ``_build_model_state``. Blocking."""
-    from acp_adapter.auth import detect_provider
-    from acp_adapter.model_catalog import build_model_state, encode_model_choice
+    from hermes_agent.acp_adapter.auth import detect_provider
+    from hermes_agent.acp_adapter.model_catalog import build_model_state, encode_model_choice
     model = str(info.get("model") or "").strip()
     provider = info.get("provider") or detect_provider() or "openrouter"
     try:
@@ -147,8 +147,8 @@ def model_state(info: dict) -> SessionModelState | None:
 
 def provenance_meta(db_path: Path, acp_session_id: str, session_id: str) -> dict | None:
     """``_meta.hermes.sessionProvenance`` for the editor's id, the logical session's current
-    compression tip and its lineage (``acp_adapter/provenance.py``). Blocking."""
-    from acp_adapter.provenance import session_provenance_meta
+    compression tip and its lineage (``hermes_agent/acp_adapter/provenance.py``). Blocking."""
+    from hermes_agent.acp_adapter.provenance import session_provenance_meta
     from hermes_state import SessionDB
     if not Path(db_path).exists():
         return None

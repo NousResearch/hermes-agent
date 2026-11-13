@@ -17,8 +17,8 @@ from types import ModuleType, SimpleNamespace
 
 import pytest
 
-from acp_adapter.server import HermesACPAgent
-from acp_adapter.session import SessionManager, SessionState
+from hermes_agent.acp_adapter.server import HermesACPAgent
+from hermes_agent.acp_adapter.session import SessionManager, SessionState
 from hermes_cli import mcp_startup
 
 

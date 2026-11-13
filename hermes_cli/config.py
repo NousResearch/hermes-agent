@@ -3183,23 +3183,6 @@ def _write_user_config(config_path: Path, user_config: dict[str, Any]) -> None:
     recording_raw_config_write(config_path, user_config, atomic_config_replace)
 
 
-def _print_unknown_key_notice(key: str, suggestion: Optional[str]) -> None:
-    print(color(
-        f"⚠ '{key}' is not a recognized config key — it was saved anyway, "
-        "but Hermes may not read it.", Colors.YELLOW))
-    if suggestion:
-        print(color(f"  Did you mean: {suggestion}", Colors.YELLOW))
-    # The env bridge covers custom TOP-LEVEL keys only; an unseeded nested path (``stt.provider``)
-    # is written but not bridged, so the footer would be a false promise there.
-    if len(_split_key_path(key)) == 1:
-        print(color(
-            "  (Custom top-level keys are supported and bridged to the "
-            "environment for skills/external tools. Use --force to skip "
-            "this notice.)", Colors.DIM))
-    else:
-        print(color("  (Use --force to skip this notice.)", Colors.DIM))
-
-
 def _dropped_shadow_notes(user_config: dict, key: str, legacy_key, drop_legacy_disabled) -> list[str]:
     """Drop what would shadow the key ``config set`` just wrote, one note per drop: a legacy
     gateway-platforms duplicate, and a legacy MCP ``disabled`` that would keep the server off."""
@@ -3229,6 +3212,12 @@ def set_config_value(key: str, value: str, force: bool = False):
             f"✗ Invalid config key: {key!r} — contains an empty path segment "
             "(leading, trailing, or doubled '.').")
     _exit_if_key_managed(key, "set")
+    # A gate's own switch is not settable by the process it guards: an unattended agent runs
+    # `hermes config set` itself, so without this it can grant the approval the gate requires.
+    from hermes_cli.config_self_control import refuse_unattended_security_self_control
+
+    refuse_unattended_security_self_control(key, value)
+
     if _is_env_config_key(key):
         from hermes_cli.credential_lifecycle import save_provider_env_credential
 
@@ -3349,7 +3338,9 @@ def set_config_value(key: str, value: str, force: bool = False):
     # Post-write unknown-key notice (#34067): value IS saved, but tell the user the runtime may never read
     # it and suggest the likely-intended path.
     if not is_known and not force:
-        _print_unknown_key_notice(key, suggestion)
+        from hermes_cli.config_key_notices import unknown_key_notice
+
+        unknown_key_notice(key, suggestion)
 
 
 def get_config_value(key: str, *, as_json: bool = False, raw: bool = False):

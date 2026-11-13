@@ -77,7 +77,7 @@ def test_apply_model_switch_does_not_leak_process_env():
         patch("hermes_cli.model_switch.persist_model_selection") as mock_persist,
         patch(
             "tui_gateway.server._persist_live_session_runtime",
-            side_effect=lambda session: persisted_composer_profiles.append(
+            side_effect=lambda session, **_kw: persisted_composer_profiles.append(
                 session.get("composer_override_profile")),
         ) as persist_runtime,
         patch("tui_gateway.server._config_model_target", return_value=("minimax/m3", "minimax")),
@@ -97,7 +97,7 @@ def test_apply_model_switch_does_not_leak_process_env():
     assert sess_b["composer_override_profile"] == {"model": "minimax/m3", "provider": "minimax"}
     # _commit_agent_switch owns the runtime transaction; provenance must be present
     # on its first (and only) DB write rather than relying on a second best-effort write.
-    persist_runtime.assert_called_once_with(sess_b)
+    persist_runtime.assert_called_once_with(sess_b, pin_route=True)
     assert persisted_composer_profiles == [{"model": "minimax/m3", "provider": "minimax"}]
     # The switched agent mutated in place.
     assert sess_b["agent"].model == "zai/glm-5.1"

@@ -1,8 +1,9 @@
 """``no core override`` judges a name by the scope that binds it: a function's local
 ``key = <core value>`` does not make every ``key`` in the module core, and calling ``add`` on a
-set / dict / list the scope built itself is not calling a same-named plugin patch helper. Every
-real rebind shape next to those (aliased bases, static helpers, ``global`` imports, annotations,
-a builtin name rebound to a factory) stays caught."""
+name the module only ever binds to a set / dict / list is not calling a same-named plugin patch
+helper. Every real rebind shape next to those (aliased bases, static helpers, ``global`` imports,
+annotations, a builtin name rebound to a factory, a container name rebound by any other binding)
+stays caught."""
 
 from __future__ import annotations
 
@@ -50,6 +51,19 @@ CASES = {
         "        key.x = 1\n"
         "    register(callback)\n"
     ), {}, []),
+    "nested_global_skips_parent_taint": ((
+        "class Plugin:\n"
+        "    x = 0\n"
+        "core = Plugin()\n"
+        "def register(ctx):\n"
+        "    def factory():\n"
+        "        import run_agent as core\n"
+        "        def callback():\n"
+        "            global core\n"
+        "            core.x = 1\n"
+        "        return callback, core\n"
+        "    ctx.cb = factory()\n"
+    ), {}, []),
     # -- real rebinds: every shape main catches stays caught --------------------------------------
     "closure_sees_parent_taint": ((
         "import importlib\n"
@@ -76,6 +90,20 @@ CASES = {
         "    if (rec := factory()):\n"
         "        rec.add(run_agent, print)\n"
     ), {}, ["rec.add(run_agent, ...) (__init__.py:10)"]),
+    "nonlocal_rebinds_a_container_name": (_RECORDER + (
+        "def register(ctx):\n"
+        "    rec = set()\n"
+        "    def swap():\n"
+        "        nonlocal rec\n"
+        "        rec = Recorder()\n"
+        "    swap()\n"
+        "    rec.add(run_agent, print)\n"
+    ), {}, ["rec.add(run_agent, ...) (__init__.py:11)"]),
+    "comprehension_target_shadows_a_container_name": (_RECORDER + (
+        "def register(ctx):\n"
+        "    rec = set()\n"
+        "    [rec.add(run_agent, print) for rec in [Recorder()]]\n"
+    ), {}, ["rec.add(run_agent, ...) (__init__.py:7)"]),
     "staticmethod_helper": ((
         "import run_agent\n"
         "class Recorder:\n"

@@ -127,8 +127,14 @@ def _call_name(node: ast.Call) -> str:
 
 # Constructors whose result is a plain container, never the plugin's own helper object (unless
 # the module rebinds the name: ``from .factory import make_recorder as set``).
-_CONTAINER_CTORS = frozenset({"set", "dict", "list"})
+_CONTAINER_CTORS = frozenset({"set", "dict", "list", "frozenset"})
 _CONTAINER_DISPLAYS = (ast.Dict, ast.List, ast.Set, ast.DictComp, ast.ListComp, ast.SetComp)
+# Names / attributes that reach a namespace dynamically (``globals()["rec"] = ...``, frame locals,
+# ``builtins.set = ...``): a plugin using any of them gets no receiver-name exemption at all.
+_NAMESPACE_ESCAPES = frozenset({
+    "globals", "locals", "vars", "exec", "eval", "builtins", "__builtins__", "__dict__", "__setattr__",
+    "__globals__", "_getframe", "currentframe", "f_locals", "f_globals", "ctypes"})
+_TYPE_PARAMS = tuple(getattr(ast, n) for n in ("TypeVar", "ParamSpec", "TypeVarTuple") if hasattr(ast, n))
 
 # Methods that change a list / dict / set in place.
 _MUTATORS = frozenset({
@@ -173,8 +179,8 @@ class _Analysis:
         self.param_mutators: dict[str, set[int]] = {}  # helpers mutating a parameter's private state
         self.aliases: dict[str, str] = {}  # ``from .compat import server as gateway_server``
         self.constants: dict[str, str] = {}  # module-level ``NAME = "module.path"``
-        self.rebound_ctors: set[str] = set()  # container constructors the current module rebinds
-        self.containers: set[str] = set()  # names the current scope binds only to a container
+        self.rebound_ctors: frozenset = frozenset()  # container constructors the current module rebinds
+        self.containers: frozenset = frozenset()  # names every binding in the current module makes a container
 
     def _func_key(self, call: ast.Call) -> str:
         name = _call_name(call).split(".")[-1]
@@ -190,8 +196,9 @@ class _Analysis:
 
     def helper_indices(self, table: dict[str, set[int]], call: ast.Call) -> set[int]:
         """Argument positions a call hands to a patching / mutating helper, matched by name. A
-        method called on a container (``seen.add(x)`` after ``seen = set()`` in the same scope)
-        is the container's own, not a same-named plugin helper."""
+        method called on a container display / constructor, or on a name that EVERY binding in
+        the module makes a container (``seen = set()`` and nothing else), is the container's own,
+        not a same-named plugin helper."""
         func = call.func
         if isinstance(func, ast.Attribute) and (
                 self.is_container(func.value) or isinstance(func.value, ast.Name) and func.value.id in self.containers):
@@ -419,13 +426,8 @@ class _Module:
         self.nodes = [n for stmt in tree.body for n in _walk_scope(stmt)]
         self.scopes = _scopes(tree)
         self.declares = any(s.globals or s.nonlocals for s in self.scopes)
-        bound = {n.id for n in ast.walk(tree) if isinstance(n, ast.Name) and not isinstance(n.ctx, ast.Load)}
-        bound |= {a.arg for n in ast.walk(tree) if isinstance(n, ast.arguments)
-                  for a in (*n.posonlyargs, *n.args, *n.kwonlyargs, n.vararg, n.kwarg) if a is not None}
-        bound |= {(a.asname or a.name).split(".")[0] for n in ast.walk(tree)
-                  if isinstance(n, (ast.Import, ast.ImportFrom)) for a in n.names}
-        bound |= {n.name for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))}
-        self.rebound_ctors = _CONTAINER_CTORS & bound
+        self.rebound_ctors: frozenset = _CONTAINER_CTORS  # set by ``_vet_containers``
+        self.containers: frozenset = frozenset()
 
     def taints(self, analysis: _Analysis, calls: bool = False) -> tuple[set[str], dict]:
         """Module taint and each function's taint. A closure inherits its enclosing function's
@@ -438,7 +440,8 @@ class _Module:
             taints: dict = {}
             for scope in self.scopes:
                 outer = taints[scope.parent] if scope.parent is not None else module
-                inherited = (outer - scope.locals) | (module & scope.globals) | to_func.get(scope.func, set())
+                inherited = (outer - scope.locals - scope.globals) | (module & scope.globals) \
+                    | to_func.get(scope.func, set())
                 taints[scope.func] = analysis.scope_taint(scope.nodes, inherited, calls)
             if not self.declares:
                 return module, taints
@@ -453,32 +456,87 @@ class _Module:
         return module, taints
 
 
-def _containers(analysis: _Analysis, nodes: list[ast.AST], shadowed: set[str]) -> set[str]:
-    """Names a scope binds only by plain assignment of a set / dict / list."""
-    plain: dict[str, bool] = {}
-    targets: set[int] = set()
-    for node in nodes:
-        if isinstance(node, (ast.Assign, ast.AnnAssign)) and node.value is not None:
-            for t in node.targets if isinstance(node, ast.Assign) else [node.target]:
-                if isinstance(t, ast.Name):
-                    targets.add(id(t))
-                    plain[t.id] = plain.get(t.id, True) and analysis.is_container(node.value)
-    other = _local_bindings([n for n in nodes if id(n) not in targets]) | shadowed
-    return {name for name, ok in plain.items() if ok and name not in other}
-
-
 def _closure_nodes(scope: _Scope, name: str) -> list[ast.AST]:
-    """A scope's nodes plus those of nested functions that see ``name`` (do not rebind it)."""
+    """A scope's nodes plus those of nested functions that see ``name`` (neither rebind it nor
+    declare it ``global``)."""
     nodes = list(scope.nodes)
     for child in scope.children:
-        if name not in child.locals:
+        if name not in child.locals and name not in child.globals:
             nodes += _closure_nodes(child, name)
     return nodes
 
 
-def _enter_scope(analysis: _Analysis, module: _Module, nodes: list[ast.AST], shadowed: set[str]) -> None:
-    analysis.rebound_ctors = module.rebound_ctors
-    analysis.containers = _containers(analysis, nodes, shadowed)
+def _bindings(tree: ast.AST) -> list[tuple[str, ast.AST | None]]:
+    """Every name binding in the module, any scope and any form, with the bound value when the
+    binding is a plain ``name = value`` / ``name: T = value`` / ``(name := value)`` (else None)."""
+    found: list[tuple[str, ast.AST | None]] = []
+    plain: set[int] = set()
+    for node in ast.walk(tree):
+        pairs = [(t, node.value) for t in node.targets] if isinstance(node, ast.Assign) else \
+            [(node.target, node.value)] if isinstance(node, (ast.AnnAssign, ast.NamedExpr)) and node.value else []
+        for target, value in pairs:
+            if isinstance(target, ast.Name):
+                plain.add(id(target))
+                found.append((target.id, value))
+    for node in ast.walk(tree):
+        name = None
+        if isinstance(node, ast.Name) and not isinstance(node.ctx, ast.Load) and id(node) not in plain:
+            name = node.id  # unpacking, for / with / comprehension targets, augassign, del, bare annotation
+        elif isinstance(node, ast.arg):
+            name = node.arg
+        elif isinstance(node, ast.alias):
+            name = (node.asname or node.name).split(".")[0]
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.ExceptHandler,
+                               ast.MatchAs, ast.MatchStar, *_TYPE_PARAMS)):
+            name = node.name
+        elif isinstance(node, ast.MatchMapping):
+            name = node.rest
+        elif isinstance(node, (ast.Global, ast.Nonlocal)):
+            found += [(n, None) for n in node.names]
+        if name:
+            found.append((name, None))
+    return found
+
+
+def _namespace_escapes(modules: list[_Module]) -> tuple[bool, set[str]]:
+    """Whether the plugin reaches a namespace dynamically, and every attribute name it writes
+    (``mod.rec = ...``, ``setattr(mod, "rec", ...)``): either can rebind a module name from outside
+    its own bindings."""
+    written: set[str] = set()
+    for module in modules:
+        for node in ast.walk(module.tree):
+            if isinstance(node, ast.Name) and node.id in _NAMESPACE_ESCAPES \
+                    or isinstance(node, ast.Attribute) and node.attr in _NAMESPACE_ESCAPES \
+                    or isinstance(node, ast.alias) and node.name.split(".")[0] in _NAMESPACE_ESCAPES:
+                return True, written
+            if isinstance(node, ast.Attribute) and not isinstance(node.ctx, ast.Load):
+                written.add(node.attr)
+            elif isinstance(node, ast.Call) and _call_name(node) in ("setattr", "delattr") and len(node.args) > 1:
+                if not isinstance(node.args[1], ast.Constant):
+                    return True, written
+                written.add(str(node.args[1].value))
+    return False, written
+
+
+def _vet_containers(analysis: _Analysis, modules: list[_Module]) -> None:
+    """Per module: the constructors it rebinds, and the receiver names exempt from helper matching.
+    A name is exempt only if EVERY binding of it anywhere in the module is a container display or
+    an un-rebound constructor call, the module has no ``import *``, and no plugin code writes it as
+    an attribute or reaches namespaces dynamically."""
+    dynamic, written = _namespace_escapes(modules)
+    for module in modules:
+        bindings = _bindings(module.tree)
+        names = {name for name, _value in bindings}
+        module.rebound_ctors = _CONTAINER_CTORS if dynamic else _CONTAINER_CTORS & (names | written)
+        if dynamic or "*" in names:
+            continue
+        analysis.rebound_ctors = module.rebound_ctors
+        bad = {name for name, value in bindings if value is None or not analysis.is_container(value)}
+        module.containers = frozenset(names - bad - written)
+
+
+def _enter_module(analysis: _Analysis, module: _Module) -> None:
+    analysis.rebound_ctors, analysis.containers = module.rebound_ctors, module.containers
 
 
 def _summarise_helpers(analysis: _Analysis, modules: list[_Module]) -> None:
@@ -488,10 +546,10 @@ def _summarise_helpers(analysis: _Analysis, modules: list[_Module]) -> None:
         before = (len(analysis.core_returners), sum(len(v) for v in analysis.param_patchers.values()),
                   sum(len(v) for v in analysis.param_mutators.values()))
         for module in modules:
+            _enter_module(analysis, module)
             _module_taint, taints = module.taints(analysis)
             for scope in module.scopes:
                 func = scope.func
-                _enter_scope(analysis, module, scope.nodes, set(scope.params) | scope.globals | scope.nonlocals)
                 if any(isinstance(n, ast.Return) and n.value is not None and analysis.is_core(n.value, taints[func])
                        for n in scope.nodes):
                     analysis.core_returners.add(func.name)
@@ -532,17 +590,17 @@ def core_override_findings(plugin_dir: Path) -> list[str]:
                     and isinstance(node.value.value, str):
                 analysis.constants.update({n: node.value.value for n in _bound_names(node.targets)})
 
+    _vet_containers(analysis, modules)
     _summarise_helpers(analysis, modules)
 
     findings: list[str] = []
     for module in modules:
+        _enter_module(analysis, module)
         module_taint, taints = module.taints(analysis)
         module_derived, derived = module.taints(analysis, calls=True)
-        scopes = [(module.nodes, {n for s in module.scopes for n in s.globals}, module_taint, module_derived)]
-        scopes += [(s.nodes, set(s.params) | s.globals | s.nonlocals, taints[s.func], derived[s.func])
-                   for s in module.scopes]
-        for nodes, shadowed, taint, derived_taint in scopes:
-            _enter_scope(analysis, module, nodes, shadowed)
+        scopes = [(module.nodes, module_taint, module_derived)]
+        scopes += [(s.nodes, taints[s.func], derived[s.func]) for s in module.scopes]
+        for nodes, taint, derived_taint in scopes:
             for node in nodes:
                 for target in analysis.rebinds(node, taint, derived_taint):
                     findings.append((module.rel.as_posix(), getattr(node, "lineno", 0), target))

@@ -1970,12 +1970,12 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
             chat_id, question, choices, clarify_id, session_key, metadata=metadata
         )
 
-    async def _consume_prompt_response(self, event, *, author_admitted: bool = True) -> bool:
+    async def _consume_prompt_response(self, event) -> bool:
         """Route an inbound prompt_response to its waiting primitive; True when the event was a prompt
         answer (consumed — never dispatched as chat). EVERY prompt answer is consumed, whoever owns it: a
         sibling's prompt (the connector fans the press to every gateway of the tenant; falling through
         produced a wall of "Unknown command"), a repeat answer (first one won), or our own expired/unknown
-        prompt (a short expiry notice). A Discord press skipped the connector's author check: not admitted."""
+        prompt (a short expiry notice). A Discord press is not admitted (``answer_admitted``)."""
         pr = getattr(event, "prompt_response", None)
         if not isinstance(pr, dict):
             return False
@@ -1999,11 +1999,11 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
         from gateway.relay.prompt_resolvers import prompt_refusal
         actor = None
         if pending.get("kind") in ("exec_approval", "slash_confirm", "clarify"):
-            from gateway.approval_actor import runner_answer_policy
+            from gateway.approval_actor import answer_admitted, runner_answer_policy
             # Identity first: this answer is consumed before handle_message, and without the transport
             # identity the admin lookup read the routed runtime profile instead of the bot-owning one.
             self._canonicalize(event.source)
-            actor = {"actor_id": getattr(event.source, "user_id", ""), "admitted": author_admitted,
+            actor = {"actor_id": getattr(event.source, "user_id", ""), "admitted": answer_admitted(event),
                      "admin_ids": runner_answer_policy(event.source)}
         if actor and (refusal := prompt_refusal(pending, actor, option_id)):
             # Left pending: only the requester (or an approver) can consume it.

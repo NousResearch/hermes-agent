@@ -1211,11 +1211,11 @@ class GatewaySlashCommandsMixin(
         from tools.approval import has_blocking_approval
         session_key = self._session_key_for_source(event.source)
         if has_blocking_approval(session_key):
-            from gateway.approval_actor import answerable_request_ids, refusal_text
+            from gateway.approval_actor import answer_admitted, answerable_request_ids, refusal_text
             from gateway.slash_access import policy_for_runner_source
             ids, requester = answerable_request_ids(
                 session_key, event.sender_id(), resolve_all=resolve_all, choice=choice,
-                admin_ids=policy_for_runner_source(self, event.source))
+                admin_ids=policy_for_runner_source(self, event.source), admitted=answer_admitted(event))
             return (session_key, refusal_text(requester), []) if requester else (session_key, None, ids)
         _approval_state = self._peek_session_state(session_key)
         if _approval_state is not None and _approval_state.persistent.approvals is not None:

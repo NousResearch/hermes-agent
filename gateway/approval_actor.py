@@ -94,6 +94,12 @@ def _refusal_name(authority: dict, commands: tuple[str, ...], admitted: bool = T
     return str(authority.get("requester_name") or authority.get("requester_id") or _NO_REQUESTER)
 
 
+def answer_admitted(event: Any) -> bool:
+    """Whether *event*'s sender passed an allowlist (``may_answer``'s ``admitted``). The relay marks a
+    Discord interaction (``_unadmitted_author``): the connector forwards it without its author check."""
+    return getattr(event, "_unadmitted_author", False) is not True
+
+
 def runner_answer_policy(source: Any):
     """Slash policy of the profile whose bot received *source*: the one the text ``/approve`` uses."""
     from gateway.run import _gateway_runner_ref

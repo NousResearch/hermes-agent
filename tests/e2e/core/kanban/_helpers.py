@@ -77,6 +77,9 @@ class Board:
             "  api_max_retries: 1\n"
             "updates:\n"
             "  check: false\n"
+            # Workers run inside the profile's owner daemon; its embedded dispatcher would race
+            # the explicit ticks these tests count. A test that wants it brings its own block.
+            + ("" if "kanban:" in self.extra_config else "kanban:\n  dispatch_in_gateway: false\n")
             + self.extra_config,
             encoding="utf-8",
         )
@@ -110,6 +113,7 @@ class Board:
         proc = subprocess.run(
             [PY, "-m", "hermes_cli.main", "kanban", *args], cwd=str(self.root), env=self.env(),
             capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL,
+            check=False,
         )
         if check and proc.returncode != 0:
             raise AssertionError(f"kanban {' '.join(args)} rc={proc.returncode}\n{proc.stdout}\n{proc.stderr}")

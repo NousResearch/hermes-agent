@@ -475,7 +475,7 @@ class TestTaskStore:
         adapter._add_pending("t-live", "c1")
         agent = {"slug": "dev", "tenant": "dev", "profile": "dev", "local": False, "timeout": 900}
 
-        def fake_forward(*_args):
+        def fake_forward(*_args, **_kwargs):
             forwarded_id = next(tid for tid in adapter.tasks._tasks if tid not in {
                 "t-live", "t-orphan", "t-within-reply-window"
             })
@@ -730,7 +730,11 @@ class TestA2AOrchestrate:
 
 
 class TestSSRFProtection:
-    def test_safe_public_urls_allowed(self):
+    def test_safe_public_urls_allowed(self, monkeypatch):
+        def fake_getaddrinfo(host, port, *args, **kwargs):
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("8.8.8.8", port or 0))]
+
+        monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
         assert security.is_safe_callback_url("https://example.com/webhook") is True
         assert security.is_safe_callback_url("http://example.com/webhook") is True
 

@@ -1,0 +1,26 @@
+name: hermes-manas-aegis
+title: Manas Aegis
+repo: https://github.com/elianjuan-g/hermes-manas-aegis
+sha: ea1be1c103de0f5dedf6b6993855e17da49cca95
+version: "2.6.6"
+description: "[ALPHA] Experimental Hermes guardrail (prototype, not standalone security): pattern-based pre-tool checks that can block or rewrite some risky tool arguments, with a canary honeypot, local telemetry and a loopback HUD, plus STIX 2.1 export. Opt-in, test environments only. Disclosure — alpha guardrail: its pre_tool_call / pre_llm_call / transform hooks can block tool calls or rewrite their arguments (honeypot redirect to a decoy file, safe-flag git rewrite) and scrub tool results; serves a token-protected loopback-only HUD on 127.0.0.1 (default port 18777, off with auto_launch_hud_server: false); fetches public CISA KEV and NVD CVE feeds over HTTPS (no key) for the threat-intel panel, refreshed every 6 hours while the HUD runs; the full scan reads files under the active Hermes home (skipping .env, auth.json, config.yaml, webhook_subscriptions.json, mcp-tokens/, *.bak backups and other profiles); writes redacted telemetry and a STIX 2.1 feed under the plugin data folder; no credentials read, no telemetry sent out."
+maintainer: elianjuan-g
+tier: community
+category: tools
+requires_hermes: ">=0.21.0"
+docs_url: https://github.com/elianjuan-g/hermes-manas-aegis
+known_issues:
+  - "Alpha release: prototype guardrail, not standalone security; opt-in, test environments only."
+  - "The HUD's big KPI cards count only local activity and the plugin's internal rule/indicator count; the live CISA KEV + NVD feed appears only in the separate global-intel panel, as awareness only — the plugin does not check whether this device is affected by any listed CVE."
+capabilities:
+  provides_tools:
+    - manas_tactical_core
+    - manas_stix_intelligence
+  provides_hooks:
+    - on_session_start
+    - pre_llm_call
+    - pre_tool_call
+    - transform_tool_result
+    - transform_llm_output
+  provides_middleware: []
+  requires_env: []

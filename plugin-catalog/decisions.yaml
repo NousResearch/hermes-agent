@@ -1,0 +1,15 @@
+name: decisions
+repo: https://github.com/eve-ai-dev/hermes-decisions-plugin
+sha: eeac2eac98a3d1f566dc020912bb378aece431f8
+description: "Predicate Decisions API tools with background jobs and session-owned structured JSON results. Disclosure — each submission sends the model-supplied text and questions with your OpenAI API key to the configured Decisions endpoint (OpenAI by default; billable); jobs run on a background thread and results stay in memory only, lost on restart."
+maintainer: eve-ai-dev
+tier: community
+category: tools
+requires_hermes: ">=0.22.5"
+version: "0.1.0"
+docs_url: https://github.com/eve-ai-dev/hermes-decisions-plugin#readme
+capabilities:
+  provides_tools: [decisions_submit, decisions_status]
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: [OPENAI_API_KEY]

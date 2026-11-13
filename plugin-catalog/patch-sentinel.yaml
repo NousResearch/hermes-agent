@@ -1,0 +1,31 @@
+name: patch-sentinel
+repo: https://github.com/thebangarang/Patch-Sentinel
+sha: "70bbf9d06ec6eab06a33476862f5da40dc58daa3"
+subdir: ""
+description: "Measures the host, not the source tree: code review asks \"can an attacker exploit this code?\" and this asks \"is this machine running what the vendor shipped?\" — the two are complements, never substitutes. Answers \"are we patched?\" with evidence, for whatever the host runs — an adapter chosen from the host's own /etc/os-release (apt, dnf, pacman, zypper, apk), the running kernel against the newest installed and installable, whatever advisory names the fixed version per release (Ubuntu notices, OSV per release, Bodhi, Arch's tracker, SUSE's OVAL), container image digests, nine language ecosystems through OSV plus lockfile pins, package checksums and listening sockets against a recorded baseline, and a CycloneDX SBOM. Every check has three outcomes — clean, finding, could-not-look — so an unreachable host, an unimplemented distro or a rate-limited registry reads as unknown rather than clean. The pane reads one device at a time and hands over the exact commands per device; a gated cve_apply tool stages, applies, re-measures and writes a receipt for an agent explicitly asked to patch. Linux only: any other OS answers \"unsupported\" with its name. Disclosure — scans run fixed read-only commands on this machine and, over your own ssh agent, on hosts you list; package names and versions go to api.osv.dev, api.first.org and the distro advisory sites (ubuntu.com, bodhi.fedoraproject.org, security.archlinux.org, ftp.suse.com, cisa.gov); cve_apply, after Hermes's approval prompt, runs the distro's full upgrade with sudo -n on the chosen host; scans, receipts and SBOMs stay under $HERMES_HOME/patch-sentinel (mode 700)."
+maintainer: thebangarang
+tier: community
+category: tools
+requires_hermes: ">=0.21.6"
+docs_url: "https://github.com/thebangarang/Patch-Sentinel#readme"
+version: "0.1.2"
+title: "Patch Sentinel"
+image: "https://raw.githubusercontent.com/thebangarang/Patch-Sentinel/70bbf9d06ec6eab06a33476862f5da40dc58daa3/docs/banner.png"
+platforms: [linux]
+capabilities:
+  provides_tools:
+    - cve_scan
+    - cve_plan
+    - cve_explain
+    - cve_coverage
+    - cve_libraries
+    - cve_image
+    - cve_sbom
+    - cve_apply
+    - cve_ack
+    - cve_integrity
+    - cve_rescan
+  provides_hooks:
+    - pre_tool_call
+  provides_middleware: []
+  requires_env: []

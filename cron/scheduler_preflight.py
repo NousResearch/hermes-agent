@@ -83,6 +83,12 @@ def _cron_preflight_enabled(cfg: dict) -> bool:
     return not isinstance(cron_cfg, dict) or cron_cfg.get("preflight", True) is not False
 
 
+def cron_default_provider(cfg: dict) -> str:
+    """``cron.model_provider``: the provider every cron job without its own pin resolves through."""
+    cron = cfg.get("cron") if isinstance(cfg, dict) else None
+    return str(cron.get("model_provider") or "").strip() if isinstance(cron, dict) else ""
+
+
 def _preflight_check_provider_key(job: dict, cfg: dict) -> Optional[str]:
     """READ-ONLY probe: would provider resolution fail for lack of a key? Mirrors run_job's
     requested-provider computation. Skipped when the job has a fallback chain — auth-fallback may
@@ -94,9 +100,7 @@ def _preflight_check_provider_key(job: dict, cfg: dict) -> Optional[str]:
     except Exception:
         return None  # fail-open: never block on a preflight-internal error
 
-    _cron_cfg = cfg.get("cron") if isinstance(cfg.get("cron"), dict) else {}
-    requested = (
-        job.get("provider") or str((_cron_cfg or {}).get("model_provider") or "").strip() or None)
+    requested = job.get("provider") or cron_default_provider(cfg) or None
     model = job.get("model") or cron_env_setting("HERMES_MODEL") or ""
 
     from hermes_cli.auth import AuthError, is_rate_limited_auth_error
@@ -162,7 +166,18 @@ def _primary_profile_routes_for_current_home() -> list:
         # (/etc/hermes/config.yaml) never reached the raw user-file read (#121212), so preflight
         # false-blocked and routed delivery failed closed on centrally-managed installs.
         from gateway.config_loader import read_yaml_layers
-        layered = read_yaml_layers(primary_home.expanduser())
+        # The caller runs inside the SATELLITE's secret scope (the gateway drain walks satellites under
+        # their own profile scope), and ``${env:...}`` refs resolve through whatever scope is bound,
+        # fail-closed. Expanding the primary's YAML there resolved its refs against the satellite's
+        # .env: unresolved refs re-logged "keeping the literal placeholder" every housekeeping tick, and
+        # a satellite key of the same name was substituted into the primary's config (#148606).
+        # Bind only home + secrets: the terminal policy is not read here, and hydrating external
+        # secret sources every housekeeping tick is the primary's boot job, not this read's.
+        from agent.runtime_scope import bind_state, scope_for_profile
+        from agent.secret_scope import _is_process_home
+        with bind_state(scope_for_profile(primary_home), hydrate_secrets=False, terminal=False,
+                        stamp_home=not _is_process_home(primary_home)):
+            layered = read_yaml_layers(primary_home.expanduser())
         routes_raw = layered.get("profile_routes")
         if routes_raw is None and isinstance(layered.get("gateway"), dict):
             routes_raw = layered["gateway"].get("profile_routes")
@@ -221,16 +236,36 @@ class SharedRouteAdapters:
         # A cron target carries no inbound guild anchor, so a route's guild_id is matched against
         # itself — the target-exact discriminators (chat_id/thread_id) authorize the send. Without
         # this the documented ``guild_id + chat_id`` Discord route never authorized cron output.
+        # A Telegram DM's chat id IS the user id for every bot (#104933), so a ``user_id`` DM route
+        # is equally target-exact: feed the target chat id as the user discriminator. Without this
+        # the documented ``user_id``-only Telegram DM route never authorized cron output and the
+        # credentialless satellite fell to standalone "platform 'telegram' not configured/enabled"
+        # (#146336). Other platforms' chat ids live in a separate id space than user ids, so their
+        # ``user_id`` routes stay a miss — fail closed.
         for route in self._routes:
             if str(route.platform).lower() != platform_key:
                 continue
-            if not (route.chat_id or route.thread_id):
+            if not (route.chat_id or route.thread_id or route.user_id):
                 continue  # guild-only routes are not target-exact
+            route_user_id = (
+                str(chat_id) if route.user_id and platform_key == "telegram" else None
+            )
             if route.matches(
                 str(route.platform), guild_id=route.guild_id, chat_id=chat_id, thread_id=thread_id,
+                user_id=route_user_id,
             ):
                 return adapter
         return default
+
+
+def has_credential_platform(adapters, owned=None) -> bool:
+    """True when the profile has a bot of its own. Any local session (Desktop chat, CLI run, Kanban
+    worker) adds a ``LOCAL`` adapter, which holds no platform credential: a profile with only that is
+    still a credentialless satellite that may ride routed primary adapters. ``owned`` is the
+    profile's ``_profile_bot_platforms`` entry: a bot that dropped leaves the live map while it
+    disconnects and reconnects, and borrowing the primary meanwhile would send through the wrong bot."""
+    return bool(owned) or any(
+        getattr(platform, "value", platform) != "local" for platform in adapters or ())
 
 
 def _preflight_check_delivery(job: dict) -> Optional[str]:
@@ -254,6 +289,8 @@ def _preflight_check_delivery(job: dict) -> Optional[str]:
             # bot-chat targets deliver via a local subprocess; failures land in last_delivery_error.
             if _delivery.parse_bot_chat_deliver_token(part) is not None:
                 continue
+            if _delivery.parse_room_deliver_token(part) is not None:
+                continue  # Group Chat posts write the room store directly; no adapter needed.
             platform_parts.append(part.split(":", 1)[0].strip())
     if not platform_parts:
         return None
@@ -408,5 +445,5 @@ def _preflight_job_config(job: dict, cfg: dict) -> Optional[str]:
 
 # Late-bound origin namespace (see module docstring). Imported LAST so this module is fully
 # populated before ``scheduler`` re-exports from it.
-from cron import scheduler as _sched  # noqa: E402
-from cron import scheduler_delivery as _delivery  # noqa: E402
+from cron import scheduler as _sched
+from cron import scheduler_delivery as _delivery

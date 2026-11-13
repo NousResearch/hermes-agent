@@ -25,10 +25,20 @@ export function isFileEditTool(toolName: string): boolean {
 //     render their own markup: a question the user has to answer, an image
 //     they asked for, the several agents a fan-out is running.
 //   - `manage_connections` and `manage_catalog` are consent cards; their controls must stay visible.
+//   - `set_theme` shows a picker card while it waits for the user, then a one-line receipt.
+//   - `setup_beat` is the onboarding chat's card for one beat, then a one-line receipt.
 //
 // Everything else is ephemeral activity — reads, searches, commands — which is
 // what a run summarizes and what the live ticker cycles through.
-const CARD_TOOL_NAMES = ['clarify', 'delegate_task', 'image_generate', 'manage_catalog', 'manage_connections'] as const
+const CARD_TOOL_NAMES = [
+  'clarify',
+  'delegate_task',
+  'image_generate',
+  'manage_catalog',
+  'manage_connections',
+  'set_theme',
+  'setup_beat'
+] as const
 
 export type CardToolName = (typeof CARD_TOOL_NAMES)[number]
 

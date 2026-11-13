@@ -603,13 +603,18 @@ async def test_blocks_canonical_read_denylist_credential_stores(tmp_path: Path, 
     mcp_token.parent.mkdir(parents=True)
     mcp_token.write_text('{"token": "MCP-TOKEN-SECRET"}\n', encoding="utf-8")
 
+    gcloud_adc = tmp_path / ".config" / "gcloud" / "application_default_credentials.json"
+    gcloud_adc.parent.mkdir(parents=True)
+    gcloud_adc.write_text('{"refresh_token": "GCLOUD-SECRET"}\n', encoding="utf-8")
+
     project_env = tmp_path / "project" / ".env"
     project_env.parent.mkdir(parents=True)
     project_env.write_text("DB_PASSWORD=ENV-SECRET\n", encoding="utf-8")
 
     result = await preprocess_context_references_async(
         "inspect @file:.hermes/auth.json and @file:.hermes/.anthropic_oauth.json "
-        "and @file:.hermes/mcp-tokens/github.json and @file:project/.env",
+        "and @file:.hermes/mcp-tokens/github.json and @file:project/.env "
+        "and @file:.config/gcloud/application_default_credentials.json",
         cwd=tmp_path,
         allowed_root=tmp_path,
         context_length=100_000,
@@ -621,9 +626,10 @@ async def test_blocks_canonical_read_denylist_credential_stores(tmp_path: Path, 
         "OAUTH-SECRET",
         "MCP-TOKEN-SECRET",
         "ENV-SECRET",
+        "GCLOUD-SECRET",
     ):
         assert secret not in result.message
-    assert sum("sensitive credential" in warning for warning in result.warnings) == 4
+    assert sum("sensitive credential" in warning for warning in result.warnings) == 5
 
 
 @pytest.mark.asyncio

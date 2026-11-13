@@ -1,21 +1,20 @@
-"""Release-channel records: the updater follows the stable record exactly, or refuses.
+"""Stable releases: the updater follows the latest published GitHub release exactly, or refuses.
 
-A source install subscribed to ``stable`` resolves its target from the channel record at
-``https://hermes-assets.nousresearch.com/releases/channels/stable.json`` and the build manifest
-it names (digest-pinned). The edge serves those objects (a fake of the R2 bucket, behind the
-TLS-inspecting proxy that is the namespace's only egress) and the git server behind the same
-proxy serves the source. In every cell origin/main has moved past what stable pins, so "the
-updater silently followed main" is visible as a HEAD that landed on the main tip.
+A source install subscribed to ``stable`` resolves its target from GitHub's latest published
+release (``api.github.com/repos/<repo>/releases/latest``: non-draft, non-prerelease, strict
+``vX.Y.Z``) and verifies the tag on origin points at the commit GitHub reports. No R2 channel
+record is read. The edge serves the API (behind the TLS-inspecting proxy that is the
+namespace's only egress) and the git server behind the same proxy serves the source. In every
+cell origin/main has moved past the release, so "the updater silently followed main" is
+visible as a HEAD that landed on the main tip.
 
-Classes: the record is valid (land exactly on its commit), unavailable (404 / 503 / tunnel cut),
-malformed (not JSON, manifest digest mismatch, another repository's record), or names a commit
-the forge does not have. #124309 is the missing live record; this suite pins that the updater
-then refuses stable with a clear message instead of moving to main.
+Classes: the release is valid (land exactly on its commit), unavailable (404 / 503 / tunnel cut),
+unacceptable (draft, prerelease, not JSON), or its commit disagrees with the tag on origin.
+In each failure the updater refuses stable with a clear message instead of moving to main.
 """
 
 from __future__ import annotations
 
-import json
 import shutil
 
 import pytest
@@ -35,7 +34,7 @@ pytestmark = [
     pytest.mark.skipif(I.real_uv() is None, reason="uv required"),
 ]
 
-STABLE = "/releases/channels/stable.json"
+LATEST = f"/repos/{S.REPOSITORY}/releases/latest"
 
 
 @pytest.fixture(scope="module")
@@ -47,30 +46,32 @@ def inst(tmp_path_factory):
 
 
 def _release_and_main_tip(inst: S.Installed, tag: str) -> tuple[str, str]:
-    """A stable candidate commit on top of the install, then a newer main tip on top of it."""
+    """A release commit on top of the install, then a newer main tip on top of it."""
     release = inst.publish(f"{tag}-release")
     tip = I.publish_commit(inst.origin, inst.root, f"e2e network: {tag} main tip",
                            {f"E2E_NETWORK_{tag}_TIP.txt": "unreleased\n"})
     return release, tip
 
 
-def _update(inst: S.Installed, assets: N.App | None = None, **edge_kw) -> S.Result:
-    edge = inst.edge(assets=assets, **edge_kw)
+def _update(inst: S.Installed, api: N.App | None = None, **edge_kw) -> S.Result:
+    edge = inst.edge(extra={S.GITHUB_API: api or N.static_app({})}, **edge_kw)
     try:
         return inst.hermes("update", "--yes", edge=edge, timeout=600)
     finally:
         edge.close()
 
 
-def test_valid_stable_record_lands_exactly_on_its_commit(inst):
+def test_published_release_lands_exactly_on_its_commit_without_reading_r2(inst):
     release, tip = _release_and_main_tip(inst, "valid")
-    r = _update(inst, N.static_app(S.stable_objects(release)))
-    assert r.rc == 0, "update to a valid stable record failed\n" + r.report(inst)
+    r = _update(inst, N.static_app(S.stable_release(inst, release)))
+    assert r.rc == 0, "update to the published stable release failed\n" + r.report(inst)
     head = inst.head()
     assert head != tip, "stable subscriber was moved to the unreleased main tip\n" + r.report(inst)
     assert head == release, f"stable update landed on {head}, not the released {release}\n" + r.report(inst)
-    reads = [h.path for h in r.edge.proxy.requests(S.ASSETS)] if r.edge else []
-    assert STABLE in reads, f"the stable record was not read through the proxy: {reads}\n" + r.report(inst)
+    reads = [h.path for h in r.edge.proxy.requests(S.GITHUB_API)] if r.edge else []
+    assert LATEST in reads, f"the latest release was not read through the proxy: {reads}\n" + r.report(inst)
+    r2 = [h.path for h in r.edge.proxy.requests(S.ASSETS)] if r.edge else []
+    assert not any("/releases/" in path for path in r2), f"stable read R2 release objects: {r2}\n" + r.report(inst)
 
 
 def _refused(inst: S.Installed, r: S.Result, before: dict, what: str) -> None:
@@ -80,46 +81,31 @@ def _refused(inst: S.Installed, r: S.Result, before: dict, what: str) -> None:
 
 
 UNAVAILABLE = {
-    "not-published-404": dict(assets=N.static_app({})),
-    "outage-503": dict(assets=N.static_app({}, always={STABLE: N.Response(503, b"down\n")})),
-    "tunnel-cut": dict(eof_hosts=[S.ASSETS]),
+    "no-release-404": dict(api=N.static_app({})),
+    "outage-503": dict(api=N.static_app({}, always={LATEST: N.Response(503, b"down\n")})),
+    "tunnel-cut": dict(eof_hosts=[S.GITHUB_API]),
 }
 
 
 @pytest.mark.parametrize("fault", sorted(UNAVAILABLE))
-def test_unavailable_stable_record_refuses_and_never_moves_to_main(inst, fault):
+def test_unavailable_release_refuses_and_never_moves_to_main(inst, fault):
     _release_and_main_tip(inst, f"unavailable-{fault}")
     before = inst.state()
     r = _update(inst, **UNAVAILABLE[fault])
-    _refused(inst, r, before, f"stable record {fault}")
+    _refused(inst, r, before, f"stable release {fault}")
 
 
-def _malformed(release: str) -> dict[str, dict[str, bytes]]:
-    good = S.stable_objects(release)
-    manifest_key = next(k for k in good if k != STABLE)
-    tampered = dict(good)
-    manifest = json.loads(good[manifest_key])
-    manifest["request"]["commit"] = "f" * 40  # a different build than the record's digest pins
-    tampered[manifest_key] = S.canonical(manifest)
-    return {
-        "not-json": {STABLE: b"<html>502 Bad Gateway</html>\n"},
-        "manifest-digest-mismatch": tampered,
-        "other-repository": S.stable_objects(release, repository="someone-else/hermes-agent"),
-    }
+def _unacceptable(inst: S.Installed, release: str, fault: str) -> dict[str, bytes]:
+    if fault == "not-json":
+        return {LATEST: b"<html>502 Bad Gateway</html>\n"}
+    if fault == "origin-tag-mismatch":
+        return S.stable_release(inst, release, api_commit="f" * 40)
+    return S.stable_release(inst, release, **{fault: True})
 
 
-@pytest.mark.parametrize("fault", ["manifest-digest-mismatch", "not-json", "other-repository"])
-def test_malformed_stable_record_refuses(inst, fault):
-    release, _ = _release_and_main_tip(inst, f"malformed-{fault}")
+@pytest.mark.parametrize("fault", ["draft", "not-json", "origin-tag-mismatch", "prerelease"])
+def test_unacceptable_release_refuses(inst, fault):
+    release, _ = _release_and_main_tip(inst, f"unacceptable-{fault}")
     before = inst.state()
-    r = _update(inst, N.static_app(_malformed(release)[fault]))
-    _refused(inst, r, before, f"stable record {fault}")
-
-
-def test_stable_record_naming_a_commit_the_forge_does_not_have(inst):
-    """The record was published for a build whose commit never reached the forge (or was
-    force-pushed away): the fetch of that exact commit fails and nothing may change."""
-    _release_and_main_tip(inst, "unpublished-commit")
-    before = inst.state()
-    r = _update(inst, N.static_app(S.stable_objects("0123456789abcdef0123456789abcdef01234567")))
-    S.assert_nothing_changed(inst, before, r, "stable record naming an unpublished commit")
+    r = _update(inst, N.static_app(_unacceptable(inst, release, fault)))
+    _refused(inst, r, before, f"stable release {fault}")

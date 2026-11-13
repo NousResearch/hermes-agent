@@ -1,0 +1,30 @@
+name: hermes-studiotwin
+title: StudioTwin
+repo: https://github.com/realtwin/hermes-studiotwin-plugin
+sha: ed8021399fbb8dfa28703c566fc7a90ee40c7c2b
+version: "1.0.0"
+description: "StudioTwin cloud images, environments, PBR materials, meshes, rigs, motion, sound effects and Concepts via remote MCP, with an optional Desktop media workspace. Disclosure — Sends prompts and any media you upload to StudioTwin (api.studiotwin.ai; uploads and downloads via StudioTwin's Amazon S3 and assets.studiotwin.ai) with your StudioTwin API key, and StudioTwin passes jobs to its own model providers. Generation spends StudioTwin wallet credits with no plugin spend cap; paid, upload, cancel and delete tools go through Hermes approval. The optional Desktop backend can read media-type files anywhere in your home folder (except hidden folders) for its viewers and stores downloads in its plugin-data folder. The optional local helper scripts run Blender, ffmpeg and headless Chromium with its sandbox disabled, and on first preview download three.js 0.180.0 from npm (integrity-checked)."
+maintainer: realtwin
+tier: community
+category: desktop
+requires_hermes: ">=0.23.1"
+docs_url: https://github.com/realtwin/hermes-studiotwin-plugin/blob/ed8021399fbb8dfa28703c566fc7a90ee40c7c2b/README.md
+screenshots:
+  - https://raw.githubusercontent.com/realtwin/hermes-studiotwin-plugin/ed8021399fbb8dfa28703c566fc7a90ee40c7c2b/docs/screenshots/Library.png
+  - https://raw.githubusercontent.com/realtwin/hermes-studiotwin-plugin/ed8021399fbb8dfa28703c566fc7a90ee40c7c2b/docs/screenshots/Model.png
+  - https://raw.githubusercontent.com/realtwin/hermes-studiotwin-plugin/ed8021399fbb8dfa28703c566fc7a90ee40c7c2b/docs/screenshots/Audio.png
+  - https://raw.githubusercontent.com/realtwin/hermes-studiotwin-plugin/ed8021399fbb8dfa28703c566fc7a90ee40c7c2b/docs/screenshots/CharacterConcept.png
+  - https://raw.githubusercontent.com/realtwin/hermes-studiotwin-plugin/ed8021399fbb8dfa28703c566fc7a90ee40c7c2b/docs/screenshots/SceneConcept.png
+  - https://raw.githubusercontent.com/realtwin/hermes-studiotwin-plugin/ed8021399fbb8dfa28703c566fc7a90ee40c7c2b/docs/screenshots/Jobs.png
+known_issues:
+  - A StudioTwin account, API key and wallet credits are required for cloud generation; prompts and authorized input media are sent to StudioTwin and its selected providers.
+  - Paid tools use Hermes native approval. Obtain a fresh estimate for variable costs; the plugin imposes no session spend cap.
+  - Full Desktop UI requires compatible Hermes SDK surfaces and separate Desktop enablement; remote setups need the UI installed on the client and the package and key on the backend.
+  - Optional local processing requires backend-local Blender 4.2+, ffmpeg/ffprobe, or Node.js 22+ and Chrome/Chromium as applicable; render helpers disable Chromium's sandbox, so use trusted inputs or a separately isolated environment.
+capabilities:
+  # Cloud tools are discovered through mcp.json, not local register_tool calls.
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - STUDIOTWIN_API_KEY

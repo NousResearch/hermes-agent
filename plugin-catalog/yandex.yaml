@@ -1,0 +1,27 @@
+name: yandex
+repo: https://github.com/akinfold/hermes-yandex-search-api
+sha: fb4b339ddaf758064a450bd0c242c261d7418178
+subdir: hermes_yandex_search
+title: "Yandex Search API"
+image: https://raw.githubusercontent.com/akinfold/hermes-yandex-search-api/fb4b339ddaf758064a450bd0c242c261d7418178/docs/banner.png
+description: "Yandex Search API for Hermes web search and generated answers with cited sources. Uses the paid Yandex Cloud service. Disclosure — sends web_search queries and yandex_generative_search questions to searchapi.api.cloud.yandex.net, or to the base URL in YANDEX_SEARCH_API_URL if you set one, with your YANDEX_API_KEY and YANDEX_FOLDER_ID read through Hermes; the Search API is a paid Yandex Cloud service billed to the folder that owns the key; no other endpoint, no telemetry, no file or shell access, no background process. Independent community plugin, not affiliated with Yandex."
+maintainer: akinfold
+tier: community
+category: web
+requires_hermes: ">=0.18.1"
+version: "0.1.6"
+docs_url: https://github.com/akinfold/hermes-yandex-search-api#readme
+readme: true
+platforms: []
+known_issues:
+  - "Paid: every web_search routed to yandex and every yandex_generative_search call is billed by Yandex Cloud to the folder that owns YANDEX_API_KEY; the Search API must be enabled for that folder, with billing active"
+  - "Installing does not switch web_search over: run hermes config set web.search_backend yandex. The backend is search-only, so web_extract stays with another backend. yandex_generative_search is offered to the agent as soon as the plugin is enabled (toolset yandex_search; hermes tools turns it off per platform)"
+  - "Searches the Russian market (SEARCH_TYPE_RU) unless YANDEX_SEARCH_TYPE names another: SEARCH_TYPE_COM, SEARCH_TYPE_TR, SEARCH_TYPE_KK, SEARCH_TYPE_BE or SEARCH_TYPE_UZ"
+capabilities:
+  provides_tools:
+    - yandex_generative_search
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - YANDEX_API_KEY
+    - YANDEX_FOLDER_ID

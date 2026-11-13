@@ -139,6 +139,20 @@ class TestCreateJob:
                 assert call_kwargs["origin"]["forwarded_for"] == "203.0.113.11"
                 assert call_kwargs["origin"]["user_agent"] == "cron-client"
 
+    @pytest.mark.asyncio
+    async def test_a_job_created_through_the_dashboard_peer_route_names_its_creator(self, adapter):
+        """The dashboard's /api/peer route signs a peer pass holder's calls with the Portal user it
+        verified, so a job they create stays attributable after their pass expires."""
+        app = _create_app(adapter)
+        mock_create = MagicMock(return_value=SAMPLE_JOB)
+        async with TestClient(TestServer(app)) as cli:
+            with patch(f"{_MOD}._CRON_AVAILABLE", True), patch(f"{_MOD}._cron_create", mock_create):
+                resp = await cli.post("/api/jobs", json={
+                    "name": "nightly", "schedule": "0 3 * * *", "prompt": "summarise the day"},
+                    headers={"X-Hermes-Peer-Principal": "usr_abc"})
+                assert resp.status == 200
+                assert mock_create.call_args[1]["origin"]["peer_principal"] == "usr_abc"
+
 
     @pytest.mark.asyncio
     async def test_create_job_reports_saved_but_unregistered(self, adapter):

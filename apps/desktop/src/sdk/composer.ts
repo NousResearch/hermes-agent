@@ -7,7 +7,7 @@ import {
   requestComposerSetDraft,
   requestComposerSubmit
 } from '@/app/chat/composer/focus'
-import { NEW_SESSION_DRAFT_KEY, takeSessionDraft } from '@/store/composer'
+import { freshDraftScope, takeSessionDraft } from '@/store/composer'
 import { $activeSessionId, $selectedStoredSessionId } from '@/store/session'
 import { $sessionStates } from '@/store/session-states'
 
@@ -37,7 +37,7 @@ const resolveComposerAddress = (
   if (id === 'new') {
     const primaryIsNewDraft = !$activeSessionId.get() && !$selectedStoredSessionId.get()
 
-    return { ids: [NEW_SESSION_DRAFT_KEY], stored: NEW_SESSION_DRAFT_KEY, target: primaryIsNewDraft ? 'main' : null }
+    return { ids: [freshDraftScope()], stored: freshDraftScope(), target: primaryIsNewDraft ? 'main' : null }
   }
 
   const stored = $sessionStates.get()[id]?.storedSessionId ?? id

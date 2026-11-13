@@ -77,7 +77,6 @@ def _make_runner():
         get_or_create_session=lambda source: SimpleNamespace(session_id="session-1"),
         load_transcript=lambda session_id: [],
     )
-    runner._get_or_create_gateway_honcho = lambda session_key: (None, None)
     runner._enrich_message_with_vision = AsyncMock(return_value="ENRICHED")
     runner._gateway_loop = None
     return runner
@@ -114,7 +113,7 @@ def _setup_monkeypatches(monkeypatch, tmp_path):
         },
     )
 
-    import hermes_cli.tools_config as tools_config
+    from hermes_cli import tools_config
     monkeypatch.setattr(tools_config, "_get_platform_tools", lambda user_config, platform_key: {"core"})
 
 

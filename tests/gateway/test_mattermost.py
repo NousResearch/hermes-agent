@@ -2,6 +2,7 @@
 import json
 import os
 import time
+from types import SimpleNamespace
 import pytest
 from unittest.mock import MagicMock, patch, AsyncMock
 
@@ -299,6 +300,23 @@ class TestMattermostWebSocketParsing:
         assert msg_event.text == "Hello from Matrix!"
         assert msg_event.message_id == "post_abc"
 
+    @pytest.mark.asyncio
+    async def test_known_peer_bot_is_marked_on_the_inbound_source(self):
+        """Regression for #137027: configured peer bots must enter the loop guard."""
+        self.adapter.config.extra["bot_users"] = ["peer_bot"]
+        self.adapter._download_attachments = AsyncMock(return_value=([], []))
+        post_data = {
+            "id": "post_from_peer", "user_id": "peer_bot", "channel_id": "dm_456", "message": "ping",
+        }
+        event = {
+            "event": "posted",
+            "data": {"post": json.dumps(post_data), "channel_type": "D", "sender_name": "@peer"},
+        }
+
+        await self.adapter._handle_ws_event(event)
+
+        assert self.adapter.handle_message.await_args.args[0].source.is_bot is True
+
 
     @pytest.mark.asyncio
     async def test_ignore_system_posts(self):
@@ -410,7 +428,12 @@ class TestMattermostFileUpload:
         # Mock the download (GET)
         mock_dl_resp = AsyncMock()
         mock_dl_resp.status = 200
-        mock_dl_resp.read = AsyncMock(return_value=b"\x89PNG\x00fake-image-data")
+        mock_dl_resp.headers = {}
+
+        async def _body(_size):
+            yield b"\x89PNG\x00fake-image-data"
+
+        mock_dl_resp.content = MagicMock(iter_chunked=_body)
         mock_dl_resp.content_type = "image/png"
         mock_dl_resp.__aenter__ = AsyncMock(return_value=mock_dl_resp)
         mock_dl_resp.__aexit__ = AsyncMock(return_value=False)
@@ -523,6 +546,7 @@ class TestMattermostMediaTypes:
         self.adapter = _make_adapter()
         self.adapter._bot_user_id = "bot_user_id"
         self.adapter.handle_message = AsyncMock()
+        self.adapter.set_authorization_check(lambda *args, **kwargs: True)
 
     def _make_event(self, file_ids):
         post_data = {
@@ -547,9 +571,14 @@ class TestMattermostMediaTypes:
         file_info = {"name": "photo.png", "mime_type": "image/png"}
         self.adapter._api_get = AsyncMock(return_value=file_info)
 
+        async def chunks(_size):
+            yield b"\x89PNG fake"
+
         mock_resp = AsyncMock()
         mock_resp.status = 200
-        mock_resp.read = AsyncMock(return_value=b"\x89PNG fake")
+        mock_resp.headers = {}
+        mock_resp.content = MagicMock()
+        mock_resp.content.iter_chunked = chunks
         mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
         mock_resp.__aexit__ = AsyncMock(return_value=False)
         self.adapter._session = MagicMock()
@@ -561,6 +590,16 @@ class TestMattermostMediaTypes:
         msg = self.adapter.handle_message.call_args[0][0]
         assert msg.media_types == ["image/png"]
         assert msg.media_types[0].startswith("image/")
+
+    @pytest.mark.asyncio
+    async def test_unwired_authorization_check_downloads_nothing(self):
+        self.adapter.set_authorization_check(None)
+        self.adapter._download_attachments = AsyncMock(return_value=(["/tmp/photo.png"], ["image/png"]))
+
+        await self.adapter._handle_ws_event(self._make_event(["file1"]))
+
+        self.adapter._download_attachments.assert_not_awaited()
+        assert self.adapter.handle_message.call_args[0][0].media_urls == []
 
 
 @pytest.mark.asyncio
@@ -709,3 +748,43 @@ class TestMultiplexProfileScope:
             # os.environ.
             assert "MATTERMOST_REQUIRE_MENTION" not in os.environ
 
+
+def test_bot_turn_does_not_publish_runtime_status():
+    """#137027: a provider-fallback diagnostic must not become a peer-bot message."""
+    from gateway.run_turn_runner import TurnRunner
+
+    turn_runner = object.__new__(TurnRunner)
+    turn_runner._schedule = MagicMock()
+    turn_runner._ctx = SimpleNamespace(
+        mute_notification_reply=False,
+        source=SimpleNamespace(platform=Platform.MATTERMOST, is_bot=True),
+        _status_adapter=object(),
+        _run_still_current=lambda: True,
+        user_config={},
+        _status_chat_id="dm_456",
+        _status_thread_metadata=None,
+        _cleanup_progress=False,
+    )
+
+    turn_runner._status_callback_sync("warn", "⚠️ Model fallback: unavailable")
+
+    turn_runner._schedule.assert_not_called()
+
+
+def test_configured_mattermost_bot_is_authorized(monkeypatch):
+    """#137027: peer bots use Mattermost's registered bot-admission policy."""
+    from gateway.run import GatewayRunner
+    from gateway.session import SessionSource
+
+    for name in ("MATTERMOST_ALLOW_BOTS", "MATTERMOST_ALLOWED_USERS", "GATEWAY_ALLOW_ALL_USERS", "GATEWAY_ALLOWED_USERS"):
+        monkeypatch.delenv(name, raising=False)
+    runner = object.__new__(GatewayRunner)
+    runner.pairing_store = SimpleNamespace(is_approved=lambda *_a, **_kw: False)
+    source = SessionSource(
+        platform=Platform.MATTERMOST, chat_id="dm_456", chat_type="dm", user_id="peer_bot",
+        user_name="Peer Bot", is_bot=True,
+    )
+
+    assert runner._is_user_authorized(source) is False
+    monkeypatch.setenv("MATTERMOST_ALLOW_BOTS", "mentions")
+    assert runner._is_user_authorized(source) is True

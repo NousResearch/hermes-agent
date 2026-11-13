@@ -15,9 +15,18 @@ import subprocess
 from contextlib import suppress
 from typing import Dict, List
 
-from hermes_cli._subprocess_compat import harden_git_argv, noninteractive_git_env, selected_git_env
+from hermes_cli._subprocess_compat import (
+    FILTER_DISCOVERY_FAILED,
+    harden_git_argv,
+    noninteractive_repo_git_env,
+    selected_git_env,
+)
 
 _GIT_TIMEOUT = 15
+# Return code of a git call that was not spawned because the repository's filter drivers could not
+# be discovered (not a real git exit status; git never exits negative without a signal).
+_REFUSED = -1
+_REFUSED_ERROR = f"git could not be run safely for this repository ({FILTER_DISCOVERY_FAILED})."
 _MAX_UNTRACKED_FILES = 50  # sanity cap so a node_modules explosion can't hang us
 
 _MODE_ARGS = {
@@ -28,36 +37,43 @@ _MODE_ARGS = {
 VALID_MODES = tuple(_MODE_ARGS)
 
 
-def _run(args: List[str], cwd: str, timeout: int = _GIT_TIMEOUT):
+def _run(args: list[str], cwd: str, timeout: int = _GIT_TIMEOUT):
     """Run git, returning (returncode, stdout). Never raises on git failure.
 
     Hardened against a malicious repo's ``.git/config`` (GHSA-7x36-8jrh-v4pw):
     ``noninteractive_git_env`` disables fsmonitor/hooks/pager/editor/credential
     sinks, and ``harden_git_argv`` appends ``--no-ext-diff --no-textconv`` to
     the diff-rendering subcommands so attribute-scoped diff/textconv drivers
-    can't execute either.
+    can't execute either. ``noninteractive_repo_git_env`` also empties the
+    clean/smudge/process filter commands the repository names, which ``diff``
+    and ``ls-files`` run on a stat-dirty file; when those cannot be discovered
+    git is not spawned and the code is ``_REFUSED``.
     """
-    env = noninteractive_git_env(selected_git_env())
-    command = shutil.which("git", path=env.get("PATH", ""))
+    base = selected_git_env()
+    command = shutil.which("git", path=base.get("PATH", ""))
     if command is None:
         return 127, ""
+    env = noninteractive_repo_git_env(cwd, base)
+    if env is None:
+        return _REFUSED, ""
     proc = subprocess.run(
         [command, "-c", "core.quotePath=false", *harden_git_argv(args)],
         cwd=cwd, capture_output=True, text=True, timeout=timeout,
         encoding="utf-8", errors="replace",
         stdin=subprocess.DEVNULL, env=env,
+        check=False,
     )
     return proc.returncode, proc.stdout
 
 
-def _untracked_files(cwd: str) -> List[str]:
+def _untracked_files(cwd: str) -> list[str]:
     code, out = _run(["ls-files", "--others", "--exclude-standard"], cwd)
     return [line for line in out.splitlines() if line.strip()] if code == 0 else []
 
 
-def _untracked_diff(cwd: str, files: List[str]) -> str:
+def _untracked_diff(cwd: str, files: list[str]) -> str:
     """Render untracked files as new-file diffs via ``git diff --no-index``."""
-    chunks: List[str] = []
+    chunks: list[str] = []
     for rel in files[:_MAX_UNTRACKED_FILES]:
         with suppress(subprocess.TimeoutExpired, OSError):
             # --no-index exits 1 when the files differ — that's the success
@@ -73,7 +89,7 @@ def _untracked_diff(cwd: str, files: List[str]) -> str:
 
 
 def collect_working_diff(cwd: str, mode: str = "working",
-                         paths: List[str] | None = None) -> Dict:
+                         paths: list[str] | None = None) -> dict:
     """Collect a git diff of the working directory.
 
     Returns ``{"success", "stat", "diff", "untracked", "empty"}`` on success or
@@ -91,6 +107,8 @@ def collect_working_diff(cwd: str, mode: str = "working",
         return {"success": False, "error": f"git failed: {e}"}
     if code == 127:
         return {"success": False, "error": "git is not installed or not on PATH."}
+    if code == _REFUSED:
+        return {"success": False, "error": _REFUSED_ERROR}
     if code != 0:
         return {"success": False, "error": "Not a git repository."}
 
@@ -103,8 +121,10 @@ def collect_working_diff(cwd: str, mode: str = "working",
     base_args = ["diff", "--no-ext-diff", *base_args]
     pathspec = ["--", *paths] if paths else []
     try:
-        _, stat_out = _run([*base_args, "--stat", *pathspec], cwd)
-        _, diff_out = _run([*base_args, *pathspec], cwd, timeout=_GIT_TIMEOUT * 2)
+        stat_code, stat_out = _run([*base_args, "--stat", *pathspec], cwd)
+        diff_code, diff_out = _run([*base_args, *pathspec], cwd, timeout=_GIT_TIMEOUT * 2)
+        if _REFUSED in (stat_code, diff_code):
+            return {"success": False, "error": _REFUSED_ERROR}
         untracked = _untracked_files(cwd) if mode in ("working", "all") and not paths else []
         untracked_diff = _untracked_diff(cwd, untracked) if untracked else ""
     except subprocess.TimeoutExpired:

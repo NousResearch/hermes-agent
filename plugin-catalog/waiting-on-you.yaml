@@ -1,0 +1,17 @@
+name: waiting-on-you
+title: Waiting on You
+repo: https://github.com/irsan-dimyati/hermes-waiting-on-you
+sha: ca1fb1a58c82b794e198c6d0777ee6fdddbbe2a9
+description: "One list of the questions your Hermes bots are waiting on you to answer. /waiting and hermes waiting scan profile session stores, keep only replies that end by asking you something (English and Indonesian), merge the same question asked by several bots, and drop an item once you reply in that chat or dismiss it. Disclosure — opens state.db (sessions, messages) with SQLite mode=ro and PRAGMA query_only and shows the text of matching bot replies: every profile on this machine for the terminal command and CLI/TUI/Desktop, but only the chat's own profile for /waiting in a messaging chat unless the owner turns on all_profiles_in_chat (off by default). Writes only plugin-data/waiting-on-you/dismissed.json in the active profile. No network calls, no model calls, no shell commands, no credentials, no background processes, no tools or hooks."
+maintainer: irsan-dimyati
+tier: community
+category: tools
+requires_hermes: ">=0.21.1"
+docs_url: https://github.com/irsan-dimyati/hermes-waiting-on-you#readme
+version: "0.2.0"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -27,7 +27,7 @@ from typing import Any, Callable, Optional, TYPE_CHECKING
 from hermes_cli._subprocess_compat import windows_hide_flags
 
 if TYPE_CHECKING:
-    from cron.scheduler import _CancelEventLike
+    from cron.cancellation import _CancelEventLike
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("cron.scheduler")
@@ -92,6 +92,19 @@ def _get_media_send_timeout() -> int:
         "HERMES_CRON_MEDIA_SEND_TIMEOUT", "media_send_timeout_seconds", _positive_int,
         "cron media-send timeout")
     return _DEFAULT_MEDIA_SEND_TIMEOUT if resolved is None else resolved
+
+
+def _media_scaled_timeout(base: float, media_files) -> float:
+    """``base`` widened for the on-disk ``(path, is_voice)`` attachments the way the gateway's own
+    upload deadline grows (``gateway.platforms.helpers.scaled_upload_deadline``): a platform answers
+    an upload only once the file arrived, so a fixed cap reported a delivered file as failed."""
+    from gateway.platforms.helpers import media_upload_seconds, scaled_upload_deadline
+    return scaled_upload_deadline(base, media_upload_seconds(path for path, _voice in media_files or ()))
+
+
+def _media_send_timeout_for(media_path) -> float:
+    """``_get_media_send_timeout()`` for one attachment, widened by its upload time."""
+    return _media_scaled_timeout(_get_media_send_timeout(), [(media_path, False)])
 
 
 def _get_session_db_timeout() -> float:
@@ -444,6 +457,9 @@ def _run_job_script(
     instead of the scripts-dir parent. See #69396. interpreter: the job's optional Python for
     ``.py`` scripts (#8714).
     """
+    from tools.hosted_tool_policy import host_feature_refusal
+    if refusal := host_feature_refusal("cron_scripts", "A cron script"):
+        return False, refusal
     path, err = _resolve_script_path(script_path)
     if path is None:
         return False, err
@@ -459,6 +475,7 @@ def _run_job_script(
         # or stderr raises UnicodeDecodeError in communicate() and fails the whole run,
         # discarding the output (#105582; the Windows branch decodes lossily per #45099).
         popen_kwargs: dict[str, Any] = {
+            # detached-spawn: ok — awaited; cancel and timeout tree-kill the group
             "start_new_session": True,
             "errors": "replace",
         }
@@ -473,10 +490,11 @@ def _run_job_script(
                 "encoding": "utf-8",
                 "errors": "replace"}
         # The process env is the LAUNCH profile's. For a job owned by a routed profile, drop that
-        # profile's .env residue from the base first (no-op for the launch profile's own jobs);
-        # the sanitizer then overlays the names the owning profile declares in
-        # terminal.env_passthrough from its own secret scope (#114209). The factory snapshots the
-        # process env itself — no raw copy at the spawn site (test_subprocess_env_guard).
+        # profile's .env residue from the base first (no-op for the launch profile's own jobs), then
+        # overlay the routed profile's own scope (which never enters os.environ under multiplex
+        # semantics) before the sanitizer, which also overlays the names the owning profile declares
+        # in terminal.env_passthrough from that scope (#114209). The factory snapshots the process
+        # env itself — no raw copy at the spawn site (test_subprocess_env_guard).
         env = build_subprocess_env(strip_launch_profile=True)
         env.update(env_overlay)
         # Subprocess cwd only (default: scripts-dir parent). NEVER os.chdir() the process.
@@ -493,7 +511,8 @@ def _run_job_script(
             if cancel_event is not None and cancel_event.is_set():
                 _terminate_cron_script_tree(proc)
                 _drain_script_pipes(proc)
-                return False, "Script cancelled because cron fire ownership was lost"
+                from cron.cancellation import cancel_reason
+                return False, f"Script cancelled: {cancel_reason(cancel_event)}"
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 _terminate_cron_script_tree(proc)
@@ -595,4 +614,4 @@ def _run_job_script_with_claim_heartbeat(
 
 # Late-bound origin namespace (see module docstring). Imported LAST so this module is fully
 # populated before ``scheduler`` re-exports from it.
-from cron import scheduler as _sched  # noqa: E402
+from cron import scheduler as _sched

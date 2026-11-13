@@ -1,7 +1,9 @@
 // @vitest-environment jsdom
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, renderHook, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { $apiRequestScope } from '@/api/client'
+import { useDesktopMetrics } from '@/app/contrib/hooks/use-desktop-metrics'
 import type { HermesConnection } from '@/global'
 import {
   $desktopMetricsGate,
@@ -55,7 +57,8 @@ const setCalls = () =>
 const initialOwner = {
   connection: $connection.get(),
   profile: $activeGatewayProfile.get(),
-  settings: $settingsScopeOverride.get()
+  settings: $settingsScopeOverride.get(),
+  requestScope: $apiRequestScope.get()
 }
 
 const sourceConnection: HermesConnection = {
@@ -78,6 +81,7 @@ beforeEach(() => {
   $connection.set(sourceConnection)
   $activeGatewayProfile.set('default')
   $settingsScopeOverride.set(null)
+  $apiRequestScope.set({ connectionId: 'source-server', profile: 'default' })
   bindDesktopMetrics(null, 'source-server|default')
 })
 
@@ -88,6 +92,7 @@ afterEach(() => {
   $connection.set(initialOwner.connection)
   $activeGatewayProfile.set(initialOwner.profile)
   $settingsScopeOverride.set(initialOwner.settings)
+  $apiRequestScope.set(initialOwner.requestScope)
   vi.useRealTimers()
   vi.unstubAllGlobals()
 })
@@ -123,6 +128,66 @@ describe('SharedMetricsSettings', () => {
     const share = await screen.findByRole('switch', { name: copy.sendLabel })
     await waitFor(() => expect(share.hasAttribute('disabled')).toBe(false))
     expect(share.getAttribute('aria-checked')).toBe('false')
+  })
+
+  it.each([true, false])('reconciles a saved opt-in after focus retires its cohort (backend enabled=%s)', async enabled => {
+    const off = { enabled: false, send: false, decided: true }
+    const on = { enabled: true, send: true, decided: true }
+    const focusRead = Promise.withResolvers<SharedMetricsConsent>()
+    const saved = Promise.withResolvers<SharedMetricsConsent>()
+    let stored = off
+    let holdFocusRead = false
+
+    requestGatewayForAgent.mockImplementation(async (_connection, _profile, method) => {
+      if (method === 'shared_metrics.set') {
+        return saved.promise
+      }
+
+      if (method === 'shared_metrics.status') {
+        if (holdFocusRead) {
+          holdFocusRead = false
+
+          return focusRead.promise
+        }
+
+        return stored
+      }
+
+      return { recorded: true }
+    })
+
+    renderHook(() => useDesktopMetrics({
+      enabled: true,
+      gatewayOpen: true,
+      pathname: '/settings',
+      profile: 'default'
+    }))
+    render(<SharedMetricsSettings />)
+    const share = await screen.findByRole('switch', { name: copy.sendLabel })
+    await waitFor(() => expect(share.hasAttribute('disabled')).toBe(false))
+    await waitFor(() => expect($desktopMetricsGate.get()).toBe('off'))
+
+    holdFocusRead = true
+    fireEvent.focus(window)
+    await waitFor(() => expect(holdFocusRead).toBe(false))
+    fireEvent.click(share)
+    await waitFor(() => expect(setCalls()).toEqual([{ enabled: true, send: true }]))
+    await act(async () => {
+      focusRead.resolve(off)
+      await focusRead.promise
+    })
+    expect($desktopMetricsGate.get()).toBe('off')
+
+    // The successful save response can itself be older than a subsequent withdrawal.
+    await act(async () => {
+      stored = enabled ? on : off
+      saved.resolve(on)
+      await saved.promise
+    })
+
+    await waitFor(() => expect(share.hasAttribute('disabled')).toBe(false))
+    expect($desktopMetricsGate.get()).toBe(enabled ? 'on' : 'off')
+    expect(share.getAttribute('aria-checked')).toBe(String(enabled))
   })
 
   it('keeps the newly focused connection collecting when an old connection finishes opting out', async () => {

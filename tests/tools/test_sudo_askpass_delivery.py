@@ -489,6 +489,16 @@ def test_live_no_temp_dir_or_process_left_after_return(live_env):
         assert left == [] and procs == [], (left, procs)
 
 
+def test_live_timeout_kill_leaves_no_temp_dir(live_env):
+    env, sudo, temp_dir = live_env
+    result = env.execute(f"sleep 20; {sudo} true", timeout=2)
+    assert result["returncode"] == 124, result
+    deadline = time.monotonic() + 5
+    while list(temp_dir.glob("hermes-sudo.*")) and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert list(temp_dir.glob("hermes-sudo.*")) == []
+
+
 def test_live_background_sudo_and_wait_return_promptly(live_env):
     env, sudo, _ = live_env
     started = time.monotonic()

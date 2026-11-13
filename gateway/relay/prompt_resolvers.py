@@ -10,21 +10,26 @@ from typing import Optional
 
 
 def prompt_refusal(state: dict, actor: dict, option_id: Optional[str] = None) -> Optional[str]:
-    """The localized refusal when *actor* (``actor_id`` + ``admin_ids``) may not answer the pending
-    prompt *state*, else None: the requester / approvers / admins rule of ``gateway.approval_actor``."""
+    """The localized refusal when *actor* (``actor_id`` + ``admin_ids`` + ``admitted``) may not answer
+    the pending prompt *state*, else None: the requester / approvers / admins rule of
+    ``gateway.approval_actor``."""
     from gateway import approval_actor
+
+    admitted = actor.get("admitted", True)
 
     session_key = str(state.get("session_key") or "")
     kind = state.get("kind")
     if kind == "exec_approval":
         requester = approval_actor.approval_refusal(session_key, actor["actor_id"], admin_ids=actor["admin_ids"],
-                                                    request_id=state.get("request_id"), choice=option_id)
+                                                    request_id=state.get("request_id"), choice=option_id,
+                                                    admitted=admitted)
     elif kind == "slash_confirm":
         requester = approval_actor.slash_confirm_refusal(session_key, str(state.get("confirm_id") or ""),
-                                                         actor["actor_id"], admin_ids=actor["admin_ids"])
+                                                         actor["actor_id"], admin_ids=actor["admin_ids"],
+                                                         admitted=admitted)
     else:
         requester = approval_actor.clarify_refusal(str(state.get("clarify_id") or ""), actor["actor_id"],
-                                                   admin_ids=actor["admin_ids"])
+                                                   admin_ids=actor["admin_ids"], admitted=admitted)
     return approval_actor.refusal_text(requester) if requester else None
 
 

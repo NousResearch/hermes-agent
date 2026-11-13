@@ -1970,13 +1970,12 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
             chat_id, question, choices, clarify_id, session_key, metadata=metadata
         )
 
-    async def _consume_prompt_response(self, event) -> bool:
-        """Route an inbound prompt_response to its waiting primitive; True when the
-        event was a prompt answer (consumed — never dispatched as chat). EVERY prompt
-        answer is consumed, whoever owns it: a sibling's prompt (the connector fans the
-        press to every gateway of the tenant; falling through produced a wall of
-        "Unknown command"), a repeat answer (first one won), or our own expired/unknown
-        prompt (answered with a short expiry notice — option ids are not commands)."""
+    async def _consume_prompt_response(self, event, *, author_admitted: bool = True) -> bool:
+        """Route an inbound prompt_response to its waiting primitive; True when the event was a prompt
+        answer (consumed — never dispatched as chat). EVERY prompt answer is consumed, whoever owns it: a
+        sibling's prompt (the connector fans the press to every gateway of the tenant; falling through
+        produced a wall of "Unknown command"), a repeat answer (first one won), or our own expired/unknown
+        prompt (a short expiry notice). A Discord press skipped the connector's author check: not admitted."""
         pr = getattr(event, "prompt_response", None)
         if not isinstance(pr, dict):
             return False
@@ -2004,7 +2003,8 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
             # Identity first: this answer is consumed before handle_message, and without the transport
             # identity the admin lookup read the routed runtime profile instead of the bot-owning one.
             self._canonicalize(event.source)
-            actor = {"actor_id": getattr(event.source, "user_id", ""), "admin_ids": runner_answer_policy(event.source)}
+            actor = {"actor_id": getattr(event.source, "user_id", ""), "admitted": author_admitted,
+                     "admin_ids": runner_answer_policy(event.source)}
         if actor and (refusal := prompt_refusal(pending, actor, option_id)):
             # Left pending: only the requester (or an approver) can consume it.
             self._send_lifecycle_ack(str(pending.get("chat_id") or getattr(event.source, "chat_id", "")),

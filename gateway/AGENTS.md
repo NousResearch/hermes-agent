@@ -139,9 +139,8 @@ gateway under the backend, and do NOT "fix" update locks by widening the tree-ki
   plugin injection, background-process events) reads `entry.origin` through
   `authz_mixin.py::_restored_source`, which re-pins a `RoutingIdentity(transport=None)` via
   `session_identity.restore_identity`; `_delivery_adapter_for` then delivers through that bot's
-  adapter or nothing (never the default bot by heuristic). The relay marker is never persisted, so a
-  restored relayed lane reaches the primary's Relay through `_fronting_relay`; revival paths call
-  `delivery.prime_revived_egress` before `handle_message` (the Relay's egress caches fill only on inbound). Rows without the column (pre-PR-5)
+  adapter or nothing (never the default bot by heuristic). Restored relay lanes use `_fronting_relay`;
+  revival paths warm egress with `delivery.prime_revived_egress`. Rows without the column (pre-PR-5)
   keep the `_is_shared_bot_satellite` fallback. Deferred callbacks capture the identity/home at
   command time (`/model` picker); `_run_in_executor_with_context` carries the scope over thread
   hops. Relay: `_with_scope` echoes the routed `profile` on every outbound frame and `follow_up`

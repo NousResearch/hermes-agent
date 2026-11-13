@@ -1046,10 +1046,7 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
         await localize_inbound_media(event, self._get_media_client)
 
     def prime_routing_cache(self, event) -> None:
-        """Warm the per-chat egress routing caches from a SYNTHETIC or restored event: a turn
-        revived after a restart reaches the adapter with the caches COLD, so its replies egress
-        without scope_id/user_id and the connector's fail-closed tenant guard declines them.
-        Fill-only: an entry a live inbound already captured is newer and is never replaced."""
+        """Fill cold scope/user egress caches for a restored turn; preserve newer live routing."""
         if event is None or getattr(event, "source", None) is None:
             return
         self._capture_scope(event, fill_only=True)

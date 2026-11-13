@@ -191,3 +191,25 @@ def test_external_process_plugin_relogin_hint_never_names_a_failing_auth_add(ins
     install_provider("fake-auth")
     assert oauth_relogin_command("fake-auth") == "hermes auth add fake-auth --type oauth"
     assert oauth_relogin_command("nous") == "hermes portal"
+
+
+def test_external_process_plugin_relogin_is_its_declared_login_command(monkeypatch):
+    """A plugin whose ``setup_status()`` names its CLI's login gets exactly that command on every
+    re-login surface: ``hermes model`` also runs that login, but then saves the provider as the
+    default, which a sign-in hint must not do."""
+    from hermes_cli import auth_plugin_providers as ap
+    from providers.base import ProviderProfile
+
+    class _Declares(ProviderProfile):
+        def setup_status(self, **kwargs):
+            return {"available": True, "logged_in": False, "login_command": ["/opt/vendor cli/vendor", "auth", "login"]}
+
+    profile = _Declares(name="cli-declares", auth_type="external_process", process_command="vendor")
+    monkeypatch.setattr(ap, "plugin_profile", lambda slug: profile if slug == "cli-declares" else None)
+    monkeypatch.setattr(ap, "plugin_auth_handler", lambda slug: None)
+    monkeypatch.setattr("hermes_constants.profile_cli_selector", lambda: "")
+
+    from agent.turn_failure_copy import oauth_relogin_command, relogin_command_hint
+
+    assert oauth_relogin_command("cli-declares") == "'/opt/vendor cli/vendor' auth login"
+    assert relogin_command_hint("cli-declares") == "'/opt/vendor cli/vendor' auth login"

@@ -21,7 +21,9 @@
  */
 
 import { useStore } from '@nanostores/react'
-import { type ReactNode, useEffect } from 'react'
+import { type ReactNode, useEffect, useLayoutEffect } from 'react'
+
+import { TITLEBAR_CHROME_CHANGED_EVENT } from '@/app/shell/titlebar'
 
 import { useLayoutEditHotkey } from '../../edit-mode'
 import { publishWorkspaceGeometry } from '../../geometry'
@@ -46,6 +48,14 @@ export function LayoutTreeRoot({ children, titlebar = false }: { children?: Reac
   // Publish --workspace-left/right so chrome (titlebar title) aligns to the
   // main pane's geometry in plain CSS.
   useEffect(publishWorkspaceGeometry, [])
+
+  // Keyed groups can move without resizing. Refresh native drag reservations
+  // after their DOM positions commit, before paint, without subscribing panes.
+  useLayoutEffect(() => {
+    if (titlebar) {
+      window.dispatchEvent(new Event(TITLEBAR_CHROME_CHANGED_EVENT))
+    }
+  }, [tree, titlebar])
 
   return (
     <div className="relative flex min-h-0 min-w-0 flex-1">

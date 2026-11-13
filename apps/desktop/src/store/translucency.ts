@@ -45,6 +45,7 @@ import {
 } from '@hermes/shared/translucency'
 import { atom, computed } from 'nanostores'
 
+import { queryAllVisible } from '@/components/pane-shell/pane-visibility'
 import { hostHas } from '@/lib/host-capabilities'
 import { isMacPlatform, isWindowsPlatform } from '@/lib/platform'
 import { readJson, readKey, writeJson, writeKey } from '@/lib/storage'
@@ -188,76 +189,123 @@ export const isChatWindow = (search = typeof window === 'undefined' ? '' : windo
   }
 }
 
-/* Sidebar scope needs the rail's visual edge published on :root so <body>
-   can split its paint there (glass left of the seam, opaque chrome right of
-   it — the Finder shape). The rail is an in-flow div whose WIDTH animates
-   (components/ui/sidebar.tsx, collapsible='none' branch), so a
-   ResizeObserver sees every collapse/expand frame; a window resize listener
-   and a re-measure on every store sync cover the rest. RTL flips which side
-   the seam is measured from; styles.css picks the matching gradient
-   direction off html[dir]. */
+/* Sidebar scope is a PHYSICAL interval: Sessions can be on either side or
+   between other panes, independently of document direction. Sidebar owns the
+   post-commit/mount/visibility invalidation; size observers cover live sash
+   previews (which intentionally do not commit the layout store). */
+const RAIL_SELECTOR = '[data-slot="sidebar"]'
+const RAIL_BOUNDS = ['--glass-rail-left', '--glass-rail-right'] as const
 let railObserver: null | ResizeObserver = null
-let railTarget: Element | null = null
+let railDirectionObserver: MutationObserver | null = null
+let railTargets = new Set<Element>()
 let railTrackingOn = false
+let railFrame: number | null = null
 
-const measureRailEdge = (): void => {
-  const root = document.documentElement
-  const rail = document.querySelector('[data-slot="sidebar"]')
+/** Coalesce Sidebar's committed layout changes, never tint-slider ticks. */
+export function invalidateSidebarGlassGeometry(): void {
+  if (railTrackingOn && railFrame === null) {
+    railFrame = requestAnimationFrame(() => {
+      railFrame = null
+      measureRailBounds()
+    })
+  }
+}
 
-  if (rail !== railTarget) {
-    if (railObserver && railTarget) {
-      railObserver.unobserve(railTarget)
-    }
+function trackRailSizes(rails: NodeListOf<HTMLElement>): void {
+  const targets = new Set<Element>(rails)
 
-    railTarget = rail
+  for (const rail of rails) {
+    const host = rail.closest<HTMLElement>('[data-tree-group]')
+    const groupId = host?.dataset.treeGroup
 
-    if (railObserver && rail) {
-      railObserver.observe(rail)
+    // Keep-alive bodies are CSS-anchored outside the split tree. Observe the
+    // corresponding SLOT's split tracks, not the body's stable DOM ancestry.
+    const slot = groupId
+      ? document.querySelector(`[data-tree-group="${CSS.escape(groupId)}"]:not([data-pane-host])`)
+      : rail
+
+    for (let parent = slot?.parentElement; parent; parent = parent.parentElement) {
+      if (parent.hasAttribute('data-tree-split')) {
+        for (const track of parent.children) {
+          targets.add(track)
+        }
+      }
     }
   }
 
-  if (!rail) {
-    // No rail in this window (e.g. a pane-only layout): the seam sits at the
-    // window edge and the whole field stays opaque — glass simply waits for
-    // a rail to exist.
-    root.style.setProperty('--glass-rail-edge', '0px')
+  for (const target of railTargets) {
+    if (!targets.has(target)) {
+      railObserver?.unobserve(target)
+    }
+  }
 
+  for (const target of targets) {
+    if (!railTargets.has(target)) {
+      railObserver?.observe(target)
+    }
+  }
+
+  railTargets = targets
+}
+
+function measureRailBounds(): void {
+  if (!railTrackingOn) {
     return
   }
 
-  const rect = rail.getBoundingClientRect()
-  const rtl = getComputedStyle(root).direction === 'rtl'
-  const edge = rtl ? window.innerWidth - rect.left : rect.right
+  const root = document.documentElement
+  trackRailSizes(document.querySelectorAll<HTMLElement>(RAIL_SELECTOR))
+  let left = 0
+  let right = 0
 
-  root.style.setProperty('--glass-rail-edge', `${Math.max(0, Math.round(edge))}px`)
+  // Inactive tabs retain their full layout box. Follow the shell's visibility
+  // policy before measuring, and ignore collapsed/display:none/empty rails.
+  for (const rail of queryAllVisible<HTMLElement>(RAIL_SELECTOR)) {
+    if (getComputedStyle(rail).visibility !== 'visible') {
+      continue
+    }
+
+    const rect = rail.getBoundingClientRect()
+
+    if (rect.width <= 0 || rect.height <= 0) {
+      continue
+    }
+
+    const start = Math.max(0, Math.min(window.innerWidth, Math.round(rect.left)))
+    const end = Math.max(start, Math.min(window.innerWidth, Math.round(rect.right)))
+
+    if (end > start) {
+      left = start
+      right = end
+
+      break
+    }
+  }
+
+  for (const [index, value] of [left, right].entries()) {
+    const pixels = `${value}px`
+
+    // Root custom-property writes invalidate every consuming surface. Sash
+    // observers and duplicate lifecycle notifications must be no-ops at rest.
+    if (root.style.getPropertyValue(RAIL_BOUNDS[index]) !== pixels) {
+      root.style.setProperty(RAIL_BOUNDS[index], pixels)
+    }
+  }
 }
 
 const startRailTracking = (): void => {
   if (railTrackingOn) {
-    // Already tracking: the ResizeObserver on the rail and the window resize
-    // listener own every geometry change from here. Re-measuring per store
-    // sync would force a layout read (getBoundingClientRect) right after the
-    // tint's style write, once per slider tick — write/read thrash on the
-    // drag's hot path for a seam that isn't moving. Two exceptions re-acquire:
-    // a rail we haven't FOUND yet (scope enabled before the sidebar mounted),
-    // and a rail that REMOUNTED (layout reset swaps the element) — the
-    // observer sits on the detached node and never fires again. isConnected
-    // is a flag read, so the settled hot path stays a single boolean check.
-    if (!railTarget || !railTarget.isConnected) {
-      measureRailEdge()
-    }
-
     return
   }
 
   railTrackingOn = true
-
-  if (typeof ResizeObserver !== 'undefined' && !railObserver) {
-    railObserver = new ResizeObserver(() => measureRailEdge())
-  }
-
-  window.addEventListener('resize', measureRailEdge)
-  measureRailEdge()
+  railObserver = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(invalidateSidebarGlassGeometry)
+  // Locale direction can reflow a same-size rail without a tree commit. This
+  // watches one root attribute, not the streaming document or our style writes.
+  railDirectionObserver = new MutationObserver(invalidateSidebarGlassGeometry)
+  railDirectionObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['dir'] })
+  window.addEventListener('resize', invalidateSidebarGlassGeometry)
+  measureRailBounds()
 }
 
 const stopRailTracking = (): void => {
@@ -267,13 +315,18 @@ const stopRailTracking = (): void => {
 
   railTrackingOn = false
 
-  if (railObserver && railTarget) {
-    railObserver.unobserve(railTarget)
+  if (railFrame !== null) {
+    cancelAnimationFrame(railFrame)
+    railFrame = null
   }
 
-  railTarget = null
-  window.removeEventListener('resize', measureRailEdge)
-  document.documentElement.style.removeProperty('--glass-rail-edge')
+  railObserver?.disconnect()
+  railObserver = null
+  railDirectionObserver?.disconnect()
+  railDirectionObserver = null
+  railTargets.clear()
+  window.removeEventListener('resize', invalidateSidebarGlassGeometry)
+  RAIL_BOUNDS.forEach(name => document.documentElement.style.removeProperty(name))
 }
 
 /* Peek: while the user is actively adjusting translucency from Settings, the

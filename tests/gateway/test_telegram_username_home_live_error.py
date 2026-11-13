@@ -1,12 +1,34 @@
-"""The live Telegram gateway must explain a private @username home send (#95121)."""
+"""The live Telegram gateway must explain a private @username home send (#95121).
+
+An in-process gateway dispatches send_message through ``TelegramAdapter.send`` (not
+``standalone_send``), so the hint must come from the adapter's own failure boundary. The bot
+refuses the way the Bot API does; the real send path (chunking, error classification, the
+media fallback notice) runs unmocked.
+"""
 
 import asyncio
-from contextlib import asynccontextmanager
 
 import pytest
 
-from gateway.platforms.base import SendResult
+from gateway.config import PlatformConfig
 from plugins.platforms.telegram.adapter import TelegramAdapter
+
+
+class _RefusingBot:
+    def __init__(self, error: str) -> None:
+        self.error = error
+
+    async def send_message(self, **_kw):
+        raise RuntimeError(self.error)
+
+    async def send_document(self, **_kw):
+        raise RuntimeError(self.error)
+
+
+def _adapter(error: str) -> TelegramAdapter:
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="1:fake", extra={"rich_messages": False}))
+    adapter._bot = _RefusingBot(error)
+    return adapter
 
 
 @pytest.mark.parametrize(
@@ -17,28 +39,22 @@ from plugins.platforms.telegram.adapter import TelegramAdapter
         ("@shelmecha", "Forbidden: bot was blocked by the user", False),
     ],
 )
-def test_live_gateway_username_home_error_explains_numeric_id(
-    monkeypatch: pytest.MonkeyPatch, chat_id: str, api_error: str, hint_expected: bool,
-) -> None:
-    """Unlike the CLI, an in-process gateway dispatches through TelegramAdapter.send."""
-    adapter = TelegramAdapter.__new__(TelegramAdapter)
-    adapter._bot = object()
-
-    @asynccontextmanager
-    async def no_lock(_self, _chat_id):
-        yield
-
-    async def refused(_self, _chat_id, _content, _reply_to, _metadata):
-        return SendResult(success=False, error=api_error)
-
-    monkeypatch.setattr(TelegramAdapter, "_chat_send_lock", no_lock)
-    monkeypatch.setattr(TelegramAdapter, "_send_text_locked", refused)
-
-    result = asyncio.run(adapter.send(chat_id, "notification"))
+def test_live_gateway_username_home_error_explains_numeric_id(chat_id: str, api_error: str, hint_expected: bool) -> None:
+    result = asyncio.run(_adapter(api_error).send(chat_id, "notification"))
     assert result.success is False
+    error = result.error or ""
     if hint_expected:
-        assert "Chat not found" in result.error
-        assert "numeric chat id" in result.error
-        assert "/sethome" in result.error
+        assert error.startswith("Chat not found.")
+        assert "numeric chat id" in error and "/sethome" in error
     else:
-        assert result.error == api_error
+        assert error == api_error
+
+
+def test_live_media_send_to_username_home_carries_the_hint(tmp_path) -> None:
+    """send_message with media: a refused document falls back to a text notice through send()."""
+    attachment = tmp_path / "report.txt"
+    attachment.write_text("x")
+    result = asyncio.run(_adapter("Chat not found").send_document("@shelmecha", str(attachment)))
+    error = result.error or ""
+    assert result.success is False
+    assert "numeric chat id" in error and "/sethome" in error

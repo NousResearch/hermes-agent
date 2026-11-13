@@ -9,6 +9,7 @@ conservative: only LONG verbatim repeats (60+ chars) covering a majority of the 
 
 from __future__ import annotations
 
+import logging
 import math
 from collections import Counter
 
@@ -192,3 +193,10 @@ class RunawayStreamWatch:
         tail = "".join(self._parts)[-_STREAM_TAIL_CHARS:]
         self._parts = [tail]
         return is_runaway_repetition(tail)
+
+
+def log_runaway_cut(agent, api_kwargs: dict, channel: str) -> None:
+    logging.getLogger("agent.chat_completion_helpers").warning(
+        "%sStream cut: the %s turned into a runaway repetition loop (model=%s, provider=%s).",
+        getattr(agent, "log_prefix", ""), channel, api_kwargs.get("model", "unknown"),
+        getattr(agent, "provider", "") or "unknown")

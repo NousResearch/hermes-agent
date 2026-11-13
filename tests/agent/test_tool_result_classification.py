@@ -29,3 +29,12 @@ def test_side_effect_classification_keeps_session_mutations():
     assert tool_may_have_side_effect("mcp_unknown") is True
     assert tool_may_have_side_effect("read_file") is False
     assert tool_may_have_side_effect("web_search") is False
+
+
+def test_skill_view_is_effect_capable_because_it_records_usage():
+    from agent.tool_result_classification import tool_may_have_side_effect
+
+    # skill_view persists view/use counters on success, so an interrupted call
+    # must not be treated as a pure read.
+    assert tool_may_have_side_effect("skill_view") is True
+    assert tool_may_have_side_effect("skills_list") is False

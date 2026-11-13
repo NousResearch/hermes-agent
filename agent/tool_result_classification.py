@@ -12,9 +12,10 @@ FILE_MUTATING_TOOL_NAMES = frozenset({"write_file", "patch"})
 
 # Tools whose interrupted/dangling execution is safe to discard because they
 # cannot mutate either external state or Hermes session state. Unknown/plugin/
-# MCP tools stay effect-capable by default.
+# MCP tools stay effect-capable by default. ``skill_view`` is deliberately absent:
+# a successful call persists view/use counters (tools/skills_tool.py).
 NO_EFFECT_TOOL_NAMES = frozenset({
-    "read_file", "search_files", "session_search", "skill_view", "skills_list",
+    "read_file", "search_files", "session_search", "skills_list",
     "web_extract", "web_search", "vision_analyze", "browser_snapshot",
     "browser_get_images", "browser_console", "read_terminal",
 })

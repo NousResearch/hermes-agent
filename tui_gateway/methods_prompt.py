@@ -966,7 +966,7 @@ def _(rid, params: dict) -> dict:
         target=lambda: _run_after_agent_ready(
             rid, sid, session, text, display_kind, display_metadata, hosted_terminal_callback, turn_author,
             hosted_images),
-        daemon=True)
+        daemon=True, name=f"prompt-submit-{sid}")
     # Handle lets session.interrupt tell a live turn from a stuck `running` flag.
     session["_run_thread"] = run_thread
     run_thread.start()

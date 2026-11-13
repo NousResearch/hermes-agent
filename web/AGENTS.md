@@ -52,8 +52,9 @@ What each surface (`serve`, `dashboard`, `webapp`) may do is one table,
   overlays English independently; Simplified Chinese is the first complete non-English
   implementation, not a privileged runtime branch.
 - `locales/registry.json` is the single authority for locale identities, endonyms, picker
-  labels, ordinary aliases and protocol compatibility aliases. Python, Ink and Dashboard
-  consume it directly; do not recreate locale lists or normalization tables elsewhere.
+  labels, ordinary aliases and protocol compatibility aliases. Python reads it directly;
+  `node scripts/gen_locale_registry.mjs` generates the self-contained TypeScript data used by
+  Ink and Dashboard. Regenerate after registry edits; the shared-package test checks parity.
 - Product language choices expose `zh` (Simplified Chinese) and `zh-hant` (Traditional
   Chinese) as independent languages. Region-tagged inputs such as `zh-TW`, `zh-HK` and
   `zh-MO` are boundary-only compatibility values that normalize immediately to `zh-hant`.

@@ -1,4 +1,4 @@
-import registry from '../../../locales/registry.json' with { type: 'json' }
+import registry from './locale-registry.generated.js'
 
 export type Locale = keyof typeof registry.locales
 

@@ -1138,15 +1138,21 @@ def _invalid_tool_name_error_content(name: str, valid_tool_names) -> str:
 
 
 def _content_policy_blocked_result(
-    messages: list[dict], api_call_count: int, *, final_response: str, error_detail: str
+    messages: list[dict], api_call_count: int, *, final_response: str, error_detail: str,
+    boundary_row_id: Optional[int] = None,
 ) -> dict[str, Any]:
     """Terminal turn result for a content-policy block (deterministic for the unchanged
-    prompt, so no retry); shared by the HTTP-200 and exception paths."""
-    return {
+    prompt, so no retry); shared by the HTTP-200 and exception paths. ``messages`` is the
+    CLEAN pre-refusal history (the refused turn is dropped from it). ``boundary_row_id`` is
+    the durable row that started the refused run, so the owner drops the exact turn."""
+    result = {
         "final_response": final_response, "messages": messages, "api_calls": api_call_count,
         "completed": False, "failed": True, "error": f"content_policy_blocked: {error_detail}",
         "failure_reason": "content_policy_blocked", "failure_retryable": False,
     }
+    if boundary_row_id is not None:
+        result["refused_turn_boundary_row_id"] = boundary_row_id
+    return result
 
 
 def _partial_turn_result(
@@ -1235,10 +1241,10 @@ def _rewrite_system_content_blocks(system_message: dict, effective: str) -> bool
     if len(content) == 1:
         content[0]["text"] = effective
         return True
-    if len(content) == 2:
-        head = content[0].get("text") or ""
-        if head and effective.startswith(head) and effective[len(head):]:
-            content[1]["text"] = effective[len(head):]
+    if len(content) in (2, 3):  # [static, volatile] or [static, session rest, ephemeral tail]
+        head = "".join(part.get("text") or "" for part in content[:-1])
+        if all(part.get("text") for part in content[:-1]) and effective.startswith(head) and effective[len(head):]:
+            content[-1]["text"] = effective[len(head):]
             return True
     return False
 
@@ -1319,6 +1325,7 @@ def _redecorate_prompt_cache_for_provider(
             cache_ttl=effective_cache_ttl(agent._cache_ttl, provider=agent.provider, model=agent.model),
             native_anthropic=agent._use_native_cache_layout,
             static_system_prefix=static if isinstance(static, str) else None,
+            session_system_prompt=agent._cached_system_prompt,
             direct_native_tool_cache=getattr(
                 agent, "_direct_native_anthropic_tool_cache_capability", lambda: False
             )(),
@@ -1824,7 +1831,7 @@ def run_conversation(
     addresses, after every history rewrite including post-turn micro-compaction.
     """
     from agent.turn_context import export_current_turn_boundary
-    from agent.turn_finalizer import settle_held_final
+    from agent.turn_finalizer import fence_result_reply, settle_held_final
     from agent.voice_turn_route import end_voice_turn_route
     from tools.vision_tools_history_budget import native_turn_images
 
@@ -1853,6 +1860,7 @@ def run_conversation(
             )
         finally:
             end_voice_turn_route(agent)
+    fence_result_reply(result)
     settle_held_final(agent, result)
     result = export_current_turn_boundary(agent, result, user_message)
     if isinstance(result, dict):
@@ -1919,16 +1927,22 @@ def _close_durable_failed_turn(agent, result: Any) -> None:
 
     Excluded: the context-pressure classes (``compression_exhausted``, ``compression_deferred``,
     ``failure_reason == "context_overflow"``) — appending to an already-oversized session is the
-    #1630 growth loop; their repair is rotation or a retry. Idempotence is keyed on the DURABLE
-    tail (``SessionDB.latest_conversation_role``), so a redelivery or a tail already closed by
-    another writer is a no-op, and the gateway's own closer then no-ops in turn.
+    #1630 growth loop; their repair is rotation or a retry. ``content_policy_blocked`` too: the
+    WHOLE refused turn is erased from the conversation — the user message, any tool rounds that ran,
+    and the refusal (the owner rewinds it durably: the gateway owner-side for Bot Chat, the CLI/ACP
+    owner for their direct DB; in-memory surfaces return the pre-refusal history). Erasing the whole
+    turn (tool rounds included) is deliberate: the user keeps SEEING the message in the chat, but the
+    model is never re-sent the content that tripped the filter, so the chat is not locked. A closing
+    boundary would only be written to be rewound. Idempotence
+    is keyed on the DURABLE tail (``SessionDB.latest_conversation_role``), so a redelivery or a tail
+    already closed by another writer is a no-op, and the gateway's own closer then no-ops in turn.
     """
     try:
         if not isinstance(result, dict) or result.get("completed") is True:
             return
         if (
             result.get("compression_exhausted") or result.get("compression_deferred")
-            or result.get("failure_reason") == "context_overflow"
+            or result.get("failure_reason") in ("context_overflow", "content_policy_blocked")
         ):
             return
         messages = result.get("messages")

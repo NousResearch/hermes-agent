@@ -220,6 +220,31 @@ export interface WorkspaceTranslations {
 
   // ── Channels page ──
   channels: {
+    relay: {
+      via: string
+      managed: string
+      managedNote: (name: string) => string
+      directWarning: string
+      refused: (name: string, reason: string) => string
+      linked: (name: string) => string
+      expired: string
+      inactive: (name: string) => string
+      copied: string
+      copyFailed: (command: string) => string
+      portalDescription: (name: string) => string
+      linkDescription: (name: string) => string
+      unlink: string
+      portalLink: string
+      qrAlt: (name: string) => string
+      scanStep: (name: string) => string
+      openStep: (name: string) => string
+      sendStep: string
+      open: (name: string) => string
+      copyMessage: string
+      waiting: string
+      linkAnother: (name: string) => string
+      link: (name: string) => string
+    }
     allowlistIdPlaceholder: string
     addAnotherAllowlistId: string
     changesSaved: string

@@ -112,11 +112,16 @@ def _run_child(request: dict) -> tuple[int, dict]:
     root = Path(__file__).resolve().parents[1]
     home = os.environ.get("HERMES_HOME")
     constants = sys.modules.get("hermes_constants")
+    # The running process may hold any historical hermes_constants: older ones keep the override in
+    # a module ContextVar, newer ones behind get_hermes_home_override() (the runtime scope state).
     override = vars(constants).get("_HERMES_HOME_OVERRIDE") if constants else None
     if override is not None:
         value = override.get()
-        if isinstance(value, (str, Path)) and value:
-            home = str(value)
+    else:
+        read_override = getattr(constants, "get_hermes_home_override", None) if constants else None
+        value = read_override() if callable(read_override) else None
+    if isinstance(value, (str, Path)) and value:
+        home = str(value)
     request.update(root=str(root), home=home, argv=list(sys.argv))
     env = {key: value for key, value in os.environ.items()
            if not key.startswith(("PYTHON", "UV_")) and key != "VIRTUAL_ENV"}

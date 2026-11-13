@@ -59,6 +59,12 @@ export interface DelegationRoutingTranslations {
   tierFast: string
   tierUltrafast: string
   tierHint: string
+  daybreakLabel: string
+  daybreakOff: string
+  daybreakOn: string
+  daybreakHint: string
+  daybreakUnlisted: string
+  daybreakNeedsPlugin: string
   optional: string
   errors: { required: string; spaces: string; duplicate: string }
   saveRoute: string

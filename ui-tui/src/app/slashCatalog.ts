@@ -1,8 +1,8 @@
+import type { CommandsCatalogResponse } from '@hermes/shared/gateway-types'
 import { useStore } from '@nanostores/react'
 import { atom } from 'nanostores'
 import { useEffect } from 'react'
 
-import type { CommandsCatalogResponse } from '../gatewayTypes.js'
 import { t } from '../i18n/runtime.js'
 import { rpcErrorMessage } from '../lib/rpc.js'
 import type { SlashCatalog } from '../types.js'

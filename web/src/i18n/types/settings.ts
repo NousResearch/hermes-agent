@@ -40,6 +40,11 @@ export interface SettingsTranslations {
     authRequired: string
     authRequiredHint: string
     updateGit: string
+    updateAll: string
+    updatingAll: string
+    updateAllDone: (updated: number, needsReview: number, failed: number) => string
+    autoUpdate: string
+    autoUpdateDesc: (hours: number) => string
     /** Optional: locales without it fall back to the English body at the call site. */
 
     versionBadge: string

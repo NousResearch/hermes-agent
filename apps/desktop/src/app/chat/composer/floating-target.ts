@@ -15,6 +15,7 @@ const carets = new WeakMap<HTMLElement, Range>()
 let pointer: { x: number; y: number } | null = null
 let pointerDownTarget: Element | null = null
 let keyboardNavigation = false
+let floatingLayerFocused = false
 let reconcileQueued = false
 
 /** The inline message edit lives in the transcript, outside every composer
@@ -204,6 +205,13 @@ function trackFocus(event: FocusEvent) {
     return
   }
 
+  // A closing portal can detach its focused node before restoring its opener,
+  // leaving relatedTarget null. Keep the last focus origin across that teardown.
+  const fromFloatingLayer =
+    floatingLayerFocused || inFloatingLayer(event.relatedTarget instanceof Element ? event.relatedTarget : null)
+
+  floatingLayerFocused = inFloatingLayer(target)
+
   const hostId = target.closest<HTMLElement>('[data-composer-owner]')?.dataset.composerOwner
 
   if (hostId === $floatingComposerOwner.get()?.id) {
@@ -216,10 +224,16 @@ function trackFocus(event: FocusEvent) {
     return
   }
 
-  // A delayed focus/restore isn't a navigation gesture. A clicked control,
-  // keyboard Tab, or the inline edit opened by a bubble click still keeps its
-  // normal focus, without redirecting to the input.
-  if (isTouchInteraction() || keyboardNavigation || keepsOwnFocus(target) || (pointerDownTarget && target.contains(pointerDownTarget))) {
+  // Navigation selects the recipient without moving the caret. Tab headers
+  // must update the owning split too, while retaining their roving focus.
+  if (
+    target.closest('[role="tab"]') ||
+    isTouchInteraction() ||
+    keyboardNavigation ||
+    fromFloatingLayer ||
+    keepsOwnFocus(target) ||
+    (pointerDownTarget && target.contains(pointerDownTarget))
+  ) {
     flushSync(() => selectSurface(id))
   } else {
     // A refused redirect leaves focus where it landed: that element's focusin
@@ -258,6 +272,7 @@ export function registerFloatingComposer(id: string, surface: Omit<FloatingCompo
   surfaces.set(id, surface)
 
   if (surfaces.size === 1) {
+    floatingLayerFocused = inFloatingLayer(document.activeElement)
     window.addEventListener('pointermove', trackPointer, true)
     window.addEventListener('pointerdown', trackPointer, true)
     window.addEventListener('focusin', trackFocus, true)
@@ -293,6 +308,7 @@ export function registerFloatingComposer(id: string, surface: Omit<FloatingCompo
       pointer = null
       pointerDownTarget = null
       keyboardNavigation = false
+      floatingLayerFocused = false
     }
   }
 }

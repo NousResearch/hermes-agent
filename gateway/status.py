@@ -787,12 +787,13 @@ def _record_argv() -> list[str]:
 
 
 def _build_pid_record() -> dict:
+    from hermes_state_pidns import pid_namespace_id  # ``pid`` is relative to its PID namespace (#123081)
     return {
         "pid": os.getpid(), "kind": _GATEWAY_KIND, "argv": _record_argv(),
         "start_time": _get_process_start_time(os.getpid()),
         # Scoped locks are machine-global; the owner's home lets a cross-profile
         # --replace place its takeover marker where the target will read it.
-        "hermes_home": str(_canonical_hermes_home(_get_process_hermes_home())),
+        "hermes_home": str(_canonical_hermes_home(_get_process_hermes_home())), "pidns": pid_namespace_id(),
     }
 
 
@@ -1330,29 +1331,9 @@ def multiplexer_liveness_for_profile(profile_dir: Path) -> Optional[tuple[int, d
 
 
 def shared_listener_mirror_platforms(runtime: Optional[dict[str, Any]], profile: str) -> dict[str, Any]:
-    """Entries for the api_server/webhook mirrors a served ``profile`` gets from the DEFAULT's
-    listener. The multiplexer never builds those adapters for a secondary (``gateway.run_adapters``
-    skips them: ``SHARED_LISTENER_MIRROR_PLATFORMS``), so the record has no ``<profile>:api_server``
-    entry and every reader fell through to ``pending_restart`` — "Restart needed" forever while
-    ``/p/<profile>/v1/...`` answered. Only a live default entry is mirrored; its state is the profile's
-    state, plus the ``/p/<profile>`` URL the client must actually call.
-    """
-    from gateway.config import SHARED_LISTENER_MIRROR_PATHS, SHARED_LISTENER_MIRROR_PLATFORMS
-    plats = (runtime or {}).get("platforms")
-    if not profile or profile == "default" or not isinstance(plats, dict):
-        return {}
-    mirrored: dict[str, Any] = {}
-    for name in sorted(SHARED_LISTENER_MIRROR_PLATFORMS):
-        entry = plats.get(name)
-        if not isinstance(entry, dict) or entry.get("state") not in {"connected", "connecting", "retrying"}:
-            continue
-        # api_server and webhook bind separate ports; each mirror hangs off its own listener. A record
-        # from an older gateway carries no ``listener_base``: connected, URL unknown.
-        base = entry.get("listener_base")
-        url = f"{base}/p/{profile}{SHARED_LISTENER_MIRROR_PATHS.get(name, '')}" if isinstance(base, str) and base else None
-        mirrored[name] = {k: v for k, v in entry.items() if k != "listener_base"}
-        mirrored[name].update(ingress_url=url, mirrored_from="default")
-    return mirrored
+    """Entries a served ``profile`` mirrors from the default; see ``gateway.status_served``."""
+    from gateway.status_served import served_profile_mirror_platforms
+    return served_profile_mirror_platforms(runtime, profile)
 
 
 def profile_platforms_from_multiplexer(runtime: Optional[dict[str, Any]], profile: str) -> dict[str, Any]:
@@ -1564,15 +1545,13 @@ def _acquire_scoped_lock_at(
         _unlink_quietly(lock_path)
     if existing:
         existing_pid = _pid_from_record(existing)
-        # Our own PID: always self-reacquire. start_time guards reuse of OTHER PIDs; requiring
-        # equality here rejects reconnects when the on-disk record has start_time null.
         # Same live PID as this process: always self-reacquire. ``start_time`` is a PID-reuse guard for
         # *other* PIDs; it cannot distinguish two processes that share the caller's own PID (impossible
         # while we are alive). Requiring start_time equality here falsely rejects reconnects when the
-        # on-disk record has ``start_time: null`` (older writers / psutil failure at first write) while the
-        # freshly built record has a real value — the gateway then reports itself as the foreign squatter of
-        # its own token (#81468).
-        if existing_pid == os.getpid():
+        # on-disk record has ``start_time: null`` (older writers / psutil failure at first write) while the fresh
+        # record has a real value — the gateway then reports itself as the foreign squatter of its token (#81468).
+        from gateway.status_scoped_locks import scoped_lock_pid_is_ours
+        if existing_pid == os.getpid() and scoped_lock_pid_is_ours(existing):
             _write_json_file(lock_path, record)
             return True, existing
         if not _scoped_lock_record_is_stale(existing, existing_pid):
@@ -1985,13 +1964,14 @@ def get_running_pid(
     resolved_pid_path = pid_path or _get_pid_path()
     resolved_lock_path = _get_gateway_lock_path(resolved_pid_path)
     if is_gateway_runtime_lock_active(resolved_lock_path):
-        records = (
-            _read_pid_record(resolved_pid_path), _read_gateway_lock_record(resolved_lock_path),
-        )
+        from gateway.status_scoped_locks import scoped_lock_pid_is_ours
+        records = (_read_pid_record(resolved_pid_path), _read_gateway_lock_record(resolved_lock_path))
         expected_home = pid_path.parent if pid_path is not None else None
-        saw_live_pid = False
-        foreign_live_pid = False
+        saw_live_pid = foreign_live_pid = False
         for record in records:
+            if isinstance(record, dict) and not scoped_lock_pid_is_ours(record):
+                saw_live_pid = True  # held flock, PID from another namespace: never probe or unlink (#123081)
+                continue
             pid = _live_pid_from_record(record)
             if pid is None:
                 continue

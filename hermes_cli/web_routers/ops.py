@@ -234,6 +234,10 @@ async def create_webhook(body: WebhookCreate, profile: Optional[str] = None):
         route["deliver_only"] = True
     if body.deliver_chat_id:
         route["deliver_extra"] = {"chat_id": body.deliver_chat_id}
+    if isinstance(expected, dict) and "signature" in expected:
+        # A re-POST replaces the record; dropping its pin would republish the route accepting every
+        # signature family again, body-only GitHub/Linear MACs included (#84265).
+        route["signature"] = expected["signature"]
 
     def _save():
         try:

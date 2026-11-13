@@ -1,0 +1,35 @@
+name: letterpress
+title: Letterpress
+repo: https://github.com/Dgardenhire/hermes-letterpress
+sha: f67cc002118bbd81ba3b99c773c38ad4e46401f5
+description: "Drop in your PDFs, Word files and text, and Letterpress turns them into a finished deck, one-pager, graphic or audio brief in your own brand. Pick from three deck designs (Editorial, Data board, Statement), mix slides between them, and revise any slide by asking in plain words. Ask questions of your sources and get answers that cite the paragraph. Numbers and quotes are checked against your sources before export, and a Source notes PDF sets each one beside the sentence it came from. The check covers numbers and quotes, not claims or framing, so read the headlines yourself. Five built-in brands, or make your own. Independent community plugin, not made or endorsed by Nous Research. Disclosure — Sends source text (secrets redacted by Hermes), questions, briefs and pictures of draft slides to the user's own Hermes model (auxiliary task \"Letterpress writing\") and audio scripts to the user's Hermes text-to-speech provider; fetches only web addresses the user enters, through Hermes's SSRF-safe client or the user's web_extract tool; starts a headless Chrome/Chromium/Edge/Brave child process (path from LETTERPRESS_BROWSER or IMPRINT_BROWSER, install folders or PATH) with only a minimal environment to render exports with network blocked and, on macOS/Linux, to view up to four pages of a user-named website through a public-address-only proxy on 127.0.0.1; runs sips on macOS; on first start copies its own earlier data from $HERMES_HOME/plugin-data/imprint/ when that folder holds this plugin's database, without changing it; writes only under $HERMES_HOME/plugin-data/letterpress/ (or LETTERPRESS_DATA_DIR / IMPRINT_DATA_DIR) and to paths picked in the save dialog."
+maintainer: Dgardenhire
+tier: community
+category: desktop
+requires_hermes: ">=0.22.6"
+docs_url: https://linchpin.studio/hermes/letterpress/manual/
+version: "0.1.1"
+image: "https://raw.githubusercontent.com/Dgardenhire/hermes-letterpress/f67cc002118bbd81ba3b99c773c38ad4e46401f5/docs/catalog/card.jpg"
+screenshots:
+  - "https://raw.githubusercontent.com/Dgardenhire/hermes-letterpress/f67cc002118bbd81ba3b99c773c38ad4e46401f5/docs/shots/live/three-designs.jpg"
+  - "https://raw.githubusercontent.com/Dgardenhire/hermes-letterpress/f67cc002118bbd81ba3b99c773c38ad4e46401f5/docs/shots/live/deck-numbers.jpg"
+  - "https://raw.githubusercontent.com/Dgardenhire/hermes-letterpress/f67cc002118bbd81ba3b99c773c38ad4e46401f5/docs/shots/live/notebook.jpg"
+  - "https://raw.githubusercontent.com/Dgardenhire/hermes-letterpress/f67cc002118bbd81ba3b99c773c38ad4e46401f5/docs/shots/live/one-pager.jpg"
+  - "https://raw.githubusercontent.com/Dgardenhire/hermes-letterpress/f67cc002118bbd81ba3b99c773c38ad4e46401f5/docs/shots/live/mixed-deck.jpg"
+readme: true
+platforms: []
+known_issues:
+  - "The three designs, and PDF or image export of a designed piece, need Google Chrome, Chromium, Microsoft Edge or Brave, found in the usual install folders, on PATH, or at the path in LETTERPRESS_BROWSER. Without one the Designs screen says so and the Template version still works. The lookup has been run on a Mac; on Windows and Linux it is covered by tests only."
+  - "Build from a website looks at the site in that browser on macOS and Linux only. On Windows it still reads the site's colors and fonts, but writes no style brief."
+  - "A three-designs run takes several minutes on a small model."
+  - "Updating the plugin while Letterpress is working reloads its page, and an outline in progress loses its place on screen."
+  - "In the light theme, placeholder text and buttons that aren't ready yet are pale."
+  - "Audio needs text to speech turned on in Hermes; without it the script is made and can be exported."
+  - "Reading a logo or brand sheet needs a model that can see images."
+  - "The source check proves a number or quote is in your sources, not that the source is right."
+  - "The check covers numbers and quotes, not claims or framing: a sample deck headlined \"adds a site\" passed 19 of 19 when its sources said \"proposes\"."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

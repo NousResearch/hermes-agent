@@ -20,7 +20,7 @@ _SILENT_BACKGROUND_HINT = (
     'will not be told when it exits. If this is a bounded task (test suite, build, CI poller, '
     'deploy, anything with a defined end), you almost certainly wanted notify_on_complete=true '
     'so the system pings you on exit. Re-launch with notify_on_complete=true, or call '
-    "process(action='poll') / process(action='wait') yourself to learn the outcome. Only "
+    "process_manage(action='poll') / process_manage(action='wait') yourself to learn the outcome. Only "
     'ignore this hint for genuine long-lived processes that never exit (servers, watchers, '
     'daemons).'
 )
@@ -42,7 +42,7 @@ _HOMEBREW_CI_POLLER_HINT = (
     '"$2==\\"pending\\""`) for sharded matrices. Load '
     "skill_view(name='github/hermes-agent-dev', file_path='references/green-ci-policy.md') for "
     'the verbatim snippets. If you must roll a custom loop with rich structured output, write '
-    "each tick to a known file (`tee -a $TMPDIR/ci.log`) and rely on `process(action='log')` to "
+    "each tick to a known file (`tee -a $TMPDIR/ci.log`) and rely on `process_manage(action='log')` to "
     'read THAT file — do not rely on background-process stdout capture for line-buffered shell '
     'loops.'
 )
@@ -55,9 +55,9 @@ _AUTO_BACKGROUND_NOTE = (
 
 _ASYNC_UNSUPPORTED_NOTE = (
     'notify_on_complete / watch_patterns are not available in this session — it cannot receive '
-    'an async completion after the turn ends (a one-shot runner such as `hermes -z`, a cron '
-    'job, a Kanban worker, or a stateless HTTP endpoint). The process is running in the '
-    "background; retrieve its result with process(action='poll') or process(action='wait')."
+    'an async completion after the turn ends (a one-shot runner such as `hermes -z`, a /bg '
+    'background task, a cron job, a Kanban worker, a hosted agent, or a stateless HTTP endpoint). The process is running in the '
+    "background; retrieve its result with process_manage(action='poll') or process_manage(action='wait')."
 )
 
 # proc_session attribute -> HERMES_SESSION_* env var carrying it.
@@ -111,8 +111,11 @@ def _apply_async_support(proc_session, result_data, notify_on_complete, watch_pa
     if not (notify_on_complete or watch_patterns):
         return notify_on_complete, watch_patterns
     from gateway.session_context import async_delivery_supported, get_session_env
+    from tools.environments.sandbox_scope import hosted_scope
 
-    if async_delivery_supported():
+    # A hosted agent's process is invisible outside its scope, and no notification consumer binds
+    # that scope (the gateway watcher and every drain pass over it), so its notice could never land.
+    if async_delivery_supported() and hosted_scope() is None:
         _stamp_gateway_routing(proc_session, get_session_env)
         return notify_on_complete, watch_patterns
     result_data["notify_on_complete"] = False
@@ -149,6 +152,7 @@ def _register_completion_watcher(process_registry, proc_session, session_key) ->
 def spawn_background_process(
     *, command: str, env: Any, env_type: str, effective_task_id: str, task_id: Optional[str],
     session_key: str, workdir: Optional[str], cwd: str, effective_pty: bool,
+    cwd_key: Optional[str] = None,
     notify_on_complete: bool, watch_patterns: Optional[list[str]], approval_note: Optional[str],
     completion_output_chars: int = 0,
     pty_disabled_reason: Optional[str],
@@ -171,7 +175,7 @@ def spawn_background_process(
     )
 
     effective_cwd = _resolve_command_cwd(
-        workdir=workdir, default_cwd=cwd, session_key=session_key, env_type=env_type,
+        workdir=workdir, default_cwd=cwd, session_key=cwd_key or session_key, env_type=env_type,
         mounted_host=mounted_host if mounted_host is not None else getattr(env, "host_cwd", None),
         env=env,
     )
@@ -245,7 +249,7 @@ _YIELDED_NOTE = (
     "The user sent a message while this command was running, so it was moved to the "
     "background WITHOUT being killed and is still running. You will be notified when it "
     "exits (notify_on_complete). Read the user's message and respond to it now; use "
-    "process(action='poll'|'wait'|'log', session_id=...) to check on this command."
+    "process_manage(action='poll'|'wait'|'log', session_id=...) to check on this command."
 )
 
 

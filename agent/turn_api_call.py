@@ -268,6 +268,7 @@ def nous_rate_limit_guard(
                 agent._buffer_vprint(f"⏳ {_nous_msg} Trying fallback...")
                 agent._buffer_diagnostic_status(f"⏳ {_nous_msg}")
                 if agent._try_activate_fallback():
+                    logger.warning("%sNous rate limit recorded (resets in %s) — switched to fallback", agent.log_prefix, reset)
                     active_system_prompt = _arm_fallback_restart(
                         agent, api_messages, active_system_prompt, _retry)
                     retry_count = 0

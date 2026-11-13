@@ -742,6 +742,10 @@ The Discord adapter supports native file uploads for every common media type via
 
 Discord's per-upload size limit depends on the server's boost tier (25 MB free, up to 500 MB). If Hermes gets an HTTP 413, the adapter falls back to a link pointing at the local cache path rather than failing silently.
 
+## Long Replies
+
+A reply that would need more than 8 Discord messages (about 16,000 characters) is sent as one `reply-<id>.md` attachment holding the complete text, with a short caption, instead of a long run of 2,000-character messages. While a long reply streams, Hermes stops opening new messages at the limit, uploads the finished reply, then deletes the partial messages it had already posted for it. If the upload fails (no **Attach Files** permission, for example), nothing is deleted and the whole reply is delivered as messages, never cut short; they go out at the pace Discord's rate limits allow (about five per channel every five seconds), and a rate-limited message is retried after the wait Discord asks for. A reply over the attachment limit is split across numbered files of at most 7 MB each.
+
 ## Receiving Arbitrary File Types
 
 Any file type a user uploads is accepted. Authorization to message the agent is the gate — not the file extension. Every upload is downloaded, cached under `~/.hermes/cache/documents/`, and surfaced to the agent as a `DOCUMENT`-typed message event so it can inspect the file with `terminal` (`ffprobe`, `unzip`, `file`, `strings`, etc.) or `read_file`.
@@ -778,7 +782,7 @@ When the agent calls the `clarify` tool — to ask which approach you prefer, ge
 
 Click a numbered button to answer, or click **Other** to type a free-form response (the next message you send in that channel becomes the answer). Open-ended `clarify` calls (no preset choices) skip the buttons and just capture your next message.
 
-The buttons disable themselves once a choice is made so duplicate clicks don't double-resolve the prompt. Configure the response timeout via `agent.clarify_timeout` in `~/.hermes/config.yaml` (default `3600` seconds; `0` or less = unlimited). If you don't respond within the timeout, the agent unblocks with `"outcome": "timed_out"` and adapts rather than hanging. Reply `skip` to skip a question.
+The buttons disable themselves once a choice is made so duplicate clicks don't double-resolve the prompt. Configure the response timeout via `agent.clarify_timeout` in `~/.hermes/config.yaml` (default `90` seconds; `0` or less = unlimited). If you don't respond within the timeout, the agent unblocks with `"outcome": "timed_out"` and adapts rather than hanging. Reply `skip` to skip a question.
 
 ### Prompt layout
 

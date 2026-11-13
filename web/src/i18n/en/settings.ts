@@ -72,6 +72,13 @@ export const settingsEn: Pick<
     authRequired: 'Auth required',
     authRequiredHint: 'Run this command to authenticate:',
     updateGit: 'Git pull',
+    updateAll: 'Update all',
+    updatingAll: 'Updating plugins…',
+    updateAllDone: (updated: number, needsReview: number, failed: number) =>
+      `Updated ${updated}, needs review ${needsReview}, failed ${failed}`,
+    autoUpdate: 'Auto-update',
+    autoUpdateDesc: (hours: number) =>
+      `Apply plugin updates automatically when the gateway checks (every ${hours} h). Updated code loads in new sessions.`,
 
     versionBadge: 'Version',
     showInSidebar: 'Show in sidebar',

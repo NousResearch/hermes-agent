@@ -1,14 +1,14 @@
+import type { SlashExecResponse } from '@hermes/shared/gateway-types'
 import { parseCommandDispatch, parseSlashCommand } from '@hermes/shared/slash'
+import { scoreSlashMenuItem } from '@hermes/shared/slash-score'
 
 import type { GatewayClient } from '../gatewayClient.js'
-import type { SlashExecResponse } from '../gatewayTypes.js'
 import { t as tr } from '../i18n/index.js'
 import { rpcErrorMessage } from '../lib/rpc.js'
 import { launchWidget } from '../sdk/host.js'
 import { getWidgetApp } from '../sdk/registry.js'
 
 import type { SlashHandler, SlashHandlerContext, SlashSubmission } from './interfaces.js'
-import { scoreSlashMenuItem } from './slash/fuzzyScore.js'
 import { findSlashCommand } from './slash/registry.js'
 import type { SlashRunCtx } from './slash/types.js'
 import { captureDestination, isCurrentDestination } from './submissionDestination.js'

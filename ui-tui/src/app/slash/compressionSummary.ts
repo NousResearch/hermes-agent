@@ -1,4 +1,5 @@
-import type { SessionCompressResponse } from '../../gatewayTypes.js'
+import type { SessionCompressResponse } from '@hermes/shared/gateway-types'
+
 import { t } from '../../i18n/runtime.js'
 
 function compressionTokenLine(summary: NonNullable<SessionCompressResponse['summary']>): null | string {

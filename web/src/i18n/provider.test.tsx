@@ -7,6 +7,8 @@ import { api, setManagementProfile } from '../lib/api'
 import { I18nProvider } from './context'
 import { useI18n } from './useI18n'
 
+declare const jsdom: { window: { localStorage: Storage } }
+
 let root: Root
 let container: HTMLDivElement
 let current: ReturnType<typeof useI18n>
@@ -28,6 +30,8 @@ function deferred<T>() {
 }
 beforeEach(() => {
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true)
+  // Node's native storage getter can shadow the browser storage in this environment.
+  vi.stubGlobal('localStorage', jsdom.window.localStorage)
   localStorage.clear()
   setManagementProfile('')
   container = document.createElement('div')

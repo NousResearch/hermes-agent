@@ -118,7 +118,8 @@ export function singleFlight<T>(ref: { current: null | Promise<T> }, start: () =
 
 /** The clone source's capability catalog, staged before the profile exists. */
 interface CapabilityCatalog {
-  mcp: (CapabilityEntry & { installedInDraft?: boolean })[]
+  /** `installedInDraft`: the draft name whose setup installed the row. */
+  mcp: (CapabilityEntry & { installedInDraft?: string })[]
   skills: CapabilityEntry[]
   source: string
   toolsets: CapabilityEntry[]
@@ -153,8 +154,9 @@ function capabilityPayload(
     payload.enabled_toolsets = en.length === caps.toolsets.length || en.length === 0 ? [] : en.map(t => t.name)
   }
 
+  // A fresh create never holds an earlier draft's MCP setup.
   if (dirty.mcp) {
-    payload.enabled_mcp_servers = caps.mcp.filter(m => m.enabled).map(m => m.name)
+    payload.enabled_mcp_servers = caps.mcp.filter(m => m.enabled && !m.installedInDraft).map(m => m.name)
   }
 
   return payload
@@ -175,6 +177,39 @@ function creationOwnerFields(owner: string, remote: boolean): Partial<RosterRow>
   const scoped = owner && typeof host.requestProfile === 'function' ? { connectionId: owner, sourceScoped: true } : {}
 
   return remote ? { ...scoped, remoteSource: true } : scoped
+}
+
+/** Saves a new bot's appearance. A bot on ANOTHER machine (`remote` = its
+ *  connection id) gets it in that profile's ui_meta and asset store, since
+ *  local bot-meta is scoped to the active gateway. Best-effort: the profile
+ *  exists either way. */
+function saveDraftLook(
+  slug: string,
+  remote: null | string,
+  { shape, color, image, title }: { color: null | string; image: null | string; shape: string; title: string }
+) {
+  const imageKind = image ? 'photo' : 'shape'
+
+  if (!remote) {
+    saveBotMeta(slug, { shape, color: color ?? undefined, image, imageKind, title, created: Date.now() })
+
+    return
+  }
+
+  try {
+    void requestOnTarget(remote, 'profiles.configure', {
+      name: slug,
+      ui_meta: { 'hermes-bots': { shape, color, imageKind, title, created: Date.now() } }
+    }).catch(() => undefined)
+
+    if (image) {
+      void requestOnTarget(remote, 'profiles.set_asset', { name: slug, asset: 'avatar', data: image }).catch(
+        () => undefined
+      )
+    }
+  } catch {
+    /* older remote gateway */
+  }
 }
 
 /** Delete a draft profile the New Agent dialog minted, on the `target` it was
@@ -257,51 +292,77 @@ function slugTaken(roster: RosterRow[], slug: string, target: string, draft: nul
   )
 }
 
+/** One creation attempt's view of the draft ledger: whether it still owns the
+ *  draft, and where to record what it minted. */
+interface DraftLease {
+  /** False once the draft was discarded, replaced, reset or unmounted. */
+  live: () => boolean
+  /** Records the minted profile and the machine it was created on. */
+  created: (target: string, owner: string) => void
+  /** Holds creation warnings until the draft is adopted. */
+  warn: (title: string, warnings: string[] | undefined) => void
+}
+
+interface DraftWarning {
+  generation: number
+  message: string
+  title: string
+}
+
 /** Draft-profile ledger for the New Agent dialog. Opening Capabilities (or MCP
  *  setup) materializes a DRAFT profile so the live config surfaces have a
- *  backend; discarding deletes it on the machine it was CREATED on
- *  (`draftTargetRef`, recorded with it): the "Create on" picker may point
- *  elsewhere by then, and a same-named bot there is not the draft. Each discard,
- *  and the dialog unmounting, bumps `draftGenRef` so an in-flight create
- *  deletes its own draft and configures nothing. */
+ *  backend; discarding deletes it on the machine it was CREATED on: the
+ *  "Create on" picker may point elsewhere by then, and a same-named bot there
+ *  is not the draft. Each discard, reset and the dialog unmounting retires the
+ *  draft generation, so an in-flight create deletes its own draft and
+ *  configures nothing. The dialog only sees operations, never the refs. */
 function useDraftProfile() {
   const [caps, setCaps] = useState<CapabilityCatalog | null>(null)
+  const [createdForCaps, setCreatedForCaps] = useState<null | string>(null)
   const createdRef = useRef<null | string>(null)
   const flightRef = useRef<Promise<null | string> | null>(null)
   // The name the in-flight create is minting; a different name replaces it.
   const flightSlugRef = useRef('')
-  const [createdForCaps, setCreatedForCaps] = useState<null | string>(null)
-  const draftGenRef = useRef(0)
-  const draftTargetRef = useRef('')
-  const draftOwnerRef = useRef('')
-  const draftWarningRef = useRef<{ generation: number; message: string; title: string } | null>(null)
-  // Keys the MCP setup buttons: bumping it drops their forms and pending flows.
+  const genRef = useRef(0)
+  const targetRef = useRef('')
+  const ownerRef = useRef('')
+  const warningRef = useRef<DraftWarning | null>(null)
+  // Keys the MCP setup buttons: bumping it drops their forms and pending
+  // flows. The ref lets a pending key write ask whether it was retired; an
+  // adopted draft's generation is kept, so creating the bot never cuts off
+  // its setup.
   const [setupGen, setSetupGen] = useState(0)
+  const setupGenRef = useRef(0)
+  const keptSetupGenRef = useRef(-1)
 
-  // Pending and completed MCP setup belongs to the old name's draft, never
-  // its replacement: drop the buttons' flows and un-install draft-only rows.
   const retireSetup = () => {
-    setSetupGen(gen => gen + 1)
+    setupGenRef.current += 1
+    setSetupGen(setupGenRef.current)
+  }
+
+  const setupRetired = (gen: number) => () => setupGenRef.current !== gen && keptSetupGenRef.current !== gen
+
+  const forget = () => {
+    genRef.current += 1
+    warningRef.current = null
+    createdRef.current = flightRef.current = null
+  }
+
+  // Drops the draft and the setup it completed: neither belongs to whatever
+  // replaces it.
+  const replaceDraft = () => {
+    const draft = createdRef.current
+    forget()
+    setCreatedForCaps(null)
     setCaps(prev => prev?.mcp.some(m => m.installedInDraft) ? {
       ...prev,
       mcp: prev.mcp.map(m => m.installedInDraft
-        ? { ...m, installed: false, enabled: false, installedInDraft: false }
+        ? { ...m, installed: false, enabled: false, installedInDraft: undefined }
         : m)
     } : prev)
-  }
-
-  // Drops the draft itself. Its setup was already retired by the rename that
-  // made it stale, and retiring again here would remount the very button
-  // whose click is replacing the draft.
-  const replaceDraft = () => {
-    const draft = createdRef.current
-    draftGenRef.current += 1
-    draftWarningRef.current = null
-    createdRef.current = flightRef.current = null
-    setCreatedForCaps(null)
 
     if (draft) {
-      discardDraftProfile(draft, draftTargetRef.current)
+      discardDraftProfile(draft, targetRef.current)
     }
   }
 
@@ -310,16 +371,28 @@ function useDraftProfile() {
     retireSetup()
   }
 
+  /** After a successful create: the next dialog session starts clean, while
+   *  the adopted draft's own setup keeps running. */
+  const resetDraft = () => {
+    forget()
+    setCreatedForCaps(null)
+    setCaps(null)
+    retireSetup()
+  }
+
   useEffect(
     () => () => {
-      draftGenRef.current += 1
-      draftWarningRef.current = null
+      genRef.current += 1
+      warningRef.current = null
+      // Closing without adopting abandons the draft's pending setup too.
+      setupGenRef.current += 1
     },
     []
   )
 
-  // A rename retires the draft's setup but not the draft: it is deleted only
-  // once replaced, so renaming back reuses it instead of racing its delete.
+  // A rename drops pending setup flows but keeps the draft and its completed
+  // setup: both go only when the draft is replaced, so renaming back finds
+  // them intact instead of racing a delete or re-adding a configured server.
   const renameDraft = (next: string, slug: string, setName: (name: string) => void) => {
     if ((createdRef.current || flightRef.current) && botProfileIdentity(next, '').slug !== slug) {
       retireSetup()
@@ -328,7 +401,77 @@ function useDraftProfile() {
     setName(next)
   }
 
-  return { caps, setCaps, createdRef, flightRef, flightSlugRef, createdForCaps, setCreatedForCaps, discardDraft, replaceDraft, renameDraft, draftGenRef, draftTargetRef, draftOwnerRef, draftWarningRef, setupGen }
+  /** Materialize the draft for `slug` exactly once: concurrent callers (Create,
+   *  MCP setup, the Capabilities tab) share one in-flight `mint`, and a draft
+   *  minted under another name is replaced first. `mint` runs only when
+   *  `startable`; singleFlight clears its slot only on failure, so a null
+   *  result for an unusable name would otherwise stick. */
+  const ensureDraft = (slug: string, startable: boolean, mint: (lease: DraftLease) => Promise<null | string>) => {
+    if ((createdRef.current || flightRef.current) && (createdRef.current || flightSlugRef.current) !== slug) {
+      replaceDraft()
+    }
+
+    // A recorded draft can still be applying its initial capability picks.
+    if (flightRef.current) {
+      return flightRef.current
+    }
+
+    if (createdRef.current) {
+      return Promise.resolve(createdRef.current)
+    }
+
+    if (!startable) {
+      return Promise.resolve(null)
+    }
+
+    const generation = genRef.current
+
+    const lease: DraftLease = {
+      live: () => generation === genRef.current,
+      created: (target, owner) => {
+        createdRef.current = slug
+        targetRef.current = target
+        ownerRef.current = owner
+      },
+      warn: (title, warnings) => {
+        warningRef.current = warnings?.length ? { generation, title, message: warnings.join('\n') } : null
+      }
+    }
+
+    const flight = singleFlight(flightRef, () => mint(lease))
+    flightSlugRef.current = slug
+
+    return flight
+  }
+
+  /** The submitted draft becomes the bot: its setup keeps running, and its
+   *  warnings (if still its own) are handed over exactly once. */
+  const adoptDraft = () => {
+    keptSetupGenRef.current = setupGenRef.current
+    const warning = warningRef.current?.generation === genRef.current ? warningRef.current : null
+    warningRef.current = null
+
+    return { owner: ownerRef.current, warning }
+  }
+
+  /** The draft profile minted under `slug`, if that is the current name. */
+  const draftFor = (slug: string) => (createdRef.current === slug ? slug : null)
+
+  return {
+    adoptDraft,
+    caps,
+    createdForCaps,
+    discardDraft,
+    draftName: () => createdRef.current,
+    draftFor,
+    ensureDraft,
+    renameDraft,
+    resetDraft,
+    setCaps,
+    setCreatedForCaps,
+    setupGen,
+    setupRetired
+  }
 }
 
 export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: CreateAgentDialogProps) {
@@ -336,7 +479,8 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
   const b = useBots()
   const [name, setName] = useState('')
 
-  const { caps, setCaps, createdRef, flightRef, flightSlugRef, createdForCaps, setCreatedForCaps, discardDraft, replaceDraft, renameDraft, draftGenRef, draftTargetRef, draftOwnerRef, draftWarningRef, setupGen } = useDraftProfile()
+  const draft = useDraftProfile()
+  const { caps, setCaps, createdForCaps, setCreatedForCaps, discardDraft, renameDraft } = draft
 
   const [title, setTitle] = useState('')
   const [description, setDescription] = useState('')
@@ -417,7 +561,7 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
   // A remote-target create is gated by the TARGET machine's roster: a local
   // name clash is fine there, and the remote's own duplicate check rejects
   // real collisions at profiles.create time.
-  const taken = slugTaken(roster, slug, createTarget, createdRef.current)
+  const taken = slugTaken(roster, slug, createTarget, draft.draftName())
 
   const reset = () => {
     setName('')
@@ -437,8 +581,7 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
     setNoSkills(false)
     setShareAuth(true)
     setAdvTab('general')
-    setCreatedForCaps(null)
-    setCaps(null)
+    draft.resetDraft()
     setCapsFailed(false)
     setDirtyCaps({
       skills: false,
@@ -449,10 +592,6 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
     setTargetConnection('')
     setBusy(false)
     setError(null)
-    createdRef.current = null
-    flightRef.current = null
-    draftWarningRef.current = null
-    draftGenRef.current += 1
   }
 
   // Capability catalog for the tabs: the profile doesn't exist yet, so show
@@ -529,167 +668,92 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
     )
   }
 
-  // Materialize the profile exactly once. createdRef stores the finished slug
-  // (its consumers — the taken check, draft discard on cancel, the MCP setup
-  // button's profile param — all read a string); flightRef shares the
-  // in-flight creation promise so simultaneous MCP setup / Create clicks fire
-  // ONE profiles.create. A failed flight clears its slot so a retry can run.
-  const ensureAgentCreated = (): Promise<null | string> => {
-    // Renamed since the draft materialized (or started)? The old draft is
-    // orphaned — discard it and create fresh under the new slug.
-    if ((createdRef.current || flightRef.current) && (createdRef.current || flightSlugRef.current) !== slug) {
-      replaceDraft()
-    }
+  // Materialize the draft profile exactly once (see useDraftProfile.ensureDraft):
+  // Create, MCP setup and the Capabilities tab all share the one flight.
+  const ensureAgentCreated = (): Promise<null | string> => draft.ensureDraft(slug, valid && !taken, mintDraft)
 
-    // A recorded draft can still be applying its initial capability picks.
-    if (flightRef.current) {
-      return flightRef.current
-    }
-
-    if (createdRef.current) {
-      return Promise.resolve(createdRef.current)
-    }
-
-    // Never start a flight for an unusable name: singleFlight only clears its
-    // slot on failure, so a null result would be returned to every later
-    // caller and the draft could never be created once a name is typed.
-    if (!valid || taken) {
-      return Promise.resolve(null)
-    }
-
-    const generation = draftGenRef.current
+  const mintDraft = async (lease: DraftLease): Promise<null | string> => {
     const target = createTarget
     // Unknown on a legacy remote gateway: never guess 'local' for it.
     const targetId = target || activeConnectionId
     const machine = (connections || []).find(c => c.id === targetId)?.label
     const warningTitle = targetId ? `${slug} — ${machine ? `${machine} (${targetId})` : targetId}` : slug
 
-    const flight = singleFlight(flightRef, async () => {
-      const result = await requestForTarget<ProfilesCreateResult>('profiles.create', {
+    const result = await requestForTarget<ProfilesCreateResult>('profiles.create', {
+      name: slug,
+      description: descriptionText,
+      // Clone sources are profiles of the TARGET backend. The picker's
+      // roster is the local one, so a remote create always starts from the
+      // remote machine's default (or fresh) — never a local profile name
+      // the remote box doesn't have.
+      clone_from: cloneFrom === '__none__' ? null : remoteTarget ? 'default' : cloneFrom,
+      no_skills: noSkills,
+      // Shared (not copied) auth keeps ONE OAuth/token pool with the default
+      // profile, so refreshes can't invalidate each other. From a named launch
+      // profile the gateway copies its logins instead (single-use OAuth still
+      // read from the default profile). Older gateways ignore the param and copy.
+      share_auth: shareAuth,
+      soul: composeSoul({
         name: slug,
-        description: descriptionText,
-        // Clone sources are profiles of the TARGET backend. The picker's
-        // roster is the local one, so a remote create always starts from the
-        // remote machine's default (or fresh) — never a local profile name
-        // the remote box doesn't have.
-        clone_from: cloneFrom === '__none__' ? null : remoteTarget ? 'default' : cloneFrom,
-        no_skills: noSkills,
-        // Shared (not copied) auth keeps ONE OAuth/token pool with the default
-        // profile, so refreshes can't invalidate each other. From a named launch
-        // profile the gateway copies its logins instead (single-use OAuth still
-        // read from the default profile). Older gateways ignore the param and copy.
-        share_auth: shareAuth,
-        soul: composeSoul({
-          name: slug,
-          title: botTitle,
-          description,
-          roster,
-          customSoul: soul
-        }),
-        ...(model.trim() && provider.trim()
-          ? {
-              model: model.trim(),
-              provider: provider.trim()
-            }
-          : {})
-      })
-
-      // Prefs a deleted profile left under this name must not become the new
-      // bot's. Older builds without the door keep them, as before.
-      if (typeof host.dropLeftoverProfilePrefs === 'function') {
-        host.dropLeftoverProfilePrefs(slug, target || null)
-      }
-
-      // Discarded mid-create: delete the profile this flight minted, configure nothing.
-      if (generation !== draftGenRef.current) {
-        discardDraftProfile(slug, target)
-
-        return null
-      }
-
-      createdRef.current = slug
-      draftTargetRef.current = target
-      draftOwnerRef.current = targetId
-
-      // Apply capability picks from the Advanced tabs (best-effort; the
-      // profile exists either way and Edit Profile can finish the job).
-      try {
-        const capPayload = capabilityPayload(caps, dirtyCaps)
-
-        if (Object.keys(capPayload).length) {
-          await requestForTarget('profiles.configure', {
-            name: slug,
-            ...capPayload
-          })
-        }
-      } catch {
-        /* capability application is best-effort */
-      }
-
-      // Cancelled while configure ran: the discard already deleted the draft,
-      // so it gets no bot meta and is not adopted.
-      if (generation !== draftGenRef.current) {
-        return null
-      }
-
-      if (remoteTarget) {
-        // The bot lives on ANOTHER machine — local bot-meta is scoped to the
-        // active gateway, so write appearance/title into the remote
-        // profile's ui_meta (and asset store) directly. Best-effort: the
-        // profile exists either way.
-        const { image: avatarImage, ...look } = {
-          shape,
-          color,
-          image,
-          imageKind: image ? 'photo' : 'shape',
-          title: botTitle,
-          created: Date.now()
-        }
-
-        try {
-          void requestForTarget('profiles.configure', {
-            name: slug,
-            ui_meta: {
-              'hermes-bots': look
-            }
-          }).catch(() => undefined)
-
-          if (avatarImage) {
-            void requestForTarget('profiles.set_asset', {
-              name: slug,
-              asset: 'avatar',
-              data: avatarImage
-            }).catch(() => undefined)
+        title: botTitle,
+        description,
+        roster,
+        customSoul: soul
+      }),
+      ...(model.trim() && provider.trim()
+        ? {
+            model: model.trim(),
+            provider: provider.trim()
           }
-        } catch {
-          /* older remote gateway */
-        }
-      } else {
-        saveBotMeta(slug, {
-          shape,
-          color: color ?? undefined,
-          image,
-          imageKind: image ? 'photo' : 'shape',
-          title: botTitle,
-          created: Date.now()
-        })
-      }
-
-      queryClient.invalidateQueries({
-        queryKey: ROSTER_KEY
-      })
-
-      // A disposable draft owns its warnings until final adoption, not a toast.
-      draftWarningRef.current = result.warnings?.length
-        ? { generation, title: warningTitle, message: result.warnings.join('\n') }
-        : null
-
-      return slug
+        : {})
     })
 
-    flightSlugRef.current = slug
+    // Prefs a deleted profile left under this name must not become the new
+    // bot's. Older builds without the door keep them, as before.
+    if (typeof host.dropLeftoverProfilePrefs === 'function') {
+      host.dropLeftoverProfilePrefs(slug, target || null)
+    }
 
-    return flight
+    // Discarded mid-create: delete the profile this flight minted, configure nothing.
+    if (!lease.live()) {
+      discardDraftProfile(slug, target)
+
+      return null
+    }
+
+    lease.created(target, targetId)
+
+    // Apply capability picks from the Advanced tabs (best-effort; the
+    // profile exists either way and Edit Profile can finish the job).
+    try {
+      const capPayload = capabilityPayload(caps, dirtyCaps)
+
+      if (Object.keys(capPayload).length) {
+        await requestForTarget('profiles.configure', {
+          name: slug,
+          ...capPayload
+        })
+      }
+    } catch {
+      /* capability application is best-effort */
+    }
+
+    // Cancelled while configure ran: the discard already deleted the draft,
+    // so it gets no bot meta and is not adopted.
+    if (!lease.live()) {
+      return null
+    }
+
+    saveDraftLook(slug, remoteTarget ? target : null, { shape, color, image, title: botTitle })
+
+    queryClient.invalidateQueries({
+      queryKey: ROSTER_KEY
+    })
+
+    // A disposable draft owns its warnings until final adoption, not a toast.
+    lease.warn(warningTitle, result.warnings)
+
+    return slug
   }
 
   const submit = async () => {
@@ -710,13 +774,14 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
         return
       }
 
+      // The profile is adopted now: unmounting while readiness runs must not
+      // drop its warnings, notice or chat.
+      const { owner, warning } = draft.adoptDraft()
+
       // The intro turn is a real model call. Probe the new profile's route
       // first so a bot whose machine has no usable credential lands as
       // "created, needs a model" instead of a doomed "No LLM provider" turn.
       // Only an explicit `ok: false` counts; older gateways proceed as before.
-      // The profile is adopted now: unmounting while readiness runs must not
-      // drop its warnings, notice or chat.
-      const warning = draftWarningRef.current?.generation === draftGenRef.current ? draftWarningRef.current : null
 
       const readiness = await requestForTarget<{ error?: string; ok?: boolean }>('setup.runtime_check', {
         profile: slugCreated
@@ -730,12 +795,11 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
         name: slugCreated,
         description: descriptionText,
         title: botTitle,
-        ...creationOwnerFields(draftOwnerRef.current, remoteTarget)
+        ...creationOwnerFields(owner, remoteTarget)
       }
 
       if (warning) {
         host.notify({ kind: 'warning', title: warning.title, message: warning.message, persistent: true })
-        draftWarningRef.current = null
       }
 
       host.notify(
@@ -1124,7 +1188,12 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
                     }}
                   >
                     <div className="grid gap-1">
-                      {caps.mcp.map(m => {
+                      {caps.mcp.map(row => {
+                        // Setup a draft completed shows only under that draft's name.
+                        const m = row.installedInDraft && row.installedInDraft !== slug
+                          ? { ...row, installed: false, enabled: false }
+                          : row
+
                         const needsSetup =
                           m.fromCatalog &&
                           !m.installed &&
@@ -1148,7 +1217,7 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
                                 <McpSetupButton
                                   ensureProfile={ensureAgentCreated}
                                   entry={m}
-                                  key={setupGen}
+                                  key={draft.setupGen}
                                   onDone={() => {
                                     // Setup done: mark installed so the row's
                                     // checkbox un-disables, and enable it.
@@ -1161,7 +1230,7 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
                                                 ? {
                                                     ...x,
                                                     installed: true,
-                                                    installedInDraft: true,
+                                                    installedInDraft: slug,
                                                     enabled: true
                                                   }
                                                 : x
@@ -1175,7 +1244,8 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
                                     }))
                                   }}
                                   // A renamed-away draft is not this name's profile.
-                                  profile={createdRef.current === slug ? slug : null}
+                                  profile={draft.draftFor(slug)}
+                                  retired={draft.setupRetired(draft.setupGen)}
                                 />
                               ) : null}
                               {m.description ? (

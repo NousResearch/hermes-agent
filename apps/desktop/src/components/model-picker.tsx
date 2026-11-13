@@ -21,7 +21,7 @@ import { foldIncludes, normalize } from '@/lib/text'
 import { formatPercentUsed, formatResetsIn } from '@/lib/usage-percent'
 import { cn } from '@/lib/utils'
 import { $customModels, addCustomModel, customModelCandidate, withCustomModels } from '@/store/custom-models'
-import { $localModelsEnabled } from '@/store/local-models-flag'
+import { $localModelsEnabled, localModelsSelectable } from '@/store/local-models-flag'
 import {
   type LocalModelsOwner,
   runningModelDownloads,
@@ -308,10 +308,12 @@ function ModelResults({
   // Only configured providers (those with curated models) are selectable
   // here. Switching to a NOT-yet-configured provider goes through the
   // "Add provider" footer button, which opens the full onboarding selector.
-  // The local provider sits behind the --local launch flag (strict: staged
-  // models on disk don't show without it). Module-level read — a launch flag
-  // can't change mid-session.
-  const localModelsShown = $localModelsEnabled.get()
+  // On native Desktop the local provider sits behind the --local launch flag
+  // (strict: staged models on disk don't show without it). The Webapp has no
+  // such flag, so it lists whatever Local provider the backend advertises
+  // (management stays gated on $localModelsEnabled). A launch flag can't change
+  // mid-session.
+  const localModelsShown = localModelsSelectable()
 
   const configured = providers.filter(
     p => (p.models ?? []).length > 0 && (localModelsShown || p.slug !== LOCAL_PROVIDER_SLUG)

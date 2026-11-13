@@ -82,6 +82,7 @@ const OPEN_DIRECTIVE_RE = /(?<=^|\s)::[a-z][a-z0-9-]{0,63}\{[^{}]*$/
 
 interface MdNode {
   children?: MdNode[]
+  data?: { hName?: string; hProperties?: Record<string, string> }
   type: string
   value?: string
 }
@@ -160,15 +161,79 @@ function foldDirectiveRuns(node: MdNode) {
 }
 
 /**
- * remark plugin. GFM links every bare URL in a text node — including one
- * inside a directive attribute (`url="https://…"`) — and that link element
- * splits the paragraph, so it is no longer text-only and the card is never
- * claimed. Fold a run that opens a directive brace in a text node and closes
- * it within text/link siblings back into one text node; the link's text is
- * the URL as written, so the directive comes back byte-for-byte.
+ * remark plugin: lifts every directive out of its paragraph's text into a
+ * node of its own, so the rest of the pipeline treats it as structure, not
+ * prose. Two steps:
+ *
+ * 1. GFM links every bare URL in a text node — including one inside a
+ *    directive attribute (`url="https://…"`) — and that link splits the
+ *    text. Fold a run that opens a directive brace in a text node and closes
+ *    it within text/link siblings back into one text node; the link's text is
+ *    the URL as written, so the directive comes back byte-for-byte.
+ * 2. Split each of a paragraph's text children on the directives in it. Each
+ *    directive becomes a `transcriptDirective` node rendered as
+ *    `<hermes-directive source="…">`, whose child is the source text, so any
+ *    surface that doesn't claim the element still shows exactly what was
+ *    written.
+ *
+ * Runs before remark-soft-breaks and any later plugin, which then only ever
+ * see the prose around a directive: a `<br>`, a mention or bold next to it
+ * no longer hides it.
  */
 export function remarkTranscriptDirectives() {
-  return (tree: MdNode) => foldDirectiveRuns(tree)
+  return (tree: MdNode) => {
+    foldDirectiveRuns(tree)
+    liftDirectives(tree)
+  }
+}
+
+/** The element a lifted directive renders as. The markdown surface maps it to
+ *  a component and allows it (with only its `source` attribute) through
+ *  sanitization. */
+export const TRANSCRIPT_DIRECTIVE_ELEMENT = 'hermes-directive'
+
+function directiveNode(source: string): MdNode {
+  return {
+    type: 'transcriptDirective',
+    data: { hName: TRANSCRIPT_DIRECTIVE_ELEMENT, hProperties: { source } },
+    children: [{ type: 'text', value: source }]
+  }
+}
+
+function liftDirectives(node: MdNode) {
+  const kids = node.children
+
+  if (!kids) {
+    return
+  }
+
+  if (node.type !== 'paragraph') {
+    kids.forEach(liftDirectives)
+
+    return
+  }
+
+  node.children = kids.flatMap((child, index) => {
+    const segments = child.type === 'text' ? segmentTranscriptDirectives(child.value ?? '') : null
+
+    if (!segments) {
+      return [child]
+    }
+
+    // `^` in the directive pattern means "start of this text node", which is
+    // only a word start when nothing but a line break precedes it (`**a**::x`
+    // is one word).
+    const previous = kids[index - 1]
+    const glued = previous !== undefined && previous.type !== 'break'
+
+    return segments.map((segment, at) =>
+      segment.kind === 'prose'
+        ? { type: 'text', value: segment.text }
+        : at === 0 && glued
+          ? { type: 'text', value: segment.directive.source }
+          : directiveNode(segment.directive.source)
+    )
+  })
 }
 
 // `key="value"` pairs; single quotes accepted for model sloppiness.

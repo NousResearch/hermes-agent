@@ -1114,46 +1114,6 @@ def _project_from_source_task(
     return project_obj, project_repo
 
 
-def _normalize_task_skills(skills: Optional[Iterable[str]]) -> Optional[list[str]]:
-    """Strip/dedupe a skills list. Commas are refused (a comma-joined string must
-    not land in one argv slot); toolset names are rejected all at once because
-    agents that confuse the two usually pass several."""
-    if skills is None:
-        return None
-    cleaned: list[str] = []
-    seen: set[str] = set()
-    toolset_typos: list[str] = []
-    for s in skills:
-        if not s:
-            continue
-        name = str(s).strip()
-        if not name:
-            continue
-        if "," in name:
-            raise ValueError(
-                f"skill name cannot contain comma: {name!r} "
-                f"(pass a list of separate names instead of a comma-joined string)"
-            )
-        if name.casefold() in KNOWN_TOOLSET_NAMES:
-            toolset_typos.append(name)
-            continue
-        if name in seen:
-            continue
-        seen.add(name)
-        cleaned.append(name)
-    if toolset_typos:
-        quoted = ", ".join(repr(n) for n in toolset_typos)
-        noun = "is a toolset name" if len(toolset_typos) == 1 else "are toolset names"
-        raise ValueError(
-            f"{quoted} {noun}, not skill name(s). "
-            "Put toolsets in the assignee profile's `toolsets:` config "
-            "instead of per-task skills. Skills are named skill bundles "
-            "(e.g. `blogwatcher`, `github-code-review`); toolsets are runtime "
-            "capabilities (e.g. `web`, `browser`, `terminal`)."
-        )
-    return cleaned
-
-
 def create_task(
     conn: sqlite3.Connection, *, title: str, body: Optional[str] = None,
     assignee: Optional[str] = None, created_by: Optional[str] = None,
@@ -1220,7 +1180,8 @@ def create_task(
         conn, project_id, project_source_task_id, workspace_kind, workspace_path
     )
     parents = tuple(p for p in parents if p)
-    skills_list = _normalize_task_skills(skills)
+    from hermes_cli.kanban_db_skill_normalization import normalize_task_skills
+    skills_list = normalize_task_skills(skills)
 
     # Idempotency check BEFORE the write txn (no lock held); a concurrent-create
     # race may insert twice, the next lookup stabilises on the newest.
@@ -1249,7 +1210,22 @@ def create_task(
             # allow_nested: graph builders compose create_task under one outer
             # commit so the dispatcher never sees a half-built graph.
             with write_txn(conn, allow_nested=True):
-                task_status, tenant = initial_task_state(conn, parents, initial_status, triage, tenant)
+                from hermes_cli.kanban_costar_policy import (
+                    CONTRACT, apply_create_policy, has_costar_parent_lineage, is_costar_card,
+                    persist_creation_receipts,
+                )
+
+                costar_target = is_costar_card(title, body) or has_costar_parent_lineage(conn, parents)
+                effective_model, effective_provider, effective_initial_status, costar_exception, supervisor_hold = (
+                    apply_create_policy(
+                        task_id=task_id, title=title.strip(), body=body,
+                        model=model_override, provider=provider_override,
+                        initial_status=initial_status, costar_target=costar_target,
+                    )
+                )
+                task_status, tenant = initial_task_state(
+                    conn, parents, effective_initial_status, triage, tenant,
+                )
                 # Project worktree: fresh dir under the repo + deterministic
                 # branch, instead of the random ``wt/<id>`` worker fallback.
                 if project_obj is not None and workspace_kind == "worktree":
@@ -1276,7 +1252,7 @@ def create_task(
                         branch_name, project_id, tenant, idempotency_key,
                         _opt_int(max_runtime_seconds),
                         json.dumps(skills_list) if skills_list is not None else None,
-                        _opt_int(max_retries), model_override, provider_override, reasoning_effort,
+                        _opt_int(max_retries), effective_model, effective_provider, reasoning_effort,
                         1 if goal_mode else 0, _opt_int(goal_max_turns), session_id, completion_contract,
                     ),
                 )
@@ -1298,9 +1274,13 @@ def create_task(
                         "project_id": project_id,
                         "skills": list(skills_list) if skills_list else None,
                         "goal_mode": bool(goal_mode) or None,
-                        "model_override": model_override,
-                        "provider_override": provider_override,
+                        "model_override": effective_model,
+                        "provider_override": effective_provider,
+                        **({"costar_contract": CONTRACT} if costar_target else {}),
                     },
+                )
+                persist_creation_receipts(
+                    _append_event, conn, task_id, costar_exception, supervisor_hold,
                 )
                 if task_status == "blocked":
                     _append_event(
@@ -2191,6 +2171,16 @@ def claim_task(
             )
             _append_event(conn, task_id, "claim_rejected", {"reason": "parents_not_done"})
             return None
+        task_row = conn.execute(
+            "SELECT title, body FROM tasks WHERE id = ?", (task_id,),
+        ).fetchone()
+        if task_row is not None:
+            from hermes_cli.kanban_costar_policy import admission_reason
+
+            reason = admission_reason(conn, task_id, task_row["title"], task_row["body"])
+            if reason is not None:
+                _append_event(conn, task_id, "claim_rejected", {"reason": reason})
+                return None
         # Close a leaked prior run so the CAS below doesn't strand it.
         _reclaim_dangling_run(
             conn, task_id, statuses=("ready",), now=now, note="invariant recovery on re-claim",
@@ -3144,7 +3134,7 @@ def block_task(
         raise ValueError(f"block kind must be one of {sorted(VALID_BLOCK_KINDS)} or None")
     with write_txn(conn):
         cur_row = conn.execute(
-            "SELECT status, block_kind, block_recurrences FROM tasks WHERE id = ?", (task_id,),
+            "SELECT status, block_kind, block_recurrences, title, body FROM tasks WHERE id = ?", (task_id,),
         ).fetchone()
         if cur_row is None:
             return False
@@ -3207,6 +3197,12 @@ def block_task(
             conn, task_id, outcome="blocked", status="blocked", summary=reason, synthesize=bool(reason),
         )
         _append_event(conn, task_id, event_kind, payload, run_id=run_id)
+        from hermes_cli.kanban_costar_policy import is_costar_task, is_denial
+        if is_costar_task(conn, task_id, cur_row["title"], cur_row["body"]) and is_denial(reason):
+            _append_event(
+                conn, task_id, "costar_provider_hold",
+                {"task_id": task_id, "reason": "access_denied", "immutable": True}, run_id=run_id,
+            )
         blocked_task = get_task(conn, task_id)
     _fire_task_hook("kanban_task_blocked", blocked_task, task_id, run_id, reason=reason)
     return True
@@ -3492,6 +3488,10 @@ def promote_task(
             f"'todo' or 'blocked'"
         )
 
+    from hermes_cli.kanban_costar_policy import supervisor_hold_active
+    if supervisor_hold_active(conn, task_id):
+        return False, "task has a supervisor hold; only explicit kanban_unblock may release it"
+
     # No override: claim_task demotes ready -> todo on an undone parent whichever
     # writer set 'ready', so a forced promotion would only report a success the
     # first claim silently reverts (#106195). The dependency itself is the knob.
@@ -3559,6 +3559,7 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
     when that is where it left off), closing any leaked run first."""
     now = int(time.time())
     with write_txn(conn):
+        from hermes_cli.kanban_costar_policy import provider_hold_owner
         resume_status = (
             _resume_status_from_events(conn, task_id)
             if _task_status(conn, task_id) == "blocked"
@@ -3595,6 +3596,8 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
                 else None
             ),
         )
+        if provider_hold_owner(conn) == task_id:
+            _append_event(conn, task_id, "costar_provider_released", {"task_id": task_id})
         return True
 
 

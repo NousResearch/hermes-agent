@@ -35,6 +35,25 @@ The board has two front doors, both backed by the same `~/.hermes/kanban.db`:
 
 Both surfaces route through the same `kanban_db` layer, so reads see a consistent view and writes can't drift. The rest of this page shows CLI examples because they're easy to copy-paste, but every CLI verb has a tool-call equivalent the model uses.
 
+### CoStar offline admission contract
+
+Cards whose title or body identifies CoStar are admitted as a constrained offline
+workflow. Creation persists a `HermesCDP-CoStar` contract with the sole endpoint
+`http://127.0.0.1:9224`; Hermes never probes or falls back to `:9223`, and the
+Kanban layer does not open either endpoint. Omitted model routing is pinned to
+`gpt-5.6-terra` through `openai-codex`. A caller-supplied non-Terra model remains
+an auditable `costar_model_exception`; a Warden saved-search hunt/refresh may use
+Luna only as that model exception.
+
+`initial_status=blocked` and a `do not start until` instruction create a sticky
+supervisor hold. Parent completion and dispatcher recomputation cannot promote a
+held card; an explicit `kanban_unblock` is required. An `Access Denied` or
+`unusual_activity` block writes an immutable provider-hold receipt and prevents
+all CoStar cards from dispatching until the owning card is explicitly unblocked.
+The dispatcher also refuses a second concurrent CoStar owner. These admission
+rules never authorize cross-port retry, automatic resume, or a reduction of
+existing dispatcher pacing and retry floors.
+
 This is the shape that covers the workloads `delegate_task` can't:
 
 - **Research triage** — parallel researchers + analyst + writer, human-in-the-loop.

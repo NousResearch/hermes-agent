@@ -115,7 +115,7 @@ def decompose_triage_task(
     now = int(time.time())
     with write_txn(conn):
         root_row = conn.execute(
-            "SELECT id, status, tenant, workspace_kind, workspace_path "
+            "SELECT id, status, title, body, tenant, workspace_kind, workspace_path "
             "FROM tasks WHERE id = ?", (task_id,),
         ).fetchone()
         if root_row is None or root_row["status"] != "triage":
@@ -181,7 +181,10 @@ def _insert_decomposed_child(
     ``<repo>/.worktrees/<child-id>`` per child from the board anchor.
     """
     from hermes_cli.kanban_db import (
-        _new_task_id, _canonical_assignee, _append_event,
+        _new_task_id, _canonical_assignee, _append_event, _validate_model_override,
+    )
+    from hermes_cli.kanban_costar_policy import (
+        CONTRACT, apply_create_policy, is_costar_card, persist_creation_receipts,
     )
 
     root_ws_kind = root_row["workspace_kind"] or "scratch"
@@ -196,19 +199,40 @@ def _insert_decomposed_child(
         child_ws_path = None
     new_id = _new_task_id()
     body = child.get("body")
+    title = child["title"].strip()
+    body = body if isinstance(body, str) else None
+    model_override, provider_override = _validate_model_override(
+        child.get("model_override"), child.get("provider_override"),
+    )
+    costar_target = is_costar_card(root_row["title"], root_row["body"])
+    model_override, provider_override, initial_status, costar_exception, supervisor_hold = apply_create_policy(
+        task_id=new_id, title=title, body=body, model=model_override,
+        provider=provider_override, initial_status="running", costar_target=costar_target,
+    )
+    status = "blocked" if initial_status == "blocked" else "todo"
     conn.execute(
         "INSERT INTO tasks "
-        "(id, title, body, assignee, status, workspace_kind, "
-        " workspace_path, tenant, created_at, created_by) "
-        "VALUES (?, ?, ?, ?, 'todo', ?, ?, ?, ?, ?)",
+        "(id, title, body, assignee, status, workspace_kind, workspace_path, tenant, "
+        "created_at, created_by, model_override, provider_override) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
-            new_id, child["title"].strip(), body if isinstance(body, str) else None,
-            _canonical_assignee(child.get("assignee")), child_ws_kind, child_ws_path,
-            root_row["tenant"], now, (author or "decomposer"),
+            new_id, title, body, _canonical_assignee(child.get("assignee")), status,
+            child_ws_kind, child_ws_path, root_row["tenant"], now, (author or "decomposer"),
+            model_override, provider_override,
         ),
     )
     _append_event(
-        conn, new_id, "created", {"by": author or "decomposer", "from_decompose_of": root_id},
+        conn, new_id, "created", {
+            "by": author or "decomposer", "from_decompose_of": root_id,
+            "model_override": model_override, "provider_override": provider_override,
+            **({"costar_contract": CONTRACT} if costar_target else {}),
+        },
     )
+    persist_creation_receipts(_append_event, conn, new_id, costar_exception, supervisor_hold)
+    if status == "blocked":
+        _append_event(
+            conn, new_id, "blocked",
+            {"reason": "initial_status", "status": "blocked", "actor": author or "decomposer"},
+        )
     inherit_creator_origin(conn, new_id, root_id, created_at=now)
     return new_id

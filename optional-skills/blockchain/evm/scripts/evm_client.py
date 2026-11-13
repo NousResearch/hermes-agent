@@ -746,7 +746,8 @@ def cmd_tx(args: argparse.Namespace) -> None:
 
     value_wei  = hex_to_int(tx.get("value", "0x0"))
     value_eth  = wei_to_native(value_wei, cfg["decimals"])
-    gas_price  = hex_to_int(tx.get("gasPrice") or "0x0")
+    # The receipt's effectiveGasPrice is what was actually charged per gas unit.
+    gas_price  = hex_to_int((receipt or {}).get("effectiveGasPrice") or tx.get("gasPrice") or "0x0")
     gas_limit  = hex_to_int(tx.get("gas", "0x0"))
     gas_used   = hex_to_int((receipt or {}).get("gasUsed", "0x0")) if receipt else None
     status     = None
@@ -762,7 +763,9 @@ def cmd_tx(args: argparse.Namespace) -> None:
     fee_eth: Optional[float] = None
     fee_usd: Optional[float] = None
     if gas_used is not None:
-        fee_eth = wei_to_native(gas_used * gas_price, cfg["decimals"])
+        # OP-stack chains (Base, Optimism) charge the L1 data fee on top of execution gas.
+        l1_fee = hex_to_int(receipt.get("l1Fee") or "0x0")
+        fee_eth = wei_to_native(gas_used * gas_price + l1_fee, cfg["decimals"])
         if native_price:
             fee_usd = round(fee_eth * native_price, 6)
 

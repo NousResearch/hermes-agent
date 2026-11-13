@@ -60,6 +60,23 @@ _LIST_ITEM_RE = re.compile(r" *(?:[-+*]|\d{1,9}[.)])(?:[ \t]+(?=\S)|[ \t]*$)")  
 _FENCE_CLOSE_RE = re.compile(r"( *)(`{3,}|~{3,})[ \t]*")
 
 
+_FENCE_OPEN_LINE_RE = re.compile(r"[ \t]*" + _FENCE_OPEN)
+
+
+def fence_opener(line: str) -> str | None:
+    """The full fence run (`` ``` ``, ```` ```` ````, ``~~~``...) opening *line*, or ``None``: the
+    same opener rule the literal-region scan uses (a backtick info string holds no backtick)."""
+    match = _FENCE_OPEN_LINE_RE.match(line)
+    return match.group("fence") if match else None
+
+
+def closes_fence(line: str, fence: str) -> bool:
+    """Whether *line* closes the block *fence* opened: the opener's character at least as many
+    times, then only whitespace (CommonMark, as :func:`_fence_end` checks it)."""
+    close = _FENCE_CLOSE_RE.fullmatch(line.lstrip(" \t").expandtabs(4))
+    return bool(close and close.group(2)[0] == fence[0] and len(close.group(2)) >= len(fence))
+
+
 def _container_markers(prefix: str) -> tuple[list[int], int]:
     """Containers a fence's line prefix opens (-1 = a quote marker each line repeats; n = a list
     item's content indent) and the opener's own indent past them."""

@@ -303,6 +303,8 @@ _UPDATE_PIPELINE = (
     "hermes_cli/gateway_launchd.py",
     "hermes_cli/gateway_migrate",
     "hermes_cli/gateway_supervised_restart.py",
+    "hermes_cli/gateway_restart_env.py",  # the fleet restart watcher's env
+    "hermes_cli/gateway_runtime_start.py",  # supervisor-marker strip for the watcher and the pause replay
     "hermes_cli/git_pack_tidy.py",  # partial-clone pack tidy: every update's pre-fetch runs it
     "hermes_bootstrap.py",  # every launch's prepare_launch
     "hermes_constants.py",  # root home = update marker location
@@ -365,6 +367,7 @@ _UPDATE_DEPENDENCIES = (
     "hermes_cli/desktop_release_holders.py",  # main_desktop names/closes a holder of release/ on a failed swap
     "hermes_cli/memory_provider_migration.py",
     "hermes_cli/left_core_migration.py",  # source_build migrates plugins that left core
+    "hermes_cli/default_plugins.py",  # the update tail and boot bootstrap install catalog defaults
     "hermes_cli/config_version_stamp.py",  # post_update converts legacy AGENT_BROWSER_* before stamping
     "hermes_cli/web_build_limits.py",  # source_build caps the dashboard Node build
     "hermes_cli/desktop_console.py",
@@ -446,9 +449,11 @@ _E2E_LANES: dict[str, tuple[str, ...]] = {
         "hermes_state",
         # Messaging-gated gateway cases: only the e2e job installs the real
         # Discord/Telegram SDKs (tests.yml "Run messaging-gated gateway cases").
+        "tests/gateway/test_session_terminal_cwd_restart.py",
         "tests/gateway/test_native_role_reauthorization.py",
         "tests/gateway/test_native_telegram_startup_recovery.py",
         "tests/gateway/test_native_pause_notice.py",
+        "tests/gateway/test_reset_paused_queue_notice.py",
         "tests/gateway/test_native_reply_crash_recovery.py",
     ),
     "e2e_upgrade": (

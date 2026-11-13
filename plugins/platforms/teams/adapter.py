@@ -64,7 +64,7 @@ from agent.i18n import t
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms._shared import (
     coerce_port, extra_or_secret as _extra_or_secret, get_scoped_secret as _get_scoped_secret,
-    seed_extra_from_env as _seed_extra_from_env, send_error
+    request_never_left, seed_extra_from_env as _seed_extra_from_env, send_error
 )
 
 logger = logging.getLogger(__name__)
@@ -199,7 +199,8 @@ async def _standalone_send(
     extra = getattr(pconfig, "extra", {}) or {}
     client_id, client_secret, tenant_id = _credentials(pconfig)
     if not (client_id and client_secret and tenant_id):
-        return send_error("Teams standalone send: TEAMS_CLIENT_ID, TEAMS_CLIENT_SECRET, and TEAMS_TENANT_ID are all required")
+        return send_error("Teams standalone send: TEAMS_CLIENT_ID, TEAMS_CLIENT_SECRET, and TEAMS_TENANT_ID are all required",
+                          nothing_sent=True)
     raw_service_url = extra.get("service_url") or _get_scoped_secret("TEAMS_SERVICE_URL", "") or _DEFAULT_TEAMS_SERVICE_URL
     service_url = _validate_teams_service_url(raw_service_url)
     for failed, error in (
@@ -210,7 +211,7 @@ async def _standalone_send(
         (not _TEAMS_CONV_ID_RE.match(tenant_id), "TEAMS_TENANT_ID contains characters outside the expected set"),
         (not AIOHTTP_AVAILABLE, "aiohttp not installed")):
         if failed:
-            return send_error(f"Teams standalone send: {error}")
+            return send_error(f"Teams standalone send: {error}", nothing_sent=True)
     token_url, token_form = _bf_token_request(tenant_id, client_id, client_secret)
     activities_url = f"{service_url}v3/conversations/{chat_id}/activities"
     try:
@@ -224,11 +225,12 @@ async def _standalone_send(
             ) as token_resp:
                 if token_resp.status >= 400:
                     body = await token_resp.text()
-                    return send_error(f"Teams standalone send: token request failed ({token_resp.status}): {body[:300]}")
+                    return send_error(f"Teams standalone send: token request failed ({token_resp.status}): {body[:300]}",
+                                      nothing_sent=True)  # the activity was never posted
                 token_payload = await token_resp.json()
             access_token = token_payload.get("access_token")
             if not access_token:
-                return send_error("Teams standalone send: token response missing access_token")
+                return send_error("Teams standalone send: token response missing access_token", nothing_sent=True)
             async with session.post(
                 activities_url, json={"type": "message", "text": message, "textFormat": "markdown"},
                 headers={"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"},
@@ -243,7 +245,8 @@ async def _standalone_send(
         raise
     except Exception as e:
         logger.debug("Teams standalone send raised", exc_info=not (shown := describe_proxy_error(e, env_proxy_for_redaction(token_url, activities_url, trust_env=gateway_trust_env()))))
-        return send_error(f"Teams standalone send failed: {shown or e}")  # the text may echo the proxy URL
+        # the text may echo the proxy URL
+        return send_error(f"Teams standalone send failed: {shown or e}", nothing_sent=request_never_left(e))
 
 
 # SDK module → names rebound into this module's globals by check_teams_requirements().
@@ -528,7 +531,12 @@ class TeamsAdapter(BasePlatformAdapter):
             user_name=getattr(from_account, "name", None) or "",
             guild_id=getattr(conv, "tenant_id", None) or self._tenant_id,
             message_id=msg_id)
-        media: list = [m for m in [await self._cache_attachment(a) for a in getattr(activity, "attachments", None) or []] if m]
+        # The fetch spends the bot's token and disk on a sender-chosen file: only the gateway's explicit True
+        # permits it. The message still dispatches so the runner applies denial/pairing.
+        attachments = getattr(activity, "attachments", None) or []
+        if attachments and self._is_sender_authorized(source.user_id, source.chat_type, source.chat_id) is not True:
+            attachments = []
+        media: list = [m for m in [await self._cache_attachment(a) for a in attachments] if m]
         media_kinds = [kind for _, _, kind in media]  # media items are (path, media_type, kind)
         msg_type = next((t for kind, t in _MEDIA_KIND_PRECEDENCE if kind in media_kinds), MessageType.TEXT)
         await self.handle_message(MessageEvent(

@@ -850,11 +850,12 @@ def installs_held():
         _installs_held.reset(token)
 
 
-def defer_startup_notice(message: str) -> None:
+def defer_startup_notice(message: str, *, log: bool = True) -> None:
     """Hand *message* to the active home's next turn someone sees (:func:`claim_kept_notices`), once.
-    For boot-path work that runs before any agent exists."""
+    For boot-path work that runs before any agent exists. *log* False: the caller already logged it."""
     from hermes_constants import get_hermes_home
-    logger.warning(message)
+    if log:
+        logger.warning(message)
     _queue_notice(Path(get_hermes_home()), message)
 
 
@@ -1141,11 +1142,14 @@ def _noticed(message: str, home: Path, feature: LeftCoreFeature, process_env: bo
 
 
 def _install_into(home: Path, *, consent: Optional[bool] = None) -> Callable[[str], dict]:
-    def _install(name: str) -> dict:
+    def _install(name: str, discard: Optional[Path] = None) -> dict:
         from hermes_cli.plugins_cmd import dashboard_install_plugin
         from hermes_constants import reset_hermes_home_override, set_hermes_home_override
         token = set_hermes_home_override(home)
         try:
+            if discard is not None:  # the caller's own leftover tree, removed under this same binding
+                from hermes_cli.plugins_cmd_remove import _remove_plugin_core
+                _remove_plugin_core(discard)
             return dashboard_install_plugin("", force=False, enable=True, catalog_name=name,
                                             assume_deps_consent=_unattended_consent() if consent is None
                                             else consent)

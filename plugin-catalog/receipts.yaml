@@ -1,17 +1,17 @@
 name: receipts
 repo: https://github.com/cirwel/hermes-receipts
-sha: 0dd1a374cc70ce388040f99adc908c7054ed8fa9
+sha: 7572eae729fc1d83b937583da950401fbecc0e20
 title: "Receipts: tested-tree push gate"
-description: "Verification receipts tied to Git content; gates terminal pushes and PR creation on a passing check. Disclosure — runs read-only local `git` commands (rev-parse, status, ls-files, hash-object without -w) in the agent's repository on terminal tool calls, and blocks `git push` / `gh pr create` there until the user's configured check has passed on that exact content; stores receipts in a local SQLite file under the plugin data dir; no network."
+description: "Verification receipts tied to Git content; gates terminal pushes and PR creation on a passing check. Disclosure — runs read-only local `git` commands (rev-parse, status, ls-files, hash-object without -w) in the agent's repository on terminal tool calls, and blocks `git push` / `gh pr create` there until the user's configured check has passed on that exact content; also refuses a push that selects its repository indirectly (`--git-dir`, `GIT_DIR`, a path it cannot read) whenever any repository has a check configured, and any publishing command it fails to evaluate; observes `pre_llm_call` to read only the session id and model name (never prompts or history; returns nothing) and records that model, the session id and a locally minted issuer id on each receipt; stores receipts in a local SQLite file under the plugin data dir; no network. While Hermes multiplexed profiles are active the plugin cannot issue receipts and blocks every recognized `git push` / `gh pr create` with an explanation, including in repositories with no check configured; use a single-profile session for the gate."
 maintainer: cirwel
 tier: community
 category: tools
 requires_hermes: ">=0.22.0"
 docs_url: https://github.com/cirwel/hermes-receipts
-version: "0.1.0"
+version: "0.2.2"
 platforms: [linux, macos]
 capabilities:
   provides_tools: []
-  provides_hooks: [pre_tool_call, post_tool_call]
+  provides_hooks: [pre_tool_call, post_tool_call, pre_llm_call]
   provides_middleware: []
   requires_env: []

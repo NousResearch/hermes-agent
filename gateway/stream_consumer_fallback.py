@@ -9,17 +9,24 @@ import logging
 from typing import Any, Callable, Optional
 
 from gateway.platforms.base import BasePlatformAdapter as _BasePlatformAdapter
+from gateway.platforms.helpers import reply_file_off
 from gateway.stream_consumer_fences import ensure_closed_code_fences, open_code_fence_span
 
 logger = logging.getLogger("gateway.stream_consumer")
+
+
+def _edit_skipped(result: Any) -> bool:
+    raw = getattr(result, "raw_response", None)
+    return isinstance(raw, dict) and bool(raw.get("skipped"))
 
 
 class StreamFallbackMixin:
     """Non-streaming delivery paths used once progressive edits fail or the turn ends oddly."""
 
     async def _send_new_chunk(self, text: str, reply_to_id: Optional[str], *,
-                              final: bool = False) -> Optional[str]:
-        """Send a sealed head. ``__no_edit__`` means it may have landed without an id."""
+                              final: bool = False, first: bool = False) -> Optional[str]:
+        """Send a sealed head. ``__no_edit__`` means it may have landed without an id;
+        ``__partial__`` that the *first* head landed in part (see :meth:`_adopt_partial_head`)."""
         text = self._clean_for_display(text)
         if not text.strip():
             return reply_to_id
@@ -30,16 +37,20 @@ class StreamFallbackMixin:
         except Exception as e:
             logger.error("Stream send chunk error: %s", e, exc_info=True)
             if await self._uncertain_send_fully_shown(e):
+                self._ceiling_note_unknown()
                 self._already_sent = True
                 self._last_sent_text = text
                 return "__no_edit__"
             return reply_to_id
         if not result.success and await self._uncertain_send_fully_shown(result):
+            self._ceiling_note_unknown()
             # The head may be visible without a message id. Do not send it again
             # inside the whole answer; the split loop must send only its unseen tail.
             self._already_sent = True
             self._last_sent_text = text
             return "__no_edit__"
+        if first and not result.success and self._adopt_partial_head(result, text):
+            return "__partial__"
         if not (result.success and result.message_id):
             self._edit_supported = False
             return reply_to_id
@@ -49,6 +60,22 @@ class StreamFallbackMixin:
         self._last_sent_text = text
         self._notify_new_message()
         return str(result.message_id)
+
+    def _adopt_partial_head(self, result: Any, text: str) -> bool:
+        """A head send whose first parts landed (``partial_overflow`` naming a ``delivered_prefix``
+        of *text*): keep them as the shown prefix and enter fallback mode, so got_done sends only the
+        unseen tail. Without an exact prefix the caller resends it all (a repeated head beats a lost tail)."""
+        raw = getattr(result, "raw_response", None)
+        prefix = raw.get("delivered_prefix") if isinstance(raw, dict) and raw.get("partial_overflow") else None
+        if not (isinstance(prefix, str) and prefix.strip() and text.startswith(prefix)):
+            return False
+        self._message_id = str(raw.get("last_message_id") or result.message_id or "__no_edit__")
+        self._track_preview_ids_from_result(result)
+        self._last_sent_text = prefix
+        self._fallback_preserve_partial_messages = True
+        self._enter_fallback_mode(prefix)
+        self._notify_new_message()
+        return True
 
     def _visible_prefix(self) -> str:
         """Return the visible text already shown in the streamed message."""
@@ -74,7 +101,18 @@ class StreamFallbackMixin:
             cut = lead + len(prefix)
             span = open_code_fence_span(final_text, cut)
             if span is None:
-                return final_text[self._prose_resume_point(final_text, cut):].lstrip()
+                resume = self._prose_resume_point(final_text, cut)
+                if resume <= lead:
+                    # The whole answer replaces the fragment only when the fragment can be deleted:
+                    # a preview whose send timed out has no id, an adapter without a real
+                    # ``delete_message`` (Discord, Matrix, Mattermost, WhatsApp) cannot remove it,
+                    # and a preserved partial is kept on purpose. Each of those keeps the
+                    # fragment on screen, so only the tail may follow it.
+                    if self._fragment_can_be_replaced():
+                        self._fragment_cut = cut  # _send_fallback_final deletes the fragment first
+                        return final_text
+                    resume = cut
+                return final_text[resume:].lstrip()
             # The tail starts inside a code block the user saw closed: reopen it with the model's
             # own opener (a cut inside its language tag must not turn the tag's rest into code),
             # and keep the code's indentation. A cut mid-line re-sends that whole line: a code
@@ -88,20 +126,58 @@ class StreamFallbackMixin:
             return f"{final_text[start:end]}\n{tail}" if tail.replace("```", "").strip() else ""
         return final_text
 
+    async def _delete_fragment_preview(self, message_id: str) -> bool:
+        """Delete the first-word fragment before the whole answer replaces it; one retry on a refusal
+        (Telegram's ``delete_message`` reports failure as ``False``). True only on a confirmed delete."""
+        for attempt in range(2):
+            if attempt:
+                await asyncio.sleep(1.0)
+            try:
+                # Replacement needs the fragment GONE: Telegram's ordinary delete returns True for a
+                # delete it queued behind a long flood window, which may still be refused later.
+                delete = getattr(self.adapter, "delete_message_confirmed", self.adapter.delete_message)
+                if await delete(self.chat_id, message_id) is True:
+                    self._preview_message_ids.discard(message_id)
+                    return True
+            except Exception:  # an adapter delete can raise anything; the fragment then stays
+                logger.debug("Fragment preview delete failed (%s)", message_id, exc_info=True)
+        return False
+
+    def _turn_reset(self) -> bool:
+        """True once /stop or /new invalidated this turn; checked after every awaited call that
+        precedes a send, since the reset can land while the adapter I/O is in flight."""
+        still_current = getattr(self, "_run_still_current", None)
+        return still_current is not None and not still_current()
+
+    def _fragment_can_be_replaced(self) -> bool:
+        """True when the preview can be deleted after a whole-answer resend."""
+        if self._message_id in (None, "__no_edit__") or self._fallback_preserve_partial_messages:
+            return False
+        return getattr(type(self.adapter), "delete_message", None) not in (
+            None, _BasePlatformAdapter.delete_message)
+
     @staticmethod
     def _prose_resume_point(final_text: str, cut: int) -> int:
         """Back a prose cut up to the last space or newline.
 
         ``cut`` follows whatever the last successful edit put on screen. Edits fire on a
         throttle tick, not at a word boundary, so it can fall inside a word; re-sending the
-        broken word's tail reads as an ordinary continuation. A prefix with no boundary (one
-        very long token) keeps the original cut rather than re-sending the whole reply, and a
-        prefix that already ends on a whole word needs no back-up (it would repeat that word).
+        broken word's tail reads as an ordinary continuation. A prefix that already ends on a
+        whole word needs no back-up (it would repeat that word). A prefix with no boundary at
+        all (a fragment of the first word, or unspaced CJK prose) returns 0 when whitespace
+        follows later, meaning "the continuation would start mid-word"; the caller then resends
+        the whole answer only if it deleted the fragment, and otherwise keeps ``cut``. One
+        long token with no whitespace after it keeps the original cut.
         """
         if cut < len(final_text) and not final_text[cut].isspace() and not final_text[cut - 1].isspace():
             boundary = max(final_text.rfind(" ", 0, cut), final_text.rfind("\n", 0, cut))
             if boundary >= 0:
                 return boundary + 1
+            # The preview is a fragment of the answer's first word (``<<A-fin-stre``) and that word
+            # ends later: resuming here starts the continuation mid-word, so send the whole answer
+            # (the full-resend path then deletes the fragment).
+            if any(ch.isspace() for ch in final_text[cut:]):
+                return 0
         return cut
 
     @staticmethod
@@ -140,10 +216,23 @@ class StreamFallbackMixin:
                 "declined this destination for this run"
             )
             return
+        if self._turn_reset():
+            return  # the refused final edit before this was awaited; /stop or /new may have landed
         # Balance fences BEFORE computing the continuation so the closing fence
         # reaches the user even when only the tail is delivered.
         final_text = ensure_closed_code_fences(self._clean_for_display(text))
+        self._fragment_cut = None
         continuation = self._continuation_text(final_text)
+        stale_message_id = self._message_id  # partial message to clean up
+        if self._fragment_cut is not None and stale_message_id:
+            # The whole answer replaces a first-word fragment only once that fragment is gone: a
+            # delete refused twice keeps it on screen, so only the tail follows it.
+            if await self._delete_fragment_preview(stale_message_id):
+                stale_message_id = None
+            else:
+                continuation = final_text[self._fragment_cut:].lstrip()
+            if self._turn_reset():
+                return  # /stop or /new landed during the delete: the dead turn sends nothing
         self._fallback_final_send = False
         if not continuation.strip():
             continuation = await self._fallback_when_nothing_unseen(final_text)
@@ -152,8 +241,9 @@ class StreamFallbackMixin:
 
         _len_fn, raw_limit = self._fallback_len_budget()
         chunks = self._split_text_chunks(continuation, max(500, raw_limit - 100), len_fn=_len_fn)
+        if await self._ceiling_fallback_file(final_text, chunks):
+            return  # the continuation would pass the reply's message cap: the whole reply went as a file
 
-        stale_message_id = self._message_id  # partial message to clean up
         last_message_id: Optional[str] = None
         last_successful_chunk = ""
         sent_any_chunk = False
@@ -161,6 +251,8 @@ class StreamFallbackMixin:
         # keeps its existing unthreaded delivery on every platform.
         anchor = self._initial_reply_to_id if continuation == final_text else None
         for chunk in chunks:
+            if self._turn_reset():
+                return  # each send awaits the network; a reset in between ends the dead turn here
             try:
                 result = await self._send_with_flood_retry(
                     content=chunk, reply_to=None if sent_any_chunk else anchor,
@@ -175,19 +267,27 @@ class StreamFallbackMixin:
             if shown:
                 # This chunk may be on screen: count it, so neither it nor the whole answer is
                 # sent again; later chunks still go out and must land on their own.
+                self._ceiling_note_unknown()
                 sent_any_chunk = True
                 last_successful_chunk = chunk
                 continue
             if not result or not result.success:
                 # Partial continuation landed: do NOT set _final_response_sent (the
                 # gateway must still deliver the full answer); _already_sent only
-                # prevents a duplicate of the partial.  Nothing landed: let the
-                # gateway final send try once more.
+                # prevents a duplicate of the partial, and the answer now spans several
+                # messages (the id is only the last one).  Nothing landed: the frozen
+                # preview keeps its id, so the gateway finishes it in place instead of
+                # posting the whole answer again beside it.
                 self._already_sent = sent_any_chunk
-                self._message_id = last_message_id
-                self._last_sent_text = last_successful_chunk
+                self._turn_split_delivery = self._turn_split_delivery or sent_any_chunk
+                if sent_any_chunk or not stale_message_id:
+                    self._message_id = last_message_id
+                    self._last_sent_text = last_successful_chunk
+                else:
+                    self._message_id = stale_message_id
                 self._fallback_prefix = ""
                 return
+            self._ceiling_observe(result)
             sent_any_chunk = True
             last_successful_chunk = chunk
             last_message_id = result.message_id or last_message_id
@@ -199,7 +299,7 @@ class StreamFallbackMixin:
         if (stale_message_id and stale_message_id != last_message_id
                 and not self._fallback_preserve_partial_messages and continuation == final_text):
             await self._delete_previews([stale_message_id], label="Fallback partial",
-                                        skip_sentinel=False)
+                                        skip_sentinel=False, retry_on_false=True)
 
         self._message_id = last_message_id
         self._already_sent = True
@@ -340,6 +440,7 @@ class StreamFallbackMixin:
             return "ambiguous" if await self._uncertain_send_fully_shown(result) else "failed"
 
         new_message_id = getattr(result, "message_id", None)
+        self._ceiling_observe(result)
         # Telegram reports delete failure by returning False; the flood window that
         # broke the finalize can reject this too — one bounded retry.
         await self._delete_previews(stale_ids, skip=new_message_id, label="Empty fallback",
@@ -422,7 +523,13 @@ class StreamFallbackMixin:
             return
         with contextlib.suppress(Exception):  # never block the fallback path
             result = await self._edit_message(message_id=self._message_id, content=prefix)
-            if getattr(result, "success", False):
+            if _edit_skipped(result):
+                # The adapter deferred a preview edit (Telegram's shared send+edit slot, armed by
+                # the refused edit just before): nothing changed on screen. This is the preview's
+                # last edit, so send it as the final one, which is never deferred.
+                result = await self._edit_message(message_id=self._message_id, content=prefix,
+                                                  finalize=True)
+            if getattr(result, "success", False) and not _edit_skipped(result):
                 self._last_sent_text = prefix
 
     async def _send_commentary(self, text: str) -> bool:
@@ -441,9 +548,10 @@ class StreamFallbackMixin:
             _plat = getattr(getattr(self.adapter, "platform", None), "value", None)
             _platform_name = str(_plat or getattr(self.adapter, "name", "")).lower()
             _needs_reply_anchor = _platform_name in ("buzz", "slack", "mattermost", "feishu")
-            result = await self.adapter.send(
-                chat_id=self.chat_id, content=text,
-                reply_to=self._initial_reply_to_id if _needs_reply_anchor else None, metadata=_md)
+            with reply_file_off(False):  # a complete message: past the cap it goes out as one file (#152012)
+                result = await self.adapter.send(
+                    chat_id=self.chat_id, content=text,
+                    reply_to=self._initial_reply_to_id if _needs_reply_anchor else None, metadata=_md)
             # Do NOT set _already_sent: commentary is interim, and the flag would
             # suppress the real final after multiple tool calls.
             if result.success:

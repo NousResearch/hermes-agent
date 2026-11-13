@@ -1,15 +1,23 @@
 name: cmi
 repo: https://github.com/jeremiebergel/context-manager-intelligence
-sha: 399468f0687c051476961e4bb045eb84263be6b1
+sha: e1f6713d9e4f1ed1651c46b0002e296691feae79
 subdir: cmi
-version: "1.11.4"
+version: "1.12.2"
 title: CMI — Context Manager Intelligence
-description: "Deterministic, zero-LLM context engine (context.engine: cmi). Shortens old tool results, stale screenshots and old write payloads to digests while keeping tool pairs and a byte-stable cache prefix; every original is stored first and comes back byte-exact with cmi_recall. Replay of 26 real sessions with the provider cache modelled: 28% fewer tokens on average, modelled API cost -24%, no session costlier; live 195-request sessions: 49% fewer tokens. Disclosure - originals and a full-text index (SQLite FTS5) are written under $HERMES_HOME (0700/0600, 30-day retention, 512 MiB cap); regex credential detection skips recognized secrets but can miss some; no network calls, no LLM calls, no dependencies. Project memory (experimental) is on for sessions opened in a Hermes Desktop project folder and stores only claims a model publishes with the user's exact words as proof; turn it off with context.cmi.auto_project_binding false. Disclosure — originals and a full-text index (SQLite FTS5) are written under $HERMES_HOME (0700/0600, 30-day retention, 512 MiB cap); regex credential detection skips recognized secrets but can miss some; no network calls, no LLM calls, no dependencies; project memory (experimental) is on for sessions opened in a Hermes Desktop project folder and stores only claims a model publishes with the user's exact words as proof (turn it off with context.cmi.auto_project_binding false); it imports private core helpers (token estimator, tool-summary helper, ContextCompressor) that can break on a Hermes release."
+description: "Deterministic, zero-LLM context engine (context.engine: cmi): fewer tokens resent on every request, so sessions last longer on the same plan. Old tool results and stale screenshots become short digests and old write payloads are removed from past calls, while tool pairs and a byte-stable cache prefix are kept; every original is stored first and comes back byte-exact with cmi_recall. When enabled, a pre_tool_call hook blocks a write whose payload is a CMI stub; a stub write that went through is flagged at the next request with the file's last known content. Replay of 26 real sessions with the provider cache modelled: 30% fewer tokens on average (modelled API cost -25%); live 195-request sessions: 49% fewer tokens. Disclosure: originals and a full-text index (SQLite FTS5) are written under $HERMES_HOME (0700/0600, 30-day retention, 512 MiB cap); regex credential detection skips recognized secrets but can miss some; no network calls, no LLM calls, no dependencies. Project memory (experimental) is on for sessions opened in a Hermes Desktop project folder and stores only claims a model publishes with the user's exact words as proof; turn it off with context.cmi.auto_project_binding false."
 maintainer: jeremiebergel
 tier: community
 category: memory
 requires_hermes: ">=0.21"
-docs_url: https://github.com/jeremiebergel/context-manager-intelligence/blob/399468f0687c051476961e4bb045eb84263be6b1/README.md
+docs_url: https://github.com/jeremiebergel/context-manager-intelligence/blob/e1f6713d9e4f1ed1651c46b0002e296691feae79/README.md
+image: https://raw.githubusercontent.com/jeremiebergel/context-manager-intelligence/e1f6713d9e4f1ed1651c46b0002e296691feae79/docs/catalog/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/jeremiebergel/context-manager-intelligence/e1f6713d9e4f1ed1651c46b0002e296691feae79/docs/catalog/shot-problem.png
+  - https://raw.githubusercontent.com/jeremiebergel/context-manager-intelligence/e1f6713d9e4f1ed1651c46b0002e296691feae79/docs/catalog/shot-fold.png
+  - https://raw.githubusercontent.com/jeremiebergel/context-manager-intelligence/e1f6713d9e4f1ed1651c46b0002e296691feae79/docs/catalog/shot-results.png
+  - https://raw.githubusercontent.com/jeremiebergel/context-manager-intelligence/e1f6713d9e4f1ed1651c46b0002e296691feae79/docs/catalog/shot-memory.png
+known_issues:
+  - "Imports private Hermes core helpers (token estimator, tool-summary helper, ContextCompressor, pricing) that can break on a Hermes release; public seams requested in NousResearch/hermes-agent#152139."
 capabilities:
   provides_tools: []
   provides_hooks: []

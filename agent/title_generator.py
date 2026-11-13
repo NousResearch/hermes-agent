@@ -11,6 +11,7 @@ import os
 import re
 import threading
 import time
+import unicodedata
 import weakref
 from contextlib import suppress
 from typing import Any, Callable, Optional
@@ -58,6 +59,29 @@ MAX_DERIVED_TITLE_CHARS = 48
 # answer-shaped output guard in generate_title; port of can1357/oh-my-pi#7306). 12 leaves headroom for
 # legitimate wordy titles while excluding full-sentence answers.
 _MAX_TITLE_WORDS = 12
+# Answer-shaped guard, CJK half: Han, kana and Hangul have no inter-word spaces, so the word count above
+# cannot see a full reply in those scripts (a 76-character Chinese answer counts as three "words"). Length
+# alone does not separate them: a plain Japanese title such as "クラウドストレージの同期エラーを解決する方法"
+# runs 22 characters. A reply is a sentence, so over 20 characters it is rejected when it carries sentence
+# punctuation, and past 40 (twice a sidebar title, where the 80-char cut would truncate it anyway) always.
+_MAX_TITLE_CJK_CHARS = 20
+_MAX_UNPUNCTUATED_TITLE_CJK_CHARS = 40
+# CJK script ranges counted by _cjk_char_count (after NFC): Han (Unified Ideographs, Extension A and the
+# supplementary-plane extensions), kana, Hangul syllables, and the CJK punctuation/fullwidth/halfwidth
+# blocks a reply in those scripts is written with, so "可以，直接在这说。…" counts its punctuation too.
+_CJK_RANGES = (
+    ("\u3000", "\u303f"),
+    ("\u3040", "\u30ff"),
+    ("\u3400", "\u4dbf"),
+    ("\u4e00", "\u9fff"),
+    ("\uac00", "\ud7af"),
+    ("\uff01", "\uff9f"),
+    ("\U00020000", "\U0003134f"),
+)
+# Sentence punctuation after NFKC (fullwidth ！？，． fold to ASCII): the ideographic full stop, and ASCII
+# ! ? , or a full stop that ends a sentence (followed by space or the end, so "Node.js" is not one).
+# Not "、" or ":": list commas and "Topic: detail" prefixes are title shapes.
+_SENTENCE_PUNCTUATION = re.compile(r"[\u3002!?,]|\.(?:\s|$)")
 # Output budget for the title call: room for a fenced/prefixed JSON reply and for a reasoning model that
 # thinks despite the thinking-disabled request, without letting a runaway reply burn minutes.
 TITLE_MAX_TOKENS = 512
@@ -468,6 +492,29 @@ def _is_prompt_example_echo(title: str) -> bool:
     return normalized in _EXAMPLE_ECHO_REJECT
 
 
+def _cjk_char_count(text: str) -> int:
+    """CJK script characters in ``text`` after canonical composition (NFD Hangul is conjoining jamo,
+    outside the syllable block, so the same visible reply would otherwise count 0)."""
+    return sum(1 for ch in unicodedata.normalize("NFC", text) if any(lo <= ch <= hi for lo, hi in _CJK_RANGES))
+
+
+def _is_answer_shaped(title: str) -> bool:
+    """True when the model answered the user instead of titling the session.
+
+    Titling is a 3-7 word task with a short result; a reply is a full sentence. The word count covers
+    space-delimited text and the character budget covers CJK, where ``str.split()`` sees no boundaries.
+    NFKC first, for the judgement only (the stored title keeps its bytes): decomposed Hangul is the
+    same text as precomposed, and fullwidth punctuation the same as ASCII. The character count reads
+    the NFC text, where fullwidth punctuation still counts as CJK text.
+    """
+    text = unicodedata.normalize("NFKC", title)
+    if len(text.split()) > _MAX_TITLE_WORDS:
+        return True
+    cjk = _cjk_char_count(title)
+    return cjk > _MAX_UNPUNCTUATED_TITLE_CJK_CHARS or (
+        cjk > _MAX_TITLE_CJK_CHARS and _SENTENCE_PUNCTUATION.search(text) is not None)
+
+
 def generate_title(
     user_message: str,
     timeout: Optional[float] = None,
@@ -530,15 +577,18 @@ def generate_title(
             reasoning_config={"enabled": False},
         )
         message = response.choices[0].message
-        title = _clean_title(_extract_title_text(message.content or "") or _title_from_reasoning(message))
+        raw_title = _extract_title_text(message.content or "") or _title_from_reasoning(message)
+        title = _clean_title(raw_title)
         # Answer-shaped output guard: titling is a 3-7 word task, so a title with many words is a model that
         # ignored the task and answered the user's message instead ("I don't have context on X — that's not
         # something I recognize..."). Truncating would store half an assistant blob as the session title,
         # which is still an assistant blob — reject instead so the caller retries on the next exchange
         # (maybe_auto_title retries a placeholder title through the third exchange). Port of can1357/oh-my-pi#7306.
-        if title is not None and len(title.split()) > _MAX_TITLE_WORDS:
+        # Measured on the text before _clean_title's 80-char cut, so a long URL prefix cannot push
+        # most of an answer past the cut and hide it from the guard.
+        if title is not None and _is_answer_shaped(" ".join(raw_title.split())):
             # Answer-shaped output: reject (not truncate) so the caller retries next exchange.
-            logger.debug("Rejecting answer-shaped title output (%d words > %d)", len(title.split()), _MAX_TITLE_WORDS)
+            logger.debug("Rejecting answer-shaped title output (%r)", title)
             return None
         # Example-echo guard: a title that parrots one of the prompt's own
         # examples back verbatim says nothing about the session — reject it so

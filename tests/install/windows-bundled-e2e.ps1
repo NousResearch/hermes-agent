@@ -12,6 +12,7 @@ if (-not $ManifestUrl) { throw 'ManifestUrl is required for ordinary package upd
 $Work = Join-Path $env:RUNNER_TEMP 'hermes-bundled-update'
 if (Test-Path $Work) { throw "Refusing to reuse $Work" }
 $Proof = Join-Path $Work 'proof'
+$LegStart = Get-Date
 New-Item -ItemType Directory -Path $Proof -Force | Out-Null
 $env:HERMES_HOME = Join-Path $Work 'home'
 New-Item -ItemType Directory -Path $env:HERMES_HOME | Out-Null
@@ -73,6 +74,7 @@ $server = Start-Process -FilePath $Node -ArgumentList @('"'+$Helper+'"', 'serve'
 $installed = $false
 $mock = $null
 $oldDriver = $null
+$passed = $false
 try {
     $deadline = (Get-Date).AddSeconds(20)
     while (-not (Test-Path $PortFile)) {
@@ -107,6 +109,8 @@ try {
         ('"' + (Join-Path $Assets 'drive-update.cjs') + '"'), ('"' + $old.exe + '"'),
         ('"' + $Proof + '"'), $m.old.commit, '--native-handoff'
     ) -PassThru -RedirectStandardOutput (Join-Path $Proof 'old-chat-driver.log') -RedirectStandardError (Join-Path $Proof 'old-chat-driver-error.log')
+    # Start-Process returns a process with no open handle; once it exits, ExitCode reads as $null.
+    $null = $oldDriver.Handle
     $deadline = (Get-Date).AddMinutes(6)
     while (-not (Test-Path -LiteralPath $oldChatReady)) {
         if ($oldDriver.HasExited -or (Get-Date) -ge $deadline) { throw 'Mandatory OLD desktop chat failed before the update trigger' }
@@ -173,7 +177,13 @@ try {
         '--home', $env:HERMES_HOME, '--user-data', $env:HERMES_DESKTOP_USER_DATA_DIR, '--out', $Proof,
         '--phase', 'new', '--expect-commit', $m.new.commit, '--mock-url', $env:HERMES_E2E_MOCK_URL)
     @{ ok=$true; oldVersion=$m.old.version; newVersion=$m.new.version; oldPid=$oldProcess.ProcessId; oldBirth=$oldProcess.CreationDate; newPid=$newProcess.ProcessId; newBirth=$newProcess.CreationDate; newPath=$newProcess.ExecutablePath; stamp=$new.stamp; automaticRelaunch=$true } | ConvertTo-Json -Depth 8 | Set-Content (Join-Path $Proof 'acceptance.json')
+    $passed = $true
 } finally {
+    if (-not $passed) {
+        # Before teardown removes the package; a collection error must not replace the leg's own.
+        try { & (Join-Path $Assets 'windows-update-evidence.ps1') -OutDir (Join-Path $Proof 'update-evidence') -Since $LegStart -Identity $m.old.identity }
+        catch { Write-Host "  [evidence] collection failed: $($_.Exception.Message)" }
+    }
     if ($mock -and -not $mock.HasExited) { Stop-Process -Id $mock.Id -ErrorAction SilentlyContinue }
     if ($oldDriver -and -not $oldDriver.HasExited) { Stop-Process -Id $oldDriver.Id -ErrorAction SilentlyContinue }
     if (-not $server.HasExited) { Stop-Process -Id $server.Id -ErrorAction SilentlyContinue }

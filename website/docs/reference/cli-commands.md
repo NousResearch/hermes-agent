@@ -146,7 +146,7 @@ Common options:
 | `--safe-mode` | Troubleshooting mode: disable ALL customizations — user config, rules/memory injection, plugins, shell hooks, and MCP servers (implies `--ignore-user-config` and `--ignore-rules`). The gateway freezes code defaults plus your explicit options into the session and runs the turn in an isolated worker process that never reads the profile, so a broken `config.yaml` cannot block it. Requires an explicit `--model` (there is no profile default to inherit); pair with `--provider custom --base-url <url> --api-key <key>` for a fully explicit endpoint. |
 | `--base-url <url>` / `--api-key <key>` | Explicit OpenAI-compatible endpoint and launch-only key for `--provider custom`. The key is held in the running gateway's memory for this session and never written to disk. |
 | `--source <tag>` | Session source tag for filtering (default: `cli`; one-shot runs default to `oneshot`, which pickers hide). Use `tool` for third-party integrations that should not appear in user session lists. An explicit `--source` is always stored as given, even for a one-shot run launched from inside a TUI or Desktop session. |
-| `--max-turns <N>` | Maximum tool-calling iterations per conversation turn (default: 500, or `agent.max_turns` in config). |
+| `--max-turns <N>` | Maximum tool-calling iterations per conversation turn (default: unlimited, or `agent.max_turns` in config). |
 
 Examples:
 
@@ -990,12 +990,13 @@ hermes webhook subscribe <name> [options]
 | `--deliver` | Delivery target: `log` (default), `telegram`, `discord`, `slack`, `github_comment`. |
 | `--deliver-chat-id` | Target chat/channel ID for cross-platform delivery. |
 | `--secret` | Custom HMAC secret. Auto-generated if omitted. |
+| `--signature` | Signature scheme the route accepts: `generic` (default for new routes; `X-Webhook-Signature-V2` + `X-Webhook-Timestamp` or Standard Webhooks), `github`, `gitlab` or `linear`. Every other header family is rejected. Kept on update when omitted. See [Pin the signature scheme](../user-guide/messaging/webhooks.md#pin-the-signature-scheme). |
 | `--deliver-only` | Skip the agent — deliver the rendered `--prompt` as the literal message. Zero LLM cost, sub-second delivery. Requires `--deliver` to be a real target (not `log`). |
 | `--mirror-to-session` | Also write each delivered message into the target chat's session, so replying to it in that chat has context. Off by default; only enable it for sources whose content you trust in your conversation. |
 | `--script` | Filter/transform script under `~/.hermes/scripts/`. The webhook payload is passed as JSON on stdin; JSON stdout replaces the payload, and empty stdout, `[SILENT]`, or a nonzero exit code ignores the webhook. See [Script Filters and Transforms](../user-guide/messaging/webhooks.md#script-filters-and-transforms). |
 | `--route-profile` | Bind the route to a multiplexed profile: it is then reachable only at `/p/<profile>/webhooks/<name>` and the agent runs as that profile. Validated against existing profiles; kept on update when omitted. Not the same as the global `-p/--profile`, which selects the gateway whose subscriptions file is written. See [Multi-profile gateways](../user-guide/multi-profile-gateways.md). |
 
-Subscriptions persist to `~/.hermes/webhook_subscriptions.json` and are hot-reloaded by the webhook adapter without a gateway restart. Re-running `subscribe` for an existing name keeps its secret and profile binding unless you pass `--secret` / `--route-profile`.
+Subscriptions persist to `~/.hermes/webhook_subscriptions.json` and are hot-reloaded by the webhook adapter without a gateway restart. Re-running `subscribe` for an existing name keeps its secret, signature pin and profile binding unless you pass `--secret` / `--signature` / `--route-profile`. `hermes webhook test` signs the way the route's pin expects (V2 for `generic` and unpinned routes).
 
 ## `hermes doctor`
 
@@ -1105,7 +1106,7 @@ Upload a debug report (system info + recent logs) to a paste service and get a s
 | Option | Description |
 |--------|-------------|
 | `--lines <N>` | Number of log lines to include per log file (default: 200). |
-| `--expire <days>` | Paste expiry in days (default: 7). |
+| `--expire <days>` | dpaste.com fallback retention in days (minimum 1; default: 1). paste.rs pastes are always deleted after 6 hours; dpaste.com pastes cannot be deleted early. |
 | `--nous` | Upload to Nous-internal diagnostics storage instead of a public paste service. Use this when Nous support asks for a private diagnostic bundle. |
 | `--local` | Print the report locally instead of uploading. |
 | `--no-redact` | Disable upload-time secret redaction. By default, uploads are redacted. |
@@ -1119,7 +1120,7 @@ Default uploads use public paste services tried in order: paste.rs, dpaste.com. 
 ```bash
 hermes debug share              # Upload debug report, print URL
 hermes debug share --lines 500  # Include more log lines
-hermes debug share --expire 30  # Keep paste for 30 days
+hermes debug share --expire 30  # Keep a dpaste.com fallback paste for 30 days
 hermes debug share --nous       # Upload a private diagnostics bundle for Nous support
 hermes debug share --local      # Print report to terminal (no upload)
 ```
@@ -1956,7 +1957,7 @@ Launch the web dashboard to manage configuration, API keys, and sessions. For a 
 | `--no-open` | — | Don't auto-open the browser |
 | `--insecure` | off | **Deprecated / no-op.** Formerly bypassed auth on a non-loopback bind. Since the June 2026 hardening a public bind *always* requires an auth provider (password or OAuth). Bind `127.0.0.1` and tunnel to keep it local. |
 | `--skip-build` | off | Skip the web UI build step and serve the existing `dist` directly. Useful for non-interactive contexts (Windows Scheduled Tasks, CI) where pnpm isn't available. Pre-build with `cd web && pnpm run build`. |
-| `--isolated` | off | When launched from a named profile (`worker dashboard`), run a dedicated per-profile server instead of routing to the machine dashboard. |
+| `--isolated` | off | When launched from a named profile (`worker dashboard`), run a dedicated per-profile server instead of routing to the machine dashboard. It lists only that profile. Routing/ops convenience, **not** a security boundary: profiles under one OS user can read each other; isolate tenants with separate OS users or containers. |
 | `--stop` | — | Stop the running `hermes dashboard` / `hermes serve` backend **of this Hermes home** and exit (`-p <profile>` / `HERMES_HOME` select which; backends of other profiles, other installs on the machine, and the shell you typed the command into are never touched — a backend whose owner cannot be read is left alone). SIGTERM, a 10s grace, then SIGKILL; a hosted Chat TUI that outlives its backend is stopped too (it would otherwise keep the deleted `state.db-wal` open and block the next start). Messaging-gateway bots started from the dashboard are not touched. |
 | `--status` | — | List running `hermes dashboard` processes and exit. |
 

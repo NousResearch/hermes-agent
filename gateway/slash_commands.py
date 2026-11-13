@@ -432,6 +432,7 @@ class GatewaySlashCommandsMixin(
         never checking _interrupt_requested) is caught by the early intercept in _handle_message();
         this handler runs via normal dispatch or as a fallback, and force-cleans the session lock in
         all cases.  The session is preserved so the user can continue."""
+        event.accept_interrupt()  # past admission and slash access: the adapter may cancel the turn
         from gateway.run import _AGENT_PENDING_SENTINEL, _INTERRUPT_REASON_STOP
         source = event.source
         session_entry = await self.async_session_store.get_or_create_session(source)
@@ -573,9 +574,15 @@ class GatewaySlashCommandsMixin(
             return data
 
         def _dedup_payload() -> dict:
-            # Platform + update_id of the triggering /restart, for redelivery detection.
+            from gateway.session_identity import transport_profile_of
+
+            # Scope the update counter to the bot that received /restart, even if its
+            # session executes in a different (or shared) runtime profile.
             data = {"platform": event.source.platform.value if event.source.platform else None,
                     "requested_at": time.time()}
+            transport_profile = transport_profile_of(event.source)
+            if transport_profile is not None:
+                data["transport_profile"] = transport_profile
             if event.platform_update_id is not None:
                 data["update_id"] = event.platform_update_id
             return data
@@ -1204,11 +1211,12 @@ class GatewaySlashCommandsMixin(
         from tools.approval import has_blocking_approval
         session_key = self._session_key_for_source(event.source)
         if has_blocking_approval(session_key):
+            from gateway.relay.admitted_authors import answer_admitted
             from gateway.approval_actor import answerable_request_ids, refusal_text
             from gateway.slash_access import policy_for_runner_source
             ids, requester = answerable_request_ids(
                 session_key, event.sender_id(), resolve_all=resolve_all, choice=choice,
-                admin_ids=policy_for_runner_source(self, event.source))
+                admin_ids=policy_for_runner_source(self, event.source), admitted=answer_admitted(event))
             return (session_key, refusal_text(requester), []) if requester else (session_key, None, ids)
         _approval_state = self._peek_session_state(session_key)
         if _approval_state is not None and _approval_state.persistent.approvals is not None:
@@ -1287,28 +1295,39 @@ class GatewaySlashCommandsMixin(
         return await self._run_in_executor_with_context(_run)
 
     async def _handle_debug_command(self, event: MessageEvent) -> str:
-        """Handle /debug — upload ONLY the summary (system info + log tails), never full logs, to
-        protect privacy; ``hermes debug share`` from the CLI does full uploads."""
+        """Handle /debug — bare: privacy notice only; ``upload``: upload ONLY the summary (system
+        info + log tails), never full logs; ``hermes debug share`` from the CLI does full uploads."""
         from hermes_cli.debug import (_GATEWAY_PRIVACY_NOTICE, _best_effort_sweep_expired_pastes,
                                       _capture_dump, _is_dpaste_url, _schedule_auto_delete,
                                       collect_debug_report, upload_to_pastebin)
         from hermes_cli.debug_redaction import redact_debug_support_text
 
-        wants_local = "local" in {w.lower() for w in (event.get_command_args() or "").split()}
-        if wants_local and getattr(event.source, "platform", None) != Platform.LOCAL:
+        words = {w.lower() for w in (event.get_command_args() or "").split()}
+        wants_local = "local" in words
+        is_local_session = getattr(event.source, "platform", None) == Platform.LOCAL
+        if not wants_local and ("upload" not in words or words - {"upload", "nous"}):
+            # Notice first, upload only on the explicit `/debug upload` (#94876): a bare /debug is
+            # not consent to publish this session's logs, nor is `/debug do not upload`.
+            hint = t("gateway.debug.upload_hint_local" if is_local_session else "gateway.debug.upload_hint")
+            return f"{_GATEWAY_PRIVACY_NOTICE}\n\n{hint}"
+        if wants_local and not is_local_session:
             # From a chat the report can't stay on the machine; `/debug local` must never fall
-            # through to the public paste. Bare `/debug` is the upload form.
+            # through to the public paste. `/debug upload` is the upload form.
             return t("gateway.debug.local_refused")
         if wants_local:
             # A local session's `/debug local` (main's CLI form) asks for the report on this machine:
             # return the redacted report for the client to show, with no network call at all (not
-            # even the expired-paste sweep). Uploading stays on the explicit `/debug` form (T7).
+            # even the expired-paste sweep). Uploading stays on the explicit `/debug upload` form (T7).
             from hermes_cli.debug import collect_share_bundle
 
             def _collect_local():
                 return collect_share_bundle(log_lines=200)["report"]
 
             return await self._run_in_executor_with_context(_collect_local)
+        if "nous" in words:
+            # `/debug nous upload` consents to private Nous storage; the gateway only has the public
+            # paste, so refuse rather than publish under a consent that named another destination.
+            return t("gateway.debug.nous_refused")
 
         def _collect_and_upload():  # blocking I/O (dump capture, log reads, uploads) -> thread
             _best_effort_sweep_expired_pastes()

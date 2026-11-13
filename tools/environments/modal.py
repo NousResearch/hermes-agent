@@ -133,6 +133,9 @@ class ModalEnvironment(BaseEnvironment):
     wrapping async SDK calls, cancel_fn wired to sandbox.terminate for interrupt support."""
 
     _stdin_mode = "payload"
+    # The askpass prologue checks sudo ``-A`` support inside each command, so no capability probe
+    # runs here (a timed-out probe could only be cancelled by stopping the sandbox).
+    _sudo_askpass_runtime_checked = True
     _snapshot_timeout = 60  # Modal cold starts can be slow
     # Modal SDK stdin buffer limit: the command-router path allows 16 MB but the legacy server
     # path caps at 2 MB, so chunks stay under 2 MB and each is flushed individually via drain().

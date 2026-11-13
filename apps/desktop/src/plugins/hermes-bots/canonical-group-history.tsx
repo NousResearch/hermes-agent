@@ -177,13 +177,19 @@ export function CanonicalGroupHistory({ avatarFor, binding, events, members = []
   const roster = new Map(members.map(member => [member.member_id, member]))
   const maxContinues = pause?.maxContinues
   const pauses = useMemo(() => typeof maxContinues === 'number' ? pausedDiscussions(events, maxContinues) : undefined, [events, maxContinues])
-  const handoffsAfter = new Map<number, RoomHandoff[]>()
 
-  for (const handoff of roomHandoffs(events as RoomLogEvent[], members)) {
-    const after = handoffsAfter.get(handoff.afterSeq)
+  // One members × events scan per log or roster change, not per render.
+  const handoffsAfter = useMemo(() => {
+    const byEvent = new Map<number, RoomHandoff[]>()
 
-    if (after) {after.push(handoff)} else {handoffsAfter.set(handoff.afterSeq, [handoff])}
-  }
+    for (const handoff of roomHandoffs(events as RoomLogEvent[], members)) {
+      const after = byEvent.get(handoff.afterSeq)
+
+      if (after) {after.push(handoff)} else {byEvent.set(handoff.afterSeq, [handoff])}
+    }
+
+    return byEvent
+  }, [events, members])
 
   const nameOf = (id: string) => { const member = roster.get(id);
 

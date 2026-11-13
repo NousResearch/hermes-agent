@@ -1,0 +1,21 @@
+name: puppetmaster-learn
+repo: https://github.com/professorpalmer/Puppetmaster
+sha: "d43d027992cbd520829001807e9eb3d4ac9dd7b8"
+subdir: puppetmaster/hermes_plugin/puppetmaster-learn
+version: "0.2.1"
+title: Puppetmaster Learn
+description: "Turns a Puppetmaster swarm into a Hermes skill. Puppetmaster runs durable worker jobs (swarms and flow graphs) for an agent. When a Hermes session ends, this plugin finds the swarm that finished during that session in the session's directory and, if it produced findings or a patch, writes its goal and findings (title, location, severity, failure scenario, evidence) as a skill candidate under $HERMES_HOME/skills-candidates/. Promote it with `puppetmaster skills promote-candidate <slug>`. It never writes a live skill or starts an agent or job, and writes one candidate per job. Needs the Puppetmaster CLI (PyPI puppetmaster-ai). Disclosure — at session end it reads the ending session's cwd and started_at from the Hermes session store (read-only, no messages), runs up to three read-only Puppetmaster CLI commands (last --json, status, artifacts) as child processes in that directory, 15 s timeout each, stdin closed, and reads the mcp_servers.puppetmaster entry of Hermes config.yaml (no credentials); it writes only under $HERMES_HOME/skills-candidates/; no network, no threads or background processes, no telemetry, no dependencies beyond the standard library."
+maintainer: professorpalmer
+tier: community
+category: automation
+requires_hermes: ">=0.20.4"
+docs_url: https://github.com/professorpalmer/Puppetmaster/blob/d43d027992cbd520829001807e9eb3d4ac9dd7b8/puppetmaster/hermes_plugin/puppetmaster-learn/README.md
+readme: true
+capabilities:
+  provides_tools: []
+  provides_hooks: [on_session_finalize]
+  provides_middleware: []
+  requires_env: []
+known_issues:
+  - "Gateway-owned sessions (hermes -z, TUI, desktop) drop plugin session-end messages today, so the notice does not show. The candidate is still written; `puppetmaster skills list-candidates` lists it."
+  - "Only the latest Puppetmaster job of the session's directory is checked. If two swarms finish in one session, only the later one becomes a candidate."

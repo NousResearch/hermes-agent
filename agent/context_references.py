@@ -17,7 +17,13 @@ from typing import Awaitable, Callable
 
 from agent.file_safety import HOME_CREDENTIAL_DIRS
 from agent.model_metadata import CHARS_PER_TOKEN, estimate_tokens_rough
-from hermes_cli._subprocess_compat import IS_WINDOWS, harden_git_argv, noninteractive_git_env, windows_hide_flags
+from hermes_cli._subprocess_compat import (
+    FILTER_DISCOVERY_FAILED,
+    IS_WINDOWS,
+    harden_git_argv,
+    noninteractive_repo_git_env,
+    windows_hide_flags,
+)
 from hermes_cli.sqlite_safe_read import LiveConnectionError, offline_file_access
 from hermes_cli.sizefmt import format_bytes
 
@@ -227,6 +233,10 @@ async def preprocess_context_references_async(
     refs = parse_context_references(message, plugins=plugins)
     if not refs:
         return ContextReferenceResult(message=message, original_message=message)
+    from tools.hosted_tool_policy import host_feature_refusal
+    if refusal := host_feature_refusal("context_references", "@-references"):
+        return ContextReferenceResult(message=message, original_message=message, references=refs,
+                                      warnings=[refusal], blocked=True)
     cwd_path = Path(cwd).expanduser().resolve()
     # Default root = cwd so @ references cannot escape the workspace unless a caller widens it.
     allowed_root_path = Path(allowed_root).expanduser().resolve() if allowed_root is not None else cwd_path
@@ -464,9 +474,14 @@ def _run_quiet(cmd: list[str], cwd: Path, timeout: int, env: dict | None = None)
 
 
 def _expand_git_reference(ref: ContextReference, cwd: Path, args: list[str], label: str) -> Expansion:
+    # The repository's named clean/smudge/process filters run during `diff` on a stat-dirty file:
+    # their commands are emptied, and git is not spawned when they cannot be discovered.
+    env = noninteractive_repo_git_env(cwd)
+    if env is None:
+        return f"{ref.raw}: {FILTER_DISCOVERY_FAILED}", None
     try:
         # Repo-supplied config/attributes must never execute code (GHSA-7x36-8jrh-v4pw).
-        result = _run_quiet(["git", *harden_git_argv(args)], cwd, 30, env=noninteractive_git_env())
+        result = _run_quiet(["git", *harden_git_argv(args)], cwd, 30, env=env)
     except subprocess.TimeoutExpired:
         return f"{ref.raw}: git command timed out (30s)", None
     if result.returncode != 0:

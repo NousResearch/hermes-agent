@@ -1,0 +1,33 @@
+name: stock-runway
+repo: https://github.com/usegreymatter/hermes-stock-runway
+sha: e3f7b28e1e8fa4f0ce9c65cdf75a0e676a596f69
+subdir: ""
+description: >-
+  See when each product will run out and when to reorder. Forecasts seasonal monthly demand,
+  shows past demand, deliveries and stock on one chart, grades forecast accuracy, and
+  lists what to order now (quantity and order-by date, with lead time, MOQ and pack size).
+  Works from the bundled sample, a local CSV (reads SAP, NetSuite, Zoho, Odoo, Sage,
+  QuickBooks and Dynamics export column names as is), or an optional read-only Odoo connection
+  configured through Hermes secrets. Adds a /stock command, a stock_runway tool and a
+  Desktop page. Disclosure — with the Odoo source it makes read-only XML-RPC calls to the
+  Odoo server you configure; the sample and CSV sources make no network calls.
+maintainer: usegreymatter
+tier: community
+category: tools
+requires_hermes: ">=0.22.2"
+docs_url: https://github.com/usegreymatter/hermes-stock-runway#readme
+version: "0.1.0"
+screenshots:
+  - https://raw.githubusercontent.com/usegreymatter/hermes-stock-runway/e3f7b28e1e8fa4f0ce9c65cdf75a0e676a596f69/docs/screens/harness-1440-dark.png
+  - https://raw.githubusercontent.com/usegreymatter/hermes-stock-runway/e3f7b28e1e8fa4f0ce9c65cdf75a0e676a596f69/docs/screens/popup-1440-dark.png
+  - https://raw.githubusercontent.com/usegreymatter/hermes-stock-runway/e3f7b28e1e8fa4f0ce9c65cdf75a0e676a596f69/docs/screens/card-1440-dark.png
+  - https://raw.githubusercontent.com/usegreymatter/hermes-stock-runway/e3f7b28e1e8fa4f0ce9c65cdf75a0e676a596f69/docs/screens/harness-360-dark.png
+readme: true
+platforms: []
+title: Stock Runway
+known_issues: []
+capabilities:
+  provides_tools: [stock_runway]
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

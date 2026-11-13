@@ -439,16 +439,21 @@ def _host_derived_api_key(base_url: str) -> str:
     return (get_secret_str(f"{sanitized}_API_KEY", "") or "").strip()
 
 
+def openai_env_key_authoritative_for(base_url: str, env_openai_base: str) -> bool:
+    """Whether ``OPENAI_API_KEY`` may be sent to *base_url*: an OpenAI-owned host, or exactly the
+    ``OPENAI_BASE_URL`` the key is paired with (the user's own proxy/gateway, not an unrelated host)."""
+    if base_url_host_matches(base_url, "openai.com") or base_url_host_matches(base_url, "openai.azure.com"):
+        return True
+    env_openai_base = (env_openai_base or "").strip().rstrip("/")
+    return bool(env_openai_base) and (base_url or "").strip().rstrip("/") == env_openai_base
+
+
 def _host_gated_env_key_candidates(base_url: str, *, ollama: bool) -> list:
     """Env API keys gated on their authoritative hosts, then the host-derived ``<VENDOR>_API_KEY``.
     Sending OPENAI/OPENROUTER/OLLAMA keys to an unrelated endpoint leaks credentials
     (GHSA-76xc-57q6-vm5m); match on HOST, not substring. ``_host_derived_api_key`` skips OLLAMA, so
     callers that want it opt in via ``ollama``."""
-    is_openai = base_url_host_matches(base_url, "openai.com") or base_url_host_matches(base_url, "openai.azure.com")
-    # OPENAI_BASE_URL names the proxy/gateway the OPENAI_API_KEY was issued for (the ``openai`` alias
-    # expands onto it); an exact match is the user's own pairing, not a leak to an unrelated host.
-    env_openai_base = get_secret_str("OPENAI_BASE_URL", "").strip().rstrip("/")
-    is_openai = is_openai or (bool(env_openai_base) and (base_url or "").strip().rstrip("/") == env_openai_base)
+    is_openai = openai_env_key_authoritative_for(base_url, get_secret_str("OPENAI_BASE_URL", ""))
     candidates = [get_secret_str("OLLAMA_API_KEY", "").strip() if base_url_host_matches(base_url, "ollama.com") else ""] if ollama else []
     return candidates + [get_secret_str("OPENAI_API_KEY", "").strip() if is_openai else "",
                          get_secret_str("OPENROUTER_API_KEY", "").strip() if base_url_host_matches(base_url, "openrouter.ai") else "",

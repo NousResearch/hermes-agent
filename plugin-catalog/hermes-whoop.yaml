@@ -1,0 +1,26 @@
+name: hermes-whoop
+title: WHOOP Readiness
+repo: https://github.com/solmonger/hermes-whoop
+sha: "ea30c764a44fc792b66e34061331f2948356cc03"
+version: "0.1.0"
+description: "Your own WHOOP data in Hermes: today's recovery, HRV, resting heart rate, SpO2, skin temperature, sleep and strain against your personal 30-day baseline, history over any date range and 7-vs-30-day trends, from the official WHOOP API v2 with your own WHOOP developer app. Adds a /whoop command that answers without a model call, two Automation Blueprints (morning readiness brief, weekly review), an opt-in readiness hook and a bundled skill. Includes a clearly labelled synthetic demo mode. Native Python plugin, no dependencies. Unofficial; not affiliated with WHOOP, Inc. Disclosure: network calls go only to api.prod.whoop.com and are made by Hermes through credentialed_provider_request; the WHOOP OAuth client is declared under oauth: and signed in with `hermes auth add hermes-whoop:whoop`, so Hermes stores and refreshes the grant and the plugin never receives a token; WHOOP_CLIENT_ID and WHOOP_CLIENT_SECRET (your own app) are optional_env read only by Hermes. Health data returned by the tools enters the conversation and is sent to your model provider; /whoop in a group chat shows it to that chat. The pre_llm_call hook is off by default; when enabled it appends a one-line readiness summary to matching messages. Creates no files of its own (settings changes are written to the profile's config.yaml by Hermes); WHOOP responses are cached in memory for 5 minutes. No shell commands, no background processes, no telemetry, no self-updates. Not medical advice."
+maintainer: solmonger
+tier: community
+category: tools
+requires_hermes: ">=0.22.3"
+docs_url: https://github.com/solmonger/hermes-whoop#readme
+image: https://raw.githubusercontent.com/solmonger/hermes-whoop/ea30c764a44fc792b66e34061331f2948356cc03/docs/media/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/solmonger/hermes-whoop/ea30c764a44fc792b66e34061331f2948356cc03/docs/media/today.png
+  - https://raw.githubusercontent.com/solmonger/hermes-whoop/ea30c764a44fc792b66e34061331f2948356cc03/docs/media/trends.png
+  - https://raw.githubusercontent.com/solmonger/hermes-whoop/ea30c764a44fc792b66e34061331f2948356cc03/docs/media/week.png
+readme: true
+platforms: []
+known_issues:
+  - "WHOOP's docs say the redirect URI must match the one registered; Hermes signs in on 127.0.0.1 with an OS-assigned port. Register http://127.0.0.1/callback: WHOOP's OAuth server appears to be Ory Hydra, which accepts any port for a loopback redirect (RFC 8252), but WHOOP does not document this. If WHOOP reports a redirect mismatch, see the README's Limits section."
+  - "As of 2026-11-07 the WHOOP sign-in and token refresh are tested only against Hermes's real OAuth code with WHOOP faked, not against a real WHOOP account. Demo mode needs no account."
+capabilities:
+  provides_tools: [whoop_today, whoop_history, whoop_trends, whoop_profile, whoop_status]
+  provides_hooks: [pre_llm_call]
+  provides_middleware: []
+  requires_env: []

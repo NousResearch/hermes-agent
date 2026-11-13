@@ -67,6 +67,26 @@ Settings are resolved in this order (highest priority first):
 Secrets (API keys, bot tokens, passwords) go in `.env`. Everything else (model, terminal backend, compression settings, memory limits, toolsets) goes in `config.yaml`. When both are set, `config.yaml` wins for non-secret settings.
 :::
 
+### Credentials written by Hermes
+
+When Hermes itself writes a credential for a config field, the value goes to the profile's `.env` and `config.yaml` gets only a reference to it. This covers `hermes config set` on these fields, the dashboard / desktop model and auxiliary pickers, and the `hermes model` custom-endpoint and auxiliary flows:
+
+| Field | Saved in `.env` as | `config.yaml` stores |
+|---|---|---|
+| `model.api_key` (`hermes config set`) | `HERMES_MODEL_API_KEY` | `${HERMES_MODEL_API_KEY}` |
+| `model.api_key` for a custom endpoint picked in the dashboard | `HERMES_CUSTOM_<HOST>[_<PORT>][_<PATH>]_<HASH>_API_KEY` | `${...}` |
+| `auxiliary.<task>.api_key` | `AUXILIARY_<TASK>_API_KEY` | `${AUXILIARY_<TASK>_API_KEY}` |
+| `delegation.api_key` | `HERMES_DELEGATION_API_KEY` | `${HERMES_DELEGATION_API_KEY}` |
+| a new `custom_providers` entry | `HERMES_CUSTOM_<HOST>[_<PORT>][_<PATH>]_<HASH>_API_KEY` | `key_env: <that name>` |
+| `custom_providers.<N>.api_key` (`hermes config set`) | the entry's `HERMES_CUSTOM_..._API_KEY` (an entry without a `base_url` uses its name: `HERMES_PROVIDER_<NAME>_<HASH>_API_KEY`) | `${...}` |
+| `providers.<name>.api_key` (`hermes config set`), a dashboard Custom Endpoints entry | `HERMES_PROVIDER_<NAME>_<HASH>_API_KEY` | `${...}` |
+
+The path segment is only added when it is something other than `/v1`. A plugin task key that is not all lowercase (`My_Task`) also gets `_<HASH>`, so it never shares a variable with `my_task`. `<HASH>` is 8 hex characters derived from the exact endpoint URL (or provider name), so endpoints whose names look alike, such as `my-host.com` and `my.host.com`, never share a variable. Hermes refuses to overwrite a variable that another endpoint in `config.yaml` already reads with a different key. A value you type as a reference (`hermes config set model.api_key '${MY_KEY}'`) is stored as you typed it. These variables are always stripped from terminal and subprocess environments, even when `env_passthrough` lists them or `inherit_credentials` is on. With a remote config backend, which does not share `.env` between hosts, values are stored as given.
+
+A running gateway re-reads `.env` at the start of every turn, so its next message uses a newly saved key without a restart. A process that read `.env` only at startup and is not driven by gateway turns picks the key up after `/reload` or a restart; until then, an auxiliary task whose key was just saved sends the unexpanded `${VAR}` text as the key.
+
+Inline credentials already in `config.yaml` still work and are not migrated, but they are discouraged. Move one by hand with `hermes config set <field> <value>`, which rewrites it as a reference.
+
 :::tip Org deployments
 An administrator can pin specific config and secret values that a standard user
 cannot override, via a system-level managed directory. See
@@ -1164,8 +1184,9 @@ auxiliary:
   compression:
     model: glm-4.7
     base_url: https://api.z.ai/api/coding/paas/v4
+    api_key: ${GLM_API_KEY}
 ```
-Points at a custom OpenAI-compatible endpoint. Uses `OPENAI_API_KEY` for auth.
+Points at a custom OpenAI-compatible endpoint, authenticated with `api_key`. Without one, Hermes reuses the main model's key only on the main endpoint's exact origin, and `OPENAI_API_KEY` only on OpenAI hosts or the exact `OPENAI_BASE_URL` it is paired with.
 
 ### How the three knobs interact
 
@@ -1264,6 +1285,7 @@ Semantics:
 - **Notify-only.** The watchdog never kills the turn — contrast `agent.gateway_timeout`, which cancels a run after prolonged inactivity. The stall notice just tells you the agent looks wedged so you can decide (`/new`, `/stop`, or keep waiting).
 - **One notification per stall episode.** The latch clears when the pending inbound drains or activity resumes, so a session that recovers and stalls again notifies again.
 - Progress comes only from the shared activity snapshot (tool calls, API stream progress, compression heartbeats). Pending inbound is a notify gate, not a progress clock.
+- **Before the agent starts.** A turn still setting up (session load, transcript, `agent:start` hooks) answers a follow-up past this timeout with "Still starting this turn … Use /stop if it should be cancelled". Setup itself is bounded by `agent.gateway_timeout`: past it the turn ends with "Turn setup stalled … Please resend your message" and the next message runs. `/stop` and `/new` end a turn still in setup.
 
 ```yaml
 agent:
@@ -1627,13 +1649,13 @@ auxiliary:
     reasoning_effort: "none"   # disable thinking for image description
 ```
 
-When `base_url` is set, Hermes ignores the provider and calls that endpoint directly (using `api_key` or `OPENAI_API_KEY` for auth). When only `provider` is set, Hermes uses that provider's built-in auth and base URL.
+When `base_url` is set, Hermes ignores the provider and calls that endpoint directly (using `api_key` for auth; see below for the fallbacks). When only `provider` is set, Hermes uses that provider's built-in auth and base URL.
 
 Available providers for auxiliary tasks: `auto`, `main`, plus any provider in the [provider registry](../reference/environment-variables.md) — `openrouter`, `nous`, `openai-codex`, `anthropic`, `gemini`, `qwen-oauth`, `zai`, `kimi-coding`, `kimi-coding-cn`, `minimax`, `minimax-cn`, `minimax-oauth`, `deepseek`, `nvidia`, `xai`, `xai-oauth`, `ollama-cloud`, `alibaba`, `bedrock`, `huggingface`, `arcee`, `xiaomi`, `kilocode`, `opencode-zen`, `opencode-go`, `commandcode`, `commandcode-anthropic`, `ai-gateway`, `azure-foundry` — or any named custom provider from your `providers:` dict (e.g. `provider: "beans"`).
 
 Local OpenAI-compatible servers work under their own names too: `provider: ollama` (also `vllm`, `llamacpp`, `llama.cpp`) with a `base_url` such as `http://127.0.0.1:11434` and an empty `api_key` routes through the custom endpoint with a placeholder key, and a bare `host:port` base_url gets the `/v1` suffix automatically.
 
-`provider: openai` is a direct-API alias: it routes through the custom endpoint at the block's `base_url`, else `OPENAI_BASE_URL`, else `https://api.openai.com/v1`, authenticated with `api_key` or `OPENAI_API_KEY`. Every auxiliary task resolves it the same way — `compression`/`vision`/`title_generation` as well as `background_review`, `curator` and MoA slots — so removing `base_url` while keeping `provider: openai` moves that task to the public OpenAI endpoint. A `providers.openai` entry in your `providers:` dict takes precedence and keeps its own endpoint and key.
+`provider: openai` is a direct-API alias: it routes through the custom endpoint at the block's `base_url`, else `OPENAI_BASE_URL`, else `https://api.openai.com/v1`, authenticated with `api_key`, else `OPENAI_API_KEY` when the endpoint is an OpenAI host or the exact paired `OPENAI_BASE_URL`. Every auxiliary task resolves it the same way — `compression`/`vision`/`title_generation` as well as `background_review`, `curator` and MoA slots — so removing `base_url` while keeping `provider: openai` moves that task to the public OpenAI endpoint. A `providers.openai` entry in your `providers:` dict takes precedence and keeps its own endpoint and key.
 
 When a routed `auxiliary.<task>` block cannot be resolved (unknown provider, missing endpoint or credentials), the task runs on the main model and Hermes says so: `background_review` emits a one-time user-visible warning naming the provider and reason (plus a `WARNING` line in `agent.log` per review), and `hermes doctor` resolves every routed `auxiliary.<task>` block through the same resolver and reports the ones that fail.
 
@@ -1658,7 +1680,7 @@ auxiliary:
     provider: "auto"           # "auto", "openrouter", "nous", "codex", "main", etc.
     model: ""                  # e.g. "openai/gpt-4o", "google/gemini-2.5-flash"
     base_url: ""               # Custom OpenAI-compatible endpoint (overrides provider)
-    api_key: ""                # API key for base_url (falls back to OPENAI_API_KEY)
+    api_key: ""                # API key for base_url (OPENAI_API_KEY fallback: OpenAI hosts only)
     timeout: 120               # seconds — LLM API call timeout; vision payloads need generous timeout
     download_timeout: 30       # seconds — image HTTP download; increase for slow connections
     max_concurrency: 8         # max concurrent image encode/resize bursts across the process
@@ -1873,7 +1895,7 @@ auxiliary:
     model: "qwen2.5-vl"
 ```
 
-`base_url` takes precedence over `provider`, so this is the most explicit way to route an auxiliary task to a specific endpoint. For direct endpoint overrides, Hermes uses the configured `api_key` or falls back to `OPENAI_API_KEY`; it does not reuse `OPENROUTER_API_KEY` for that custom endpoint. With neither set, the main model's key is reused only when `base_url` has the main endpoint's exact origin (scheme, host and port). The main endpoint is the one the session is running on (after a `/model` switch, that one), paired with its own key, never with a key from a different endpoint.
+`base_url` takes precedence over `provider`, so this is the most explicit way to route an auxiliary task to a specific endpoint. For direct endpoint overrides, Hermes uses the configured `api_key`; it does not reuse `OPENROUTER_API_KEY` for that custom endpoint. Without one, the main model's key is reused only when `base_url` has the main endpoint's exact origin (scheme, host and port). The main endpoint is the one the session is running on (after a `/model` switch, that one), paired with its own key, never with a key from a different endpoint. `OPENAI_API_KEY` is the last fallback and is sent only to OpenAI hosts (`*.openai.com`, `*.openai.azure.com`) or to the exact `OPENAI_BASE_URL` it is paired with; any other endpoint needs its own `api_key`.
 
 **Using OpenAI API key for vision:**
 ```yaml
@@ -2322,7 +2344,7 @@ display:
   # notification; other terminals ignore it) and, inside Warp (TERM_PROGRAM=WarpTerminal with the CLI-agent
   # protocol advertised), a warp://cli-agent OSC 777 event (`stop` on completion, `permission_request` on
   # blocking prompts) so Warp's tab status and notification mailbox track Hermes. No extra keys needed.
-  show_reasoning: true    # Show model reasoning/thinking above each response (default: true; toggle with /reasoning show|hide)
+  show_reasoning: true    # Show model reasoning/thinking above each response (default: true; toggle with /reasoning show|hide). On a gateway reply that was streamed, it follows the answer as its own message
   streaming: false        # Stream tokens to terminal as they arrive (real-time output)
   show_cost: false        # Show estimated $ cost in the CLI status bar
   vim_mode: false         # CLI only: vi/vim keybindings in the input composer (Esc → NORMAL, i → INSERT). The live NORMAL/INSERT/REPLACE mode shows at the right of the status bar. Config-only, read at startup.
@@ -2493,7 +2515,7 @@ Example footer appended to a Telegram/Discord/Slack reply:
 — claude-opus-4.7 · 12 tool calls · 2m 14s · $0.042
 ```
 
-Only the **final** message of a turn gets the footer; interim updates stay clean.
+Only the **final** message of a turn gets the footer; interim updates stay clean. When that final message would otherwise be the footer on its own (a streamed reply, whose text is already on screen, or a reply that is only a `MEDIA:` photo), the footer goes into the last photo's caption instead, on platforms with photo captions (Telegram), and only if it fits the caption limit (1,024 characters on Telegram). Otherwise it is sent as its own short message, as before.
 
 ### Per-platform progress overrides
 
@@ -2517,7 +2539,7 @@ Platforms without an override fall back to the global `tool_progress` value. Val
 
 Signal is listed as a valid platform key because the setting can be saved per platform, but the current Signal adapter cannot edit sent messages and does not render tool-progress bubbles. Keep Signal `tool_progress` set to `off`; use the CLI or an editing-capable messaging platform if you need to watch each tool call live.
 
-`interim_assistant_messages` is gateway-only. When enabled, Hermes sends completed mid-turn assistant updates as separate chat messages. This is independent from `tool_progress` and does not require gateway streaming.
+`interim_assistant_messages` is gateway-only. When enabled, Hermes sends completed mid-turn assistant updates as separate chat messages. This is independent from `tool_progress` and does not require gateway streaming. When disabled, text the model writes in the same message as a `clarify` question is still sent just before the question. The question waits up to 15 seconds in total for that send; a send that is still running after that does not hold the question back, so on a very slow connection the choices can arrive before the end of their explanation.
 
 `show_commentary` (default `true`) controls Codex Responses models' commentary channel — the polished progress narration these models produce alongside their private reasoning. When enabled, each completed commentary message is delivered as a visible mid-turn update (on the gateway this also requires `interim_assistant_messages`). Set it to `false` if the extra narration annoys you: commentary then falls back to the reasoning channel and is only shown when `show_reasoning` is enabled.
 
@@ -2728,7 +2750,7 @@ For separate natural mid-turn assistant updates without progressive token editin
 **Fresh final (Telegram):** Telegram's `editMessageText` preserves the original message timestamp, so a long-running streamed reply would keep the first-token timestamp even after completion. Set `fresh_final_after_seconds > 0` to opt in to delivering old previews as brand-new final messages with best-effort preview deletion. The default is `0`, which always finalizes streamed replies in place and avoids the brief duplicate-message/delete sequence on clients that show both operations.
 
 :::note Per-platform streaming defaults
-The master `streaming.enabled` switch is `false` by default — nothing streams until you flip it. Once enabled, streaming is decided **per platform**: Telegram ships with `display.platforms.telegram.streaming: true` (streams) and Discord with `display.platforms.discord.streaming: false` (does not). So after enabling streaming, Telegram streams out of the box and Discord stays on whole-message replies until you change its toggle. You can adjust these per-platform switches from the dashboard's **Channels** toggles or directly in `~/.hermes/config.yaml`; those per-platform toggles are re-read on every message, so they apply without a restart. The `streaming:` block itself (`enabled`, `transport`, `edit_interval`, `buffer_threshold`, `cursor`, `fresh_final_after_seconds`) is captured once when the gateway starts: after changing any of those keys, restart the gateway for the change to take effect. Note that a per-platform switch can only narrow the master switch, never enable streaming on its own.
+The master `streaming.enabled` switch is `false` by default — nothing streams until you flip it. Once enabled, streaming is decided **per platform**: Telegram ships with `display.platforms.telegram.streaming: true` (streams) and Discord with `display.platforms.discord.streaming: false` (does not). So after enabling streaming, Telegram streams out of the box and Discord stays on whole-message replies until you change its toggle. You can adjust these per-platform switches from the dashboard's **Channels** toggles or directly in `~/.hermes/config.yaml`; those per-platform toggles are re-read on every message, so they apply without a restart. The `streaming:` block itself (`enabled`, `transport`, `edit_interval`, `buffer_threshold`, `cursor`, `fresh_final_after_seconds`) is captured once when the gateway starts: after changing any of those keys, restart the gateway for the change to take effect. Note that a per-platform switch can only narrow the master switch, never enable streaming on its own. Under `gateway.multiplex_profiles`, each served profile's turns use the `streaming:` block from that profile's own `config.yaml` (`hermes -p <profile> config set streaming.enabled true`), not the host profile's. A served profile with no `streaming:` block of its own gets the default (off): it no longer streams just because the host profile does.
 :::
 
 ## Group Chat Session Isolation
@@ -3186,6 +3208,10 @@ delegation:
   max_spawn_depth: 1                        # Delegation tree depth cap (1-3, clamped). 1 = flat (default): parent spawns leaves that cannot delegate. 2 = orchestrator children can spawn leaf grandchildren. 3 = three levels.
   orchestrator_enabled: true                # Global kill switch. When false, role="orchestrator" is ignored and every child is forced to leaf regardless of max_spawn_depth.
   oneshot_max_children: 2                   # Total subagents a one-shot run (hermes chat -q / --oneshot) may spawn; 0 = unlimited. Interactive and gateway sessions are never capped by this.
+  resumable_ttl_hours: 48                   # A child stopped by a restart, crash or provider failure stays continuable (delegate_task action=continue) this long, and its worktree is kept from the startup sweep.
+  max_resumable: 32                         # Per profile, how many such children keep their worktree pinned; the oldest beyond it loses its pin (the record stays).
+  auto_resume: false                        # Opt-in: the gateway resumes children stopped by a limit (at its reset) or a restart/crash, at most twice each, silently (no completion while it waits; see delegate_task list), until you stop it, /stop or /new. Spends tokens unattended. Off = you continue them.
+  auto_resume_deadline_minutes: 360         # With auto_resume: give up this long after a child's first stop and send the parent one failure.
   gateway_mode: auto                        # Gateway sessions: auto | inline | background. auto = join children inside the turn (one answer) on a messaging chat whose display.interim_assistant_messages is off. See Subagent Delegation → Messaging chats without interim messages.
 ```
 
@@ -3195,7 +3221,7 @@ delegation:
 
 **Subagent fallback chain:** Set `delegation.fallback_providers` to give workers their own chain (same entry shape as the top-level list). An explicitly pinned child (by provider, endpoint, or model) uses that chain only when it is declared; otherwise it fails loudly instead of borrowing the parent agent's route. For an unpinned child, an absent or `null` setting preserves parent-chain inheritance. Use `fallback_providers: []` under `delegation:` to disable child fallback entirely.
 
-**Direct endpoint override:** If you want the obvious custom-endpoint path, set `delegation.base_url`, `delegation.api_key`, and `delegation.model`. That sends subagents directly to that OpenAI-compatible endpoint and takes precedence over `delegation.provider`. If `delegation.api_key` is omitted, Hermes falls back to `OPENAI_API_KEY` only. When `delegation.provider` is set alongside `delegation.base_url`, the explicit endpoint and key still win, but that provider's request settings (`extra_body` overrides and max output tokens from your `custom_providers` entry) are carried into the subagent.
+**Direct endpoint override:** If you want the obvious custom-endpoint path, set `delegation.base_url`, `delegation.api_key`, and `delegation.model`. That sends subagents directly to that OpenAI-compatible endpoint and takes precedence over `delegation.provider`. If `delegation.api_key` is omitted and `delegation.provider` names a provider (anything but `custom`/`auto`), `delegation.base_url` is that provider's endpoint override — the same as `model.base_url` for the main agent — and the subagent uses that provider's own key (e.g. `XIAOMI_API_KEY` for `provider: xiaomi` on a token-plan URL), never the parent agent's key. Without a named provider, an omitted `delegation.api_key` inherits the parent agent's key. When `delegation.provider` is set alongside `delegation.base_url` and `delegation.api_key`, the explicit endpoint and key win, but that provider's request settings (`extra_body` overrides and max output tokens from your `custom_providers` entry) are carried into the subagent.
 
 **Per-child request settings (`request_overrides`):** `delegation.request_overrides` is a dict of request settings sent on every subagent API call. Top-level keys are API kwargs (e.g. `service_tier`); an `extra_body` sub-dict is merged into the request's `extra_body`. It is honored on **all three** resolution branches — direct `base_url`, named `provider`, and pure inherit — so the key always takes effect. Precedence: explicit `request_overrides` values merge **over** any runtime- or parent-derived overrides — top-level explicit keys win, and `extra_body` is deep-merged one level so runtime `extra_body` keys (e.g. a provider's `thinking: {type: disabled}` personality) survive unless your key redefines them. The canonical use case is OpenRouter routing hints for delegation children:
 

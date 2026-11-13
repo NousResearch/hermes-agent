@@ -9,13 +9,11 @@ import contextlib
 import json
 import os
 import shutil
-import sqlite3
 import subprocess
 import sys
 
 from pathlib import Path
 from typing import Optional
-from agent.i18n import t
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("hermes_cli.main")
@@ -39,41 +37,6 @@ def _read_tui_active_session_file(path: Optional[str]) -> Optional[str]:
         return None
 
 
-# A canonical local session is keyed ``local-`` + 64 hex; main's epilogue printed 22-char stored ids.
-_SHORT_RESUME_LEN = 22
-
-
-def _short_resume_id(db, session_id: str) -> str:
-    """The 22-char prefix of a canonical ``local-…`` id when it names only that session (``--resume``
-    resolves a unique prefix back); every other id, or an ambiguous prefix, prints whole."""
-    if not session_id.startswith("local-") or len(session_id) <= _SHORT_RESUME_LEN:
-        return session_id
-    short = session_id[:_SHORT_RESUME_LEN]
-    try:
-        return short if db.resolve_session_id(short) == session_id else session_id
-    except sqlite3.Error:  # an unreadable store prints the whole id
-        return session_id
-
-
-def _branch_lineage(db, session: dict) -> list:
-    """*session* plus each ``/branch`` ancestor it was cut from. Main's epilogue after ``/branch`` still
-    named the parent and so reported the conversation's tokens; a canonical branch child is named
-    itself, and its copied history was billed on the ancestors."""
-    rows, seen = [session], {session.get("id")}
-    while True:
-        try:
-            config = json.loads(rows[-1].get("model_config") or "{}")
-        except (TypeError, ValueError):
-            break
-        parent_id = config.get("_branched_from") if isinstance(config, dict) else None
-        parent = db.get_session(parent_id) if parent_id and parent_id not in seen else None
-        if not parent:
-            break
-        seen.add(parent_id)
-        rows.append(parent)
-    return rows
-
-
 def _print_tui_exit_summary(session_id: Optional[str], active_session_file: Optional[str] = None) -> None:
     """Print a shell-visible epilogue after TUI exits."""
     from hermes_cli.main import _resolve_last_session
@@ -82,47 +45,8 @@ def _print_tui_exit_summary(session_id: Optional[str], active_session_file: Opti
     )
     if not target:
         return
-
-    db = None
-    try:
-        from hermes_state import SessionDB
-        from hermes_cli.config import get_hermes_home
-        db = SessionDB(db_path=get_hermes_home() / "state.db", read_only=True)
-        session = db.get_session(target)
-        if not session:
-            return
-
-        title = db.get_session_title(target)
-        resume_id = _short_resume_id(db, target)
-        message_count = int(session.get("message_count") or 0)
-        if message_count == 0:
-            return  # No real conversation — don't show resume info
-        tokens = {k: 0 for k in ("input", "output", "cache_read", "cache_write", "reasoning")}
-        for row in _branch_lineage(db, session):
-            for k in tokens:
-                tokens[k] += int(row.get(f"{k}_tokens") or 0)
-    except Exception:
-        return
-    finally:
-        if db is not None:
-            db.close()
-
-    # Sessions live under the profile's HERMES_HOME — mirror cli_session_mixin::_print_exit_summary.
-    from hermes_cli.profiles import get_active_profile_name
-    active_profile = get_active_profile_name()
-    profile_flag = "" if active_profile in ("default", "custom") else f" -p {active_profile}"
-    print(f"\n{t('cli.session.exit_resume_hint')}\n  hermes --tui --resume {resume_id}{profile_flag}")
-    if title:
-        print(f'  hermes --tui -c "{title}"{profile_flag}')
-    print(f"\nSession:        {resume_id}")
-    if title:
-        print(f"Title:          {title}")
-    print(f"Messages:       {message_count}")
-    print(
-        "Tokens:         "
-        f"{sum(tokens.values())} (in {tokens['input']}, out {tokens['output']}, "
-        f"cache {tokens['cache_read'] + tokens['cache_write']}, reasoning {tokens['reasoning']})"
-    )
+    from hermes_cli.chat_launch import print_exit_summary
+    print_exit_summary(target, command="hermes --tui")
 
 
 def _tui_force_build() -> bool:
@@ -389,64 +313,6 @@ def _apply_tui_python_env(env: dict) -> None:
         env["HERMES_CWD"] = _safe_tui_cwd(env)
 
 
-def _setup_tui_worktree() -> dict:
-    """Create the ``--worktree`` checkout for a TUI launch (prune + async pack maintenance); exits on failure."""
-    wt_info = None
-    try:
-        from cli import _git_repo_root, _maintain_pack_health, _prune_stale_worktrees, _setup_worktree
-        repo = _git_repo_root()
-        if repo:
-            _prune_stale_worktrees(repo)
-            # Repack on pack sprawl so `worktree add` never crawls on a
-            # multi-agent box; on a thread so it can't block launch.
-            import threading as _threading
-
-            _threading.Thread(
-                target=_maintain_pack_health, args=(repo,), name="pack-maintenance", daemon=True).start()
-        from hermes_cli.config import get_hermes_home
-        # The session's frozen cwd keeps this checkout; name the store from creation so a
-        # launcher killed with its terminal still leaves the tree to its sessions.
-        wt_info = _setup_worktree(retain_db=get_hermes_home() / "state.db")
-    except Exception as exc:
-        print(f"✗ Failed to create TUI worktree: {exc}", file=sys.stderr)
-    if not wt_info:
-        sys.exit(1)
-    return wt_info
-
-
-def _remove_idle_clean_tui_worktree(wt_info: dict) -> bool:
-    """Remove the ``--tui -w`` checkout on quit when nothing still needs it (N8) -> True if gone.
-
-    Kept when the gateway has queued or started work for a session inside it (quitting only
-    detaches the viewer), still schedules work for one (an active loop, heartbeat or goal
-    continuation, or a cron job bound to it), another viewer still holds one, or another process
-    still works in it; and by ``_cleanup_worktree`` when it is dirty, holds unpushed commits or
-    something no branch keeps.
-    """
-    from hermes_cli.config import get_hermes_home
-    from hermes_cli.worktree_exit import _still_in_use
-    from hermes_cli.worktree_ops import _retained_tree_is_live, _tree_still_served
-
-    path = wt_info.get("path")
-    if not path or not Path(path).is_dir():
-        return False
-    try:
-        db_path = str(get_hermes_home() / "state.db")
-        if _retained_tree_is_live(db_path, path, pending_only=True):
-            return False
-        if _still_in_use(path):
-            return False
-        # After the grace above: a legacy sidecar stamps its rows ``tui_shutdown`` as it exits.
-        if _tree_still_served(db_path, path):
-            return False
-        from cli import _cleanup_worktree
-        _cleanup_worktree(wt_info)
-    except Exception:
-        logger.debug("TUI worktree cleanup failed; keeping %s", path, exc_info=True)
-        return False
-    return not Path(path).exists()
-
-
 def _require_bypass_model(env: dict, model: Optional[str], resume_session_id: Optional[str]) -> None:
     """A --safe-mode / --ignore-user-config session reads no profile default model, so the owner
     refuses its session.create without one (bare invalid_params). Say so before the TUI starts,
@@ -583,7 +449,10 @@ def _launch_tui(
 
     wt_info = None
     if worktree:
-        wt_info = _setup_tui_worktree()
+        from hermes_cli.session_worktree import create
+        wt_info = create()
+        if not wt_info:
+            sys.exit(1)
         env["HERMES_CWD"] = wt_info["path"]
         env["TERMINAL_CWD"] = wt_info["path"]
 
@@ -648,25 +517,9 @@ def _launch_tui(
         attached_session = _read_tui_active_session_file(active_session_file) or resume_session_id
         with contextlib.suppress(OSError):
             os.unlink(active_session_file)
-        if wt_info and code in {0, 130}:
-            from hermes_cli.worktree_exit import ask_exit_choice
-            ask_exit_choice(wt_info)
-        from hermes_cli.worktree_exit import apply_exit_choice
-        if wt_info and apply_exit_choice(wt_info, print):
-            wt_info = None  # archived or discarded at the user's request
-        if wt_info and _remove_idle_clean_tui_worktree(wt_info):
-            wt_info = None  # clean and idle: removed with its branch, as before the shared gateway
         if wt_info:
-            # Quitting detaches a viewer; the gateway may still be executing in
-            # this checkout and future resumes retain its frozen cwd.
-            if attached_session:
-                # The launch lock names this (exiting) pid; hand it to the session so a later
-                # launch's stale prune keeps the tree while the session is resumable.
-                from hermes_cli.config import get_hermes_home
-                from hermes_cli.worktree_ops import _retain_worktree_for_session
-                _retain_worktree_for_session(wt_info["repo_root"], wt_info["path"], attached_session,
-                                             get_hermes_home() / "state.db")
-            print(f"Worktree retained for this session: {wt_info['path']}", file=sys.stderr)
+            from hermes_cli.session_worktree import finish
+            finish(wt_info, attached_session, ask=code in {0, 130})
 
     # Exit code 42 = TUI requested an update. Relaunch as `hermes update`;
     # preserve_inherited=False keeps --tui and other flags out of the subcommand.

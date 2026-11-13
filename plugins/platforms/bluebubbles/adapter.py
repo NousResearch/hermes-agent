@@ -25,7 +25,8 @@ from gateway.platforms.base import (
 )
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms.media_cache import ext_for_mime
-from gateway.platforms.helpers import compile_mention_patterns, strip_markdown
+from gateway.platforms.helpers import compile_mention_patterns, spoken_mention_clips, strip_markdown
+from gateway.platforms.helpers import voice_mention_gate_enabled
 from utils import TRUTHY_STRINGS
 
 # Historical BlueBubbles mime→ext maps, preserved verbatim as overrides for the shared dispatch in
@@ -101,6 +102,11 @@ def _ok():
     """Plain ``ok`` acknowledgement for webhook events we accept but don't process."""
     from aiohttp import web
     return web.Response(text="ok")
+
+
+def _is_voice_attachment(att: dict[str, Any]) -> bool:
+    """An audio attachment or a ``.caf`` voice memo (which may arrive without an audio MIME)."""
+    return (att.get("mimeType") or "").lower().startswith("audio/") or (att.get("uti") or "").endswith("caf")
 
 
 class BlueBubblesAdapter(BasePlatformAdapter):
@@ -522,9 +528,10 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             return json.loads(payload_str) if payload_str else {}
 
     async def _collect_attachments(self, record: dict[str, Any]):
-        """Download inbound attachments; returns (media_urls, media_types, msg_type)."""
+        """Download inbound attachments; returns (media_urls, media_types, msg_type, voice_paths)."""
         media_urls: list[str] = []
         media_types: list[str] = []
+        voice_paths: list[str] = []
         msg_type = MessageType.TEXT
         for att in record.get("attachments") or []:
             att_guid = att.get("guid", "")
@@ -533,13 +540,17 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                 continue
             mime = (att.get("mimeType") or "").lower()
             media_urls.append(cached)
+            is_voice = _is_voice_attachment(att)
+            if is_voice and not mime.startswith("audio/"):  # a CAF memo sent as octet-stream is still audio
+                mime = "audio/x-caf"
             media_types.append(mime)
-            is_voice = mime.startswith("audio/") or (att.get("uti") or "").endswith("caf")
+            if is_voice:
+                voice_paths.append(cached)
             msg_type = (MessageType.PHOTO if mime.startswith("image/") else MessageType.VOICE if is_voice
                         else MessageType.VIDEO if mime.startswith("video/") else MessageType.DOCUMENT)
         if len(media_urls) > 1 and any(m.split("/")[0] == "image" for m in media_types):  # any image → PHOTO
             msg_type = MessageType.PHOTO
-        return media_urls, media_types, msg_type
+        return media_urls, media_types, msg_type, voice_paths
 
     def _webhook_token(self, request) -> Optional[str]:
         return (request.query.get("password") or request.query.get("guid") or request.headers.get("x-password")
@@ -587,18 +598,39 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         is_group = bool(record.get("isGroup")) or (";+;" in (chat_guid or ""))
         # Mention gate BEFORE the attachment downloads: an unmentioned group message must not
         # pull every attachment through the REST API only to be dropped.
-        if is_group and self.require_mention:
+        # A captionless voice memo can match only once transcribed (opt-in, #102330).
+        spoken = (is_group and self.require_mention and not text and voice_mention_gate_enabled(self.config.extra)
+                  and any(map(_is_voice_attachment, record.get("attachments") or ())))
+        if is_group and self.require_mention and not spoken:
             if not self._message_matches_mention_patterns(text):
                 logger.debug("[bluebubbles] ignoring group message (require_mention=true, no mention pattern matched)")
                 return _ok()
             text = self._clean_mention_text(text)
-        media_urls, media_types, msg_type = await self._collect_attachments(record)
-        if not text and media_urls:
+        chat_type = "group" if is_group else "dm"
+        # The fetch spends the server password and disk on a sender-chosen file: only the gateway's explicit
+        # True permits it. The message still dispatches so the runner applies denial/pairing.
+        has_attachments = bool(record.get("attachments"))
+        media_urls, media_types, msg_type, voice_paths = [], [], MessageType.TEXT, []
+        if has_attachments and self._is_sender_authorized(sender, chat_type, session_chat_id) is True:
+            media_urls, media_types, msg_type, voice_paths = await self._collect_attachments(record)
+        # Only the memo's audio enters gate STT; a rejected envelope's other files are deleted with it.
+        if spoken and not await spoken_mention_clips(
+                voice_paths, self._mention_patterns, adapter=self, source=self.build_source(
+                    chat_id=session_chat_id, chat_name=chat_identifier or sender, chat_type="group",
+                    user_id=sender, user_name=sender, chat_id_alt=chat_identifier)):
+            for path in set(media_urls) - set(voice_paths):
+                with suppress(OSError):
+                    os.remove(path)
+            logger.debug("[bluebubbles] ignoring group voice memo (require_mention=true, no wake word spoken)")
+            return _ok()
+        if spoken:  # speech admitted it: a photo/PDF beside the memo must not demote its audio out of STT
+            msg_type = MessageType.VOICE
+        if not text and (media_urls or has_attachments):
             text = "(attachment)"
         if not sender or not (chat_guid or chat_identifier) or not text:
             return web.json_response({"error": "missing message fields"}, status=400)
         source = self.build_source(chat_id=session_chat_id, chat_name=chat_identifier or sender,
-                                   chat_type="group" if is_group else "dm", user_id=sender, user_name=sender,
+                                   chat_type=chat_type, user_id=sender, user_name=sender,
                                    chat_id_alt=chat_identifier)
         event = MessageEvent(
             text=text, message_type=msg_type, source=source, raw_message=payload,

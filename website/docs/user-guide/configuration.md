@@ -249,6 +249,7 @@ terminal:
   temp_dir: ""      # Session temp root; empty = TMPDIR, else ~/.hermes/cache/terminal
   font_family: ""   # Desktop terminal font; e.g. "MesloLGS NF"
   timeout: 180      # Per-command timeout in seconds
+  background_on_timeout: false  # Local: a command still running at its timeout moves to the background instead of being killed
   home_mode: auto   # auto | real | profile — subprocess HOME policy
   env_passthrough: []  # Env var names to forward to sandboxed execution (terminal + execute_code)
   client_env_passthrough: []  # Extra non-secret toolchain names (e.g. GEM_HOME) a local CLI/TUI session's tools take from its launching shell
@@ -256,6 +257,14 @@ terminal:
   modal_image: "nousresearch/hermes-sandbox:desktop"                 # Container image for Modal backend
   daytona_image: "nousresearch/hermes-sandbox:desktop"               # Container image for Daytona backend
 ```
+
+`terminal.background_on_timeout` (local backend, default `false`): when a
+foreground command is still running at its `timeout`, Hermes moves it to the
+background instead of ending it, the same way a command yields when you send a
+message mid-run. The agent gets the output so far, a `session_id`, and a
+completion notice when the command exits, and is told not to start a second
+copy. Sessions that cannot receive a later notice (subagents, Kanban tasks,
+managed worker turns, stateless API channels) keep the old behaviour.
 
 `terminal.temp_dir` controls where Hermes puts session temp artifacts on the
 local backend — background-process logs/pid/exit files, code-execution

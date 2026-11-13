@@ -3,11 +3,11 @@ title: Live2D Rigger
 repo: https://github.com/flabanabba8/live2d-rigger
 sha: f13a5af37c3322b8de5fca6d193ab20ec46189b8
 version: 0.6.2
-description: 'Create a provisional Live2D character from a brief with complete image parts, local cutout, placement, an experimental Umamo/JDK rig and Core motion review; also inspect and adjust a copy of an existing model. Disclosure: on first use it scans PATH and the hardware (read-only; it reports only whether image-service keys exist, yes or no) and asks which routes to use. It runs the JDK, the Kotlin/Umamo classpath (Umamo 0.5.0), the Python with Playwright and the Cubism viewer folder that you set in the plugin settings (the model cannot name a program, classpath or command), FFmpeg and a local headless browser, each with a minimal environment; the host image tool may use its configured provider. Optional official sample download requires the user’s licence acceptance. No SDK, Core, viewer, sample model, model layers or textures are bundled; the approved thumbnail contains character artwork. XY head turns, independent limbs and polished eyes are not provided.'
+description: "Create a provisional Live2D character from a brief with complete image parts, local cutout, placement, an experimental Umamo/JDK rig and Core motion review; also inspect and adjust a copy of an existing model. XY head turns, independent limbs and polished eyes are not provided. Disclosure — runs the Java (JDK) and Kotlin/Umamo classpath, the Python with Playwright and the Cubism SDK viewer folder that you set in the plugin settings (the model cannot name a program, classpath or command), plus FFmpeg and a local headless browser against a viewer served only on a temporary loopback port, each with a minimal environment; on first use it scans PATH and the hardware (read-only) and asks which routes to use; opening an existing model copies its folder into the plugin's data directory; on request it downloads official Live2D sample archives from cubism.live2d.com after you agree to Live2D's licence; the host image tool may use its configured provider; no Cubism SDK, Core, viewer, sample model, layers or textures are bundled, and the catalog thumbnail contains character artwork."
 maintainer: flabanabba8
 tier: community
 category: tools
-requires_hermes: '>=0.22.0'
+requires_hermes: ">=0.22.3"
 docs_url: https://github.com/flabanabba8/live2d-rigger/blob/f13a5af37c3322b8de5fca6d193ab20ec46189b8/README.md
 image: https://raw.githubusercontent.com/flabanabba8/live2d-rigger/f13a5af37c3322b8de5fca6d193ab20ec46189b8/assets/thumbnail.jpg
 platforms:
